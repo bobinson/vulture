@@ -17,7 +17,7 @@ Vulture is a compliance audit platform that uses AI agents to inspect source cod
 ┌──────────────────────────────────────────────────────────┐
 │                  Go Backend (Orchestrator)                │
 │  ┌─────────┐ ┌─────────────┐ ┌────────────┐ ┌────────┐ │
-│  │ Handlers│ │  Services   │ │  ag-ui SSE │ │ SQLite │ │
+│  │ Handlers│ │  Services   │ │  ag-ui SSE │ │Postgres│ │
 │  │ (REST)  │ │ (Business)  │ │ (Encoder)  │ │ (Repo) │ │
 │  └─────────┘ └─────────────┘ └────────────┘ └────────┘ │
 └────────┬──────────────┬──────────────┬───────────────────┘
@@ -48,7 +48,7 @@ The frontend connects to the Go backend via two channels:
 ### Go Backend (Orchestrator)
 
 - **Language**: Go 1.23+
-- **Database**: SQLite (via CGO)
+- **Database**: PostgreSQL with pgvector extension (SQLite fallback available)
 - **Role**: Central orchestrator that receives audit requests, manages source code, dispatches work to Python agents, and aggregates results
 
 Key responsibilities:
@@ -79,7 +79,7 @@ Each agent is a standalone FastAPI service with:
 | Agent UI Protocol | ag-ui + CopilotKit | Standard protocol for agent-to-UI communication, event-based SSE |
 | Backend | Go | Performance, single binary deployment, excellent concurrency for stream aggregation |
 | Agent SDK | OpenAI Agents SDK | Code-first agent definition, built-in streaming, multi-model via LiteLLM |
-| Database | SQLite | Zero-config, embedded, sufficient for audit result storage |
+| Database | PostgreSQL + pgvector | Vector similarity search for audit memory, production-grade persistence |
 | Deployment | Docker Compose | Simple multi-service orchestration for Go + Python + Next.js |
 
 ## Constraints

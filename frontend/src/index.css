@@ -1,0 +1,299 @@
+@import "tailwindcss";
+
+@theme {
+  /* Surface palette — warm-neutral inspired by Linear's elevation system */
+  --color-cream: #F8F7F4;
+  --color-cream-dark: #F0EFEC;
+  --color-cream-darker: #E6E5E1;
+
+  /* Accent — desaturated indigo-blue (Linear-style muted accent) */
+  --color-accent: #5B6BF0;
+  --color-accent-light: #7B88F5;
+  --color-accent-dark: #4A57D4;
+
+  /* Status */
+  --color-success: #2DA44E;
+  --color-success-light: #3FB950;
+  --color-warning: #BF8700;
+  --color-danger: #CF222E;
+  --color-danger-light: #F85149;
+
+  /* Terminal */
+  --color-terminal: #161B22;
+  --color-terminal-text: #79C0FF;
+  --color-terminal-green: #56D364;
+  --color-terminal-yellow: #E3B341;
+  --color-terminal-red: #F85149;
+  --color-terminal-blue: #79C0FF;
+  --color-terminal-muted: #484F58;
+
+  /* Text hierarchy — 4-level system like Linear */
+  --color-foreground: #1B1B1F;
+  --color-secondary: #54545C;
+  --color-muted: #6E6E76;
+  --color-muted-light: #9898A0;
+
+  /* Borders */
+  --color-border: #E4E4E7;
+  --color-border-dark: #D4D4D8;
+
+  /* Surface */
+  --color-surface: #FFFFFF;
+
+  /* Typography — Inter with proper optical sizing */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  body {
+    background-color: var(--color-cream);
+    color: var(--color-foreground);
+    font-size: 14px;
+    line-height: 1.5;
+    letter-spacing: -0.006em;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    color: var(--color-accent-dark);
+  }
+
+  /* Linear-style focus ring */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+    border-radius: 4px;
+  }
+}
+
+/* ─── Cards ─────────────────────────────────────────────── */
+
+@utility card {
+  background-color: var(--color-surface);
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+}
+
+@utility card-hover {
+  background-color: var(--color-surface);
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  transition: border-color 150ms ease;
+  &:hover {
+    border-color: var(--color-border-dark);
+  }
+}
+
+/* ─── Buttons ───────────────────────────────────────────── */
+
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition: all 120ms ease;
+  cursor: pointer;
+  user-select: none;
+  &:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+}
+
+@utility btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition: all 120ms ease;
+  cursor: pointer;
+  user-select: none;
+  background-color: var(--color-accent);
+  color: white;
+  &:hover { background-color: var(--color-accent-dark); }
+  &:active { transform: scale(0.98); }
+  &:disabled { opacity: 0.45; pointer-events: none; }
+}
+
+@utility btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition: all 120ms ease;
+  cursor: pointer;
+  user-select: none;
+  background-color: var(--color-surface);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  &:hover { background-color: var(--color-cream); border-color: var(--color-border-dark); }
+  &:active { transform: scale(0.98); }
+}
+
+@utility btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition: all 120ms ease;
+  cursor: pointer;
+  user-select: none;
+  color: var(--color-muted);
+  &:hover { color: var(--color-foreground); background-color: var(--color-cream-dark); }
+}
+
+/* ─── Inputs ────────────────────────────────────────────── */
+
+@utility input-field {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-surface);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-foreground);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+  &::placeholder { color: var(--color-muted-light); }
+  &:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+}
+
+@utility label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+  margin-bottom: 6px;
+}
+
+/* ─── Badges ────────────────────────────────────────────── */
+
+@utility badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+@utility severity-critical { background-color: #FEE2E2; color: #991B1B; }
+@utility severity-high { background-color: #FFEDD5; color: #9A3412; }
+@utility severity-medium { background-color: #FEF3C7; color: #92400E; }
+@utility severity-low { background-color: #DBEAFE; color: #1E40AF; }
+@utility severity-info { background-color: #F1F5F9; color: #475569; }
+
+/* ─── Terminal ──────────────────────────────────────────── */
+
+@utility terminal {
+  background-color: var(--color-terminal);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow: hidden;
+}
+
+@utility terminal-line {
+  padding: 1px 16px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.04);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+@utility terminal-time {
+  color: var(--color-terminal-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  padding-top: 1px;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Scrollbar (minimal, Linear-style) ─────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-dark);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-light);
+}
+
+.terminal-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.terminal-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Animations ────────────────────────────────────────── */
+
+@keyframes audit-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes score-ring {
+  from { stroke-dashoffset: 283; }
+}
+
+.animate-score-ring {
+  animation: score-ring 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
+}

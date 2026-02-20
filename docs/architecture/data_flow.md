@@ -34,7 +34,7 @@ User → Frontend (AuditTypeSelector + Submit)
       }
     }
   → Go Backend: audit_service.Start()
-    → Creates audit record in SQLite (status: "running")
+    → Creates audit record in PostgreSQL (status: "running")
     → Returns audit_id immediately (non-blocking)
   ← Response: { audit_id: "xyz789", status: "running" }
 ```
@@ -119,7 +119,7 @@ React (via useAgent hook receives ag-ui events):
 ```
 Go Backend (after RunFinished):
   → audit_repo.SaveResult(audit_id, findings, scores)
-  → SQLite update: audit.status = "completed", audit.completed_at = now()
+  → PostgreSQL update: audit.status = "completed", audit.completed_at = now()
   → Results accessible via GET /api/audits/xyz789
 ```
 

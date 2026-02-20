@@ -1,0 +1,216 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"github.com/vulture/backend/internal/config"
+	"github.com/vulture/backend/internal/localdev"
+	"github.com/vulture/backend/internal/server"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		runServer()
+		return
+	}
+
+	switch os.Args[1] {
+	case "serve", "server":
+		runServer()
+	case "local_start", "local-start":
+		runLocalStart()
+	case "status":
+		runStatus()
+	case "scan":
+		runScan()
+	case "version":
+		fmt.Println("vulture v0.1.0")
+	case "help", "--help", "-h":
+		printUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Println(`Usage: vulture <command> [options]
+
+Commands:
+  serve          Start the backend HTTP server (default)
+  local_start    Launch all components locally (backend + agents + frontend)
+  scan <path>    Quick-scan a local path or git URL
+  status         Show status of running services
+  version        Print version
+  help           Show this help
+
+Environment:
+  VULTURE_PORT             Backend port (default: 8080)
+  VULTURE_DB_PATH          SQLite database path (default: /data/vulture.db)
+  VULTURE_DB_DSN           PostgreSQL DSN (if set, uses Postgres instead of SQLite)
+  OPENAI_API_KEY           API key for LLM-powered audits
+  VULTURE_LLM_MODEL        LLM model name (default: gpt-4o)`)
+}
+
+func runServer() {
+	cfg := config.Load()
+	srv := server.New(cfg)
+
+	addr := ":" + cfg.Port
+	httpSrv := &http.Server{
+		Addr:              addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		log.Printf("vulture backend starting on %s", addr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	<-done
+	log.Println("shutting down gracefully...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Fatalf("forced shutdown: %v", err)
+	}
+	log.Println("server stopped")
+}
+
+func runLocalStart() {
+	projectRoot := findProjectRoot()
+	cfg := localdev.DefaultConfig(projectRoot)
+	launcher := localdev.NewLauncher(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+
+	if err := launcher.Start(ctx); err != nil {
+		log.Fatalf("local start failed: %v", err)
+	}
+
+	<-done
+	fmt.Println("\nshutting down all services...")
+	cancel()
+	launcher.Manager().WaitAll()
+	fmt.Println("all services stopped")
+}
+
+func runStatus() {
+	ports := map[string]string{
+		"backend":     "8080",
+		"agent-chaos": "8001",
+		"agent-owasp": "8002",
+		"agent-soc2":  "8003",
+		"frontend":    "3001",
+	}
+
+	fmt.Println("Vulture Service Status")
+	fmt.Println("======================")
+	for name, port := range ports {
+		status := checkHealth("http://localhost:" + port)
+		fmt.Printf("  %-15s :%s  %s\n", name, port, status)
+	}
+}
+
+func runScan() {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "usage: vulture scan <path_or_url>")
+		os.Exit(1)
+	}
+	target := os.Args[2]
+	apiURL := os.Getenv("VULTURE_API_URL")
+	if apiURL == "" {
+		apiURL = "http://localhost:8080"
+	}
+
+	fmt.Printf("Scanning: %s\n", target)
+	fmt.Printf("API: %s\n", apiURL)
+
+	// Determine source type
+	sourceType := "local"
+	if isGitURL(target) {
+		sourceType = "git"
+	}
+
+	// Submit source
+	sourceID, err := submitSource(apiURL, sourceType, target)
+	if err != nil {
+		log.Fatalf("submit source: %v", err)
+	}
+	fmt.Printf("Source ID: %s\n", sourceID)
+
+	// Create audit with all types
+	auditID, err := createAudit(apiURL, sourceID, []string{"chaos", "owasp", "soc2"})
+	if err != nil {
+		log.Fatalf("create audit: %v", err)
+	}
+	fmt.Printf("Audit ID: %s\n", auditID)
+	fmt.Printf("\nView results: http://localhost:3001/audit/%s\n", auditID)
+	fmt.Printf("Stream API:   %s/api/audits/%s/stream\n", apiURL, auditID)
+}
+
+func findProjectRoot() string {
+	// Check if we're inside the vulture project
+	cwd, _ := os.Getwd()
+	candidates := []string{
+		cwd,
+		filepath.Join(cwd, ".."),
+		filepath.Join(cwd, "../.."),
+	}
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, "backend")); err == nil {
+				abs, _ := filepath.Abs(dir)
+				return abs
+			}
+		}
+	}
+	return cwd
+}
+
+func checkHealth(url string) string {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url + "/health")
+	if err != nil {
+		return "DOWN"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		return "UP"
+	}
+	return fmt.Sprintf("ERROR (%d)", resp.StatusCode)
+}
+
+func isGitURL(s string) bool {
+	for _, prefix := range []string{"http://", "https://", "git@", "ssh://"} {
+		if len(s) > len(prefix) && s[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
+}

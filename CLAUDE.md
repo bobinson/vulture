@@ -2,42 +2,109 @@
 
 ## Project Overview
 
-Vulture is a compliance audit platform that uses AI agents to inspect source code against multiple compliance frameworks (Chaos Engineering, OWASP, SOC2). It consists of three components: a Go backend orchestrator, Python agent microservices, and a Next.js frontend.
+Vulture is an application that loads source code from a local folder or git repository and inspects it for compliance against:
+
+1. **Chaos Engineering principles**
+2. **OWASP guidelines**
+3. **SOC2** (configurable down to specific compliance clauses)
+
+Each audit option is further configurable based on complexity. For SOC2, users select specific compliance clauses to audit against. The system is built to be extensible for other types of compliance and audits.
+
+AI agents for each audit type are launched independently. Each agent has precisely defined skills (documented in SKILLS.md) and uses the OpenAI Agents SDK (https://github.com/openai/openai-agents-python) with support for OpenAI, Claude, and Gemini models.
 
 ## Architecture
 
 ```
-Frontend (Next.js + CopilotKit + ag-ui) → SSE/REST → Go Backend → HTTP/SSE → Python Agent Services
+Frontend (React SPA + Vite) → SSE/REST → Go Backend → HTTP/SSE → Python Agent Services
+                                              ↓
+                                     PostgreSQL + pgvector
 ```
 
-- **Go Backend** (`backend/`): Orchestrator. Receives audit requests, manages sources (git clone / local path), dispatches to Python agents, aggregates SSE streams, serves ag-ui events to frontend. SQLite for persistence.
+- **Go Backend** (`backend/`): Orchestrator. Receives audit requests, manages sources (git clone / local path), dispatches to Python agents concurrently, aggregates SSE streams, serves structured SSE events to frontend. PostgreSQL (pgvector) for production, SQLite fallback for local dev.
 - **Python Agents** (`agents/`): Each audit type (chaos, owasp, soc2) is a separate FastAPI microservice using OpenAI Agents SDK + LiteLLM. Shared library in `agents/shared/`.
-- **Frontend** (`frontend/`): Next.js + Tailwind + CopilotKit. Warm cream theme, compact sidebar, terminal-style agent output.
-- **Deployment**: docker-compose with all services.
+- **Frontend** (`frontend/`): React SPA (Vite) + Tailwind + react-i18next. Plain React with native EventSource for SSE streaming. Look and feel must be elegant like https://agentation.dev — intuitive, simple, elegant. Warm cream theme, compact sidebar, terminal-style agent output.
+- **CLI** (`cli/`): Go CLI binary for headless audit execution (`vulture scan`, `vulture watch`, `vulture list`).
+- **Deployment**: docker-compose with all services (PostgreSQL, backend, 3 agents, frontend).
 
 ## Directory Structure
 
 ```
 vulture/
-  backend/           # Go 1.23+ backend
-    cmd/vulture/     # Entry point
-    internal/        # Private packages (handler, service, model, agui, repository, config)
-    pkg/             # Public packages (gitutil, fileutil)
-    test/e2e/        # Go E2E tests
-  agents/            # Python 3.12+
-    shared/          # Common tools, models, transport, LLM config
-    chaos_engineering/
-    owasp/
-    soc2/
-  frontend/          # Next.js + TypeScript
-    src/app/         # Pages
-    src/components/  # UI components
-    src/hooks/       # React hooks
-    src/lib/         # Utilities, types, API client
+  backend/               # Go 1.24+ backend
+    cmd/vulture/         # Entry point (serve, local_start, status, scan, version)
+    internal/
+      handler/           # HTTP handlers (audit, source, stream, auth, memory, agent, filesystem, health)
+      service/           # Business logic (audit, source, stream, agent_proxy, memory, auth)
+      repository/        # Data access (postgres_repo, sqlite_repo, *_memory_repo, user_repo, mocks)
+      model/             # Data structures (audit, finding, source, user, agent, event, memory)
+      server/            # HTTP server setup, middleware (CORS, logging, auth), request_id
+      config/            # Environment configuration loading
+      agui/              # SSE encoder & agent-to-agui translator
+      embedding/         # Vector embedding client (OpenAI/Ollama compatible)
+      localdev/          # Local dev launcher (detect, process management)
+    pkg/
+      gitutil/           # Git clone utilities
+      fileutil/          # File tree walking
+    migrations/          # SQL migrations (001_init, 002_flexible_embeddings, 003_add_indexes)
+    test/e2e/            # Go E2E tests
+  agents/                # Python 3.12+
+    shared/              # Common library
+      shared/
+        audit_runner.py  # Combined skill+LLM audit pipeline
+        base_agent.py    # Agent factory
+        llm/provider.py  # LiteLLM config, model resolution, context window detection
+        tools/           # file_scanner, file_reader, file_lister, pattern_matcher, ast_parser, dependency_checker, git_history, memory_client
+        transport/       # sse_app (FastAPI factory), event_emitter (SSE events)
+        models/          # audit_request, audit_result, finding
+      tests/             # Unit + E2E tests
+    chaos_engineering/   # Chaos agent (skills: retry, circuit_breaker, timeout, fallback, blast_radius)
+    owasp/               # OWASP agent (skills: injection, auth, crypto, misconfig, access_control)
+    soc2/                # SOC2 agent (skills: access_logging, encryption, change_mgmt, monitoring, data_retention; clauses: CC6, CC7, CC8)
+  frontend/              # React SPA (Vite) + TypeScript
+    src/
+      pages/             # Dashboard, AuditNew, AuditResults, Memories, Settings, Login, Register
+      components/
+        layout/          # Layout, Sidebar, Header
+        audit/           # SourceInput, FolderBrowser, AuditTypeSelector
+        results/         # AgentStream, FindingsTable, ScoreCard, SeveritySummary, TokenSavings, AuditTimeline, SeverityBadge
+      hooks/             # useAgentStream, useAudit, useSource, useFindings, useCopyFeedback
+      lib/               # api (HTTP client), auth (AuthProvider), types, constants, clipboard, markdown
+      i18n/locales/      # en, es, de, fr, ja, pt
+    e2e/                 # Playwright E2E tests (22 tests)
+  cli/                   # Go CLI binary (scan, login, list, watch)
   docs/
-    architecture/    # System docs
-    features/        # Per-feature: implementation_plan.md, rollback_plan.md, implementation_status.md
+    architecture/        # system_overview, data_flow, agent_protocol, extensibility
+    features/            # 001-008 feature docs (each: plan, status, rollback)
+    guides/              # cli_usage
+  .github/workflows/     # CI/CD (lint, build, test for all components)
+  docker-compose.yml     # Full stack orchestration
+  Makefile               # Build, test, lint automation
 ```
+
+## Audit Pipeline (Combined Skill + LLM)
+
+Agents use a two-phase audit pipeline via `run_combined_audit()`:
+
+```
+Phase 1 (ALWAYS): Skill-based pattern matching → 100% file coverage, fast, deterministic
+Phase 2 (OPTIONAL): LLM analysis → deeper reasoning on file subset that fits context window
+                     ↓
+              Deduplicate LLM findings against skill findings
+                     ↓
+              Merged result: all skill findings + new-only LLM findings
+```
+
+- **Skills always run first** across the entire codebase using `ThreadPoolExecutor`.
+- **LLM runs second** only when `VULTURE_USE_LLM=true`, analyzing the subset of files that fits the model's context window.
+- **Deduplication** (`_deduplicate_findings`) matches by normalized title + file_path, so only genuinely new LLM findings are added.
+- **Context window sizing** (`get_context_window()`) resolves via: `VULTURE_LLM_CTX_SIZE` env > model lookup in `CONTEXT_WINDOWS` dict > 32K default.
+- **Prior findings** from the memory system are passed as context to avoid redundant analysis. Dedup stats are emitted for observability.
+
+## Database
+
+- **PostgreSQL** (production): pgvector extension for embedding similarity search. Schema in `backend/migrations/`.
+- **SQLite** (local dev fallback): WAL mode + busy_timeout. Embeddings stored as JSON text.
+- **Key tables**: `users`, `sources`, `audits`, `findings`, `audit_memories` (with vector column), `memory_edges` (graph relations).
 
 ## Development Commands
 
@@ -52,21 +119,42 @@ make docker-up      # Start full stack via docker-compose
 make docker-down    # Stop all services
 ```
 
+## Development Workflow (MANDATORY)
+
+Every code change MUST follow this sequence:
+
+1. **Think** — Understand the problem fully before writing any code.
+2. **Plan** — Design the approach, identify affected components, consider edge cases.
+3. **Write E2E business logic tests FIRST** — Define the expected behavior as E2E tests before any implementation code exists.
+4. **Implement** — Write the code to make the E2E tests pass.
+5. **Verify** — Run the full E2E business logic test suite to confirm the code satisfies the business logic.
+6. **After EVERY code addition or change**, re-run the entire E2E business logic test suite. No code is considered complete until E2E passes.
+
+### CRITICAL INVARIANT: NEVER modify E2E business logic tests to make code pass. The tests define the business contract. If tests fail, fix the implementation code, not the tests.
+
+## Planning and documentation
+
+Each new feature must have a unique folder in the format 4digits_feature_name under docs/features/ and each
+folder must have a  4digits_implementation_plan.md, 4digits_implementation_status.md and  4digts_rollback_plan.md.
+
+4digts = 0001, 0002 etc and should be incremented 
+
 ## Code Quality Rules
 
 These rules are mandatory for all code in this project:
 
-1. **E2E tests first**: Write E2E business logic tests before implementation. Never modify existing E2E tests.
-2. **DRY**: No duplicated logic. Extract shared code into appropriate shared modules.
-3. **Cyclomatic complexity < 10**: No function may exceed 10 independent code paths. Use early returns, strategy pattern, and delegation.
-4. **100% test coverage**: Every line of code must be covered by tests.
-5. **ISO 26262 safety**: Code must be categorized for safety and adhere to ISO 26262 principles.
-6. **Optimize**: Code must be optimized for performance.
+1. **E2E tests first**: E2E business logic tests must be written first, then the code. Code must be verified against the business logic after every change.
+2. **NEVER modify E2E business logic tests**: These tests are the source of truth for business requirements. Changing them to make code pass is forbidden.
+3. **DRY**: No duplicated logic. Extract shared code into appropriate shared modules.
+4. **Cyclomatic complexity < 5**: No function may exceed 10 independent code paths. Use early returns, strategy pattern, and delegation.
+5. **100% test coverage**: Every line of code must be covered by tests.
+6. **ISO 26262 safety**: Code must be categorized for safety and adhere to ISO 26262 safety standards.
+7. **Assembly-level optimization**: Code must be optimized for performance even at the assembly level. This means: minimize allocations, avoid unnecessary copies, use efficient data structures, leverage compiler optimizations, profile hot paths.
 
 ## Coding Conventions
 
 ### Go (backend/)
-- Use standard library where possible; minimize dependencies
+- Use standard library where possible; minimize dependencies (current: `lib/pq`, `x/crypto`, `modernc.org/sqlite`)
 - All handlers accept service interfaces for testability
 - All services accept repository interfaces for mock injection
 - Error handling: return errors, don't panic. Wrap errors with context using `fmt.Errorf("operation: %w", err)`
@@ -78,24 +166,35 @@ These rules are mandatory for all code in this project:
 - Python 3.12+, type hints on all functions
 - Use `@function_tool` decorator for agent tools
 - Agent definitions in `agent.py`, skills in `skills/` subdirectory
-- Each agent has a `SKILLS.md` documenting its capabilities
+- **Each agent MUST have a `SKILLS.md`** documenting its precise capabilities, skill definitions, and attributes. This is a core requirement — agents without a SKILLS.md are incomplete.
 - FastAPI for HTTP, SSE for streaming
+- All agents use `run_combined_audit()` from `shared.audit_runner` — do NOT use the old `if USE_LLM` branch pattern
 - Tests: `pytest` with `pytest-cov`, E2E in `tests/e2e/`, unit in `tests/unit/`
 - Use `ruff` for linting, `radon` for complexity checks
 
 ### Frontend (frontend/)
-- TypeScript strict mode
+- React 19 SPA with Vite 7, TypeScript strict mode
 - Functional components with hooks
-- CopilotKit for ag-ui protocol integration
-- Tailwind CSS with custom theme (cream bg `#F6F5F4`, blue accent `#3b82f6`, green highlight `#22c55e`)
-- Tests: Playwright for E2E, Vitest for unit tests
+- Native EventSource API for SSE streaming (no ag-ui client library)
+- react-i18next for internationalization (en, es, de, fr, ja, pt)
+- Tailwind CSS v4 with custom theme (cream bg `#F6F5F0`, blue accent `#2563eb`, green highlight `#22c55e`)
+- Auth: JWT token in localStorage, AuthProvider context, protected routes
+- Tests: Playwright for E2E (22 tests), Vitest for unit tests
 - Use `eslint` + `prettier` for linting/formatting
+
+## Audit Configurability
+
+Each audit type must be configurable:
+- **Chaos Engineering**: Configurable by resilience pattern categories (retry, circuit breaker, timeout, fallback, blast radius)
+- **OWASP**: Configurable by OWASP Top 10 categories or custom rule sets
+- **SOC2**: Configurable down to specific compliance clauses (CC6, CC7, CC8)
+- Each agent's `/info` endpoint exposes a `config_schema` (JSON Schema) so the frontend can dynamically render configuration options
 
 ## Agent Extensibility
 
 To add a new audit type (e.g., GDPR):
-1. Create `agents/gdpr/` from existing agent template (agent.py, skills/, main.py, Dockerfile)
-2. Add 1 line to Go agent registry in `internal/config/agents.go`
+1. Create `agents/gdpr/` from existing agent template (agent.py, skills/, SKILLS.md, main.py, Dockerfile)
+2. Add 1 line to Go agent registry in `internal/config/config.go`
 3. Add 1 service block to `docker-compose.yml`
 4. Frontend auto-discovers via `GET /api/agents` — no frontend changes needed
 
@@ -105,26 +204,73 @@ To add a new audit type (e.g., GDPR):
 |--------|------|---------|
 | POST | `/api/sources` | Submit local path or git URL |
 | POST | `/api/audits` | Start audit (source + types + config) |
+| GET | `/api/audits` | List audits |
 | GET | `/api/audits/:id` | Get audit status and results |
-| GET | `/api/audits/:id/stream` | SSE stream (ag-ui events) |
+| GET | `/api/audits/:id/stream` | SSE stream (live or replay) |
+| GET | `/api/audits/cached` | Check for cached audit results |
 | GET | `/api/agents` | List available agent types |
+| GET | `/api/agents/:type/info` | Get agent config schema & skills |
+| POST | `/api/auth/register` | Register new user |
+| POST | `/api/auth/login` | Login and get JWT token |
+| GET | `/api/auth/me` | Get current user (requires auth) |
+| GET | `/api/auth/local-session` | Passwordless token (local mode) |
+| GET | `/api/memories/search` | Semantic search (pgvector) |
+| GET | `/api/memories/by-path` | Get findings for a codebase path |
+| GET | `/api/memories/:id/edges` | Get related memories (graph) |
+| POST | `/api/filesystem/browse` | Browse local filesystem |
 | GET | `/health` | Health check |
+
+## Memory System
+
+The memory system provides cross-audit intelligence via pgvector:
+
+1. **Storage**: Each finding → `audit_memories` record with text embedding.
+2. **Embeddings**: Generated via OpenAI (`text-embedding-3-small`) or Ollama (`nomic-embed-text`).
+3. **Auto-linking**: Cosine similarity search finds related memories → `memory_edges` graph.
+4. **Reuse**: Agents receive prior findings as context to avoid redundant analysis and track token savings.
+5. **Search**: Frontend exposes semantic search on the Memories page.
 
 ## Environment Variables
 
 ```
 # Go Backend
-VULTURE_PORT=8080
-VULTURE_DB_PATH=/data/vulture.db
-VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001
+VULTURE_PORT=8080                                    # Server port
+VULTURE_DB_PATH=/data/vulture.db                     # SQLite path (fallback)
+VULTURE_DB_DSN=postgres://...                        # PostgreSQL DSN (if set, uses Postgres)
+VULTURE_JWT_SECRET=change-me-in-production           # JWT signing key
+VULTURE_LOCAL_MODE=true                              # Enable passwordless auth
+VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001      # Agent endpoints
 VULTURE_AGENT_OWASP_URL=http://agent-owasp:8002
 VULTURE_AGENT_SOC2_URL=http://agent-soc2:8003
+VULTURE_AGENT_CWE_URL=http://agent-cwe:8004
+VULTURE_EMBEDDING_URL=                               # Custom embedding endpoint
+VULTURE_EMBEDDING_MODEL=                             # Embedding model override
 
 # Python Agents (each service)
-OPENAI_API_KEY=sk-...
-VULTURE_LLM_MODEL=gpt-4o    # or claude-sonnet, gemini-pro
-VULTURE_AGENT_PORT=8001      # varies per agent
+OPENAI_API_KEY=sk-...                                # LLM API key
+OPENAI_BASE_URL=                                     # Custom OpenAI-compatible endpoint (LM Studio, vLLM)
+VULTURE_LLM_MODEL=gpt-4o                            # Model: gpt-4o, claude-sonnet, gemini-pro, qwen3:1.7b, etc.
+VULTURE_USE_LLM=false                               # Enable LLM phase (true = skills + LLM, false = skills only)
+VULTURE_LLM_CTX_SIZE=                                # Override context window (tokens); auto-detected from model if unset
+VULTURE_AGENT_PORT=8001                              # Service port (varies per agent)
+VULTURE_BACKEND_URL=http://backend:8080              # Backend URL for memory API
+OLLAMA_API_BASE=http://localhost:11434               # Ollama endpoint (local models)
 
 # Frontend
-NEXT_PUBLIC_API_URL=http://localhost:8080
+VITE_API_URL=http://localhost:8080                   # Backend URL
 ```
+
+## SSE Event Types
+
+Events emitted during an audit stream:
+
+| Event | Description |
+|-------|-------------|
+| `agent_start` | Audit begins (run_id) |
+| `thinking` | Text messages (progress, context, status) |
+| `finding` | Individual finding (severity, title, file, etc.) |
+| `progress` | Files analyzed / total / findings count |
+| `dedup_stats` | Deduplication metrics (findings_deduped, prior_findings_used) |
+| `token_savings` | Token savings from memory context |
+| `result` | Final result (all findings, summary, score) |
+| `agent_end` | Audit completed |
