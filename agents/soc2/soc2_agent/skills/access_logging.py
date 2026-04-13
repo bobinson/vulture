@@ -60,6 +60,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if has_auth_actions and not has_logging:
         findings.append({
             "severity": "high",
+            "check_id": "soc2.access_logging.missing_audit_log",
             "category": "CC6-access-logging",
             "title": "Missing audit logging for sensitive operations",
             "description": f"File {file_path.name} has auth actions without audit logging",

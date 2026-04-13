@@ -8,11 +8,14 @@ from cwe_agent.skills.injection_check import (
     COMMAND_INJECTION_PATTERNS,
     XSS_PATTERNS,
     CODE_INJECTION_PATTERNS,
+    SSRF_PATTERNS,
 )
 from cwe_agent.skills.buffer_check import (
     check_buffer_handling,
     UNBOUNDED_COPY_PATTERNS,
     OOB_WRITE_PATTERNS,
+    USE_AFTER_FREE_PATTERNS,
+    INTEGER_OVERFLOW_PATTERNS,
 )
 from cwe_agent.skills.auth_check import (
     check_authentication,
@@ -29,16 +32,20 @@ from cwe_agent.skills.input_validation_check import (
     check_input_validation,
     PATH_TRAVERSAL_PATTERNS,
     XXE_PATTERNS,
+    CSRF_PATTERNS,
+    DESERIALIZATION_PATTERNS,
 )
 from cwe_agent.skills.resource_check import (
     check_resource_management,
     RESOURCE_OPEN_PATTERNS,
     NULL_DEREF_PATTERNS,
+    UNBOUNDED_ALLOC_PATTERNS,
 )
 from cwe_agent.skills.info_exposure_check import (
     check_information_exposure,
     ERROR_DISCLOSURE_PATTERNS,
     LOG_SENSITIVE_PATTERNS,
+    SENSITIVE_RESPONSE_PATTERNS,
 )
 from cwe_agent.skills.access_control_check import (
     check_access_control,
@@ -48,11 +55,13 @@ from cwe_agent.skills.error_handling_check import (
     check_error_handling,
     BARE_EXCEPT_PATTERNS,
     EMPTY_CATCH_PATTERNS,
+    IO_WITHOUT_CHECK,
 )
 from cwe_agent.skills.concurrency_check import (
     check_concurrency,
     TOCTOU_CHECK_PATTERNS,
     TOCTOU_USE_PATTERNS,
+    LOCK_ACQUIRE,
 )
 from cwe_agent.config import ALL_CATEGORIES, AGENT_INFO, CONFIG_SCHEMA
 
@@ -410,7 +419,7 @@ class TestCheckAccessControl:
         (source_dir / "views.py").write_text(code)
         result = check_access_control(str(source_dir))
         assert len(result["findings"]) >= 1
-        assert result["findings"][0]["category"] == "CWE-284"
+        assert result["findings"][0]["category"] == "CWE-639"
 
     def test_reduces_severity_for_test_files(self, source_dir):
         code = 'def test_get():\n    user = get_user(request.args["id"])\n'
@@ -481,13 +490,351 @@ class TestCheckConcurrency:
         assert len(toctou) >= 1
 
 
+# === SSRF Patterns (CWE-918) ===
+
+class TestSSRFPatterns:
+    """Tests for SSRF regex detection."""
+
+    def test_detects_requests_get_user_input(self):
+        line = "resp = requests.get(user_input)"
+        assert any(p.search(line) for p in SSRF_PATTERNS)
+
+    def test_detects_urllib_user_input(self):
+        line = "urllib.request.urlopen(user_input)"
+        assert any(p.search(line) for p in SSRF_PATTERNS)
+
+    def test_no_false_positive_static_url(self):
+        line = 'requests.get("https://api.example.com/data")'
+        assert not any(p.search(line) for p in SSRF_PATTERNS)
+
+
+class TestCheckSSRF:
+    """Tests for the SSRF check in injection skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_ssrf(self, source_dir):
+        code = "import requests\ndef fetch(url):\n    return requests.get(user_input)\n"
+        (source_dir / "api.py").write_text(code)
+        result = check_injection(str(source_dir))
+        ssrf = [f for f in result["findings"] if f["category"] == "CWE-918"]
+        assert len(ssrf) >= 1
+
+    def test_no_finding_with_allowlist(self, source_dir):
+        code = "import requests\ndef fetch(url):\n    validate_url(url)\n    allowed_hosts = ['api.example.com']\n    return requests.get(user_input)\n"
+        (source_dir / "api.py").write_text(code)
+        result = check_injection(str(source_dir))
+        ssrf = [f for f in result["findings"] if f["category"] == "CWE-918"]
+        assert len(ssrf) == 0
+
+
+# === Use After Free Patterns (CWE-416) ===
+
+class TestUseAfterFreePatterns:
+    """Tests for use-after-free regex detection."""
+
+    def test_detects_free_call(self):
+        line = "    free(ptr);"
+        assert any(p.search(line) for p in USE_AFTER_FREE_PATTERNS)
+
+    def test_no_false_positive_no_free(self):
+        line = "    ptr->field = 1;"
+        assert not any(p.search(line) for p in USE_AFTER_FREE_PATTERNS)
+
+
+class TestCheckUseAfterFree:
+    """Tests for the use-after-free check in buffer skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_use_after_free(self, source_dir):
+        code = "void f(char *ptr) {\n    free(ptr);\n    ptr->field = 1;\n}\n"
+        (source_dir / "uaf.c").write_text(code)
+        result = check_buffer_handling(str(source_dir))
+        uaf = [f for f in result["findings"] if f["category"] == "CWE-416"]
+        assert len(uaf) >= 1
+
+    def test_no_finding_when_nulled(self, source_dir):
+        code = "void f(char *ptr) {\n    free(ptr);\n    ptr = NULL;\n}\n"
+        (source_dir / "safe.c").write_text(code)
+        result = check_buffer_handling(str(source_dir))
+        uaf = [f for f in result["findings"] if f["category"] == "CWE-416"]
+        assert len(uaf) == 0
+
+
+# === Integer Overflow Patterns (CWE-190) ===
+
+class TestIntegerOverflowPatterns:
+    """Tests for integer overflow regex detection."""
+
+    def test_detects_int_arithmetic(self):
+        line = "    int result = a * b;"
+        assert any(p.search(line) for p in INTEGER_OVERFLOW_PATTERNS)
+
+    def test_detects_malloc_multiply(self):
+        line = "    malloc(count * size)"
+        assert any(p.search(line) for p in INTEGER_OVERFLOW_PATTERNS)
+
+
+class TestCheckIntegerOverflow:
+    """Tests for the integer overflow check in buffer skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_overflow(self, source_dir):
+        code = "void f() {\n    int result = a * b;\n}\n"
+        (source_dir / "math.c").write_text(code)
+        result = check_buffer_handling(str(source_dir))
+        overflow = [f for f in result["findings"] if f["category"] == "CWE-190"]
+        assert len(overflow) >= 1
+
+    def test_no_finding_with_check(self, source_dir):
+        code = "void f() {\n    if (a > INT_MAX / b) return;\n    int result = a * b;\n}\n"
+        (source_dir / "safe.c").write_text(code)
+        result = check_buffer_handling(str(source_dir))
+        overflow = [f for f in result["findings"] if f["category"] == "CWE-190"]
+        assert len(overflow) == 0
+
+
+# === CSRF Patterns (CWE-352) ===
+
+class TestCSRFPatterns:
+    """Tests for CSRF regex detection."""
+
+    def test_detects_flask_post_route(self):
+        line = '@app.route("/update", methods=["POST"])'
+        assert any(p.search(line) for p in CSRF_PATTERNS)
+
+    def test_detects_express_post(self):
+        line = 'router.post("/api/update", handler)'
+        assert any(p.search(line) for p in CSRF_PATTERNS)
+
+    def test_no_false_positive_get(self):
+        line = '@app.route("/read", methods=["GET"])'
+        assert not any(p.search(line) for p in CSRF_PATTERNS)
+
+
+class TestCheckCSRF:
+    """Tests for the CSRF check in input validation skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_csrf(self, source_dir):
+        code = '@app.route("/update", methods=["POST"])\ndef update():\n    return process()\n'
+        (source_dir / "app.py").write_text(code)
+        result = check_input_validation(str(source_dir))
+        csrf = [f for f in result["findings"] if f["category"] == "CWE-352"]
+        assert len(csrf) >= 1
+
+    def test_no_finding_with_csrf_token(self, source_dir):
+        code = 'csrf = CSRFProtect(app)\n@app.route("/update", methods=["POST"])\ndef update():\n    return process()\n'
+        (source_dir / "app.py").write_text(code)
+        result = check_input_validation(str(source_dir))
+        csrf = [f for f in result["findings"] if f["category"] == "CWE-352"]
+        assert len(csrf) == 0
+
+
+# === Deserialization Patterns (CWE-502) ===
+
+class TestDeserializationPatterns:
+    """Tests for deserialization regex detection."""
+
+    def test_detects_pickle_loads(self):
+        line = "data = pickle.loads(user_data)"
+        assert any(p.search(line) for p in DESERIALIZATION_PATTERNS)
+
+    def test_detects_yaml_load(self):
+        line = "config = yaml.load(data)"
+        assert any(p.search(line) for p in DESERIALIZATION_PATTERNS)
+
+    def test_no_false_positive_safe_load(self):
+        line = "config = yaml.safe_load(data)"
+        assert not any(p.search(line) for p in DESERIALIZATION_PATTERNS)
+
+
+class TestCheckDeserialization:
+    """Tests for the deserialization check in input validation skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_pickle(self, source_dir):
+        code = "import pickle\ndef load(data):\n    return pickle.loads(data)\n"
+        (source_dir / "loader.py").write_text(code)
+        result = check_input_validation(str(source_dir))
+        deser = [f for f in result["findings"] if f["category"] == "CWE-502"]
+        assert len(deser) >= 1
+
+    def test_no_finding_safe_loader(self, source_dir):
+        code = "import yaml\ndef load(data):\n    return yaml.safe_load(data)\n"
+        (source_dir / "loader.py").write_text(code)
+        result = check_input_validation(str(source_dir))
+        deser = [f for f in result["findings"] if f["category"] == "CWE-502"]
+        assert len(deser) == 0
+
+
+# === NULL Pointer Dereference (CWE-476) ===
+
+class TestNullDerefPatterns:
+    """Tests for NULL pointer dereference regex detection."""
+
+    def test_detects_go_method_call(self):
+        line = "    val := obj.GetItem()"
+        assert NULL_DEREF_PATTERNS[0].search(line)
+
+
+class TestCheckNullDeref:
+    """Tests for the null deref check in resource skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_null_deref(self, source_dir):
+        code = "package main\n\nfunc process() {\n    val := obj.GetItem()\n    val.Use()\n}\n"
+        (source_dir / "ptr.go").write_text(code)
+        result = check_resource_management(str(source_dir))
+        null_deref = [f for f in result["findings"] if f["category"] == "CWE-476"]
+        assert len(null_deref) >= 1
+
+    def test_no_finding_with_nil_check(self, source_dir):
+        code = "package main\n\nfunc process() {\n    val := obj.GetItem()\n    if val != nil {\n        val.Use()\n    }\n}\n"
+        (source_dir / "safe.go").write_text(code)
+        result = check_resource_management(str(source_dir))
+        null_deref = [f for f in result["findings"] if f["category"] == "CWE-476"]
+        assert len(null_deref) == 0
+
+
+# === Unbounded Allocation (CWE-770) ===
+
+class TestUnboundedAllocPatterns:
+    """Tests for unbounded allocation regex detection."""
+
+    def test_detects_unbounded_go_slice(self):
+        line = "    items := make([]string, 0)"
+        assert any(p.search(line) for p in UNBOUNDED_ALLOC_PATTERNS)
+
+
+class TestCheckUnboundedAlloc:
+    """Tests for the unbounded alloc check in resource skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_unbounded_alloc(self, source_dir):
+        code = "package main\n\nfunc collect() {\n    items := make([]string, 0)\n}\n"
+        (source_dir / "alloc.go").write_text(code)
+        result = check_resource_management(str(source_dir))
+        alloc = [f for f in result["findings"] if f["category"] == "CWE-770"]
+        assert len(alloc) >= 1
+
+    def test_no_finding_with_capacity(self, source_dir):
+        code = "package main\n\nfunc collect() {\n    max_size := 100\n    items := make([]string, 0)\n}\n"
+        (source_dir / "safe.go").write_text(code)
+        result = check_resource_management(str(source_dir))
+        alloc = [f for f in result["findings"] if f["category"] == "CWE-770"]
+        assert len(alloc) == 0
+
+
+# === Sensitive Response (CWE-200) ===
+
+class TestSensitiveResponsePatterns:
+    """Tests for sensitive response regex detection."""
+
+    def test_detects_internal_path_in_response(self):
+        line = 'return Response(str(internal_path))'
+        assert any(p.search(line) for p in SENSITIVE_RESPONSE_PATTERNS)
+
+
+class TestCheckSensitiveResponse:
+    """Tests for the sensitive response check in info exposure skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_sensitive_response(self, source_dir):
+        code = "def error_handler(err):\n    return Response(str(internal_path))\n"
+        (source_dir / "api.py").write_text(code)
+        result = check_information_exposure(str(source_dir))
+        sens = [f for f in result["findings"] if f["category"] == "CWE-200"]
+        assert len(sens) >= 1
+
+
+# === I/O Without Error Check (CWE-754) ===
+
+class TestIOWithoutCheckPatterns:
+    """Tests for I/O without error check regex detection."""
+
+    def test_detects_open_without_check(self):
+        line = "    data = open('file.txt')"
+        assert any(p.search(line) for p in IO_WITHOUT_CHECK)
+
+
+class TestCheckIOWithoutCheck:
+    """Tests for the I/O without check in error handling skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_unchecked_io(self, source_dir):
+        code = "def read_data():\n    data = open('file.txt').read()\n    return data\n"
+        (source_dir / "io.py").write_text(code)
+        result = check_error_handling(str(source_dir))
+        io_findings = [f for f in result["findings"] if f["category"] == "CWE-754"]
+        assert len(io_findings) >= 1
+
+    def test_no_finding_with_try(self, source_dir):
+        code = "def read_data():\n    try:\n        data = open('file.txt').read()\n    except IOError:\n        pass\n"
+        (source_dir / "io.py").write_text(code)
+        result = check_error_handling(str(source_dir))
+        io_findings = [f for f in result["findings"] if f["category"] == "CWE-754"]
+        assert len(io_findings) == 0
+
+
+# === Deadlock (CWE-833) ===
+
+class TestDeadlockPatterns:
+    """Tests for deadlock regex detection."""
+
+    def test_detects_lock_acquire(self):
+        line = "    lock_a.acquire()"
+        assert any(p.search(line) for p in LOCK_ACQUIRE)
+
+
+class TestCheckDeadlock:
+    """Tests for the deadlock check in concurrency skill."""
+
+    @pytest.fixture
+    def source_dir(self, tmp_path):
+        return tmp_path
+
+    def test_detects_nested_locks(self, source_dir):
+        code = "import threading\nlock_a = threading.Lock()\nlock_b = threading.Lock()\ndef transfer():\n    lock_a.acquire()\n    lock_b.acquire()\n"
+        (source_dir / "worker.py").write_text(code)
+        result = check_concurrency(str(source_dir))
+        deadlock = [f for f in result["findings"] if f["category"] == "CWE-833"]
+        assert len(deadlock) >= 1
+
+
 # === Configuration Tests ===
 
 class TestCWEConfig:
     """Tests for CWE agent configuration."""
 
     def test_all_categories_complete(self):
-        assert len(ALL_CATEGORIES) == 10
+        assert len(ALL_CATEGORIES) == 16
         assert "injection" in ALL_CATEGORIES
         assert "buffer_handling" in ALL_CATEGORIES
         assert "authentication" in ALL_CATEGORIES
@@ -498,6 +845,12 @@ class TestCWEConfig:
         assert "access_control" in ALL_CATEGORIES
         assert "error_handling" in ALL_CATEGORIES
         assert "concurrency" in ALL_CATEGORIES
+        assert "web_security" in ALL_CATEGORIES
+        assert "configuration" in ALL_CATEGORIES
+        assert "dependency_security" in ALL_CATEGORIES
+        assert "data_handling" in ALL_CATEGORIES
+        assert "memory_safety" in ALL_CATEGORIES
+        assert "catalog_generic" in ALL_CATEGORIES
 
     def test_agent_type_is_cwe(self):
         assert AGENT_INFO["type"] == "cwe"

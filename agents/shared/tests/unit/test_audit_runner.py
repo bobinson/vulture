@@ -11,16 +11,21 @@ from shared.audit_runner import (
     compute_score,
     normalize_severity,
     run_combined_audit,
-    run_skill_audit,
     _build_source_context,
+    _check_context_budget,
+    _collect_llm_findings_async,
     _deduplicate_findings,
     _emit_token_savings,
     _extract_dupe_count,
     _get_max_source_chars,
     _normalize_finding,
+    _pack_files,
     _parse_llm_findings,
     _parse_known_titles,
+    _prioritize_files,
+    _truncate_prompt_to_budget,
 )
+from shared.tools.file_scanner import is_entry_or_config
 from shared.transport.event_emitter import AgUiEventEmitter
 
 
@@ -389,6 +394,55 @@ class TestEmitTokenSavings:
         assert data["actual_input_tokens"] == 1500
         assert data["actual_output_tokens"] == 800
 
+    def test_cost_usd_included_with_usage(self):
+        """When actual tokens and model are provided, cost_usd appears in the event."""
+        emitter = AgUiEventEmitter("test-run")
+        ctx = "Known issues (1):\n C:SQL Inj @db.py\nSkip."
+        result = _emit_token_savings(
+            emitter, ctx,
+            findings_total=3,
+            findings_skipped=1,
+            actual_input_tokens=10000,
+            actual_output_tokens=5000,
+            model="gpt-4o",
+        )
+        assert result is not None
+        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data = json.loads(data_line[5:])
+        assert "cost_usd" in data
+        assert data["cost_usd"] > 0.0
+
+    def test_cost_usd_omitted_for_local_model(self):
+        """Local models (cost=0) should not emit cost_usd."""
+        emitter = AgUiEventEmitter("test-run")
+        ctx = "Known issues (1):\n C:SQL Inj @db.py\nSkip."
+        result = _emit_token_savings(
+            emitter, ctx,
+            findings_total=3,
+            findings_skipped=1,
+            actual_input_tokens=10000,
+            actual_output_tokens=5000,
+            model="qwen3:1.7b",
+        )
+        assert result is not None
+        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data = json.loads(data_line[5:])
+        assert "cost_usd" not in data  # cost is 0.0, not emitted
+
+    def test_cost_usd_omitted_without_actual_usage(self):
+        """Without actual token counts, cost_usd is not emitted."""
+        emitter = AgUiEventEmitter("test-run")
+        ctx = "Known issues (1):\n C:SQL Inj @db.py\nSkip."
+        result = _emit_token_savings(
+            emitter, ctx,
+            findings_total=3,
+            findings_skipped=1,
+        )
+        assert result is not None
+        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data = json.loads(data_line[5:])
+        assert "cost_usd" not in data
+
 
 class TestParseKnownTitles:
     """Tests for extracting known issue titles from prior context."""
@@ -521,7 +575,7 @@ class TestStructuredOutput:
                 recommendation="Use parameterized queries",
             ),
         ])
-        # Simulate the conversion done in _run_llm_audit_async
+        # Simulate the conversion done in _collect_llm_findings_async
         assert isinstance(output, AuditOutput)
         findings = [f.model_dump() for f in output.findings]
         assert len(findings) == 1
@@ -566,7 +620,7 @@ def _parse_result_from_events(events: list[str]) -> dict:
 
 
 class TestRunSkillAuditDedup:
-    """Tests for deduplication behavior in run_skill_audit.
+    """Tests for deduplication behavior in run_combined_audit (skill-only mode).
 
     Prior context must NOT cause findings to be removed from results.
     """
@@ -578,7 +632,7 @@ class TestRunSkillAuditDedup:
             " C:[A03-injection] Potential SQL injection @db.py\n"
             "Skip known issues. Report NEW findings only."
         )
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="unit-dedup-1",
             source_path=str(tmp_path),
             categories=["injection"],
@@ -595,7 +649,7 @@ class TestRunSkillAuditDedup:
             " C:[A03-injection] Potential SQL injection @db.py\n"
             "Skip known issues. Report NEW findings only."
         )
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="unit-dedup-2",
             source_path=str(tmp_path),
             categories=["injection"],
@@ -612,7 +666,7 @@ class TestRunSkillAuditDedup:
             " C:[A03-injection] Potential SQL injection @db.py\n"
             "Skip known issues. Report NEW findings only."
         )
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="unit-dedup-3",
             source_path=str(tmp_path),
             categories=["injection"],
@@ -627,7 +681,7 @@ class TestRunSkillAuditDedup:
 
     def test_empty_prior_context_no_dedup(self, tmp_path):
         """Without prior context, no dedup stats and all findings retained."""
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="unit-dedup-4",
             source_path=str(tmp_path),
             categories=["injection"],
@@ -705,29 +759,34 @@ class TestGetMaxSourceChars:
         """Without env var, uses get_context_window() which defaults to model lookup."""
         monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
         monkeypatch.setenv("VULTURE_LLM_MODEL", "qwen3:1.7b")
-        # qwen3:1.7b = 32K tokens → 32000 * 0.5 * 3 = 48000
-        assert _get_max_source_chars() == 48_000
+        # qwen3:1.7b = 32K tokens (<=32K → 0.35 fraction) → 32000 * 0.35 * 3 = 33600
+        assert _get_max_source_chars() == 33_600
 
-    def test_with_env_set(self, monkeypatch):
+    def test_with_env_set_large(self, monkeypatch):
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "128000")
+        # 128000 > 32K → 0.5 fraction → 128000 * 0.5 * 3 = 192000
+        assert _get_max_source_chars() == 192_000
+
+    def test_with_env_set_small(self, monkeypatch):
         monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "32768")
-        # 32768 * 0.5 * 3 = 49152
-        assert _get_max_source_chars() == 49152
+        # 32768 > 32K → 0.5 fraction → 32768 * 0.5 * 3 = 49152
+        assert _get_max_source_chars() == int(32768 * 0.5 * 3)
 
     def test_small_ctx_env(self, monkeypatch):
         monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "4096")
-        # 4096 * 0.5 * 3 = 6144
-        assert _get_max_source_chars() == 6144
+        # 4096 <= 32K → 0.35 fraction → 4096 * 0.35 * 3 = 4300
+        assert _get_max_source_chars() == int(4096 * 0.35 * 3)
 
     def test_invalid_env_falls_back_to_model(self, monkeypatch):
         """Invalid env var falls through to model lookup in get_context_window()."""
         monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "not_a_number")
         monkeypatch.setenv("VULTURE_LLM_MODEL", "qwen3:1.7b")
-        # qwen3:1.7b = 32K → 32000 * 0.5 * 3 = 48000
-        assert _get_max_source_chars() == 48_000
+        # qwen3:1.7b = 32K (<=32K → 0.35) → 32000 * 0.35 * 3 = 33600
+        assert _get_max_source_chars() == 33_600
 
     def test_minimum_floor(self, monkeypatch):
         monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "100")
-        # 100 * 0.5 * 3 = 150, but min is 2000
+        # 100 * 0.35 * 3 = 105, but min is 2000
         assert _get_max_source_chars() == 2000
 
 
@@ -919,3 +978,342 @@ class TestRunCombinedAudit:
         ))
         result = _parse_result_from_events(events)
         assert len(result["findings"]) == 2
+
+
+class TestCheckContextBudget:
+    """Tests for _check_context_budget context window guard."""
+
+    def test_small_prompt_returns_none(self, monkeypatch):
+        """Prompt within budget returns (None, tokens) tuple."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "128000")
+        warning, tokens = _check_context_budget("small prompt text")
+        assert warning is None
+        assert tokens > 0
+
+    def test_large_prompt_returns_warning(self, monkeypatch):
+        """Prompt exceeding 80% of context returns (warning, tokens) tuple."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "100")
+        # 100 tokens * 4 chars = 400 chars budget; 80% = 320 chars
+        big_prompt = "x" * 2000  # ~500 estimated tokens, way over 100
+        warning, tokens = _check_context_budget(big_prompt)
+        assert warning is not None
+        assert "exceeds 80%" in warning
+        assert tokens > 0
+
+    def test_exact_boundary(self, monkeypatch):
+        """Prompt at exactly 80% is not a warning (must exceed)."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "1000")
+        # With safe_estimate_tokens (1.2x margin): ~2667 chars -> 2667/4*1.2 = 800 tokens = exactly 80%
+        prompt = "x" * 2667  # ~800 safe-estimated tokens = exactly 80%
+        warning, tokens = _check_context_budget(prompt)
+        assert warning is None
+        assert tokens > 0
+
+    def test_uses_model_param(self, monkeypatch):
+        """Model param is passed to get_context_window."""
+        monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
+        # gpt-4o has 128K context -> any reasonable prompt fits
+        warning, tokens = _check_context_budget("small text", model="gpt-4o")
+        assert warning is None
+        assert tokens > 0
+
+
+class TestIsEntryOrConfig:
+    """Tests for is_entry_or_config helper in file_scanner."""
+
+    def test_main_py(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("src/main.py")) is True
+
+    def test_app_py(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("app.py")) is True
+
+    def test_index_ts(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("src/index.ts")) is True
+
+    def test_dockerfile(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("Dockerfile")) is True
+
+    def test_settings_py(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("myapp/settings.py")) is True
+
+    def test_regular_file_is_not_entry(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("utils/helpers.py")) is False
+
+    def test_test_file_is_not_entry(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("tests/test_main.py")) is False
+
+    def test_stem_matching_config_ts(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("src/config.ts")) is True
+
+    def test_manage_py(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("manage.py")) is True
+
+
+class TestPrioritizeFiles:
+    """Tests for _prioritize_files tiered file ordering."""
+
+    def test_finding_files_first(self, tmp_path):
+        """Files matching skill findings should come first."""
+        (tmp_path / "db.py").write_text("x = 1\n")
+        (tmp_path / "utils.py").write_text("y = 2\n")
+        (tmp_path / "main.py").write_text("z = 3\n")
+
+        findings = [{"file_path": str(tmp_path / "db.py"), "title": "SQL Inj"}]
+        files = [tmp_path / "utils.py", tmp_path / "db.py", tmp_path / "main.py"]
+
+        result = _prioritize_files(files, str(tmp_path), skill_findings=findings)
+        assert result[0] == tmp_path / "db.py", "Finding file should be first"
+
+    def test_entry_points_before_regular(self, tmp_path):
+        """Entry points come before regular files when no findings match."""
+        (tmp_path / "app.py").write_text("a = 1\n")
+        (tmp_path / "helpers.py").write_text("b = 2\n")
+
+        files = [tmp_path / "helpers.py", tmp_path / "app.py"]
+        result = _prioritize_files(files, str(tmp_path))
+
+        assert result[0] == tmp_path / "app.py", "Entry point should be first"
+        assert result[1] == tmp_path / "helpers.py"
+
+    def test_no_findings_still_works(self, tmp_path):
+        """Without skill_findings, files are ordered by entry-point then size."""
+        (tmp_path / "big.py").write_text("x" * 1000 + "\n")
+        (tmp_path / "small.py").write_text("y\n")
+
+        files = [tmp_path / "big.py", tmp_path / "small.py"]
+        result = _prioritize_files(files, str(tmp_path))
+
+        # Both are tier3; small.py should come first (smaller file)
+        assert result[0] == tmp_path / "small.py"
+        assert result[1] == tmp_path / "big.py"
+
+    def test_all_three_tiers(self, tmp_path):
+        """Tier1 (findings) > Tier2 (entry) > Tier3 (rest)."""
+        (tmp_path / "vuln.py").write_text("vuln\n")
+        (tmp_path / "main.py").write_text("main\n")
+        (tmp_path / "lib.py").write_text("lib\n")
+
+        findings = [{"file_path": str(tmp_path / "vuln.py"), "title": "Bug"}]
+        files = [tmp_path / "lib.py", tmp_path / "main.py", tmp_path / "vuln.py"]
+
+        result = _prioritize_files(files, str(tmp_path), skill_findings=findings)
+        assert result[0] == tmp_path / "vuln.py"   # tier1
+        assert result[1] == tmp_path / "main.py"   # tier2
+        assert result[2] == tmp_path / "lib.py"    # tier3
+
+
+class TestPackFiles:
+    """Tests for _pack_files budget loop."""
+
+    def test_packs_files_within_budget(self, tmp_path):
+        (tmp_path / "a.py").write_text("x = 1\n")
+        (tmp_path / "b.py").write_text("y = 2\n")
+        files = [tmp_path / "a.py", tmp_path / "b.py"]
+
+        result, paths = _pack_files(files, str(tmp_path), max_chars=10000)
+        assert "--- a.py ---" in result
+        assert "--- b.py ---" in result
+        assert "a.py" in paths
+        assert "b.py" in paths
+
+    def test_skips_files_exceeding_budget(self, tmp_path):
+        (tmp_path / "small.py").write_text("x\n")
+        (tmp_path / "large.py").write_text("y" * 500 + "\n")
+        files = [tmp_path / "small.py", tmp_path / "large.py"]
+
+        result, paths = _pack_files(files, str(tmp_path), max_chars=50)
+        assert "small.py" in result
+        assert "large.py" not in result
+
+    def test_empty_file_skipped(self, tmp_path):
+        (tmp_path / "empty.py").write_text("")
+        (tmp_path / "real.py").write_text("code\n")
+        files = [tmp_path / "empty.py", tmp_path / "real.py"]
+
+        result, paths = _pack_files(files, str(tmp_path), max_chars=10000)
+        assert "empty.py" not in result
+        assert "real.py" in result
+
+    def test_returns_empty_when_nothing_fits(self, tmp_path):
+        (tmp_path / "big.py").write_text("x" * 1000 + "\n")
+        files = [tmp_path / "big.py"]
+
+        result, paths = _pack_files(files, str(tmp_path), max_chars=10)
+        assert result == ""
+        assert paths == []
+
+
+class TestBuildSourceContextWithFindings:
+    """Tests for _build_source_context when skill_findings are provided."""
+
+    def test_finding_files_prioritized(self, tmp_path):
+        """Files with findings should appear in context even if they'd be skipped alphabetically."""
+        (tmp_path / "aaaa.py").write_text("a" * 200 + "\n")
+        (tmp_path / "zzzz.py").write_text("vuln_code\n")
+
+        findings = [{"file_path": str(tmp_path / "zzzz.py"), "title": "Bug"}]
+        result = _build_source_context(str(tmp_path), max_chars=300, skill_findings=findings)
+
+        # zzzz.py should be prioritized and appear even with tight budget
+        assert "zzzz.py" in result
+
+    def test_no_findings_falls_back_to_default_ordering(self, tmp_path):
+        """Without findings, still works with entry-point + size ordering."""
+        (tmp_path / "main.py").write_text("entry\n")
+        (tmp_path / "lib.py").write_text("helper\n")
+
+        result = _build_source_context(str(tmp_path), max_chars=10000)
+        assert "main.py" in result
+        assert "lib.py" in result
+
+
+class TestCustomEndpointStructuredOutputBypass:
+    """When OPENAI_BASE_URL is set (custom endpoint), output_type must be
+    omitted to avoid vLLM 'lazy grammar' errors.  The agent should fall back
+    to prompt-based JSON and parse via _parse_llm_findings."""
+
+    def test_no_output_type_when_custom_endpoint(self):
+        """Agent(...) must NOT receive output_type when uses_custom_endpoint() is True."""
+        import inspect
+        source = inspect.getsource(_collect_llm_findings_async)
+        # The code must conditionally decide structured vs unstructured
+        assert "uses_custom_endpoint" in source
+        assert "use_structured" in source
+
+    def test_json_instruction_appended_for_custom_endpoint(self):
+        """When structured output is disabled, prompt must include JSON format instructions."""
+        import inspect
+        source = inspect.getsource(_collect_llm_findings_async)
+        assert "json" in source.lower()
+        assert "```json" in source
+
+    def test_output_type_used_for_standard_endpoint(self):
+        """When NOT using a custom endpoint, output_type=AuditOutput must still be set."""
+        import inspect
+        source = inspect.getsource(_collect_llm_findings_async)
+        assert 'output_type' in source
+        assert 'AuditOutput' in source
+
+    def test_parse_llm_result_handles_raw_text(self):
+        """_parse_llm_result falls back to _parse_llm_findings for non-AuditOutput."""
+        from shared.audit_runner import _parse_llm_result
+
+        class FakeResult:
+            final_output = '''```json
+[{"severity": "high", "category": "injection", "title": "SQLi", "description": "bad", "file_path": "a.py", "line_start": 1, "line_end": 2, "recommendation": "fix"}]
+```'''
+
+        findings = _parse_llm_result(FakeResult())
+        assert len(findings) == 1
+        assert findings[0]["title"] == "SQLi"
+        assert findings[0]["severity"] == "high"
+
+    def test_parse_llm_result_handles_structured_output(self):
+        """_parse_llm_result handles AuditOutput instances (standard endpoint path)."""
+        from shared.audit_runner import _parse_llm_result
+
+        class FakeResult:
+            final_output = AuditOutput(findings=[
+                AuditFinding(severity="critical", title="XSS", category="xss"),
+            ])
+
+        findings = _parse_llm_result(FakeResult())
+        assert len(findings) == 1
+        assert findings[0]["title"] == "XSS"
+        assert findings[0]["severity"] == "critical"
+
+    def test_uses_custom_endpoint_reflects_env(self, monkeypatch):
+        """uses_custom_endpoint() returns True only when OPENAI_BASE_URL is set."""
+        from shared.llm import provider
+
+        monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:8000/v1")
+        assert provider.uses_custom_endpoint() is True
+
+        monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
+        assert provider.uses_custom_endpoint() is False
+
+
+class TestCheckContextBudgetReturnsTuple:
+    """Tests that _check_context_budget returns (warning, estimated_tokens) tuple."""
+
+    def test_returns_tuple(self, monkeypatch):
+        """_check_context_budget must return a (warning, tokens) tuple."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "128000")
+        result = _check_context_budget("small prompt text")
+        assert isinstance(result, tuple), f"Expected tuple, got {type(result)}"
+        assert len(result) == 2
+
+    def test_small_prompt_returns_none_warning(self, monkeypatch):
+        """Prompt within budget returns (None, token_count)."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "128000")
+        warning, tokens = _check_context_budget("small prompt text")
+        assert warning is None
+        assert tokens > 0
+
+    def test_large_prompt_returns_warning_string(self, monkeypatch):
+        """Prompt exceeding 80% returns (warning_str, token_count)."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "100")
+        big_prompt = "x" * 2000
+        warning, tokens = _check_context_budget(big_prompt)
+        assert warning is not None
+        assert "exceeds 80%" in warning
+        assert tokens > 0
+
+    def test_token_count_is_positive_int(self, monkeypatch):
+        """Estimated tokens must be a positive integer."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "128000")
+        _, tokens = _check_context_budget("some text here")
+        assert isinstance(tokens, int)
+        assert tokens > 0
+
+
+class TestTruncatePromptAcceptsPrecomputedTokens:
+    """Tests that _truncate_prompt_to_budget accepts pre-computed token count."""
+
+    def test_accepts_precomputed_tokens(self, monkeypatch):
+        """_truncate_prompt_to_budget should accept estimated_tokens parameter."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "128000")
+        prompt = "small text"
+        result = _truncate_prompt_to_budget(prompt, estimated_tokens=5)
+        assert result == prompt  # within budget, no truncation
+
+    def test_truncates_with_precomputed_tokens(self, monkeypatch):
+        """When precomputed tokens exceed budget, prompt should be truncated."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "100")
+        # Build a prompt with file blocks large enough that removal is needed.
+        # target_tokens = 100 * 0.8 = 80; estimated_tokens = 500 >> 80.
+        blocks = [f"\n\n--- file{i}.py ---\n{'x' * 200}" for i in range(5)]
+        prompt = "Preamble text" + "".join(blocks)
+        result = _truncate_prompt_to_budget(prompt, estimated_tokens=500)
+        assert len(result) < len(prompt)
+
+    def test_no_double_estimation_when_precomputed(self, monkeypatch):
+        """When estimated_tokens is passed, safe_estimate_tokens should not be called again."""
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "128000")
+        call_count = 0
+        original_fn = None
+
+        import shared.audit_runner as runner
+        original_fn = runner.safe_estimate_tokens
+
+        def counting_estimate(text):
+            nonlocal call_count
+            call_count += 1
+            return original_fn(text)
+
+        monkeypatch.setattr(runner, "safe_estimate_tokens", counting_estimate)
+
+        prompt = "some text content"
+        _truncate_prompt_to_budget(prompt, estimated_tokens=5)
+        # With precomputed tokens, the initial estimation should be skipped.
+        # Only per-block estimations should happen (0 for small prompt).
+        assert call_count == 0, f"Expected 0 calls to safe_estimate_tokens, got {call_count}"

@@ -20,14 +20,14 @@ Comment out the OWASP agent from the Go registry:
 
 ```go
 // backend/internal/config/agents.go
-// "owasp": {Name: "OWASP", URLEnv: "VULTURE_AGENT_OWASP_URL", DefaultPort: 8002},
+// "owasp": {Name: "OWASP", URLEnv: "VULTURE_AGENT_OWASP_URL", DefaultPort: 28002},
 ```
 
 ### 2. Stop the Container
 
 ```bash
-docker-compose stop agent-owasp
-docker-compose rm agent-owasp
+docker compose stop agent-owasp
+docker compose rm agent-owasp
 ```
 
 ### 3. Revert Code (if needed)

@@ -19,7 +19,11 @@ type AuditMemory struct {
 	FilePaths         []string  `json:"file_paths"`
 	RemediationStatus string    `json:"remediation_status"`
 	RemediationNotes  string    `json:"remediation_notes,omitempty"`
+	ConfidenceScore   float64   `json:"confidence_score"`
+	CWEName           string    `json:"cwe_name,omitempty"`
+	CWELikelihood     string    `json:"cwe_likelihood,omitempty"`
 	Similarity        float64   `json:"similarity,omitempty"`
+	Embedding         []float32 `json:"-"`
 }
 
 type DashboardStats struct {
@@ -27,6 +31,8 @@ type DashboardStats struct {
 	TotalFindings  int `json:"total_findings"`
 	CriticalIssues int `json:"critical_issues"`
 	AverageScore   int `json:"average_score"`
+	ProveVerified  int `json:"prove_verified"`
+	ProveTotal     int `json:"prove_total"`
 }
 
 type MemorySearchRequest struct {

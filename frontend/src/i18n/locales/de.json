@@ -51,7 +51,9 @@
     "chaosDesc": "Resilienzmuster: Wiederholung, Schutzschalter, Timeout, Fallback, Wirkungsradius",
     "owaspDesc": "Sicherheitslücken: Injection, Authentifizierung, Kryptographie, Zugriffskontrolle, Fehlkonfiguration",
     "soc2Desc": "Compliance-Klauseln: CC6 (logischer Zugriff), CC7 (Überwachung), CC8 (Änderungsmanagement)",
-    "cweDesc": "CWE v4.19.1 Schwachstellenerkennung: Injection, Buffer, Auth, Kryptografie, Zugriffskontrolle, Nebenläufigkeit"
+    "cweDesc": "CWE v4.19.1 Schwachstellenerkennung: Injection, Buffer, Auth, Kryptografie, Zugriffskontrolle, Nebenläufigkeit",
+    "xssDesc": "XSS-Schwachstellenerkennung: Reflektiert, Gespeichert, DOM-basiert, Template-Injection, Header-Injection",
+    "ssdfDesc": "NIST SSDF v1.1 Konformität: sicheres Design, Implementierung, Schwachstellenreaktion, Software-Integrität"
   },
   "results": {
     "title": "Audit-Ergebnisse",
@@ -91,7 +93,11 @@
     "tokensSaved": "Tokens gespart",
     "tokens": "Tokens",
     "priorFindings": "{{count}} frühere(r) Befund(e) wiederverwendet",
-    "duplicatesRemoved": "{{count}} Duplikat(e) entfernt"
+    "duplicatesRemoved": "{{count}} Duplikat(e) entfernt",
+    "exportReport": "Bericht Exportieren",
+    "reportGenerated": "Bericht heruntergeladen",
+    "evidence": "Beweis",
+    "verificationEvidence": "Verifizierungsbeweis"
   },
   "settings": {
     "title": "Einstellungen",
@@ -147,7 +153,10 @@
     "chaos": "Chaos",
     "owasp": "OWASP",
     "soc2": "SOC2",
-    "cwe": "CWE"
+    "cwe": "CWE",
+    "xss": "XSS",
+    "ssdf": "SSDF",
+    "discover": "Discover"
   },
   "severity": {
     "critical": "Kritisch",
@@ -197,6 +206,26 @@
     "invalidLocalPath": "Bitte geben Sie einen absoluten Pfad ein (beginnend mit /)",
     "connectionLost": "Verbindung verloren. Erneuter Versuch..."
   },
+  "prove": {
+    "verificationResults": "Verifizierungsergebnisse",
+    "verified": "Verifiziert",
+    "notReproduced": "Nicht Reproduziert",
+    "inconclusive": "Unklar",
+    "skipped": "\u00dcbersprungen",
+    "showEvidence": "Beweis anzeigen",
+    "hideEvidence": "Beweis ausblenden",
+    "iterations": "{{count}} Iteration(en)",
+    "stagingUrl": "Staging",
+    "totalVerified": "Verifizierte Befunde",
+    "verificationRate": "Verifizierungsrate",
+    "reproductionSteps": "Reproduktionsschritte",
+    "findingDescription": "Befundbeschreibung",
+    "copyAllResults": "Alle als Tickets kopieren",
+    "noLineage": "Keine Rückverfolgbarkeitsdaten für diesen Befund",
+    "verificationHistory": "Verifizierungsverlauf",
+    "viewVerificationHistory": "Verifizierungsverlauf anzeigen",
+    "noVerificationHistory": "Kein audit-übergreifender Verifizierungsverlauf für diesen Befund"
+  },
   "lineage": {
     "title": "Befund-Rückverfolgbarkeit",
     "firstDetected": "Erstmals erkannt",
@@ -228,6 +257,39 @@
     "status_false_positive": "Falsch Positiv",
     "status_fixed": "Behoben",
     "status_regression": "Regression",
-    "gitContext": "Git-Kontext"
+    "gitContext": "Git-Kontext",
+    "fullCommit": "Vollständiger Commit",
+    "copyCommit": "Commit-Hash kopieren",
+    "fingerprint": "Fingerabdruck",
+    "checkId": "Prüf-ID",
+    "newBadge": "NEU",
+    "regressionBadge": "REGRESSION"
+  },
+  "comparison": {
+    "title": "Scan-Vergleich",
+    "firstScan": "Erster Scan dieser Quelle",
+    "vsLabel": "vs. vorheriger Scan",
+    "newTab": "Neu",
+    "fixedTab": "Behoben",
+    "changedTab": "Geändert",
+    "persistentTab": "Bestehend",
+    "fixedSinceLastScan": "Seit letztem Scan behoben"
+  },
+  "crossAgent": {
+    "title": "Agenten-übergreifende Erkennung",
+    "countLabel": "{{count}} Befunde von mehreren Agenten",
+    "primary": "primär",
+    "alsoDetected": "Auch erkannt:",
+    "filterLabel": "Multi-Agent"
+  },
+  "proveSummary": {
+    "title": "Verifizierungsübersicht",
+    "verified": "{{count}} von {{total}} Befunden verifiziert",
+    "untested": "{{count}} noch nicht getestet"
+  },
+  "auditHistory": {
+    "title": "Audit-Verlauf",
+    "showAll": "Alle anzeigen",
+    "findingsCount": "{{count}} Audits"
   }
 }

@@ -6,39 +6,52 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/vulture/backend/internal/config"
 )
 
 // Config holds local development launch configuration.
 type Config struct {
-	ProjectRoot string
-	DataDir     string
-	BackendPort string
+	ProjectRoot  string
+	DataDir      string
+	BackendPort  string
 	FrontendPort string
-	AgentPorts  map[string]string // agent_type -> port
+	AgentPorts   map[string]string // agent_type -> port
 }
 
-// DefaultConfig returns default local development configuration.
+// DefaultConfig returns default local development configuration,
+// reading port overrides from <projectRoot>/config.ini when present.
 func DefaultConfig(projectRoot string) *Config {
 	dataDir, _ := DefaultDataDir()
+	ini := loadLocalINI(filepath.Join(projectRoot, "config.ini"))
+
+	port := func(iniKey, fallback string) string {
+		if v := ini["ports."+iniKey]; v != "" {
+			return v
+		}
+		return fallback
+	}
+
+	agentPorts := make(map[string]string, len(config.AllAgents))
+	for _, entry := range config.AllAgents {
+		agentPorts[entry.Type] = port(entry.INIKey, entry.DefaultPort)
+	}
+
 	return &Config{
 		ProjectRoot:  projectRoot,
 		DataDir:      dataDir,
-		BackendPort:  "8080",
-		FrontendPort: "3001",
-		AgentPorts: map[string]string{
-			"chaos": "8001",
-			"owasp": "8002",
-			"soc2":  "8003",
-			"cwe":   "8004",
-		},
+		BackendPort:  port("backend", "28080"),
+		FrontendPort: port("frontend_host", "23001"),
+		AgentPorts:   agentPorts,
 	}
 }
 
 // Launcher orchestrates all local development processes.
 type Launcher struct {
-	cfg     *Config
-	mgr     *Manager
-	detect  *Detect
+	cfg    *Config
+	mgr    *Manager
+	detect *Detect
 }
 
 // NewLauncher creates a launcher with the given config.
@@ -105,13 +118,7 @@ func (l *Launcher) setupOllama(ctx context.Context) {
 	hasExplicitModel := os.Getenv("VULTURE_LLM_MODEL") != ""
 	hasExplicitEmbedding := os.Getenv("VULTURE_EMBEDDING_URL") != ""
 
-	if hasCloudKey && !hasExplicitModel {
-		// User has cloud key, don't override their setup
-		log.Println("  Using cloud API (OPENAI_API_KEY set)")
-		return
-	}
-
-	// Auto-pull embedding model
+	// Auto-pull embedding model (always, even with cloud key — embeddings use Ollama locally)
 	if !hasExplicitEmbedding {
 		embeddingReady := OllamaHasModel("nomic-embed-text")
 		if !embeddingReady {
@@ -175,18 +182,18 @@ func (l *Launcher) installAgentDeps(ctx context.Context) error {
 		return fmt.Errorf("install shared: %w", err)
 	}
 
-	for _, agent := range []string{"chaos_engineering", "owasp", "soc2"} {
-		agentDir := filepath.Join(agentsDir, agent)
+	for _, entry := range config.AllAgents {
+		agentDir := filepath.Join(agentsDir, entry.DirName)
 		if _, err := os.Stat(agentDir); os.IsNotExist(err) {
 			continue
 		}
 		installCmd := fmt.Sprintf("%s -m pip install -e %s -q 2>/dev/null || %s -m pip install -e %s -q --break-system-packages 2>/dev/null", l.detect.PythonPath, agentDir, l.detect.PythonPath, agentDir)
-		err := l.mgr.Start(ctx, "pip-"+agent, agentsDir,
+		err := l.mgr.Start(ctx, "pip-"+entry.DirName, agentsDir,
 			[]string{},
 			"sh", "-c", installCmd,
 		)
 		if err != nil {
-			log.Printf("warning: install %s: %v", agent, err)
+			log.Printf("warning: install %s: %v", entry.DirName, err)
 		}
 	}
 	return nil
@@ -195,27 +202,22 @@ func (l *Launcher) installAgentDeps(ctx context.Context) error {
 func (l *Launcher) startAgents(ctx context.Context) error {
 	agentsDir := filepath.Join(l.cfg.ProjectRoot, "agents")
 
-	agents := []struct {
-		name    string
-		module  string
-		port    string
-		dir     string
-	}{
-		{"chaos", "chaos_agent.main:app", l.cfg.AgentPorts["chaos"], filepath.Join(agentsDir, "chaos_engineering")},
-		{"owasp", "owasp_agent.main:app", l.cfg.AgentPorts["owasp"], filepath.Join(agentsDir, "owasp")},
-		{"soc2", "soc2_agent.main:app", l.cfg.AgentPorts["soc2"], filepath.Join(agentsDir, "soc2")},
-		{"cwe", "cwe_agent.main:app", l.cfg.AgentPorts["cwe"], filepath.Join(agentsDir, "cwe")},
-	}
+	for _, entry := range config.AllAgents {
+		agentDir := filepath.Join(agentsDir, entry.DirName)
+		port := l.cfg.AgentPorts[entry.Type]
 
-	for _, a := range agents {
-		if _, err := os.Stat(a.dir); os.IsNotExist(err) {
-			log.Printf("skipping agent %s: directory not found", a.name)
+		if _, err := os.Stat(agentDir); os.IsNotExist(err) {
+			log.Printf("skipping agent %s: directory not found", entry.Type)
 			continue
 		}
+		// Build PYTHONPATH: shared + agent dir + any cross-agent deps
+		pythonPath := agentsDir + "/shared:" + agentDir
+		pythonPath += extraPythonPath(agentsDir, entry.Type)
+
 		env := []string{
-			"VULTURE_AGENT_PORT=" + a.port,
+			"VULTURE_AGENT_PORT=" + port,
 			"VULTURE_BACKEND_URL=http://localhost:" + l.cfg.BackendPort,
-			"PYTHONPATH=" + agentsDir + "/shared:" + a.dir,
+			"PYTHONPATH=" + pythonPath,
 		}
 		if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
 			env = append(env, "OPENAI_API_KEY="+apiKey)
@@ -242,17 +244,31 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {
 			env = append(env, "ANTHROPIC_API_KEY="+anthropicKey)
 		}
+		// Pass Gemini API key for Google models via LiteLLM.
+		if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
+			env = append(env, "GEMINI_API_KEY="+geminiKey)
+		}
+		// Pass token efficiency configuration.
+		if ctxSize := os.Getenv("VULTURE_LLM_CTX_SIZE"); ctxSize != "" {
+			env = append(env, "VULTURE_LLM_CTX_SIZE="+ctxSize)
+		}
+		if maxOutput := os.Getenv("VULTURE_LLM_MAX_OUTPUT_TOKENS"); maxOutput != "" {
+			env = append(env, "VULTURE_LLM_MAX_OUTPUT_TOKENS="+maxOutput)
+		}
+		if loopLimit := os.Getenv("VULTURE_LOOP_GLOBAL_LIMIT"); loopLimit != "" {
+			env = append(env, "VULTURE_LOOP_GLOBAL_LIMIT="+loopLimit)
+		}
 		// Disable OpenAI Agents SDK tracing (avoids 400 errors from unsupported fields).
 		env = append(env, "OPENAI_AGENTS_DISABLE_TRACING=1")
 
-		err := l.mgr.Start(ctx, "agent-"+a.name, a.dir, env,
-			l.detect.PythonPath, "-m", "uvicorn", a.module,
-			"--host", "0.0.0.0", "--port", a.port,
+		err := l.mgr.Start(ctx, "agent-"+entry.Type, agentDir, env,
+			l.detect.PythonPath, "-m", "uvicorn", entry.Module,
+			"--host", "0.0.0.0", "--port", port,
 		)
 		if err != nil {
-			return fmt.Errorf("start agent %s: %w", a.name, err)
+			return fmt.Errorf("start agent %s: %w", entry.Type, err)
 		}
-		log.Printf("started agent-%s on port %s", a.name, a.port)
+		log.Printf("started agent-%s on port %s", entry.Type, port)
 	}
 	return nil
 }
@@ -264,10 +280,10 @@ func (l *Launcher) startBackend(ctx context.Context) error {
 		"VULTURE_DB_PATH=" + dbPath,
 		"VULTURE_DB_DSN=",
 		"VULTURE_LOCAL_MODE=true",
-		"VULTURE_AGENT_CHAOS_URL=http://localhost:" + l.cfg.AgentPorts["chaos"],
-		"VULTURE_AGENT_OWASP_URL=http://localhost:" + l.cfg.AgentPorts["owasp"],
-		"VULTURE_AGENT_SOC2_URL=http://localhost:" + l.cfg.AgentPorts["soc2"],
-		"VULTURE_AGENT_CWE_URL=http://localhost:" + l.cfg.AgentPorts["cwe"],
+	}
+	// Set agent URL env vars from the registry
+	for _, entry := range config.AllAgents {
+		env = append(env, entry.EnvURLKey()+"=http://localhost:"+l.cfg.AgentPorts[entry.Type])
 	}
 	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
 		env = append(env, "OPENAI_API_KEY="+apiKey)
@@ -317,7 +333,7 @@ func (l *Launcher) startFrontend(ctx context.Context) error {
 	}
 
 	env := []string{
-		"VITE_API_URL=http://localhost:" + l.cfg.BackendPort,
+		"VULTURE_PROXY_TARGET=http://localhost:" + l.cfg.BackendPort,
 		"VITE_LOCAL_MODE=true",
 	}
 
@@ -343,8 +359,14 @@ func printBanner(cfg *Config) {
 	fmt.Println()
 	fmt.Printf("  Backend:   http://localhost:%s\n", cfg.BackendPort)
 	fmt.Printf("  Frontend:  http://localhost:%s\n", cfg.FrontendPort)
-	fmt.Printf("  Agents:    chaos:%s  owasp:%s  soc2:%s  cwe:%s\n",
-		cfg.AgentPorts["chaos"], cfg.AgentPorts["owasp"], cfg.AgentPorts["soc2"], cfg.AgentPorts["cwe"])
+
+	// Build agent port display from registry
+	agentParts := make([]string, 0, len(config.AllAgents))
+	for _, entry := range config.AllAgents {
+		agentParts = append(agentParts, entry.Type+":"+cfg.AgentPorts[entry.Type])
+	}
+	fmt.Printf("  Agents:    %s\n", strings.Join(agentParts, "  "))
+
 	fmt.Printf("  Data:      %s\n", cfg.DataDir)
 
 	// Show LLM/embedding configuration
@@ -362,4 +384,23 @@ func printBanner(cfg *Config) {
 	fmt.Println()
 	fmt.Println("  Press Ctrl+C to stop all services")
 	fmt.Println()
+}
+
+// extraPythonPath returns additional PYTHONPATH entries for agents that
+// depend on other agent packages. For example, the discover agent imports
+// prove_agent.plugins, so it needs the prove agent directory on its path.
+func extraPythonPath(agentsDir, agentType string) string {
+	// Map of agent type → list of other agent directories it depends on
+	deps := map[string][]string{
+		"discover": {"prove"},
+	}
+	dirs, ok := deps[agentType]
+	if !ok {
+		return ""
+	}
+	var extra string
+	for _, dir := range dirs {
+		extra += ":" + filepath.Join(agentsDir, dir)
+	}
+	return extra
 }

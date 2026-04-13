@@ -1051,6 +1051,22 @@ func TestScanMemories_ScanError(t *testing.T) {
 	}
 }
 
+func TestMigrateMemory_CreatesKeywordsIndex(t *testing.T) {
+	repo := newTestMemoryRepo(t)
+
+	// Verify the idx_memories_keywords index exists after migration.
+	var indexName string
+	err := repo.db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_memories_keywords'`,
+	).Scan(&indexName)
+	if err != nil {
+		t.Fatalf("keywords index not found: %v", err)
+	}
+	if indexName != "idx_memories_keywords" {
+		t.Fatalf("expected idx_memories_keywords, got %s", indexName)
+	}
+}
+
 func TestMemory_FieldParsing(t *testing.T) {
 	repo := newTestMemoryRepo(t)
 	mem := sampleMemory("mem-fp", "audit-1")

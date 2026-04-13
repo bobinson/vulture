@@ -5,7 +5,13 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import scan_code_files, read_file_safe
+from shared.tools.file_scanner import (
+    is_generated_file,
+    is_test_file,
+    read_file_safe,
+    scan_code_files,
+)
+from shared.tools.snippet import extract_snippet
 
 MONITORING_PATTERNS = [
     re.compile(r"prometheus|grafana|datadog|newrelic|sentry", re.IGNORECASE),
@@ -37,6 +43,10 @@ def check_monitoring(source_path: str) -> dict:
     has_service = False
 
     for file_path in all_files:
+        if is_generated_file(file_path):
+            continue
+        if is_test_file(file_path):
+            continue
         content = read_file_safe(file_path)
         if content is None:
             continue
@@ -46,8 +56,9 @@ def check_monitoring(source_path: str) -> dict:
             has_service = True
 
     if has_service and not has_monitoring:
-        findings.append({
+        finding = {
             "severity": "medium",
+            "check_id": "soc2.monitoring.absent",
             "category": "CC7-monitoring",
             "title": "No monitoring or alerting detected",
             "description": "Service code found but no monitoring/alerting instrumentation",
@@ -55,7 +66,9 @@ def check_monitoring(source_path: str) -> dict:
             "line_start": 0,
             "line_end": 0,
             "recommendation": "Add metrics, health checks, and alerting integration",
-        })
+        }
+        finding["code_snippet"] = extract_snippet([], 0)
+        findings.append(finding)
 
     return {"findings": findings}
 

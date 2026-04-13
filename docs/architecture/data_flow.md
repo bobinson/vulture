@@ -9,16 +9,16 @@ User → Frontend (SourceInput)
   → POST /api/sources { type: "git", url: "https://github.com/org/repo" }
   → Go Backend: source_service.Ingest()
     → gitutil.Clone() to /tmp/sources/{hash}/
-    → fileutil.Walk() to count and categorize files
+    → fileutil.CountFiles() to count files
   ← Response: { source_id: "abc123", path: "/tmp/sources/abc123", file_count: 142 }
 ```
 
 For local paths:
 ```
   → POST /api/sources { type: "local", path: "/path/to/code" }
-  → Go Backend: source_service.Validate()
+  → Go Backend: source_service.Ingest()
     → Verify path exists and is readable
-    → fileutil.Walk() to count and categorize files
+    → fileutil.CountFiles() to count files
   ← Response: { source_id: "def456", path: "/path/to/code", file_count: 89 }
 ```
 
@@ -42,8 +42,9 @@ User → Frontend (AuditTypeSelector + Submit)
 ### Step 3: SSE Stream Connection
 
 ```
-Frontend → useAgentStream("xyz789")
-  → GET /api/audits/xyz789/stream
+Frontend → POST /api/audits/xyz789/stream-token (JWT in Authorization header)
+  ← Response: { stream_token: "..." }
+Frontend → GET /api/audits/xyz789/stream?stream_token=<token>
   → Go Backend: stream_handler
     → Sets headers: Content-Type: text/event-stream, Cache-Control: no-cache
     → Emits ag-ui event: RunStarted { runId: "xyz789" }
@@ -54,13 +55,13 @@ Frontend → useAgentStream("xyz789")
 ```
 Go Backend (concurrent goroutines for each audit type):
 
-  goroutine 1: POST http://agent-chaos:8001/run
+  goroutine 1: POST http://agent-chaos:28001/run
     { run_id: "xyz789", source_path: "/tmp/sources/abc123", config: {} }
 
-  goroutine 2: POST http://agent-owasp:8002/run
+  goroutine 2: POST http://agent-owasp:28002/run
     { run_id: "xyz789", source_path: "/tmp/sources/abc123", config: {} }
 
-  goroutine 3: POST http://agent-soc2:8003/run
+  goroutine 3: POST http://agent-soc2:28003/run
     { run_id: "xyz789", source_path: "/tmp/sources/abc123",
       config: { clauses: ["CC6", "CC7", "CC8"] } }
 ```
@@ -70,7 +71,9 @@ Go Backend (concurrent goroutines for each audit type):
 ```
 Python Agent (e.g., Chaos Engineering):
   → Receives AuditRequest via POST /run
-  → Runner.run_streamed(chaos_agent, input)
+  → run_combined_audit() — two-phase pipeline:
+      Phase 1: Skill-based pattern matching (100% file coverage, deterministic)
+      Phase 2: Optional LLM analysis (deeper reasoning on file subset within context window)
   → Agent invokes tools:
     → list_files(source_path) → get file inventory
     → read_file(path) → read source files
@@ -106,7 +109,7 @@ When all agents complete:
 ### Step 7: Frontend Rendering
 
 ```
-React (via useAgent hook receives ag-ui events):
+React (via useAgentStream hook receives ag-ui events):
   → AuditTimeline: shows step progress (chaos ✓, owasp ◌, soc2 ...)
   → AgentStream: renders terminal-style streaming text per agent
   → FindingsTable: populates incrementally as StateDelta events arrive

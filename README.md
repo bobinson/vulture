@@ -1,0 +1,274 @@
+# Vulture
+
+[![CI](https://github.com/vulture-project/vulture/actions/workflows/ci.yml/badge.svg)](https://github.com/vulture-project/vulture/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Go 1.24+](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg)](https://www.python.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg)](https://www.typescriptlang.org/)
+
+Vulture is an AI-powered compliance audit platform that inspects source code against multiple security and reliability frameworks including Chaos Engineering principles, OWASP Top 10, CWE (Common Weakness Enumeration), SOC2 compliance, SSDF (Secure Software Development Framework), and XSS vulnerabilities. It uses specialized AI agents built on the OpenAI Agents SDK with LiteLLM, running a two-phase audit pipeline: fast deterministic skill-based pattern matching across the entire codebase, followed by optional LLM-driven deep analysis with automatic deduplication.
+
+## Key Features
+
+- **Multi-framework auditing** -- Chaos Engineering, OWASP, CWE, SOC2, SSDF, XSS, and formal verification (Prove), with per-framework configurability down to individual compliance clauses
+- **Specialized AI agents** -- Each audit type runs as an independent FastAPI microservice with precisely defined skills, using the OpenAI Agents SDK with support for OpenAI, Claude, and Gemini models via LiteLLM
+- **Two-phase audit pipeline** -- Deterministic skill-based pattern matching covers 100% of files first; optional LLM analysis adds deeper reasoning with automatic deduplication against skill findings
+- **Real-time SSE streaming** -- Live audit progress, findings, and agent output streamed to the browser as Server-Sent Events
+- **Memory system with pgvector** -- Cross-audit intelligence via vector embeddings; prior findings are reused as context to avoid redundant analysis and reduce token usage
+- **Extensible architecture** -- Add a new audit type in three steps: create the agent, register it in the Go backend, add a Docker service block. The frontend auto-discovers new agents
+- **CLI tool** -- Headless audit execution with `vulture scan`, `vulture watch`, and `vulture list`
+- **Multi-language UI** -- React SPA with internationalization support for English, Spanish, German, French, Japanese, and Portuguese
+
+## Architecture
+
+```
+                         +-------------------+
+                         |   React Frontend  |
+                         |  (Vite + Tailwind)|
+                         +--------+----------+
+                                  |
+                            SSE / REST
+                                  |
+                         +--------v----------+
+                         |    Go Backend     |
+                         |   (Orchestrator)  |
+                         +---+----+----+----++
+                             |    |    |    |
+                  +----------+    |    |    +----------+
+                  |               |    |               |
+           +------v-----+ +------v----v-+ +-----v------+
+           |Agent: Chaos | |Agent: OWASP | |Agent: SOC2 |  ...
+           |  (FastAPI)  | |  (FastAPI)  | |  (FastAPI)  |
+           +-------------+ +-------------+ +-------------+
+                             |
+                    +--------v---------+
+                    |   PostgreSQL     |
+                    |   + pgvector     |
+                    +------------------+
+```
+
+The Go backend orchestrates audit requests, dispatches them to Python agent services concurrently, aggregates SSE streams, and serves structured events to the frontend. PostgreSQL with pgvector handles persistence and vector similarity search. SQLite is available as a local development fallback.
+
+## Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose
+- An LLM API key (OpenAI, Anthropic, or Gemini) if using LLM-enhanced analysis
+
+### 1. Configure
+
+Copy and edit the configuration file:
+
+```bash
+cp config.ini.example config.ini
+```
+
+Edit `config.ini` to set your database password and any other values. At minimum, review:
+
+| Setting | Location | Purpose |
+|---------|----------|---------|
+| `database.password` | `config.ini` | PostgreSQL password (required) |
+| `auth.jwt_secret` | `config.ini` | JWT signing key (auto-generated if blank) |
+| `OPENAI_API_KEY` | Environment | Required only if `VULTURE_USE_LLM=true` |
+
+Generate the `.env` file from `config.ini`:
+
+```bash
+make gen-env
+```
+
+### 2. Launch
+
+```bash
+make docker-up
+```
+
+This builds all images (Go backend, Python agents, React frontend) and starts the full stack: PostgreSQL, backend, all agent services, and the frontend.
+
+### 3. Access
+
+- **Frontend**: http://localhost:23001
+- **Backend API**: http://localhost:28080
+- **Health check**: http://localhost:28080/health
+
+### Stop
+
+```bash
+make docker-down
+```
+
+## Local Development
+
+### Go Backend
+
+```bash
+cd backend
+go build -o bin/vulture ./cmd/vulture/
+go test ./...
+```
+
+The backend falls back to SQLite in local mode when `VULTURE_DB_DSN` is not set.
+
+### Python Agents
+
+```bash
+cd agents
+pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/
+
+# Run unit tests for individual agents
+cd shared && python -m pytest tests/unit/ -v
+cd chaos_engineering && python -m pytest tests/unit/ -v
+cd owasp && python -m pytest tests/unit/ -v
+cd soc2 && python -m pytest tests/unit/ -v
+cd cwe && python -m pytest tests/unit/ -v
+```
+
+Each agent is a standalone FastAPI service. Start one individually:
+
+```bash
+cd agents/owasp
+VULTURE_AGENT_PORT=28002 python -m uvicorn main:app --port 28002
+```
+
+### React Frontend
+
+```bash
+cd frontend
+npm ci
+npm run dev    # Development server with hot reload
+npm test       # Vitest unit tests
+npx playwright test  # E2E tests
+```
+
+### Make Targets
+
+```bash
+make build          # Build all components
+make test           # Run all unit tests (Go + Python + Frontend)
+make e2e            # Run all E2E test suites
+make coverage       # Verify test coverage
+make complexity     # Verify cyclomatic complexity thresholds
+make lint           # Lint all components (golangci-lint, ruff, eslint)
+make docker-up      # Start full stack via docker compose
+make docker-down    # Stop all services
+```
+
+## Configuration
+
+### Environment Variables
+
+#### Go Backend
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VULTURE_PORT` | `28080` | Backend server port |
+| `VULTURE_DB_DSN` | -- | PostgreSQL connection string (uses SQLite if unset) |
+| `VULTURE_DB_PATH` | `/data/vulture.db` | SQLite database path (fallback) |
+| `VULTURE_JWT_SECRET` | -- | JWT signing key (required in production) |
+| `VULTURE_LOCAL_MODE` | `false` | Enable passwordless authentication (set `true` for development) |
+| `VULTURE_AGENT_CHAOS_URL` | `http://agent-chaos:28001` | Chaos agent endpoint |
+| `VULTURE_AGENT_OWASP_URL` | `http://agent-owasp:28002` | OWASP agent endpoint |
+| `VULTURE_AGENT_SOC2_URL` | `http://agent-soc2:28003` | SOC2 agent endpoint |
+| `VULTURE_AGENT_CWE_URL` | `http://agent-cwe:28004` | CWE agent endpoint |
+| `VULTURE_AGENT_PROVE_URL` | `http://agent-prove:28005` | Prove agent endpoint |
+| `VULTURE_AGENT_XSS_URL` | `http://agent-xss:28006` | XSS agent endpoint |
+| `VULTURE_AGENT_SSDF_URL` | `http://agent-ssdf:28007` | SSDF agent endpoint |
+| `VULTURE_AGENT_DISCOVER_URL` | `http://agent-discover:28008` | Discover agent endpoint |
+| `VULTURE_EMBEDDING_URL` | -- | Custom embedding endpoint |
+| `VULTURE_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+
+#### Python Agents
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | -- | LLM API key |
+| `OPENAI_BASE_URL` | -- | Custom OpenAI-compatible endpoint (LM Studio, vLLM, Ollama) |
+| `ANTHROPIC_API_KEY` | -- | Anthropic API key (for Claude models) |
+| `GEMINI_API_KEY` | -- | Google Gemini API key |
+| `VULTURE_LLM_MODEL` | `gpt-4o` | Model identifier (gpt-4o, claude-sonnet, gemini-pro, etc.) |
+| `VULTURE_USE_LLM` | `false` | Enable LLM analysis phase (`true` = skills + LLM, `false` = skills only) |
+| `VULTURE_LLM_CTX_SIZE` | -- | Override context window size in tokens (auto-detected if unset) |
+| `VULTURE_AGENT_PORT` | varies | Agent service port |
+| `VULTURE_BACKEND_URL` | `http://backend:28080` | Backend URL for memory API callbacks |
+| `OLLAMA_API_BASE` | `http://localhost:11434` | Ollama endpoint for local models |
+
+#### Frontend
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VITE_API_URL` | `http://localhost:28080` | Backend API URL |
+
+### Configuration File
+
+Vulture uses a `config.ini` file at the project root as the single source of truth for ports, database settings, and service defaults. Run `make gen-env` to generate the `.env` file consumed by `docker compose`.
+
+## Adding New Audit Types
+
+Vulture is designed for easy extensibility. To add a new audit type (for example, GDPR):
+
+1. **Create the agent** -- Copy an existing agent directory (e.g., `agents/owasp/`) to `agents/gdpr/`. Implement skills in the `skills/` subdirectory, define the agent in `agent.py`, document capabilities in `SKILLS.md`, and create a `Dockerfile`.
+
+2. **Register in the Go backend** -- Add one line to the agent registry in `backend/internal/config/config.go`:
+   ```go
+   "gdpr": {URL: getEnv("VULTURE_AGENT_GDPR_URL", "http://agent-gdpr:28009")},
+   ```
+
+3. **Add to docker-compose** -- Add a service block to `docker-compose.yml` following the pattern of existing agents.
+
+The frontend auto-discovers available agents via `GET /api/agents` and dynamically renders configuration options from each agent's `/info` endpoint -- no frontend changes are needed.
+
+## API Overview
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/sources` | Submit a local path or git URL for auditing |
+| `POST` | `/api/audits` | Start an audit (source + types + configuration) |
+| `GET` | `/api/audits` | List all audits |
+| `GET` | `/api/audits/:id` | Get audit status and results |
+| `GET` | `/api/audits/:id/stream` | SSE stream for live or replayed audit events |
+| `GET` | `/api/audits/cached` | Check for cached audit results |
+| `GET` | `/api/agents` | List available agent types |
+| `GET` | `/api/agents/:type/info` | Get agent configuration schema and skills |
+| `POST` | `/api/auth/register` | Register a new user |
+| `POST` | `/api/auth/login` | Authenticate and receive a JWT token |
+| `GET` | `/api/auth/me` | Get current user (requires authentication) |
+| `GET` | `/api/auth/local-session` | Passwordless token for local mode |
+| `GET` | `/api/memories/search` | Semantic search across audit findings (pgvector) |
+| `GET` | `/api/memories/by-path` | Get findings for a specific codebase path |
+| `GET` | `/api/memories/:id/edges` | Get related memories via graph edges |
+| `POST` | `/api/filesystem/browse` | Browse local filesystem directories |
+| `GET` | `/health` | Health check |
+
+### SSE Event Types
+
+During an audit stream, the following event types are emitted:
+
+| Event | Description |
+|-------|-------------|
+| `agent_start` | Audit begins with a run ID |
+| `thinking` | Progress and status messages |
+| `finding` | Individual finding with severity, title, file, and details |
+| `progress` | Files analyzed, total count, findings count |
+| `dedup_stats` | Deduplication metrics |
+| `token_savings` | Token savings from memory context reuse |
+| `result` | Final aggregated result with all findings, summary, and score |
+| `agent_end` | Audit completed |
+
+## CLI
+
+The Vulture CLI provides headless audit execution:
+
+```bash
+vulture scan --source /path/to/code --type owasp,cwe
+vulture list
+vulture watch <audit-id>
+```
+
+## Contributing
+
+Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development workflow, coding standards, and pull request requirements.
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.

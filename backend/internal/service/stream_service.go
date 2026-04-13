@@ -36,6 +36,12 @@ func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audi
 		ThreadID: "t-" + audit.ID,
 	}
 
+	// Pre-parse config once before goroutine loop to avoid N re-parses
+	var cfgMap map[string]json.RawMessage
+	if err := json.Unmarshal(audit.Config, &cfgMap); err != nil {
+		cfgMap = nil
+	}
+
 	var wg sync.WaitGroup
 	for _, auditType := range audit.Types {
 		agentCfg, ok := agents[auditType]
@@ -44,18 +50,25 @@ func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audi
 			continue
 		}
 
+		// Extract agent config from pre-parsed map
+		agentConfig := json.RawMessage("{}")
+		if cfgMap != nil {
+			if ac, ok := cfgMap[auditType]; ok {
+				agentConfig = ac
+			}
+		}
+		prior := priorByAgent[auditType]
+
 		log.Printf("[stream-svc] launching agent=%s url=%s", auditType, agentCfg.URL)
 		wg.Add(1)
-		go func(at string, ac config.AgentConfig) {
+		go func(at string, ac config.AgentConfig, agCfg json.RawMessage, pr []model.PriorFinding) {
 			defer wg.Done()
-			agentConfig := extractAgentConfig(audit.Config, at)
-			prior := priorByAgent[at]
-			if err := s.proxy.RunAgentWithContext(ctx, ac.URL, at, audit.ID, sourcePath, agentConfig, prior, eventCh); err != nil {
+			if err := s.proxy.RunAgentWithContext(ctx, ac.URL, at, audit.ID, sourcePath, agCfg, pr, eventCh); err != nil {
 				log.Printf("[stream-svc] agent=%s error: %v", at, err)
 			} else {
 				log.Printf("[stream-svc] agent=%s completed successfully", at)
 			}
-		}(auditType, agentCfg)
+		}(auditType, agentCfg, agentConfig, prior)
 	}
 
 	wg.Wait()
@@ -65,15 +78,4 @@ func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audi
 		Type:  model.EventRunFinished,
 		RunID: audit.ID,
 	}
-}
-
-func extractAgentConfig(fullConfig json.RawMessage, agentType string) json.RawMessage {
-	var cfgMap map[string]json.RawMessage
-	if err := json.Unmarshal(fullConfig, &cfgMap); err != nil {
-		return json.RawMessage("{}")
-	}
-	if agentCfg, ok := cfgMap[agentType]; ok {
-		return agentCfg
-	}
-	return json.RawMessage("{}")
 }

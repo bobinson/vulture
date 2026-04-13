@@ -5,7 +5,7 @@
 Vulture uses a two-layer protocol for agent communication:
 
 1. **Go Backend ↔ Python Agents**: HTTP + SSE (custom lightweight protocol)
-2. **Go Backend ↔ Frontend**: SSE using the ag-ui protocol standard
+2. **Go Backend ↔ Frontend**: SSE with ag-ui-compatible event naming (no external ag-ui dependency)
 
 The Go backend acts as a translator between these two layers.
 
@@ -22,7 +22,8 @@ Content-Type: application/json
   "source_path": "/tmp/sources/abc123",
   "config": {
     // agent-specific configuration
-  }
+  },
+  "prior_findings": [...]
 }
 ```
 
@@ -60,7 +61,7 @@ data: {"run_id": "uuid", "status": "completed"}
 
 ```
 GET http://agent-{type}:{port}/health
-→ 200 { "status": "healthy", "agent": "chaos_engineering", "model": "gpt-4o" }
+→ 200 { "status": "healthy", "agent": "chaos_engineering" }
 ```
 
 ### Agent Discovery
@@ -76,14 +77,22 @@ GET http://agent-{type}:{port}/info
   }
 ```
 
-## Layer 2: Go Backend ↔ Frontend (ag-ui Protocol)
+## Layer 2: Go Backend ↔ Frontend (SSE Protocol (ag-ui-compatible event naming))
 
 ### Connection
 
+The frontend first obtains a short-lived, single-use stream token, then connects:
+
 ```
-GET /api/audits/{id}/stream
+POST /api/audits/{id}/stream-token
+Authorization: Bearer <jwt>
+→ 200 { "stream_token": "..." }
+
+GET /api/audits/{id}/stream?stream_token=<token>
 Accept: text/event-stream
 ```
+
+Stream tokens expire after 60 seconds and can only be used once. This avoids exposing the long-lived JWT in URL query parameters.
 
 ### ag-ui Event Types Used
 
@@ -145,4 +154,4 @@ The `agui/translator.go` component maps between the two layers:
 - If all agents fail, `RunError` is emitted
 - The frontend gracefully handles partial results (some agents succeeded, some failed)
 - Agent HTTP timeouts: 5 minutes per agent (configurable)
-- SSE reconnection: frontend auto-reconnects with `Last-Event-ID` header
+- SSE reconnection: disabled — stream tokens are single-use, so the frontend closes the EventSource on error rather than auto-reconnecting

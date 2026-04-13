@@ -21,9 +21,9 @@ func NewPostgresRepo(dsn string) (*PostgresRepo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(50)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(10 * time.Minute)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
@@ -33,6 +33,11 @@ func NewPostgresRepo(dsn string) (*PostgresRepo, error) {
 
 func (r *PostgresRepo) Close() error {
 	return r.db.Close()
+}
+
+// DB returns the underlying *sql.DB for reuse by other repositories.
+func (r *PostgresRepo) DB() *sql.DB {
+	return r.db
 }
 
 func (r *PostgresRepo) CreateSource(src *model.Source) error {
@@ -191,9 +196,13 @@ func (r *PostgresRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
 	}
 	rows, err := r.db.Query(
 		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), a.created_at, a.completed_at,
-			(SELECT COUNT(*) FROM findings f WHERE f.audit_id = a.id::text) AS findings_count
+			COUNT(DISTINCT f.id) AS findings_count,
+			COUNT(DISTINCT pr.id) AS prove_count
 		FROM audits a
 		LEFT JOIN sources s ON a.source_id = s.id
+		LEFT JOIN findings f ON f.audit_id = a.id::text
+		LEFT JOIN prove_results pr ON pr.audit_id = a.id::text
+		GROUP BY a.id, a.source_id, s.path, a.types, a.config, a.status, a.scores, a.created_at, a.completed_at
 		ORDER BY a.created_at DESC LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
@@ -206,7 +215,7 @@ func (r *PostgresRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
 		var a model.Audit
 		var cfgStr, scoresStr string
 		var completedAt sql.NullTime
-		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, pq.Array(&a.Types), &cfgStr, &a.Status, &scoresStr, &a.CreatedAt, &completedAt, &a.FindingsCount)
+		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, pq.Array(&a.Types), &cfgStr, &a.Status, &scoresStr, &a.CreatedAt, &completedAt, &a.FindingsCount, &a.ProveCount)
 		if err != nil {
 			return nil, fmt.Errorf("scan audit: %w", err)
 		}
@@ -223,29 +232,25 @@ func (r *PostgresRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
 
 func (r *PostgresRepo) GetStats() (*model.DashboardStats, error) {
 	stats := &model.DashboardStats{}
-	err := r.db.QueryRow(`SELECT COUNT(*) FROM audits`).Scan(&stats.AuditsRun)
-	if err != nil {
-		return nil, fmt.Errorf("count audits: %w", err)
-	}
-	err = r.db.QueryRow(`SELECT COUNT(*) FROM findings`).Scan(&stats.TotalFindings)
-	if err != nil {
-		return nil, fmt.Errorf("count findings: %w", err)
-	}
-	err = r.db.QueryRow(`SELECT COUNT(*) FROM findings WHERE severity = 'critical'`).Scan(&stats.CriticalIssues)
-	if err != nil {
-		return nil, fmt.Errorf("count critical: %w", err)
-	}
 	var avgScore sql.NullFloat64
-	err = r.db.QueryRow(`
-		SELECT AVG(score_val) FROM (
-			SELECT (jsonb_each_text(scores)).value::int AS score_val
-			FROM audits WHERE status = 'completed' AND scores != '{}'
-		) sub
-	`).Scan(&avgScore)
+	err := r.db.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM audits),
+			(SELECT COUNT(*) FROM findings),
+			(SELECT COUNT(*) FROM findings WHERE severity = 'critical'),
+			COALESCE((SELECT AVG(score_val) FROM (
+				SELECT (jsonb_each_text(scores)).value::int AS score_val
+				FROM audits WHERE status = 'completed' AND scores != '{}'
+			) sub), 0)
+	`).Scan(&stats.AuditsRun, &stats.TotalFindings, &stats.CriticalIssues, &avgScore)
 	if err != nil {
-		stats.AverageScore = 0
-	} else if avgScore.Valid {
+		return nil, fmt.Errorf("get stats: %w", err)
+	}
+	if avgScore.Valid {
 		stats.AverageScore = int(avgScore.Float64)
+	}
+	if err := scanProveStats(r.db, stats); err != nil {
+		return nil, err
 	}
 	return stats, nil
 }
@@ -278,6 +283,75 @@ func (r *PostgresRepo) GetLatestCompletedAudit(sourceID string, types []string) 
 	audit.Findings, _ = r.getFindings(audit.ID)
 	audit.FindingsCount = len(audit.Findings)
 	return &audit, nil
+}
+
+func (r *PostgresRepo) GetPreviousCompletedAudit(sourceID string, types []string, excludeAuditID string) (*model.Audit, error) {
+	row := r.db.QueryRow(`
+		SELECT id, source_id, types, config, status, COALESCE(scores, '{}'), created_at, completed_at
+		FROM audits
+		WHERE source_id = $1 AND status = 'completed' AND id != $2 AND types @> $3 AND types <@ $3
+		ORDER BY completed_at DESC
+		LIMIT 1`,
+		sourceID, excludeAuditID, pq.Array(types),
+	)
+	var audit model.Audit
+	var cfgStr, scoresStr string
+	var completedAt sql.NullTime
+	err := row.Scan(&audit.ID, &audit.SourceID, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.CreatedAt, &completedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get previous completed audit: %w", err)
+	}
+	audit.Config = json.RawMessage(cfgStr)
+	audit.Scores = map[string]int{}
+	_ = json.Unmarshal([]byte(scoresStr), &audit.Scores)
+	if completedAt.Valid {
+		audit.CompletedAt = &completedAt.Time
+	}
+	audit.Findings, _ = r.getFindings(audit.ID)
+	audit.FindingsCount = len(audit.Findings)
+	return &audit, nil
+}
+
+func (r *PostgresRepo) ListAuditsBySourcePath(sourcePath string, limit, offset int) ([]model.Audit, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := r.db.Query(
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), a.created_at, a.completed_at,
+			COUNT(DISTINCT f.id) AS findings_count
+		FROM audits a
+		JOIN sources s ON a.source_id = s.id
+		LEFT JOIN findings f ON f.audit_id = a.id::text
+		WHERE s.path = $1
+		GROUP BY a.id, a.source_id, s.path, a.types, a.config, a.status, a.scores, a.created_at, a.completed_at
+		ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`,
+		sourcePath, limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list audits by source path: %w", err)
+	}
+	defer rows.Close()
+	var audits []model.Audit
+	for rows.Next() {
+		var a model.Audit
+		var cfgStr, scoresStr string
+		var completedAt sql.NullTime
+		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, pq.Array(&a.Types), &cfgStr, &a.Status, &scoresStr, &a.CreatedAt, &completedAt, &a.FindingsCount)
+		if err != nil {
+			return nil, fmt.Errorf("scan audit: %w", err)
+		}
+		a.Config = json.RawMessage(cfgStr)
+		a.Scores = map[string]int{}
+		_ = json.Unmarshal([]byte(scoresStr), &a.Scores)
+		if completedAt.Valid {
+			a.CompletedAt = &completedAt.Time
+		}
+		audits = append(audits, a)
+	}
+	return audits, rows.Err()
 }
 
 func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {

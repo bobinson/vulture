@@ -51,7 +51,9 @@
     "chaosDesc": "Patrones de resiliencia: reintento, cortacircuito, timeout, fallback, radio de impacto",
     "owaspDesc": "Vulnerabilidades de seguridad: inyección, autenticación, criptografía, control de acceso, configuración",
     "soc2Desc": "Cláusulas de cumplimiento: CC6 (acceso lógico), CC7 (monitoreo), CC8 (gestión de cambios)",
-    "cweDesc": "Detección de debilidades CWE v4.19.1: inyección, buffer, autenticación, criptografía, control de acceso, concurrencia"
+    "cweDesc": "Detección de debilidades CWE v4.19.1: inyección, buffer, autenticación, criptografía, control de acceso, concurrencia",
+    "xssDesc": "Detección de vulnerabilidades XSS: reflejado, almacenado, basado en DOM, inyección de plantillas, inyección de cabeceras",
+    "ssdfDesc": "Conformidad NIST SSDF v1.1: diseño seguro, implementación, respuesta a vulnerabilidades, integridad del software"
   },
   "results": {
     "title": "Resultados de Auditoría",
@@ -96,7 +98,11 @@
     "estimated": "(estimado)",
     "copyIssue": "Copiar como Incidencia",
     "copyAll": "Copiar Todo como Incidencias",
-    "copied": "¡Copiado!"
+    "copied": "¡Copiado!",
+    "exportReport": "Exportar Informe",
+    "reportGenerated": "Informe descargado",
+    "evidence": "Evidencia",
+    "verificationEvidence": "Evidencia de Verificación"
   },
   "settings": {
     "title": "Configuración",
@@ -152,7 +158,10 @@
     "chaos": "Chaos",
     "owasp": "OWASP",
     "soc2": "SOC2",
-    "cwe": "CWE"
+    "cwe": "CWE",
+    "xss": "XSS",
+    "ssdf": "SSDF",
+    "discover": "Discover"
   },
   "severity": {
     "critical": "Crítico",
@@ -202,6 +211,26 @@
     "invalidLocalPath": "Ingrese una ruta absoluta (comenzando con /)",
     "connectionLost": "Conexión perdida. Reintentando..."
   },
+  "prove": {
+    "verificationResults": "Resultados de Verificaci\u00f3n",
+    "verified": "Verificado",
+    "notReproduced": "No Reproducido",
+    "inconclusive": "Inconcluso",
+    "skipped": "Omitido",
+    "showEvidence": "Mostrar evidencia",
+    "hideEvidence": "Ocultar evidencia",
+    "iterations": "{{count}} iteraci\u00f3n(es)",
+    "stagingUrl": "Staging",
+    "totalVerified": "Hallazgos Verificados",
+    "verificationRate": "Tasa de Verificaci\u00f3n",
+    "reproductionSteps": "Pasos de Reproducci\u00f3n",
+    "findingDescription": "Descripci\u00f3n del Hallazgo",
+    "copyAllResults": "Copiar Todo como Incidencias",
+    "noLineage": "Sin datos de trazabilidad para este hallazgo",
+    "verificationHistory": "Historial de Verificación",
+    "viewVerificationHistory": "Ver Historial de Verificación",
+    "noVerificationHistory": "Sin historial de verificación entre auditorías para este hallazgo"
+  },
   "lineage": {
     "title": "Trazabilidad de Hallazgos",
     "firstDetected": "Primera detección",
@@ -233,6 +262,39 @@
     "status_false_positive": "Falso Positivo",
     "status_fixed": "Corregido",
     "status_regression": "Regresión",
-    "gitContext": "Contexto Git"
+    "gitContext": "Contexto Git",
+    "fullCommit": "Commit completo",
+    "copyCommit": "Copiar hash del commit",
+    "fingerprint": "Huella digital",
+    "checkId": "ID de Verificación",
+    "newBadge": "NUEVO",
+    "regressionBadge": "REGRESIÓN"
+  },
+  "comparison": {
+    "title": "Comparación de Escaneo",
+    "firstScan": "Primer escaneo de esta fuente",
+    "vsLabel": "vs. escaneo anterior",
+    "newTab": "Nuevos",
+    "fixedTab": "Corregidos",
+    "changedTab": "Cambiados",
+    "persistentTab": "Persistentes",
+    "fixedSinceLastScan": "Corregidos desde el último escaneo"
+  },
+  "crossAgent": {
+    "title": "Detección Multi-Agente",
+    "countLabel": "{{count}} hallazgos por múltiples agentes",
+    "primary": "primario",
+    "alsoDetected": "También detectado:",
+    "filterLabel": "Multi-Agente"
+  },
+  "proveSummary": {
+    "title": "Resumen de Verificación",
+    "verified": "{{count}} de {{total}} hallazgos verificados",
+    "untested": "{{count}} aún no probados"
+  },
+  "auditHistory": {
+    "title": "Historial de Auditorías",
+    "showAll": "Mostrar todo",
+    "findingsCount": "{{count}} auditorías"
   }
 }

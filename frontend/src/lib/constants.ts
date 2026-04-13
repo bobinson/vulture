@@ -23,12 +23,17 @@ export const SEVERITY_ORDER: Record<string, number> = {
 };
 
 
-export const AGENT_TYPES = ["chaos", "owasp", "soc2"] as const;
+export const AGENT_TYPES = ["chaos", "owasp", "soc2", "cwe", "xss", "ssdf"] as const;
 
-/** Resolve agent type to i18n display name with fallback to capitalized raw key */
+/** Resolve agent type to i18n display name with fallback.
+ *  Acronym-like types (all-alpha, ≤6 chars) are uppercased: "ssdf" → "SSDF".
+ *  Longer names get first-letter capitalization: "discover" → "Discover".
+ */
 export function agentLabel(type: string, t: (key: string) => string): string {
   const key = `agents.${type}`;
   const label = t(key);
-  return label === key ? type.charAt(0).toUpperCase() + type.slice(1) : label;
+  if (label !== key) return label;
+  if (type.length <= 6) return type.toUpperCase();
+  return type.charAt(0).toUpperCase() + type.slice(1);
 }
 

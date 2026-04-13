@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vulture-discover-agent"
+version = "0.1.0"
+description = "Discover agent for endpoint discovery and attack surface mapping"
+requires-python = ">=3.12"
+dependencies = [
+    "vulture-shared",
+    "httpx>=0.28.0",
+    "pyyaml>=6.0",
+    "websockets>=13.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["discover_agent"]
+
+[project.optional-dependencies]
+playwright = [
+    "playwright>=1.40.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "anyio[trio]>=4.0.0",
+    "respx>=0.22.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["discover_agent"]

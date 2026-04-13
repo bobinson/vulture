@@ -92,12 +92,18 @@ export function Dashboard() {
       <p className="text-[13px] text-muted -mt-4">{t("dashboard.subtitle")}</p>
 
       {/* Stats row — compact, Linear-style metric cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className={`grid grid-cols-2 gap-3 ${(stats?.prove_total ?? 0) > 0 ? "lg:grid-cols-6" : "lg:grid-cols-4"}`}>
         {[
           { label: t("dashboard.auditsRun"), value: stats?.audits_run ?? 0 },
           { label: t("dashboard.totalFindings"), value: stats?.total_findings ?? 0 },
           { label: t("dashboard.criticalIssues"), value: stats?.critical_issues ?? 0 },
           { label: t("dashboard.avgScore"), value: stats?.average_score ? `${stats.average_score}%` : "\u2014" },
+          ...((stats?.prove_total ?? 0) > 0
+            ? [
+                { label: t("prove.totalVerified"), value: stats?.prove_verified ?? 0 },
+                { label: t("prove.verificationRate"), value: stats?.prove_total ? `${Math.round(((stats?.prove_verified ?? 0) / stats.prove_total) * 100)}%` : "\u2014" },
+              ]
+            : []),
         ].map((stat) => (
           <div key={stat.label} className="card px-4 py-3">
             <p className="text-[11px] text-muted font-medium uppercase tracking-wide mb-1">{stat.label}</p>
@@ -229,6 +235,14 @@ export function Dashboard() {
                           {findCount > 0 && (
                             <span className="text-[10px] font-medium text-muted bg-cream-dark px-1.5 py-0.5 rounded-full tabular-nums shrink-0">
                               {findCount}
+                            </span>
+                          )}
+                          {(audit.prove_count ?? 0) > 0 && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-[#991B1B] bg-[#FEE2E2] px-1.5 py-0.5 rounded-full tabular-nums shrink-0">
+                              <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                              </svg>
+                              {audit.prove_count}
                             </span>
                           )}
                         </div>

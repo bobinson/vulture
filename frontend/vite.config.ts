@@ -3,6 +3,14 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
+// VULTURE_PROXY_TARGET is server-side only (not leaked to the browser bundle).
+// VITE_API_URL is kept as fallback for backwards-compat / production builds.
+const backendURL =
+  process.env.VULTURE_PROXY_TARGET ??
+  process.env.VITE_API_URL ??
+  "http://localhost:28080";
+const devPort = parseInt(process.env.VITE_DEV_PORT ?? "23000", 10);
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -11,10 +19,11 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,
+    host: "0.0.0.0",
+    port: devPort,
     proxy: {
-      "/api": "http://localhost:8080",
-      "/health": "http://localhost:8080",
+      "/api": backendURL,
+      "/health": backendURL,
     },
   },
   build: {

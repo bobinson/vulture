@@ -1,19 +1,23 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFindings } from "@/hooks/useFindings.ts";
+import { useLineage } from "@/hooks/useLineage.ts";
 import { SeverityBadge } from "./SeverityBadge.tsx";
 import { CopyFindingButton } from "./CopyFindingButton.tsx";
 import { LineageStatusBadge } from "./LineageStatusBadge.tsx";
 import { FindingTimeline } from "./FindingTimeline.tsx";
+import { FindingLifecycleBadge } from "./FindingLifecycleBadge.tsx";
+import { CrossAgentBadge } from "./CrossAgentBadge.tsx";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import { findingToMarkdown } from "@/lib/markdown.ts";
-import { api } from "@/lib/api.ts";
-import type { Finding, FindingLineage, LineageEvent, LineageStatus, Severity } from "@/lib/types.ts";
+import { ProveStatusBadge } from "./ProveStatusBadge.tsx";
+import type { Finding, LineageStatus, ProveResult, Severity } from "@/lib/types.ts";
 
 interface FindingsTableProps {
   findings: Finding[];
   auditId?: string;
+  proveResults?: ProveResult[];
 }
 
 function SortIcon({ field, sortField, sortDirection }: { field: string; sortField: string; sortDirection: string }) {
@@ -21,16 +25,31 @@ function SortIcon({ field, sortField, sortDirection }: { field: string; sortFiel
   return <span className="text-accent ml-1">{sortDirection === "asc" ? "\u2191" : "\u2193"}</span>;
 }
 
-export function FindingsTable({ findings: allFindings, auditId }: FindingsTableProps) {
-  const { t } = useTranslation();
-  const [agentFilter, setAgentFilter] = useState<string>("all");
-  const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
+function RowCopyButton({ finding, auditId }: { finding: Finding; auditId?: string }) {
+  const { copied, onCopy } = useCopyFeedback();
+  return (
+    <button
+      type="button"
+      className="w-7 h-7 inline-flex items-center justify-center rounded-md text-muted hover:text-foreground hover:bg-cream-dark transition-colors cursor-pointer"
+      title="Copy"
+      onClick={(e) => { e.stopPropagation(); void onCopy(findingToMarkdown(finding, auditId)); }}
+    >
+      {copied ? (
+        <svg className="w-3.5 h-3.5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+      ) : (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        </svg>
+      )}
+    </button>
+  );
+}
 
-  // Filter by agent before passing to useFindings
-  const agentFiltered = useMemo(() => {
-    if (agentFilter === "all") return allFindings;
-    return allFindings.filter((f) => (f.agent_type ?? f.agent_id) === agentFilter);
-  }, [allFindings, agentFilter]);
+export function FindingsTable({ findings: allFindings, auditId, proveResults }: FindingsTableProps) {
+  const { t } = useTranslation();
+  const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
 
   const {
     findings,
@@ -41,51 +60,14 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
     sortField,
     sortDirection,
     filterSeverity,
+    filterAgent,
     setFilterSeverity,
+    setFilterAgent,
     toggleSort,
-  } = useFindings(agentFiltered);
+  } = useFindings(allFindings);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [lineageMap, setLineageMap] = useState<Map<string, FindingLineage>>(new Map());
-  const [timelineMap, setTimelineMap] = useState<Map<string, LineageEvent[]>>(new Map());
-  const [showTimeline, setShowTimeline] = useState<string | null>(null);
-  const [editingLineage, setEditingLineage] = useState<Map<string, { status: string; notes: string; ticketUrl: string }>>(new Map());
-  const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
-
-  // Fetch lineage data for the audit
-  useEffect(() => {
-    if (!auditId) return;
-    api.getAuditLineage(auditId).then((lineages) => {
-      const map = new Map<string, FindingLineage>();
-      for (const l of lineages) {
-        map.set(l.fingerprint, l);
-      }
-      setLineageMap(map);
-    }).catch(() => {
-      // Lineage API may not be available yet; gracefully degrade
-    });
-  }, [auditId]);
-
-  const loadTimeline = useCallback((lineageId: string) => {
-    if (timelineMap.has(lineageId)) {
-      setShowTimeline((prev) => (prev === lineageId ? null : lineageId));
-      return;
-    }
-    api.getLineageTimeline(lineageId).then((events) => {
-      setTimelineMap((prev) => new Map(prev).set(lineageId, events));
-      setShowTimeline(lineageId);
-    }).catch(() => {});
-  }, [timelineMap]);
-
-  const handleSaveStatus = useCallback((lineageId: string, fingerprint: string) => {
-    const edit = editingLineage.get(fingerprint);
-    if (!edit) return;
-    api.updateLineageStatus(lineageId, edit.status, edit.notes || undefined, edit.ticketUrl || undefined).then((updated) => {
-      setLineageMap((prev) => new Map(prev).set(fingerprint, updated));
-      setSavedFeedback(fingerprint);
-      setTimeout(() => setSavedFeedback((prev) => (prev === fingerprint ? null : prev)), 2000);
-    }).catch(() => {});
-  }, [editingLineage]);
+  const { lineageMap, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId);
 
   const severities: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
@@ -98,6 +80,12 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
     }
     return Array.from(set).sort();
   }, [allFindings]);
+
+  // Map finding IDs to prove results for inline badges
+  const proveMap = useMemo(() => {
+    if (!proveResults?.length) return new Map<string, ProveResult>();
+    return new Map(proveResults.map((pr) => [pr.finding_id, pr]));
+  }, [proveResults]);
 
   if (allFindings.length === 0) {
     return (
@@ -114,12 +102,12 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h3 className="text-[13px] font-semibold text-foreground">{t("results.findings")}</h3>
-            <span className="badge bg-cream text-muted">{agentFiltered.length}</span>
+            <span className="badge bg-cream text-muted">{totalFiltered}</span>
             <button
               type="button"
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark"
               onClick={() => {
-                const md = agentFiltered.map((f) => findingToMarkdown(f, auditId)).join("\n---\n\n");
+                const md = allFindings.map((f) => findingToMarkdown(f, auditId)).join("\n---\n\n");
                 void onCopyAll(md);
               }}
             >
@@ -168,11 +156,11 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
               <button
                 type="button"
                 className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
-                  agentFilter === "all"
+                  filterAgent === "all"
                     ? "bg-foreground text-surface"
                     : "text-muted hover:text-foreground hover:bg-cream-dark"
                 }`}
-                onClick={() => { setAgentFilter("all"); setPage(0); }}
+                onClick={() => setFilterAgent("all")}
               >
                 {t("results.all")}
               </button>
@@ -181,11 +169,11 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                   key={at}
                   type="button"
                   className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
-                    agentFilter === at
+                    filterAgent === at
                       ? "bg-foreground text-surface"
                       : "text-muted hover:text-foreground hover:bg-cream-dark"
                   }`}
-                  onClick={() => { setAgentFilter(at); setPage(0); }}
+                  onClick={() => setFilterAgent(at)}
                 >
                   {agentLabel(at, t)}
                 </button>
@@ -212,6 +200,13 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
               </th>
               <th
                 className="text-left px-4 py-2.5 text-[11px] font-semibold text-muted uppercase tracking-wider cursor-pointer hover:text-foreground select-none"
+                onClick={() => toggleSort("agent_type")}
+              >
+                {t("results.agent")}
+                <SortIcon field="agent_type" sortField={sortField} sortDirection={sortDirection} />
+              </th>
+              <th
+                className="text-left px-4 py-2.5 text-[11px] font-semibold text-muted uppercase tracking-wider cursor-pointer hover:text-foreground select-none"
                 onClick={() => toggleSort("category")}
               >
                 {t("results.category")}
@@ -231,13 +226,18 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                 {t("results.file")}
                 <SortIcon field="file" sortField={sortField} sortDirection={sortDirection} />
               </th>
+              <th className="w-10 px-2 py-2.5" />
             </tr>
           </thead>
           <tbody>
-            {findings.map((finding, idx) => {
-              const key = `${finding.title}-${finding.file_path}-${page}-${idx}`;
+            {findings.map((finding) => {
+              const key = finding.fingerprint || finding.id || `${finding.title}-${finding.file_path}-${finding.line_start ?? 0}`;
               const isExpanded = expandedId === key;
-              const fileName = finding.file_path.split("/").pop() ?? finding.file_path;
+              const pathParts = finding.file_path.split("/");
+              const shortPath = pathParts.length > 2
+                ? pathParts.slice(-3).join("/")
+                : finding.file_path;
+              const agentType = finding.agent_type ?? finding.agent_id;
               return (
                 <Fragment key={key}>
                   <tr
@@ -258,24 +258,56 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                       )}
                     </td>
                     <td className="px-4 py-2.5">
+                      {agentType ? (
+                        <div>
+                          <span className="text-[10px] font-mono font-medium uppercase bg-cream rounded px-1.5 py-0.5 text-muted">
+                            {agentLabel(agentType, t)}
+                          </span>
+                          <CrossAgentBadge origins={finding.cross_agent_origins} />
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-muted-light">&mdash;</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5">
                       <span className="text-[11px] font-mono bg-cream rounded px-1.5 py-0.5 text-muted">
                         {finding.category}
                       </span>
                     </td>
                     <td className="px-4 py-2.5 max-w-md">
-                      <p className="text-[13px] text-foreground font-medium truncate">{finding.title}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-[13px] text-foreground font-medium truncate">{finding.title}</p>
+                        <FindingLifecycleBadge
+                          lineage={finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined}
+                          currentAuditId={auditId}
+                        />
+                        {finding.id && proveMap.has(finding.id) && (
+                          <ProveStatusBadge status={proveMap.get(finding.id)!.status} />
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-2.5">
                       <span className="text-[11px] font-mono text-muted" title={finding.file_path}>
-                        {fileName}
+                        {shortPath}
                         {finding.line_start ? `:${finding.line_start}` : ""}
                       </span>
+                    </td>
+                    <td className="px-2 py-2.5">
+                      <RowCopyButton finding={finding} auditId={auditId} />
                     </td>
                   </tr>
                   {isExpanded && (
                     <tr className="bg-cream/50">
-                      <td colSpan={5} className="px-6 py-4">
+                      <td colSpan={7} className="px-6 py-4">
                         <div className="space-y-3 max-w-2xl">
+                          {agentType && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-mono font-medium uppercase bg-cream rounded px-1.5 py-0.5 text-muted">
+                                {agentLabel(agentType, t)}
+                              </span>
+                              <span className="text-[11px] text-muted-light">{t("results.agent").toLowerCase()}</span>
+                            </div>
+                          )}
                           <div className="flex items-start justify-between">
                             <p className="text-[13px] text-foreground">{finding.description}</p>
                             <CopyFindingButton finding={finding} auditId={auditId} />
@@ -285,6 +317,22 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                             {finding.line_start ? `:${finding.line_start}` : ""}
                             {finding.line_end && finding.line_end !== finding.line_start ? `-${finding.line_end}` : ""}
                           </div>
+                          {(finding.check_id || finding.fingerprint) && (
+                            <div className="flex items-center gap-3 text-[11px] text-muted-light">
+                              {finding.check_id && (
+                                <span>
+                                  {t("lineage.checkId")}:{" "}
+                                  <span className="font-mono bg-cream rounded px-1.5 py-0.5">{finding.check_id}</span>
+                                </span>
+                              )}
+                              {finding.fingerprint && (
+                                <span>
+                                  {t("lineage.fingerprint")}:{" "}
+                                  <span className="font-mono bg-cream rounded px-1.5 py-0.5" title={finding.fingerprint}>{finding.fingerprint.slice(0, 12)}</span>
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {finding.code_snippet && (
                             <pre className="text-[12px] font-mono bg-terminal text-terminal-text rounded-lg px-4 py-3 overflow-x-auto">
                               {finding.code_snippet}
@@ -298,6 +346,30 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                               <p className="text-[13px] text-foreground">{finding.recommendation}</p>
                             </div>
                           )}
+                          {/* Inline prove evidence */}
+                          {finding.id && proveMap.has(finding.id) && (() => {
+                            const prove = proveMap.get(finding.id!)!;
+                            const borderColor = prove.status === "verified" ? "border-[#CF222E]" : prove.status === "not_reproduced" ? "border-[#22C55E]" : "border-border";
+                            return (
+                              <div className={`border-l-2 ${borderColor} pl-3 py-2 space-y-1.5`}>
+                                <div className="flex items-center gap-2">
+                                  <ProveStatusBadge status={prove.status} />
+                                  <span className="text-[11px] text-muted">{t("results.verificationEvidence")}</span>
+                                </div>
+                                {prove.evidence && (
+                                  <p className="text-[12px] text-foreground">{prove.evidence}</p>
+                                )}
+                                <div className="flex items-center gap-4 text-[11px] text-muted">
+                                  {prove.staging_url && /^https?:\/\//i.test(prove.staging_url) && (
+                                    <a href={prove.staging_url} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
+                                      {t("prove.stagingUrl")}
+                                    </a>
+                                  )}
+                                  <span>{t("prove.iterations", { count: prove.iterations_used })}</span>
+                                </div>
+                              </div>
+                            );
+                          })()}
                           {/* Traceability section */}
                           {(() => {
                             const lineage = finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined;
@@ -354,13 +426,7 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                                     <select
                                       className="w-full text-[12px] bg-surface border border-border rounded-md px-2 py-1.5 text-foreground"
                                       value={edit.status}
-                                      onChange={(e) => {
-                                        setEditingLineage((prev) => {
-                                          const next = new Map(prev);
-                                          next.set(finding.fingerprint!, { ...edit, status: e.target.value });
-                                          return next;
-                                        });
-                                      }}
+                                      onChange={(e) => updateEdit(finding.fingerprint!, { status: e.target.value })}
                                     >
                                       {STATUSES.map((s) => (
                                         <option key={s} value={s}>{t(`lineage.status_${s}`)}</option>
@@ -374,13 +440,7 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                                       className="w-full text-[12px] bg-surface border border-border rounded-md px-2 py-1.5 text-foreground"
                                       placeholder={t("lineage.ticketPlaceholder")}
                                       value={edit.ticketUrl}
-                                      onChange={(e) => {
-                                        setEditingLineage((prev) => {
-                                          const next = new Map(prev);
-                                          next.set(finding.fingerprint!, { ...edit, ticketUrl: e.target.value });
-                                          return next;
-                                        });
-                                      }}
+                                      onChange={(e) => updateEdit(finding.fingerprint!, { ticketUrl: e.target.value })}
                                     />
                                   </div>
                                 </div>
@@ -391,20 +451,14 @@ export function FindingsTable({ findings: allFindings, auditId }: FindingsTableP
                                     rows={2}
                                     placeholder={t("lineage.notesPlaceholder")}
                                     value={edit.notes}
-                                    onChange={(e) => {
-                                      setEditingLineage((prev) => {
-                                        const next = new Map(prev);
-                                        next.set(finding.fingerprint!, { ...edit, notes: e.target.value });
-                                        return next;
-                                      });
-                                    }}
+                                    onChange={(e) => updateEdit(finding.fingerprint!, { notes: e.target.value })}
                                   />
                                 </div>
                                 <div className="flex items-center gap-3">
                                   <button
                                     type="button"
                                     className="px-3 py-1 text-[11px] font-medium rounded-md bg-foreground text-surface hover:bg-foreground/90 transition-colors cursor-pointer"
-                                    onClick={() => handleSaveStatus(lineage.id, finding.fingerprint!)}
+                                    onClick={() => saveStatus(lineage.id, finding.fingerprint!)}
                                   >
                                     {savedFeedback === finding.fingerprint ? t("lineage.saved") : t("lineage.save")}
                                   </button>

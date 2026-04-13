@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/pkg/agentregistry"
 )
 
 type AgentEvent struct {
@@ -20,12 +22,20 @@ var translators = map[string]translatorFunc{
 	"thinking":      func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateThinking(d) },
 	"tool_call":     func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateToolCall(d) },
 	"tool_result":   func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateToolResult(d) },
-	"finding":       func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateFinding(d) },
+	"finding":       func(at string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateFinding(at, d) },
 	"progress":      func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProgress(d) },
 	"result":        func(at string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateResult(at, d) },
 	"token_savings": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateTokenSavings(d) },
 	"dedup_stats":   func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateDedupStats(d) },
 	"agent_end":     func(at string, _ json.RawMessage) ([]*model.AgUIEvent, error) { return translateAgentEnd(at) },
+	"proof_phase":   func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_phase", d) },
+	"proof_plan":    func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_plan", d) },
+	"proof_review":  func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_review", d) },
+	"proof_attempt": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_attempt", d) },
+	"proof_reflection": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_reflection", d) },
+	"proof_result":     func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_result", d) },
+	"proof_summary":    func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_summary", d) },
+	"discover_result":  func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateDiscoverResult(d) },
 }
 
 func Translate(agentType string, event string, data json.RawMessage) ([]*model.AgUIEvent, error) {
@@ -36,9 +46,23 @@ func Translate(agentType string, event string, data json.RawMessage) ([]*model.A
 	return fn(agentType, data)
 }
 
+// agentDisplayName returns the registry display name for an agent type,
+// falling back to uppercase for short acronym-like types (e.g. "ssdf" → "SSDF").
+func AgentDisplayName(agentType string) string {
+	for _, a := range agentregistry.AllAgents {
+		if a.Type == agentType {
+			return a.Name
+		}
+	}
+	if len(agentType) <= 6 {
+		return strings.ToUpper(agentType)
+	}
+	return strings.ToUpper(agentType[:1]) + agentType[1:]
+}
+
 func translateAgentStart(agentType string, _ json.RawMessage) ([]*model.AgUIEvent, error) {
 	return []*model.AgUIEvent{
-		{Type: model.EventStepStarted, StepName: agentType, StepID: "step-" + agentType},
+		{Type: model.EventStepStarted, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType},
 	}, nil
 }
 
@@ -81,12 +105,12 @@ func translateToolResult(data json.RawMessage) ([]*model.AgUIEvent, error) {
 	}, nil
 }
 
-func translateFinding(data json.RawMessage) ([]*model.AgUIEvent, error) {
+func translateFinding(agentType string, data json.RawMessage) ([]*model.AgUIEvent, error) {
 	patch, _ := json.Marshal([]map[string]interface{}{
 		{"op": "add", "path": "/findings/-", "value": json.RawMessage(data)},
 	})
 	return []*model.AgUIEvent{
-		{Type: model.EventStateDelta, Delta: patch},
+		{Type: model.EventStateDelta, Delta: patch, AgentType: agentType},
 	}, nil
 }
 
@@ -118,8 +142,22 @@ func translateDedupStats(data json.RawMessage) ([]*model.AgUIEvent, error) {
 	}, nil
 }
 
+func translateProofEvent(eventName string, data json.RawMessage) ([]*model.AgUIEvent, error) {
+	wrapped, _ := json.Marshal(map[string]json.RawMessage{eventName: data})
+	return []*model.AgUIEvent{
+		{Type: model.EventStateDelta, Delta: wrapped},
+	}, nil
+}
+
+func translateDiscoverResult(data json.RawMessage) ([]*model.AgUIEvent, error) {
+	wrapped, _ := json.Marshal(map[string]json.RawMessage{"discover_result": data})
+	return []*model.AgUIEvent{
+		{Type: model.EventStateDelta, Delta: wrapped},
+	}, nil
+}
+
 func translateAgentEnd(agentType string) ([]*model.AgUIEvent, error) {
 	return []*model.AgUIEvent{
-		{Type: model.EventStepFinished, StepName: agentType, StepID: "step-" + agentType},
+		{Type: model.EventStepFinished, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType},
 	}, nil
 }

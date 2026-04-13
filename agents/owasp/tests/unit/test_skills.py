@@ -12,6 +12,9 @@ from owasp_agent.skills.security_misconfig import (
     DEBUG_PATTERNS,
     EXPOSED_PATTERNS,
     CORS_PATTERNS,
+    COMBINED_DEBUG_RE,
+    COMBINED_CORS_RE,
+    COMBINED_EXPOSED_RE,
 )
 from owasp_agent.skills.auth_check import (
     check_authentication,
@@ -521,3 +524,87 @@ def get_profile():
         (source_dir / "test_views.py").write_text(code)
         result = check_access_control(str(source_dir))
         assert result["findings"] == []
+
+
+class TestCombinedRegexPatterns:
+    """Tests that combined regex patterns match the same inputs as individual patterns."""
+
+    def test_combined_debug_matches_debug_true(self):
+        """COMBINED_DEBUG_RE matches DEBUG = True."""
+        assert COMBINED_DEBUG_RE.search("DEBUG = True")
+
+    def test_combined_debug_matches_yaml_debug(self):
+        """COMBINED_DEBUG_RE matches YAML debug: true."""
+        assert COMBINED_DEBUG_RE.search("debug: true")
+
+    def test_combined_debug_matches_node_env(self):
+        """COMBINED_DEBUG_RE matches NODE_ENV=development."""
+        assert COMBINED_DEBUG_RE.search("NODE_ENV=development")
+
+    def test_combined_debug_no_false_positive(self):
+        """COMBINED_DEBUG_RE does not match clean config."""
+        assert not COMBINED_DEBUG_RE.search("DEBUG = False")
+        assert not COMBINED_DEBUG_RE.search("NODE_ENV=production")
+
+    def test_combined_cors_matches_wildcard_origin(self):
+        """COMBINED_CORS_RE matches allow_origins = ['*']."""
+        assert COMBINED_CORS_RE.search('allow_origins = ["*"]')
+
+    def test_combined_cors_matches_header_wildcard(self):
+        """COMBINED_CORS_RE matches Access-Control-Allow-Origin *."""
+        assert COMBINED_CORS_RE.search("Access-Control-Allow-Origin: *")
+
+    def test_combined_cors_matches_cors_call(self):
+        """COMBINED_CORS_RE matches cors(origin=*)."""
+        assert COMBINED_CORS_RE.search("cors(origin='*')")
+
+    def test_combined_cors_no_false_positive(self):
+        """COMBINED_CORS_RE does not match restrictive CORS."""
+        assert not COMBINED_CORS_RE.search('allow_origins = ["https://example.com"]')
+
+    def test_combined_exposed_matches_db_url(self):
+        """COMBINED_EXPOSED_RE matches DATABASE_URL with creds."""
+        assert COMBINED_EXPOSED_RE.search('DATABASE_URL = "postgres://user:pass@localhost/db"')
+
+    def test_combined_exposed_matches_secret_key(self):
+        """COMBINED_EXPOSED_RE matches SECRET_KEY = 'value'."""
+        assert COMBINED_EXPOSED_RE.search("SECRET_KEY = 'my-secret'")
+
+    def test_combined_exposed_no_false_positive(self):
+        """COMBINED_EXPOSED_RE does not match env var reference."""
+        assert not COMBINED_EXPOSED_RE.search("SECRET_KEY = os.environ.get('KEY')")
+
+    def test_combined_regexes_equivalent_to_originals(self):
+        """Combined patterns match the same inputs as iterating individual patterns."""
+        debug_lines = [
+            "DEBUG = True",
+            "debug : true",
+            "NODE_ENV = 'development'",
+            "DEBUG = False",
+            "regular code",
+        ]
+        for line in debug_lines:
+            individual = any(p.search(line) for p in DEBUG_PATTERNS)
+            combined = bool(COMBINED_DEBUG_RE.search(line))
+            assert individual == combined, f"Mismatch on debug line: {line!r}"
+
+        cors_lines = [
+            'allow_origins = ["*"]',
+            "Access-Control-Allow-Origin: *",
+            "cors(origin='*')",
+            'allow_origins = ["https://safe.com"]',
+        ]
+        for line in cors_lines:
+            individual = any(p.search(line) for p in CORS_PATTERNS)
+            combined = bool(COMBINED_CORS_RE.search(line))
+            assert individual == combined, f"Mismatch on cors line: {line!r}"
+
+        exposed_lines = [
+            'DATABASE_URL = "postgres://user:pass@localhost/db"',
+            "SECRET_KEY = 'my-secret'",
+            "SECRET_KEY = os.environ.get('KEY')",
+        ]
+        for line in exposed_lines:
+            individual = any(p.search(line) for p in EXPOSED_PATTERNS)
+            combined = bool(COMBINED_EXPOSED_RE.search(line))
+            assert individual == combined, f"Mismatch on exposed line: {line!r}"

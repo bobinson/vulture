@@ -1,16 +1,21 @@
 import type {
   AgentInfo,
   Audit,
+  AuditComparison,
   AuditMemory,
   BrowseResponse,
   CacheCheckResponse,
   CreateAuditRequest,
+  CreatePipelineRequest,
   CreateSourceRequest,
   DashboardStats,
+  DiscoverResult,
   FindingLineage,
   LineageEvent,
   MemoryEdge,
   MemoryWithEdges,
+  Pipeline,
+  ProveResult,
   Source,
 } from "./types.ts";
 import type { User } from "./auth.tsx";
@@ -34,7 +39,9 @@ function getAuthHeaders(): Record<string, string> {
   return {};
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+const inFlightRequests = new Map<string, Promise<unknown>>();
+
+async function doRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
   const response = await fetch(url, {
     ...options,
@@ -49,6 +56,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new ApiError(response.status, text);
   }
   return response.json() as Promise<T>;
+}
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const method = options?.method ?? "GET";
+  // Only deduplicate GETs without custom headers (custom headers may carry different auth)
+  if (method !== "GET" || options?.headers) return doRequest<T>(path, options);
+  const existing = inFlightRequests.get(path);
+  if (existing) return existing as Promise<T>;
+  const promise = doRequest<T>(path, options).finally(() => inFlightRequests.delete(path));
+  inFlightRequests.set(path, promise);
+  return promise;
 }
 
 interface AuthResponse {
@@ -191,16 +209,64 @@ export const api = {
     return request<FindingLineage[]>(`/api/audits/${auditId}/lineage`);
   },
 
-  getStreamUrl(auditId: string): string {
-    const token = localStorage.getItem("vulture_token");
+  getProveResultsByFingerprint(fingerprint: string): Promise<ProveResult[]> {
+    return request<ProveResult[]>(`/api/prove-results?fingerprint=${encodeURIComponent(fingerprint)}`);
+  },
+
+  getAuditComparison(auditId: string): Promise<AuditComparison> {
+    return request<AuditComparison>(`/api/audits/${auditId}/comparison`);
+  },
+
+  listAuditsBySource(sourcePath: string, limit = 20): Promise<Audit[]> {
+    return request<Audit[]>(
+      `/api/audits?source_path=${encodeURIComponent(sourcePath)}&limit=${limit}`,
+    );
+  },
+
+  async getStreamToken(auditId: string): Promise<string> {
+    const resp = await request<{ stream_token: string }>(
+      `/api/audits/${auditId}/stream-token`,
+      { method: "POST" },
+    );
+    return resp.stream_token;
+  },
+
+  getStreamUrl(auditId: string, streamToken: string): string {
     const base = `${API_BASE}/api/audits/${auditId}/stream`;
-    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+    return `${base}?stream_token=${encodeURIComponent(streamToken)}`;
   },
 
   // Filesystem browsing
   browseFilesystem(path: string): Promise<BrowseResponse> {
     return request<BrowseResponse>(
       `/api/filesystem/browse?path=${encodeURIComponent(path)}`,
+    );
+  },
+
+  // Pipelines
+  createPipeline(data: CreatePipelineRequest): Promise<Pipeline> {
+    return request<Pipeline>("/api/pipelines", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  listPipelines(limit = 20): Promise<Pipeline[]> {
+    return request<Pipeline[]>(`/api/pipelines?limit=${limit}`);
+  },
+
+  getPipeline(id: string): Promise<Pipeline> {
+    return request<Pipeline>(`/api/pipelines/${id}`);
+  },
+
+  // Discover
+  getDiscoverResult(auditId: string): Promise<DiscoverResult> {
+    return request<DiscoverResult>(`/api/audits/${auditId}/discover-result`);
+  },
+
+  getDiscoverResultsByTarget(targetUrl: string): Promise<DiscoverResult[]> {
+    return request<DiscoverResult[]>(
+      `/api/discover-results?target_url=${encodeURIComponent(targetUrl)}`,
     );
   },
 

@@ -19,6 +19,7 @@ func NewSourceHandler(svc service.SourceService) *SourceHandler {
 }
 
 func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 	var req model.SourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,7 +55,7 @@ Commands:
   help           Show this help
 
 Environment:
-  VULTURE_PORT             Backend port (default: 8080)
+  VULTURE_PORT             Backend port (default: from config.ini)
   VULTURE_DB_PATH          SQLite database path (default: /data/vulture.db)
   VULTURE_DB_DSN           PostgreSQL DSN (if set, uses Postgres instead of SQLite)
   OPENAI_API_KEY           API key for LLM-powered audits
@@ -63,7 +64,10 @@ Environment:
 
 func runServer() {
 	cfg := config.Load()
-	srv := server.New(cfg)
+	srv, err := server.New(cfg)
+	if err != nil {
+		log.Fatalf("server init: %v", err)
+	}
 
 	addr := ":" + cfg.Port
 	httpSrv := &http.Server{
@@ -71,7 +75,7 @@ func runServer() {
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      5 * time.Minute,
+		WriteTimeout:      0, // Disabled — SSE streams can run for hours
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -121,12 +125,18 @@ func runLocalStart() {
 }
 
 func runStatus() {
+	cfg := config.Load()
+	lcfg := localdev.DefaultConfig(findProjectRoot())
 	ports := map[string]string{
-		"backend":     "8080",
-		"agent-chaos": "8001",
-		"agent-owasp": "8002",
-		"agent-soc2":  "8003",
-		"frontend":    "3001",
+		"backend":  cfg.Port,
+		"frontend": lcfg.FrontendPort,
+	}
+	for name, agent := range cfg.Agents {
+		// Extract port from URL like "http://agent-chaos:28001"
+		parts := strings.Split(agent.URL, ":")
+		if len(parts) == 3 {
+			ports["agent-"+name] = parts[2]
+		}
 	}
 
 	fmt.Println("Vulture Service Status")
@@ -143,9 +153,10 @@ func runScan() {
 		os.Exit(1)
 	}
 	target := os.Args[2]
+	cfg := config.Load()
 	apiURL := os.Getenv("VULTURE_API_URL")
 	if apiURL == "" {
-		apiURL = "http://localhost:8080"
+		apiURL = "http://localhost:" + cfg.Port
 	}
 
 	fmt.Printf("Scanning: %s\n", target)
@@ -164,13 +175,20 @@ func runScan() {
 	}
 	fmt.Printf("Source ID: %s\n", sourceID)
 
-	// Create audit with all types
-	auditID, err := createAudit(apiURL, sourceID, []string{"chaos", "owasp", "soc2"})
+	// Create audit with all configured agent types (excluding prove — it runs post-audit)
+	auditTypes := make([]string, 0, len(cfg.Agents))
+	for agentType := range cfg.Agents {
+		if agentType != "prove" {
+			auditTypes = append(auditTypes, agentType)
+		}
+	}
+	auditID, err := createAudit(apiURL, sourceID, auditTypes)
 	if err != nil {
 		log.Fatalf("create audit: %v", err)
 	}
 	fmt.Printf("Audit ID: %s\n", auditID)
-	fmt.Printf("\nView results: http://localhost:3001/audit/%s\n", auditID)
+	fmt.Printf("\nView results: http://localhost:%s/audit/%s\n",
+		localdev.DefaultConfig(findProjectRoot()).FrontendPort, auditID)
 	fmt.Printf("Stream API:   %s/api/audits/%s/stream\n", apiURL, auditID)
 }
 

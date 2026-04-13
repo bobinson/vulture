@@ -50,4 +50,4 @@
 - 5 of 10 OWASP Top 10 skills implemented (injection, auth, crypto, access control, misconfig)
 - Remaining 5 skills (XXE, XSS, deserialization, components, logging) are planned
 - Agent uses shared base from `agents/shared/` for transport and models
-- Agent runs on port 8002 in Docker
+- Agent runs on port 28002 in Docker

@@ -5,9 +5,15 @@ from pathlib import Path
 
 from agents import function_tool
 
+from shared.tools.file_scanner import _walk_filtered
+
 
 def search_pattern(path: str, pattern: str) -> list[dict]:
     """Search for a regex pattern across files in a directory.
+
+    Uses ``_walk_filtered`` so that ``.git``, ``node_modules``,
+    ``__pycache__``, ``vendor``, and other non-source directories
+    are automatically skipped.
 
     Args:
         path: Directory path to search.
@@ -23,9 +29,7 @@ def search_pattern(path: str, pattern: str) -> list[dict]:
     compiled = re.compile(pattern)
     results: list[dict] = []
 
-    for file_path in root.rglob("*"):
-        if not file_path.is_file():
-            continue
+    for file_path in _walk_filtered(root):
         _search_file(file_path, compiled, results)
 
     return results

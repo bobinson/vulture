@@ -24,7 +24,7 @@ Frontend (React SPA + Vite) → SSE/REST → Go Backend → HTTP/SSE → Python 
 - **Python Agents** (`agents/`): Each audit type (chaos, owasp, soc2) is a separate FastAPI microservice using OpenAI Agents SDK + LiteLLM. Shared library in `agents/shared/`.
 - **Frontend** (`frontend/`): React SPA (Vite) + Tailwind + react-i18next. Plain React with native EventSource for SSE streaming. Look and feel must be elegant like https://agentation.dev — intuitive, simple, elegant. Warm cream theme, compact sidebar, terminal-style agent output.
 - **CLI** (`cli/`): Go CLI binary for headless audit execution (`vulture scan`, `vulture watch`, `vulture list`).
-- **Deployment**: docker-compose with all services (PostgreSQL, backend, 3 agents, frontend).
+- **Deployment**: `docker compose` with all services (PostgreSQL, backend, 3 agents, frontend).
 
 ## Directory Structure
 
@@ -115,7 +115,7 @@ make e2e            # Run E2E test suites
 make coverage       # Verify 100% test coverage
 make complexity     # Verify cyclomatic complexity < 10
 make lint           # Lint all components
-make docker-up      # Start full stack via docker-compose
+make docker-up      # Start full stack via docker compose
 make docker-down    # Stop all services
 ```
 
@@ -131,6 +131,48 @@ Every code change MUST follow this sequence:
 6. **After EVERY code addition or change**, re-run the entire E2E business logic test suite. No code is considered complete until E2E passes.
 
 ### CRITICAL INVARIANT: NEVER modify E2E business logic tests to make code pass. The tests define the business contract. If tests fail, fix the implementation code, not the tests.
+
+## Audits
+
+When performing audits (security, code quality, documentation, performance):
+
+1. **Do a SINGLE comprehensive pass and compile ALL issues BEFORE starting any fixes.** Output a numbered list with file paths, line numbers, severity, and category.
+2. **Wait for approval** of the full list before making any changes.
+3. **After fixes, do exactly ONE re-audit pass** to verify the fixes landed and catch regressions. Do not loop endlessly discovering new issues — if the re-audit surfaces fundamentally new issue classes, stop and escalate.
+4. **Never split an audit into iterative discovery + fix cycles.** That pattern compounds rework. Enumerate first, fix once, verify once.
+
+Prior incident: A 53-issue performance audit missed a PostgreSQL N+1 query that was only caught in the post-fix re-audit because the initial pass only examined SQLite. Multi-implementation features (Postgres + SQLite + memory repos) require checking ALL implementations in the enumeration phase.
+
+## Debugging & Infrastructure
+
+Before implementing fixes to runtime errors or deployment bugs:
+
+1. **Map the full environmental context first.** List all services, Docker networking, proxies/caching layers, database migration state, and relevant environment variables BEFORE attempting any fix.
+2. **Ask about infrastructure constraints upfront** rather than discovering them through repeated failures. Examples: hostile caching proxies, Docker network topology, missing migrations, cross-container DNS resolution.
+3. **When the user pastes a runtime error, focus on the SPECIFIC error context first.** Do not broadly explore the codebase — ask which command/endpoint/flow triggered the error, then investigate from that starting point.
+
+Prior incidents: OIDC logout through a caching proxy required exhaustive serial pivots because proxy behavior wasn't mapped upfront. FutureID deployment required debugging Redis binding, OIDC config, key derivation, and referral permissions sequentially because the infrastructure topology wasn't enumerated first.
+
+## Languages & Testing
+
+Post-edit verification commands (run these after modifying files of the corresponding type):
+
+- **Go** (`*.go`): `cd backend && go vet ./...` and `go test ./...` for the affected package
+- **Python** (`*.py`): `cd agents/<component> && python -m pytest tests/unit/ -q`
+- **TypeScript/React** (`*.ts`, `*.tsx`): `cd frontend && npx tsc --noEmit` and `npx vitest run` for affected test files
+- **SQL migrations** (`*.sql`): Verify both `postgres_*.go` and `sqlite_*.go` repositories match the schema
+
+Do NOT batch multiple file edits before testing — test after each logical change so breakage is caught at the source rather than during a later audit pass.
+
+## Complex Tasks
+
+For complex multi-step tasks (deployment, E2E flows, formal verification, multi-component refactors):
+
+1. **Break work into discrete, verifiable checkpoints.** Each checkpoint must have a clear pass/fail criterion.
+2. **Verify each checkpoint works before moving to the next.** Do not attempt to fix everything in one sweep — cascading failures compound quickly.
+3. **Scope-lock the session.** If scope naturally expands (e.g., "fix agent wiring" becomes "audit all agent wiring + add conformance tests"), STOP and confirm with the user before expanding. Default to the narrower interpretation.
+
+Prior incidents: An Isabelle/HOL verification session grew from "audit agent wiring" to "30+ theorems + 77 conformance tests across 3 languages" with 9+ iterations of proof tactic hangs. A deployment session expanded from "merge and deploy" to "fix 13 merge conflicts + full E2E debugging" when the cascading failures weren't gated at checkpoints.
 
 ## Planning and documentation
 

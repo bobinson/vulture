@@ -51,7 +51,9 @@
     "chaosDesc": "Modèles de résilience : réessai, coupe-circuit, timeout, repli, rayon d'impact",
     "owaspDesc": "Vulnérabilités de sécurité : injection, authentification, cryptographie, contrôle d'accès, configuration",
     "soc2Desc": "Clauses de conformité : CC6 (accès logique), CC7 (surveillance), CC8 (gestion des changements)",
-    "cweDesc": "Détection de faiblesses CWE v4.19.1 : injection, buffer, auth, cryptographie, contrôle d'accès, concurrence"
+    "cweDesc": "Détection de faiblesses CWE v4.19.1 : injection, buffer, auth, cryptographie, contrôle d'accès, concurrence",
+    "xssDesc": "Détection de vulnérabilités XSS : réfléchi, stocké, basé sur le DOM, injection de templates, injection d'en-têtes",
+    "ssdfDesc": "Conformité NIST SSDF v1.1 : conception sécurisée, implémentation, réponse aux vulnérabilités, intégrité logicielle"
   },
   "results": {
     "title": "Résultats d'Audit",
@@ -91,7 +93,11 @@
     "tokensSaved": "tokens économisés",
     "tokens": "tokens",
     "priorFindings": "{{count}} constatation(s) antérieure(s) réutilisée(s)",
-    "duplicatesRemoved": "{{count}} doublon(s) supprimé(s)"
+    "duplicatesRemoved": "{{count}} doublon(s) supprimé(s)",
+    "exportReport": "Exporter le Rapport",
+    "reportGenerated": "Rapport téléchargé",
+    "evidence": "Preuve",
+    "verificationEvidence": "Preuve de Vérification"
   },
   "settings": {
     "title": "Paramètres",
@@ -147,7 +153,10 @@
     "chaos": "Chaos",
     "owasp": "OWASP",
     "soc2": "SOC2",
-    "cwe": "CWE"
+    "cwe": "CWE",
+    "xss": "XSS",
+    "ssdf": "SSDF",
+    "discover": "Discover"
   },
   "severity": {
     "critical": "Critique",
@@ -197,6 +206,26 @@
     "invalidLocalPath": "Veuillez entrer un chemin absolu (commençant par /)",
     "connectionLost": "Connexion perdue. Nouvelle tentative..."
   },
+  "prove": {
+    "verificationResults": "R\u00e9sultats de V\u00e9rification",
+    "verified": "V\u00e9rifi\u00e9",
+    "notReproduced": "Non Reproduit",
+    "inconclusive": "Non Concluant",
+    "skipped": "Ignor\u00e9",
+    "showEvidence": "Afficher la preuve",
+    "hideEvidence": "Masquer la preuve",
+    "iterations": "{{count}} it\u00e9ration(s)",
+    "stagingUrl": "Staging",
+    "totalVerified": "Constatations V\u00e9rifi\u00e9es",
+    "verificationRate": "Taux de V\u00e9rification",
+    "reproductionSteps": "\u00c9tapes de Reproduction",
+    "findingDescription": "Description de la Constatation",
+    "copyAllResults": "Copier Tout comme Tickets",
+    "noLineage": "Aucune donnée de traçabilité pour cette constatation",
+    "verificationHistory": "Historique de Vérification",
+    "viewVerificationHistory": "Voir l'Historique de Vérification",
+    "noVerificationHistory": "Aucun historique de vérification inter-audits pour cette constatation"
+  },
   "lineage": {
     "title": "Traçabilité des Constatations",
     "firstDetected": "Première détection",
@@ -228,6 +257,39 @@
     "status_false_positive": "Faux Positif",
     "status_fixed": "Corrigé",
     "status_regression": "Régression",
-    "gitContext": "Contexte Git"
+    "gitContext": "Contexte Git",
+    "fullCommit": "Commit complet",
+    "copyCommit": "Copier le hash du commit",
+    "fingerprint": "Empreinte",
+    "checkId": "ID de Vérification",
+    "newBadge": "NOUVEAU",
+    "regressionBadge": "RÉGRESSION"
+  },
+  "comparison": {
+    "title": "Comparaison de Scan",
+    "firstScan": "Premier scan de cette source",
+    "vsLabel": "vs. scan précédent",
+    "newTab": "Nouveaux",
+    "fixedTab": "Corrigés",
+    "changedTab": "Modifiés",
+    "persistentTab": "Persistants",
+    "fixedSinceLastScan": "Corrigés depuis le dernier scan"
+  },
+  "crossAgent": {
+    "title": "Détection Multi-Agents",
+    "countLabel": "{{count}} constatations par plusieurs agents",
+    "primary": "primaire",
+    "alsoDetected": "Également détecté :",
+    "filterLabel": "Multi-Agents"
+  },
+  "proveSummary": {
+    "title": "Résumé de Vérification",
+    "verified": "{{count}} sur {{total}} constatations vérifiées",
+    "untested": "{{count}} pas encore testées"
+  },
+  "auditHistory": {
+    "title": "Historique des Audits",
+    "showAll": "Tout afficher",
+    "findingsCount": "{{count}} audits"
   }
 }

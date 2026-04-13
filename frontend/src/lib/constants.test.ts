@@ -31,10 +31,13 @@ describe("SEVERITY_ORDER", () => {
 });
 
 describe("AGENT_TYPES", () => {
-  it("includes all three agent types", () => {
+  it("includes all agent types", () => {
     expect(AGENT_TYPES).toContain("chaos");
     expect(AGENT_TYPES).toContain("owasp");
     expect(AGENT_TYPES).toContain("soc2");
+    expect(AGENT_TYPES).toContain("cwe");
+    expect(AGENT_TYPES).toContain("xss");
+    expect(AGENT_TYPES).toContain("ssdf");
   });
 });
 
@@ -44,8 +47,17 @@ describe("agentLabel", () => {
     expect(agentLabel("chaos", t)).toBe("Chaos");
   });
 
-  it("capitalizes raw key when no translation found", () => {
+  it("uppercases short types when no translation found", () => {
     const t = (key: string) => key; // returns key as-is (no translation)
-    expect(agentLabel("gdpr", t)).toBe("Gdpr");
+    expect(agentLabel("ssdf", t)).toBe("SSDF");
+    expect(agentLabel("gdpr", t)).toBe("GDPR");
+    expect(agentLabel("cwe", t)).toBe("CWE");
+    expect(agentLabel("soc2", t)).toBe("SOC2");
+    expect(agentLabel("xss", t)).toBe("XSS");
+  });
+
+  it("capitalizes longer names when no translation found", () => {
+    const t = (key: string) => key;
+    expect(agentLabel("discover", t)).toBe("Discover");
   });
 });

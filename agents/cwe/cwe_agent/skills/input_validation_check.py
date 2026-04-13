@@ -6,11 +6,17 @@ from pathlib import Path
 from agents import function_tool
 
 from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
+    SCANNER_DEF_LINE,
     is_generated_file,
     is_test_file,
-    read_file_safe,
+    read_file_lines,
+
     scan_code_files,
 )
+from shared.tools.snippet import extract_snippet
+
+from cwe_agent.catalog import enrich_finding
 
 # CWE-22: Path traversal
 PATH_TRAVERSAL_PATTERNS = [
@@ -78,7 +84,35 @@ SAFE_XXE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
+# CWE-352: Cross-Site Request Forgery (CSRF)
+CSRF_PATTERNS = [
+    re.compile(r"@app\.route\([^)]*methods\s*=\s*\[.*(?:POST|PUT|DELETE)", re.IGNORECASE),
+    re.compile(r"router\.(?:post|put|delete)\s*\(", re.IGNORECASE),
+    re.compile(r"@(?:Post|Put|Delete)Mapping", re.IGNORECASE),
+    re.compile(r'<form[^>]*method\s*=\s*["\']?post', re.IGNORECASE),
+]
+
+SAFE_CSRF_PATTERNS = re.compile(
+    r"(?:csrf|CSRFProtect|CsrfViewMiddleware|csrf_token|_token|X-CSRF|antiforgery|csurf|csrfmiddlewaretoken)",
+    re.IGNORECASE,
+)
+
+# CWE-502: Deserialization of Untrusted Data
+DESERIALIZATION_PATTERNS = [
+    re.compile(r"pickle\.loads?\s*\("),
+    re.compile(r"yaml\.(?:load|unsafe_load)\s*\("),
+    re.compile(r"marshal\.loads?\s*\("),
+    re.compile(r"shelve\.open\s*\("),
+    re.compile(r"\bunserialize\s*\("),  # PHP
+    re.compile(r"\.readObject\s*\("),  # Java ObjectInputStream
+    re.compile(r"jsonpickle\.decode\s*\("),
+]
+
+SAFE_DESERIALIZE_PATTERNS = re.compile(
+    r"(?:SafeLoader|safe_load|yaml\.safe_load|yaml\.CSafeLoader|trusted|allowed_classes)",
+    re.IGNORECASE,
+)
+
 IMPORT_LINE = re.compile(r"^\s*(?:from|import|require|use)\s")
 
 
@@ -96,39 +130,45 @@ def check_input_validation(source_path: str) -> dict:
     for file_path in scan_code_files(source_path):
         if is_generated_file(file_path):
             continue
-        _analyze_file(file_path, findings, is_test=is_test_file(file_path))
+        if is_test_file(file_path):
+            continue
+        _analyze_file(file_path, findings)
 
     return {"findings": findings}
 
 
-def _analyze_file(file_path: Path, findings: list[dict], *, is_test: bool) -> None:
+def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze a file for input validation patterns."""
-    content = read_file_safe(file_path)
-    if content is None:
+    lines = read_file_lines(file_path)
+    if lines is None:
         return
-
-    lines = content.splitlines()
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
             continue
         if IMPORT_LINE.match(line):
             continue
-        _check_path_traversal(file_path, line, line_num, findings, is_test=is_test)
-        _check_no_validation(file_path, line, line_num, lines, findings, is_test=is_test)
-        _check_file_upload(file_path, line, line_num, lines, findings, is_test=is_test)
-        _check_xxe(file_path, line, line_num, lines, findings, is_test=is_test)
+        if SCANNER_DEF_LINE.search(line):
+            continue
+        _check_path_traversal(file_path, line, line_num, lines, findings)
+        _check_no_validation(file_path, line, line_num, lines, findings)
+        _check_file_upload(file_path, line, line_num, lines, findings)
+        _check_xxe(file_path, line, line_num, lines, findings)
+        _check_csrf(file_path, line, line_num, lines, findings)
+        _check_deserialization(file_path, line, line_num, lines, findings)
 
 
 def _check_path_traversal(
-    file_path: Path, line: str, line_num: int, findings: list[dict], *, is_test: bool
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
 ) -> None:
     """Check for CWE-22 path traversal."""
     if SAFE_PATH_PATTERNS.search(line):
         return
     for pattern in PATH_TRAVERSAL_PATTERNS:
         if pattern.search(line):
-            findings.append({
-                "severity": "low" if is_test else "high",
+            finding = {
+                "severity": "high",
+                "check_id": "cwe.input_validation.path_traversal",
                 "category": "CWE-22",
                 "title": "Potential path traversal",
                 "description": f"User-controlled path input at line {line_num}",
@@ -136,13 +176,15 @@ def _check_path_traversal(
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Use os.path.realpath and validate against allowed base directory",
-            })
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(enrich_finding(finding, "22"))
             return
 
 
 def _check_no_validation(
     file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict], *, is_test: bool,
+    findings: list[dict],
 ) -> None:
     """Check for CWE-20 improper input validation."""
     # Check surrounding context for validation
@@ -153,8 +195,9 @@ def _check_no_validation(
         return
     for pattern in NO_VALIDATION_PATTERNS:
         if pattern.search(line):
-            findings.append({
-                "severity": "low" if is_test else "medium",
+            finding = {
+                "severity": "medium",
+                "check_id": "cwe.input_validation.missing_validation",
                 "category": "CWE-20",
                 "title": "Missing input validation",
                 "description": f"User input used without validation at line {line_num}",
@@ -162,13 +205,15 @@ def _check_no_validation(
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Validate and sanitize all user input before processing",
-            })
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(enrich_finding(finding, "20"))
             return
 
 
 def _check_file_upload(
     file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict], *, is_test: bool,
+    findings: list[dict],
 ) -> None:
     """Check for CWE-434 unrestricted file upload."""
     # Check surrounding context for upload safeguards
@@ -179,8 +224,9 @@ def _check_file_upload(
         return
     for pattern in FILE_UPLOAD_PATTERNS:
         if pattern.search(line):
-            findings.append({
-                "severity": "low" if is_test else "high",
+            finding = {
+                "severity": "high",
+                "check_id": "cwe.input_validation.unrestricted_upload",
                 "category": "CWE-434",
                 "title": "Unrestricted file upload",
                 "description": f"File upload without type/size validation at line {line_num}",
@@ -188,13 +234,15 @@ def _check_file_upload(
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Validate file type, extension, size, and content before saving",
-            })
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(enrich_finding(finding, "434"))
             return
 
 
 def _check_xxe(
     file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict], *, is_test: bool,
+    findings: list[dict],
 ) -> None:
     """Check for CWE-611 XML external entity."""
     # Check surrounding context for XXE protections
@@ -205,8 +253,9 @@ def _check_xxe(
         return
     for pattern in XXE_PATTERNS:
         if pattern.search(line):
-            findings.append({
-                "severity": "low" if is_test else "high",
+            finding = {
+                "severity": "high",
+                "check_id": "cwe.input_validation.xxe",
                 "category": "CWE-611",
                 "title": "XML external entity (XXE) vulnerability",
                 "description": f"XML parsing without entity restriction at line {line_num}",
@@ -214,7 +263,63 @@ def _check_xxe(
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Use defusedxml or disable external entity resolution",
-            })
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(enrich_finding(finding, "611"))
+            return
+
+
+def _check_csrf(
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
+) -> None:
+    """Check for CWE-352 cross-site request forgery."""
+    # Check surrounding context for CSRF protection
+    context_start = max(0, line_num - 6)
+    context_end = min(len(lines), line_num + 6)
+    context = "\n".join(lines[context_start:context_end])
+    if SAFE_CSRF_PATTERNS.search(context):
+        return
+    for pattern in CSRF_PATTERNS:
+        if pattern.search(line):
+            finding = {
+                "severity": "high",
+                "check_id": "cwe.input_validation.missing_csrf",
+                "category": "CWE-352",
+                "title": "Missing CSRF protection",
+                "description": f"State-changing endpoint without CSRF token at line {line_num}",
+                "file_path": str(file_path),
+                "line_start": line_num,
+                "line_end": line_num,
+                "recommendation": "Add CSRF token validation (CSRFProtect, csurf, or framework middleware)",
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(enrich_finding(finding, "352"))
+            return
+
+
+def _check_deserialization(
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
+) -> None:
+    """Check for CWE-502 deserialization of untrusted data."""
+    if SAFE_DESERIALIZE_PATTERNS.search(line):
+        return
+    for pattern in DESERIALIZATION_PATTERNS:
+        if pattern.search(line):
+            finding = {
+                "severity": "critical",
+                "check_id": "cwe.input_validation.unsafe_deserialization",
+                "category": "CWE-502",
+                "title": "Deserialization of untrusted data",
+                "description": f"Unsafe deserialization at line {line_num}",
+                "file_path": str(file_path),
+                "line_start": line_num,
+                "line_end": line_num,
+                "recommendation": "Use safe loaders (yaml.safe_load), avoid pickle with untrusted data, validate before deserializing",
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(enrich_finding(finding, "502"))
             return
 
 

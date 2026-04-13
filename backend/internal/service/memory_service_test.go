@@ -382,13 +382,15 @@ func TestMemoryService_GetEdges(t *testing.T) {
 func TestMemoryService_StoreFindingsAsMemories(t *testing.T) {
 	var storedCount int
 	repo := &repository.MockMemoryRepository{
-		StoreMemoryFn: func(mem *model.AuditMemory) error {
-			storedCount++
-			if mem.AuditID != "a-1" {
-				t.Errorf("expected audit_id=a-1, got %q", mem.AuditID)
-			}
-			if mem.RemediationStatus != "open" {
-				t.Errorf("expected remediation_status=open, got %q", mem.RemediationStatus)
+		StoreBatchFn: func(memories []*model.AuditMemory) error {
+			storedCount = len(memories)
+			for _, mem := range memories {
+				if mem.AuditID != "a-1" {
+					t.Errorf("expected audit_id=a-1, got %q", mem.AuditID)
+				}
+				if mem.RemediationStatus != "open" {
+					t.Errorf("expected remediation_status=open, got %q", mem.RemediationStatus)
+				}
 			}
 			return nil
 		},
@@ -427,7 +429,7 @@ func TestMemoryService_StoreFindingsAsMemories(t *testing.T) {
 func TestMemoryService_StoreFindingsAsMemories_Error(t *testing.T) {
 	repoErr := errors.New("store failed")
 	repo := &repository.MockMemoryRepository{
-		StoreMemoryFn: func(mem *model.AuditMemory) error {
+		StoreBatchFn: func(memories []*model.AuditMemory) error {
 			return repoErr
 		},
 	}

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 /**
  * Live integration tests that run against the real backend.
- * Requires: vulture localstart (backend + agents + frontend on ports 8080, 8001-8003, 3001)
+ * Requires: vulture localstart (backend + agents + frontend on ports 28080, 28001-28005, 23001)
  * Uses the seeded local dev user: admin@vulture.local / REDACTED-DEV-PW
  */
 
@@ -37,8 +37,8 @@ test.describe("Live Integration", () => {
     const pathInput = page.locator('input[type="text"]').first();
     await expect(pathInput).toBeVisible();
     await pathInput.click();
-    await pathInput.fill("/home/user/src/vulture/cli");
-    await expect(pathInput).toHaveValue("/home/user/src/vulture/cli");
+    await pathInput.fill("/tmp/vulture-test-source");
+    await expect(pathInput).toHaveValue("/tmp/vulture-test-source");
 
     // Select OWASP audit type by clicking the card
     await page.locator("text=OWASP").first().click();

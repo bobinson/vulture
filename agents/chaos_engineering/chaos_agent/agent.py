@@ -1,5 +1,6 @@
 """Chaos Engineering agent definition."""
 
+import os
 from collections.abc import Generator
 from typing import Any
 
@@ -27,6 +28,7 @@ def run_audit(
     max_f = get_max_findings()
     context = build_prior_context(source_path, "chaos", preloaded=preloaded, max_findings=max_f)
 
+    use_llm_val = config.get("use_llm")
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
@@ -36,4 +38,6 @@ def run_audit(
         prior_context=context,
         skill_tools=SKILL_TOOLS,
         instructions=INSTRUCTIONS,
+        model=os.environ.get("VULTURE_LLM_MODEL"),
+        use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
     )

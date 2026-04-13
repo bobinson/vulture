@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -13,7 +14,9 @@ import (
 )
 
 type SQLiteRepo struct {
-	db *sql.DB
+	db              *sql.DB
+	proveRepo       *SQLiteProveRepo
+	stmtGetFindings *sql.Stmt
 }
 
 func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
@@ -21,6 +24,11 @@ func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
+	// WAL mode supports concurrent reads. Allow up to 4 connections for read
+	// parallelism while SQLite serialises writes internally via busy_timeout.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(5 * time.Minute)
 	if err := configureSQLite(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("configure sqlite: %w", err)
@@ -29,7 +37,9 @@ func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	return &SQLiteRepo{db: db}, nil
+	repo := &SQLiteRepo{db: db, proveRepo: &SQLiteProveRepo{db: db}}
+	repo.prepareStatements()
+	return repo, nil
 }
 
 func configureSQLite(db *sql.DB) error {
@@ -154,9 +164,78 @@ func migrateAddColumns(db *sql.DB) {
 	} {
 		_, _ = db.Exec(col)
 	}
+	// Prove results table (verification outcomes)
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS prove_results (
+		id TEXT PRIMARY KEY,
+		audit_id TEXT NOT NULL REFERENCES audits(id),
+		finding_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		evidence TEXT NOT NULL DEFAULT '',
+		iterations_used INTEGER NOT NULL DEFAULT 0,
+		staging_url TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL
+	)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_prove_results_audit ON prove_results(audit_id)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_prove_results_finding ON prove_results(finding_id)`)
+	_, _ = db.Exec(`ALTER TABLE prove_results ADD COLUMN fingerprint TEXT DEFAULT ''`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_prove_fingerprint ON prove_results(fingerprint)`)
+
+	// Pipeline stages table (scan → discover → prove orchestration)
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS pipelines (
+		id TEXT PRIMARY KEY,
+		target_url TEXT NOT NULL DEFAULT '',
+		source_id TEXT DEFAULT '',
+		stages TEXT NOT NULL DEFAULT '[]',
+		config TEXT NOT NULL DEFAULT '{}',
+		scan_audit_id TEXT DEFAULT '',
+		discover_audit_id TEXT DEFAULT '',
+		prove_audit_id TEXT DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'pending',
+		created_at TEXT NOT NULL,
+		completed_at TEXT
+	)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(status)`)
+
+	// Discover results table (endpoint discovery output)
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS discover_results (
+		id TEXT PRIMARY KEY,
+		audit_id TEXT NOT NULL REFERENCES audits(id),
+		target_url TEXT NOT NULL,
+		site_map_json TEXT NOT NULL DEFAULT '{}',
+		url_count INTEGER NOT NULL DEFAULT 0,
+		api_count INTEGER NOT NULL DEFAULT 0,
+		form_count INTEGER NOT NULL DEFAULT 0,
+		technologies TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL
+	)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_discover_results_audit ON discover_results(audit_id)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_discover_results_target ON discover_results(target_url)`)
+
+	// Performance indexes for hot query paths
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audits_source_status ON audits(source_id, status, created_at)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_sources_path ON sources(path)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_findings_audit ON findings(audit_id)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_findings_file_path ON findings(file_path)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_path_agent ON audit_memories(codebase_path, agent_type)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id, target_id)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_lineage_fingerprint ON finding_lineage(fingerprint, source_path, agent_type)`)
+}
+
+// prepareStatements pre-compiles frequently executed queries for reuse.
+func (r *SQLiteRepo) prepareStatements() {
+	const getFindingsSQL = `SELECT id, audit_id, agent_type, severity, category, title, description, file_path, line_start, line_end, recommendation, refs, COALESCE(fingerprint, '') FROM findings WHERE audit_id = ?`
+	stmt, err := r.db.Prepare(getFindingsSQL)
+	if err != nil {
+		log.Printf("[sqlite] prepare getFindings failed (will use raw query): %v", err)
+		return
+	}
+	r.stmtGetFindings = stmt
 }
 
 func (r *SQLiteRepo) Close() error {
+	if r.stmtGetFindings != nil {
+		r.stmtGetFindings.Close()
+	}
 	return r.db.Close()
 }
 
@@ -273,6 +352,7 @@ func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	}
 	audit.Findings, _ = r.getFindings(id)
 	audit.FindingsCount = len(audit.Findings)
+	audit.ProveResults, _ = r.proveRepo.GetProveResults(id)
 	return &audit, nil
 }
 
@@ -323,9 +403,13 @@ func (r *SQLiteRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
 	}
 	rows, err := r.db.Query(
 		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, a.created_at, a.completed_at,
-			(SELECT COUNT(*) FROM findings f WHERE f.audit_id = a.id) AS findings_count
+			COUNT(DISTINCT f.id) AS findings_count,
+			COUNT(DISTINCT pr.id) AS prove_count
 		FROM audits a
 		LEFT JOIN sources s ON a.source_id = s.id
+		LEFT JOIN findings f ON f.audit_id = a.id
+		LEFT JOIN prove_results pr ON pr.audit_id = a.id
+		GROUP BY a.id
 		ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
 		limit, offset,
 	)
@@ -338,7 +422,7 @@ func (r *SQLiteRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
 		var a model.Audit
 		var typesStr, cfgStr, scoresStr, createdAt string
 		var completedAt sql.NullString
-		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, &typesStr, &cfgStr, &a.Status, &scoresStr, &createdAt, &completedAt, &a.FindingsCount)
+		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, &typesStr, &cfgStr, &a.Status, &scoresStr, &createdAt, &completedAt, &a.FindingsCount, &a.ProveCount)
 		if err != nil {
 			return nil, fmt.Errorf("scan audit: %w", err)
 		}
@@ -368,11 +452,14 @@ func (r *SQLiteRepo) GetStats() (*model.DashboardStats, error) {
 		return nil, fmt.Errorf("count critical: %w", err)
 	}
 	stats.AverageScore = r.computeAvgScore()
+	if err := scanProveStats(r.db, stats); err != nil {
+		return nil, err
+	}
 	return stats, nil
 }
 
 func (r *SQLiteRepo) computeAvgScore() int {
-	rows, err := r.db.Query(`SELECT scores FROM audits WHERE status = 'completed' AND scores != '{}'`)
+	rows, err := r.db.Query(`SELECT scores FROM audits WHERE status = 'completed' AND scores != '{}' ORDER BY created_at DESC LIMIT 100`)
 	if err != nil {
 		return 0
 	}
@@ -404,6 +491,13 @@ func accumulateScores(scoresStr string, total, count int) (int, int) {
 }
 
 func (r *SQLiteRepo) GetLatestCompletedAudit(sourceID string, types []string) (*model.Audit, error) {
+	// Collect candidates first, then close rows before nested getFindings query.
+	// SQLite's connection pool (MaxOpenConns=4 in WAL mode) can exhaust all
+	// connections if rows.Scan loops hold connections while getFindings opens another.
+	type candidate struct {
+		audit       model.Audit
+		completedAt sql.NullString
+	}
 	rows, err := r.db.Query(
 		`SELECT id, source_id, types, config, status, scores, created_at, completed_at
 		 FROM audits WHERE source_id = ? AND status = 'completed'
@@ -413,32 +507,36 @@ func (r *SQLiteRepo) GetLatestCompletedAudit(sourceID string, types []string) (*
 	if err != nil {
 		return nil, fmt.Errorf("get latest completed audit: %w", err)
 	}
-	defer rows.Close()
+	var match *candidate
 	for rows.Next() {
-		var a model.Audit
+		var c candidate
 		var typesStr, cfgStr, scoresStr, createdAt string
-		var completedAt sql.NullString
-		err := rows.Scan(&a.ID, &a.SourceID, &typesStr, &cfgStr, &a.Status, &scoresStr, &createdAt, &completedAt)
+		err := rows.Scan(&c.audit.ID, &c.audit.SourceID, &typesStr, &cfgStr, &c.audit.Status, &scoresStr, &createdAt, &c.completedAt)
 		if err != nil {
 			continue
 		}
-		_ = json.Unmarshal([]byte(typesStr), &a.Types)
-		if !typesMatch(a.Types, types) {
+		_ = json.Unmarshal([]byte(typesStr), &c.audit.Types)
+		if !typesMatch(c.audit.Types, types) {
 			continue
 		}
-		a.Config = json.RawMessage(cfgStr)
-		a.Scores = map[string]int{}
-		_ = json.Unmarshal([]byte(scoresStr), &a.Scores)
-		a.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		if completedAt.Valid {
-			t, _ := time.Parse(time.RFC3339, completedAt.String)
-			a.CompletedAt = &t
+		c.audit.Config = json.RawMessage(cfgStr)
+		c.audit.Scores = map[string]int{}
+		_ = json.Unmarshal([]byte(scoresStr), &c.audit.Scores)
+		c.audit.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if c.completedAt.Valid {
+			t, _ := time.Parse(time.RFC3339, c.completedAt.String)
+			c.audit.CompletedAt = &t
 		}
-		a.Findings, _ = r.getFindings(a.ID)
-		a.FindingsCount = len(a.Findings)
-		return &a, nil
+		match = &c
+		break
 	}
-	return nil, nil
+	rows.Close()
+	if match == nil {
+		return nil, nil
+	}
+	match.audit.Findings, _ = r.getFindings(match.audit.ID)
+	match.audit.FindingsCount = len(match.audit.Findings)
+	return &match.audit, nil
 }
 
 func typesMatch(a, b []string) bool {
@@ -457,11 +555,106 @@ func typesMatch(a, b []string) bool {
 	return true
 }
 
-func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
+func (r *SQLiteRepo) GetPreviousCompletedAudit(sourceID string, types []string, excludeAuditID string) (*model.Audit, error) {
+	// Same candidate pattern as GetLatestCompletedAudit to avoid connection pool exhaustion.
+	type candidate struct {
+		audit       model.Audit
+		completedAt sql.NullString
+	}
 	rows, err := r.db.Query(
-		`SELECT id, audit_id, agent_type, severity, category, title, description, file_path, line_start, line_end, recommendation, refs, COALESCE(fingerprint, '') FROM findings WHERE audit_id = ?`,
-		auditID,
+		`SELECT id, source_id, types, config, status, scores, created_at, completed_at
+		 FROM audits WHERE source_id = ? AND status = 'completed' AND id != ?
+		 ORDER BY created_at DESC LIMIT 10`,
+		sourceID, excludeAuditID,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("get previous completed audit: %w", err)
+	}
+	var match *candidate
+	for rows.Next() {
+		var c candidate
+		var typesStr, cfgStr, scoresStr, createdAt string
+		err := rows.Scan(&c.audit.ID, &c.audit.SourceID, &typesStr, &cfgStr, &c.audit.Status, &scoresStr, &createdAt, &c.completedAt)
+		if err != nil {
+			continue
+		}
+		_ = json.Unmarshal([]byte(typesStr), &c.audit.Types)
+		if !typesMatch(c.audit.Types, types) {
+			continue
+		}
+		c.audit.Config = json.RawMessage(cfgStr)
+		c.audit.Scores = map[string]int{}
+		_ = json.Unmarshal([]byte(scoresStr), &c.audit.Scores)
+		c.audit.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if c.completedAt.Valid {
+			t, _ := time.Parse(time.RFC3339, c.completedAt.String)
+			c.audit.CompletedAt = &t
+		}
+		match = &c
+		break
+	}
+	rows.Close()
+	if match == nil {
+		return nil, nil
+	}
+	match.audit.Findings, _ = r.getFindings(match.audit.ID)
+	match.audit.FindingsCount = len(match.audit.Findings)
+	return &match.audit, nil
+}
+
+func (r *SQLiteRepo) ListAuditsBySourcePath(sourcePath string, limit, offset int) ([]model.Audit, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := r.db.Query(
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, a.created_at, a.completed_at,
+			COUNT(DISTINCT f.id) AS findings_count
+		FROM audits a
+		JOIN sources s ON a.source_id = s.id
+		LEFT JOIN findings f ON f.audit_id = a.id
+		WHERE s.path = ?
+		GROUP BY a.id
+		ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
+		sourcePath, limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list audits by source path: %w", err)
+	}
+	defer rows.Close()
+	var audits []model.Audit
+	for rows.Next() {
+		var a model.Audit
+		var typesStr, cfgStr, scoresStr, createdAt string
+		var completedAt sql.NullString
+		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, &typesStr, &cfgStr, &a.Status, &scoresStr, &createdAt, &completedAt, &a.FindingsCount)
+		if err != nil {
+			return nil, fmt.Errorf("scan audit: %w", err)
+		}
+		_ = json.Unmarshal([]byte(typesStr), &a.Types)
+		a.Config = json.RawMessage(cfgStr)
+		a.Scores = map[string]int{}
+		_ = json.Unmarshal([]byte(scoresStr), &a.Scores)
+		a.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if completedAt.Valid {
+			t, _ := time.Parse(time.RFC3339, completedAt.String)
+			a.CompletedAt = &t
+		}
+		audits = append(audits, a)
+	}
+	return audits, rows.Err()
+}
+
+func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
+	var rows *sql.Rows
+	var err error
+	if r.stmtGetFindings != nil {
+		rows, err = r.stmtGetFindings.Query(auditID)
+	} else {
+		rows, err = r.db.Query(
+			`SELECT id, audit_id, agent_type, severity, category, title, description, file_path, line_start, line_end, recommendation, refs, COALESCE(fingerprint, '') FROM findings WHERE audit_id = ?`,
+			auditID,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("query findings: %w", err)
 	}
@@ -481,3 +674,6 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 	}
 	return findings, rows.Err()
 }
+
+// Prove result methods are in sqlite_prove_repo.go (SQLiteProveRepo).
+// SQLiteRepo delegates via r.proveRepo for internal use (e.g., GetAudit).

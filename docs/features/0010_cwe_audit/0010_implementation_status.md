@@ -4,7 +4,7 @@
 
 ### Completed
 - [x] Backend config: CWE agent registered in `defaultAgents()` (config.go)
-- [x] Docker Compose: `agent-cwe` service block added (port 8004)
+- [x] Docker Compose: `agent-cwe` service block added (port 28004)
 - [x] Docker Compose: Backend environment variable `VULTURE_AGENT_CWE_URL` added
 - [x] Docker Compose: Backend `depends_on` includes `agent-cwe`
 - [x] Feature documentation created
@@ -12,7 +12,7 @@
 - [x] Agent skeleton: config.py, agent.py, main.py, skills/__init__.py
 - [x] 10 CWE skills covering 40 CWE IDs across all categories
 - [x] SKILLS.md documentation for CWE agent
-- [x] Dockerfile for CWE agent (port 8004)
+- [x] Dockerfile for CWE agent (port 28004)
 - [x] pyproject.toml package definition
 - [x] E2E tests: 23 tests (health, info, run, skills, clean code)
 - [x] Unit tests: 62 tests (patterns, skills, config, finding format)
@@ -35,4 +35,4 @@
 
 ### Pending
 - [ ] Frontend verification (auto-discovery via /api/agents)
-- [ ] Full integration testing with docker-compose
+- [ ] Full integration testing with docker compose

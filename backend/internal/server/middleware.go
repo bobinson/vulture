@@ -91,9 +91,18 @@ func (rl *rateLimiter) allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	b, ok := rl.buckets[ip]
 	now := time.Now()
 
+	// Evict stale buckets to prevent unbounded memory growth
+	if len(rl.buckets) > 1000 {
+		for k, v := range rl.buckets {
+			if now.Sub(v.lastReset) > rl.window {
+				delete(rl.buckets, k)
+			}
+		}
+	}
+
+	b, ok := rl.buckets[ip]
 	if !ok || now.Sub(b.lastReset) > rl.window {
 		rl.buckets[ip] = &bucket{tokens: rl.rate - 1, lastReset: now}
 		return true

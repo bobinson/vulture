@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const devPort = parseInt(process.env.VITE_DEV_PORT ?? "23000", 10);
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -8,7 +10,8 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: "html",
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000",
+    baseURL:
+      process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${devPort}`,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
@@ -22,7 +25,7 @@ export default defineConfig({
     ? undefined
     : {
         command: "npm run dev",
-        port: 3000,
+        port: devPort,
         reuseExistingServer: true,
       },
 });

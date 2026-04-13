@@ -3,7 +3,7 @@
 CONFIG_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "clauses": {
+        "categories": {
             "type": "array",
             "items": {
                 "type": "string",
@@ -30,4 +30,7 @@ AGENT_INFO: dict = {
     ],
 }
 
-ALL_CLAUSES: list[str] = ["CC6", "CC7", "CC8"]
+ALL_CATEGORIES: list[str] = ["CC6", "CC7", "CC8"]
+
+# Backward-compatible alias for existing imports
+ALL_CLAUSES = ALL_CATEGORIES

@@ -77,8 +77,8 @@ describe("Dashboard", () => {
   it("renders audit rows with type labels", async () => {
     render(<Dashboard />);
     await waitFor(() => {
-      // "Owasp" appears in both type filter button and audit row
-      expect(screen.getAllByText("Owasp").length).toBeGreaterThanOrEqual(2);
+      // "OWASP" appears in both type filter button and audit row
+      expect(screen.getAllByText("OWASP").length).toBeGreaterThanOrEqual(2);
     });
   });
 
@@ -129,12 +129,12 @@ describe("Dashboard", () => {
     ] as never);
     render(<Dashboard />);
     await waitFor(() => {
-      expect(screen.getAllByText("Owasp").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getAllByText("OWASP").length).toBeGreaterThanOrEqual(2);
     });
     fireEvent.click(screen.getByText("common.running"));
-    // After filtering to running, Owasp audit row disappears (only filter button remains)
-    expect(screen.getAllByText("Owasp").length).toBe(1); // just filter button
-    expect(screen.getAllByText("Chaos").length).toBeGreaterThanOrEqual(2); // filter + row
+    // After filtering to running, OWASP audit row disappears (only filter button remains)
+    expect(screen.getAllByText("OWASP").length).toBe(1); // just filter button
+    expect(screen.getAllByText("CHAOS").length).toBeGreaterThanOrEqual(2); // filter + row
   });
 
   it("filters audits by search text", async () => {
@@ -144,14 +144,16 @@ describe("Dashboard", () => {
     ] as never);
     render(<Dashboard />);
     await waitFor(() => {
-      expect(screen.getAllByText("Owasp").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getAllByText("OWASP").length).toBeGreaterThanOrEqual(2);
     });
     fireEvent.change(screen.getByPlaceholderText("dashboard.searchPlaceholder"), {
       target: { value: "xyz" },
     });
-    // After search, Owasp audit row gone (only filter button remains)
-    expect(screen.getAllByText("Owasp").length).toBe(1);
-    expect(screen.getAllByText("Soc2").length).toBeGreaterThanOrEqual(2);
+    // After search, OWASP audit row gone (only filter button remains)
+    await waitFor(() => {
+      expect(screen.getAllByText("OWASP").length).toBe(1);
+      expect(screen.getAllByText("SOC2").length).toBeGreaterThanOrEqual(2);
+    });
   });
 
   it("shows load more button when more than 10 audits", async () => {
@@ -169,7 +171,7 @@ describe("Dashboard", () => {
   it("shows no matches message when filter has no results", async () => {
     render(<Dashboard />);
     await waitFor(() => {
-      expect(screen.getAllByText("Owasp").length).toBeGreaterThanOrEqual(2);
+      expect(screen.getAllByText("OWASP").length).toBeGreaterThanOrEqual(2);
     });
     fireEvent.change(screen.getByPlaceholderText("dashboard.searchPlaceholder"), {
       target: { value: "nonexistent" },

@@ -15,13 +15,19 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/vulture/backend/pkg/agentregistry"
+	"github.com/vulture/backend/pkg/iniutil"
+	"golang.org/x/term"
 )
 
 const (
-	defaultAPIURL = "http://localhost:8080"
-	configDir     = ".vulture"
-	tokenFile     = "token"
+	configDir = ".vulture"
+	tokenFile = "token"
 )
+
+var defaultAPIURL = cliResolve("ports", "backend", "28080", "http://localhost:")
+var defaultFrontendURL = cliResolve("ports", "frontend_host", "23001", "http://localhost:")
 
 type authResponse struct {
 	Token string `json:"token"`
@@ -86,11 +92,21 @@ func main() {
 		cmdLogin(apiURL)
 	case "scan":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types chaos,owasp,soc2,cwe] [--no-cache]")
+			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
 			os.Exit(1)
 		}
 		types, noCache := parseScanFlags(os.Args[3:])
 		cmdScan(apiURL, os.Args[2], types, noCache)
+	case "discover", "discovery":
+		df := parseDiscoverFlags(os.Args[2:])
+		cmdDiscover(apiURL, df)
+	case "prove":
+		if len(os.Args) < 3 {
+			fmt.Fprintf(os.Stderr, "Usage: vulture prove <path-or-url> --staging-url <url> [--types %s] [--max-iterations 3] [--allow-local] [--no-cache]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
+			os.Exit(1)
+		}
+		pf := parseProveFlags(os.Args[3:])
+		cmdProve(apiURL, os.Args[2], pf)
 	case "localstart", "local-start", "local_start":
 		cmdLocalStart()
 	case "localstop", "local-stop", "local_stop":
@@ -118,7 +134,7 @@ func main() {
 
 // parseScanFlags extracts --types and --no-cache from arguments.
 func parseScanFlags(args []string) (types []string, noCache bool) {
-	types = []string{"chaos", "owasp", "soc2", "cwe"}
+	types = agentregistry.ScanAgentTypes()
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--types":
@@ -134,32 +150,317 @@ func parseScanFlags(args []string) (types []string, noCache bool) {
 }
 
 func printUsage() {
-	fmt.Println(`Vulture CLI - Compliance Audit Platform
+	scanTypes := strings.Join(agentregistry.ScanAgentTypes(), ",")
+	fmt.Printf(`Vulture CLI - Compliance Audit Platform
 
 Usage:
   vulture login                          Authenticate with the Vulture server
   vulture scan <path-or-url> [--types]   Scan source code for compliance issues
+  vulture discover [path] [flags]        Discover endpoints and attack surface
+  vulture prove <path-or-url> [flags]    Verify findings against a staging environment
   vulture <path-or-url>                  Shorthand for scan
   vulture localstart                     Start all services locally (backend + agents + frontend)
   vulture localstop                      Stop all locally running services
   vulture status                         Show recent audit statuses
   vulture results <audit-id>             Show detailed results for an audit
 
-Options:
-  --types chaos,owasp,soc2,cwe  Comma-separated audit types (default: all)
-  --no-cache                  Force fresh audit, skip cached results
+Scan Options:
+  --types %s  Comma-separated audit types (default: all)
+  --no-cache                        Force fresh audit, skip cached results
+
+Discover Options:
+  --target-url <url>                Target URL to discover (required)
+  --no-cache                        Skip previously reported items, look for new ones
+  --rate-limit <seconds>            Delay between HTTP requests (default: 0 = no limit)
+
+Prove Options:
+  --staging-url <url>               Staging environment URL (required)
+  --types %s  Scanner types to verify (default: all)
+  --max-iterations <n>          Max verification attempts per finding (default: 3, max: 65535)
+  --allow-local                 Allow targeting localhost/local IPs
+  --no-cache                    Force fresh scan, skip cached findings
 
 Environment:
-  VULTURE_API_URL             API server URL (default: http://localhost:8080)
+  VULTURE_API_URL             API server URL (default: from config.ini [ports] backend)
 
 Examples:
   vulture login
-  vulture scan /home/user/project
+  vulture scan /path/to/project
   vulture scan https://github.com/org/repo.git --types owasp,soc2,cwe
+  vulture discover --target-url https://staging.example.com
+  vulture discover /path/to/project --target-url https://staging.example.com
+  vulture prove /path/to/project --staging-url https://staging.example.com --types owasp
   vulture localstart
-  vulture /home/user/project
+  vulture /path/to/project
   vulture status
-  vulture results abc123`)
+  vulture results abc123
+`, scanTypes, scanTypes)
+}
+
+type discoverFlags struct {
+	targetURL  string
+	sourcePath string
+	noCache    bool
+	rateLimit  float64
+}
+
+func parseDiscoverFlags(args []string) discoverFlags {
+	df := discoverFlags{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--target-url", "--staging-url":
+			if i+1 < len(args) {
+				df.targetURL = args[i+1]
+				i++
+			}
+		case "--no-cache":
+			df.noCache = true
+		case "--rate-limit":
+			if i+1 < len(args) {
+				if v, err := strconv.ParseFloat(args[i+1], 64); err == nil && v >= 0 {
+					df.rateLimit = v
+				}
+				i++
+			}
+		default:
+			// Positional arg = source path
+			if !strings.HasPrefix(args[i], "--") && df.sourcePath == "" {
+				df.sourcePath = args[i]
+			}
+		}
+	}
+	return df
+}
+
+func cmdDiscover(apiURL string, df discoverFlags) {
+	if df.targetURL == "" {
+		fatalf("--target-url is required for discover command")
+	}
+
+	token := loadToken()
+	if token == "" && isLocalMode(apiURL) {
+		token = autoLoginLocal(apiURL)
+	}
+
+	var sourceID string
+
+	// Create source if path provided (triggers scan → discover pipeline)
+	if df.sourcePath != "" {
+		srcType := "local"
+		target := df.sourcePath
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasSuffix(target, ".git") {
+			srcType = "git"
+		}
+		if srcType == "local" {
+			abs, err := filepath.Abs(target)
+			if err == nil {
+				target = abs
+			}
+		}
+
+		fmt.Printf("  Submitting source (%s): %s\n", srcType, target)
+		srcBody := map[string]string{"type": srcType}
+		if srcType == "git" {
+			srcBody["url"] = target
+		} else {
+			srcBody["path"] = target
+		}
+		srcJSON, _ := json.Marshal(srcBody)
+		src := apiPost[source](apiURL+"/api/sources", srcJSON, token)
+		sourceID = src.ID
+		fmt.Printf("  Source created: %s (%d files)\n", truncateID(src.ID, 12), src.FileCount)
+	}
+
+	fmt.Printf("  Target URL: %s\n", df.targetURL)
+
+	// Create discover audit
+	discoverCfg := map[string]interface{}{
+		"target_url": df.targetURL,
+		"no_cache":   df.noCache,
+	}
+	if df.rateLimit > 0 {
+		discoverCfg["rate_limit"] = df.rateLimit
+		fmt.Printf("  Rate limit: %.1fs between requests\n", df.rateLimit)
+	}
+	cfg := map[string]interface{}{
+		"discover": discoverCfg,
+	}
+
+	auditReq := map[string]interface{}{
+		"types":  []string{"discover"},
+		"config": cfg,
+	}
+	if sourceID != "" {
+		auditReq["source_id"] = sourceID
+	}
+
+	auditBody, _ := json.Marshal(auditReq)
+	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
+	fmt.Printf("  Discover session: %s\n\n", truncateID(a.ID, 12))
+
+	// Stream discover results
+	fmt.Println(strings.Repeat("-", 60))
+	streamDiscover(apiURL, a.ID, token)
+	fmt.Println(strings.Repeat("-", 60))
+
+	// Fetch final results
+	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
+	printAuditSummary(final)
+}
+
+func streamDiscover(apiURL, auditID, token string) {
+	url := apiURL + "/api/audits/" + auditID + "/stream"
+	req, _ := http.NewRequest("GET", url, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 15 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		fatalf("Stream connection failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		fatalf("Stream error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	var eventType string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			printDiscoverEvent(eventType, data)
+		}
+	}
+}
+
+func printDiscoverEvent(eventType, data string) {
+	var evt map[string]interface{}
+	json.Unmarshal([]byte(data), &evt)
+
+	switch eventType {
+	case "RunStarted":
+		fmt.Println("  Discovery started")
+	case "StepStarted":
+		printEvtField(evt, "stepName", "\n  \033[34m>>> %s\033[0m\n")
+	case "TextMessageContent":
+		printDelta(evt)
+	case "StateDelta":
+		printDiscoverDelta(evt)
+	case "StateSnapshot":
+		printStateSnapshot(evt)
+	case "StepFinished":
+		printEvtField(evt, "stepName", "  \033[32m<<< %s done\033[0m\n")
+	case "RunFinished":
+		fmt.Println("\n  \033[32mDiscovery completed\033[0m")
+	case "RunError":
+		printEvtField(evt, "error", "  \033[31mERROR: %s\033[0m\n")
+	}
+}
+
+func printDiscoverDelta(evt map[string]interface{}) {
+	delta, ok := evt["delta"]
+	if !ok {
+		return
+	}
+
+	// JSON-patch array → finding patches
+	if arr, ok := delta.([]interface{}); ok {
+		for _, patch := range arr {
+			printFindingPatch(patch)
+		}
+		return
+	}
+
+	m, ok := delta.(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	// Discover result with SiteMap data
+	if dr, ok := m["discover_result"].(map[string]interface{}); ok {
+		urlCount, _ := dr["url_count"].(float64)
+		apiCount, _ := dr["api_count"].(float64)
+		formCount, _ := dr["form_count"].(float64)
+		targetURL, _ := dr["target_url"].(string)
+
+		fmt.Printf("\n  \033[34mDiscovery Results for %s\033[0m\n", targetURL)
+		fmt.Printf("    URLs discovered:     %d\n", int(urlCount))
+		fmt.Printf("    API endpoints:       %d\n", int(apiCount))
+		fmt.Printf("    Forms:               %d\n", int(formCount))
+
+		if techs, ok := dr["technologies"].([]interface{}); ok && len(techs) > 0 {
+			techStrs := make([]string, len(techs))
+			for i, t := range techs {
+				techStrs[i], _ = t.(string)
+			}
+			fmt.Printf("    Technologies:        %s\n", strings.Join(techStrs, ", "))
+		}
+	}
+
+	// Token savings and dedup (reuse existing helpers)
+	if ts, ok := m["token_savings"].(map[string]interface{}); ok {
+		printTokenSavings(ts)
+	}
+	if ds, ok := m["dedup_stats"].(map[string]interface{}); ok {
+		printDedupStats(ds)
+	}
+}
+
+type proveFlags struct {
+	stagingURL    string
+	types         []string
+	maxIterations int
+	allowLocal    bool
+	noCache       bool
+}
+
+func parseProveFlags(args []string) proveFlags {
+	pf := proveFlags{
+		types:         agentregistry.ScanAgentTypes(),
+		maxIterations: 3,
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--staging-url":
+			if i+1 < len(args) {
+				pf.stagingURL = args[i+1]
+				i++
+			}
+		case "--types":
+			if i+1 < len(args) {
+				pf.types = strings.Split(args[i+1], ",")
+				i++
+			}
+		case "--max-iterations":
+			if i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil {
+					if n < 1 {
+						n = 1
+					}
+					if n > 65535 {
+						n = 65535
+					}
+					pf.maxIterations = n
+				}
+				i++
+			}
+		case "--allow-local":
+			pf.allowLocal = true
+		case "--no-cache":
+			pf.noCache = true
+		}
+	}
+	return pf
 }
 
 // --- Commands ---
@@ -183,16 +484,31 @@ func cmdLocalStart() {
 	}
 }
 
-var localServices = []struct {
+var localServices = buildLocalServices()
+
+func buildLocalServices() []struct {
 	name string
 	port string
-}{
-	{"backend", "8080"},
-	{"agent-chaos", "8001"},
-	{"agent-owasp", "8002"},
-	{"agent-soc2", "8003"},
-	{"agent-cwe", "8004"},
-	{"frontend", "3001"},
+} {
+	services := make([]struct {
+		name string
+		port string
+	}, 0, len(agentregistry.AllAgents)+2)
+	services = append(services, struct {
+		name string
+		port string
+	}{"backend", cliINIValue("ports", "backend", "28080")})
+	for _, entry := range agentregistry.AllAgents {
+		services = append(services, struct {
+			name string
+			port string
+		}{"agent-" + entry.Type, cliINIValue("ports", entry.INIKey, entry.DefaultPort)})
+	}
+	services = append(services, struct {
+		name string
+		port string
+	}{"frontend", cliINIValue("ports", "frontend_host", "23001")})
+	return services
 }
 
 func cmdLocalStop() {
@@ -315,6 +631,9 @@ func looksLikePath(arg string) bool {
 }
 
 func isLocalMode(frontendURL string) bool {
+	if os.Getenv("VULTURE_LOCAL_MODE") == "false" {
+		return false
+	}
 	return strings.Contains(frontendURL, "localhost") || strings.Contains(frontendURL, "127.0.0.1")
 }
 
@@ -357,8 +676,18 @@ func cmdLogin(apiURL string) {
 	email = strings.TrimSpace(email)
 
 	fmt.Print("Password: ")
-	password, _ := reader.ReadString('\n')
-	password = strings.TrimSpace(password)
+	var password string
+	if term.IsTerminal(int(syscall.Stdin)) {
+		passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
+		fmt.Println()
+		if err != nil {
+			fatalf("Failed to read password: %v", err)
+		}
+		password = string(passwordBytes)
+	} else {
+		password, _ = reader.ReadString('\n')
+		password = strings.TrimSpace(password)
+	}
 
 	body, _ := json.Marshal(map[string]string{"email": email, "password": password})
 	resp, err := http.Post(apiURL+"/api/auth/login", "application/json", bytes.NewReader(body))
@@ -439,7 +768,7 @@ func cmdScan(apiURL string, target string, types []string, noCache bool) {
 	})
 	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
 	fmt.Printf("  Audit started: %s\n", truncateID(a.ID, 12))
-	fmt.Printf("  Types: %s\n\n", strings.Join(types, ", "))
+	fmt.Printf("  Types: %s\n\n", joinAgentNames(types))
 
 	// Stream results
 	fmt.Println("  Streaming results...")
@@ -450,6 +779,312 @@ func cmdScan(apiURL string, target string, types []string, noCache bool) {
 	fmt.Println(strings.Repeat("-", 60))
 	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
 	printAuditSummary(final)
+}
+
+func cmdProve(apiURL string, target string, pf proveFlags) {
+	if pf.stagingURL == "" {
+		fatalf("--staging-url is required for prove command")
+	}
+
+	token := loadToken()
+	if token == "" && isLocalMode(apiURL) {
+		token = autoLoginLocal(apiURL)
+	}
+
+	// Determine source type
+	srcType := "local"
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasSuffix(target, ".git") {
+		srcType = "git"
+	}
+
+	if srcType == "local" {
+		abs, err := filepath.Abs(target)
+		if err == nil {
+			target = abs
+		}
+	}
+
+	fmt.Printf("  Submitting source (%s): %s\n", srcType, target)
+
+	srcBody := map[string]string{"type": srcType}
+	if srcType == "git" {
+		srcBody["url"] = target
+	} else {
+		srcBody["path"] = target
+	}
+	srcJSON, _ := json.Marshal(srcBody)
+	src := apiPost[source](apiURL+"/api/sources", srcJSON, token)
+	fmt.Printf("  Source created: %s (%d files)\n", truncateID(src.ID, 12), src.FileCount)
+
+	// Step 1: Get scanner findings (from cache, fresh scan, or memory)
+	findings := proveGetFindings(apiURL, src.ID, target, pf.types, token, pf.noCache)
+	if len(findings) == 0 {
+		fmt.Println("\n  No findings to verify. The scan produced no results.")
+		return
+	}
+	fmt.Printf("\n  \033[34m%d findings to verify against %s\033[0m\n", len(findings), pf.stagingURL)
+
+	// Step 2: Convert findings for the prove agent config
+	findingMaps := make([]map[string]interface{}, len(findings))
+	for i, f := range findings {
+		findingMaps[i] = map[string]interface{}{
+			"id":             f.ID,
+			"agent_type":     f.AgentType,
+			"severity":       f.Severity,
+			"category":       f.Category,
+			"title":          f.Title,
+			"description":    truncateStr(f.Description, 500),
+			"file_path":      f.FilePath,
+			"line_start":     f.LineStart,
+			"recommendation": truncateStr(f.Recommendation, 300),
+		}
+	}
+
+	// Step 3: Create prove audit with findings embedded in config
+	// Config is nested under "prove" key because extractAgentConfig looks for config[agentType]
+	auditBody, _ := json.Marshal(map[string]interface{}{
+		"source_id": src.ID,
+		"types":     []string{"prove"},
+		"config": map[string]interface{}{
+			"prove": map[string]interface{}{
+				"staging_url":    pf.stagingURL,
+				"types":          pf.types,
+				"max_iterations": pf.maxIterations,
+				"allow_local":    pf.allowLocal,
+				"findings":       findingMaps,
+			},
+		},
+	})
+	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
+	fmt.Printf("  Prove session: %s\n", truncateID(a.ID, 12))
+	fmt.Printf("  Max iterations: %d\n\n", pf.maxIterations)
+
+	// Step 4: Stream verification results
+	fmt.Println(strings.Repeat("-", 60))
+	streamProve(apiURL, a.ID, token)
+	fmt.Println(strings.Repeat("-", 60))
+}
+
+// proveGetFindings runs a scan (or uses cache) and returns the findings.
+func proveGetFindings(apiURL, sourceID, sourcePath string, types []string, token string, noCache bool) []finding {
+	// Check cache first (unless --no-cache)
+	if !noCache {
+		cacheURL := fmt.Sprintf("%s/api/audits/cache?source_id=%s&types=%s", apiURL, sourceID, strings.Join(types, ","))
+		cached := apiGet[cacheResponse](cacheURL, token)
+		if cached.Cached && cached.Audit.ID != "" && len(cached.Audit.Findings) > 0 {
+			fmt.Printf("\n  \033[33m⚡ Using cached scan results (audit %s, %d findings)\033[0m\n",
+				truncateID(cached.Audit.ID, 12), len(cached.Audit.Findings))
+			return cached.Audit.Findings
+		}
+	}
+
+	// No cache — run a fresh scan
+	fmt.Printf("\n  Running scan first (%s)...\n", joinAgentNames(types))
+	auditBody, _ := json.Marshal(map[string]interface{}{
+		"source_id": sourceID,
+		"types":     types,
+	})
+	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
+	fmt.Printf("  Scan started: %s\n", truncateID(a.ID, 12))
+
+	// Stream scan progress
+	streamAudit(apiURL, a.ID, token)
+
+	// Fetch final results with findings
+	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
+	if len(final.Findings) > 0 {
+		fmt.Printf("  Scan complete: %d findings\n", final.findingCount())
+		return final.Findings
+	}
+
+	// Scan produced no findings — check memory system for prior findings
+	return proveGetMemoryFindings(apiURL, sourcePath, types, token)
+}
+
+func proveGetMemoryFindings(apiURL, sourcePath string, types []string, token string) []finding {
+	memURL := fmt.Sprintf("%s/api/memories/by-path?path=%s&limit=100", apiURL, sourcePath)
+	req, err := http.NewRequest("GET", memURL, nil)
+	if err != nil {
+		return nil
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return nil
+	}
+	defer resp.Body.Close()
+	var memories []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&memories); err != nil {
+		return nil
+	}
+	typeSet := make(map[string]bool, len(types))
+	for _, t := range types {
+		typeSet[t] = true
+	}
+	// Deduplicate by title+agent_type
+	seen := make(map[string]bool)
+	var results []finding
+	for _, m := range memories {
+		agentType, _ := m["agent_type"].(string)
+		if !typeSet[agentType] {
+			continue
+		}
+		title, _ := m["title"].(string)
+		key := agentType + ":" + title
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		id, _ := m["id"].(string)
+		sev, _ := m["severity"].(string)
+		cat, _ := m["category"].(string)
+		desc, _ := m["content"].(string)
+		results = append(results, finding{
+			ID:          id,
+			AgentType:   agentType,
+			Severity:    sev,
+			Category:    cat,
+			Title:       title,
+			Description: desc,
+		})
+	}
+	if len(results) > 0 {
+		fmt.Printf("  Scan produced no new findings; loaded %d prior findings from memory\n", len(results))
+	} else {
+		fmt.Println("  Scan complete: 0 findings")
+	}
+	return results
+}
+
+func streamProve(apiURL, auditID, token string) {
+	url := apiURL + "/api/audits/" + auditID + "/stream"
+	req, _ := http.NewRequest("GET", url, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 30 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		fatalf("Stream connection failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		fatalf("Stream error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	var eventType string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			printProveEvent(eventType, data)
+		}
+	}
+}
+
+func printProveEvent(eventType, data string) {
+	var evt map[string]interface{}
+	json.Unmarshal([]byte(data), &evt)
+
+	switch eventType {
+	case "RunStarted":
+		fmt.Println("  Prove session started")
+	case "StepStarted":
+		printEvtField(evt, "stepName", "\n  \033[34m>>> %s\033[0m\n")
+	case "TextMessageContent":
+		printDelta(evt)
+	case "StateDelta":
+		printProveDelta(evt)
+	case "StepFinished":
+		printEvtField(evt, "stepName", "  \033[32m<<< %s done\033[0m\n")
+	case "RunFinished":
+		fmt.Println("\n  \033[32mProve session completed\033[0m")
+	case "RunError":
+		printEvtField(evt, "error", "  \033[31mERROR: %s\033[0m\n")
+	}
+}
+
+func printProveDelta(evt map[string]interface{}) {
+	delta, ok := evt["delta"]
+	if !ok {
+		return
+	}
+	m, ok := delta.(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	if plan, ok := m["proof_plan"].(map[string]interface{}); ok {
+		title, _ := plan["title"].(string)
+		planText, _ := plan["plan_text"].(string)
+		iter, _ := plan["iteration"].(float64)
+		fmt.Printf("  [%s]\n", title)
+		fmt.Printf("    Plan (attempt %d): %s\n", int(iter), planText)
+	}
+
+	if review, ok := m["proof_review"].(map[string]interface{}); ok {
+		safe, _ := review["safe"].(bool)
+		if safe {
+			fmt.Printf("    Review: \033[32mSAFE\033[0m\n")
+		} else {
+			fmt.Printf("    Review: \033[31mUNSAFE\033[0m — skipping\n")
+		}
+	}
+
+	if attempt, ok := m["proof_attempt"].(map[string]interface{}); ok {
+		reproduced, _ := attempt["reproduced"].(bool)
+		evidence, _ := attempt["evidence"].(string)
+		iter, _ := attempt["iteration"].(float64)
+		if reproduced {
+			fmt.Printf("    Attempt %d: %s \033[31m→ REPRODUCED\033[0m\n", int(iter), evidence)
+		} else {
+			fmt.Printf("    Attempt %d: %s → inconclusive\n", int(iter), evidence)
+		}
+	}
+
+	if refl, ok := m["proof_reflection"].(map[string]interface{}); ok {
+		analysis, _ := refl["analysis"].(string)
+		approach, _ := refl["suggested_approach"].(string)
+		confidence, _ := refl["confidence"].(float64)
+		fmt.Printf("    \033[36mReflection (confidence %d%%)\033[0m: %s\n", int(confidence), analysis)
+		fmt.Printf("    \033[36mNext approach\033[0m: %s\n", approach)
+	}
+
+	if result, ok := m["proof_result"].(map[string]interface{}); ok {
+		status, _ := result["status"].(string)
+		evidence, _ := result["evidence"].(string)
+		switch status {
+		case "verified":
+			fmt.Printf("    Result: \033[31mVERIFIED\033[0m — %s\n", evidence)
+		case "not_reproduced":
+			fmt.Printf("    Result: \033[32mNOT REPRODUCED\033[0m — %s\n", evidence)
+		case "skipped":
+			fmt.Printf("    Result: \033[33mSKIPPED\033[0m — %s\n", evidence)
+		default:
+			fmt.Printf("    Result: \033[33mINCONCLUSIVE\033[0m — %s\n", evidence)
+		}
+	}
+
+	if summary, ok := m["proof_summary"].(map[string]interface{}); ok {
+		total, _ := summary["total"].(float64)
+		verified, _ := summary["verified"].(float64)
+		notRepr, _ := summary["not_reproduced"].(float64)
+		inconc, _ := summary["inconclusive"].(float64)
+		skipped, _ := summary["skipped"].(float64)
+		fmt.Printf("\n  Summary: %d findings tested, \033[31m%d verified\033[0m, \033[32m%d not reproduced\033[0m, %d inconclusive, %d skipped\n",
+			int(total), int(verified), int(notRepr), int(inconc), int(skipped))
+	}
 }
 
 func cmdStatus(apiURL string) {
@@ -481,7 +1116,7 @@ func cmdStatus(apiURL string) {
 		fmt.Printf("  %-14s %-12s %-20s %-10d %s\n",
 			idDisplay,
 			status,
-			strings.Join(a.Types, ","),
+			joinAgentNames(a.Types),
 			findCount,
 			date,
 		)
@@ -504,7 +1139,7 @@ func cmdResults(apiURL string, id string) {
 			sev := colorSeverity(f.Severity)
 			fmt.Printf("  %d. [%s] %s\n", i+1, sev, f.Title)
 			fmt.Printf("     File: %s:%d\n", f.FilePath, f.LineStart)
-			fmt.Printf("     Category: %s | Agent: %s\n", f.Category, f.AgentType)
+			fmt.Printf("     Category: %s | Agent: %s\n", f.Category, agentDisplayName(f.AgentType))
 			if f.Recommendation != "" {
 				fmt.Printf("     Fix: %s\n", f.Recommendation)
 			}
@@ -514,6 +1149,29 @@ func cmdResults(apiURL string, id string) {
 }
 
 // --- Helpers ---
+
+// agentDisplayName returns the human-friendly name for an agent type.
+// Falls back to strings.ToUpper for short acronym-like types (e.g. "ssdf" → "SSDF").
+func agentDisplayName(agentType string) string {
+	for _, a := range agentregistry.AllAgents {
+		if a.Type == agentType {
+			return a.Name
+		}
+	}
+	if len(agentType) <= 6 {
+		return strings.ToUpper(agentType)
+	}
+	return strings.ToUpper(agentType[:1]) + agentType[1:]
+}
+
+// joinAgentNames maps a slice of agent types to display names and joins them.
+func joinAgentNames(types []string) string {
+	names := make([]string, len(types))
+	for i, t := range types {
+		names[i] = agentDisplayName(t)
+	}
+	return strings.Join(names, ", ")
+}
 
 func streamAudit(apiURL, auditID, token string) {
 	url := apiURL + "/api/audits/" + auditID + "/stream"
@@ -602,17 +1260,53 @@ func printDelta(evt map[string]interface{}) {
 }
 
 // printStateDelta prints findings from a JSON-patch style StateDelta event.
+// Also handles wrapped token_savings and dedup_stats events.
 func printStateDelta(evt map[string]interface{}) {
 	delta, ok := evt["delta"]
 	if !ok {
 		return
 	}
-	arr, ok := delta.([]interface{})
+	// JSON-patch array → finding patches
+	if arr, ok := delta.([]interface{}); ok {
+		for _, patch := range arr {
+			printFindingPatch(patch)
+		}
+		return
+	}
+	// Wrapped map events (token_savings, dedup_stats)
+	m, ok := delta.(map[string]interface{})
 	if !ok {
 		return
 	}
-	for _, patch := range arr {
-		printFindingPatch(patch)
+	if ts, ok := m["token_savings"].(map[string]interface{}); ok {
+		printTokenSavings(ts)
+	}
+	if ds, ok := m["dedup_stats"].(map[string]interface{}); ok {
+		printDedupStats(ds)
+	}
+}
+
+// printTokenSavings displays memory-based token optimization stats.
+func printTokenSavings(ts map[string]interface{}) {
+	priorCount, _ := ts["prior_findings_used"].(float64)
+	skipped, _ := ts["findings_skipped"].(float64)
+	total, _ := ts["findings_total"].(float64)
+	pct, _ := ts["savings_percent"].(float64)
+	if priorCount > 0 || skipped > 0 {
+		fmt.Printf("    \033[36m💾 Token savings: %d prior findings used", int(priorCount))
+		if total > 0 {
+			fmt.Printf(", %d/%d skipped (%.0f%% saved)", int(skipped), int(total), pct)
+		}
+		fmt.Printf("\033[0m\n")
+	}
+}
+
+// printDedupStats displays deduplication metrics from skill-mode scanning.
+func printDedupStats(ds map[string]interface{}) {
+	deduped, _ := ds["findings_deduped"].(float64)
+	prior, _ := ds["prior_findings_used"].(float64)
+	if deduped > 0 || prior > 0 {
+		fmt.Printf("    \033[36m🔄 Dedup: %d findings deduped, %d prior findings used\033[0m\n", int(deduped), int(prior))
 	}
 }
 
@@ -642,7 +1336,7 @@ func printStateSnapshot(evt map[string]interface{}) {
 		count = len(findings)
 	}
 	agent, _ := evt["agentType"].(string)
-	fmt.Printf("    Results: %s found %d findings\n", agent, count)
+	fmt.Printf("    Results: %s found %d findings\n", agentDisplayName(agent), count)
 }
 
 // findingCount returns the total finding count, using the full slice length or the summary count.
@@ -656,7 +1350,7 @@ func (a audit) findingCount() int {
 func printAuditSummary(a audit) {
 	fmt.Printf("\n  Audit: %s\n", a.ID)
 	fmt.Printf("  Status: %s\n", colorStatus(a.Status))
-	fmt.Printf("  Types: %s\n", strings.Join(a.Types, ", "))
+	fmt.Printf("  Types: %s\n", joinAgentNames(a.Types))
 	fmt.Printf("  Findings: %d\n", a.findingCount())
 
 	if len(a.Scores) > 0 {
@@ -687,7 +1381,7 @@ func printAuditSummary(a audit) {
 	// Show UI link
 	frontendURL := os.Getenv("VULTURE_FRONTEND_URL")
 	if frontendURL == "" {
-		frontendURL = "http://localhost:3001"
+		frontendURL = defaultFrontendURL
 	}
 	fmt.Printf("\n  View in UI: %s/audit/%s\n", frontendURL, a.ID)
 
@@ -794,7 +1488,43 @@ func truncateID(id string, maxLen int) string {
 	return id
 }
 
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func fatalf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "\n  Error: "+format+"\n\n", args...)
 	os.Exit(1)
+}
+
+// --- config.ini helpers ---
+
+// cliResolve reads a value from config.ini with fallback, prepending a URL prefix.
+func cliResolve(section, key, fallback, prefix string) string {
+	val := cliINIValue(section, key, fallback)
+	return prefix + val
+}
+
+// cliINIValue reads a single value from config.ini. Returns fallback if absent.
+func cliINIValue(section, key, fallback string) string {
+	path := cliINIPath()
+	if path == "" {
+		return fallback
+	}
+	vals := cliLoadINI(path)
+	if v, ok := vals[section+"."+key]; ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+func cliINIPath() string {
+	return iniutil.FindINIPath()
+}
+
+func cliLoadINI(path string) map[string]string {
+	return iniutil.ParseINI(path)
 }

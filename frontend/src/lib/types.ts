@@ -19,8 +19,23 @@ export interface AgentInfo {
   id: string;
   name: string;
   type: string;
+  status?: "healthy" | "unhealthy" | "unknown";
   description?: string;
   config_schema?: Record<string, unknown>;
+}
+
+export type ProveStatus = "verified" | "not_reproduced" | "inconclusive" | "skipped";
+
+export interface ProveResult {
+  id: string;
+  audit_id: string;
+  finding_id: string;
+  fingerprint?: string;
+  status: ProveStatus;
+  evidence: string;
+  iterations_used: number;
+  staging_url: string;
+  created_at: string;
 }
 
 export interface Audit {
@@ -33,6 +48,8 @@ export interface Audit {
   findings?: Finding[];
   findings_count?: number;
   scores?: Record<string, number>;
+  prove_results?: ProveResult[];
+  prove_count?: number;
   created_at: string;
   completed_at?: string;
 }
@@ -49,10 +66,12 @@ export interface Finding {
   file_path: string;
   line_start?: number;
   line_end?: number;
+  check_id?: string;
   code_snippet?: string;
   recommendation: string;
   compliance_ref?: string;
   fingerprint?: string;
+  cross_agent_origins?: string[];
 }
 
 export interface AgentStep {
@@ -86,6 +105,8 @@ export interface DashboardStats {
   total_findings: number;
   critical_issues: number;
   average_score: number;
+  prove_verified: number;
+  prove_total: number;
 }
 
 export interface CacheCheckResponse {
@@ -205,4 +226,93 @@ export interface LineageStatusUpdate {
   status: string;
   notes?: string;
   ticket_url?: string;
+}
+
+export interface AuditComparison {
+  has_previous: boolean;
+  previous_audit_id?: string;
+  previous_commit?: string;
+  previous_branch?: string;
+  previous_date?: string;
+  previous_findings_count?: number;
+  current_findings_count: number;
+  new_count: number;
+  fixed_count: number;
+  persistent_count: number;
+  changed_count: number;
+  regression_count: number;
+  new_findings?: ComparisonFindingSummary[];
+  fixed_findings?: ComparisonFindingSummary[];
+  changed_findings?: ComparisonChangedFinding[];
+}
+
+export interface ComparisonFindingSummary {
+  fingerprint: string;
+  title: string;
+  severity: Severity;
+  file_path: string;
+  agent_type: string;
+}
+
+export interface ComparisonChangedFinding {
+  fingerprint: string;
+  title: string;
+  old_severity: Severity;
+  new_severity: Severity;
+  file_path: string;
+}
+
+// --- Pipeline (scan → discover → prove) ---
+
+export type PipelineStatus =
+  | "pending"
+  | "scan_running"
+  | "discover_running"
+  | "prove_running"
+  | "completed"
+  | "failed";
+
+export interface Pipeline {
+  id: string;
+  target_url: string;
+  source_id?: string;
+  stages: string[];
+  config?: Record<string, unknown>;
+  scan_audit_id?: string;
+  discover_audit_id?: string;
+  prove_audit_id?: string;
+  status: PipelineStatus;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface CreatePipelineRequest {
+  source_id?: string;
+  target_url: string;
+  stages: string[];
+  config?: Record<string, unknown>;
+}
+
+export interface DiscoverResult {
+  id: string;
+  audit_id: string;
+  target_url: string;
+  site_map_json: string;
+  url_count: number;
+  api_count: number;
+  form_count: number;
+  technologies: string[];
+  created_at: string;
+}
+
+/** Validate URL has http/https scheme to prevent javascript: XSS. */
+export function safeExternalUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") return url;
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }

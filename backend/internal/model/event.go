@@ -18,6 +18,15 @@ const (
 	EventToolCallEnd        AgUIEventType = "ToolCallEnd"
 	EventStateDelta         AgUIEventType = "StateDelta"
 	EventStateSnapshot      AgUIEventType = "StateSnapshot"
+
+	// Prove agent event types (agent SSE names, not AgUI types).
+	EventProofPhase      = "proof_phase"
+	EventProofPlan       = "proof_plan"
+	EventProofReview     = "proof_review"
+	EventProofAttempt    = "proof_attempt"
+	EventProofReflection = "proof_reflection"
+	EventProofResult     = "proof_result"
+	EventProofSummary    = "proof_summary"
 )
 
 type AgUIEvent struct {

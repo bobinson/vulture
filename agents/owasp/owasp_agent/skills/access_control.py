@@ -59,6 +59,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
             if pattern.search(line):
                 findings.append({
                     "severity": "medium" if has_authz else "high",
+                    "check_id": "owasp.access_control.idor",
                     "category": "A01-access-control",
                     "title": "Potential IDOR vulnerability",
                     "description": f"User-supplied ID used directly at line {line_num}",

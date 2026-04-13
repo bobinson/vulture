@@ -65,6 +65,11 @@ func validateBrowsePath(reqPath string) (string, int, string) {
 		return "", http.StatusBadRequest, "invalid path"
 	}
 	absPath = filepath.Clean(absPath)
+	// Resolve symlinks before checking the blocklist to prevent symlink escape
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err == nil {
+		absPath = resolved
+	}
 	if isBlockedPath(absPath) {
 		return "", http.StatusForbidden, "access denied"
 	}
@@ -109,6 +114,9 @@ func isBlockedPath(path string) bool {
 	blocked := []string{
 		"/proc", "/sys", "/dev", "/run",
 		"/boot", "/lost+found",
+		"/etc", "/root", "/var",
+		"/snap", "/sbin", "/bin",
+		"/lib", "/lib64", "/usr",
 	}
 	for _, b := range blocked {
 		if path == b || strings.HasPrefix(path, b+"/") {

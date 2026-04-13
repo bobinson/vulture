@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api.ts";
 import type { Audit, Severity } from "@/lib/types.ts";
 
@@ -27,11 +27,14 @@ function normalizeAudit(audit: Audit): Audit {
   };
 }
 
+const INITIAL_DELAY = 2000;
+const MAX_DELAY = 10000;
+const BACKOFF_FACTOR = 1.5;
+
 export function useAudit(auditId?: string) {
   const [audit, setAudit] = useState<Audit | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const createAudit = useCallback(
     async (sourceId: string, types: string[]) => {
@@ -66,19 +69,19 @@ export function useAudit(auditId?: string) {
 
   useEffect(() => {
     if (!auditId) return;
-    fetchAudit(auditId);
-    pollRef.current = setInterval(() => fetchAudit(auditId), 5000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+    let delay = INITIAL_DELAY;
+    let timer: ReturnType<typeof setTimeout>;
+    let aborted = false;
+    const poll = async () => {
+      const result = await fetchAudit(auditId);
+      if (aborted) return;
+      if (result && (result.status === "completed" || result.status === "failed")) return;
+      timer = setTimeout(poll, delay);
+      delay = Math.min(delay * BACKOFF_FACTOR, MAX_DELAY);
     };
+    poll();
+    return () => { aborted = true; clearTimeout(timer); };
   }, [auditId, fetchAudit]);
-
-  useEffect(() => {
-    if (audit && (audit.status === "completed" || audit.status === "failed") && pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, [audit]);
 
   return { audit, loading, error, createAudit, fetchAudit };
 }

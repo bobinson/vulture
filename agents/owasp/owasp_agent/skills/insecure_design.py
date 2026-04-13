@@ -72,6 +72,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         if any(p.search(line) for p in AUTH_ENDPOINT_PATTERNS):
             findings.append({
                 "severity": "medium",
+                "check_id": "owasp.insecure_design.missing_rate_limit",
                 "category": "A04-insecure-design",
                 "title": "Auth endpoint without rate limiting",
                 "description": f"Auth endpoint at line {line_num} has no rate limiting",

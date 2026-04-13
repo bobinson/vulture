@@ -95,6 +95,80 @@ describe("error handling", () => {
   });
 });
 
+describe("request deduplication", () => {
+  it("deduplicates concurrent GET requests to the same endpoint", async () => {
+    let resolveResponse: (value: unknown) => void;
+    const responsePromise = new Promise((resolve) => {
+      resolveResponse = resolve;
+    });
+    mockFetch.mockReturnValue(
+      responsePromise.then((data) => ({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(data),
+        text: () => Promise.resolve(JSON.stringify(data)),
+      })),
+    );
+
+    // Fire two concurrent requests to the same endpoint
+    const p1 = api.getAudit("audit-1");
+    const p2 = api.getAudit("audit-1");
+
+    // fetch should only be called once
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Resolve and verify both get the same result
+    resolveResponse!({ id: "audit-1", status: "running" });
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toEqual(r2);
+  });
+
+  it("does not deduplicate POST requests", async () => {
+    mockFetch
+      .mockReturnValueOnce(jsonResponse({ id: "a1" }))
+      .mockReturnValueOnce(jsonResponse({ id: "a2" }));
+
+    const p1 = api.createAudit({ source_id: "s1", types: ["owasp"] });
+    const p2 = api.createAudit({ source_id: "s1", types: ["owasp"] });
+
+    await Promise.all([p1, p2]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows new GET after previous one completes", async () => {
+    mockFetch
+      .mockReturnValueOnce(jsonResponse({ id: "audit-1", status: "running" }))
+      .mockReturnValueOnce(jsonResponse({ id: "audit-1", status: "completed" }));
+
+    // First request
+    await api.getAudit("audit-1");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Second request after first completed - should make a new fetch
+    await api.getAudit("audit-1");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears in-flight cache when request fails", async () => {
+    mockFetch.mockReturnValueOnce(
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve("server error"),
+      }),
+    );
+
+    // First request fails
+    await api.getAudit("audit-1").catch(() => {});
+
+    // Retry should make a new fetch, not return cached error
+    mockFetch.mockReturnValueOnce(jsonResponse({ id: "audit-1", status: "running" }));
+    const result = await api.getAudit("audit-1");
+    expect(result).toEqual({ id: "audit-1", status: "running" });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("api.getStreamUrl", () => {
   it("returns SSE url without token", () => {
     localStorage.clear();

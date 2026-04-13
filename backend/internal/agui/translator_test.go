@@ -19,8 +19,26 @@ func TestTranslateAgentStart(t *testing.T) {
 	if events[0].Type != model.EventStepStarted {
 		t.Fatalf("expected StepStarted, got %s", events[0].Type)
 	}
-	if events[0].StepName != "chaos" {
-		t.Fatalf("expected step name chaos, got %s", events[0].StepName)
+	if events[0].StepName != "Chaos Engineering" {
+		t.Fatalf("expected step name 'Chaos Engineering', got %s", events[0].StepName)
+	}
+}
+
+func TestAgentDisplayName(t *testing.T) {
+	tests := []struct{ input, want string }{
+		{"chaos", "Chaos Engineering"},
+		{"owasp", "OWASP"},
+		{"ssdf", "NIST SSDF v1.1"},
+		{"cwe", "CWE"},
+		{"xss", "XSS Scanner"},
+		{"gdpr", "GDPR"},           // short acronym fallback (<=6 chars)
+		{"discover", "Endpoint Discover"}, // registry entry
+	}
+	for _, tt := range tests {
+		got := AgentDisplayName(tt.input)
+		if got != tt.want {
+			t.Errorf("AgentDisplayName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

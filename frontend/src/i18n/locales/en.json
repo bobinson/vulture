@@ -51,7 +51,9 @@
     "chaosDesc": "Resilience patterns: retry, circuit breaker, timeout, fallback, blast radius",
     "owaspDesc": "Security vulnerabilities: injection, auth, crypto, access control, misconfig",
     "soc2Desc": "Compliance clauses: CC6 (logical access), CC7 (monitoring), CC8 (change mgmt)",
-    "cweDesc": "CWE v4.19.1 weakness detection: injection, buffer, auth, crypto, access control, concurrency"
+    "cweDesc": "CWE v4.19.1 weakness detection: injection, buffer, auth, crypto, access control, concurrency",
+    "xssDesc": "XSS vulnerability detection: reflected, stored, DOM-based, template injection, header injection",
+    "ssdfDesc": "NIST SSDF v1.1 compliance: secure design, implementation, vulnerability response, software integrity"
   },
   "results": {
     "title": "Audit Results",
@@ -96,7 +98,11 @@
     "estimated": "(estimated)",
     "copyIssue": "Copy as Issue",
     "copyAll": "Copy All as Issues",
-    "copied": "Copied!"
+    "copied": "Copied!",
+    "exportReport": "Export Report",
+    "reportGenerated": "Report downloaded",
+    "evidence": "Evidence",
+    "verificationEvidence": "Verification Evidence"
   },
   "settings": {
     "title": "Settings",
@@ -152,7 +158,10 @@
     "chaos": "Chaos",
     "owasp": "OWASP",
     "soc2": "SOC2",
-    "cwe": "CWE"
+    "cwe": "CWE",
+    "xss": "XSS",
+    "ssdf": "SSDF",
+    "discover": "Discover"
   },
   "severity": {
     "critical": "Critical",
@@ -202,6 +211,26 @@
     "invalidLocalPath": "Please enter an absolute path (starting with /)",
     "connectionLost": "Connection lost. Retrying..."
   },
+  "prove": {
+    "verificationResults": "Verification Results",
+    "verified": "Verified",
+    "notReproduced": "Not Reproduced",
+    "inconclusive": "Inconclusive",
+    "skipped": "Skipped",
+    "showEvidence": "Show evidence",
+    "hideEvidence": "Hide evidence",
+    "iterations": "{{count}} iteration(s)",
+    "stagingUrl": "Staging",
+    "totalVerified": "Verified Findings",
+    "verificationRate": "Verification Rate",
+    "reproductionSteps": "Reproduction Steps",
+    "findingDescription": "Finding Description",
+    "copyAllResults": "Copy All as Issues",
+    "noLineage": "No traceability data for this finding",
+    "verificationHistory": "Verification History",
+    "viewVerificationHistory": "View Verification History",
+    "noVerificationHistory": "No cross-audit verification history for this finding"
+  },
   "lineage": {
     "title": "Finding Traceability",
     "firstDetected": "First detected",
@@ -233,6 +262,39 @@
     "status_false_positive": "False Positive",
     "status_fixed": "Fixed",
     "status_regression": "Regression",
-    "gitContext": "Git Context"
+    "gitContext": "Git Context",
+    "fullCommit": "Full commit",
+    "copyCommit": "Copy commit hash",
+    "fingerprint": "Fingerprint",
+    "checkId": "Check ID",
+    "newBadge": "NEW",
+    "regressionBadge": "REGRESSION"
+  },
+  "comparison": {
+    "title": "Scan Comparison",
+    "firstScan": "First scan of this source",
+    "vsLabel": "vs. previous scan",
+    "newTab": "New",
+    "fixedTab": "Fixed",
+    "changedTab": "Changed",
+    "persistentTab": "Persistent",
+    "fixedSinceLastScan": "Fixed since last scan"
+  },
+  "crossAgent": {
+    "title": "Cross-Agent Detection",
+    "countLabel": "{{count}} findings by multiple agents",
+    "primary": "primary",
+    "alsoDetected": "Also detected:",
+    "filterLabel": "Cross-Agent"
+  },
+  "proveSummary": {
+    "title": "Verification Summary",
+    "verified": "{{count}} of {{total}} findings verified",
+    "untested": "{{count}} not yet tested"
+  },
+  "auditHistory": {
+    "title": "Audit History",
+    "showAll": "Show all",
+    "findingsCount": "{{count}} audits"
   }
 }

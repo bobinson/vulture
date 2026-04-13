@@ -1,17 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAudit } from "@/hooks/useAudit.ts";
 import { useAgentStream } from "@/hooks/useAgentStream.ts";
+import { useAuditComparison } from "@/hooks/useAuditComparison.ts";
+import { useAuditHistory } from "@/hooks/useAuditHistory.ts";
 import { AgentStream } from "@/components/results/AgentStream.tsx";
 import { AuditTimeline } from "@/components/results/AuditTimeline.tsx";
 import { FindingsTable } from "@/components/results/FindingsTable.tsx";
 import { ScoreCard } from "@/components/results/ScoreCard.tsx";
 import { SeveritySummary } from "@/components/results/SeveritySummary.tsx";
 import { TokenSavings } from "@/components/results/TokenSavings.tsx";
+import { GitContextHeader } from "@/components/results/GitContextHeader.tsx";
+import { AuditHistoryTimeline } from "@/components/results/AuditHistoryTimeline.tsx";
+import { ProveSummaryCard } from "@/components/results/ProveSummaryCard.tsx";
+import { CrossAgentSummary } from "@/components/results/CrossAgentSummary.tsx";
+import { AuditComparisonView } from "@/components/results/AuditComparisonView.tsx";
+import { FixedFindingsList } from "@/components/results/FixedFindingsList.tsx";
 import { agentLabel } from "@/lib/constants.ts";
 import { api } from "@/lib/api.ts";
-import type { AuditStatus, AgentStep, Source, StreamLine } from "@/lib/types.ts";
+import { auditReportToMarkdown } from "@/lib/markdown.ts";
+import { ProveResults } from "@/components/results/ProveResults.tsx";
+import type { AuditStatus, AgentStep, Finding, Source, StreamLine } from "@/lib/types.ts";
 
 const STATUS_STYLES: Record<AuditStatus, string> = {
   pending: "bg-[#FEF3C7] text-[#92400E] border-[#FDE68A]",
@@ -28,16 +38,20 @@ export function AuditResults() {
   const status = audit?.status ?? "pending";
   const isTerminal = status === "completed" || status === "failed";
 
-  // Track whether we ever received live stream data (persists via state)
+  // Track whether we ever received live stream data (one-way latch via ref)
+  const hadLiveStreamRef = useRef(false);
   const [hadLiveStream, setHadLiveStream] = useState(false);
 
   // Disable SSE when audit already terminal and we never had a live stream
   const { lines: streamLines, steps: streamSteps, connected, done: streamDone, tokenSavings, dedupStats } = useAgentStream(id, isTerminal && !hadLiveStream);
 
-  // Once stream data arrives, flag it (one-way latch)
-  if (streamLines.length > 0 && !hadLiveStream) {
-    setHadLiveStream(true);
-  }
+  // Once stream data arrives, flag it (via useEffect, not during render)
+  useEffect(() => {
+    if (streamLines.length > 0 && !hadLiveStreamRef.current) {
+      hadLiveStreamRef.current = true;
+      setHadLiveStream(true);
+    }
+  }, [streamLines.length]);
 
   const auditTypes = audit?.types;
   const auditCompletedAt = audit?.completed_at;
@@ -76,8 +90,18 @@ export function AuditResults() {
   const done = isTerminal ? true : streamDone;
 
   const findings = audit?.findings ?? [];
+  const proveResults = audit?.prove_results ?? [];
   const scores = audit?.scores ?? {};
   const hasScores = Object.keys(scores).length > 0;
+
+  // For prove-only audits, original findings live in config.prove.findings
+  const proveFindings = useMemo(() => {
+    if (findings.length > 0) return findings;
+    const cfg = audit?.config as Record<string, Record<string, unknown>> | undefined;
+    const pf = cfg?.prove?.findings;
+    if (Array.isArray(pf)) return pf as Finding[];
+    return [];
+  }, [findings, audit?.config]);
 
   // Source data for git context
   const [source, setSource] = useState<Source | null>(null);
@@ -85,6 +109,10 @@ export function AuditResults() {
     if (!audit?.source_id) return;
     api.getSource(audit.source_id).then(setSource).catch(() => {});
   }, [audit?.source_id]);
+
+  // Comparison & history hooks
+  const comparison = useAuditComparison(id, isTerminal);
+  const auditHistory = useAuditHistory(audit?.source_path);
 
   // For completed audits, agent output is collapsed by default
   const [showStream, setShowStream] = useState(false);
@@ -100,6 +128,27 @@ export function AuditResults() {
               {t(`common.${status}`)}
             </span>
             <span className="text-[11px] text-muted-light font-mono" title={id}>{id?.slice(0, 11)}</span>
+            {findings.length > 0 && audit && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark"
+                onClick={() => {
+                  const md = auditReportToMarkdown(audit, findings, audit.source_path);
+                  const blob = new Blob([md], { type: "text/markdown" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `vulture-audit-${(id ?? "report").slice(0, 8)}.md`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                {t("results.exportReport")}
+              </button>
+            )}
           </div>
           {audit?.source_path && (
             <div className="flex items-center gap-2 text-[12px] text-muted">
@@ -113,25 +162,11 @@ export function AuditResults() {
           )}
         </div>
 
-        {/* Git context from source */}
-        {source && (source.git_branch || source.git_commit_short) && (
-          <div className="flex items-center gap-4 text-[12px] text-muted">
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
-            </svg>
-            <span className="font-semibold uppercase tracking-wider text-[11px]">{t("lineage.gitContext")}</span>
-            {source.git_branch && (
-              <span>
-                {t("lineage.branch")}: <span className="font-mono bg-cream rounded px-2 py-0.5">{source.git_branch}</span>
-              </span>
-            )}
-            {source.git_commit_short && (
-              <span>
-                {t("lineage.commit")}: <span className="font-mono bg-cream rounded px-2 py-0.5">{source.git_commit_short}</span>
-              </span>
-            )}
-          </div>
-        )}
+        {/* Git context + comparison delta */}
+        <GitContextHeader source={source} comparison={comparison} previousAuditId={comparison?.previous_audit_id} />
+
+        {/* Audit history timeline */}
+        <AuditHistoryTimeline audits={auditHistory} currentAuditId={id} />
 
         {/* Summary row: scores + severity side-by-side */}
         {(hasScores || findings.length > 0) && (
@@ -186,8 +221,26 @@ export function AuditResults() {
           </div>
         )}
 
+        {/* Prove summary card */}
+        {proveResults.length > 0 && (
+          <ProveSummaryCard results={proveResults} totalFindings={findings.length} />
+        )}
+
+        {/* Cross-agent summary */}
+        <CrossAgentSummary findings={findings} />
+
+        {/* Comparison view (collapsible) */}
+        {comparison && comparison.has_previous && (
+          <AuditComparisonView comparison={comparison} />
+        )}
+
+        {/* Fixed findings list (collapsible) */}
+        {comparison && comparison.fixed_findings && comparison.fixed_findings.length > 0 && (
+          <FixedFindingsList findings={comparison.fixed_findings} />
+        )}
+
         {/* No findings state */}
-        {findings.length === 0 && (
+        {findings.length === 0 && proveResults.length === 0 && (
           <div className="card p-8 text-center">
             <svg className="w-10 h-10 text-success mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -198,7 +251,12 @@ export function AuditResults() {
 
         {/* Findings table - full width */}
         {findings.length > 0 && (
-          <FindingsTable findings={findings} auditId={id} />
+          <FindingsTable findings={findings} auditId={id} proveResults={proveResults} />
+        )}
+
+        {/* Prove verification results */}
+        {proveResults.length > 0 && (
+          <ProveResults results={proveResults} findings={proveFindings} auditId={id} />
         )}
 
         {/* Agent output - collapsible, collapsed by default */}

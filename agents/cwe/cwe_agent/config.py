@@ -11,6 +11,12 @@ ALL_CATEGORIES: list[str] = [
     "access_control",
     "error_handling",
     "concurrency",
+    "web_security",
+    "configuration",
+    "dependency_security",
+    "data_handling",
+    "memory_safety",
+    "catalog_generic",
 ]
 
 CONFIG_SCHEMA: dict = {
@@ -32,7 +38,12 @@ CONFIG_SCHEMA: dict = {
 AGENT_INFO: dict = {
     "name": "CWE Weakness Auditor",
     "type": "cwe",
-    "description": "Analyzes code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities",
+    "description": (
+        "Analyzes code for Common Weakness Enumeration (CWE v4.19.1) "
+        "vulnerabilities across 846 software-relevant CWE IDs in 16 categories "
+        "with catalog-driven detection, self-learning confidence scoring, "
+        "and MMR-based memory retrieval"
+    ),
     "config_schema": CONFIG_SCHEMA,
     "skills": [
         "injection_check",
@@ -45,5 +56,11 @@ AGENT_INFO: dict = {
         "access_control_check",
         "error_handling_check",
         "concurrency_check",
+        "web_security_check",
+        "configuration_check",
+        "dependency_check",
+        "data_handling_check",
+        "memory_safety_check",
+        "catalog_detector",
     ],
 }

@@ -66,6 +66,132 @@ def sample_source(tmp_path: Path) -> Path:
         '    user = get_user(request.args["id"])\n'
         "    return user\n"
     )
+    # CWE-918: SSRF
+    (tmp_path / "ssrf_handler.py").write_text(
+        "import requests\n\n"
+        "def fetch_url(url):\n"
+        "    return requests.get(user_input)\n"
+    )
+    # CWE-352: CSRF + CWE-502: Deserialization
+    (tmp_path / "csrf_app.py").write_text(
+        "import pickle\n\n"
+        '@app.route("/update", methods=["POST"])\n'
+        "def update():\n"
+        "    return process()\n"
+    )
+    (tmp_path / "deserialize.py").write_text(
+        "import pickle\n\n"
+        "def load_data(data):\n"
+        "    return pickle.loads(data)\n"
+    )
+    # CWE-416: Use after free + CWE-190: Integer overflow
+    (tmp_path / "vuln.c").write_text(
+        "#include <stdlib.h>\n"
+        "void use_freed(char *ptr) {\n"
+        "    free(ptr);\n"
+        "    ptr->field = 1;\n"
+        "}\n"
+        "void compute() {\n"
+        "    int result = a * b;\n"
+        "}\n"
+    )
+    # CWE-476: NULL pointer deref (Go method call without nil check)
+    (tmp_path / "null_deref.go").write_text(
+        "package main\n\n"
+        "func process() {\n"
+        "    val := obj.GetItem()\n"
+        "    val.Use()\n"
+        "}\n"
+    )
+    # CWE-770: Unbounded alloc
+    (tmp_path / "alloc.go").write_text(
+        "package main\n\n"
+        "func collect() {\n"
+        "    items := make([]string, 0)\n"
+        "}\n"
+    )
+    # CWE-200: Sensitive response
+    (tmp_path / "api_response.py").write_text(
+        "def error_handler(err):\n"
+        '    return Response(str(internal_path))\n'
+    )
+    # CWE-754: I/O without error check
+    (tmp_path / "io_nocheck.py").write_text(
+        "def read_data():\n"
+        "    data = open('file.txt').read()\n"
+        "    return data\n"
+    )
+    # CWE-833: Deadlock
+    (tmp_path / "deadlock.py").write_text(
+        "import threading\n\n"
+        "lock_a = threading.Lock()\n"
+        "lock_b = threading.Lock()\n\n"
+        "def transfer():\n"
+        "    lock_a.acquire()\n"
+        "    lock_b.acquire()\n"
+    )
+    # CWE-601: Open redirect
+    (tmp_path / "redirect_handler.py").write_text(
+        "def handle_login(request):\n"
+        "    next_url = request.args['next']\n"
+        "    return redirect(request.args['url'])\n"
+    )
+    # CWE-1004: Cookie without HttpOnly
+    (tmp_path / "cookie_handler.py").write_text(
+        "def set_session(response):\n"
+        "    response.set_cookie('session_id', token)\n"
+    )
+    # CWE-1188: Insecure default config
+    (tmp_path / "prod_config.py").write_text(
+        "CORS_ALLOW_ALL = True\n"
+        "VERIFY_SSL = False\n"
+    )
+    # CWE-732: Overly permissive permissions
+    (tmp_path / "deploy.sh").write_text(
+        "#!/bin/bash\n"
+        "chmod 777 /var/data\n"
+    )
+    # CWE-1104: Unpinned dependencies
+    (tmp_path / "requirements.txt").write_text(
+        "flask\n"
+        "requests>=2.0\n"
+        "django==4.2.1\n"
+    )
+    # CWE-829: Untrusted source
+    (tmp_path / "install.sh").write_text(
+        "#!/bin/bash\n"
+        "curl http://example.com/setup.sh | bash\n"
+    )
+    # CWE-134: Format string
+    (tmp_path / "format_vuln.c").write_text(
+        "#include <stdio.h>\n"
+        "void log_input(char *argv[]) {\n"
+        "    printf(argv[1]);\n"
+        "}\n"
+    )
+    # CWE-1321: Prototype pollution
+    (tmp_path / "merge_handler.js").write_text(
+        "function handleUpdate(req) {\n"
+        "    Object.assign({}, req.body);\n"
+        "}\n"
+    )
+    # CWE-401: Memory leak
+    (tmp_path / "leak.c").write_text(
+        "#include <stdlib.h>\n"
+        "void process() {\n"
+        "    char *buf = malloc(1024);\n"
+        "    return;\n"
+        "}\n"
+    )
+    # CWE-415: Double free
+    (tmp_path / "double_free.c").write_text(
+        "#include <stdlib.h>\n"
+        "void cleanup(char *ptr) {\n"
+        "    free(ptr);\n"
+        "    ptr = NULL;\n"
+        "    free(ptr);\n"
+        "}\n"
+    )
     return tmp_path
 
 
@@ -121,7 +247,7 @@ class TestCweInfo:
         assert body["type"] == "cwe"
         assert "config_schema" in body
         assert "skills" in body
-        assert len(body["skills"]) >= 10
+        assert len(body["skills"]) >= 15
 
 
 class TestCweRun:
@@ -283,6 +409,150 @@ class TestCweSkills:
         result = check_concurrency(str(sample_source))
         assert "findings" in result
         assert len(result["findings"]) > 0
+
+    def test_injection_detects_ssrf(self, sample_source: Path) -> None:
+        """injection_check finds SSRF patterns (CWE-918)."""
+        from cwe_agent.skills.injection_check import check_injection
+        result = check_injection(str(sample_source))
+        assert any(f["category"] == "CWE-918" for f in result["findings"])
+
+    def test_buffer_detects_use_after_free(self, sample_source: Path) -> None:
+        """buffer_check finds use-after-free patterns (CWE-416)."""
+        from cwe_agent.skills.buffer_check import check_buffer_handling
+        result = check_buffer_handling(str(sample_source))
+        assert any(f["category"] == "CWE-416" for f in result["findings"])
+
+    def test_buffer_detects_integer_overflow(self, sample_source: Path) -> None:
+        """buffer_check finds integer overflow patterns (CWE-190)."""
+        from cwe_agent.skills.buffer_check import check_buffer_handling
+        result = check_buffer_handling(str(sample_source))
+        assert any(f["category"] == "CWE-190" for f in result["findings"])
+
+    def test_input_validation_detects_csrf(self, sample_source: Path) -> None:
+        """input_validation_check finds CSRF patterns (CWE-352)."""
+        from cwe_agent.skills.input_validation_check import check_input_validation
+        result = check_input_validation(str(sample_source))
+        assert any(f["category"] == "CWE-352" for f in result["findings"])
+
+    def test_input_validation_detects_deserialization(self, sample_source: Path) -> None:
+        """input_validation_check finds deserialization patterns (CWE-502)."""
+        from cwe_agent.skills.input_validation_check import check_input_validation
+        result = check_input_validation(str(sample_source))
+        assert any(f["category"] == "CWE-502" for f in result["findings"])
+
+    def test_resource_detects_null_deref(self, sample_source: Path) -> None:
+        """resource_check finds NULL pointer dereference (CWE-476)."""
+        from cwe_agent.skills.resource_check import check_resource_management
+        result = check_resource_management(str(sample_source))
+        assert any(f["category"] == "CWE-476" for f in result["findings"])
+
+    def test_resource_detects_unbounded_alloc(self, sample_source: Path) -> None:
+        """resource_check finds unbounded allocation (CWE-770)."""
+        from cwe_agent.skills.resource_check import check_resource_management
+        result = check_resource_management(str(sample_source))
+        assert any(f["category"] == "CWE-770" for f in result["findings"])
+
+    def test_info_exposure_detects_sensitive_response(self, sample_source: Path) -> None:
+        """info_exposure_check finds sensitive info in responses (CWE-200)."""
+        from cwe_agent.skills.info_exposure_check import check_information_exposure
+        result = check_information_exposure(str(sample_source))
+        assert any(f["category"] == "CWE-200" for f in result["findings"])
+
+    def test_error_handling_detects_unchecked_io(self, sample_source: Path) -> None:
+        """error_handling_check finds unchecked I/O (CWE-754)."""
+        from cwe_agent.skills.error_handling_check import check_error_handling
+        result = check_error_handling(str(sample_source))
+        assert any(f["category"] == "CWE-754" for f in result["findings"])
+
+    def test_concurrency_detects_deadlock(self, sample_source: Path) -> None:
+        """concurrency_check finds deadlock patterns (CWE-833)."""
+        from cwe_agent.skills.concurrency_check import check_concurrency
+        result = check_concurrency(str(sample_source))
+        assert any(f["category"] == "CWE-833" for f in result["findings"])
+
+    def test_web_security_check(self, sample_source: Path) -> None:
+        """web_security_check finds open redirect and cookie issues."""
+        from cwe_agent.skills.web_security_check import check_web_security
+        result = check_web_security(str(sample_source))
+        assert "findings" in result
+        assert len(result["findings"]) > 0
+
+    def test_web_security_detects_open_redirect(self, sample_source: Path) -> None:
+        """web_security_check finds open redirect (CWE-601)."""
+        from cwe_agent.skills.web_security_check import check_web_security
+        result = check_web_security(str(sample_source))
+        assert any(f["category"] == "CWE-601" for f in result["findings"])
+
+    def test_configuration_check(self, sample_source: Path) -> None:
+        """configuration_check finds insecure defaults and permissions."""
+        from cwe_agent.skills.configuration_check import check_configuration
+        result = check_configuration(str(sample_source))
+        assert "findings" in result
+        assert len(result["findings"]) > 0
+
+    def test_configuration_detects_insecure_default(self, sample_source: Path) -> None:
+        """configuration_check finds insecure defaults (CWE-1188)."""
+        from cwe_agent.skills.configuration_check import check_configuration
+        result = check_configuration(str(sample_source))
+        assert any(f["category"] == "CWE-1188" for f in result["findings"])
+
+    def test_dependency_check(self, sample_source: Path) -> None:
+        """dependency_check finds unpinned deps and untrusted sources."""
+        from cwe_agent.skills.dependency_check import check_dependency_security
+        result = check_dependency_security(str(sample_source))
+        assert "findings" in result
+        assert len(result["findings"]) > 0
+
+    def test_dependency_detects_unpinned(self, sample_source: Path) -> None:
+        """dependency_check finds unpinned dependencies (CWE-1104)."""
+        from cwe_agent.skills.dependency_check import check_dependency_security
+        result = check_dependency_security(str(sample_source))
+        assert any(f["category"] == "CWE-1104" for f in result["findings"])
+
+    def test_dependency_detects_untrusted_source(self, sample_source: Path) -> None:
+        """dependency_check finds pipe-to-shell install (CWE-829)."""
+        from cwe_agent.skills.dependency_check import check_dependency_security
+        result = check_dependency_security(str(sample_source))
+        assert any(f["category"] == "CWE-829" for f in result["findings"])
+
+    def test_data_handling_check(self, sample_source: Path) -> None:
+        """data_handling_check finds format string and prototype pollution."""
+        from cwe_agent.skills.data_handling_check import check_data_handling
+        result = check_data_handling(str(sample_source))
+        assert "findings" in result
+        assert len(result["findings"]) > 0
+
+    def test_data_handling_detects_format_string(self, sample_source: Path) -> None:
+        """data_handling_check finds format string vulnerability (CWE-134)."""
+        from cwe_agent.skills.data_handling_check import check_data_handling
+        result = check_data_handling(str(sample_source))
+        assert any(f["category"] == "CWE-134" for f in result["findings"])
+
+    def test_data_handling_detects_prototype_pollution(self, sample_source: Path) -> None:
+        """data_handling_check finds prototype pollution (CWE-1321)."""
+        from cwe_agent.skills.data_handling_check import check_data_handling
+        result = check_data_handling(str(sample_source))
+        assert any(f["category"] == "CWE-1321" for f in result["findings"])
+
+    def test_memory_safety_check(self, sample_source: Path) -> None:
+        """memory_safety_check finds memory lifecycle issues."""
+        from cwe_agent.skills.memory_safety_check import check_memory_safety
+        result = check_memory_safety(str(sample_source))
+        assert "findings" in result
+        assert len(result["findings"]) > 0
+
+    def test_memory_safety_detects_leak(self, sample_source: Path) -> None:
+        """memory_safety_check finds memory leak (CWE-401)."""
+        from cwe_agent.skills.memory_safety_check import check_memory_safety
+        result = check_memory_safety(str(sample_source))
+        assert any(f["category"] == "CWE-401" for f in result["findings"])
+
+    def test_findings_have_catalog_metadata(self, sample_source: Path) -> None:
+        """Findings from new skills include catalog enrichment metadata."""
+        from cwe_agent.skills.web_security_check import check_web_security
+        result = check_web_security(str(sample_source))
+        enriched = [f for f in result["findings"] if f.get("cwe_name")]
+        assert len(enriched) > 0, "Expected at least one finding with cwe_name from catalog"
 
 
 class TestCweCleanCode:

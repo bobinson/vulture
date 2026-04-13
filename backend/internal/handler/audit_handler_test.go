@@ -19,14 +19,16 @@ var errTest = errors.New("test error")
 // --- Mock implementations ---
 
 type mockAuditService struct {
-	createFn         func(req *model.AuditRequest) (*model.Audit, error)
-	getFn            func(id string) (*model.Audit, error)
-	updateFn         func(audit *model.Audit) error
-	saveFindingsFn   func(auditID string, findings []model.Finding) error
-	listFn           func(limit, offset int) ([]model.Audit, error)
-	statsFn          func() (*model.DashboardStats, error)
-	getCachedAuditFn func(sourceID string, types []string) (*model.Audit, error)
-	findSourceFn     func(path string) (*model.Source, error)
+	createFn                   func(req *model.AuditRequest) (*model.Audit, error)
+	getFn                      func(id string) (*model.Audit, error)
+	updateFn                   func(audit *model.Audit) error
+	saveFindingsFn             func(auditID string, findings []model.Finding) error
+	listFn                     func(limit, offset int) ([]model.Audit, error)
+	statsFn                    func() (*model.DashboardStats, error)
+	getCachedAuditFn           func(sourceID string, types []string) (*model.Audit, error)
+	findSourceFn               func(path string) (*model.Source, error)
+	getPreviousCompletedFn     func(sourceID string, types []string, excludeAuditID string) (*model.Audit, error)
+	listAuditsBySourcePathFn   func(sourcePath string, limit, offset int) ([]model.Audit, error)
 }
 
 func (m *mockAuditService) Create(req *model.AuditRequest) (*model.Audit, error) {
@@ -77,6 +79,18 @@ func (m *mockAuditService) FindSourceByPath(path string) (*model.Source, error) 
 	}
 	return nil, nil
 }
+func (m *mockAuditService) GetPreviousCompletedAudit(sourceID string, types []string, excludeAuditID string) (*model.Audit, error) {
+	if m.getPreviousCompletedFn != nil {
+		return m.getPreviousCompletedFn(sourceID, types, excludeAuditID)
+	}
+	return nil, nil
+}
+func (m *mockAuditService) ListAuditsBySourcePath(sourcePath string, limit, offset int) ([]model.Audit, error) {
+	if m.listAuditsBySourcePathFn != nil {
+		return m.listAuditsBySourcePathFn(sourcePath, limit, offset)
+	}
+	return nil, nil
+}
 
 type mockSourceService struct {
 	ingestFn func(ctx context.Context, req *model.SourceRequest) (*model.Source, error)
@@ -103,8 +117,9 @@ type mockMemoryService struct {
 	getWithEdgesFn       func(id string) (*model.MemoryWithEdges, error)
 	updateRemFn          func(id, status, notes string) error
 	listByAuditFn        func(auditID string) ([]model.AuditMemory, error)
-	listByCodebasePathFn func(path, agentType string, limit int) ([]model.AuditMemory, error)
-	listRecentFn         func(limit int) ([]model.AuditMemory, error)
+	listByCodebasePathFn      func(path, agentType string, limit int) ([]model.AuditMemory, error)
+	listByCodebasePathMultiFn func(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error)
+	listRecentFn              func(limit int) ([]model.AuditMemory, error)
 	storeFindingsFn      func(auditID, sourcePath string, findings []model.Finding) error
 	getEdgesFn           func(memoryID string) ([]model.MemoryEdge, error)
 }
@@ -150,6 +165,12 @@ func (m *mockMemoryService) ListByCodebasePath(path, agentType string, limit int
 		return m.listByCodebasePathFn(path, agentType, limit)
 	}
 	return []model.AuditMemory{}, nil
+}
+func (m *mockMemoryService) ListByCodebasePathMulti(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error) {
+	if m.listByCodebasePathMultiFn != nil {
+		return m.listByCodebasePathMultiFn(path, agentTypes, limit)
+	}
+	return nil, nil
 }
 func (m *mockMemoryService) ListRecent(limit int) ([]model.AuditMemory, error) {
 	if m.listRecentFn != nil {

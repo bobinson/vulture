@@ -6,11 +6,17 @@ from pathlib import Path
 from agents import function_tool
 
 from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
+    SCANNER_DEF_LINE,
     is_generated_file,
     is_test_file,
+    read_file_lines,
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.snippet import check_context, extract_snippet
+
+from cwe_agent.catalog import enrich_finding
 
 # CWE-862: Missing authorization
 ROUTE_PATTERNS = [
@@ -32,7 +38,7 @@ ROLE_STRING_CMP = [
     re.compile(r'["\'](?:admin|root|superuser)["\']\s*==\s*(?:role|user_role|userRole)'),
 ]
 
-# CWE-284: IDOR patterns
+# CWE-639: Authorization Bypass Through User-Controlled Key (IDOR)
 IDOR_PATTERNS = [
     re.compile(r'request\.(?:args|params|query)\[?["\'](?:\w*id)["\']'),
     re.compile(r'request\.form\[?["\'](?:\w*id)["\']'),
@@ -52,8 +58,10 @@ PRIVILEGE_PATTERNS = [
     re.compile(r"setuid\s*\(\s*0\s*\)"),
 ]
 
-COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
 IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
+
+# Two-tier context: missing auth is only high with route/handler context
+_ROUTE_CONTEXT = [re.compile(r"(route|handler|endpoint|controller|app\.|router\.|api)", re.I)]
 
 
 def check_access_control(source_path: str) -> dict:
@@ -70,30 +78,33 @@ def check_access_control(source_path: str) -> dict:
     for file_path in scan_code_files(source_path):
         if is_generated_file(file_path):
             continue
-        _analyze_file(file_path, findings, is_test=is_test_file(file_path))
+        if is_test_file(file_path):
+            continue
+        _analyze_file(file_path, findings)
 
     return {"findings": findings}
 
 
-def _analyze_file(file_path: Path, findings: list[dict], *, is_test: bool) -> None:
+def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze a file for access control issues."""
-    content = read_file_safe(file_path)
-    if content is None:
+    lines = read_file_lines(file_path)
+    if lines is None:
         return
+    content = read_file_safe(file_path) or ""
 
     has_authz = AUTHZ_PRESENT.search(content) is not None
     has_ownership = OWNERSHIP_CHECK.search(content) is not None
-
-    lines = content.splitlines()
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
             continue
         if IMPORT_LINE.match(line):
             continue
-        _check_missing_authz(file_path, line, line_num, has_authz, findings, is_test=is_test)
-        _check_role_string_cmp(file_path, line, line_num, findings, is_test=is_test)
-        _check_idor(file_path, line, line_num, has_ownership, findings, is_test=is_test)
-        _check_privilege(file_path, line, line_num, findings, is_test=is_test)
+        if SCANNER_DEF_LINE.search(line):
+            continue
+        _check_missing_authz(file_path, line, line_num, has_authz, lines, content, findings)
+        _check_role_string_cmp(file_path, line, line_num, lines, findings)
+        _check_idor(file_path, line, line_num, has_ownership, lines, findings)
+        _check_privilege(file_path, line, line_num, lines, findings)
 
 
 def _check_missing_authz(
@@ -101,9 +112,9 @@ def _check_missing_authz(
     line: str,
     line_num: int,
     has_authz: bool,
+    lines: list[str],
+    content: str,
     findings: list[dict],
-    *,
-    is_test: bool,
 ) -> None:
     """Check for missing authorization on routes (CWE-862)."""
     if has_authz:
@@ -111,8 +122,13 @@ def _check_missing_authz(
     for pattern in ROUTE_PATTERNS:
         if not pattern.search(line):
             continue
-        findings.append({
-            "severity": "low" if is_test else "high",
+        # Two-tier: demote to medium if file lacks route/handler context
+        severity = "high"
+        if not check_context(content, _ROUTE_CONTEXT):
+            severity = "medium"
+        finding = {
+            "severity": severity,
+            "check_id": "cwe.access_control.missing_authz",
             "category": "CWE-862",
             "title": "Route handler without authorization",
             "description": f"Endpoint at line {line_num} has no visible auth check",
@@ -120,19 +136,23 @@ def _check_missing_authz(
             "line_start": line_num,
             "line_end": line_num,
             "recommendation": "Add authentication/authorization middleware or decorators",
-        })
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "862"))
         return
 
 
 def _check_role_string_cmp(
-    file_path: Path, line: str, line_num: int, findings: list[dict], *, is_test: bool,
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
 ) -> None:
     """Check for incorrect authorization via string comparison (CWE-863)."""
     for pattern in ROLE_STRING_CMP:
         if not pattern.search(line):
             continue
-        findings.append({
-            "severity": "low" if is_test else "high",
+        finding = {
+            "severity": "high",
+            "check_id": "cwe.access_control.role_string_cmp",
             "category": "CWE-863",
             "title": "Role check via string comparison",
             "description": f"Direct string comparison for role at line {line_num}",
@@ -140,7 +160,9 @@ def _check_role_string_cmp(
             "line_start": line_num,
             "line_end": line_num,
             "recommendation": "Use a role-based access control (RBAC) system instead of string checks",
-        })
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "863"))
         return
 
 
@@ -149,38 +171,42 @@ def _check_idor(
     line: str,
     line_num: int,
     has_ownership: bool,
+    lines: list[str],
     findings: list[dict],
-    *,
-    is_test: bool,
 ) -> None:
-    """Check for IDOR vulnerabilities (CWE-284)."""
+    """Check for IDOR vulnerabilities (CWE-639)."""
     if has_ownership:
         return
     for pattern in IDOR_PATTERNS:
         if not pattern.search(line):
             continue
-        findings.append({
-            "severity": "low" if is_test else "high",
-            "category": "CWE-284",
+        finding = {
+            "severity": "high",
+            "check_id": "cwe.access_control.idor",
+            "category": "CWE-639",
             "title": "Potential IDOR vulnerability",
             "description": f"User-supplied ID used without ownership check at line {line_num}",
             "file_path": str(file_path),
             "line_start": line_num,
             "line_end": line_num,
             "recommendation": "Verify resource ownership before granting access",
-        })
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "639"))
         return
 
 
 def _check_privilege(
-    file_path: Path, line: str, line_num: int, findings: list[dict], *, is_test: bool,
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
 ) -> None:
     """Check for improper privilege management (CWE-269)."""
     for pattern in PRIVILEGE_PATTERNS:
         if not pattern.search(line):
             continue
-        findings.append({
-            "severity": "medium" if is_test else "critical",
+        finding = {
+            "severity": "critical",
+            "check_id": "cwe.access_control.improper_privilege",
             "category": "CWE-269",
             "title": "Improper privilege management",
             "description": f"Excessive permissions or privilege escalation at line {line_num}",
@@ -188,7 +214,9 @@ def _check_privilege(
             "line_start": line_num,
             "line_end": line_num,
             "recommendation": "Apply least privilege principle; avoid running as root or using 777 permissions",
-        })
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "269"))
         return
 
 

@@ -12,10 +12,10 @@ func TestProcessAuditFindings_NewFinding(t *testing.T) {
 	var upserted *model.FindingLineage
 	var addedEvent *model.LineageEvent
 	mock := &repository.MockLineageRepository{
-		GetLineageByFingerprintFn: func(fp, sp, at string) (*model.FindingLineage, error) { return nil, nil },
-		UpsertLineageFn:           func(l *model.FindingLineage) error { upserted = l; l.ID = "lineage-1"; return nil },
-		AddEventFn:                func(e *model.LineageEvent) error { addedEvent = e; return nil },
-		GetOpenBySourcePathFn:     func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
+		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) { return nil, nil },
+		UpsertLineageFn:            func(l *model.FindingLineage) error { upserted = l; l.ID = "lineage-1"; return nil },
+		AddEventFn:                 func(e *model.LineageEvent) error { addedEvent = e; return nil },
+		GetOpenBySourcePathFn:      func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
 	}
 	svc := NewLineageService(mock)
 
@@ -63,11 +63,13 @@ func TestProcessAuditFindings_Regression(t *testing.T) {
 		CurrentStatus: model.LineageStatusFixed,
 	}
 	mock := &repository.MockLineageRepository{
-		GetLineageByFingerprintFn: func(fp, sp, at string) (*model.FindingLineage, error) { return existing, nil },
-		UpsertLineageFn:           func(l *model.FindingLineage) error { return nil },
-		MarkRegressionFn:          func(id, aid, c string) error { regressionCalled = true; return nil },
-		AddEventFn:                func(e *model.LineageEvent) error { regressionEvent = e; return nil },
-		GetOpenBySourcePathFn:     func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
+		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) {
+			return map[string]*model.FindingLineage{"fp-1|chaos": existing}, nil
+		},
+		UpsertLineageFn:       func(l *model.FindingLineage) error { return nil },
+		MarkRegressionFn:      func(id, aid, c string) error { regressionCalled = true; return nil },
+		AddEventFn:            func(e *model.LineageEvent) error { regressionEvent = e; return nil },
+		GetOpenBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
 	}
 	svc := NewLineageService(mock)
 
@@ -93,9 +95,9 @@ func TestProcessAuditFindings_FixDetection(t *testing.T) {
 		{ID: "lineage-old", Fingerprint: "fp-old", CurrentStatus: model.LineageStatusOpen},
 	}
 	mock := &repository.MockLineageRepository{
-		GetLineageByFingerprintFn: func(fp, sp, at string) (*model.FindingLineage, error) { return nil, nil },
-		UpsertLineageFn:           func(l *model.FindingLineage) error { l.ID = "lineage-new"; return nil },
-		AddEventFn:                func(e *model.LineageEvent) error { return nil },
+		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) { return nil, nil },
+		UpsertLineageFn:            func(l *model.FindingLineage) error { l.ID = "lineage-new"; return nil },
+		AddEventFn:                 func(e *model.LineageEvent) error { return nil },
 		GetOpenBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) {
 			return openLineages, nil
 		},
@@ -123,9 +125,9 @@ func TestProcessAuditFindings_AcceptedRiskNotAutoFixed(t *testing.T) {
 		{ID: "lineage-risk", Fingerprint: "fp-risk", CurrentStatus: model.LineageStatusAcceptedRisk},
 	}
 	mock := &repository.MockLineageRepository{
-		GetLineageByFingerprintFn: func(fp, sp, at string) (*model.FindingLineage, error) { return nil, nil },
-		UpsertLineageFn:           func(l *model.FindingLineage) error { l.ID = "lineage-x"; return nil },
-		AddEventFn:                func(e *model.LineageEvent) error { return nil },
+		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) { return nil, nil },
+		UpsertLineageFn:            func(l *model.FindingLineage) error { l.ID = "lineage-x"; return nil },
+		AddEventFn:                 func(e *model.LineageEvent) error { return nil },
 		GetOpenBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) {
 			return openLineages, nil
 		},

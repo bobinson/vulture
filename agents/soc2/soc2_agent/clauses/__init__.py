@@ -10,4 +10,7 @@ CLAUSE_MAP = {
     "CC8": audit_cc8,
 }
 
-__all__ = ["audit_cc6", "audit_cc7", "audit_cc8", "CLAUSE_MAP"]
+# Normalized alias for cross-agent consistency
+SKILL_MAP = CLAUSE_MAP
+
+__all__ = ["audit_cc6", "audit_cc7", "audit_cc8", "CLAUSE_MAP", "SKILL_MAP"]

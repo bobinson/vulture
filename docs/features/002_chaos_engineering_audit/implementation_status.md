@@ -45,4 +45,4 @@
 - Agent uses shared base from `agents/shared/` for transport and models
 - SSE streaming via FastAPI StreamingResponse with `agents/shared/shared/transport/sse_app.py`
 - LLM provider configurable via `VULTURE_LLM_MODEL` env var (default: gpt-4o)
-- Agent runs on port 8001 in Docker
+- Agent runs on port 28001 in Docker

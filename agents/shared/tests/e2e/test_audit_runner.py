@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from shared.audit_runner import run_skill_audit
+from shared.audit_runner import run_combined_audit
 
 
 def _sql_injection_skill(source_path: str) -> dict:
@@ -74,7 +74,7 @@ class TestSkillAuditWithPriorContext:
         )
         skill_map = {"injection": _sql_injection_skill}
 
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="test-prior-1",
             source_path=str(tmp_path),
             categories=["injection"],
@@ -98,7 +98,7 @@ class TestSkillAuditWithPriorContext:
         )
         skill_map = {"injection": _sql_injection_skill}
 
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="test-prior-2",
             source_path=str(tmp_path),
             categories=["injection"],
@@ -124,7 +124,7 @@ class TestSkillAuditWithPriorContext:
             "crypto_failure": _weak_crypto_skill,
         }
 
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="test-prior-3",
             source_path=str(tmp_path),
             categories=["injection", "crypto_failure"],
@@ -141,7 +141,7 @@ class TestSkillAuditWithPriorContext:
         """Without prior context, findings and score work as normal."""
         skill_map = {"injection": _sql_injection_skill}
 
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="test-no-prior",
             source_path=str(tmp_path),
             categories=["injection"],
@@ -183,7 +183,7 @@ def _failing_skill(source_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Exception handling tests for run_skill_audit
+# Exception handling tests for run_combined_audit (skill-only mode)
 # ---------------------------------------------------------------------------
 
 
@@ -197,7 +197,7 @@ class TestSkillExceptionHandling:
             "crypto": _failing_skill,
         }
 
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="test-exc-partial",
             source_path=str(tmp_path),
             categories=["injection", "crypto"],
@@ -218,7 +218,7 @@ class TestSkillExceptionHandling:
             "crypto": _failing_skill,
         }
 
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="test-exc-error-event",
             source_path=str(tmp_path),
             categories=["injection", "crypto"],
@@ -239,7 +239,7 @@ class TestSkillExceptionHandling:
             "misconfig": _failing_skill,
         }
 
-        events = list(run_skill_audit(
+        events = list(run_combined_audit(
             run_id="test-exc-all-fail",
             source_path=str(tmp_path),
             categories=["crypto", "misconfig"],
@@ -259,9 +259,6 @@ class TestSkillExceptionHandling:
 # ---------------------------------------------------------------------------
 # Exception handling tests for run_combined_audit
 # ---------------------------------------------------------------------------
-
-
-from shared.audit_runner import run_combined_audit
 
 
 class TestCombinedAuditExceptionHandling:
@@ -309,3 +306,93 @@ class TestCombinedAuditExceptionHandling:
         assert "failed" in all_event_text or "error" in all_event_text, (
             "Expected an error/failed message in SSE events when a skill crashes"
         )
+
+
+# ---------------------------------------------------------------------------
+# Skill retry E2E tests
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRetryBehavior:
+    """E2E tests: transient skill errors are retried, permanent errors are not."""
+
+    def test_transient_error_retried_and_recovers(self, tmp_path, monkeypatch):
+        """PermissionError on first call, succeeds on second → findings appear."""
+        monkeypatch.setattr("shared.audit_runner.USE_LLM", False)
+        call_count = 0
+
+        def _flaky_skill(source_path: str) -> dict:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise PermissionError("File locked by another process")
+            return {
+                "findings": [
+                    {
+                        "severity": "high",
+                        "category": "resilience",
+                        "title": "Missing circuit breaker",
+                        "description": "No circuit breaker on external call",
+                        "file_path": f"{source_path}/client.py",
+                        "line_start": 10,
+                        "line_end": 10,
+                        "recommendation": "Add circuit breaker",
+                    }
+                ]
+            }
+
+        events = list(run_combined_audit(
+            run_id="test-retry-recover",
+            source_path=str(tmp_path),
+            categories=["resilience"],
+            skill_map={"resilience": _flaky_skill},
+        ))
+
+        result = _parse_result_event(events)
+        assert len(result["findings"]) == 1, (
+            "Transient PermissionError should be retried; finding must appear"
+        )
+        assert result["findings"][0]["title"] == "Missing circuit breaker"
+        assert call_count == 2, "Skill should have been called exactly twice"
+
+    def test_permanent_error_not_retried(self, tmp_path, monkeypatch):
+        """ValueError is not transient → call_count == 1, no findings."""
+        monkeypatch.setattr("shared.audit_runner.USE_LLM", False)
+        call_count = 0
+
+        def _perm_fail_skill(source_path: str) -> dict:
+            nonlocal call_count
+            call_count += 1
+            raise ValueError("Invalid configuration: missing required field")
+
+        events = list(run_combined_audit(
+            run_id="test-retry-permanent",
+            source_path=str(tmp_path),
+            categories=["check"],
+            skill_map={"check": _perm_fail_skill},
+        ))
+
+        result = _parse_result_event(events)
+        assert len(result["findings"]) == 0
+        assert call_count == 1, "Permanent error must NOT be retried"
+
+    def test_transient_error_exhausts_retries(self, tmp_path, monkeypatch):
+        """Always PermissionError → call_count == 2, no findings."""
+        monkeypatch.setattr("shared.audit_runner.USE_LLM", False)
+        call_count = 0
+
+        def _always_locked_skill(source_path: str) -> dict:
+            nonlocal call_count
+            call_count += 1
+            raise PermissionError("File locked permanently")
+
+        events = list(run_combined_audit(
+            run_id="test-retry-exhaust",
+            source_path=str(tmp_path),
+            categories=["check"],
+            skill_map={"check": _always_locked_skill},
+        ))
+
+        result = _parse_result_event(events)
+        assert len(result["findings"]) == 0
+        assert call_count == 2, "Transient error should be retried once (2 attempts total)"

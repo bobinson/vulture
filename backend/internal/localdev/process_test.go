@@ -51,13 +51,13 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ProjectRoot != "/test/root" {
 		t.Errorf("expected /test/root, got %s", cfg.ProjectRoot)
 	}
-	if cfg.BackendPort != "8080" {
-		t.Errorf("expected 8080, got %s", cfg.BackendPort)
+	if cfg.BackendPort != "28080" {
+		t.Errorf("expected 28080, got %s", cfg.BackendPort)
 	}
-	if cfg.FrontendPort != "3001" {
-		t.Errorf("expected 3001, got %s", cfg.FrontendPort)
+	if cfg.FrontendPort != "23001" {
+		t.Errorf("expected 23001, got %s", cfg.FrontendPort)
 	}
-	if len(cfg.AgentPorts) != 4 {
-		t.Errorf("expected 4 agent ports, got %d", len(cfg.AgentPorts))
+	if len(cfg.AgentPorts) != 8 {
+		t.Errorf("expected 8 agent ports, got %d", len(cfg.AgentPorts))
 	}
 }

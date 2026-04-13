@@ -91,21 +91,56 @@ describe("useAudit", () => {
     expect(mockGetAudit).toHaveBeenCalledWith("audit-1");
   });
 
-  it("polls every 5 seconds", async () => {
+  it("uses exponential backoff starting at 2s", async () => {
     mockGetAudit.mockResolvedValue(SAMPLE_AUDIT);
     renderHook(() => useAudit("audit-1"));
 
-    // Wait for initial fetch
+    // Initial fetch fires immediately
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
     });
     expect(mockGetAudit).toHaveBeenCalledTimes(1);
 
-    // Advance 5 seconds for poll
+    // First retry at 2s (initial delay * 1.5 = 3s for next)
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(2000);
     });
     expect(mockGetAudit).toHaveBeenCalledTimes(2);
+
+    // Second retry at 3s (2000 * 1.5)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(mockGetAudit).toHaveBeenCalledTimes(3);
+  });
+
+  it("caps backoff delay at 10s", async () => {
+    mockGetAudit.mockResolvedValue(SAMPLE_AUDIT);
+    renderHook(() => useAudit("audit-1"));
+
+    // Initial fetch
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(mockGetAudit).toHaveBeenCalledTimes(1);
+
+    // Run through enough iterations to exceed 10s cap:
+    // delays: 2s, 3s, 4.5s, 6.75s, 10s (capped), 10s...
+    let total = 0;
+    const delays = [2000, 3000, 4500, 6750, 10000];
+    for (let i = 0; i < delays.length; i++) {
+      total += delays[i];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(delays[i]);
+      });
+      expect(mockGetAudit).toHaveBeenCalledTimes(i + 2);
+    }
+
+    // Next should also be 10s (capped)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(mockGetAudit).toHaveBeenCalledTimes(delays.length + 2);
   });
 
   it("stops polling when status is completed", async () => {
@@ -153,7 +188,7 @@ describe("useAudit", () => {
     expect(result.current.audit).toBeNull();
   });
 
-  it("cleans up interval on unmount", async () => {
+  it("cleans up timeout on unmount", async () => {
     mockGetAudit.mockResolvedValue(SAMPLE_AUDIT);
     const { unmount } = renderHook(() => useAudit("audit-1"));
 
@@ -166,7 +201,7 @@ describe("useAudit", () => {
     // Advancing time after unmount should not cause additional calls
     const callsBefore = mockGetAudit.mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(10000);
+      await vi.advanceTimersByTimeAsync(20000);
     });
     expect(mockGetAudit).toHaveBeenCalledTimes(callsBefore);
   });

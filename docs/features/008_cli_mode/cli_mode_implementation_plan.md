@@ -54,7 +54,7 @@ vulture memories search <query> → GET /api/memories/search → formatted list
 ### Config (`~/.vulture/config.json`)
 ```json
 {
-  "server_url": "http://localhost:8080",
+  "server_url": "http://localhost:28080",
   "token": "eyJhbG...",
   "default_types": ["chaos", "owasp", "soc2"],
   "output_format": "text"

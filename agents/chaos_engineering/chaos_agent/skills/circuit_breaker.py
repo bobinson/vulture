@@ -58,6 +58,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if has_service_calls and not has_breaker:
         findings.append({
             "severity": "medium",
+            "check_id": "chaos.circuit_breaker.missing",
             "category": "circuit-breaker",
             "title": "Missing circuit breaker for external service calls",
             "description": f"File {file_path.name} makes external calls without circuit breaker",

@@ -190,7 +190,7 @@ func TestFirstOrEmpty(t *testing.T) {
 
 func TestLoadPriorFindingsNoMemoryService(t *testing.T) {
 	h := NewStreamHandler(&mockAuditService{}, &mockSourceService{}, &mockStreamService{}, nil)
-	result := h.loadPriorFindings("/code", []string{"owasp"})
+	result := h.loadPriorFindings("/code", []string{"owasp"}, 50)
 	if result != nil {
 		t.Errorf("expected nil when no memory service, got %v", result)
 	}
@@ -198,20 +198,19 @@ func TestLoadPriorFindingsNoMemoryService(t *testing.T) {
 
 func TestLoadPriorFindingsWithMemories(t *testing.T) {
 	memSvc := &mockMemoryService{
-		listByCodebasePathFn: func(path, agentType string, limit int) ([]model.AuditMemory, error) {
-			if agentType == "owasp" {
-				return []model.AuditMemory{
+		listByCodebasePathMultiFn: func(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error) {
+			return map[string][]model.AuditMemory{
+				"owasp": {
 					{ID: "m-1", Title: "SQL Injection", Severity: "high", FilePaths: []string{"/db.py"}, RemediationStatus: "open"},
-				}, nil
-			}
-			return nil, nil
+				},
+			}, nil
 		},
 	}
 	agents := map[string]config.AgentConfig{}
 	h := NewStreamHandler(&mockAuditService{}, &mockSourceService{}, &mockStreamService{}, agents)
 	h.SetMemoryService(memSvc)
 
-	result := h.loadPriorFindings("/code", []string{"owasp", "chaos"})
+	result := h.loadPriorFindings("/code", []string{"owasp", "chaos"}, 50)
 
 	if len(result["owasp"]) != 1 {
 		t.Fatalf("expected 1 owasp prior finding, got %d", len(result["owasp"]))
@@ -226,14 +225,14 @@ func TestLoadPriorFindingsWithMemories(t *testing.T) {
 
 func TestLoadPriorFindingsWithError(t *testing.T) {
 	memSvc := &mockMemoryService{
-		listByCodebasePathFn: func(path, agentType string, limit int) ([]model.AuditMemory, error) {
+		listByCodebasePathMultiFn: func(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error) {
 			return nil, errTest
 		},
 	}
 	h := NewStreamHandler(&mockAuditService{}, &mockSourceService{}, &mockStreamService{}, nil)
 	h.SetMemoryService(memSvc)
 
-	result := h.loadPriorFindings("/code", []string{"owasp"})
+	result := h.loadPriorFindings("/code", []string{"owasp"}, 50)
 	// Errors should be silently ignored
 	if len(result) != 0 {
 		t.Errorf("expected empty result on error, got %d", len(result))
@@ -281,6 +280,127 @@ func TestStreamHandlerReplayCompleted(t *testing.T) {
 	body := w.Body.String()
 	if body == "" {
 		t.Fatal("expected SSE events in body")
+	}
+}
+
+func TestDeduplicateCrossAgentRemovesDuplicates(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "SQL Injection", FilePath: "/db.py", LineStart: 42, AgentType: "owasp", Severity: model.SeverityHigh},
+		{Title: "SQL Injection", FilePath: "/db.py", LineStart: 42, AgentType: "cwe", Severity: model.SeverityCritical, CheckID: "cwe.injection.sql", CodeSnippet: "query = f\"SELECT...\""},
+		{Title: "XSS", FilePath: "/web.js", LineStart: 10, AgentType: "cwe", Severity: model.SeverityHigh},
+	}
+
+	result := deduplicateCrossAgent(findings)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 findings after dedup, got %d", len(result))
+	}
+	// CWE finding should be kept (higher severity + more detail)
+	for _, f := range result {
+		if f.Title == "SQL Injection" && f.AgentType != "cwe" {
+			t.Errorf("expected CWE finding kept for SQL Injection, got %s", f.AgentType)
+		}
+	}
+}
+
+func TestDeduplicateCrossAgentPreservesUnique(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "SQL Injection", FilePath: "/db.py", LineStart: 42, AgentType: "owasp"},
+		{Title: "Memory Leak", FilePath: "/mem.c", LineStart: 10, AgentType: "cwe"},
+		{Title: "Weak Password", FilePath: "/auth.py", LineStart: 5, AgentType: "cwe"},
+	}
+
+	result := deduplicateCrossAgent(findings)
+
+	if len(result) != 3 {
+		t.Fatalf("expected 3 findings (all unique), got %d", len(result))
+	}
+}
+
+func TestDeduplicateCrossAgentEmpty(t *testing.T) {
+	result := deduplicateCrossAgent(nil)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 findings for nil, got %d", len(result))
+	}
+
+	result = deduplicateCrossAgent([]model.Finding{})
+	if len(result) != 0 {
+		t.Fatalf("expected 0 findings for empty, got %d", len(result))
+	}
+}
+
+func TestDeduplicateCrossAgentSingleFinding(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "Bug", FilePath: "/a.py", LineStart: 1},
+	}
+	result := deduplicateCrossAgent(findings)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result))
+	}
+}
+
+func TestDeduplicateCrossAgentDifferentLines(t *testing.T) {
+	// Same title + file but different lines should NOT be deduped
+	findings := []model.Finding{
+		{Title: "SQL Injection", FilePath: "/db.py", LineStart: 10, AgentType: "owasp"},
+		{Title: "SQL Injection", FilePath: "/db.py", LineStart: 50, AgentType: "cwe"},
+	}
+
+	result := deduplicateCrossAgent(findings)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 findings (different lines), got %d", len(result))
+	}
+}
+
+func TestDeduplicateCrossAgentCaseInsensitive(t *testing.T) {
+	findings := []model.Finding{
+		{Title: "SQL Injection", FilePath: "/db.py", LineStart: 42, AgentType: "owasp"},
+		{Title: "sql injection", FilePath: "/db.py", LineStart: 42, AgentType: "cwe", CodeSnippet: "code"},
+	}
+
+	result := deduplicateCrossAgent(findings)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 finding (case-insensitive match), got %d", len(result))
+	}
+}
+
+func TestSeverityRank(t *testing.T) {
+	tests := []struct {
+		severity model.Severity
+		want     int
+	}{
+		{model.SeverityCritical, 5},
+		{model.SeverityHigh, 4},
+		{model.SeverityMedium, 3},
+		{model.SeverityLow, 2},
+		{model.SeverityInfo, 1},
+		{model.Severity("unknown"), 0},
+	}
+	for _, tc := range tests {
+		got := severityRank(tc.severity)
+		if got != tc.want {
+			t.Errorf("severityRank(%q) = %d, want %d", tc.severity, got, tc.want)
+		}
+	}
+}
+
+func TestFindingDetailScore(t *testing.T) {
+	basic := model.Finding{Severity: model.SeverityHigh}
+	rich := model.Finding{
+		Severity:          model.SeverityCritical,
+		CodeSnippet:       "code",
+		CheckID:           "cwe.injection.sql",
+		References:        []string{"ref1", "ref2"},
+		VerificationHints: []string{"hint1"},
+	}
+
+	basicScore := findingDetailScore(basic)
+	richScore := findingDetailScore(rich)
+
+	if richScore <= basicScore {
+		t.Errorf("rich finding should score higher: rich=%d basic=%d", richScore, basicScore)
 	}
 }
 

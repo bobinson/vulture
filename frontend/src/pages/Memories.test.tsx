@@ -81,7 +81,7 @@ describe("Memories", () => {
   it("renders agent label", async () => {
     render(<Memories />);
     await waitFor(() => {
-      expect(screen.getByText("Owasp")).toBeInTheDocument();
+      expect(screen.getByText("OWASP")).toBeInTheDocument();
     });
   });
 

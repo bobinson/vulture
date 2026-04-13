@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -18,10 +19,14 @@ type Server struct {
 	mux http.Handler
 }
 
-func New(cfg *config.Config) *Server {
-	repo, sqliteDB, err := openRepo(cfg)
+func New(cfg *config.Config) (*Server, error) {
+	if cfg.JWTSecret == "" && !cfg.LocalMode {
+		return nil, fmt.Errorf("VULTURE_JWT_SECRET must be set in production mode (generate one with: openssl rand -hex 32)")
+	}
+
+	repo, pgDB, sqliteDB, err := openRepo(cfg)
 	if err != nil {
-		panic("open database: " + err.Error())
+		return nil, fmt.Errorf("open database: %w", err)
 	}
 
 	sourceSvc := service.NewSourceService(repo)
@@ -39,18 +44,19 @@ func New(cfg *config.Config) *Server {
 	mux := http.NewServeMux()
 	mux.Handle("/health", healthH)
 
-	pgDB := getPostgresDB(cfg)
-
 	// Build route handler functions
 	auditsHandler := auditsRouter(auditH)
 	auditDetailHandler := auditDetailRouter(auditH, streamH)
 
-	registerAPIRoutes(mux, pgDB, sqliteDB, cfg, sourceH, auditH, auditsHandler, auditDetailHandler, agentH, fsH)
-	registerMemoryRoutes(mux, pgDB, sqliteDB, streamH)
-	registerLineageRoutes(mux, pgDB, sqliteDB, streamH)
+	authMW := registerAPIRoutes(mux, pgDB, sqliteDB, cfg, sourceH, auditH, auditsHandler, auditDetailHandler, agentH, fsH, streamH)
+	registerMemoryRoutes(mux, pgDB, sqliteDB, streamH, authMW)
+	registerLineageRoutes(mux, pgDB, sqliteDB, streamH, authMW)
+	registerProveRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW)
+	registerDiscoverRoutes(mux, pgDB, sqliteDB, streamH, authMW)
+	registerPipelineRoutes(mux, pgDB, sqliteDB, auditSvc, streamH.DiscoverService(), streamH, authMW)
 
 	corsMux := addCORS(mux)
-	return &Server{mux: addRequestLogging(addRequestID(corsMux))}
+	return &Server{mux: addRequestLogging(addRequestID(corsMux))}, nil
 }
 
 func auditsRouter(auditH *handler.AuditHandler) http.HandlerFunc {
@@ -68,6 +74,10 @@ func auditsRouter(auditH *handler.AuditHandler) http.HandlerFunc {
 
 func auditDetailRouter(auditH *handler.AuditHandler, streamH *handler.StreamHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if isStreamTokenPath(r.URL.Path) {
+			streamH.CreateStreamToken(w, r)
+			return
+		}
 		if isStreamPath(r.URL.Path) {
 			streamH.ServeHTTP(w, r)
 			return
@@ -80,6 +90,34 @@ func auditDetailRouter(auditH *handler.AuditHandler, streamH *handler.StreamHand
 			writeNotFound(w)
 			return
 		}
+		if isProveResultsPath(r.URL.Path) && r.Method == http.MethodGet {
+			if ph := streamH.ProveHandler(); ph != nil {
+				ph.GetResults(w, r)
+				return
+			}
+			writeNotFound(w)
+			return
+		}
+		if isProveSummaryPath(r.URL.Path) && r.Method == http.MethodGet {
+			if ph := streamH.ProveHandler(); ph != nil {
+				ph.GetSummary(w, r)
+				return
+			}
+			writeNotFound(w)
+			return
+		}
+		if isDiscoverResultPath(r.URL.Path) && r.Method == http.MethodGet {
+			if dh := streamH.DiscoverHandler(); dh != nil {
+				dh.GetByAudit(w, r)
+				return
+			}
+			writeNotFound(w)
+			return
+		}
+		if isComparisonPath(r.URL.Path) && r.Method == http.MethodGet {
+			auditH.Compare(w, r)
+			return
+		}
 		if r.Method == http.MethodGet {
 			auditH.Get(w, r)
 			return
@@ -88,16 +126,43 @@ func auditDetailRouter(auditH *handler.AuditHandler, streamH *handler.StreamHand
 	}
 }
 
+func isStreamTokenPath(path string) bool {
+	return strings.HasSuffix(path, "/stream-token")
+}
+
+func isComparisonPath(path string) bool {
+	return strings.HasSuffix(path, "/comparison")
+}
+
 func isLineagePath(path string) bool {
 	return strings.HasSuffix(path, "/lineage")
 }
+
+func isProveResultsPath(path string) bool {
+	return strings.HasSuffix(path, "/prove-results")
+}
+
+func isProveSummaryPath(path string) bool {
+	return strings.HasSuffix(path, "/prove-summary")
+}
+
+func isDiscoverResultPath(path string) bool {
+	return strings.HasSuffix(path, "/discover-result")
+}
+
+// wrapFunc optionally wraps a handler with auth middleware.
+// When mw is nil (no-auth fallback), it returns the handler as-is.
+type authWrapper func(http.HandlerFunc) http.HandlerFunc
+
+func noopAuth(h http.HandlerFunc) http.HandlerFunc { return h }
 
 func registerAPIRoutes(
 	mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, cfg *config.Config,
 	sourceH *handler.SourceHandler, auditH *handler.AuditHandler,
 	auditsH, auditDetailH http.HandlerFunc,
 	agentH *handler.AgentHandler, fsH *handler.FilesystemHandler,
-) {
+	streamH *handler.StreamHandler,
+) authWrapper {
 	var userRepo repository.UserRepository
 	if pgDB != nil {
 		userRepo = repository.NewPostgresUserRepo(pgDB)
@@ -107,8 +172,8 @@ func registerAPIRoutes(
 	}
 
 	if userRepo != nil {
-		registerAuthRoutes(mux, userRepo, cfg, sourceH, auditH, auditsH, auditDetailH, agentH, fsH)
-		return
+		authMW := registerAuthRoutes(mux, userRepo, cfg, sourceH, auditH, auditsH, auditDetailH, agentH, fsH, streamH)
+		return authMW
 	}
 
 	// Fallback: no auth (no database available)
@@ -120,6 +185,7 @@ func registerAPIRoutes(
 	mux.HandleFunc("/api/audits/cache", auditH.CachedAudit)
 	mux.HandleFunc("/api/agents", agentH.List)
 	mux.HandleFunc("/api/filesystem/browse", fsH.Browse)
+	return noopAuth
 }
 
 const (
@@ -151,10 +217,16 @@ func registerAuthRoutes(
 	sourceH *handler.SourceHandler, auditH *handler.AuditHandler,
 	auditsH, auditDetailH http.HandlerFunc,
 	agentH *handler.AgentHandler, fsH *handler.FilesystemHandler,
-) {
+	streamH *handler.StreamHandler,
+) authWrapper {
 	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret)
 	authH := handler.NewAuthHandler(authSvc)
 	authMW := handler.NewAuthMiddleware(authSvc)
+
+	// Stream token store: short-lived tokens for SSE authentication
+	streamTokenStore := service.NewStreamTokenStore(userRepo)
+	authMW.SetStreamTokenStore(streamTokenStore)
+	streamH.SetStreamTokenStore(streamTokenStore)
 
 	if cfg.LocalMode {
 		authH.SetLocalMode(true)
@@ -177,9 +249,10 @@ func registerAuthRoutes(
 	mux.HandleFunc("/api/filesystem/browse", authMW.Require(fsH.Browse))
 
 	log.Println("Auth endpoints enabled")
+	return authMW.Require
 }
 
-func registerMemoryRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler) {
+func registerMemoryRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper) {
 	var memRepo repository.MemoryRepository
 	if pgDB != nil {
 		memRepo = repository.NewPostgresMemoryRepo(pgDB)
@@ -199,10 +272,10 @@ func registerMemoryRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, st
 
 	streamH.SetMemoryService(memorySvc)
 
-	mux.HandleFunc("/api/memories/search", memoryH.Search)
-	mux.HandleFunc("/api/memories/by-path", memoryH.ListByCodebasePath)
-	mux.HandleFunc("/api/memories", memoryH.ListByAudit)
-	mux.HandleFunc("/api/memories/", memoryRouter(memoryH))
+	mux.HandleFunc("/api/memories/search", protect(memoryH.Search))
+	mux.HandleFunc("/api/memories/by-path", protect(memoryH.ListByCodebasePath))
+	mux.HandleFunc("/api/memories", protect(memoryH.ListByAudit))
+	mux.HandleFunc("/api/memories/", protect(memoryRouter(memoryH)))
 }
 
 func memoryRouter(memoryH *handler.MemoryHandler) http.HandlerFunc {
@@ -222,7 +295,7 @@ func memoryRouter(memoryH *handler.MemoryHandler) http.HandlerFunc {
 	}
 }
 
-func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler) {
+func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper) {
 	var lineageRepo repository.LineageRepository
 	if pgDB != nil {
 		lineageRepo = repository.NewPostgresLineageRepo(pgDB)
@@ -237,8 +310,8 @@ func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, s
 	streamH.SetLineageService(lineageSvc)
 	streamH.SetLineageHandler(lineageH)
 
-	mux.HandleFunc("/api/lineage", lineageH.List)
-	mux.HandleFunc("/api/lineage/", lineageRouter(lineageH))
+	mux.HandleFunc("/api/lineage", protect(lineageH.List))
+	mux.HandleFunc("/api/lineage/", protect(lineageRouter(lineageH)))
 }
 
 func lineageRouter(lineageH *handler.LineageHandler) http.HandlerFunc {
@@ -258,33 +331,99 @@ func lineageRouter(lineageH *handler.LineageHandler) http.HandlerFunc {
 	}
 }
 
+func registerProveRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, auditH *handler.AuditHandler, protect authWrapper) {
+	var proveRepo repository.ProveRepository
+	if pgDB != nil {
+		proveRepo = repository.NewPostgresProveRepo(pgDB)
+	} else if sqliteDB != nil {
+		proveRepo = repository.NewSQLiteProveRepo(sqliteDB)
+	}
+	if proveRepo == nil {
+		return
+	}
+	proveSvc := service.NewProveService(proveRepo)
+	proveH := handler.NewProveHandler(proveSvc)
+
+	streamH.SetProveService(proveSvc)
+	streamH.SetProveHandler(proveH)
+	auditH.SetProveService(proveSvc)
+
+	mux.HandleFunc("/api/prove-results", protect(proveH.GetResultsByFingerprint))
+
+	dbType := "SQLite"
+	if pgDB != nil {
+		dbType = "PostgreSQL"
+	}
+	log.Printf("Prove routes enabled (%s)", dbType)
+}
+
+func registerDiscoverRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper) {
+	var discoverRepo repository.DiscoverRepository
+	if pgDB != nil {
+		discoverRepo = repository.NewPostgresDiscoverRepo(pgDB)
+	} else if sqliteDB != nil {
+		discoverRepo = repository.NewSQLiteDiscoverRepo(sqliteDB)
+	}
+	if discoverRepo == nil {
+		return
+	}
+	discoverSvc := service.NewDiscoverService(discoverRepo)
+	discoverH := handler.NewDiscoverHandler(discoverSvc)
+
+	streamH.SetDiscoverService(discoverSvc)
+	streamH.SetDiscoverHandler(discoverH)
+
+	mux.HandleFunc("/api/discover-results", protect(discoverH.GetByTarget))
+	log.Println("Discover routes enabled")
+}
+
+func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, auditSvc service.AuditService, discoverSvc service.DiscoverService, streamH *handler.StreamHandler, protect authWrapper) {
+	var pipelineRepo repository.PipelineRepository
+	if pgDB != nil {
+		pipelineRepo = repository.NewPostgresPipelineRepo(pgDB)
+	} else if sqliteDB != nil {
+		pipelineRepo = repository.NewSQLitePipelineRepo(sqliteDB)
+	}
+	if pipelineRepo == nil {
+		return
+	}
+	pipelineSvc := service.NewPipelineService(pipelineRepo, auditSvc, discoverSvc)
+	pipelineSvc.SetRunner(streamH)
+	pipelineH := handler.NewPipelineHandler(pipelineSvc)
+
+	streamH.SetPipelineService(pipelineSvc)
+
+	mux.HandleFunc("/api/pipelines", protect(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			pipelineH.Create(w, r)
+		case http.MethodGet:
+			pipelineH.List(w, r)
+		default:
+			writeNotFound(w)
+		}
+	}))
+	mux.HandleFunc("/api/pipelines/", protect(pipelineH.Get))
+	log.Println("Pipeline routes enabled")
+}
+
 func (s *Server) Handler() http.Handler {
 	return s.mux
 }
 
-func openRepo(cfg *config.Config) (repository.AuditRepository, *sql.DB, error) {
+func openRepo(cfg *config.Config) (repository.AuditRepository, *sql.DB, *sql.DB, error) {
 	if cfg.DBDSN != "" {
 		repo, err := repository.NewPostgresRepo(cfg.DBDSN)
-		return repo, nil, err
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return repo, repo.DB(), nil, nil
 	}
 	repo, err := repository.NewSQLiteRepo(cfg.DBPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return repo, repo.DB(), nil
-}
-
-func getPostgresDB(cfg *config.Config) *sql.DB {
-	if cfg.DBDSN == "" {
-		return nil
-	}
-	db, err := sql.Open("postgres", cfg.DBDSN)
-	if err != nil {
-		return nil
-	}
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	return db
+	return repo, nil, repo.DB(), nil
 }
 
 func writeNotFound(w http.ResponseWriter) {

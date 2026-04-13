@@ -5,7 +5,12 @@ from pathlib import Path
 
 from agents import function_tool
 
+from shared.tools.snippet import extract_snippet
+
 from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
+    SAFE_IMPORT_LINE,
+    SCANNER_DEF_LINE,
     is_generated_file,
     is_test_file,
     read_file_safe,
@@ -18,9 +23,6 @@ WEAK_AUTH_PATTERNS = [
     re.compile(r'password\s*==\s*["\']'),
     re.compile(r"(?:hardcoded|default).?password\s*=", re.IGNORECASE),
 ]
-
-SKIP_LINE_PATTERNS = re.compile(r"re\.compile|PATTERN|regex|pattern.*=.*compile", re.IGNORECASE)
-COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
 
 MISSING_AUTH_PATTERNS = [
     re.compile(r"@app\.route\(.*methods.*POST", re.IGNORECASE),
@@ -47,12 +49,14 @@ def check_authentication(source_path: str) -> dict:
     for file_path in scan_code_files(source_path):
         if is_generated_file(file_path):
             continue
-        _analyze_file(file_path, findings, is_test=is_test_file(file_path))
+        if is_test_file(file_path):
+            continue
+        _analyze_file(file_path, findings)
 
     return {"findings": findings}
 
 
-def _analyze_file(file_path: Path, findings: list[dict], *, is_test: bool) -> None:
+def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze a file for authentication issues."""
     content = read_file_safe(file_path)
     if content is None:
@@ -62,12 +66,15 @@ def _analyze_file(file_path: Path, findings: list[dict], *, is_test: bool) -> No
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
             continue
-        if SKIP_LINE_PATTERNS.search(line):
+        if SAFE_IMPORT_LINE.match(line):
+            continue
+        if SCANNER_DEF_LINE.search(line):
             continue
         for pattern in WEAK_AUTH_PATTERNS:
             if pattern.search(line):
-                findings.append({
-                    "severity": "low" if is_test else "high",
+                finding = {
+                    "severity": "high",
+                    "check_id": "owasp.auth.weak_hash",
                     "category": "A07-auth-failure",
                     "title": "Weak authentication mechanism",
                     "description": f"Weak auth pattern at line {line_num}",
@@ -75,24 +82,25 @@ def _analyze_file(file_path: Path, findings: list[dict], *, is_test: bool) -> No
                     "line_start": line_num,
                     "line_end": line_num,
                     "recommendation": "Use bcrypt or argon2 for password hashing",
-                })
+                }
+                finding["code_snippet"] = extract_snippet(lines, line_num)
+                findings.append(finding)
                 break
 
-    _check_missing_auth(file_path, content, lines, findings, is_test=is_test)
+    _check_missing_auth(file_path, content, lines, findings)
 
 
 def _check_missing_auth(
-    file_path: Path, content: str, lines: list[str], findings: list[dict], *, is_test: bool
+    file_path: Path, content: str, lines: list[str], findings: list[dict],
 ) -> None:
     """Check for sensitive endpoints missing authentication decorators."""
-    if is_test:
-        return
     if any(p.search(content) for p in AUTH_DECORATOR_PATTERNS):
         return
     for line_num, line in enumerate(lines, start=1):
         if any(p.search(line) for p in MISSING_AUTH_PATTERNS):
-            findings.append({
+            finding = {
                 "severity": "high",
+                "check_id": "owasp.auth.missing_auth",
                 "category": "A07-auth-failure",
                 "title": "Missing authentication on sensitive endpoint",
                 "description": f"Sensitive endpoint without auth at line {line_num}",
@@ -100,7 +108,9 @@ def _check_missing_auth(
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Add authentication decorator to protect this endpoint",
-            })
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(finding)
             return
 
 

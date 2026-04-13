@@ -34,18 +34,30 @@ func (s *lineageService) ProcessAuditFindings(audit *model.Audit, source *model.
 	currentFingerprints := map[string]bool{}
 	agentTypes := map[string]bool{}
 
+	// Collect all fingerprints for batch lookup
+	fps := make([]string, 0, len(findings))
 	for _, f := range findings {
 		if f.Fingerprint == "" {
 			continue
 		}
 		currentFingerprints[f.Fingerprint] = true
 		agentTypes[f.AgentType] = true
+		fps = append(fps, f.Fingerprint)
+	}
 
-		existing, err := s.repo.GetLineageByFingerprint(f.Fingerprint, source.Path, f.AgentType)
-		if err != nil {
-			log.Printf("[lineage] lookup error fingerprint=%s: %v", f.Fingerprint, err)
+	// Batch-fetch existing lineage records
+	existingMap, err := s.repo.GetLineageByFingerprints(fps, source.Path)
+	if err != nil {
+		log.Printf("[lineage] batch lookup error: %v", err)
+		existingMap = nil
+	}
+
+	for _, f := range findings {
+		if f.Fingerprint == "" {
 			continue
 		}
+		key := f.Fingerprint + "|" + f.AgentType
+		existing := existingMap[key]
 
 		if existing == nil {
 			if err := s.createNewLineage(audit, source, &f, now); err != nil {

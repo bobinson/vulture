@@ -58,7 +58,7 @@ func (s *authService) Register(req *model.RegisterRequest) (*model.AuthResponse,
 		Email:        req.Email,
 		PasswordHash: string(hash),
 		Name:         req.Name,
-		Role:         "admin",
+		Role:         "user",
 		TeamID:       teamID,
 		CreatedAt:    time.Now().UTC(),
 	}
@@ -103,10 +103,10 @@ func (s *authService) ValidateToken(token string) (*model.User, error) {
 		return nil, fmt.Errorf("invalid token format")
 	}
 
-	// Verify signature
+	// Verify signature (constant-time comparison to prevent timing oracle)
 	sigInput := parts[0] + "." + parts[1]
 	expectedSig := s.sign(sigInput)
-	if parts[2] != expectedSig {
+	if !hmac.Equal([]byte(parts[2]), []byte(expectedSig)) {
 		return nil, fmt.Errorf("invalid token signature")
 	}
 

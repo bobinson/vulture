@@ -6,11 +6,15 @@ from pathlib import Path
 from agents import function_tool
 
 from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
+    SAFE_IMPORT_LINE,
+    SCANNER_DEF_LINE,
     is_generated_file,
     is_test_file,
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.snippet import extract_snippet
 
 UNSAFE_DEPLOY_PATTERNS = [
     re.compile(r"git pull.*main|git pull.*master"),
@@ -46,11 +50,19 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if content is None:
         return
 
-    for line_num, line in enumerate(content.splitlines(), start=1):
+    lines = content.splitlines()
+    for line_num, line in enumerate(lines, start=1):
+        if COMMENT_INDICATORS.match(line):
+            continue
+        if SAFE_IMPORT_LINE.match(line):
+            continue
+        if SCANNER_DEF_LINE.search(line):
+            continue
         for pattern in UNSAFE_DEPLOY_PATTERNS:
             if pattern.search(line):
-                findings.append({
+                finding = {
                     "severity": "medium",
+                    "check_id": "soc2.change_mgmt.unsafe_deploy",
                     "category": "CC8-change-management",
                     "title": "Unsafe deployment practice detected",
                     "description": f"Manual/unsafe deployment at line {line_num}",
@@ -58,7 +70,9 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
                     "line_start": line_num,
                     "line_end": line_num,
                     "recommendation": "Use CI/CD pipelines with approval gates",
-                })
+                }
+                finding["code_snippet"] = extract_snippet(lines, line_num)
+                findings.append(finding)
                 break
 
 

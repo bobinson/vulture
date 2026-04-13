@@ -9,14 +9,16 @@ from shared.tools.memory_client import (
     _dedup_key,
     _fetch_edge_clusters,
     _filter_and_dedup,
+    _get_encoder,
+    _HALF_LIFE_DAYS,
     _MAX_CONTEXT_FINDINGS,
     _normalize_title,
     _SEVERITY_RANK,
     _SKIP_STATUSES,
     _staleness_weight,
-    _STALENESS_DAYS,
     build_prior_context,
     estimate_tokens,
+    safe_estimate_tokens,
 )
 
 
@@ -25,14 +27,72 @@ class TestEstimateTokens:
         assert estimate_tokens("") == 1
 
     def test_short_string(self):
-        assert estimate_tokens("hi") == 1
+        assert estimate_tokens("hi") >= 1
 
-    def test_normal_string(self):
-        # 20 chars -> ~5 tokens
-        assert estimate_tokens("a" * 20) == 5
+    def test_returns_positive(self):
+        assert estimate_tokens("hello world") >= 1
 
-    def test_long_string(self):
-        assert estimate_tokens("x" * 400) == 100
+    def test_longer_text_more_tokens(self):
+        short = estimate_tokens("hello")
+        long = estimate_tokens("hello world this is a longer sentence with more tokens")
+        assert long > short
+
+    def test_code_snippet(self):
+        code = "def hello():\n    print('hello world')\n"
+        tokens = estimate_tokens(code)
+        assert tokens >= 5  # reasonable lower bound for code
+
+    def test_tiktoken_available(self):
+        """When tiktoken is available, encoder should be loaded."""
+        enc = _get_encoder()
+        if enc is not None:
+            # tiktoken gives accurate counts
+            result = estimate_tokens("hello world")
+            assert result >= 1
+            # tiktoken should be more accurate than heuristic for code
+            code = "function foo() { return 42; }"
+            assert estimate_tokens(code) >= 1
+
+    def test_heuristic_fallback(self):
+        """When tiktoken encoder is unavailable, falls back to len//4 heuristic."""
+        import shared.tools.memory_client as mc
+        old_loaded = mc._ENCODER_LOADED
+        old_encoder = mc._ENCODER
+        try:
+            mc._ENCODER_LOADED = True
+            mc._ENCODER = None  # force fallback
+            assert estimate_tokens("a" * 20) == 5
+            assert estimate_tokens("x" * 400) == 100
+        finally:
+            mc._ENCODER_LOADED = old_loaded
+            mc._ENCODER = old_encoder
+
+
+class TestSafeEstimateTokens:
+    def test_returns_positive(self):
+        assert safe_estimate_tokens("hello") >= 1
+
+    def test_larger_than_estimate(self):
+        """Safe estimate should be >= raw estimate (safety margin)."""
+        text = "some text to estimate tokens for"
+        assert safe_estimate_tokens(text) >= estimate_tokens(text)
+
+    def test_empty_string(self):
+        assert safe_estimate_tokens("") >= 1
+
+    def test_heuristic_fallback(self):
+        """Heuristic path applies _SAFETY_MARGIN."""
+        import shared.tools.memory_client as mc
+        old_loaded = mc._ENCODER_LOADED
+        old_encoder = mc._ENCODER
+        try:
+            mc._ENCODER_LOADED = True
+            mc._ENCODER = None
+            # 400 chars / 4 * 1.2 = 120
+            assert safe_estimate_tokens("x" * 400) == 120
+        finally:
+            mc._ENCODER_LOADED = old_loaded
+            mc._ENCODER = old_encoder
 
 
 class TestNormalizeTitle:
@@ -59,10 +119,11 @@ class TestStalenessWeight:
         w = _staleness_weight({"created_at": now})
         assert 0.9 < w <= 1.0
 
-    def test_old_finding_zero_weight(self):
+    def test_old_finding_low_weight(self):
         from datetime import datetime, timezone, timedelta
         old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-        assert _staleness_weight({"created_at": old}) == 0.0
+        w = _staleness_weight({"created_at": old})
+        assert w < 0.25  # Exponential decay: 200 days ≈ 0.21
 
     def test_missing_created_at(self):
         assert _staleness_weight({}) == 0.5
@@ -75,6 +136,17 @@ class TestStalenessWeight:
         mid = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         w = _staleness_weight({"created_at": mid})
         assert 0.4 < w < 0.6
+
+    def test_exponential_never_zero(self):
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        w = _staleness_weight({"created_at": old})
+        assert w > 0  # Exponential decay never reaches exactly 0
+
+    def test_future_date_returns_one(self):
+        from datetime import datetime, timezone, timedelta
+        future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+        assert _staleness_weight({"created_at": future}) == 1.0
 
 
 class TestDedupKey:

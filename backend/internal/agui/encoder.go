@@ -25,6 +25,13 @@ func (s *SSEWriter) WriteEvent(evt *model.AgUIEvent) error {
 	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", evt.Type, data); err != nil {
 		return fmt.Errorf("write event: %w", err)
 	}
-	s.flusher()
+	// Flush on lifecycle events and content events for real-time display.
+	// High-frequency progress events rely on buffer auto-flush.
+	switch evt.Type {
+	case model.EventRunStarted, model.EventStepStarted, model.EventStepFinished,
+		model.EventRunFinished, model.EventStateSnapshot,
+		model.EventTextMessageContent, model.EventStateDelta:
+		s.flusher()
+	}
 	return nil
 }

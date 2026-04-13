@@ -19,14 +19,14 @@ Remove or comment out the chaos agent from the Go registry:
 
 ```go
 // backend/internal/config/agents.go
-// "chaos": {Name: "Chaos Engineering", URLEnv: "VULTURE_AGENT_CHAOS_URL", DefaultPort: 8001},
+// "chaos": {Name: "Chaos Engineering", URLEnv: "VULTURE_AGENT_CHAOS_URL", DefaultPort: 28001},
 ```
 
 ### 2. Stop the Container
 
 ```bash
-docker-compose stop agent-chaos
-docker-compose rm agent-chaos
+docker compose stop agent-chaos
+docker compose rm agent-chaos
 ```
 
 ### 3. Revert Code (if needed)

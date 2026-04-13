@@ -20,14 +20,14 @@ Comment out the SOC2 agent from the Go registry:
 
 ```go
 // backend/internal/config/agents.go
-// "soc2": {Name: "SOC2", URLEnv: "VULTURE_AGENT_SOC2_URL", DefaultPort: 8003},
+// "soc2": {Name: "SOC2", URLEnv: "VULTURE_AGENT_SOC2_URL", DefaultPort: 28003},
 ```
 
 ### 2. Stop the Container
 
 ```bash
-docker-compose stop agent-soc2
-docker-compose rm agent-soc2
+docker compose stop agent-soc2
+docker compose rm agent-soc2
 ```
 
 ### 3. Revert Code (if needed)

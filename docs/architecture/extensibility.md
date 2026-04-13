@@ -30,7 +30,7 @@ agents/gdpr/
       test_skills.py
   SKILLS.md         # Agent capability documentation (REQUIRED)
   Dockerfile
-  requirements.txt
+  pyproject.toml
 ```
 
 ### agent.py
@@ -86,24 +86,15 @@ def check_data_mapping(code: str, file_path: str) -> dict:
 Use the shared FastAPI template from `agents/shared/`:
 
 ```python
-from agents.shared.transport import create_agent_app
-from .agent import gdpr_agent
+from shared.transport.sse_app import create_sse_app
 
-app = create_agent_app(
-    agent=gdpr_agent,
-    agent_type="gdpr",
-    name="GDPR Compliance Auditor",
-    description="Analyzes code for GDPR compliance including data mapping, consent, and retention",
-    config_schema={
-        "type": "object",
-        "properties": {
-            "articles": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["art5", "art6", "art7", "art13", "art17", "art25", "art32"]},
-                "description": "GDPR articles to audit against"
-            }
-        }
-    },
+from gdpr_agent.agent import run_audit
+from gdpr_agent.config import AGENT_INFO
+
+app = create_sse_app(
+    agent_name="gdpr",
+    agent_info=AGENT_INFO,
+    run_handler=run_audit,
 )
 ```
 
@@ -134,29 +125,28 @@ Every agent **must** have a SKILLS.md documenting its capabilities:
 ### Dockerfile
 
 ```dockerfile
-FROM python:3.12-slim
+FROM vulture-agent-base:latest
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-COPY ../shared /app/shared
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8004"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${VULTURE_AGENT_PORT:-28009}"]
 ```
 
 ---
 
 ## Step 2: Register the Agent in the Go Backend
 
-Add one line to `backend/internal/config/agents.go`:
+Add one entry to the `AllAgents` slice in `backend/pkg/agentregistry/registry.go`:
 
 ```go
-// agents.go - Agent registry
-var AgentRegistry = map[string]AgentConfig{
-    "chaos": {Name: "Chaos Engineering", URLEnv: "VULTURE_AGENT_CHAOS_URL", DefaultPort: 8001},
-    "owasp": {Name: "OWASP",             URLEnv: "VULTURE_AGENT_OWASP_URL", DefaultPort: 8002},
-    "soc2":  {Name: "SOC2",              URLEnv: "VULTURE_AGENT_SOC2_URL",  DefaultPort: 8003},
+// registry.go - Agent registry
+var AllAgents = []AgentRegistryEntry{
+    {"chaos", "Chaos Engineering", "28001", "chaos_engineering", "chaos_agent.main:app", "agent_chaos"},
+    {"owasp", "OWASP", "28002", "owasp", "owasp_agent.main:app", "agent_owasp"},
+    {"soc2", "SOC2", "28003", "soc2", "soc2_agent.main:app", "agent_soc2"},
+    {"cwe", "CWE", "28004", "cwe", "cwe_agent.main:app", "agent_cwe"},
+    // ... other agents ...
     // Add this single line:
-    "gdpr":  {Name: "GDPR",              URLEnv: "VULTURE_AGENT_GDPR_URL",  DefaultPort: 8004},
+    {"gdpr", "GDPR", "28009", "gdpr", "gdpr_agent.main:app", "agent_gdpr"},
 }
 ```
 
@@ -178,14 +168,14 @@ Add one service block:
     build:
       context: ./agents
       dockerfile: gdpr/Dockerfile
-    ports:
-      - "8004:8004"
+    expose:
+      - "${VULTURE_AGENT_GDPR_PORT:-28009}"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-gpt-4o}
-      - VULTURE_AGENT_PORT=8004
+      - VULTURE_AGENT_PORT=${VULTURE_AGENT_GDPR_PORT:-28009}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:28009/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -198,7 +188,7 @@ Add the environment variable to the backend service:
 ```yaml
   backend:
     environment:
-      - VULTURE_AGENT_GDPR_URL=http://agent-gdpr:8004
+      - VULTURE_AGENT_GDPR_URL=http://agent-gdpr:${VULTURE_AGENT_GDPR_PORT:-28009}
 ```
 
 ---
@@ -227,7 +217,7 @@ The frontend renders audit type selectors and configuration forms from the `conf
 | Location | Change | Lines |
 |----------|--------|-------|
 | `agents/gdpr/` | New agent service (from template) | ~200 |
-| `backend/internal/config/agents.go` | Add registry entry | 1 |
+| `backend/pkg/agentregistry/registry.go` | Add registry entry | 1 |
 | `docker-compose.yml` | Add service block + env var | ~15 |
 | Frontend | None | 0 |
 
@@ -235,10 +225,10 @@ The frontend renders audit type selectors and configuration forms from the `conf
 
 The shared library provides common functionality to all agents:
 
-- **`tools.py`**: File listing, file reading, AST parsing, pattern matching
-- **`models.py`**: Common data models (AuditRequest, AuditResult, Finding)
-- **`transport.py`**: FastAPI app factory with `/run`, `/health`, `/info` endpoints and SSE streaming
-- **`llm_config.py`**: LiteLLM configuration for model-agnostic LLM access
+- **`tools/`**: file_scanner, file_reader, file_lister, ast_parser, pattern_matcher, dependency_checker, memory_client
+- **`models/`**: audit_request, audit_result, finding
+- **`transport/sse_app.py`**: FastAPI app factory with `/run`, `/health`, `/info` endpoints and SSE streaming
+- **`llm/provider.py`**: LiteLLM configuration for model-agnostic LLM access
 
 When building a new agent, import these shared components rather than reimplementing them.
 

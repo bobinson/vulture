@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/vulture/backend/internal/agui"
 	"github.com/vulture/backend/internal/model"
@@ -24,7 +27,15 @@ type agentProxyService struct {
 }
 
 func NewAgentProxyService() AgentProxyService {
-	return &agentProxyService{client: &http.Client{}}
+	return &agentProxyService{client: &http.Client{
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			ResponseHeaderTimeout: 300 * time.Second,
+			MaxIdleConns:          20,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       120 * time.Second,
+		},
+	}}
 }
 
 func (s *agentProxyService) RunAgent(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, eventCh chan<- *model.AgUIEvent) error {
@@ -32,6 +43,10 @@ func (s *agentProxyService) RunAgent(ctx context.Context, agentURL string, agent
 }
 
 func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, priorFindings []model.PriorFinding, eventCh chan<- *model.AgUIEvent) error {
+	// Wrap caller context with a max audit duration timeout.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
 	payload := map[string]interface{}{
 		"run_id":      runID,
 		"source_path": sourcePath,
@@ -50,6 +65,9 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if token := os.Getenv("VULTURE_AGENT_TOKEN"); token != "" {
+		req.Header.Set("X-Vulture-Agent-Token", token)
+	}
 
 	log.Printf("[agent-proxy] calling agent=%s url=%s/run", agentType, agentURL)
 	resp, err := s.client.Do(req)
@@ -63,13 +81,15 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 		return fmt.Errorf("agent returned status %d", resp.StatusCode)
 	}
 
-	return s.readSSEStream(agentType, resp, eventCh)
+	return s.readSSEStream(ctx, agentType, resp, eventCh)
 }
 
-func (s *agentProxyService) readSSEStream(agentType string, resp *http.Response, eventCh chan<- *model.AgUIEvent) error {
+func (s *agentProxyService) readSSEStream(ctx context.Context, agentType string, resp *http.Response, eventCh chan<- *model.AgUIEvent) error {
 	scanner := bufio.NewScanner(resp.Body)
-	// Increase buffer to handle large result events with many findings
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// Increase buffer to handle large result events with many findings.
+	// 16MB allows ~1000+ findings in a single result payload.
+	// Validated: 215 findings × ~2KB each ≈ 430KB, well within 16MB limit.
+	scanner.Buffer(make([]byte, 0, 4096), 16*1024*1024)
 	var currentEvent string
 
 	for scanner.Scan() {
@@ -80,14 +100,17 @@ func (s *agentProxyService) readSSEStream(agentType string, resp *http.Response,
 		}
 		if strings.HasPrefix(line, "data: ") {
 			data := json.RawMessage(strings.TrimPrefix(line, "data: "))
-			log.Printf("[sse-read] agent=%s event=%s dataLen=%d", agentType, currentEvent, len(data))
 			events, err := agui.Translate(agentType, currentEvent, data)
 			if err != nil {
 				log.Printf("[sse-read] translate error agent=%s event=%s: %v", agentType, currentEvent, err)
 				continue
 			}
 			for _, evt := range events {
-				eventCh <- evt
+				select {
+				case eventCh <- evt:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
 			currentEvent = ""
 		}

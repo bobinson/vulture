@@ -51,7 +51,9 @@
     "chaosDesc": "レジリエンスパターン：リトライ、サーキットブレーカー、タイムアウト、フォールバック、影響範囲",
     "owaspDesc": "セキュリティ脆弱性：インジェクション、認証、暗号化、アクセス制御、設定ミス",
     "soc2Desc": "コンプライアンス条項：CC6（論理アクセス）、CC7（監視）、CC8（変更管理）",
-    "cweDesc": "CWE v4.19.1 脆弱性検出：インジェクション、バッファ、認証、暗号化、アクセス制御、並行性"
+    "cweDesc": "CWE v4.19.1 脆弱性検出：インジェクション、バッファ、認証、暗号化、アクセス制御、並行性",
+    "xssDesc": "XSS脆弱性検出：反射型、蓄積型、DOM型、テンプレートインジェクション、ヘッダーインジェクション",
+    "ssdfDesc": "NIST SSDF v1.1準拠：セキュアな設計、実装、脆弱性対応、ソフトウェアの完全性"
   },
   "results": {
     "title": "監査結果",
@@ -91,7 +93,11 @@
     "tokensSaved": "トークン節約",
     "tokens": "トークン",
     "priorFindings": "{{count}} 件の過去の検出事項を再利用",
-    "duplicatesRemoved": "{{count}} 件の重複を削除"
+    "duplicatesRemoved": "{{count}} 件の重複を削除",
+    "exportReport": "レポートをエクスポート",
+    "reportGenerated": "レポートをダウンロードしました",
+    "evidence": "証拠",
+    "verificationEvidence": "検証証拠"
   },
   "settings": {
     "title": "設定",
@@ -147,7 +153,10 @@
     "chaos": "Chaos",
     "owasp": "OWASP",
     "soc2": "SOC2",
-    "cwe": "CWE"
+    "cwe": "CWE",
+    "xss": "XSS",
+    "ssdf": "SSDF",
+    "discover": "Discover"
   },
   "severity": {
     "critical": "重大",
@@ -197,6 +206,26 @@
     "invalidLocalPath": "絶対パスを入力してください（/で始まるもの）",
     "connectionLost": "接続が切断されました。再接続中..."
   },
+  "prove": {
+    "verificationResults": "\u691c\u8a3c\u7d50\u679c",
+    "verified": "\u691c\u8a3c\u6e08\u307f",
+    "notReproduced": "\u518d\u73fe\u4e0d\u53ef",
+    "inconclusive": "\u4e0d\u78ba\u5b9a",
+    "skipped": "\u30b9\u30ad\u30c3\u30d7",
+    "showEvidence": "\u8a3c\u62e0\u3092\u8868\u793a",
+    "hideEvidence": "\u8a3c\u62e0\u3092\u975e\u8868\u793a",
+    "iterations": "{{count}} \u56de\u306e\u53cd\u5fa9",
+    "stagingUrl": "\u30b9\u30c6\u30fc\u30b8\u30f3\u30b0",
+    "totalVerified": "\u691c\u8a3c\u6e08\u307f\u691c\u51fa\u4e8b\u9805",
+    "verificationRate": "\u691c\u8a3c\u7387",
+    "reproductionSteps": "\u518d\u73fe\u624b\u9806",
+    "findingDescription": "\u691c\u51fa\u4e8b\u9805\u306e\u8aac\u660e",
+    "copyAllResults": "\u3059\u3079\u3066\u3092\u30c1\u30b1\u30c3\u30c8\u3068\u3057\u3066\u30b3\u30d4\u30fc",
+    "noLineage": "この検出事項の追跡データなし",
+    "verificationHistory": "検証履歴",
+    "viewVerificationHistory": "検証履歴を表示",
+    "noVerificationHistory": "この検出事項の監査間検証履歴はありません"
+  },
   "lineage": {
     "title": "検出事項の追跡",
     "firstDetected": "初回検出",
@@ -228,6 +257,39 @@
     "status_false_positive": "誤検知",
     "status_fixed": "修正済み",
     "status_regression": "回帰",
-    "gitContext": "Gitコンテキスト"
+    "gitContext": "Gitコンテキスト",
+    "fullCommit": "完全なコミット",
+    "copyCommit": "コミットハッシュをコピー",
+    "fingerprint": "フィンガープリント",
+    "checkId": "チェックID",
+    "newBadge": "新規",
+    "regressionBadge": "回帰"
+  },
+  "comparison": {
+    "title": "スキャン比較",
+    "firstScan": "このソースの初回スキャン",
+    "vsLabel": "vs. 前回のスキャン",
+    "newTab": "新規",
+    "fixedTab": "修正済み",
+    "changedTab": "変更あり",
+    "persistentTab": "継続",
+    "fixedSinceLastScan": "前回スキャン以降の修正"
+  },
+  "crossAgent": {
+    "title": "クロスエージェント検出",
+    "countLabel": "{{count}} 件が複数エージェントで検出",
+    "primary": "プライマリ",
+    "alsoDetected": "他の検出:",
+    "filterLabel": "クロスエージェント"
+  },
+  "proveSummary": {
+    "title": "検証サマリー",
+    "verified": "{{total}} 件中 {{count}} 件を検証済み",
+    "untested": "{{count}} 件は未検証"
+  },
+  "auditHistory": {
+    "title": "監査履歴",
+    "showAll": "すべて表示",
+    "findingsCount": "{{count}} 件の監査"
   }
 }

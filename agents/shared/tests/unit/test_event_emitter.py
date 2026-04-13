@@ -117,6 +117,7 @@ class TestAgUiEventEmitter:
         event, data = _parse_sse(raw)
         assert event == "result"
         assert data["findings"] == findings
+        assert data["findings_count"] == 1
         assert data["summary"] == "Found 1 issue(s) across 3 categories."
         assert data["score"] == 72.5
 
@@ -168,3 +169,54 @@ class TestAgUiEventEmitter:
         _, data = _parse_sse(raw)
         assert data["tokens_saved"] == 0
         assert data["savings_pct"] == 0
+
+    def test_token_savings_with_actual_usage(self):
+        raw = self.emitter.token_savings_event(
+            context_tokens=50,
+            raw_tokens=150,
+            prior_findings_used=5,
+            duplicates_removed=2,
+            actual_input_tokens=1500,
+            actual_output_tokens=800,
+        )
+        _, data = _parse_sse(raw)
+        assert data["actual_input_tokens"] == 1500
+        assert data["actual_output_tokens"] == 800
+
+    def test_token_savings_with_cost_usd(self):
+        raw = self.emitter.token_savings_event(
+            context_tokens=50,
+            raw_tokens=150,
+            prior_findings_used=5,
+            duplicates_removed=2,
+            actual_input_tokens=10000,
+            actual_output_tokens=5000,
+            cost_usd=0.075,
+        )
+        _, data = _parse_sse(raw)
+        assert "cost_usd" in data
+        assert data["cost_usd"] == 0.075
+
+    def test_token_savings_zero_cost_omitted(self):
+        raw = self.emitter.token_savings_event(
+            context_tokens=50,
+            raw_tokens=150,
+            prior_findings_used=5,
+            duplicates_removed=2,
+            cost_usd=0.0,
+        )
+        _, data = _parse_sse(raw)
+        assert "cost_usd" not in data
+
+    def test_token_savings_zero_actual_tokens_omitted(self):
+        raw = self.emitter.token_savings_event(
+            context_tokens=50,
+            raw_tokens=150,
+            prior_findings_used=5,
+            duplicates_removed=2,
+            actual_input_tokens=0,
+            actual_output_tokens=0,
+        )
+        _, data = _parse_sse(raw)
+        assert "actual_input_tokens" not in data
+        assert "actual_output_tokens" not in data

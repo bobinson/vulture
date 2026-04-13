@@ -28,7 +28,10 @@ func startTestServer(t *testing.T, cfg *config.Config) (string, func()) {
 	}
 	addr := listener.Addr().String()
 
-	srv := server.New(cfg)
+	srv, err := server.New(cfg)
+	if err != nil {
+		t.Fatalf("server init: %v", err)
+	}
 	httpServer := &http.Server{Handler: srv.Handler()}
 
 	go func() {
@@ -48,8 +51,10 @@ func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "vulture_test.db")
 	return &config.Config{
-		Port:   "0",
-		DBPath: dbPath,
+		Port:      "0",
+		DBPath:    dbPath,
+		LocalMode: true,
+		JWTSecret: "test-secret-for-e2e",
 		Agents: map[string]config.AgentConfig{
 			"chaos": {Name: "Chaos Engineering", Type: "chaos", URL: ""},
 			"owasp": {Name: "OWASP", Type: "owasp", URL: ""},

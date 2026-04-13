@@ -51,7 +51,9 @@
     "chaosDesc": "Padrões de resiliência: retentativa, disjuntor, timeout, fallback, raio de impacto",
     "owaspDesc": "Vulnerabilidades de segurança: injeção, autenticação, criptografia, controle de acesso, configuração incorreta",
     "soc2Desc": "Cláusulas de conformidade: CC6 (acesso lógico), CC7 (monitoramento), CC8 (gestão de mudanças)",
-    "cweDesc": "Detecção de fraquezas CWE v4.19.1: injeção, buffer, autenticação, criptografia, controle de acesso, concorrência"
+    "cweDesc": "Detecção de fraquezas CWE v4.19.1: injeção, buffer, autenticação, criptografia, controle de acesso, concorrência",
+    "xssDesc": "Detecção de vulnerabilidades XSS: refletido, armazenado, baseado em DOM, injeção de templates, injeção de cabeçalhos",
+    "ssdfDesc": "Conformidade NIST SSDF v1.1: design seguro, implementação, resposta a vulnerabilidades, integridade do software"
   },
   "results": {
     "title": "Resultados da Auditoria",
@@ -91,7 +93,11 @@
     "tokensSaved": "tokens economizados",
     "tokens": "tokens",
     "priorFindings": "{{count}} constatação(ões) anterior(es) reutilizada(s)",
-    "duplicatesRemoved": "{{count}} duplicata(s) removida(s)"
+    "duplicatesRemoved": "{{count}} duplicata(s) removida(s)",
+    "exportReport": "Exportar Relatório",
+    "reportGenerated": "Relatório baixado",
+    "evidence": "Evidência",
+    "verificationEvidence": "Evidência de Verificação"
   },
   "settings": {
     "title": "Configurações",
@@ -147,7 +153,10 @@
     "chaos": "Chaos",
     "owasp": "OWASP",
     "soc2": "SOC2",
-    "cwe": "CWE"
+    "cwe": "CWE",
+    "xss": "XSS",
+    "ssdf": "SSDF",
+    "discover": "Discover"
   },
   "severity": {
     "critical": "Crítico",
@@ -197,6 +206,26 @@
     "invalidLocalPath": "Por favor, insira um caminho absoluto (começando com /)",
     "connectionLost": "Conexão perdida. Tentando novamente..."
   },
+  "prove": {
+    "verificationResults": "Resultados de Verifica\u00e7\u00e3o",
+    "verified": "Verificado",
+    "notReproduced": "N\u00e3o Reproduzido",
+    "inconclusive": "Inconclusivo",
+    "skipped": "Ignorado",
+    "showEvidence": "Mostrar evid\u00eancia",
+    "hideEvidence": "Ocultar evid\u00eancia",
+    "iterations": "{{count}} itera\u00e7\u00e3o(\u00f5es)",
+    "stagingUrl": "Staging",
+    "totalVerified": "Constata\u00e7\u00f5es Verificadas",
+    "verificationRate": "Taxa de Verifica\u00e7\u00e3o",
+    "reproductionSteps": "Passos de Reprodu\u00e7\u00e3o",
+    "findingDescription": "Descri\u00e7\u00e3o da Constata\u00e7\u00e3o",
+    "copyAllResults": "Copiar Tudo como Tickets",
+    "noLineage": "Sem dados de rastreabilidade para esta constatação",
+    "verificationHistory": "Histórico de Verificação",
+    "viewVerificationHistory": "Ver Histórico de Verificação",
+    "noVerificationHistory": "Sem histórico de verificação entre auditorias para esta constatação"
+  },
   "lineage": {
     "title": "Rastreabilidade de Constatações",
     "firstDetected": "Primeira detecção",
@@ -228,6 +257,39 @@
     "status_false_positive": "Falso Positivo",
     "status_fixed": "Corrigido",
     "status_regression": "Regressão",
-    "gitContext": "Contexto Git"
+    "gitContext": "Contexto Git",
+    "fullCommit": "Commit completo",
+    "copyCommit": "Copiar hash do commit",
+    "fingerprint": "Impressão digital",
+    "checkId": "ID de Verificação",
+    "newBadge": "NOVO",
+    "regressionBadge": "REGRESSÃO"
+  },
+  "comparison": {
+    "title": "Comparação de Scan",
+    "firstScan": "Primeiro scan desta fonte",
+    "vsLabel": "vs. scan anterior",
+    "newTab": "Novos",
+    "fixedTab": "Corrigidos",
+    "changedTab": "Alterados",
+    "persistentTab": "Persistentes",
+    "fixedSinceLastScan": "Corrigidos desde o último scan"
+  },
+  "crossAgent": {
+    "title": "Detecção Multi-Agente",
+    "countLabel": "{{count}} constatações por múltiplos agentes",
+    "primary": "primário",
+    "alsoDetected": "Também detectado:",
+    "filterLabel": "Multi-Agente"
+  },
+  "proveSummary": {
+    "title": "Resumo de Verificação",
+    "verified": "{{count}} de {{total}} constatações verificadas",
+    "untested": "{{count}} ainda não testadas"
+  },
+  "auditHistory": {
+    "title": "Histórico de Auditorias",
+    "showAll": "Mostrar tudo",
+    "findingsCount": "{{count}} auditorias"
   }
 }

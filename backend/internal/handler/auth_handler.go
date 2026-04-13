@@ -54,6 +54,10 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
+	if len(req.Password) > 72 {
+		writeError(w, http.StatusBadRequest, "password must not exceed 72 characters")
+		return
+	}
 	resp, err := h.svc.Register(&req)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())

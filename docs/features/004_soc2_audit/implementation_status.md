@@ -53,5 +53,5 @@
 - CC9 (Risk Mitigation) clause handler not yet implemented
 - 5 specialized skills implemented across 3 clause families
 - Agent uses shared base from `agents/shared/` for transport and models
-- Agent runs on port 8003 in Docker
+- Agent runs on port 28003 in Docker
 - Configurable audit depth (surface/standard/deep) via config schema

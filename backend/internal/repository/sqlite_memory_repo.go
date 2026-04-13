@@ -63,7 +63,14 @@ func migrateMemory(db *sql.DB) error {
 			UNIQUE(source_id, target_id, relation_type)
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Index on keywords for non-leading-% queries and general query planning.
+	// SQLite cannot use B-tree indexes for LIKE with leading %, but the index
+	// benefits exact-match and prefix queries on this column.
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON audit_memories(keywords)`)
+	return nil
 }
 
 func (r *SQLiteMemoryRepo) StoreMemory(mem *model.AuditMemory) error {
@@ -133,6 +140,12 @@ func (r *SQLiteMemoryRepo) SearchMemories(query string, _ []float32, limit int) 
 	}
 	defer rows.Close()
 	return r.scanMemories(rows)
+}
+
+// HybridSearchMemories in SQLite falls back to text search since SQLite
+// doesn't support pgvector operations. Same as SearchMemories.
+func (r *SQLiteMemoryRepo) HybridSearchMemories(query string, _ []float32, limit int) ([]model.AuditMemory, error) {
+	return r.SearchMemories(query, nil, limit)
 }
 
 func (r *SQLiteMemoryRepo) FindSimilarByVector(excludeID string, _ []float32, limit int) ([]model.AuditMemory, error) {
@@ -275,6 +288,87 @@ func (r *SQLiteMemoryRepo) ListByCodebasePath(path string, agentType string, lim
 	}
 	defer rows.Close()
 	return r.scanMemories(rows)
+}
+
+// ListByCodebasePathMulti fetches memories for multiple agent types in a single query.
+func (r *SQLiteMemoryRepo) ListByCodebasePathMulti(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(agentTypes) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(agentTypes))
+	args := make([]interface{}, 0, len(agentTypes)+2)
+	args = append(args, path)
+	for i, at := range agentTypes {
+		placeholders[i] = "?"
+		args = append(args, at)
+	}
+	args = append(args, limit*len(agentTypes))
+	rows, err := r.db.Query(fmt.Sprintf(`
+		SELECT id, audit_id, agent_type, codebase_path, finding_type, title, content,
+		       severity, compliance_ref, category,
+		       keywords, tags, file_paths, remediation_status,
+		       remediation_notes, created_at,
+		       0.0 AS sim
+		FROM audit_memories
+		WHERE codebase_path = ? AND agent_type IN (%s)
+		ORDER BY created_at DESC
+		LIMIT ?`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list by codebase path multi: %w", err)
+	}
+	defer rows.Close()
+	memories, err := r.scanMemories(rows)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]model.AuditMemory, len(agentTypes))
+	for _, m := range memories {
+		if len(result[m.AgentType]) < limit {
+			result[m.AgentType] = append(result[m.AgentType], m)
+		}
+	}
+	return result, nil
+}
+
+// StoreBatch inserts multiple memories in a single transaction.
+func (r *SQLiteMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
+	if len(memories) == 0 {
+		return nil
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin batch: %w", err)
+	}
+	stmt, err := tx.Prepare(`
+		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (id) DO NOTHING`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare batch: %w", err)
+	}
+	defer stmt.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, mem := range memories {
+		keywordsJSON, _ := json.Marshal(mem.Keywords)
+		tagsJSON, _ := json.Marshal(mem.Tags)
+		filePathsJSON, _ := json.Marshal(mem.FilePaths)
+		_, err = stmt.Exec(
+			mem.ID, mem.AuditID, mem.AgentType, mem.CodebasePath,
+			mem.FindingType, mem.Title, mem.Content, string(mem.Severity),
+			mem.ComplianceRef, mem.Category,
+			string(keywordsJSON), string(tagsJSON), string(filePathsJSON),
+			mem.RemediationStatus, now,
+		)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("batch insert: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (r *SQLiteMemoryRepo) ListRecent(limit int) ([]model.AuditMemory, error) {

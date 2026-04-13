@@ -2,52 +2,50 @@
 
 ## Purpose
 
-Vulture is a compliance audit platform that uses AI agents to inspect source code against multiple compliance frameworks. It currently supports Chaos Engineering principles, OWASP guidelines, and SOC2 compliance, with an extensible architecture for adding new audit types.
+Vulture is a compliance audit platform that uses AI agents to inspect source code against multiple compliance frameworks. It currently supports Chaos Engineering, OWASP Top 10, CWE, SOC2, XSS scanning, NIST SSDF, endpoint discovery, and formal verification (Prove), with an extensible architecture for adding new audit types.
 
 ## High-Level Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                   Frontend (Next.js)                     │
-│         CopilotKit + ag-ui protocol client               │
+│              Frontend (React 19 + Vite 7)                │
+│       Native EventSource + SSE streaming client          │
 │         Tailwind CSS (agentation.dev aesthetic)           │
 └────────────┬──────────────────────┬──────────────────────┘
-             │ SSE (ag-ui events)   │ REST (CRUD)
+             │ SSE (events)         │ REST (CRUD)
              ▼                      ▼
 ┌──────────────────────────────────────────────────────────┐
 │                  Go Backend (Orchestrator)                │
 │  ┌─────────┐ ┌─────────────┐ ┌────────────┐ ┌────────┐ │
-│  │ Handlers│ │  Services   │ │  ag-ui SSE │ │Postgres│ │
+│  │ Handlers│ │  Services   │ │    SSE     │ │Postgres│ │
 │  │ (REST)  │ │ (Business)  │ │ (Encoder)  │ │ (Repo) │ │
 │  └─────────┘ └─────────────┘ └────────────┘ └────────┘ │
 └────────┬──────────────┬──────────────┬───────────────────┘
          │ HTTP/SSE     │ HTTP/SSE     │ HTTP/SSE
          ▼              ▼              ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐ ┌ ─ ─ ─ ─ ┐
-│   Chaos    │ │   OWASP    │ │    SOC2    │   Future
-│   Agent    │ │   Agent    │ │   Agent    │ │  Agent   │
-│  (Python)  │ │  (Python)  │ │  (Python)  │  (Python)
-└────────────┘ └────────────┘ └────────────┘ └ ─ ─ ─ ─ ┘
-  FastAPI + OpenAI Agents SDK + LiteLLM (each)
+  8 Agent Types (each: FastAPI + OpenAI Agents SDK + LiteLLM)
+┌───────┐┌───────┐┌───────┐┌───────┐┌───────┐┌───────┐┌───────┐┌────────┐
+│ Chaos ││ OWASP ││ SOC2  ││  CWE  ││ Prove ││  XSS  ││ SSDF  ││Discover│
+└───────┘└───────┘└───────┘└───────┘└───────┘└───────┘└───────┘└────────┘
 ```
 
 ## Components
 
-### Frontend (Next.js + CopilotKit)
+### Frontend (React 19 + Vite 7)
 
-- **Framework**: Next.js with TypeScript
+- **Framework**: React 19 with TypeScript (Vite 7)
 - **UI Library**: Tailwind CSS with custom warm cream theme
-- **Agent Protocol**: ag-ui (CopilotKit React integration)
+- **Streaming**: Native EventSource API for Server-Sent Events (SSE)
 - **Transport**: Server-Sent Events (SSE) for real-time agent streaming
 - **Testing**: Playwright for E2E, Vitest for unit tests
 
 The frontend connects to the Go backend via two channels:
 1. **REST API** for CRUD operations (submit sources, start audits, fetch results)
-2. **SSE stream** for real-time audit progress using the ag-ui protocol
+2. **SSE stream** for real-time audit progress using Server-Sent Events
 
 ### Go Backend (Orchestrator)
 
-- **Language**: Go 1.23+
+- **Language**: Go 1.24+
 - **Database**: PostgreSQL with pgvector extension (SQLite fallback available)
 - **Role**: Central orchestrator that receives audit requests, manages source code, dispatches work to Python agents, and aggregates results
 
@@ -55,7 +53,7 @@ Key responsibilities:
 - Source code ingestion (git clone or local path validation)
 - Audit lifecycle management (create, track, complete)
 - Agent dispatch and SSE stream aggregation
-- ag-ui event translation and forwarding to frontend
+- SSE event translation and forwarding to frontend
 - Persistence of audit results
 
 ### Python Agent Microservices
@@ -75,12 +73,12 @@ Each agent is a standalone FastAPI service with:
 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
-| Frontend | Next.js + Tailwind | Modern React framework with SSR, Tailwind for rapid styling |
-| Agent UI Protocol | ag-ui + CopilotKit | Standard protocol for agent-to-UI communication, event-based SSE |
+| Frontend | React 19 + Vite 7 + Tailwind | Modern React SPA with Vite, Tailwind for rapid styling |
+| Streaming | Native EventSource (SSE) | Standard browser API for Server-Sent Events, no external dependencies |
 | Backend | Go | Performance, single binary deployment, excellent concurrency for stream aggregation |
 | Agent SDK | OpenAI Agents SDK | Code-first agent definition, built-in streaming, multi-model via LiteLLM |
 | Database | PostgreSQL + pgvector | Vector similarity search for audit memory, production-grade persistence |
-| Deployment | Docker Compose | Simple multi-service orchestration for Go + Python + Next.js |
+| Deployment | Docker Compose | Simple multi-service orchestration for Go + Python + React |
 
 ## Constraints
 

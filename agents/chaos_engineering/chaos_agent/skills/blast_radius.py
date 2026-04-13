@@ -19,10 +19,16 @@ ISOLATION_PATTERNS = [
 ]
 
 SHARED_STATE_PATTERNS = [
-    re.compile(r"global\s|shared.?state|singleton", re.IGNORECASE),
+    re.compile(r"\bglobal\s+\w+", re.IGNORECASE),
+    re.compile(r"shared.?state|singleton", re.IGNORECASE),
     re.compile(r"\.Lock\(|sync\.Mutex|threading\.Lock"),
     re.compile(r"shared.?database|common.?cache|global.?config", re.IGNORECASE),
 ]
+
+# Node.js/Next.js intentional singleton patterns (hot-reload-safe).
+_NODEJS_SINGLETON = re.compile(
+    r"global\.\w+\s*=\s*global\.\w+\s*\|\||declare\s+global|globalThis\.\w+",
+)
 
 
 def assess_blast_radius(source_path: str) -> dict:
@@ -52,12 +58,29 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if content is None:
         return
 
-    has_shared_state = any(p.search(content) for p in SHARED_STATE_PATTERNS)
+    # Find lines matching Node.js/Next.js intentional singleton patterns.
+    nodejs_singleton_lines: set[int] = set()
+    for match in _NODEJS_SINGLETON.finditer(content):
+        line_no = content[:match.start()].count("\n")
+        nodejs_singleton_lines.add(line_no)
+
+    # Check shared state per-match, skipping lines that are Node.js singletons.
+    has_shared_state = False
+    for p in SHARED_STATE_PATTERNS:
+        for match in p.finditer(content):
+            line_no = content[:match.start()].count("\n")
+            if line_no not in nodejs_singleton_lines:
+                has_shared_state = True
+                break
+        if has_shared_state:
+            break
+
     has_isolation = any(p.search(content) for p in ISOLATION_PATTERNS)
 
     if has_shared_state and not has_isolation:
         findings.append({
             "severity": "medium",
+            "check_id": "chaos.blast_radius.missing_isolation",
             "category": "blast-radius",
             "title": "Shared state without isolation",
             "description": f"File {file_path.name} uses shared state without isolation mechanisms",

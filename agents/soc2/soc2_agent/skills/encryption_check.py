@@ -59,6 +59,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if has_data_storage and not has_encryption:
         findings.append({
             "severity": "high",
+            "check_id": "soc2.encryption.missing_at_rest",
             "category": "CC6-encryption",
             "title": "Data storage without encryption",
             "description": f"File {file_path.name} stores data without encryption",

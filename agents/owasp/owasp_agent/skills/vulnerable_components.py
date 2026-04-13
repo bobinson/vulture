@@ -50,6 +50,7 @@ def _check_dep(dep: dict, findings: list[dict]) -> None:
     if version_tuple < threshold:
         findings.append({
             "severity": "high",
+            "check_id": "owasp.vulnerable_components.outdated_dependency",
             "category": "A06-vulnerable-components",
             "title": f"Vulnerable dependency: {dep['name']}",
             "description": f"{dep['name']} {dep['version']} is below safe version {'.'.join(str(v) for v in threshold)}",

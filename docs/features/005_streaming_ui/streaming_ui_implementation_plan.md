@@ -165,7 +165,7 @@ No new API endpoints. This feature consumes:
 
 ## Dependencies
 
-- `@copilotkit/react-core`: ag-ui protocol React integration
-- `next`: Next.js framework
+- `react` + `vite`: React 19 SPA with Vite 7
+- Native `EventSource` API for SSE streaming (ag-ui-compatible event naming)
 - `tailwindcss`: Utility-first CSS
 - No additional UI component libraries -- custom components with Tailwind

@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY shared/pyproject.toml shared/setup.cfg* shared/setup.py* /app/shared/
+RUN --mount=type=cache,target=/root/.cache/pip pip install /app/shared || true
+COPY shared/ /app/shared/
+RUN --mount=type=cache,target=/root/.cache/pip pip install /app/shared

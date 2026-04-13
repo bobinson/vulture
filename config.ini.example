@@ -1,0 +1,49 @@
+# Vulture — Global Configuration
+#
+# Copy this file to config.ini and fill in your values:
+#   cp config.ini.example config.ini
+#
+# All ports, database settings, and service defaults in one place.
+# Environment variables override any value set here.
+# Run `make gen-env` after editing to generate the .env file for docker compose.
+
+[app]
+name = vulture
+
+[ports]
+backend           = 28080
+agent_chaos       = 28001
+agent_owasp       = 28002
+agent_soc2        = 28003
+agent_cwe         = 28004
+agent_prove       = 28005
+agent_xss         = 28006
+agent_ssdf        = 28007
+agent_discover    = 28008
+frontend_internal = 23000
+frontend_host     = 23001
+postgres_internal = 25432
+postgres_host     = 25433
+
+[database]
+name        = vulture
+user        = vulture
+password    = CHANGE_ME
+sqlite_path = /data/vulture.db
+
+[auth]
+jwt_secret =
+
+[embedding]
+url   =
+model = text-embedding-3-small
+
+[llm]
+model        = gpt-4o
+context_size =
+
+[ollama]
+url = http://localhost:11434
+
+[lmstudio]
+url = http://localhost:1234/v1

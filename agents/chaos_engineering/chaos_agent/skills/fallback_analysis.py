@@ -58,6 +58,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if has_error_prone and not has_fallback:
         findings.append({
             "severity": "medium",
+            "check_id": "chaos.fallback.missing",
             "category": "fallback-pattern",
             "title": "Missing fallback mechanism",
             "description": f"File {file_path.name} lacks fallback for failure scenarios",

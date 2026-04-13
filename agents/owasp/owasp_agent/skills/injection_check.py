@@ -5,7 +5,12 @@ from pathlib import Path
 
 from agents import function_tool
 
+from shared.tools.snippet import extract_snippet
+
 from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
+    SAFE_IMPORT_LINE,
+    SCANNER_DEF_LINE,
     is_generated_file,
     is_test_file,
     read_file_safe,
@@ -32,7 +37,6 @@ COMMAND_INJECTION_PATTERNS = [
 SAFE_STATIC_CALL = re.compile(r"""(?:exec|eval)\(\s*(?:'[^']*'|"[^"]*")\s*[,)]""")
 # Shell function definitions: `func_name() {`
 SHELL_FUNC_DEF = re.compile(r"^\s*\w+\s*\(\s*\)\s*\{")
-COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
 
 
 def check_injection(source_path: str) -> dict:
@@ -49,12 +53,14 @@ def check_injection(source_path: str) -> dict:
     for file_path in scan_code_files(source_path):
         if is_generated_file(file_path):
             continue
-        _analyze_file(file_path, findings, is_test=is_test_file(file_path))
+        if is_test_file(file_path):
+            continue
+        _analyze_file(file_path, findings)
 
     return {"findings": findings}
 
 
-def _analyze_file(file_path: Path, findings: list[dict], *, is_test: bool) -> None:
+def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze a file for injection patterns."""
     content = read_file_safe(file_path)
     if content is None:
@@ -64,18 +70,24 @@ def _analyze_file(file_path: Path, findings: list[dict], *, is_test: bool) -> No
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
             continue
-        _check_sql_injection(file_path, line, line_num, findings, is_test=is_test)
-        _check_command_injection(file_path, line, line_num, findings, is_test=is_test)
+        if SAFE_IMPORT_LINE.match(line):
+            continue
+        if SCANNER_DEF_LINE.search(line):
+            continue
+        _check_sql_injection(file_path, line, line_num, findings, lines)
+        _check_command_injection(file_path, line, line_num, findings, lines)
 
 
 def _check_sql_injection(
-    file_path: Path, line: str, line_num: int, findings: list[dict], *, is_test: bool
+    file_path: Path, line: str, line_num: int, findings: list[dict],
+    lines: list[str],
 ) -> None:
     """Check a line for SQL injection patterns."""
     for pattern in SQL_INJECTION_PATTERNS:
         if pattern.search(line):
-            findings.append({
-                "severity": "medium" if is_test else "critical",
+            finding = {
+                "severity": "critical",
+                "check_id": "owasp.injection.sql",
                 "category": "A03-injection",
                 "title": "Potential SQL injection",
                 "description": f"String interpolation in SQL query at line {line_num}",
@@ -83,12 +95,15 @@ def _check_sql_injection(
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Use parameterized queries instead of string formatting",
-            })
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(finding)
             return
 
 
 def _check_command_injection(
-    file_path: Path, line: str, line_num: int, findings: list[dict], *, is_test: bool
+    file_path: Path, line: str, line_num: int, findings: list[dict],
+    lines: list[str],
 ) -> None:
     """Check a line for command injection patterns."""
     if SHELL_FUNC_DEF.match(line):
@@ -97,8 +112,9 @@ def _check_command_injection(
         if pattern.search(line):
             if SAFE_STATIC_CALL.search(line):
                 return
-            findings.append({
-                "severity": "medium" if is_test else "critical",
+            finding = {
+                "severity": "critical",
+                "check_id": "owasp.injection.command",
                 "category": "A03-injection",
                 "title": "Potential command injection",
                 "description": f"Unsafe command execution at line {line_num}",
@@ -106,7 +122,9 @@ def _check_command_injection(
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Use subprocess with shell=False and list arguments",
-            })
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(finding)
             return
 
 

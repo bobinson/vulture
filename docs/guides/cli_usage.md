@@ -23,7 +23,7 @@ sudo mv cli/vulture /usr/local/bin/vulture
 vulture localstart
 
 # Scan a local project
-vulture scan /home/user/my-project
+vulture scan /path/to/my-project
 
 # Scan a Git repository
 vulture scan https://github.com/org/repo.git
@@ -74,7 +74,7 @@ vulture /path/to/project
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--types` | Comma-separated audit types: `chaos`, `owasp`, `soc2` | All three |
+| `--types` | Comma-separated audit types: `chaos`, `owasp`, `soc2`, `cwe`, `xss`, `ssdf` | All scan types |
 | `--no-cache` | Skip cached results and force a fresh audit | Off (uses cache) |
 
 **What happens:**
@@ -147,7 +147,45 @@ vulture localstop
 
 Aliases: `local-stop`, `local_stop`
 
-Sends SIGTERM to processes on ports 8080 (backend), 8001-8003 (agents), and 3001 (frontend), with a SIGKILL fallback after 500ms.
+Sends SIGTERM to processes on ports 28080 (backend), 28001-28008 (all agents), and 23001 (frontend), with a SIGKILL fallback after 500ms.
+
+### `vulture discover <path-or-url> --target-url <url>`
+
+Run endpoint discovery against a live target. Maps API endpoints, infrastructure configuration, and service dependencies by combining static analysis of the codebase with live probing of the target URL.
+
+```bash
+vulture discover /path/to/project --target-url https://staging.example.com
+vulture discover --target-url https://staging.example.com
+vulture discover /path/to/project --target-url https://staging.example.com --rate-limit 1
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--target-url` | URL of the target environment to discover | Required |
+| `--rate-limit` | Delay in seconds between HTTP requests | 0 (no limit) |
+| `--no-cache` | Skip cached results | Off |
+
+### `vulture prove <path-or-url>`
+
+Run formal verification against a staging environment. Attempts to prove or disprove audit findings with evidence.
+
+```bash
+vulture prove /path/to/project --staging-url https://staging.example.com
+vulture prove /path/to/project --staging-url https://staging.example.com --max-iterations 5
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--staging-url` | URL of the staging environment to test against | Required |
+| `--target-url` | Alias for `--staging-url` | - |
+| `--max-iterations` | Maximum prove iterations per finding | 3 |
+| `--allow-local` | Allow proving against localhost targets | Off |
+| `--rate-limit` | Max requests per second to the staging URL | Unlimited |
+| `--no-cache` | Skip cached results | Off |
 
 ### `vulture help`
 
@@ -163,8 +201,8 @@ vulture -h
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `VULTURE_API_URL` | Backend API base URL | `http://localhost:8080` |
-| `VULTURE_FRONTEND_URL` | Frontend URL (used in result links) | `http://localhost:3001` |
+| `VULTURE_API_URL` | Backend API base URL | `http://localhost:28080` |
+| `VULTURE_FRONTEND_URL` | Frontend URL (used in result links) | `http://localhost:23001` |
 
 Example with a remote server:
 
@@ -190,25 +228,37 @@ The CLI automatically determines whether a source is a Git repository or a local
 |-------|-------------|
 | `https://github.com/org/repo.git` | Git |
 | `http://gitlab.example.com/repo` | Git |
-| `/home/user/project` | Local path |
+| `/path/to/project` | Local path |
 | `./relative/path` | Local path |
 
 Local paths are resolved to absolute paths before submission.
 
 ## Audit Types
 
+### Scan Types (used by `vulture scan`)
+
 | Type | Description |
 |------|-------------|
 | `chaos` | Chaos Engineering resilience patterns (retry, circuit breaker, timeout, fallback, blast radius) |
 | `owasp` | OWASP Top 10 security vulnerabilities (injection, auth, crypto, access control, misconfiguration) |
 | `soc2` | SOC2 compliance clauses (CC6, CC7, CC8, etc.) |
+| `cwe` | CWE (Common Weakness Enumeration) detection across multiple categories |
+| `xss` | XSS (Cross-Site Scripting) vulnerability scanning |
+| `ssdf` | NIST SSDF v1.1 (Secure Software Development Framework) compliance |
 
-By default all three types run. Use `--types` to select a subset:
+By default all scan types run. Use `--types` to select a subset:
 
 ```bash
 vulture scan /path/to/project --types owasp
-vulture scan /path/to/project --types owasp,soc2
+vulture scan /path/to/project --types owasp,soc2,cwe
 ```
+
+### Additional Commands
+
+| Command | Description |
+|---------|-------------|
+| `vulture discover` | Endpoint discovery — maps API endpoints and infrastructure configuration |
+| `vulture prove` | Formal verification — attempts to prove or disprove findings with evidence |
 
 ## Using Local Models
 
@@ -294,7 +344,7 @@ cd cli && go build -o vulture . && cd ..
 cli/vulture localstart
 
 # Run an audit
-cli/vulture scan /home/user/my-app --types owasp
+cli/vulture scan /path/to/my-app --types owasp
 
 # Check recent audits
 cli/vulture status

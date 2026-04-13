@@ -1,0 +1,6 @@
+test/
+*_test.go
+*.test
+.git/
+*.md
+vulture

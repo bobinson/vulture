@@ -6,8 +6,9 @@ import "github.com/vulture/backend/internal/model"
 type MockLineageRepository struct {
 	UpsertLineageFn          func(*model.FindingLineage) error
 	GetLineageFn             func(string) (*model.FindingLineage, error)
-	GetLineageByFingerprintFn func(string, string, string) (*model.FindingLineage, error)
-	ListBySourcePathFn       func(string, string, int, int) ([]model.FindingLineage, error)
+	GetLineageByFingerprintFn  func(string, string, string) (*model.FindingLineage, error)
+	GetLineageByFingerprintsFn func([]string, string) (map[string]*model.FindingLineage, error)
+	ListBySourcePathFn         func(string, string, int, int) ([]model.FindingLineage, error)
 	ListByAuditFn            func(string) ([]model.FindingLineage, error)
 	UpdateStatusFn           func(string, string, string, string) error
 	MarkFixedFn              func(string, string, string) error
@@ -34,6 +35,13 @@ func (m *MockLineageRepository) GetLineage(id string) (*model.FindingLineage, er
 func (m *MockLineageRepository) GetLineageByFingerprint(fingerprint, sourcePath, agentType string) (*model.FindingLineage, error) {
 	if m.GetLineageByFingerprintFn != nil {
 		return m.GetLineageByFingerprintFn(fingerprint, sourcePath, agentType)
+	}
+	return nil, nil
+}
+
+func (m *MockLineageRepository) GetLineageByFingerprints(fingerprints []string, sourcePath string) (map[string]*model.FindingLineage, error) {
+	if m.GetLineageByFingerprintsFn != nil {
+		return m.GetLineageByFingerprintsFn(fingerprints, sourcePath)
 	}
 	return nil, nil
 }

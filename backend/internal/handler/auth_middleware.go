@@ -14,8 +14,9 @@ type contextKey string
 const userContextKey contextKey = "user"
 
 type AuthMiddleware struct {
-	authSvc   service.AuthService
-	localUser *model.User
+	authSvc          service.AuthService
+	streamTokenStore *service.StreamTokenStore
+	localUser        *model.User
 }
 
 func NewAuthMiddleware(authSvc service.AuthService) *AuthMiddleware {
@@ -62,19 +63,32 @@ func (m *AuthMiddleware) Optional(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// SetStreamTokenStore sets the stream token store for validating ephemeral SSE tokens.
+func (m *AuthMiddleware) SetStreamTokenStore(store *service.StreamTokenStore) {
+	m.streamTokenStore = store
+}
+
 func (m *AuthMiddleware) extractUser(r *http.Request) *model.User {
+	// Check short-lived stream tokens first (only on /api/audits/:id/stream)
+	if streamToken := r.URL.Query().Get("stream_token"); streamToken != "" {
+		if isAuditStreamPath(r.URL.Path) && m.streamTokenStore != nil {
+			auditID := extractAuditIDFromPath(r.URL.Path)
+			user, err := m.streamTokenStore.Validate(streamToken, auditID)
+			if err == nil {
+				return user
+			}
+		}
+		return nil // stream_token was provided but invalid — don't fall through
+	}
+
 	token := ""
-	// Check Authorization header first
+	// Check Authorization header
 	header := r.Header.Get("Authorization")
 	if header != "" {
 		t := strings.TrimPrefix(header, "Bearer ")
 		if t != header {
 			token = t
 		}
-	}
-	// Fall back to query parameter (needed for EventSource SSE which can't set headers)
-	if token == "" {
-		token = r.URL.Query().Get("token")
 	}
 	if token == "" {
 		return nil
@@ -84,6 +98,26 @@ func (m *AuthMiddleware) extractUser(r *http.Request) *model.User {
 		return nil
 	}
 	return user
+}
+
+// isAuditStreamPath returns true only for /api/audits/{id}/stream (not other /stream suffixes)
+func isAuditStreamPath(path string) bool {
+	trimmed := strings.TrimPrefix(path, "/api/audits/")
+	if trimmed == path {
+		return false // didn't start with /api/audits/
+	}
+	// Must be exactly "{id}/stream" — one segment then /stream
+	parts := strings.SplitN(trimmed, "/", 2)
+	return len(parts) == 2 && parts[0] != "" && parts[1] == "stream"
+}
+
+// extractAuditIDFromPath extracts the audit ID from paths like /api/audits/{id}/stream
+func extractAuditIDFromPath(path string) string {
+	path = strings.TrimPrefix(path, "/api/audits/")
+	if idx := strings.Index(path, "/"); idx > 0 {
+		return path[:idx]
+	}
+	return path
 }
 
 func getUserFromContext(r *http.Request) *model.User {

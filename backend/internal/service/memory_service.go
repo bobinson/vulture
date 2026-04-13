@@ -1,7 +1,7 @@
 package service
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"strings"
@@ -10,6 +10,9 @@ import (
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
 )
+
+// embedSem limits concurrent embedding goroutines to prevent goroutine leaks.
+var embedSem = make(chan struct{}, 10)
 
 // Similarity threshold for auto-linking (cosine similarity 0-1).
 const autoLinkThreshold = 0.75
@@ -22,6 +25,7 @@ type MemoryService interface {
 	UpdateRemediation(id string, status string, notes string) error
 	ListByAudit(auditID string) ([]model.AuditMemory, error)
 	ListByCodebasePath(path string, agentType string, limit int) ([]model.AuditMemory, error)
+	ListByCodebasePathMulti(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error)
 	ListRecent(limit int) ([]model.AuditMemory, error)
 	StoreFindingsAsMemories(auditID string, sourcePath string, findings []model.Finding) error
 	GetEdges(memoryID string) ([]model.MemoryEdge, error)
@@ -49,8 +53,12 @@ func (s *memoryService) Store(mem *model.AuditMemory) error {
 	if err := s.repo.StoreMemory(mem); err != nil {
 		return err
 	}
-	// Generate embedding and auto-link asynchronously
-	go s.embedAndLink(mem)
+	// Generate embedding and auto-link asynchronously with concurrency limit.
+	go func() {
+		embedSem <- struct{}{}
+		defer func() { <-embedSem }()
+		s.embedAndLink(mem)
+	}()
 	return nil
 }
 
@@ -110,9 +118,11 @@ func (s *memoryService) batchEmbedAndLink(memories []*model.AuditMemory) {
 	vectors, err := s.embedder.EmbedBatch(texts)
 	if err != nil {
 		log.Printf("[memory] batch embed error: %v", err)
-		// Fall back to individual embedding
+		// Fall back to individual embedding with semaphore
 		for _, mem := range memories {
+			embedSem <- struct{}{}
 			s.embedAndLink(mem)
+			<-embedSem
 		}
 		return
 	}
@@ -167,11 +177,11 @@ func (s *memoryService) Search(req *model.MemorySearchRequest) ([]model.AuditMem
 	if limit <= 0 {
 		limit = 20
 	}
-	// Try vector search first if embeddings are available
+	// Use hybrid search (vector + text) when embeddings are available.
 	if s.embedder.Available() {
 		vec, err := s.embedder.Embed(req.Query)
 		if err == nil {
-			return s.repo.SearchMemories(req.Query, vec, limit)
+			return s.repo.HybridSearchMemories(req.Query, vec, limit)
 		}
 		log.Printf("[memory] search embed fallback to text: %v", err)
 	}
@@ -219,6 +229,13 @@ func (s *memoryService) ListByCodebasePath(path string, agentType string, limit 
 	return s.repo.ListByCodebasePath(path, agentType, limit)
 }
 
+func (s *memoryService) ListByCodebasePathMulti(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return s.repo.ListByCodebasePathMulti(path, agentTypes, limit)
+}
+
 func (s *memoryService) StoreFindingsAsMemories(auditID string, sourcePath string, findings []model.Finding) error {
 	memories := make([]*model.AuditMemory, 0, len(findings))
 	for _, f := range findings {
@@ -240,15 +257,20 @@ func (s *memoryService) StoreFindingsAsMemories(auditID string, sourcePath strin
 		if f.Recommendation != "" {
 			mem.RemediationNotes = f.Recommendation
 		}
-		if err := s.repo.StoreMemory(mem); err != nil {
-			return fmt.Errorf("store finding memory: %w", err)
-		}
 		memories = append(memories, mem)
 	}
 
-	// Batch embed and auto-link in background
+	// Batch insert all memories in a single transaction
 	if len(memories) > 0 {
-		go s.batchEmbedAndLink(memories)
+		if err := s.repo.StoreBatch(memories); err != nil {
+			return fmt.Errorf("store finding memories batch: %w", err)
+		}
+		// Batch embed and auto-link in background with semaphore
+		go func() {
+			embedSem <- struct{}{}
+			defer func() { <-embedSem }()
+			s.batchEmbedAndLink(memories)
+		}()
 	}
 	return nil
 }
@@ -265,8 +287,8 @@ func (s *memoryService) GetEdges(memoryID string) ([]model.MemoryEdge, error) {
 }
 
 func generateMemoryID(auditID, title, findingType string) string {
-	h := md5.Sum([]byte(auditID + title + findingType))
-	return fmt.Sprintf("%x", h)
+	h := sha256.Sum256([]byte(auditID + title + findingType))
+	return fmt.Sprintf("%x", h[:16])
 }
 
 func extractKeywords(title, description string) []string {

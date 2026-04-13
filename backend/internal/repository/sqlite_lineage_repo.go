@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/vulture/backend/internal/model"
@@ -104,6 +105,43 @@ func (r *SQLiteLineageRepo) GetLineageByFingerprint(fingerprint, sourcePath, age
 		FROM finding_lineage
 		WHERE fingerprint = ? AND source_path = ? AND agent_type = ?`, fingerprint, sourcePath, agentType)
 	return scanSQLiteLineage(row)
+}
+
+// GetLineageByFingerprints fetches lineage records for multiple fingerprints in a single query.
+func (r *SQLiteLineageRepo) GetLineageByFingerprints(fingerprints []string, sourcePath string) (map[string]*model.FindingLineage, error) {
+	if len(fingerprints) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(fingerprints))
+	args := make([]interface{}, 0, len(fingerprints)+1)
+	for i, fp := range fingerprints {
+		placeholders[i] = "?"
+		args = append(args, fp)
+	}
+	args = append(args, sourcePath)
+	rows, err := r.db.Query(fmt.Sprintf(`
+		SELECT id, fingerprint, source_path, agent_type, current_status,
+			COALESCE(notes,''), COALESCE(ticket_url,''),
+			first_audit_id, first_found_at, COALESCE(first_commit,''),
+			COALESCE(latest_audit_id,''), latest_found_at, COALESCE(latest_commit,''),
+			COALESCE(fixed_audit_id,''), fixed_at, COALESCE(fixed_commit,''),
+			severity, category, title, file_path, created_at, updated_at
+		FROM finding_lineage
+		WHERE fingerprint IN (%s) AND source_path = ?`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get lineage by fingerprints: %w", err)
+	}
+	defer rows.Close()
+	lineages, err := scanSQLiteLineageRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]*model.FindingLineage, len(lineages))
+	for i := range lineages {
+		key := lineages[i].Fingerprint + "|" + lineages[i].AgentType
+		result[key] = &lineages[i]
+	}
+	return result, nil
 }
 
 func (r *SQLiteLineageRepo) ListBySourcePath(sourcePath, status string, limit, offset int) ([]model.FindingLineage, error) {

@@ -4,17 +4,20 @@ import "github.com/vulture/backend/internal/model"
 
 // MockMemoryRepository implements MemoryRepository for testing.
 type MockMemoryRepository struct {
-	StoreMemoryFn        func(*model.AuditMemory) error
-	StoreEmbeddingFn     func(string, []float32) error
-	SearchMemoriesFn     func(string, []float32, int) ([]model.AuditMemory, error)
-	FindSimilarByVectorFn func(string, []float32, int) ([]model.AuditMemory, error)
-	GetMemoryFn          func(string) (*model.AuditMemory, error)
-	UpdateRemediationFn  func(string, string, string) error
-	ListMemoriesByAuditFn func(string) ([]model.AuditMemory, error)
-	ListByCodebasePathFn func(string, string, int) ([]model.AuditMemory, error)
-	ListRecentFn         func(int) ([]model.AuditMemory, error)
-	StoreEdgeFn          func(*model.MemoryEdge) error
-	GetEdgesFn           func(string) ([]model.MemoryEdge, error)
+	StoreMemoryFn              func(*model.AuditMemory) error
+	StoreEmbeddingFn           func(string, []float32) error
+	SearchMemoriesFn           func(string, []float32, int) ([]model.AuditMemory, error)
+	HybridSearchMemoriesFn     func(string, []float32, int) ([]model.AuditMemory, error)
+	FindSimilarByVectorFn      func(string, []float32, int) ([]model.AuditMemory, error)
+	GetMemoryFn                func(string) (*model.AuditMemory, error)
+	UpdateRemediationFn        func(string, string, string) error
+	ListMemoriesByAuditFn      func(string) ([]model.AuditMemory, error)
+	ListByCodebasePathFn       func(string, string, int) ([]model.AuditMemory, error)
+	ListByCodebasePathMultiFn  func(string, []string, int) (map[string][]model.AuditMemory, error)
+	StoreBatchFn               func([]*model.AuditMemory) error
+	ListRecentFn               func(int) ([]model.AuditMemory, error)
+	StoreEdgeFn                func(*model.MemoryEdge) error
+	GetEdgesFn                 func(string) ([]model.MemoryEdge, error)
 }
 
 func (m *MockMemoryRepository) StoreMemory(mem *model.AuditMemory) error {
@@ -36,6 +39,13 @@ func (m *MockMemoryRepository) SearchMemories(query string, embedding []float32,
 		return m.SearchMemoriesFn(query, embedding, limit)
 	}
 	return nil, nil
+}
+
+func (m *MockMemoryRepository) HybridSearchMemories(query string, embedding []float32, limit int) ([]model.AuditMemory, error) {
+	if m.HybridSearchMemoriesFn != nil {
+		return m.HybridSearchMemoriesFn(query, embedding, limit)
+	}
+	return m.SearchMemories(query, embedding, limit)
 }
 
 func (m *MockMemoryRepository) FindSimilarByVector(excludeID string, embedding []float32, limit int) ([]model.AuditMemory, error) {
@@ -71,6 +81,20 @@ func (m *MockMemoryRepository) ListByCodebasePath(path string, agentType string,
 		return m.ListByCodebasePathFn(path, agentType, limit)
 	}
 	return nil, nil
+}
+
+func (m *MockMemoryRepository) ListByCodebasePathMulti(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error) {
+	if m.ListByCodebasePathMultiFn != nil {
+		return m.ListByCodebasePathMultiFn(path, agentTypes, limit)
+	}
+	return nil, nil
+}
+
+func (m *MockMemoryRepository) StoreBatch(memories []*model.AuditMemory) error {
+	if m.StoreBatchFn != nil {
+		return m.StoreBatchFn(memories)
+	}
+	return nil
 }
 
 func (m *MockMemoryRepository) ListRecent(limit int) ([]model.AuditMemory, error) {

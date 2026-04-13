@@ -4,7 +4,10 @@ import { useAgentStream } from "./useAgentStream";
 
 vi.mock("@/lib/api.ts", () => ({
   api: {
-    getStreamUrl: vi.fn((id: string) => `/api/audits/${id}/stream`),
+    getStreamToken: vi.fn().mockResolvedValue("token-123"),
+    getStreamUrl: vi.fn(
+      (id: string, token: string) => `/api/audits/${id}/stream?stream_token=${token}`,
+    ),
   },
 }));
 
@@ -39,6 +42,12 @@ class MockEventSource {
 
 let latestES: MockEventSource | null = null;
 
+/** Wait for the async connect() to create the EventSource. */
+async function waitForES(): Promise<MockEventSource> {
+  await vi.waitFor(() => expect(latestES).not.toBeNull());
+  return latestES!;
+}
+
 beforeEach(() => {
   latestES = null;
   vi.stubGlobal("EventSource", class extends MockEventSource {
@@ -67,54 +76,60 @@ describe("useAgentStream", () => {
     expect(latestES).toBeNull();
   });
 
-  it("connects to SSE when auditId provided", () => {
+  it("connects to SSE when auditId provided", async () => {
     renderHook(() => useAgentStream("audit-1"));
-    expect(latestES).not.toBeNull();
-    expect(latestES!.url).toBe("/api/audits/audit-1/stream");
+    const es = await waitForES();
+    expect(es.url).toContain("/api/audits/audit-1/stream");
   });
 
-  it("handles RunStarted event", () => {
+  it("handles RunStarted event", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("RunStarted", { runId: "run-1" }));
+    const es = await waitForES();
+    act(() => es.emit("RunStarted", { runId: "run-1" }));
     expect(result.current.lines.length).toBe(1);
     expect(result.current.lines[0].text).toContain("run-1");
     expect(result.current.lines[0].type).toBe("info");
   });
 
-  it("handles StepStarted event and creates agent step", () => {
+  it("handles StepStarted event and creates agent step", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("StepStarted", { stepName: "chaos" }));
+    const es = await waitForES();
+    act(() => es.emit("StepStarted", { stepName: "chaos" }));
     expect(result.current.steps.length).toBe(1);
     expect(result.current.steps[0].agent_id).toBe("chaos");
     expect(result.current.steps[0].status).toBe("running");
     expect(result.current.lines[0].text).toContain("chaos");
   });
 
-  it("handles StepFinished event and updates agent step", () => {
+  it("handles StepFinished event and updates agent step", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("StepStarted", { stepName: "chaos" }));
-    act(() => latestES!.emit("StepFinished", { stepName: "chaos" }));
+    const es = await waitForES();
+    act(() => es.emit("StepStarted", { stepName: "chaos" }));
+    act(() => es.emit("StepFinished", { stepName: "chaos" }));
     expect(result.current.steps[0].status).toBe("complete");
   });
 
-  it("handles TextMessageContent event", () => {
+  it("handles TextMessageContent event", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("TextMessageContent", { delta: "Scanning files..." }));
+    const es = await waitForES();
+    act(() => es.emit("TextMessageContent", { delta: "Scanning files..." }));
     expect(result.current.lines.length).toBe(1);
     expect(result.current.lines[0].text).toBe("Scanning files...");
     expect(result.current.lines[0].type).toBe("info");
   });
 
-  it("ignores TextMessageContent without string delta", () => {
+  it("ignores TextMessageContent without string delta", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("TextMessageContent", { delta: 42 }));
+    const es = await waitForES();
+    act(() => es.emit("TextMessageContent", { delta: 42 }));
     expect(result.current.lines.length).toBe(0);
   });
 
-  it("handles StateDelta with finding array", () => {
+  it("handles StateDelta with finding array", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
+    const es = await waitForES();
     act(() =>
-      latestES!.emit("StateDelta", {
+      es.emit("StateDelta", {
         delta: [
           {
             op: "add",
@@ -129,10 +144,11 @@ describe("useAgentStream", () => {
     expect(result.current.lines[0].text).toContain("SQL Injection");
   });
 
-  it("handles StateDelta with progress object", () => {
+  it("handles StateDelta with progress object", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
+    const es = await waitForES();
     act(() =>
-      latestES!.emit("StateDelta", {
+      es.emit("StateDelta", {
         delta: { files_analyzed: 10, total_files: 50, findings_count: 3 },
       }),
     );
@@ -141,39 +157,43 @@ describe("useAgentStream", () => {
     expect(result.current.lines[0].text).toContain("10/50");
   });
 
-  it("handles StateSnapshot event", () => {
+  it("handles StateSnapshot event", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("StateSnapshot", {}));
+    const es = await waitForES();
+    act(() => es.emit("StateSnapshot", {}));
     expect(result.current.lines[0].text).toBe("Results snapshot received");
   });
 
-  it("handles RunFinished event and sets done", () => {
+  it("handles RunFinished event and sets done", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
+    const es = await waitForES();
     expect(result.current.done).toBe(false);
-    act(() => latestES!.emit("RunFinished", {}));
+    act(() => es.emit("RunFinished", {}));
     expect(result.current.done).toBe(true);
-    expect(latestES!.closed).toBe(true);
+    expect(es.closed).toBe(true);
   });
 
-  it("handles RunError event and sets done", () => {
+  it("handles RunError event and sets done", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("RunError", { error: "Agent crashed" }));
+    const es = await waitForES();
+    act(() => es.emit("RunError", { error: "Agent crashed" }));
     expect(result.current.done).toBe(true);
     expect(result.current.lines[0].text).toContain("Agent crashed");
     expect(result.current.lines[0].type).toBe("error");
   });
 
-  it("closes EventSource on unmount", () => {
+  it("closes EventSource on unmount", async () => {
     const { unmount } = renderHook(() => useAgentStream("audit-1"));
-    const es = latestES!;
+    const es = await waitForES();
     expect(es.closed).toBe(false);
     unmount();
     expect(es.closed).toBe(true);
   });
 
-  it("handles malformed SSE data gracefully", () => {
+  it("handles malformed SSE data gracefully", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    const handlers = latestES!.listeners["TextMessageContent"] ?? [];
+    const es = await waitForES();
+    const handlers = es.listeners["TextMessageContent"] ?? [];
     act(() => {
       for (const h of handlers) {
         h(new MessageEvent("TextMessageContent", { data: "not json" }));
@@ -184,19 +204,21 @@ describe("useAgentStream", () => {
     expect(result.current.lines[0].text).toBe("not json");
   });
 
-  it("creates new step entry for unknown agent", () => {
+  it("creates new step entry for unknown agent", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
-    act(() => latestES!.emit("StepStarted", { stepName: "owasp" }));
-    act(() => latestES!.emit("StepStarted", { stepName: "soc2" }));
+    const es = await waitForES();
+    act(() => es.emit("StepStarted", { stepName: "owasp" }));
+    act(() => es.emit("StepStarted", { stepName: "soc2" }));
     expect(result.current.steps.length).toBe(2);
     expect(result.current.steps[0].agent_id).toBe("owasp");
     expect(result.current.steps[1].agent_id).toBe("soc2");
   });
 
-  it("handles StateDelta with token_savings data", () => {
+  it("handles StateDelta with token_savings data", async () => {
     const { result } = renderHook(() => useAgentStream("audit-1"));
+    const es = await waitForES();
     act(() =>
-      latestES!.emit("StateDelta", {
+      es.emit("StateDelta", {
         delta: {
           token_savings: {
             context_tokens: 50,

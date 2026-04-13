@@ -10,6 +10,9 @@ const SSE_EVENT_TYPES = [
   "StateDelta", "StateSnapshot",
 ] as const;
 
+/** Maximum number of stream lines retained in state. */
+const MAX_LINES = 500;
+
 export function useAgentStream(auditId: string | undefined, disabled = false) {
   const [lines, setLines] = useState<StreamLine[]>([]);
   const [steps, setSteps] = useState<AgentStep[]>([]);
@@ -20,12 +23,19 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
   const esRef = useRef<EventSource | null>(null);
   const lineCounterRef = useRef(0);
 
+  // Issue #9: Cap lines at MAX_LINES, dropping oldest entries
   const addLine = useCallback(
     (text: string, type: StreamLine["type"]) => {
-      setLines((prev) => [
-        ...prev,
-        { id: `l-${++lineCounterRef.current}`, text, type, timestamp: new Date() },
-      ]);
+      setLines((prev) => {
+        const next = [
+          ...prev,
+          { id: `l-${++lineCounterRef.current}`, text, type, timestamp: new Date() },
+        ];
+        if (next.length > MAX_LINES) {
+          return next.slice(next.length - MAX_LINES);
+        }
+        return next;
+      });
     },
     [],
   );
@@ -48,83 +58,61 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
     [],
   );
 
-  const handleSSEEvent = useCallback(
+  // Issues #1, #2: Store callbacks in refs so the effect handler is stable
+  const addLineRef = useRef(addLine);
+  addLineRef.current = addLine;
+
+  const updateStepRef = useRef(updateStep);
+  updateStepRef.current = updateStep;
+
+  // Stable handler ref -- never changes identity, calls current refs internally.
+  // addLine/updateStep use refs because they are user-defined callbacks that could change.
+  // setDone/setConnected/setDedupStats/setTokenSavings are React state setters,
+  // which are guaranteed stable across renders (React contract), so closing over
+  // them directly is safe.
+  const handleSSEEventRef = useRef(
     (eventType: string, data: Record<string, unknown>) => {
+      const addLineFn = addLineRef.current;
+      const updateStepFn = updateStepRef.current;
+
       switch (eventType) {
         case "RunStarted":
-          addLine(`Audit started: ${String(data.runId ?? "")}`, "info");
+          addLineFn(`Audit started: ${String(data.runId ?? "")}`, "info");
           break;
 
         case "StepStarted": {
           const name = String(data.stepName ?? "agent");
-          updateStep(name, "running");
-          addLine(`Agent started: ${name}`, "step");
+          updateStepFn(name, "running");
+          addLineFn(`Agent started: ${name}`, "step");
           break;
         }
 
         case "StepFinished": {
           const name = String(data.stepName ?? "agent");
-          updateStep(name, "complete");
-          addLine(`Agent finished: ${name}`, "step");
+          updateStepFn(name, "complete");
+          addLineFn(`Agent finished: ${name}`, "step");
           break;
         }
 
         case "TextMessageContent": {
           const delta = data.delta;
           if (typeof delta === "string") {
-            addLine(delta, "info");
+            addLineFn(delta, "info");
           }
           break;
         }
 
-        case "StateDelta": {
-          const delta = data.delta;
-          if (Array.isArray(delta)) {
-            for (const op of delta) {
-              const patch = op as Record<string, unknown>;
-              if (patch.op === "add" && patch.value) {
-                const finding = patch.value as Record<string, unknown>;
-                const severity = String(finding.severity ?? "info").toUpperCase();
-                const title = String(finding.title ?? "Finding");
-                const file = String(finding.file_path ?? "");
-                addLine(`[${severity}] ${title} \u2014 ${file}`, "finding");
-              }
-            }
-          } else if (delta && typeof delta === "object") {
-            const d = delta as Record<string, unknown>;
-            // Handle dedup_stats event from skill mode (no LLM)
-            if (d.dedup_stats && typeof d.dedup_stats === "object") {
-              setDedupStats(d.dedup_stats as DedupStats);
-              const ds = d.dedup_stats as DedupStats;
-              addLine(
-                `Memory optimization: ${ds.findings_deduped} findings deduplicated, ${ds.duplicates_removed} duplicates removed`,
-                "info",
-              );
-            } else if (d.token_savings && typeof d.token_savings === "object") {
-              setTokenSavings(d.token_savings as TokenSavings);
-              const ts = d.token_savings as TokenSavings;
-              addLine(
-                `Memory optimization: ${ts.tokens_saved} tokens saved (${ts.savings_pct}%), ${ts.duplicates_removed} duplicates removed`,
-                "info",
-              );
-            } else if (d.files_analyzed != null) {
-              addLine(
-                `Progress: ${String(d.files_analyzed)}/${String(d.total_files)} files, ${String(d.findings_count)} findings`,
-                "progress",
-              );
-            }
-          }
+        case "StateDelta":
+          handleStateDelta(data, addLineFn, setDedupStats, setTokenSavings);
           break;
-        }
 
         case "StateSnapshot":
-          addLine("Results snapshot received", "info");
+          addLineFn("Results snapshot received", "info");
           break;
 
         case "RunFinished":
-          addLine("Audit completed", "step");
+          addLineFn("Audit completed", "step");
           setDone(true);
-          // Close EventSource to prevent auto-reconnect replay loop
           if (esRef.current) {
             esRef.current.close();
             esRef.current = null;
@@ -132,7 +120,7 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
           break;
 
         case "RunError":
-          addLine(`Error: ${String(data.error ?? "Unknown error")}`, "error");
+          addLineFn(`Error: ${String(data.error ?? "Unknown error")}`, "error");
           setDone(true);
           if (esRef.current) {
             esRef.current.close();
@@ -144,35 +132,121 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
           break;
       }
     },
-    [addLine, updateStep],
   );
 
+  // Issue #10: Effect depends only on [auditId, disabled]
   useEffect(() => {
     if (!auditId || disabled) return;
 
-    const url = api.getStreamUrl(auditId);
-    const es = new EventSource(url);
-    esRef.current = es;
+    let cancelled = false;
 
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
+    const connect = async () => {
+      try {
+        const streamToken = await api.getStreamToken(auditId);
+        if (cancelled) return;
 
-    for (const eventType of SSE_EVENT_TYPES) {
-      es.addEventListener(eventType, (msg: MessageEvent) => {
-        try {
-          const data = JSON.parse(msg.data as string) as Record<string, unknown>;
-          handleSSEEvent(eventType, data);
-        } catch {
-          addLine(String(msg.data), "info");
+        const url = api.getStreamUrl(auditId, streamToken);
+        const es = new EventSource(url);
+        esRef.current = es;
+
+        es.onopen = () => setConnected(true);
+        es.onerror = () => {
+          setConnected(false);
+          es.close();
+          esRef.current = null;
+        };
+
+        for (const eventType of SSE_EVENT_TYPES) {
+          es.addEventListener(eventType, (msg: MessageEvent) => {
+            try {
+              const data = JSON.parse(msg.data as string) as Record<string, unknown>;
+              handleSSEEventRef.current(eventType, data);
+            } catch {
+              addLineRef.current(String(msg.data), "info");
+            }
+          });
         }
-      });
-    }
+      } catch {
+        addLineRef.current("Failed to establish stream connection", "error");
+      }
+    };
+
+    connect();
 
     return () => {
-      es.close();
-      esRef.current = null;
+      cancelled = true;
+      if (esRef.current) {
+        esRef.current.close();
+        esRef.current = null;
+      }
     };
-  }, [auditId, disabled, handleSSEEvent, addLine]);
+  }, [auditId, disabled]);
 
   return { lines, steps, connected, done, tokenSavings, dedupStats };
+}
+
+/** Handle StateDelta events -- extracted to keep handleSSEEvent under complexity limit. */
+function handleStateDelta(
+  data: Record<string, unknown>,
+  addLineFn: (text: string, type: StreamLine["type"]) => void,
+  setDedupStatsFn: React.Dispatch<React.SetStateAction<DedupStats | null>>,
+  setTokenSavingsFn: React.Dispatch<React.SetStateAction<TokenSavings | null>>,
+) {
+  const delta = data.delta;
+  if (Array.isArray(delta)) {
+    handleFindingsDelta(delta, addLineFn);
+    return;
+  }
+  if (delta && typeof delta === "object") {
+    handleObjectDelta(delta as Record<string, unknown>, addLineFn, setDedupStatsFn, setTokenSavingsFn);
+  }
+}
+
+/** Process array deltas (individual findings). */
+function handleFindingsDelta(
+  delta: unknown[],
+  addLineFn: (text: string, type: StreamLine["type"]) => void,
+) {
+  for (const op of delta) {
+    const patch = op as Record<string, unknown>;
+    if (patch.op !== "add" || !patch.value) continue;
+    const finding = patch.value as Record<string, unknown>;
+    const severity = String(finding.severity ?? "info").toUpperCase();
+    const title = String(finding.title ?? "Finding");
+    const file = String(finding.file_path ?? "");
+    addLineFn(`[${severity}] ${title} \u2014 ${file}`, "finding");
+  }
+}
+
+/** Process object deltas (dedup_stats, token_savings, progress). */
+function handleObjectDelta(
+  d: Record<string, unknown>,
+  addLineFn: (text: string, type: StreamLine["type"]) => void,
+  setDedupStatsFn: React.Dispatch<React.SetStateAction<DedupStats | null>>,
+  setTokenSavingsFn: React.Dispatch<React.SetStateAction<TokenSavings | null>>,
+) {
+  if (d.dedup_stats && typeof d.dedup_stats === "object") {
+    setDedupStatsFn(d.dedup_stats as DedupStats);
+    const ds = d.dedup_stats as DedupStats;
+    addLineFn(
+      `Memory optimization: ${ds.findings_deduped} findings deduplicated, ${ds.duplicates_removed} duplicates removed`,
+      "info",
+    );
+    return;
+  }
+  if (d.token_savings && typeof d.token_savings === "object") {
+    setTokenSavingsFn(d.token_savings as TokenSavings);
+    const ts = d.token_savings as TokenSavings;
+    addLineFn(
+      `Memory optimization: ${ts.tokens_saved} tokens saved (${ts.savings_pct}%), ${ts.duplicates_removed} duplicates removed`,
+      "info",
+    );
+    return;
+  }
+  if (d.files_analyzed != null) {
+    addLineFn(
+      `Progress: ${String(d.files_analyzed)}/${String(d.total_files)} files, ${String(d.findings_count)} findings`,
+      "progress",
+    );
+  }
 }

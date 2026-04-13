@@ -47,6 +47,14 @@ func TestMockAuditRepository_DefaultBehavior(t *testing.T) {
 	if err != nil || ca != nil {
 		t.Errorf("GetLatestCompletedAudit: ca=%v err=%v", ca, err)
 	}
+	pa, err := mock.GetPreviousCompletedAudit("src", []string{"chaos"}, "exclude")
+	if err != nil || pa != nil {
+		t.Errorf("GetPreviousCompletedAudit: pa=%v err=%v", pa, err)
+	}
+	spa, err := mock.ListAuditsBySourcePath("/path", 10, 0)
+	if err != nil || spa != nil {
+		t.Errorf("ListAuditsBySourcePath: spa=%v err=%v", spa, err)
+	}
 }
 
 func TestMockAuditRepository_WithFunctions(t *testing.T) {
@@ -64,6 +72,12 @@ func TestMockAuditRepository_WithFunctions(t *testing.T) {
 		ListAuditsFn:   func(l, o int) ([]model.Audit, error) { return nil, repoErr },
 		GetStatsFn:     func() (*model.DashboardStats, error) { return nil, repoErr },
 		GetLatestCompletedAuditFn: func(srcID string, types []string) (*model.Audit, error) {
+			return nil, repoErr
+		},
+		GetPreviousCompletedAuditFn: func(srcID string, types []string, excludeID string) (*model.Audit, error) {
+			return nil, repoErr
+		},
+		ListAuditsBySourcePathFn: func(path string, l, o int) ([]model.Audit, error) {
 			return nil, repoErr
 		},
 	}
@@ -99,6 +113,12 @@ func TestMockAuditRepository_WithFunctions(t *testing.T) {
 	if _, err := mock.GetLatestCompletedAudit("src", []string{"chaos"}); !errors.Is(err, repoErr) {
 		t.Errorf("GetLatestCompletedAudit: expected repoErr, got %v", err)
 	}
+	if _, err := mock.GetPreviousCompletedAudit("src", []string{"chaos"}, "exclude"); !errors.Is(err, repoErr) {
+		t.Errorf("GetPreviousCompletedAudit: expected repoErr, got %v", err)
+	}
+	if _, err := mock.ListAuditsBySourcePath("/path", 10, 0); !errors.Is(err, repoErr) {
+		t.Errorf("ListAuditsBySourcePath: expected repoErr, got %v", err)
+	}
 }
 
 func TestMockMemoryRepository_DefaultBehavior(t *testing.T) {
@@ -113,6 +133,10 @@ func TestMockMemoryRepository_DefaultBehavior(t *testing.T) {
 	mems, err := mock.SearchMemories("q", nil, 10)
 	if err != nil || mems != nil {
 		t.Errorf("SearchMemories: mems=%v err=%v", mems, err)
+	}
+	mems, err = mock.HybridSearchMemories("q", nil, 10)
+	if err != nil || mems != nil {
+		t.Errorf("HybridSearchMemories: mems=%v err=%v", mems, err)
 	}
 	mems, err = mock.FindSimilarByVector("id", nil, 10)
 	if err != nil || mems != nil {

@@ -43,6 +43,8 @@ const AGENT_DESC_KEYS: Record<string, string> = {
   owasp: "audit.owaspDesc",
   soc2: "audit.soc2Desc",
   cwe: "audit.cweDesc",
+  xss: "audit.xssDesc",
+  ssdf: "audit.ssdfDesc",
 };
 
 interface AuditTypeSelectorProps {

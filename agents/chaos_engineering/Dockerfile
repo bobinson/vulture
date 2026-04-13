@@ -1,13 +1,5 @@
-FROM python:3.12-slim
-
-WORKDIR /app
-
-COPY shared/ /app/shared/
-RUN pip install --no-cache-dir /app/shared
-
+FROM vulture-agent-base:latest
 COPY chaos_engineering/ /app/chaos/
 RUN pip install --no-cache-dir /app/chaos
-
-EXPOSE 8001
-
-CMD ["uvicorn", "chaos_agent.main:app", "--host", "0.0.0.0", "--port", "8001"]
+EXPOSE 28001
+CMD ["sh", "-c", "uvicorn chaos_agent.main:app --host 0.0.0.0 --port ${VULTURE_AGENT_PORT:-28001}"]

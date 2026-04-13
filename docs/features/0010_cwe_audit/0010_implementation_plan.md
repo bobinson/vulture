@@ -6,7 +6,7 @@ Add a CWE (Common Weakness Enumeration) audit agent to Vulture, enabling automat
 ## Components
 
 ### 1. Python Agent (`agents/cwe/`)
-- FastAPI microservice on port 8004
+- FastAPI microservice on port 28004
 - Skills-based pattern matching for CWE categories (buffer overflow, injection, auth issues, crypto failures, resource management)
 - Optional LLM phase via `run_combined_audit()`
 - `SKILLS.md` documenting all CWE detection capabilities
@@ -14,10 +14,10 @@ Add a CWE (Common Weakness Enumeration) audit agent to Vulture, enabling automat
 
 ### 2. Backend Integration (`backend/internal/config/`)
 - Register `cwe` agent in `defaultAgents()` with `VULTURE_AGENT_CWE_URL` env var
-- Default URL: `http://agent-cwe:8004`
+- Default URL: `http://agent-cwe:28004`
 
 ### 3. Docker Compose
-- `agent-cwe` service block (port 8004, same pattern as other agents)
+- `agent-cwe` service block (port 28004, same pattern as other agents)
 - Backend depends_on and environment variable for CWE agent URL
 
 ### 4. Frontend

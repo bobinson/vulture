@@ -19,6 +19,8 @@ type AuditService interface {
 	Stats() (*model.DashboardStats, error)
 	GetCachedAudit(sourceID string, types []string) (*model.Audit, error)
 	FindSourceByPath(path string) (*model.Source, error)
+	GetPreviousCompletedAudit(sourceID string, types []string, excludeAuditID string) (*model.Audit, error)
+	ListAuditsBySourcePath(sourcePath string, limit, offset int) ([]model.Audit, error)
 }
 
 type auditService struct {
@@ -30,20 +32,23 @@ func NewAuditService(repo repository.AuditRepository) AuditService {
 }
 
 func (s *auditService) Create(req *model.AuditRequest) (*model.Audit, error) {
-	src, err := s.repo.GetSource(req.SourceID)
-	if err != nil {
-		return nil, fmt.Errorf("get source: %w", err)
-	}
-	if src == nil {
-		return nil, ErrNotFound
-	}
-	// Refresh git info from live repo state
-	if gi, _ := gitutil.GetInfo(src.Path); gi != nil {
-		src.GitBranch = gi.Branch
-		src.GitCommitHash = gi.CommitHash
-		src.GitCommitShort = gi.CommitShort
-		src.GitRemoteURL = gi.RemoteURL
-		_ = s.repo.UpdateSourceGitInfo(src.ID, gi.Branch, gi.CommitHash, gi.CommitShort, gi.RemoteURL)
+	// Source is optional for discover-only audits (URL-only discovery)
+	if req.SourceID != "" {
+		src, err := s.repo.GetSource(req.SourceID)
+		if err != nil {
+			return nil, fmt.Errorf("get source: %w", err)
+		}
+		if src == nil {
+			return nil, ErrNotFound
+		}
+		// Refresh git info from live repo state
+		if gi, _ := gitutil.GetInfo(src.Path); gi != nil {
+			src.GitBranch = gi.Branch
+			src.GitCommitHash = gi.CommitHash
+			src.GitCommitShort = gi.CommitShort
+			src.GitRemoteURL = gi.RemoteURL
+			_ = s.repo.UpdateSourceGitInfo(src.ID, gi.Branch, gi.CommitHash, gi.CommitShort, gi.RemoteURL)
+		}
 	}
 	cfg := req.Config
 	if cfg == nil {
@@ -97,4 +102,12 @@ func (s *auditService) GetCachedAudit(sourceID string, types []string) (*model.A
 
 func (s *auditService) FindSourceByPath(path string) (*model.Source, error) {
 	return s.repo.FindSourceByPath(path)
+}
+
+func (s *auditService) GetPreviousCompletedAudit(sourceID string, types []string, excludeAuditID string) (*model.Audit, error) {
+	return s.repo.GetPreviousCompletedAudit(sourceID, types, excludeAuditID)
+}
+
+func (s *auditService) ListAuditsBySourcePath(sourcePath string, limit, offset int) ([]model.Audit, error) {
+	return s.repo.ListAuditsBySourcePath(sourcePath, limit, offset)
 }

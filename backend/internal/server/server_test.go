@@ -395,7 +395,7 @@ func TestOpenRepo_EmptyDSN_UsesSQLite(t *testing.T) {
 }
 
 func TestOpenRepo_WithDSN_AttemptsPostgres(t *testing.T) {
-	_, err := openRepoTestPostgres("postgres://invalid:5432/test")
+	_, err := openRepoTestPostgres("postgres://invalid:25432/test")
 	if err == nil {
 		t.Fatal("expected error for invalid postgres DSN")
 	}

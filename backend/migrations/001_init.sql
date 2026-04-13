@@ -139,7 +139,7 @@ CREATE TABLE memory_edges (
     target_id       UUID NOT NULL REFERENCES audit_memories(id) ON DELETE CASCADE,
     relation_type   VARCHAR(50) NOT NULL CHECK (relation_type IN (
         'same_issue', 'supersedes', 'derived_from', 'contradicts',
-        'remediated_by', 'related_compliance', 'escalates_to'
+        'remediated_by', 'related_compliance', 'escalates_to', 'similar'
     )),
     strength        FLOAT NOT NULL DEFAULT 1.0 CHECK (strength >= 0 AND strength <= 1),
     bidirectional   BOOLEAN DEFAULT FALSE,

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { SEVERITY_ORDER } from "@/lib/constants.ts";
 import type { Finding, Severity } from "@/lib/types.ts";
 
-type SortField = "severity" | "category" | "file" | "title";
+type SortField = "severity" | "category" | "file" | "title" | "agent_type";
 type SortDirection = "asc" | "desc";
 
 const PAGE_SIZE = 25;
@@ -41,7 +41,7 @@ export function useFindings(allFindings: Finding[]) {
       filtered = filtered.filter((f) => f.severity === filterSeverity);
     }
     if (filterAgent !== "all") {
-      filtered = filtered.filter((f) => f.agent_id === filterAgent);
+      filtered = filtered.filter((f) => (f.agent_type ?? f.agent_id) === filterAgent);
     }
 
     return [...filtered].sort((a, b) => {
@@ -58,6 +58,9 @@ export function useFindings(allFindings: Finding[]) {
           break;
         case "title":
           cmp = a.title.localeCompare(b.title);
+          break;
+        case "agent_type":
+          cmp = (a.agent_type ?? a.agent_id ?? "").localeCompare(b.agent_type ?? b.agent_id ?? "");
           break;
       }
       return sortDirection === "asc" ? cmp : -cmp;

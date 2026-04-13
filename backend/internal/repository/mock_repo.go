@@ -14,7 +14,9 @@ type MockAuditRepository struct {
 	SaveFindingsFn            func(string, []model.Finding) error
 	ListAuditsFn              func(int, int) ([]model.Audit, error)
 	GetStatsFn                func() (*model.DashboardStats, error)
-	GetLatestCompletedAuditFn func(string, []string) (*model.Audit, error)
+	GetLatestCompletedAuditFn     func(string, []string) (*model.Audit, error)
+	GetPreviousCompletedAuditFn   func(string, []string, string) (*model.Audit, error)
+	ListAuditsBySourcePathFn      func(string, int, int) ([]model.Audit, error)
 }
 
 func (m *MockAuditRepository) CreateSource(src *model.Source) error {
@@ -90,6 +92,20 @@ func (m *MockAuditRepository) GetStats() (*model.DashboardStats, error) {
 func (m *MockAuditRepository) GetLatestCompletedAudit(sourceID string, types []string) (*model.Audit, error) {
 	if m.GetLatestCompletedAuditFn != nil {
 		return m.GetLatestCompletedAuditFn(sourceID, types)
+	}
+	return nil, nil
+}
+
+func (m *MockAuditRepository) GetPreviousCompletedAudit(sourceID string, types []string, excludeAuditID string) (*model.Audit, error) {
+	if m.GetPreviousCompletedAuditFn != nil {
+		return m.GetPreviousCompletedAuditFn(sourceID, types, excludeAuditID)
+	}
+	return nil, nil
+}
+
+func (m *MockAuditRepository) ListAuditsBySourcePath(sourcePath string, limit, offset int) ([]model.Audit, error) {
+	if m.ListAuditsBySourcePathFn != nil {
+		return m.ListAuditsBySourcePathFn(sourcePath, limit, offset)
 	}
 	return nil, nil
 }

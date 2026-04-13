@@ -46,7 +46,7 @@ func TestStreamService_Stream(t *testing.T) {
 		Config: json.RawMessage(`{"chaos":{"patterns":["retry"]}}`),
 	}
 	agents := map[string]config.AgentConfig{
-		"chaos": {URL: "http://localhost:8001"},
+		"chaos": {URL: "http://localhost:28001"},
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 
@@ -87,7 +87,7 @@ func TestStreamService_StreamWithContext(t *testing.T) {
 		Config: json.RawMessage(`{}`),
 	}
 	agents := map[string]config.AgentConfig{
-		"owasp": {URL: "http://localhost:8002"},
+		"owasp": {URL: "http://localhost:28002"},
 	}
 	priorByAgent := map[string][]model.PriorFinding{
 		"owasp": {{Title: "XSS", Severity: "high"}},
@@ -122,7 +122,7 @@ func TestStreamService_SkipUnconfiguredAgent(t *testing.T) {
 		Config: json.RawMessage(`{}`),
 	}
 	agents := map[string]config.AgentConfig{
-		"chaos": {URL: "http://localhost:8001"},
+		"chaos": {URL: "http://localhost:28001"},
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 
@@ -179,9 +179,9 @@ func TestStreamService_MultipleAgents(t *testing.T) {
 		Config: json.RawMessage(`{}`),
 	}
 	agents := map[string]config.AgentConfig{
-		"chaos": {URL: "http://localhost:8001"},
-		"owasp": {URL: "http://localhost:8002"},
-		"soc2":  {URL: "http://localhost:8003"},
+		"chaos": {URL: "http://localhost:28001"},
+		"owasp": {URL: "http://localhost:28002"},
+		"soc2":  {URL: "http://localhost:28003"},
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 
@@ -212,7 +212,7 @@ func TestStreamService_AgentError(t *testing.T) {
 		Config: json.RawMessage(`{}`),
 	}
 	agents := map[string]config.AgentConfig{
-		"chaos": {URL: "http://localhost:8001"},
+		"chaos": {URL: "http://localhost:28001"},
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 
@@ -222,56 +222,3 @@ func TestStreamService_AgentError(t *testing.T) {
 	}
 }
 
-func TestExtractAgentConfig_WithMatchingKey(t *testing.T) {
-	fullConfig := json.RawMessage(`{"owasp":{"rules":["A1","A2"]},"chaos":{"patterns":["retry"]}}`)
-	result := extractAgentConfig(fullConfig, "owasp")
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(result, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
-	}
-	rules, ok := parsed["rules"]
-	if !ok {
-		t.Fatal("expected 'rules' key in extracted config")
-	}
-	arr, ok := rules.([]interface{})
-	if !ok || len(arr) != 2 {
-		t.Errorf("expected 2 rules, got %v", rules)
-	}
-}
-
-func TestExtractAgentConfig_WithoutMatchingKey(t *testing.T) {
-	fullConfig := json.RawMessage(`{"owasp":{"rules":["A1"]}}`)
-	result := extractAgentConfig(fullConfig, "soc2")
-
-	if string(result) != "{}" {
-		t.Errorf("expected empty config, got %s", string(result))
-	}
-}
-
-func TestExtractAgentConfig_InvalidJSON(t *testing.T) {
-	fullConfig := json.RawMessage(`not valid json`)
-	result := extractAgentConfig(fullConfig, "owasp")
-
-	if string(result) != "{}" {
-		t.Errorf("expected empty config for invalid JSON, got %s", string(result))
-	}
-}
-
-func TestExtractAgentConfig_EmptyConfig(t *testing.T) {
-	fullConfig := json.RawMessage(`{}`)
-	result := extractAgentConfig(fullConfig, "owasp")
-
-	if string(result) != "{}" {
-		t.Errorf("expected empty config, got %s", string(result))
-	}
-}
-
-func TestExtractAgentConfig_NullConfig(t *testing.T) {
-	fullConfig := json.RawMessage(`null`)
-	result := extractAgentConfig(fullConfig, "owasp")
-
-	if string(result) != "{}" {
-		t.Errorf("expected empty config for null, got %s", string(result))
-	}
-}

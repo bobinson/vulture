@@ -4,6 +4,7 @@ type AgentInfo struct {
 	ID           string      `json:"id"`
 	Name         string      `json:"name"`
 	Type         string      `json:"type"`
+	Status       string      `json:"status,omitempty"`
 	Description  string      `json:"description,omitempty"`
 	ConfigSchema interface{} `json:"config_schema,omitempty"`
 	Skills       []string    `json:"skills,omitempty"`

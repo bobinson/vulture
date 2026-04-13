@@ -5,7 +5,13 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import scan_code_files, read_file_safe
+from shared.tools.file_scanner import (
+    is_generated_file,
+    is_test_file,
+    read_file_safe,
+    scan_code_files,
+)
+from shared.tools.snippet import extract_snippet
 
 RETENTION_PATTERNS = [
     re.compile(r"retention|expire|ttl|time.?to.?live|max.?age", re.IGNORECASE),
@@ -35,6 +41,10 @@ def check_data_retention(source_path: str) -> dict:
     has_retention = False
 
     for file_path in scan_code_files(source_path):
+        if is_generated_file(file_path):
+            continue
+        if is_test_file(file_path):
+            continue
         content = read_file_safe(file_path)
         if content is None:
             continue
@@ -44,8 +54,9 @@ def check_data_retention(source_path: str) -> dict:
             has_retention = True
 
     if has_data_ops and not has_retention:
-        findings.append({
+        finding = {
             "severity": "medium",
+            "check_id": "soc2.data_retention.missing_policy",
             "category": "CC6-data-retention",
             "title": "No data retention policy detected",
             "description": "Data storage found but no retention/expiry/cleanup logic",
@@ -53,7 +64,9 @@ def check_data_retention(source_path: str) -> dict:
             "line_start": 0,
             "line_end": 0,
             "recommendation": "Implement data retention policies with TTL and cleanup jobs",
-        })
+        }
+        finding["code_snippet"] = extract_snippet([], 0)
+        findings.append(finding)
 
     return {"findings": findings}
 

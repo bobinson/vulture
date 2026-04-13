@@ -7,6 +7,7 @@ type LineageRepository interface {
 	UpsertLineage(l *model.FindingLineage) error
 	GetLineage(id string) (*model.FindingLineage, error)
 	GetLineageByFingerprint(fingerprint, sourcePath, agentType string) (*model.FindingLineage, error)
+	GetLineageByFingerprints(fingerprints []string, sourcePath string) (map[string]*model.FindingLineage, error)
 	ListBySourcePath(sourcePath, status string, limit, offset int) ([]model.FindingLineage, error)
 	ListByAudit(auditID string) ([]model.FindingLineage, error)
 	UpdateStatus(id string, status string, notes string, ticketURL string) error

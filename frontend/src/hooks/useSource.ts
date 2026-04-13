@@ -4,7 +4,7 @@ import type { Source } from "@/lib/types.ts";
 
 export function validateGitUrl(url: string): string | null {
   if (!url.trim()) return "URL is required";
-  if (!/^https?:\/\/.+\.git$|^git@.+:.+\.git$/.test(url)) {
+  if (!/^https?:\/\/.+\/.+|^git@.+:.+/.test(url)) {
     return "Please enter a valid Git URL";
   }
   return null;

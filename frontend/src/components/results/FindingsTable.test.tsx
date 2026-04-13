@@ -42,7 +42,8 @@ describe("FindingsTable", () => {
 
   it("shows file name from path", () => {
     render(<FindingsTable findings={[makeFinding({ file_path: "/very/deep/path/db.ts", line_start: 42 })]} />);
-    expect(screen.getByText("db.ts:42")).toBeInTheDocument();
+    // Path "/very/deep/path/db.ts" is shortened to last 3 segments: "deep/path/db.ts"
+    expect(screen.getByText("deep/path/db.ts:42")).toBeInTheDocument();
   });
 
   it("renders filter buttons for severities", () => {
@@ -80,6 +81,43 @@ describe("FindingsTable", () => {
 
   it("shows findings count", () => {
     render(<FindingsTable findings={[makeFinding(), makeFinding({ title: "XSS" })]} />);
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
+  it("filters by agent type via useFindings (no local agentFiltered memo)", () => {
+    const findings = [
+      makeFinding({ title: "Injection", agent_type: "owasp" }),
+      makeFinding({ title: "No Retry", agent_type: "chaos" }),
+      makeFinding({ title: "Weak Crypto", agent_type: "owasp" }),
+    ];
+    render(<FindingsTable findings={findings} />);
+    // All 3 findings visible initially
+    expect(screen.getByText("Injection")).toBeInTheDocument();
+    expect(screen.getByText("No Retry")).toBeInTheDocument();
+    expect(screen.getByText("Weak Crypto")).toBeInTheDocument();
+
+    // Click CHAOS agent filter button (filter buttons are <button> elements)
+    const chaosButtons = screen.getAllByText("CHAOS");
+    const filterButton = chaosButtons.find((el) => el.tagName === "BUTTON");
+    fireEvent.click(filterButton!);
+    // Only chaos findings should be visible
+    expect(screen.getByText("No Retry")).toBeInTheDocument();
+    expect(screen.queryByText("Injection")).toBeNull();
+    expect(screen.queryByText("Weak Crypto")).toBeNull();
+  });
+
+  it("agent filter count reflects filtered results", () => {
+    const findings = [
+      makeFinding({ title: "A", agent_type: "owasp" }),
+      makeFinding({ title: "B", agent_type: "owasp" }),
+      makeFinding({ title: "C", agent_type: "chaos" }),
+    ];
+    render(<FindingsTable findings={findings} />);
+    // Click OWASP filter button (filter buttons are <button> elements)
+    const owaspButtons = screen.getAllByText("OWASP");
+    const filterButton = owaspButtons.find((el) => el.tagName === "BUTTON");
+    fireEvent.click(filterButton!);
+    // Count badge should show 2 (the owasp findings)
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 });

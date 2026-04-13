@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,11 +19,13 @@ const defaultBaseURL = "https://api.openai.com/v1"
 // Client generates text embeddings via an OpenAI-compatible API.
 // Supports OpenAI, Ollama (nomic-embed-text), and any OpenAI-compatible endpoint.
 type Client struct {
-	apiKey  string
-	baseURL string
-	model   string
-	local   bool // true when using a local endpoint (Ollama) that needs no API key
-	http    *http.Client
+	apiKey    string
+	baseURL   string
+	model     string
+	local     bool // true when using a local endpoint (Ollama) that needs no API key
+	http      *http.Client
+	dimOnce   sync.Once
+	dimension int // learned dimension from first successful Embed call
 }
 
 // New creates an embedding client. Falls back gracefully if no API key is set
@@ -30,7 +34,12 @@ func New() *Client {
 	key := os.Getenv("OPENAI_API_KEY")
 	baseURL := os.Getenv("VULTURE_EMBEDDING_URL")
 	if baseURL == "" {
-		baseURL = defaultBaseURL
+		// Fall back to OPENAI_BASE_URL (LM Studio, vLLM, etc.) before defaulting to OpenAI cloud.
+		if altURL := os.Getenv("OPENAI_BASE_URL"); altURL != "" {
+			baseURL = altURL
+		} else {
+			baseURL = defaultBaseURL
+		}
 	}
 	model := os.Getenv("VULTURE_EMBEDDING_MODEL")
 	if model == "" {
@@ -67,7 +76,8 @@ func isLocalEndpoint(baseURL string) bool {
 	return host == "localhost" ||
 		host == "127.0.0.1" ||
 		host == "0.0.0.0" ||
-		host == "::1"
+		host == "::1" ||
+		host == "host.docker.internal"
 }
 
 type embeddingRequest struct {
@@ -98,7 +108,7 @@ func (c *Client) Embed(text string) ([]float32, error) {
 		return nil, fmt.Errorf("create embedding request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
+	if c.apiKey != "" && !c.local {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
@@ -120,7 +130,24 @@ func (c *Client) Embed(text string) ([]float32, error) {
 	if len(result.Data) == 0 {
 		return nil, fmt.Errorf("empty embedding response")
 	}
-	return result.Data[0].Embedding, nil
+	embedding := result.Data[0].Embedding
+	if err := c.validateDimension(len(embedding)); err != nil {
+		return nil, err
+	}
+	return embedding, nil
+}
+
+// validateDimension records the dimension on first call and returns an error
+// if subsequent calls return a different dimension (likely model mismatch).
+func (c *Client) validateDimension(dim int) error {
+	c.dimOnce.Do(func() {
+		c.dimension = dim
+	})
+	if dim != c.dimension {
+		log.Printf("ERROR embedding_dimension_mismatch expected=%d got=%d model=%s", c.dimension, dim, c.model)
+		return fmt.Errorf("embedding dimension mismatch: expected %d, got %d (model=%s)", c.dimension, dim, c.model)
+	}
+	return nil
 }
 
 // EmbedBatch generates embeddings for multiple texts in a single API call.
@@ -143,7 +170,7 @@ func (c *Client) EmbedBatch(texts []string) ([][]float32, error) {
 		return nil, fmt.Errorf("create batch request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
+	if c.apiKey != "" && !c.local {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
@@ -164,6 +191,9 @@ func (c *Client) EmbedBatch(texts []string) ([][]float32, error) {
 	}
 	embeddings := make([][]float32, len(result.Data))
 	for i, d := range result.Data {
+		if err := c.validateDimension(len(d.Embedding)); err != nil {
+			return nil, err
+		}
 		embeddings[i] = d.Embedding
 	}
 	return embeddings, nil

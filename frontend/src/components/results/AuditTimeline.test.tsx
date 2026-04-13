@@ -30,9 +30,9 @@ describe("AuditTimeline", () => {
       makeStep({ agent_id: "owasp" }),
     ];
     render(<AuditTimeline steps={steps} />);
-    // agentLabel fallback capitalizes when mock t() returns the key
-    expect(screen.getByText("Chaos")).toBeInTheDocument();
-    expect(screen.getByText("Owasp")).toBeInTheDocument();
+    // agentLabel fallback uppercases short acronym-like types when mock t() returns the key
+    expect(screen.getByText("CHAOS")).toBeInTheDocument();
+    expect(screen.getByText("OWASP")).toBeInTheDocument();
   });
 
   it("shows status for each step", () => {
