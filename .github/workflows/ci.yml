@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: "1.24"
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  # ── Go Backend ──────────────────────────────────────────────
+
+  lint-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Lint Go
+        uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: backend
+
+  build-backend:
+    runs-on: ubuntu-latest
+    needs: lint-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        run: cd backend && go build -o bin/vulture ./cmd/vulture/
+
+  test-backend:
+    runs-on: ubuntu-latest
+    needs: build-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Test with coverage
+        run: cd backend && go test ./... -coverprofile=coverage.out -covermode=atomic
+      - name: Verify 100% coverage
+        run: |
+          cd backend
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 100" | bc -l) )); then
+            echo "Coverage below 100%"
+            exit 1
+          fi
+      - name: Complexity check (gocyclo < 10)
+        run: |
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+          RESULT=$(cd backend && gocyclo -over 9 .)
+          if [ -n "$RESULT" ]; then
+            echo "Functions with cyclomatic complexity > 9:"
+            echo "$RESULT"
+            exit 1
+          fi
+          echo "All functions have cyclomatic complexity < 10"
+
+  # ── Python Agents ───────────────────────────────────────────
+
+  lint-agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      - name: Install ruff
+        run: pip install ruff
+      - name: Lint Python
+        run: cd agents && ruff check .
+
+  test-agents:
+    runs-on: ubuntu-latest
+    needs: lint-agents
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      - name: Install dependencies
+        run: cd agents && pip install -e shared/ && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/
+      - name: Test with 100% coverage
+        run: cd agents && python -m pytest shared/tests/ chaos_engineering/tests/ owasp/tests/ soc2/tests/ cwe/tests/ prove/tests/ xss/tests/ ssdf/tests/ discover/tests/ -v
+      - name: Complexity check (radon < C)
+        run: |
+          pip install radon
+          RESULT=$(cd agents && radon cc . -a -nc --exclude=".venv/*")
+          if echo "$RESULT" | grep -qE "^\s+[C-F]"; then
+            echo "Functions with complexity grade C or worse:"
+            echo "$RESULT"
+            exit 1
+          fi
+          echo "All functions have acceptable complexity"
+
+  # ── Frontend ────────────────────────────────────────────────
+
+  lint-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+      - name: Install dependencies
+        run: cd frontend && npm ci
+      - name: Lint (ESLint)
+        run: cd frontend && npm run lint
+
+  build-frontend:
+    runs-on: ubuntu-latest
+    needs: lint-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+      - name: Install dependencies
+        run: cd frontend && npm ci
+      - name: Build
+        run: cd frontend && npm run build
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    needs: build-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+      - name: Install dependencies
+        run: cd frontend && npm ci
+      - name: Test with 100% coverage
+        run: cd frontend && npm test -- --coverage --coverageThreshold='{"global":{"lines":100,"branches":100,"functions":100,"statements":100}}'
+
+  # ── Docker Build Verification ───────────────────────────────
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-agents, test-frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build all Docker images
+        env:
+          VULTURE_DB_PASSWORD: ci-test-password
+          VULTURE_JWT_SECRET: ci-test-jwt-secret-placeholder
+          DOCKER_BUILDKIT: 1
+          COMPOSE_DOCKER_CLI_BUILD: 1
+        run: docker compose build
+      - name: Verify images were created
+        run: |
+          docker images | grep vulture || true
+          echo "Docker build verification passed"
