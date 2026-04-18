@@ -337,9 +337,9 @@ class TestEnhancedConfig:
         from cwe_agent.config import ALL_CATEGORIES
         assert "catalog_generic" in ALL_CATEGORIES
 
-    def test_skill_count_is_16(self):
-        from cwe_agent.config import AGENT_INFO
-        assert len(AGENT_INFO["skills"]) == 16
+    def test_skill_count_matches_all_categories(self):
+        from cwe_agent.config import AGENT_INFO, ALL_CATEGORIES
+        assert len(AGENT_INFO["skills"]) == len(ALL_CATEGORIES)
 
     def test_description_mentions_846(self):
         from cwe_agent.config import AGENT_INFO
@@ -351,7 +351,7 @@ class TestEnhancedConfig:
 
     def test_skill_tools_has_catalog_generic_tool(self):
         from cwe_agent.skills import SKILL_TOOLS
-        assert len(SKILL_TOOLS) == 16
+        assert len(SKILL_TOOLS) == 17
 
 
 # === Agent Tests ===

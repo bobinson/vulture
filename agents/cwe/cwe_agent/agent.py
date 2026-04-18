@@ -1,7 +1,7 @@
 """CWE Weakness Auditor agent definition.
 
 Implements a two-phase audit pipeline:
-  Phase 1 (Skills): 16 concurrent skills including catalog-driven detector
+  Phase 1 (Skills): 17 concurrent skills including catalog-driven detector
   Phase 2 (LLM): Self-learning analysis with catalog context injection
 """
 
@@ -24,8 +24,8 @@ INSTRUCTIONS = """You are a CWE (Common Weakness Enumeration) Security Auditor u
 
 ## Catalog Coverage
 The CWE v4.19.1 catalog contains 846 software-relevant weaknesses. The skill phase
-already ran 16 concurrent detectors covering:
-- 15 dedicated skills with hand-crafted regex patterns (~67 CWE IDs)
+already ran 17 concurrent detectors covering:
+- 16 dedicated skills with hand-crafted regex patterns (~79 CWE IDs)
 - 1 catalog-driven generic detector using keyword matching (~400+ CWE IDs)
 
 ## Your Role (LLM Phase)

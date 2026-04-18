@@ -58,6 +58,8 @@ _DEDICATED_SKILL_CWES = frozenset({
     "497", "535", "536", "537", "538",
     # --- Cleartext storage variants (children of CWE-312) ---
     "313", "314", "315", "316", "317", "318", "526",
+    # --- Path equivalence family (children of CWE-41) ---
+    "42", "43", "46", "48", "49", "50", "51", "52", "54", "55", "56", "57",
 })
 
 # Data/config file extensions that should not be analyzed for CWE patterns.

@@ -15,6 +15,7 @@ from cwe_agent.skills.configuration_check import check_configuration, check_conf
 from cwe_agent.skills.dependency_check import check_dependency_security, check_dependency_security_tool
 from cwe_agent.skills.data_handling_check import check_data_handling, check_data_handling_tool
 from cwe_agent.skills.memory_safety_check import check_memory_safety, check_memory_safety_tool
+from cwe_agent.skills.path_equivalence_check import check_path_equivalence, check_path_equivalence_tool
 from cwe_agent.skills.catalog_detector import check_catalog_generic, check_catalog_generic_tool
 
 SKILL_TOOLS = [
@@ -33,6 +34,7 @@ SKILL_TOOLS = [
     check_dependency_security_tool,
     check_data_handling_tool,
     check_memory_safety_tool,
+    check_path_equivalence_tool,
     check_catalog_generic_tool,
 ]
 
@@ -52,6 +54,7 @@ SKILL_MAP = {
     "dependency_security": check_dependency_security,
     "data_handling": check_data_handling,
     "memory_safety": check_memory_safety,
+    "path_equivalence": check_path_equivalence,
     "catalog_generic": check_catalog_generic,
 }
 
@@ -71,6 +74,7 @@ __all__ = [
     "check_dependency_security", "check_dependency_security_tool",
     "check_data_handling", "check_data_handling_tool",
     "check_memory_safety", "check_memory_safety_tool",
+    "check_path_equivalence", "check_path_equivalence_tool",
     "check_catalog_generic", "check_catalog_generic_tool",
     "SKILL_TOOLS", "SKILL_MAP",
 ]

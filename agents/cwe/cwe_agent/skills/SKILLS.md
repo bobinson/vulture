@@ -1,6 +1,6 @@
 # CWE Weakness Auditor - Skills
 
-Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities across 16 categories covering 846 software-relevant CWE IDs with catalog-driven detection, self-learning confidence scoring, and MMR-based memory retrieval with embedding similarity.
+Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities across 17 categories covering 846 software-relevant CWE IDs with catalog-driven detection, self-learning confidence scoring, and MMR-based memory retrieval with embedding similarity.
 
 ## injection_check
 
@@ -189,10 +189,38 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **Severity**: critical (CWE-415, CWE-824, CWE-562), high (CWE-401), medium (CWE-457, CWE-467)
 - **Detection**: Scans C/C++/Go/Rust files only; window-based analysis for use-after-alloc and double-free patterns
 
+## path_equivalence_check
+
+- **Function**: `check_path_equivalence(source_path: str) -> dict`
+- **Family**: Path-equivalence weaknesses — children of CWE-41 (Improper Resolution of Path Equivalence). These are string-equivalence tricks on filenames that bypass allowlists, path comparisons, or access controls.
+- **CWE Coverage**:
+  - **CWE-42** Trailing Dot ('filedir.'): `foo.txt.`
+  - **CWE-43** Multiple Trailing Dots ('filedir...'): `foo.txt....`
+  - **CWE-46** Trailing Whitespace ('filedir '): `foo.txt ` (space/tab at end)
+  - **CWE-48** Internal Whitespace ('file(SPACE)name'): `foo bar.txt`
+  - **CWE-49** Trailing Slash ('filedir/'): `foo.txt/`
+  - **CWE-50** Multiple Leading Slashes ('//absolute/path'): `//etc/passwd`
+  - **CWE-51** Multiple Internal Slashes ('/absolute//path'): `/etc//passwd`
+  - **CWE-52** Multiple Trailing Slashes ('filedir//'): `/etc/passwd//`
+  - **CWE-54** Trailing Backslash ('filedir\\'): `foo\\`
+  - **CWE-55** Path Equivalence Using Single Dot ('/./'): `/./foo`
+  - **CWE-56** Path Equivalence: 'filedir*' (Wildcard): `foo*.txt`
+  - **CWE-57** Path Equivalence: 'fakedir/../realdir/filename': `fake/../real/f`
+- **Detection Approach** — two-stage filtering to suppress false positives:
+  1. **Path-call gate**: The line must invoke a recognized filesystem API (Python `open`/`os.path.*`/`pathlib.Path`, Go `ioutil.ReadFile`, Java `Files.read`/`Paths.get`, JavaScript `fs.readFile`, C `fopen`/`unlink`/`stat`, etc.). Lines without such a call are skipped — this filters out log messages, regex patterns, version strings, URLs inside `requests.get`, etc.
+  2. **Path-shape filter**: The quoted literal content must contain at least one path signal (`/`, `\`, `../`, an extension tail like `.py`/`.json`, or a trailing dot). Plain identifiers like `"Hello world"` inside a path call are excluded.
+  3. **Variant regexes**: Each of the 12 variants is a compiled pattern with absolute anchors `\A` / `\Z` operating on the literal content only. One variant per literal (first match wins, ordered by specificity).
+- **Severity** (calibrated to false-positive risk):
+  - **high**: CWE-57 (directory-traversal equivalence — high-signal, classical `../` bypass)
+  - **medium**: CWE-43, CWE-54, CWE-52, CWE-50, CWE-51, CWE-55 (specific path shapes, low FP)
+  - **low**: CWE-42, CWE-46, CWE-48, CWE-49, CWE-56 (noisier variants — trailing dot, whitespace, wildcard)
+- **FP Risk Note**: Wildcards (CWE-56) can still fire on glob-style path literals passed to `open(glob_result)` — this is by-design (catalog variant) but requires manual review. Internal-whitespace (CWE-48) assumes filenames with embedded spaces are unusual; this may produce FPs on legitimate filenames with spaces.
+- **Language-agnostic**: Scans all source extensions; skips test and generated files.
+
 ## catalog_detector
 
 - **Function**: `check_catalog_generic(source_path: str) -> dict`
-- **Purpose**: Catalog-driven generic CWE detection engine covering 400+ additional CWE IDs beyond the 15 dedicated skills using enriched CWE v4.19.1 metadata
+- **Purpose**: Catalog-driven generic CWE detection engine covering 400+ additional CWE IDs beyond the 16 dedicated skills using enriched CWE v4.19.1 metadata
 - **Mechanism**:
   - Loads all CWEs with static-detectability score >= 0.3 from enriched catalog
   - Builds keyword-to-CWE inverted index for fast file-level matching

@@ -834,7 +834,7 @@ class TestCWEConfig:
     """Tests for CWE agent configuration."""
 
     def test_all_categories_complete(self):
-        assert len(ALL_CATEGORIES) == 16
+        assert len(ALL_CATEGORIES) == 17
         assert "injection" in ALL_CATEGORIES
         assert "buffer_handling" in ALL_CATEGORIES
         assert "authentication" in ALL_CATEGORIES
