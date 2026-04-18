@@ -59,6 +59,48 @@ EFFECTIVENESS_SCORE = {
 }
 
 
+# Must stay in sync with _GENERIC_TOKENS in
+# agents/cwe/cwe_agent/skills/catalog_detector.py. Both serve the same
+# purpose: prevent generic programming nouns from polluting the keyword
+# index. If that set changes, update this one in the same commit.
+_GENERIC_TOKENS = frozenset({
+    "error", "errors", "message", "value", "return", "function",
+    "string", "type", "object", "data", "use", "used", "get",
+    "set", "check", "access", "information", "through", "code",
+    "the", "and", "for", "with", "from", "that", "this",
+    "input", "output", "result", "name", "file", "path",
+    "method", "request", "response", "status", "control",
+    "exception", "handling", "read", "write", "list",
+})
+
+
+# Module-level compiled pattern for DRY: tech-topic whitelist expanded with
+# dangerous-function stems so CVE-description vocabulary (strcpy, sprintf,
+# gets, popen, …) is mined into the keyword index. Single definition — do
+# not duplicate this regex inside _extract_keywords.
+_TECH_WORDS_RE = re.compile(
+    r"\b(?:injection|overflow|traversal|bypass|leak|race|deadlock|"
+    r"deserialization|redirect|forgery|disclosure|escalation|"
+    r"authentication|authorization|validation|sanitiz|encod|"
+    r"encrypt|hash|null|pointer|memory|buffer|sql|xss|csrf|"
+    r"ssrf|xxe|rce|lfi|rfi|idor|cors|csp|cookie|session|"
+    r"certificate|tls|ssl|http|header|upload|download|exec|"
+    r"eval|command|template|format|string|integer|type|cast|"
+    r"free|alloc|init|uninit|lock|mutex|atomic|thread|"
+    r"privilege|permission|access|control|log|error|exception|"
+    # Dangerous-function stems (CVE vocabulary)
+    r"strcpy|strcat|strncpy|strncat|strlcpy|strlcat|"
+    r"sprintf|snprintf|vsprintf|vsnprintf|gets|scanf|sscanf|"
+    r"system|popen|atoi|atol|strtok|rand|srand|"
+    r"malloc|calloc|realloc|getchar|putchar|"
+    r"tmpnam|tmpfile|mktemp|chown|chmod|setuid|setgid"
+    r")\w*\b"
+)
+
+
+_NAME_WORD_RE = re.compile(r"[A-Z][a-z]+|[a-z]+")
+
+
 def _text_content(el: ET.Element | None) -> str:
     """Extract text content from an element, stripping xhtml tags."""
     if el is None:
@@ -175,38 +217,68 @@ def _extract_code_examples(w: ET.Element) -> list[dict]:
     return examples[:6]
 
 
-def _extract_keywords(w: ET.Element, name: str, description: str) -> list[str]:
-    """Extract search keywords from name, description, and alternate terms."""
-    terms: set[str] = set()
-    # From name: split camelCase and extract meaningful words
-    for word in re.findall(r"[A-Z][a-z]+|[a-z]+", name):
-        if len(word) >= 3:
-            terms.add(word.lower())
-    # From alternate terms
+def _extract_observed_examples(w: ET.Element) -> list[dict]:
+    """Extract Observed_Examples (CVE references + descriptions), capped at 5.
+
+    Each description is truncated to 300 chars. Examples without a reference
+    are skipped.
+    """
+    obs: list[dict] = []
+    el = w.find(f"{NS}Observed_Examples")
+    if el is None:
+        return obs
+    for o in el:
+        ref = o.findtext(f"{NS}Reference", "")
+        desc = _deep_text(o.find(f"{NS}Description"))[:300]
+        if ref:
+            obs.append({"reference": ref, "description": desc})
+    return obs[:5]
+
+
+def _name_words(name: str) -> set[str]:
+    """Camel-case / lowercase tokens ≥3 chars from a CWE name."""
+    return {
+        word.lower()
+        for word in _NAME_WORD_RE.findall(name)
+        if len(word) >= 3
+    }
+
+
+def _collect_alt_terms(w: ET.Element) -> tuple[set[str], str]:
+    """Return (legacy whitespace-split words ≥3 chars, concatenated alt text).
+
+    Preserves the legacy ``term.lower().split()`` behaviour for Alternate_Terms
+    so existing keyword coverage does not regress.
+    """
+    words: set[str] = set()
+    parts: list[str] = []
     alt = w.find(f"{NS}Alternate_Terms")
-    if alt is not None:
-        for at in alt:
-            term = at.findtext(f"{NS}Term", "")
-            if term:
-                for word in term.lower().split():
-                    if len(word) >= 3:
-                        terms.add(word)
-    # From description: extract key technical terms
-    tech_words = re.findall(
-        r"\b(?:injection|overflow|traversal|bypass|leak|race|deadlock|"
-        r"deserialization|redirect|forgery|disclosure|escalation|"
-        r"authentication|authorization|validation|sanitiz|encod|"
-        r"encrypt|hash|null|pointer|memory|buffer|sql|xss|csrf|"
-        r"ssrf|xxe|rce|lfi|rfi|idor|cors|csp|cookie|session|"
-        r"certificate|tls|ssl|http|header|upload|download|exec|"
-        r"eval|command|template|format|string|integer|type|cast|"
-        r"free|alloc|init|uninit|lock|mutex|atomic|thread|"
-        r"privilege|permission|access|control|log|error|exception)\w*\b",
-        description.lower(),
-    )
-    terms.update(tech_words)
-    # Remove too-common words
-    terms -= {"the", "and", "for", "that", "this", "with", "from"}
+    if alt is None:
+        return words, ""
+    for at in alt:
+        term = at.findtext(f"{NS}Term", "")
+        if not term:
+            continue
+        parts.append(term)
+        words.update(w for w in term.lower().split() if len(w) >= 3)
+    return words, " ".join(parts)
+
+
+def _extract_keywords(
+    w: ET.Element,
+    name: str,
+    description: str,
+    observed_examples: list[dict],
+) -> list[str]:
+    """Extract keywords from name, description, Alternate_Terms, and
+    Observed_Examples CVE descriptions. Filters against _GENERIC_TOKENS."""
+    terms: set[str] = _name_words(name)
+    alt_words, alt_text = _collect_alt_terms(w)
+    terms |= alt_words
+    obs_text = " ".join(o.get("description", "") for o in observed_examples)
+    combined = f"{description} {alt_text} {obs_text}".lower()
+    terms.update(_TECH_WORDS_RE.findall(combined))
+    terms -= _GENERIC_TOKENS
     return sorted(terms)[:20]
 
 
@@ -263,7 +335,8 @@ def extract_weakness(w: ET.Element) -> dict | None:
     detection_methods = _extract_detection_methods(w)
     related_weaknesses = _extract_related(w)
     code_examples = _extract_code_examples(w)
-    keywords = _extract_keywords(w, name, description)
+    observed_examples = _extract_observed_examples(w)
+    keywords = _extract_keywords(w, name, description, observed_examples)
     mitigations = _extract_mitigations(w)
 
     # Compute a static-detectability score (0.0-1.0)
@@ -290,6 +363,7 @@ def extract_weakness(w: ET.Element) -> dict | None:
         "static_detectability": static_score,
         "related_weaknesses": related_weaknesses,
         "code_examples": code_examples,
+        "observed_examples": observed_examples,
         "keywords": keywords,
     }
 
