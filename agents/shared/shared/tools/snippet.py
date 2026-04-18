@@ -31,6 +31,39 @@ def extract_snippet(lines: Sequence[str], line_num: int, context: int = 2) -> st
     return snippet[:200]
 
 
+def collect_handler_body(
+    lines: Sequence[str],
+    header_lineno_1based: int,
+    max_body_lines: int = 5,
+    search_window: int = 10,
+) -> list[str]:
+    """Return up to ``max_body_lines`` non-blank lines following an
+    exception-handler header.
+
+    Args:
+        lines: Source file split into lines (0-indexed tuple/list).
+        header_lineno_1based: 1-based line number of the ``except:`` or
+            ``catch(...)`` header itself. Body collection begins at the
+            NEXT line (index ``header_lineno_1based`` in 0-based terms,
+            since 1-based lineno == 0-based "next line" index).
+        max_body_lines: Stop after collecting this many non-blank lines.
+        search_window: Scan at most this many raw lines past the header.
+
+    Returns:
+        List of raw (un-stripped) body lines, at most ``max_body_lines``.
+    """
+    body: list[str] = []
+    start = header_lineno_1based
+    end = min(start + search_window, len(lines))
+    for i in range(start, end):
+        if not lines[i].strip():
+            continue
+        body.append(lines[i])
+        if len(body) >= max_body_lines:
+            break
+    return body
+
+
 def check_context(content: str, context_patterns: list[re.Pattern]) -> bool:  # type: ignore[type-arg]
     """Return True if any context pattern matches in file content.
 

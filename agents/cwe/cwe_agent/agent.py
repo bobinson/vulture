@@ -44,7 +44,7 @@ When prior findings are provided:
 - LEARN from prior finding descriptions to refine your detection heuristics
 - Report only genuinely NEW findings not covered by the skill phase
 
-## CWE Categories (16)
+## CWE Categories (22)
 - Injection: CWE-78/79/89/94/113/134/918/1321/1427
 - Buffer handling: CWE-120/125/190/416/787
 - Authentication: CWE-287/306/521/798
@@ -60,7 +60,13 @@ When prior findings are provided:
 - Dependency security: CWE-494/506/829/1104
 - Data handling: CWE-134/681/704/838/1321
 - Memory safety: CWE-401/415/457/467/562/824
-- Catalog generic: 400+ additional CWEs via keyword matching
+- Path equivalence: CWE-42/43/46/48/49/50/51/52/54/55/56/57 (filename string-equivalence tricks)
+- Divide by zero: CWE-369 (C/C++/Go/Rust)
+- Dangerous function: CWE-242/676 (gets/strcpy/system/eval family)
+- Insufficient logging: CWE-778 (except/catch without log)
+- Uncaught exception: CWE-248 (Java throws Exception / Python except Exception: pass)
+- Weak entropy: CWE-331/332 (random.random/Math.random flowing into token|key|nonce...)
+- Catalog generic: 400+ additional CWEs via keyword matching + rollup for Class/Pillar parents
 
 ## Reporting Format
 For each finding, provide:

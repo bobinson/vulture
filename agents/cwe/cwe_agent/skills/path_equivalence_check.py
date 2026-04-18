@@ -11,6 +11,7 @@ Two filters suppress false positives:
 Variant regexes use \\A / \\Z absolute anchors (robust to future changes).
 """
 import re
+from pathlib import Path
 from typing import Any
 
 from agents import function_tool
@@ -126,7 +127,7 @@ def _scan_line(
         _match_variants_for_literal(m.group(2), file_path, lineno, lines, findings)
 
 
-def _scan_file(file_path: Any, findings: list[dict]) -> None:
+def _scan_file(file_path: Path, findings: list[dict]) -> None:
     """Read file lines and scan each one for path-equivalence variants."""
     if is_generated_file(file_path) or is_test_file(file_path):
         return

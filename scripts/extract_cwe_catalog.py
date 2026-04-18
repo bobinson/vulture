@@ -19,9 +19,17 @@ Usage:
 """
 
 import json
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
+
+# Hard floor for successful extraction. If the CWE XML schema namespace
+# changes (MITRE v4.20+ bump) or the input is malformed, we catch the
+# silent-wipe failure mode here instead of overwriting the catalog with
+# an empty file.
+_MIN_EXPECTED_CWES = 800
 
 NS = "{http://cwe.mitre.org/cwe-7}"
 XHTML = "{http://www.w3.org/1999/xhtml}"
@@ -392,8 +400,21 @@ def main() -> None:
             if entry["keywords"]:
                 with_keywords += 1
 
-    with open(json_path, "w") as f:
+    if len(catalog) < _MIN_EXPECTED_CWES:
+        print(
+            f"ERROR: extracted only {len(catalog)} CWEs, expected >= "
+            f"{_MIN_EXPECTED_CWES}. Refusing to overwrite {json_path}. "
+            f"Likely cause: XML namespace changed or input is malformed.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Atomic write: tmp + os.replace so a killed process can't truncate
+    # the live catalog under concurrent readers.
+    tmp_path = Path(json_path).with_suffix(".json.tmp")
+    with tmp_path.open("w") as f:
         json.dump(catalog, f, indent=1, sort_keys=True)
+    os.replace(tmp_path, json_path)
 
     print(f"Extracted {len(catalog)} software-relevant CWEs to {json_path}")
     print(f"  Static-detectable: {static_detectable}")

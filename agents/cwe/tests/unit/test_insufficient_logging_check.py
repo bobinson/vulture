@@ -60,3 +60,15 @@ def test_no_fire_with_logging_exception(tmp_path):
     )
     from cwe_agent.skills.insufficient_logging_check import check_insufficient_logging
     assert check_insufficient_logging(str(tmp_path))["findings"] == []
+
+
+def test_except_at_last_line_does_not_crash(tmp_path):
+    """except at EOF with no body (malformed Python) must not crash the scanner.
+
+    Regression guard: collect_handler_body returns [] when the header is the
+    final line; the skill should fire CWE-778 rather than IndexError."""
+    f = tmp_path / "eof.py"
+    f.write_text("try:\n    x()\nexcept ValueError:")
+    from cwe_agent.skills.insufficient_logging_check import check_insufficient_logging
+    result = check_insufficient_logging(str(tmp_path))
+    assert isinstance(result["findings"], list)

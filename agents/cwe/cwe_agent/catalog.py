@@ -11,17 +11,33 @@ related weakness graphs, keywords, and static detectability scores.
 """
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 _CATALOG_PATH = Path(__file__).parent / "data" / "cwe_catalog.json"
 
+_log = logging.getLogger(__name__)
+
 
 @lru_cache(maxsize=1)
 def load_catalog() -> dict[str, dict[str, Any]]:
-    """Load CWE catalog from JSON. Cached after first call."""
+    """Load CWE catalog from JSON. Cached after first call.
+
+    Logs a warning and returns {} if the JSON file is missing — the agent
+    runs in degraded mode (no catalog enrichment, empty keyword index)
+    rather than failing hard. Skills that depend on catalog metadata will
+    still execute their regex patterns but won't contribute catalog
+    context to findings.
+    """
     if not _CATALOG_PATH.exists():
+        _log.warning(
+            "CWE catalog JSON missing at %s — running in degraded mode "
+            "with no catalog-driven detection. Regenerate via "
+            "scripts/extract_cwe_catalog.py.",
+            _CATALOG_PATH,
+        )
         return {}
     with _CATALOG_PATH.open() as f:
         return json.load(f)
@@ -34,19 +50,22 @@ def get_cwe(cwe_id: str) -> dict[str, Any] | None:
 
 @lru_cache(maxsize=1)
 def _parent_children_index() -> dict[str, list[str]]:
-    """Parent CWE ID -> direct ChildOf children (one hop). Cached."""
-    idx: dict[str, list[str]] = {}
+    """Parent CWE ID -> direct ChildOf children (one hop). Cached.
+
+    Children with multiple ChildOf parents are registered under each
+    distinct parent. Per-(child, parent) deduplication prevents a single
+    catalog entry's duplicate relationship edges from appearing twice.
+    """
+    idx: dict[str, set[str]] = {}
     for cid, e in load_catalog().items():
-        seen_this: set[str] = set()
         for r in e.get("related_weaknesses", []):
             if r.get("nature") != "ChildOf":
                 continue
             pid = r.get("cwe_id", "")
-            if not pid or cid in seen_this:
+            if not pid:
                 continue
-            seen_this.add(cid)
-            idx.setdefault(pid, []).append(cid)
-    return idx
+            idx.setdefault(pid, set()).add(cid)
+    return {pid: sorted(children) for pid, children in idx.items()}
 
 
 def get_descendants(cwe_id: str) -> list[str]:

@@ -33,3 +33,22 @@ def test_catalog_keywords_exclude_shared_generic_tokens():
         if leaked:
             offenders[cwe_id] = leaked
     assert not offenders, f"{len(offenders)} CWEs leak generic tokens: {list(offenders.items())[:3]}"
+
+
+def test_generic_tokens_sync_between_extractor_and_runtime():
+    """The extraction-time and runtime _GENERIC_TOKENS frozensets must be
+    identical. They are intentionally duplicated (script cannot import from
+    the agent module cleanly) — this test fails loudly on divergence."""
+    import importlib.util
+    import pathlib
+    from cwe_agent.skills.catalog_detector import _GENERIC_TOKENS as runtime_set
+    repo_root = pathlib.Path(__file__).resolve().parents[4]
+    script_path = repo_root / "scripts" / "extract_cwe_catalog.py"
+    spec = importlib.util.spec_from_file_location("extract_cwe_catalog", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module._GENERIC_TOKENS == runtime_set, (
+        "extract_cwe_catalog._GENERIC_TOKENS diverged from "
+        "catalog_detector._GENERIC_TOKENS — update both in the same commit."
+    )

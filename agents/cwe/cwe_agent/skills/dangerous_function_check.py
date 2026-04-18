@@ -22,12 +22,19 @@ from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
 
-# String-handling CWE-676: unbounded copy / scan family.
+# CWE-242 "Use of Inherently Dangerous Function": calls that are unsafe
+# by design with no safe alternative, e.g. gets() which has no length
+# bound and was removed from C11 specifically for this reason.
+_INHERENTLY_DANGEROUS_FN = re.compile(r"\bgets\s*\(")
+
+# CWE-676 string-handling: unbounded copy/scan functions that HAVE safe
+# alternatives (strncpy, snprintf, etc.).
 _STRING_FN = re.compile(
-    r"\b(strcpy|strcat|sprintf|vsprintf|gets|scanf|sscanf)\s*\("
+    r"\b(strcpy|strcat|sprintf|vsprintf|scanf|sscanf)\s*\("
 )
 
-# Shell/code-execution family: CWE-676 plus CWE-242 (use of inherently dangerous API).
+# CWE-676 shell/code-execution: dangerous command/eval APIs with safer
+# alternatives (subprocess.run([...]), ast.literal_eval, etc.).
 _EXEC_FN = re.compile(
     r"\b(system|popen|eval|exec)\s*\("
     r"|Runtime\.getRuntime\(\)\.exec\s*\("
@@ -57,6 +64,8 @@ def _is_safe_context(lines: tuple[str, ...], lineno: int) -> bool:
 
 def _classify_match(line: str) -> tuple[str, str] | None:
     """Return (cwe_id, severity) for a dangerous-function match on this line."""
+    if _INHERENTLY_DANGEROUS_FN.search(line):
+        return ("242", "critical")
     if _EXEC_FN.search(line):
         return ("676", "critical")
     if _STRING_FN.search(line):

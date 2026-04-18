@@ -23,7 +23,7 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
-from shared.tools.snippet import extract_snippet
+from shared.tools.snippet import collect_handler_body, extract_snippet
 
 from cwe_agent.catalog import enrich_finding
 
@@ -56,19 +56,6 @@ def _body_is_safe(body_lines: list[str]) -> bool:
         if _SAFE_CONTEXT.search(line):
             return True
     return False
-
-
-def _collect_body(lines: tuple[str, ...], start: int) -> list[str]:
-    """Collect up to 5 non-blank handler-body lines following ``start``."""
-    body: list[str] = []
-    for i in range(start, min(start + 10, len(lines))):
-        stripped = lines[i].strip()
-        if not stripped:
-            continue
-        body.append(lines[i])
-        if len(body) >= 5:
-            break
-    return body
 
 
 def _build_finding(
@@ -116,7 +103,7 @@ def _scan_py_except(
     """Scan a Python ``except Exception`` header for bare-pass/raise bodies."""
     if not _PY_EXCEPT_EXCEPTION.search(line):
         return
-    body = _collect_body(lines, lineno)
+    body = collect_handler_body(lines, lineno)
     if _body_is_safe(body):
         return
     if _body_is_bare(body):

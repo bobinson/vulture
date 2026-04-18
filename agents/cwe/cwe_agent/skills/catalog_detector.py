@@ -15,6 +15,7 @@ skills don't explicitly cover. Findings from this engine carry a
 """
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -135,25 +136,16 @@ _IMPACT_SEVERITY: dict[str, str] = {
 }
 
 
-_KEYWORD_INDEX_CACHE: dict[str, list[dict[str, Any]]] | None = None
-
-
+@lru_cache(maxsize=1)
 def _build_keyword_index() -> dict[str, list[dict[str, Any]]]:
-    """Build keyword → CWE entries index for fast lookup. Cached after first call."""
-    global _KEYWORD_INDEX_CACHE
-    if _KEYWORD_INDEX_CACHE is not None:
-        return _KEYWORD_INDEX_CACHE
+    """Build keyword → CWE entries index for fast lookup. Thread-safe singleton."""
     index: dict[str, list[dict[str, Any]]] = {}
     for entry in get_static_detectable(min_score=0.2):
         if entry["id"] in _DEDICATED_SKILL_CWES:
             continue
-        # Pre-compute specific keyword frozenset for fast matching
         entry["_specific_kw"] = frozenset(entry.get("keywords", [])) - _GENERIC_TOKENS
         for kw in entry.get("keywords", []):
-            if kw not in index:
-                index[kw] = []
-            index[kw].append(entry)
-    _KEYWORD_INDEX_CACHE = index
+            index.setdefault(kw, []).append(entry)
     return index
 
 

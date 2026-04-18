@@ -16,7 +16,7 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
-from shared.tools.snippet import extract_snippet
+from shared.tools.snippet import collect_handler_body, extract_snippet
 
 from cwe_agent.catalog import enrich_finding
 
@@ -56,19 +56,6 @@ def _body_has_logging(body_lines: list[str]) -> bool:
         if _LOG_CALL.search(line):
             return True
     return False
-
-
-def _collect_py_body(lines: tuple[str, ...], start: int) -> list[str]:
-    """Collect up to 5 non-blank body lines following a Python ``except:`` header."""
-    body: list[str] = []
-    for i in range(start, min(start + 10, len(lines))):
-        stripped = lines[i].strip()
-        if not stripped:
-            continue
-        body.append(lines[i])
-        if len(body) >= 5:
-            break
-    return body
 
 
 def _build_finding(
@@ -111,7 +98,7 @@ def _scan_py_except(
         return
     if not _PY_EXCEPT.search(line):
         return
-    body = _collect_py_body(lines, lineno)  # lineno is 1-based → start at index lineno
+    body = collect_handler_body(lines, lineno)  # lineno is 1-based → start at index lineno
     if not _body_has_logging(body):
         findings.append(_build_finding(file_path, lineno, lines))
 
@@ -129,7 +116,7 @@ def _scan_catch(
         return
     if not _CATCH_LINE.search(line):
         return
-    body = _collect_py_body(lines, lineno)
+    body = collect_handler_body(lines, lineno)
     if not _body_has_logging(body):
         findings.append(_build_finding(file_path, lineno, lines))
 
