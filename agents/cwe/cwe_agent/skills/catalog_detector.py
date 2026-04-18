@@ -144,7 +144,7 @@ def _build_keyword_index() -> dict[str, list[dict[str, Any]]]:
     if _KEYWORD_INDEX_CACHE is not None:
         return _KEYWORD_INDEX_CACHE
     index: dict[str, list[dict[str, Any]]] = {}
-    for entry in get_static_detectable(min_score=0.3):
+    for entry in get_static_detectable(min_score=0.2):
         if entry["id"] in _DEDICATED_SKILL_CWES:
             continue
         # Pre-compute specific keyword frozenset for fast matching
