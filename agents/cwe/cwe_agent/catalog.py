@@ -32,6 +32,28 @@ def get_cwe(cwe_id: str) -> dict[str, Any] | None:
     return load_catalog().get(cwe_id)
 
 
+@lru_cache(maxsize=1)
+def _parent_children_index() -> dict[str, list[str]]:
+    """Parent CWE ID -> direct ChildOf children (one hop). Cached."""
+    idx: dict[str, list[str]] = {}
+    for cid, e in load_catalog().items():
+        seen_this: set[str] = set()
+        for r in e.get("related_weaknesses", []):
+            if r.get("nature") != "ChildOf":
+                continue
+            pid = r.get("cwe_id", "")
+            if not pid or cid in seen_this:
+                continue
+            seen_this.add(cid)
+            idx.setdefault(pid, []).append(cid)
+    return idx
+
+
+def get_descendants(cwe_id: str) -> list[str]:
+    """Direct ChildOf children only (one hop). Grand-children excluded by design."""
+    return _parent_children_index().get(cwe_id, [])
+
+
 def get_static_detectable(min_score: float = 0.3) -> list[dict[str, Any]]:
     """Return all CWEs marked as static-analysis detectable above threshold.
 

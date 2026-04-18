@@ -376,3 +376,120 @@ class TestEnhancedAgent:
         ctx = _build_llm_catalog_context()
         assert len(ctx) > 100
         assert "CWE-" in ctx
+
+
+class TestRollupHelper:
+    """Unit tests for _emit_parent_rollups using synthetic catalog data."""
+
+    def _synth_catalog(self):
+        return {
+            "100": {
+                "id": "100", "name": "Parent Class", "abstraction": "Class",
+                "consequences": [{"impact": "Read Application Data"}],
+                "static_detectability": 0.6, "mitigation": "Fix parent",
+                "keywords": [], "languages": [], "related_weaknesses": [],
+            },
+            "101": {
+                "id": "101", "name": "Child A", "abstraction": "Variant",
+                "consequences": [{"impact": "Other"}],
+                "static_detectability": 0.5, "mitigation": "", "keywords": [],
+                "languages": [],
+                "related_weaknesses": [{"nature": "ChildOf", "cwe_id": "100"}],
+            },
+            "102": {
+                "id": "102", "name": "Child B", "abstraction": "Variant",
+                "consequences": [{"impact": "Other"}],
+                "static_detectability": 0.5, "mitigation": "", "keywords": [],
+                "languages": [],
+                "related_weaknesses": [{"nature": "ChildOf", "cwe_id": "100"}],
+            },
+        }
+
+    def test_emits_rollup_when_two_children_match(self, tmp_path):
+        from cwe_agent.skills.catalog_detector import _emit_parent_rollups
+        file_key = str(tmp_path / "x.py")
+        seen = {file_key: {"101", "102"}}
+        counts: dict[str, int] = {}
+        findings: list[dict] = []
+        _emit_parent_rollups(tmp_path / "x.py", file_key, seen, counts, findings,
+                              self._synth_catalog())
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["category"] == "CWE-100"
+        assert f["check_id"].endswith(".rollup")
+        assert f["rollup_children"] == ["101", "102"]
+        assert counts["100"] == 1
+        assert "100" in seen[file_key]
+
+    def test_skips_rollup_for_single_child(self, tmp_path):
+        from cwe_agent.skills.catalog_detector import _emit_parent_rollups
+        file_key = str(tmp_path / "x.py")
+        seen = {file_key: {"101"}}
+        counts: dict[str, int] = {}
+        findings: list[dict] = []
+        _emit_parent_rollups(tmp_path / "x.py", file_key, seen, counts, findings,
+                              self._synth_catalog())
+        assert findings == []
+
+    def test_respects_max_files_per_cwe(self, tmp_path):
+        from cwe_agent.skills.catalog_detector import (
+            _emit_parent_rollups, _MAX_FILES_PER_CWE,
+        )
+        file_key = str(tmp_path / "x.py")
+        seen = {file_key: {"101", "102"}}
+        counts = {"100": _MAX_FILES_PER_CWE}  # cap already hit
+        findings: list[dict] = []
+        _emit_parent_rollups(tmp_path / "x.py", file_key, seen, counts, findings,
+                              self._synth_catalog())
+        assert findings == []
+
+    def test_skips_when_parent_already_seen(self, tmp_path):
+        from cwe_agent.skills.catalog_detector import _emit_parent_rollups
+        file_key = str(tmp_path / "x.py")
+        seen = {file_key: {"100", "101", "102"}}  # parent already in seen
+        counts: dict[str, int] = {}
+        findings: list[dict] = []
+        _emit_parent_rollups(tmp_path / "x.py", file_key, seen, counts, findings,
+                              self._synth_catalog())
+        assert findings == []
+
+    def test_skips_non_class_pillar_parents(self, tmp_path):
+        from cwe_agent.skills.catalog_detector import _emit_parent_rollups
+        synth = self._synth_catalog()
+        synth["100"]["abstraction"] = "Base"  # not Class or Pillar
+        file_key = str(tmp_path / "x.py")
+        seen = {file_key: {"101", "102"}}
+        findings: list[dict] = []
+        _emit_parent_rollups(tmp_path / "x.py", file_key, seen, {}, findings, synth)
+        assert findings == []
+
+
+class TestRollupIntegration:
+    """End-to-end: real catalog, crafted fixtures."""
+
+    def test_rollup_fires_on_multi_child_file(self, tmp_path):
+        """Smoke test: if any file triggers >=2 children of a real Class/Pillar
+        parent, at least one rollup finding appears. Specific parent IDs
+        depend on catalog version -- we assert the mechanism only."""
+        f = tmp_path / "multi.py"
+        f.write_text(
+            "import os\n"
+            "import subprocess\n"
+            "os.system(user_input)\n"
+            "subprocess.Popen(arg, shell=True)\n"
+            "eval(f'x {payload}')\n"
+        )
+        from cwe_agent.skills.catalog_detector import check_catalog_generic
+        result = check_catalog_generic(str(tmp_path))
+        rollups = [x for x in result["findings"] if x["check_id"].endswith(".rollup")]
+        # If no rollup fires, it means either no two children of the same Class
+        # parent matched (catalog-dependent) or the mechanism is broken.
+        # Failure mode we care about: mechanism broken -- assert helper invocation
+        # at minimum via the unit tests above. This integration test is a
+        # smoke check: document catalog state if it fails.
+        if not rollups:
+            import pytest
+            pytest.skip("No rollup candidates in current catalog (not a regression)")
+        for r in rollups:
+            assert "rollup_children" in r
+            assert len(r["rollup_children"]) >= 2

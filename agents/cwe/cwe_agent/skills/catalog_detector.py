@@ -243,6 +243,82 @@ def check_catalog_generic(source_path: str) -> dict:
     return {"findings": findings}
 
 
+def _is_class_or_pillar(parent: dict[str, Any] | None) -> bool:
+    """True if parent entry has Class or Pillar abstraction."""
+    return bool(parent) and parent.get("abstraction") in ("Class", "Pillar")
+
+
+def _collect_parent_child_hits(
+    file_key: str,
+    seen_per_file: dict[str, set[str]],
+    catalog: dict[str, Any],
+) -> dict[str, set[str]]:
+    """For each Class/Pillar parent, collect which children are seen in this file."""
+    child_hits: dict[str, set[str]] = {}
+    for child_cwe in seen_per_file.get(file_key, set()):
+        for r in catalog.get(child_cwe, {}).get("related_weaknesses", []):
+            if r.get("nature") != "ChildOf":
+                continue
+            parent_id = r.get("cwe_id", "")
+            if not _is_class_or_pillar(catalog.get(parent_id)):
+                continue
+            child_hits.setdefault(parent_id, set()).add(child_cwe)
+    return child_hits
+
+
+def _build_rollup_finding(
+    file_path: Path,
+    parent_id: str,
+    parent: dict[str, Any],
+    hits: set[str],
+) -> dict[str, Any]:
+    """Build a single rollup finding dict for a Class/Pillar parent."""
+    sorted_hits = sorted(hits)
+    return {
+        "severity": _severity_from_consequences(parent.get("consequences", [])),
+        "check_id": f"cwe.catalog.cwe_{parent_id}.rollup",
+        "category": f"CWE-{parent_id}",
+        "title": parent.get("name", f"CWE-{parent_id}"),
+        "description": (
+            f"Multiple children of CWE-{parent_id} matched in this file: "
+            f"{', '.join('CWE-' + c for c in sorted_hits)}"
+        ),
+        "file_path": str(file_path),
+        "line_start": 1,
+        "line_end": 1,
+        "recommendation": parent.get(
+            "mitigation",
+            "Review the code for the class-level weakness pattern.",
+        ),
+        "rollup_children": sorted_hits,
+    }
+
+
+def _emit_parent_rollups(
+    file_path: Path,
+    file_key: str,
+    seen_per_file: dict[str, set[str]],
+    cwe_file_counts: dict[str, int],
+    findings: list[dict],
+    catalog: dict[str, Any],
+) -> None:
+    """Emit Class/Pillar rollup findings for files where >=2 distinct
+    children of the same parent matched. Respects _MAX_FILES_PER_CWE."""
+    child_hits = _collect_parent_child_hits(file_key, seen_per_file, catalog)
+    for parent_id, hits in child_hits.items():
+        if len(hits) < 2:
+            continue
+        if parent_id in seen_per_file[file_key]:
+            continue
+        if cwe_file_counts.get(parent_id, 0) >= _MAX_FILES_PER_CWE:
+            continue
+        parent = catalog[parent_id]
+        finding = _build_rollup_finding(file_path, parent_id, parent, hits)
+        findings.append(enrich_finding(finding, parent_id))
+        seen_per_file[file_key].add(parent_id)
+        cwe_file_counts[parent_id] = cwe_file_counts.get(parent_id, 0) + 1
+
+
 def _analyze_file(
     file_path: Path,
     kw_index: dict[str, list[dict[str, Any]]],
@@ -333,7 +409,12 @@ def _analyze_file(
             finding["code_snippet"] = extract_snippet(lines, line_num)
             findings.append(enrich_finding(finding, cwe_id))
             if len(seen_per_file[file_key]) >= 15:
-                return
+                break
+
+    _emit_parent_rollups(
+        file_path, file_key, seen_per_file, cwe_file_counts,
+        findings, catalog or load_catalog(),
+    )
 
 
 check_catalog_generic_tool = function_tool(check_catalog_generic)
