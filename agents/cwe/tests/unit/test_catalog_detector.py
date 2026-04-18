@@ -351,7 +351,7 @@ class TestEnhancedConfig:
 
     def test_skill_tools_has_catalog_generic_tool(self):
         from cwe_agent.skills import SKILL_TOOLS
-        assert len(SKILL_TOOLS) == 17
+        assert len(SKILL_TOOLS) == 22
 
 
 # === Agent Tests ===

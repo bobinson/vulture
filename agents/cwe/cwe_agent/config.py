@@ -17,6 +17,11 @@ ALL_CATEGORIES: list[str] = [
     "data_handling",
     "memory_safety",
     "path_equivalence",
+    "divide_by_zero",
+    "dangerous_function",
+    "insufficient_logging",
+    "uncaught_exception",
+    "weak_entropy",
     "catalog_generic",
 ]
 
@@ -41,7 +46,7 @@ AGENT_INFO: dict = {
     "type": "cwe",
     "description": (
         "Analyzes code for Common Weakness Enumeration (CWE v4.19.1) "
-        "vulnerabilities across 846 software-relevant CWE IDs in 17 categories "
+        "vulnerabilities across 846 software-relevant CWE IDs in 22 categories "
         "with catalog-driven detection, self-learning confidence scoring, "
         "and MMR-based memory retrieval"
     ),
@@ -63,6 +68,11 @@ AGENT_INFO: dict = {
         "data_handling_check",
         "memory_safety_check",
         "path_equivalence_check",
+        "divide_by_zero_check",
+        "dangerous_function_check",
+        "insufficient_logging_check",
+        "uncaught_exception_check",
+        "weak_entropy_check",
         "catalog_detector",
     ],
 }

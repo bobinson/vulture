@@ -16,6 +16,11 @@ from cwe_agent.skills.dependency_check import check_dependency_security, check_d
 from cwe_agent.skills.data_handling_check import check_data_handling, check_data_handling_tool
 from cwe_agent.skills.memory_safety_check import check_memory_safety, check_memory_safety_tool
 from cwe_agent.skills.path_equivalence_check import check_path_equivalence, check_path_equivalence_tool
+from cwe_agent.skills.divide_by_zero_check import check_divide_by_zero, check_divide_by_zero_tool
+from cwe_agent.skills.dangerous_function_check import check_dangerous_function, check_dangerous_function_tool
+from cwe_agent.skills.insufficient_logging_check import check_insufficient_logging, check_insufficient_logging_tool
+from cwe_agent.skills.uncaught_exception_check import check_uncaught_exception, check_uncaught_exception_tool
+from cwe_agent.skills.weak_entropy_check import check_weak_entropy, check_weak_entropy_tool
 from cwe_agent.skills.catalog_detector import check_catalog_generic, check_catalog_generic_tool
 
 SKILL_TOOLS = [
@@ -35,6 +40,11 @@ SKILL_TOOLS = [
     check_data_handling_tool,
     check_memory_safety_tool,
     check_path_equivalence_tool,
+    check_divide_by_zero_tool,
+    check_dangerous_function_tool,
+    check_insufficient_logging_tool,
+    check_uncaught_exception_tool,
+    check_weak_entropy_tool,
     check_catalog_generic_tool,
 ]
 
@@ -55,6 +65,11 @@ SKILL_MAP = {
     "data_handling": check_data_handling,
     "memory_safety": check_memory_safety,
     "path_equivalence": check_path_equivalence,
+    "divide_by_zero": check_divide_by_zero,
+    "dangerous_function": check_dangerous_function,
+    "insufficient_logging": check_insufficient_logging,
+    "uncaught_exception": check_uncaught_exception,
+    "weak_entropy": check_weak_entropy,
     "catalog_generic": check_catalog_generic,
 }
 
@@ -75,6 +90,11 @@ __all__ = [
     "check_data_handling", "check_data_handling_tool",
     "check_memory_safety", "check_memory_safety_tool",
     "check_path_equivalence", "check_path_equivalence_tool",
+    "check_divide_by_zero", "check_divide_by_zero_tool",
+    "check_dangerous_function", "check_dangerous_function_tool",
+    "check_insufficient_logging", "check_insufficient_logging_tool",
+    "check_uncaught_exception", "check_uncaught_exception_tool",
+    "check_weak_entropy", "check_weak_entropy_tool",
     "check_catalog_generic", "check_catalog_generic_tool",
     "SKILL_TOOLS", "SKILL_MAP",
 ]

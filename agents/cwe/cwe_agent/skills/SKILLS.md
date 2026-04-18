@@ -1,6 +1,6 @@
 # CWE Weakness Auditor - Skills
 
-Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities across 17 categories covering 846 software-relevant CWE IDs with catalog-driven detection, self-learning confidence scoring, and MMR-based memory retrieval with embedding similarity.
+Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities across 22 categories covering 846 software-relevant CWE IDs with catalog-driven detection, self-learning confidence scoring, and MMR-based memory retrieval with embedding similarity.
 
 ## injection_check
 
@@ -217,10 +217,59 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **FP Risk Note**: Wildcards (CWE-56) can still fire on glob-style path literals passed to `open(glob_result)` — this is by-design (catalog variant) but requires manual review. Internal-whitespace (CWE-48) assumes filenames with embedded spaces are unusual; this may produce FPs on legitimate filenames with spaces.
 - **Language-agnostic**: Scans all source extensions; skips test and generated files.
 
+## divide_by_zero_check
+
+- **Function**: `check_divide_by_zero(source_path: str) -> dict`
+- **CWE Coverage**: **CWE-369** Divide By Zero.
+- **Detection**: Binary `/` or `%` operator whose RHS is a non-literal identifier (`\b(\w+)\s*([/%])\s*([A-Za-z_]\w*)\b`).
+- **Safe-context** (5-line preceding window): `(?:!=|==|>|<)\s*0`, `is_zero`, `isZero`, `.is_zero(`, `assert ... (!=|==) 0`.
+- **Language-gate**: `.c .h .cpp .cc .cxx .hpp .go .rs` (undefined-behavior languages; Python / JS / Java raise a well-defined exception instead).
+- **Severity**: medium.
+
+## dangerous_function_check
+
+- **Function**: `check_dangerous_function(source_path: str) -> dict`
+- **CWE Coverage**: **CWE-676** Use of Potentially Dangerous Function, **CWE-242** Use of Inherently Dangerous Function.
+- **Detection**: Unbounded string APIs `strcpy|strcat|sprintf|vsprintf|gets|scanf|sscanf` (high) and command-execution APIs `system|popen|eval|exec|Runtime.getRuntime().exec|os.system|os.popen` (critical).
+- **Safe-context** (5-line window): `strncpy`, `strlcpy`, `snprintf`, `subprocess.run([...])`, `shlex.quote`, `html.escape`, `ast.literal_eval`.
+- **Language-gate**: all languages (regex is API-specific).
+- **Severity**: critical for execution APIs, high for string APIs.
+
+## insufficient_logging_check
+
+- **Function**: `check_insufficient_logging(source_path: str) -> dict`
+- **CWE Coverage**: **CWE-778** Insufficient Logging.
+- **Detection**: Python `except:` or Java/JS/C#/Go `catch(...)` block whose first 5 non-blank body lines contain no logging call.
+- **Logging regex** (body must match one): `log.`, `logger.`, `logging.`, `slf4j`, `console.error`, `console.warn`, `syslog`, `LOG_*`, `fmt.Fprintf(os.Stderr`.
+- **Language-gate**: `.py .java .js .ts .go .cs .rb .php`.
+- **Severity**: medium.
+
+## uncaught_exception_check
+
+- **Function**: `check_uncaught_exception(source_path: str) -> dict`
+- **CWE Coverage**: **CWE-248** Uncaught Exception.
+- **Detection**:
+  * Java method decl with generic `throws Exception`.
+  * Python `except Exception` whose first body line is bare `pass` or bare `raise`.
+- **Safe-context** (body must NOT match): `raise X(Error|Exception)(...)`, `throw new XException(...)`, `from <var>`, `chain(`, `__cause__`.
+- **Language-gate**: `.java .py`.
+- **Severity**: medium.
+
+## weak_entropy_check
+
+- **Function**: `check_weak_entropy(source_path: str) -> dict`
+- **CWE Coverage**: **CWE-331** Insufficient Entropy, **CWE-332** Insufficient Entropy in PRNG.
+- **Detection**: Assignment `name = <rhs>` where `rhs` invokes `random.random`, `Math.random`, `rand()` or `new Random()`, and the assignment target matches `token|key|nonce|secret|session|password|iv|salt`.
+- **Safe-context / suppress**:
+  * File-scope co-occurrence with `secrets.(token|choice|randbelow)`, `SecureRandom`, `crypto.randomBytes`, or `os.urandom`.
+  * Target-variable name matches `test|mock|fake|example|cache|demo`.
+- **Language-gate**: all languages.
+- **Severity**: high.
+
 ## catalog_detector
 
 - **Function**: `check_catalog_generic(source_path: str) -> dict`
-- **Purpose**: Catalog-driven generic CWE detection engine covering 400+ additional CWE IDs beyond the 16 dedicated skills using enriched CWE v4.19.1 metadata
+- **Purpose**: Catalog-driven generic CWE detection engine covering 400+ additional CWE IDs beyond the 21 dedicated skills using enriched CWE v4.19.1 metadata
 - **Mechanism**:
   - Loads all CWEs with static-detectability score >= 0.3 from enriched catalog
   - Builds keyword-to-CWE inverted index for fast file-level matching
