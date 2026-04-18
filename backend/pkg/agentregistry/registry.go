@@ -23,6 +23,8 @@ var AllAgents = []AgentRegistryEntry{
 	{"xss", "XSS Scanner", "28006", "xss", "xss_agent.main:app", "agent_xss"},
 	{"ssdf", "NIST SSDF v1.1", "28007", "ssdf", "ssdf_agent.main:app", "agent_ssdf"},
 	{"discover", "Endpoint Discover", "28008", "discover", "discover_agent.main:app", "agent_discover"},
+	{"do178c", "DO-178C Compliance Auditor", "28009", "do178c", "do178c_agent.main:app", "agent_do178c"},
+	{"asvs", "ASVS Compliance Auditor", "28010", "asvs", "asvs_agent.main:app", "agent_asvs"},
 }
 
 // ScanAgentTypes returns the agent types used for scanning (excludes "prove" and "discover").
