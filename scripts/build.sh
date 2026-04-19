@@ -113,6 +113,8 @@ build_agents() {
         ssdf
         xss
         discover
+        do178c
+        asvs
     )
 
     # Install shared library first (all agents depend on it)

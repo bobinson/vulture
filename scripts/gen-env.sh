@@ -45,6 +45,8 @@ VULTURE_AGENT_PROVE_PORT=$(ini_get ports agent_prove)
 VULTURE_AGENT_XSS_PORT=$(ini_get ports agent_xss)
 VULTURE_AGENT_SSDF_PORT=$(ini_get ports agent_ssdf)
 VULTURE_AGENT_DISCOVER_PORT=$(ini_get ports agent_discover)
+VULTURE_AGENT_DO178C_PORT=$(ini_get ports agent_do178c)
+VULTURE_AGENT_ASVS_PORT=$(ini_get ports agent_asvs)
 VULTURE_FRONTEND_INTERNAL=$(ini_get ports frontend_internal)
 VULTURE_FRONTEND_HOST=$(ini_get ports frontend_host)
 VITE_DEV_PORT=$(ini_get ports frontend_internal)
@@ -52,13 +54,55 @@ VULTURE_POSTGRES_INTERNAL_PORT=$(ini_get ports postgres_internal)
 VULTURE_POSTGRES_HOST_PORT=$(ini_get ports postgres_host)
 
 # Database
+VULTURE_DB_MODE=$(ini_get database mode)
 VULTURE_DB_NAME=$(ini_get database name)
 VULTURE_DB_USER=$(ini_get database user)
 VULTURE_DB_PASSWORD=$(ini_get database password)
 VULTURE_DB_SQLITE_PATH=$(ini_get database sqlite_path)
+VULTURE_DB_HOST=$(ini_get database host)
+VULTURE_DB_PORT=$(ini_get database port)
+VULTURE_DB_SSLMODE=$(ini_get database sslmode)
+VULTURE_NEON_DSN=$(ini_get database neon_dsn)
+EOF
+
+# Compute VULTURE_DB_DSN from mode
+_DB_MODE=$(ini_get database mode)
+_DB_DSN=""
+case "$_DB_MODE" in
+    postgres)
+        _u=$(ini_get database user)
+        _p=$(ini_get database password)
+        _h=$(ini_get database host)
+        _port=$(ini_get database port)
+        _n=$(ini_get database name)
+        _ssl=$(ini_get database sslmode)
+        _DB_DSN="postgres://${_u}:${_p}@${_h}:${_port}/${_n}?sslmode=${_ssl:-disable}"
+        ;;
+    neon)
+        _DB_DSN=$(ini_get database neon_dsn)
+        if [[ -z "$_DB_DSN" ]]; then
+            echo "  Warning: mode=neon but neon_dsn is empty in config.ini"
+        fi
+        ;;
+    sqlite|"")
+        _DB_DSN=""
+        ;;
+    *)
+        echo "  Warning: unknown database mode '$_DB_MODE', defaulting to sqlite"
+        _DB_DSN=""
+        ;;
+esac
+
+cat >> "$OUT" <<EOF
+VULTURE_DB_DSN=$_DB_DSN
 
 # Auth
 VULTURE_JWT_SECRET=$_JWT_VAL
+
+# API keys
+OPENAI_API_KEY=$(ini_get api_keys openai)
+ANTHROPIC_API_KEY=$(ini_get api_keys anthropic)
+GEMINI_API_KEY=$(ini_get api_keys gemini)
 EOF
 
 # Continue writing the rest of .env

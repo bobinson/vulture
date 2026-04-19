@@ -26,6 +26,10 @@ declare -a SERVICES=(
     "agent-cwe:$(ini_get ports agent_cwe 28004)"
     "agent-prove:$(ini_get ports agent_prove 28005)"
     "agent-xss:$(ini_get ports agent_xss 28006)"
+    "agent-ssdf:$(ini_get ports agent_ssdf 28007)"
+    "agent-discover:$(ini_get ports agent_discover 28008)"
+    "agent-do178c:$(ini_get ports agent_do178c 28009)"
+    "agent-asvs:$(ini_get ports agent_asvs 28010)"
     "frontend:$(ini_get ports frontend_host 23001)"
 )
 

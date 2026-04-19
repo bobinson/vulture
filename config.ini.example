@@ -20,19 +20,44 @@ agent_prove       = 28005
 agent_xss         = 28006
 agent_ssdf        = 28007
 agent_discover    = 28008
+agent_do178c      = 28009
+agent_asvs        = 28010
 frontend_internal = 23000
 frontend_host     = 23001
 postgres_internal = 25432
 postgres_host     = 25433
 
 [database]
-name        = vulture
-user        = vulture
-password    = CHANGE_ME
+# Database mode: sqlite | postgres | neon
+#   sqlite   — local file, zero setup (default)
+#   postgres — local PostgreSQL (via docker compose or host install)
+#   neon     — remote Neon serverless Postgres (pgvector included)
+mode = sqlite
+
+# SQLite path (mode = sqlite)
 sqlite_path = /data/vulture.db
+
+# PostgreSQL connection (mode = postgres)
+name     = vulture
+user     = vulture
+password = CHANGE_ME
+host     = localhost
+port     = 25432
+sslmode  = disable
+
+# Neon DSN (mode = neon)
+# Get from: Neon dashboard → Connection Details → pooled connection string
+# Example: postgres://user:pass@ep-xxx-pooler.us-east-2.aws.neon.tech/vulture?sslmode=require
+neon_dsn =
 
 [auth]
 jwt_secret =
+
+[api_keys]
+# API keys for LLM providers. Leave empty if not using that provider.
+openai    =
+anthropic =
+gemini    =
 
 [embedding]
 url   =

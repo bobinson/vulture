@@ -51,7 +51,8 @@ Options:
   -h, --help         Show this help
 
 Services: postgres, backend, frontend, agent-chaos, agent-owasp, agent-soc2,
-          agent-cwe, agent-prove, agent-xss, agent-ssdf, agent-discover
+          agent-cwe, agent-prove, agent-xss, agent-ssdf, agent-discover,
+          agent-do178c, agent-asvs
 EOF
             exit 0
             ;;
