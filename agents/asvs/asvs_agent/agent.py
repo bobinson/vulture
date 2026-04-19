@@ -8,10 +8,11 @@ Implements the two-phase audit pipeline:
 
 import os
 from collections.abc import Generator
+from functools import lru_cache
 from typing import Any
 
 from shared.audit_runner import run_combined_audit
-from shared.llm.provider import get_max_findings
+from shared.llm.provider import get_context_window, get_max_findings
 from shared.tools.memory_client import build_prior_context
 
 from asvs_agent.catalog import build_catalog_context, load_catalog
@@ -117,8 +118,27 @@ grouped by chapter in the frontend.
 """
 
 
-def _build_llm_catalog_context() -> str:
-    return build_catalog_context(_prioritized_req_ids(60), max_chars=3000)
+@lru_cache(maxsize=4)
+def _build_llm_catalog_context(ctx_window: int = 32_000) -> str:
+    """Build the ASVS catalog reference string injected into LLM instructions.
+
+    Scales the catalog budget to the model's context window so small models
+    (32K Ollama) see fewer reqs (~40 entries × ~2000 chars) while large
+    models (200K+ Claude/Gemini) get the full 60-req ~3000-char view. The
+    resulting string is a stable prefix — Anthropic/OpenAI prompt-caching
+    relies on byte-level stability across audits to get cache hits.
+
+    Cached with ``lru_cache(maxsize=4)`` so repeated audits with the same
+    ctx_window reuse the exact-same string instance (and thus the same
+    prompt-cache key at Anthropic).
+    """
+    if ctx_window <= 32_000:
+        limit, max_chars = 40, 2000
+    elif ctx_window <= 128_000:
+        limit, max_chars = 60, 3000
+    else:
+        limit, max_chars = 80, 4000
+    return build_catalog_context(_prioritized_req_ids(limit), max_chars=max_chars)
 
 
 def run_audit(
@@ -133,7 +153,11 @@ def run_audit(
     max_f = get_max_findings()
     context = build_prior_context(source_path, "asvs", preloaded=preloaded, max_findings=max_f)
 
-    catalog_ctx = _build_llm_catalog_context()
+    model = os.environ.get("VULTURE_LLM_MODEL")
+    # Scale catalog context to the active model's window so small local
+    # models don't waste budget on requirements they won't have room to
+    # analyze anyway.
+    catalog_ctx = _build_llm_catalog_context(get_context_window(model))
     enhanced_instructions = INSTRUCTIONS
     if catalog_ctx:
         enhanced_instructions += (
@@ -152,6 +176,6 @@ def run_audit(
         prior_context=context,
         skill_tools=SKILL_TOOLS,
         instructions=enhanced_instructions,
-        model=os.environ.get("VULTURE_LLM_MODEL"),
+        model=model,
         use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
     )
