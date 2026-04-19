@@ -616,7 +616,12 @@ def run_combined_audit(
     completed = 0
 
     pool_workers = min(total, _SKILL_WORKERS)
-    with ThreadPoolExecutor(max_workers=pool_workers) as pool:
+    # Manual pool management (no `with` / no CM-driven shutdown-with-wait)
+    # so that generator GC — which can fire from a worker thread when an
+    # SSE consumer disconnects mid-stream — doesn't trigger
+    # `RuntimeError: cannot join current thread` via Executor.__exit__.
+    pool = ThreadPoolExecutor(max_workers=pool_workers)
+    try:
         futures = {}
         for cat in categories:
             fn = skill_map.get(cat)
@@ -652,6 +657,15 @@ def run_combined_audit(
                 total_files=total,
                 findings_count=len(skill_findings),
             )
+    finally:
+        # If we're being GC'd from inside a worker thread (the typical
+        # disconnect path), wait=True would join that very thread.
+        # Use wait=False to skip the join; Python's thread teardown
+        # still cleans up daemon pool threads on process exit.
+        try:
+            pool.shutdown(wait=True)
+        except RuntimeError:
+            pool.shutdown(wait=False)
 
     logger.info("skill_phase_done run_id=%s findings=%d", run_id, len(skill_findings))
 
