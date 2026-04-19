@@ -17,21 +17,30 @@ ini_get() {
     echo "${val:-$fallback}"
 }
 
-# Service name → port, all driven from config.ini
+# Discover every agent_* port key under [ports] in config.ini so adding
+# a new agent doesn't require editing this list. Falls back to an empty
+# list if config.ini is absent (then only backend+frontend are stopped).
+discover_agent_entries() {
+    [[ -f "$PROJECT_ROOT/config.ini" ]] || return 0
+    awk '
+        /^\[ports\]/          { in_sec = 1; next }
+        /^\[/                 { in_sec = 0 }
+        in_sec && /^[[:space:]]*agent_/ {
+            key = $1; sub(/=.*/, "", key); gsub(/[[:space:]]/, "", key)
+            val = $0; sub(/^[^=]*=[[:space:]]*/, "", val); gsub(/[[:space:]]/, "", val)
+            name = key; sub(/^agent_/, "agent-", name); gsub(/_/, "-", name)
+            if (val ~ /^[0-9]+$/) printf "%s:%s\n", name, val
+        }
+    ' "$PROJECT_ROOT/config.ini"
+}
+
 declare -a SERVICES=(
     "backend:$(ini_get ports backend 28080)"
-    "agent-chaos:$(ini_get ports agent_chaos 28001)"
-    "agent-owasp:$(ini_get ports agent_owasp 28002)"
-    "agent-soc2:$(ini_get ports agent_soc2 28003)"
-    "agent-cwe:$(ini_get ports agent_cwe 28004)"
-    "agent-prove:$(ini_get ports agent_prove 28005)"
-    "agent-xss:$(ini_get ports agent_xss 28006)"
-    "agent-ssdf:$(ini_get ports agent_ssdf 28007)"
-    "agent-discover:$(ini_get ports agent_discover 28008)"
-    "agent-do178c:$(ini_get ports agent_do178c 28009)"
-    "agent-asvs:$(ini_get ports agent_asvs 28010)"
     "frontend:$(ini_get ports frontend_host 23001)"
 )
+while IFS= read -r entry; do
+    [[ -n "$entry" ]] && SERVICES+=("$entry")
+done < <(discover_agent_entries)
 
 find_pids_on_port() {
     lsof -ti ":$1" 2>/dev/null || true

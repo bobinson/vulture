@@ -37,16 +37,23 @@ VULTURE_APP_NAME=$(ini_get app name)
 
 # Ports
 VULTURE_BACKEND_PORT=$(ini_get ports backend)
-VULTURE_AGENT_CHAOS_PORT=$(ini_get ports agent_chaos)
-VULTURE_AGENT_OWASP_PORT=$(ini_get ports agent_owasp)
-VULTURE_AGENT_SOC2_PORT=$(ini_get ports agent_soc2)
-VULTURE_AGENT_CWE_PORT=$(ini_get ports agent_cwe)
-VULTURE_AGENT_PROVE_PORT=$(ini_get ports agent_prove)
-VULTURE_AGENT_XSS_PORT=$(ini_get ports agent_xss)
-VULTURE_AGENT_SSDF_PORT=$(ini_get ports agent_ssdf)
-VULTURE_AGENT_DISCOVER_PORT=$(ini_get ports agent_discover)
-VULTURE_AGENT_DO178C_PORT=$(ini_get ports agent_do178c)
-VULTURE_AGENT_ASVS_PORT=$(ini_get ports agent_asvs)
+
+# Auto-emit VULTURE_AGENT_<NAME>_PORT= for every agent_* key in [ports].
+# Keeps the env in sync with config.ini without a hardcoded list.
+while IFS='=' read -r agent_key port; do
+    # e.g. agent_asvs=28010 -> VULTURE_AGENT_ASVS_PORT=28010
+    upper=$(echo "${agent_key#agent_}" | tr '[:lower:]' '[:upper:]')
+    echo "VULTURE_AGENT_${upper}_PORT=${port}"
+done < <(awk '
+    /^\[ports\]/          { in_sec = 1; next }
+    /^\[/                 { in_sec = 0 }
+    in_sec && /^[[:space:]]*agent_/ {
+        key = $1; sub(/=.*/, "", key); gsub(/[[:space:]]/, "", key)
+        val = $0; sub(/^[^=]*=[[:space:]]*/, "", val); gsub(/[[:space:]]/, "", val)
+        if (val ~ /^[0-9]+$/) printf "%s=%s\n", key, val
+    }
+' "$PROJECT_ROOT/config.ini")
+
 VULTURE_FRONTEND_INTERNAL=$(ini_get ports frontend_internal)
 VULTURE_FRONTEND_HOST=$(ini_get ports frontend_host)
 VITE_DEV_PORT=$(ini_get ports frontend_internal)

@@ -104,39 +104,30 @@ build_agents() {
     py=$(check_python) || return 1
     check_pip "$py" || return 1
 
-    local agents=(
-        chaos_engineering
-        cwe
-        owasp
-        prove
-        soc2
-        ssdf
-        xss
-        discover
-        do178c
-        asvs
-    )
-
     # Install shared library first (all agents depend on it)
     log "  Installing shared library..."
     cd "$PROJECT_ROOT/agents/shared"
     "$py" -m pip install -e . --quiet 2>&1 | tail -1 || true
     ok "  shared library installed"
 
-    # Install each agent
-    for agent in "${agents[@]}"; do
-        local agent_dir="$PROJECT_ROOT/agents/$agent"
-        if [[ -f "$agent_dir/pyproject.toml" ]]; then
-            log "  Installing $agent agent..."
-            cd "$agent_dir"
-            "$py" -m pip install -e . --quiet 2>&1 | tail -1 || true
-            ok "  $agent agent installed"
-        else
-            warn "  Skipping $agent (no pyproject.toml)"
-        fi
-    done
+    # Auto-discover agents from the filesystem. Any agents/<name>/pyproject.toml
+    # is treated as an installable agent (shared handled separately above).
+    # This prevents the hardcoded-list drift we hit when adding agent-asvs.
+    local installed=0
+    local skipped=0
+    while IFS= read -r -d '' agent_dir; do
+        local agent_name
+        agent_name=$(basename "$agent_dir")
+        [[ "$agent_name" == "shared" ]] && continue
+        log "  Installing $agent_name agent..."
+        cd "$agent_dir"
+        "$py" -m pip install -e . --quiet 2>&1 | tail -1 || true
+        ok "  $agent_name agent installed"
+        installed=$((installed + 1))
+    done < <(find "$PROJECT_ROOT/agents" -mindepth 1 -maxdepth 2 -name "pyproject.toml" \
+             -not -path "*/node_modules/*" -printf '%h\0' | sort -z)
 
-    ok "All agents installed"
+    ok "All $installed agents installed ($skipped skipped)"
 }
 
 # ---------------------------------------------------------------------------
