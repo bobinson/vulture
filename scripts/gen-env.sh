@@ -37,23 +37,6 @@ VULTURE_APP_NAME=$(ini_get app name)
 
 # Ports
 VULTURE_BACKEND_PORT=$(ini_get ports backend)
-
-# Auto-emit VULTURE_AGENT_<NAME>_PORT= for every agent_* key in [ports].
-# Keeps the env in sync with config.ini without a hardcoded list.
-while IFS='=' read -r agent_key port; do
-    # e.g. agent_asvs=28010 -> VULTURE_AGENT_ASVS_PORT=28010
-    upper=$(echo "${agent_key#agent_}" | tr '[:lower:]' '[:upper:]')
-    echo "VULTURE_AGENT_${upper}_PORT=${port}"
-done < <(awk '
-    /^\[ports\]/          { in_sec = 1; next }
-    /^\[/                 { in_sec = 0 }
-    in_sec && /^[[:space:]]*agent_/ {
-        key = $1; sub(/=.*/, "", key); gsub(/[[:space:]]/, "", key)
-        val = $0; sub(/^[^=]*=[[:space:]]*/, "", val); gsub(/[[:space:]]/, "", val)
-        if (val ~ /^[0-9]+$/) printf "%s=%s\n", key, val
-    }
-' "$PROJECT_ROOT/config.ini")
-
 VULTURE_FRONTEND_INTERNAL=$(ini_get ports frontend_internal)
 VULTURE_FRONTEND_HOST=$(ini_get ports frontend_host)
 VITE_DEV_PORT=$(ini_get ports frontend_internal)
@@ -71,6 +54,22 @@ VULTURE_DB_PORT=$(ini_get database port)
 VULTURE_DB_SSLMODE=$(ini_get database sslmode)
 VULTURE_NEON_DSN=$(ini_get database neon_dsn)
 EOF
+
+# Append VULTURE_AGENT_<NAME>_PORT= for every agent_* key in [ports].
+# Done AFTER the heredoc so the while-loop variables live in this shell's
+# scope (not eagerly expanded by heredoc substitution under set -u).
+awk '
+    /^\[ports\]/          { in_sec = 1; next }
+    /^\[/                 { in_sec = 0 }
+    in_sec && /^[[:space:]]*agent_/ {
+        key = $1; sub(/=.*/, "", key); gsub(/[[:space:]]/, "", key)
+        val = $0; sub(/^[^=]*=[[:space:]]*/, "", val); gsub(/[[:space:]]/, "", val)
+        if (val ~ /^[0-9]+$/) printf "%s=%s\n", key, val
+    }
+' "$INI" | while IFS='=' read -r _agent_key _port; do
+    _upper=$(echo "${_agent_key#agent_}" | tr '[:lower:]' '[:upper:]')
+    echo "VULTURE_AGENT_${_upper}_PORT=${_port}"
+done >> "$OUT"
 
 # Compute VULTURE_DB_DSN from mode
 _DB_MODE=$(ini_get database mode)
