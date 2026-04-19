@@ -45,6 +45,8 @@ const AGENT_DESC_KEYS: Record<string, string> = {
   cwe: "audit.cweDesc",
   xss: "audit.xssDesc",
   ssdf: "audit.ssdfDesc",
+  do178c: "audit.do178cDesc",
+  asvs: "audit.asvsDesc",
 };
 
 interface AuditTypeSelectorProps {

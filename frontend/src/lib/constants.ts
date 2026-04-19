@@ -23,7 +23,16 @@ export const SEVERITY_ORDER: Record<string, number> = {
 };
 
 
-export const AGENT_TYPES = ["chaos", "owasp", "soc2", "cwe", "xss", "ssdf"] as const;
+export const AGENT_TYPES = [
+  "chaos",
+  "owasp",
+  "soc2",
+  "cwe",
+  "xss",
+  "ssdf",
+  "do178c",
+  "asvs",
+] as const;
 
 /** Resolve agent type to i18n display name with fallback.
  *  Acronym-like types (all-alpha, ≤6 chars) are uppercased: "ssdf" → "SSDF".

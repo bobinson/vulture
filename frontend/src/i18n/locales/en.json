@@ -53,7 +53,9 @@
     "soc2Desc": "Compliance clauses: CC6 (logical access), CC7 (monitoring), CC8 (change mgmt)",
     "cweDesc": "CWE v4.19.1 weakness detection: injection, buffer, auth, crypto, access control, concurrency",
     "xssDesc": "XSS vulnerability detection: reflected, stored, DOM-based, template injection, header injection",
-    "ssdfDesc": "NIST SSDF v1.1 compliance: secure design, implementation, vulnerability response, software integrity"
+    "ssdfDesc": "NIST SSDF v1.1 compliance: secure design, implementation, vulnerability response, software integrity",
+    "do178cDesc": "DO-178C avionics software compliance: requirements traceability, coverage, verification",
+    "asvsDesc": "OWASP ASVS 5.0.0 compliance: 345 requirements across 17 chapters at L1/L2/L3 verification levels"
   },
   "results": {
     "title": "Audit Results",
@@ -161,6 +163,8 @@
     "cwe": "CWE",
     "xss": "XSS",
     "ssdf": "SSDF",
+    "do178c": "DO-178C",
+    "asvs": "ASVS",
     "discover": "Discover"
   },
   "severity": {
