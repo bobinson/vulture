@@ -2,13 +2,13 @@
 # Non-Docker build script for Vulture.
 # Builds backend (Go), CLI (Go), Python agents, and frontend (Node.js).
 #
-# Usage: scripts/build.sh [component...]
-#   scripts/build.sh              # Build everything
-#   scripts/build.sh backend      # Build Go backend only
-#   scripts/build.sh cli          # Build Go CLI only
-#   scripts/build.sh agents       # Build Python agents only
-#   scripts/build.sh frontend     # Build frontend only
-#   scripts/build.sh backend cli  # Build multiple components
+# Usage: scripts/vulture.sh build [component...]
+#   scripts/vulture.sh build              # Build everything
+#   scripts/vulture.sh build backend      # Build Go backend only
+#   scripts/vulture.sh build cli          # Build Go CLI only
+#   scripts/vulture.sh build agents       # Build Python agents only
+#   scripts/vulture.sh build frontend     # Build frontend only
+#   scripts/vulture.sh build backend cli  # Build multiple components
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

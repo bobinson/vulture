@@ -6,15 +6,15 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/prod_stop.sh [--volumes|-v]
+Usage: scripts/vulture.sh stop docker [--volumes|-v]
 
 Options:
   --volumes, -v    Also remove PostgreSQL data volume (DESTROYS DATA)
   --help, -h       Show this help
 
 Examples:
-  scripts/prod_stop.sh              # Stop services, keep data
-  scripts/prod_stop.sh --volumes    # Stop services and delete all data
+  scripts/vulture.sh stop docker              # Stop services, keep data
+  scripts/vulture.sh stop docker --volumes    # Stop services and delete all data
 EOF
     exit 0
 }

@@ -2,11 +2,11 @@
 # Docker build script for Vulture.
 # Builds all Docker images via docker compose.
 #
-# Usage: scripts/build-docker.sh [options]
-#   scripts/build-docker.sh              # Build all services
-#   scripts/build-docker.sh --no-cache   # Build without Docker cache
-#   scripts/build-docker.sh --up         # Build and start services
-#   scripts/build-docker.sh --service backend   # Build specific service
+# Usage: scripts/vulture.sh build docker [options]
+#   scripts/vulture.sh build docker              # Build all services
+#   scripts/vulture.sh build docker --no-cache   # Build without Docker cache
+#   scripts/vulture.sh build docker --up         # Build and start services
+#   scripts/vulture.sh build docker --service backend   # Build specific service
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
         --service)  SERVICE="$2"; shift 2 ;;
         -h|--help)
             cat <<'EOF'
-Usage: scripts/build-docker.sh [options]
+Usage: scripts/vulture.sh build docker [options]
 
 Options:
   --no-cache         Build without Docker cache
@@ -194,7 +194,7 @@ main() {
     if ! $START_AFTER; then
         echo ""
         log "To start services: docker compose up -d"
-        log "To start after build: scripts/build-docker.sh --up"
+        log "To start after build: scripts/vulture.sh build docker --up"
     fi
 }
 

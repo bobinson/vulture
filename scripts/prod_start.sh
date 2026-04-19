@@ -7,7 +7,7 @@ ENV_FILE="$PROJECT_ROOT/.env"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/prod_start.sh <provider> [model]
+Usage: scripts/vulture.sh server <provider> [model]
 
 Providers:
   openai [model]       OpenAI API (default: gpt-4o)
@@ -17,12 +17,12 @@ Providers:
   skills               Skills only — no LLM (fastest, no API key needed)
 
 Examples:
-  scripts/prod_start.sh openai
-  scripts/prod_start.sh openai gpt-4o
-  scripts/prod_start.sh anthropic claude-sonnet
-  scripts/prod_start.sh ollama qwen3:8b
-  scripts/prod_start.sh lmstudio my-model
-  scripts/prod_start.sh skills
+  scripts/vulture.sh server openai
+  scripts/vulture.sh server openai gpt-4o
+  scripts/vulture.sh server anthropic claude-sonnet
+  scripts/vulture.sh server ollama qwen3:8b
+  scripts/vulture.sh server lmstudio my-model
+  scripts/vulture.sh server skills
 EOF
     exit 1
 }
@@ -72,6 +72,35 @@ check_lmstudio() {
     if ! curl -sf "$url/models" &>/dev/null; then
         echo "Error: LM Studio not reachable at $url"
         echo "  Start LM Studio and enable the local server."
+        exit 1
+    fi
+}
+
+# Detect the first embedding model loaded in LM Studio.
+detect_lmstudio_embedding_model() {
+    local url="${OPENAI_BASE_URL:-$LMSTUDIO_DEFAULT_URL}"
+    curl -sf "$url/models" 2>/dev/null \
+        | python3 -c "import sys,json; models=[m['id'] for m in json.load(sys.stdin)['data'] if 'embed' in m['id'].lower()]; print(models[0] if models else '')" 2>/dev/null \
+        || true
+}
+
+# Verify ports required by docker-compose are not already bound by non-docker processes.
+check_ports_free() {
+    local ports="$1"
+    local busy=""
+    for p in $ports; do
+        if ss -tln 2>/dev/null | awk '{print $4}' | grep -qE ":$p$"; then
+            # Port is bound — check if it's a docker container, which is fine.
+            if ! docker ps --format '{{.Ports}}' 2>/dev/null | grep -qE "[:]$p->"; then
+                busy="$busy $p"
+            fi
+        fi
+    done
+    if [[ -n "$busy" ]]; then
+        echo "Error: ports in use by non-docker processes:$busy"
+        echo "  Identify with: ss -tlnp | grep -E '$(echo $busy | tr ' ' '|')'"
+        echo "  Stop them, then retry. If they are root-owned stale processes, try:"
+        echo "    sudo kill -9 \$(pgrep -f \"vulture|uvicorn.*agent|vite.*2300\")"
         exit 1
     fi
 }
@@ -178,6 +207,15 @@ case "$PROVIDER" in
         fi
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
+        # Auto-configure embeddings if a compatible model is loaded in LM Studio
+        if [[ -z "${VULTURE_EMBEDDING_MODEL:-}" ]]; then
+            _embed_model=$(detect_lmstudio_embedding_model)
+            if [[ -n "$_embed_model" ]]; then
+                export VULTURE_EMBEDDING_MODEL="$_embed_model"
+                export VULTURE_EMBEDDING_URL="http://host.docker.internal:1234/v1"
+                echo "  Auto-detected embedding model: $_embed_model"
+            fi
+        fi
         # Rewrite base URL for container access
         export OPENAI_BASE_URL="http://host.docker.internal:1234/v1"
         ;;
@@ -200,11 +238,14 @@ echo "  Model:     $MODEL"
 echo "  LLM:       ${VULTURE_USE_LLM:-false}"
 echo
 
-# Generate .env from config.ini
+# Port conflict pre-check (docker containers are fine; external binds are not)
+check_ports_free "$BACKEND_PORT $FRONTEND_PORT $POSTGRES_PORT"
+
+# Regenerate .env cleanly from config.ini (avoids accumulation across runs)
 echo "  Generating .env..."
 "$SCRIPT_DIR/gen-env.sh"
 
-# Append LLM-specific vars to .env
+# Append LLM-specific vars to the freshly generated .env
 {
     echo ""
     echo "# LLM provider (set by prod_start.sh)"
@@ -214,9 +255,12 @@ echo "  Generating .env..."
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
     [[ -n "${OPENAI_BASE_URL:-}" ]] && echo "OPENAI_BASE_URL=$OPENAI_BASE_URL"
     [[ -n "${OLLAMA_API_BASE:-}" ]] && echo "OLLAMA_API_BASE=$OLLAMA_API_BASE"
+    [[ -n "${VULTURE_EMBEDDING_URL:-}" ]] && echo "VULTURE_EMBEDDING_URL=$VULTURE_EMBEDDING_URL"
+    [[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "VULTURE_EMBEDDING_MODEL=$VULTURE_EMBEDDING_MODEL"
 } >> "$ENV_FILE"
 
-# Build shared agent base image (once, reused by all 7 agents)
+# Build shared agent base image (once, reused by all 9 agents: chaos, owasp, soc2,
+# cwe, prove, xss, ssdf, discover, do178c)
 echo "  Building agent base image..."
 docker build -t vulture-agent-base:latest -f "$PROJECT_ROOT/agents/Dockerfile.base" "$PROJECT_ROOT/agents/" -q
 
@@ -242,6 +286,6 @@ echo "  Provider:   $PROVIDER"
 echo "  Model:      $MODEL"
 echo ""
 echo "  Logs:       docker compose logs -f"
-echo "  Stop:       scripts/prod_stop.sh"
+echo "  Stop:       scripts/vulture.sh stop docker"
 echo "  ──────────────────────────────────────────"
 echo

@@ -13,7 +13,7 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: scripts/start.sh <provider> [model]
+Usage: scripts/vulture.sh dev <provider> [model]
 
 Providers:
   openai [model]       OpenAI API (default: gpt-4o)
@@ -23,12 +23,12 @@ Providers:
   skills               Skills only — no LLM (fastest, no API key needed)
 
 Examples:
-  scripts/start.sh openai
-  scripts/start.sh openai gpt-4o
-  scripts/start.sh anthropic claude-sonnet
-  scripts/start.sh ollama qwen3:8b
-  scripts/start.sh lmstudio my-model
-  scripts/start.sh skills
+  scripts/vulture.sh dev openai
+  scripts/vulture.sh dev openai gpt-4o
+  scripts/vulture.sh dev anthropic claude-sonnet
+  scripts/vulture.sh dev ollama qwen3:8b
+  scripts/vulture.sh dev lmstudio my-model
+  scripts/vulture.sh dev skills
 EOF
     exit 1
 }
