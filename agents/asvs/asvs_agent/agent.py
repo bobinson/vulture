@@ -6,6 +6,7 @@ Implements the two-phase audit pipeline:
   Phase 2 (LLM):    self-learning analysis with ASVS catalog context.
 """
 
+import logging
 import os
 from collections.abc import Generator
 from functools import lru_cache
@@ -18,6 +19,32 @@ from shared.tools.memory_client import build_prior_context
 from asvs_agent.catalog import build_catalog_context, load_catalog
 from asvs_agent.config import ALL_CATEGORIES
 from asvs_agent.skills import SKILL_MAP, SKILL_TOOLS
+
+_log = logging.getLogger(__name__)
+
+
+def _safe_build_prior_context(
+    source_path: str,
+    preloaded: list[dict[str, Any]] | None,
+    max_findings: int,
+) -> str:
+    """Fetch prior-findings context, degrading gracefully on memory-API errors.
+
+    A down memory service must not block audits — we log the failure and
+    continue without prior context. Phase 1 skill scan is unaffected;
+    Phase 2 LLM simply loses the "known issues" hint and may re-report.
+    """
+    try:
+        return build_prior_context(
+            source_path, "asvs",
+            preloaded=preloaded, max_findings=max_findings,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "memory_api_unavailable source=%s err=%s — audit continues without prior context",
+            source_path, exc,
+        )
+        return ""
 
 # Prioritize critical chapters in the LLM context budget: V6/V7/V9/V10/V11
 _CRITICAL_CHAPTERS = {"V6", "V7", "V9", "V10", "V11"}
@@ -151,7 +178,7 @@ def run_audit(
     categories = config.get("categories", ALL_CATEGORIES)
     preloaded = prior_findings if prior_findings else None
     max_f = get_max_findings()
-    context = build_prior_context(source_path, "asvs", preloaded=preloaded, max_findings=max_f)
+    context = _safe_build_prior_context(source_path, preloaded, max_f)
 
     model = os.environ.get("VULTURE_LLM_MODEL")
     # Scale catalog context to the active model's window so small local
