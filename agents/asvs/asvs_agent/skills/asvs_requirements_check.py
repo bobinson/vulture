@@ -36,19 +36,21 @@ from asvs_agent.catalog import (
 # Reuse hand-crafted CWE regex constants so overlap ASVS reqs don't
 # duplicate patterns. The ASVS registry references these compiled patterns
 # directly — no re-compilation.
-from cwe_agent.skills.auth_check import HARDCODED_CRED_PATTERNS
-from cwe_agent.skills.crypto_check import (
+# Regex pattern copies previously imported from cwe_agent. Inlined into
+# asvs_agent so Docker builds don't require the CWE package and so that
+# CWE-side pattern changes can't silently alter ASVS detection semantics.
+# See asvs_agent/skills/_cwe_patterns.py for the sync protocol.
+from asvs_agent.skills._cwe_patterns import (
     BROKEN_CRYPTO_PATTERNS,
-    WEAK_RANDOM_PATTERNS,
-)
-from cwe_agent.skills.configuration_check import DEBUG_PROD_PATTERNS
-from cwe_agent.skills.input_validation_check import PATH_TRAVERSAL_PATTERNS
-from cwe_agent.skills.web_security_check import (
     COOKIE_NO_HTTPONLY_PATTERNS,
     COOKIE_NO_SECURE_PATTERNS,
+    DEBUG_PROD_PATTERNS,
+    HARDCODED_CRED_PATTERNS,
+    PATH_TRAVERSAL_PATTERNS,
     SAFE_COOKIE_PATTERNS,
     SAFE_SECURE_PATTERNS,
     SESSION_FIXATION_PATTERNS,
+    WEAK_RANDOM_PATTERNS,
 )
 
 # Type alias for a per-requirement check specification.

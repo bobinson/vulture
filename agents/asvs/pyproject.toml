@@ -9,7 +9,6 @@ description = "ASVS 5.0.0 compliance audit agent for Vulture"
 requires-python = ">=3.12"
 dependencies = [
     "vulture-shared",
-    "vulture-cwe-agent",
 ]
 
 [tool.hatch.build.targets.wheel]
