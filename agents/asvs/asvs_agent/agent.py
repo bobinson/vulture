@@ -22,16 +22,55 @@ from asvs_agent.skills import SKILL_MAP, SKILL_TOOLS
 _CRITICAL_CHAPTERS = {"V6", "V7", "V9", "V10", "V11"}
 
 
+def _req_sort_key(rid: str) -> tuple[int, ...]:
+    """Numeric tuple for ASVS Shortcode (V{C}.{S}.{R}) — avoids lexical
+    string sort that would rank V10 before V6."""
+    try:
+        return tuple(int(x) for x in rid[1:].split("."))
+    except (ValueError, IndexError):
+        return (999, 999, 999)
+
+
 def _prioritized_req_ids(limit: int = 60) -> list[str]:
+    """Select static-detectable reqs balanced across critical chapters.
+
+    Critical = V6/V7/V9/V10/V11 (auth/session/tokens/oauth/crypto). We
+    round-robin within critical chapters so the LLM sees diverse
+    context instead of 60× V6 reqs. Non-critical static reqs fill
+    remaining budget.
+    """
     catalog = load_catalog()
-    prio: list[tuple[int, str]] = []
+    by_chapter: dict[str, list[str]] = {}
+    non_critical: list[str] = []
     for rid, e in catalog.items():
         if e.get("detectability") != "static":
             continue
-        rank = 0 if e.get("chapter_id") in _CRITICAL_CHAPTERS else 1
-        prio.append((rank, rid))
-    prio.sort()
-    return [rid for _, rid in prio[:limit]]
+        ch = e.get("chapter_id", "")
+        if ch in _CRITICAL_CHAPTERS:
+            by_chapter.setdefault(ch, []).append(rid)
+        else:
+            non_critical.append(rid)
+    for ch in by_chapter:
+        by_chapter[ch].sort(key=_req_sort_key)
+    non_critical.sort(key=_req_sort_key)
+
+    selected: list[str] = []
+    chapter_order = sorted(by_chapter, key=lambda c: int(c[1:]))
+    # Round-robin across critical chapters until limit reached.
+    i = 0
+    while len(selected) < limit and any(by_chapter.values()):
+        ch = chapter_order[i % len(chapter_order)]
+        if by_chapter[ch]:
+            selected.append(by_chapter[ch].pop(0))
+        i += 1
+        if i > limit * 10:  # safety net
+            break
+    # Top up with non-critical if room remains.
+    for rid in non_critical:
+        if len(selected) >= limit:
+            break
+        selected.append(rid)
+    return selected
 
 
 INSTRUCTIONS = """You are an ASVS (Application Security Verification Standard)

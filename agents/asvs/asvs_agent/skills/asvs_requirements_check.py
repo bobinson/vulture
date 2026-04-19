@@ -39,18 +39,10 @@ from asvs_agent.catalog import (
 from cwe_agent.skills.auth_check import HARDCODED_CRED_PATTERNS
 from cwe_agent.skills.crypto_check import (
     BROKEN_CRYPTO_PATTERNS,
-    HARDCODED_KEY_PATTERNS,
     WEAK_RANDOM_PATTERNS,
 )
-from cwe_agent.skills.configuration_check import (
-    DEBUG_PROD_PATTERNS,
-
-)
-from cwe_agent.skills.info_exposure_check import LOG_SENSITIVE_PATTERNS
-from cwe_agent.skills.input_validation_check import (
-    FILE_UPLOAD_PATTERNS,
-    PATH_TRAVERSAL_PATTERNS,
-)
+from cwe_agent.skills.configuration_check import DEBUG_PROD_PATTERNS
+from cwe_agent.skills.input_validation_check import PATH_TRAVERSAL_PATTERNS
 from cwe_agent.skills.web_security_check import (
     COOKIE_NO_HTTPONLY_PATTERNS,
     COOKIE_NO_SECURE_PATTERNS,
@@ -143,13 +135,7 @@ _GET_STATE_CHANGING = re.compile(
     re.IGNORECASE,
 )
 
-# V5.2.5 / V5.2.6 — SSRF / URL follow-redirects
-_SSRF_PATTERNS = re.compile(
-    r"(?:requests|urllib|http\.Client|axios|fetch)\.(?:get|post|request)\s*\([^)]*(?:request|req|params|user|input)",
-    re.IGNORECASE,
-)
-
-# V5.3.3 — file extension validation (allow all / no check)
+# V5.1.2 — file extension validation (allow all / no check)
 _UNRESTRICTED_UPLOAD_EXT = re.compile(
     r"(?:allowed_extensions\s*=\s*\[\s*\]|accept\s*=\s*['\"]\*|ALLOWED_EXTENSIONS\s*=\s*None)",
     re.IGNORECASE,
@@ -158,11 +144,6 @@ _UNRESTRICTED_UPLOAD_EXT = re.compile(
 # V6.2.1 — minimum password length < 8
 _MIN_PASSWORD_SHORT = re.compile(
     r"(?:password|passwd)[\w_]*\s*(?:min_?length|min_?len)\s*[:=]\s*[1-7]\b",
-    re.IGNORECASE,
-)
-# V7.2.1 — client-side session validation (trust client token blindly)
-_CLIENT_SIDE_TOKEN_TRUST = re.compile(
-    r"(?:localStorage|sessionStorage)\.getItem\s*\(\s*['\"](?:token|jwt|session)",
     re.IGNORECASE,
 )
 
@@ -311,12 +292,6 @@ _CONTENT_TYPE_NO_CHARSET = re.compile(
     re.IGNORECASE,
 )
 
-# V8.2.x - data protection at rest
-_UNENCRYPTED_STORAGE = re.compile(
-    r"(?:open|write_text|WriteFile)\s*\([^)]*(?:secret|password|token|credential)",
-    re.IGNORECASE,
-)
-
 # ---------------------------------------------------------------------------
 # Per-requirement registry. Key = ASVS Shortcode.
 # Value = (compiled_regex, severity, safe_context_regex_or_None, lang_gate_or_None)
@@ -347,15 +322,12 @@ def _union(patterns: list[re.Pattern[str]]) -> re.Pattern[str]:
 
 
 _HARDCODED_CRED_UNION = _union(HARDCODED_CRED_PATTERNS)
-_HARDCODED_KEY_UNION = _union(HARDCODED_KEY_PATTERNS)
 _BROKEN_CRYPTO_UNION = _union(BROKEN_CRYPTO_PATTERNS)
 _WEAK_RANDOM_UNION = _union(WEAK_RANDOM_PATTERNS)
 _COOKIE_NO_HTTPONLY_UNION = _union(COOKIE_NO_HTTPONLY_PATTERNS)
 _COOKIE_NO_SECURE_UNION = _union(COOKIE_NO_SECURE_PATTERNS)
 _SESSION_FIXATION_UNION = _union(SESSION_FIXATION_PATTERNS)
 _DEBUG_PROD_UNION = _union(DEBUG_PROD_PATTERNS)
-_LOG_SENSITIVE_UNION = _union(LOG_SENSITIVE_PATTERNS)
-_FILE_UPLOAD_UNION = _union(FILE_UPLOAD_PATTERNS)
 _PATH_TRAVERSAL_UNION = _union(PATH_TRAVERSAL_PATTERNS)
 
 
@@ -365,12 +337,9 @@ _CHECKS: dict[str, CheckSpec] = {
     "V1.2.5": (_OS_CMD_INJECTION, "critical", None, _CODE_EXTS),
 
     # -------------------- V2 Validation ---------------------------------
-    "V2.2.1": (
-        re.compile(r"(?:request|req)\.(?:body|params|query|form|args)\s*\[", re.IGNORECASE),
-        "medium",
-        re.compile(r"(?:validate|sanitize|schema|pydantic|marshmallow)", re.IGNORECASE),
-        _CODE_EXTS,
-    ),
+    # V2.2.1 input validation removed — regex matched any request
+    # accessor (too broad). The LLM phase is a better fit: input
+    # validation is context-sensitive and needs data-flow tracing.
 
     # -------------------- V3 Web Frontend Security -----------------------
     # V3.3.1 cookies missing Secure flag.
@@ -407,11 +376,17 @@ _CHECKS: dict[str, CheckSpec] = {
     ),
 
     # -------------------- V5 File Handling ------------------------------
-    "V5.2.1": (_FILE_UPLOAD_UNION, "high", None, _CODE_EXTS),
-    "V5.2.5": (_SSRF_PATTERNS, "high", None, _CODE_EXTS),
-    "V5.2.6": (_SSRF_PATTERNS, "high", None, _CODE_EXTS),
-    "V5.3.1": (_PATH_TRAVERSAL_UNION, "high", None, _CODE_EXTS),
-    "V5.3.3": (_UNRESTRICTED_UPLOAD_EXT, "high", None, _CODE_EXTS),
+    # V5.1.1 path traversal — upload paths that include user-controlled
+    # segments. Matches the "restrict access to uploaded files" pattern
+    # better than V5.3.1 which is about post-upload execution behavior.
+    "V5.1.1": (_PATH_TRAVERSAL_UNION, "high", None, _CODE_EXTS),
+    # V5.1.2 "filenames from user input must be sanitized or rejected"
+    # — unrestricted upload extension pattern matches this.
+    "V5.1.2": (_UNRESTRICTED_UPLOAD_EXT, "high", None, _CODE_EXTS),
+    # Note: V5.2.5 (symlink-in-archive), V5.2.6 (pixel-flood), V5.3.1
+    # (post-upload execution), V5.3.3 (zip-slip) removed in correctness
+    # hardening — no SAST regex cleanly matches these semantics.
+    # Keyword fallback may surface related findings.
 
     # -------------------- V6 Authentication -----------------------------
     # V6.2.1 password min length < 8.
@@ -429,18 +404,18 @@ _CHECKS: dict[str, CheckSpec] = {
     ),
 
     # -------------------- V7 Session Management -------------------------
-    # V7.2.1 client-side token trust / session fixation.
-    "V7.2.1": (_CLIENT_SIDE_TOKEN_TRUST, "high", None, _WEB_EXTS),
-    "V7.2.2": (_SESSION_FIXATION_UNION, "high", None, _CODE_EXTS),
+    # V7.1.1 session fixation (session IDs populated from user input).
+    # Previously mapped to V7.2.2 which is about static API secrets.
+    "V7.1.1": (_SESSION_FIXATION_UNION, "high", None, _CODE_EXTS),
+    # Note: V7.2.1/V7.2.2 previously had regexes that matched the wrong
+    # concerns (client-side storage / session-from-request). Removed in
+    # correctness hardening. Keyword fallback covers token-handling reqs.
 
-    # -------------------- V8 Data Protection ----------------------------
-    "V8.2.1": (_UNENCRYPTED_STORAGE, "high", None, _CODE_EXTS),
-    "V8.3.1": (
-        re.compile(r"(?:password|token|secret).*=.*(?:request|req|params)", re.IGNORECASE),
-        "high",
-        re.compile(r"(?:encrypt|hash|bcrypt|argon2)", re.IGNORECASE),
-        _CODE_EXTS,
-    ),
+    # -------------------- V8 Authorization ------------------------------
+    # Note: V8.2.1 (function-level access) and V8.3.1 (trusted service
+    # layer) are largely runtime/behavioral concerns — no reliable SAST
+    # regex fits these without high false-positive rates. Removed in
+    # correctness hardening.
 
     # -------------------- V9 Tokens -------------------------------------
     "V9.1.1": (_JWT_NO_VERIFY, "critical", None, _CODE_EXTS),
@@ -457,7 +432,10 @@ _CHECKS: dict[str, CheckSpec] = {
     "V11.4.1": (_WEAK_HASH_GENERAL, "medium", None, _CRYPTO_EXTS),
     "V11.4.2": (_WEAK_PW_HASH, "high", _SAFE_PW_HASH, _CRYPTO_EXTS),
     "V11.5.1": (_WEAK_RANDOM_UNION, "high", None, _CRYPTO_EXTS),
-    "V11.6.1": (_HARDCODED_KEY_UNION, "critical", None, _CRYPTO_EXTS),
+    # V13.3.1 hardcoded-keys check also applies here as "static secrets
+    # for cryptographic operations" — already covered via V13.3.1 entry.
+    # Previously mapped as V11.6.1 which is about approved algorithms
+    # for key gen, not hardcoded key values. Removed.
 
     # -------------------- V12 TLS Configuration -------------------------
     "V12.1.1": (_WEAK_TLS, "high", None, _CONFIG_EXTS),
@@ -467,9 +445,11 @@ _CHECKS: dict[str, CheckSpec] = {
     "V12.3.2": (_INSECURE_TLS_VERIFY, "high", _SAFE_TLS_VERIFY, _CODE_EXTS),
 
     # -------------------- V13 Configuration -----------------------------
-    "V13.2.1": (_HARDCODED_CRED_UNION, "high", None, _CODE_EXTS),
-    "V13.2.2": (_HARDCODED_CRED_UNION, "high", None, _CODE_EXTS),
-    "V13.3.1": (_HARDCODED_CRED_UNION, "medium", None, _CODE_EXTS),
+    # Note: V13.2.1/V13.2.2 (backend-to-backend comms) removed — their
+    # regex was duplicating V13.3.1 hardcoded-creds detection, causing
+    # noisy triple findings per hit. V13.3.1 is the authoritative home.
+    # V13.3.1 registration is earlier in the dict (ensuring the single
+    # critical-severity mapping wins).
     "V13.4.1": (_SCM_METADATA_EXPOSED, "high", None, _CONFIG_EXTS),
     "V13.4.2": (_DEBUG_PROD_UNION, "high", None, _CONFIG_EXTS),
     "V13.4.6": (_VERSION_DISCLOSURE, "low", None, _CONFIG_EXTS),
@@ -483,24 +463,23 @@ _CHECKS: dict[str, CheckSpec] = {
     # maps cleanly. Removed V15.3.1/V15.3.2 mislabels in hardening pass.
 
     # -------------------- V16 Logging, Errors & Auditing ----------------
-    "V16.2.1": (_LOG_SENSITIVE_UNION, "critical", None, _CODE_EXTS),
-    "V16.2.2": (_LOG_SENSITIVE_UNION, "critical", None, _CODE_EXTS),
-    "V16.3.1": (
-        re.compile(r"(?:login|authenticate).*\b(?:succeed|fail)\b", re.IGNORECASE),
-        "low",
-        re.compile(r"(?:log|logger|logging)", re.IGNORECASE),
-        _CODE_EXTS,
-    ),
-    "V16.3.2": (_BARE_EXCEPT, "medium", None, _PY_EXTS),
+    # V14.2.1: sensitive data must not be exposed — includes logs with
+    # passwords/tokens/secrets. Relocated from V16.2.1/V16.2.2 which are
+    # about log-metadata completeness and timestamp sync (neither of
+    # which match the LOG_SENSITIVE regex semantics).
+    # (V14.2.1 is already registered earlier with _SENSITIVE_IN_URL;
+    #  adding _LOG_SENSITIVE_UNION here would double-register — use the
+    #  keyword fallback for LOG_SENSITIVE detection instead.)
     "V16.3.4": (_STACK_TRACE_IN_RESPONSE, "high", None, _CODE_EXTS),
+    # V16.5.3: fail gracefully when exceptions occur — bare except
+    # blocks swallow errors which prevents graceful failure.
+    # Previously mapped to V16.3.2 (failed authorization logging).
+    "V16.5.3": (_BARE_EXCEPT, "medium", None, _PY_EXTS),
 
     # -------------------- V17 WebRTC & Misc -----------------------------
-    "V17.2.2": (
-        re.compile(r"(?:permissive-cross-domain|Access-Control-Allow-Origin\s*:\s*\*)", re.IGNORECASE),
-        "medium",
-        None,
-        _CONFIG_EXTS,
-    ),
+    # Note: V17.2.2 previously had a CORS wildcard regex duplicating
+    # V3.4.2. Removed — V17 reqs are WebRTC-specific (DTLS, SRTP, ICE)
+    # and require protocol-aware detection out of SAST scope.
 
     # -------------------- V10 Authorization -----------------------------
     # V10.1.1 — origin validation (CWE-346)

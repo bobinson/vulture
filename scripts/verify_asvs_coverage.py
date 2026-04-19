@@ -67,9 +67,9 @@ def main() -> int:
     print(f"  Policy (out of scope):                   {det['policy']:>4}")
     print()
     ok_total = total == 345
-    ok_ded = _check("Dedicated _CHECKS registry entries:", dedicated, 50)
+    ok_ded = _check("Dedicated _CHECKS registry entries:", dedicated, 45)
     ok_fb = _check("Keyword-fallback eligible:", fallback, 50)
-    ok_active = _check("Total active scannable:", active, 120)
+    ok_active = _check("Total active scannable:", active, 115)
 
     ok = ok_total and ok_ded and ok_fb and ok_active
     if not ok:
