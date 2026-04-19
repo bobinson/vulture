@@ -213,8 +213,11 @@ _WEAK_TLS = re.compile(
 _CLEARTEXT_HTTP = re.compile(
     r"['\"]http://(?!localhost|127\.0\.0\.1|0\.0\.0\.0|example\.com)",
 )
+# Suppress internal-service and parser-regex false positives.
 _SAFE_HTTP = re.compile(
-    r"(?:localhost|127\.0\.0\.1|docs|schema|xmlns|example|test|mock)",
+    r"(?:localhost|127\.0\.0\.1|docs|schema|xmlns|example|test|mock|"
+    r"backend|agent-|\w+_URL\b|_TEST_URL|\.finditer\(|_RE\s*=|"
+    r"f\"http://\{host\}|f\"http://\{m\.|regex)",
     re.IGNORECASE,
 )
 
@@ -281,8 +284,20 @@ _SAFE_SQLI = re.compile(
 )
 
 _OS_CMD_INJECTION = re.compile(
-    r"(?:os\.system|subprocess\.(?:call|run|Popen)\s*\([^)]*shell\s*=\s*True|"
-    r"Runtime\.getRuntime\(\)\.exec|exec\s*\()",
+    # os.system(...) with parens (not attribute refs); subprocess shell=True;
+    # Java Runtime.exec; bare exec() — but NOT db.Exec/http.Exec (Go DB API)
+    # and not preceded by '.' or '_' (catches legitimate shell calls, not
+    # method calls on unrelated objects like db.Exec).
+    r"(?:\bos\.system\s*\(|"
+    r"\bsubprocess\.(?:call|run|Popen)\s*\([^)]*shell\s*=\s*True|"
+    r"\bRuntime\.getRuntime\(\)\.exec\s*\(|"
+    r"(?<![.\w])exec\s*\()",
+    re.IGNORECASE,
+)
+# Comment/docstring/detector-code suppression: lines whose exec mention is
+# inside a quoted string are typically detector metadata or documentation.
+_OS_CMD_SAFE = re.compile(
+    r"['\"](?:[^'\"]*exec)|#.*exec|\*.*exec",
     re.IGNORECASE,
 )
 
@@ -334,7 +349,7 @@ _PATH_TRAVERSAL_UNION = _union(PATH_TRAVERSAL_PATTERNS)
 _CHECKS: dict[str, CheckSpec] = {
     # -------------------- V1 Encoding & Sanitization --------------------
     "V1.2.3": (_SQL_INJECTION_CONCAT, "critical", _SAFE_SQLI, _CODE_EXTS),
-    "V1.2.5": (_OS_CMD_INJECTION, "critical", None, _CODE_EXTS),
+    "V1.2.5": (_OS_CMD_INJECTION, "critical", _OS_CMD_SAFE, _CODE_EXTS),
 
     # -------------------- V2 Validation ---------------------------------
     # V2.2.1 input validation removed — regex matched any request
@@ -377,9 +392,19 @@ _CHECKS: dict[str, CheckSpec] = {
 
     # -------------------- V5 File Handling ------------------------------
     # V5.1.1 path traversal — upload paths that include user-controlled
-    # segments. Matches the "restrict access to uploaded files" pattern
-    # better than V5.3.1 which is about post-upload execution behavior.
-    "V5.1.1": (_PATH_TRAVERSAL_UNION, "high", None, _CODE_EXTS),
+    # segments. Safe-context excludes lines where `user` appears only
+    # inside innocuous API names (expanduser, getusername, users/ URL
+    # literals in docstrings, etc.).
+    "V5.1.1": (
+        _PATH_TRAVERSAL_UNION, "high",
+        re.compile(
+            r"expanduser|getusername|getpass\.getuser|"
+            r"'api/users/|\"api/users/|"
+            r"\"\"\"|'''",  # triple-quoted docstrings
+            re.IGNORECASE,
+        ),
+        _CODE_EXTS,
+    ),
     # V5.1.2 "filenames from user input must be sanitized or rejected"
     # — unrestricted upload extension pattern matches this.
     "V5.1.2": (_UNRESTRICTED_UPLOAD_EXT, "high", None, _CODE_EXTS),
@@ -489,11 +514,15 @@ _CHECKS: dict[str, CheckSpec] = {
         None,
         _CONFIG_EXTS,
     ),
-    # V10.2.1 — decision without authn
+    # V10.2.1 — decision without authn. Match only as a SETTING/VALUE
+    # (assignment RHS or config literal), not as a function/variable
+    # name that merely contains the substring (e.g. _probe_auth_bypass
+    # in detector code). Anchor on '=' / ': ' / True/False boolean.
     "V10.2.1": (
         re.compile(
-            r"(?:auth(?:entication)?_(?:skip|bypass|off)|authenticate\s*=\s*False|"
-            r"skip_auth|anon(?:ymous)?_allowed)",
+            r"(?:\b(?:auth(?:entication)?_(?:skip|bypass|off)|skip_auth|"
+            r"anon(?:ymous)?_allowed)\s*[:=]\s*(?:True|true|1|['\"]?on['\"]?)|"
+            r"\bauthenticate\s*=\s*False)",
             re.IGNORECASE,
         ),
         "high",
