@@ -1,0 +1,71 @@
+# Minimal compose for the VM-side read-only deployment.
+#
+# Connects to a REMOTE Postgres (e.g. Neon with pgvector) and reads everything
+# from there. No agents, no local postgres, no writer backend.
+#
+# Usage:
+#   export VULTURE_DB_DSN="postgres://user:pass@ep-xxx-pooler.region.neon.tech/vulture?sslmode=require"
+#   export VULTURE_JWT_SECRET="<must match the writer-side secret>"
+#   docker compose -f docker-compose.readonly.yml up -d --build
+#
+# The writer-side Vulture (running on your desktop/server with all 9 agents)
+# publishes findings + memories to the same Neon DB. This deployment only
+# SERVES those results to end users via the frontend.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "${VULTURE_BACKEND_PORT:-28080}:${VULTURE_BACKEND_PORT:-28080}"
+    environment:
+      - VULTURE_PORT=${VULTURE_BACKEND_PORT:-28080}
+      - VULTURE_READONLY=true
+      - VULTURE_LOCAL_MODE=${VULTURE_LOCAL_MODE:-false}
+      - "VULTURE_DB_DSN=${VULTURE_DB_DSN:?Remote DB DSN required. Example: postgres://user:pass@ep-xxx-pooler.region.neon.tech/vulture?sslmode=require}"
+      - "VULTURE_JWT_SECRET=${VULTURE_JWT_SECRET:?JWT secret required - must match the writer side so tokens validate across instances}"
+      # Embedding provider. MUST match the writer side for vector consistency.
+      # Viewer embeds user search queries only; not documents.
+      - VULTURE_EMBEDDING_URL=${VULTURE_EMBEDDING_URL}
+      - VULTURE_EMBEDDING_MODEL=${VULTURE_EMBEDDING_MODEL:-text-embedding-3-small}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_BACKEND_PORT:-28080}/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${VULTURE_FRONTEND_HOST:-23001}:${VULTURE_FRONTEND_INTERNAL:-23000}"
+    environment:
+      - NGINX_ENVSUBST_FILTER=VULTURE_
+      - VULTURE_FRONTEND_INTERNAL=${VULTURE_FRONTEND_INTERNAL:-23000}
+      - VULTURE_BACKEND_PORT=${VULTURE_BACKEND_PORT:-28080}
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_FRONTEND_INTERNAL:-23000}/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    restart: unless-stopped
