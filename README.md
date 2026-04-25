@@ -6,11 +6,11 @@
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg)](https://www.python.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg)](https://www.typescriptlang.org/)
 
-Vulture is an AI-powered compliance audit platform that inspects source code against multiple security and reliability frameworks including Chaos Engineering principles, OWASP Top 10, CWE (Common Weakness Enumeration), SOC2 compliance, SSDF (Secure Software Development Framework), and XSS vulnerabilities. It uses specialized AI agents built on the OpenAI Agents SDK with LiteLLM, running a two-phase audit pipeline: fast deterministic skill-based pattern matching across the entire codebase, followed by optional LLM-driven deep analysis with automatic deduplication.
+Vulture is an AI-powered compliance audit platform that inspects source code against multiple security and reliability frameworks. Point it at a Git repository or a local folder; it dispatches specialized agents that flag compliance issues across **Chaos Engineering principles, OWASP Top 10, CWE 4.19.1, SOC2, NIST SSDF, XSS, formal provenance verification, attack-surface discovery, DO-178C (avionics safety), and OWASP ASVS 5.0.0** — ten frameworks today, with the architecture designed for adding more in three steps. The two-phase audit pipeline runs fast deterministic skill-based pattern matching across the entire codebase first, followed by optional LLM-driven deep analysis with automatic deduplication.
 
 ## Key Features
 
-- **Multi-framework auditing** -- Chaos Engineering, OWASP, CWE, SOC2, SSDF, XSS, and formal verification (Prove), with per-framework configurability down to individual compliance clauses
+- **Multi-framework auditing** -- Ten built-in agents (Chaos, OWASP, SOC2, CWE, SSDF, XSS, Prove, Discover, DO-178C, ASVS) with per-framework configurability down to individual compliance clauses
 - **Specialized AI agents** -- Each audit type runs as an independent FastAPI microservice with precisely defined skills, using the OpenAI Agents SDK with support for OpenAI, Claude, and Gemini models via LiteLLM
 - **Two-phase audit pipeline** -- Deterministic skill-based pattern matching covers 100% of files first; optional LLM analysis adds deeper reasoning with automatic deduplication against skill findings
 - **Real-time SSE streaming** -- Live audit progress, findings, and agent output streamed to the browser as Server-Sent Events
@@ -98,6 +98,18 @@ This builds all images (Go backend, Python agents, React frontend) and starts th
 make docker-down
 ```
 
+## Deployment Modes
+
+The same binaries and Docker images serve every deployment mode; mode is selected
+by environment variables. The default `make docker-up` starts **Mode A**.
+
+| Mode | Who runs it | Command | Notes |
+|------|-------------|---------|-------|
+| **A — Dev-local** | Developer laptop | `make docker-up` | SQLite or local Postgres; `VULTURE_LOCAL_MODE=true`; no extra config. **Supported in v0.1.0.** |
+| **B — Centralized server** | Ops VM | `docker compose up -d` + Neon DSN + `VULTURE_API_KEYS_ENABLED=true` | See [docs/guides/central_server_deployment.md](docs/guides/central_server_deployment.md). ⚠️ Mode B hardening is tracked in feature 0036 Phase 3 / 0037; review SECURITY.md before exposing publicly. |
+| **C — Read-only viewer** | Ops VM | `docker compose -f docker-compose.readonly.yml up -d` | Optional. Set `VULTURE_READONLY=true`. See [docs/guides/neon_deployment.md](docs/guides/neon_deployment.md). |
+| **D — CI client** | GitHub Actions etc. | `vulture scan <git-url> --api-key X --server Y --wait` | See [docs/guides/ci_integration.md](docs/guides/ci_integration.md). |
+
 ## Local Development
 
 ### Go Backend
@@ -114,15 +126,19 @@ The backend falls back to SQLite in local mode when `VULTURE_DB_DSN` is not set.
 
 ```bash
 cd agents
-pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/
+pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/ -e do178c/ -e asvs/
 
-# Run unit tests for individual agents
+# Run unit tests for individual agents (one example each)
 cd shared && python -m pytest tests/unit/ -v
 cd chaos_engineering && python -m pytest tests/unit/ -v
 cd owasp && python -m pytest tests/unit/ -v
 cd soc2 && python -m pytest tests/unit/ -v
 cd cwe && python -m pytest tests/unit/ -v
 ```
+
+> **Note:** Vulture requires Python 3.12+ (declared in `.python-version`).
+> If `pip install -e` fails on Python 3.11 or earlier, install Python 3.12 via
+> `pyenv` or your distribution's package manager first.
 
 Each agent is a standalone FastAPI service. Start one individually:
 
@@ -175,6 +191,8 @@ make docker-down    # Stop all services
 | `VULTURE_AGENT_XSS_URL` | `http://agent-xss:28006` | XSS agent endpoint |
 | `VULTURE_AGENT_SSDF_URL` | `http://agent-ssdf:28007` | SSDF agent endpoint |
 | `VULTURE_AGENT_DISCOVER_URL` | `http://agent-discover:28008` | Discover agent endpoint |
+| `VULTURE_AGENT_DO178C_URL` | `http://agent-do178c:28009` | DO-178C agent endpoint |
+| `VULTURE_AGENT_ASVS_URL` | `http://agent-asvs:28010` | ASVS agent endpoint |
 | `VULTURE_EMBEDDING_URL` | -- | Custom embedding endpoint |
 | `VULTURE_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 
@@ -227,7 +245,7 @@ The frontend auto-discovers available agents via `GET /api/agents` and dynamical
 | `GET` | `/api/audits` | List all audits |
 | `GET` | `/api/audits/:id` | Get audit status and results |
 | `GET` | `/api/audits/:id/stream` | SSE stream for live or replayed audit events |
-| `GET` | `/api/audits/cached` | Check for cached audit results |
+| `GET` | `/api/audits/cache` | Check for cached audit results |
 | `GET` | `/api/agents` | List available agent types |
 | `GET` | `/api/agents/:type/info` | Get agent configuration schema and skills |
 | `POST` | `/api/auth/register` | Register a new user |

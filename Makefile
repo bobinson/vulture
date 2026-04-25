@@ -13,7 +13,7 @@ build-backend:
 	cd backend && go build -o bin/vulture ./cmd/vulture/
 
 build-agents:
-	cd agents && pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/
+	cd agents && pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/ -e do178c/ -e asvs/
 
 build-frontend:
 	cd frontend && npm ci && npm run build
@@ -35,6 +35,8 @@ test-agents:
 	cd agents/xss && python -m pytest tests/unit/ -v
 	cd agents/ssdf && python -m pytest tests/unit/ -v
 	cd agents/discover && python -m pytest tests/unit/ -v
+	cd agents/do178c && python -m pytest tests/unit/ -v
+	cd agents/asvs && python -m pytest tests/unit/ -v
 
 test-frontend:
 	cd frontend && npm test
@@ -51,6 +53,8 @@ e2e:
 	cd agents/xss && python -m pytest tests/e2e/ -v
 	cd agents/ssdf && python -m pytest tests/e2e/ -v
 	cd agents/discover && python -m pytest tests/e2e/ -v
+	cd agents/do178c && python -m pytest tests/e2e/ -v
+	cd agents/asvs && python -m pytest tests/e2e/ -v
 	cd frontend && npx playwright test
 
 # Coverage verification (100% required)

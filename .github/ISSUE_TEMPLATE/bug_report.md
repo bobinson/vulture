@@ -33,6 +33,12 @@ Which audit agent is affected? (Select all that apply)
 - [ ] OWASP
 - [ ] SOC2
 - [ ] CWE
+- [ ] SSDF (NIST SP 800-218)
+- [ ] XSS
+- [ ] Prove (formal verification)
+- [ ] Discover (attack-surface mapping)
+- [ ] DO-178C
+- [ ] ASVS (OWASP)
 - [ ] Go Backend
 - [ ] Frontend
 - [ ] CLI
