@@ -83,6 +83,95 @@ func translateLocalPath(hostPath, apiURL string) string {
 	return filepath.Join("/mnt/source", rel)
 }
 
+// pathInsideMount reports whether `target` (an absolute host path) is at or
+// inside the current /mnt/source bind-mount source.
+func pathInsideMount(target, mountSource string) bool {
+	if mountSource == "" {
+		return false
+	}
+	absMount, err := filepath.Abs(mountSource)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absMount, target)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..")
+}
+
+// findComposeFile locates docker-compose.yml relative to the CLI binary.
+// The CLI lives at <project-root>/cli/vulture, so the compose file is at
+// <project-root>/docker-compose.yml.
+func findComposeFile() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{"docker-compose.yml", "compose.yml"} {
+		p := filepath.Join(filepath.Dir(filepath.Dir(exe)), name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// remountBackendIfNeeded ensures the backend container's /mnt/source mount
+// covers `target`. If the target is already inside the current mount, this
+// is a no-op. Otherwise it re-runs `docker compose up -d` with
+// VULTURE_SOURCE_DIR=<target> set so the bind-mount is updated, then waits
+// for the backend's /health endpoint to return 200.
+//
+// This solves the recurring "Error: validate path: stat <abs-path>: no such
+// file or directory" surfacing when users scan paths outside the project
+// root that was originally mounted.
+func remountBackendIfNeeded(target, apiURL string) error {
+	current := discoverSourceDir()
+	if current == "" {
+		// Backend probably runs natively (no docker mount); nothing to remount.
+		return nil
+	}
+	if pathInsideMount(target, current) {
+		return nil
+	}
+	composeFile := findComposeFile()
+	if composeFile == "" {
+		return fmt.Errorf(
+			"target %s is outside the backend mount (%s) and docker-compose.yml "+
+				"could not be located to remount automatically. "+
+				"Restart the stack with: VULTURE_SOURCE_DIR=%s docker compose up -d",
+			target, current, target,
+		)
+	}
+	fmt.Fprintf(os.Stderr, "  Source %s is outside the current backend mount (%s).\n", target, current)
+	fmt.Fprintf(os.Stderr, "  Remounting backend to %s ... (Ctrl+C to abort)\n", target)
+
+	composeDir := filepath.Dir(composeFile)
+	cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d")
+	cmd.Env = append(os.Environ(), "VULTURE_SOURCE_DIR="+target)
+	cmd.Dir = composeDir
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker compose up: %w", err)
+	}
+	// Wait for /health.
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(apiURL + "/health")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				fmt.Fprintf(os.Stderr, "  Backend healthy. Mount is now %s -> /mnt/source.\n", target)
+				return nil
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("backend did not become healthy within 120s after remount")
+}
+
 type authResponse struct {
 	Token string `json:"token"`
 	User  struct {
@@ -414,6 +503,9 @@ func cmdDiscover(apiURL string, df discoverFlags) {
 			abs, err := filepath.Abs(target)
 			if err == nil {
 				target = abs
+			}
+			if err := remountBackendIfNeeded(target, apiURL); err != nil {
+				fatalf("remount backend: %v", err)
 			}
 			target = translateLocalPath(target, apiURL)
 		}
@@ -895,6 +987,9 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, ci ciFl
 		if err == nil {
 			target = abs
 		}
+		if err := remountBackendIfNeeded(target, apiURL); err != nil {
+			fatalf("remount backend: %v", err)
+		}
 		target = translateLocalPath(target, apiURL)
 	}
 
@@ -963,6 +1058,9 @@ func cmdProve(apiURL string, target string, pf proveFlags) {
 		abs, err := filepath.Abs(target)
 		if err == nil {
 			target = abs
+		}
+		if err := remountBackendIfNeeded(target, apiURL); err != nil {
+			fatalf("remount backend: %v", err)
 		}
 		target = translateLocalPath(target, apiURL)
 	}
