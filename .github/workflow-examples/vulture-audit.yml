@@ -1,0 +1,50 @@
+# Reference: Vulture audit triggered by GitHub Actions.
+# Copy into .github/workflows/vulture-audit.yml in the repo you want audited.
+#
+# Required secrets (set in the target repo's Settings > Secrets and variables > Actions):
+#   VULTURE_SERVER_URL  - Base URL of your Vulture central server (e.g. https://vulture.example.com)
+#   VULTURE_API_KEY     - API key created via `vulture api-key create ci-github-actions`
+#
+# GITHUB_TOKEN is provided automatically by GitHub Actions and used to clone private repos.
+name: Vulture Audit
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install Vulture CLI
+        run: |
+          curl -fsSL "${{ secrets.VULTURE_SERVER_URL }}/releases/latest/vulture-linux-amd64" \
+            -o /usr/local/bin/vulture
+          chmod +x /usr/local/bin/vulture
+          vulture --version
+
+      - name: Submit audit
+        env:
+          VULTURE_SERVER:   ${{ secrets.VULTURE_SERVER_URL }}
+          VULTURE_API_KEY:  ${{ secrets.VULTURE_API_KEY }}
+          GH_TOKEN:         ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          vulture scan "${{ github.server_url }}/${{ github.repository }}.git" \
+            --ref "${{ github.sha }}" \
+            --server "$VULTURE_SERVER" \
+            --api-key "$VULTURE_API_KEY" \
+            --git-credentials "token:$GH_TOKEN" \
+            --types cwe,owasp,do178c \
+            --wait \
+            --exit-on high \
+            --output json > vulture-report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulture-report
+          path: vulture-report.json
+          retention-days: 30

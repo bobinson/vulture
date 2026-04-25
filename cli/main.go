@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,59 @@ const (
 var defaultAPIURL = cliResolve("ports", "backend", "28080", "http://localhost:")
 var defaultFrontendURL = cliResolve("ports", "frontend_host", "23001", "http://localhost:")
 
+// discoverSourceDir finds the host path mapped to /mnt/source in the backend
+// container. Prefers the live Docker mount (source of truth), falls back to
+// $VULTURE_SOURCE_DIR, then to the project .env file.
+func discoverSourceDir() string {
+	// Primary: introspect the live backend container — this is what's actually mounted.
+	if out, err := exec.Command("docker", "inspect", "-f",
+		"{{range .Mounts}}{{if eq .Destination \"/mnt/source\"}}{{.Source}}{{end}}{{end}}",
+		"vulture-backend-1").Output(); err == nil {
+		if src := strings.TrimSpace(string(out)); src != "" {
+			return src
+		}
+	}
+	// Fallback: explicit env var
+	if v := os.Getenv("VULTURE_SOURCE_DIR"); v != "" {
+		return v
+	}
+	// Last resort: read project .env (CLI sits at <project>/cli/vulture)
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	envPath := filepath.Join(filepath.Dir(filepath.Dir(exe)), ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "VULTURE_SOURCE_DIR="); ok {
+			return strings.Trim(v, "\"'")
+		}
+	}
+	return ""
+}
+
+// translateLocalPath converts a host absolute path to its container-visible
+// equivalent (/mnt/source/<rel>) when the backend runs in Docker. Returns
+// the original path if translation isn't possible.
+func translateLocalPath(hostPath, apiURL string) string {
+	sourceDir := discoverSourceDir()
+	if sourceDir == "" {
+		return hostPath
+	}
+	abs, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return hostPath
+	}
+	rel, err := filepath.Rel(abs, hostPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return hostPath
+	}
+	return filepath.Join("/mnt/source", rel)
+}
+
 type authResponse struct {
 	Token string `json:"token"`
 	User  struct {
@@ -49,6 +103,7 @@ type source struct {
 type audit struct {
 	ID            string         `json:"id"`
 	SourceID      string         `json:"source_id"`
+	SourcePath    string         `json:"source_path"`
 	Status        string         `json:"status"`
 	Types         []string       `json:"types"`
 	Findings      []finding      `json:"findings"`
@@ -68,11 +123,31 @@ type finding struct {
 	FilePath       string `json:"file_path"`
 	LineStart      int    `json:"line_start"`
 	Recommendation string `json:"recommendation"`
+	Fingerprint    string `json:"fingerprint"`
+	Ref            string `json:"ref,omitempty"`
+}
+
+type lineageRec struct {
+	Fingerprint string `json:"fingerprint"`
+	Ref         string `json:"ref"`
+	RefNumber   int    `json:"ref_number"`
 }
 
 type cacheResponse struct {
 	Cached bool  `json:"cached"`
 	Audit  audit `json:"audit"`
+}
+
+// ciFlags holds flags shared by scan and prove for CI/CD integration.
+type ciFlags struct {
+	apiKey         string // --api-key: overrides stored JWT
+	server         string // --server: overrides defaultAPIURL
+	wait           bool   // --wait: block until audit completes
+	output         string // --output: "text" or "json"
+	exitOn         string // --exit-on: exit non-zero at/above severity
+	webhook        string // --webhook: POST completion notification URL
+	ref            string // --ref: git ref (branch/tag/SHA)
+	gitCredentials string // --git-credentials: "token:VALUE" or "ssh_key:VALUE"
 }
 
 func main() {
@@ -92,21 +167,29 @@ func main() {
 		cmdLogin(apiURL)
 	case "scan":
 		if len(os.Args) < 3 {
-			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
+			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache] [CI flags]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
 			os.Exit(1)
 		}
-		types, noCache := parseScanFlags(os.Args[3:])
-		cmdScan(apiURL, os.Args[2], types, noCache)
+		types, noCache, ci := parseScanFlags(os.Args[3:])
+		if ci.server != "" {
+			apiURL = ci.server
+		}
+		cmdScan(apiURL, os.Args[2], types, noCache, ci)
 	case "discover", "discovery":
 		df := parseDiscoverFlags(os.Args[2:])
 		cmdDiscover(apiURL, df)
 	case "prove":
 		if len(os.Args) < 3 {
-			fmt.Fprintf(os.Stderr, "Usage: vulture prove <path-or-url> --staging-url <url> [--types %s] [--max-iterations 3] [--allow-local] [--no-cache]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
+			fmt.Fprintf(os.Stderr, "Usage: vulture prove <path-or-url> --staging-url <url> [--types %s] [--max-iterations 3] [--allow-local] [--no-cache] [CI flags]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
 			os.Exit(1)
 		}
 		pf := parseProveFlags(os.Args[3:])
+		if pf.ci.server != "" {
+			apiURL = pf.ci.server
+		}
 		cmdProve(apiURL, os.Args[2], pf)
+	case "api-key":
+		cmdAPIKey(apiURL, os.Args[2:])
 	case "localstart", "local-start", "local_start":
 		cmdLocalStart()
 	case "localstop", "local-stop", "local_stop":
@@ -127,26 +210,80 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		types, noCache := parseScanFlags(os.Args[2:])
-		cmdScan(apiURL, cmd, types, noCache)
+		types, noCache, ci := parseScanFlags(os.Args[2:])
+		if ci.server != "" {
+			apiURL = ci.server
+		}
+		cmdScan(apiURL, cmd, types, noCache, ci)
 	}
 }
 
-// parseScanFlags extracts --types and --no-cache from arguments.
-func parseScanFlags(args []string) (types []string, noCache bool) {
+// parseScanFlags extracts --types, --no-cache, and CI flags from arguments.
+func parseScanFlags(args []string) (types []string, noCache bool, ci ciFlags) {
 	types = agentregistry.ScanAgentTypes()
+	ci.output = "text"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--types":
 			if i+1 < len(args) {
 				types = strings.Split(args[i+1], ",")
-				i++ // skip value
+				i++
 			}
 		case "--no-cache":
 			noCache = true
+		default:
+			if consumed := parseCIFlag(args, i, &ci); consumed > 0 {
+				i += consumed - 1
+			}
 		}
 	}
 	return
+}
+
+// parseCIFlag parses a single CI flag at position i. Returns the number of
+// args consumed (0 if not a CI flag, 1 for bool flags, 2 for value flags).
+func parseCIFlag(args []string, i int, ci *ciFlags) int {
+	switch args[i] {
+	case "--api-key":
+		if i+1 < len(args) {
+			ci.apiKey = args[i+1]
+			return 2
+		}
+	case "--server":
+		if i+1 < len(args) {
+			ci.server = args[i+1]
+			return 2
+		}
+	case "--wait":
+		ci.wait = true
+		return 1
+	case "--output":
+		if i+1 < len(args) {
+			ci.output = args[i+1]
+			return 2
+		}
+	case "--exit-on":
+		if i+1 < len(args) {
+			ci.exitOn = args[i+1]
+			return 2
+		}
+	case "--webhook":
+		if i+1 < len(args) {
+			ci.webhook = args[i+1]
+			return 2
+		}
+	case "--ref":
+		if i+1 < len(args) {
+			ci.ref = args[i+1]
+			return 2
+		}
+	case "--git-credentials":
+		if i+1 < len(args) {
+			ci.gitCredentials = args[i+1]
+			return 2
+		}
+	}
+	return 0
 }
 
 func printUsage() {
@@ -158,6 +295,7 @@ Usage:
   vulture scan <path-or-url> [--types]   Scan source code for compliance issues
   vulture discover [path] [flags]        Discover endpoints and attack surface
   vulture prove <path-or-url> [flags]    Verify findings against a staging environment
+  vulture api-key <create|list|revoke>   Manage API keys for CI/CD authentication
   vulture <path-or-url>                  Shorthand for scan
   vulture localstart                     Start all services locally (backend + agents + frontend)
   vulture localstop                      Stop all locally running services
@@ -180,6 +318,22 @@ Prove Options:
   --allow-local                 Allow targeting localhost/local IPs
   --no-cache                    Force fresh scan, skip cached findings
 
+CI/CD Flags (scan, prove):
+  --api-key <key>               API key for machine auth (overrides stored JWT)
+  --server <url>                Server URL (overrides VULTURE_API_URL / config.ini)
+  --wait                        Block until audit completes; print result
+  --output <text|json>          Output format (default: text)
+  --exit-on <severity>          Exit non-zero if findings at/above severity
+                                (critical, high, medium, low)
+  --webhook <url>               POST completion notification to this URL
+  --ref <ref>                   Git ref (branch/tag/SHA) for git URL sources
+  --git-credentials <creds>     Git credentials (format: token:VALUE or ssh_key:VALUE)
+
+API Key Management:
+  vulture api-key create <name>     Create a new API key
+  vulture api-key list              List active API keys
+  vulture api-key revoke <id>       Revoke an API key
+
 Environment:
   VULTURE_API_URL             API server URL (default: from config.ini [ports] backend)
 
@@ -187,9 +341,14 @@ Examples:
   vulture login
   vulture scan /path/to/project
   vulture scan https://github.com/org/repo.git --types owasp,soc2,cwe
+  vulture scan https://github.com/org/repo.git --api-key vk_abc123 --wait --exit-on high
+  vulture scan https://github.com/org/repo.git --server https://vulture.example.com --output json
   vulture discover --target-url https://staging.example.com
   vulture discover /path/to/project --target-url https://staging.example.com
   vulture prove /path/to/project --staging-url https://staging.example.com --types owasp
+  vulture api-key create ci-github-actions
+  vulture api-key list
+  vulture api-key revoke <key-id>
   vulture localstart
   vulture /path/to/project
   vulture status
@@ -256,6 +415,7 @@ func cmdDiscover(apiURL string, df discoverFlags) {
 			if err == nil {
 				target = abs
 			}
+			target = translateLocalPath(target, apiURL)
 		}
 
 		fmt.Printf("  Submitting source (%s): %s\n", srcType, target)
@@ -422,6 +582,7 @@ type proveFlags struct {
 	maxIterations int
 	allowLocal    bool
 	noCache       bool
+	ci            ciFlags
 }
 
 func parseProveFlags(args []string) proveFlags {
@@ -429,6 +590,7 @@ func parseProveFlags(args []string) proveFlags {
 		types:         agentregistry.ScanAgentTypes(),
 		maxIterations: 3,
 	}
+	pf.ci.output = "text"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--staging-url":
@@ -458,6 +620,10 @@ func parseProveFlags(args []string) proveFlags {
 			pf.allowLocal = true
 		case "--no-cache":
 			pf.noCache = true
+		default:
+			if consumed := parseCIFlag(args, i, &pf.ci); consumed > 0 {
+				i += consumed - 1
+			}
 		}
 	}
 	return pf
@@ -714,11 +880,8 @@ func cmdLogin(apiURL string) {
 	fmt.Printf("\n  Logged in as %s (%s)\n  Token saved to ~/%s/%s\n\n", auth.User.Name, auth.User.Email, configDir, tokenFile)
 }
 
-func cmdScan(apiURL string, target string, types []string, noCache bool) {
-	token := loadToken()
-	if token == "" && isLocalMode(apiURL) {
-		token = autoLoginLocal(apiURL)
-	}
+func cmdScan(apiURL string, target string, types []string, noCache bool, ci ciFlags) {
+	token := resolveToken(ci.apiKey, apiURL)
 
 	// Determine source type
 	srcType := "local"
@@ -732,53 +895,55 @@ func cmdScan(apiURL string, target string, types []string, noCache bool) {
 		if err == nil {
 			target = abs
 		}
+		target = translateLocalPath(target, apiURL)
 	}
 
-	fmt.Printf("  Submitting source (%s): %s\n", srcType, target)
+	fmt.Fprintf(os.Stderr, "  Submitting source (%s): %s\n", srcType, target)
 
 	// Create source
-	srcBody := map[string]string{"type": srcType}
-	if srcType == "git" {
-		srcBody["url"] = target
-	} else {
-		srcBody["path"] = target
-	}
+	srcBody := buildSourceBody(srcType, target, ci)
 	srcJSON, _ := json.Marshal(srcBody)
 	src := apiPost[source](apiURL+"/api/sources", srcJSON, token)
-	fmt.Printf("  Source created: %s (%d files)\n", truncateID(src.ID, 12), src.FileCount)
+	fmt.Fprintf(os.Stderr, "  Source created: %s (%d files)\n", truncateID(src.ID, 12), src.FileCount)
 
 	// Check for cached results
 	if !noCache {
 		cacheURL := fmt.Sprintf("%s/api/audits/cache?source_id=%s&types=%s", apiURL, src.ID, strings.Join(types, ","))
 		cached := apiGet[cacheResponse](cacheURL, token)
 		if cached.Cached && cached.Audit.ID != "" {
-			fmt.Printf("\n  \033[33m⚡ Cached results found (audit %s)\033[0m\n", truncateID(cached.Audit.ID, 12))
-			fmt.Printf("  Completed: %s\n", cached.Audit.CompletedAt)
-			fmt.Printf("  Use --no-cache to force a fresh audit\n")
-			fmt.Println(strings.Repeat("-", 60))
-			printAuditSummary(cached.Audit)
-			return
+			fmt.Fprintf(os.Stderr, "\n  \033[33m⚡ Cached results found (audit %s)\033[0m\n", truncateID(cached.Audit.ID, 12))
+			fmt.Fprintf(os.Stderr, "  Completed: %s\n", cached.Audit.CompletedAt)
+			fmt.Fprintf(os.Stderr, "  Use --no-cache to force a fresh audit\n")
+			fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
+			outputResult(cached.Audit, ci)
+			os.Exit(computeExitCode(cached.Audit, ci.exitOn))
 		}
 	}
 
 	// Create audit
-	auditBody, _ := json.Marshal(map[string]interface{}{
-		"source_id": src.ID,
-		"types":     types,
-	})
+	auditReq := buildAuditBody(src.ID, types, ci)
+	auditBody, _ := json.Marshal(auditReq)
 	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
-	fmt.Printf("  Audit started: %s\n", truncateID(a.ID, 12))
-	fmt.Printf("  Types: %s\n\n", joinAgentNames(types))
+	fmt.Fprintf(os.Stderr, "  Audit started: %s\n", truncateID(a.ID, 12))
+	fmt.Fprintf(os.Stderr, "  Types: %s\n\n", joinAgentNames(types))
+
+	if ci.wait {
+		fmt.Fprintf(os.Stderr, "  Waiting for audit to complete...\n")
+		final := pollUntilDone(apiURL, a.ID, token)
+		outputResult(final, ci)
+		os.Exit(computeExitCode(final, ci.exitOn))
+	}
 
 	// Stream results
-	fmt.Println("  Streaming results...")
-	fmt.Println(strings.Repeat("-", 60))
+	fmt.Fprintln(os.Stderr, "  Streaming results...")
+	fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
 	streamAudit(apiURL, a.ID, token)
 
 	// Fetch final results
-	fmt.Println(strings.Repeat("-", 60))
+	fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
 	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
-	printAuditSummary(final)
+	outputResult(final, ci)
+	os.Exit(computeExitCode(final, ci.exitOn))
 }
 
 func cmdProve(apiURL string, target string, pf proveFlags) {
@@ -786,10 +951,7 @@ func cmdProve(apiURL string, target string, pf proveFlags) {
 		fatalf("--staging-url is required for prove command")
 	}
 
-	token := loadToken()
-	if token == "" && isLocalMode(apiURL) {
-		token = autoLoginLocal(apiURL)
-	}
+	token := resolveToken(pf.ci.apiKey, apiURL)
 
 	// Determine source type
 	srcType := "local"
@@ -802,19 +964,15 @@ func cmdProve(apiURL string, target string, pf proveFlags) {
 		if err == nil {
 			target = abs
 		}
+		target = translateLocalPath(target, apiURL)
 	}
 
-	fmt.Printf("  Submitting source (%s): %s\n", srcType, target)
+	fmt.Fprintf(os.Stderr, "  Submitting source (%s): %s\n", srcType, target)
 
-	srcBody := map[string]string{"type": srcType}
-	if srcType == "git" {
-		srcBody["url"] = target
-	} else {
-		srcBody["path"] = target
-	}
+	srcBody := buildSourceBody(srcType, target, pf.ci)
 	srcJSON, _ := json.Marshal(srcBody)
 	src := apiPost[source](apiURL+"/api/sources", srcJSON, token)
-	fmt.Printf("  Source created: %s (%d files)\n", truncateID(src.ID, 12), src.FileCount)
+	fmt.Fprintf(os.Stderr, "  Source created: %s (%d files)\n", truncateID(src.ID, 12), src.FileCount)
 
 	// Step 1: Get scanner findings (from cache, fresh scan, or memory)
 	findings := proveGetFindings(apiURL, src.ID, target, pf.types, token, pf.noCache)
@@ -842,7 +1000,7 @@ func cmdProve(apiURL string, target string, pf proveFlags) {
 
 	// Step 3: Create prove audit with findings embedded in config
 	// Config is nested under "prove" key because extractAgentConfig looks for config[agentType]
-	auditBody, _ := json.Marshal(map[string]interface{}{
+	auditReq := map[string]interface{}{
 		"source_id": src.ID,
 		"types":     []string{"prove"},
 		"config": map[string]interface{}{
@@ -854,15 +1012,31 @@ func cmdProve(apiURL string, target string, pf proveFlags) {
 				"findings":       findingMaps,
 			},
 		},
-	})
+	}
+	if pf.ci.webhook != "" {
+		auditReq["webhook_url"] = pf.ci.webhook
+	}
+	auditBody, _ := json.Marshal(auditReq)
 	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
-	fmt.Printf("  Prove session: %s\n", truncateID(a.ID, 12))
-	fmt.Printf("  Max iterations: %d\n\n", pf.maxIterations)
+	fmt.Fprintf(os.Stderr, "  Prove session: %s\n", truncateID(a.ID, 12))
+	fmt.Fprintf(os.Stderr, "  Max iterations: %d\n\n", pf.maxIterations)
+
+	if pf.ci.wait {
+		fmt.Fprintf(os.Stderr, "  Waiting for prove session to complete...\n")
+		final := pollUntilDone(apiURL, a.ID, token)
+		outputResult(final, pf.ci)
+		os.Exit(computeExitCode(final, pf.ci.exitOn))
+	}
 
 	// Step 4: Stream verification results
-	fmt.Println(strings.Repeat("-", 60))
+	fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
 	streamProve(apiURL, a.ID, token)
-	fmt.Println(strings.Repeat("-", 60))
+	fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
+
+	// Fetch final results for exit code evaluation
+	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
+	outputResult(final, pf.ci)
+	os.Exit(computeExitCode(final, pf.ci.exitOn))
 }
 
 // proveGetFindings runs a scan (or uses cache) and returns the findings.
@@ -1124,6 +1298,26 @@ func cmdStatus(apiURL string) {
 	fmt.Println()
 }
 
+// fetchRefsBySourcePath returns a fingerprint→VLT-ref map for the given source path.
+// Returns nil on any error (non-fatal — CLI falls back to no refs).
+func fetchRefsBySourcePath(apiURL, token, sourcePath string) map[string]string {
+	if sourcePath == "" {
+		return nil
+	}
+	u := apiURL + "/api/lineage?source_path=" + url.QueryEscape(sourcePath) + "&limit=10000"
+	recs := apiGet[[]lineageRec](u, token)
+	if len(recs) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(recs))
+	for _, r := range recs {
+		if r.Ref != "" && r.Fingerprint != "" {
+			m[r.Fingerprint] = r.Ref
+		}
+	}
+	return m
+}
+
 func cmdResults(apiURL string, id string) {
 	token := loadToken()
 	if token == "" && isLocalMode(apiURL) {
@@ -1132,20 +1326,153 @@ func cmdResults(apiURL string, id string) {
 	a := apiGet[audit](apiURL+"/api/audits/"+id, token)
 	printAuditSummary(a)
 
-	if len(a.Findings) > 0 {
-		fmt.Println("\n  FINDINGS:")
-		fmt.Println("  " + strings.Repeat("-", 70))
-		for i, f := range a.Findings {
-			sev := colorSeverity(f.Severity)
+	if len(a.Findings) == 0 {
+		return
+	}
+
+	refs := fetchRefsBySourcePath(apiURL, token, a.SourcePath)
+
+	fmt.Println("\n  FINDINGS:")
+	fmt.Println("  " + strings.Repeat("-", 70))
+	for i, f := range a.Findings {
+		ref := f.Ref
+		if ref == "" {
+			ref = refs[f.Fingerprint]
+		}
+		sev := colorSeverity(f.Severity)
+		if ref != "" {
+			fmt.Printf("  %d. %s [%s] %s\n", i+1, ref, sev, f.Title)
+		} else {
 			fmt.Printf("  %d. [%s] %s\n", i+1, sev, f.Title)
-			fmt.Printf("     File: %s:%d\n", f.FilePath, f.LineStart)
-			fmt.Printf("     Category: %s | Agent: %s\n", f.Category, agentDisplayName(f.AgentType))
-			if f.Recommendation != "" {
-				fmt.Printf("     Fix: %s\n", f.Recommendation)
+		}
+		fmt.Printf("     File: %s:%d\n", f.FilePath, f.LineStart)
+		fmt.Printf("     Category: %s | Agent: %s\n", f.Category, agentDisplayName(f.AgentType))
+		if f.Recommendation != "" {
+			fmt.Printf("     Fix: %s\n", f.Recommendation)
+		}
+		fmt.Println()
+	}
+}
+
+// --- CI/CD helpers ---
+
+// resolveToken returns the appropriate auth token. If an API key is provided,
+// it is used directly. Otherwise falls back to stored JWT or local auto-login.
+func resolveToken(apiKey, apiURL string) string {
+	if apiKey != "" {
+		return apiKey
+	}
+	token := loadToken()
+	if token == "" && isLocalMode(apiURL) {
+		token = autoLoginLocal(apiURL)
+	}
+	return token
+}
+
+// buildSourceBody constructs the JSON body for POST /api/sources, including
+// optional git ref and credentials from CI flags.
+func buildSourceBody(srcType, target string, ci ciFlags) map[string]interface{} {
+	body := map[string]interface{}{"type": srcType}
+	if srcType == "git" {
+		body["url"] = target
+		if ci.ref != "" {
+			body["ref"] = ci.ref
+		}
+		if ci.gitCredentials != "" {
+			credType, credValue := parseGitCredentials(ci.gitCredentials)
+			if credType != "" {
+				body["git_credentials"] = map[string]string{
+					"type":  credType,
+					"value": credValue,
+				}
 			}
-			fmt.Println()
+		}
+	} else {
+		body["path"] = target
+	}
+	return body
+}
+
+// parseGitCredentials splits "type:value" into its parts.
+// Accepted types: "token", "ssh_key".
+func parseGitCredentials(creds string) (string, string) {
+	idx := strings.Index(creds, ":")
+	if idx < 1 {
+		fmt.Fprintf(os.Stderr, "  Warning: invalid --git-credentials format (expected type:value)\n")
+		return "", ""
+	}
+	credType := creds[:idx]
+	credValue := creds[idx+1:]
+	if credType != "token" && credType != "ssh_key" {
+		fmt.Fprintf(os.Stderr, "  Warning: unknown credential type %q (expected \"token\" or \"ssh_key\")\n", credType)
+		return "", ""
+	}
+	return credType, credValue
+}
+
+// buildAuditBody constructs the JSON body for POST /api/audits, including
+// optional webhook URL from CI flags.
+func buildAuditBody(sourceID string, types []string, ci ciFlags) map[string]interface{} {
+	body := map[string]interface{}{
+		"source_id": sourceID,
+		"types":     types,
+	}
+	if ci.webhook != "" {
+		body["webhook_url"] = ci.webhook
+	}
+	return body
+}
+
+// pollUntilDone polls GET /api/audits/:id every 3 seconds until the audit
+// reaches a terminal status (completed or failed).
+func pollUntilDone(apiURL, auditID, token string) audit {
+	url := apiURL + "/api/audits/" + auditID
+	for {
+		a := apiGet[audit](url, token)
+		if a.Status == "completed" || a.Status == "failed" {
+			return a
+		}
+		fmt.Fprintf(os.Stderr, "  Status: %s ...\n", a.Status)
+		time.Sleep(3 * time.Second)
+	}
+}
+
+// outputResult writes the audit result to stdout. If --output json, it emits
+// the full audit as JSON. Otherwise it calls printAuditSummary (text to stderr+stdout).
+func outputResult(a audit, ci ciFlags) {
+	if ci.output == "json" {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(a)
+		return
+	}
+	printAuditSummary(a)
+}
+
+// computeExitCode returns 1 if any finding meets or exceeds the given severity
+// threshold, 0 otherwise. Returns 0 if exitOn is empty.
+func computeExitCode(a audit, exitOn string) int {
+	if exitOn == "" {
+		return 0
+	}
+	severityRank := map[string]int{
+		"critical": 4,
+		"high":     3,
+		"medium":   2,
+		"low":      1,
+		"info":     0,
+	}
+	threshold, ok := severityRank[exitOn]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "  Warning: unknown severity %q for --exit-on (expected critical, high, medium, low)\n", exitOn)
+		return 0
+	}
+	for _, f := range a.Findings {
+		if severityRank[f.Severity] >= threshold {
+			return 1
 		}
 	}
+	return 0
 }
 
 // --- Helpers ---
@@ -1458,6 +1785,12 @@ func apiGet[T any](url string, token string) T {
 	var result T
 	json.NewDecoder(resp.Body).Decode(&result)
 	return result
+}
+
+func apiDelete(url string, token string) {
+	req, _ := http.NewRequest("DELETE", url, nil)
+	resp := apiDo(req, token)
+	resp.Body.Close()
 }
 
 // --- Token management ---
