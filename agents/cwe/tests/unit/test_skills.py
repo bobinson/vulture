@@ -161,6 +161,93 @@ class TestCheckInjection:
         result = check_injection(str(source_dir))
         assert result["findings"] == []
 
+    # --- VLT-4152 hardening: validation-context awareness -----------------
+    #
+    # The CWE-78 detector should NOT fire on a `subprocess.* shell=True` /
+    # `os.system` / `os.popen` call when an input-validation guard
+    # (regex match, IsValid*, validate_*, allowlist) precedes the call
+    # within the surrounding function. The detector previously matched on
+    # line content alone, producing false positives on code that *had*
+    # already validated the input.
+
+    def test_command_injection_suppressed_after_isvalid_guard(self, source_dir):
+        # Go-style: regex check + IsValidPython guard preceding os.system
+        code = (
+            "import re\n"
+            "is_valid_module = re.compile(r'^[A-Za-z_][A-Za-z0-9_.]*$').match\n"
+            "def check(name):\n"
+            "    if not is_valid_module(name):\n"
+            "        return False\n"
+            "    import os\n"
+            "    os.system('python -c \"import ' + name + '\"')\n"
+        )
+        (source_dir / "guarded.py").write_text(code)
+        result = check_injection(str(source_dir))
+        cmd_findings = [f for f in result["findings"] if f["category"] == "CWE-78"]
+        assert cmd_findings == [], f"unexpected CWE-78 findings on validated input: {cmd_findings}"
+
+    def test_command_injection_suppressed_after_validate_call(self, source_dir):
+        code = (
+            "import os\n"
+            "def validate_module(name):\n"
+            "    return name.isidentifier()\n"
+            "def check(name):\n"
+            "    if not validate_module(name):\n"
+            "        return False\n"
+            "    os.system('echo ' + name)\n"
+        )
+        (source_dir / "validated.py").write_text(code)
+        result = check_injection(str(source_dir))
+        cmd_findings = [f for f in result["findings"] if f["category"] == "CWE-78"]
+        assert cmd_findings == [], f"unexpected CWE-78 findings after validate_*: {cmd_findings}"
+
+    def test_command_injection_still_fires_without_validation(self, source_dir):
+        # Negative control: no guard -> finding still emitted.
+        code = (
+            "import os\n"
+            "def check(name):\n"
+            "    os.system('echo ' + name)\n"
+        )
+        (source_dir / "unguarded.py").write_text(code)
+        result = check_injection(str(source_dir))
+        cmd_findings = [f for f in result["findings"] if f["category"] == "CWE-78"]
+        assert cmd_findings, "CWE-78 should still fire when no validation guard precedes the call"
+
+    def test_exec_command_argv_no_shell_not_cwe78(self, source_dir):
+        # Go's exec.Command without a shell binary is NOT CWE-78. Concat'd
+        # argv into a non-shell binary is at most CWE-88 (argument injection)
+        # or CWE-94 (code injection if the binary is an interpreter); the
+        # CWE-78 detector should leave it alone.
+        code = (
+            'package main\n'
+            'import "os/exec"\n'
+            'func run(arg string) {\n'
+            '    cmd := exec.Command("python3", "-c", "import "+arg)\n'
+            '    cmd.Run()\n'
+            '}\n'
+        )
+        (source_dir / "ok.go").write_text(code)
+        result = check_injection(str(source_dir))
+        cmd_findings = [f for f in result["findings"] if f["category"] == "CWE-78"]
+        assert cmd_findings == [], (
+            f"exec.Command on a non-shell binary must not trigger CWE-78, got: {cmd_findings}"
+        )
+
+    def test_exec_command_with_shell_binary_still_fires(self, source_dir):
+        # Negative control: exec.Command("sh", "-c", concat) IS CWE-78.
+        code = (
+            'package main\n'
+            'import "os/exec"\n'
+            'func run(arg string) {\n'
+            '    cmd := exec.Command("sh", "-c", "echo "+arg)\n'
+            '    cmd.Run()\n'
+            '}\n'
+        )
+        (source_dir / "shell.go").write_text(code)
+        result = check_injection(str(source_dir))
+        cmd_findings = [f for f in result["findings"] if f["category"] == "CWE-78"]
+        assert cmd_findings, "exec.Command('sh', '-c', concat) must trigger CWE-78"
+
 
 # === Buffer Handling Patterns ===
 

@@ -32,12 +32,41 @@ SQL_INJECTION_PATTERNS = [
 ]
 
 # CWE-78: OS Command Injection
+#
+# Real CWE-78 = passing user input to a shell. In Python that means the
+# patterns below — os.system / os.popen / subprocess.* with shell=True.
+# In Go, `exec.Command(name, arg, ...)` does NOT invoke a shell; argv
+# concatenation there is a different vulnerability class (CWE-88 argument
+# injection or CWE-94 code injection if the binary is an interpreter).
+# We retain a narrow Go pattern that flags ONLY shell-binary invocations
+# explicitly: exec.Command("sh"/"bash"/"/bin/sh"/etc., "-c", ...).
 COMMAND_INJECTION_PATTERNS = [
     re.compile(r"os\.system\("),
     re.compile(r"os\.popen\("),
     re.compile(r"subprocess\.(?:call|run|Popen)\([^)]*shell\s*=\s*True"),
-    re.compile(r'exec\.Command\([^)]*\+'),
+    re.compile(r'exec\.Command\(\s*"(?:sh|bash|zsh|/bin/(?:sh|bash|zsh))"\s*,'),
 ]
+
+# Validation-guard patterns. If any of these match within the radius of
+# an injection-pattern hit, the detector treats the call as guarded and
+# does NOT emit a finding. Mirrors the `_has_safe_context` approach used
+# by the XSS skill.
+SAFE_VALIDATION_PATTERNS = re.compile(
+    r"(?:"
+    r"regexp\.MustCompile|"               # Go: precompiled regex
+    r"\bre\.compile\s*\(|"                # Python: precompiled regex
+    r"\.MatchString\s*\(|"                # Go: regexp.MatchString
+    r"\.match\s*\(|"                      # Python: pattern.match()
+    r"\bIsValid\w*|"                      # Go: IsValidX, IsValidPython, ...
+    r"\bis_valid\w*|"                     # Python snake_case: is_valid_*
+    r"\b[Vv]alidate\w+|"                  # validate_x / ValidateX
+    r"\b[Ss]anitize\w+|"                  # sanitize_x / SanitizeX
+    r"\bshlex\.(?:quote|split)\s*\(|"     # Python: command-escaping helpers
+    r"\bshell_quote\s*\(|"                # custom shell-quote helpers
+    r"\.isidentifier\s*\(|"               # Python: name.isidentifier()
+    r"allowlist|allow_list|whitelist"     # allowlist-style guards
+    r")",
+)
 
 # CWE-79: Cross-site Scripting (XSS)
 XSS_PATTERNS = [
@@ -145,6 +174,18 @@ def _check_sql(
             return
 
 
+def _has_validation_context(lines: list[str], line_num: int, radius: int = 10) -> bool:
+    """Check if a validation/sanitization guard appears within `radius`
+    lines of `line_num`. The window covers the function body that contains
+    the suspicious call — guards like `if !isValidX(arg) { return }` or
+    `if not validate_module(name): return False` immediately preceding the
+    call mitigate the injection risk and should suppress the finding.
+    """
+    start = max(0, line_num - 1 - radius)
+    end = min(len(lines), line_num + radius)
+    return bool(SAFE_VALIDATION_PATTERNS.search("\n".join(lines[start:end])))
+
+
 def _check_command(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
@@ -155,6 +196,8 @@ def _check_command(
     for pattern in COMMAND_INJECTION_PATTERNS:
         if pattern.search(line):
             if SAFE_STATIC_CALL.search(line):
+                return
+            if _has_validation_context(lines, line_num):
                 return
             finding = {
                 "severity": "critical",
