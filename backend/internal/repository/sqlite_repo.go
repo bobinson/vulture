@@ -219,6 +219,47 @@ func migrateAddColumns(db *sql.DB) {
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_path_agent ON audit_memories(codebase_path, agent_type)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id, target_id)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_lineage_fingerprint ON finding_lineage(fingerprint, source_path, agent_type)`)
+
+	// Feature 0031: API keys table
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (
+		id          TEXT PRIMARY KEY,
+		prefix      TEXT NOT NULL,
+		hash        TEXT NOT NULL,
+		name        TEXT NOT NULL,
+		scopes      TEXT NOT NULL DEFAULT '["read","write"]',
+		created_by  TEXT NOT NULL,
+		created_at  TEXT NOT NULL,
+		last_used_at TEXT,
+		revoked_at  TEXT
+	)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix) WHERE revoked_at IS NULL`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_keys_created_by ON api_keys(created_by)`)
+
+	// Feature 0031: webhook deliveries
+	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN webhook_url TEXT`)
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS audit_webhook_deliveries (
+		id            TEXT PRIMARY KEY,
+		audit_id      TEXT NOT NULL,
+		url           TEXT NOT NULL,
+		status        TEXT NOT NULL DEFAULT 'pending',
+		attempts      INTEGER NOT NULL DEFAULT 0,
+		last_error    TEXT NOT NULL DEFAULT '',
+		created_at    TEXT NOT NULL,
+		delivered_at  TEXT
+	)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_audit ON audit_webhook_deliveries(audit_id)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON audit_webhook_deliveries(status)`)
+
+	// Feature 0033: finding reference numbers
+	_, _ = db.Exec(`ALTER TABLE finding_lineage ADD COLUMN ref_number INTEGER`)
+	// Backfill existing records. Use rowid for unique ordering (avoids duplicates
+	// when multiple records share the same created_at timestamp).
+	_, _ = db.Exec(`
+		UPDATE finding_lineage SET ref_number = (
+			SELECT COUNT(*) FROM finding_lineage AS fl2
+			WHERE fl2.rowid < finding_lineage.rowid
+		) + 1 WHERE ref_number IS NULL
+	`)
 }
 
 // prepareStatements pre-compiles frequently executed queries for reuse.
@@ -318,8 +359,8 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 	}
 	scoresJSON, _ := json.Marshal(audit.Scores)
 	_, err := r.db.Exec(
-		`INSERT INTO audits (id, source_id, types, config, status, scores, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		audit.ID, audit.SourceID, string(typesJSON), cfgStr, string(audit.Status), string(scoresJSON), audit.CreatedAt.Format(time.RFC3339),
+		`INSERT INTO audits (id, source_id, types, config, status, scores, webhook_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		audit.ID, audit.SourceID, string(typesJSON), cfgStr, string(audit.Status), string(scoresJSON), audit.WebhookURL, audit.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("insert audit: %w", err)
@@ -329,12 +370,12 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = ?`, id)
 	var audit model.Audit
 	var typesStr, cfgStr, scoresStr, createdAt string
 	var completedAt sql.NullString
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &createdAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &createdAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +41,7 @@ func New(cfg *config.Config) (*Server, error) {
 	auditH := handler.NewAuditHandler(auditSvc)
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
 	agentH := handler.NewAgentHandler(cfg.Agents)
+	agentH.SetReadOnly(cfg.ReadOnly)
 	fsH := handler.NewFilesystemHandler()
 
 	mux := http.NewServeMux()
@@ -48,12 +51,14 @@ func New(cfg *config.Config) (*Server, error) {
 	auditsHandler := auditsRouter(auditH)
 	auditDetailHandler := auditDetailRouter(auditH, streamH)
 
-	authMW := registerAPIRoutes(mux, pgDB, sqliteDB, cfg, sourceH, auditH, auditsHandler, auditDetailHandler, agentH, fsH, streamH)
-	registerMemoryRoutes(mux, pgDB, sqliteDB, streamH, authMW)
-	registerLineageRoutes(mux, pgDB, sqliteDB, streamH, authMW)
-	registerProveRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW)
-	registerDiscoverRoutes(mux, pgDB, sqliteDB, streamH, authMW)
-	registerPipelineRoutes(mux, pgDB, sqliteDB, auditSvc, streamH.DiscoverService(), streamH, authMW)
+	readOnly := cfg.ReadOnly
+	authMW := registerAPIRoutes(mux, pgDB, sqliteDB, cfg, sourceH, auditH, auditsHandler, auditDetailHandler, agentH, fsH, streamH, readOnly)
+	registerWebhookService(pgDB, sqliteDB, streamH)
+	registerMemoryRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
+	registerLineageRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
+	registerProveRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW, readOnly)
+	registerDiscoverRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
+	registerPipelineRoutes(mux, pgDB, sqliteDB, auditSvc, streamH.DiscoverService(), streamH, authMW, readOnly)
 
 	corsMux := addCORS(mux)
 	return &Server{mux: addRequestLogging(addRequestID(corsMux))}, nil
@@ -162,6 +167,7 @@ func registerAPIRoutes(
 	auditsH, auditDetailH http.HandlerFunc,
 	agentH *handler.AgentHandler, fsH *handler.FilesystemHandler,
 	streamH *handler.StreamHandler,
+	readOnly bool,
 ) authWrapper {
 	var userRepo repository.UserRepository
 	if pgDB != nil {
@@ -172,19 +178,18 @@ func registerAPIRoutes(
 	}
 
 	if userRepo != nil {
-		authMW := registerAuthRoutes(mux, userRepo, cfg, sourceH, auditH, auditsH, auditDetailH, agentH, fsH, streamH)
-		return authMW
+		return registerAuthRoutes(mux, userRepo, cfg, sourceH, auditH, auditsH, auditDetailH, agentH, fsH, streamH, readOnly, pgDB, sqliteDB)
 	}
 
 	// Fallback: no auth (no database available)
-	mux.HandleFunc("/api/sources", sourceH.Create)
-	mux.HandleFunc("/api/sources/", sourceH.Get)
+	mux.HandleFunc("/api/sources", ReadOnlyGuard(readOnly, sourceH.Create))
+	mux.HandleFunc("/api/sources/", ReadOnlyGuard(readOnly, sourceH.Get))
 	mux.HandleFunc("/api/stats", auditH.Stats)
-	mux.HandleFunc("/api/audits", auditsH)
-	mux.HandleFunc("/api/audits/", auditDetailH)
+	mux.HandleFunc("/api/audits", ReadOnlyGuard(readOnly, auditsH))
+	mux.HandleFunc("/api/audits/", ReadOnlyGuard(readOnly, auditDetailH))
 	mux.HandleFunc("/api/audits/cache", auditH.CachedAudit)
 	mux.HandleFunc("/api/agents", agentH.List)
-	mux.HandleFunc("/api/filesystem/browse", fsH.Browse)
+	mux.HandleFunc("/api/filesystem/browse", ReadOnlyGuard(readOnly, fsH.Browse))
 	return noopAuth
 }
 
@@ -218,6 +223,8 @@ func registerAuthRoutes(
 	auditsH, auditDetailH http.HandlerFunc,
 	agentH *handler.AgentHandler, fsH *handler.FilesystemHandler,
 	streamH *handler.StreamHandler,
+	readOnly bool,
+	pgDB *sql.DB, sqliteDB *sql.DB,
 ) authWrapper {
 	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret)
 	authH := handler.NewAuthHandler(authSvc)
@@ -234,25 +241,38 @@ func registerAuthRoutes(
 		log.Println("Local mode enabled — auth bypass active")
 	}
 
+	// Feature 0031: API keys for machine-to-machine auth (gated by env flag)
+	if cfg.APIKeysEnabled {
+		registerAPIKeyRoutes(mux, pgDB, sqliteDB, authMW, readOnly)
+	}
+
 	mux.HandleFunc("/api/auth/register", RateLimit(5, time.Minute, authH.Register))
 	mux.HandleFunc("/api/auth/login", RateLimit(10, time.Minute, authH.Login))
 	mux.HandleFunc("/api/auth/local-session", authH.LocalSession)
 	mux.HandleFunc("/api/auth/me", authMW.Require(authH.Me))
 
-	mux.HandleFunc("/api/sources", authMW.Require(sourceH.Create))
-	mux.HandleFunc("/api/sources/", authMW.Require(sourceH.Get))
+	mux.HandleFunc("/api/sources", authMW.Require(ReadOnlyGuard(readOnly, sourceH.Create)))
+	mux.HandleFunc("/api/sources/", authMW.Require(ReadOnlyGuard(readOnly, sourceH.Get)))
 	mux.HandleFunc("/api/stats", authMW.Require(auditH.Stats))
-	mux.HandleFunc("/api/audits", authMW.Require(auditsH))
-	mux.HandleFunc("/api/audits/", authMW.Require(auditDetailH))
+
+	// Per-principal rate limiting on audit creation (Feature 0031 Task 9).
+	apiKeyRPM := 60
+	if v := os.Getenv("VULTURE_APIKEY_RPM"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			apiKeyRPM = n
+		}
+	}
+	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, principalKeyFunc, ReadOnlyGuard(readOnly, auditsH))))
+	mux.HandleFunc("/api/audits/", authMW.Require(ReadOnlyGuard(readOnly, auditDetailH)))
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
-	mux.HandleFunc("/api/filesystem/browse", authMW.Require(fsH.Browse))
+	mux.HandleFunc("/api/filesystem/browse", authMW.Require(ReadOnlyGuard(readOnly, fsH.Browse)))
 
 	log.Println("Auth endpoints enabled")
 	return authMW.Require
 }
 
-func registerMemoryRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper) {
+func registerMemoryRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper, readOnly bool) {
 	var memRepo repository.MemoryRepository
 	if pgDB != nil {
 		memRepo = repository.NewPostgresMemoryRepo(pgDB)
@@ -275,7 +295,7 @@ func registerMemoryRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, st
 	mux.HandleFunc("/api/memories/search", protect(memoryH.Search))
 	mux.HandleFunc("/api/memories/by-path", protect(memoryH.ListByCodebasePath))
 	mux.HandleFunc("/api/memories", protect(memoryH.ListByAudit))
-	mux.HandleFunc("/api/memories/", protect(memoryRouter(memoryH)))
+	mux.HandleFunc("/api/memories/", protect(ReadOnlyGuard(readOnly, memoryRouter(memoryH))))
 }
 
 func memoryRouter(memoryH *handler.MemoryHandler) http.HandlerFunc {
@@ -295,7 +315,7 @@ func memoryRouter(memoryH *handler.MemoryHandler) http.HandlerFunc {
 	}
 }
 
-func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper) {
+func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper, readOnly bool) {
 	var lineageRepo repository.LineageRepository
 	if pgDB != nil {
 		lineageRepo = repository.NewPostgresLineageRepo(pgDB)
@@ -311,7 +331,7 @@ func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, s
 	streamH.SetLineageHandler(lineageH)
 
 	mux.HandleFunc("/api/lineage", protect(lineageH.List))
-	mux.HandleFunc("/api/lineage/", protect(lineageRouter(lineageH)))
+	mux.HandleFunc("/api/lineage/", protect(ReadOnlyGuard(readOnly, lineageRouter(lineageH))))
 }
 
 func lineageRouter(lineageH *handler.LineageHandler) http.HandlerFunc {
@@ -331,7 +351,7 @@ func lineageRouter(lineageH *handler.LineageHandler) http.HandlerFunc {
 	}
 }
 
-func registerProveRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, auditH *handler.AuditHandler, protect authWrapper) {
+func registerProveRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, auditH *handler.AuditHandler, protect authWrapper, readOnly bool) {
 	var proveRepo repository.ProveRepository
 	if pgDB != nil {
 		proveRepo = repository.NewPostgresProveRepo(pgDB)
@@ -357,7 +377,7 @@ func registerProveRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, str
 	log.Printf("Prove routes enabled (%s)", dbType)
 }
 
-func registerDiscoverRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper) {
+func registerDiscoverRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper, readOnly bool) {
 	var discoverRepo repository.DiscoverRepository
 	if pgDB != nil {
 		discoverRepo = repository.NewPostgresDiscoverRepo(pgDB)
@@ -377,7 +397,7 @@ func registerDiscoverRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, 
 	log.Println("Discover routes enabled")
 }
 
-func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, auditSvc service.AuditService, discoverSvc service.DiscoverService, streamH *handler.StreamHandler, protect authWrapper) {
+func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, auditSvc service.AuditService, discoverSvc service.DiscoverService, streamH *handler.StreamHandler, protect authWrapper, readOnly bool) {
 	var pipelineRepo repository.PipelineRepository
 	if pgDB != nil {
 		pipelineRepo = repository.NewPostgresPipelineRepo(pgDB)
@@ -393,7 +413,7 @@ func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, 
 
 	streamH.SetPipelineService(pipelineSvc)
 
-	mux.HandleFunc("/api/pipelines", protect(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/pipelines", protect(ReadOnlyGuard(readOnly, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
 			pipelineH.Create(w, r)
@@ -402,9 +422,19 @@ func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, 
 		default:
 			writeNotFound(w)
 		}
-	}))
+	})))
 	mux.HandleFunc("/api/pipelines/", protect(pipelineH.Get))
 	log.Println("Pipeline routes enabled")
+}
+
+func registerWebhookService(pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler) {
+	// TODO: add PostgresWebhookRepo when postgres_webhook_repo.go is implemented
+	if sqliteDB != nil {
+		webhookRepo := repository.NewSQLiteWebhookRepo(sqliteDB)
+		webhookSvc := service.NewWebhookService(webhookRepo)
+		streamH.SetWebhookService(webhookSvc)
+		log.Println("Webhook service enabled (SQLite)")
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -428,4 +458,28 @@ func openRepo(cfg *config.Config) (repository.AuditRepository, *sql.DB, *sql.DB,
 
 func writeNotFound(w http.ResponseWriter) {
 	http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+}
+
+// registerAPIKeyRoutes wires the /api/api-keys CRUD endpoints and enables
+// API-key bearer-token auth in the AuthMiddleware. Feature 0031.
+func registerAPIKeyRoutes(
+	mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB,
+	authMW *handler.AuthMiddleware, readOnly bool,
+) {
+	var repo repository.APIKeyRepository
+	if pgDB != nil {
+		repo = repository.NewPostgresAPIKeyRepo(pgDB)
+	} else if sqliteDB != nil {
+		repo = repository.NewSQLiteAPIKeyRepo(sqliteDB)
+	}
+	if repo == nil {
+		return
+	}
+	svc := service.NewAPIKeyService(repo)
+	authMW.SetAPIKeyService(svc) // enable vk_... bearer auth
+
+	h := handler.NewAPIKeyHandler(svc)
+	mux.HandleFunc("/api/api-keys", authMW.Require(ReadOnlyGuard(readOnly, h.CreateOrList)))
+	mux.HandleFunc("/api/api-keys/", authMW.Require(ReadOnlyGuard(readOnly, h.Revoke)))
+	log.Println("Feature 0031: API keys enabled — endpoints registered at /api/api-keys")
 }

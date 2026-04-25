@@ -17,10 +17,16 @@ type AuthMiddleware struct {
 	authSvc          service.AuthService
 	streamTokenStore *service.StreamTokenStore
 	localUser        *model.User
+	apiKeySvc        service.APIKeyService // optional; nil when API keys disabled
 }
 
 func NewAuthMiddleware(authSvc service.AuthService) *AuthMiddleware {
 	return &AuthMiddleware{authSvc: authSvc}
+}
+
+// SetAPIKeyService enables API-key bearer-token auth. Safe to call with nil.
+func (m *AuthMiddleware) SetAPIKeyService(svc service.APIKeyService) {
+	m.apiKeySvc = svc
 }
 
 // SetLocalMode enables local mode by resolving and caching the local admin user.
@@ -92,6 +98,22 @@ func (m *AuthMiddleware) extractUser(r *http.Request) *model.User {
 	}
 	if token == "" {
 		return nil
+	}
+	// API key path: "vk_" prefix is cheap discriminator.
+	// Keep separate from JWT — a failed API-key verify must NOT fall through
+	// to JWT, since the two token schemes are not interchangeable.
+	if strings.HasPrefix(token, "vk_") {
+		if m.apiKeySvc == nil {
+			return nil
+		}
+		key, err := m.apiKeySvc.Verify(token)
+		if err != nil || key == nil {
+			return nil
+		}
+		return &model.User{
+			ID:   "apikey:" + key.ID,
+			Role: "apikey",
+		}
 	}
 	user, err := m.authSvc.ValidateToken(token)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/vulture/backend/internal/config"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -46,6 +48,26 @@ func TestWriteError(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&result)
 	if result["error"] != "bad request" {
 		t.Fatalf("expected 'bad request', got %s", result["error"])
+	}
+}
+
+func TestAgentHandler_ListReadOnly(t *testing.T) {
+	h := NewAgentHandler(map[string]config.AgentConfig{
+		"chaos": {Name: "Chaos", Type: "chaos", URL: "http://localhost:8001"},
+	})
+	h.SetReadOnly(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	rec := httptest.NewRecorder()
+	h.List(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var agents []map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&agents)
+	if len(agents) != 0 {
+		t.Fatalf("expected empty agent list in readonly mode, got %d", len(agents))
 	}
 }
 

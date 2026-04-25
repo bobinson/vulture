@@ -26,14 +26,16 @@ type Audit struct {
 	Scores        map[string]int    `json:"scores,omitempty"`
 	ProveResults  []ProveResult     `json:"prove_results,omitempty"`
 	ProveCount    int               `json:"prove_count,omitempty"`
+	WebhookURL    string            `json:"webhook_url,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
 }
 
 type AuditRequest struct {
-	SourceID string          `json:"source_id"`
-	Types    []string        `json:"types"`
-	Config   json.RawMessage `json:"config"`
+	SourceID   string          `json:"source_id"`
+	Types      []string        `json:"types"`
+	Config     json.RawMessage `json:"config"`
+	WebhookURL string          `json:"webhook_url,omitempty"` // Feature 0031: optional callback on completion
 }
 
 // AuditComparison holds the diff between the current audit and the previous one.

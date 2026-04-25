@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type StreamHandler struct {
 	proveSvc         service.ProveService
 	discoverSvc      service.DiscoverService
 	pipelineSvc      service.PipelineService
+	webhookSvc       service.WebhookService
 	streamTokenStore *service.StreamTokenStore
 	lineageH         *LineageHandler
 	proveH           *ProveHandler
@@ -70,6 +72,10 @@ func (h *StreamHandler) SetDiscoverService(svc service.DiscoverService) {
 
 func (h *StreamHandler) SetPipelineService(svc service.PipelineService) {
 	h.pipelineSvc = svc
+}
+
+func (h *StreamHandler) SetWebhookService(svc service.WebhookService) {
+	h.webhookSvc = svc
 }
 
 func (h *StreamHandler) DiscoverService() service.DiscoverService {
@@ -544,6 +550,7 @@ func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source,
 
 	saveFindings(h.auditSvc, audit.ID, findings)
 	completeAudit(h.auditSvc, audit, findings, scores)
+	dispatchWebhook(h.webhookSvc, audit, findings, scores)
 	backfillAndSaveProve(h.proveSvc, findings, proveResults, audit.ID)
 	storeMemoriesAndLineage(h, audit, source, findings)
 
@@ -552,6 +559,8 @@ func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source,
 			log.Printf("[persist] advance pipeline stage: %v", err)
 		}
 	}
+
+	cleanupRunDir(source, audit)
 }
 
 // RunPipelineStage runs agents for a pipeline-created audit in a background goroutine.
@@ -617,6 +626,20 @@ func completeAudit(svc service.AuditService, audit *model.Audit, findings []mode
 	}
 }
 
+func dispatchWebhook(svc service.WebhookService, audit *model.Audit, findings []model.Finding, scores map[string]int) {
+	if svc == nil || audit.WebhookURL == "" {
+		return
+	}
+	payload := &model.WebhookPayload{
+		AuditID:       audit.ID,
+		Status:        string(audit.Status),
+		FindingsCount: len(findings),
+		Scores:        scores,
+		CompletedAt:   *audit.CompletedAt,
+	}
+	svc.DeliverAsync(audit.ID, audit.WebhookURL, payload)
+}
+
 func backfillAndSaveProve(proveSvc service.ProveService, findings []model.Finding, proveResults []model.ProveResult, auditID string) {
 	if len(proveResults) == 0 {
 		return
@@ -643,6 +666,25 @@ func backfillProveFingerprints(findings []model.Finding, proveResults []model.Pr
 		if proveResults[i].Fingerprint == "" {
 			proveResults[i].Fingerprint = fpMap[proveResults[i].FindingID]
 		}
+	}
+}
+
+// cleanupRunDir removes a per-run source directory after audit completion.
+// Gated by VULTURE_CLEANUP_RUN_DIRS=true so local dev keeps sources for debugging.
+// Only removes directories whose path contains "run-" as a safety guard.
+func cleanupRunDir(source *model.Source, audit *model.Audit) {
+	if source == nil || os.Getenv("VULTURE_CLEANUP_RUN_DIRS") != "true" {
+		return
+	}
+	runDir := service.SourceRunDir(
+		filepath.Join(os.TempDir(), "vulture-sources"),
+		source.ID, audit.ID,
+	)
+	if !strings.Contains(runDir, "run-") {
+		return
+	}
+	if err := os.RemoveAll(runDir); err != nil {
+		log.Printf("[cleanup] remove run dir %s: %v", runDir, err)
 	}
 }
 

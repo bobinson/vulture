@@ -14,8 +14,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DBPath != "/data/vulture.db" {
 		t.Fatalf("expected default db path, got %s", cfg.DBPath)
 	}
-	if len(cfg.Agents) != 8 {
-		t.Fatalf("expected 8 agents, got %d", len(cfg.Agents))
+	if len(cfg.Agents) != len(AllAgents) {
+		t.Fatalf("expected %d agents, got %d", len(AllAgents), len(cfg.Agents))
 	}
 }
 
@@ -127,6 +127,22 @@ func TestLoadLLMConfigDefaults(t *testing.T) {
 	}
 	if cfg.LLMCtxSize != "" {
 		t.Fatalf("expected empty LLMCtxSize default, got %s", cfg.LLMCtxSize)
+	}
+}
+
+func TestLoadDefaults_ReadOnlyFalse(t *testing.T) {
+	t.Setenv("VULTURE_READONLY", "")
+	cfg := Load()
+	if cfg.ReadOnly {
+		t.Fatal("expected ReadOnly=false by default")
+	}
+}
+
+func TestLoadFromEnv_ReadOnlyTrue(t *testing.T) {
+	t.Setenv("VULTURE_READONLY", "true")
+	cfg := Load()
+	if !cfg.ReadOnly {
+		t.Fatal("expected ReadOnly=true when VULTURE_READONLY=true")
 	}
 }
 

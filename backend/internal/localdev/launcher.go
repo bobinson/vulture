@@ -275,10 +275,12 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 
 func (l *Launcher) startBackend(ctx context.Context) error {
 	dbPath := filepath.Join(l.cfg.DataDir, "vulture.db")
+	// If VULTURE_DB_DSN is set (e.g. Neon), use Postgres; otherwise SQLite.
+	dbDSN := os.Getenv("VULTURE_DB_DSN")
 	env := []string{
 		"VULTURE_PORT=" + l.cfg.BackendPort,
 		"VULTURE_DB_PATH=" + dbPath,
-		"VULTURE_DB_DSN=",
+		"VULTURE_DB_DSN=" + dbDSN,
 		"VULTURE_LOCAL_MODE=true",
 	}
 	// Set agent URL env vars from the registry
@@ -294,6 +296,20 @@ func (l *Launcher) startBackend(ctx context.Context) error {
 	}
 	if embModel := os.Getenv("VULTURE_EMBEDDING_MODEL"); embModel != "" {
 		env = append(env, "VULTURE_EMBEDDING_MODEL="+embModel)
+	}
+	// Pass through optional feature flags
+	for _, key := range []string{
+		"VULTURE_JWT_SECRET",
+		"VULTURE_API_KEYS_ENABLED",
+		"VULTURE_READONLY",
+		"VULTURE_WEBHOOK_SECRET",
+		"ANTHROPIC_API_KEY",
+		"GEMINI_API_KEY",
+		"OPENAI_BASE_URL",
+	} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
 	}
 
 	backendDir := filepath.Join(l.cfg.ProjectRoot, "backend")

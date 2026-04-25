@@ -111,11 +111,12 @@ func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest)
 		return nil, fmt.Errorf("url is required for git source")
 	}
 	id := generateID(req.URL)
-	destPath := filepath.Join(os.TempDir(), "vulture-sources", id)
+	baseDir := filepath.Join(os.TempDir(), "vulture-sources")
+	destPath := SourceRunDir(baseDir, id, req.RunID)
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
-	if err := gitutil.Clone(ctx, req.URL, destPath, 1); err != nil {
+	if err := gitutil.Clone(ctx, req.URL, destPath, 1, req.GitCredentials); err != nil {
 		return nil, fmt.Errorf("clone: %w", err)
 	}
 	fileCount, err := fileutil.CountFiles(destPath)

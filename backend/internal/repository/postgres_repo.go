@@ -110,8 +110,8 @@ func (r *PostgresRepo) CreateAudit(audit *model.Audit) error {
 	}
 	scoresJSON, _ := json.Marshal(audit.Scores)
 	_, err := r.db.Exec(
-		`INSERT INTO audits (id, source_id, types, config, status, scores, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		audit.ID, audit.SourceID, pq.Array(audit.Types), cfgStr, string(audit.Status), string(scoresJSON), audit.CreatedAt,
+		`INSERT INTO audits (id, source_id, types, config, status, scores, webhook_url, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		audit.ID, audit.SourceID, pq.Array(audit.Types), cfgStr, string(audit.Status), string(scoresJSON), audit.WebhookURL, audit.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert audit: %w", err)
@@ -121,12 +121,12 @@ func (r *PostgresRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *PostgresRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), COALESCE(a.webhook_url, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = $1`, id)
 	var audit model.Audit
 	var cfgStr, scoresStr string
 	var completedAt sql.NullTime
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.CreatedAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.CreatedAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

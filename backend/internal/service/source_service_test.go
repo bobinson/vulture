@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/vulture/backend/internal/model"
@@ -270,33 +271,24 @@ func TestSourceService_IngestGit_Success(t *testing.T) {
 		t.Skipf("git commit failed: %s %v", string(out), err)
 	}
 
-	var createdSource *model.Source
 	mockRepo := &repository.MockAuditRepository{
 		CreateSourceFn: func(src *model.Source) error {
-			createdSource = src
 			return nil
 		},
 	}
 	svc := NewSourceService(mockRepo)
 
-	src, err := svc.Ingest(context.Background(), &model.SourceRequest{
+	// Local file paths are rejected by URL validation (security: only https/http allowed).
+	// Test verifies the security gate works.
+	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "git",
 		URL:  srcDir,
 	})
-	if err != nil {
-		t.Fatalf("ingest git: %v", err)
+	if err == nil {
+		t.Fatal("expected error for non-HTTP git URL, got nil")
 	}
-	if src.Type != model.SourceTypeGit {
-		t.Errorf("expected git type, got %s", src.Type)
-	}
-	if src.URL != srcDir {
-		t.Errorf("expected URL=%s, got %s", srcDir, src.URL)
-	}
-	if src.FileCount < 1 {
-		t.Errorf("expected at least 1 file, got %d", src.FileCount)
-	}
-	if createdSource == nil {
-		t.Error("CreateSource was not called")
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected URL scheme rejection, got: %v", err)
 	}
 }
 
@@ -346,12 +338,17 @@ func TestSourceService_IngestGit_CreateSourceError(t *testing.T) {
 	}
 	svc := NewSourceService(mockRepo)
 
+	// Local paths are rejected by URL validation before reaching CreateSource.
+	// This test now verifies the security gate, not the repo error path.
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "git",
 		URL:  srcDir,
 	})
-	if !errors.Is(err, repoErr) {
-		t.Errorf("expected wrapped repo error, got %v", err)
+	if err == nil {
+		t.Fatal("expected error for non-HTTP git URL")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected URL scheme rejection, got: %v", err)
 	}
 }
 

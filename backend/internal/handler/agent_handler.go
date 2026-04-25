@@ -10,14 +10,24 @@ import (
 )
 
 type AgentHandler struct {
-	agents map[string]config.AgentConfig
+	agents   map[string]config.AgentConfig
+	readOnly bool
 }
 
 func NewAgentHandler(agents map[string]config.AgentConfig) *AgentHandler {
 	return &AgentHandler{agents: agents}
 }
 
+// SetReadOnly enables read-only mode. When true, List returns an empty
+// agent list without probing agent health endpoints.
+func (h *AgentHandler) SetReadOnly(v bool) { h.readOnly = v }
+
 func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
+	if h.readOnly {
+		writeJSON(w, http.StatusOK, []model.AgentInfo{})
+		return
+	}
+
 	type result struct {
 		key    string
 		status string

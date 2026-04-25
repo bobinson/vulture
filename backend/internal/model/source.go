@@ -22,8 +22,24 @@ type Source struct {
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
+// GitCredentials carries per-source git auth. Never persisted.
+type GitCredentials struct {
+	Type  string `json:"type"`  // "token" or "ssh_key"
+	Value string `json:"value"` // token string or PEM-encoded SSH private key
+}
+
+// Mask returns a safe representation for logging (reveals Type but never Value).
+func (c *GitCredentials) Mask() string {
+	if c == nil {
+		return "(none)"
+	}
+	return "(type=" + c.Type + " value=***)"
+}
+
 type SourceRequest struct {
-	Type string `json:"type"`
-	URL  string `json:"url,omitempty"`
-	Path string `json:"path,omitempty"`
+	Type           string          `json:"type"`
+	URL            string          `json:"url,omitempty"`
+	Path           string          `json:"path,omitempty"`
+	RunID          string          `json:"run_id,omitempty"`
+	GitCredentials *GitCredentials `json:"git_credentials,omitempty"`
 }

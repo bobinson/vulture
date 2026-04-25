@@ -20,6 +20,8 @@ type Config struct {
 	DBDSN          string                 `json:"db_dsn"`
 	JWTSecret      string                 `json:"jwt_secret"`
 	LocalMode      bool                   `json:"local_mode"`
+	ReadOnly       bool                   `json:"read_only"`
+	APIKeysEnabled bool                   `json:"api_keys_enabled"`
 	LLMModel       string                 `json:"llm_model"`
 	LLMCtxSize     string                 `json:"llm_ctx_size"`
 	EmbeddingURL   string                 `json:"embedding_url"`
@@ -46,6 +48,8 @@ func Load() *Config {
 		DBDSN:          envOrDefault("VULTURE_DB_DSN", ""),
 		JWTSecret:      resolve(ini, "VULTURE_JWT_SECRET", "auth", "jwt_secret", ""),
 		LocalMode:      os.Getenv("VULTURE_LOCAL_MODE") == "true",
+		ReadOnly:       os.Getenv("VULTURE_READONLY") == "true",
+		APIKeysEnabled: os.Getenv("VULTURE_API_KEYS_ENABLED") == "true",
 		LLMModel:       resolve(ini, "VULTURE_LLM_MODEL", "llm", "model", ""),
 		LLMCtxSize:     resolve(ini, "VULTURE_LLM_CTX_SIZE", "llm", "ctx_size", ""),
 		EmbeddingURL:   resolve(ini, "VULTURE_EMBEDDING_URL", "embedding", "url", ""),

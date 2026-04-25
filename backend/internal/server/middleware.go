@@ -130,3 +130,50 @@ func RateLimit(limit int, window time.Duration, next http.HandlerFunc) http.Hand
 		next(w, r)
 	}
 }
+
+// RateLimitByKey limits requests by the authenticated principal (API key or user ID).
+// keyFunc extracts the rate-limit key from the request; if it returns "" the
+// middleware falls back to IP-based limiting.
+func RateLimitByKey(rpm int, keyFunc func(*http.Request) string, next http.HandlerFunc) http.HandlerFunc {
+	rl := newRateLimiter(rpm, time.Minute)
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := keyFunc(r)
+		if key == "" {
+			key = clientIP(r)
+		}
+		if !rl.allow(key) {
+			http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// clientIP extracts the client IP, preferring X-Forwarded-For when present.
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+	}
+	return r.RemoteAddr
+}
+
+// principalKeyFunc returns a key-extraction function that derives the
+// rate-limit key from the Authorization header. API key tokens (vk_ prefix)
+// use the token itself; other Bearer tokens use "jwt:<token-prefix>" to
+// provide a stable per-user key without needing access to the decoded JWT.
+// Returns "" when no Authorization header is present (triggers IP fallback).
+func principalKeyFunc(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if h == "" {
+		return ""
+	}
+	token := strings.TrimPrefix(h, "Bearer ")
+	if token == h {
+		return "" // not a Bearer token
+	}
+	if strings.HasPrefix(token, "vk_") {
+		return "apikey:" + token
+	}
+	// JWT tokens: use the full token as key (stable per session).
+	return "jwt:" + token
+}
