@@ -13,6 +13,7 @@ from typing import Any
 from agents import function_tool
 
 from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
     is_generated_file,
     is_test_file,
     read_file_lines,
@@ -111,6 +112,13 @@ def _scan_line(
     findings: list[dict],
 ) -> None:
     """Scan a single line for dangerous-function calls."""
+    # Pure comment lines (Python `#`, Go/JS/Java/C++ `//`, C-style `/*` or `*`,
+    # HTML `<!--`) cannot themselves invoke dangerous APIs — the matched
+    # tokens are documentation. This prevents the detector from flagging
+    # security-fix commentary that mentions os.system / strcpy / eval by
+    # name. (VLT-4768 hardening.)
+    if COMMENT_INDICATORS.match(line):
+        return
     classification = _classify_match(line)
     if classification is None:
         return
