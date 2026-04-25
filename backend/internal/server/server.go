@@ -174,6 +174,8 @@ func registerAPIRoutes(
 		userRepo = repository.NewPostgresUserRepo(pgDB)
 	} else if sqliteDB != nil {
 		userRepo = repository.NewSQLiteUserRepo(sqliteDB)
+	}
+	if userRepo != nil && cfg.LocalMode {
 		seedLocalUser(userRepo, cfg.JWTSecret)
 	}
 
