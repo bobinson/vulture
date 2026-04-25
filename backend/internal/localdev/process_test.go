@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/vulture/backend/pkg/agentregistry"
 )
 
 func TestManagerStartAndStop(t *testing.T) {
@@ -57,7 +59,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.FrontendPort != "23001" {
 		t.Errorf("expected 23001, got %s", cfg.FrontendPort)
 	}
-	if len(cfg.AgentPorts) != 8 {
-		t.Errorf("expected 8 agent ports, got %d", len(cfg.AgentPorts))
+	expectedAgentCount := len(agentregistry.AllAgents)
+	if len(cfg.AgentPorts) != expectedAgentCount {
+		t.Errorf("expected %d agent ports (matching agentregistry.AllAgents), got %d",
+			expectedAgentCount, len(cfg.AgentPorts))
 	}
 }
