@@ -30,16 +30,37 @@ const (
 var defaultAPIURL = cliResolve("ports", "backend", "28080", "http://localhost:")
 var defaultFrontendURL = cliResolve("ports", "frontend_host", "23001", "http://localhost:")
 
+// backendInDocker reports whether the vulture-backend-1 container is
+// currently RUNNING. A stopped container still returns its old mount via
+// `docker inspect`, which is misleading when the user has switched to
+// bare-metal dev mode. When this is false, callers should treat the
+// backend as a host process with full filesystem access (no path
+// translation, no remount).
+func backendInDocker() bool {
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}",
+		"vulture-backend-1").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
+
 // discoverSourceDir finds the host path mapped to /mnt/source in the backend
-// container. Prefers the live Docker mount (source of truth), falls back to
-// $VULTURE_SOURCE_DIR, then to the project .env file.
+// container — but only when the container is actually running. Falls back
+// to $VULTURE_SOURCE_DIR or the project .env file when no live mount is
+// available. Returns "" when the backend is bare-metal (no docker mount).
 func discoverSourceDir() string {
-	// Primary: introspect the live backend container — this is what's actually mounted.
-	if out, err := exec.Command("docker", "inspect", "-f",
-		"{{range .Mounts}}{{if eq .Destination \"/mnt/source\"}}{{.Source}}{{end}}{{end}}",
-		"vulture-backend-1").Output(); err == nil {
-		if src := strings.TrimSpace(string(out)); src != "" {
-			return src
+	// Primary: only trust the docker mount when the container is RUNNING.
+	// A stopped container's `docker inspect` returns its stale config
+	// (last mount before stop) — misleading when bare-metal dev mode took
+	// over the port.
+	if backendInDocker() {
+		if out, err := exec.Command("docker", "inspect", "-f",
+			"{{range .Mounts}}{{if eq .Destination \"/mnt/source\"}}{{.Source}}{{end}}{{end}}",
+			"vulture-backend-1").Output(); err == nil {
+			if src := strings.TrimSpace(string(out)); src != "" {
+				return src
+			}
 		}
 	}
 	// Fallback: explicit env var
@@ -66,8 +87,14 @@ func discoverSourceDir() string {
 
 // translateLocalPath converts a host absolute path to its container-visible
 // equivalent (/mnt/source/<rel>) when the backend runs in Docker. Returns
-// the original path if translation isn't possible.
+// the original path if translation isn't possible OR if the backend is
+// running bare-metal (which has full filesystem access and doesn't need
+// the /mnt/source rewrite).
 func translateLocalPath(hostPath, apiURL string) string {
+	if !backendInDocker() {
+		// Bare-metal backend: no docker mount, send the raw host path.
+		return hostPath
+	}
 	sourceDir := discoverSourceDir()
 	if sourceDir == "" {
 		return hostPath
@@ -127,6 +154,11 @@ func findComposeFile() string {
 // file or directory" surfacing when users scan paths outside the project
 // root that was originally mounted.
 func remountBackendIfNeeded(target, apiURL string) error {
+	if !backendInDocker() {
+		// Bare-metal backend: no docker bind-mount to manage; the
+		// host backend can stat any path directly. No-op.
+		return nil
+	}
 	current := discoverSourceDir()
 	if current == "" {
 		// Backend probably runs natively (no docker mount); nothing to remount.
