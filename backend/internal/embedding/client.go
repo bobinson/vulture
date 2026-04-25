@@ -26,7 +26,20 @@ type Client struct {
 	http      *http.Client
 	dimOnce   sync.Once
 	dimension int // learned dimension from first successful Embed call
+
+	// VLT-3890 hardening: bounded exponential-backoff retry on outbound
+	// embedding-API calls. Transient failures (network errors, 5xx, 429
+	// rate-limit) are retried up to retryMaxAttempts times with delay =
+	// retryBaseDelay * 2^attempt. Non-retryable status codes (any other
+	// 4xx) return immediately. Default 3 attempts × 100ms base.
+	retryMaxAttempts int
+	retryBaseDelay   time.Duration
 }
+
+const (
+	defaultRetryMaxAttempts = 3
+	defaultRetryBaseDelay   = 100 * time.Millisecond
+)
 
 // New creates an embedding client. Falls back gracefully if no API key is set
 // and no local endpoint is configured.
@@ -50,12 +63,70 @@ func New() *Client {
 	local := isLocalEndpoint(baseURL)
 
 	return &Client{
-		apiKey:  key,
-		baseURL: baseURL,
-		model:   model,
-		local:   local,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		apiKey:           key,
+		baseURL:          baseURL,
+		model:            model,
+		local:            local,
+		http:             &http.Client{Timeout: 30 * time.Second},
+		retryMaxAttempts: defaultRetryMaxAttempts,
+		retryBaseDelay:   defaultRetryBaseDelay,
 	}
+}
+
+// doWithRetry POSTs `body` to `url` (with optional Authorization) and
+// retries the request on transient failures. Each attempt builds a fresh
+// http.Request so the body is replayable. Returns the final response or
+// the wrapped error from the last attempt.
+//
+// Retry policy:
+//   - Network error (err != nil)               → retry
+//   - HTTP 5xx (any 500-class status)          → retry
+//   - HTTP 429 Too Many Requests               → retry
+//   - HTTP 4xx other than 429 (client error)   → return immediately
+//   - HTTP 2xx                                  → return immediately
+//
+// Backoff is `retryBaseDelay * 2^(attempt-1)` (e.g. 100ms, 200ms, 400ms).
+func (c *Client) doWithRetry(url string, body []byte) (*http.Response, error) {
+	maxAttempts := c.retryMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultRetryMaxAttempts
+	}
+	baseDelay := c.retryBaseDelay
+	if baseDelay <= 0 {
+		baseDelay = defaultRetryBaseDelay
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(baseDelay << (attempt - 2)) // 100, 200, 400ms
+		}
+
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if c.apiKey != "" && !c.local {
+			req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// Retryable status: drain & close, record reason, loop.
+		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+			continue
+		}
+		// Success or non-retryable client error: return as-is for caller to handle.
+		return resp, nil
+	}
+	return nil, fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // Available reports whether the embedding client is configured and ready.
@@ -103,16 +174,7 @@ func (c *Client) Embed(text string) ([]float32, error) {
 		return nil, fmt.Errorf("marshal embedding request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create embedding request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" && !c.local {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithRetry(c.baseURL+"/embeddings", body)
 	if err != nil {
 		return nil, fmt.Errorf("embedding API call: %w", err)
 	}
@@ -165,16 +227,7 @@ func (c *Client) EmbedBatch(texts []string) ([][]float32, error) {
 		return nil, fmt.Errorf("marshal batch request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create batch request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" && !c.local {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithRetry(c.baseURL+"/embeddings", body)
 	if err != nil {
 		return nil, fmt.Errorf("batch embedding API call: %w", err)
 	}

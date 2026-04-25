@@ -1,6 +1,8 @@
 package embedding
 
 import (
+	"sync/atomic"
+	"time"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -377,5 +379,143 @@ func TestEmbedBatch_InvalidResponseJSON(t *testing.T) {
 	_, err := c.EmbedBatch([]string{"text"})
 	if err == nil {
 		t.Fatal("expected error on invalid JSON")
+	}
+}
+
+// --- VLT-3890 hardening: bounded retry+backoff on outbound HTTP --------------
+//
+// Embed and EmbedBatch send HTTPS requests to OpenAI/Ollama embedding
+// endpoints. The previous implementation called c.http.Do(req) once and
+// surfaced any error to callers, including transient failures (network
+// blips, 5xx, rate-limit 429). These tests pin the contract that
+// transient errors are automatically retried with bounded exponential
+// backoff before the final error is returned.
+
+func TestEmbed_RetriesOn503ThenSucceeds(t *testing.T) {
+	var attempts int32
+	expectedVec := []float32{0.1, 0.2}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&attempts, 1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(embeddingResponse{
+			Data: []struct {
+				Embedding []float32 `json:"embedding"`
+			}{{Embedding: expectedVec}},
+		})
+	}))
+	defer server.Close()
+
+	c := &Client{apiKey: "sk-test", baseURL: server.URL, model: "m", http: server.Client()}
+	c.retryBaseDelay = time.Millisecond // keep test fast
+
+	vec, err := c.Embed("text")
+	if err != nil {
+		t.Fatalf("unexpected error after retries: %v", err)
+	}
+	if len(vec) != 2 {
+		t.Fatalf("expected 2 dims, got %d", len(vec))
+	}
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Fatalf("expected 3 attempts (2 fail + 1 success), got %d", got)
+	}
+}
+
+func TestEmbed_RetriesOn429ThenSucceeds(t *testing.T) {
+	var attempts int32
+	expectedVec := []float32{0.5}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(embeddingResponse{
+			Data: []struct {
+				Embedding []float32 `json:"embedding"`
+			}{{Embedding: expectedVec}},
+		})
+	}))
+	defer server.Close()
+
+	c := &Client{apiKey: "sk-test", baseURL: server.URL, model: "m", http: server.Client()}
+	c.retryBaseDelay = time.Millisecond
+
+	if _, err := c.Embed("text"); err != nil {
+		t.Fatalf("expected retry on 429 to succeed, got %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("expected 2 attempts on 429-then-200, got %d", got)
+	}
+}
+
+func TestEmbed_DoesNotRetryOn400(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	c := &Client{apiKey: "sk-test", baseURL: server.URL, model: "m", http: server.Client()}
+	c.retryBaseDelay = time.Millisecond
+
+	_, err := c.Embed("text")
+	if err == nil {
+		t.Fatal("expected error on 400")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("expected exactly 1 attempt on 400 (not retryable), got %d", got)
+	}
+}
+
+func TestEmbed_GivesUpAfterMaxAttempts(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	c := &Client{apiKey: "sk-test", baseURL: server.URL, model: "m", http: server.Client()}
+	c.retryBaseDelay = time.Millisecond
+
+	_, err := c.Embed("text")
+	if err == nil {
+		t.Fatal("expected final error after all retries fail")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Fatalf("expected 3 total attempts (max), got %d", got)
+	}
+}
+
+func TestEmbedBatch_RetriesOn503(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(embeddingResponse{
+			Data: []struct {
+				Embedding []float32 `json:"embedding"`
+			}{{Embedding: []float32{0.1}}, {Embedding: []float32{0.2}}},
+		})
+	}))
+	defer server.Close()
+
+	c := &Client{apiKey: "sk-test", baseURL: server.URL, model: "m", http: server.Client()}
+	c.retryBaseDelay = time.Millisecond
+
+	vecs, err := c.EmbedBatch([]string{"a", "b"})
+	if err != nil {
+		t.Fatalf("expected EmbedBatch to retry on 503: %v", err)
+	}
+	if len(vecs) != 2 {
+		t.Fatalf("expected 2 vectors back, got %d", len(vecs))
 	}
 }
