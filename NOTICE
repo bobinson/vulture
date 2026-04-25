@@ -1,0 +1,42 @@
+Vulture
+Copyright 2026 Vulture maintainers
+
+This product includes software developed by Vulture contributors,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product redistributes the following third-party content:
+
+  - MITRE CWE™ (Common Weakness Enumeration)
+    Copyright (c) 2006-2025, The MITRE Corporation. All rights reserved.
+    Source:        https://cwe.mitre.org/
+    Terms of Use:  https://cwe.mitre.org/about/termsofuse.html
+    Distributed in: agents/cwe/cwe_agent/data/cwe_catalog.json
+                    (a derivative lookup JSON; the upstream XML, PDF, and
+                    XSD are not redistributed — see the *.md pointer files
+                    under docs/features/0014_cwe_version_4.19.1/ and
+                    docs/features/0010_cwe_audit/ for fetch instructions).
+
+  - OWASP Application Security Verification Standard (ASVS) v5.0.0
+    Copyright (c) The OWASP Foundation, contributors.
+    Licensed under Creative Commons Attribution-ShareAlike 4.0
+    International (CC BY-SA 4.0).
+    License:       https://creativecommons.org/licenses/by-sa/4.0/
+    Source:        https://github.com/OWASP/ASVS
+    Distributed in: agents/asvs/asvs_agent/data/asvs_source.json
+                    agents/asvs/asvs_agent/data/asvs_catalog.json
+                    agents/asvs/asvs_agent/data/asvs_cwe_crosswalk.json
+                    agents/asvs/asvs_agent/data/asvs_detectability.json
+    Modifications: transformed to lookup JSON; CWE crosswalk added;
+                   detectability classification added (static / runtime /
+                   policy). The redistributed data files in this directory
+                   inherit CC BY-SA 4.0; see
+                   agents/asvs/asvs_agent/data/LICENSE.md for the per-file
+                   license declaration and the ShareAlike obligation.
+
+  - NIST SP 800-218 Secure Software Development Framework (SSDF)
+    Public domain (NIST publication).
+    Source:        https://csrc.nist.gov/Projects/ssdf
+    Distributed in: agents/ssdf/ssdf_agent/practice_groups/
+
+Full per-source attribution, modification summaries, and license texts
+are in THIRD_PARTY_LICENSES.md.

@@ -269,6 +269,19 @@ vulture watch <audit-id>
 
 Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development workflow, coding standards, and pull request requirements.
 
+## Attributions
+
+Vulture redistributes the following third-party content. Full notices are in
+[NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+- **MITRE CWE™** — Copyright © MITRE Corporation, distributed under the
+  [CWE Terms of Use](https://cwe.mitre.org/about/termsofuse.html).
+- **OWASP ASVS v5.0.0** — Copyright © OWASP Foundation, distributed under
+  [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The data
+  files under `agents/asvs/asvs_agent/data/` inherit CC BY-SA 4.0; see the
+  per-directory [LICENSE.md](agents/asvs/asvs_agent/data/LICENSE.md).
+- **NIST SSDF (SP 800-218)** — public domain.
+
 ## License
 
 This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
