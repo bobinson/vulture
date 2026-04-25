@@ -307,6 +307,65 @@ class TestMalloc:
         result = check_malloc(str(tmp_path))
         assert result["findings"] == []
 
+    # --- VLT-4421 hardening: Go-specific append() pattern must not fire on
+    # other languages. Python `list.append()` is the most common operation
+    # in the language and must NOT be classified as DO-178C dynamic
+    # allocation; the Go pattern is meant for Go's `append([]T, x)` /
+    # `make([]T, n)` semantics only.
+
+    def test_no_finding_for_python_list_append(self, tmp_path):
+        code = (
+            "def collect(items):\n"
+            "    out = []\n"
+            "    for x in items:\n"
+            "        out.append(x)\n"          # Python list.append — NOT heap alloc
+            "    return out\n"
+        )
+        (tmp_path / "v.py").write_text(code)
+        result = check_malloc(str(tmp_path))
+        assert result["findings"] == [], (
+            f"Python list.append must not trigger DO-178C malloc finding, got: {result['findings']}"
+        )
+
+    def test_no_finding_for_javascript_array_append(self, tmp_path):
+        # JS doesn't have an `append(` method on arrays out of the box, but
+        # users define `.append()` on custom classes. The Go pattern must
+        # not match in `.js`/`.ts` files either.
+        code = "function add(arr, x){\n    arr.append(x);\n}\n"
+        (tmp_path / "v.js").write_text(code)
+        result = check_malloc(str(tmp_path))
+        assert result["findings"] == []
+
+    def test_go_append_still_fires(self, tmp_path):
+        code = (
+            "package main\n"
+            "func collect(in []int) []int {\n"
+            "    out := []int{}\n"
+            "    for _, x := range in {\n"
+            "        out = append(out, x)\n"   # Go append — IS dynamic alloc
+            "    }\n"
+            "    return out\n"
+            "}\n"
+        )
+        (tmp_path / "main.go").write_text(code)
+        result = check_malloc(str(tmp_path))
+        assert len(result["findings"]) >= 1, "Go `append(out, x)` must still fire"
+        assert result["findings"][0]["category"] == "malloc"
+
+    def test_python_C_extension_calls_still_fire_in_C_files(self, tmp_path):
+        # If someone writes a .c file with Python C-extension code that
+        # actually calls malloc(), the C pattern must still fire (the
+        # language gate only narrows the *Go-flavoured* pattern).
+        code = (
+            "#include <stdlib.h>\n"
+            "void f() {\n"
+            "    char *buf = malloc(64);\n"
+            "}\n"
+        )
+        (tmp_path / "ext.c").write_text(code)
+        result = check_malloc(str(tmp_path))
+        assert len(result["findings"]) >= 1
+
 
 class TestMallocContainers:
     """Detect dynamic containers."""

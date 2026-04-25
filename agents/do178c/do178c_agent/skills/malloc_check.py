@@ -25,6 +25,12 @@ _NEW_KEYWORD = re.compile(
 )
 
 # Go dynamic allocation: make([]...) or append().
+#
+# VLT-4421 hardening: this pattern is Go-specific and MUST be gated to
+# `.go` files only. `(?<!\w)append\s*\(` matches Python `list.append(`
+# (and JS `arr.append(`, etc.) — those are NOT heap allocations in the
+# DO-178C sense. Without the language gate the Python half of any
+# codebase produces a flood of false-positive findings.
 _GO_ALLOC = re.compile(
     r"(?:make\s*\(\s*\[|(?<!\w)append\s*\()"
 )
@@ -34,7 +40,12 @@ _CONTAINER = re.compile(
     r"(?<!\w)(?:ArrayList|LinkedList|HashMap|vector)\s*[<(]"
 )
 
-_ALL_PATTERNS: list[re.Pattern[str]] = [_C_ALLOC, _NEW_KEYWORD, _GO_ALLOC, _CONTAINER]
+# Patterns that fire regardless of language extension (the call shape is
+# unambiguous across languages or has the same heap-allocation semantics).
+_LANGUAGE_AGNOSTIC_PATTERNS: list[re.Pattern[str]] = [_C_ALLOC, _NEW_KEYWORD, _CONTAINER]
+
+# Per-language patterns: only run when the file's suffix is in the set.
+_GO_FILE_SUFFIXES: frozenset[str] = frozenset({".go"})
 
 
 def check_malloc(source_path: str) -> dict:
@@ -66,12 +77,25 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         _check_alloc(file_path, line, line_num, line_list, findings)
 
 
+def _patterns_for_file(file_path: Path) -> list[re.Pattern[str]]:
+    """Return the patterns that apply to this file's language.
+
+    Language-agnostic patterns (malloc, new, ArrayList) always run.
+    The Go-flavoured pattern (make([]T) / append()) is added only for
+    `.go` files so Python `list.append(...)` and JS `arr.append(...)`
+    don't produce false-positive DO-178C malloc findings.
+    """
+    if file_path.suffix.lower() in _GO_FILE_SUFFIXES:
+        return [*_LANGUAGE_AGNOSTIC_PATTERNS, _GO_ALLOC]
+    return _LANGUAGE_AGNOSTIC_PATTERNS
+
+
 def _check_alloc(
     file_path: Path, line: str, line_num: int,
     lines: list[str], findings: list[dict],
 ) -> None:
     """Flag any dynamic allocation pattern on this line."""
-    for pattern in _ALL_PATTERNS:
+    for pattern in _patterns_for_file(file_path):
         if pattern.search(line):
             findings.append({
                 "severity": "high",
