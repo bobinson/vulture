@@ -7,9 +7,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// pythonModuleNameRE matches the canonical Python module/package identifier
+// grammar: a sequence of identifiers separated by dots, where each identifier
+// is [A-Za-z_][A-Za-z0-9_]*. Used by checkPythonModule to reject inputs that
+// could inject Python source via the `-c` argument (VLT-4152 hardening).
+var pythonModuleNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`)
+
+// isValidPythonModule reports whether s is a syntactically valid Python
+// module name (one or more identifiers joined by dots). It does NOT verify
+// that the module exists.
+func isValidPythonModule(s string) bool {
+	return pythonModuleNameRE.MatchString(s)
+}
 
 // Detect checks for required tools and returns their paths.
 type Detect struct {
@@ -124,7 +138,17 @@ func findPython(projectRoot string) string {
 }
 
 // checkPythonModule checks if a Python module is importable.
+//
+// The module name is validated against the canonical Python identifier
+// grammar before being embedded into the `-c` script argument. exec.Command
+// does not invoke a shell, so OS-level shell metacharacters cannot escape —
+// but a malicious module string CAN contain Python source that the
+// interpreter would execute (e.g. "os; os.system('rm -rf /')"). Reject any
+// non-conforming input before invoking Python (VLT-4152 hardening).
 func checkPythonModule(pythonPath, module string) bool {
+	if !isValidPythonModule(module) {
+		return false
+	}
 	cmd := exec.Command(pythonPath, "-c", "import "+module)
 	return cmd.Run() == nil
 }
