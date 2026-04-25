@@ -72,6 +72,14 @@ export function AuditComparisonView({ comparison }: AuditComparisonViewProps) {
               <div className="space-y-1.5">
                 {comparison.new_findings!.map((f) => (
                   <div key={f.fingerprint} className="flex items-center gap-2 text-[12px]">
+                    {f.ref && (
+                      <span
+                        className="text-[10px] font-mono font-semibold text-foreground shrink-0"
+                        title={`Lineage ref ${f.ref} \u2014 fingerprint ${f.fingerprint}`}
+                      >
+                        {f.ref}
+                      </span>
+                    )}
                     <SeverityBadge severity={f.severity} />
                     <span className="text-foreground truncate">{f.title}</span>
                     <span className="text-[10px] font-mono text-muted-light">{f.file_path}</span>
@@ -87,6 +95,14 @@ export function AuditComparisonView({ comparison }: AuditComparisonViewProps) {
                     <svg className="w-3.5 h-3.5 text-success shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
+                    {f.ref && (
+                      <span
+                        className="text-[10px] font-mono font-semibold text-[#22C55E] shrink-0"
+                        title={`Lineage ref ${f.ref} \u2014 fingerprint ${f.fingerprint}`}
+                      >
+                        {f.ref}
+                      </span>
+                    )}
                     <SeverityBadge severity={f.severity} />
                     <span className="line-through truncate">{f.title}</span>
                     <span className="text-[10px] font-mono text-muted-light">{f.file_path}</span>
@@ -99,6 +115,14 @@ export function AuditComparisonView({ comparison }: AuditComparisonViewProps) {
               <div className="space-y-1.5">
                 {comparison.changed_findings!.map((f) => (
                   <div key={f.fingerprint} className="flex items-center gap-2 text-[12px]">
+                    {f.ref && (
+                      <span
+                        className="text-[10px] font-mono font-semibold text-foreground shrink-0"
+                        title={`Lineage ref ${f.ref} \u2014 fingerprint ${f.fingerprint}`}
+                      >
+                        {f.ref}
+                      </span>
+                    )}
                     <span className="text-foreground truncate">{f.title}</span>
                     <span className="text-[10px] font-mono text-muted-light">
                       {f.old_severity.toUpperCase()} {"\u2192"} {f.new_severity.toUpperCase()}

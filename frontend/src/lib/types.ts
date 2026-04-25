@@ -254,6 +254,8 @@ export interface ComparisonFindingSummary {
   severity: Severity;
   file_path: string;
   agent_type: string;
+  ref?: string;          // e.g. "VLT-3890"; populated when lineage record exists
+  ref_number?: number;
 }
 
 export interface ComparisonChangedFinding {
@@ -262,6 +264,8 @@ export interface ComparisonChangedFinding {
   old_severity: Severity;
   new_severity: Severity;
   file_path: string;
+  ref?: string;
+  ref_number?: number;
 }
 
 // --- Pipeline (scan → discover → prove) ---

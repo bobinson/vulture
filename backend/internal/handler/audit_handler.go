@@ -8,17 +8,25 @@ import (
 	"strings"
 
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
 )
 
 type AuditHandler struct {
-	svc      service.AuditService
-	proveSvc service.ProveService
+	svc         service.AuditService
+	proveSvc    service.ProveService
+	lineageRepo repository.LineageRepository
 }
 
 // SetProveService enables prove-result enrichment on audit responses.
 func (h *AuditHandler) SetProveService(svc service.ProveService) {
 	h.proveSvc = svc
+}
+
+// SetLineageRepo enables ref-number enrichment on /comparison responses
+// so the new/fixed/changed lists carry a stable "VLT-XXXX" identifier.
+func (h *AuditHandler) SetLineageRepo(repo repository.LineageRepository) {
+	h.lineageRepo = repo
 }
 
 func NewAuditHandler(svc service.AuditService) *AuditHandler {
@@ -184,10 +192,73 @@ func (h *AuditHandler) Compare(w http.ResponseWriter, r *http.Request) {
 
 	comparison := buildComparison(audit, prev)
 
-	// Enrich with git info from source
-	source, _ := h.svc.FindSourceByPath("")
-	_ = source // source lookup for previous audit's git info is done via prev audit's source
+	// Enrich the new/fixed/changed lists with lineage ref numbers
+	// (e.g. "VLT-3890") so UI consumers can render a stable identifier
+	// alongside each summary. Best-effort: if the lineage lookup fails we
+	// still return the comparison without refs.
+	h.enrichComparisonRefs(audit.SourcePath, &comparison)
+
 	writeJSON(w, http.StatusOK, comparison)
+}
+
+// enrichComparisonRefs populates the Ref / RefNumber fields on every
+// summary entry in `comp` by batch-fetching FindingLineage records keyed by
+// fingerprint + source_path. No-op when the lineage repo isn't wired in.
+func (h *AuditHandler) enrichComparisonRefs(sourcePath string, comp *model.AuditComparison) {
+	if h.lineageRepo == nil || sourcePath == "" {
+		return
+	}
+	fps := make([]string, 0, len(comp.NewFindings)+len(comp.FixedFindings)+len(comp.ChangedFindings))
+	for _, f := range comp.NewFindings {
+		if f.Fingerprint != "" {
+			fps = append(fps, f.Fingerprint)
+		}
+	}
+	for _, f := range comp.FixedFindings {
+		if f.Fingerprint != "" {
+			fps = append(fps, f.Fingerprint)
+		}
+	}
+	for _, f := range comp.ChangedFindings {
+		if f.Fingerprint != "" {
+			fps = append(fps, f.Fingerprint)
+		}
+	}
+	if len(fps) == 0 {
+		return
+	}
+	lin, err := h.lineageRepo.GetLineageByFingerprints(fps, sourcePath)
+	if err != nil || len(lin) == 0 {
+		return
+	}
+	// GetLineageByFingerprints returns a map keyed by "fingerprint|agent_type"
+	// (because the lineage table has unique (fingerprint, source_path,
+	// agent_type) — the same fingerprint can map to different agents).
+	apply := func(fp, agent string) (string, int) {
+		if l, ok := lin[fp+"|"+agent]; ok && l != nil {
+			return l.FormatRef(), l.RefNumber
+		}
+		return "", 0
+	}
+	for i := range comp.NewFindings {
+		comp.NewFindings[i].Ref, comp.NewFindings[i].RefNumber = apply(comp.NewFindings[i].Fingerprint, comp.NewFindings[i].AgentType)
+	}
+	for i := range comp.FixedFindings {
+		comp.FixedFindings[i].Ref, comp.FixedFindings[i].RefNumber = apply(comp.FixedFindings[i].Fingerprint, comp.FixedFindings[i].AgentType)
+	}
+	// ChangedFindings doesn't carry agent_type today; fall back to fingerprint-only
+	// (best-effort: in the rare event the same fingerprint appears under two
+	// agents, we'd pick the first map entry — acceptable for change diffs).
+	for i := range comp.ChangedFindings {
+		fp := comp.ChangedFindings[i].Fingerprint
+		for k, l := range lin {
+			if strings.HasPrefix(k, fp+"|") && l != nil {
+				comp.ChangedFindings[i].Ref = l.FormatRef()
+				comp.ChangedFindings[i].RefNumber = l.RefNumber
+				break
+			}
+		}
+	}
 }
 
 func buildComparison(current, previous *model.Audit) model.AuditComparison {

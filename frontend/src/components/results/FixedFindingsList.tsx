@@ -40,6 +40,14 @@ export function FixedFindingsList({ findings }: FixedFindingsListProps) {
         <div className="border-t border-border divide-y divide-border">
           {findings.map((f) => (
             <div key={f.fingerprint} className="flex items-center gap-2 px-4 py-2 border-l-2 border-[#22C55E]">
+              {f.ref && (
+                <span
+                  className="text-[10px] font-mono font-semibold text-[#22C55E] shrink-0"
+                  title={`Lineage ref ${f.ref} — fingerprint ${f.fingerprint}`}
+                >
+                  {f.ref}
+                </span>
+              )}
               <SeverityBadge severity={f.severity} />
               <span className="text-[12px] text-muted truncate">{f.title}</span>
               <span className="text-[10px] font-mono text-muted-light ml-auto shrink-0">{f.file_path}</span>

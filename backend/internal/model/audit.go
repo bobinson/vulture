@@ -58,12 +58,17 @@ type AuditComparison struct {
 }
 
 // ComparisonFindingSummary is a lightweight summary for new/fixed findings.
+// Ref / RefNumber are populated when the audit handler enriches the response
+// with the FindingLineage record matching this fingerprint, so UI consumers
+// can display a stable "VLT-XXXX" identifier alongside the finding.
 type ComparisonFindingSummary struct {
 	Fingerprint string   `json:"fingerprint"`
 	Title       string   `json:"title"`
 	Severity    Severity `json:"severity"`
 	FilePath    string   `json:"file_path"`
 	AgentType   string   `json:"agent_type"`
+	Ref         string   `json:"ref,omitempty"`
+	RefNumber   int      `json:"ref_number,omitempty"`
 }
 
 // ComparisonChangedFinding tracks findings whose severity changed between audits.
@@ -72,5 +77,7 @@ type ComparisonChangedFinding struct {
 	Title       string   `json:"title"`
 	OldSeverity Severity `json:"old_severity"`
 	NewSeverity Severity `json:"new_severity"`
+	Ref         string   `json:"ref,omitempty"`
+	RefNumber   int      `json:"ref_number,omitempty"`
 	FilePath    string   `json:"file_path"`
 }

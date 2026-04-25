@@ -55,7 +55,7 @@ func New(cfg *config.Config) (*Server, error) {
 	authMW := registerAPIRoutes(mux, pgDB, sqliteDB, cfg, sourceH, auditH, auditsHandler, auditDetailHandler, agentH, fsH, streamH, readOnly)
 	registerWebhookService(pgDB, sqliteDB, streamH)
 	registerMemoryRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
-	registerLineageRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
+	registerLineageRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW, readOnly)
 	registerProveRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW, readOnly)
 	registerDiscoverRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
 	registerPipelineRoutes(mux, pgDB, sqliteDB, auditSvc, streamH.DiscoverService(), streamH, authMW, readOnly)
@@ -317,7 +317,7 @@ func memoryRouter(memoryH *handler.MemoryHandler) http.HandlerFunc {
 	}
 }
 
-func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, protect authWrapper, readOnly bool) {
+func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, streamH *handler.StreamHandler, auditH *handler.AuditHandler, protect authWrapper, readOnly bool) {
 	var lineageRepo repository.LineageRepository
 	if pgDB != nil {
 		lineageRepo = repository.NewPostgresLineageRepo(pgDB)
@@ -331,6 +331,7 @@ func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, s
 
 	streamH.SetLineageService(lineageSvc)
 	streamH.SetLineageHandler(lineageH)
+	auditH.SetLineageRepo(lineageRepo) // enrich /comparison summaries with VLT-XXXX refs
 
 	mux.HandleFunc("/api/lineage", protect(lineageH.List))
 	mux.HandleFunc("/api/lineage/", protect(ReadOnlyGuard(readOnly, lineageRouter(lineageH))))
