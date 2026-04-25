@@ -53,17 +53,49 @@ config.ini
 
 # Binaries
 backend-bin
+backend/vulture
 cli/vulture
 cli/cli
 cli/bin/
+
+# External upstream artifacts — replaced by sibling *.md pointer files.
+# Anyone who needs the raw upstream binary fetches it via the pointer.
+docs/features/0014_cwe_version_4.19.1/cwe_latest.pdf
+docs/features/0014_cwe_version_4.19.1/cwec_v4.19.1.xml
+docs/features/0014_cwe_version_4.19.1/cwe_schema_latest.xsd
+docs/features/0010_cwe_audit/cwec_v4.19.1.xml
 
 # Tool caches
 .playwright-mcp/
 .claude/
 frontend/playwright-report/
 
+# Editor / AI tooling
+.aider*
+.cursor/
+.zed/
+.fleet/
+*.tsbuildinfo
+.eslintcache
+.turbo/
+
+# Merge-conflict and runtime debris
+*.bak
+*.orig
+*.rej
+*.tmp
+*.log
+
 # Verification artifacts
 verification/
 
 # Docker
 docker-compose.override.yml
+
+# Explicit allowlists (negate broader rules above)
+!.env.example
+!config.ini.example
+# The .md pointer files for external CWE artifacts must stay tracked even
+# though the binaries they describe are gitignored. The *.pdf / *.xml /
+# *.xsd patterns above do not match *.md files, so no negation is needed —
+# this comment is a reminder, not a rule.
