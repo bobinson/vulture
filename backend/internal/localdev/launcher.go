@@ -330,8 +330,32 @@ func (l *Launcher) startBackend(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("start backend: %w", err)
 	}
-	log.Printf("started backend on port %s (SQLite: %s)", l.cfg.BackendPort, dbPath)
+	if dbDSN != "" {
+		// Mask the password in the log line for safety.
+		masked := maskDSNPassword(dbDSN)
+		log.Printf("started backend on port %s (Postgres: %s)", l.cfg.BackendPort, masked)
+	} else {
+		log.Printf("started backend on port %s (SQLite: %s)", l.cfg.BackendPort, dbPath)
+	}
 	return nil
+}
+
+// maskDSNPassword returns the DSN with the password component replaced by
+// ***. Best-effort string surgery — handles the postgres://user:pass@host
+// form. Returns the input unchanged if the shape doesn't match.
+func maskDSNPassword(dsn string) string {
+	at := strings.LastIndex(dsn, "@")
+	scheme := strings.Index(dsn, "://")
+	if at == -1 || scheme == -1 || at <= scheme+3 {
+		return dsn
+	}
+	creds := dsn[scheme+3 : at]
+	colon := strings.Index(creds, ":")
+	if colon == -1 {
+		return dsn
+	}
+	user := creds[:colon]
+	return dsn[:scheme+3] + user + ":***" + dsn[at:]
 }
 
 func (l *Launcher) startFrontend(ctx context.Context) error {
