@@ -99,8 +99,8 @@ func TestAuthService_Register_Success(t *testing.T) {
 	if resp.User.Name != "Test User" {
 		t.Errorf("user name = %q, want Test User", resp.User.Name)
 	}
-	if resp.User.Role != "user" {
-		t.Errorf("user role = %q, want user", resp.User.Role)
+	if resp.User.Role != "member" {
+		t.Errorf("user role = %q, want member", resp.User.Role)
 	}
 	if createdUser == nil {
 		t.Fatal("CreateUser was not called")
@@ -552,8 +552,8 @@ func TestAuthService_TokenFormat(t *testing.T) {
 	if payload["sub"] != "fmt-user" {
 		t.Errorf("sub = %v, want fmt-user", payload["sub"])
 	}
-	if payload["role"] != "user" {
-		t.Errorf("role = %v, want user", payload["role"])
+	if payload["role"] != "member" {
+		t.Errorf("role = %v, want member", payload["role"])
 	}
 	exp, ok := payload["exp"].(float64)
 	if !ok {

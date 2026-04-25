@@ -58,7 +58,7 @@ func (s *authService) Register(req *model.RegisterRequest) (*model.AuthResponse,
 		Email:        req.Email,
 		PasswordHash: string(hash),
 		Name:         req.Name,
-		Role:         "user",
+		Role:         "member",
 		TeamID:       teamID,
 		CreatedAt:    time.Now().UTC(),
 	}
