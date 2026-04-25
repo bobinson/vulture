@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "MCP server for Vulture compliance audit platform"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "MIT"
+license = "Apache-2.0"
 dependencies = [
     "mcp>=1.20.0",
     "httpx>=0.27.0",
