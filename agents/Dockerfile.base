@@ -1,4 +1,7 @@
 FROM python:3.12-slim
+# curl is required by docker-compose healthchecks (slim image has no curl by default)
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY shared/pyproject.toml shared/setup.cfg* shared/setup.py* /app/shared/
 RUN --mount=type=cache,target=/root/.cache/pip pip install /app/shared || true

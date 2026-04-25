@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /vulture ./cmd/vulture/
 
 FROM alpine:3.19
 
-RUN apk add --no-cache git ca-certificates
+RUN apk add --no-cache git ca-certificates curl
 
 COPY --from=builder /vulture /usr/local/bin/vulture
 
