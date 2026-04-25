@@ -1,19 +1,23 @@
 # 0036 — Public Open-Source Release Hardening: Implementation Status
 
-## Status: NOT STARTED
+## Status: PHASES 1 & 2 IMPLEMENTED — Phases 3 & 4 pending user decisions
 
-Plan authored 2026-04-25 from the six-dimension public-release audit run on `feat/0031-central-server` at commit `b8ce4b3`. No tasks have been executed yet.
+Plan authored 2026-04-25 from the six-dimension public-release audit run on `feat/0031-central-server` at commit `b8ce4b3`. Phases 1 and 2 (T1–T6) implemented inline 2026-04-25; commits `5fb0192`, `64ba347`, `438da03`, `d35c4f9`, `191be87`, `fc13042`, `fbd22c0`. HEAD-tracked size dropped from ~90 MB to ~6.7 MB. `.git` size will drop further only after Phase 4 (filter-repo).
+
+Phase 3 (Mode-B hardening) deferred — Phase-3 fixes touch `middleware.go`, `server.go`, `auth_handler.go`, `config.go` which are all in active feature-0031 WIP currently stashed; merging there safely needs the WIP to land first. Tracked as a follow-up.
+
+Phase 4 (history rewrite + push) **NOT executed** — destructive, irreversible after public push, requires explicit user confirmation per the plan's pre-flight checklist.
 
 ## Phase / task tracker
 
 | Phase | Task | Description | Status | Commit |
 |---|---|---|---|---|
-| 1 | T1 | Third-party data attribution (NOTICE, THIRD_PARTY_LICENSES, per-data LICENSE.md, README §Attributions) | ⬜ Not started | — |
-| 1 | T2 | License-metadata reconciliation (mcp/pyproject MIT→Apache, 11 pyproject.toml license fields, frontend/package.json) | ⬜ Not started | — |
-| 1 | T3 | Documentation drift sync (README agent count 6→10, API path fix, repo slug, env vars, deployment modes, CLAUDE.md complexity) | ⬜ Not started | — |
-| 1 | T4 | Missing standard files (CHANGELOG, security-report contact link, AUTHORS, CODEOWNERS) | ⬜ Not started | — |
-| 1 | T5 | Personal/internal references scrub (FutureID, Prior-incidents paragraphs, story.md, agents/owasp/PLAN.md, absolute paths) | ⬜ Not started | — |
-| 2 | T6 | Untrack binaries + bloat; tighten .gitignore | ⬜ Not started | — |
+| 1 | T1 | Third-party data attribution (NOTICE, THIRD_PARTY_LICENSES, per-data LICENSE.md, README §Attributions) | ✅ Completed | `5fb0192` |
+| 1 | T2 | License-metadata reconciliation (10 pyproject.toml license fields, frontend/package.json). `mcp/pyproject.toml` not present in HEAD (in stashed WIP); apply when WIP lands. | ✅ Completed | `64ba347` |
+| 1 | T3 | Documentation drift sync (README agent count 6→10, API path fix, repo slug, env vars, deployment modes, issue templates, Makefile do178c+asvs) | ✅ Completed | `438da03` |
+| 1 | T4 | Missing standard files (CHANGELOG, AUTHORS, CODEOWNERS). Security-advisory contact link landed in T3 commit. | ✅ Completed | `d35c4f9` |
+| 1 | T5 | Personal/internal references scrub (FutureID, Prior-incidents paragraphs, story.md, agents/owasp/PLAN.md, absolute paths in 0034/0035, CLAUDE.md complexity rule) | ✅ Completed | `191be87` |
+| 2 | T6 | Untrack binaries + create 4 pointer .md files + tighten .gitignore + delete stale backend-bin + track .env.example | ✅ Completed | `fc13042`, `fbd22c0` |
 | 3 | T7 | Auth/CORS/local-mode E2E tests — RED | ⬜ Optional / not started | — |
 | 3 | T8 | Auth/CORS/local-mode fixes — GREEN | ⬜ Optional / not started | — |
 | 3 | T9 | SQLite default-role mismatch — RED | ⬜ Optional / not started | — |
@@ -37,11 +41,11 @@ These must be filled in before the relevant task starts. Until pinned, the task 
 
 | Decision | Required by | Choice |
 |---|---|---|
-| Canonical repo slug | T3 Step 1 | _____ (e.g., `vulture-project/vulture`) |
-| `story.md` disposition | T5 Step 3 | _____ (`delete` \| `move-to-history`) |
+| Canonical repo slug | T3 Step 1 | **PINNED 2026-04-25 (default)**: `vulture-project/vulture` (matches existing README CI badge). User can override; if changed, also update `frontend/package.json::repository.url`, `.github/ISSUE_TEMPLATE/config.yml` (two URLs), CHANGELOG `[0.1.0]` link, AUTHORS.md handle, and CODEOWNERS team. |
+| `story.md` disposition | T5 Step 3 | **PINNED 2026-04-25 (default)**: deleted. Original brief had typos and was superseded by README/docs/architecture. |
 | CWE artifact strategy | T6 Step 1 | **PINNED 2026-04-25**: replace each external XML/PDF/XSD with a sibling `*.md` pointer file (upstream URL + SHA-256 + license); preserve the generated `cwe_catalog.json` and `asvs_*.json` derivatives as tracked files. |
-| Phase 3 scope for v0.1 | Before T7 | _____ (`complete-phase-3` \| `defer-to-v0.2`) |
-| Security/Conduct contact channel | T16 Step 1 | _____ (`a` \| `b` \| `c`) |
+| Phase 3 scope for v0.1 | Before T7 | **PINNED 2026-04-25 (default)**: `defer-to-v0.2`. Phase-3 fixes touch files (`middleware.go`, `server.go`, `auth_handler.go`, `config.go`) in user's stashed feature-0031 WIP; conflict-prone. The plan documents Phase 3 in detail; tracked as follow-up feature 0037 (Mode-B hardening). v0.1 README §Deployment Modes already declares "Mode B is not hardened in v0.1.0". |
+| Security/Conduct contact channel | T16 Step 1 | **PINNED 2026-04-25 (default)**: GitHub Security Advisories for security reports (link added in `.github/ISSUE_TEMPLATE/config.yml`); SECURITY.md `security@vulture.dev` and CODE_OF_CONDUCT.md `conduct@vulture.dev` retained as placeholders — user must register `vulture.dev` and provision both inboxes before public push, **OR** edit those two files to point to a controlled inbox / GitHub-native flow. Flagged as `verify before push` in the Phase 4 pre-flight checklist. |
 
 ## Progress log
 
@@ -49,6 +53,7 @@ These must be filled in before the relevant task starts. Until pinned, the task 
 
 - _2026-04-25_ — Plan authored. Audit findings cross-referenced. Awaiting user choice on Phase 3 scope and the four remaining pinned decisions before execution begins.
 - _2026-04-25_ — Decision #3 (CWE artifact strategy) pinned: drop external XML/PDF/XSD, replace each with sibling `*.md` pointer file, preserve generated JSON derivatives.
+- _2026-04-25_ — **Phases 1 & 2 implemented inline.** User WIP stashed (`stash@{0}`) before commits land; pop after `feat/0031-central-server` work merges. Default values pinned for the four open decisions (slug `vulture-project/vulture`, `story.md` deleted, Phase 3 deferred, contact = GitHub Security Advisories + retained `vulture.dev` placeholder); user can override before Phase 4. Phase 3 NOT executed (conflicts with WIP). Phase 4 NOT executed (destructive; requires explicit confirmation). HEAD-tracked size now ~6.7 MB (was ~90 MB).
 
 ## Verification checklist (sign off at end of Phase 4)
 
