@@ -1,0 +1,31 @@
+# CODEOWNERS — automatic review routing
+#
+# Lines later in this file override earlier ones. Owners listed here will be
+# auto-requested as reviewers on pull requests that change matching files.
+# Update the @vulture-project/maintainers handle once the team is created in
+# the GitHub org.
+
+# Default owner — every file
+*                                       @vulture-project/maintainers
+
+# Backend (Go)
+/backend/                               @vulture-project/maintainers
+/cli/                                   @vulture-project/maintainers
+
+# Agents (Python)
+/agents/                                @vulture-project/maintainers
+
+# Frontend (React/TypeScript)
+/frontend/                              @vulture-project/maintainers
+
+# Infrastructure
+/docker-compose*.yml                    @vulture-project/maintainers
+/.github/workflows/                     @vulture-project/maintainers
+/Makefile                               @vulture-project/maintainers
+
+# Licensing & community
+/LICENSE                                @vulture-project/maintainers
+/NOTICE                                 @vulture-project/maintainers
+/THIRD_PARTY_LICENSES.md                @vulture-project/maintainers
+/SECURITY.md                            @vulture-project/maintainers
+/CODE_OF_CONDUCT.md                     @vulture-project/maintainers
