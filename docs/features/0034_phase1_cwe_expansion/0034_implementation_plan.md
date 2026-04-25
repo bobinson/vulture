@@ -123,7 +123,7 @@ def test_catalog_keywords_exclude_shared_generic_tokens():
 - [ ] **1.2 Run — expect FAIL**:
 
 ```bash
-cd /home/user/src/vulture/agents/cwe && python -m pytest tests/unit/test_catalog.py -v
+cd <vulture-repo-root>/agents/cwe && python -m pytest tests/unit/test_catalog.py -v
 ```
 
 - [ ] **1.3 Implement `_extract_observed_examples`** in `scripts/extract_cwe_catalog.py`:
@@ -239,7 +239,7 @@ def _extract_observed_examples(w: ET.Element) -> list[dict]:
 - [ ] **1.6 Regenerate catalog**:
 
 ```bash
-cd /home/user/src/vulture && python scripts/extract_cwe_catalog.py \
+cd <vulture-repo-root> && python scripts/extract_cwe_catalog.py \
     docs/features/0014_cwe_version_4.19.1/cwec_v4.19.1.xml \
     agents/cwe/cwe_agent/data/cwe_catalog.json
 ```
@@ -249,7 +249,7 @@ Expected stdout: `Extracted 846 software-relevant CWEs to ...`. File size betwee
 - [ ] **1.7 Re-run tests — expect PASS**:
 
 ```bash
-cd /home/user/src/vulture/agents/cwe && python -m pytest tests/unit/ -q
+cd <vulture-repo-root>/agents/cwe && python -m pytest tests/unit/ -q
 ```
 
 Expected: existing 186 tests + 3 new tests pass (= 189).
@@ -257,7 +257,7 @@ Expected: existing 186 tests + 3 new tests pass (= 189).
 - [ ] **1.8 Verify keyword expansion at BOTH threshold brackets** (de-risks Task 5):
 
 ```bash
-cd /home/user/src/vulture && python3 -c "
+cd <vulture-repo-root> && python3 -c "
 import json, pathlib
 from agents.cwe.cwe_agent.skills.catalog_detector import _GENERIC_TOKENS
 c = json.loads(pathlib.Path('agents/cwe/cwe_agent/data/cwe_catalog.json').read_text())
@@ -539,7 +539,7 @@ def get_descendants(cwe_id: str) -> list[str]:
 - [ ] **2.5 Re-run tests — expect PASS**:
 
 ```bash
-cd /home/user/src/vulture/agents/cwe && python -m pytest tests/unit/test_catalog_detector.py -v
+cd <vulture-repo-root>/agents/cwe && python -m pytest tests/unit/test_catalog_detector.py -v
 ```
 
 - [ ] **2.6 Commit**:
@@ -793,7 +793,7 @@ check_path_equivalence_tool = function_tool(check_path_equivalence)
 - [ ] **3.8 Run — expect PASS**:
 
 ```bash
-cd /home/user/src/vulture/agents/cwe && python -m pytest tests/unit/ -q
+cd <vulture-repo-root>/agents/cwe && python -m pytest tests/unit/ -q
 ```
 
 - [ ] **3.9 Commit**:
@@ -869,7 +869,7 @@ git commit -m "feat(cwe): add path_equivalence skill with path-call context gate
 - [ ] **4.6 Run — PASS** after each skill:
 
 ```bash
-cd /home/user/src/vulture/agents/cwe && python -m pytest tests/unit/ -q
+cd <vulture-repo-root>/agents/cwe && python -m pytest tests/unit/ -q
 ```
 
 - [ ] **4.7 Commit per skill** with message `feat(cwe): add <skill_name> skill covering CWE-<ids>`. Five separate commits; each stands alone (tests pass, counts updated incrementally).
@@ -919,13 +919,13 @@ def _reset_catalog_caches():
 - [ ] **5.2 Measure pre-change baselines** on two fixtures:
 
 ```bash
-cd /home/user/src/vulture && python3 -c "
+cd <vulture-repo-root> && python3 -c "
 from agents.cwe.cwe_agent.skills.catalog_detector import check_catalog_generic
 r = check_catalog_generic('agents/shared')
 print(f'agents/shared findings: {len(r[\"findings\"])}')
 print(f'agents/shared unique CWEs: {len({f[\"category\"] for f in r[\"findings\"]})}')
 "
-cd /home/user/src/vulture && python3 -c "
+cd <vulture-repo-root> && python3 -c "
 import tempfile, pathlib
 from agents.cwe.cwe_agent.skills.catalog_detector import check_catalog_generic
 with tempfile.TemporaryDirectory() as d:
@@ -1033,7 +1033,7 @@ sys.exit(0 if ok else 1)
 - [ ] **5.8 Run full CWE suite + verifier — expect PASS**:
 
 ```bash
-cd /home/user/src/vulture && make test
+cd <vulture-repo-root> && make test
 python scripts/verify_cwe_coverage.py
 ```
 
@@ -1052,7 +1052,7 @@ git commit -m "feat(cwe): lower static_detectability threshold to 0.2 + coverage
 Run once after all 5 tasks land:
 
 ```bash
-cd /home/user/src/vulture && make test && make complexity && make lint
+cd <vulture-repo-root> && make test && make complexity && make lint
 python scripts/verify_cwe_coverage.py
 ```
 

@@ -141,7 +141,7 @@ When performing audits (security, code quality, documentation, performance):
 3. **After fixes, do exactly ONE re-audit pass** to verify the fixes landed and catch regressions. Do not loop endlessly discovering new issues — if the re-audit surfaces fundamentally new issue classes, stop and escalate.
 4. **Never split an audit into iterative discovery + fix cycles.** That pattern compounds rework. Enumerate first, fix once, verify once.
 
-Prior incident: A 53-issue performance audit missed a PostgreSQL N+1 query that was only caught in the post-fix re-audit because the initial pass only examined SQLite. Multi-implementation features (Postgres + SQLite + memory repos) require checking ALL implementations in the enumeration phase.
+Multi-implementation features (Postgres + SQLite + memory repos) require checking ALL implementations in the enumeration phase, not just one. Audits that only examine the most-frequently-touched backend will miss issues in the others.
 
 ## Debugging & Infrastructure
 
@@ -151,7 +151,7 @@ Before implementing fixes to runtime errors or deployment bugs:
 2. **Ask about infrastructure constraints upfront** rather than discovering them through repeated failures. Examples: hostile caching proxies, Docker network topology, missing migrations, cross-container DNS resolution.
 3. **When the user pastes a runtime error, focus on the SPECIFIC error context first.** Do not broadly explore the codebase — ask which command/endpoint/flow triggered the error, then investigate from that starting point.
 
-Prior incidents: OIDC logout through a caching proxy required exhaustive serial pivots because proxy behavior wasn't mapped upfront. FutureID deployment required debugging Redis binding, OIDC config, key derivation, and referral permissions sequentially because the infrastructure topology wasn't enumerated first.
+When a runtime error has multiple possible causes (proxy behavior, container networking, environment-variable propagation), enumerate the topology once at the start. Serial-pivoting through possible causes without an inventory wastes time and obscures interactions between layers.
 
 ## Languages & Testing
 
@@ -172,7 +172,7 @@ For complex multi-step tasks (deployment, E2E flows, formal verification, multi-
 2. **Verify each checkpoint works before moving to the next.** Do not attempt to fix everything in one sweep — cascading failures compound quickly.
 3. **Scope-lock the session.** If scope naturally expands (e.g., "fix agent wiring" becomes "audit all agent wiring + add conformance tests"), STOP and confirm with the user before expanding. Default to the narrower interpretation.
 
-Prior incidents: An Isabelle/HOL verification session grew from "audit agent wiring" to "30+ theorems + 77 conformance tests across 3 languages" with 9+ iterations of proof tactic hangs. A deployment session expanded from "merge and deploy" to "fix 13 merge conflicts + full E2E debugging" when the cascading failures weren't gated at checkpoints.
+Sessions that begin as narrow tasks (audit, merge, deploy) commonly expand into broad ones (full conformance test runs, multi-conflict resolution, debugging chains) when checkpoints are skipped. Gate progress at each checkpoint and stop to confirm with the user before broadening scope.
 
 ## Planning and documentation
 
@@ -188,7 +188,7 @@ These rules are mandatory for all code in this project:
 1. **E2E tests first**: E2E business logic tests must be written first, then the code. Code must be verified against the business logic after every change.
 2. **NEVER modify E2E business logic tests**: These tests are the source of truth for business requirements. Changing them to make code pass is forbidden.
 3. **DRY**: No duplicated logic. Extract shared code into appropriate shared modules.
-4. **Cyclomatic complexity < 5**: No function may exceed 10 independent code paths. Use early returns, strategy pattern, and delegation.
+4. **Cyclomatic complexity < 10**: No function may exceed 10 independent code paths (matches the `gocyclo -over 9` and `radon` thresholds in `make complexity`). Use early returns, strategy pattern, and delegation to keep functions under the limit.
 5. **100% test coverage**: Every line of code must be covered by tests.
 6. **ISO 26262 safety**: Code must be categorized for safety and adhere to ISO 26262 safety standards.
 7. **Assembly-level optimization**: Code must be optimized for performance even at the assembly level. This means: minimize allocations, avoid unnecessary copies, use efficient data structures, leverage compiler optimizations, profile hot paths.

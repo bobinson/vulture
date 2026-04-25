@@ -141,10 +141,10 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 
 - [ ] **1.1 Vendor upstream JSON**:
   ```bash
-  mkdir -p /home/user/src/vulture/agents/asvs/asvs_agent/data
+  mkdir -p <vulture-repo-root>/agents/asvs/asvs_agent/data
   curl -fsSL https://raw.githubusercontent.com/OWASP/ASVS/v5.0.0/5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.json \
-    -o /home/user/src/vulture/agents/asvs/asvs_agent/data/asvs_source.json
-  sha256sum /home/user/src/vulture/agents/asvs/asvs_agent/data/asvs_source.json
+    -o <vulture-repo-root>/agents/asvs/asvs_agent/data/asvs_source.json
+  sha256sum <vulture-repo-root>/agents/asvs/asvs_agent/data/asvs_source.json
   # Record the hash in the plan's Appendix for provenance.
   ```
 
@@ -303,7 +303,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
   Cross-reference these authoritative sources where relevant:
     - OWASP ASVS 4.0.3 had explicit CWE mappings — reuse them for
       req_ids that remained stable from 4.0.3 to 5.0.0.
-    - CWE catalog: /home/user/src/vulture/agents/cwe/cwe_agent/data/cwe_catalog.json
+    - CWE catalog: <vulture-repo-root>/agents/cwe/cwe_agent/data/cwe_catalog.json
     - CWE descriptions and detection methods from the catalog.
 
   Output format:
@@ -344,7 +344,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 
 - [ ] **1.6 Run extractor + tests — expect PASS**:
   ```bash
-  cd /home/user/src/vulture && python scripts/extract_asvs_catalog.py \
+  cd <vulture-repo-root> && python scripts/extract_asvs_catalog.py \
     --source agents/asvs/asvs_agent/data/asvs_source.json \
     --crosswalk agents/asvs/asvs_agent/data/asvs_cwe_crosswalk.json \
     --detectability agents/asvs/asvs_agent/data/asvs_detectability.json \
@@ -440,7 +440,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 
 - [ ] **2.4 Run tests — expect PASS**:
   ```bash
-  cd /home/user/src/vulture/agents/asvs && python -m pytest tests/unit/ -v
+  cd <vulture-repo-root>/agents/asvs && python -m pytest tests/unit/ -v
   ```
 
 - [ ] **2.5 Commit**:
@@ -681,7 +681,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 
 - [ ] **3.7 Cyclomatic-complexity check**:
   ```bash
-  cd /home/user/src/vulture/agents/asvs && radon cc -s asvs_agent/skills/asvs_requirements_check.py
+  cd <vulture-repo-root>/agents/asvs && radon cc -s asvs_agent/skills/asvs_requirements_check.py
   ```
   Every function ≤ 5. If `check_asvs_requirements` exceeds, extract additional helpers (e.g., `_resolve_config`, `_iter_scannable_files`).
 
@@ -712,7 +712,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 
 - [ ] **6.3 Integration test**:
   ```bash
-  cd /home/user/src/vulture && docker compose build agent-asvs
+  cd <vulture-repo-root> && docker compose build agent-asvs
   docker compose up -d agent-asvs
   curl -sf http://localhost:28010/health
   curl -sf http://localhost:28010/info | jq '.type, .config_schema'
@@ -721,7 +721,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 
 - [ ] **6.4 Run backend Go tests** (registry table now has an extra row; any tests that count entries must be updated):
   ```bash
-  cd /home/user/src/vulture/backend && go test ./pkg/agentregistry/...
+  cd <vulture-repo-root>/backend && go test ./pkg/agentregistry/...
   ```
 
 - [ ] **6.5 Commit**: `feat(asvs): backend registry + docker-compose integration`.
@@ -774,7 +774,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 - E2E: spawn the agent container, submit an audit via SSE, assert the stream includes `agent_start`, at least one `finding` event with `category: "ASVS-V..."`, and `agent_end`.
 - Verifier script:
   ```bash
-  cd /home/user/src/vulture && python scripts/verify_asvs_coverage.py
+  cd <vulture-repo-root> && python scripts/verify_asvs_coverage.py
   ```
   Output:
   ```
@@ -807,7 +807,7 @@ Each task produces an independently verifiable, committable unit. Run the ASVS a
 - [ ] **6.3 Update CLAUDE.md agent listing**.
 - [ ] **6.4 Run full matrix**:
   ```bash
-  cd /home/user/src/vulture && make test && make complexity && make lint
+  cd <vulture-repo-root> && make test && make complexity && make lint
   docker compose up -d && python scripts/verify_asvs_coverage.py && docker compose down
   ```
 - [ ] **6.5 Commit**: `feat(asvs): E2E tests + coverage verifier + CLAUDE.md update`.
