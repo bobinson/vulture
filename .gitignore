@@ -64,6 +64,7 @@ docs/features/0014_cwe_version_4.19.1/cwe_latest.pdf
 docs/features/0014_cwe_version_4.19.1/cwec_v4.19.1.xml
 docs/features/0014_cwe_version_4.19.1/cwe_schema_latest.xsd
 docs/features/0010_cwe_audit/cwec_v4.19.1.xml
+docs/cwe_version_4.19.1/
 
 # Tool caches
 .playwright-mcp/

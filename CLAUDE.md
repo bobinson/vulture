@@ -24,7 +24,20 @@ Frontend (React SPA + Vite) → SSE/REST → Go Backend → HTTP/SSE → Python 
 - **Python Agents** (`agents/`): Each audit type (chaos, owasp, soc2) is a separate FastAPI microservice using OpenAI Agents SDK + LiteLLM. Shared library in `agents/shared/`.
 - **Frontend** (`frontend/`): React SPA (Vite) + Tailwind + react-i18next. Plain React with native EventSource for SSE streaming. Look and feel must be elegant like https://agentation.dev — intuitive, simple, elegant. Warm cream theme, compact sidebar, terminal-style agent output.
 - **CLI** (`cli/`): Go CLI binary for headless audit execution (`vulture scan`, `vulture watch`, `vulture list`).
-- **Deployment**: `docker compose` with all services (PostgreSQL, backend, 3 agents, frontend).
+- **Deployment**: `docker compose` with all services (PostgreSQL, backend, 9 agents, frontend).
+
+### Deployment Modes
+
+Same binaries and Docker images serve all modes. Mode selection is via env vars only.
+
+| Mode | Who runs it | Command | Notes |
+|------|-------------|---------|-------|
+| A: Dev-local | Developer laptop | `docker compose up` | SQLite or local Postgres; `VULTURE_LOCAL_MODE=true`; no new env vars required |
+| B: Centralized server | Ops VM | `docker compose up -d` + Neon DSN + `VULTURE_API_KEYS_ENABLED=true` | See `docs/guides/central_server_deployment.md` (feature 0031) |
+| C: Read-only viewer VM | Ops VM | `docker compose -f docker-compose.readonly.yml up -d` | Optional; set `VULTURE_READONLY=true`. See feature 0030 + `docs/guides/neon_deployment.md` |
+| D: CI client | GitHub Actions etc. | `vulture scan <git-url> --api-key X --server Y --wait` | See `docs/guides/ci_integration.md` (feature 0031) |
+
+Mode A is the default when you clone the repo. No new env vars are required; all centralized features are opt-in.
 
 ## Directory Structure
 
