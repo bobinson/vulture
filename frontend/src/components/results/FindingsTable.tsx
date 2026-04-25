@@ -25,6 +25,20 @@ function SortIcon({ field, sortField, sortDirection }: { field: string; sortFiel
   return <span className="text-accent ml-1">{sortDirection === "asc" ? "\u2191" : "\u2193"}</span>;
 }
 
+function RefCopyButton({ refText }: { refText: string }) {
+  const { copied, onCopy } = useCopyFeedback();
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); void onCopy(refText); }}
+      title={copied ? "Copied" : `Copy ${refText}`}
+      className="text-[11px] font-mono font-medium text-accent hover:underline cursor-pointer"
+    >
+      {copied ? `${refText} ✓` : refText}
+    </button>
+  );
+}
+
 function RowCopyButton({ finding, auditId }: { finding: Finding; auditId?: string }) {
   const { copied, onCopy } = useCopyFeedback();
   return (
@@ -188,6 +202,9 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
         <table className="w-full text-[13px]">
           <thead>
             <tr className="border-b border-border bg-cream/50">
+              <th className="text-left px-4 py-2.5 text-[11px] font-semibold text-muted uppercase tracking-wider select-none">
+                ID
+              </th>
               <th
                 className="text-left px-4 py-2.5 text-[11px] font-semibold text-muted uppercase tracking-wider cursor-pointer hover:text-foreground select-none"
                 onClick={() => toggleSort("severity")}
@@ -248,6 +265,16 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId(isExpanded ? null : key); } }}
                   >
                     <td className="px-4 py-2.5">
+                      {(() => {
+                        const lin = finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined;
+                        const rn = lin?.ref_number;
+                        if (!rn || rn <= 0) {
+                          return <span className="text-[11px] text-muted-light">&mdash;</span>;
+                        }
+                        return <RefCopyButton refText={`VLT-${String(rn).padStart(4, "0")}`} />;
+                      })()}
+                    </td>
+                    <td className="px-4 py-2.5">
                       <SeverityBadge severity={finding.severity} />
                     </td>
                     <td className="px-4 py-2.5">
@@ -298,7 +325,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                   </tr>
                   {isExpanded && (
                     <tr className="bg-cream/50">
-                      <td colSpan={7} className="px-6 py-4">
+                      <td colSpan={8} className="px-6 py-4">
                         <div className="space-y-3 max-w-2xl">
                           {agentType && (
                             <div className="flex items-center gap-2">

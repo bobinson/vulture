@@ -189,6 +189,8 @@ export interface FindingLineage {
   source_path: string;
   agent_type: string;
   current_status: LineageStatus;
+  ref_number?: number;
+  ref?: string;
   notes?: string;
   ticket_url?: string;
   first_audit_id: string;

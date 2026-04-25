@@ -18,6 +18,21 @@ import { CrossAgentSummary } from "@/components/results/CrossAgentSummary.tsx";
 import { AuditComparisonView } from "@/components/results/AuditComparisonView.tsx";
 import { FixedFindingsList } from "@/components/results/FixedFindingsList.tsx";
 import { agentLabel } from "@/lib/constants.ts";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
+
+function AuditIdCopy({ id }: { id: string }) {
+  const { copied, onCopy } = useCopyFeedback();
+  return (
+    <button
+      type="button"
+      onClick={() => void onCopy(id)}
+      title={copied ? "Copied full ID" : id}
+      className="ml-2 text-[11px] font-mono text-muted-light hover:text-accent cursor-pointer"
+    >
+      {copied ? `${id.slice(0, 11)} ✓` : id.slice(0, 11)}
+    </button>
+  );
+}
 import { api } from "@/lib/api.ts";
 import { auditReportToMarkdown } from "@/lib/markdown.ts";
 import { ProveResults } from "@/components/results/ProveResults.tsx";
@@ -158,6 +173,7 @@ export function AuditResults() {
               <span className="font-medium truncate max-w-xs" title={audit.source_path}>
                 {audit.source_path}
               </span>
+              {id && <AuditIdCopy id={id} />}
             </div>
           )}
         </div>

@@ -3,7 +3,22 @@ import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ROUTES, AGENT_TYPES, agentLabel } from "@/lib/constants.ts";
 import { api } from "@/lib/api.ts";
+import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import type { Audit, AuditStatus, DashboardStats } from "@/lib/types.ts";
+
+function AuditIdCopy({ id, className }: { id: string; className?: string }) {
+  const { copied, onCopy } = useCopyFeedback();
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); e.preventDefault(); void onCopy(id); }}
+      title={copied ? "Copied full ID" : id}
+      className={className ?? "text-[11px] text-muted-light font-mono truncate hover:text-accent cursor-pointer"}
+    >
+      {copied ? `${id.slice(0, 11)} ✓` : id.slice(0, 11)}
+    </button>
+  );
+}
 
 const STATUS_DOTS: Record<string, string> = {
   completed: "bg-success",
@@ -252,7 +267,8 @@ export function Dashboard() {
                               {sourceName}
                             </span>
                           )}
-                          <span className="text-[11px] text-muted-light font-mono truncate">{audit.id.slice(0, 11)}</span>
+                          <AuditIdCopy id={audit.id} />
+
                         </div>
                       </div>
                     </div>

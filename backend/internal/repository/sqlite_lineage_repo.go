@@ -61,25 +61,44 @@ func (r *SQLiteLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 	if l.FixedAt != nil {
 		fixedAt = l.FixedAt.Format(time.RFC3339)
 	}
-	_, err = r.db.Exec(`
+
+	// Assign next ref_number atomically within a transaction.
+	// SQLite serializes writes, but the SELECT+INSERT must be in the same
+	// transaction to prevent interleaving from the connection pool.
+	tx, txErr := r.db.Begin()
+	if txErr != nil {
+		return fmt.Errorf("begin lineage insert tx: %w", txErr)
+	}
+	defer tx.Rollback()
+
+	var nextRef int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(ref_number), 0) + 1 FROM finding_lineage`).Scan(&nextRef); err != nil {
+		return fmt.Errorf("next ref_number: %w", err)
+	}
+	l.RefNumber = nextRef
+	l.Ref = l.FormatRef()
+
+	_, err = tx.Exec(`
 		INSERT INTO finding_lineage (
 			id, fingerprint, source_path, agent_type, current_status,
 			notes, ticket_url, first_audit_id, first_found_at, first_commit,
 			latest_audit_id, latest_found_at, latest_commit,
 			fixed_audit_id, fixed_at, fixed_commit,
-			severity, category, title, file_path, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			severity, category, title, file_path, created_at, updated_at,
+			ref_number
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, l.Fingerprint, l.SourcePath, l.AgentType, string(l.CurrentStatus),
 		l.Notes, l.TicketURL, l.FirstAuditID, l.FirstFoundAt.Format(time.RFC3339), l.FirstCommit,
 		l.LatestAuditID, latestFoundAt, l.LatestCommit,
 		l.FixedAuditID, fixedAt, l.FixedCommit,
 		l.Severity, l.Category, l.Title, l.FilePath,
 		l.CreatedAt.Format(time.RFC3339), l.UpdatedAt.Format(time.RFC3339),
+		l.RefNumber,
 	)
 	if err != nil {
 		return fmt.Errorf("insert lineage: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (r *SQLiteLineageRepo) GetLineage(id string) (*model.FindingLineage, error) {
@@ -89,7 +108,8 @@ func (r *SQLiteLineageRepo) GetLineage(id string) (*model.FindingLineage, error)
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage WHERE id = ?`, id)
 	return scanSQLiteLineage(row)
 }
@@ -101,7 +121,8 @@ func (r *SQLiteLineageRepo) GetLineageByFingerprint(fingerprint, sourcePath, age
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage
 		WHERE fingerprint = ? AND source_path = ? AND agent_type = ?`, fingerprint, sourcePath, agentType)
 	return scanSQLiteLineage(row)
@@ -125,7 +146,8 @@ func (r *SQLiteLineageRepo) GetLineageByFingerprints(fingerprints []string, sour
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage
 		WHERE fingerprint IN (%s) AND source_path = ?`, strings.Join(placeholders, ",")), args...)
 	if err != nil {
@@ -157,7 +179,8 @@ func (r *SQLiteLineageRepo) ListBySourcePath(sourcePath, status string, limit, o
 				first_audit_id, first_found_at, COALESCE(first_commit,''),
 				COALESCE(latest_audit_id,''), latest_found_at, COALESCE(latest_commit,''),
 				COALESCE(fixed_audit_id,''), fixed_at, COALESCE(fixed_commit,''),
-				severity, category, title, file_path, created_at, updated_at
+				severity, category, title, file_path, created_at, updated_at,
+				COALESCE(ref_number, 0)
 			FROM finding_lineage WHERE source_path = ?
 			ORDER BY updated_at DESC LIMIT ? OFFSET ?`, sourcePath, limit, offset)
 	} else {
@@ -167,7 +190,8 @@ func (r *SQLiteLineageRepo) ListBySourcePath(sourcePath, status string, limit, o
 				first_audit_id, first_found_at, COALESCE(first_commit,''),
 				COALESCE(latest_audit_id,''), latest_found_at, COALESCE(latest_commit,''),
 				COALESCE(fixed_audit_id,''), fixed_at, COALESCE(fixed_commit,''),
-				severity, category, title, file_path, created_at, updated_at
+				severity, category, title, file_path, created_at, updated_at,
+				COALESCE(ref_number, 0)
 			FROM finding_lineage WHERE source_path = ? AND current_status = ?
 			ORDER BY updated_at DESC LIMIT ? OFFSET ?`, sourcePath, status, limit, offset)
 	}
@@ -185,7 +209,8 @@ func (r *SQLiteLineageRepo) ListByAudit(auditID string) ([]model.FindingLineage,
 			fl.first_audit_id, fl.first_found_at, COALESCE(fl.first_commit,''),
 			COALESCE(fl.latest_audit_id,''), fl.latest_found_at, COALESCE(fl.latest_commit,''),
 			COALESCE(fl.fixed_audit_id,''), fl.fixed_at, COALESCE(fl.fixed_commit,''),
-			fl.severity, fl.category, fl.title, fl.file_path, fl.created_at, fl.updated_at
+			fl.severity, fl.category, fl.title, fl.file_path, fl.created_at, fl.updated_at,
+			COALESCE(fl.ref_number, 0)
 		FROM finding_lineage fl
 		INNER JOIN findings f ON f.fingerprint = fl.fingerprint
 			AND f.agent_type = fl.agent_type
@@ -241,7 +266,8 @@ func (r *SQLiteLineageRepo) GetOpenBySourcePath(sourcePath, agentType string) ([
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage
 		WHERE source_path = ? AND agent_type = ? AND current_status IN ('open','in_progress')`, sourcePath, agentType)
 	if err != nil {
@@ -305,6 +331,7 @@ func scanSQLiteLineage(row *sql.Row) (*model.FindingLineage, error) {
 		&l.LatestAuditID, &latestFoundAt, &l.LatestCommit,
 		&l.FixedAuditID, &fixedAt, &l.FixedCommit,
 		&l.Severity, &l.Category, &l.Title, &l.FilePath, &createdAt, &updatedAt,
+		&l.RefNumber,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -323,6 +350,9 @@ func scanSQLiteLineage(row *sql.Row) (*model.FindingLineage, error) {
 		t, _ := time.Parse(time.RFC3339, fixedAt.String)
 		l.FixedAt = &t
 	}
+	if l.RefNumber > 0 {
+		l.Ref = l.FormatRef()
+	}
 	return &l, nil
 }
 
@@ -339,6 +369,7 @@ func scanSQLiteLineageRows(rows *sql.Rows) ([]model.FindingLineage, error) {
 			&l.LatestAuditID, &latestFoundAt, &l.LatestCommit,
 			&l.FixedAuditID, &fixedAt, &l.FixedCommit,
 			&l.Severity, &l.Category, &l.Title, &l.FilePath, &createdAt, &updatedAt,
+			&l.RefNumber,
 		); err != nil {
 			return nil, fmt.Errorf("scan lineage row: %w", err)
 		}
@@ -352,6 +383,9 @@ func scanSQLiteLineageRows(rows *sql.Rows) ([]model.FindingLineage, error) {
 		if fixedAt.Valid && fixedAt.String != "" {
 			t, _ := time.Parse(time.RFC3339, fixedAt.String)
 			l.FixedAt = &t
+		}
+		if l.RefNumber > 0 {
+			l.Ref = l.FormatRef()
 		}
 		result = append(result, l)
 	}

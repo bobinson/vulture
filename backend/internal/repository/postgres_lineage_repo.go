@@ -31,14 +31,30 @@ func (r *PostgresLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 	if l.UpdatedAt.IsZero() {
 		l.UpdatedAt = now
 	}
-	_, err := r.db.Exec(`
+	// Assign next ref_number atomically. Use a serializable transaction
+	// to prevent duplicate ref_numbers under concurrent inserts.
+	tx, txErr := r.db.Begin()
+	if txErr != nil {
+		return fmt.Errorf("begin lineage tx: %w", txErr)
+	}
+	defer tx.Rollback()
+
+	var nextRef int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(ref_number), 0) + 1 FROM finding_lineage`).Scan(&nextRef); err != nil {
+		return fmt.Errorf("next ref_number: %w", err)
+	}
+	l.RefNumber = nextRef
+	l.Ref = l.FormatRef()
+
+	_, err := tx.Exec(`
 		INSERT INTO finding_lineage (
 			id, fingerprint, source_path, agent_type, current_status,
 			notes, ticket_url, first_audit_id, first_found_at, first_commit,
 			latest_audit_id, latest_found_at, latest_commit,
 			fixed_audit_id, fixed_at, fixed_commit,
-			severity, category, title, file_path, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+			severity, category, title, file_path, created_at, updated_at,
+			ref_number
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
 		ON CONFLICT (fingerprint, source_path, agent_type) DO UPDATE SET
 			latest_audit_id = $11, latest_found_at = $12, latest_commit = $13, updated_at = now()`,
 		l.ID, l.Fingerprint, l.SourcePath, l.AgentType, string(l.CurrentStatus),
@@ -46,11 +62,22 @@ func (r *PostgresLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 		nullIfEmpty(l.LatestAuditID), l.LatestFoundAt, l.LatestCommit,
 		nullIfEmpty(l.FixedAuditID), l.FixedAt, l.FixedCommit,
 		l.Severity, l.Category, l.Title, l.FilePath, l.CreatedAt, l.UpdatedAt,
+		l.RefNumber,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert lineage: %w", err)
 	}
-	return nil
+
+	// On conflict (update path), restore the existing ref from DB
+	// since the struct was mutated with a new ref that was not actually stored.
+	var storedRef int
+	if scanErr := tx.QueryRow(`SELECT COALESCE(ref_number, 0) FROM finding_lineage WHERE fingerprint = $1 AND source_path = $2 AND agent_type = $3`,
+		l.Fingerprint, l.SourcePath, l.AgentType).Scan(&storedRef); scanErr == nil {
+		l.RefNumber = storedRef
+		l.Ref = l.FormatRef()
+	}
+
+	return tx.Commit()
 }
 
 func (r *PostgresLineageRepo) GetLineage(id string) (*model.FindingLineage, error) {
@@ -60,7 +87,8 @@ func (r *PostgresLineageRepo) GetLineage(id string) (*model.FindingLineage, erro
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id::text,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id::text,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage WHERE id = $1`, id)
 	return scanPostgresLineage(row)
 }
@@ -72,7 +100,8 @@ func (r *PostgresLineageRepo) GetLineageByFingerprint(fingerprint, sourcePath, a
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id::text,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id::text,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage
 		WHERE fingerprint = $1 AND source_path = $2 AND agent_type = $3`, fingerprint, sourcePath, agentType)
 	return scanPostgresLineage(row)
@@ -89,7 +118,8 @@ func (r *PostgresLineageRepo) GetLineageByFingerprints(fingerprints []string, so
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id::text,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id::text,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage
 		WHERE fingerprint = ANY($1) AND source_path = $2`,
 		pq.Array(fingerprints), sourcePath,
@@ -124,7 +154,8 @@ func (r *PostgresLineageRepo) ListBySourcePath(sourcePath, status string, limit,
 				first_audit_id, first_found_at, COALESCE(first_commit,''),
 				COALESCE(latest_audit_id::text,''), latest_found_at, COALESCE(latest_commit,''),
 				COALESCE(fixed_audit_id::text,''), fixed_at, COALESCE(fixed_commit,''),
-				severity, category, title, file_path, created_at, updated_at
+				severity, category, title, file_path, created_at, updated_at,
+				COALESCE(ref_number, 0)
 			FROM finding_lineage WHERE source_path = $1
 			ORDER BY updated_at DESC LIMIT $2 OFFSET $3`, sourcePath, limit, offset)
 	} else {
@@ -134,7 +165,8 @@ func (r *PostgresLineageRepo) ListBySourcePath(sourcePath, status string, limit,
 				first_audit_id, first_found_at, COALESCE(first_commit,''),
 				COALESCE(latest_audit_id::text,''), latest_found_at, COALESCE(latest_commit,''),
 				COALESCE(fixed_audit_id::text,''), fixed_at, COALESCE(fixed_commit,''),
-				severity, category, title, file_path, created_at, updated_at
+				severity, category, title, file_path, created_at, updated_at,
+				COALESCE(ref_number, 0)
 			FROM finding_lineage WHERE source_path = $1 AND current_status = $2
 			ORDER BY updated_at DESC LIMIT $3 OFFSET $4`, sourcePath, status, limit, offset)
 	}
@@ -152,7 +184,8 @@ func (r *PostgresLineageRepo) ListByAudit(auditID string) ([]model.FindingLineag
 			fl.first_audit_id, fl.first_found_at, COALESCE(fl.first_commit,''),
 			COALESCE(fl.latest_audit_id::text,''), fl.latest_found_at, COALESCE(fl.latest_commit,''),
 			COALESCE(fl.fixed_audit_id::text,''), fl.fixed_at, COALESCE(fl.fixed_commit,''),
-			fl.severity, fl.category, fl.title, fl.file_path, fl.created_at, fl.updated_at
+			fl.severity, fl.category, fl.title, fl.file_path, fl.created_at, fl.updated_at,
+			COALESCE(fl.ref_number, 0)
 		FROM finding_lineage fl
 		INNER JOIN findings f ON f.fingerprint = fl.fingerprint
 			AND f.agent_type = fl.agent_type
@@ -206,7 +239,8 @@ func (r *PostgresLineageRepo) GetOpenBySourcePath(sourcePath, agentType string) 
 			first_audit_id, first_found_at, COALESCE(first_commit,''),
 			COALESCE(latest_audit_id::text,''), latest_found_at, COALESCE(latest_commit,''),
 			COALESCE(fixed_audit_id::text,''), fixed_at, COALESCE(fixed_commit,''),
-			severity, category, title, file_path, created_at, updated_at
+			severity, category, title, file_path, created_at, updated_at,
+			COALESCE(ref_number, 0)
 		FROM finding_lineage
 		WHERE source_path = $1 AND agent_type = $2 AND current_status IN ('open','in_progress')`, sourcePath, agentType)
 	if err != nil {
@@ -267,6 +301,7 @@ func scanPostgresLineage(row *sql.Row) (*model.FindingLineage, error) {
 		&l.LatestAuditID, &latestFoundAt, &l.LatestCommit,
 		&l.FixedAuditID, &fixedAt, &l.FixedCommit,
 		&l.Severity, &l.Category, &l.Title, &l.FilePath, &l.CreatedAt, &l.UpdatedAt,
+		&l.RefNumber,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -279,6 +314,9 @@ func scanPostgresLineage(row *sql.Row) (*model.FindingLineage, error) {
 	}
 	if fixedAt.Valid {
 		l.FixedAt = &fixedAt.Time
+	}
+	if l.RefNumber > 0 {
+		l.Ref = l.FormatRef()
 	}
 	return &l, nil
 }
@@ -295,6 +333,7 @@ func scanPostgresLineageRows(rows *sql.Rows) ([]model.FindingLineage, error) {
 			&l.LatestAuditID, &latestFoundAt, &l.LatestCommit,
 			&l.FixedAuditID, &fixedAt, &l.FixedCommit,
 			&l.Severity, &l.Category, &l.Title, &l.FilePath, &l.CreatedAt, &l.UpdatedAt,
+			&l.RefNumber,
 		); err != nil {
 			return nil, fmt.Errorf("scan lineage row: %w", err)
 		}
@@ -303,6 +342,9 @@ func scanPostgresLineageRows(rows *sql.Rows) ([]model.FindingLineage, error) {
 		}
 		if fixedAt.Valid {
 			l.FixedAt = &fixedAt.Time
+		}
+		if l.RefNumber > 0 {
+			l.Ref = l.FormatRef()
 		}
 		result = append(result, l)
 	}

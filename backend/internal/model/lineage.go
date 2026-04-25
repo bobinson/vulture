@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // LineageStatus represents the lifecycle state of a finding across audits.
 type LineageStatus string
@@ -50,6 +53,16 @@ type FindingLineage struct {
 	FilePath      string        `json:"file_path"`
 	CreatedAt     time.Time     `json:"created_at"`
 	UpdatedAt     time.Time     `json:"updated_at"`
+	RefNumber     int           `json:"ref_number"`
+	Ref           string        `json:"ref,omitempty"`
+}
+
+// FormatRef returns the human-readable reference string (e.g. "VLT-0042").
+func (l *FindingLineage) FormatRef() string {
+	if l.RefNumber <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("VLT-%04d", l.RefNumber)
 }
 
 // LineageEvent is a single audit-trail entry for a lineage record.
