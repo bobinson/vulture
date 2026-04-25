@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "vulture-prove-agent"
 version = "0.1.0"
 description = "Prove companion agent for autonomous finding verification"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "vulture-shared",

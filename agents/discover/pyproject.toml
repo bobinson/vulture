@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "vulture-discover-agent"
 version = "0.1.0"
 description = "Discover agent for endpoint discovery and attack surface mapping"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "vulture-shared",

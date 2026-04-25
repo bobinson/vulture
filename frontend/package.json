@@ -3,6 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "license": "Apache-2.0",
+  "author": "Vulture maintainers",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vulture-project/vulture.git",
+    "directory": "frontend"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
