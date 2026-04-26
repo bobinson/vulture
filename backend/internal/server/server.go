@@ -43,6 +43,7 @@ func New(cfg *config.Config) (*Server, error) {
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
 	llmHealthH := handler.NewLLMHealthHandler(cfg.Agents)
+	auditH.SetLLMHealth(llmHealthH)
 	fsH := handler.NewFilesystemHandler()
 
 	mux := http.NewServeMux()

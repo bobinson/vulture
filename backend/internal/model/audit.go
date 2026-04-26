@@ -15,27 +15,30 @@ const (
 )
 
 type Audit struct {
-	ID            string            `json:"id"`
-	SourceID      string            `json:"source_id"`
-	SourcePath    string            `json:"source_path,omitempty"`
-	Types         []string          `json:"types"`
-	Config        json.RawMessage   `json:"config"`
-	Status        AuditStatus       `json:"status"`
-	Findings      []Finding         `json:"findings,omitempty"`
-	FindingsCount int               `json:"findings_count"`
-	Scores        map[string]int    `json:"scores,omitempty"`
-	ProveResults  []ProveResult     `json:"prove_results,omitempty"`
-	ProveCount    int               `json:"prove_count,omitempty"`
-	WebhookURL    string            `json:"webhook_url,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
-	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
+	ID             string            `json:"id"`
+	SourceID       string            `json:"source_id"`
+	SourcePath     string            `json:"source_path,omitempty"`
+	Types          []string          `json:"types"`
+	Config         json.RawMessage   `json:"config"`
+	Status         AuditStatus       `json:"status"`
+	Findings       []Finding         `json:"findings,omitempty"`
+	FindingsCount  int               `json:"findings_count"`
+	Scores         map[string]int    `json:"scores,omitempty"`
+	ProveResults   []ProveResult     `json:"prove_results,omitempty"`
+	ProveCount     int               `json:"prove_count,omitempty"`
+	WebhookURL     string            `json:"webhook_url,omitempty"`
+	DegradedReason string            `json:"degraded_reason,omitempty"` // Feature 0039: canonical LLMHealthStatus.message() when LLM unreachable at submit time
+	CreatedAt      time.Time         `json:"created_at"`
+	CompletedAt    *time.Time        `json:"completed_at,omitempty"`
 }
 
 type AuditRequest struct {
-	SourceID   string          `json:"source_id"`
-	Types      []string        `json:"types"`
-	Config     json.RawMessage `json:"config"`
-	WebhookURL string          `json:"webhook_url,omitempty"` // Feature 0031: optional callback on completion
+	SourceID       string          `json:"source_id"`
+	Types          []string        `json:"types"`
+	Config         json.RawMessage `json:"config"`
+	WebhookURL     string          `json:"webhook_url,omitempty"`     // Feature 0031: optional callback on completion
+	DegradedReason string          `json:"degraded_reason,omitempty"` // Feature 0039: populated by handler from /api/llm/health preflight; not user-supplied
+
 }
 
 // AuditComparison holds the diff between the current audit and the previous one.

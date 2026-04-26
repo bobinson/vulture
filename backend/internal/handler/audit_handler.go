@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,7 @@ type AuditHandler struct {
 	svc         service.AuditService
 	proveSvc    service.ProveService
 	lineageRepo repository.LineageRepository
+	llmHealth   *LLMHealthHandler
 }
 
 // SetProveService enables prove-result enrichment on audit responses.
@@ -29,6 +31,16 @@ func (h *AuditHandler) SetLineageRepo(repo repository.LineageRepository) {
 	h.lineageRepo = repo
 }
 
+// SetLLMHealth enables per-audit LLM-health preflight (feature 0039).
+// When set, Create reads the cached /api/llm/health value; if degraded
+// (LLM unreachable while VULTURE_USE_LLM=true), populates
+// audit.DegradedReason with the canonical message string. When
+// VULTURE_REQUIRE_LLM=true and LLM is degraded, the request is rejected
+// with HTTP 503.
+func (h *AuditHandler) SetLLMHealth(handler *LLMHealthHandler) {
+	h.llmHealth = handler
+}
+
 func NewAuditHandler(svc service.AuditService) *AuditHandler {
 	return &AuditHandler{svc: svc}
 }
@@ -40,6 +52,24 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	// Feature 0039: per-audit LLM-health preflight. Best-effort — if the
+	// aggregator cannot reach any agent, proceed without populating
+	// degraded_reason rather than failing audit creation.
+	var degradedMsg string
+	if h.llmHealth != nil {
+		if hr, err := h.llmHealth.Get(r.Context()); err == nil {
+			if hr.Provider != "disabled" && !hr.Reachable {
+				degradedMsg = hr.Message
+				if os.Getenv("VULTURE_REQUIRE_LLM") == "true" {
+					writeError(w, http.StatusServiceUnavailable, hr.Message)
+					return
+				}
+			}
+		}
+	}
+
+	req.DegradedReason = degradedMsg
 	audit, err := h.svc.Create(&req)
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "source not found")

@@ -55,14 +55,15 @@ func (s *auditService) Create(req *model.AuditRequest) (*model.Audit, error) {
 		cfg = json.RawMessage("{}")
 	}
 	audit := &model.Audit{
-		ID:         generateID(req.SourceID),
-		SourceID:   req.SourceID,
-		Types:      req.Types,
-		Config:     cfg,
-		Status:     model.AuditStatusPending,
-		Scores:     map[string]int{},
-		WebhookURL: req.WebhookURL,
-		CreatedAt:  time.Now().UTC(),
+		ID:             generateID(req.SourceID),
+		SourceID:       req.SourceID,
+		Types:          req.Types,
+		Config:         cfg,
+		Status:         model.AuditStatusPending,
+		Scores:         map[string]int{},
+		WebhookURL:     req.WebhookURL,
+		DegradedReason: req.DegradedReason,
+		CreatedAt:      time.Now().UTC(),
 	}
 	if err := s.repo.CreateAudit(audit); err != nil {
 		return nil, fmt.Errorf("create audit: %w", err)
