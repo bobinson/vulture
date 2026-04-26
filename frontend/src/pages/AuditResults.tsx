@@ -17,6 +17,7 @@ import { ProveSummaryCard } from "@/components/results/ProveSummaryCard.tsx";
 import { CrossAgentSummary } from "@/components/results/CrossAgentSummary.tsx";
 import { AuditComparisonView } from "@/components/results/AuditComparisonView.tsx";
 import { FixedFindingsList } from "@/components/results/FixedFindingsList.tsx";
+import { LLMDegradedBanner } from "@/components/results/LLMDegradedBanner.tsx";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 
@@ -136,6 +137,10 @@ export function AuditResults() {
   if (isTerminal) {
     return (
       <div className="space-y-5 max-w-6xl">
+        {/* Feature 0039: LLM-degraded banner — shows the canonical message
+            captured at audit-creation time when LLM was unreachable. */}
+        <LLMDegradedBanner preset={audit?.degraded_reason} />
+
         {/* Status bar */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">

@@ -11,6 +11,7 @@ import type {
   DashboardStats,
   DiscoverResult,
   FindingLineage,
+  LLMHealth,
   LineageEvent,
   MemoryEdge,
   MemoryWithEdges,
@@ -147,6 +148,11 @@ export const api = {
   // Agents
   getAgents(): Promise<AgentInfo[]> {
     return request<AgentInfo[]>("/api/agents");
+  },
+
+  /** Feature 0039: live LLM provider health (/api/llm/health). */
+  getLLMHealth(): Promise<LLMHealth> {
+    return request<LLMHealth>("/api/llm/health");
   },
 
   checkCache(sourceId: string, types: string[]): Promise<CacheCheckResponse> {

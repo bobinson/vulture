@@ -50,8 +50,22 @@ export interface Audit {
   scores?: Record<string, number>;
   prove_results?: ProveResult[];
   prove_count?: number;
+  /** Feature 0039: canonical LLMHealthStatus.message() when LLM was unreachable
+   * at audit-creation time. Empty/undefined means the audit ran in normal mode. */
+  degraded_reason?: string;
   created_at: string;
   completed_at?: string;
+}
+
+/** Feature 0039: live LLM health status from /api/llm/health. */
+export interface LLMHealth {
+  provider: string;
+  endpoint: string;
+  model: string;
+  reachable: boolean;
+  error?: string;
+  detail?: Record<string, unknown>;
+  message: string;
 }
 
 export interface Finding {

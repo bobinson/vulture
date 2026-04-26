@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { SourceInput } from "@/components/audit/SourceInput.tsx";
 import { AuditTypeSelector } from "@/components/audit/AuditTypeSelector.tsx";
+import { LLMDegradedBanner } from "@/components/results/LLMDegradedBanner.tsx";
 import { useSource, validateGitUrl, validateLocalPath } from "@/hooks/useSource.ts";
 import { useAudit } from "@/hooks/useAudit.ts";
 import { ROUTES } from "@/lib/constants.ts";
@@ -98,6 +99,8 @@ export function AuditNew() {
   return (
     <div className="max-w-3xl space-y-5">
       <p className="text-[13px] text-muted -mt-4 mb-2">{t("audit.subtitle")}</p>
+
+      <LLMDegradedBanner />
 
       <SourceInput
         sourceType={sourceType}
