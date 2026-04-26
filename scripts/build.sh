@@ -19,6 +19,13 @@ if [[ -d "$HOME/.pyenv/shims" ]] && [[ ":$PATH:" != *":$HOME/.pyenv/shims:"* ]];
     export PATH="$HOME/.pyenv/shims:$HOME/.pyenv/bin:$PATH"
 fi
 
+# Prefer the user's installed Go at $HOME/go/bin/go over a possibly-older
+# Debian-packaged /usr/bin/go. With this on PATH the rest of the script
+# can just call `go` and it'll resolve to the right binary.
+if [[ -x "$HOME/go/bin/go" ]] && [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
+    export PATH="$HOME/go/bin:$PATH"
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -36,10 +43,10 @@ err()  { echo -e "${RED}[build]${NC} $*" >&2; }
 
 check_go() {
     if ! command -v go &>/dev/null; then
-        err "Go not found. Install with: sudo apt install golang-go"
+        err "Go not found. Install with: sudo apt install golang-go OR put a Go binary at \$HOME/go/bin/go"
         return 1
     fi
-    log "Go $(go version | awk '{print $3}')"
+    log "Go $(go version | awk '{print $3}') (from $(command -v go))"
 }
 
 check_python() {
@@ -78,7 +85,10 @@ build_backend() {
     log "Building Go backend..."
     check_go || return 1
     cd "$PROJECT_ROOT/backend"
-    go build -o bin/vulture ./cmd/vulture/
+    if ! go build -o bin/vulture ./cmd/vulture/; then
+        err "Backend build FAILED"
+        return 1
+    fi
     ok "Backend binary: backend/bin/vulture"
 }
 
@@ -90,7 +100,10 @@ build_cli() {
     log "Building Go CLI..."
     check_go || return 1
     cd "$PROJECT_ROOT/cli"
-    go build -o bin/vulture ./
+    if ! go build -o bin/vulture ./; then
+        err "CLI build FAILED"
+        return 1
+    fi
     ok "CLI binary: cli/bin/vulture"
 }
 
