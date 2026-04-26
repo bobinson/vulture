@@ -47,8 +47,27 @@ def create_sse_app(
     app = FastAPI(title=f"Vulture {agent_name} Agent")
 
     @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "healthy", "agent": agent_name}
+    async def health() -> dict[str, Any]:
+        """Process liveness + LLM reachability sub-status.
+
+        The 'llm' sub-object is the canonical LLMHealthStatus.as_dict();
+        the backend /api/llm/health aggregator reads it verbatim from any
+        one agent. Backwards-compatible — `status` and `agent` keys are
+        preserved.
+        """
+        # Lazy-import so this module stays usable in environments without
+        # the new shared.llm.health module (e.g. older agent images mid-rollout).
+        try:
+            from shared.llm.health import check_llm_health
+            llm_status = await check_llm_health(timeout=2.0)
+            return {
+                "status": "healthy",
+                "agent": agent_name,
+                "llm": llm_status.as_dict(),
+                "llm_message": llm_status.message(),
+            }
+        except Exception:
+            return {"status": "healthy", "agent": agent_name}
 
     @app.get("/info")
     def info() -> dict[str, Any]:
