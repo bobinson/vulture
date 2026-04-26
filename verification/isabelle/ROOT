@@ -1,0 +1,5 @@
+session Pipeline_Verification = HOL +
+  description "Formal verification of Vulture pipeline state machine"
+  theories
+    Pipeline_State
+    Stage_Expansion

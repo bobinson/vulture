@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,13 +37,25 @@ var defaultFrontendURL = cliResolve("ports", "frontend_host", "23001", "http://l
 // bare-metal dev mode. When this is false, callers should treat the
 // backend as a host process with full filesystem access (no path
 // translation, no remount).
+//
+// Cached per-process: `docker inspect` shells out (~100ms cold) and the
+// answer cannot change within a single CLI invocation, so we memoise.
+var (
+	backendInDockerOnce  sync.Once
+	backendInDockerCache bool
+)
+
 func backendInDocker() bool {
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}",
-		"vulture-backend-1").Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(out)) == "true"
+	backendInDockerOnce.Do(func() {
+		out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}",
+			"vulture-backend-1").Output()
+		if err != nil {
+			backendInDockerCache = false
+			return
+		}
+		backendInDockerCache = strings.TrimSpace(string(out)) == "true"
+	})
+	return backendInDockerCache
 }
 
 // discoverSourceDir finds the host path mapped to /mnt/source in the backend

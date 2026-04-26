@@ -263,6 +263,7 @@ export interface ComparisonChangedFinding {
   title: string;
   old_severity: Severity;
   new_severity: Severity;
+  agent_type: string;
   file_path: string;
   ref?: string;
   ref_number?: number;

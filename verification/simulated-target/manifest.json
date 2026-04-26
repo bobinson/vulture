@@ -1,0 +1,41 @@
+{
+  "target_url": "http://localhost:9999",
+
+  "endpoints": {
+    "expected_discovered": ["/api/users", "/api/admin", "/api/orders", "/.env", "/openapi.json", "/health"],
+    "expected_from_openapi": ["/api/users", "/api/admin", "/api/orders"]
+  },
+
+  "technologies": {
+    "expected_min": 1,
+    "expected_patterns": ["OpenAPI"]
+  },
+
+  "vulnerabilities": {
+    "must_find": [
+      {"id": "VULN_001", "category": "info_exposure", "title_pattern": ".*[Ee]xposed.*\\.env.*|.*[Ss]ensitive.*file.*", "severity_min": "high"},
+      {"id": "VULN_002", "category": "security_header", "title_pattern": ".*HSTS.*|.*Strict.Transport.*", "severity_min": "medium"},
+      {"id": "VULN_003", "category": "info_exposure", "title_pattern": ".*[Ss]erver.*[Hh]eader.*|.*X-Powered-By.*|.*[Vv]ersion.*leak.*", "severity_min": "low"}
+    ],
+    "must_not_find": [
+      {"id": "FALSE_001", "title_pattern": ".*[Dd]irectory.*[Ll]isting.*"},
+      {"id": "FALSE_002", "title_pattern": ".*[Oo]pen.*[Rr]edirect.*"}
+    ]
+  },
+
+  "source": {
+    "path": "./source",
+    "scan_expectations": {
+      "must_find": [
+        {"id": "SRC_001", "title_pattern": ".*SQL.*[Ii]njection.*", "severity_min": "high"},
+        {"id": "SRC_003", "title_pattern": ".*[Hh]ardcoded.*[Cc]redential.*|.*[Hh]ardcoded.*[Ss]ecret.*", "severity_min": "medium"}
+      ]
+    }
+  },
+
+  "pipeline_expectations": {
+    "scan_to_discover": {"after_scan_complete": "discover_running", "scan_must_produce_findings": true},
+    "discover_to_prove": {"after_discover_complete": "prove_running", "discover_must_find_endpoints_min": 3, "discover_must_find_technologies_min": 1},
+    "prove_completion": {"after_prove_complete": "completed", "prove_must_verify_min": 1}
+  }
+}

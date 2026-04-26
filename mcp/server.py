@@ -3,6 +3,8 @@
 import asyncio
 import os
 import re
+import stat
+import sys
 from collections import deque
 from time import monotonic
 
@@ -109,6 +111,36 @@ _client_lock = asyncio.Lock()
 
 _VALID_STATUSES = {"open", "in_progress", "resolved", "false_positive", "accepted_risk", "fixed"}
 
+
+def _read_token_file() -> str | None:
+    """Read VULTURE_API_KEY from a token file when env vars are stripped.
+
+    Some MCP hosts (e.g. Claude Desktop) drop *_KEY / *_TOKEN env vars from
+    subprocess environments. The fallback path is `~/.config/vulture/mcp_token`,
+    overridable via $VULTURE_MCP_TOKEN_FILE. Returns None when the file is
+    missing, empty, or unreadable. Warns on stderr when the file is
+    world/group-readable since the token is a secret and should be 0600.
+    """
+    path = os.environ.get(
+        "VULTURE_MCP_TOKEN_FILE",
+        os.path.expanduser("~/.config/vulture/mcp_token"),
+    )
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        sys.stderr.write(
+            f"vulture-mcp: warning: token file {path} has group/world permissions; "
+            f"recommend `chmod 0600 {path}`\n"
+        )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError:
+        return None
+    return token or None
+
 _SENSITIVE_FIELDS = ("code_snippet", "description", "recommendation", "content", "remediation_notes")
 
 
@@ -123,6 +155,8 @@ async def _get_client() -> VultureClient:
         if not url:
             raise ValueError("VULTURE_URL environment variable is required")
         key = os.environ.get("VULTURE_API_KEY")
+        if not key:
+            key = _read_token_file()
         rate = int(os.environ.get("VULTURE_MCP_RATE_LIMIT", "10"))
         os.environ.setdefault("HTTPX_LOG_LEVEL", "warn")
         _client = VultureClient(url, key, rate_limit=rate)

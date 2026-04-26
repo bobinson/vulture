@@ -77,6 +77,7 @@ type ComparisonChangedFinding struct {
 	Title       string   `json:"title"`
 	OldSeverity Severity `json:"old_severity"`
 	NewSeverity Severity `json:"new_severity"`
+	AgentType   string   `json:"agent_type"`
 	Ref         string   `json:"ref,omitempty"`
 	RefNumber   int      `json:"ref_number,omitempty"`
 	FilePath    string   `json:"file_path"`

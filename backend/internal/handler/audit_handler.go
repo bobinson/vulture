@@ -246,18 +246,8 @@ func (h *AuditHandler) enrichComparisonRefs(sourcePath string, comp *model.Audit
 	for i := range comp.FixedFindings {
 		comp.FixedFindings[i].Ref, comp.FixedFindings[i].RefNumber = apply(comp.FixedFindings[i].Fingerprint, comp.FixedFindings[i].AgentType)
 	}
-	// ChangedFindings doesn't carry agent_type today; fall back to fingerprint-only
-	// (best-effort: in the rare event the same fingerprint appears under two
-	// agents, we'd pick the first map entry — acceptable for change diffs).
 	for i := range comp.ChangedFindings {
-		fp := comp.ChangedFindings[i].Fingerprint
-		for k, l := range lin {
-			if strings.HasPrefix(k, fp+"|") && l != nil {
-				comp.ChangedFindings[i].Ref = l.FormatRef()
-				comp.ChangedFindings[i].RefNumber = l.RefNumber
-				break
-			}
-		}
+		comp.ChangedFindings[i].Ref, comp.ChangedFindings[i].RefNumber = apply(comp.ChangedFindings[i].Fingerprint, comp.ChangedFindings[i].AgentType)
 	}
 }
 
@@ -285,7 +275,8 @@ func buildComparison(current, previous *model.Audit) model.AuditComparison {
 			comp.ChangedFindings = append(comp.ChangedFindings, model.ComparisonChangedFinding{
 				Fingerprint: fp, Title: cf.Title,
 				OldSeverity: pf.Severity, NewSeverity: cf.Severity,
-				FilePath: cf.FilePath,
+				AgentType: cf.AgentType,
+				FilePath:  cf.FilePath,
 			})
 			continue
 		}
