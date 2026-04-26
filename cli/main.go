@@ -1906,9 +1906,24 @@ func apiDo(req *http.Request, token string) *http.Response {
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		// Feature 0039: 503 from /api/audits when VULTURE_REQUIRE_LLM=true
+		// and LLM is unreachable. Surface the canonical message verbatim
+		// to stderr and exit 75 (EX_TEMPFAIL) so CI can distinguish a
+		// retriable LLM outage from a genuine error.
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			tempFailf(string(body))
+		}
 		fatalf("API error (%d): %s", resp.StatusCode, string(body))
 	}
 	return resp
+}
+
+// tempFailf writes the message to stderr and exits with code 75 (EX_TEMPFAIL).
+// Used when the server signals a transient condition like LLM unreachable in
+// strict mode — CI integrations can map exit-code 75 to "retry later".
+func tempFailf(message string) {
+	fmt.Fprintf(os.Stderr, "\n  %s\n\n", message)
+	os.Exit(75)
 }
 
 func apiPost[T any](url string, body []byte, token string) T {
