@@ -86,6 +86,10 @@ func (l *Launcher) Start(ctx context.Context) error {
 		return fmt.Errorf("start agents: %w", err)
 	}
 
+	// 2.5. Probe LLM health via one agent's /health and print canonical
+	// message. Aborts on VULTURE_REQUIRE_LLM=true if degraded. Feature 0039.
+	reportLLMHealthOrAbort(ctx, l.agentURLs())
+
 	// 3. Start Go backend
 	if err := l.startBackend(ctx); err != nil {
 		return fmt.Errorf("start backend: %w", err)
@@ -197,6 +201,20 @@ func (l *Launcher) installAgentDeps(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// agentURLs returns the http://localhost:<port> URL for every registered
+// agent, used by reportLLMHealthOrAbort to query /health.
+func (l *Launcher) agentURLs() []string {
+	urls := make([]string, 0, len(config.AllAgents))
+	for _, entry := range config.AllAgents {
+		port, ok := l.cfg.AgentPorts[entry.Type]
+		if !ok || port == "" {
+			continue
+		}
+		urls = append(urls, "http://localhost:"+port)
+	}
+	return urls
 }
 
 func (l *Launcher) startAgents(ctx context.Context) error {
