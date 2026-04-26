@@ -42,6 +42,7 @@ func New(cfg *config.Config) (*Server, error) {
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
+	llmHealthH := handler.NewLLMHealthHandler(cfg.Agents)
 	fsH := handler.NewFilesystemHandler()
 
 	mux := http.NewServeMux()
@@ -52,7 +53,7 @@ func New(cfg *config.Config) (*Server, error) {
 	auditDetailHandler := auditDetailRouter(auditH, streamH)
 
 	readOnly := cfg.ReadOnly
-	authMW := registerAPIRoutes(mux, pgDB, sqliteDB, cfg, sourceH, auditH, auditsHandler, auditDetailHandler, agentH, fsH, streamH, readOnly)
+	authMW := registerAPIRoutes(mux, pgDB, sqliteDB, cfg, sourceH, auditH, auditsHandler, auditDetailHandler, agentH, llmHealthH, fsH, streamH, readOnly)
 	registerWebhookService(pgDB, sqliteDB, streamH)
 	registerMemoryRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
 	registerLineageRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW, readOnly)
@@ -165,7 +166,8 @@ func registerAPIRoutes(
 	mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, cfg *config.Config,
 	sourceH *handler.SourceHandler, auditH *handler.AuditHandler,
 	auditsH, auditDetailH http.HandlerFunc,
-	agentH *handler.AgentHandler, fsH *handler.FilesystemHandler,
+	agentH *handler.AgentHandler, llmHealthH *handler.LLMHealthHandler,
+	fsH *handler.FilesystemHandler,
 	streamH *handler.StreamHandler,
 	readOnly bool,
 ) authWrapper {
@@ -180,7 +182,7 @@ func registerAPIRoutes(
 	}
 
 	if userRepo != nil {
-		return registerAuthRoutes(mux, userRepo, cfg, sourceH, auditH, auditsH, auditDetailH, agentH, fsH, streamH, readOnly, pgDB, sqliteDB)
+		return registerAuthRoutes(mux, userRepo, cfg, sourceH, auditH, auditsH, auditDetailH, agentH, llmHealthH, fsH, streamH, readOnly, pgDB, sqliteDB)
 	}
 
 	// Fallback: no auth (no database available)
@@ -191,6 +193,7 @@ func registerAPIRoutes(
 	mux.HandleFunc("/api/audits/", ReadOnlyGuard(readOnly, auditDetailH))
 	mux.HandleFunc("/api/audits/cache", auditH.CachedAudit)
 	mux.HandleFunc("/api/agents", agentH.List)
+	mux.Handle("/api/llm/health", llmHealthH)
 	mux.HandleFunc("/api/filesystem/browse", ReadOnlyGuard(readOnly, fsH.Browse))
 	return noopAuth
 }
@@ -223,7 +226,8 @@ func registerAuthRoutes(
 	mux *http.ServeMux, userRepo repository.UserRepository, cfg *config.Config,
 	sourceH *handler.SourceHandler, auditH *handler.AuditHandler,
 	auditsH, auditDetailH http.HandlerFunc,
-	agentH *handler.AgentHandler, fsH *handler.FilesystemHandler,
+	agentH *handler.AgentHandler, llmHealthH *handler.LLMHealthHandler,
+	fsH *handler.FilesystemHandler,
 	streamH *handler.StreamHandler,
 	readOnly bool,
 	pgDB *sql.DB, sqliteDB *sql.DB,
@@ -268,6 +272,7 @@ func registerAuthRoutes(
 	mux.HandleFunc("/api/audits/", authMW.Require(ReadOnlyGuard(readOnly, auditDetailH)))
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
+	mux.HandleFunc("/api/llm/health", authMW.Require(llmHealthH.ServeHTTP))
 	mux.HandleFunc("/api/filesystem/browse", authMW.Require(ReadOnlyGuard(readOnly, fsH.Browse)))
 
 	log.Println("Auth endpoints enabled")
