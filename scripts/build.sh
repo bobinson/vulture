@@ -117,10 +117,48 @@ build_agents() {
     py=$(check_python) || return 1
     check_pip "$py" || return 1
 
-    # Install shared library first (all agents depend on it)
+    # Install into a project-local venv so installs work on PEP-668 systems
+    # (Ubuntu 24.04+) without --break-system-packages, and so the runtime
+    # launcher's findPython picks up the same interpreter we installed into.
+    local venv_dir="$PROJECT_ROOT/agents/.venv"
+    local venv_py="$venv_dir/bin/python"
+    if [[ ! -x "$venv_py" ]]; then
+        log "  Creating agents venv at $venv_dir"
+        if ! "$py" -m venv "$venv_dir"; then
+            err "  failed to create venv (install with: sudo apt install python3-venv)"
+            return 1
+        fi
+    fi
+
+    # Verify pip is functional inside the venv. Ubuntu 24.04's `python3 -m venv`
+    # sometimes ships a partially-bootstrapped pip (package dir without
+    # __main__.py) when python3-pip-whl is stale or missing — install fails
+    # with `No module named pip.__main__`. Recover via ensurepip; if that
+    # also fails, recreate the venv from scratch.
+    if ! "$venv_py" -m pip --version >/dev/null 2>&1; then
+        warn "  venv pip is broken; bootstrapping via ensurepip"
+        if ! "$venv_py" -m ensurepip --upgrade >/dev/null 2>&1; then
+            warn "  ensurepip failed; recreating venv"
+            rm -rf "$venv_dir"
+            if ! "$py" -m venv "$venv_dir"; then
+                err "  venv recreate failed (try: sudo apt install python3-venv python3-pip-whl)"
+                return 1
+            fi
+            if ! "$venv_py" -m pip --version >/dev/null 2>&1; then
+                err "  pip still unavailable after venv recreate (try: sudo apt install python3-pip-whl)"
+                return 1
+            fi
+        fi
+    fi
+    if ! "$venv_py" -m pip install --quiet --upgrade pip; then
+        warn "  pip self-upgrade failed (continuing with bundled pip)"
+    fi
+
     log "  Installing shared library..."
-    cd "$PROJECT_ROOT/agents/shared"
-    "$py" -m pip install -e . --quiet 2>&1 | tail -1 || true
+    if ! "$venv_py" -m pip install -e "$PROJECT_ROOT/agents/shared" --quiet; then
+        err "  shared library install failed"
+        return 1
+    fi
     ok "  shared library installed"
 
     # Auto-discover agents from the filesystem. Any agents/<name>/pyproject.toml
@@ -133,12 +171,21 @@ build_agents() {
         agent_name=$(basename "$agent_dir")
         [[ "$agent_name" == "shared" ]] && continue
         log "  Installing $agent_name agent..."
-        cd "$agent_dir"
-        "$py" -m pip install -e . --quiet 2>&1 | tail -1 || true
+        if ! "$venv_py" -m pip install -e "$agent_dir" --quiet; then
+            err "  $agent_name agent install failed"
+            return 1
+        fi
         ok "  $agent_name agent installed"
         installed=$((installed + 1))
     done < <(find "$PROJECT_ROOT/agents" -mindepth 1 -maxdepth 2 -name "pyproject.toml" \
              -not -path "*/node_modules/*" -printf '%h\0' | sort -z)
+
+    # Sanity check: the launcher invokes `python -m uvicorn ...`, so this
+    # has to succeed before we declare the build done.
+    if ! "$venv_py" -c "import uvicorn" 2>/dev/null; then
+        err "  uvicorn missing from venv after install — aborting"
+        return 1
+    fi
 
     ok "All $installed agents installed ($skipped skipped)"
 }
@@ -175,14 +222,14 @@ main() {
     local failed=0
     for component in "${components[@]}"; do
         case "$component" in
-            backend)  build_backend  || ((failed++)) ;;
-            cli)      build_cli      || ((failed++)) ;;
-            agents)   build_agents   || ((failed++)) ;;
-            frontend) build_frontend || ((failed++)) ;;
+            backend)  build_backend  || failed=$((failed + 1)) ;;
+            cli)      build_cli      || failed=$((failed + 1)) ;;
+            agents)   build_agents   || failed=$((failed + 1)) ;;
+            frontend) build_frontend || failed=$((failed + 1)) ;;
             *)
                 err "Unknown component: $component"
                 err "Valid components: backend, cli, agents, frontend"
-                ((failed++))
+                failed=$((failed + 1))
                 ;;
         esac
         echo ""

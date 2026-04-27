@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -76,9 +77,11 @@ func (l *Launcher) Start(ctx context.Context) error {
 
 	printBanner(l.cfg)
 
-	// 1. Install Python agent dependencies if needed
+	// 1. Install Python agent dependencies if needed. Fatal: agents can't
+	// start without uvicorn, and the previous warn-and-continue behavior
+	// produced a flood of cryptic ImportError messages.
 	if err := l.installAgentDeps(ctx); err != nil {
-		log.Printf("warning: agent deps install: %v", err)
+		return fmt.Errorf("install agent deps: %w", err)
 	}
 
 	// 2. Start Python agents
@@ -172,17 +175,19 @@ func (l *Launcher) Manager() *Manager {
 }
 
 func (l *Launcher) installAgentDeps(ctx context.Context) error {
+	// Skip if the venv (or system Python) already has uvicorn installed —
+	// the typical case after a successful `scripts/vulture.sh build`. This
+	// also avoids the previous race where pip and uvicorn raced and agents
+	// crashed with "No module named uvicorn.__main__".
+	if l.detect.UvicornOK {
+		return nil
+	}
+
 	agentsDir := filepath.Join(l.cfg.ProjectRoot, "agents")
 	sharedDir := filepath.Join(agentsDir, "shared")
 
-	// Install shared package in editable mode
-	log.Println("installing Python agent dependencies...")
-	cmd := fmt.Sprintf("%s -m pip install -e %s -q 2>/dev/null || %s -m pip install -e %s -q --break-system-packages 2>/dev/null", l.detect.PythonPath, sharedDir, l.detect.PythonPath, sharedDir)
-	err := l.mgr.Start(ctx, "pip-shared", agentsDir,
-		[]string{},
-		"sh", "-c", cmd,
-	)
-	if err != nil {
+	log.Println("installing Python agent dependencies (one-time)...")
+	if err := runPipInstallEditable(ctx, l.detect.PythonPath, sharedDir); err != nil {
 		return fmt.Errorf("install shared: %w", err)
 	}
 
@@ -191,16 +196,36 @@ func (l *Launcher) installAgentDeps(ctx context.Context) error {
 		if _, err := os.Stat(agentDir); os.IsNotExist(err) {
 			continue
 		}
-		installCmd := fmt.Sprintf("%s -m pip install -e %s -q 2>/dev/null || %s -m pip install -e %s -q --break-system-packages 2>/dev/null", l.detect.PythonPath, agentDir, l.detect.PythonPath, agentDir)
-		err := l.mgr.Start(ctx, "pip-"+entry.DirName, agentsDir,
-			[]string{},
-			"sh", "-c", installCmd,
-		)
-		if err != nil {
+		if err := runPipInstallEditable(ctx, l.detect.PythonPath, agentDir); err != nil {
 			log.Printf("warning: install %s: %v", entry.DirName, err)
 		}
 	}
+
+	// Verify uvicorn is importable now. If not, the agents will crash with
+	// a cryptic ImportError the moment they start — abort here with a clear
+	// message instead.
+	if !checkPythonModule(l.detect.PythonPath, "uvicorn") {
+		return fmt.Errorf("uvicorn not importable after pip install (python=%s); run: ./scripts/vulture.sh build agents", l.detect.PythonPath)
+	}
+	l.detect.UvicornOK = true
 	return nil
+}
+
+// runPipInstallEditable runs `pip install -e <target>` synchronously against
+// the given Python interpreter. Tries a normal install first, then falls back
+// to --break-system-packages for PEP-668 system Pythons (Ubuntu 24.04+). When
+// `python` points at a venv the first attempt always succeeds.
+func runPipInstallEditable(ctx context.Context, python, target string) error {
+	cmd := exec.CommandContext(ctx, python, "-m", "pip", "install", "-e", target, "-q")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+	cmd = exec.CommandContext(ctx, python, "-m", "pip", "install", "-e", target, "-q", "--break-system-packages")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // agentURLs returns the http://localhost:<port> URL for every registered
