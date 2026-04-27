@@ -195,6 +195,29 @@ async def _probe_openai_models_endpoint(
         )
 
 
+def _normalise_routing_prefix(model: str) -> str:
+    """Strip LiteLLM/openai routing prefixes that don't reach the upstream server.
+
+    Vulture's provider.py auto-prepends 'openai/' (and the SDK adds 'litellm/')
+    to route OpenAI-compatible endpoints through LiteLLM's chat-completions
+    path. LiteLLM strips these prefixes before sending the request to the
+    actual server (LM Studio, vLLM, LocalAI, etc.). The probe must mirror this
+    normalisation so its substring match answers what the agent's actual call
+    sees, not what's nominally configured.
+
+    Examples:
+        litellm/openai/qwen/qwen3-8b → qwen/qwen3-8b
+        openai/qwen/qwen3-8b         → qwen/qwen3-8b
+        litellm/qwen3:1.7b           → qwen3:1.7b
+        qwen/qwen3-8b                → qwen/qwen3-8b (unchanged)
+    """
+    # Try longest prefix first so 'litellm/openai/' strips both layers in one pass.
+    for prefix in ("litellm/openai/", "litellm/", "openai/"):
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
+
+
 def _interpret_models_response(
     provider: str, base_url: str, model: str, r: httpx.Response,
 ) -> LLMHealthStatus:
@@ -227,7 +250,10 @@ def _interpret_models_response(
             "endpoint returned non-JSON", {},
         )
     ids = [m.get("id", "") for m in data if isinstance(m, dict)]
-    model_loaded = (not model) or any(model in mid for mid in ids if mid)
+    # Match what LiteLLM actually sends to the upstream server (prefixes
+    # stripped) so the probe agrees with the agent's real call path.
+    normalised = _normalise_routing_prefix(model)
+    model_loaded = (not normalised) or any(normalised in mid for mid in ids if mid)
     return LLMHealthStatus(
         provider=provider, endpoint=base_url, model=model, reachable=model_loaded,
         error="" if model_loaded else (

@@ -640,6 +640,102 @@ def test_message_format_unreachable_without_endpoint():
     )
 
 
+# ===========================================================================
+# Routing-prefix normalisation (the bug observed in production with LM Studio)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_lmstudio_openai_prefix_stripped(monkeypatch):
+    """The bug observed in production: VULTURE_LLM_MODEL='openai/qwen/qwen3.6-27b'
+    while LM Studio reports it as 'qwen/qwen3.6-27b' (no prefix).
+
+    LiteLLM strips the 'openai/' prefix at call time, so the agent's actual
+    LLM call succeeds. The probe must mirror this normalisation so the banner
+    doesn't say 'unavailable' when the call would in fact succeed.
+    """
+    monkeypatch.setenv("VULTURE_USE_LLM", "true")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setenv("VULTURE_LLM_MODEL", "openai/qwen/qwen3.6-27b")
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "data": [{"id": "qwen/qwen3.6-27b"}, {"id": "minimax/minimax-m2.7"}]
+        })
+    _patch_async_client(monkeypatch, handler)
+
+    r = await check_llm_health(timeout=1.0)
+    assert r.provider == "lmstudio"
+    assert r.reachable is True, (
+        f"openai/ prefix must be stripped before matching; got error: {r.error}"
+    )
+    # Reported model field stays as configured (preserves user's actual env value).
+    assert r.model == "openai/qwen/qwen3.6-27b"
+    assert r.message() == (
+        "LLM ready: lmstudio (openai/qwen/qwen3.6-27b) at http://localhost:1234/v1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_lmstudio_litellm_openai_double_prefix_stripped(monkeypatch):
+    """Even if both routing prefixes are present (litellm/openai/...), the
+    upstream server only sees the bare name. Probe must mirror that."""
+    monkeypatch.setenv("VULTURE_USE_LLM", "true")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setenv("VULTURE_LLM_MODEL", "litellm/openai/qwen/qwen3-8b")
+
+    def handler(request):
+        return httpx.Response(200, json={"data": [{"id": "qwen/qwen3-8b"}]})
+    _patch_async_client(monkeypatch, handler)
+
+    r = await check_llm_health(timeout=1.0)
+    assert r.reachable is True
+    assert r.model == "litellm/openai/qwen/qwen3-8b"  # raw value preserved
+
+
+@pytest.mark.asyncio
+async def test_lmstudio_unprefixed_model_still_works(monkeypatch):
+    """Regression: bare model name (no prefix) must still match correctly."""
+    monkeypatch.setenv("VULTURE_USE_LLM", "true")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setenv("VULTURE_LLM_MODEL", "qwen/qwen3-8b")
+
+    def handler(request):
+        return httpx.Response(200, json={"data": [{"id": "qwen/qwen3-8b"}]})
+    _patch_async_client(monkeypatch, handler)
+
+    r = await check_llm_health(timeout=1.0)
+    assert r.reachable is True
+
+
+@pytest.mark.asyncio
+async def test_lmstudio_prefix_stripped_but_still_not_loaded(monkeypatch):
+    """Even after prefix stripping, the bare name must actually be in the
+    available list. False positive guard: if user configures a model that
+    really isn't loaded, the probe must still report degraded."""
+    monkeypatch.setenv("VULTURE_USE_LLM", "true")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setenv("VULTURE_LLM_MODEL", "openai/some/never-loaded-model")
+
+    def handler(request):
+        return httpx.Response(200, json={"data": [{"id": "qwen/qwen3-8b"}]})
+    _patch_async_client(monkeypatch, handler)
+
+    r = await check_llm_health(timeout=1.0)
+    assert r.reachable is False
+    assert "not loaded" in r.error
+
+
+def test_normalise_routing_prefix_unit():
+    """Direct unit test of the normaliser helper."""
+    from shared.llm.health import _normalise_routing_prefix
+    assert _normalise_routing_prefix("openai/qwen/qwen3-8b") == "qwen/qwen3-8b"
+    assert _normalise_routing_prefix("litellm/openai/qwen/qwen3-8b") == "qwen/qwen3-8b"
+    assert _normalise_routing_prefix("litellm/ollama/qwen3:1.7b") == "ollama/qwen3:1.7b"
+    assert _normalise_routing_prefix("qwen/qwen3-8b") == "qwen/qwen3-8b"
+    assert _normalise_routing_prefix("") == ""
+
+
 def test_as_dict_serialisable():
     s = LLMHealthStatus(
         "ollama", "http://localhost:11434", "qwen3:1.7b", True, "",
