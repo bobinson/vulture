@@ -9,7 +9,11 @@ services:
       - POSTGRES_DB=${VULTURE_DB_NAME:-vulture}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./backend/migrations:/docker-entrypoint-initdb.d
+      # Schema migrations are applied by the Go backend at startup
+      # (see backend/internal/repository/migrations). The previous
+      # `/docker-entrypoint-initdb.d` mount only fired on fresh data
+      # volumes and aborted mid-replay on errors — feature 0040
+      # replaced it with an in-binary runner that's always authoritative.
       - ./backend/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "port=${VULTURE_POSTGRES_INTERNAL_PORT:-25432}"]
     healthcheck:

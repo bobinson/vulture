@@ -58,7 +58,7 @@ vulture/
     pkg/
       gitutil/           # Git clone utilities
       fileutil/          # File tree walking
-    migrations/          # SQL migrations (001_init, 002_flexible_embeddings, 003_add_indexes)
+    internal/repository/migrations/  # SQL migrations + auto-runner (//go:embed; feature 0040)
     test/e2e/            # Go E2E tests
   agents/                # Python 3.12+
     shared/              # Common library
@@ -115,8 +115,8 @@ Phase 2 (OPTIONAL): LLM analysis → deeper reasoning on file subset that fits c
 
 ## Database
 
-- **PostgreSQL** (production): pgvector extension for embedding similarity search. Schema in `backend/migrations/`.
-- **SQLite** (local dev fallback): WAL mode + busy_timeout. Embeddings stored as JSON text.
+- **PostgreSQL** (production): pgvector extension for embedding similarity search. Schema migrations in `backend/internal/repository/migrations/` (embedded into the binary via `//go:embed`; auto-applied at startup by the in-Go runner — feature 0040).
+- **SQLite** (local dev fallback): WAL mode + busy_timeout. Embeddings stored as JSON text. SQLite schema is still managed by the inline `migrate()` function in `sqlite_repo.go` — unifying it with the Postgres migration runner is tracked as a follow-up to feature 0040.
 - **Key tables**: `users`, `sources`, `audits`, `findings`, `audit_memories` (with vector column), `memory_edges` (graph relations).
 
 ## Development Commands
@@ -173,7 +173,7 @@ Post-edit verification commands (run these after modifying files of the correspo
 - **Go** (`*.go`): `cd backend && go vet ./...` and `go test ./...` for the affected package
 - **Python** (`*.py`): `cd agents/<component> && python -m pytest tests/unit/ -q`
 - **TypeScript/React** (`*.ts`, `*.tsx`): `cd frontend && npx tsc --noEmit` and `npx vitest run` for affected test files
-- **SQL migrations** (`*.sql`): Verify both `postgres_*.go` and `sqlite_*.go` repositories match the schema
+- **SQL migrations** (`*.sql`): see `docs/guides/migration_authoring.md` for the full contract (filename grammar, idempotency, FK type-match rule). Migrations are embedded into the Go binary and auto-applied at backend startup. Verify locally with the integration test: `POSTGRES_TEST_DSN=postgres://test:test@localhost:25439/test?sslmode=disable go test -tags=integration ./internal/repository/migrations/`
 
 Do NOT batch multiple file edits before testing — test after each logical change so breakage is caught at the source rather than during a later audit pass.
 

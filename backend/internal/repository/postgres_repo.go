@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/repository/migrations"
 
 	"github.com/lib/pq"
 )
@@ -16,7 +18,23 @@ type PostgresRepo struct {
 	db *sql.DB
 }
 
+// NewPostgresRepo opens a connection to Postgres and applies pending
+// schema migrations before returning. Use this for read/write backend
+// instances (modes A and B). For read-only viewer instances (mode C),
+// use NewPostgresRepoReadOnly to skip the migration step (the writer
+// instance owns the schema; viewer DB users typically lack DDL perms).
 func NewPostgresRepo(dsn string) (*PostgresRepo, error) {
+	return newPostgresRepo(dsn, true)
+}
+
+// NewPostgresRepoReadOnly opens a Postgres connection without applying
+// migrations. Used by the read-only viewer (feature 0030 / mode C),
+// which connects to a DB already migrated by the writer instance.
+func NewPostgresRepoReadOnly(dsn string) (*PostgresRepo, error) {
+	return newPostgresRepo(dsn, false)
+}
+
+func newPostgresRepo(dsn string, applyMigrations bool) (*PostgresRepo, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -27,6 +45,15 @@ func NewPostgresRepo(dsn string) (*PostgresRepo, error) {
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
+	}
+	if applyMigrations {
+		// Apply pending schema migrations before any application code runs.
+		// Concurrent backend starts serialize via a Postgres advisory lock;
+		// a failed migration aborts startup with a descriptive error.
+		if err := migrations.Apply(context.Background(), db, migrations.Postgres); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("apply migrations: %w", err)
+		}
 	}
 	return &PostgresRepo{db: db}, nil
 }

@@ -1,5 +1,5 @@
 -- Feature 0031: audit webhook callbacks
-ALTER TABLE audits ADD COLUMN webhook_url TEXT;
+ALTER TABLE audits ADD COLUMN IF NOT EXISTS webhook_url TEXT;
 
 CREATE TABLE IF NOT EXISTS audit_webhook_deliveries (
     id            TEXT PRIMARY KEY,

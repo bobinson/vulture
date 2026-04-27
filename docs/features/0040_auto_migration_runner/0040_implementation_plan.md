@@ -49,12 +49,19 @@ schema changes deterministically at startup, tracks applied versions in a
 
 ## Goals
 
-1. **Single source of truth**: all schema changes live in `backend/migrations/*.sql`;
-   the runner applies them to whichever DB backend is configured (Postgres or
-   SQLite). The hand-written CREATE TABLEs in `sqlite_repo.go` go away.
+1. **Single source of truth for Postgres**: schema changes live in
+   `backend/internal/repository/migrations/*.sql`; the runner applies
+   them at startup. Read-only viewer mode (feature 0030 / mode C) opens
+   via `NewPostgresRepoReadOnly` and skips migration application —
+   writers own the schema.
+   *(SQLite unification was descoped from v1.0 — see decision log entry
+   2026-04-28. The SQLite schema in `sqlite_repo.go::migrate()` diverges
+   fundamentally from Postgres (TEXT vs UUID, no `vector`, no
+   `uuid-ossp`/`pg_trgm`), and unifying would require dialect-aware
+   migrations. Tracked as a follow-up feature.)*
 2. **Idempotent + safe at startup**: backend startup blocks on migrations.
-   Concurrent backends serialize via an advisory lock. Each migration runs in
-   a transaction (Postgres) or with `BEGIN IMMEDIATE` (SQLite).
+   Concurrent backends serialize via an advisory lock pinned to a single
+   connection.
 3. **Compatible with existing deployments**: existing Postgres volumes that
    already have N migrations applied via `docker-entrypoint-initdb.d` keep
    working. The runner detects "already applied" and writes the historical

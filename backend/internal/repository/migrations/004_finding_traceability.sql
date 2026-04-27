@@ -3,17 +3,17 @@
 -- and creates finding_lineage + lineage_events tables.
 
 -- Add git metadata to sources
-ALTER TABLE sources ADD COLUMN git_branch TEXT;
-ALTER TABLE sources ADD COLUMN git_commit_hash TEXT;
-ALTER TABLE sources ADD COLUMN git_commit_short TEXT;
-ALTER TABLE sources ADD COLUMN git_remote_url TEXT;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS git_branch TEXT;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS git_commit_hash TEXT;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS git_commit_short TEXT;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS git_remote_url TEXT;
 
 -- Add fingerprint to findings
-ALTER TABLE findings ADD COLUMN fingerprint TEXT;
-CREATE INDEX idx_findings_fingerprint ON findings (fingerprint) WHERE fingerprint IS NOT NULL;
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS fingerprint TEXT;
+CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings (fingerprint) WHERE fingerprint IS NOT NULL;
 
 -- Finding lineage: cross-audit identity and lifecycle
-CREATE TABLE finding_lineage (
+CREATE TABLE IF NOT EXISTS finding_lineage (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     fingerprint     TEXT NOT NULL,
     source_path     TEXT NOT NULL,
@@ -40,11 +40,11 @@ CREATE TABLE finding_lineage (
     CONSTRAINT uq_lineage UNIQUE (fingerprint, source_path, agent_type)
 );
 
-CREATE INDEX idx_lineage_source_path ON finding_lineage (source_path);
-CREATE INDEX idx_lineage_status ON finding_lineage (current_status);
+CREATE INDEX IF NOT EXISTS idx_lineage_source_path ON finding_lineage (source_path);
+CREATE INDEX IF NOT EXISTS idx_lineage_status ON finding_lineage (current_status);
 
 -- Lineage events: audit trail
-CREATE TABLE lineage_events (
+CREATE TABLE IF NOT EXISTS lineage_events (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     lineage_id  UUID NOT NULL REFERENCES finding_lineage(id) ON DELETE CASCADE,
     event_type  VARCHAR(30) NOT NULL
@@ -58,4 +58,4 @@ CREATE TABLE lineage_events (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_lineage_events_lineage ON lineage_events (lineage_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_lineage_events_lineage ON lineage_events (lineage_id, created_at);

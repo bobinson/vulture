@@ -452,7 +452,15 @@ func (s *Server) Handler() http.Handler {
 
 func openRepo(cfg *config.Config) (repository.AuditRepository, *sql.DB, *sql.DB, error) {
 	if cfg.DBDSN != "" {
-		repo, err := repository.NewPostgresRepo(cfg.DBDSN)
+		// Read-only viewer (mode C) connects to a writer-owned schema and
+		// typically lacks DDL perms — skip the migration step.
+		var repo *repository.PostgresRepo
+		var err error
+		if cfg.ReadOnly {
+			repo, err = repository.NewPostgresRepoReadOnly(cfg.DBDSN)
+		} else {
+			repo, err = repository.NewPostgresRepo(cfg.DBDSN)
+		}
 		if err != nil {
 			return nil, nil, nil, err
 		}

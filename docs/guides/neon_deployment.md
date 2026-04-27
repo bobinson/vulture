@@ -143,7 +143,7 @@ The writer uses its LM Studio embedding model (`text-embedding-nomic-embed-text-
 |---------|-----------|
 | Network latency (desktop → Neon) | Pick Neon region close to desktop. Inserts are already batched via multi-value `INSERT`. Pooled connection string reduces handshake overhead. |
 | First-query cold start on Neon free tier | ~1-2 s after idle. Use Neon Pro or disable autosuspend if this matters. |
-| Concurrent migrations | Both backends run `CREATE ... IF NOT EXISTS` at startup. Idempotent. If it ever becomes a problem, wrap migrations in `pg_advisory_lock`. |
+| Concurrent migrations | The writer backend applies pending migrations at startup via the in-Go runner (feature 0040), serialized across instances by a Postgres advisory lock (`0x564C545F4D49475F`). The read-only viewer (mode C) opens via `NewPostgresRepoReadOnly` and skips migration application entirely — the writer owns the schema. See `docs/guides/migration_authoring.md` for the runner contract. |
 | Live streams across instances | SSE stream tokens are in-memory per backend. The viewer cannot stream a live audit running on the desktop — it sees only completed results. For live viewing, point your browser at the desktop backend URL directly. |
 | Secrets management | Don't commit `.env`. Use your deployment's secrets mechanism (Docker secrets, systemd credentials, Vault, etc.). |
 | TLS termination | Neon enforces TLS. For the public VM, add a reverse proxy that terminates HTTPS in front of the frontend container. |

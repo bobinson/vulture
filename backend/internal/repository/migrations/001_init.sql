@@ -24,11 +24,11 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at   TIMESTAMPTZ
 );
 
-CREATE INDEX idx_users_email ON users (email);
-CREATE INDEX idx_users_team ON users (team_id);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_team ON users (team_id);
 
 -- Sources: repositories or local paths being audited
-CREATE TABLE sources (
+CREATE TABLE IF NOT EXISTS sources (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     type        VARCHAR(20) NOT NULL CHECK (type IN ('git', 'local')),
     url         TEXT,
@@ -37,10 +37,10 @@ CREATE TABLE sources (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_sources_created ON sources (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sources_created ON sources (created_at DESC);
 
 -- Audits: audit runs
-CREATE TABLE audits (
+CREATE TABLE IF NOT EXISTS audits (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     source_id     UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     types         TEXT[] NOT NULL DEFAULT '{}',
@@ -52,9 +52,9 @@ CREATE TABLE audits (
     completed_at  TIMESTAMPTZ
 );
 
-CREATE INDEX idx_audits_source ON audits (source_id);
-CREATE INDEX idx_audits_status ON audits (status);
-CREATE INDEX idx_audits_created ON audits (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audits_source ON audits (source_id);
+CREATE INDEX IF NOT EXISTS idx_audits_status ON audits (status);
+CREATE INDEX IF NOT EXISTS idx_audits_created ON audits (created_at DESC);
 
 -- Findings: individual audit findings (normalized from agent output)
 CREATE TABLE IF NOT EXISTS findings (
@@ -74,13 +74,13 @@ CREATE TABLE IF NOT EXISTS findings (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_findings_audit ON findings (audit_id);
-CREATE INDEX idx_findings_severity ON findings (severity);
-CREATE INDEX idx_findings_agent ON findings (agent_type);
+CREATE INDEX IF NOT EXISTS idx_findings_audit ON findings (audit_id);
+CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings (severity);
+CREATE INDEX IF NOT EXISTS idx_findings_agent ON findings (agent_type);
 
 -- Audit memories: vector-indexed findings for semantic search
 -- Inspired by mem0ai/mem0 + jeffpierce/memory-palace architecture
-CREATE TABLE audit_memories (
+CREATE TABLE IF NOT EXISTS audit_memories (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ,
@@ -117,22 +117,34 @@ CREATE TABLE audit_memories (
     is_archived         BOOLEAN DEFAULT FALSE
 );
 
--- HNSW index for vector similarity search (cosine distance)
-CREATE INDEX idx_memories_embedding_hnsw ON audit_memories
-    USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
+-- HNSW index for vector similarity search (cosine distance).
+-- Guarded with a dimension check so this migration stays idempotent even
+-- after migration 002 strips dimensions from the embedding column (HNSW
+-- requires a fixed dimension; an untyped `vector` column would fail here).
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        WHERE c.relname = 'audit_memories' AND a.attname = 'embedding'
+          AND format_type(a.atttypid, a.atttypmod) <> 'vector'
+    ) THEN
+        CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw ON audit_memories
+            USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64);
+    END IF;
+END $$;
 
 -- Common query indexes
-CREATE INDEX idx_memories_audit ON audit_memories (audit_id);
-CREATE INDEX idx_memories_agent ON audit_memories (agent_type);
-CREATE INDEX idx_memories_severity ON audit_memories (severity);
-CREATE INDEX idx_memories_compliance ON audit_memories (compliance_ref) WHERE compliance_ref IS NOT NULL;
-CREATE INDEX idx_memories_remediation ON audit_memories (remediation_status);
-CREATE INDEX idx_memories_finding_type ON audit_memories (finding_type);
-CREATE INDEX idx_memories_archived ON audit_memories (is_archived) WHERE is_archived = FALSE;
+CREATE INDEX IF NOT EXISTS idx_memories_audit ON audit_memories (audit_id);
+CREATE INDEX IF NOT EXISTS idx_memories_agent ON audit_memories (agent_type);
+CREATE INDEX IF NOT EXISTS idx_memories_severity ON audit_memories (severity);
+CREATE INDEX IF NOT EXISTS idx_memories_compliance ON audit_memories (compliance_ref) WHERE compliance_ref IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_remediation ON audit_memories (remediation_status);
+CREATE INDEX IF NOT EXISTS idx_memories_finding_type ON audit_memories (finding_type);
+CREATE INDEX IF NOT EXISTS idx_memories_archived ON audit_memories (is_archived) WHERE is_archived = FALSE;
 
 -- Knowledge graph: relationships between findings
-CREATE TABLE memory_edges (
+CREATE TABLE IF NOT EXISTS memory_edges (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     source_id       UUID NOT NULL REFERENCES audit_memories(id) ON DELETE CASCADE,
@@ -150,11 +162,11 @@ CREATE TABLE memory_edges (
     CONSTRAINT check_no_self_loops CHECK (source_id != target_id)
 );
 
-CREATE INDEX idx_edges_source ON memory_edges (source_id, relation_type);
-CREATE INDEX idx_edges_target ON memory_edges (target_id);
+CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges (source_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges (target_id);
 
 -- Remediation patterns: shared knowledge for fixing common issues
-CREATE TABLE remediation_patterns (
+CREATE TABLE IF NOT EXISTS remediation_patterns (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     finding_type    VARCHAR(100) NOT NULL,
@@ -168,7 +180,16 @@ CREATE TABLE remediation_patterns (
     CONSTRAINT uq_pattern UNIQUE (finding_type, pattern_name)
 );
 
-CREATE INDEX idx_patterns_embedding_hnsw ON remediation_patterns
-    USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-CREATE INDEX idx_patterns_finding_type ON remediation_patterns (finding_type);
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        WHERE c.relname = 'remediation_patterns' AND a.attname = 'embedding'
+          AND format_type(a.atttypid, a.atttypmod) <> 'vector'
+    ) THEN
+        CREATE INDEX IF NOT EXISTS idx_patterns_embedding_hnsw ON remediation_patterns
+            USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64);
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_patterns_finding_type ON remediation_patterns (finding_type);

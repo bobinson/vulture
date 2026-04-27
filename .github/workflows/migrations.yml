@@ -1,0 +1,61 @@
+name: Migrations replay
+
+# Spins up a fresh pgvector container and runs every embedded migration
+# end-to-end via the in-Go runner. Catches schema bugs (FK type
+# mismatches, non-idempotent DDL, malformed filenames, etc.) at
+# commit time instead of at deploy time.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.24"
+
+jobs:
+  migrations-replay:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        # Wait until pg accepts connections before the job starts.
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run migration runner integration tests
+        env:
+          POSTGRES_TEST_DSN: "postgres://test:test@localhost:5432/test?sslmode=disable"
+        run: |
+          cd backend
+          go test -tags=integration ./internal/repository/migrations/ -count=1 -v
+
+          # TestApply_PG_RealMigrations internally asserts that
+          # schema_migrations row count == len(embedded migrations) on
+          # both first apply and re-run, so an external count check
+          # against the (post-test, schemas-dropped) DB would be vacuous.
+          #
+          # TestApply_PG_PartialFailure / TestApply_PG_RegressFKTypeMismatch
+          # intentionally trigger Postgres errors as part of asserting
+          # the runner surfaces them clearly, so a "grep ERROR in pg
+          # logs" check would also be noisy. The Go test framework
+          # is the source of truth here.

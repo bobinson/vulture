@@ -4,19 +4,19 @@
 
 -- Confidence score: 0.0-1.0, tracks how reliable a finding is across audits.
 -- Starts at 0.5 (neutral), increases when confirmed, decreases on false_positive.
-ALTER TABLE audit_memories ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0.5;
+ALTER TABLE audit_memories ADD COLUMN IF NOT EXISTS confidence_score REAL NOT NULL DEFAULT 0.5;
 
 -- CWE-specific metadata from catalog enrichment.
-ALTER TABLE audit_memories ADD COLUMN cwe_name TEXT;
-ALTER TABLE audit_memories ADD COLUMN cwe_likelihood TEXT;
+ALTER TABLE audit_memories ADD COLUMN IF NOT EXISTS cwe_name TEXT;
+ALTER TABLE audit_memories ADD COLUMN IF NOT EXISTS cwe_likelihood TEXT;
 
 -- Index for confidence-weighted queries.
-CREATE INDEX idx_memories_confidence ON audit_memories (confidence_score DESC)
+CREATE INDEX IF NOT EXISTS idx_memories_confidence ON audit_memories (confidence_score DESC)
     WHERE is_archived = false;
 
 -- Pattern profiles: track which CWE patterns are most relevant per codebase.
 -- Used by self-learning to prioritize patterns that have been confirmed before.
-CREATE TABLE codebase_pattern_profiles (
+CREATE TABLE IF NOT EXISTS codebase_pattern_profiles (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     codebase_path   TEXT NOT NULL,
     agent_type      VARCHAR(50) NOT NULL,
@@ -31,4 +31,4 @@ CREATE TABLE codebase_pattern_profiles (
     CONSTRAINT uq_pattern_profile UNIQUE (codebase_path, agent_type, category)
 );
 
-CREATE INDEX idx_pattern_profiles_path ON codebase_pattern_profiles (codebase_path, agent_type);
+CREATE INDEX IF NOT EXISTS idx_pattern_profiles_path ON codebase_pattern_profiles (codebase_path, agent_type);
