@@ -261,7 +261,15 @@ With the server running and TLS configured, create the first admin user and gene
 # Register the admin user (interactive -- prompts for password)
 vulture login --register --email admin@example.com
 
-# Create an API key for CI
+# Promote the new user to admin role.
+# /api/auth/register sets role='member' by default (Postgres CHECK
+# constraint on users.role). The /api/api-keys endpoint requires
+# role='admin'. Until a "promote first user" CLI command exists, run
+# this against the running Postgres container:
+docker compose exec postgres psql -U vulture -d vulture -p 25432 \
+  -c "UPDATE users SET role='admin' WHERE email='admin@example.com';"
+
+# Create an API key for CI (now succeeds because the user is admin)
 vulture api-key create ci-github-actions
 # Output:
 #   API Key created successfully.

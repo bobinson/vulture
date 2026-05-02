@@ -1,0 +1,62 @@
+name: Mode-B end-to-end smoke
+
+# Brings up the full Vulture compose stack (Postgres + 9 agents + backend +
+# frontend), bootstraps an admin + API key, runs `vulture scan` against it
+# from outside the docker network. Catches container-wiring failures that
+# the unit + migration-runner CI workflows cannot see.
+#
+# Feature 0041. The shell script `scripts/mode-b-smoke.sh` does the actual
+# work; this workflow is a thin wrapper so behavior in CI matches behavior
+# on a developer's laptop.
+#
+# Started life with `continue-on-error: true` to gather stability data
+# before being promoted to a required check. Until then, failure here is
+# informational only — does NOT block PR merges.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  mode-b-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run Mode-B smoke
+        run: bash scripts/mode-b-smoke.sh
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          echo "::group::backend logs"
+          docker compose logs --tail=200 backend || true
+          echo "::endgroup::"
+          echo "::group::postgres logs"
+          docker compose logs --tail=80 postgres || true
+          echo "::endgroup::"
+          echo "::group::agent-chaos logs"
+          docker compose logs --tail=80 agent-chaos || true
+          echo "::endgroup::"
+
+      - name: Tear down (always, even on success)
+        if: always()
+        run: |
+          docker compose down -v --remove-orphans 2>/dev/null || true
