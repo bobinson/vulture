@@ -22,6 +22,7 @@ from cwe_agent.skills.insufficient_logging_check import check_insufficient_loggi
 from cwe_agent.skills.uncaught_exception_check import check_uncaught_exception, check_uncaught_exception_tool
 from cwe_agent.skills.weak_entropy_check import check_weak_entropy, check_weak_entropy_tool
 from cwe_agent.skills.catalog_detector import check_catalog_generic, check_catalog_generic_tool
+from cwe_agent.skills.secret_scan import check_secrets, check_secrets_tool
 
 SKILL_TOOLS = [
     check_injection_tool,
@@ -46,6 +47,7 @@ SKILL_TOOLS = [
     check_uncaught_exception_tool,
     check_weak_entropy_tool,
     check_catalog_generic_tool,
+    check_secrets_tool,
 ]
 
 SKILL_MAP = {
@@ -71,6 +73,7 @@ SKILL_MAP = {
     "uncaught_exception": check_uncaught_exception,
     "weak_entropy": check_weak_entropy,
     "catalog_generic": check_catalog_generic,
+    "secrets": check_secrets,
 }
 
 __all__ = [
@@ -96,5 +99,6 @@ __all__ = [
     "check_uncaught_exception", "check_uncaught_exception_tool",
     "check_weak_entropy", "check_weak_entropy_tool",
     "check_catalog_generic", "check_catalog_generic_tool",
+    "check_secrets", "check_secrets_tool",
     "SKILL_TOOLS", "SKILL_MAP",
 ]

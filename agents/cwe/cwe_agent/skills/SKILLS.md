@@ -288,6 +288,25 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **Detection**: Keyword-based matching with catalog confidence scoring; findings enriched with catalog metadata (name, likelihood, mitigations)
 - **Catalog Confidence**: Each finding carries a `catalog_confidence` score = `static_detectability × keyword_match_score`
 
+## secret_scan
+
+- **Function**: `check_secrets(source_path: str) -> dict`
+- **Purpose**: Content-pattern detection of hardcoded secrets across cloud / SaaS, PEM private keys, cryptocurrency wallets, and Polkadot/Substrate keys. Complementary to `auth_check`'s name-pattern detection (`auth_check` covers `name = "value"`-shape; this skill covers the SECRET shape itself).
+- **Sub-modules**:
+  - `pem_blocks` — `-----BEGIN ... PRIVATE KEY-----` blocks (RSA / EC / DSA / OpenSSH / PKCS8 / encrypted variants). Public certs and public keys explicitly **not** flagged.
+  - `cloud_providers` — ~40 provider-specific patterns: AWS (`AKIA*`/`ASIA*`), GitHub (`ghp_*`/`ghs_*`/`gho_*`/`ghu_*`/`ghr_*`), GitLab (`glpat-*`), Stripe (`sk_live_*`/`rk_live_*`/`sk_test_*`/`pk_live_*`), Slack (`xoxb-*`/`xoxp-*`/`xoxa-*`/webhook URLs), Google (`AIza*`/`GOCSPX-*`/`ya29.*`), Twilio (`AC*`/`SK*`), SendGrid, Mailgun, Datadog, Heroku, Discord (bot tokens + webhooks), Telegram, Cloudflare, JWT, npm (`npm_*`), PyPI, Square, DigitalOcean, Linear, Notion, Anthropic (`sk-ant-*`), OpenAI (`sk-*`), Hugging Face (`hf_*`).
+  - `crypto_wallets` — BIP-39 mnemonic phrases (12/15/18/21/24-word, with vendored 2048-word English wordlist), BIP-32 extended keys (`xprv*`/`xpub*`/`yprv*`/`zprv*`/`tprv*` + Litecoin variants), Bitcoin WIF (with Base58 checksum verification), Ethereum / EVM hex private keys (with context disambiguation against SHA-256), Solana keypair JSON.
+  - `substrate` — Polkadot.js encrypted keystore JSON (3-fact match), Substrate dev-account URIs (`//Alice` etc., path-aware severity: `medium` in production, `info` in tests), `subkey` CLI output, SS58 addresses (Substrate / Polkadot / Kusama).
+  - `config_files` — JSON / YAML / `.env` config-file extraction. Applies cloud-provider patterns to extracted values + flags suspicious key names with literal values.
+  - `entropy` — Shannon-entropy fallback (off by default, `VULTURE_SECRET_SCAN_ENTROPY=true` to enable). Catches generic high-entropy strings without identifier context.
+- **CWE Coverage**: **CWE-798** Use of Hard-coded Credentials, **CWE-321** Use of Hard-coded Cryptographic Key, **CWE-200** Information Exposure (for JWTs and SS58 addresses).
+- **File-extension override**: Per-skill extension list adds `.pem`, `.key`, `.crt`, `.cer`, `.pfx`, `.ovpn`, `.kdbx`, `.env`, `.envrc`. Other skills' extension lists unchanged.
+- **Severity calibration**: PEM unencrypted private keys → critical; encrypted PEMs / encrypted keystores → high; live cloud-provider keys → critical; test variants (`sk_test_*`) → low; informational shapes (Substrate dev URIs in test paths, public addresses) → info. Test/fixture path detection downgrades severity by one level.
+- **Redaction**: Findings never include the raw secret bytes — `code_snippet` shows the first 4-6 chars then `[REDACTED]`. PEM blocks are rendered as `BEGIN…[REDACTED — N lines of key material]…END`.
+- **Boundary with `auth_check`**: `auth_check.py` covers the LHS-identifier-name shape (`api_key = "..."`); `secret_scan` covers content patterns. Both can fire on the same line; the orchestrator deduplicates within a single run but cross-skill duplicates are intentional (signals two confidences).
+- **Boundary with `info_exposure_check`**: `info_exposure_check.py` covers CWE-312 cleartext-storage with the same name-LHS shape. `secret_scan` covers the broader content-pattern surface. No overlap-suppression; both report.
+- **Git-history limitation**: Vulture scans the working tree only. Pair with `gitleaks` or `truffleHog` for git-history scanning of removed-but-present-in-history secrets.
+
 ## Self-Learning (LLM Phase)
 
 When the LLM phase is enabled (`VULTURE_USE_LLM=true`), the agent augments skill findings with:
