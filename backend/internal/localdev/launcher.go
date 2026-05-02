@@ -262,6 +262,15 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 			"VULTURE_BACKEND_URL=http://localhost:" + l.cfg.BackendPort,
 			"PYTHONPATH=" + pythonPath,
 		}
+		// Cross-agent URL: prove → discover. Defaults to the docker
+		// hostname `http://agent-discover:28008` (compose mode), which
+		// can't be resolved in bare-metal mode and produced
+		//   "Discover agent call failed: Name or service not known"
+		// in the prove agent's logs. Override with localhost when the
+		// discover port is known.
+		if discoverPort, ok := l.cfg.AgentPorts["discover"]; ok && discoverPort != "" {
+			env = append(env, "VULTURE_DISCOVER_URL=http://localhost:"+discoverPort)
+		}
 		if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
 			env = append(env, "OPENAI_API_KEY="+apiKey)
 		}
