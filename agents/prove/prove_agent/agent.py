@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 
+from shared.llm.mode import is_llm_required, is_skills_only
 from shared.transport.event_emitter import AgUiEventEmitter
 
 from shared.discovery.cache import load_cached_discovery
@@ -71,6 +72,40 @@ def run_prove(
     if url_error:
         yield emitter.text_message(f"ERROR: {url_error}")
         yield emitter.run_finished("failed")
+        return
+
+    # Feature 0043: skills-only mode bail-out. The prove agent is
+    # currently LLM-mandatory by design (per agents/prove/CLAUDE.md
+    # — verification logic uses LLM-assisted proof generation). If
+    # the operator opted out of LLM use via VULTURE_USE_LLM=false
+    # (or unset) we MUST NOT call any LLM client — doing so produces
+    # AuthenticationError + 5-minute litellm cooldown loops that
+    # never recover. Exit cleanly with a clear message instead.
+    #
+    # If the operator simultaneously set VULTURE_REQUIRE_LLM=true,
+    # that is a config conflict (require LLM AND opt out of LLM) —
+    # fail loudly so they correct it.
+    if is_skills_only():
+        if is_llm_required():
+            yield emitter.text_message(
+                "ERROR: VULTURE_REQUIRE_LLM=true but VULTURE_USE_LLM is "
+                "not set to 'true'. Configuration conflict — set "
+                "VULTURE_USE_LLM=true (and provide an LLM API key) "
+                "to satisfy VULTURE_REQUIRE_LLM, or unset "
+                "VULTURE_REQUIRE_LLM to allow skills-only operation."
+            )
+            yield emitter.run_finished("failed")
+            return
+        yield emitter.text_message(
+            "Prove agent skipped: skills-only mode "
+            "(VULTURE_USE_LLM != true). Prove requires LLM for "
+            "verification logic. To enable, set VULTURE_USE_LLM=true "
+            "and provide an LLM API key (OPENAI_API_KEY, "
+            "ANTHROPIC_API_KEY, GEMINI_API_KEY, or run Ollama). "
+            "See docs/features/0043_universal_skills_llm_contract/ "
+            "for the full skills/LLM dual-mode contract."
+        )
+        yield emitter.run_finished("skipped")
         return
 
     # Reset token tracking for this session

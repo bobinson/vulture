@@ -1,13 +1,42 @@
 # 0043 — Implementation Status
 
 **Branch**: tbd (recommend `feat/0043-universal-skills-llm-contract`)
-**Status**: PLANNED
+**Status**: SHIPPED v1.0 (Phase 1 helper + Phase 3 prove fix); v1.1+ pending
 **Owner**: tbd
 **Created**: 2026-05-02
-**Target v1.0** (Phases 1+2+3 — fix the urgent prove regression): ~1 day
-**Target v1.1** (Phases 4+5 — discover + analysis_mode plumbing): +1 day
+**v1.0 ship date**: 2026-05-02 (Phases 1+3 minimal fix — stops the cooldown regression)
+**Target v1.1** (Phase 2 scan-agent audit + Phase 4 discover + Phase 5 SSE event/analysis_mode): +1 day
 **Target v1.2** (Phases 6+7 — CI test + docs): +1 day
 **Target v1.3** (Phase 8 — default-on cutover): after ~1-week stability window
+
+## v1.0 ship summary (Phases 1 + 3)
+
+The minimum-viable fix for the prove cooldown regression. Ships:
+
+- `agents/shared/shared/llm/mode.py` with `is_skills_only()` and
+  `is_llm_required()` synchronous helpers (Phase 1).
+- `agents/shared/tests/unit/llm/test_mode.py` with 11 tests covering
+  the env-var grammar (unset / empty / "false" / "true" / case
+  variants).
+- `prove_agent/agent.py::run_prove` short-circuits when
+  `is_skills_only()` returns True. The short-circuit happens BEFORE
+  any LLM machinery is touched (`reset_token_usage`, `get_model`),
+  so no AuthenticationError + cooldown loops are possible.
+- `prove_agent/tests/unit/test_skills_only_mode.py` with 5 tests
+  asserting: unset / explicit-false skip cleanly; LLM helpers are
+  never imported in skills mode; `VULTURE_REQUIRE_LLM=true` +
+  skills-only is a config conflict (fails loudly); `VULTURE_USE_LLM=true`
+  does not short-circuit (preserves existing LLM-mode path).
+
+What's deliberately deferred to v1.1:
+
+- The async `resolve_audit_mode()` 4-state enum from the plan — v1.0
+  only needs the synchronous skip path; the LLM-health probe is only
+  useful when the agent has a "degraded" fallback to run, which prove
+  doesn't have until v1.1+ when rule-based verification ships.
+- Discover agent gating (Phase 4).
+- Per-finding `analysis_mode` field + DB migration (Phase 5).
+- CI purity test (Phase 6).
 
 ## Phase summary
 

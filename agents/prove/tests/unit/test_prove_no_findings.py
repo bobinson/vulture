@@ -3,8 +3,14 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-def test_run_prove_continues_without_findings():
-    """Prove should NOT exit with 'Run a scan first' when no findings."""
+def test_run_prove_continues_without_findings(monkeypatch):
+    """Prove should NOT exit with 'Run a scan first' when no findings.
+
+    Sets VULTURE_USE_LLM=true to exercise the LLM-mode prove path
+    (this test is about the pipeline's empty-findings handling, not
+    feature 0043's skills-only short-circuit — see
+    test_skills_only_mode.py for that)."""
+    monkeypatch.setenv("VULTURE_USE_LLM", "true")
     from prove_agent.agent import run_prove
 
     caps = MagicMock()
