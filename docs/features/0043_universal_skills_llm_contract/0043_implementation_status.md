@@ -1,13 +1,42 @@
 # 0043 — Implementation Status
 
 **Branch**: tbd (recommend `feat/0043-universal-skills-llm-contract`)
-**Status**: SHIPPED v1.0 (Phase 1 helper + Phase 3 prove fix); v1.1+ pending
+**Status**: SHIPPED v1.0 + v1.1-lite (Phase 1 helper + Phase 3 prove fix + Phase 4 discover refactor + Phase 5-lite degraded_mode emitter)
 **Owner**: tbd
 **Created**: 2026-05-02
 **v1.0 ship date**: 2026-05-02 (Phases 1+3 minimal fix — stops the cooldown regression)
-**Target v1.1** (Phase 2 scan-agent audit + Phase 4 discover + Phase 5 SSE event/analysis_mode): +1 day
-**Target v1.2** (Phases 6+7 — CI test + docs): +1 day
-**Target v1.3** (Phase 8 — default-on cutover): after ~1-week stability window
+**v1.1-lite ship date**: 2026-05-02 (Phase 4 discover compliance + Phase 5-lite emitter)
+**Target v1.2** (Phase 5 full — per-finding analysis_mode field + DB migration + frontend label): +1 day
+**Target v1.3** (Phases 6+7 — CI purity test + docs): +1 day
+**Target v1.4** (Phase 8 — default-on cutover): after ~1-week stability window
+
+## v1.1-lite ship summary (Phases 4 + 5 lite)
+
+Discover agent compliance turned out to be a 5-line refactor —
+`LLMEndpointPlugin.accepts()` already gated on `VULTURE_USE_LLM=true`
+(verified by reading `discover_agent/plugins/llm_suggest.py:59-70`).
+v1.1 routes that read through the shared `is_skills_only()` helper
+for consistency and adds 6 unit tests asserting the gate behavior.
+
+Phase 5-lite ships the `degraded_mode` SSE event emitter helper in
+`shared/transport/event_emitter.py` — the per-finding `analysis_mode`
+field + DB migration is deferred to v1.2 because it touches more
+layers (Go model, repos, Postgres + SQLite migrations, frontend
+type, UI label).
+
+What lands in v1.1-lite:
+
+- `discover_agent/plugins/llm_suggest.py::accepts()` — refactored to
+  use `shared.llm.mode.is_skills_only()`; provider-key check stays as
+  defense-in-depth so USE_LLM=true without any key still skips the
+  plugin (avoids fresh AuthenticationError surface).
+- `discover/tests/unit/test_skills_only_mode.py` — 6 tests covering
+  the (USE_LLM × provider-key) matrix.
+- `shared/transport/event_emitter.py::degraded_mode()` — new emitter
+  method producing a `degraded_mode` SSE event with `audit_mode` tag.
+- `shared/tests/unit/transport/test_degraded_mode_event.py` — 5
+  tests covering the canonical shape, default `audit_mode`, and the
+  three explicit modes (`degraded`/`skills_only`/`required_failed`).
 
 ## v1.0 ship summary (Phases 1 + 3)
 

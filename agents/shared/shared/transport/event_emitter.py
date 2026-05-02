@@ -286,3 +286,28 @@ class AgUiEventEmitter:
             "run_id": self._run_id,
             "status": status,
         })
+
+    def degraded_mode(self, message: str, audit_mode: str = "degraded") -> str:
+        """Emit a degraded_mode event signaling the agent is running
+        without LLM augmentation.
+
+        Feature 0043. Consumed by the frontend banner (already wired up
+        via feature 0039's LLMDegradedBanner). Backend agui/translator.go
+        passes new event types through generically — no backend code
+        change required.
+
+        Args:
+            message: Canonical human-readable text. Reuse
+                ``LLMHealthStatus.message()`` from feature 0039 for
+                "operator opted in but LLM unreachable"; supply a
+                custom string for "operator opted out of LLM".
+            audit_mode: One of ``"degraded"`` (operator wanted LLM,
+                LLM is down), ``"skills_only"`` (operator opted out),
+                ``"required_failed"`` (operator set REQUIRE_LLM but
+                LLM is down — agent will abort).
+        """
+        return self._format("degraded_mode", {
+            "run_id": self._run_id,
+            "message": message,
+            "audit_mode": audit_mode,
+        })

@@ -57,9 +57,19 @@ class LLMEndpointPlugin(DiscoveryPlugin):
     priority = 80
 
     async def accepts(self, ctx: DiscoveryContext) -> bool:
-        """Only run if LLM is configured."""
-        use_llm = os.environ.get("VULTURE_USE_LLM", "false").lower() == "true"
-        if not use_llm:
+        """Only run if LLM is configured.
+
+        Feature 0043: route the env-var read through the shared helper
+        ``shared.llm.mode.is_skills_only()`` so discover honors the
+        platform-wide skills/LLM contract consistently with prove and
+        the scan agents. A separate provider-key check ensures we
+        skip even when use_llm=true is set but no key is available
+        (avoids litellm AuthenticationError entries when the operator
+        forgot to set the key).
+        """
+        from shared.llm.mode import is_skills_only
+
+        if is_skills_only():
             return False
         has_key = bool(
             os.environ.get("OPENAI_API_KEY")
