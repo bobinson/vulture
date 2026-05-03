@@ -20,6 +20,64 @@ scripts/vulture.sh dev skills
 VULTURE_URL=http://localhost:28080 vulture-mcp
 ```
 
+## First-time setup for this repo
+
+`.claude/` is in `.gitignore` (along with other AI-tool caches), so
+the repo does **not** ship a project-scoped `.claude/mcp.json`. Each
+developer creates their own. Three steps:
+
+1. **Install the `vulture-mcp` console script** so it's on `$PATH`:
+
+   ```bash
+   cd mcp && pip install -e .   # editable install from source
+   # OR (when published)
+   pip install vulture-mcp
+   ```
+
+   After install, `which vulture-mcp` should print a path
+   (typically `~/.local/bin/vulture-mcp`).
+
+2. **Create `.claude/mcp.json`** at the repo root with the following
+   content (this file is gitignored — yours alone):
+
+   ```json
+   {
+     "mcpServers": {
+       "vulture": {
+         "command": "vulture-mcp",
+         "env": {
+           "VULTURE_URL": "http://localhost:28080"
+         }
+       }
+     }
+   }
+   ```
+
+   Or, equivalently, run from the repo root:
+
+   ```bash
+   claude mcp add-json vulture '{"command":"vulture-mcp","env":{"VULTURE_URL":"http://localhost:28080"}}'
+   ```
+
+3. **Optional — set `VULTURE_API_KEY`** in the shell that launches
+   Claude Code. Required only when the backend has API keys
+   enabled (`VULTURE_API_KEYS_ENABLED=true`, i.e. centralized-server
+   Mode B). For `dev skills` / `dev <provider>` local mode the
+   default has API keys disabled, so no key is needed:
+
+   ```bash
+   export VULTURE_API_KEY=vk_...   # only if API keys are enabled
+   ```
+
+   Claude Code inherits the parent shell's environment, so
+   exporting in your shell before launching propagates to the MCP
+   subprocess. Don't commit the key to your local `.claude/mcp.json`
+   either — keep secrets in the parent-shell env so they never end
+   up in dotfiles you might `cat` or share.
+
+4. **Verify** by running `claude mcp list` from the repo root —
+   should show `vulture: vulture-mcp - ✓ Connected`.
+
 ## Client configuration
 
 ### Claude Code
