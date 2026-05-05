@@ -29,5 +29,18 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Split vendor code into stable, cache-friendly chunks. React +
+        // router seldom change between releases; i18n only loads when
+        // the user changes language. Splitting keeps the main bundle
+        // small and lets the browser cache vendor chunks across deploys
+        // when only application code changed.
+        manualChunks: {
+          react: ["react", "react-dom", "react-router-dom"],
+          i18n: ["react-i18next", "i18next", "i18next-browser-languagedetector"],
+        },
+      },
+    },
   },
 });

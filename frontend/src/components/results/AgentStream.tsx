@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { StreamLine } from "@/lib/types.ts";
 
@@ -23,6 +23,32 @@ function formatTime(date: Date): string {
     second: "2-digit",
   });
 }
+
+// Per-line memo: each line's props (id/text/type/timestamp) are stable
+// once the line is appended, so on re-render only the brand-new line
+// reconciles. Without this, every SSE event re-renders all 500 lines.
+interface LineRowProps {
+  text: string;
+  type: StreamLine["type"];
+  timestamp: Date;
+}
+
+const LineRow = memo(function LineRow({ text, type, timestamp }: LineRowProps) {
+  return (
+    <div className="terminal-line">
+      <span className="terminal-time">{formatTime(timestamp)}</span>
+      <span className={`flex-1 text-xs leading-relaxed break-all ${LINE_COLORS[type]}`}>
+        {type === "finding" ? (
+          <span className="font-medium">{text}</span>
+        ) : type === "step" ? (
+          <span className="font-semibold">{text}</span>
+        ) : (
+          text
+        )}
+      </span>
+    </div>
+  );
+});
 
 export function AgentStream({ lines, connected, done }: AgentStreamProps) {
   const { t } = useTranslation();
@@ -71,18 +97,12 @@ export function AgentStream({ lines, connected, done }: AgentStreamProps) {
           </div>
         ) : (
           lines.map((line) => (
-            <div key={line.id} className="terminal-line">
-              <span className="terminal-time">{formatTime(line.timestamp)}</span>
-              <span className={`flex-1 text-xs leading-relaxed break-all ${LINE_COLORS[line.type]}`}>
-                {line.type === "finding" ? (
-                  <span className="font-medium">{line.text}</span>
-                ) : line.type === "step" ? (
-                  <span className="font-semibold">{line.text}</span>
-                ) : (
-                  line.text
-                )}
-              </span>
-            </div>
+            <LineRow
+              key={line.id}
+              text={line.text}
+              type={line.type}
+              timestamp={line.timestamp}
+            />
           ))
         )}
       </div>

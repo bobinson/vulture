@@ -20,6 +20,37 @@ interface FindingsTableProps {
   proveResults?: ProveResult[];
 }
 
+// Build the full markdown export for "Copy all findings" without
+// blocking the UI thread. For 1000+ findings the synchronous
+// findings.map(...).join() can stall layout for hundreds of ms.
+// Chunking the work and yielding to the event loop between batches
+// keeps the click-to-copy responsive.
+const COPY_BATCH = 100;
+
+async function buildAllFindingsMarkdown(
+  findings: Finding[],
+  auditId: string | undefined,
+): Promise<string> {
+  if (findings.length <= COPY_BATCH) {
+    return findings.map((f) => findingToMarkdown(f, auditId)).join("\n---\n\n");
+  }
+  const parts: string[] = new Array(findings.length);
+  for (let i = 0; i < findings.length; i += COPY_BATCH) {
+    const end = Math.min(i + COPY_BATCH, findings.length);
+    for (let j = i; j < end; j++) {
+      parts[j] = findingToMarkdown(findings[j], auditId);
+    }
+    // Yield to the event loop so React can paint the "copying" state
+    // and other listeners can run between batches.
+    if (end < findings.length) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+  }
+  return parts.join("\n---\n\n");
+}
+
 function SortIcon({ field, sortField, sortDirection }: { field: string; sortField: string; sortDirection: string }) {
   if (sortField !== field) return <span className="text-border-dark ml-1">{"\u2195"}</span>;
   return <span className="text-accent ml-1">{sortDirection === "asc" ? "\u2191" : "\u2193"}</span>;
@@ -121,8 +152,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
               type="button"
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark"
               onClick={() => {
-                const md = allFindings.map((f) => findingToMarkdown(f, auditId)).join("\n---\n\n");
-                void onCopyAll(md);
+                void buildAllFindingsMarkdown(allFindings, auditId).then(onCopyAll);
               }}
             >
               {allCopied ? (
