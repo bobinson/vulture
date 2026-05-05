@@ -31,53 +31,35 @@ func (r *PostgresLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 	if l.UpdatedAt.IsZero() {
 		l.UpdatedAt = now
 	}
-	// Assign next ref_number atomically. Use a serializable transaction
-	// to prevent duplicate ref_numbers under concurrent inserts.
-	tx, txErr := r.db.Begin()
-	if txErr != nil {
-		return fmt.Errorf("begin lineage tx: %w", txErr)
-	}
-	defer tx.Rollback()
-
-	var nextRef int
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(ref_number), 0) + 1 FROM finding_lineage`).Scan(&nextRef); err != nil {
-		return fmt.Errorf("next ref_number: %w", err)
-	}
-	l.RefNumber = nextRef
-	l.Ref = l.FormatRef()
-
-	_, err := tx.Exec(`
+	// ref_number is assigned by a Postgres sequence (migration 016) so
+	// concurrent inserts can't collide. We omit ref_number from the INSERT
+	// column list and rely on the column DEFAULT (nextval). RETURNING
+	// reports back the value Postgres actually stored — for the new-row
+	// case it's the freshly assigned sequence value; for the conflict
+	// branch it's the pre-existing row's ref_number (since DO UPDATE
+	// doesn't touch it). Either way the struct is updated correctly.
+	err := r.db.QueryRow(`
 		INSERT INTO finding_lineage (
 			id, fingerprint, source_path, agent_type, current_status,
 			notes, ticket_url, first_audit_id, first_found_at, first_commit,
 			latest_audit_id, latest_found_at, latest_commit,
 			fixed_audit_id, fixed_at, fixed_commit,
-			severity, category, title, file_path, created_at, updated_at,
-			ref_number
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+			severity, category, title, file_path, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		ON CONFLICT (fingerprint, source_path, agent_type) DO UPDATE SET
-			latest_audit_id = $11, latest_found_at = $12, latest_commit = $13, updated_at = now()`,
+			latest_audit_id = $11, latest_found_at = $12, latest_commit = $13, updated_at = now()
+		RETURNING ref_number`,
 		l.ID, l.Fingerprint, l.SourcePath, l.AgentType, string(l.CurrentStatus),
 		l.Notes, l.TicketURL, l.FirstAuditID, l.FirstFoundAt, l.FirstCommit,
 		nullIfEmpty(l.LatestAuditID), l.LatestFoundAt, l.LatestCommit,
 		nullIfEmpty(l.FixedAuditID), l.FixedAt, l.FixedCommit,
 		l.Severity, l.Category, l.Title, l.FilePath, l.CreatedAt, l.UpdatedAt,
-		l.RefNumber,
-	)
+	).Scan(&l.RefNumber)
 	if err != nil {
 		return fmt.Errorf("upsert lineage: %w", err)
 	}
-
-	// On conflict (update path), restore the existing ref from DB
-	// since the struct was mutated with a new ref that was not actually stored.
-	var storedRef int
-	if scanErr := tx.QueryRow(`SELECT COALESCE(ref_number, 0) FROM finding_lineage WHERE fingerprint = $1 AND source_path = $2 AND agent_type = $3`,
-		l.Fingerprint, l.SourcePath, l.AgentType).Scan(&storedRef); scanErr == nil {
-		l.RefNumber = storedRef
-		l.Ref = l.FormatRef()
-	}
-
-	return tx.Commit()
+	l.Ref = l.FormatRef()
+	return nil
 }
 
 func (r *PostgresLineageRepo) GetLineage(id string) (*model.FindingLineage, error) {

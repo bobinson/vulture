@@ -27,7 +27,7 @@ func submitSource(apiURL, sourceType, target string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return "", fmt.Errorf("submit source: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -55,7 +55,7 @@ func createAudit(apiURL, sourceID string, types []string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return "", fmt.Errorf("create audit: status %d: %s", resp.StatusCode, string(respBody))
 	}
 

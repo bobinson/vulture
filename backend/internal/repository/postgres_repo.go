@@ -221,16 +221,26 @@ func (r *PostgresRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+	// Pre-limit audits, THEN aggregate counts via index scans on the page.
+	// The original GROUP BY over LEFT JOINs of findings + prove_results
+	// fully materialized those joins for every audit before the LIMIT
+	// kicked in — cost grew with table size, not page size. The CTE form
+	// is O(page * log N) on idx_findings_audit + idx_prove_results_audit.
 	rows, err := r.db.Query(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), a.created_at, a.completed_at,
-			COUNT(DISTINCT f.id) AS findings_count,
-			COUNT(DISTINCT pr.id) AS prove_count
-		FROM audits a
-		LEFT JOIN sources s ON a.source_id = s.id
-		LEFT JOIN findings f ON f.audit_id = a.id::text
-		LEFT JOIN prove_results pr ON pr.audit_id = a.id::text
-		GROUP BY a.id, a.source_id, s.path, a.types, a.config, a.status, a.scores, a.created_at, a.completed_at
-		ORDER BY a.created_at DESC LIMIT $1 OFFSET $2`,
+		`WITH limited_audits AS (
+			SELECT a.id, a.source_id, COALESCE(s.path, '') AS source_path, a.types, a.config, a.status,
+			       COALESCE(a.scores, '{}') AS scores, a.created_at, a.completed_at
+			FROM audits a
+			LEFT JOIN sources s ON a.source_id = s.id
+			ORDER BY a.created_at DESC
+			LIMIT $1 OFFSET $2
+		)
+		SELECT la.id, la.source_id, la.source_path, la.types, la.config, la.status, la.scores,
+			la.created_at, la.completed_at,
+			(SELECT COUNT(*) FROM findings WHERE audit_id = la.id::text) AS findings_count,
+			(SELECT COUNT(*) FROM prove_results WHERE audit_id = la.id::text) AS prove_count
+		FROM limited_audits la
+		ORDER BY la.created_at DESC`,
 		limit, offset,
 	)
 	if err != nil {
@@ -346,15 +356,25 @@ func (r *PostgresRepo) ListAuditsBySourcePath(sourcePath string, limit, offset i
 	if limit <= 0 {
 		limit = 20
 	}
+	// CTE pre-limits to the page before per-row count subqueries (same
+	// rationale as ListAudits). Also returns prove_count so the handler
+	// doesn't need a per-audit enrichProveCount round-trip.
 	rows, err := r.db.Query(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), a.created_at, a.completed_at,
-			COUNT(DISTINCT f.id) AS findings_count
-		FROM audits a
-		JOIN sources s ON a.source_id = s.id
-		LEFT JOIN findings f ON f.audit_id = a.id::text
-		WHERE s.path = $1
-		GROUP BY a.id, a.source_id, s.path, a.types, a.config, a.status, a.scores, a.created_at, a.completed_at
-		ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`,
+		`WITH limited_audits AS (
+			SELECT a.id, a.source_id, s.path AS source_path, a.types, a.config, a.status,
+			       COALESCE(a.scores, '{}') AS scores, a.created_at, a.completed_at
+			FROM audits a
+			JOIN sources s ON a.source_id = s.id
+			WHERE s.path = $1
+			ORDER BY a.created_at DESC
+			LIMIT $2 OFFSET $3
+		)
+		SELECT la.id, la.source_id, la.source_path, la.types, la.config, la.status, la.scores,
+			la.created_at, la.completed_at,
+			(SELECT COUNT(*) FROM findings WHERE audit_id = la.id::text) AS findings_count,
+			(SELECT COUNT(*) FROM prove_results WHERE audit_id = la.id::text) AS prove_count
+		FROM limited_audits la
+		ORDER BY la.created_at DESC`,
 		sourcePath, limit, offset,
 	)
 	if err != nil {
@@ -366,7 +386,7 @@ func (r *PostgresRepo) ListAuditsBySourcePath(sourcePath string, limit, offset i
 		var a model.Audit
 		var cfgStr, scoresStr string
 		var completedAt sql.NullTime
-		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, pq.Array(&a.Types), &cfgStr, &a.Status, &scoresStr, &a.CreatedAt, &completedAt, &a.FindingsCount)
+		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, pq.Array(&a.Types), &cfgStr, &a.Status, &scoresStr, &a.CreatedAt, &completedAt, &a.FindingsCount, &a.ProveCount)
 		if err != nil {
 			return nil, fmt.Errorf("scan audit: %w", err)
 		}
@@ -390,7 +410,9 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 		return nil, fmt.Errorf("query findings: %w", err)
 	}
 	defer rows.Close()
-	var findings []model.Finding
+	// Pre-size to a typical audit-page size to avoid log-N reallocations
+	// for the common case (most audits produce 10s-100s of findings).
+	findings := make([]model.Finding, 0, 64)
 	for rows.Next() {
 		var f model.Finding
 		var refsStr string

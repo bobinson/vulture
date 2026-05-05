@@ -445,16 +445,24 @@ func (r *SQLiteRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+	// Pre-limit, then count via correlated subqueries on idx_findings_audit
+	// and idx_prove_results_audit. See postgres_repo.go::ListAudits for the
+	// full rationale.
 	rows, err := r.db.Query(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, a.created_at, a.completed_at,
-			COUNT(DISTINCT f.id) AS findings_count,
-			COUNT(DISTINCT pr.id) AS prove_count
-		FROM audits a
-		LEFT JOIN sources s ON a.source_id = s.id
-		LEFT JOIN findings f ON f.audit_id = a.id
-		LEFT JOIN prove_results pr ON pr.audit_id = a.id
-		GROUP BY a.id
-		ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
+		`WITH limited_audits AS (
+			SELECT a.id, a.source_id, COALESCE(s.path, '') AS source_path, a.types, a.config, a.status,
+			       a.scores, a.created_at, a.completed_at
+			FROM audits a
+			LEFT JOIN sources s ON a.source_id = s.id
+			ORDER BY a.created_at DESC
+			LIMIT ? OFFSET ?
+		)
+		SELECT la.id, la.source_id, la.source_path, la.types, la.config, la.status, la.scores,
+			la.created_at, la.completed_at,
+			(SELECT COUNT(*) FROM findings WHERE audit_id = la.id) AS findings_count,
+			(SELECT COUNT(*) FROM prove_results WHERE audit_id = la.id) AS prove_count
+		FROM limited_audits la
+		ORDER BY la.created_at DESC`,
 		limit, offset,
 	)
 	if err != nil {
@@ -650,15 +658,25 @@ func (r *SQLiteRepo) ListAuditsBySourcePath(sourcePath string, limit, offset int
 	if limit <= 0 {
 		limit = 20
 	}
+	// CTE pre-limits to the page; correlated subqueries count via index.
+	// Also returns prove_count so the handler can skip enrichProveCount
+	// (which was an N+1 round-trip per audit).
 	rows, err := r.db.Query(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, a.created_at, a.completed_at,
-			COUNT(DISTINCT f.id) AS findings_count
-		FROM audits a
-		JOIN sources s ON a.source_id = s.id
-		LEFT JOIN findings f ON f.audit_id = a.id
-		WHERE s.path = ?
-		GROUP BY a.id
-		ORDER BY a.created_at DESC LIMIT ? OFFSET ?`,
+		`WITH limited_audits AS (
+			SELECT a.id, a.source_id, s.path AS source_path, a.types, a.config, a.status,
+			       a.scores, a.created_at, a.completed_at
+			FROM audits a
+			JOIN sources s ON a.source_id = s.id
+			WHERE s.path = ?
+			ORDER BY a.created_at DESC
+			LIMIT ? OFFSET ?
+		)
+		SELECT la.id, la.source_id, la.source_path, la.types, la.config, la.status, la.scores,
+			la.created_at, la.completed_at,
+			(SELECT COUNT(*) FROM findings WHERE audit_id = la.id) AS findings_count,
+			(SELECT COUNT(*) FROM prove_results WHERE audit_id = la.id) AS prove_count
+		FROM limited_audits la
+		ORDER BY la.created_at DESC`,
 		sourcePath, limit, offset,
 	)
 	if err != nil {
@@ -670,7 +688,7 @@ func (r *SQLiteRepo) ListAuditsBySourcePath(sourcePath string, limit, offset int
 		var a model.Audit
 		var typesStr, cfgStr, scoresStr, createdAt string
 		var completedAt sql.NullString
-		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, &typesStr, &cfgStr, &a.Status, &scoresStr, &createdAt, &completedAt, &a.FindingsCount)
+		err := rows.Scan(&a.ID, &a.SourceID, &a.SourcePath, &typesStr, &cfgStr, &a.Status, &scoresStr, &createdAt, &completedAt, &a.FindingsCount, &a.ProveCount)
 		if err != nil {
 			return nil, fmt.Errorf("scan audit: %w", err)
 		}
@@ -703,7 +721,9 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 		return nil, fmt.Errorf("query findings: %w", err)
 	}
 	defer rows.Close()
-	var findings []model.Finding
+	// Pre-size: typical audits produce dozens of findings. 64 covers the
+	// common case without over-allocating for tiny audits.
+	findings := make([]model.Finding, 0, 64)
 	for rows.Next() {
 		var f model.Finding
 		var refsStr string

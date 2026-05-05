@@ -184,6 +184,12 @@ func (h *AuditHandler) enrichProveCount(audit *model.Audit) {
 	if h.proveSvc == nil || audit == nil {
 		return
 	}
+	// ListAudits / ListAuditsBySourcePath already populate ProveCount via
+	// a SQL COUNT against prove_results — skip the per-audit summary
+	// round-trip (was N+1 across the page).
+	if audit.ProveCount > 0 {
+		return
+	}
 	summary, err := h.proveSvc.GetSummary(audit.ID)
 	if err != nil || summary == nil || summary.Total == 0 {
 		return

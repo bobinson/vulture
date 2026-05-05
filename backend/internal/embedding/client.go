@@ -118,7 +118,7 @@ func (c *Client) doWithRetry(url string, body []byte) (*http.Response, error) {
 		}
 		// Retryable status: drain & close, record reason, loop.
 		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
-			respBody, _ := io.ReadAll(resp.Body)
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			_ = resp.Body.Close()
 			lastErr = fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 			continue
@@ -181,7 +181,7 @@ func (c *Client) Embed(text string) ([]float32, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return nil, fmt.Errorf("embedding API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -234,7 +234,7 @@ func (c *Client) EmbedBatch(texts []string) ([][]float32, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return nil, fmt.Errorf("batch embedding API error %d: %s", resp.StatusCode, string(respBody))
 	}
 

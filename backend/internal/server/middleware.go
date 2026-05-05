@@ -68,10 +68,11 @@ func isStreamPath(path string) bool {
 
 // rateLimiter implements a simple per-IP token bucket rate limiter.
 type rateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    int
-	window  time.Duration
+	mu           sync.Mutex
+	buckets      map[string]*bucket
+	rate         int
+	window       time.Duration
+	lastEviction time.Time
 }
 
 type bucket struct {
@@ -87,20 +88,16 @@ func newRateLimiter(rate int, window time.Duration) *rateLimiter {
 	}
 }
 
+// allow holds rl.mu only briefly per request: the eviction sweep that
+// previously ran on every call once len(buckets) > 1000 is now amortized
+// to at most once per window. Most requests pay only O(1) map ops.
 func (rl *rateLimiter) allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
 
-	// Evict stale buckets to prevent unbounded memory growth
-	if len(rl.buckets) > 1000 {
-		for k, v := range rl.buckets {
-			if now.Sub(v.lastReset) > rl.window {
-				delete(rl.buckets, k)
-			}
-		}
-	}
+	rl.maybeEvict(now)
 
 	b, ok := rl.buckets[ip]
 	if !ok || now.Sub(b.lastReset) > rl.window {
@@ -113,6 +110,25 @@ func (rl *rateLimiter) allow(ip string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// maybeEvict runs a stale-bucket sweep at most once per window when the
+// map is large. Caller must hold rl.mu. Even when triggered, the sweep is
+// bounded: with N active buckets and a sweep cadence of `window`, the
+// amortized per-request cost is O(1).
+func (rl *rateLimiter) maybeEvict(now time.Time) {
+	if len(rl.buckets) <= 1000 {
+		return
+	}
+	if now.Sub(rl.lastEviction) < rl.window {
+		return
+	}
+	for k, v := range rl.buckets {
+		if now.Sub(v.lastReset) > rl.window {
+			delete(rl.buckets, k)
+		}
+	}
+	rl.lastEviction = now
 }
 
 // RateLimit wraps a handler with rate limiting per IP.

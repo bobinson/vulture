@@ -86,20 +86,23 @@ func (r *PostgresMemoryRepo) SearchMemories(query string, embedding []float32, l
 func (r *PostgresMemoryRepo) searchByVector(embedding []float32, limit int) ([]model.AuditMemory, error) {
 	vecStr := float32SliceToVec(embedding)
 	dim := len(embedding)
-	rows, err := r.db.Query(`
+	// Use the dim-cast form `(embedding::vector(N)) <=> ($1::vector(N))` so
+	// the partial HNSW index added in migration 015 is eligible. The dim
+	// is interpolated as an integer literal — never user input — so this
+	// is safe wrt SQL injection.
+	q := fmt.Sprintf(`
 		SELECT id, audit_id, agent_type, codebase_path, finding_type, title, content,
 		       severity, COALESCE(compliance_ref, ''), category,
 		       keywords, tags, file_paths, remediation_status,
 		       COALESCE(remediation_notes, ''), created_at,
-		       1.0 - (embedding <=> $1::vector) AS sim,
+		       1.0 - ((embedding::vector(%[1]d)) <=> ($1::vector(%[1]d))) AS sim,
 		       confidence_score, embedding::text
 		FROM audit_memories
 		WHERE embedding IS NOT NULL AND is_archived = false
 		  AND vector_dims(embedding) = $3
-		ORDER BY embedding <=> $1::vector
-		LIMIT $2`,
-		vecStr, limit, dim,
-	)
+		ORDER BY (embedding::vector(%[1]d)) <=> ($1::vector(%[1]d))
+		LIMIT $2`, dim)
+	rows, err := r.db.Query(q, vecStr, limit, dim)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
@@ -416,19 +419,19 @@ func tokenize(text string) map[string]bool {
 func (r *PostgresMemoryRepo) FindSimilarByVector(excludeID string, embedding []float32, limit int) ([]model.AuditMemory, error) {
 	vecStr := float32SliceToVec(embedding)
 	dim := len(embedding)
-	rows, err := r.db.Query(`
+	// See searchByVector for why the dim is fmt-interpolated.
+	q := fmt.Sprintf(`
 		SELECT id, audit_id, agent_type, codebase_path, finding_type, title, content,
 		       severity, COALESCE(compliance_ref, ''), category,
 		       keywords, tags, file_paths, remediation_status,
 		       COALESCE(remediation_notes, ''), created_at,
-		       1.0 - (embedding <=> $1::vector) AS sim
+		       1.0 - ((embedding::vector(%[1]d)) <=> ($1::vector(%[1]d))) AS sim
 		FROM audit_memories
 		WHERE embedding IS NOT NULL AND id != $2 AND is_archived = false
 		  AND vector_dims(embedding) = $4
-		ORDER BY embedding <=> $1::vector
-		LIMIT $3`,
-		vecStr, excludeID, limit, dim,
-	)
+		ORDER BY (embedding::vector(%[1]d)) <=> ($1::vector(%[1]d))
+		LIMIT $3`, dim)
+	rows, err := r.db.Query(q, vecStr, excludeID, limit, dim)
 	if err != nil {
 		return nil, fmt.Errorf("find similar: %w", err)
 	}

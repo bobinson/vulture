@@ -26,6 +26,10 @@ import (
 const (
 	configDir = ".vulture"
 	tokenFile = "token"
+	// maxErrorBody caps how much of an HTTP error response we read into
+	// memory. Prevents a misbehaving / malicious server from forcing the
+	// CLI to allocate gigabytes by replying with a huge body.
+	maxErrorBody = 64 << 10 // 64 KiB
 )
 
 var defaultAPIURL = cliResolve("ports", "backend", "28080", "http://localhost:")
@@ -621,7 +625,7 @@ func streamDiscover(apiURL, auditID, token string) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		fatalf("Stream error (%d): %s", resp.StatusCode, string(body))
 	}
 
@@ -1000,7 +1004,7 @@ func cmdLogin(apiURL string) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		var errResp struct {
 			Error string `json:"error"`
 		}
@@ -1291,7 +1295,7 @@ func streamProve(apiURL, auditID, token string) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		fatalf("Stream error (%d): %s", resp.StatusCode, string(body))
 	}
 
@@ -1659,7 +1663,7 @@ func streamAudit(apiURL, auditID, token string) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		fatalf("Stream error (%d): %s", resp.StatusCode, string(body))
 	}
 
@@ -1904,7 +1908,7 @@ func apiDo(req *http.Request, token string) *http.Response {
 		fatalf("Request failed: %v", err)
 	}
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		resp.Body.Close()
 		// Feature 0039: 503 from /api/audits when VULTURE_REQUIRE_LLM=true
 		// and LLM is unreachable. Surface the canonical message verbatim
