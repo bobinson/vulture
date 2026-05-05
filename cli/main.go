@@ -630,7 +630,7 @@ func streamDiscover(apiURL, auditID, token string) {
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
 	var eventType string
 	for scanner.Scan() {
@@ -1300,7 +1300,7 @@ func streamProve(apiURL, auditID, token string) {
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
 	var eventType string
 	for scanner.Scan() {
@@ -1570,17 +1570,30 @@ func buildAuditBody(sourceID string, types []string, ci ciFlags) map[string]inte
 	return body
 }
 
-// pollUntilDone polls GET /api/audits/:id every 3 seconds until the audit
-// reaches a terminal status (completed or failed).
+// pollUntilDone polls GET /api/audits/:id with exponential backoff until
+// the audit reaches a terminal status (completed or failed).
+//
+// Cadence: starts at 1s and doubles up to a 30s ceiling. Short audits
+// finish before the first slow poll; long ones spend ~30s between polls
+// instead of pounding the API every 3s for the full duration.
 func pollUntilDone(apiURL, auditID, token string) audit {
 	url := apiURL + "/api/audits/" + auditID
+	const initialDelay = time.Second
+	const maxDelay = 30 * time.Second
+	delay := initialDelay
 	for {
 		a := apiGet[audit](url, token)
 		if a.Status == "completed" || a.Status == "failed" {
 			return a
 		}
 		fmt.Fprintf(os.Stderr, "  Status: %s ...\n", a.Status)
-		time.Sleep(3 * time.Second)
+		time.Sleep(delay)
+		if delay < maxDelay {
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
 	}
 }
 
@@ -1668,7 +1681,7 @@ func streamAudit(apiURL, auditID, token string) {
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
 	var eventType string
 	for scanner.Scan() {
