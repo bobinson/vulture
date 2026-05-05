@@ -222,42 +222,60 @@ def _truncate_prompt_to_budget(
         prompt_text: The full prompt string.
         model: Optional model key for context window sizing.
         estimated_tokens: Pre-computed token count from ``_check_context_budget``.
-            When provided, skips the initial ``safe_estimate_tokens`` call.
+            When provided, skips a redundant whole-prompt encode.
     """
     from shared.llm.provider import get_context_window
 
     ctx_tokens = get_context_window(model)
     target_tokens = int(ctx_tokens * 0.8)
-    estimated = estimated_tokens if estimated_tokens is not None else safe_estimate_tokens(prompt_text)
-    if estimated <= target_tokens:
+
+    # Cheap pre-check: if caller already estimated and the prompt fits,
+    # we're done before any encoding work.
+    if estimated_tokens is not None and estimated_tokens <= target_tokens:
         return prompt_text
 
-    # Split on file boundaries ("--- path ---") and remove from the end
+    # Split on file boundaries ("--- path ---") so we can remove whole files.
     file_marker = "\n\n--- "
     parts = prompt_text.split(file_marker)
     if len(parts) <= 1:
-        # No file blocks found — fall back to char truncation
+        # No file blocks — fall back to char truncation. Encode here only
+        # if the caller didn't already.
+        estimated = estimated_tokens if estimated_tokens is not None else safe_estimate_tokens(prompt_text)
+        if estimated <= target_tokens:
+            return prompt_text
         ratio = len(prompt_text) / max(estimated, 1)
         target_chars = int(target_tokens * ratio)
         return prompt_text[:target_chars] + "\n\n[... truncated to fit context window ...]"
 
-    # parts[0] is everything before the first file; parts[1:] are file blocks
+    # parts[0] is everything before the first file; parts[1:] are file blocks.
     preamble = parts[0]
     file_blocks = [file_marker.lstrip("\n") + p for p in parts[1:]]
 
-    # If preamble alone exceeds budget, truncate it directly
+    # Per-block token counts — these dominate the encode work, but each
+    # block is encoded exactly once (no O(N²) re-encoding inside the loop).
     preamble_tokens = safe_estimate_tokens(preamble)
+    block_tokens = [safe_estimate_tokens(b) for b in file_blocks]
+    separator_tokens = safe_estimate_tokens("\n\n")
+    running_total = preamble_tokens + sum(block_tokens) + separator_tokens * len(block_tokens)
+
+    # Reuse the per-block sum as our total estimate (avoid encoding the
+    # whole prompt a second time just to log it). Only meaningful when
+    # the caller didn't already provide estimated_tokens.
+    if estimated_tokens is None:
+        estimated_tokens = running_total
+
+    # If the prompt was within budget after all (caller's pre-estimate
+    # was conservative) we can return unchanged.
+    if running_total <= target_tokens:
+        return prompt_text
+
+    # If preamble alone exceeds budget, truncate it directly.
     if preamble_tokens > target_tokens:
         ratio = len(preamble) / max(preamble_tokens, 1)
         target_chars = int(target_tokens * ratio)
         return preamble[:target_chars] + "\n\n[... truncated to fit context window ...]"
 
-    # Pre-compute per-block token counts to avoid O(N²) re-encoding
-    block_tokens = [safe_estimate_tokens(b) for b in file_blocks]
-    separator_tokens = safe_estimate_tokens("\n\n")
-    running_total = preamble_tokens + sum(block_tokens) + separator_tokens * len(block_tokens)
-
-    # Remove file blocks from the end (lowest priority) until budget met
+    # Remove file blocks from the end (lowest priority) until budget met.
     while file_blocks and running_total > target_tokens:
         running_total -= block_tokens.pop() + separator_tokens
         removed = file_blocks.pop()
@@ -272,7 +290,7 @@ def _truncate_prompt_to_budget(
     removed_count = len(parts) - 1 - len(file_blocks)
     if removed_count > 0:
         result += f"\n\n[... {removed_count} file(s) removed to fit context window ...]"
-    logger.info("prompt_truncated original=%d target=%d files_removed=%d", estimated, target_tokens, removed_count)
+    logger.info("prompt_truncated original=%d target=%d files_removed=%d", estimated_tokens, target_tokens, removed_count)
     return result
 
 

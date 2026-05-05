@@ -43,6 +43,18 @@ def load_catalog() -> dict[str, dict[str, Any]]:
         return json.load(f)
 
 
+def preload() -> None:
+    """Eagerly populate the catalog cache.
+
+    Call this once at agent startup (before workers fan out via
+    ThreadPoolExecutor) so the first batch of skill threads doesn't all
+    queue on the lru_cache lock waiting for one of them to finish parsing
+    the 2 MB JSON. Subsequent calls are no-ops courtesy of lru_cache.
+    """
+    load_catalog()
+    _parent_children_index()
+
+
 def get_cwe(cwe_id: str) -> dict[str, Any] | None:
     """Get metadata for a CWE by numeric ID string (e.g. '89')."""
     return load_catalog().get(cwe_id)

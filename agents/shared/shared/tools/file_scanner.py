@@ -71,32 +71,57 @@ def scan_code_files(
     source_path: str,
     extensions: frozenset[str] | None = None,
     max_files: int = MAX_FILES,
+    extra_filenames: frozenset[str] | None = None,
 ) -> list[Path]:
     """Scan a directory for code files efficiently.
 
     Skips common non-code directories, respects file limits,
     and only returns files with relevant extensions.
 
-    Results are cached by (source_path, extensions, max_files) so that
-    multiple skills scanning the same directory reuse the walk result.
+    Results are cached by (source_path, extensions, max_files,
+    extra_filenames) so that multiple skills scanning the same directory
+    reuse the walk result.
 
     Args:
         source_path: Root directory to scan.
         extensions: File extensions to include. Defaults to CODE_EXTENSIONS.
         max_files: Maximum number of files to return.
+        extra_filenames: Optional explicit basenames (or basename
+            prefixes ending in ``.``) to include in addition to
+            ``extensions``. Use this for files whose suffix doesn't
+            classify them — e.g. ``.env``, ``.envrc``, ``.env.production``
+            all match an entry of ``".env"`` (literal or as prefix).
 
     Returns:
         List of Path objects for code files found.
     """
     exts = extensions or CODE_EXTENSIONS
-    return list(_scan_code_files_cached(source_path, exts, max_files))
+    extras = extra_filenames or _EMPTY_EXTRAS
+    return list(_scan_code_files_cached(source_path, exts, max_files, extras))
+
+
+_EMPTY_EXTRAS: frozenset[str] = frozenset()
+
+
+def _matches_extra(name: str, extras: frozenset[str]) -> bool:
+    """True if ``name`` is exactly an extras entry, OR starts with one
+    of them used as a prefix (so ``.env`` matches ``.env.production``)."""
+    if name in extras:
+        return True
+    for e in extras:
+        # Treat entries ending in '.' OR plain '.env'-style names as a
+        # prefix family, so `.env.production` matches an extras entry of
+        # `.env`. Don't accept arbitrary substrings.
+        if name.startswith(e + "."):
+            return True
+    return False
 
 
 @lru_cache(maxsize=16)
 def _scan_code_files_cached(
-    source_path: str, exts: frozenset[str], max_files: int,
+    source_path: str, exts: frozenset[str], max_files: int, extras: frozenset[str],
 ) -> tuple[Path, ...]:
-    """Cached inner scan — keyed by (path, extensions, max_files).
+    """Cached inner scan — keyed by (path, extensions, max_files, extras).
 
     Returns an immutable tuple so callers cannot corrupt the cache.
     """
@@ -107,10 +132,13 @@ def _scan_code_files_cached(
     spec = _load_ignore_spec(str(root))
     files: list[Path] = []
     for p in _walk_filtered(root, root, spec):
-        if p.suffix.lower() in exts and p.name not in SKIP_FILES:
-            files.append(p)
-            if len(files) >= max_files:
-                break
+        suffix_match = p.suffix.lower() in exts and p.name not in SKIP_FILES
+        extras_match = bool(extras) and _matches_extra(p.name, extras)
+        if not (suffix_match or extras_match):
+            continue
+        files.append(p)
+        if len(files) >= max_files:
+            break
     logger.info("scan_complete path=%s files=%d max=%d", source_path, len(files), max_files)
     return tuple(files)
 

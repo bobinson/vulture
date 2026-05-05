@@ -20,7 +20,6 @@ from agents import function_tool
 
 from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
-    SKIP_DIRS,
     is_generated_file,
     read_file_safe,
     scan_code_files,
@@ -83,10 +82,24 @@ def check_secrets(source_path: str) -> dict:
 
 
 def _collect_scannable_files(source_path: str) -> list[Path]:
-    """Combine suffix-matched files + manual `.env*` pass."""
-    suffix_files = scan_code_files(source_path, extensions=SECRET_SCAN_EXTENSIONS)
-    dotenv_files = _iter_dotenv_files(Path(source_path))
-    return list(suffix_files) + list(dotenv_files)
+    """Suffix-matched code files plus `.env*` config files in one walk.
+
+    Previously this called scan_code_files() then ran a second rglob()
+    explicitly looking for `.env`/`.envrc`/`.env.*` filenames. The
+    file_scanner now accepts ``extra_filenames`` so the dotenv detection
+    happens inline with the normal walk — one tree traversal instead of
+    two for a 10K-file repo.
+    """
+    return scan_code_files(
+        source_path,
+        extensions=SECRET_SCAN_EXTENSIONS,
+        extra_filenames=_DOTENV_NAMES,
+    )
+
+
+# Names that the secret_scan wants on top of the suffix-based scan.
+# `.env` matches `.env.production` etc. via prefix logic in the scanner.
+_DOTENV_NAMES = frozenset({".env", ".envrc"})
 
 
 def _scan_one_file(
@@ -118,32 +131,6 @@ def _scan_one_file(
     for detect in detectors:
         for f in detect(file_path, content):
             _maybe_emit(findings, seen_keys, f, file_path)
-
-
-def _iter_dotenv_files(root: Path) -> list[Path]:
-    """Yield ``.env`` / ``.env.<env>`` / ``.envrc`` files under ``root``.
-
-    Path.suffix returns '' for `.env` and '.production' for
-    `.env.production`, so the suffix-based scan_code_files() misses
-    them. This helper walks the tree once explicitly looking for
-    these filename patterns.
-    """
-    out: list[Path] = []
-    if not root.is_dir():
-        return out
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        # Skip if any *parent* directory is in SKIP_DIRS. Don't check
-        # the file's own basename — `.env` is in SKIP_DIRS to suppress
-        # Python virtualenv directories named `.env`, but we explicitly
-        # WANT to scan files literally named `.env`.
-        if any(part in SKIP_DIRS for part in p.parts[:-1]):
-            continue
-        name = p.name
-        if name == ".env" or name == ".envrc" or name.startswith(".env."):
-            out.append(p)
-    return out
 
 
 def _maybe_emit(

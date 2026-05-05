@@ -62,6 +62,11 @@ def _provider_token_multiplier() -> float:
     - Anthropic (Claude): 1.1 (Claude tokenizer is ~10% more efficient)
     - Google (Gemini): 1.15 (Gemini tokenizer differs ~15%)
     - Ollama/local: 1.2 (varies widely, conservative estimate)
+
+    Re-reads VULTURE_LLM_MODEL on each call so per-process env changes
+    (e.g. test monkeypatching) take effect. The actual cost — one env
+    lookup + a few string prefix checks — is negligible vs. the tiktoken
+    encode it accompanies.
     """
     model_key = os.environ.get("VULTURE_LLM_MODEL", "gpt-4o")
     if model_key.startswith("gpt") or model_key == "gpt-4o":

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import _walk_filtered
+from shared.tools.file_scanner import _load_ignore_spec, _walk_filtered, read_file_safe
 
 
 def search_pattern(path: str, pattern: str) -> list[dict]:
@@ -13,7 +13,8 @@ def search_pattern(path: str, pattern: str) -> list[dict]:
 
     Uses ``_walk_filtered`` so that ``.git``, ``node_modules``,
     ``__pycache__``, ``vendor``, and other non-source directories
-    are automatically skipped.
+    are automatically skipped, plus any `.vultureignore` /
+    `.gitignore` patterns from the source root.
 
     Args:
         path: Directory path to search.
@@ -26,10 +27,11 @@ def search_pattern(path: str, pattern: str) -> list[dict]:
     if not root.is_dir():
         return []
 
+    spec = _load_ignore_spec(str(root))
     compiled = re.compile(pattern)
     results: list[dict] = []
 
-    for file_path in _walk_filtered(root):
+    for file_path in _walk_filtered(root, root, spec):
         _search_file(file_path, compiled, results)
 
     return results
@@ -38,10 +40,14 @@ def search_pattern(path: str, pattern: str) -> list[dict]:
 def _search_file(
     file_path: Path, compiled: re.Pattern, results: list[dict]
 ) -> None:
-    """Search a single file for pattern matches."""
-    try:
-        text = file_path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, PermissionError):
+    """Search a single file for pattern matches.
+
+    Uses ``read_file_safe`` so this share the lru_cache that skill phase
+    populated — no redundant disk read when the LLM tool layer fans out
+    multiple search_pattern calls during analysis.
+    """
+    text = read_file_safe(file_path)
+    if text is None:
         return
 
     for line_num, line in enumerate(text.splitlines(), start=1):

@@ -38,10 +38,21 @@ func (s *sourceService) Get(id string) (*model.Source, error) {
 	return src, nil
 }
 
+// IngestTimeout caps how long a synchronous source ingest can run. The
+// HTTP request goroutine is held for the duration, so an unbounded git
+// clone or file walk would otherwise block one of the server's worker
+// goroutines for as long as the remote is slow / hung.
+const IngestTimeout = 10 * time.Minute
+
 func (s *sourceService) Ingest(ctx context.Context, req *model.SourceRequest) (*model.Source, error) {
+	// Bound the entire ingest pipeline (clone + walk) so a slow remote
+	// can't pin a request goroutine indefinitely. The handler's
+	// r.Context() may already have a deadline; this only tightens it.
+	ctx, cancel := context.WithTimeout(ctx, IngestTimeout)
+	defer cancel()
 	switch model.SourceType(req.Type) {
 	case model.SourceTypeLocal:
-		return s.ingestLocal(req)
+		return s.ingestLocal(ctx, req)
 	case model.SourceTypeGit:
 		return s.ingestGit(ctx, req)
 	default:
@@ -49,7 +60,7 @@ func (s *sourceService) Ingest(ctx context.Context, req *model.SourceRequest) (*
 	}
 }
 
-func (s *sourceService) ingestLocal(req *model.SourceRequest) (*model.Source, error) {
+func (s *sourceService) ingestLocal(ctx context.Context, req *model.SourceRequest) (*model.Source, error) {
 	if req.Path == "" {
 		return nil, fmt.Errorf("path is required for local source")
 	}
@@ -68,7 +79,7 @@ func (s *sourceService) ingestLocal(req *model.SourceRequest) (*model.Source, er
 	existing, _ := s.repo.FindSourceByPath(req.Path)
 	if existing != nil {
 		// Update file count in case files changed
-		fileCount, _ := fileutil.CountFiles(req.Path)
+		fileCount, _ := fileutil.CountFilesCtx(ctx, req.Path)
 		if fileCount > 0 {
 			existing.FileCount = fileCount
 		}
@@ -83,7 +94,7 @@ func (s *sourceService) ingestLocal(req *model.SourceRequest) (*model.Source, er
 		return existing, nil
 	}
 
-	fileCount, err := fileutil.CountFiles(req.Path)
+	fileCount, err := fileutil.CountFilesCtx(ctx, req.Path)
 	if err != nil {
 		return nil, fmt.Errorf("count files: %w", err)
 	}
@@ -119,7 +130,7 @@ func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest)
 	if err := gitutil.Clone(ctx, req.URL, destPath, 1, req.GitCredentials); err != nil {
 		return nil, fmt.Errorf("clone: %w", err)
 	}
-	fileCount, err := fileutil.CountFiles(destPath)
+	fileCount, err := fileutil.CountFilesCtx(ctx, destPath)
 	if err != nil {
 		return nil, fmt.Errorf("count files: %w", err)
 	}
