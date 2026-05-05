@@ -94,6 +94,16 @@ vulture/
   Makefile               # Build, test, lint automation
 ```
 
+## Scan-time exclusion (`.vultureignore` + `.gitignore`)
+
+The file scanner (`agents/shared/shared/tools/file_scanner.py`) skips paths in three layers, in order:
+
+1. Hardcoded `SKIP_DIRS` / `SKIP_FILES` (e.g. `.git`, `node_modules`, `__pycache__`, lock files).
+2. `.gitignore` at the source root — read by default, gitignore-syntax via `pathspec`. Disable with `VULTURE_IGNORE_GITIGNORE=true`.
+3. `.vultureignore` at the source root — same syntax, always honored when present. Use this to exclude paths that aren't gitignored but shouldn't be audited (test artifacts, vendored data files, recorded fixtures).
+
+The repo ships its own `.vultureignore` covering `.playwright-mcp/`, `docs/cwe_version_*/`, `agents/cwe/cwe_agent/data/cwe_catalog.json`, etc. Add project-specific patterns at the bottom of that file.
+
 ## Audit Pipeline (Combined Skill + LLM)
 
 Agents use a two-phase audit pipeline via `run_combined_audit()`:

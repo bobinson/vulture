@@ -1,0 +1,49 @@
+# .vultureignore — gitignore-syntax patterns Vulture skips when scanning.
+# Honored ALONGSIDE .gitignore (which Vulture also reads by default; set
+# VULTURE_IGNORE_GITIGNORE=true to opt out of that). Patterns here apply
+# even to checked-in / not-gitignored files that Vulture shouldn't audit.
+
+# ── Test artifact output ────────────────────────────────────────────
+# Playwright MCP output dir; not production code, not behaviorally
+# part of the audit surface. Was generating ~180 false-positive
+# findings per scan before exclusion.
+.playwright-mcp/
+
+# ── Generated catalogs / data ───────────────────────────────────────
+# Large XML/XSD catalogs vendored for offline lookup; not source code.
+docs/cwe_version_*/
+agents/cwe/cwe_agent/data/cwe_catalog.json
+agents/cwe/cwe_agent/skills/secret_scan/data/bip39_english.txt
+
+# ── E2E test fixtures + recorded artifacts ──────────────────────────
+# Frontend Playwright tests recorded HTML/screenshots — analyzing
+# them produces noise, not real findings.
+frontend/test-results/
+frontend/playwright-report/
+
+# ── Verification harness scratch ────────────────────────────────────
+verification/build/
+verification/.coq/
+
+# ── IDE / tooling state ─────────────────────────────────────────────
+# Most of these are also in .gitignore, but listed here so an
+# operator running `--no-gitignore` still gets them excluded.
+.aider*
+.cursor/
+.zed/
+.fleet/
+
+# ── Vendor / third-party / build outputs ────────────────────────────
+# Most are also in SKIP_DIRS, but listed for explicit override of
+# any operator-supplied --gitignore-disabled mode.
+node_modules/
+vendor/
+third_party/
+target/
+dist/
+build/
+agents/.venv/
+backend/bin/
+cli/bin/
+
+# ── Add project-specific patterns below this line ──────────────────

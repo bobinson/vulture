@@ -104,8 +104,9 @@ def _scan_code_files_cached(
     if not root.is_dir():
         return ()
 
+    spec = _load_ignore_spec(str(root))
     files: list[Path] = []
-    for p in _walk_filtered(root):
+    for p in _walk_filtered(root, root, spec):
         if p.suffix.lower() in exts and p.name not in SKIP_FILES:
             files.append(p)
             if len(files) >= max_files:
@@ -114,8 +115,57 @@ def _scan_code_files_cached(
     return tuple(files)
 
 
-def _walk_filtered(root: Path) -> Iterator[Path]:
-    """Walk directory tree, skipping ignored directories."""
+@lru_cache(maxsize=16)
+def _load_ignore_spec(source_path: str):
+    """Load gitignore-style patterns from `.vultureignore` and
+    `.gitignore` at ``source_path`` and compile a ``PathSpec``.
+
+    Honors `.gitignore` by default (set ``VULTURE_IGNORE_GITIGNORE=true``
+    to disable). Honors `.vultureignore` always when present.
+
+    Returns a compiled ``pathspec.PathSpec`` or ``None`` if both files
+    are absent / unreadable / pathspec isn't installed.
+    """
+    try:
+        import pathspec
+    except ImportError:
+        return None
+
+    root = Path(source_path)
+    patterns: list[str] = []
+
+    # Read .gitignore first so .vultureignore patterns layer on top
+    # (later patterns override earlier ones in pathspec's gitwildmatch
+    # semantics). Skip if operator opted out.
+    if os.environ.get("VULTURE_IGNORE_GITIGNORE", "").lower() != "true":
+        gi = root / ".gitignore"
+        if gi.is_file():
+            try:
+                patterns.extend(gi.read_text(encoding="utf-8", errors="ignore").splitlines())
+            except OSError:
+                pass
+
+    vi = root / ".vultureignore"
+    if vi.is_file():
+        try:
+            patterns.extend(vi.read_text(encoding="utf-8", errors="ignore").splitlines())
+        except OSError:
+            pass
+
+    if not patterns:
+        return None
+    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+
+def _walk_filtered(root: Path, scan_root: Path, spec) -> Iterator[Path]:
+    """Walk directory tree, skipping ignored directories.
+
+    Skips entries that:
+    - Are in :data:`SKIP_DIRS` or :data:`SKIP_FILES` (hardcoded baseline).
+    - Match a `.vultureignore` / `.gitignore` pattern from ``scan_root``.
+    - Are symlinks (avoid loops).
+    - Are backup directories (`-backup`, `_old`, etc.).
+    """
     try:
         entries = sorted(root.iterdir())
     except PermissionError:
@@ -125,13 +175,34 @@ def _walk_filtered(root: Path) -> Iterator[Path]:
     for entry in entries:
         if entry.is_symlink():
             continue
+        if _is_path_ignored(entry, scan_root, spec):
+            continue
         if entry.is_file():
             yield entry
         elif entry.is_dir() and entry.name not in SKIP_DIRS and not _is_backup_dir(entry.name):
             dirs.append(entry)
 
     for d in dirs:
-        yield from _walk_filtered(d)
+        yield from _walk_filtered(d, scan_root, spec)
+
+
+def _is_path_ignored(entry: Path, scan_root: Path, spec) -> bool:
+    """True if ``entry`` matches the loaded ignore spec.
+
+    Pathspec's gitwildmatch matcher operates on POSIX-style relative
+    paths. Directories must be matched with a trailing slash for
+    dir-only patterns (e.g. `node_modules/`) to apply.
+    """
+    if spec is None:
+        return False
+    try:
+        rel = entry.relative_to(scan_root)
+    except ValueError:
+        return False
+    rel_posix = rel.as_posix()
+    if entry.is_dir():
+        rel_posix += "/"
+    return spec.match_file(rel_posix)
 
 
 def read_file_safe(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
