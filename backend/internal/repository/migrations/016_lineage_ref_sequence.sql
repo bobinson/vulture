@@ -20,13 +20,18 @@
 CREATE SEQUENCE IF NOT EXISTS finding_lineage_ref_seq;
 
 -- Pin the sequence to the highest existing ref_number so newly assigned
--- values don't collide with rows backfilled by migration 013. setval()
--- without is_called=true so the next nextval() returns max+1.
-SELECT setval(
-    'finding_lineage_ref_seq',
-    COALESCE((SELECT MAX(ref_number) FROM finding_lineage), 0),
-    true
-);
+-- values don't collide with rows backfilled by migration 013. Skip on
+-- an empty table — sequences default to start=1 so the first nextval()
+-- already returns 1, and setval() rejects values below MINVALUE (1).
+DO $$
+DECLARE
+    max_ref INTEGER;
+BEGIN
+    SELECT MAX(ref_number) INTO max_ref FROM finding_lineage;
+    IF max_ref IS NOT NULL AND max_ref > 0 THEN
+        PERFORM setval('finding_lineage_ref_seq', max_ref, true);
+    END IF;
+END $$;
 
 -- New rows get a sequence value automatically; existing rows already have
 -- backfilled values from migration 013, so ALTER ... SET DEFAULT is safe.
