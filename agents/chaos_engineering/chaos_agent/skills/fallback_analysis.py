@@ -52,21 +52,32 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if content is None:
         return
 
-    has_error_prone = any(p.search(content) for p in ERROR_PRONE_PATTERNS)
     has_fallback = any(p.search(content) for p in FALLBACK_PATTERNS)
+    if has_fallback:
+        return
 
-    if has_error_prone and not has_fallback:
-        findings.append({
-            "severity": "medium",
-            "check_id": "chaos.fallback.missing",
-            "category": "fallback-pattern",
-            "title": "Missing fallback mechanism",
-            "description": f"File {file_path.name} lacks fallback for failure scenarios",
-            "file_path": str(file_path),
-            "line_start": 1,
-            "line_end": 1,
-            "recommendation": "Implement fallback responses or cached defaults",
-        })
+    line_num = 0
+    for ln, line in enumerate(content.splitlines(), start=1):
+        for pat in ERROR_PRONE_PATTERNS:
+            if pat.search(line):
+                line_num = ln
+                break
+        if line_num:
+            break
+    if line_num == 0:
+        return
+
+    findings.append({
+        "severity": "medium",
+        "check_id": "chaos.fallback.missing",
+        "category": "fallback-pattern",
+        "title": "Missing fallback mechanism",
+        "description": f"File {file_path.name} lacks fallback for failure scenarios",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Implement fallback responses or cached defaults",
+    })
 
 
 check_fallback_patterns_tool = function_tool(check_fallback_patterns)

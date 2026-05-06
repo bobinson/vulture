@@ -18,14 +18,30 @@ from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
 
-# CWE-22: Path traversal
+# CWE-22: Path traversal.
+#
+# CWE-22 requires a FILESYSTEM SINK with attacker-controlled path
+# components. Bare `../` substrings in TypeScript imports, npm scoped
+# package names (`@scope/pkg`), and URL string literals are NOT
+# attacks. Each pattern below pairs a sink (open / readFile / Path /
+# os.path.join) with a tainted source identifier on the same line, so
+# the regex itself encodes the precondition.
+#
+# The `..\` and `..%2f` shapes belong to the dedicated
+# path_equivalence_check skill — keeping them out of this list
+# prevents double-flagging.
 PATH_TRAVERSAL_PATTERNS = [
-    re.compile(r'os\.path\.join\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
-    re.compile(r'\.\./'),
-    re.compile(r'\.\.\\\\'),
-    re.compile(r'open\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
-    re.compile(r'Path\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
-    re.compile(r'(?:readFile|readFileSync)\([^)]*(?:req|params|query)', re.IGNORECASE),
+    re.compile(r'os\.path\.join\([^)]*\b(?:request|req|params|input|user|body|query)\b', re.IGNORECASE),
+    re.compile(r'\bopen\s*\([^)]*\b(?:request|req|params|input|user|body|query)\b', re.IGNORECASE),
+    re.compile(r'\bPath\s*\([^)]*\b(?:request|req|params|input|user|body|query)\b'),
+    re.compile(r'\b(?:readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream)\s*\([^)]*\b(?:req|params|query|body)\b', re.IGNORECASE),
+    re.compile(r'\bfs\.(?:readFile|writeFile|stat|access|unlink)\s*\([^)]*\b(?:req|params|query|body)\b', re.IGNORECASE),
+    # Go: ioutil.ReadFile, os.Open with request body
+    re.compile(r'\b(?:ioutil\.ReadFile|os\.Open|os\.OpenFile|os\.Create)\s*\([^)]*\b(?:r|req|c|ctx)\.\w+\(', re.IGNORECASE),
+    # Express download/sendFile/static with user-controlled arg
+    re.compile(r'\bres\.(?:sendFile|download)\s*\([^)]*\b(?:req|params|query|body)\b', re.IGNORECASE),
+    # Java: java.io.File / Files.readString with request data
+    re.compile(r'\b(?:new\s+File|Files\.read(?:String|AllBytes)?|Paths\.get)\s*\([^)]*\b(?:request|req|params)\b', re.IGNORECASE),
 ]
 
 SAFE_PATH_PATTERNS = re.compile(
@@ -66,13 +82,67 @@ SAFE_VALIDATION_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# CWE-434: Unrestricted file upload
-FILE_UPLOAD_PATTERNS = [
-    re.compile(r'request\.files\[', re.IGNORECASE),
-    re.compile(r'(?:multer|upload|formidable)', re.IGNORECASE),
-    re.compile(r'\.save\([^)]*(?:filename|file_name)', re.IGNORECASE),
-    re.compile(r'MultiPartParser|multipart/form-data', re.IGNORECASE),
+# CWE-434: Unrestricted file upload.
+#
+# Two-tier:
+#   STRONG patterns are upload SINKS — function calls / API references
+#   that genuinely receive uploaded bytes. Match these directly.
+#   WEAK patterns are bare identifier mentions of "upload" that need
+#   corroboration: only fire when a STRONG pattern also appears
+#   somewhere in the file. Without that corroboration, the bare
+#   "upload" substring matches every JSX import, every state variable,
+#   every database column name, GraphQL operation name, etc.
+#
+# Files we always SKIP for CWE-434:
+#   - YAML / JSON / TOML metadata, schema, and config files (no upload
+#     sink can be expressed declaratively)
+#   - TypeScript .d.ts type-definition files
+FILE_UPLOAD_STRONG = [
+    # Python frameworks
+    re.compile(r'\brequest\.files\b', re.IGNORECASE),
+    re.compile(r'\brequest\.FILES\b'),                    # Django
+    re.compile(r'\bMultiPartParser\b'),                   # Django REST framework
+    re.compile(r'\bFlask-Uploads\b'),
+    # Node.js libraries (real upload-handling middleware)
+    re.compile(r'\bmulter\s*\(', re.IGNORECASE),          # multer({})
+    re.compile(r'\bformidable\s*\(', re.IGNORECASE),      # formidable({})
+    re.compile(r'\bbusboy\s*\(', re.IGNORECASE),
+    re.compile(r'\bexpress-fileupload\b', re.IGNORECASE),
+    re.compile(r'\b(?:upload|files|fileUpload)\.single\s*\(', re.IGNORECASE),
+    re.compile(r'\b(?:upload|files|fileUpload)\.array\s*\(', re.IGNORECASE),
+    re.compile(r'\b(?:upload|files|fileUpload)\.fields\s*\(', re.IGNORECASE),
+    re.compile(r'\b(?:upload|files|fileUpload)\.any\s*\('),
+    # Go
+    re.compile(r'\b(?:r|req|c|ctx)\.FormFile\s*\('),
+    re.compile(r'\bMultipartReader\s*\('),
+    # HTML5 file input
+    re.compile(r'<input[^>]*type\s*=\s*["\']file["\']', re.IGNORECASE),
+    # Multipart content type literal in code
+    re.compile(r'["\']multipart/form-data["\']', re.IGNORECASE),
+    # Save with filename (real disk write, not just any save())
+    re.compile(r'\.save\s*\([^)]*(?:filename|file_name)', re.IGNORECASE),
 ]
+
+# Generic mentions that need corroboration. Kept narrow.
+FILE_UPLOAD_WEAK = [
+    re.compile(r'\bupload\w*\s*=\s*multer\s*\(', re.IGNORECASE),
+]
+
+# File extensions where CWE-434 is structurally impossible to express
+# (declarative configs, schemas, type stubs).
+_NON_CODE_EXTENSIONS = frozenset({
+    ".yaml", ".yml", ".json", ".toml", ".ini", ".env",
+    ".d.ts",                             # TS type definitions
+})
+
+# Non-code basenames that hold metadata and trip the bare-"upload" regex
+# (Hasura action declarations, DB schema column lists, etc.)
+_NON_CODE_BASENAMES = frozenset({
+    "actions.yaml", "metadata.yaml",
+})
+
+# Backward compat alias for tests / callers.
+FILE_UPLOAD_PATTERNS = FILE_UPLOAD_STRONG + FILE_UPLOAD_WEAK
 
 SAFE_UPLOAD_PATTERNS = re.compile(
     r"(?:allowed_extensions|content_type|file_type|mimetype|"
@@ -268,14 +338,33 @@ def _check_file_upload(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for CWE-434 unrestricted file upload."""
-    # Check surrounding context for upload safeguards
+    """Check for CWE-434 unrestricted file upload.
+
+    Only fires on real upload SINKS (multer/formidable/req.files etc.),
+    not on bare identifier mentions of the substring 'upload'. Skips
+    declarative metadata files (YAML/JSON schemas, GraphQL action
+    declarations, DB column listings) where CWE-434 cannot be expressed.
+    """
+    # Skip metadata / declarative files entirely.
+    suffix = file_path.suffix.lower()
+    if suffix in _NON_CODE_EXTENSIONS:
+        return
+    if file_path.name in _NON_CODE_BASENAMES:
+        return
+    # Skip TypeScript .d.ts files (suffix is just ".ts" but name ends ".d.ts").
+    if file_path.name.endswith(".d.ts"):
+        return
+
+    # Check surrounding context for upload safeguards.
     context_start = max(0, line_num - 6)
     context_end = min(len(lines), line_num + 6)
     context = "\n".join(lines[context_start:context_end])
     if SAFE_UPLOAD_PATTERNS.search(context):
         return
-    for pattern in FILE_UPLOAD_PATTERNS:
+
+    # Only flag on a STRONG sink match. Bare-identifier "upload" mentions
+    # in JSX, imports, or state-variable names no longer trigger.
+    for pattern in FILE_UPLOAD_STRONG:
         if pattern.search(line):
             finding = {
                 "severity": "high",

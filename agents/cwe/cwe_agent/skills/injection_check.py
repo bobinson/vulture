@@ -101,10 +101,20 @@ XSS_PATTERNS = [
     re.compile(r"v-html\s*="),
 ]
 
-# CWE-94: Code Injection
+# CWE-94: Code Injection.
+#
+# The previous `(?<!\w)exec\s*\(` pattern matched `.exec(` because the
+# `.` between a method receiver and the method name is NOT a word
+# character. That trapped JavaScript regex calls like
+# `myRegex.exec(input)` (which is regex MATCHING, not code execution).
+# Tighten to `(?<![\w.\]\)])` so any method-call shape — `.exec(`,
+# `].exec(`, `).exec(` — is excluded.
+#
+# True positives still match: bare `eval(` / `exec(` at statement start,
+# after assignment, after semicolons, after `if`, etc.
 CODE_INJECTION_PATTERNS = [
-    re.compile(r"(?<!\w)eval\s*\("),
-    re.compile(r"(?<!\w)exec\s*\("),
+    re.compile(r"(?<![\w.\]\)])eval\s*\("),
+    re.compile(r"(?<![\w.\]\)])exec\s*\("),
     re.compile(r"new\s+Function\s*\("),
     re.compile(r"setTimeout\s*\(\s*['\"`]"),
     re.compile(r"setInterval\s*\(\s*['\"`]"),

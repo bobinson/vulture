@@ -408,8 +408,8 @@ func (r *SQLiteRepo) UpdateAudit(audit *model.Audit) error {
 		completedAt = &s
 	}
 	_, err := r.db.Exec(
-		`UPDATE audits SET status = ?, scores = ?, completed_at = ? WHERE id = ?`,
-		string(audit.Status), string(scoresJSON), completedAt, audit.ID,
+		`UPDATE audits SET status = ?, scores = ?, completed_at = ?, degraded_reason = ? WHERE id = ?`,
+		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, audit.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update audit: %w", err)

@@ -18,6 +18,7 @@ from shared.tools.snippet import check_context, extract_snippet
 from shared.tools.suppression import should_suppress, INFO_EXPOSURE_SUPPRESSIONS
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._var_reference import line_value_is_variable_ref
 
 
 # CWE-209: Error message information disclosure
@@ -156,8 +157,16 @@ def _check_cleartext_storage(
     file_path: Path, line: str, line_num: int, lines: list[str],
     content: str, findings: list[dict], suppression_counts: dict[int, int],
 ) -> None:
-    """Check for cleartext storage of sensitive info (CWE-312)."""
+    """Check for cleartext storage of sensitive info (CWE-312).
+
+    Suppress lines whose RHS is a variable reference — `password=$X`,
+    `--build-arg STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"` etc. are env
+    indirections that the static analysis can't see resolve to a
+    literal.
+    """
     if SAFE_STORAGE.search(line):
+        return
+    if line_value_is_variable_ref(line):
         return
     for pattern in CLEARTEXT_STORAGE_PATTERNS:
         if not pattern.search(line):

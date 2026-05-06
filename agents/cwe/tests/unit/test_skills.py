@@ -406,7 +406,12 @@ class TestInputValidationPatterns:
     """Tests for input validation regex detection."""
 
     def test_detects_path_traversal(self):
-        line = 'path = os.path.join(base_dir, user_input)'
+        # CWE-22 pattern requires a fs-sink + tainted source on the same
+        # line. The previous test asserted on `user_input` matching as a
+        # substring; the tightened pattern uses word boundaries to keep
+        # generic identifiers from triggering, so use the explicit
+        # `request.body` shape that real attack sites use.
+        line = 'path = os.path.join(base_dir, request.body)'
         assert any(p.search(line) for p in PATH_TRAVERSAL_PATTERNS)
 
     def test_detects_xxe(self):
@@ -422,10 +427,19 @@ class TestCheckInputValidation:
         return tmp_path
 
     def test_detects_path_traversal(self, source_dir):
-        code = 'import os\ndef serve(name):\n    path = os.path.join("/uploads", name)\n    return open(path).read()\n'
+        # The previous fixture relied on `/uploads` matching the
+        # CWE-434 upload-substring regex (an FP we fixed). This new
+        # fixture exercises the actual CWE-22 path: fs-sink (`open`) +
+        # tainted source (`request.args`) on the same line.
+        code = (
+            "from flask import request\n"
+            "def serve():\n"
+            "    return open(request.args['file']).read()\n"
+        )
         (source_dir / "views.py").write_text(code)
         result = check_input_validation(str(source_dir))
         assert len(result["findings"]) >= 1
+        assert any(f["category"] == "CWE-22" for f in result["findings"])
 
     def test_no_findings_for_clean_code(self, source_dir):
         code = "import os\nx = os.environ.get('FOO')\n"

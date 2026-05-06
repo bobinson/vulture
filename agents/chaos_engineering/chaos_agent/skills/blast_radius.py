@@ -65,19 +65,21 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         nodejs_singleton_lines.add(line_no)
 
     # Check shared state per-match, skipping lines that are Node.js singletons.
-    has_shared_state = False
+    # Capture the line of the first non-singleton shared-state match
+    # so the finding points at the actual offender, not line 1.
+    shared_state_line = 0
     for p in SHARED_STATE_PATTERNS:
         for match in p.finditer(content):
             line_no = content[:match.start()].count("\n")
             if line_no not in nodejs_singleton_lines:
-                has_shared_state = True
+                shared_state_line = line_no + 1  # 1-indexed
                 break
-        if has_shared_state:
+        if shared_state_line:
             break
 
     has_isolation = any(p.search(content) for p in ISOLATION_PATTERNS)
 
-    if has_shared_state and not has_isolation:
+    if shared_state_line and not has_isolation:
         findings.append({
             "severity": "medium",
             "check_id": "chaos.blast_radius.missing_isolation",
@@ -85,8 +87,8 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
             "title": "Shared state without isolation",
             "description": f"File {file_path.name} uses shared state without isolation mechanisms",
             "file_path": str(file_path),
-            "line_start": 1,
-            "line_end": 1,
+            "line_start": shared_state_line,
+            "line_end": shared_state_line,
             "recommendation": "Apply bulkhead pattern to isolate failure domains",
         })
 

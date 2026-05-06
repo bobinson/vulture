@@ -57,26 +57,47 @@ def check_timeout_handling(source_path: str) -> dict:
 
 
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
-    """Check a file for missing timeout handling."""
+    """Check a file for missing timeout handling.
+
+    Reports the line of the FIRST detected network call rather than
+    pinning every finding to line 1 (the file's import statement). The
+    underlying signal is file-scoped (no timeout anywhere AND a
+    network call exists), but pointing at the actual call site makes
+    triage faster.
+    """
     content = read_file_safe(file_path)
     if content is None:
         return
 
-    has_network = any(p.search(content) for p in NETWORK_PATTERNS)
     has_timeout = any(p.search(content) for p in TIMEOUT_PATTERNS)
+    if has_timeout:
+        return
 
-    if has_network and not has_timeout:
-        findings.append({
-            "severity": "high",
-            "check_id": "chaos.timeout.missing",
-            "category": "timeout-handling",
-            "title": "Missing timeout for network operation",
-            "description": f"File {file_path.name} performs network operations without timeouts",
-            "file_path": str(file_path),
-            "line_start": 1,
-            "line_end": 1,
-            "recommendation": "Add explicit timeouts to all network operations",
-        })
+    network_line = _first_network_line(content)
+    if network_line == 0:
+        return
+
+    findings.append({
+        "severity": "high",
+        "check_id": "chaos.timeout.missing",
+        "category": "timeout-handling",
+        "title": "Missing timeout for network operation",
+        "description": f"File {file_path.name} performs network operations without timeouts",
+        "file_path": str(file_path),
+        "line_start": network_line,
+        "line_end": network_line,
+        "recommendation": "Add explicit timeouts to all network operations",
+    })
+
+
+def _first_network_line(content: str) -> int:
+    """Return the 1-indexed line number of the first network-call match.
+    Returns 0 when no network call is found."""
+    for ln, line in enumerate(content.splitlines(), start=1):
+        for pat in NETWORK_PATTERNS:
+            if pat.search(line):
+                return ln
+    return 0
 
 
 check_timeout_handling_tool = function_tool(check_timeout_handling)

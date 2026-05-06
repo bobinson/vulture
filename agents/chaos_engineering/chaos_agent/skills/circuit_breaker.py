@@ -47,26 +47,42 @@ def check_circuit_breaker(source_path: str) -> dict:
 
 
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
-    """Check a file for missing circuit breaker patterns."""
+    """Check a file for missing circuit breaker patterns.
+
+    Reports the line of the first service call instead of pinning
+    every finding to line 1 (the file's import line).
+    """
     content = read_file_safe(file_path)
     if content is None:
         return
 
-    has_service_calls = any(p.search(content) for p in SERVICE_CALL_PATTERNS)
     has_breaker = any(p.search(content) for p in CIRCUIT_BREAKER_PATTERNS)
+    if has_breaker:
+        return
 
-    if has_service_calls and not has_breaker:
-        findings.append({
-            "severity": "medium",
-            "check_id": "chaos.circuit_breaker.missing",
-            "category": "circuit-breaker",
-            "title": "Missing circuit breaker for external service calls",
-            "description": f"File {file_path.name} makes external calls without circuit breaker",
-            "file_path": str(file_path),
-            "line_start": 1,
-            "line_end": 1,
-            "recommendation": "Wrap external calls with a circuit breaker pattern",
-        })
+    line_num = _first_service_line(content)
+    if line_num == 0:
+        return
+
+    findings.append({
+        "severity": "medium",
+        "check_id": "chaos.circuit_breaker.missing",
+        "category": "circuit-breaker",
+        "title": "Missing circuit breaker for external service calls",
+        "description": f"File {file_path.name} makes external calls without circuit breaker",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Wrap external calls with a circuit breaker pattern",
+    })
+
+
+def _first_service_line(content: str) -> int:
+    for ln, line in enumerate(content.splitlines(), start=1):
+        for pat in SERVICE_CALL_PATTERNS:
+            if pat.search(line):
+                return ln
+    return 0
 
 
 check_circuit_breaker_tool = function_tool(check_circuit_breaker)

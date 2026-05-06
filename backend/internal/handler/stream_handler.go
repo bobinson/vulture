@@ -211,10 +211,10 @@ func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter,
 	priorByAgent := h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
 	go h.streamSvc.StreamWithContext(r.Context(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
-	collectedFindings, scores, proveResults := h.consumeEvents(sseWriter, eventCh, audit.ID)
+	res := drainResult(eventCh, audit.ID, sseWriter)
 
-	log.Printf("[stream] stream complete audit=%s findings=%d proveResults=%d scores=%v", audit.ID, len(collectedFindings), len(proveResults), scores)
-	h.persistResults(audit, source, collectedFindings, scores, proveResults)
+	log.Printf("[stream] stream complete audit=%s findings=%d proveResults=%d scores=%v", audit.ID, len(res.Findings), len(res.ProveResults), res.Scores)
+	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
 }
 
 func (h *StreamHandler) consumeEvents(sseWriter *agui.SSEWriter, eventCh <-chan *model.AgUIEvent, auditID string) ([]model.Finding, map[string]int, []model.ProveResult) {
@@ -223,14 +223,38 @@ func (h *StreamHandler) consumeEvents(sseWriter *agui.SSEWriter, eventCh <-chan 
 
 // drainEventChannel processes all events from eventCh and optionally writes to SSE.
 // Shared by both live-streaming (with sseWriter) and pipeline (without) paths.
+//
+// Also collects any agent-emitted TextMessageContent that begins with
+// "ERROR:" so the caller can mark the audit as failed when an agent
+// short-circuited (e.g. discover hitting an invalid config and never
+// running). See drainResult / collectErrorText below.
 func drainEventChannel(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agui.SSEWriter) ([]model.Finding, map[string]int, []model.ProveResult) {
+	res := drainResult(eventCh, auditID, sseWriter)
+	return res.Findings, res.Scores, res.ProveResults
+}
+
+// DrainResult bundles every output of drainEventChannel plus the
+// agent-emitted error text (if any). Used by persistResults to decide
+// whether to mark the audit as failed.
+type DrainResult struct {
+	Findings     []model.Finding
+	Scores       map[string]int
+	ProveResults []model.ProveResult
+	AgentError   string // non-empty when an agent emitted "ERROR: …"
+}
+
+func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agui.SSEWriter) DrainResult {
 	var findings []model.Finding
 	var deltaFindings []model.Finding
 	var proveResults []model.ProveResult
 	scores := map[string]int{}
 	fpLookup := map[string]string{}
+	var agentError string
 	for evt := range eventCh {
 		processEvent(evt, auditID, &findings, &deltaFindings, &proveResults, scores, fpLookup)
+		if agentError == "" {
+			agentError = collectErrorText(evt)
+		}
 		if sseWriter != nil {
 			if err := sseWriter.WriteEvent(evt); err != nil {
 				log.Printf("[stream] write error: %v", err)
@@ -243,7 +267,39 @@ func drainEventChannel(eventCh <-chan *model.AgUIEvent, auditID string, sseWrite
 		findings = deltaFindings
 	}
 	findings = deduplicateCrossAgent(findings)
-	return findings, scores, proveResults
+	return DrainResult{
+		Findings:     findings,
+		Scores:       scores,
+		ProveResults: proveResults,
+		AgentError:   agentError,
+	}
+}
+
+// collectErrorText returns the trimmed error message when evt is a
+// TextMessageContent whose delta begins with "ERROR:". Empty for any
+// other event shape.
+//
+// The Delta field carries a JSON-encoded string for text messages
+// (the AgUI translator marshals the content via json.Marshal), so we
+// unmarshal back to a Go string before substring matching.
+func collectErrorText(evt *model.AgUIEvent) string {
+	if evt == nil || evt.Type != model.EventTextMessageContent {
+		return ""
+	}
+	if len(evt.Delta) == 0 {
+		return ""
+	}
+	var content string
+	if err := json.Unmarshal(evt.Delta, &content); err != nil {
+		// Some agents may emit the delta as raw text (not JSON-encoded).
+		// Fall back to the raw bytes.
+		content = string(evt.Delta)
+	}
+	delta := strings.TrimSpace(content)
+	if !strings.HasPrefix(strings.ToUpper(delta), "ERROR:") {
+		return ""
+	}
+	return strings.TrimSpace(delta[len("ERROR:"):])
 }
 
 func processEvent(evt *model.AgUIEvent, auditID string, findings *[]model.Finding, deltaFindings *[]model.Finding, proveResults *[]model.ProveResult, scores map[string]int, fpLookup map[string]string) {
@@ -440,9 +496,22 @@ func deduplicateStrings(ss []string) []string {
 }
 
 // crossAgentKey builds a dedup key independent of agent type.
-// Normalises title to lowercase and combines with file path and line.
+//
+// Two-key dedup: we collapse on (lowercased title, file, line) for
+// the existing exact-match case AND on (CWE category, file, line) so
+// near-duplicate titles like "Hardcoded credentials detected" vs
+// "Hardcoded API key detected" — emitted by separate detectors at the
+// same site — collapse into one finding. Category is the canonical
+// identifier (CWE-798 vs CWE-321 etc.); same-category-same-line is
+// almost always the same underlying issue.
 func crossAgentKey(f model.Finding) string {
 	title := strings.ToLower(strings.TrimSpace(f.Title))
+	cat := strings.TrimSpace(f.Category)
+	// When category is set, use it as the primary discriminant — title
+	// drift across detectors no longer prevents dedup.
+	if cat != "" {
+		return fmt.Sprintf("cat:%s|%s|%d", cat, f.FilePath, f.LineStart)
+	}
 	return fmt.Sprintf("%s|%s|%d", title, f.FilePath, f.LineStart)
 }
 
@@ -546,10 +615,19 @@ func extractProveResult(delta json.RawMessage, auditID string, fpLookup map[stri
 }
 
 func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult) {
+	h.persistResultsWithError(audit, source, findings, scores, proveResults, "")
+}
+
+// persistResultsWithError records audit state, propagating an
+// agent-emitted error so audit.status becomes failed when the agent
+// short-circuited (zero findings + ERROR text). Discover-agent
+// short-circuits on bad config used to land as status=completed; this
+// path now surfaces the failure.
+func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string) {
 	log.Printf("[persist] audit=%s findings=%d scores=%v", audit.ID, len(findings), scores)
 
 	saveFindings(h.auditSvc, audit.ID, findings)
-	completeAudit(h.auditSvc, audit, findings, scores)
+	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError)
 	dispatchWebhook(h.webhookSvc, audit, findings, scores)
 	backfillAndSaveProve(h.proveSvc, findings, proveResults, audit.ID)
 	storeMemoriesAndLineage(h, audit, source, findings)
@@ -593,9 +671,9 @@ func (h *StreamHandler) runPipelineAudit(auditID string) {
 	priorByAgent := h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
 	go h.streamSvc.StreamWithContext(context.Background(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
-	collectedFindings, scores, proveResults := consumeEventsNoSSE(eventCh, audit.ID)
-	log.Printf("[pipeline] stage complete audit=%s findings=%d", audit.ID, len(collectedFindings))
-	h.persistResults(audit, source, collectedFindings, scores, proveResults)
+	res := drainResult(eventCh, audit.ID, nil)
+	log.Printf("[pipeline] stage complete audit=%s findings=%d", audit.ID, len(res.Findings))
+	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
 }
 
 func consumeEventsNoSSE(eventCh <-chan *model.AgUIEvent, auditID string) ([]model.Finding, map[string]int, []model.ProveResult) {
@@ -614,15 +692,34 @@ func saveFindings(svc service.AuditService, auditID string, findings []model.Fin
 }
 
 func completeAudit(svc service.AuditService, audit *model.Audit, findings []model.Finding, scores map[string]int) {
+	completeAuditWithError(svc, audit, findings, scores, "")
+}
+
+// completeAuditWithError records final state. When agentError is
+// non-empty AND no findings landed, the audit is marked failed with
+// the error captured in degraded_reason. This surfaces silent-failure
+// modes such as the discover-agent rejecting an invalid config.
+func completeAuditWithError(
+	svc service.AuditService,
+	audit *model.Audit,
+	findings []model.Finding,
+	scores map[string]int,
+	agentError string,
+) {
 	now := time.Now().UTC()
-	audit.Status = model.AuditStatusCompleted
 	audit.CompletedAt = &now
 	audit.Scores = scores
 	audit.Findings = findings
+	if agentError != "" && len(findings) == 0 {
+		audit.Status = model.AuditStatusFailed
+		audit.DegradedReason = agentError
+		log.Printf("[persist] audit=%s marked FAILED: %s", audit.ID, agentError)
+	} else {
+		audit.Status = model.AuditStatusCompleted
+		log.Printf("[persist] audit=%s marked completed", audit.ID)
+	}
 	if err := svc.Update(audit); err != nil {
 		log.Printf("[persist] update audit error: %v", err)
-	} else {
-		log.Printf("[persist] audit=%s marked completed", audit.ID)
 	}
 }
 

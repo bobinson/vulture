@@ -178,8 +178,8 @@ func (r *PostgresRepo) UpdateAudit(audit *model.Audit) error {
 		completedAt = audit.CompletedAt
 	}
 	_, err := r.db.Exec(
-		`UPDATE audits SET status = $1, scores = $2, completed_at = $3 WHERE id = $4`,
-		string(audit.Status), string(scoresJSON), completedAt, audit.ID,
+		`UPDATE audits SET status = $1, scores = $2, completed_at = $3, degraded_reason = $4 WHERE id = $5`,
+		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, audit.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update audit: %w", err)

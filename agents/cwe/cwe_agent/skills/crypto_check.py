@@ -17,6 +17,7 @@ from shared.tools.file_scanner import (
 from shared.tools.snippet import check_context, extract_snippet
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._var_reference import line_value_is_variable_ref
 
 # CWE-327: Broken or risky cryptographic algorithm.
 #
@@ -297,8 +298,13 @@ def _check_hardcoded_key(
     for keys embedded in source. Earlier code labelled this CWE-327
     ("Use of Broken/Risky Algorithm"), which mis-routes catalog
     enrichment and confuses downstream triage.
+
+    Suppress when the captured RHS is a variable reference (`$VAR`,
+    `${VAR}`, `{{ var }}`) — the literal value is a pointer, not a key.
     """
     if SAFE_KEY_CONTEXT.search(line):
+        return
+    if line_value_is_variable_ref(line):
         return
     for pattern in HARDCODED_KEY_PATTERNS:
         if pattern.search(line):

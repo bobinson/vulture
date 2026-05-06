@@ -19,6 +19,7 @@ from shared.tools.snippet import check_context, extract_snippet
 from shared.tools.suppression import should_suppress, AUTH_CHECK_SUPPRESSIONS
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._var_reference import line_value_is_variable_ref
 
 
 # CWE-798: Hardcoded credentials.
@@ -149,8 +150,16 @@ def _check_hardcoded_creds(
     file_path: Path, line: str, line_num: int, lines: list[str],
     content: str, findings: list[dict], suppression_counts: dict[int, int],
 ) -> None:
-    """Check for CWE-798 hardcoded credentials."""
+    """Check for CWE-798 hardcoded credentials.
+
+    Suppresses lines whose RHS is a variable reference (`$VAR`,
+    `${VAR}`, `{{ var }}`, `%(VAR)s`, etc.) — those are env / template
+    indirections, not literal secrets. CI YAML files in particular are
+    full of these false positives.
+    """
     if SAFE_CRED_PATTERNS.search(line):
+        return
+    if line_value_is_variable_ref(line):
         return
     for pattern in HARDCODED_CRED_PATTERNS:
         if pattern.search(line):

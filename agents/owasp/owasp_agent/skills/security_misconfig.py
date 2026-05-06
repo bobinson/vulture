@@ -91,25 +91,51 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         _check_cors(file_path, line, line_num, findings, lines)
 
 
+_GUARDED_DEBUG_RE = re.compile(
+    r"""
+    debug\s*:\s*                                # debug:
+    (?:                                         # then either…
+        process\.env\.NODE_ENV\s*[!=]==?\s*["'](?:development|dev)["']
+      | NODE_ENV\s*[!=]==?\s*["'](?:development|dev)["']
+      | __DEV__
+      | process\.env\.NODE_ENV\s*[!=]==?\s*["']production["']  # !==production
+      | !\s*isProduction
+      | isDev(?:elopment)?\b
+      | env\s*===?\s*["']development["']
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
 def _check_debug_mode(
     file_path: Path, line: str, line_num: int, findings: list[dict],
     lines: list[str],
 ) -> None:
-    """Check for debug mode enabled."""
-    if COMBINED_DEBUG_RE.search(line):
-        finding = {
-            "severity": "medium",
-            "check_id": "owasp.misconfig.debug_enabled",
-            "category": "A05-security-misconfig",
-            "title": "Debug mode enabled",
-            "description": f"Debug mode at line {line_num}",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Disable debug mode in production",
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(finding)
+    """Check for debug mode enabled.
+
+    Skips lines where the debug toggle is already gated by an
+    environment check (`debug: process.env.NODE_ENV === "development"`,
+    `debug: !isProduction`, etc.). Those are the CORRECT pattern —
+    they make debug active only in dev builds.
+    """
+    if not COMBINED_DEBUG_RE.search(line):
+        return
+    if _GUARDED_DEBUG_RE.search(line):
+        return
+    finding = {
+        "severity": "medium",
+        "check_id": "owasp.misconfig.debug_enabled",
+        "category": "A05-security-misconfig",
+        "title": "Debug mode enabled",
+        "description": f"Debug mode at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Disable debug mode in production",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(finding)
 
 
 def _check_exposed_config(
