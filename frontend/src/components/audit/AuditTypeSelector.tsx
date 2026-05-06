@@ -112,10 +112,19 @@ export function AuditTypeSelector({ selected, onSelectionChange }: AuditTypeSele
                     <AgentIcon id={agent.id} />
                   </span>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-[13px] font-semibold text-foreground">
                         {agent.name}
                       </p>
+                      {agent.optional && (
+                        <span
+                          data-testid={`agent-optional-${agent.id}`}
+                          className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-cream text-muted-light border border-border"
+                          title={t("audit.optionalAgent")}
+                        >
+                          {t("audit.optional")}
+                        </span>
+                      )}
                       {isSelected && (
                         <span className="w-4 h-4 rounded-full bg-accent flex items-center justify-center shrink-0">
                           <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>

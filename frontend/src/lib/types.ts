@@ -22,6 +22,12 @@ export interface AgentInfo {
   status?: "healthy" | "unhealthy" | "unknown";
   description?: string;
   config_schema?: Record<string, unknown>;
+  /**
+   * Optional agents are excluded from the default scan set and only
+   * run when explicitly selected. The selector visually distinguishes
+   * them so users know they aren't in the default flow.
+   */
+  optional?: boolean;
 }
 
 export type ProveStatus = "verified" | "not_reproduced" | "inconclusive" | "skipped";

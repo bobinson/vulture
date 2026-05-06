@@ -48,6 +48,8 @@
     "useCached": "View Cached Results",
     "runFresh": "Run Fresh Audit",
     "noAgents": "No agents available. Check that the backend is running.",
+    "optional": "Optional",
+    "optionalAgent": "Optional agent — only runs when explicitly selected. Not part of the default scan set.",
     "chaosDesc": "Resilience patterns: retry, circuit breaker, timeout, fallback, blast radius",
     "owaspDesc": "Security vulnerabilities: injection, auth, crypto, access control, misconfig",
     "soc2Desc": "Compliance clauses: CC6 (logical access), CC7 (monitoring), CC8 (change mgmt)",

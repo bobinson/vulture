@@ -7,6 +7,7 @@ import (
 
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/pkg/agentregistry"
 )
 
 type AgentHandler struct {
@@ -51,13 +52,24 @@ func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 		statusMap[r.key] = r.status
 	}
 
+	// Index registry entries by Type so we can flag Optional agents on
+	// the response. The frontend uses Optional to badge opt-in agents
+	// in the audit type selector.
+	optional := make(map[string]bool, len(agentregistry.AllAgents))
+	for _, e := range agentregistry.AllAgents {
+		if e.Optional {
+			optional[e.Type] = true
+		}
+	}
+
 	infos := make([]model.AgentInfo, 0, len(h.agents))
 	for key, a := range h.agents {
 		infos = append(infos, model.AgentInfo{
-			ID:     key,
-			Name:   a.Name,
-			Type:   a.Type,
-			Status: statusMap[key],
+			ID:       key,
+			Name:     a.Name,
+			Type:     a.Type,
+			Status:   statusMap[key],
+			Optional: optional[a.Type],
 		})
 	}
 	writeJSON(w, http.StatusOK, infos)
