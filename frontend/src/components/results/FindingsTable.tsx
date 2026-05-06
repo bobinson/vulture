@@ -277,8 +277,25 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
             </tr>
           </thead>
           <tbody>
-            {findings.map((finding) => {
-              const key = finding.fingerprint || finding.id || `${finding.title}-${finding.file_path}-${finding.line_start ?? 0}`;
+            {findings.map((finding, idx) => {
+              // finding.id is unique per row in an audit. fingerprint
+              // is INTENTIONALLY shared across rows that represent the
+              // same lineage class — the formula is sha256(title | file
+              // | category | agent_type) with no line number, so e.g.
+              // five "Weak cryptographic algorithm" findings on
+              // different lines all share one fingerprint. Using
+              // fingerprint as a React key collapsed those rows during
+              // reconciliation, which broke filter/sort (rows from
+              // other agents bled into the visible page).
+              //
+              // Use id first (always unique), fall back to fingerprint
+              // only when id is absent, and finally to a synthetic key
+              // including the row index so duplicates can never collide.
+              const key =
+                finding.id ||
+                (finding.fingerprint
+                  ? `${finding.fingerprint}#${idx}`
+                  : `${finding.title}|${finding.file_path}|${finding.line_start ?? 0}|${idx}`);
               const isExpanded = expandedId === key;
               const pathParts = finding.file_path.split("/");
               const shortPath = pathParts.length > 2

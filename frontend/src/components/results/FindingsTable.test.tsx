@@ -120,4 +120,106 @@ describe("FindingsTable", () => {
     // Count badge should show 2 (the owasp findings)
     expect(screen.getByText("2")).toBeInTheDocument();
   });
+
+  // Regression: production audit ec01e021... had 320 findings sharing 62
+  // duplicate fingerprints (the formula intentionally collides on
+  // title+file+category+agent_type to track lineage across audits).
+  // FindingsTable was using fingerprint as the React key first, which
+  // caused React to coalesce same-fingerprint rows during reconciliation
+  // — clicking the agent filter then rendered the wrong rows because
+  // React's diff matched up rows by their (collided) keys, not by data.
+  // The fix: use `id` first (always unique per finding row), fingerprint
+  // only as a fallback with row-index disambiguation.
+  it("filters correctly when findings share fingerprints (regression)", () => {
+    // Three OWASP findings on different lines of the same file. The
+    // backend generates the same fingerprint for all of them because
+    // (title, file, category, agent_type) are identical.
+    const sharedFp = "fp-collision-owasp-A02";
+    const findings: Finding[] = [
+      {
+        id: "id-1",
+        fingerprint: sharedFp,
+        agent_type: "owasp",
+        severity: "high",
+        category: "A02-crypto-failure",
+        title: "Weak cryptographic algorithm",
+        description: "MD5 used at line 10",
+        file_path: "/src/web/auth.go",
+        line_start: 10,
+        recommendation: "Use SHA-256",
+      },
+      {
+        id: "id-2",
+        fingerprint: sharedFp,
+        agent_type: "owasp",
+        severity: "high",
+        category: "A02-crypto-failure",
+        title: "Weak cryptographic algorithm",
+        description: "MD5 used at line 50",
+        file_path: "/src/web/auth.go",
+        line_start: 50,
+        recommendation: "Use SHA-256",
+      },
+      {
+        id: "id-3",
+        fingerprint: sharedFp,
+        agent_type: "owasp",
+        severity: "high",
+        category: "A02-crypto-failure",
+        title: "Weak cryptographic algorithm",
+        description: "MD5 used at line 90",
+        file_path: "/src/web/auth.go",
+        line_start: 90,
+        recommendation: "Use SHA-256",
+      },
+      {
+        id: "id-4",
+        fingerprint: "fp-cwe-1",
+        agent_type: "cwe",
+        severity: "medium",
+        category: "CWE-89",
+        title: "SQL injection",
+        description: "Tainted query",
+        file_path: "/src/db.go",
+        line_start: 5,
+        recommendation: "Parameterize",
+      },
+    ];
+    render(<FindingsTable findings={findings} />);
+
+    // Click the OWASP filter — should keep all three OWASP rows even
+    // though they share a fingerprint.
+    const owaspButtons = screen.getAllByText("OWASP");
+    const filterButton = owaspButtons.find((el) => el.tagName === "BUTTON");
+    fireEvent.click(filterButton!);
+
+    // All three line numbers must be present (10, 50, 90). The bug
+    // collapsed them to a single row.
+    expect(screen.getByText("src/web/auth.go:10")).toBeInTheDocument();
+    expect(screen.getByText("src/web/auth.go:50")).toBeInTheDocument();
+    expect(screen.getByText("src/web/auth.go:90")).toBeInTheDocument();
+    // CWE finding should be filtered out.
+    expect(screen.queryByText("SQL injection")).toBeNull();
+    // Filter count reflects the 3 OWASP rows.
+    expect(screen.getByText("3")).toBeInTheDocument();
+  });
+
+  // Companion to the above: with no agent filter applied, all rows
+  // (even fingerprint-colliding ones) must appear. shortPath needs
+  // ≥3 path segments to actually shorten — using "/src/lib/f.go" so
+  // the DOM text matches "src/lib/f.go:N".
+  it("renders every fingerprint-colliding row in the unfiltered view", () => {
+    const sharedFp = "fp-shared";
+    const findings: Finding[] = [
+      { id: "a", fingerprint: sharedFp, severity: "high", category: "x", title: "T", description: "d1", file_path: "/src/lib/f.go", line_start: 1, recommendation: "r" },
+      { id: "b", fingerprint: sharedFp, severity: "high", category: "x", title: "T", description: "d2", file_path: "/src/lib/f.go", line_start: 2, recommendation: "r" },
+      { id: "c", fingerprint: sharedFp, severity: "high", category: "x", title: "T", description: "d3", file_path: "/src/lib/f.go", line_start: 3, recommendation: "r" },
+    ];
+    render(<FindingsTable findings={findings} />);
+    // Three distinct line numbers must render — bug collapsed them
+    // into a single row by colliding React keys on shared fingerprint.
+    expect(screen.getByText("src/lib/f.go:1")).toBeInTheDocument();
+    expect(screen.getByText("src/lib/f.go:2")).toBeInTheDocument();
+    expect(screen.getByText("src/lib/f.go:3")).toBeInTheDocument();
+  });
 });
