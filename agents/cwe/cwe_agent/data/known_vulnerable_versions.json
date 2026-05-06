@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "schema": "vulture-known-vulnerable-versions/1",
+    "description": "Compact bundle of high-profile known-vulnerable package versions. Operators may override via VULTURE_DEPENDENCY_DB env var pointing to a JSON file with the same shape. Format: ecosystem -> package -> [{version_spec, cve, severity, summary, fixed_in}]. version_spec is a comma-separated list of pip / npm / etc. range specifiers (e.g. \"<2.27.0\", \"==1.4.0\", \">=4.0,<4.0.7\").",
+    "last_updated": "2026-05-06"
+  },
+  "pypi": {
+    "requests": [
+      {"version_spec": "<2.32.0", "cve": "CVE-2024-35195", "severity": "medium", "summary": "Cert-verification disabled by attacker-controlled session.verify", "fixed_in": "2.32.0"}
+    ],
+    "django": [
+      {"version_spec": "<3.2.25", "cve": "CVE-2024-24680", "severity": "high", "summary": "Denial of service in intcomma template filter", "fixed_in": "3.2.25"},
+      {"version_spec": "<4.2.11", "cve": "CVE-2024-24680", "severity": "high", "summary": "DoS in intcomma template filter", "fixed_in": "4.2.11"},
+      {"version_spec": "<5.0.3",  "cve": "CVE-2024-24680", "severity": "high", "summary": "DoS in intcomma template filter", "fixed_in": "5.0.3"}
+    ],
+    "flask": [
+      {"version_spec": "<2.2.5", "cve": "CVE-2023-30861", "severity": "high", "summary": "Cookie disclosure on shared proxies", "fixed_in": "2.2.5"}
+    ],
+    "pyyaml": [
+      {"version_spec": "<5.4",   "cve": "CVE-2020-14343", "severity": "critical", "summary": "Arbitrary code execution via yaml.load", "fixed_in": "5.4"}
+    ],
+    "jinja2": [
+      {"version_spec": "<3.1.5", "cve": "CVE-2024-56326", "severity": "high", "summary": "Sandbox escape via attribute access", "fixed_in": "3.1.5"}
+    ],
+    "cryptography": [
+      {"version_spec": "<42.0.4", "cve": "CVE-2024-26130", "severity": "high", "summary": "NULL-deref on PKCS12 with no name and no certificate", "fixed_in": "42.0.4"},
+      {"version_spec": "<43.0.1", "cve": "CVE-2024-26129", "severity": "medium", "summary": "OpenSSL X.509 certificate parsing edge case", "fixed_in": "43.0.1"}
+    ],
+    "urllib3": [
+      {"version_spec": "<1.26.18", "cve": "CVE-2023-45803", "severity": "medium", "summary": "Cookie request smuggling via redirect", "fixed_in": "1.26.18"},
+      {"version_spec": "<2.0.7",   "cve": "CVE-2023-45803", "severity": "medium", "summary": "Cookie request smuggling via redirect", "fixed_in": "2.0.7"}
+    ]
+  },
+  "npm": {
+    "lodash": [
+      {"version_spec": "<4.17.21", "cve": "CVE-2021-23337", "severity": "high", "summary": "Command injection via template", "fixed_in": "4.17.21"}
+    ],
+    "axios": [
+      {"version_spec": "<0.21.4", "cve": "CVE-2021-3749", "severity": "high", "summary": "ReDoS in trim header", "fixed_in": "0.21.4"},
+      {"version_spec": "<1.6.0",  "cve": "CVE-2023-45857", "severity": "high", "summary": "CSRF via cross-site request forgery handling", "fixed_in": "1.6.0"}
+    ],
+    "minimist": [
+      {"version_spec": "<1.2.6", "cve": "CVE-2021-44906", "severity": "critical", "summary": "Prototype pollution", "fixed_in": "1.2.6"}
+    ],
+    "node-fetch": [
+      {"version_spec": "<2.6.7", "cve": "CVE-2022-0235", "severity": "high", "summary": "Cookie leak on cross-origin redirect", "fixed_in": "2.6.7"}
+    ],
+    "express": [
+      {"version_spec": "<4.20.0", "cve": "CVE-2024-29041", "severity": "medium", "summary": "Open redirect via res.location", "fixed_in": "4.20.0"}
+    ]
+  }
+}

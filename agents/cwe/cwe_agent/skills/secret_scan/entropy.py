@@ -35,6 +35,23 @@ MIN_SAFE_CHAR_FRACTION = 0.95
 # Token-extractor: long alphanumeric runs (with limited punctuation).
 _TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
 
+# Pure hex strings of well-known cryptographic hash lengths. These are
+# overwhelmingly hashes (SHA-1: 40, SHA-256: 64, SHA-384: 96, SHA-512:
+# 128) or commit shas, not secrets. Keep them out of the entropy
+# fallback to suppress the bulk of the false positives.
+_HEX_HASH_RE = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{56}$|^[0-9a-fA-F]{64}$|^[0-9a-fA-F]{96}$|^[0-9a-fA-F]{128}$")
+
+# UUID/GUID shape (v1-v5): 8-4-4-4-12 hex, optional braces.
+_UUID_RE = re.compile(
+    r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89ab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\}?$",
+    re.IGNORECASE,
+)
+
+# Looks like a JWT (3 base64url segments separated by `.`). The token
+# extractor strips the `.`, but we can detect this in find_high_entropy
+# by checking the SURROUNDING character. Bare base64-padded `.` chains
+# are not what _TOKEN_RE matches.
+
 
 def shannon_entropy(s: str) -> float:
     """Shannon entropy in bits/char."""
@@ -49,6 +66,13 @@ def shannon_entropy(s: str) -> float:
 
 def _is_high_entropy_secret(s: str) -> bool:
     if len(s) < MIN_LENGTH:
+        return False
+    # Filter common non-secret high-entropy shapes BEFORE the
+    # entropy/safe-char gate, since hashes and UUIDs trivially exceed
+    # both thresholds.
+    if _HEX_HASH_RE.match(s):
+        return False
+    if _UUID_RE.match(s):
         return False
     if shannon_entropy(s) < MIN_ENTROPY:
         return False

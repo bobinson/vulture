@@ -38,6 +38,26 @@ def _is_secret_key_name(key: str) -> bool:
     return bool(_SECRET_KEY_NAMES.match(key))
 
 
+# Variable reference shapes commonly used in config files to defer the
+# actual secret to env / secrets-manager indirection. These are SAFE
+# patterns — the literal value is just a pointer.
+_VAR_REF_RE = re.compile(
+    r"^\s*(?:"
+    r"\$\{[A-Za-z_][\w]*(?::-[^}]*)?\}"        # ${VAR} or ${VAR:-default}
+    r"|\$[A-Za-z_][\w]*"                          # $VAR
+    r"|%\([A-Za-z_][\w]*\)s"                     # Python configparser %(VAR)s
+    r"|<%=\s*[A-Za-z_][\w]*\s*%>"               # ERB <%= VAR %>
+    r"|\{\{\s*[A-Za-z_][\w.]*\s*\}\}"            # Jinja / Helm {{ VAR }}
+    r")\s*$"
+)
+
+
+def _is_variable_reference(value: str) -> bool:
+    """True when the value is a placeholder / env-var indirection
+    rather than a literal secret."""
+    return bool(_VAR_REF_RE.match(value))
+
+
 def _walk_json(obj: Any, path: list[str]) -> Iterator[tuple[list[str], str]]:
     """Yield ``(key_path, value)`` for each str leaf in a JSON object."""
     if isinstance(obj, dict):
@@ -187,8 +207,36 @@ def _emit_suspicious_name(
     findings: list[dict],
 ) -> None:
     """Emit a medium-severity finding when the key NAME suggests a
-    secret and the value is non-placeholder, non-trivial-length."""
+    secret and the value is non-placeholder, non-trivial-length.
+
+    Variable-reference values (``$VAR`` / ``${VAR}`` / ``%(VAR)s``) are
+    treated as a SAFE indirection, not as a secret — but we lower the
+    severity bar to "info" and emit a different finding so the
+    operator can confirm the reference resolves to a managed secret."""
     if not _is_secret_key_name(key):
+        return
+    if _is_variable_reference(value):
+        findings.append({
+            "severity": "info",
+            "check_id": "cwe.secret_scan.config.variable_reference",
+            "category": "CWE-798",
+            "title": f"Secret-named key {key!r} bound to variable reference",
+            "description": (
+                f"Config key `{key}` (line {line_num}) is bound to "
+                f"`{value}` — a variable reference rather than a "
+                "literal secret. Verify the referenced variable is "
+                "populated from a secrets manager / env var at runtime."
+            ),
+            "file_path": str(file_path),
+            "line_start": line_num,
+            "line_end": line_num,
+            "recommendation": (
+                "Confirm the referenced variable is set from a secrets "
+                "manager (Vault / AWS Secrets Manager / GCP Secret "
+                "Manager / etc.) and never echoed in build logs."
+            ),
+            "code_snippet": _redact(key, value, value),
+        })
         return
     if ctx.SAFE_CONTEXT.search(value) or len(value) < 8:
         return

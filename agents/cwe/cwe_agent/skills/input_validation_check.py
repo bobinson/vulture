@@ -35,11 +35,28 @@ SAFE_PATH_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# CWE-20: Improper input validation
+# CWE-20: Improper input validation.
+#
+# Modern web frameworks expose request-data via several access shapes.
+# Bracket-only matching missed all of:
+#   - dot access:        request.args.user_id
+#   - property access:   request.json
+#   - method get():      request.get("user_id"), request.GET.get("u")
+#   - destructured kwargs: const { id } = req.body  (TS/JS — best-effort)
 NO_VALIDATION_PATTERNS = [
+    # bracket access (original)
     re.compile(r'(?:request|req)\.(?:body|params|query|form|args)\s*\[', re.IGNORECASE),
     re.compile(r'(?:request|req)\.(?:GET|POST)\s*\[', re.IGNORECASE),
     re.compile(r'params\[:?\w+\]'),
+    # dot-attribute access on request: request.args.foo, req.body.bar
+    re.compile(r'(?:request|req)\.(?:body|params|query|form|args|GET|POST)\.\w+', re.IGNORECASE),
+    # request.json (Flask), request.JSON (less common)
+    re.compile(r'(?:request|req)\.json\b'),
+    # request.get("name") / request.GET.get("name") method form
+    re.compile(r'(?:request|req)\.(?:GET|POST|args|form|body|params|query)\.get\s*\(\s*["\']', re.IGNORECASE),
+    re.compile(r'(?:request|req)\.get\s*\(\s*["\']', re.IGNORECASE),
+    # JS/TS destructure of req.body / req.query / req.params
+    re.compile(r'(?:const|let|var)\s*\{\s*[^}]+\}\s*=\s*(?:request|req)\.(?:body|query|params)\b', re.IGNORECASE),
 ]
 
 SAFE_VALIDATION_PATTERNS = re.compile(
@@ -76,20 +93,56 @@ XXE_PATTERNS = [
     re.compile(r'SAXParser(?:Factory)?\.new'),
 ]
 
+# Safe-XXE: explicit module imports (defusedxml) or attribute settings
+# that DEFINITIVELY disable entity resolution. The previous regex
+# matched any line containing the literal `resolve_entities = False`,
+# but `resolve_entities = SAFE_FLAG` (where SAFE_FLAG is False) was
+# missed. We accept either the literal-False form OR an obvious
+# defusedxml import. Comments containing the words alone (e.g. "# safe:
+# defusedxml") no longer trigger because they don't reach the regex
+# without function-call shape.
 SAFE_XXE_PATTERNS = re.compile(
-    r"(?:defusedxml|defused|resolve_entities\s*=\s*False|"
-    r"no_network|XMLParser\([^)]*resolve_entities\s*=\s*False|"
-    r"FEATURE_EXTERNAL_GENERAL_ENTITIES.*false|"
-    r"setFeature.*disallow-doctype-decl.*true)",
+    r"(?:"
+    # Explicit safe library import or call
+    r"\bimport\s+defusedxml\b"
+    r"|\bfrom\s+defusedxml\b"
+    r"|\bdefusedxml\.\w+\.parse\s*\("
+    # Constructor with literal False / no_network=True
+    r"|XMLParser\s*\([^)]*\bresolve_entities\s*=\s*False\b"
+    r"|XMLParser\s*\([^)]*\bno_network\s*=\s*True\b"
+    # Java SAX feature toggles
+    r"|setFeature\s*\([^)]*disallow-doctype-decl[^)]*,\s*true\)"
+    r"|setFeature\s*\([^)]*external-general-entities[^)]*,\s*false\)"
+    r"|setFeature\s*\([^)]*external-parameter-entities[^)]*,\s*false\)"
+    r")",
     re.IGNORECASE,
 )
 
-# CWE-352: Cross-Site Request Forgery (CSRF)
+# CWE-352: Cross-Site Request Forgery (CSRF).
+#
+# Server-side decorator/route patterns AND modern client-side state-
+# changing fetch/XHR shapes. SPAs that hit `fetch("/api", {method:
+# "POST"})` without a CSRF token are now matched — previously only
+# `<form method=POST>` markup was detected.
 CSRF_PATTERNS = [
-    re.compile(r"@app\.route\([^)]*methods\s*=\s*\[.*(?:POST|PUT|DELETE)", re.IGNORECASE),
-    re.compile(r"router\.(?:post|put|delete)\s*\(", re.IGNORECASE),
-    re.compile(r"@(?:Post|Put|Delete)Mapping", re.IGNORECASE),
-    re.compile(r'<form[^>]*method\s*=\s*["\']?post', re.IGNORECASE),
+    # Server-side route decorators
+    re.compile(r"@app\.route\([^)]*methods\s*=\s*\[.*(?:POST|PUT|DELETE|PATCH)", re.IGNORECASE),
+    re.compile(r"router\.(?:post|put|delete|patch)\s*\(", re.IGNORECASE),
+    re.compile(r"@(?:Post|Put|Delete|Patch)Mapping", re.IGNORECASE),
+    # HTML form
+    re.compile(r'<form[^>]*method\s*=\s*["\']?(?:post|put|delete|patch)', re.IGNORECASE),
+    # Client-side fetch / axios / XHR with state-changing method
+    re.compile(
+        r'fetch\s*\([^)]*\bmethod\s*:\s*["\'](?:POST|PUT|DELETE|PATCH)["\']',
+        re.IGNORECASE,
+    ),
+    re.compile(r'\baxios\.(?:post|put|delete|patch)\s*\(', re.IGNORECASE),
+    re.compile(
+        r'(?:XMLHttpRequest|xhr)\s*\.\s*open\s*\(\s*["\'](?:POST|PUT|DELETE|PATCH)["\']',
+        re.IGNORECASE,
+    ),
+    # jQuery
+    re.compile(r'\$\.(?:post|ajax)\s*\(', re.IGNORECASE),
 ]
 
 SAFE_CSRF_PATTERNS = re.compile(

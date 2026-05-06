@@ -368,8 +368,10 @@ class TestEnhancedConfig:
 
     def test_skill_tools_has_catalog_generic_tool(self):
         from cwe_agent.skills import SKILL_TOOLS
-        # 22 hand-crafted skills + 1 secret_scan (feature 0042) = 23 total.
-        assert len(SKILL_TOOLS) == 23
+        # 22 hand-crafted skills + 1 secret_scan (feature 0042)
+        # + 1 plaintext_transmission (audit batch 4, CWE-319)
+        # = 24 total.
+        assert len(SKILL_TOOLS) == 24
 
 
 # === Agent Tests ===

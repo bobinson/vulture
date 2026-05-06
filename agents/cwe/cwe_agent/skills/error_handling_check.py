@@ -26,12 +26,22 @@ UNCHECKED_RETURN_GO = [
 GO_ERR_ASSIGN = re.compile(r",\s*err\s*:?=\s*\w+")
 GO_ERR_CHECK = re.compile(r"if\s+err\s*!=\s*nil")
 
-# CWE-755: Improper exception handling
+# CWE-755: Improper exception handling.
+#
+# Now also flags:
+#   - except BaseException: catches SystemExit, KeyboardInterrupt,
+#     GeneratorExit — strictly worse than `except Exception`.
+#   - except (Exception, BaseException, ...) as tuples: same shape.
+#   - Java catch(Throwable t) which catches Errors (StackOverflow, OOM).
 BARE_EXCEPT_PATTERNS = [
     re.compile(r"^\s*except\s*:"),  # Python: bare except
-    re.compile(r"^\s*except\s+Exception\s*:"),  # Python: catch-all
+    re.compile(r"^\s*except\s+Exception\s*(?:as\s+\w+\s*)?:"),  # Python: catch-all
+    re.compile(r"^\s*except\s+BaseException\s*(?:as\s+\w+\s*)?:"),  # Python: catches SystemExit/KeyboardInterrupt
+    # Tuple form: except (Exception,) / except (X, BaseException, ...)
+    re.compile(r"^\s*except\s+\([^)]*\b(?:Exception|BaseException)\b[^)]*\)\s*(?:as\s+\w+\s*)?:"),
     re.compile(r"catch\s*\(\s*\.\.\.\s*\)"),  # C++: catch(...)
     re.compile(r"catch\s*\(\s*Exception\s+\w+\s*\)"),  # Java: catch(Exception e)
+    re.compile(r"catch\s*\(\s*Throwable\s+\w+\s*\)"),  # Java: catch(Throwable t)
 ]
 
 # CWE-754: Improper check for unusual conditions (I/O without error check)

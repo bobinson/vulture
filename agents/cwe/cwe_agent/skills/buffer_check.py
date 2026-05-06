@@ -19,9 +19,16 @@ from shared.tools.snippet import extract_snippet
 from cwe_agent.catalog import enrich_finding
 
 # Only scan C/C++/Go files
+# Files we consider for buffer-style analysis. Go is included because
+# the OOB / integer-overflow patterns apply, but the C-string copy
+# functions (strcpy/strcat/etc.) cannot exist in Go and are gated
+# below.
 BUFFER_EXTENSIONS = frozenset({".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".go"})
 
-# CWE-120: Buffer overflow (unbounded copy)
+# Extensions where C-string functions are valid identifiers.
+_C_STRING_EXTENSIONS = frozenset({".c", ".h", ".cpp", ".cc", ".cxx", ".hpp"})
+
+# CWE-120: Buffer overflow (unbounded copy). C-only.
 UNBOUNDED_COPY_PATTERNS = [
     re.compile(r"\bstrcpy\s*\("),
     re.compile(r"\bstrcat\s*\("),
@@ -35,18 +42,62 @@ SAFE_BOUNDED_ALTERNATIVES = re.compile(
     r"\b(?:strncpy|strncat|snprintf|fgets|strlcpy|strlcat)\s*\("
 )
 
-# CWE-787: Out-of-bounds write (memcpy/memmove without validation)
+# CWE-787: Out-of-bounds write (memcpy/memmove without validation). C-only.
 OOB_WRITE_PATTERNS = [
     re.compile(r"\bmemcpy\s*\("),
     re.compile(r"\bmemmove\s*\("),
     re.compile(r"\bcopy\s*\([^)]*,\s*\w+\s*\["),
 ]
 
-SAFE_SIZEOF_CHECK = re.compile(r"sizeof\s*\(")
+# SAFE_SIZEOF_CHECK was previously `sizeof\s*\(` — too permissive; a
+# `sizeof` mention anywhere on the line (including comments and
+# unrelated arguments) suppressed the OOB-write finding. Tighten to
+# require sizeof appearing as the LAST positional arg of the memcpy /
+# memmove call (the size parameter). False negatives on unusual call
+# shapes are acceptable; the previous pattern hid genuine bugs.
+SAFE_SIZEOF_CHECK = re.compile(
+    r"\b(?:memcpy|memmove|memset|memcmp|copy|strncpy|strncat|snprintf)\s*\("
+    r"[^;]*?,\s*sizeof\s*\([^)]*\)\s*\)"
+)
 
-# CWE-125: Out-of-bounds read (array access without bounds check)
+# CWE-125: Out-of-bounds read (array access without bounds check).
+#
+# Previously this matched EVERY `\w+[\w+]` access, which is essentially
+# every array dereference in C/C++ code — producing hundreds of false
+# positives per audit. The new patterns target shapes that are
+# materially more likely to indicate an unsafe access:
+#
+#   1. Index derived from external input on the same line:
+#         buf[atoi(argv[1])]
+#         arr[strtoul(input, ...)]
+#         data[recv_len(...)]
+#         ptr[i + offset]   (compound arithmetic)
+#   2. Index that is a known-tainted source name:
+#         buf[user_input]   buf[req_size]   buf[strlen(s) + N]
+#   3. Memory-region access via pointer + bare index immediately after
+#      a malloc/alloc on the same expression — likely off-by-one risk.
+#
+# The base "any array access" pattern is GONE — that was the noise
+# floor. Bounds-check suppression is preserved.
 OOB_READ_PATTERNS = [
-    re.compile(r"\w+\s*\[\s*\w+\s*\]"),
+    # Compound arithmetic in subscript: arr[i + N], arr[i * 2], etc.
+    re.compile(r"\b\w+\s*\[\s*\w+\s*[+\-*]\s*\w+\s*\]"),
+    # Subscript with a tainted-looking name (heuristic).
+    re.compile(
+        r"\b\w+\s*\[\s*"
+        r"(?:argv|envp|user_input|input|untrusted|tainted|req(?:_\w+)?|param|payload)"
+        r"\b[^\]]*\]",
+        re.IGNORECASE,
+    ),
+    # Subscript with a function call that returns external/length data.
+    re.compile(
+        r"\b\w+\s*\[\s*"
+        r"(?:atoi|atol|strtol|strtoul|strtoll|recv|read|sscanf|getenv|atof)"
+        r"\s*\(",
+        re.IGNORECASE,
+    ),
+    # strlen(...) + offset as index (classic off-by-one).
+    re.compile(r"\b\w+\s*\[\s*strlen\s*\([^)]*\)\s*[+\-]\s*\d+\s*\]"),
 ]
 
 SAFE_BOUNDS_CHECK = re.compile(r"(?:len\(|\.(?:size|length|Len)\b|<\s*\w+\s*\)|sizeof)")
@@ -91,10 +142,17 @@ def check_buffer_handling(source_path: str) -> dict:
 
 
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
-    """Analyze a file for buffer handling patterns."""
+    """Analyze a file for buffer handling patterns.
+
+    C-string-only checks (`unbounded_copy`, `oob_write`,
+    `use_after_free`) are gated to C/C++ extensions — running them on
+    Go is wasted work since `strcpy` etc. cannot exist in Go.
+    OOB-read and integer-overflow patterns apply to both languages.
+    """
     lines = read_file_lines(file_path)
     if lines is None:
         return
+    is_c_family = file_path.suffix.lower() in _C_STRING_EXTENSIONS
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
             continue
@@ -102,10 +160,11 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
             continue
         if SCANNER_DEF_LINE.search(line):
             continue
-        _check_unbounded_copy(file_path, line, line_num, lines, findings)
-        _check_oob_write(file_path, line, line_num, lines, findings)
+        if is_c_family:
+            _check_unbounded_copy(file_path, line, line_num, lines, findings)
+            _check_oob_write(file_path, line, line_num, lines, findings)
+            _check_use_after_free(file_path, line, line_num, lines, findings)
         _check_oob_read(file_path, line, line_num, lines, findings)
-        _check_use_after_free(file_path, line, line_num, lines, findings)
         _check_integer_overflow(file_path, line, line_num, lines, findings)
 
 
@@ -163,20 +222,23 @@ def _check_oob_read(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for CWE-125 out-of-bounds read."""
+    """Check for CWE-125 out-of-bounds read.
+
+    Now matches only on indices likely derived from external input or
+    arithmetic (see OOB_READ_PATTERNS doc). Pure `arr[i]` in a bounded
+    loop body is no longer flagged — the previous behaviour produced
+    hundreds of FPs per audit on standard C/Go code.
+    """
     if SAFE_BOUNDS_CHECK.search(line):
         return
     for pattern in OOB_READ_PATTERNS:
         if pattern.search(line):
-            # Skip simple constant index access like arr[0] or arr[1]
-            if re.search(r"\w+\s*\[\s*\d+\s*\]", line):
-                return
             finding = {
                 "severity": "medium",
                 "check_id": "cwe.buffer.oob_read",
                 "category": "CWE-125",
                 "title": "Potential out-of-bounds read",
-                "description": f"Array access without bounds check at line {line_num}",
+                "description": f"Array access at line {line_num} uses a tainted or derived index without a bounds check",
                 "file_path": str(file_path),
                 "line_start": line_num,
                 "line_end": line_num,

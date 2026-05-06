@@ -372,8 +372,20 @@ CLOUD_PATTERNS: list[CloudPattern] = [
         rule_id="anthropic_api_key",
         prefix_filter="sk-ant-",
     ),
+    # OpenAI keys: the platform issues two real shapes. Bound the
+    # length tightly so unrelated `sk-`-prefixed strings (Stripe test
+    # keys, base64 hashes, custom tokens) don't match.
+    #   - Legacy: sk-<48 alnum chars>           => 51 total
+    #   - Project-scoped: sk-proj-<...>-<...>-...
+    # We stay within ~50–200 chars and require either the literal
+    # `sk-proj-` prefix OR the exact 48-char trailing payload.
     CloudPattern(
-        regex=re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{40,200}\b"),
+        regex=re.compile(
+            r"\bsk-(?:"
+            r"proj-[A-Za-z0-9_\-]{60,200}"          # project key
+            r"|[A-Za-z0-9]{48}"                       # legacy key (48 chars, no dash/underscore)
+            r")\b"
+        ),
         name="OpenAI API Key",
         cwe="798", severity="critical", kind="live",
         rule_id="openai_api_key",

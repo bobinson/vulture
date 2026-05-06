@@ -1,6 +1,19 @@
-"""Dependency and supply chain security detection skill."""
+"""Dependency and supply chain security detection skill.
 
+Covers CWE-1104 (unmaintained / unpinned), CWE-829 (untrusted source),
+CWE-494 (download without integrity check), CWE-506 (suspicious
+embedded code), and CWE-937 (using known-vulnerable component) — the
+last via an embedded JSON catalog of well-known CVEs.
+
+Operators can override the bundled catalog by setting
+``VULTURE_DEPENDENCY_DB`` to a JSON file matching the same shape
+(``data/known_vulnerable_versions.json``).
+"""
+
+import json
+import os
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from agents import function_tool
@@ -17,6 +30,96 @@ from shared.tools.file_scanner import (
 from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
+
+
+# ---------------------------------------------------------------------------
+# CWE-937: Known-Vulnerable Component
+# ---------------------------------------------------------------------------
+
+_KNOWN_VULN_DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "known_vulnerable_versions.json"
+
+
+@lru_cache(maxsize=1)
+def _load_known_vulnerable_db() -> dict:
+    """Load the known-vulnerable-versions catalog.
+
+    Tries ``VULTURE_DEPENDENCY_DB`` first (operator override), then the
+    bundled JSON. Missing / unreadable file → empty dict (skill runs in
+    degraded mode without crashing).
+    """
+    override = os.environ.get("VULTURE_DEPENDENCY_DB")
+    candidates = [Path(override)] if override else []
+    candidates.append(_KNOWN_VULN_DEFAULT_PATH)
+    for path in candidates:
+        try:
+            if path.is_file():
+                with path.open() as f:
+                    return json.load(f)
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+# Spec → comparator. `version_spec` strings come from the JSON catalog
+# and use a small grammar we evaluate ourselves so we don't pull in
+# packaging.
+_OP_RE = re.compile(r"^(<=|>=|==|!=|<|>|~=)\s*(.+)$")
+
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Parse a dotted-numeric version into a comparable tuple.
+
+    Non-numeric components fall back to 0 — sufficient for the simple
+    CVE-bound matching this skill performs (we never compare against
+    pre-release tags, just bounded ranges).
+    """
+    parts: list[int] = []
+    for chunk in re.split(r"[.+\-]", v):
+        m = re.match(r"(\d+)", chunk)
+        parts.append(int(m.group(1)) if m else 0)
+    return tuple(parts)
+
+
+def _spec_matches(installed: str, spec: str) -> bool:
+    """Return True when ``installed`` satisfies a single spec like
+    ``<2.27.0``. Comma-separated specs are AND-joined by the caller."""
+    m = _OP_RE.match(spec.strip())
+    if not m:
+        return False
+    op, ver = m.groups()
+    a = _parse_version(installed)
+    b = _parse_version(ver)
+    if op == "==": return a == b
+    if op == "!=": return a != b
+    if op == "<":  return a < b
+    if op == "<=": return a <= b
+    if op == ">":  return a > b
+    if op == ">=": return a >= b
+    if op == "~=":
+        # Python compatible release: ~=1.4 means >=1.4,<2.0
+        prefix = b[:-1]
+        next_major = b[:-1] + (b[-1] + 1,) if b else b
+        return a >= b and a < next_major
+    return False
+
+
+def _check_cve_match(installed: str, ecosystem: str, package: str) -> list[dict]:
+    """Return the list of catalog entries whose version_spec matches."""
+    db = _load_known_vulnerable_db()
+    pkgs = (db.get(ecosystem) or {}).get(package, [])
+    matched = []
+    for entry in pkgs:
+        spec = entry.get("version_spec", "")
+        # Comma-separated AND of specs
+        all_match = True
+        for piece in spec.split(","):
+            piece = piece.strip()
+            if piece and not _spec_matches(installed, piece):
+                all_match = False
+                break
+        if all_match and spec:
+            matched.append(entry)
+    return matched
 
 # CWE-1104: Use of Unmaintained Third Party Components
 DEPENDENCY_FILE_NAMES = frozenset({
@@ -104,31 +207,137 @@ def check_dependency_security(source_path: str) -> dict:
 
 
 def _analyze_dependency_file(file_path: Path, findings: list[dict]) -> None:
-    """Analyze dependency manifest files for CWE-1104."""
+    """Analyze dependency manifest files for CWE-1104 (unpinned) and
+    CWE-937 (known-vulnerable component)."""
     content = read_file_safe(file_path)
     if content is None:
         return
 
     if file_path.name == "requirements.txt":
-        lines = content.splitlines()
-        for line_num, line in enumerate(lines, start=1):
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+        _analyze_requirements_txt(file_path, content, findings)
+    elif file_path.name in ("package.json", "package-lock.json"):
+        _analyze_npm_manifest(file_path, content, findings)
+
+
+# Requirement spec for `pkg==1.2.3` / `pkg>=1.2`. Captures (name, version).
+_PIP_SPEC = re.compile(r"^([A-Za-z][\w.\-]*)\s*(?:==|~=|===)\s*([0-9][\w.\-]*)")
+
+
+def _analyze_requirements_txt(file_path: Path, content: str, findings: list[dict]) -> None:
+    lines = content.splitlines()
+    for line_num, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+            continue
+        if UNPINNED_PYTHON.match(stripped) or UNPINNED_PYTHON_LOOSE.match(stripped):
+            finding = {
+                "severity": "medium",
+                "check_id": "cwe.dependency.unpinned_version",
+                "category": "CWE-1104",
+                "title": "Unpinned dependency version",
+                "description": f"Dependency '{stripped.split()[0]}' lacks pinned version at line {line_num}",
+                "file_path": str(file_path),
+                "line_start": line_num,
+                "line_end": line_num,
+                "recommendation": "Pin dependencies to specific versions (use == or ~=)",
+            }
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+            findings.append(enrich_finding(finding, "1104"))
+            continue
+        # CWE-937: pinned version → check the known-vuln catalog.
+        m = _PIP_SPEC.match(stripped)
+        if m:
+            _emit_cve_findings(file_path, lines, line_num, m.group(1).lower(), m.group(2),
+                               ecosystem="pypi", findings=findings)
+
+
+def _analyze_npm_manifest(file_path: Path, content: str, findings: list[dict]) -> None:
+    """Best-effort parse of package*.json to extract pinned versions.
+
+    Uses a JSON parser; bails out gracefully on unparseable input.
+    Looks at top-level ``dependencies`` and ``devDependencies``. For
+    package-lock.json, walks the ``packages`` map.
+    """
+    try:
+        data = json.loads(content)
+    except (ValueError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    lines = content.splitlines()
+    pairs: list[tuple[str, str]] = []
+    for key in ("dependencies", "devDependencies", "peerDependencies"):
+        deps = data.get(key)
+        if isinstance(deps, dict):
+            for name, ver in deps.items():
+                if isinstance(name, str) and isinstance(ver, str):
+                    pairs.append((name.lower(), _strip_npm_range(ver)))
+    pkgs_map = data.get("packages")
+    if isinstance(pkgs_map, dict):
+        for path, info in pkgs_map.items():
+            if not (isinstance(info, dict) and isinstance(path, str)):
                 continue
-            if UNPINNED_PYTHON.match(stripped) or UNPINNED_PYTHON_LOOSE.match(stripped):
-                finding = {
-                    "severity": "medium",
-                    "check_id": "cwe.dependency.unpinned_version",
-                    "category": "CWE-1104",
-                    "title": "Unpinned dependency version",
-                    "description": f"Dependency '{stripped.split()[0]}' lacks pinned version at line {line_num}",
-                    "file_path": str(file_path),
-                    "line_start": line_num,
-                    "line_end": line_num,
-                    "recommendation": "Pin dependencies to specific versions (use == or ~=)",
-                }
-                finding["code_snippet"] = extract_snippet(lines, line_num)
-                findings.append(enrich_finding(finding, "1104"))
+            ver = info.get("version")
+            if not isinstance(ver, str):
+                continue
+            # path is "node_modules/<pkg>" — strip the prefix
+            name = path.rsplit("node_modules/", 1)[-1].lower()
+            if name:
+                pairs.append((name, ver))
+    for name, ver in pairs:
+        if not ver:
+            continue
+        _emit_cve_findings(file_path, lines, 1, name, ver, ecosystem="npm", findings=findings)
+
+
+def _strip_npm_range(spec: str) -> str:
+    """Best-effort: drop `^`, `~`, `>=`, `<` etc. from an npm spec.
+
+    Accuracy isn't critical — we use the resulting version as the
+    LOWER bound for CVE matching. Catalog spec matching is conservative
+    (false negatives over false positives) so a stripped `^1.2.3` →
+    `1.2.3` is fine.
+    """
+    spec = spec.strip()
+    m = re.search(r"\d[\w.\-]*", spec)
+    return m.group(0) if m else ""
+
+
+def _emit_cve_findings(
+    file_path: Path,
+    lines: list[str],
+    line_num: int,
+    package: str,
+    version: str,
+    ecosystem: str,
+    findings: list[dict],
+) -> None:
+    matches = _check_cve_match(version, ecosystem, package)
+    for entry in matches:
+        cve = entry.get("cve", "UNKNOWN")
+        severity = entry.get("severity", "medium")
+        summary = entry.get("summary", "Known-vulnerable version")
+        fixed_in = entry.get("fixed_in", "")
+        finding = {
+            "severity": severity,
+            "check_id": f"cwe.dependency.known_vulnerable.{cve}",
+            "category": "CWE-937",
+            "title": f"Known-vulnerable dependency: {package} {version} ({cve})",
+            "description": (
+                f"{ecosystem.upper()} package {package!r} version {version} matches "
+                f"a known CVE: {cve}. {summary}."
+            ),
+            "file_path": str(file_path),
+            "line_start": line_num,
+            "line_end": line_num,
+            "recommendation": (
+                f"Upgrade {package} to {fixed_in} or later. Refer to {cve} "
+                "advisory for full impact and remediation guidance."
+            ),
+        }
+        if lines:
+            finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "937"))
 
 
 def _analyze_code_file(file_path: Path, findings: list[dict]) -> None:

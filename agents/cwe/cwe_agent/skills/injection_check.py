@@ -21,13 +21,37 @@ from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
 
-# CWE-89: SQL Injection
+# CWE-89: SQL Injection.
+#
+# All four common Python string-construction antipatterns are now
+# matched, plus Go's Sprintf / direct concat:
+#   - f-string with placeholder            f"SELECT ... {var}"
+#   - .format(...)                          "SELECT ...".format(x)
+#   - %-formatting                          "SELECT ... %s" % var       (NEW)
+#   - + concatenation                       query = "SELECT " + var
+#   - Sprintf                               fmt.Sprintf("SELECT %s", x)
 SQL_INJECTION_PATTERNS = [
+    # f-strings
     re.compile(r'f"[^"]*(?:SELECT|INSERT|UPDATE|DELETE|DROP)[^"]*\{'),
     re.compile(r"f'[^']*(?:SELECT|INSERT|UPDATE|DELETE|DROP)[^']*\{"),
+    # .format(...)
     re.compile(r"\.format\([^)]*(?:SELECT|INSERT|UPDATE|DELETE)", re.IGNORECASE),
     re.compile(r"(?:SELECT|INSERT|UPDATE|DELETE)\s.*\.format\(", re.IGNORECASE),
+    # %-formatting against a SQL string. Two complementary shapes
+    # because the SQL keyword can be in either operand of `%`.
+    re.compile(
+        r'["\'][^"\']*(?:SELECT|INSERT|UPDATE|DELETE|DROP)[^"\']*["\']\s*%\s*[\w(]',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'(?:query|sql|stmt)\s*=\s*["\'][^"\']*(?:SELECT|INSERT|UPDATE|DELETE)[^"\']*["\']\s*%',
+        re.IGNORECASE,
+    ),
+    # Sprintf (Go)
     re.compile(r'Sprintf\([^)]*(?:SELECT|INSERT|UPDATE|DELETE)', re.IGNORECASE),
+    # Concatenation
+    re.compile(r'(?:query|sql|stmt)\s*=\s*["\'][^"\']*(?:SELECT|INSERT|UPDATE|DELETE)[^"\']*["\']\s*\+',
+               re.IGNORECASE),
     re.compile(r'(?:query|sql)\s*=\s*[f"\'"].*\+'),
 ]
 

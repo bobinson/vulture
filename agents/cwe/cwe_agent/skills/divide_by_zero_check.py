@@ -12,6 +12,7 @@ from typing import Any
 from agents import function_tool
 
 from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
     is_generated_file,
     is_test_file,
     read_file_lines,
@@ -28,6 +29,31 @@ _LANG_EXTENSIONS: frozenset[str] = frozenset({
 
 # Divide or modulo by an identifier (not a digit literal).
 _DIV_OP = re.compile(r"\b(\w+)\s*([/%])\s*([A-Za-z_]\w*)\b")
+
+# Pre-strip strings and comments before regex search so URLs ("http://"),
+# file paths in string literals, and inline doc comments don't trigger
+# the divide pattern. Handles C/C++ // and /* */, double- and single-
+# quoted strings.
+_STRING_OR_COMMENT = re.compile(
+    r"""
+    "(?:\\.|[^"\\])*"        # double-quoted string
+    | '(?:\\.|[^'\\])*'      # single-quoted string / char
+    | //[^\n]*               # C++/Go/Rust line comment
+    | /\*.*?\*/              # C block comment (single-line variant)
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
+
+def _strip_strings_and_comments(line: str) -> str:
+    """Replace string literals / line comments with spaces of equal length.
+
+    Equal-length substitution preserves column positions so the line
+    number context stays meaningful, while the divide-op regex no
+    longer matches `/` characters embedded in `"http://..."` or in a
+    `// note: x/y` comment.
+    """
+    return _STRING_OR_COMMENT.sub(lambda m: " " * len(m.group(0)), line)
 
 # Safe-context guard: zero-check within the 5-line preceding window.
 _SAFE_CONTEXT = re.compile(
@@ -81,8 +107,16 @@ def _scan_line(
     lines: tuple[str, ...],
     findings: list[dict],
 ) -> None:
-    """Scan a single line for unguarded divide/modulo-by-identifier."""
-    if not _DIV_OP.search(line):
+    """Scan a single line for unguarded divide/modulo-by-identifier.
+
+    Skip lines that are entirely a comment, and run the divide-op match
+    against a string-and-comment-stripped copy of the line so e.g.
+    `url = "http://example.com/x"` doesn't trigger CWE-369.
+    """
+    if COMMENT_INDICATORS.match(line):
+        return
+    cleaned = _strip_strings_and_comments(line)
+    if not _DIV_OP.search(cleaned):
         return
     if _is_safe_context(lines, lineno):
         return

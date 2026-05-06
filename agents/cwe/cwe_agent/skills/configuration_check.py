@@ -42,6 +42,21 @@ MISCONFIGURATION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
      "295", "Certificate verification disabled"),
     (re.compile(r'(?:HSTS|Strict-Transport-Security).*max-age\s*[:=]\s*(?:[0-9]{1,4})\b'),
      "319", "Weak HSTS max-age value"),
+    # Permissive CORS — Access-Control-Allow-Origin: * in any
+    # config-shape line is rarely intentional in production.
+    (re.compile(r'(?:Access-Control-Allow-Origin|cors\.allow_origin\w*)\s*[:=]\s*["\']?\*', re.IGNORECASE),
+     "942", "Permissive CORS Access-Control-Allow-Origin: *"),
+    # Cookie SameSite=None without Secure — cross-site cookie send
+    # over http.
+    (re.compile(r'SameSite\s*[:=]\s*["\']?None["\']?(?![^,;\n}]*Secure)', re.IGNORECASE),
+     "1275", "Cookie SameSite=None without Secure attribute"),
+    # X-Frame-Options absent — heuristic via DENY/SAMEORIGIN being
+    # explicitly removed.
+    (re.compile(r'X-Frame-Options\s*[:=]\s*["\']?ALLOWALL', re.IGNORECASE),
+     "1021", "X-Frame-Options ALLOWALL (clickjacking)"),
+    # Content-Security-Policy with `unsafe-inline` or `unsafe-eval`.
+    (re.compile(r'Content-Security-Policy[^"\']*["\'][^"\']*(?:unsafe-inline|unsafe-eval)', re.IGNORECASE),
+     "1336", "CSP includes 'unsafe-inline' / 'unsafe-eval'"),
 ]
 
 # CWE-732: Incorrect Permission Assignment for Critical Resource

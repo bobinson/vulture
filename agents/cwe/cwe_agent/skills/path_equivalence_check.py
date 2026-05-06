@@ -51,6 +51,18 @@ _PATH_SHAPE = re.compile(
 )
 
 # Variant regexes: (cwe_id, pattern, label, severity)
+#
+# Encoded-traversal variants (added in this revision) cover the common
+# attack payloads that bypass naive `if "../" in path` filters:
+#
+#   ../              literal (CWE-23 / CWE-22)
+#   ..%2f / ..%2F    single-encoded slash
+#   ..%252f          double-encoded
+#   %2e%2e/          encoded dots
+#   %2e%2e%2f        fully encoded
+#   ..\ / ..%5c      Windows backslash
+#   ..%c0%af         overlong UTF-8 (Unicode trick used in IIS et al.)
+#   ..%00            null-byte truncation
 _VARIANTS: list[tuple[str, re.Pattern[str], str, str]] = [
     ("43", re.compile(r"\.{2,}\Z"),                 "multiple trailing dots",         "medium"),
     ("42", re.compile(r"(?<!\.)\.\Z"),              "trailing dot",                   "low"),
@@ -64,6 +76,14 @@ _VARIANTS: list[tuple[str, re.Pattern[str], str, str]] = [
     ("57", re.compile(r"\.\./"),                    "directory traversal equivalence","high"),
     ("48", re.compile(r"[A-Za-z0-9]\s[A-Za-z0-9]"), "internal whitespace",            "low"),
     ("56", re.compile(r"[*?]"),                     "wildcard",                       "low"),
+    # Encoded traversal payloads.
+    ("23", re.compile(r"\.\.%2[fF5]", re.IGNORECASE), "URL-encoded directory traversal", "high"),
+    ("23", re.compile(r"\.\.%252[fF5]", re.IGNORECASE), "double-URL-encoded directory traversal", "high"),
+    ("23", re.compile(r"%2[eE]%2[eE][/\\]"),                      "encoded-dots traversal",      "high"),
+    ("23", re.compile(r"%2[eE]%2[eE]%2[fF5]"),                    "fully encoded ../ traversal", "high"),
+    ("23", re.compile(r"\.\.%c0%af", re.IGNORECASE),              "overlong UTF-8 traversal",    "high"),
+    ("158", re.compile(r"\.\.%00"),                                "null-byte traversal bypass",  "high"),
+    ("159", re.compile(r"\.\.\\"),                                 "Windows backslash traversal", "high"),
 ]
 
 

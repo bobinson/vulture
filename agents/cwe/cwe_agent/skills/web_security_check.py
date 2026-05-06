@@ -160,9 +160,22 @@ def _check_cookie_httponly(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for CWE-1004 cookie without HttpOnly flag."""
-    context_start = max(0, line_num - 3)
-    context_end = min(len(lines), line_num + 3)
+    """Check for CWE-1004 cookie without HttpOnly flag.
+
+    Cookie-setter calls span multiple lines in modern formatting (one
+    kwarg per line, trailing-comma style). The previous ±3-line window
+    missed `httponly=True` on a 6th line and produced false positives
+    for safe code. We now window by call-block: extend forward until
+    the parens balance OR a 12-line cap, whichever is shorter.
+    """
+    if not _has_unmatched_open_paren(line):
+        # Single-line cookie call — old ±3 window is fine.
+        context_start = max(0, line_num - 3)
+        context_end = min(len(lines), line_num + 3)
+    else:
+        # Multi-line call: extend forward through the closing paren.
+        context_start = max(0, line_num - 1)
+        context_end = _find_call_close(lines, line_num - 1, max_lines=12)
     context = "\n".join(lines[context_start:context_end])
     if SAFE_COOKIE_PATTERNS.search(context):
         return
@@ -182,6 +195,27 @@ def _check_cookie_httponly(
             finding["code_snippet"] = extract_snippet(lines, line_num)
             findings.append(enrich_finding(finding, "1004"))
             return
+
+
+def _has_unmatched_open_paren(line: str) -> bool:
+    """True when the line has more `(` than `)` — a multi-line call start."""
+    return line.count("(") > line.count(")")
+
+
+def _find_call_close(lines: list[str], start_idx: int, max_lines: int = 12) -> int:
+    """Return the (exclusive) line index where parens balance.
+
+    Used to extend a multi-line call's context window through its full
+    argument list. Caps at ``max_lines`` so a forgotten `)` can't make
+    the whole file the "context".
+    """
+    depth = 0
+    end = min(start_idx + max_lines, len(lines))
+    for i in range(start_idx, end):
+        depth += lines[i].count("(") - lines[i].count(")")
+        if depth <= 0 and i > start_idx:
+            return i + 1
+    return end
 
 
 def _check_session_fixation(

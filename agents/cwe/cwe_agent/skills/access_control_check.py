@@ -38,11 +38,27 @@ ROLE_STRING_CMP = [
     re.compile(r'["\'](?:admin|root|superuser)["\']\s*==\s*(?:role|user_role|userRole)'),
 ]
 
-# CWE-639: Authorization Bypass Through User-Controlled Key (IDOR)
+# CWE-639: Authorization Bypass Through User-Controlled Key (IDOR).
+#
+# Cover Django/DRF (request.GET / request.POST), Flask
+# (request.args / request.form), generic params, Go (URL.Query().Get),
+# Express/Node (req.params), and method-call form (.get("id")). The
+# previous pattern set missed Django entirely.
 IDOR_PATTERNS = [
-    re.compile(r'request\.(?:args|params|query)\[?["\'](?:\w*id)["\']'),
-    re.compile(r'request\.form\[?["\'](?:\w*id)["\']'),
+    # Bracket access via well-known web-framework attrs
+    re.compile(r'request\.(?:args|params|query|GET|POST)\[?["\'](?:\w*id)["\']', re.IGNORECASE),
+    re.compile(r'request\.form\[?["\'](?:\w*id)["\']', re.IGNORECASE),
+    # Express/Node
+    re.compile(r'req\.(?:params|query|body)\.\w*id\b', re.IGNORECASE),
+    re.compile(r'req\.(?:params|query|body)\[\s*["\']\w*id["\']', re.IGNORECASE),
+    # .get() method form (Django + Flask alike)
+    re.compile(
+        r'request\.(?:GET|POST|args|form|query|params)\.get\(\s*["\']\w*id["\']',
+        re.IGNORECASE,
+    ),
+    # Go net/http URL query
     re.compile(r'r\.URL\.Query\(\)\.Get\(\s*"[a-z_]*id"'),
+    # Generic params
     re.compile(r'params\[[\'"]\w*id[\'"]\]'),
 ]
 OWNERSHIP_CHECK = re.compile(

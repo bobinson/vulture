@@ -15,7 +15,6 @@ from shared.tools.file_scanner import (
     is_generated_file,
     is_test_file,
     read_file_lines,
-    read_file_safe,
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
@@ -91,13 +90,42 @@ def check_memory_safety(source_path: str) -> dict:
     return {"findings": findings}
 
 
+# CWE-401 alloc + bind: matches `var = malloc(...)`, `var = new T(...)`,
+# `T *var = malloc(...)`, etc. The first capture group is the bound
+# variable's name so we can pair allocations with frees per-variable
+# rather than file-globally.
+_ALLOC_BIND_PATTERNS = [
+    # C-style: optional type, optional `*`, ident, =, alloc-call
+    re.compile(r"(?:[\w\s]*\*\s*)?(\w+)\s*=\s*(?:malloc|calloc|realloc|strdup)\s*\("),
+    # C++ new: ptr = new Type(...)  /  Type *ptr = new Type[N]
+    re.compile(r"(?:[\w\s]*\*\s*)?(\w+)\s*=\s*new\s+\w+\s*[\[(]"),
+]
+
+# Match `free(name)`, `delete name`, `delete[] name`. Captures the freed
+# variable so we can mark it as released for leak tracking.
+_FREE_BIND_PATTERNS = [
+    re.compile(r"\bfree\s*\(\s*(\w+)\s*\)"),
+    re.compile(r"\bdelete(?:\[\])?\s+(\w+)"),
+]
+
+
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze a file for memory safety issues."""
     lines = read_file_lines(file_path)
     if lines is None:
         return
-    content = read_file_safe(file_path) or ""
-    has_free = MEMORY_FREE_PATTERNS.search(content) is not None
+
+    # Per-variable leak tracking. Previously we checked "is there any
+    # free() anywhere in the file?" and skipped EVERY leak finding when
+    # the answer was yes — a single cleanup at end-of-function disabled
+    # the check for every other allocation. Build a set of freed
+    # variable names so we only suppress the leak finding for that
+    # specific binding.
+    freed_vars: set[str] = set()
+    for ln in lines:
+        for pat in _FREE_BIND_PATTERNS:
+            for m in pat.finditer(ln):
+                freed_vars.add(m.group(1))
 
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
@@ -106,7 +134,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
             continue
         if SCANNER_DEF_LINE.search(line):
             continue
-        _check_memory_leak(file_path, line, line_num, has_free, lines, findings)
+        _check_memory_leak(file_path, line, line_num, freed_vars, lines, findings)
         _check_double_free(file_path, line, line_num, lines, findings)
         _check_uninit_var(file_path, line, line_num, lines, findings)
         _check_uninit_pointer(file_path, line, line_num, lines, findings)
@@ -115,12 +143,20 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
 
 
 def _check_memory_leak(
-    file_path: Path, line: str, line_num: int, has_free: bool,
+    file_path: Path, line: str, line_num: int, freed_vars: set[str],
     lines: list[str], findings: list[dict],
 ) -> None:
-    """Check for CWE-401 memory leak (alloc without matching free)."""
-    if has_free:
-        return
+    """Check for CWE-401 memory leak (alloc without matching free).
+
+    Only suppresses when the SPECIFIC variable bound to this allocation
+    is later freed; a free() of a different pointer doesn't clear this
+    one.
+    """
+    # If the alloc binds to a known-freed variable, skip the finding.
+    for pat in _ALLOC_BIND_PATTERNS:
+        m = pat.search(line)
+        if m and m.group(1) in freed_vars:
+            return
     for pattern in MEMORY_ALLOC_PATTERNS:
         if pattern.search(line):
             finding = {

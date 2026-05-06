@@ -1,8 +1,15 @@
 """Dedicated skill for CWE-778 (insufficient logging).
 
-Flags exception handlers (``catch`` / ``except`` blocks) whose body does
-not emit a logging call within the first five non-blank lines. Failing
-to log swallowed exceptions hides evidence needed for incident response.
+Flags two patterns:
+
+  1. Exception handlers (``catch`` / ``except`` blocks) whose body does
+     not emit a logging call. Swallowed exceptions hide evidence
+     needed for incident response.
+  2. Authentication/authorization decision points (login_failed,
+     access_denied, permission denied, token invalid, MFA failure)
+     that don't log the event. CWE-778 specifically calls out auth
+     decisions as critical events that must be logged for forensics
+     and intrusion detection.
 """
 import re
 from pathlib import Path
@@ -43,11 +50,42 @@ _LOG_CALL = re.compile(
     r"|\blogger\."
     r"|\blogging\."
     r"|\bslf4j\b"
-    r"|\bconsole\.(?:error|warn)\s*\("
+    r"|\bconsole\.(?:error|warn|info|log)\s*\("
     r"|\bsyslog\b"
     r"|\bLOG_[A-Z]"
     r"|\bfmt\.Fprintf\s*\(\s*os\.Stderr"
+    r"|\bzap\.\w+\s*\("
+    r"|\bzerolog\.\w+\s*\("
+    r"|\baudit_log\b"
+    r"|\bsecurity_log\b"
 )
+
+
+# Authentication/authorization decision points that should be audit-
+# logged. Lines matching these are scanned for nearby logging calls;
+# absence emits a CWE-778 finding.
+_AUTH_DECISION = re.compile(
+    r"(?:"
+    r"\b(?:login|authentication|auth)[_\-]?(?:failed|fail|denied|invalid|reject)\b"
+    r"|\b(?:permission|access)[_\-]?denied\b"
+    r"|\bmfa[_\-]?(?:failed|fail|invalid)\b"
+    r"|\btoken[_\-]?(?:invalid|expired|reject)\b"
+    r"|\bunauthorized\b"
+    r"|\bforbidden\b"
+    r"|\binvalid[_\-]?credentials\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _has_log_within(lines: tuple[str, ...], lineno: int, radius: int = 4) -> bool:
+    """True when a log call appears within ``radius`` lines of ``lineno``."""
+    start = max(0, lineno - radius - 1)
+    end = min(len(lines), lineno + radius)
+    for i in range(start, end):
+        if _LOG_CALL.search(lines[i]):
+            return True
+    return False
 
 
 def _body_has_logging(body_lines: list[str]) -> bool:
@@ -129,16 +167,60 @@ def _should_scan(file_path: Path) -> bool:
 
 
 def _scan_file(file_path: Path, findings: list[dict]) -> None:
-    """Read file lines and scan each one for un-logged exception handlers."""
+    """Read file lines and scan each one for un-logged exception handlers
+    or un-logged auth decisions."""
     if not _should_scan(file_path):
         return
     lines = read_file_lines(file_path)
     if lines is None:
         return
     path_str = str(file_path)
+    seen_lines: set[int] = set()
     for lineno, line in enumerate(lines, 1):
         _scan_py_except(line, lineno, path_str, lines, findings)
         _scan_catch(line, lineno, path_str, lines, findings)
+        _scan_auth_decision(line, lineno, path_str, lines, findings, seen_lines)
+
+
+def _scan_auth_decision(
+    line: str,
+    lineno: int,
+    file_path: str,
+    lines: tuple[str, ...],
+    findings: list[dict],
+    seen_lines: set[int],
+) -> None:
+    """Flag auth-decision points that aren't audit-logged in the
+    surrounding window. The same line is only reported once even if it
+    matches multiple auth keywords."""
+    if lineno in seen_lines:
+        return
+    if not _AUTH_DECISION.search(line):
+        return
+    if _has_log_within(lines, lineno, radius=4):
+        return
+    seen_lines.add(lineno)
+    finding = {
+        "severity": "medium",
+        "check_id": "cwe.insufficient_logging.auth_decision",
+        "category": "CWE-778",
+        "title": "Authentication/authorization decision not logged",
+        "description": (
+            f"Auth decision at line {lineno} (e.g. login failure, access "
+            "denied, invalid credentials) doesn't emit a logging call "
+            "within 4 lines. Auth events must be audit-logged."
+        ),
+        "file_path": file_path,
+        "line_start": lineno,
+        "line_end": lineno,
+        "recommendation": (
+            "Log the decision and identifying context (subject, "
+            "resource, reason) via your audit-log facility so security "
+            "monitoring and forensics can reconstruct the event."
+        ),
+        "code_snippet": extract_snippet(lines, lineno),
+    }
+    findings.append(enrich_finding(finding, "778"))
 
 
 def check_insufficient_logging(source_path: str) -> dict[str, Any]:

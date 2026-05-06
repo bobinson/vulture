@@ -59,6 +59,44 @@ def severity_for(kind: str, body: str) -> str:
     return base
 
 
+def _is_doc_or_example(file_path: Path) -> bool:
+    """True for documentation / example files where embedded PEM
+    blocks are typically illustrative, not real secrets."""
+    name_lower = file_path.name.lower()
+    parts_lower = {p.lower() for p in file_path.parts}
+    if name_lower.endswith((".md", ".rst", ".adoc", ".txt")):
+        return True
+    if any(p in {"docs", "doc", "documentation", "examples", "example", "samples"} for p in parts_lower):
+        return True
+    return False
+
+
+def _looks_like_dummy(body: str) -> bool:
+    """True when the PEM body looks like an obvious documentation
+    placeholder rather than a real private key.
+
+    Heuristics — must be applied OUTSIDE a real key context. Real
+    private keys are dense base64 of cryptographic randomness, so
+    distinct characters >= ~30 in any 64-char chunk. Placeholders are
+    typically short OR contain explicit "EXAMPLE"/"REDACTED"/<key>
+    markers.
+    """
+    stripped = "".join(body.split())
+    if len(stripped) < 64:
+        return True
+    # Explicit placeholder strings — matches `<key>`, `<your_key_here>`,
+    # `INSERT_KEY_HERE`, `REDACTED`. Don't include AAAAAAAA / XXXXXXXX
+    # bare strings — real base64 happens to contain them; rely on the
+    # placeholder-with-marker shapes instead.
+    upper = body.upper()
+    placeholder_markers = (
+        "EXAMPLE_", "_EXAMPLE", "REDACTED", "YOUR_KEY", "YOURKEY",
+        "PLACEHOLDER", "<KEY", "INSERT_KEY", "...PRIVATE_KEY_HERE",
+        "REPLACE-WITH",
+    )
+    return any(m in upper for m in placeholder_markers)
+
+
 def find_pem_blocks(file_path: Path, content: str) -> list[dict]:
     """Scan ``content`` (full file text) and return findings for every
     private-key PEM block.
@@ -71,6 +109,7 @@ def find_pem_blocks(file_path: Path, content: str) -> list[dict]:
         List of findings (one per BEGIN/END block found).
     """
     findings: list[dict] = []
+    in_doc_or_example = _is_doc_or_example(file_path)
     for match in PEM_BLOCK_RE.finditer(content):
         kind = match.group("kind").strip()
         body = match.group("body")
@@ -79,6 +118,14 @@ def find_pem_blocks(file_path: Path, content: str) -> list[dict]:
         # but defensive: an "RSA PUBLIC PRIVATE KEY" or similar won't
         # exist in the wild; this keeps the contract explicit.
         if "PUBLIC" in kind:
+            continue
+        # Suppress obvious documentation samples and placeholder bodies
+        # to keep README walk-throughs / sample files quiet.
+        if in_doc_or_example and _looks_like_dummy(body):
+            continue
+        if _looks_like_dummy(body):
+            # Even outside docs, an obvious placeholder shouldn't fire
+            # a critical finding.
             continue
 
         # Compute line number of the BEGIN marker for snippet display.

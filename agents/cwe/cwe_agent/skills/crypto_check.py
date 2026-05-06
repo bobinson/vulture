@@ -18,20 +18,46 @@ from shared.tools.snippet import check_context, extract_snippet
 
 from cwe_agent.catalog import enrich_finding
 
-# CWE-327: Broken or risky cryptographic algorithm
+# CWE-327: Broken or risky cryptographic algorithm.
+#
+# Standalone bare-cipher names (DES, RC4, Blowfish, 3DES, TripleDES,
+# ECB) used to be flagged with `\bX\b` alone, which matched variables
+# named `DES_state`, `aes_DES_compat`, comments mentioning "DES", etc.
+# Now the bare-name pattern only fires when the CALLER also confirms
+# crypto context on the line — see the
+# ``BROKEN_CRYPTO_BARE_NAME``/``BROKEN_CRYPTO_CONTEXT`` pair used by
+# ``_check_broken_crypto``.
 BROKEN_CRYPTO_PATTERNS = [
-    re.compile(r"\bDES\b(?!C)"),
-    re.compile(r"\bRC4\b"),
-    re.compile(r"\bBlowfish\b", re.IGNORECASE),
-    re.compile(r"\b3DES\b"),
-    re.compile(r"\bTripleDES\b", re.IGNORECASE),
-    re.compile(r"ECB\b"),
-    re.compile(r"DES\.new\("),
-    re.compile(r"ARC4\.new\("),
-    re.compile(r"Blowfish\.new\("),
+    # Specific high-confidence call shapes (already precise).
+    re.compile(r"\bDES\.new\("),
+    re.compile(r"\bARC4\.new\("),
+    re.compile(r"\bBlowfish\.new\("),
+    re.compile(r"\bTripleDES\.new\(", re.IGNORECASE),
     re.compile(r'mode\s*=\s*["\']?ECB'),
-    re.compile(r"MODE_ECB"),
+    re.compile(r"\bMODE_ECB\b"),
+    # Cipher constructors / library lookups by name with the cipher
+    # name as a string argument. Self-contextualising (no extra check).
+    re.compile(
+        r'(?:Cipher\.getInstance|crypto\.create(?:Cipher|Decipher)|EVP_get_cipherbyname)'
+        r'\s*\(\s*["\']?(?:DES|RC4|BLOWFISH|3DES|TRIPLEDES|ECB)\b',
+        re.IGNORECASE,
+    ),
 ]
+
+# Bare-name pattern + context check, used together by the detector to
+# require that a `\bDES\b` mention appear on a line that ALSO contains
+# a crypto symbol (Cipher, crypto, encrypt, decrypt, key, IV, mode).
+# Doing the context check separately means we don't need a variable-
+# length regex lookbehind — the context can be before OR after the
+# cipher name on the line.
+BROKEN_CRYPTO_BARE_NAME = re.compile(
+    r"\b(DES|RC4|Blowfish|3DES|TripleDES|ECB)\b(?!C\b|RIPT|RIPE|EFS)",
+    re.IGNORECASE,
+)
+BROKEN_CRYPTO_CONTEXT = re.compile(
+    r"\b(?:cipher|crypto|encrypt|decrypt|key|IV|mode)\b",
+    re.IGNORECASE,
+)
 
 SAFE_CRYPTO_CONTEXT = re.compile(
     r"(?:deprecated|legacy|migration|upgrade|warning|doc|README|CHANGELOG)",
@@ -144,25 +170,42 @@ def _check_broken_crypto(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for CWE-327 broken cryptographic algorithm."""
+    """Check for CWE-327 broken cryptographic algorithm.
+
+    Two paths:
+      1. Specific high-confidence shapes (DES.new(), MODE_ECB,
+         Cipher.getInstance("DES")) — fire on first match.
+      2. Bare-name occurrence (`\\bDES\\b` etc.) — only fire if the
+         line ALSO contains a crypto symbol like `cipher`, `crypto`,
+         `encrypt`, `decrypt`, `key`, `IV`, `mode`. Context can appear
+         before OR after the cipher name on the line (so
+         `from Crypto.Cipher import DES` matches).
+    """
     if SAFE_CRYPTO_CONTEXT.search(line):
         return
+    matched = False
     for pattern in BROKEN_CRYPTO_PATTERNS:
         if pattern.search(line):
-            finding = {
-                "severity": "critical",
-                "check_id": "cwe.crypto.broken_algorithm",
-                "category": "CWE-327",
-                "title": "Broken cryptographic algorithm",
-                "description": f"Use of weak cipher or mode at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Use AES-256-GCM, ChaCha20-Poly1305, or other modern algorithms",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "327"))
-            return
+            matched = True
+            break
+    if not matched and BROKEN_CRYPTO_BARE_NAME.search(line):
+        if BROKEN_CRYPTO_CONTEXT.search(line):
+            matched = True
+    if not matched:
+        return
+    finding = {
+        "severity": "critical",
+        "check_id": "cwe.crypto.broken_algorithm",
+        "category": "CWE-327",
+        "title": "Broken cryptographic algorithm",
+        "description": f"Use of weak cipher or mode at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Use AES-256-GCM, ChaCha20-Poly1305, or other modern algorithms",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "327"))
 
 
 def _check_weak_keys(
@@ -248,7 +291,13 @@ def _check_hardcoded_key(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for hardcoded encryption keys."""
+    """Check for hardcoded cryptographic keys (CWE-321).
+
+    CWE-321 ("Use of Hard-coded Cryptographic Key") is the precise CWE
+    for keys embedded in source. Earlier code labelled this CWE-327
+    ("Use of Broken/Risky Algorithm"), which mis-routes catalog
+    enrichment and confuses downstream triage.
+    """
     if SAFE_KEY_CONTEXT.search(line):
         return
     for pattern in HARDCODED_KEY_PATTERNS:
@@ -256,16 +305,16 @@ def _check_hardcoded_key(
             finding = {
                 "severity": "critical",
                 "check_id": "cwe.crypto.hardcoded_key",
-                "category": "CWE-327",
-                "title": "Hardcoded encryption key",
-                "description": f"Encryption key embedded in source code at line {line_num}",
+                "category": "CWE-321",
+                "title": "Hardcoded cryptographic key",
+                "description": f"Cryptographic key embedded in source code at line {line_num}",
                 "file_path": str(file_path),
                 "line_start": line_num,
                 "line_end": line_num,
                 "recommendation": "Load encryption keys from environment variables or key management service",
             }
             finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "327"))
+            findings.append(enrich_finding(finding, "321"))
             return
 
 

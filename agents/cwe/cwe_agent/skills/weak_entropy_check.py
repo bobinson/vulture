@@ -34,12 +34,22 @@ _ASSIGN = re.compile(
     r"(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<rhs>.+)$"
 )
 
-# Weak (non-cryptographic) RNG call signatures.
+# Weak (non-cryptographic) RNG call signatures, plus time-as-seed
+# patterns (CWE-338 — predictable PRNG when time is the only entropy).
 _WEAK_RNG = re.compile(
     r"\brandom\.random\s*\("
     r"|\bMath\.random\s*\("
     r"|\brand\s*\(\s*\)"
     r"|\bnew\s+Random\s*\("
+    # time-as-seed shapes: srand(time(...)), Random(currentTimeMillis),
+    # mt_srand(time(...)), random.seed(time.time()), Math.random()
+    # nominally is platform-seeded but explicit Random(Date.now()) is
+    # a code smell.
+    r"|\bsrand\s*\(\s*time\s*\("
+    r"|\bnew\s+Random\s*\(\s*(?:System\.currentTimeMillis|Date\.now|System\.nanoTime)\s*\("
+    r"|\brandom\.seed\s*\(\s*time\.time\s*\("
+    r"|\bmt_srand\s*\(\s*time\s*\("
+    r"|\bMath\.random\s*\([^)]*Date\.now"
 )
 
 # Security-sensitive target-name tokens.

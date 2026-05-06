@@ -18,9 +18,13 @@ from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
 
-# CWE-476: NULL pointer dereference
+# CWE-476: NULL pointer dereference.
+#
+# The Go pattern previously used `\(.*\)\s*$` which produces ReDoS
+# backtracking on long assignment lines with many parens. Tighten to
+# `[^()]*` inside the call so quantifier expansion is bounded.
 NULL_DEREF_PATTERNS = [
-    re.compile(r"(\w+)\s*:=\s*\w+\.\w+\(.*\)\s*$"),  # Go: no nil check after call
+    re.compile(r"(\w+)\s*:=\s*\w+\.\w+\([^()]*\)\s*$"),  # Go: no nil check after call
     re.compile(r"\*(\w+)\s*(?:=|\.)"),  # Pointer dereference
 ]
 GO_NIL_CHECK = re.compile(r"if\s+\w+\s*[!=]=\s*nil")

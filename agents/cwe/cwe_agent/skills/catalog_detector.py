@@ -36,21 +36,34 @@ from cwe_agent.catalog import (
     load_catalog,
 )
 
-# CWE IDs already covered by dedicated skill modules — skip to avoid dupes.
-# Includes direct skill CWEs AND their child/variant CWEs to prevent
-# near-duplicate findings (e.g. CWE-22 covers CWE-23..40 path traversal).
-_DEDICATED_SKILL_CWES = frozenset({
+# CWE IDs already covered by dedicated skill modules — skip to avoid
+# dupes. Includes direct skill CWEs AND their child/variant CWEs to
+# prevent near-duplicate findings (e.g. CWE-22 covers CWE-23..40 path
+# traversal).
+#
+# These are split into two layers:
+#   _BASE_DEDICATED_CWES : the explicit, hand-curated list. Edit this
+#                          when adding a new skill that owns a CWE
+#                          family.
+#   _DEDICATED_SKILL_CWES: the runtime-merged superset that ALSO pulls
+#                          CWE IDs from `category: "CWE-N"` strings in
+#                          every registered skill detector — so adding
+#                          a skill whose check_id mentions a new CWE
+#                          automatically suppresses the catalog
+#                          detector from re-emitting it.
+_BASE_DEDICATED_CWES = frozenset({
     # --- Direct dedicated skill CWEs ---
     "16", "20", "22", "78", "79", "89", "94", "113", "120", "125", "134",
     "190", "200", "209", "252", "269", "287", "295", "306", "312", "319",
+    "321",  # added in batch 1 — hardcoded crypto key (was wrongly 327)
     "326", "327", "328", "330", "352", "362", "367", "384", "390", "400",
     "401", "404", "415", "416", "434", "457", "467", "476", "494", "502",
     "506", "521", "532", "562", "601", "611", "614", "639", "662", "668",
     "681", "704", "732", "754", "755", "770", "787", "798", "824", "829",
-    "833", "838", "862", "863", "918", "1004", "1104", "1188", "1295",
-    "1321",
+    "833", "838", "862", "863", "918", "937", "942", "1004", "1021",
+    "1104", "1188", "1275", "1295", "1321", "1336",
     # --- Task 4 narrow skills: divide/dangerous/logging/exception/entropy ---
-    "242", "248", "331", "332", "369", "676", "778",
+    "242", "248", "331", "332", "338", "369", "676", "778",
     # --- Path traversal family (children of CWE-22) ---
     "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33",
     "34", "35", "36", "37", "38", "39", "40",
@@ -63,7 +76,37 @@ _DEDICATED_SKILL_CWES = frozenset({
     "313", "314", "315", "316", "317", "318", "526",
     # --- Path equivalence family (children of CWE-41) ---
     "42", "43", "46", "48", "49", "50", "51", "52", "54", "55", "56", "57",
+    "158", "159",
 })
+
+
+def _discovered_cwes_from_skills() -> frozenset[str]:
+    """Scan registered skill modules for CWE IDs they mention in
+    ``category`` literals. This catches new skills that ship a
+    `category: "CWE-N"` without having to remember to update
+    _BASE_DEDICATED_CWES.
+
+    Best-effort: parses string-literal occurrences via a regex against
+    each skill module's source. Failures (file unreadable, import
+    error) fall back silently to _BASE_DEDICATED_CWES alone.
+    """
+    cwe_re = re.compile(r'"CWE-(\d+)"|\'CWE-(\d+)\'')
+    found: set[str] = set()
+    skills_dir = Path(__file__).parent
+    try:
+        for py in skills_dir.rglob("*_check.py"):
+            try:
+                txt = py.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for m in cwe_re.finditer(txt):
+                found.add(m.group(1) or m.group(2))
+    except OSError:
+        return frozenset()
+    return frozenset(found)
+
+
+_DEDICATED_SKILL_CWES = _BASE_DEDICATED_CWES | _discovered_cwes_from_skills()
 
 # Data/config file extensions that should not be analyzed for CWE patterns.
 # These files contain structured data, not executable source code.

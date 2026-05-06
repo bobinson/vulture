@@ -349,8 +349,19 @@ class TestCryptoPatterns:
     """Tests for cryptographic weakness detection."""
 
     def test_detects_des(self):
+        # The standalone `\bDES\b` regex used to live in
+        # BROKEN_CRYPTO_PATTERNS but produced false positives on
+        # `DESCRIBE`, `aes_DES_state`, etc. Detection now requires
+        # crypto context on the line — the actual contract is what
+        # the public `_check_broken_crypto` function reports, so test
+        # against that rather than the raw pattern list.
+        from cwe_agent.skills.crypto_check import _check_broken_crypto
+        from pathlib import Path
         line = "from Crypto.Cipher import DES"
-        assert any(p.search(line) for p in BROKEN_CRYPTO_PATTERNS)
+        findings: list[dict] = []
+        _check_broken_crypto(Path("x.py"), line, 1, (line,), findings)
+        assert findings, "DES import should still be detected"
+        assert findings[0]["category"] == "CWE-327"
 
     def test_detects_math_random(self):
         line = "var token = Math.random()"

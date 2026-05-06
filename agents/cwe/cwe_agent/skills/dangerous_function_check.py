@@ -29,9 +29,22 @@ from cwe_agent.catalog import enrich_finding
 _INHERENTLY_DANGEROUS_FN = re.compile(r"\bgets\s*\(")
 
 # CWE-676 string-handling: unbounded copy/scan functions that HAVE safe
-# alternatives (strncpy, snprintf, etc.).
+# alternatives (strncpy, snprintf, etc.). Added in this revision:
+#   - strdup / strndup-without-bound: returns a heap copy whose
+#     lifetime the caller must track; common leak source.
+#   - vsprintf, vfprintf to stdout: format-string injection vector.
+#   - tmpnam / tempnam / mktemp: race-prone temp filename generators.
+#   - alloca: stack-allocate-by-untrusted-size primitive.
+#   - getwd: deprecated unbounded buffer variant of getcwd.
 _STRING_FN = re.compile(
-    r"\b(strcpy|strcat|sprintf|vsprintf|scanf|sscanf)\s*\("
+    r"\b("
+    r"strcpy|strcat|sprintf|vsprintf|scanf|sscanf|"
+    r"strdup|strndup|"
+    r"vfprintf|vprintf|"
+    r"tmpnam|tempnam|mktemp|"
+    r"alloca|"
+    r"getwd"
+    r")\s*\("
 )
 
 # CWE-676 shell/code-execution: dangerous command/eval APIs with safer
@@ -63,11 +76,26 @@ def _is_safe_context(lines: tuple[str, ...], lineno: int) -> bool:
     return _SAFE_CONTEXT.search(window) is not None
 
 
+_CONST_STRING_ARG = re.compile(
+    r"(?:system|popen|exec|eval)\s*\(\s*(?:\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')\s*[,)]"
+)
+
+
 def _classify_match(line: str) -> tuple[str, str] | None:
-    """Return (cwe_id, severity) for a dangerous-function match on this line."""
+    """Return (cwe_id, severity) for a dangerous-function match on this line.
+
+    Severity downgrade: when the dangerous-call's first argument is an
+    obvious string LITERAL (no concatenation, no variable
+    interpolation), the exploit risk is far lower — the worst case is
+    a hardcoded shellout, not arbitrary attacker code. Drop critical
+    → high in that case to keep the high-confidence-critical bucket
+    meaningful.
+    """
     if _INHERENTLY_DANGEROUS_FN.search(line):
         return ("242", "critical")
     if _EXEC_FN.search(line):
+        if _CONST_STRING_ARG.search(line):
+            return ("676", "high")
         return ("676", "critical")
     if _STRING_FN.search(line):
         return ("676", "high")

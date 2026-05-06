@@ -33,21 +33,55 @@ VALID_MNEMONIC_LENGTHS: frozenset[int] = frozenset({12, 15, 18, 21, 24})
 _TOKEN_RE = re.compile(r"\b[a-z]{3,8}\b")
 
 
-def find_mnemonics(content: str) -> list[tuple[int, int]]:
-    """Return ``[(start_offset, word_count), ...]`` for each run of
-    consecutive BIP-39 words containing a valid mnemonic.
+# Context cues that lift a coincidence-of-dictionary-words to a
+# probable secret. Without these, English prose ("able above absent
+# ...") in literature, test fixtures, or AI-generated text trips the
+# detector.
+#
+# A finding fires when at least ONE of:
+#   - A keyword from this regex appears within ±200 bytes of the run
+#     in `content`.
+#   - The file's path contains a wallet/key/seed/crypto cue (e.g.
+#     `src/wallet.py`, `keystore.json`, `seed_words.txt`).
+_MNEMONIC_CONTEXT_RE = re.compile(
+    r"(?i)\b("
+    r"mnemonic|seed[ _-]?phrase|seed[ _-]?words|recovery[ _-]?(?:phrase|words|seed)|"
+    r"private[ _-]?key|wallet[ _-]?seed|backup[ _-]?phrase|"
+    r"bip[ _-]?39|bip[ _-]?32|hd[ _-]?wallet|xprv|xpub|"
+    r"keystore|metamask|trezor|ledger"
+    r")\b"
+)
 
-    For runs whose length matches a valid mnemonic length (12/15/18/21/24)
-    exactly, emit at the run's start. For runs LONGER than 24 (which
-    happens when the variable name itself is a BIP-39 word — e.g.
-    ``seed_phrase = "abandon ... art"`` produces a 25-word run because
-    ``seed`` is in the BIP-39 wordlist), emit one finding for the last
-    valid-length sub-window. This catches the common case without
-    multiplying findings.
+_MNEMONIC_PATH_HINT_RE = re.compile(
+    r"(?i)(?:^|[/\\_.-])(?:wallet|seed|mnemonic|keystore|crypto|"
+    r"private[_-]?key|recovery|bip39|hd[_-]?wallet)(?:[/\\_.-]|$)"
+)
+
+
+def find_mnemonics(content: str, file_path: Path | None = None) -> list[tuple[int, int]]:
+    """Return ``[(start_offset, word_count), ...]`` for each run of
+    consecutive BIP-39 words containing a valid mnemonic AND either:
+
+      * a cryptocurrency-context cue keyword within ±200 bytes of the
+        run (mnemonic / seed phrase / private key / wallet / BIP-39 /
+        etc.), OR
+      * a wallet/seed/keystore hint in ``file_path`` (e.g.
+        ``src/wallet.py``, ``keystore.json``, ``seed_words.txt``).
+
+    Length match alone is insufficient: 12 consecutive English words
+    from the BIP-39 wordlist appear in fiction, dictionaries, and
+    AI-generated training data. The combined content + path gates
+    suppress those false positives without missing real key files.
     """
     words = _bip39_words()
     if not words:
         return []
+
+    # Path hint short-circuits the per-finding content check below.
+    path_match = (
+        file_path is not None and bool(_MNEMONIC_PATH_HINT_RE.search(str(file_path)))
+    )
+
     tokens = list(_TOKEN_RE.finditer(content.lower()))
     out: list[tuple[int, int]] = []
     i = 0
@@ -57,20 +91,34 @@ def find_mnemonics(content: str) -> list[tuple[int, int]]:
         while j < len(tokens) and tokens[j].group(0) in words:
             run.append(tokens[j])
             j += 1
+        candidate: tuple[int, int] | None = None
         # Exact-length match
         if len(run) in VALID_MNEMONIC_LENGTHS:
-            out.append((run[0].start(), len(run)))
-        # Long-run case: scan from the longest valid length down to find
-        # a sub-window. The last-N-words window is the most likely
-        # position for a real mnemonic adjacent to identifier tokens.
+            candidate = (run[0].start(), len(run))
+        # Long-run case (variable name extends the run): use the
+        # longest-valid sub-window at the end.
         elif len(run) > 24:
             for length in (24, 21, 18, 15, 12):
                 if length <= len(run):
                     window = run[-length:]
-                    out.append((window[0].start(), length))
+                    candidate = (window[0].start(), length)
                     break
+        if candidate is not None:
+            offset, _count = candidate
+            # Use the run's full byte span when checking context so we
+            # consider the surrounding code, not just the first word.
+            run_end = run[-1].end() if run else offset
+            if path_match or _has_mnemonic_context(content, offset, run_end):
+                out.append(candidate)
         i = j + 1 if j > i else i + 1
     return out
+
+
+def _has_mnemonic_context(content: str, run_start: int, run_end: int) -> bool:
+    """True when a mnemonic-context keyword appears within ±200 bytes."""
+    win_start = max(0, run_start - 200)
+    win_end = min(len(content), run_end + 200)
+    return _MNEMONIC_CONTEXT_RE.search(content, win_start, win_end) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +235,7 @@ def find_crypto_secrets(file_path: Path, content: str) -> list[dict]:
 
 def _find_bip39(file_path: Path, content: str, findings: list[dict]) -> None:
     """1. BIP-39 mnemonic"""
-    for offset, word_count in find_mnemonics(content):
+    for offset, word_count in find_mnemonics(content, file_path):
         line_num = content.count("\n", 0, offset) + 1
         # Verify the full line isn't a placeholder marker.
         line = _line_at(content, offset)

@@ -21,12 +21,22 @@ from shared.tools.suppression import should_suppress, AUTH_CHECK_SUPPRESSIONS
 from cwe_agent.catalog import enrich_finding
 
 
-# CWE-798: Hardcoded credentials
+# CWE-798: Hardcoded credentials.
+#
+# Length floor raised to 8 chars for password/api_key/etc. — the prior
+# 3-char minimum trapped fixture-style assignments like
+#   password = "abc"
+#   pwd = "test"
+# producing constant noise in non-test files that happen to define
+# example credentials. 8 chars matches conventional hardcoded-secret
+# heuristics (most real keys/tokens far exceed 8). Trade-off: a real
+# 6-char admin password slips through; the SAFE_CRED_PATTERNS line-
+# context filter and downstream LLM phase pick those up.
 HARDCODED_CRED_PATTERNS = [
-    re.compile(r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']{3,}["\']', re.IGNORECASE),
-    re.compile(r'(?:api_key|apikey|api_secret)\s*=\s*["\'][^"\']{3,}["\']', re.IGNORECASE),
-    re.compile(r'(?:secret_key|secret)\s*=\s*["\'][^"\']{8,}["\']', re.IGNORECASE),
-    re.compile(r'(?:token|auth_token|access_token)\s*=\s*["\'][^"\']{8,}["\']', re.IGNORECASE),
+    re.compile(r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']{8,}["\']', re.IGNORECASE),
+    re.compile(r'(?:api_key|apikey|api_secret)\s*=\s*["\'][^"\']{12,}["\']', re.IGNORECASE),
+    re.compile(r'(?:secret_key|secret)\s*=\s*["\'][^"\']{12,}["\']', re.IGNORECASE),
+    re.compile(r'(?:token|auth_token|access_token)\s*=\s*["\'][^"\']{12,}["\']', re.IGNORECASE),
     re.compile(r'(?:AWS_SECRET|PRIVATE_KEY)\s*=\s*["\'][^"\']+["\']', re.IGNORECASE),
 ]
 
@@ -59,12 +69,28 @@ SAFE_AUTH_DECORATORS = re.compile(
     re.IGNORECASE,
 )
 
-# CWE-521: Weak password requirements
+# CWE-521: Weak password requirements.
+#
+# Common idioms covered:
+#   1. min_length = 5      / minLength: 5
+#   2. len(password) >= 6  / .length > 5
+#   3. len(password) < 8   / .length < 8       (operator inverted —
+#                                              the previously-missed
+#                                              variant; this is the
+#                                              MOST common Python form)
+#   4. password.*(min|minimum).*5
+#   5. Django MinLengthValidator(4) / MinimumLengthValidator(min_length=5)
 WEAK_PASSWORD_PATTERNS = [
-    re.compile(r'(?:min.?(?:length|len))\s*(?:=|:)\s*[1-5]\b', re.IGNORECASE),
-    re.compile(r'len\(\s*password\s*\)\s*(?:>=?|>)\s*[1-5]\b'),
-    re.compile(r'\.length\s*(?:>=?|>)\s*[1-5]\b'),
-    re.compile(r'password.*(?:min|minimum).*[1-5]\b', re.IGNORECASE),
+    re.compile(r'(?:min.?(?:length|len))\s*(?:=|:)\s*[1-7]\b', re.IGNORECASE),
+    re.compile(r'len\(\s*password\s*\)\s*(?:>=?|>)\s*[1-7]\b'),
+    re.compile(r'\.length\s*(?:>=?|>)\s*[1-7]\b'),
+    re.compile(r'password.*(?:min|minimum).*[1-7]\b', re.IGNORECASE),
+    # Inverted-operator form: `if len(password) < 8: reject` is a weak
+    # bound — flag when bound is below 8.
+    re.compile(r'len\(\s*(?:password|passwd|pwd)\s*\)\s*<\s*[1-7]\b', re.IGNORECASE),
+    re.compile(r'(?:password|passwd|pwd)\.length\s*<\s*[1-7]\b', re.IGNORECASE),
+    # Django validator with weak min_length kwarg
+    re.compile(r'(?:Min(?:imum)?LengthValidator)\s*\(\s*(?:min_length\s*=\s*)?[1-7]\b'),
 ]
 
 SAFE_PASSWORD_VALIDATION = re.compile(
