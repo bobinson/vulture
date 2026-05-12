@@ -20,28 +20,38 @@ from cwe_agent.catalog import enrich_finding
 
 # CWE-22: Path traversal.
 #
-# CWE-22 requires a FILESYSTEM SINK with attacker-controlled path
-# components. Bare `../` substrings in TypeScript imports, npm scoped
-# package names (`@scope/pkg`), and URL string literals are NOT
-# attacks. Each pattern below pairs a sink (open / readFile / Path /
-# os.path.join) with a tainted source identifier on the same line, so
-# the regex itself encodes the precondition.
-#
-# The `..\` and `..%2f` shapes belong to the dedicated
-# path_equivalence_check skill — keeping them out of this list
-# prevents double-flagging.
+# Each pattern requires a filesystem SINK on the same line as a tainted
+# source identifier. Bare `../` substrings in TS imports, scoped npm
+# package names, and URL literals are not attacks and don't match.
+# `..\` and `..%2f` belong to path_equivalence_check — kept out here
+# to prevent double-flagging.
+_TAINTED_SOURCE = (
+    r"\b(?:"
+    r"request|req|params|input|user|body|query|payload"
+    r"|argv|args"
+    r"|filename|file_name|fileName|filepath|file_path|filePath"
+    r"|fname|user_file|uploaded_file|uploaded_filename"
+    r"|user_filename|dest_path|dest_file"
+    r")\w*"
+)
 PATH_TRAVERSAL_PATTERNS = [
-    re.compile(r'os\.path\.join\([^)]*\b(?:request|req|params|input|user|body|query)\b', re.IGNORECASE),
-    re.compile(r'\bopen\s*\([^)]*\b(?:request|req|params|input|user|body|query)\b', re.IGNORECASE),
-    re.compile(r'\bPath\s*\([^)]*\b(?:request|req|params|input|user|body|query)\b'),
-    re.compile(r'\b(?:readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream)\s*\([^)]*\b(?:req|params|query|body)\b', re.IGNORECASE),
-    re.compile(r'\bfs\.(?:readFile|writeFile|stat|access|unlink)\s*\([^)]*\b(?:req|params|query|body)\b', re.IGNORECASE),
-    # Go: ioutil.ReadFile, os.Open with request body
-    re.compile(r'\b(?:ioutil\.ReadFile|os\.Open|os\.OpenFile|os\.Create)\s*\([^)]*\b(?:r|req|c|ctx)\.\w+\(', re.IGNORECASE),
-    # Express download/sendFile/static with user-controlled arg
-    re.compile(r'\bres\.(?:sendFile|download)\s*\([^)]*\b(?:req|params|query|body)\b', re.IGNORECASE),
-    # Java: java.io.File / Files.readString with request data
-    re.compile(r'\b(?:new\s+File|Files\.read(?:String|AllBytes)?|Paths\.get)\s*\([^)]*\b(?:request|req|params)\b', re.IGNORECASE),
+    re.compile(
+        r'(?:'
+        r'os\.path\.join'
+        r'|\b(?:open|Path)'
+        r'|\b(?:readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream)'
+        r'|\bfs\.(?:readFile|writeFile|stat|access|unlink)'
+        r'|\b(?:ioutil\.ReadFile|os\.Open|os\.OpenFile|os\.Create)'
+        r'|\bres\.(?:sendFile|download)'
+        r'|\b(?:new\s+File|Files\.read(?:String|AllBytes)?|Paths\.get)'
+        r')\s*\([^)]*' + _TAINTED_SOURCE,
+        re.IGNORECASE,
+    ),
+    # Go HTTP-handler shape: ioutil.ReadFile(r.URL.Query().Get(...))
+    re.compile(
+        r'\b(?:ioutil\.ReadFile|os\.Open|os\.OpenFile|os\.Create)\s*\([^)]*'
+        r'\b(?:r|req|c|ctx)\.\w+\('
+    ),
 ]
 
 SAFE_PATH_PATTERNS = re.compile(
@@ -115,12 +125,25 @@ FILE_UPLOAD_STRONG = [
     # Go
     re.compile(r'\b(?:r|req|c|ctx)\.FormFile\s*\('),
     re.compile(r'\bMultipartReader\s*\('),
-    # HTML5 file input
+    # HTML5 file input (raw HTML or JSX)
     re.compile(r'<input[^>]*type\s*=\s*["\']file["\']', re.IGNORECASE),
     # Multipart content type literal in code
     re.compile(r'["\']multipart/form-data["\']', re.IGNORECASE),
     # Save with filename (real disk write, not just any save())
     re.compile(r'\.save\s*\([^)]*(?:filename|file_name)', re.IGNORECASE),
+    # Browser File API
+    re.compile(r'\b(?:event|e|evt)\.(?:target|currentTarget|dataTransfer)\.files\b'),
+    re.compile(r'\binput\.files\b'),
+    re.compile(r'\bnew\s+FormData\s*\('),
+    re.compile(r'\bformData\.append\s*\(\s*["\'](?:file|files|attachment|upload)', re.IGNORECASE),
+    # React-dropzone
+    re.compile(r'\buseDropzone\s*\(', re.IGNORECASE),
+    re.compile(r'<Dropzone\b', re.IGNORECASE),
+    # Formik / MUI file field
+    re.compile(r'<Field[^>]*type\s*=\s*["\']file["\']', re.IGNORECASE),
+    # Spring MultipartFile, Rails Active Storage
+    re.compile(r'\bMultipartFile\b'),
+    re.compile(r'\bhas_(?:one|many)_attached\b'),
 ]
 
 # Generic mentions that need corroboration. Kept narrow.

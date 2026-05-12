@@ -112,9 +112,16 @@ XSS_PATTERNS = [
 #
 # True positives still match: bare `eval(` / `exec(` at statement start,
 # after assignment, after semicolons, after `if`, etc.
+#
+# Qualified eval/Function on global objects (`globalThis.eval`,
+# `window.eval`, ...) are real code-exec calls but match the
+# generic method-call shape the lookbehind excludes. Listed
+# explicitly so they aren't silenced.
 CODE_INJECTION_PATTERNS = [
     re.compile(r"(?<![\w.\]\)])eval\s*\("),
     re.compile(r"(?<![\w.\]\)])exec\s*\("),
+    re.compile(r"\b(?:globalThis|window|self|global)\.eval\s*\("),
+    re.compile(r"\b(?:globalThis|window|self|global)\.Function\s*\("),
     re.compile(r"new\s+Function\s*\("),
     re.compile(r"setTimeout\s*\(\s*['\"`]"),
     re.compile(r"setInterval\s*\(\s*['\"`]"),
