@@ -13,9 +13,20 @@ Only the latest release on the `main` branch receives security updates.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, please report them responsibly via email:
+Preferred channel — **GitHub's private Security Advisory flow**:
 
-**Email:** security@vulture.dev
+1. Open <https://github.com/bobinson/vulture/security/advisories/new>
+2. Fill in the form (title, severity, affected versions, description,
+   PoC, suggested fix).
+3. Submit; only repository security managers see the advisory until
+   it is published.
+
+This routes through GitHub's encrypted infrastructure, gives us a
+private collaboration thread with you, and produces a CVE assignment
+if the advisory is published. If GitHub's flow is unavailable to you,
+open a regular issue containing **only** the words "security report
+available, please contact me privately" and a maintainer will reach
+out via your GitHub-registered email.
 
 ### What to Include
 

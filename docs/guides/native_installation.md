@@ -189,4 +189,5 @@ and is cleaned up on success.
 | **D — CI client** (`vulture scan ... --server`) | Pipeline integration |
 | **E — Native install** (this guide) | Single-user laptop, no Docker |
 
-See [deployment_modes.md](deployment_modes.md) for the full table.
+The same table with the full command line for each mode lives in the
+project [README](../../README.md#deployment-modes).

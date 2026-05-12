@@ -2,7 +2,8 @@
 #
 # Lines later in this file override earlier ones. Owners listed here will be
 # auto-requested as reviewers on pull requests that change matching files.
-# Switch the @bobinson handle to an org/team handle once one exists.
+# Migrate @bobinson to a team handle (e.g., @bobinson/maintainers) when a
+# multi-maintainer team is created in the GitHub org.
 
 # Default owner — every file
 *                                       @bobinson

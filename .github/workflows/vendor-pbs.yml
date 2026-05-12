@@ -26,7 +26,10 @@ jobs:
     name: re-host PBS
     runs-on: ubuntu-latest
     environment: release    # requires second-human approval
-    if: github.ref == 'refs/heads/main'   # main-only constraint
+    # Restricted to the project's default branch (main, or master
+    # during the rename transition). Feature-branch dispatches are
+    # rejected to keep a malicious branch out of the vendor pipeline.
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     strategy:
       matrix:
         include:

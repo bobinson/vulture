@@ -214,7 +214,7 @@ Per-directory license marker for the ASVS-derived JSON. **CRITICAL:** state CC B
 ## Attributions
 
 Vulture redistributes the following third-party content. Full
-notices are in [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+notices are in [NOTICE](../../../NOTICE) and [THIRD_PARTY_LICENSES.md](../../../THIRD_PARTY_LICENSES.md).
 
 - **MITRE CWE™** — Copyright © MITRE Corporation, distributed under
   the [CWE Terms of Use](https://cwe.mitre.org/about/termsofuse.html).
