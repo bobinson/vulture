@@ -1,0 +1,8 @@
+# Vulture CVE allowlist (feature 0044 H3).
+#
+# Format: CVE-XXXX-YYYY: <one-line justification> (expires YYYY-MM-DD)
+#
+# CI lint refuses any entry older than 90 days from its expires date.
+# Allowlist additions require a SECURITY codeowner review (CODEOWNERS).
+#
+# No active allowlist entries.

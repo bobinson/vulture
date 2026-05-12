@@ -1,0 +1,9 @@
+# Vulture Python CVE allowlist (feature 0044 H3).
+#
+# Format: CVE-XXXX-YYYY: <one-line justification> (expires YYYY-MM-DD)
+#
+# CI parses lines starting with `CVE-` and feeds the IDs to
+# `pip-audit --ignore-vuln`. Same 90-day expiry + codeowner-review
+# policy as .trivyignore.
+#
+# No active allowlist entries.

@@ -1,0 +1,73 @@
+name: vendor-cosign
+
+# Feature 0044 S8 — re-host the cosign static binary so install.sh
+# can fetch a known-good cosign from our own release rather than
+# require users to install it themselves.
+#
+# Same dual-control shape as vendor-pbs.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cosign_version:
+        description: "cosign release tag (e.g. v2.4.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    name: re-host cosign
+    runs-on: ubuntu-latest
+    environment: release
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        include:
+          - { os: linux,  arch: amd64, asset: cosign-linux-amd64 }
+          - { os: linux,  arch: arm64, asset: cosign-linux-arm64 }
+          - { os: darwin, arch: amd64, asset: cosign-darwin-amd64 }
+          - { os: darwin, arch: arm64, asset: cosign-darwin-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: download upstream cosign
+        run: |
+          URL="https://github.com/sigstore/cosign/releases/download/${{ inputs.cosign_version }}/${{ matrix.asset }}"
+          curl -fsSL -o "${{ matrix.asset }}" "$URL"
+      - name: verify SHA against committed manifest
+        run: |
+          MANIFEST="scripts/cosign-shas-${{ inputs.cosign_version }}.txt"
+          [ -f "$MANIFEST" ] || { echo "missing $MANIFEST"; exit 1; }
+          EXPECTED=$(awk -v a="${{ matrix.asset }}" '$2==a {print $1}' "$MANIFEST")
+          [ -n "$EXPECTED" ] || { echo "no SHA committed for ${{ matrix.asset }}"; exit 1; }
+          ACTUAL=$(sha256sum "${{ matrix.asset }}" | awk '{print $1}')
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "SHA mismatch"; exit 1; }
+          chmod 755 "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cosign-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ matrix.asset }}
+
+  publish:
+    name: publish vendor-cosign release
+    needs: vendor
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cosign-*
+          merge-multiple: true
+      - name: aggregate SHA256SUMS
+        run: sha256sum cosign-* > SHA256SUMS
+      - name: create vendor-cosign release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="vendor-cosign-${{ inputs.cosign_version }}"
+          gh release create "$TAG" \
+            --title "cosign ${{ inputs.cosign_version }} (vendored)" \
+            --notes "Re-hosted cosign for installer bootstrap. See feature 0044 S8." \
+            cosign-* SHA256SUMS

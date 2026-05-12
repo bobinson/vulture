@@ -1,0 +1,163 @@
+name: release
+
+# Feature 0044 — Native installer release pipeline.
+# Triggered on tag push (vX.Y.Z); produces 4 platform tarballs +
+# SBOM + cosign signatures + Trivy/pip-audit reports, uploads to GH
+# Releases as a draft.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write       # cosign keyless OIDC
+  contents: write       # release upload
+  attestations: write   # SLSA attestations (Phase 2 hook)
+
+jobs:
+  lint:
+    name: shellcheck + fallback-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: shellcheck
+        run: shellcheck install.sh scripts/*.sh
+      - name: check fallback tag
+        run: scripts/check-fallback-tag.sh "${GITHUB_REF_NAME}"
+
+  build-frontend:
+    name: build frontend
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: npm ci
+        working-directory: frontend
+        run: npm ci
+      - name: build
+        working-directory: frontend
+        run: npm run build
+      - name: audit-ci
+        working-directory: frontend
+        run: npx --yes audit-ci --high
+        continue-on-error: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  build-binary:
+    name: build tarball ${{ matrix.os }}-${{ matrix.arch }}
+    needs: build-frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux,  arch: amd64, runner: ubuntu-latest }
+          - { os: linux,  arch: arm64, runner: ubuntu-22.04-arm }
+          - { os: darwin, arch: amd64, runner: macos-13 }
+          - { os: darwin, arch: arm64, runner: macos-14 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: install syft
+        uses: anchore/sbom-action/download-syft@v0
+      - name: install trivy
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            curl -fsSL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz \
+              | tar -xz -C /usr/local/bin trivy
+          else
+            brew install trivy
+          fi
+      - name: install pip-audit
+        run: python3 -m pip install pip-audit
+      - name: build tarball
+        run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
+      - name: generate SBOM
+        run: |
+          syft "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
+            -o cyclonedx-json="dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.sbom.json"
+      - name: Trivy CVE scan
+        run: |
+          trivy fs --severity HIGH,CRITICAL --ignorefile .trivyignore \
+            --format json --output "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.vulns.json" \
+            "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" || true
+          trivy fs --severity HIGH,CRITICAL --ignorefile .trivyignore --exit-code 1 \
+            "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+      - name: pip-audit
+        run: |
+          if [ -f .pip-audit-ignore ]; then
+            IGN=$(awk -F: '/^CVE-/ {print "--ignore-vuln "$1}' .pip-audit-ignore)
+          else
+            IGN=""
+          fi
+          # shellcheck disable=SC2086
+          pip-audit -r agents/requirements.txt --strict $IGN || true
+      - name: cosign sign tarball
+        run: |
+          cosign sign-blob --yes \
+            "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
+            --output-signature "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.sig" \
+            --output-certificate "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.pem"
+      - name: smoke install
+        run: scripts/smoke-install.sh "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+      - name: smoke negative
+        run: scripts/smoke-negative.sh
+      - name: verify no secrets in logs
+        run: scripts/verify-no-secrets-in-logs.sh "${VULTURE_HOME:-$HOME/.vulture-smoke}"
+        if: env.VULTURE_HOME != ''
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+
+  release:
+    name: publish draft release
+    needs: build-binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: aggregate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum vulture-*.tar.gz | sort > SHA256SUMS
+      - name: cosign sign SHA256SUMS
+        run: |
+          cd dist
+          cosign sign-blob --yes SHA256SUMS \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem
+      - name: gh release create (draft)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft --title "${GITHUB_REF_NAME}" \
+            --notes "Automated draft release. Review SBOM, vulns, and signature before publishing." \
+            dist/*

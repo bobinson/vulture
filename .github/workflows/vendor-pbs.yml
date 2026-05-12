@@ -1,0 +1,82 @@
+name: vendor-pbs
+
+# Feature 0044 S9 — re-host python-build-standalone as our own
+# release asset so install.sh and build-release.sh never reach
+# indygreg/python-build-standalone at install time.
+#
+# Manually triggered. Dual-control: restricted to main branch +
+# requires `release` environment approval before upload.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pbs_version:
+        description: "python-build-standalone tag (e.g. 20240814)"
+        required: true
+      python_version:
+        description: "Python version (e.g. 3.12.5)"
+        required: true
+        default: "3.12.5"
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    name: re-host PBS
+    runs-on: ubuntu-latest
+    environment: release    # requires second-human approval
+    if: github.ref == 'refs/heads/main'   # main-only constraint
+    strategy:
+      matrix:
+        include:
+          - { triple: x86_64-unknown-linux-gnu,        platform: linux-amd64 }
+          - { triple: aarch64-unknown-linux-gnu,       platform: linux-arm64 }
+          - { triple: x86_64-apple-darwin,             platform: darwin-amd64 }
+          - { triple: aarch64-apple-darwin,            platform: darwin-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: download upstream PBS
+        run: |
+          URL="https://github.com/indygreg/python-build-standalone/releases/download/${{ inputs.pbs_version }}/cpython-${{ inputs.python_version }}+${{ inputs.pbs_version }}-${{ matrix.triple }}-install_only.tar.gz"
+          curl -fsSL -o pbs.tar.gz "$URL"
+      - name: verify SHA against committed manifest
+        run: |
+          # scripts/pbs-shas.txt: one line per platform: <sha256>  <triple>
+          MANIFEST="scripts/pbs-shas-${{ inputs.pbs_version }}.txt"
+          [ -f "$MANIFEST" ] || { echo "missing $MANIFEST"; exit 1; }
+          EXPECTED=$(awk -v t="${{ matrix.triple }}" '$2==t {print $1}' "$MANIFEST")
+          [ -n "$EXPECTED" ] || { echo "no SHA committed for triple ${{ matrix.triple }}"; exit 1; }
+          ACTUAL=$(sha256sum pbs.tar.gz | awk '{print $1}')
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "SHA mismatch: $ACTUAL != $EXPECTED"; exit 1
+          fi
+      - name: rename for our release
+        run: mv pbs.tar.gz "cpython-${{ inputs.python_version }}+${{ inputs.pbs_version }}-${{ matrix.platform }}-install_only.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pbs-${{ matrix.platform }}
+          path: cpython-*.tar.gz
+
+  publish:
+    name: publish vendor release
+    needs: vendor
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pbs-*
+          merge-multiple: true
+      - name: aggregate SHA256SUMS
+        run: sha256sum cpython-*.tar.gz > SHA256SUMS
+      - name: create immutable vendor release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="vendor-pbs-${{ inputs.pbs_version }}"
+          gh release create "$TAG" \
+            --title "python-build-standalone ${{ inputs.pbs_version }} (vendored)" \
+            --notes "Re-hosted upstream artifacts for installer use. See feature 0044 S9." \
+            cpython-*.tar.gz SHA256SUMS

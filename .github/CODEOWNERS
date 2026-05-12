@@ -2,30 +2,65 @@
 #
 # Lines later in this file override earlier ones. Owners listed here will be
 # auto-requested as reviewers on pull requests that change matching files.
-# Update the @vulture-project/maintainers handle once the team is created in
-# the GitHub org.
+# Switch the @bobinson handle to an org/team handle once one exists.
 
 # Default owner — every file
-*                                       @vulture-project/maintainers
+*                                       @bobinson
 
 # Backend (Go)
-/backend/                               @vulture-project/maintainers
-/cli/                                   @vulture-project/maintainers
+/backend/                               @bobinson
+/cli/                                   @bobinson
 
 # Agents (Python)
-/agents/                                @vulture-project/maintainers
+/agents/                                @bobinson
 
 # Frontend (React/TypeScript)
-/frontend/                              @vulture-project/maintainers
+/frontend/                              @bobinson
 
 # Infrastructure
-/docker-compose*.yml                    @vulture-project/maintainers
-/.github/workflows/                     @vulture-project/maintainers
-/Makefile                               @vulture-project/maintainers
+/docker-compose*.yml                    @bobinson
+/.github/workflows/                     @bobinson
+/Makefile                               @bobinson
 
 # Licensing & community
-/LICENSE                                @vulture-project/maintainers
-/NOTICE                                 @vulture-project/maintainers
-/THIRD_PARTY_LICENSES.md                @vulture-project/maintainers
-/SECURITY.md                            @vulture-project/maintainers
-/CODE_OF_CONDUCT.md                     @vulture-project/maintainers
+/LICENSE                                @bobinson
+/NOTICE                                 @bobinson
+/THIRD_PARTY_LICENSES.md                @bobinson
+/SECURITY.md                            @bobinson
+/CODE_OF_CONDUCT.md                     @bobinson
+
+# ─── Security-critical: every PR touching these requires SECURITY review ──
+
+# Native installer + supply-chain artifacts (feature 0044).
+/install.sh                                       @bobinson
+/scripts/build-release.sh                         @bobinson
+/scripts/smoke-install.sh                         @bobinson
+/scripts/smoke-negative.sh                        @bobinson
+/scripts/verify-release.sh                        @bobinson
+/scripts/verify-no-secrets-in-logs.sh             @bobinson
+/scripts/check-fallback-tag.sh                    @bobinson
+
+# CI release pipeline (cosign signing, SBOM, CVE gates).
+/.github/workflows/release.yml                    @bobinson
+/.github/workflows/vendor-pbs.yml                 @bobinson
+/.github/workflows/vendor-cosign.yml              @bobinson
+
+# CVE allowlists — entries require SECURITY review with date-stamped
+# justification per feature 0044 plan H3.
+/.trivyignore                                     @bobinson
+/.pip-audit-ignore                                @bobinson
+
+# Security primitives (JWT secret, env scrubber, audit log, redactor,
+# URL validator, static handler) — invariants S1, S5, S13, S16, S18.
+/backend/internal/config/jwt_secret*.go           @bobinson
+/backend/internal/localdev/env*.go                @bobinson
+/backend/internal/server/audit_log*.go            @bobinson
+/backend/internal/server/logger_redact*.go        @bobinson
+/backend/internal/llm/                            @bobinson
+/backend/internal/handler/static*.go              @bobinson
+
+# Auth surface — changes to authentication / session / API keys.
+/backend/internal/handler/auth_handler.go         @bobinson
+/backend/internal/handler/auth_middleware.go      @bobinson
+/backend/internal/handler/api_key_handler.go      @bobinson
+/backend/internal/service/auth_service.go         @bobinson
