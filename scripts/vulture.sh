@@ -8,6 +8,7 @@
 # Commands:
 #   build              Build all components (Go backend + CLI + Python agents + frontend)
 #   build docker       Build Docker images (base + all services)
+#   build installer    Build a native-installer tarball for the current host (Mode E, feature 0044)
 #
 #   dev <provider>     Mode A: Dev-local — bare metal, everything on one machine
 #   server <provider>  Mode B: Central server — Docker + remote DB
@@ -60,6 +61,16 @@ case "$COMMAND" in
         if [[ "${1:-}" == "docker" ]]; then
             shift
             exec "$SCRIPT_DIR/build-docker.sh" "$@"
+        fi
+        if [[ "${1:-}" == "installer" ]]; then
+            shift
+            # Mode E: native installer tarball — feature 0044.
+            # Usage: scripts/vulture.sh build installer [<version>] [<os>] [<arch>]
+            VERSION=${1:-v0.0.0-dev}
+            OS=${2:-$(uname -s | tr '[:upper:]' '[:lower:]')}
+            ARCH=${3:-$(uname -m)}
+            case "$ARCH" in x86_64) ARCH=amd64;; aarch64) ARCH=arm64;; esac
+            exec "$SCRIPT_DIR/build-release.sh" "$VERSION" "$OS" "$ARCH"
         fi
         exec "$SCRIPT_DIR/build.sh" "$@"
         ;;

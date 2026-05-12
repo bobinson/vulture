@@ -3,7 +3,8 @@
        e2e coverage complexity lint \
        docker-up docker-down \
        gen-env config-check \
-       verify verify-proofs verify-simulate verify-all
+       verify verify-proofs verify-simulate verify-all \
+       release-local install-local smoke-install smoke-negative freeze-deps
 
 # Build targets (parallel)
 build:
@@ -106,3 +107,28 @@ verify-agents:
 
 verify-all:
 	$(MAKE) -C verification all
+
+# ─── Feature 0044: native installer (Mode E) ─────────────────────────────
+# Build a per-platform installer tarball using the current host's OS/arch.
+release-local:
+	scripts/build-release.sh v0.0.0-dev
+
+# Build a tarball and install it into a temp VULTURE_HOME for testing.
+install-local: release-local
+	bash -c 'tb=$$(ls dist/vulture-*-$$(uname -s | tr A-Z a-z)-*.tar.gz | head -1); \
+	         scripts/smoke-install.sh "$$tb"'
+
+# Run the smoke + negative tests as a single make target.
+smoke-install:
+	scripts/build-release.sh v0.0.0-dev
+	bash -c 'tb=$$(ls dist/vulture-*.tar.gz | head -1); scripts/smoke-install.sh "$$tb"'
+
+smoke-negative:
+	scripts/smoke-negative.sh
+
+# Re-generate the pinned-hashes requirements file CI uses.
+freeze-deps:
+	bash -c 'cd agents && for d in shared chaos_engineering owasp soc2 cwe xss ssdf asvs do178c discover prove; do \
+	    [ -f "$$d/pyproject.toml" ] || continue; \
+	    pip-compile --quiet --generate-hashes -o "$$d/requirements-frozen.txt" "$$d/pyproject.toml"; \
+	  done'

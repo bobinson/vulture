@@ -1,7 +1,9 @@
 package server
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vulture/backend/internal/assets"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/handler"
+	"github.com/vulture/backend/internal/localdev"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
@@ -62,8 +66,23 @@ func New(cfg *config.Config) (*Server, error) {
 	registerDiscoverRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
 	registerPipelineRoutes(mux, pgDB, sqliteDB, auditSvc, streamH.DiscoverService(), streamH, authMW, readOnly)
 
+	// Install-mode-only: register the embedded SPA last so any
+	// unrecognized GET falls through to the static handler with the
+	// security-headers middleware (S6, S13, S14). Dev mode keeps
+	// the existing Vite-proxy path.
+	if localdev.DetectMode() == localdev.ModeInstall {
+		registerStaticHandler(mux)
+	}
+
 	corsMux := addCORS(mux)
 	return &Server{mux: addRequestLogging(addRequestID(corsMux))}, nil
+}
+
+// registerStaticHandler attaches the embedded SPA handler to "/"
+// (the catch-all). The SPA fallback exclusion (S6) is enforced
+// inside handler.StaticHandler — API paths get a real 404.
+func registerStaticHandler(mux *http.ServeMux) {
+	mux.Handle("/", handler.StaticHandler(assets.FrontendFS()))
 }
 
 func auditsRouter(auditH *handler.AuditHandler) http.HandlerFunc {
@@ -200,27 +219,61 @@ func registerAPIRoutes(
 }
 
 const (
-	localDevEmail    = "admin@vulture.local"
-	localDevPassword = "REDACTED-DEV-PW"
-	localDevName     = "Local Admin"
+	localDevEmail = "admin@vulture.local"
+	localDevName  = "Local Admin"
 )
+
+// resolveLocalDevPassword returns the password to use when seeding the
+// admin@vulture.local account. Order of resolution:
+//
+//  1. $VULTURE_LOCAL_DEV_PASSWORD env var (operator override; persists
+//     across restarts; written to config/.env by install.sh).
+//  2. CSPRNG-generated 16-byte hex if env var is unset.
+//
+// The literal "REDACTED-DEV-PW" placeholder is explicitly rejected — a
+// historical hardcoded default that, if accidentally exposed via Mode B
+// `VULTURE_LOCAL_MODE=true`, was a public-internet admin backdoor.
+func resolveLocalDevPassword() (pw string, generated bool, err error) {
+	if v := os.Getenv("VULTURE_LOCAL_DEV_PASSWORD"); v != "" {
+		if v == "REDACTED-DEV-PW" {
+			return "", false, fmt.Errorf(
+				"VULTURE_LOCAL_DEV_PASSWORD=REDACTED-DEV-PW is the disallowed historical " +
+					"default; unset it or pick a strong value")
+		}
+		return v, false, nil
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", false, fmt.Errorf("CSPRNG read: %w", err)
+	}
+	return hex.EncodeToString(buf), true, nil
+}
 
 func seedLocalUser(userRepo repository.UserRepository, jwtSecret string) {
 	existing, _ := userRepo.GetUserByEmail(localDevEmail)
 	if existing != nil {
 		return
 	}
-	authSvc := service.NewAuthService(userRepo, jwtSecret)
-	_, err := authSvc.Register(&model.RegisterRequest{
-		Email:    localDevEmail,
-		Password: localDevPassword,
-		Name:     localDevName,
-	})
+	pw, generated, err := resolveLocalDevPassword()
 	if err != nil {
 		log.Printf("warning: seed local user: %v", err)
 		return
 	}
-	log.Println("Seeded local dev user (admin@vulture.local / REDACTED-DEV-PW)")
+	authSvc := service.NewAuthService(userRepo, jwtSecret)
+	if _, err := authSvc.Register(&model.RegisterRequest{
+		Email:    localDevEmail,
+		Password: pw,
+		Name:     localDevName,
+	}); err != nil {
+		log.Printf("warning: seed local user: %v", err)
+		return
+	}
+	if generated {
+		log.Printf("Seeded local dev user: %s / %s", localDevEmail, pw)
+		log.Printf("  ^ password regenerates every restart unless you export VULTURE_LOCAL_DEV_PASSWORD")
+	} else {
+		log.Printf("Seeded local dev user: %s (password from $VULTURE_LOCAL_DEV_PASSWORD)", localDevEmail)
+	}
 }
 
 func registerAuthRoutes(
