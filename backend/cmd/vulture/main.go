@@ -32,6 +32,16 @@ func main() {
 		runStatus()
 	case "scan":
 		runScan()
+	case "start":
+		runStart()
+	case "stop":
+		runStop()
+	case "logs":
+		runLogs()
+	case "doctor":
+		runDoctor()
+	case "uninstall":
+		runUninstall()
 	case "version":
 		fmt.Println("vulture v0.1.0")
 	case "help", "--help", "-h":
@@ -51,6 +61,11 @@ Commands:
   local_start    Launch all components locally (backend + agents + frontend)
   scan <path>    Quick-scan a local path or git URL
   status         Show status of running services
+  start          Start the daemon (install mode: backgrounds; dev mode: foreground)
+  stop           Stop the daemon (verifies cmdline before SIGTERM — S4)
+  logs [agent]   Tail data/logs/<name>.log through the redactor
+  doctor         Diagnose install health (Python, modes, ports, audit log)
+  uninstall      Remove the install (install mode only)
   version        Print version
   help           Show this help
 
