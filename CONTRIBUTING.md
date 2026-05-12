@@ -119,6 +119,30 @@ To add a new audit type (e.g., GDPR):
 - Include steps to reproduce, expected behavior, and actual behavior.
 - For security vulnerabilities, see [SECURITY.md](SECURITY.md) instead.
 
+## Test fixtures: synthetic credentials
+
+Several test files contain strings that look like real secrets but are
+**deliberate synthetic test fixtures** used to exercise Vulture's own
+secret-scanning skills. These are safe — and required for the detector
+tests to be meaningful — but may trip third-party secret scanners
+running against the repository. Specifically:
+
+- `agents/cwe/tests/unit/skills/secret_scan/` — uses `AKIAJABCDEFGHIJKLMN0`
+  and `AKIAIOSFODNN7EXAMPLE` (Amazon's documented example value).
+- `agents/cwe/tests/unit/skills/secret_scan/test_pem_blocks.py` —
+  `-----BEGIN RSA PRIVATE KEY-----` blocks with literal `"fake"` /
+  sentinel-text bodies.
+- `backend/pkg/gitutil/clone_test.go` — `-----BEGIN OPENSSH PRIVATE KEY-----`
+  with `"fake"` body.
+- `verification/simulated-target/source/app.py` — `DB_PASSWORD = "admin123"`
+  is the deliberately-vulnerable target used by formal-verification
+  proofs.
+
+If you add a new secret-scanning detector test that needs realistic
+credential shapes, follow this same pattern: use sentinel bodies
+(`fake`, `EXAMPLE`, all-zeros) or AWS's documented example identifiers.
+Never commit a real key, even a revoked one.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
