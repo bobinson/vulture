@@ -955,9 +955,22 @@ func isProjectRoot(dir string) bool {
 }
 
 func autoLoginLocal(apiURL string) string {
+	// Prefer the passwordless local-session endpoint — works whenever
+	// the backend was launched with VULTURE_LOCAL_MODE=true, never
+	// reveals or requires the admin password.
+	if tok := tryLocalSession(apiURL); tok != "" {
+		return tok
+	}
+	// Fallback: password login via $VULTURE_LOCAL_DEV_PASSWORD. Empty
+	// password (no env var set) yields no auto-login; the user falls
+	// through to the explicit `vulture login` flow.
+	pw := os.Getenv("VULTURE_LOCAL_DEV_PASSWORD")
+	if pw == "" {
+		return ""
+	}
 	body, _ := json.Marshal(map[string]string{
 		"email":    "admin@vulture.local",
-		"password": "REDACTED-DEV-PW",
+		"password": pw,
 	})
 	resp, err := http.Post(apiURL+"/api/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -969,6 +982,25 @@ func autoLoginLocal(apiURL string) string {
 	}
 	var auth authResponse
 	json.NewDecoder(resp.Body).Decode(&auth)
+	if auth.Token != "" {
+		saveToken(auth.Token)
+	}
+	return auth.Token
+}
+
+func tryLocalSession(apiURL string) string {
+	resp, err := http.Get(apiURL + "/api/auth/local-session")
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return ""
+	}
+	defer resp.Body.Close()
+	var auth authResponse
+	if err := json.NewDecoder(resp.Body).Decode(&auth); err != nil {
+		return ""
+	}
 	if auth.Token != "" {
 		saveToken(auth.Token)
 	}
@@ -1872,12 +1904,16 @@ func printAuditSummary(a audit) {
 	}
 	fmt.Printf("\n  View in UI: %s/audit/%s\n", frontendURL, a.ID)
 
-	// Show local dev credentials if frontend is running locally
+	// Show local dev credentials if frontend is running locally. The
+	// seeded password is now CSPRNG-generated unless $VULTURE_LOCAL_DEV_PASSWORD
+	// is exported; either way, point the user at the backend log for
+	// the current value rather than hardcoding it here.
 	if isLocalMode(frontendURL) {
 		fmt.Println()
 		fmt.Println("  Local dev credentials:")
 		fmt.Println("    Email:    admin@vulture.local")
-		fmt.Println("    Password: REDACTED-DEV-PW")
+		fmt.Println("    Password: (see backend log line `Seeded local dev user: ...`")
+		fmt.Println("               or export VULTURE_LOCAL_DEV_PASSWORD to pin it)")
 	}
 }
 

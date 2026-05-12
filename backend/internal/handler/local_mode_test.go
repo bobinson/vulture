@@ -20,7 +20,7 @@ func setupLocalMode(t *testing.T) (*AuthHandler, *AuthMiddleware, service.AuthSe
 	// Seed local user
 	_, err := svc.Register(&model.RegisterRequest{
 		Email:    "admin@vulture.local",
-		Password: "REDACTED-DEV-PW",
+		Password: "test-only-fixture-pw-AAAA1234",
 		Name:     "Local Admin",
 	})
 	if err != nil {
@@ -159,7 +159,7 @@ func TestNormalMode_Middleware_AcceptsValidToken(t *testing.T) {
 	// Login to get token
 	resp, err := svc.Login(&model.LoginRequest{
 		Email:    "admin@vulture.local",
-		Password: "REDACTED-DEV-PW",
+		Password: "test-only-fixture-pw-AAAA1234",
 	})
 	if err != nil {
 		t.Fatalf("login: %v", err)

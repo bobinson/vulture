@@ -22,17 +22,16 @@ func (h *AuthHandler) SetLocalMode(enabled bool) {
 	h.localMode = enabled
 }
 
-// LocalSession returns a token for the seeded local user without credentials.
-// Only available when local mode is enabled.
+// LocalSession returns a token for the seeded local user without
+// credentials. Only available when local mode is enabled. Uses the
+// service's password-less IssueLocalAdminToken helper so this handler
+// no longer needs to know the (CSPRNG-generated) seed password.
 func (h *AuthHandler) LocalSession(w http.ResponseWriter, r *http.Request) {
 	if !h.localMode {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	resp, err := h.svc.Login(&model.LoginRequest{
-		Email:    "admin@vulture.local",
-		Password: "REDACTED-DEV-PW",
-	})
+	resp, err := h.svc.IssueLocalAdminToken()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "local session unavailable")
 		return

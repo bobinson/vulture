@@ -44,7 +44,15 @@ vulture login
 
 You will be prompted for your email and password interactively. The token is saved to `~/.vulture/token` (mode 0600).
 
-When running against `localhost`, the CLI auto-logs in with the default dev credentials (`admin@vulture.local` / `REDACTED-DEV-PW`) if no token is found.
+When running against `localhost`, the CLI auto-logs in via the
+passwordless `/api/auth/local-session` endpoint (only available when
+the backend is started with `VULTURE_LOCAL_MODE=true`). No password
+is needed — and no longer hardcoded. If you ever want to log in via
+the password form for the seeded admin user, export
+`VULTURE_LOCAL_DEV_PASSWORD` before starting the backend and use the
+same value at the login prompt; otherwise the backend regenerates a
+fresh random password on every start and prints it to its log:
+`Seeded local dev user: admin@vulture.local / <hex>`.
 
 ### `vulture scan <path-or-url>`
 

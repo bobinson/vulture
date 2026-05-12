@@ -22,6 +22,9 @@ func (fakeAuthSvc) ValidateToken(token string) (*model.User, error) {
 	return nil, http.ErrNoCookie
 }
 func (fakeAuthSvc) ValidateLocalUser() (*model.User, error) { return nil, nil }
+func (fakeAuthSvc) IssueLocalAdminToken() (*model.AuthResponse, error) {
+	return nil, nil
+}
 
 func newMWWithAPIKeySvc(t *testing.T) (*AuthMiddleware, service.APIKeyService) {
 	t.Helper()

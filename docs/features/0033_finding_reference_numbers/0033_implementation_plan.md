@@ -296,7 +296,7 @@ cd /home/user/src/vulture && docker compose up -d --build backend frontend
 
 - [ ] **Step 3: Verify via Playwright**
 
-1. Navigate to `http://localhost:23001`, log in (`admin@vulture.local` / `REDACTED-DEV-PW`).
+1. Navigate to `http://localhost:23001`, log in as `admin@vulture.local` (password = value of `$VULTURE_LOCAL_DEV_PASSWORD` exported when the backend started, or the hex string printed to the backend log line `Seeded local dev user: ...`).
 2. Open a recent audit with findings (e.g., `73a861bb` — 574 findings).
 3. Confirm the first column of FindingsTable shows `VLT-NNNN` values.
 4. Click one VLT label — verify clipboard contains `VLT-NNNN`.

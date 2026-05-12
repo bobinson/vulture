@@ -20,6 +20,12 @@ type AuthService interface {
 	Login(req *model.LoginRequest) (*model.AuthResponse, error)
 	ValidateToken(token string) (*model.User, error)
 	ValidateLocalUser() (*model.User, error)
+	// IssueLocalAdminToken returns a JWT for the seeded local admin
+	// without checking a password. Caller is responsible for gating
+	// this on VULTURE_LOCAL_MODE=true — exposing it without that gate
+	// is an immediate admin compromise. Eliminates the need for any
+	// component to know the (now CSPRNG-generated) dev password.
+	IssueLocalAdminToken() (*model.AuthResponse, error)
 }
 
 type authService struct {
@@ -145,6 +151,18 @@ func (s *authService) ValidateLocalUser() (*model.User, error) {
 		return nil, fmt.Errorf("local user not found")
 	}
 	return user, nil
+}
+
+func (s *authService) IssueLocalAdminToken() (*model.AuthResponse, error) {
+	user, err := s.ValidateLocalUser()
+	if err != nil {
+		return nil, err
+	}
+	token, err := s.generateToken(user)
+	if err != nil {
+		return nil, fmt.Errorf("generate token: %w", err)
+	}
+	return &model.AuthResponse{Token: token, User: *user}, nil
 }
 
 func (s *authService) generateToken(user *model.User) (string, error) {

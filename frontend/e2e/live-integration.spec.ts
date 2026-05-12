@@ -3,13 +3,24 @@ import { test, expect } from "@playwright/test";
 /**
  * Live integration tests that run against the real backend.
  * Requires: vulture localstart (backend + agents + frontend on ports 28080, 28001-28005, 23001)
- * Uses the seeded local dev user: admin@vulture.local / REDACTED-DEV-PW
+ * Uses the seeded local dev user admin@vulture.local; the password is
+ * the value of $VULTURE_LOCAL_DEV_PASSWORD (export it before launching
+ * the backend so this test knows what to type).
  */
 
+const DEV_PASSWORD = process.env.VULTURE_LOCAL_DEV_PASSWORD ?? "";
+
 async function login(page: import("@playwright/test").Page) {
+  if (!DEV_PASSWORD) {
+    throw new Error(
+      "VULTURE_LOCAL_DEV_PASSWORD env var is required for live-integration tests. " +
+        "Export the same value the backend was launched with (or generate one and " +
+        "export it before `vulture localstart`)."
+    );
+  }
   await page.goto("/login");
   await page.locator('input[type="email"]').fill("admin@vulture.local");
-  await page.locator('input[type="password"]').fill("REDACTED-DEV-PW");
+  await page.locator('input[type="password"]').fill(DEV_PASSWORD);
   await page.locator('button[type="submit"]').click();
   await expect(page).toHaveURL("/", { timeout: 10000 });
 }
