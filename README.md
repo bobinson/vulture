@@ -1,6 +1,6 @@
 # Vulture
 
-[![CI](https://github.com/vulture-project/vulture/actions/workflows/ci.yml/badge.svg)](https://github.com/vulture-project/vulture/actions/workflows/ci.yml)
+[![CI](https://github.com/bobinson/vulture/actions/workflows/ci.yml/badge.svg)](https://github.com/bobinson/vulture/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go 1.24+](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev/)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg)](https://www.python.org/)
@@ -109,6 +109,35 @@ by environment variables. The default `make docker-up` starts **Mode A**.
 | **B — Centralized server** | Ops VM | `docker compose up -d` + Neon DSN + `VULTURE_API_KEYS_ENABLED=true` | See [docs/guides/central_server_deployment.md](docs/guides/central_server_deployment.md). ⚠️ Mode B hardening is tracked in feature 0036 Phase 3 / 0037; review SECURITY.md before exposing publicly. |
 | **C — Read-only viewer** | Ops VM | `docker compose -f docker-compose.readonly.yml up -d` | Optional. Set `VULTURE_READONLY=true`. See [docs/guides/neon_deployment.md](docs/guides/neon_deployment.md). |
 | **D — CI client** | GitHub Actions etc. | `vulture scan <git-url> --api-key X --server Y --wait` | See [docs/guides/ci_integration.md](docs/guides/ci_integration.md). |
+| **E — Native install** | Single-user laptop, no Docker | `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh \| sh` | One-shot installer in the style of nuclei: per-platform tarball + bundled Python + SQLite, all under `~/.vulture/`. See [docs/guides/native_installation.md](docs/guides/native_installation.md). |
+
+## Native install (no Docker)
+
+If you don't want to install Docker, Node, and Python by hand, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh
+```
+
+The installer detects your OS/arch, downloads the matching release tarball
+from GitHub, verifies it (cosign + Rekor transparency log, falling back to
+SHA-256 if cosign isn't on PATH), extracts under `~/.vulture/`, generates a
+unique JWT secret with `/dev/urandom`, and drops a symlink at
+`~/.local/bin/vulture` — **no sudo, ever**. After install:
+
+```bash
+vulture scan ./some-repo        # nuclei-style one-shot
+vulture start                   # daemon + UI on http://127.0.0.1:23000
+vulture stop
+vulture doctor                  # diagnose install health
+vulture uninstall
+```
+
+Bundle size: ~105 MB compressed (Go binary + frontend + python-build-standalone
++ agent source + catalogs); first run pulls another ~150 MB of pinned PyPI
+wheels. Full security model (19 invariants — JWT CSPRNG, bind 127.0.0.1, env
+scrubbing, audit log, etc.) is documented in
+[docs/features/0044_native_installer/0044_implementation_plan.md](docs/features/0044_native_installer/0044_implementation_plan.md).
 
 ## Local Development
 

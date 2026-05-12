@@ -8,7 +8,14 @@ INI="${1:-$SCRIPT_DIR/../config.ini}"
 OUT="${2:-$SCRIPT_DIR/../.env}"
 
 if [[ ! -f "$INI" ]]; then
-    echo "Error: config.ini not found at $INI"
+    echo "Error: config.ini not found at $INI" >&2
+    if [[ -f "$SCRIPT_DIR/../config.ini.example" ]]; then
+        echo "" >&2
+        echo "First-time setup:" >&2
+        echo "  cp config.ini.example config.ini" >&2
+        echo "  # edit config.ini (set database.password, jwt_secret, etc.)" >&2
+        echo "  make gen-env" >&2
+    fi
     exit 1
 fi
 

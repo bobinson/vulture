@@ -92,7 +92,7 @@ Otherwise, follow the install instructions in Step 2.
 ## Step 4: Clone Vulture and configure environment
 
 ```bash
-git clone https://github.com/yourorg/vulture.git /opt/vulture
+git clone https://github.com/bobinson/vulture.git /opt/vulture
 cd /opt/vulture
 
 # Create the source directory for per-run git clones
@@ -308,7 +308,7 @@ If you want a separate VM for end users to browse audit results (without exposin
 
 ```bash
 # On a separate VM
-git clone https://github.com/yourorg/vulture.git /opt/vulture
+git clone https://github.com/bobinson/vulture.git /opt/vulture
 cd /opt/vulture
 
 cat > .env <<'EOF'

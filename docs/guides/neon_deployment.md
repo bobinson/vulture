@@ -49,7 +49,7 @@ Both backends share the same JWT secret so auth tokens validate everywhere.
 ## 2. Desktop / server (writer): backend + agents
 
 ```bash
-git clone https://github.com/yourorg/vulture && cd vulture
+git clone https://github.com/bobinson/vulture && cd vulture
 
 # Writer .env
 cat > .env <<'EOF'
@@ -98,7 +98,7 @@ Findings, memories, and embeddings land in Neon.
 ## 3. Small VM (viewer): read-only backend + frontend
 
 ```bash
-git clone https://github.com/yourorg/vulture && cd vulture
+git clone https://github.com/bobinson/vulture && cd vulture
 
 # Viewer .env
 cat > .env <<'EOF'

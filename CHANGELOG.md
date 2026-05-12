@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Feature 0044 — Native installer (Mode E):** `curl … install.sh | sh`
+  produces a Docker-less single-user install under `~/.vulture/`. Ships
+  a bundled python-build-standalone, SQLite-backed daemon, and the SPA
+  served as embedded assets straight from the Go binary. Includes new
+  `vulture {start, stop, status, logs, doctor, uninstall}` subcommands,
+  cosign-signed release tarballs with SBOM + Trivy CVE gate, and a
+  19-item security-invariant spec. See
+  [docs/features/0044_native_installer](docs/features/0044_native_installer/).
+- **Repo-hygiene & security primitives:** CODEOWNERS enforcement on
+  security-critical paths; `.trivyignore` / `.pip-audit-ignore`
+  90-day-expiry allowlist; install.sh re-validates `VULTURE_HOME` before
+  extract (TOCTOU mitigation); subprocess env scrubber drops
+  `LD_PRELOAD` / `PYTHONPATH` / `DYLD_INSERT_LIBRARIES` from agent env;
+  field-name allow-list logger redactor; append-only audit log for
+  security events; LLM endpoint URL validator rejects cleartext non-loopback.
+- **CWE detector simplifications:** PATH_TRAVERSAL_PATTERNS collapsed
+  from 9 regexes to 2 (hot-path win); 104 dual-contract lock-in tests
+  added to guard against false-negative blunders.
+
+### Changed
+
+- **Removed hardcoded `REDACTED-DEV-PW` admin backdoor.** The seeded local
+  dev user (`admin@vulture.local`) now uses
+  `$VULTURE_LOCAL_DEV_PASSWORD` if set, or a CSPRNG-generated 16-byte
+  hex password logged once at backend startup. The `/api/auth/local-session`
+  endpoint uses a new password-less `IssueLocalAdminToken` helper.
+- Unified all repo-URL references to `github.com/bobinson/vulture`.
+
 ### Planned
 
 - Mode-B (centralized server) hardening pass — see
@@ -17,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   derived from `GET /api/agents`.
 - Continuous-integration gates: `actionlint`, `govulncheck`,
   `pip-audit`, `npm audit`.
-- SBOM publication as a GitHub release artifact.
+- SBOM publication as a GitHub release artifact (gating released in
+  feature 0044's `release.yml`; pending first tag-push to validate).
 
 ## [0.1.0] - YYYY-MM-DD
 
@@ -74,5 +105,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   template, bug-report and feature-request issue templates,
   security-advisory contact link.
 
-[Unreleased]: https://github.com/vulture-project/vulture/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/vulture-project/vulture/releases/tag/v0.1.0
+[Unreleased]: https://github.com/bobinson/vulture/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/bobinson/vulture/releases/tag/v0.1.0

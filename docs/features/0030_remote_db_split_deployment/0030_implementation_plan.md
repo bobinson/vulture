@@ -344,7 +344,7 @@ Deploy Vulture with:
 ## 2. Desktop (writer): backend + agents
 
 ```bash
-git clone https://github.com/yourorg/vulture
+git clone https://github.com/bobinson/vulture
 cd vulture
 
 # Configure
@@ -383,7 +383,7 @@ Findings, memories, embeddings all land in Neon.
 ## 3. VM (viewer): read-only FE + backend
 
 ```bash
-git clone https://github.com/yourorg/vulture
+git clone https://github.com/bobinson/vulture
 cd vulture
 
 cat > .env <<EOF

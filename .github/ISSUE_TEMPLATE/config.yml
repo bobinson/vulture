@@ -1,10 +1,10 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/vulture-project/vulture/security/advisories/new
+    url: https://github.com/bobinson/vulture/security/advisories/new
     about: |
       Do NOT open a public issue for security vulnerabilities.
       Use GitHub Security Advisories or the contact listed in SECURITY.md.
   - name: Documentation
-    url: https://github.com/vulture-project/vulture/tree/main/docs
+    url: https://github.com/bobinson/vulture/tree/main/docs
     about: Architecture guides, deployment-mode references, and per-feature plans.

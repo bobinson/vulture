@@ -87,8 +87,11 @@ frontend/playwright-report/
 *.tmp
 *.log
 
-# Verification artifacts
-#verification/
+# Verification artifacts — build outputs only, never check in.
+verification/bin/
+**/.gradle/
+verification/oracle/build/
+verification/oracle/.idea/
 
 # Docker
 docker-compose.override.yml

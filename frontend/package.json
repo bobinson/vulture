@@ -7,7 +7,7 @@
   "author": "Vulture maintainers",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vulture-project/vulture.git",
+    "url": "https://github.com/bobinson/vulture.git",
     "directory": "frontend"
   },
   "scripts": {
