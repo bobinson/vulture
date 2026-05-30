@@ -34,10 +34,17 @@ func (r *PostgresLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 	// ref_number is assigned by a Postgres sequence (migration 016) so
 	// concurrent inserts can't collide. We omit ref_number from the INSERT
 	// column list and rely on the column DEFAULT (nextval). RETURNING
-	// reports back the value Postgres actually stored — for the new-row
-	// case it's the freshly assigned sequence value; for the conflict
-	// branch it's the pre-existing row's ref_number (since DO UPDATE
-	// doesn't touch it). Either way the struct is updated correctly.
+	// reports back the value Postgres actually stored.
+	//
+	// BUG FIX 2026-05-29: we also RETURNING id. The ON CONFLICT DO UPDATE
+	// branch keeps the pre-existing row's id — but the caller had
+	// generated a fresh UUID at l.ID = generateLineageUUID() above, which
+	// is NOT the id of the row that actually exists in the table. Without
+	// the RETURNING id + Scan, callers proceeding to AddEvent(LineageID:
+	// l.ID, ...) hit a foreign-key violation because the local UUID is
+	// phantom. This race fires under concurrent persistence of findings
+	// sharing a fingerprint (e.g. CWE agent emitting many findings per
+	// fingerprint, persisted in parallel).
 	err := r.db.QueryRow(`
 		INSERT INTO finding_lineage (
 			id, fingerprint, source_path, agent_type, current_status,
@@ -48,13 +55,13 @@ func (r *PostgresLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		ON CONFLICT (fingerprint, source_path, agent_type) DO UPDATE SET
 			latest_audit_id = $11, latest_found_at = $12, latest_commit = $13, updated_at = now()
-		RETURNING ref_number`,
+		RETURNING id, ref_number`,
 		l.ID, l.Fingerprint, l.SourcePath, l.AgentType, string(l.CurrentStatus),
 		l.Notes, l.TicketURL, l.FirstAuditID, l.FirstFoundAt, l.FirstCommit,
 		nullIfEmpty(l.LatestAuditID), l.LatestFoundAt, l.LatestCommit,
 		nullIfEmpty(l.FixedAuditID), l.FixedAt, l.FixedCommit,
 		l.Severity, l.Category, l.Title, l.FilePath, l.CreatedAt, l.UpdatedAt,
-	).Scan(&l.RefNumber)
+	).Scan(&l.ID, &l.RefNumber)
 	if err != nil {
 		return fmt.Errorf("upsert lineage: %w", err)
 	}

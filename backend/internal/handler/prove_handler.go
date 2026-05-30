@@ -8,6 +8,28 @@ import (
 	"github.com/vulture/backend/internal/service"
 )
 
+// canonicalAuditID normalises a 32-char hex audit ID into the
+// hyphenated 8-4-4-4-12 UUID form so it matches the value stored in
+// `prove_results.audit_id` (which is TEXT, not UUID — so the
+// hyphen-less form returns zero rows even when 15 rows exist).
+//
+// The `audits.id` column is UUID and Postgres canonicalises both
+// forms transparently — that's why `/api/audits/{id}` accepts both.
+// `prove_results.audit_id` doesn't get that for free.
+//
+// Bug fix 2026-05-29: a fresh `vulture prove` run persisted 15
+// prove_results with hyphenated audit_id, but the CLI and UI queried
+// the prove-results endpoint with the hyphen-less form, got `[]`,
+// and reported "Findings: 0".
+func canonicalAuditID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) == 32 && !strings.ContainsRune(id, '-') {
+		// Re-insert hyphens at the UUID positions.
+		return id[:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:]
+	}
+	return id
+}
+
 // ProveHandler serves prove verification results.
 type ProveHandler struct {
 	svc service.ProveService
@@ -21,7 +43,7 @@ func NewProveHandler(svc service.ProveService) *ProveHandler {
 // GetResults returns all prove results for an audit.
 // GET /api/audits/{id}/prove-results
 func (h *ProveHandler) GetResults(w http.ResponseWriter, r *http.Request) {
-	id := extractProveAuditID(r.URL.Path, "/prove-results")
+	id := canonicalAuditID(extractProveAuditID(r.URL.Path, "/prove-results"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "audit id required")
 		return
@@ -40,7 +62,7 @@ func (h *ProveHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 // GetSummary returns aggregated prove stats for an audit.
 // GET /api/audits/{id}/prove-summary
 func (h *ProveHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
-	id := extractProveAuditID(r.URL.Path, "/prove-summary")
+	id := canonicalAuditID(extractProveAuditID(r.URL.Path, "/prove-summary"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "audit id required")
 		return
