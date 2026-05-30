@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulture.dev/spec/plugin-v1/events/finding.schema.json",
+  "title": "Finding event payload",
+  "type": "object",
+  "required": ["severity", "category", "title", "description", "file_path"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Plugin-supplied stable ID. Optional — orchestrator generates one if absent."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "info"]
+    },
+    "category": {
+      "type": "string",
+      "description": "After plugin's [normalization] step, MUST match ^CWE-\\d+$. Pre-normalisation may be any string.",
+      "minLength": 1
+    },
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "description": {"type": "string", "maxLength": 4096},
+    "file_path": {"type": "string", "minLength": 1},
+    "line_start": {"type": "integer", "minimum": 0},
+    "line_end": {"type": "integer", "minimum": 0},
+    "check_id": {
+      "type": "string",
+      "description": "Plugin-name-prefixed rule ID, e.g. 'semgrep.javascript.express.express-sql-injection'"
+    },
+    "code_snippet": {"type": "string", "maxLength": 16384},
+    "recommendation": {"type": "string", "maxLength": 2048},
+    "references": {
+      "type": "array",
+      "items": {"type": "string", "format": "uri"}
+    },
+    "cwe_name": {"type": "string"},
+    "cwe_likelihood": {"type": "string", "enum": ["Low", "Medium", "High"]},
+    "_unnormalised": {
+      "type": "boolean",
+      "description": "Orchestrator-internal flag — TRUE when the plugin emitted a non-CWE category and no fallback map matched."
+    }
+  }
+}

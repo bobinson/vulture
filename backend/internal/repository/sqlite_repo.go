@@ -20,7 +20,19 @@ type SQLiteRepo struct {
 }
 
 func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	// PRAGMAs must be in the DSN — modernc.org/sqlite applies them per
+	// connection. Setting them via db.Exec only affects the single
+	// connection that ran the statement; subsequent pool connections
+	// inherit SQLite defaults (no WAL, no busy_timeout) and concurrent
+	// writers then hit `database is locked` under audit-time load.
+	dsn := dbPath
+	if !strings.Contains(dsn, "?") {
+		dsn += "?"
+	} else {
+		dsn += "&"
+	}
+	dsn += "_pragma=journal_mode(WAL)&_pragma=busy_timeout(30000)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -263,11 +275,35 @@ func migrateAddColumns(db *sql.DB) {
 			WHERE fl2.rowid < finding_lineage.rowid
 		) + 1 WHERE ref_number IS NULL
 	`)
+
+	// Feature 0045: validation phase columns.
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN validation_status TEXT`)
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN validation_confidence REAL`)
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN validation TEXT`)
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN is_rollup BOOLEAN DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN rolled_up_into TEXT`)
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN instance_count INTEGER DEFAULT 1`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_findings_validation_status
+		ON findings(audit_id, validation_status)`)
+	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN user_label TEXT`)
+	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN labelled_by TEXT`)
+	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN labelled_at TIMESTAMP`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_memories_label
+		ON audit_memories(user_label)`)
 }
 
 // prepareStatements pre-compiles frequently executed queries for reuse.
 func (r *SQLiteRepo) prepareStatements() {
-	const getFindingsSQL = `SELECT id, audit_id, agent_type, severity, category, title, description, file_path, line_start, line_end, recommendation, refs, COALESCE(fingerprint, '') FROM findings WHERE audit_id = ?`
+	const getFindingsSQL = `SELECT id, audit_id, agent_type, severity, category, title, description,
+		file_path, line_start, line_end, recommendation, refs,
+		COALESCE(fingerprint, ''),
+		COALESCE(validation_status, ''),
+		COALESCE(validation_confidence, 0),
+		COALESCE(validation, ''),
+		COALESCE(is_rollup, 0),
+		COALESCE(rolled_up_into, ''),
+		COALESCE(instance_count, 1)
+		FROM findings WHERE audit_id = ?`
 	stmt, err := r.db.Prepare(getFindingsSQL)
 	if err != nil {
 		log.Printf("[sqlite] prepare getFindings failed (will use raw query): %v", err)
@@ -422,16 +458,37 @@ func (r *SQLiteRepo) SaveFindings(auditID string, findings []model.Finding) erro
 		return nil
 	}
 	valueStrings := make([]string, 0, len(findings))
-	valueArgs := make([]interface{}, 0, len(findings)*13)
+	valueArgs := make([]interface{}, 0, len(findings)*19)
 	for _, f := range findings {
-		valueStrings = append(valueStrings, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		valueStrings = append(valueStrings,
+			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		refsJSON, _ := json.Marshal(f.References)
-		valueArgs = append(valueArgs, f.ID, auditID, f.AgentType, string(f.Severity),
+		var validationJSON string
+		if f.Validation != nil {
+			b, _ := json.Marshal(f.Validation)
+			validationJSON = string(b)
+		}
+		valueArgs = append(valueArgs,
+			f.ID, auditID, f.AgentType, string(f.Severity),
 			f.Category, f.Title, f.Description, f.FilePath,
-			f.LineStart, f.LineEnd, f.Recommendation, string(refsJSON), f.Fingerprint)
+			f.LineStart, f.LineEnd, f.Recommendation, string(refsJSON), f.Fingerprint,
+			// Validation (feature 0045) — all nullable; empty string + 0 are
+			// stored when absent so the column query is uniform.
+			nullableString(f.ValidationStatus),
+			nullableFloat(f.ValidationConfidence),
+			nullableString(validationJSON),
+			f.IsRollup,
+			nullableString(f.RolledUpInto),
+			f.InstanceCount,
+		)
 	}
 	stmt := fmt.Sprintf(
-		`INSERT INTO findings (id, audit_id, agent_type, severity, category, title, description, file_path, line_start, line_end, recommendation, refs, fingerprint) VALUES %s`,
+		`INSERT INTO findings (
+			id, audit_id, agent_type, severity, category, title, description,
+			file_path, line_start, line_end, recommendation, refs, fingerprint,
+			validation_status, validation_confidence, validation,
+			is_rollup, rolled_up_into, instance_count
+		) VALUES %s`,
 		strings.Join(valueStrings, ","),
 	)
 	_, err := r.db.Exec(stmt, valueArgs...)
@@ -439,6 +496,22 @@ func (r *SQLiteRepo) SaveFindings(auditID string, findings []model.Finding) erro
 		return fmt.Errorf("insert findings: %w", err)
 	}
 	return nil
+}
+
+// nullableString converts empty Go strings to SQL NULL.
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// nullableFloat converts 0.0 Go floats to SQL NULL.
+func nullableFloat(f float64) interface{} {
+	if f == 0 {
+		return nil
+	}
+	return f
 }
 
 func (r *SQLiteRepo) ListAudits(limit, offset int) ([]model.Audit, error) {
@@ -713,7 +786,16 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 		rows, err = r.stmtGetFindings.Query(auditID)
 	} else {
 		rows, err = r.db.Query(
-			`SELECT id, audit_id, agent_type, severity, category, title, description, file_path, line_start, line_end, recommendation, refs, COALESCE(fingerprint, '') FROM findings WHERE audit_id = ?`,
+			`SELECT id, audit_id, agent_type, severity, category, title, description,
+			        file_path, line_start, line_end, recommendation, refs,
+			        COALESCE(fingerprint, ''),
+			        COALESCE(validation_status, ''),
+			        COALESCE(validation_confidence, 0),
+			        COALESCE(validation, ''),
+			        COALESCE(is_rollup, 0),
+			        COALESCE(rolled_up_into, ''),
+			        COALESCE(instance_count, 1)
+			 FROM findings WHERE audit_id = ?`,
 			auditID,
 		)
 	}
@@ -726,14 +808,19 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 	findings := make([]model.Finding, 0, 64)
 	for rows.Next() {
 		var f model.Finding
-		var refsStr string
+		var refsStr, validationStr string
 		err := rows.Scan(&f.ID, &f.AuditID, &f.AgentType, &f.Severity, &f.Category,
 			&f.Title, &f.Description, &f.FilePath, &f.LineStart, &f.LineEnd,
-			&f.Recommendation, &refsStr, &f.Fingerprint)
+			&f.Recommendation, &refsStr, &f.Fingerprint,
+			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
+			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}
 		_ = json.Unmarshal([]byte(refsStr), &f.References)
+		if validationStr != "" {
+			_ = json.Unmarshal([]byte(validationStr), &f.Validation)
+		}
 		findings = append(findings, f)
 	}
 	return findings, rows.Err()

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulture.dev/spec/plugin-v1/events/validation_update.schema.json",
+  "title": "validation_update event payload",
+  "description": "Emitted by validate-phase plugins. Each `updates[]` entry replaces the orchestrator's view of one finding's validation state.",
+  "type": "object",
+  "required": ["phase", "updates"],
+  "additionalProperties": true,
+  "properties": {
+    "phase": {
+      "type": "string",
+      "description": "Plugin name + short tag, e.g. 'semgrep-validate' or 'l5_judge'"
+    },
+    "updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {"type": "string", "description": "Finding ID being updated"},
+          "validation_status": {
+            "type": "string",
+            "enum": ["high_confidence", "suspicious", "likely_fp"]
+          },
+          "validation_confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "validation": {
+            "type": "object",
+            "required": ["checks"],
+            "properties": {
+              "status": {"type": "string"},
+              "confidence": {"type": "number"},
+              "checks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "result", "weight"],
+                  "additionalProperties": true,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Plugin name. MUST NOT use reserved in-tree IDs: path, suppression, sanitizer, rollup, cross_agent, memory, llm_judge."
+                    },
+                    "result": {
+                      "type": "string",
+                      "enum": ["real_bug", "demoted", "neutral", "error"]
+                    },
+                    "weight": {
+                      "type": "number",
+                      "minimum": -1.0,
+                      "maximum": 1.0
+                    },
+                    "reason": {"type": "string", "maxLength": 500},
+                    "extras": {"type": "object"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

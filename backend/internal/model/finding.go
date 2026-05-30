@@ -29,6 +29,15 @@ type Finding struct {
 	VerificationHints  []string `json:"verification_hints,omitempty"`
 	RequiresContext    bool     `json:"requires_context,omitempty"`
 	CrossAgentOrigins  []string `json:"cross_agent_origins,omitempty"`
+
+	// Validation phase (feature 0045). All optional; absent for
+	// pre-feature findings or when VULTURE_DISABLE_VALIDATE=true.
+	ValidationStatus     string                 `json:"validation_status,omitempty"`
+	ValidationConfidence float64                `json:"validation_confidence,omitempty"`
+	Validation           map[string]interface{} `json:"validation,omitempty"`
+	IsRollup             bool                   `json:"is_rollup,omitempty"`
+	RolledUpInto         string                 `json:"rolled_up_into,omitempty"`
+	InstanceCount        int                    `json:"instance_count,omitempty"`
 }
 
 // PriorFinding is a lightweight summary of a previous finding passed to agents

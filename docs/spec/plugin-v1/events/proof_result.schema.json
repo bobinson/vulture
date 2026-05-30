@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulture.dev/spec/plugin-v1/events/proof_result.schema.json",
+  "title": "proof_result event payload",
+  "description": "Terminal per-finding verdict emitted by a prove-phase plugin.",
+  "type": "object",
+  "required": ["finding_id", "status", "evidence", "iterations_used"],
+  "additionalProperties": true,
+  "properties": {
+    "finding_id": {"type": "string"},
+    "status": {
+      "type": "string",
+      "enum": ["verified", "not_reproduced", "inconclusive", "skipped"]
+    },
+    "evidence": {"type": "string", "maxLength": 16384},
+    "iterations_used": {"type": "integer", "minimum": 0},
+    "staging_url": {"type": "string"},
+    "protocol": {"type": "string"},
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Plugin's self-reported confidence in the verdict. Used when multiple prove plugins disagree."
+    }
+  }
+}

@@ -42,6 +42,8 @@ func main() {
 		runDoctor()
 	case "uninstall":
 		runUninstall()
+	case "plugin":
+		os.Exit(dispatchPlugin(os.Args[1:], os.Stdout, os.Stderr))
 	case "version":
 		fmt.Println("vulture v0.1.0")
 	case "help", "--help", "-h":
@@ -66,6 +68,7 @@ Commands:
   logs [agent]   Tail data/logs/<name>.log through the redactor
   doctor         Diagnose install health (Python, modes, ports, audit log)
   uninstall      Remove the install (install mode only)
+  plugin         Manage plugins (install/list/enable/disable/remove/verify/info)
   version        Print version
   help           Show this help
 
@@ -113,6 +116,15 @@ func runServer() {
 
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		log.Fatalf("forced shutdown: %v", err)
+	}
+	// Feature 0052: stop supervised container plugins before exiting.
+	// StopAll respects each plugin's runtime.restart policy
+	// (containers with restart=always/unless-stopped are intentionally
+	// left running across backend restarts).
+	if sup := srv.Supervisor(); sup != nil {
+		if err := sup.StopAll(ctx); err != nil {
+			log.Printf("supervisor stop-all: %v", err)
+		}
 	}
 	log.Println("server stopped")
 }

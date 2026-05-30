@@ -1,0 +1,21 @@
+# Hand-broken: community-signed tier without a signature field.
+
+[plugin]
+name         = "unsigned"
+version      = "1.0.0"
+api_version  = "vulture-plugin/1.0"
+publisher    = "test"
+description  = "community-signed tier missing cosign signature"
+
+[trust]
+tier         = "community-signed"
+
+[runtime]
+type         = "container"
+image        = "test/test:1.0"
+port         = 8080
+
+[[capabilities]]
+phase        = "prove"
+matches_cwe  = ["CWE-89"]
+emits        = ["proof_result"]

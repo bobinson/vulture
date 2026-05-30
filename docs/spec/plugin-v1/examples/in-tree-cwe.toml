@@ -1,0 +1,32 @@
+# Virtual manifest for the existing in-tree CWE agent.
+# This is what feature 0048 will auto-generate at runtime from
+# `agentregistry.AllAgents`. Shown here for spec validation.
+
+[plugin]
+name           = "cwe"
+display_name   = "CWE Weakness Auditor"
+version        = "1.0.0"
+api_version    = "vulture-plugin/1.0"
+publisher      = "vulture-core"
+description    = "MITRE CWE-driven static weakness detection across 846 weakness classes via 22 hand-written skills + catalog-driven generic detector."
+homepage       = "https://github.com/bobinson/vulture"
+license        = "Apache-2.0"
+
+[trust]
+tier           = "in-tree"
+
+[runtime]
+type           = "in-tree"
+module_path    = "cwe_agent.agent:run"
+
+[[capabilities]]
+phase          = "scan"
+languages      = []                # any — CWE detector is language-agnostic at the catalog level
+emits          = ["finding", "progress", "thinking", "run_started", "run_finished", "result"]
+timeout_s      = 1800
+
+[normalization]
+# In-tree CWE agent emits CWE-prefixed categories natively; identity map.
+# Listed here for spec conformance.
+[normalization.prefix_to_cwe]
+"cwe."                          = "CWE-1"      # placeholder — skills set actual CWE in finding.category directly

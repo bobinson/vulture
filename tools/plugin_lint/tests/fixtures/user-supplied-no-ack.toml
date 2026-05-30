@@ -1,0 +1,22 @@
+# Hand-broken: user-supplied tier with empty required_ack.
+
+[plugin]
+name         = "useruntrusted"
+version      = "1.0.0"
+api_version  = "vulture-plugin/1.0"
+publisher    = "test"
+description  = "tier=user-supplied without any acks declared"
+
+[trust]
+tier         = "user-supplied"
+required_ack = []
+
+[runtime]
+type         = "container"
+image        = "test/test:1.0"
+port         = 8080
+
+[[capabilities]]
+phase        = "prove"
+matches_cwe  = ["CWE-89"]
+emits        = ["proof_result"]

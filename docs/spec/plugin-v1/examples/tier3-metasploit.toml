@@ -1,0 +1,59 @@
+# Reference manifest for a user-supplied (tier-3) offensive prove plugin.
+# This is the example feature 0054 will implement.
+#
+# Critical: tier=user-supplied + non-empty required_ack means the operator
+# MUST pass `vulture plugin install --trust runs-real-exploits,network-egress`
+# before the orchestrator will dispatch this plugin.
+
+[plugin]
+name           = "metasploit"
+display_name   = "Metasploit Framework"
+version        = "1.0.0"
+api_version    = "vulture-plugin/1.0"
+publisher      = "rapid7"
+description    = "Wraps Metasploit modules to verify exploitability of scan-emitted findings against a staging target. Emits proof_attempt + proof_result events per finding."
+homepage       = "https://www.metasploit.com"
+license        = "BSD-3-Clause"
+
+[trust]
+tier           = "user-supplied"
+required_ack   = ["runs-real-exploits", "network-egress"]
+
+[runtime]
+type           = "container"
+image          = "rapid7/vulture-plugin-metasploit:6.3.42"
+port           = 8080
+health_endpoint = "/health"
+restart        = "unless-stopped"
+network        = "host"            # MSF needs to reach the staging target
+resources      = { cpu = "2", memory = "4Gi" }
+
+[runtime.fs]
+read           = []
+write          = ["/tmp/msf-loot"]
+
+[runtime.env]
+required       = []
+optional       = ["MSF_LICENSE_KEY"]
+
+# Multi-phase: serves both prove and (limited) discover.
+[[capabilities]]
+phase          = "prove"
+matches_cwe    = ["CWE-78", "CWE-79", "CWE-89", "CWE-90", "CWE-94", "CWE-502", "CWE-611", "CWE-918"]
+matches_check_id_prefix = [
+  "semgrep.*injection*",
+  "cwe.injection.*",
+  "owasp.A03.*",
+]
+emits          = ["proof_phase", "proof_plan", "proof_review", "proof_attempt", "proof_reflection", "proof_result", "proof_summary", "thinking", "run_started", "run_finished"]
+timeout_s      = 1200
+max_iterations = 5
+
+[[capabilities]]
+phase          = "discover"
+tech_stacks    = ["smb", "rdp", "ssh", "ftp", "http"]
+emits          = ["discover_result", "thinking", "run_started", "run_finished"]
+timeout_s      = 300
+
+# No [normalization] block — this plugin doesn't emit scan-phase
+# findings, so CWE normalisation is N/A.

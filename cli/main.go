@@ -144,18 +144,33 @@ func pathInsideMount(target, mountSource string) bool {
 	return !strings.HasPrefix(rel, "..")
 }
 
-// findComposeFile locates docker-compose.yml relative to the CLI binary.
-// The CLI lives at <project-root>/cli/vulture, so the compose file is at
-// <project-root>/docker-compose.yml.
+// findComposeFile locates docker-compose.yml by walking upward from the
+// CLI binary's directory and from the current working directory. The
+// CLI may live at <root>/cli/vulture *or* <root>/cli/bin/vulture
+// (depending on the build), so we don't assume a fixed depth.
 func findComposeFile() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
+	roots := []string{}
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Dir(exe))
 	}
-	for _, name := range []string{"docker-compose.yml", "compose.yml"} {
-		p := filepath.Join(filepath.Dir(filepath.Dir(exe)), name)
-		if _, err := os.Stat(p); err == nil {
-			return p
+	if cwd, err := os.Getwd(); err == nil {
+		roots = append(roots, cwd)
+	}
+	names := []string{"docker-compose.yml", "compose.yml"}
+	for _, start := range roots {
+		dir := start
+		for depth := 0; depth < 6; depth++ {
+			for _, name := range names {
+				p := filepath.Join(dir, name)
+				if _, err := os.Stat(p); err == nil {
+					return p
+				}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
 	}
 	return ""
@@ -308,11 +323,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache] [CI flags]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
 			os.Exit(1)
 		}
-		types, noCache, ci := parseScanFlags(os.Args[3:])
+		types, noCache, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[3:])
 		if ci.server != "" {
 			apiURL = ci.server
 		}
-		cmdScan(apiURL, os.Args[2], types, noCache, ci)
+		cmdScan(apiURL, os.Args[2], types, noCache, ci, validateLLM, validateLLMTopN)
 	case "discover", "discovery":
 		df := parseDiscoverFlags(os.Args[2:])
 		cmdDiscover(apiURL, df)
@@ -348,16 +363,16 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		types, noCache, ci := parseScanFlags(os.Args[2:])
+		types, noCache, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[2:])
 		if ci.server != "" {
 			apiURL = ci.server
 		}
-		cmdScan(apiURL, cmd, types, noCache, ci)
+		cmdScan(apiURL, cmd, types, noCache, ci, validateLLM, validateLLMTopN)
 	}
 }
 
 // parseScanFlags extracts --types, --no-cache, and CI flags from arguments.
-func parseScanFlags(args []string) (types []string, noCache bool, ci ciFlags) {
+func parseScanFlags(args []string) (types []string, noCache bool, validateLLM bool, validateLLMTopN int, ci ciFlags) {
 	types = agentregistry.ScanAgentTypes()
 	ci.output = "text"
 	for i := 0; i < len(args); i++ {
@@ -369,6 +384,16 @@ func parseScanFlags(args []string) (types []string, noCache bool, ci ciFlags) {
 			}
 		case "--no-cache":
 			noCache = true
+		case "--validate-llm":
+			// Feature 0046: opt in to L5 LLM judge for this audit.
+			validateLLM = true
+		case "--validate-llm-top-n":
+			if i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil && n >= 0 {
+					validateLLMTopN = n
+				}
+				i++
+			}
 		default:
 			if consumed := parseCIFlag(args, i, &ci); consumed > 0 {
 				i += consumed - 1
@@ -1053,7 +1078,7 @@ func cmdLogin(apiURL string) {
 	fmt.Printf("\n  Logged in as %s (%s)\n  Token saved to ~/%s/%s\n\n", auth.User.Name, auth.User.Email, configDir, tokenFile)
 }
 
-func cmdScan(apiURL string, target string, types []string, noCache bool, ci ciFlags) {
+func cmdScan(apiURL string, target string, types []string, noCache bool, ci ciFlags, validateLLM bool, validateLLMTopN int) {
 	token := resolveToken(ci.apiKey, apiURL)
 
 	// Determine source type
@@ -1098,6 +1123,14 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, ci ciFl
 
 	// Create audit
 	auditReq := buildAuditBody(src.ID, types, ci)
+	if validateLLM {
+		// Feature 0046 §L: per-audit config override for L5 LLM judge.
+		validateCfg := map[string]interface{}{"llm": true}
+		if validateLLMTopN > 0 {
+			validateCfg["llm_top_n"] = validateLLMTopN
+		}
+		auditReq["config"] = map[string]interface{}{"validate": validateCfg}
+	}
 	auditBody, _ := json.Marshal(auditReq)
 	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
 	fmt.Fprintf(os.Stderr, "  Audit started: %s\n", truncateID(a.ID, 12))

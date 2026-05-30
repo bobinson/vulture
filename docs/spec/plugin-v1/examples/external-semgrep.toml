@@ -1,0 +1,60 @@
+# Reference manifest for a community-signed Semgrep plugin.
+# Feature 0053 will ship the actual implementation; this file is the
+# concrete contract example for spec validation + plugin authors.
+
+[plugin]
+name           = "semgrep"
+display_name   = "Semgrep"
+version        = "1.0.0"
+api_version    = "vulture-plugin/1.0"
+publisher      = "returntocorp"
+description    = "Cross-language SAST via the Semgrep engine. Uses community rulesets p/javascript, p/typescript, p/python, p/go, p/java, p/owasp-top-ten."
+homepage       = "https://semgrep.dev"
+license        = "LGPL-2.1"
+documentation  = "https://github.com/returntocorp/vulture-plugin-semgrep"
+
+[trust]
+tier           = "community-signed"
+signature      = "cosign://sigstore/returntocorp/vulture-plugin-semgrep"
+required_ack   = []
+
+[runtime]
+type           = "container"
+image          = "ghcr.io/returntocorp/vulture-plugin-semgrep:1.0.0"
+port           = 8080
+health_endpoint = "/health"
+info_endpoint  = "/info"
+run_endpoint   = "/run"
+restart        = "unless-stopped"
+network        = "internal"
+resources      = { cpu = "2", memory = "4Gi" }
+
+[runtime.fs]
+read           = ["/src"]
+write          = ["/tmp/semgrep-cache"]
+
+[runtime.env]
+required       = []
+optional       = ["SEMGREP_APP_TOKEN"]
+
+[[capabilities]]
+phase          = "scan"
+languages      = ["javascript", "typescript", "python", "go", "java", "ruby", "rust", "csharp", "php"]
+emits          = ["finding", "progress", "thinking", "run_started", "run_finished"]
+timeout_s      = 900
+
+[normalization]
+# Semgrep rules carry CWE metadata; we extract it at plugin build time.
+# Full mapping ships as mapping_file inside the container.
+mapping_file       = "/etc/vulture-plugin/semgrep-rules-to-cwe.json"
+# Fallback if a rule isn't in mapping_file or the inline tables below:
+fallback_cross_map = "owasp_top_10_2021_to_cwe"
+
+# Inline overrides for rule families the auto-extraction missed:
+[normalization.prefix_to_cwe]
+"javascript.express.security.express-sql-injection"    = "CWE-89"
+"javascript.lang.security.audit.xss."                   = "CWE-79"
+"python.lang.security.audit.dangerous-system-call"     = "CWE-78"
+"python.lang.security.audit.dynamic-urllib-use"        = "CWE-918"
+"go.lang.security.audit.crypto.weak-hashes"            = "CWE-327"
+"java.lang.security.audit.sql-injection"               = "CWE-89"

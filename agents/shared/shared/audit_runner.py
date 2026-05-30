@@ -578,6 +578,20 @@ def _deduplicate_findings(base: list[dict], new: list[dict]) -> list[dict]:
     return unique
 
 
+def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> None:
+    """Assign a deterministic finding ID matching the backend's
+    `generateFindingID(auditID, title, file_path, index)` hash.
+
+    Mutates `finding` in place. Idempotent: if `finding["id"]` is
+    already set, leaves it untouched. Feature 0046 (issue #1).
+    """
+    if finding.get("id"):
+        return
+    import hashlib
+    raw = f"{audit_id}:{finding.get('title', '')}:{finding.get('file_path', '')}:{index}"
+    finding["id"] = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 def run_combined_audit(
     run_id: str,
     source_path: str,
@@ -589,6 +603,7 @@ def run_combined_audit(
     instructions: str | None = None,
     model: str | None = None,
     use_llm: bool | None = None,
+    validate_use_llm: bool | None = None,
 ) -> Generator[str, None, None]:
     """Run skills first (full coverage), then optionally LLM (deeper analysis).
 
@@ -664,9 +679,16 @@ def run_combined_audit(
                 continue
 
             findings = result.get("findings", [])
-            skill_findings.extend(findings)
-
+            # Feature 0046 issue #1: assign deterministic IDs at emission
+            # time so L5 streaming `validation_update` events can later
+            # reference the same finding via id. The backend's
+            # `extractDeltaFindings` only auto-generates IDs when the
+            # incoming finding has an empty id field — non-empty IDs are
+            # preserved verbatim. Hash matches backend's
+            # `generateFindingID(auditID, title, file_path, index)`.
             for finding in findings:
+                _assign_finding_id(finding, run_id, len(skill_findings))
+                skill_findings.append(finding)
                 yield emitter.finding_event(**finding)
 
             completed += 1
@@ -725,13 +747,111 @@ def run_combined_audit(
             yield emitter.text_message(
                 f"LLM discovered {len(llm_new_findings)} additional finding(s)."
             )
-            for finding in llm_new_findings:
+            # Continue indexing from the end of skill_findings so IDs
+            # remain unique across phases. (Feature 0046 issue #1.)
+            base_idx = len(skill_findings)
+            for offset, finding in enumerate(llm_new_findings):
+                _assign_finding_id(finding, run_id, base_idx + offset)
                 yield emitter.finding_event(**finding)
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
 
     # --- Combine & emit final result ---
     all_findings = skill_findings + llm_new_findings
+
+    # --- Validate stage (feature 0045) ---------------------------
+    # Annotates each finding with validation_status + validation_confidence
+    # + per-layer check trail. V6: never deletes findings (length-preserving).
+    # Disabled via VULTURE_DISABLE_VALIDATE=true env var.
+    _validate_enabled = (
+        os.environ.get("VULTURE_DISABLE_VALIDATE", "").lower() != "true"
+    )
+    if _validate_enabled:
+        try:
+            import queue as _queue
+            import threading as _threading
+            from shared.validate import validate as _validate
+            from shared.validate import ValidateConfig as _ValidateConfig
+
+            # L5 streaming (feature 0046 D6): use a thread-safe queue
+            # to bridge from validate's callback-style emit_batch into
+            # the generator's yield-based SSE flow.
+            _stream_q: "_queue.Queue[list[dict] | None]" = _queue.Queue()
+
+            def _on_validation_update(batch: list[dict]) -> None:
+                # Strip non-serialisable / large keys before queuing.
+                light = [
+                    {
+                        "id": f.get("id", ""),
+                        "validation_status": f.get("validation_status", ""),
+                        "validation_confidence": f.get("validation_confidence", 0.0),
+                        "validation": f.get("validation", {}),
+                    }
+                    for f in batch
+                ]
+                _stream_q.put(light)
+
+            # Per-request override wins; falls back to env (D4 config surface).
+            if validate_use_llm is not None:
+                _l5_enabled = bool(validate_use_llm)
+            else:
+                _l5_enabled = (
+                    os.environ.get("VULTURE_USE_VALIDATE_LLM", "").lower() == "true"
+                )
+            _vcfg = _ValidateConfig(
+                compliance_mode=(
+                    os.environ.get("VULTURE_COMPLIANCE_MODE", "").lower() == "true"
+                ),
+                enable_l1=True,
+                enable_l2=True,
+                enable_l5=_l5_enabled,
+            )
+
+            _v_result_box: list = [None]
+            _v_exc_box: list = [None]
+
+            def _run_validate_in_thread() -> None:
+                try:
+                    _v_result_box[0] = _validate(
+                        all_findings, source_path=source_path,
+                        audit_id=run_id,
+                        config=_vcfg,
+                        emit_validation_update=_on_validation_update if _l5_enabled else None,
+                    )
+                except Exception as e:        # noqa: BLE001 — handled by outer try
+                    _v_exc_box[0] = e
+                finally:
+                    _stream_q.put(None)        # sentinel
+
+            _vthread = _threading.Thread(target=_run_validate_in_thread, daemon=True)
+            _vthread.start()
+
+            # Drain the queue: emit one validation_update SSE event per
+            # batch as L5 produces them. The sentinel `None` means
+            # validate finished.
+            while True:
+                batch = _stream_q.get()
+                if batch is None:
+                    break
+                yield emitter.validation_update_event(batch)
+            _vthread.join()
+            if _v_exc_box[0] is not None:
+                raise _v_exc_box[0]
+            v_result = _v_result_box[0]
+
+            for ev_text in v_result.event_texts:
+                yield emitter.text_message(ev_text)
+            all_findings = v_result.findings
+            for parent in v_result.rollups:
+                yield emitter.finding_event(**parent)
+            all_findings = all_findings + v_result.rollups
+        except Exception as ve:
+            logger.warning("validate stage raised %s; continuing without validation", ve)
+            yield emitter.text_message(
+                f"[validate] stage failed: {type(ve).__name__}; "
+                f"findings emitted without validation_status"
+            )
+    # --- End validate stage --------------------------------------
 
     # Split prior_context once and pass to all consumers to avoid redundant splits
     prior_lines = prior_context.split("\n") if prior_context else []

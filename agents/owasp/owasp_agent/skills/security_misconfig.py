@@ -11,6 +11,7 @@ from shared.tools.file_scanner import (
     SAFE_IMPORT_LINE,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_skill_source_file,
     is_test_file,
     read_file_safe,
     scan_code_files,
@@ -68,6 +69,11 @@ def check_security_misconfig(source_path: str) -> dict:
         if is_generated_file(file_path):
             continue
         if is_test_file(file_path):
+            continue
+        # Skip Vulture's own detector source — CORS regex literals
+        # like `allow_origins=["*"]` appear in skill source as the
+        # PATTERN that's being detected, not as a real misconfiguration.
+        if is_skill_source_file(file_path):
             continue
         _analyze_file(file_path, findings)
 

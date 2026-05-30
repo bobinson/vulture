@@ -31,6 +31,9 @@ def run_audit(
     context = build_prior_context(source_path, "owasp", preloaded=preloaded, max_findings=max_f)
 
     use_llm_val = config.get("use_llm")
+    # Feature 0046: per-audit override for L5 LLM judge.
+    _v = config.get("validate")
+    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
@@ -42,4 +45,5 @@ def run_audit(
         instructions=INSTRUCTIONS,
         model=os.environ.get("VULTURE_LLM_MODEL"),
         use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
+        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
     )

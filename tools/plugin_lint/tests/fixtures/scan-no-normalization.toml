@@ -1,0 +1,19 @@
+# Hand-broken: scan-phase capability declared, but [normalization] missing.
+
+[plugin]
+name         = "noscanmap"
+version      = "1.0.0"
+api_version  = "vulture-plugin/1.0"
+publisher    = "test"
+description  = "scan plugin without CWE normalisation"
+
+[trust]
+tier         = "in-tree"
+
+[runtime]
+type         = "in-tree"
+module_path  = "x.y:run"
+
+[[capabilities]]
+phase        = "scan"
+emits        = ["finding"]

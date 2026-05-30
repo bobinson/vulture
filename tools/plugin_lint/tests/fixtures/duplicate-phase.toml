@@ -1,0 +1,29 @@
+# Hand-broken: two scan capability blocks (should be one).
+
+[plugin]
+name         = "dupphase"
+version      = "1.0.0"
+api_version  = "vulture-plugin/1.0"
+publisher    = "test"
+description  = "two scan capability blocks"
+
+[trust]
+tier         = "in-tree"
+
+[runtime]
+type         = "in-tree"
+module_path  = "x.y:run"
+
+[[capabilities]]
+phase        = "scan"
+languages    = ["python"]
+emits        = ["finding"]
+
+[[capabilities]]
+phase        = "scan"
+languages    = ["javascript"]
+emits        = ["finding"]
+
+[normalization]
+[normalization.rule_to_cwe]
+"x" = "CWE-1"

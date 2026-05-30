@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -14,18 +15,46 @@ import (
 
 	"github.com/vulture/backend/internal/assets"
 	"github.com/vulture/backend/internal/config"
+	"github.com/vulture/backend/internal/cwe"
 	"github.com/vulture/backend/internal/handler"
 	"github.com/vulture/backend/internal/localdev"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/pluginsupervisor"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
+	"github.com/vulture/backend/pkg/pluginregistry"
+	"github.com/vulture/backend/pkg/stagerouter"
 )
 
 type Server struct {
-	mux http.Handler
+	mux        http.Handler
+	plugins    pluginregistry.Registry
+	supervisor *pluginsupervisor.Supervisor
 }
 
+// Supervisor returns the plugin runtime supervisor (may be nil if
+// the registry didn't build or no container plugins are installed).
+// Used by the graceful-shutdown path to call StopAll.
+func (s *Server) Supervisor() *pluginsupervisor.Supervisor { return s.supervisor }
+
+// New constructs the production server. The plugin registry is built
+// fresh per call from DefaultLoadOptions; tests that need a controlled
+// registry should call NewWithRegistry instead.
 func New(cfg *config.Config) (*Server, error) {
+	reg, err := pluginregistry.Build(
+		pluginregistry.DefaultLoadOptions(),
+		pluginregistry.DefaultStatePath(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("plugin registry: %w", err)
+	}
+	return NewWithRegistry(cfg, reg)
+}
+
+// NewWithRegistry constructs a Server with a caller-supplied plugin
+// registry. Used by tests to inject a deterministic registry and to
+// avoid sharing global state across t.Run iterations.
+func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, error) {
 	if cfg.JWTSecret == "" && !cfg.LocalMode {
 		return nil, fmt.Errorf("VULTURE_JWT_SECRET must be set in production mode (generate one with: openssl rand -hex 32)")
 	}
@@ -35,10 +64,51 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	var supervisor *pluginsupervisor.Supervisor
+	if reg != nil {
+		all := reg.All()
+		enabled := reg.Enabled()
+		log.Printf("plugin registry: %d plugins (%d enabled)", len(all), len(enabled))
+
+		// Feature 0052: wire the runtime supervisor for container
+		// plugins. Disabled via VULTURE_DISABLE_SUPERVISOR=true so
+		// operators on docker-less hosts (mode E native install)
+		// can run the in-tree agents without docker.
+		if os.Getenv("VULTURE_DISABLE_SUPERVISOR") != "true" {
+			supervisor = pluginsupervisor.New(reg, pluginsupervisor.Options{
+				Network:   envOrDefault("VULTURE_SUPERVISOR_NETWORK", "vulture"),
+				AuditsDir: envOrDefault("VULTURE_SUPERVISOR_AUDITS_DIR", "/tmp/vulture-audit-inputs"),
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			if acts, err := supervisor.Reconcile(ctx); err != nil {
+				log.Printf("[supervisor] initial reconcile error (continuing in degraded mode): %v", err)
+			} else if len(acts) > 0 {
+				log.Printf("[supervisor] reconcile complete: %d actions", len(acts))
+			}
+		}
+	}
+
 	sourceSvc := service.NewSourceService(repo)
 	auditSvc := service.NewAuditService(repo)
 	proxyService := service.NewAgentProxyService()
-	streamSvc := service.NewStreamService(proxyService)
+	// Feature 0049: stream service consults the plugin registry via
+	// stagerouter for capability-based dispatch. When the registry
+	// built successfully, the router is wired and used for every
+	// audit. The VULTURE_STAGE_ROUTER feature flag was removed once
+	// the router shipped cleanly through 0050-0053. The nil-router
+	// fallback in NewStreamService remains for degraded-mode startup.
+	var streamSvc service.StreamService
+	if reg != nil {
+		// Feature 0050: stream service consults the CWE normalisation
+		// layer when matching prove-stage capabilities. The legacy
+		// constructors set a passthrough layer, so existing 0049
+		// behaviour is preserved for non-prove stages.
+		router := stagerouter.NewWithLayer(reg, cfg.Agents, cwe.New(reg))
+		streamSvc = service.NewStreamServiceWithRouter(proxyService, router)
+	} else {
+		streamSvc = service.NewStreamService(proxyService)
+	}
 
 	healthH := handler.NewHealthHandler()
 	sourceH := handler.NewSourceHandler(sourceSvc)
@@ -64,7 +134,7 @@ func New(cfg *config.Config) (*Server, error) {
 	registerLineageRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW, readOnly)
 	registerProveRoutes(mux, pgDB, sqliteDB, streamH, auditH, authMW, readOnly)
 	registerDiscoverRoutes(mux, pgDB, sqliteDB, streamH, authMW, readOnly)
-	registerPipelineRoutes(mux, pgDB, sqliteDB, auditSvc, streamH.DiscoverService(), streamH, authMW, readOnly)
+	registerPipelineRoutes(mux, pgDB, sqliteDB, auditSvc, streamH.DiscoverService(), streamH, reg, authMW, readOnly)
 
 	// Install-mode-only: register the embedded SPA last so any
 	// unrecognized GET falls through to the static handler with the
@@ -75,7 +145,20 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	corsMux := addCORS(mux)
-	return &Server{mux: addRequestLogging(addRequestID(corsMux))}, nil
+	return &Server{
+		mux:        addRequestLogging(addRequestID(corsMux)),
+		plugins:    reg,
+		supervisor: supervisor,
+	}, nil
+}
+
+// envOrDefault returns the value of `key` from the environment, or
+// `def` if unset/empty.
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // registerStaticHandler attaches the embedded SPA handler to "/"
@@ -329,6 +412,26 @@ func registerAuthRoutes(
 	mux.HandleFunc("/api/llm/health", authMW.Require(llmHealthH.ServeHTTP))
 	mux.HandleFunc("/api/filesystem/browse", authMW.Require(ReadOnlyGuard(readOnly, fsH.Browse)))
 
+	// Feature 0045: finding label endpoint (writes audit_memories.user_label).
+	// SH2 rate-limit: 60 POST/min/user via RateLimitByKey.
+	var rawDB *sql.DB
+	dialect := "sqlite"
+	if pgDB != nil {
+		rawDB = pgDB
+		dialect = "postgres"
+	} else if sqliteDB != nil {
+		rawDB = sqliteDB
+	}
+	if rawDB != nil {
+		labelH := handler.NewFindingLabelHandler(rawDB, dialect)
+		mux.HandleFunc("/api/findings/", authMW.Require(
+			RateLimitByKey(60, principalKeyFunc, ReadOnlyGuard(readOnly, labelH.Handle))))
+
+		// L4 memory_prior lookup — runs in the stream handler's drain
+		// path; nil-safe when DB not configured.
+		handler.SetMemoryLookup(service.NewMemoryPriorLookup(rawDB, dialect))
+	}
+
 	log.Println("Auth endpoints enabled")
 	return authMW.Require
 }
@@ -459,7 +562,7 @@ func registerDiscoverRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, 
 	log.Println("Discover routes enabled")
 }
 
-func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, auditSvc service.AuditService, discoverSvc service.DiscoverService, streamH *handler.StreamHandler, protect authWrapper, readOnly bool) {
+func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, auditSvc service.AuditService, discoverSvc service.DiscoverService, streamH *handler.StreamHandler, reg pluginregistry.Registry, protect authWrapper, readOnly bool) {
 	var pipelineRepo repository.PipelineRepository
 	if pgDB != nil {
 		pipelineRepo = repository.NewPostgresPipelineRepo(pgDB)
@@ -469,7 +572,13 @@ func registerPipelineRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, 
 	if pipelineRepo == nil {
 		return
 	}
-	pipelineSvc := service.NewPipelineService(pipelineRepo, auditSvc, discoverSvc)
+	// Feature 0049 follow-up: registry-aware default scan-types
+	// provider lets pipeline-driven audits include enabled external
+	// scan plugins by default, not just the legacy in-tree set.
+	defaultScanTypes := func() []string {
+		return stagerouter.DefaultScanAgentTypes(reg, config.ScanAgentTypes())
+	}
+	pipelineSvc := service.NewPipelineServiceWithScanTypes(pipelineRepo, auditSvc, discoverSvc, defaultScanTypes)
 	pipelineSvc.SetRunner(streamH)
 	pipelineH := handler.NewPipelineHandler(pipelineSvc)
 

@@ -1,0 +1,23 @@
+# Hand-broken: [plugin] is missing the required `name` field.
+
+[plugin]
+display_name = "Bad plugin"
+version      = "1.0.0"
+api_version  = "vulture-plugin/1.0"
+publisher    = "test"
+description  = "missing name field"
+
+[trust]
+tier         = "in-tree"
+
+[runtime]
+type         = "in-tree"
+module_path  = "x.y:run"
+
+[[capabilities]]
+phase        = "scan"
+emits        = ["finding"]
+
+[normalization]
+[normalization.rule_to_cwe]
+"rule" = "CWE-1"

@@ -249,8 +249,18 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 	var proveResults []model.ProveResult
 	scores := map[string]int{}
 	fpLookup := map[string]string{}
+	// Track per-agent: did this agent emit at least one StateSnapshot?
+	// If yes, its snapshot data supersedes any deltas it sent. If no
+	// (agent crashed / timed out before emitting one), fall back to
+	// its delta-stream findings rather than dropping them silently.
+	// Audit 2026-05-26: this fix recovers ~1000 findings per audit
+	// when one agent's LLM phase stalls.
+	snapshotAgents := map[string]bool{}
 	var agentError string
 	for evt := range eventCh {
+		if evt != nil && evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
+			snapshotAgents[evt.AgentType] = true
+		}
 		processEvent(evt, auditID, &findings, &deltaFindings, &proveResults, scores, fpLookup)
 		if agentError == "" {
 			agentError = collectErrorText(evt)
@@ -262,11 +272,27 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 			}
 		}
 	}
-	if len(findings) == 0 && len(deltaFindings) > 0 {
-		log.Printf("[stream] using %d delta findings (no snapshot findings)", len(deltaFindings))
-		findings = deltaFindings
+	// Merge: keep all snapshot findings + delta findings ONLY for agents
+	// that never sent a snapshot. Previously this was all-or-nothing
+	// (`len(findings) == 0 ...`) which dropped deltas from one stalled
+	// agent whenever any other agent had completed cleanly.
+	rescued := 0
+	for _, f := range deltaFindings {
+		if f.AgentType == "" || !snapshotAgents[f.AgentType] {
+			findings = append(findings, f)
+			rescued++
+		}
+	}
+	if rescued > 0 {
+		log.Printf("[stream] rescued %d delta findings from agents that never sent a snapshot (audit=%s)",
+			rescued, auditID)
 	}
 	findings = deduplicateCrossAgent(findings)
+	// L4 memory_prior (feature 0045): inherit labels from
+	// audit_memories.user_label by exact fingerprint match.
+	// applyMemoryPrior is wired through the StreamHandler via a closure
+	// stored on the struct; nil-safe when memory lookup isn't configured.
+	findings = applyMemoryPriorIfEnabled(findings)
 	return DrainResult{
 		Findings:     findings,
 		Scores:       scores,
@@ -386,14 +412,20 @@ func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, f
 	baseIndex := len(*findings)
 	for i := range result.Findings {
 		f := &result.Findings[i]
-		if f.ID == "" {
+		// Preserve rollup-parent IDs (deterministic SHA-derived).
+		if f.ID == "" && !f.IsRollup {
 			f.ID = generateFindingID(auditID, f.Title, f.FilePath, baseIndex+i)
 		}
 		f.AuditID = auditID
-		if f.AgentType == "" {
-			f.AgentType = agentType
+		// Feature 0050 BLOCKER #2: unconditional overwrite — a
+		// container plugin must not be able to spoof another plugin's
+		// identity in its SSE payload.
+		f.AgentType = agentType
+		if f.IsRollup {
+			f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, "rollup-parent")
+		} else {
+			f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, f.AgentType)
 		}
-		f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, f.AgentType)
 		*findings = append(*findings, *f)
 	}
 	if agentType != "" {
@@ -474,6 +506,12 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 				}
 			}
 			f.CrossAgentOrigins = deduplicateStrings(origins)
+
+			// L3 cross-agent merge (feature 0045): append a validation
+			// check + re-vote so this finding's confidence reflects the
+			// cross-agent corroboration. Each additional confirming
+			// agent adds +0.10 weight (capped at +0.30).
+			f = applyCrossAgentValidation(f)
 		}
 		result = append(result, f)
 	}
@@ -481,6 +519,169 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 		log.Printf("[dedup] removed %d cross-agent duplicate findings (%d → %d)", removed, len(findings), len(result))
 	}
 	return result
+}
+
+// applyCrossAgentValidation appends an L3 cross-agent merge check to a
+// finding's validation.checks and re-votes the result. Mutates and
+// returns the finding. Idempotent: if `cross_agent` already in the
+// checks, it's replaced rather than duplicated.
+func applyCrossAgentValidation(f model.Finding) model.Finding {
+	if len(f.CrossAgentOrigins) == 0 {
+		return f
+	}
+	weight := 0.10 * float64(len(f.CrossAgentOrigins))
+	if weight > 0.30 {
+		weight = 0.30
+	}
+	newCheck := map[string]interface{}{
+		"id":     "cross_agent",
+		"result": "merged",
+		"weight": weight,
+		"reason": fmt.Sprintf("confirmed by %d additional agent(s)", len(f.CrossAgentOrigins)),
+		"extras": map[string]interface{}{
+			"agents": f.CrossAgentOrigins,
+		},
+	}
+	// Build/extend the validation map.
+	if f.Validation == nil {
+		f.Validation = map[string]interface{}{
+			"status":     f.ValidationStatus,
+			"confidence": f.ValidationConfidence,
+			"checks":     []interface{}{},
+		}
+	}
+	checks, _ := f.Validation["checks"].([]interface{})
+	// Strip any prior cross_agent check (idempotency).
+	keep := checks[:0]
+	for _, c := range checks {
+		if m, ok := c.(map[string]interface{}); ok {
+			if m["id"] == "cross_agent" {
+				continue
+			}
+		}
+		keep = append(keep, c)
+	}
+	keep = append(keep, newCheck)
+	f.Validation["checks"] = keep
+
+	// Re-vote: collect (id, weight) pairs and call the Go voter.
+	voterChecks := make([]service.VoterCheck, 0, len(keep))
+	for _, c := range keep {
+		m, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		w, _ := m["weight"].(float64)
+		voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w})
+	}
+	res := service.Vote(voterChecks)
+	f.ValidationStatus = res.Status
+	f.ValidationConfidence = res.Confidence
+	f.Validation["status"] = res.Status
+	f.Validation["confidence"] = res.Confidence
+	return f
+}
+
+// memoryLookup is set by server.New() when a DB is available.
+// applyMemoryPriorIfEnabled becomes a no-op when nil.
+var memoryLookup *service.MemoryPriorLookup
+
+// SetMemoryLookup wires the L4 memory-prior lookup into the package-
+// scoped variable used by applyMemoryPriorIfEnabled. Called from
+// server.New(); idempotent.
+func SetMemoryLookup(lk *service.MemoryPriorLookup) {
+	memoryLookup = lk
+}
+
+// applyMemoryPriorIfEnabled runs L4: for each finding, look up the
+// `user_label` in audit_memories by fingerprint and inherit a
+// `memory` check accordingly. Re-votes affected findings.
+//
+// Batched: one DB round-trip for all fingerprints.
+// Nil-safe: returns findings unmodified if memoryLookup isn't set.
+func applyMemoryPriorIfEnabled(findings []model.Finding) []model.Finding {
+	if memoryLookup == nil || len(findings) == 0 {
+		return findings
+	}
+	fps := make([]string, 0, len(findings))
+	for _, f := range findings {
+		if f.Fingerprint != "" {
+			fps = append(fps, f.Fingerprint)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	labels, err := memoryLookup.LookupLabels(ctx, fps)
+	if err != nil {
+		log.Printf("[validate.l4] lookup failed (skipping): %v", err)
+		return findings
+	}
+	memoryLookup.LogQueryStats(len(fps), len(labels))
+	if len(labels) == 0 {
+		return findings
+	}
+	for i := range findings {
+		label, ok := labels[findings[i].Fingerprint]
+		if !ok {
+			continue
+		}
+		var weight float64
+		var result string
+		switch label {
+		case "fp":
+			weight = -0.40
+			result = "inherited_fp"
+		case "tp":
+			weight = 0.40
+			result = "inherited_tp"
+		default:
+			continue
+		}
+		newCheck := map[string]interface{}{
+			"id":     "memory",
+			"result": result,
+			"weight": weight,
+			"reason": "exact-fingerprint match against labelled prior finding",
+			"extras": map[string]interface{}{"label": label},
+		}
+		if findings[i].Validation == nil {
+			findings[i].Validation = map[string]interface{}{
+				"status":     findings[i].ValidationStatus,
+				"confidence": findings[i].ValidationConfidence,
+				"checks":     []interface{}{},
+			}
+		}
+		checks, _ := findings[i].Validation["checks"].([]interface{})
+		// Strip prior memory check (idempotency).
+		keep := checks[:0]
+		for _, c := range checks {
+			if m, ok := c.(map[string]interface{}); ok && m["id"] == "memory" {
+				continue
+			}
+			keep = append(keep, c)
+		}
+		keep = append(keep, newCheck)
+		findings[i].Validation["checks"] = keep
+
+		// Re-vote.
+		voterChecks := make([]service.VoterCheck, 0, len(keep))
+		for _, c := range keep {
+			m, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			w, _ := m["weight"].(float64)
+			voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w})
+		}
+		res := service.Vote(voterChecks)
+		findings[i].ValidationStatus = res.Status
+		findings[i].ValidationConfidence = res.Confidence
+		findings[i].Validation["status"] = res.Status
+		findings[i].Validation["confidence"] = res.Confidence
+	}
+	return findings
 }
 
 func deduplicateStrings(ss []string) []string {
@@ -517,6 +718,13 @@ func crossAgentKey(f model.Finding) string {
 
 // findingDetailScore ranks how rich a finding is. Higher = more detail.
 func findingDetailScore(f model.Finding) int {
+	// Rollup parents always beat their members: a parent represents
+	// the consolidated view that the UI should show by default. If we
+	// kept a member, the user sees one instance and has no idea
+	// there are 50 more. (Feature 0045.)
+	if f.IsRollup {
+		return 1_000_000
+	}
 	score := 0
 	score += severityRank(f.Severity) * 10
 	if len(f.References) > 0 {
@@ -551,6 +759,12 @@ func severityRank(s model.Severity) int {
 	}
 }
 
+// Cap on the size of the `validation` JSON blob we accept on a
+// replace patch (audit issue #17). Defends against a misbehaving
+// agent that emits a multi-megabyte validation payload per finding.
+// L5 verdict JSON is realistically < 2 KiB.
+const maxValidationBytes = 32 * 1024
+
 func extractDeltaFindings(delta json.RawMessage, auditID string, agentType string, findings *[]model.Finding) {
 	var patches []struct {
 		Op    string          `json:"op"`
@@ -560,21 +774,86 @@ func extractDeltaFindings(delta json.RawMessage, auditID string, agentType strin
 	if json.Unmarshal(delta, &patches) != nil {
 		return
 	}
+	// Build id→index map lazily and KEEP IT FRESH across adds.
+	// Issue #18: previously we invalidated to nil on every add op,
+	// forcing a full rebuild on the next replace. Now we update
+	// incrementally so a mixed add/replace stream is O(N+M), not O(N²).
+	var idIndex map[string]int
 	for _, p := range patches {
-		if p.Op == "add" && p.Path == "/findings/-" {
+		switch {
+		case p.Op == "add" && p.Path == "/findings/-":
 			var f model.Finding
 			if json.Unmarshal(p.Value, &f) != nil {
 				continue
 			}
 			f.AuditID = auditID
-			if f.AgentType == "" {
-				f.AgentType = agentType
-			}
-			if f.ID == "" {
+			// Feature 0050 BLOCKER #2: unconditional overwrite — a
+			// container plugin must not be able to spoof another
+			// plugin's identity in its SSE payload.
+			f.AgentType = agentType
+			// V6 (feature 0045): preserve rollup-parent IDs verbatim
+			// (SHA-derived, used for cross-audit idempotency).
+			if f.ID == "" && !f.IsRollup {
 				f.ID = generateFindingID(auditID, f.Title, f.FilePath, len(*findings))
 			}
-			f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, f.AgentType)
+			if f.IsRollup {
+				f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, "rollup-parent")
+			} else {
+				f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, f.AgentType)
+			}
 			*findings = append(*findings, f)
+			if idIndex != nil {
+				idIndex[f.ID] = len(*findings) - 1
+			}
+		case p.Op == "replace" && strings.HasPrefix(p.Path, "/findings/"):
+			if idIndex == nil {
+				idIndex = make(map[string]int, len(*findings))
+				for i := range *findings {
+					idIndex[(*findings)[i].ID] = i
+				}
+			}
+			applyValidationReplace(p.Path, p.Value, findings, idIndex)
+		}
+	}
+}
+
+// applyValidationReplace handles the L5 streaming patches of the form
+// `/findings/<id>/{validation_status|validation_confidence|validation}`.
+// Findings not yet in the slice are ignored (the L5 event may arrive
+// before the originating finding event in pathological orderings; the
+// final result event will reconcile).
+func applyValidationReplace(path string, value json.RawMessage, findings *[]model.Finding, idIndex map[string]int) {
+	rest := strings.TrimPrefix(path, "/findings/")
+	slash := strings.Index(rest, "/")
+	if slash <= 0 {
+		return
+	}
+	id := rest[:slash]
+	field := rest[slash+1:]
+	i, ok := idIndex[id]
+	if !ok {
+		return
+	}
+	switch field {
+	case "validation_status":
+		var s string
+		if json.Unmarshal(value, &s) == nil {
+			(*findings)[i].ValidationStatus = s
+		}
+	case "validation_confidence":
+		var c float64
+		if json.Unmarshal(value, &c) == nil {
+			(*findings)[i].ValidationConfidence = c
+		}
+	case "validation":
+		// Issue #17: cap the validation blob so a misbehaving agent
+		// can't OOM the backend with a multi-MB payload per finding.
+		if len(value) > maxValidationBytes {
+			return
+		}
+		var v map[string]interface{}
+		if json.Unmarshal(value, &v) == nil {
+			(*findings)[i].Validation = v
 		}
 	}
 }

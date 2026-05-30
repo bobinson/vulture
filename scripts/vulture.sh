@@ -31,7 +31,8 @@
 #   scripts/vulture.sh build                     # Build everything locally
 #   scripts/vulture.sh build docker              # Build Docker images
 #   scripts/vulture.sh dev skills                # Dev-local, skills only
-#   scripts/vulture.sh dev lmstudio              # Dev-local + LM Studio
+#   scripts/vulture.sh dev lmstudio              # Dev-local + LM Studio (SQLite)
+#   scripts/vulture.sh dev lmstudio --pg         # Dev-local + LM Studio + Postgres container
 #   scripts/vulture.sh dev openai gpt-4o         # Dev-local + OpenAI
 #   scripts/vulture.sh server lmstudio           # Central server + LM Studio (Docker)
 #   scripts/vulture.sh server skills             # Central server, skills only (Docker)
@@ -77,8 +78,37 @@ case "$COMMAND" in
 
     # ── Mode A: Dev-local (bare metal) ────────────────────────────────────
     dev)
-        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh dev <provider> [model]"; exit 1; }
-        exec "$SCRIPT_DIR/start.sh" "$@"
+        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--pg]"; exit 1; }
+        # --pg flag (any position): bring up the postgres docker
+        # container and export VULTURE_DB_DSN so local_start uses
+        # Postgres instead of SQLite.
+        args=()
+        use_pg=0
+        for a in "$@"; do
+            if [[ "$a" == "--pg" || "$a" == "--postgres" ]]; then
+                use_pg=1
+            else
+                args+=("$a")
+            fi
+        done
+        if [[ $use_pg -eq 1 ]]; then
+            if [[ -f "$PROJECT_ROOT/.env" ]]; then
+                set -a; source "$PROJECT_ROOT/.env"; set +a
+            fi
+            : "${VULTURE_DB_USER:=vulture}"
+            : "${VULTURE_DB_NAME:=vulture}"
+            : "${VULTURE_POSTGRES_HOST_PORT:=25433}"
+            if [[ -z "${VULTURE_DB_PASSWORD:-}" ]]; then
+                echo "Error: VULTURE_DB_PASSWORD must be set (in $PROJECT_ROOT/.env or env)"
+                exit 1
+            fi
+            echo "  Starting postgres container on host port $VULTURE_POSTGRES_HOST_PORT ..."
+            ( cd "$PROJECT_ROOT" && docker compose up -d postgres ) || {
+                echo "Error: failed to bring up postgres container"; exit 1; }
+            export VULTURE_DB_DSN="postgres://${VULTURE_DB_USER}:${VULTURE_DB_PASSWORD}@localhost:${VULTURE_POSTGRES_HOST_PORT}/${VULTURE_DB_NAME}?sslmode=disable"
+            echo "  DB: $VULTURE_DB_DSN" | sed -E 's#(:)[^@/]+(@)#\1***\2#'
+        fi
+        exec "$SCRIPT_DIR/start.sh" "${args[@]}"
         ;;
 
     # ── Mode B: Central server (Docker) ───────────────────────────────────

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulture.dev/spec/plugin-v1/events/run_finished.schema.json",
+  "title": "run_finished event payload",
+  "description": "Terminal event for any plugin run. Orchestrator stops reading SSE after this.",
+  "type": "object",
+  "required": ["run_id", "status"],
+  "additionalProperties": true,
+  "properties": {
+    "run_id": {"type": "string"},
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed", "degraded"]
+    },
+    "reason": {
+      "type": "string",
+      "description": "Required when status != completed. Operator-facing diagnostic.",
+      "maxLength": 500
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "findings_emitted": {"type": "integer", "minimum": 0},
+        "verdicts_emitted": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

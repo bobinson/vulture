@@ -1,0 +1,17 @@
+{
+  "owasp.injection.sql": "CWE-89",
+  "owasp.injection.command": "CWE-78",
+  "owasp.access_control.": "CWE-284",
+  "owasp.auth.": "CWE-287",
+  "owasp.crypto.": "CWE-310",
+  "owasp.misconfig.": "CWE-16",
+  "owasp.ssrf.": "CWE-918",
+  "owasp.integrity.": "CWE-345",
+  "owasp.logging.": "CWE-778",
+  "owasp.vulnerable_components.": "CWE-1104",
+  "owasp.insecure_design.": "CWE-657",
+  "ssdf.po": "CWE-1053",
+  "ssdf.pw": "CWE-1059",
+  "ssdf.ps": "CWE-1357",
+  "ssdf.rv": "CWE-1053"
+}

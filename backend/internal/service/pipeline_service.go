@@ -27,22 +27,49 @@ type PipelineService interface {
 }
 
 type pipelineService struct {
-	repo        repository.PipelineRepository
-	auditSvc    AuditService
-	discoverSvc DiscoverService
-	runner      PipelineRunner
+	repo             repository.PipelineRepository
+	auditSvc         AuditService
+	discoverSvc      DiscoverService
+	runner           PipelineRunner
+	defaultScanTypes func() []string
 }
 
 // NewPipelineService creates a new pipeline orchestration service.
+// The default scan-stage type set falls back to the legacy
+// `config.ScanAgentTypes()` (in-tree only). Callers that want
+// external scan plugins included should use
+// NewPipelineServiceWithScanTypes.
 func NewPipelineService(
 	repo repository.PipelineRepository,
 	auditSvc AuditService,
 	discoverSvc DiscoverService,
 ) PipelineService {
+	return NewPipelineServiceWithScanTypes(repo, auditSvc, discoverSvc, config.ScanAgentTypes)
+}
+
+// NewPipelineServiceWithScanTypes accepts a provider for the default
+// scan-stage type set. server.New uses this to inject a function
+// that unions the in-tree default with registry-discovered external
+// scan plugins (feature 0049 follow-up).
+//
+// The provider is called every time a pipeline launches a scan
+// stage with no explicit `types` in its config. It must be safe to
+// call concurrently and return a fresh slice each call so the
+// pipeline doesn't alias internal state.
+func NewPipelineServiceWithScanTypes(
+	repo repository.PipelineRepository,
+	auditSvc AuditService,
+	discoverSvc DiscoverService,
+	defaultScanTypes func() []string,
+) PipelineService {
+	if defaultScanTypes == nil {
+		defaultScanTypes = config.ScanAgentTypes
+	}
 	return &pipelineService{
-		repo:        repo,
-		auditSvc:    auditSvc,
-		discoverSvc: discoverSvc,
+		repo:             repo,
+		auditSvc:         auditSvc,
+		discoverSvc:      discoverSvc,
+		defaultScanTypes: defaultScanTypes,
 	}
 }
 
@@ -159,7 +186,7 @@ func (s *pipelineService) createAndLaunchStage(pipeline *model.Pipeline, stage s
 
 	audit, err := s.auditSvc.Create(&model.AuditRequest{
 		SourceID: pipeline.SourceID,
-		Types:    stageAuditTypes(stage, pipeline.Config),
+		Types:    s.stageAuditTypes(stage, pipeline.Config),
 		Config:   cfg,
 	})
 	if err != nil {
@@ -255,30 +282,57 @@ func setStageAuditID(pipeline *model.Pipeline, stage, auditID string) {
 	}
 }
 
-func stageAuditTypes(stage string, pipelineConfig json.RawMessage) []string {
+// stageAuditTypes returns the agent-type slugs to put into the new
+// audit's Types field. For discover/prove this is just the stage
+// name (those agents are 1:1 with their stage). For scan it uses
+// the explicit `types` array in the pipeline config if present;
+// otherwise it falls back to the injected default-scan-types
+// provider (server.New wires a registry-aware union of in-tree
+// scanners plus external scan plugins from the plugin registry).
+//
+// This is a method on pipelineService (rather than a package-level
+// function as before) so the default provider can be injected for
+// tests and for the registry-aware path. Feature 0049 follow-up.
+func (s *pipelineService) stageAuditTypes(stage string, pipelineConfig json.RawMessage) []string {
 	if stage == "discover" || stage == "prove" {
 		return []string{stage}
 	}
-	if stage == "scan" {
-		var cfg map[string]interface{}
-		if json.Unmarshal(pipelineConfig, &cfg) == nil {
-			if raw, ok := cfg["types"]; ok {
-				if arr, ok := raw.([]interface{}); ok {
-					types := make([]string, 0, len(arr))
-					for _, v := range arr {
-						if s, ok := v.(string); ok && s != "prove" && s != "discover" {
-							types = append(types, s)
-						}
-					}
-					if len(types) > 0 {
-						return types
-					}
-				}
-			}
-		}
-		return config.ScanAgentTypes()
+	if stage != "scan" {
+		return []string{stage}
 	}
-	return []string{stage}
+	if explicit := scanTypesFromConfig(pipelineConfig); len(explicit) > 0 {
+		return explicit
+	}
+	if s.defaultScanTypes != nil {
+		return s.defaultScanTypes()
+	}
+	return config.ScanAgentTypes()
+}
+
+// scanTypesFromConfig extracts an explicit `types` array from the
+// pipeline config (the operator-supplied override). prove/discover
+// are stripped so an explicit list cannot accidentally include
+// pipeline stages.
+func scanTypesFromConfig(pipelineConfig json.RawMessage) []string {
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(pipelineConfig, &cfg); err != nil {
+		return nil
+	}
+	raw, ok := cfg["types"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	types := make([]string, 0, len(arr))
+	for _, v := range arr {
+		if str, ok := v.(string); ok && str != "prove" && str != "discover" {
+			types = append(types, str)
+		}
+	}
+	return types
 }
 
 // expandStages auto-expands requested stages to include prerequisites.

@@ -287,6 +287,36 @@ class AgUiEventEmitter:
             "status": status,
         })
 
+    def validation_update_event(
+        self,
+        updates: list[dict[str, Any]],
+        phase: str = "l5_judge",
+    ) -> str:
+        """Emit validation_update event for live L5 verdict streaming.
+
+        Each entry in ``updates`` describes one finding whose
+        validation just changed:
+            {"id": ..., "validation_status": ...,
+             "validation_confidence": ..., "validation": {...}}
+
+        Feature 0046 D6/D19: emitted once per L5 batch, not per
+        verdict. The backend agui/translator.go converts this to a
+        StateDelta with `replace` ops keyed on finding id so the
+        frontend updates rows in place.
+        """
+        return self._format("validation_update", {
+            "phase": phase,
+            "updates": [
+                {
+                    "id": u.get("id", ""),
+                    "validation_status": u.get("validation_status", ""),
+                    "validation_confidence": u.get("validation_confidence", 0.0),
+                    "validation": u.get("validation", {}),
+                }
+                for u in updates
+            ],
+        })
+
     def degraded_mode(self, message: str, audit_mode: str = "degraded") -> str:
         """Emit a degraded_mode event signaling the agent is running
         without LLM augmentation.

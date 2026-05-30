@@ -1,3 +1,13 @@
+// Package agentregistry holds the canonical list of in-tree agents.
+//
+// Feature 0047 introduced the `vulture-plugin/1.0` contract spec
+// (`docs/spec/plugin-v1/contract.md`). Feature 0048 introduced the
+// runtime plugin registry under `pkg/pluginregistry/` for discovering
+// external plugins; that package imports this one to synthesise virtual
+// manifests for the in-tree agents. This file remains the canonical
+// source for the existing 10 in-tree agents. New agents added here
+// MUST also produce a conformant manifest (see
+// `docs/spec/plugin-v1/examples/in-tree-cwe.toml`).
 package agentregistry
 
 import "strings"

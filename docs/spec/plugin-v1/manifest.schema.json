@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulture.dev/spec/plugin-v1/manifest.schema.json",
+  "title": "Vulture Plugin Manifest (vulture-plugin/1.0)",
+  "description": "Schema for plugin.toml after TOML→dict conversion.",
+  "type": "object",
+  "required": ["plugin", "trust", "runtime", "capabilities"],
+  "additionalProperties": true,
+  "properties": {
+    "plugin": {
+      "type": "object",
+      "required": ["name", "version", "api_version", "publisher", "description"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,63}$",
+          "description": "Unique slug. Lowercase, digits, underscore, hyphen. 2-64 chars."
+        },
+        "display_name": {"type": "string", "maxLength": 100},
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.-]+)?$",
+          "description": "Semver 2.0.0"
+        },
+        "api_version": {
+          "type": "string",
+          "enum": ["vulture-plugin/1.0"]
+        },
+        "publisher": {"type": "string", "maxLength": 100},
+        "description": {"type": "string", "maxLength": 500},
+        "homepage": {"type": "string", "format": "uri"},
+        "license": {"type": "string", "maxLength": 50},
+        "documentation": {"type": "string", "format": "uri"}
+      }
+    },
+    "trust": {
+      "type": "object",
+      "required": ["tier"],
+      "additionalProperties": true,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["in-tree", "community-signed", "user-supplied"]
+        },
+        "signature": {
+          "type": "string",
+          "description": "cosign:// URL referring to a Sigstore subject; required for community-signed tier. The path after cosign:// must start with an alphanumeric character and may only contain word chars, slashes, dots, hyphens, @ (for ref pinning), and tildes. Nested URL schemes (file://, http://, etc.) are rejected.",
+          "pattern": "^cosign://[A-Za-z0-9][A-Za-z0-9._~@/-]{2,256}$"
+        },
+        "required_ack": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "runs-real-exploits",
+              "network-egress",
+              "host-fs-write",
+              "privileged",
+              "commercial-key",
+              "gpu-access",
+              "kernel-modules"
+            ]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"tier": {"const": "community-signed"}}, "required": ["tier"]},
+          "then": {"required": ["signature"]}
+        },
+        {
+          "if": {"properties": {"tier": {"const": "user-supplied"}}, "required": ["tier"]},
+          "then": {
+            "required": ["required_ack"],
+            "properties": {"required_ack": {"minItems": 1}}
+          }
+        }
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["container", "host-binary", "in-tree"]
+        },
+        "image": {"type": "string", "description": "Container image, required when type=container"},
+        "executable": {"type": "string", "description": "Host binary path, required when type=host-binary"},
+        "module_path": {"type": "string", "description": "Python module path, required when type=in-tree"},
+        "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+        "health_endpoint": {"type": "string", "default": "/health"},
+        "info_endpoint": {"type": "string", "default": "/info"},
+        "run_endpoint": {"type": "string", "default": "/run"},
+        "restart": {"type": "string", "enum": ["no", "on-failure", "always", "unless-stopped"]},
+        "network": {"type": "string", "enum": ["none", "internal", "host"]},
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {"type": "string"},
+            "memory": {"type": "string"}
+          }
+        },
+        "fs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read": {"type": "array", "items": {"type": "string"}},
+            "write": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": {"type": "array", "items": {"type": "string"}},
+            "optional": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "container"}}, "required": ["type"]},
+          "then": {"required": ["image", "port"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "host-binary"}}, "required": ["type"]},
+          "then": {"required": ["executable"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "in-tree"}}, "required": ["type"]},
+          "then": {"required": ["module_path"]}
+        }
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["phase", "emits"],
+        "additionalProperties": true,
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": ["scan", "discover", "prove", "validate"]
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "python", "javascript", "typescript", "go", "java", "kotlin",
+                "rust", "ruby", "csharp", "php", "cpp", "c", "swift", "scala",
+                "shell", "sql", "yaml", "json", "toml", "html", "css", "markdown",
+                "dockerfile", "makefile", "groovy", "lua", "r", "dart", "perl",
+                "unknown"
+              ]
+            }
+          },
+          "emits": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "run_started", "run_finished", "agent_start", "agent_end",
+                "thinking", "progress",
+                "finding",
+                "discover_result",
+                "proof_phase", "proof_plan", "proof_review",
+                "proof_attempt", "proof_reflection", "proof_result", "proof_summary",
+                "validation_update",
+                "dedup_stats", "token_savings",
+                "result"
+              ]
+            }
+          },
+          "timeout_s": {"type": "integer", "minimum": 1, "maximum": 7200},
+          "max_iterations": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "matches_cwe": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^CWE-\\d{1,5}$"},
+            "description": "Prove plugins: list of CWE categories this plugin can verify"
+          },
+          "matches_check_id_prefix": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Prove plugins: list of check_id prefixes/globs this plugin handles"
+          },
+          "tech_stacks": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Discover plugins: tech stack tags (wordpress, express, openapi, smb, ...)"
+          },
+          "selectors": {
+            "type": "object",
+            "description": "Free-form additional selectors; phase-specific"
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"phase": {"const": "scan"}}, "required": ["phase"]},
+            "then": {
+              "properties": {
+                "emits": {
+                  "contains": {"const": "finding"}
+                }
+              }
+            }
+          },
+          {
+            "if": {"properties": {"phase": {"const": "discover"}}, "required": ["phase"]},
+            "then": {
+              "properties": {
+                "emits": {
+                  "contains": {"const": "discover_result"}
+                }
+              }
+            }
+          },
+          {
+            "if": {"properties": {"phase": {"const": "validate"}}, "required": ["phase"]},
+            "then": {
+              "properties": {
+                "emits": {
+                  "contains": {"const": "validation_update"}
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "rule_to_cwe": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^CWE-\\d{1,5}$"
+          }
+        },
+        "prefix_to_cwe": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^CWE-\\d{1,5}$"
+          }
+        },
+        "mapping_file": {"type": "string"},
+        "fallback_cross_map": {"type": "string"}
+      }
+    }
+  }
+}

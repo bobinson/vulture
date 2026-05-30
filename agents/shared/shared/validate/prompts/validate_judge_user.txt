@@ -1,0 +1,4 @@
+Audit ID: {audit_id}
+Findings to review ({n} in this batch):
+
+{findings_block}

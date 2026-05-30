@@ -1,0 +1,22 @@
+# Smallest possible CONFORMANT manifest. Used as a positive fixture.
+
+[plugin]
+name         = "good_minimal"
+version      = "0.1.0"
+api_version  = "vulture-plugin/1.0"
+publisher    = "test"
+description  = "minimal conformant manifest for lint tool tests"
+
+[trust]
+tier         = "in-tree"
+
+[runtime]
+type         = "in-tree"
+module_path  = "x.y:run"
+
+[[capabilities]]
+phase        = "scan"
+emits        = ["finding"]
+
+[normalization]
+fallback_cross_map = "owasp_top_10_2021_to_cwe"

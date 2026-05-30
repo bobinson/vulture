@@ -1,0 +1,17 @@
+{
+  "A01-access-control": "CWE-284",
+  "A02-crypto-failure": "CWE-310",
+  "A03-injection": "CWE-89",
+  "A04-insecure-design": "CWE-657",
+  "A05-security-misconfig": "CWE-16",
+  "A06-vulnerable-components": "CWE-1104",
+  "A07-auth-failure": "CWE-287",
+  "A08-data-integrity": "CWE-345",
+  "A09-logging-failure": "CWE-778",
+  "A10-ssrf": "CWE-918",
+
+  "PO-prepare-organization": "CWE-1053",
+  "PS-protect-software": "CWE-1357",
+  "PW-produce-well-secured-software": "CWE-1059",
+  "RV-respond-to-vulnerabilities": "CWE-1053"
+}

@@ -1,0 +1,18 @@
+[plugin]
+name        = "bad-tier"
+version     = "1.0.0"
+api_version = "vulture-plugin/1.0"
+publisher   = "x"
+description = "tier value not in enum"
+
+[trust]
+tier        = "totally-trustworthy"
+
+[runtime]
+type        = "container"
+image       = "x:1"
+port        = 28200
+
+[[capabilities]]
+phase = "scan"
+emits = ["finding", "result"]

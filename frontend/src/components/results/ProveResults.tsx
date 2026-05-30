@@ -26,6 +26,25 @@ function statusI18nKey(status: ProveStatus): string {
   return `prove.${status}`;
 }
 
+// Display + copy a VLT-NNNN reference. Mirrors RefCopyButton in
+// FindingsTable.tsx (feature 0033). Surfaced here so prove cards
+// expose the same stable identifier users use to track findings
+// across audits.
+function ProveRefButton({ refText }: { refText: string }) {
+  const { copied, onCopy } = useCopyFeedback();
+  return (
+    <button
+      type="button"
+      data-testid="prove-ref-btn"
+      onClick={(e) => { e.stopPropagation(); void onCopy(refText); }}
+      title={copied ? "Copied" : `Copy ${refText}`}
+      className="text-[11px] font-mono font-medium text-accent hover:underline cursor-pointer shrink-0"
+    >
+      {copied ? `${refText} ✓` : refText}
+    </button>
+  );
+}
+
 function ProveCopyButton({ result, finding, auditId }: { result: ProveResult; finding: Finding; auditId?: string }) {
   const { copied, onCopy } = useCopyFeedback();
   return (
@@ -172,6 +191,9 @@ export function ProveResults({ results, findings, auditId }: ProveResultsProps) 
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
+                    {lineage?.ref_number && lineage.ref_number > 0 ? (
+                      <ProveRefButton refText={`VLT-${String(lineage.ref_number).padStart(4, "0")}`} />
+                    ) : null}
                     <span className="text-[12px] font-medium text-foreground truncate">
                       {finding?.title ?? result.finding_id}
                     </span>

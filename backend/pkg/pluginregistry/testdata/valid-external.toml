@@ -1,0 +1,23 @@
+[plugin]
+name        = "example-scanner"
+display_name = "Example Scanner"
+version     = "0.1.0"
+api_version = "vulture-plugin/1.0"
+publisher   = "example.com"
+description = "A minimal valid external manifest used by loader tests."
+license     = "MIT"
+
+[trust]
+tier        = "user-supplied"
+required_ack = ["network-egress"]
+
+[runtime]
+type        = "container"
+image       = "example/scanner:0.1.0"
+port        = 28100
+
+[[capabilities]]
+phase       = "scan"
+languages   = ["python"]
+emits       = ["finding", "result", "thinking", "progress"]
+timeout_s   = 600
