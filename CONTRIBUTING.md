@@ -143,6 +143,23 @@ credential shapes, follow this same pattern: use sentinel bodies
 (`fake`, `EXAMPLE`, all-zeros) or AWS's documented example identifiers.
 Never commit a real key, even a revoked one.
 
+## Authoring plugins
+
+Vulture supports third-party plugins for the scan, discover, prove,
+and validate phases. Plugins are sidecar services (typically
+containers) that implement the contract documented in
+[`docs/spec/plugin-v1/contract.md`](docs/spec/plugin-v1/contract.md).
+
+Quick start:
+- Read the contract spec (`docs/spec/plugin-v1/contract.md`).
+- Copy an example manifest from `docs/spec/plugin-v1/examples/`.
+- Validate yours with `python -m plugin_lint path/to/plugin.toml`
+  (run from the `tools/` directory).
+- Reference: manifest schema at `docs/spec/plugin-v1/manifest.schema.json`.
+
+The contract is stable on the `vulture-plugin/1.0` version. Minor
+bumps are backward-compatible additions.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
