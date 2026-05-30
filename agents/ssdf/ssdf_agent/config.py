@@ -3,7 +3,7 @@
 CONFIG_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "categories": {
+        "practice_groups": {
             "type": "array",
             "items": {
                 "type": "string",

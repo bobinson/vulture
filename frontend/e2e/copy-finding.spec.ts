@@ -89,8 +89,9 @@ test.describe("Copy Finding as Issue", () => {
     const auditId = "audit-copy-1";
     await mockAudit(page, auditId);
 
-    // Mock clipboard API
-    const clipboardTexts: string[] = [];
+    // Mock clipboard API. The captured texts live in page context as
+    // window.__clipboardTexts (Node-side mirror not needed — assertions
+    // read via page.evaluate).
     await page.addInitScript(() => {
       (window as unknown as Record<string, unknown>).__clipboardTexts = [];
       Object.defineProperty(navigator, "clipboard", {

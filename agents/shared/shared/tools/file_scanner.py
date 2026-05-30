@@ -182,7 +182,14 @@ def _load_ignore_spec(source_path: str):
 
     if not patterns:
         return None
-    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    # Use the newer "gitignore" style introduced in pathspec 0.12; the
+    # legacy "gitwildmatch" name was deprecated in pathspec 1.x. Fall
+    # back to gitwildmatch for pathspec < 0.12 (which doesn't expose
+    # gitignore) so we don't break older installs.
+    try:
+        return pathspec.PathSpec.from_lines("gitignore", patterns)
+    except (ValueError, LookupError):
+        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
 
 def _walk_filtered(root: Path, scan_root: Path, spec) -> Iterator[Path]:
@@ -326,6 +333,44 @@ def _is_test_file_cached(path_str: str, name: str, stem: str) -> bool:
 
 _LOCALE_DIRS = frozenset({"locales", "i18n", "translations", "messages"})
 _DATA_DIRS = frozenset({"data", "fixtures", "testdata"})
+
+# Directories whose files describe DETECTION patterns rather than
+# contain vulnerable code. Findings here are almost certainly meta-
+# detection FPs (a CORS-detector regex matches its own regex literal).
+# Self-scan 2026-05-26 attributed ~60% of FPs to this class.
+_SKILL_SOURCE_DIRS = frozenset({"skills", "validate"})
+# Specific file basenames inside agents/shared/shared/tools/ that are
+# helper-pattern dictionaries — not vulnerable code.
+_PATTERN_HELPER_BASENAMES = frozenset({
+    "obfuscation.py",
+    "_var_reference.py",
+    "pattern_matcher.py",
+})
+
+
+def is_skill_source_file(path: Path) -> bool:
+    """Return True for files that DESCRIBE detection patterns rather
+    than contain vulnerable code. Skill files contain regex strings
+    that match their own patterns (CWE-78 detector includes the literal
+    `os.system(` in its source), so scanning them produces meta-detection
+    FPs.
+
+    Caught categories:
+      - `agents/<X>/<X>_agent/skills/...` — every detector lives here
+      - `agents/shared/shared/validate/...` — context_heuristics et al
+      - `agents/shared/shared/tools/{obfuscation,_var_reference,...}.py`
+    """
+    return _is_skill_source_file_cached(str(path), path.name)
+
+
+@lru_cache(maxsize=2048)
+def _is_skill_source_file_cached(path_str: str, name: str) -> bool:
+    parts_lower = {p.lower() for p in Path(path_str).parts}
+    if parts_lower & _SKILL_SOURCE_DIRS:
+        return True
+    if name in _PATTERN_HELPER_BASENAMES:
+        return True
+    return False
 _GENERATED_JSON_KEYWORDS = ("catalog", "_data", "fixture", "snapshot")
 
 

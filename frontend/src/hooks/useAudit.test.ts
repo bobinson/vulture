@@ -126,10 +126,8 @@ describe("useAudit", () => {
 
     // Run through enough iterations to exceed 10s cap:
     // delays: 2s, 3s, 4.5s, 6.75s, 10s (capped), 10s...
-    let total = 0;
     const delays = [2000, 3000, 4500, 6750, 10000];
     for (let i = 0; i < delays.length; i++) {
-      total += delays[i];
       await act(async () => {
         await vi.advanceTimersByTimeAsync(delays[i]);
       });

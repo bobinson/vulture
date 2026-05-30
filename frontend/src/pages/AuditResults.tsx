@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAudit } from "@/hooks/useAudit.ts";
@@ -54,20 +54,22 @@ export function AuditResults() {
   const status = audit?.status ?? "pending";
   const isTerminal = status === "completed" || status === "failed";
 
-  // Track whether we ever received live stream data (one-way latch via ref)
-  const hadLiveStreamRef = useRef(false);
-  const [hadLiveStream, setHadLiveStream] = useState(false);
+  // One-way latch: once we've received any live stream data, flip true and
+  // never go back. useReducer with an idempotent reducer is the React-19
+  // canonical way to do a one-way latch without tripping
+  // react-hooks/set-state-in-effect (the rule fires on setState in effects,
+  // not on dispatch). The reducer ignoring its argument means repeated
+  // dispatches collapse to one state transition.
+  const [hadLiveStream, markLiveStream] = useReducer(() => true, false);
 
   // Disable SSE when audit already terminal and we never had a live stream
-  const { lines: streamLines, steps: streamSteps, connected, done: streamDone, tokenSavings, dedupStats } = useAgentStream(id, isTerminal && !hadLiveStream);
+  const { lines: streamLines, steps: streamSteps, connected, done: streamDone, tokenSavings, dedupStats, validationUpdates } = useAgentStream(id, isTerminal && !hadLiveStream);
 
-  // Once stream data arrives, flag it (via useEffect, not during render)
   useEffect(() => {
-    if (streamLines.length > 0 && !hadLiveStreamRef.current) {
-      hadLiveStreamRef.current = true;
-      setHadLiveStream(true);
+    if (streamLines.length > 0 && !hadLiveStream) {
+      markLiveStream();
     }
-  }, [streamLines.length]);
+  }, [streamLines.length, hadLiveStream]);
 
   const auditTypes = audit?.types;
   const auditCompletedAt = audit?.completed_at;
@@ -105,7 +107,24 @@ export function AuditResults() {
   const steps = useSynthetic ? completedSteps : streamSteps;
   const done = isTerminal ? true : streamDone;
 
-  const findings = audit?.findings ?? [];
+  // Feature 0046 issue #19: merge live L5 verdict updates into the
+  // findings array so cards / table show the in-progress badge update
+  // before the audit's final result event arrives.
+  const findings = useMemo(() => {
+    const base = audit?.findings ?? [];
+    if (!validationUpdates || Object.keys(validationUpdates).length === 0) {
+      return base;
+    }
+    return base.map((f) => {
+      const upd = f.id ? validationUpdates[f.id] : undefined;
+      if (!upd) return f;
+      return {
+        ...f,
+        validation_status: upd.status ?? f.validation_status,
+        validation_confidence: upd.confidence ?? f.validation_confidence,
+      };
+    });
+  }, [audit?.findings, validationUpdates]);
   const proveResults = audit?.prove_results ?? [];
   const scores = audit?.scores ?? {};
   const hasScores = Object.keys(scores).length > 0;

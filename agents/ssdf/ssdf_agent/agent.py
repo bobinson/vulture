@@ -25,12 +25,17 @@ def run_audit(
     prior_findings: list[dict[str, Any]] | None = None,
 ) -> Generator[str, None, None]:
     """Execute the SSDF compliance audit and yield SSE events."""
-    categories = config.get("categories", config.get("practice_groups", ALL_CATEGORIES))
+    # `practice_groups` is the canonical schema field (SSDF domain term);
+    # keep `categories` as a backward-compat fallback for older payloads.
+    categories = config.get("practice_groups", config.get("categories", ALL_CATEGORIES))
     preloaded = prior_findings if prior_findings else None
     max_f = get_max_findings()
     context = build_prior_context(source_path, "ssdf", preloaded=preloaded, max_findings=max_f)
 
     use_llm_val = config.get("use_llm")
+    # Feature 0046: per-audit override for L5 LLM judge.
+    _v = config.get("validate")
+    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
@@ -41,4 +46,5 @@ def run_audit(
         skill_tools=SKILL_TOOLS,
         instructions=INSTRUCTIONS,
         use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
+        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
     )

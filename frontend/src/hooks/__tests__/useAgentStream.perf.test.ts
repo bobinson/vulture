@@ -151,7 +151,7 @@ describe("useAgentStream performance fixes", () => {
     });
 
     it("does not leak listeners across re-renders", async () => {
-      const { result } = renderHook(() => useAgentStream("audit-1"));
+      renderHook(() => useAgentStream("audit-1"));
       await vi.waitFor(() => expect(latestES).not.toBeNull());
 
       // Emit events to trigger state updates (which used to cause re-renders

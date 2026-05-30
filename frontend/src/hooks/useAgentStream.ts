@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { api } from "@/lib/api.ts";
 import type { AgentStep, StreamLine, TokenSavings, DedupStats } from "@/lib/types.ts";
 
@@ -13,6 +13,30 @@ const SSE_EVENT_TYPES = [
 /** Maximum number of stream lines retained in state. */
 const MAX_LINES = 500;
 
+/** Per-finding L5 verdict update. Consumers (e.g. AuditResults.tsx)
+ *  merge these into their findings state so the row's badge updates
+ *  in place without a refetch. Feature 0046 issue #12. */
+export interface ValidationUpdate {
+  id: string;
+  status?: string;
+  confidence?: number;
+}
+
+const EMPTY_VALIDATION_UPDATES: Record<string, ValidationUpdate> = {};
+
+function validationUpdatesReducer(
+  state: Record<string, ValidationUpdate>,
+  action: ValidationUpdate,
+): Record<string, ValidationUpdate> {
+  const prev = state[action.id];
+  // No-op if nothing actually changed — avoids triggering downstream
+  // re-renders on duplicate verdicts (e.g. cache rehydration).
+  if (prev && prev.status === action.status && prev.confidence === action.confidence) {
+    return state;
+  }
+  return { ...state, [action.id]: { ...prev, ...action } };
+}
+
 export function useAgentStream(auditId: string | undefined, disabled = false) {
   const [lines, setLines] = useState<StreamLine[]>([]);
   const [steps, setSteps] = useState<AgentStep[]>([]);
@@ -20,8 +44,20 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
   const [done, setDone] = useState(false);
   const [tokenSavings, setTokenSavings] = useState<TokenSavings | null>(null);
   const [dedupStats, setDedupStats] = useState<DedupStats | null>(null);
+  // Feature 0046 issues #12 + #18: accumulate L5 verdict patches via
+  // a reducer so React batches updates instead of creating a fresh
+  // top-level object per verdict. Each dispatch is O(1) on average
+  // (single key update); the reducer mutates a copy keyed on id.
+  const [validationUpdates, dispatchValidation] = useReducer(
+    validationUpdatesReducer,
+    EMPTY_VALIDATION_UPDATES,
+  );
   const esRef = useRef<EventSource | null>(null);
   const lineCounterRef = useRef(0);
+
+  const recordValidationUpdate = useCallback((u: ValidationUpdate) => {
+    dispatchValidation(u);
+  }, []);
 
   // Issue #9: Cap lines at MAX_LINES, dropping oldest entries
   const addLine = useCallback(
@@ -58,12 +94,14 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
     [],
   );
 
-  // Issues #1, #2: Store callbacks in refs so the effect handler is stable
+  // Issues #1, #2: Store callbacks in refs so the effect handler is stable.
+  // Refs synced via useEffect (post-commit) to satisfy react-hooks/refs —
+  // writing to .current during render breaks concurrent-mode safety.
   const addLineRef = useRef(addLine);
-  addLineRef.current = addLine;
+  useEffect(() => { addLineRef.current = addLine; });
 
   const updateStepRef = useRef(updateStep);
-  updateStepRef.current = updateStep;
+  useEffect(() => { updateStepRef.current = updateStep; });
 
   // Stable handler ref -- never changes identity, calls current refs internally.
   // addLine/updateStep use refs because they are user-defined callbacks that could change.
@@ -103,7 +141,7 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
         }
 
         case "StateDelta":
-          handleStateDelta(data, addLineFn, setDedupStats, setTokenSavings);
+          handleStateDelta(data, addLineFn, setDedupStats, setTokenSavings, recordValidationUpdate);
           break;
 
         case "StateSnapshot":
@@ -182,7 +220,7 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
     };
   }, [auditId, disabled]);
 
-  return { lines, steps, connected, done, tokenSavings, dedupStats };
+  return { lines, steps, connected, done, tokenSavings, dedupStats, validationUpdates };
 }
 
 /** Handle StateDelta events -- extracted to keep handleSSEEvent under complexity limit. */
@@ -191,10 +229,11 @@ function handleStateDelta(
   addLineFn: (text: string, type: StreamLine["type"]) => void,
   setDedupStatsFn: React.Dispatch<React.SetStateAction<DedupStats | null>>,
   setTokenSavingsFn: React.Dispatch<React.SetStateAction<TokenSavings | null>>,
+  recordValidationUpdate: (u: ValidationUpdate) => void,
 ) {
   const delta = data.delta;
   if (Array.isArray(delta)) {
-    handleFindingsDelta(delta, addLineFn);
+    handleFindingsDelta(delta, addLineFn, recordValidationUpdate);
     return;
   }
   if (delta && typeof delta === "object") {
@@ -206,15 +245,42 @@ function handleStateDelta(
 function handleFindingsDelta(
   delta: unknown[],
   addLineFn: (text: string, type: StreamLine["type"]) => void,
+  recordValidationUpdate: (u: ValidationUpdate) => void,
 ) {
+  // L5 validation_update deltas arrive as multiple `replace` ops with
+  // path `/findings/<id>/validation_status` etc. Group per finding id,
+  // then emit BOTH a one-line stream entry and a structured update so
+  // the consumer can patch its findings state in place.
+  const replaceByID: Record<string, ValidationUpdate> = {};
   for (const op of delta) {
     const patch = op as Record<string, unknown>;
-    if (patch.op !== "add" || !patch.value) continue;
-    const finding = patch.value as Record<string, unknown>;
-    const severity = String(finding.severity ?? "info").toUpperCase();
-    const title = String(finding.title ?? "Finding");
-    const file = String(finding.file_path ?? "");
-    addLineFn(`[${severity}] ${title} \u2014 ${file}`, "finding");
+    if (patch.op === "add" && patch.value) {
+      const finding = patch.value as Record<string, unknown>;
+      const severity = String(finding.severity ?? "info").toUpperCase();
+      const title = String(finding.title ?? "Finding");
+      const file = String(finding.file_path ?? "");
+      addLineFn(`[${severity}] ${title} \u2014 ${file}`, "finding");
+      continue;
+    }
+    if (patch.op !== "replace" || typeof patch.path !== "string") continue;
+    const parts = patch.path.split("/");
+    if (parts.length < 4 || parts[1] !== "findings") continue;
+    const id = parts[2];
+    const field = parts[3];
+    const entry = replaceByID[id] ?? { id };
+    if (field === "validation_status" && typeof patch.value === "string") {
+      entry.status = patch.value;
+    } else if (field === "validation_confidence" && typeof patch.value === "number") {
+      entry.confidence = patch.value;
+    }
+    replaceByID[id] = entry;
+  }
+  for (const id of Object.keys(replaceByID)) {
+    const u = replaceByID[id];
+    if (!u.status) continue;
+    recordValidationUpdate(u);
+    const confStr = u.confidence !== undefined ? ` (${(u.confidence * 100).toFixed(0)}%)` : "";
+    addLineFn(`L5 verdict: ${id.slice(0, 10)} \u2192 ${u.status}${confStr}`, "info");
   }
 }
 

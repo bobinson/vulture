@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/vulture/backend/internal/config"
@@ -122,7 +123,7 @@ func TestConsumeEventsNoSSE(t *testing.T) {
 func TestPersistResults_AdvanceStageErrorNonFatal(t *testing.T) {
 	pSvc := &mockPipelineSvc{
 		advanceStageFn: func(string, model.AuditStatus) error {
-			return json.Unmarshal([]byte("bad"), nil) // some error
+			return errors.New("some error")
 		},
 	}
 	h := NewStreamHandler(&mockAuditService{}, &mockSourceService{}, &mockStreamService{}, nil)

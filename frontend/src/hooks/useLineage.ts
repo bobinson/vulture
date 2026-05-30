@@ -18,13 +18,13 @@ export function useLineage(auditId?: string) {
   const [error, setError] = useState<string | null>(null);
 
   const timelineMapRef = useRef(timelineMap);
-  timelineMapRef.current = timelineMap;
+  useEffect(() => { timelineMapRef.current = timelineMap; });
 
   const proveHistoryMapRef = useRef(proveHistoryMap);
-  proveHistoryMapRef.current = proveHistoryMap;
+  useEffect(() => { proveHistoryMapRef.current = proveHistoryMap; });
 
   const editingLineageRef = useRef(editingLineage);
-  editingLineageRef.current = editingLineage;
+  useEffect(() => { editingLineageRef.current = editingLineage; });
 
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(savedTimerRef.current), []);

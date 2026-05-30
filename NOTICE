@@ -38,5 +38,24 @@ This product redistributes the following third-party content:
     Source:        https://csrc.nist.gov/Projects/ssdf
     Distributed in: agents/ssdf/ssdf_agent/practice_groups/
 
+  - Semgrep CLI (bundled plugin, optional)
+    Copyright (c) Semgrep, Inc. and contributors.
+    Licensed under the GNU Lesser General Public License v2.1
+    (LGPL-2.1-only).
+    License:       https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+    Source:        https://github.com/semgrep/semgrep
+    Distributed in: plugins/semgrep/ (this bundled plugin ships a
+                    Dockerfile that pulls the upstream
+                    semgrep/semgrep:1.84.0 image). The Semgrep binary
+                    runs as a separate process inside its own container
+                    and communicates with Vulture only over HTTP/SSE
+                    across a process boundary — no static linking, no
+                    in-process loading of Semgrep code. The Vulture
+                    Apache-2.0 code is therefore not a derivative work
+                    of Semgrep for LGPL purposes. The plugin wrapper
+                    code under plugins/semgrep/ is itself Apache-2.0.
+                    Operators who modify Semgrep itself must comply
+                    with LGPL-2.1 separately at the container layer.
+
 Full per-source attribution, modification summaries, and license texts
 are in THIRD_PARTY_LICENSES.md.
