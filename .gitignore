@@ -103,6 +103,3 @@ docker-compose.override.yml
 # though the binaries they describe are gitignored. The *.pdf / *.xml /
 # *.xsd patterns above do not match *.md files, so no negation is needed —
 # this comment is a reminder, not a rule.
-
-
-.playwright-mcp/
