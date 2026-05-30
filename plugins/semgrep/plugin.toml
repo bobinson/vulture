@@ -1,0 +1,59 @@
+[plugin]
+name           = "semgrep"
+display_name   = "Semgrep (bundled)"
+version        = "0.1.0"
+api_version    = "vulture-plugin/1.0"
+publisher      = "vulture-core"
+description    = "Cross-language SAST via Semgrep. Reference bundled plugin demonstrating the vulture-plugin/1.0 contract. Maintainers: Vulture core team."
+homepage       = "https://github.com/bobinson/vulture/tree/main/plugins/semgrep"
+license        = "Apache-2.0"
+documentation  = "https://github.com/bobinson/vulture/tree/main/plugins/semgrep/README.md"
+
+[trust]
+tier           = "in-tree"
+required_ack   = ["network-egress", "host-network"]
+
+[runtime]
+type            = "container"
+image           = "ghcr.io/bobinson/vulture-plugin-semgrep:0.1.0"
+port            = 28011
+health_endpoint = "/health"
+info_endpoint   = "/info"
+run_endpoint    = "/run"
+restart         = "on-failure"
+network         = "host"
+resources       = { cpu = "2", memory = "4g" }
+
+[runtime.fs]
+read           = ["/audit-inputs"]
+write          = ["/tmp/semgrep-cache"]
+
+[runtime.env]
+required       = []
+optional       = ["SEMGREP_APP_TOKEN"]
+
+[[capabilities]]
+phase          = "scan"
+# Empty = "any" per the router contract. Pre-detection of source-tree
+# languages by the stream service isn't shipped yet; until it is,
+# declaring specific languages here filters Semgrep out of every audit.
+# When language sniffing lands, restore the proper list.
+languages      = []
+emits          = ["finding", "progress", "thinking", "run_started", "run_finished", "result"]
+timeout_s      = 1800
+
+# 0053 inline prefix mappings (non-overlapping with the orchestrator's
+# base map at backend/internal/cwe/data/check_id_prefix_to_cwe.json).
+#
+# 0050 v1.1 (2026-05-29) wired mapping_file: ~50 real Semgrep rule
+# IDs ship in rules/rule_to_cwe.json with schema_version=1. Exact
+# rule-ID matches take that path; prefix matches still go through
+# the inline block below. Inline wins on conflict with external.
+[normalization]
+mapping_file   = "rules/rule_to_cwe.json"
+
+[normalization.prefix_to_cwe]
+"python.django.security.unsafe-raw-sql" = "CWE-89"
+"python.cryptography.fernet"            = "CWE-310"
+"javascript.express.security.audit"     = "CWE-1004"
+"java.spring.security.web.cors-csrf"    = "CWE-352"

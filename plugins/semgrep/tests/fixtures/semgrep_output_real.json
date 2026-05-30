@@ -1,0 +1,82 @@
+{
+  "version": "1.84.0",
+  "results": [
+    {
+      "check_id": "python.django.security.injection.sql.sql-injection-using-raw",
+      "path": "app/views.py",
+      "start": {"line": 42, "col": 5, "offset": 1234},
+      "end": {"line": 44, "col": 30, "offset": 1300},
+      "extra": {
+        "message": "Detected user input flowing into a manually constructed SQL query. Use parameterized queries or the Django ORM instead.\nReferences: https://docs.djangoproject.com/en/4.2/topics/security/#sql-injection-protection",
+        "severity": "ERROR",
+        "lines": "    cursor.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")",
+        "metadata": {
+          "cwe": [
+            "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+          ],
+          "owasp": ["A03:2021 - Injection"],
+          "category": "security",
+          "technology": ["django"]
+        }
+      }
+    },
+    {
+      "check_id": "javascript.express.security.audit.xss.direct-response-write",
+      "path": "src/routes/profile.js",
+      "start": {"line": 18, "col": 3, "offset": 410},
+      "end": {"line": 18, "col": 60, "offset": 467},
+      "extra": {
+        "message": "Detected directly writing user input to the response. This can lead to XSS.",
+        "severity": "WARNING",
+        "lines": "  res.send('<h1>Hello ' + req.query.name + '</h1>');",
+        "metadata": {
+          "cwe": [
+            "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+          ],
+          "owasp": ["A03:2021 - Injection"],
+          "category": "security",
+          "technology": ["express"]
+        }
+      }
+    },
+    {
+      "check_id": "python.lang.best-practice.unused-variable",
+      "path": "lib/util.py",
+      "start": {"line": 7, "col": 5, "offset": 88},
+      "end": {"line": 7, "col": 25, "offset": 108},
+      "extra": {
+        "message": "Variable 'unused_temp' is assigned but never used.",
+        "severity": "INFO",
+        "lines": "    unused_temp = compute()",
+        "metadata": {
+          "category": "best-practice",
+          "technology": ["python"]
+        }
+      }
+    },
+    {
+      "check_id": "go.lang.security.audit.crypto.weak-hashes.use-of-md5",
+      "path": "internal/auth/hash.go",
+      "start": {"line": 23, "col": 9, "offset": 512},
+      "end": {"line": 23, "col": 40, "offset": 543},
+      "extra": {
+        "message": "Detected use of MD5, which is cryptographically broken. Use SHA-256 or stronger.",
+        "severity": "WARNING",
+        "lines": "\th := md5.New()",
+        "metadata": {
+          "cwe": [
+            "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+          ],
+          "owasp": ["A02:2021 - Cryptographic Failures"],
+          "category": "security",
+          "technology": ["go"]
+        }
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": ["app/views.py", "src/routes/profile.js", "lib/util.py", "internal/auth/hash.go"],
+    "skipped": []
+  }
+}
