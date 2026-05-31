@@ -119,6 +119,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	llmHealthH := handler.NewLLMHealthHandler(cfg.Agents)
 	auditH.SetLLMHealth(llmHealthH)
 	fsH := handler.NewFilesystemHandler()
+	// 0036 Phase 3 — confine filesystem browse to cfg.SourceRoot when
+	// set. Empty SourceRoot = legacy denylist-only behaviour.
+	fsH.SetSourceRoot(cfg.SourceRoot)
 
 	mux := http.NewServeMux()
 	mux.Handle("/health", healthH)

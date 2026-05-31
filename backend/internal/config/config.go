@@ -35,6 +35,12 @@ type Config struct {
 	// it on outbound calls and agents reject requests without a
 	// matching Authorization header. 0036 Phase 3.
 	AgentToken     string                 `json:"agent_token"`
+	// SourceRoot, when set, constrains the filesystem-browse
+	// endpoint to paths whose canonical (EvalSymlinks) form is
+	// inside this directory. Empty = legacy denylist-only behaviour
+	// (acceptable for dev laptops; set to e.g. /var/vulture/sources
+	// for Mode B). 0036 Phase 3.
+	SourceRoot     string                 `json:"source_root"`
 	LLMModel       string                 `json:"llm_model"`
 	LLMCtxSize     string                 `json:"llm_ctx_size"`
 	EmbeddingURL   string                 `json:"embedding_url"`
@@ -68,6 +74,7 @@ func Load() *Config {
 		APIKeysEnabled:     os.Getenv("VULTURE_API_KEYS_ENABLED") == "true",
 		CORSAllowedOrigins: parseCSV(envOrDefault("VULTURE_CORS_ALLOWED_ORIGINS", "")),
 		AgentToken:         envOrDefault("VULTURE_AGENT_TOKEN", ""),
+		SourceRoot:         envOrDefault("VULTURE_SOURCE_ROOT", ""),
 		LLMModel:           resolve(ini, "VULTURE_LLM_MODEL", "llm", "model", ""),
 		LLMCtxSize:         resolve(ini, "VULTURE_LLM_CTX_SIZE", "llm", "ctx_size", ""),
 		EmbeddingURL:       resolve(ini, "VULTURE_EMBEDDING_URL", "embedding", "url", ""),
