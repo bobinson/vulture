@@ -47,6 +47,30 @@ func isLoopbackBind(addr string) bool {
 	return ip.IsLoopback()
 }
 
+// validateJWTSecret enforces the M9 minimum-length contract for the
+// HS256 signing key. RFC 7518 §3.2 mandates a key at least as large as
+// the HMAC output (256 bits = 32 bytes) for HS256. LocalMode bypasses
+// the gate so dev installs without VULTURE_JWT_SECRET still boot.
+//
+// 0036 Phase 3 (M9).
+func validateJWTSecret(secret string, localMode bool) error {
+	if localMode {
+		return nil
+	}
+	if secret == "" {
+		return fmt.Errorf(
+			"VULTURE_JWT_SECRET must be set in production mode " +
+				"(generate one with: openssl rand -hex 32)")
+	}
+	if len(secret) < 32 {
+		return fmt.Errorf(
+			"VULTURE_JWT_SECRET is %d bytes; HS256 requires at least 32 "+
+				"bytes per RFC 7518 — regenerate with: openssl rand -hex 32",
+			len(secret))
+	}
+	return nil
+}
+
 // validateAgentTokenForNonLocalMode refuses startup when LocalMode is
 // off AND no agent token is configured. The Python agent services
 // reject untokened requests when VULTURE_AGENT_TOKEN is set; this

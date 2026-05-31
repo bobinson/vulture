@@ -31,7 +31,7 @@ jobs:
           - { os: darwin, arch: amd64, asset: cosign-darwin-amd64 }
           - { os: darwin, arch: arm64, asset: cosign-darwin-arm64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: download upstream cosign
         run: |
           URL="https://github.com/sigstore/cosign/releases/download/${{ inputs.cosign_version }}/${{ matrix.asset }}"
@@ -45,7 +45,7 @@ jobs:
           ACTUAL=$(sha256sum "${{ matrix.asset }}" | awk '{print $1}')
           [ "$EXPECTED" = "$ACTUAL" ] || { echo "SHA mismatch"; exit 1; }
           chmod 755 "${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cosign-${{ matrix.os }}-${{ matrix.arch }}
           path: ${{ matrix.asset }}
@@ -56,8 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: cosign-*
           merge-multiple: true

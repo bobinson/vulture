@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -41,6 +42,36 @@ func TestLocalModeRefusesNonLoopbackBind(t *testing.T) {
 			if !c.wantErr && err != nil {
 				t.Errorf("validateLoopbackForLocalMode(%q, %v) = %v; want nil",
 					c.addr, c.localMode, err)
+			}
+		})
+	}
+}
+
+// 0036 Phase 3 (M9) — JWT secret minimum length.
+// HS256 requires a 32-byte key per RFC 7518 §3.2. Short secrets are
+// brute-forceable; refuse to start.
+func TestJWTSecretMinLength(t *testing.T) {
+	cases := []struct {
+		name      string
+		secret    string
+		localMode bool
+		wantErr   bool
+	}{
+		{"empty + local → ok", "", true, false},
+		{"short + local → ok (local mode bypasses)", "short", true, false},
+		{"empty + non-local → REFUSE", "", false, true},
+		{"31 chars + non-local → REFUSE", strings.Repeat("a", 31), false, true},
+		{"32 chars + non-local → ok", strings.Repeat("a", 32), false, false},
+		{"64 chars + non-local → ok", strings.Repeat("a", 64), false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateJWTSecret(c.secret, c.localMode)
+			if c.wantErr && err == nil {
+				t.Errorf("expected error; got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("expected nil; got %v", err)
 			}
 		})
 	}

@@ -55,8 +55,9 @@ func New(cfg *config.Config) (*Server, error) {
 // registry. Used by tests to inject a deterministic registry and to
 // avoid sharing global state across t.Run iterations.
 func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, error) {
-	if cfg.JWTSecret == "" && !cfg.LocalMode {
-		return nil, fmt.Errorf("VULTURE_JWT_SECRET must be set in production mode (generate one with: openssl rand -hex 32)")
+	// 0036 Phase 3 (M9) — JWT secret must be set AND long enough.
+	if err := validateJWTSecret(cfg.JWTSecret, cfg.LocalMode); err != nil {
+		return nil, err
 	}
 
 	repo, pgDB, sqliteDB, err := openRepo(cfg)

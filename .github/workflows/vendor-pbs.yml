@@ -38,7 +38,7 @@ jobs:
           - { triple: x86_64-apple-darwin,             platform: darwin-amd64 }
           - { triple: aarch64-apple-darwin,            platform: darwin-arm64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: download upstream PBS
         run: |
           URL="https://github.com/indygreg/python-build-standalone/releases/download/${{ inputs.pbs_version }}/cpython-${{ inputs.python_version }}+${{ inputs.pbs_version }}-${{ matrix.triple }}-install_only.tar.gz"
@@ -56,7 +56,7 @@ jobs:
           fi
       - name: rename for our release
         run: mv pbs.tar.gz "cpython-${{ inputs.python_version }}+${{ inputs.pbs_version }}-${{ matrix.platform }}-install_only.tar.gz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pbs-${{ matrix.platform }}
           path: cpython-*.tar.gz
@@ -67,8 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: pbs-*
           merge-multiple: true
