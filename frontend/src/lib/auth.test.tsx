@@ -19,7 +19,7 @@ const mockRegister = vi.mocked(api.register);
 
 const SAMPLE_USER = {
   id: "user-1",
-  email: "test@vulture.dev",
+  email: "test@example.com",
   name: "Test User",
   role: "admin",
   created_at: "2026-01-01T00:00:00Z",
@@ -88,7 +88,7 @@ describe("useAuth", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     await act(async () => {
-      await result.current.login("test@vulture.dev", "password123");
+      await result.current.login("test@example.com", "password123");
     });
 
     expect(result.current.user).toEqual(SAMPLE_USER);
@@ -103,14 +103,14 @@ describe("useAuth", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     await act(async () => {
-      await result.current.register("test@vulture.dev", "password123", "Test User", "Team A");
+      await result.current.register("test@example.com", "password123", "Test User", "Team A");
     });
 
     expect(result.current.user).toEqual(SAMPLE_USER);
     expect(result.current.token).toBe("reg-jwt");
     expect(localStorage.getItem("vulture_token")).toBe("reg-jwt");
     expect(mockRegister).toHaveBeenCalledWith({
-      email: "test@vulture.dev",
+      email: "test@example.com",
       password: "password123",
       name: "Test User",
       team_name: "Team A",
@@ -124,7 +124,7 @@ describe("useAuth", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     await act(async () => {
-      await result.current.login("test@vulture.dev", "pass");
+      await result.current.login("test@example.com", "pass");
     });
     expect(result.current.user).not.toBeNull();
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://vulture.dev/spec/plugin-v1/events/discover_result.schema.json",
+  "$id": "https://raw.githubusercontent.com/bobinson/vulture/main/docs/spec/plugin-v1/events/discover_result.schema.json",
   "title": "discover_result event payload",
   "type": "object",
   "required": ["target_url"],

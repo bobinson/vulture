@@ -11,7 +11,7 @@ async function mockAuthAndNav(page: Page) {
       contentType: "application/json",
       body: JSON.stringify({
         id: "test-user-1",
-        email: "test@vulture.dev",
+        email: "test@example.com",
         name: "Test User",
         role: "admin",
         created_at: new Date().toISOString(),

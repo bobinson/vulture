@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://vulture.dev/spec/plugin-v1/events/validation_update.schema.json",
+  "$id": "https://raw.githubusercontent.com/bobinson/vulture/main/docs/spec/plugin-v1/events/validation_update.schema.json",
   "title": "validation_update event payload",
   "description": "Emitted by validate-phase plugins. Each `updates[]` entry replaces the orchestrator's view of one finding's validation state.",
   "type": "object",

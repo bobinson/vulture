@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://vulture.dev/spec/plugin-v1/events/proof_result.schema.json",
+  "$id": "https://raw.githubusercontent.com/bobinson/vulture/main/docs/spec/plugin-v1/events/proof_result.schema.json",
   "title": "proof_result event payload",
   "description": "Terminal per-finding verdict emitted by a prove-phase plugin.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://vulture.dev/spec/plugin-v1/events/run_finished.schema.json",
+  "$id": "https://raw.githubusercontent.com/bobinson/vulture/main/docs/spec/plugin-v1/events/run_finished.schema.json",
   "title": "run_finished event payload",
   "description": "Terminal event for any plugin run. Orchestrator stops reading SSE after this.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://vulture.dev/spec/plugin-v1/events/finding.schema.json",
+  "$id": "https://raw.githubusercontent.com/bobinson/vulture/main/docs/spec/plugin-v1/events/finding.schema.json",
   "title": "Finding event payload",
   "type": "object",
   "required": ["severity", "category", "title", "description", "file_path"],
