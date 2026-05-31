@@ -150,6 +150,15 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	if err := validateLoopbackForLocalMode(cfg.ListenAddr, cfg.LocalMode); err != nil {
 		return nil, err
 	}
+	// 0036 Phase 3 — Mode B without an agent token is a credential-
+	// less HTTP path into each agent service. Refuse to start when
+	// VULTURE_LOCAL_MODE is false AND VULTURE_AGENT_TOKEN is empty.
+	// The Python agent side already rejects untokened requests when
+	// VULTURE_AGENT_TOKEN is set; this complements by ensuring the
+	// operator can't accidentally deploy Mode B without setting it.
+	if err := validateAgentTokenForNonLocalMode(cfg.AgentToken, cfg.LocalMode); err != nil {
+		return nil, err
+	}
 	// 0036 Phase 3 (C3): allowlist-driven CORS replaces the previous
 	// wildcard. Empty CORSAllowedOrigins is the strict default (no
 	// cross-origin allowed).

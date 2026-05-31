@@ -54,6 +54,15 @@ func (s *auditService) Create(req *model.AuditRequest) (*model.Audit, error) {
 	if cfg == nil {
 		cfg = json.RawMessage("{}")
 	}
+	// 0036 Phase 3 — webhook SSRF guard. Reject at audit creation
+	// so the caller gets a 400 with a clear message instead of a
+	// silent failure at delivery time. Delivery layer re-validates
+	// to defend against DNS rebinding between create + deliver.
+	if req.WebhookURL != "" {
+		if err := ValidateWebhookURL(req.WebhookURL); err != nil {
+			return nil, fmt.Errorf("invalid webhook_url: %w", err)
+		}
+	}
 	audit := &model.Audit{
 		ID:             generateID(req.SourceID),
 		SourceID:       req.SourceID,

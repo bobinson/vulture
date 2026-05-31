@@ -47,6 +47,27 @@ func isLoopbackBind(addr string) bool {
 	return ip.IsLoopback()
 }
 
+// validateAgentTokenForNonLocalMode refuses startup when LocalMode is
+// off AND no agent token is configured. The Python agent services
+// reject untokened requests when VULTURE_AGENT_TOKEN is set; this
+// check ensures an operator can't accidentally deploy Mode B with
+// credentialless agent access.
+//
+// 0036 Phase 3 — agent-token-required-in-non-local-mode.
+func validateAgentTokenForNonLocalMode(token string, localMode bool) error {
+	if localMode {
+		return nil
+	}
+	if token == "" {
+		return fmt.Errorf(
+			"VULTURE_AGENT_TOKEN is required when not in local mode " +
+				"(otherwise agent services would accept credential-less HTTP). " +
+				"Set VULTURE_AGENT_TOKEN to a strong shared secret, or set " +
+				"VULTURE_LOCAL_MODE=true for single-host dev deployments")
+	}
+	return nil
+}
+
 // validateLoopbackForLocalMode returns an error if LocalMode is on AND
 // the listen address would bind anything other than a loopback
 // interface. The pattern is: when an operator enables LocalMode, the

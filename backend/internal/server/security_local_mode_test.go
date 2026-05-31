@@ -46,6 +46,34 @@ func TestLocalModeRefusesNonLoopbackBind(t *testing.T) {
 	}
 }
 
+// 0036 Phase 3 — agent-token startup gate (T12).
+// Mode B without VULTURE_AGENT_TOKEN means agents accept credentialless
+// HTTP. Refuse to start the backend in that configuration.
+func TestValidateAgentTokenForNonLocalMode(t *testing.T) {
+	cases := []struct {
+		name      string
+		token     string
+		localMode bool
+		wantErr   bool
+	}{
+		{"local mode, no token → ok", "", true, false},
+		{"local mode, token set → ok", "secret", true, false},
+		{"non-local, no token → REFUSE", "", false, true},
+		{"non-local, token set → ok", "secret", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateAgentTokenForNonLocalMode(c.token, c.localMode)
+			if c.wantErr && err == nil {
+				t.Errorf("expected error; got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("expected nil; got %v", err)
+			}
+		})
+	}
+}
+
 // Cross-check on the underlying parse: an addr string must split into
 // a host and a port. The empty-host case (":port") means
 // "bind all interfaces", which is non-loopback per H9.
