@@ -114,7 +114,12 @@ func migrate(db *sql.DB) error {
 			email TEXT UNIQUE NOT NULL,
 			password_hash TEXT NOT NULL,
 			name TEXT NOT NULL,
-			role TEXT NOT NULL DEFAULT 'admin',
+			-- 0036 Phase 3 (C2): default to 'member', NOT 'admin'.
+			-- The Postgres migration already does this; the SQLite
+			-- schema had drifted to 'admin' which silently promotes
+			-- any future INSERT that elides the role column.
+			role TEXT NOT NULL DEFAULT 'member'
+				CHECK (role IN ('admin', 'member', 'viewer')),
 			team_id TEXT DEFAULT '',
 			created_at TEXT NOT NULL,
 			last_login_at TEXT,
