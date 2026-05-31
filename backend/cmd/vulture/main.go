@@ -87,7 +87,12 @@ func runServer() {
 		log.Fatalf("server init: %v", err)
 	}
 
-	addr := ":" + cfg.Port
+	// 0036 Phase 3 (H9): cfg.ListenAddr is resolved by config.Load to
+	// 127.0.0.1:<port> when VULTURE_LOCAL_MODE=true, falling back to
+	// :<port> (all interfaces) for Mode-B reverse-proxy deployments.
+	// Operator override via VULTURE_LISTEN_ADDR. server.New validates
+	// the loopback constraint and refuses to start if violated.
+	addr := cfg.ListenAddr
 	httpSrv := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Handler(),

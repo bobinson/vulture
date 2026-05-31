@@ -144,7 +144,16 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		registerStaticHandler(mux)
 	}
 
-	corsMux := addCORS(mux)
+	// 0036 Phase 3 (H9): refuse to start in LocalMode unless we're
+	// binding to a loopback interface. Wiring lives here so it covers
+	// every entry point that calls server.New (CLI, daemon, tests).
+	if err := validateLoopbackForLocalMode(cfg.ListenAddr, cfg.LocalMode); err != nil {
+		return nil, err
+	}
+	// 0036 Phase 3 (C3): allowlist-driven CORS replaces the previous
+	// wildcard. Empty CORSAllowedOrigins is the strict default (no
+	// cross-origin allowed).
+	corsMux := addCORSWithAllowlist(mux, cfg.CORSAllowedOrigins)
 	return &Server{
 		mux:        addRequestLogging(addRequestID(corsMux)),
 		plugins:    reg,
@@ -381,6 +390,9 @@ func registerAuthRoutes(
 	if cfg.LocalMode {
 		authH.SetLocalMode(true)
 		authMW.SetLocalMode(true)
+		// 0036 Phase 3 (H7): defence-in-depth Host check on the
+		// passwordless /api/auth/local-session endpoint.
+		handler.SetLoopbackHostCheck(isLoopbackHost)
 		log.Println("Local mode enabled — auth bypass active")
 	}
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/iniutil"
@@ -16,12 +17,24 @@ type AgentConfig struct {
 
 type Config struct {
 	Port           string                 `json:"port"`
+	ListenAddr     string                 `json:"listen_addr"`
 	DBPath         string                 `json:"db_path"`
 	DBDSN          string                 `json:"db_dsn"`
 	JWTSecret      string                 `json:"jwt_secret"`
 	LocalMode      bool                   `json:"local_mode"`
 	ReadOnly       bool                   `json:"read_only"`
 	APIKeysEnabled bool                   `json:"api_keys_enabled"`
+	// CORSAllowedOrigins is the explicit allowlist of origins for
+	// Access-Control-Allow-Origin. Empty list = no cross-origin
+	// allowed (the strict default). Populated from
+	// VULTURE_CORS_ALLOWED_ORIGINS as a comma-separated string.
+	// 0036 Phase 3 finding C3.
+	CORSAllowedOrigins []string               `json:"cors_allowed_origins"`
+	// AgentToken is the shared bearer token gating direct HTTP
+	// access to agent services. When non-empty, the backend includes
+	// it on outbound calls and agents reject requests without a
+	// matching Authorization header. 0036 Phase 3.
+	AgentToken     string                 `json:"agent_token"`
 	LLMModel       string                 `json:"llm_model"`
 	LLMCtxSize     string                 `json:"llm_ctx_size"`
 	EmbeddingURL   string                 `json:"embedding_url"`
@@ -42,20 +55,66 @@ func ScanAgentTypes() []string { return agentregistry.ScanAgentTypes() }
 func Load() *Config {
 	ini := LoadINI(iniPath())
 
+	localMode := os.Getenv("VULTURE_LOCAL_MODE") == "true"
+	port := resolve(ini, "VULTURE_PORT", "ports", "backend", "28080")
 	return &Config{
-		Port:           resolve(ini, "VULTURE_PORT", "ports", "backend", "28080"),
-		DBPath:         resolve(ini, "VULTURE_DB_PATH", "database", "sqlite_path", "/data/vulture.db"),
-		DBDSN:          envOrDefault("VULTURE_DB_DSN", ""),
-		JWTSecret:      resolve(ini, "VULTURE_JWT_SECRET", "auth", "jwt_secret", ""),
-		LocalMode:      os.Getenv("VULTURE_LOCAL_MODE") == "true",
-		ReadOnly:       os.Getenv("VULTURE_READONLY") == "true",
-		APIKeysEnabled: os.Getenv("VULTURE_API_KEYS_ENABLED") == "true",
-		LLMModel:       resolve(ini, "VULTURE_LLM_MODEL", "llm", "model", ""),
-		LLMCtxSize:     resolve(ini, "VULTURE_LLM_CTX_SIZE", "llm", "ctx_size", ""),
-		EmbeddingURL:   resolve(ini, "VULTURE_EMBEDDING_URL", "embedding", "url", ""),
-		EmbeddingModel: resolve(ini, "VULTURE_EMBEDDING_MODEL", "embedding", "model", ""),
-		Agents:         defaultAgents(ini),
+		Port:               port,
+		ListenAddr:         resolveListenAddr(ini, port, localMode),
+		DBPath:             resolve(ini, "VULTURE_DB_PATH", "database", "sqlite_path", "/data/vulture.db"),
+		DBDSN:              envOrDefault("VULTURE_DB_DSN", ""),
+		JWTSecret:          resolve(ini, "VULTURE_JWT_SECRET", "auth", "jwt_secret", ""),
+		LocalMode:          localMode,
+		ReadOnly:           os.Getenv("VULTURE_READONLY") == "true",
+		APIKeysEnabled:     os.Getenv("VULTURE_API_KEYS_ENABLED") == "true",
+		CORSAllowedOrigins: parseCSV(envOrDefault("VULTURE_CORS_ALLOWED_ORIGINS", "")),
+		AgentToken:         envOrDefault("VULTURE_AGENT_TOKEN", ""),
+		LLMModel:           resolve(ini, "VULTURE_LLM_MODEL", "llm", "model", ""),
+		LLMCtxSize:         resolve(ini, "VULTURE_LLM_CTX_SIZE", "llm", "ctx_size", ""),
+		EmbeddingURL:       resolve(ini, "VULTURE_EMBEDDING_URL", "embedding", "url", ""),
+		EmbeddingModel:     resolve(ini, "VULTURE_EMBEDDING_MODEL", "embedding", "model", ""),
+		Agents:             defaultAgents(ini),
 	}
+}
+
+// resolveListenAddr picks the listen address (host:port) for the
+// backend HTTP server. Precedence:
+//
+//  1. VULTURE_LISTEN_ADDR env var (operator override).
+//  2. When LocalMode is on, default to 127.0.0.1:<port> so the
+//     CSPRNG-seeded admin password is not exposed to the network.
+//  3. Otherwise default to :<port> (all interfaces) — historical
+//     behaviour for Mode B deployments behind a reverse proxy.
+//
+// 0036 Phase 3 finding H9 — the server refuses to start in LocalMode
+// if the resolved address isn't loopback (enforced in server.New).
+func resolveListenAddr(ini iniValues, port string, localMode bool) string {
+	if v := os.Getenv("VULTURE_LISTEN_ADDR"); v != "" {
+		return v
+	}
+	if v := ini.get("server", "listen_addr"); v != "" {
+		return v
+	}
+	if localMode {
+		return "127.0.0.1:" + port
+	}
+	return ":" + port
+}
+
+// parseCSV splits a comma-separated string into a trimmed slice; empty
+// input returns an empty slice (callers treat that as "no cross-origin").
+func parseCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // resolve checks env var, then config.ini, then hardcoded fallback.

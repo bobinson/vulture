@@ -26,9 +26,18 @@ func (h *AuthHandler) SetLocalMode(enabled bool) {
 // credentials. Only available when local mode is enabled. Uses the
 // service's password-less IssueLocalAdminToken helper so this handler
 // no longer needs to know the (CSPRNG-generated) seed password.
+//
+// 0036 Phase 3 (H7) — defence-in-depth: even with LocalMode on AND a
+// loopback bind enforced (H9 in server.New), reject requests whose
+// Host header is not loopback. Catches DNS-rebinding and misconfigured
+// reverse-proxy paths.
 func (h *AuthHandler) LocalSession(w http.ResponseWriter, r *http.Request) {
 	if !h.localMode {
 		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !isLoopbackHostForLocalSession(r.Host) {
+		writeError(w, http.StatusForbidden, "local session requires loopback host")
 		return
 	}
 	resp, err := h.svc.IssueLocalAdminToken()
@@ -37,6 +46,22 @@ func (h *AuthHandler) LocalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// isLoopbackHostForLocalSession is set by the server package at wire
+// time. Default permits everything so unit tests of unrelated handlers
+// don't need to inject the guard. server.New replaces it with the real
+// isLoopbackHost(...) check.
+var isLoopbackHostForLocalSession = func(host string) bool { return true }
+
+// SetLoopbackHostCheck wires the server's isLoopbackHost helper into
+// this handler. Called from server.New so the production path enforces
+// the H7 guard; tests can override via SetLoopbackHostCheck(custom).
+func SetLoopbackHostCheck(fn func(host string) bool) {
+	if fn == nil {
+		fn = func(string) bool { return true }
+	}
+	isLoopbackHostForLocalSession = fn
 }
 
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {

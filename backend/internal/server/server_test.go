@@ -413,30 +413,44 @@ func openRepoTestPostgres(dsn string) (*repository.PostgresRepo, error) {
 	return repository.NewPostgresRepo(dsn)
 }
 
-// --- addCORS ---
+// --- addCORSWithAllowlist (0036 Phase 3, C3) ---
+// Replaces the previous addCORS wildcard-CORS helper.
 
-func TestAddCORS_SetsCORSHeaders(t *testing.T) {
+func TestAddCORS_SetsSecurityHeaders(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	corsHandler := addCORS(inner)
+	// No origin in request + no allowlist → no Allow-Origin header.
+	corsHandler := addCORSWithAllowlist(inner, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	rec := httptest.NewRecorder()
 	corsHandler.ServeHTTP(rec, req)
 
+	// Always-on security headers.
 	checks := map[string]string{
-		"Access-Control-Allow-Origin":  "*",
-		"X-Content-Type-Options":       "nosniff",
-		"X-Frame-Options":              "DENY",
-		"X-XSS-Protection":            "1; mode=block",
-		"Referrer-Policy":             "strict-origin-when-cross-origin",
-		"Strict-Transport-Security":   "max-age=31536000; includeSubDomains",
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "strict-origin-when-cross-origin",
+		"Content-Security-Policy": "default-src 'self'",
 	}
 	for header, want := range checks {
 		if got := rec.Header().Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)
 		}
+	}
+
+	// L1: HSTS only on TLS connections.
+	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HSTS leaked on non-TLS request: %q", got)
+	}
+	// L2: deprecated X-XSS-Protection must not be emitted.
+	if got := rec.Header().Get("X-XSS-Protection"); got != "" {
+		t.Errorf("X-XSS-Protection should be unset; got %q", got)
+	}
+	// C3: no Allow-Origin header when allowlist is empty.
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Allow-Origin leaked with empty allowlist: %q", got)
 	}
 }
 
@@ -444,7 +458,7 @@ func TestAddCORS_OptionsReturnsNoContent(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("inner handler should not be called for OPTIONS")
 	})
-	corsHandler := addCORS(inner)
+	corsHandler := addCORSWithAllowlist(inner, nil)
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/test", nil)
 	rec := httptest.NewRecorder()
@@ -461,7 +475,7 @@ func TestAddCORS_PassesThroughNonOptions(t *testing.T) {
 		innerCalled = true
 		w.WriteHeader(http.StatusOK)
 	})
-	corsHandler := addCORS(inner)
+	corsHandler := addCORSWithAllowlist(inner, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
