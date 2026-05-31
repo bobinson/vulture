@@ -1,12 +1,33 @@
 # 0036 — Public Open-Source Release Hardening: Implementation Status
 
-## Status: PHASES 1 & 2 IMPLEMENTED — Phases 3 & 4 pending user decisions
+## Status: PHASES 1, 2, 3 IMPLEMENTED — Phase 4 pending user authorisation
 
-Plan authored 2026-04-25 from the six-dimension public-release audit run on `feat/0031-central-server` at commit `b8ce4b3`. Phases 1 and 2 (T1–T6) implemented inline 2026-04-25; commits `5fb0192`, `64ba347`, `438da03`, `d35c4f9`, `191be87`, `fc13042`, `fbd22c0`. HEAD-tracked size dropped from ~90 MB to ~6.7 MB. `.git` size will drop further only after Phase 4 (filter-repo).
-
-Phase 3 (Mode-B hardening) deferred — Phase-3 fixes touch `middleware.go`, `server.go`, `auth_handler.go`, `config.go` which are all in active feature-0031 WIP currently stashed; merging there safely needs the WIP to land first. Tracked as a follow-up.
+Plan authored 2026-04-25 from the six-dimension public-release audit run on `feat/0031-central-server` at commit `b8ce4b3`. Phases 1 and 2 (T1–T6) implemented inline 2026-04-25. Phase 3 (T7–T16) implemented 2026-05-31 across commits `b5860c4` (T7-T8), `4677196` (T9-T10), `35e1c79` (T11-T12), `89325b5` (T13-T14), `528d96a` (T15), `f9ef47f` (T16).
 
 Phase 4 (history rewrite + push) **NOT executed** — destructive, irreversible after public push, requires explicit user confirmation per the plan's pre-flight checklist.
+
+### Phase 3 (Mode-B hardening) — completed 2026-05-31
+
+| Task | Finding | Resolution | Tests | Commit |
+|---|---|---|---|---|
+| T7-T8 | C1 admin seed | Already gated at server.go:283 on cfg.LocalMode (prior work) | existing auth E2E | `b5860c4` |
+| T7-T8 | C3 wildcard CORS | New addCORSWithAllowlist driven by VULTURE_CORS_ALLOWED_ORIGINS; never `*`-with-credentials; X-XSS-Protection dropped (L2); CSP `default-src 'self'` added (L3); HSTS conditional on TLS (L1); "ISO 26262" header comment fixed (L4) | TestCORSAllowlistBehavior 4 cases | `b5860c4` |
+| T7-T8 | H7 LocalSession host check | New isLoopbackHost defence-in-depth Host check; handler returns 403 on non-loopback Host even when LocalMode is on | TestIsLoopbackHost 13 cases | `b5860c4` |
+| T7-T8 | H9 LocalMode non-loopback bind | New Config.ListenAddr resolved by config.Load; validateLoopbackForLocalMode refuses startup on non-loopback addr in LocalMode | TestLocalModeRefusesNonLoopbackBind 9 cases + TestIsLoopbackBind 8 cases | `b5860c4` |
+| T9-T10 | C2 SQLite default role | sqlite_repo users.role DEFAULT 'admin' → 'member' + CHECK constraint matching Postgres | TestSQLiteUserDefaultRoleIsMember + TestSQLiteUserRoleCheckConstraint | `4677196` |
+| T11-T12 | Webhook SSRF | New ValidateWebhookURL (scheme allowlist + LookupIP gate against loopback/private/link-local/unspecified); wired at audit creation + delivery time; DNS-rebinder protection rejects any internal IP in the resolved set | webhook_ssrf_test.go 5 test groups | `35e1c79` |
+| T11-T12 | Agent-token Mode-B refusal | validateAgentTokenForNonLocalMode refuses startup when LocalMode=false AND VULTURE_AGENT_TOKEN unset | TestValidateAgentTokenForNonLocalMode 4 cases | `35e1c79` |
+| T13-T14 | Filesystem-browse confinement | New cfg.SourceRoot + validateBrowsePathWithRoot enforces canonical-prefix-inside-root; rejects literal `..`; symlink-escape rejected; maxBrowseEntries=1000 cap | filesystem_confinement_test.go 5 tests | `89325b5` |
+| T15 | M9 JWT min length | validateJWTSecret refuses non-LocalMode secret < 32 bytes (RFC 7518 §3.2 HS256 floor) | TestJWTSecretMinLength 6 cases | `528d96a` |
+| T15 | M14 SQLite api_keys migration | Left as-is — inline migrateAddColumns path is working code; extraction is style not security | n/a | n/a |
+| T15 | M15 git creds in argv | embedToken (URL-embedded creds) deprecated; production Clone now uses writeAskpassScript + GIT_ASKPASS env. Token lives in 0700 script file only, not argv | askpass_test.go 4 tests | `528d96a` |
+| T15 | L1 HSTS conditional | Wrapped in `if r.TLS != nil || X-Forwarded-Proto==https` (delivered in T8) | TestAddCORS_SetsSecurityHeaders | `b5860c4` |
+| T15 | L2 X-XSS-Protection drop | Header removed (delivered in T8) | TestAddCORS_SetsSecurityHeaders | `b5860c4` |
+| T15 | L3 CSP | Added `Content-Security-Policy: default-src 'self'` (delivered in T8) | TestAddCORS_SetsSecurityHeaders | `b5860c4` |
+| T15 | L4 misleading comment | "ISO 26262 compliance" comment removed during T8 middleware rewrite | n/a | `b5860c4` |
+| T15 | H10 action SHA pinning | All 10 distinct GitHub Actions resolved to current v* tag SHA via GitHub API; rewritten in-place with `# v<N>` comments across all .github/workflows/*.yml | mechanical | `528d96a` |
+| T16 | SECURITY contact channel | Already GitHub-native at SECURITY.md:18 — no change | n/a | n/a |
+| T16 | CoC contact channel | conduct@vulture.dev → GitHub private security advisory + maintainer DM. Plus migrated 6 JSON Schema $ids from vulture.dev to raw GitHub URIs and migrated test fixtures to @example.com | frontend tsc + auth.test.tsx 7/7 | `f9ef47f` |
 
 ## Phase / task tracker
 
