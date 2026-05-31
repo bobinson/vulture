@@ -42,7 +42,7 @@ pkg/pluginregistry          2 exported-constant tests + existing    PASS
 ## Live E2E (vulture source itself)
 
 ```
-$ VULTURE_BUILTIN_PLUGINS_DIR=/home/user/src/vulture/plugins \
+$ VULTURE_BUILTIN_PLUGINS_DIR=$REPO_ROOT/plugins \
     go run ./cmd/e2e_0050_v1_1
 
 registered: semgrep tier=in-tree source=builtin

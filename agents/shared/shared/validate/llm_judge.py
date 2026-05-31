@@ -22,6 +22,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from . import l5_cache
@@ -125,6 +126,126 @@ EmitFn = Callable[[list[dict[str, Any]]], None]
 # ── Public entry point ───────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class _L5Runtime:
+    batch_size: int
+    concurrency: int
+    total_timeout_s: float
+    per_batch_timeout_s: float
+    model: str
+    system_prompt: str
+
+
+def _resolve_l5_runtime(config: ValidateConfig) -> Optional[_L5Runtime]:
+    """Resolve all run_l5 runtime knobs; None on hard precondition fail."""
+    model = _resolve_model(config)
+    if not model:
+        log.warning("[validate.l5] no model resolved; skipping (set VULTURE_LLM_MODEL)")
+        return None
+    try:
+        system_prompt = _read_prompt("validate_judge.txt")
+    except OSError as exc:
+        log.warning("[validate.l5] cannot read system prompt: %s", exc)
+        return None
+    return _L5Runtime(
+        batch_size=_resolve_batch_size(config),
+        concurrency=_resolve_concurrency(config),
+        total_timeout_s=_resolve_total_timeout(config),
+        per_batch_timeout_s=_resolve_per_batch_timeout(config),
+        model=model,
+        system_prompt=system_prompt,
+    )
+
+
+def _append_check_to_finding(finding: dict[str, Any], check: ValidationCheck) -> None:
+    """Append `check.to_json()` onto finding["validation"]["checks"],
+    defensively initialising the blob if it's missing or None."""
+    v_blob = finding.get("validation")
+    if not isinstance(v_blob, dict):
+        v_blob = {"checks": []}
+        finding["validation"] = v_blob
+    checks_list = v_blob.get("checks")
+    if not isinstance(checks_list, list):
+        checks_list = []
+        v_blob["checks"] = checks_list
+    checks_list.append(check.to_json())
+
+
+def _apply_batch_result(
+    batch: list[tuple[int, dict[str, Any], str]],
+    batch_verdicts: dict[str, dict[str, Any]], model: str, batch_idx: int,
+    out: list[list[ValidationCheck]],
+    verdicts_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Translate one batch's verdicts into ValidationChecks and mutate
+    out / finding validation in place."""
+    for finding_idx, finding, lang in batch:
+        fid = finding.get("id") or _synthetic_id(finding_idx, finding)
+        v = batch_verdicts.get(fid)
+        if v is None:
+            check = ValidationCheck(
+                id="llm_judge", result="error", weight=0.0,
+                reason="no verdict",
+                extras={"model": model, "batch_id": batch_idx, "language": lang},
+            )
+        else:
+            check = _verdict_to_check(v, model=model, batch_id=batch_idx, language=lang)
+        out[finding_idx] = [check]
+        verdicts_by_id[fid] = {"batch": batch_idx, "check": check}
+        _append_check_to_finding(finding, check)
+
+
+def _run_l5_pool(
+    batches: list[list[tuple[int, dict[str, Any], str]]],
+    rt: _L5Runtime, audit_id: str, deadline: float,
+    out: list[list[ValidationCheck]],
+    emit_batch: Optional[EmitFn],
+) -> tuple[int, dict[str, dict[str, Any]]]:
+    """Run all batches with bounded concurrency + deadline. Returns
+    (completed_count, verdicts_by_id). Mutates `out` in place."""
+    verdicts_by_id: dict[str, dict[str, Any]] = {}
+    completed = 0
+
+    def _process_batch(
+        batch_idx: int, batch: list[tuple[int, dict[str, Any], str]],
+    ) -> dict[str, dict[str, Any]]:
+        return _judge_batch(
+            batch_idx=batch_idx, batch=batch, audit_id=audit_id,
+            system_prompt=rt.system_prompt, model=rt.model,
+            per_batch_timeout_s=rt.per_batch_timeout_s,
+        )
+
+    # Manual pool lifecycle (issue #2): the deadline-bounded loop
+    # cancels pending futures, but `with ThreadPoolExecutor.__exit__`
+    # would still block on in-flight workers via `shutdown(wait=True)`.
+    pool = ThreadPoolExecutor(max_workers=rt.concurrency)
+    try:
+        futures = {
+            pool.submit(_process_batch, i, batch): (i, batch)
+            for i, batch in enumerate(batches)
+        }
+        for fut in _as_completed_with_deadline(futures, deadline):
+            i, batch = futures[fut]
+            try:
+                batch_verdicts = fut.result()
+            except Exception as exc:  # noqa: BLE001 — RC3 isolation
+                log.warning("[validate.l5] batch %d failed: %s", i, exc)
+                batch_verdicts = {}
+            _apply_batch_result(batch, batch_verdicts, rt.model, i, out, verdicts_by_id)
+            completed += 1
+            if emit_batch is not None:
+                emit_batch([t[1] for t in batch])
+    finally:
+        # cancel_futures available in Python 3.9+. Pending workers are
+        # cancelled; in-flight workers keep their per-request openai
+        # timeout as the upper bound.
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=False)   # py<3.9 fallback
+    return completed, verdicts_by_id
+
+
 def run_l5(
     findings: list[dict[str, Any]],
     l1_results: list[list[ValidationCheck]],
@@ -141,129 +262,75 @@ def run_l5(
     `["validation"]["checks"]` list gets the new `llm_judge` check
     appended *before* `emit_batch` is invoked, so the streaming
     callback sees the updated state. Callers must own the dicts they
-    pass in (validate.__init__ does — it builds out_findings via dict
-    copy first). Issue #10.
+    pass in. Issue #10.
 
     Streaming: if `emit_batch` is provided, it is called once per
-    completed batch with the *list of updated finding dicts* (each
-    finding dict has its `validation_status` / `validation_confidence`
-    / `validation` keys already re-computed via the caller's vote).
-    The streaming caller is responsible for SSE emission; this module
-    only triggers the callback.
+    completed batch with the *list of updated finding dicts*. The
+    caller is responsible for SSE emission; this module only triggers.
     """
     out: list[list[ValidationCheck]] = [[] for _ in findings]
-
-    # Selection per §C.
     top_n = _resolve_top_n(config)
     selected_idx = _select_findings(findings, l1_results, top_n)
     if not selected_idx:
         log.info("[validate.l5] nothing to judge after selection; skipping")
         return out
 
-    batch_size = _resolve_batch_size(config)
-    concurrency = _resolve_concurrency(config)
-    total_timeout_s = _resolve_total_timeout(config)
-    per_batch_timeout_s = _resolve_per_batch_timeout(config)
-    model = _resolve_model(config)
-
-    if not model:
-        log.warning("[validate.l5] no model resolved; skipping (set VULTURE_LLM_MODEL)")
+    rt = _resolve_l5_runtime(config)
+    if rt is None:
         return out
 
-    try:
-        system_prompt = _read_prompt("validate_judge.txt")
-    except OSError as exc:
-        log.warning("[validate.l5] cannot read system prompt: %s", exc)
-        return out
-
-    # Build batches of (finding_id, finding_dict, language) tuples.
-    batches = _batch(findings, selected_idx, batch_size)
+    batches = _batch(findings, selected_idx, rt.batch_size)
     log.info("[validate.l5] enabled — model=%s findings=%d batches=%d",
-             model, len(selected_idx), len(batches))
+             rt.model, len(selected_idx), len(batches))
 
     # Audit A-5: a zero total_timeout silently disables L5. Warn so
     # operators don't mistake "L5 enabled with no verdicts" for a bug.
-    if total_timeout_s <= 0:
-        log.warning("[validate.l5] total timeout is %.3fs — L5 will produce zero verdicts. "
-                    "Check VULTURE_VALIDATE_LLM_TIMEOUT_MS.", total_timeout_s)
-    # Run batched LLM calls with bounded concurrency + total deadline.
-    deadline = time.monotonic() + total_timeout_s
-    verdicts_by_id: dict[str, dict[str, Any]] = {}
-    completed_batches = 0
-
-    def _process_batch(batch_idx: int, batch: list[tuple[int, dict[str, Any], str]]) -> dict[str, dict[str, Any]]:
-        return _judge_batch(
-            batch_idx=batch_idx,
-            batch=batch,
-            audit_id=audit_id,
-            system_prompt=system_prompt,
-            model=model,
-            per_batch_timeout_s=per_batch_timeout_s,
+    if rt.total_timeout_s <= 0:
+        log.warning(
+            "[validate.l5] total timeout is %.3fs — L5 will produce zero "
+            "verdicts. Check VULTURE_VALIDATE_LLM_TIMEOUT_MS.",
+            rt.total_timeout_s,
         )
-
-    # Manual pool lifecycle (issue #2): the deadline-bounded loop
-    # cancels pending futures, but `with ThreadPoolExecutor.__exit__`
-    # would still block on in-flight workers via `shutdown(wait=True)`.
-    # A hung LLM call would freeze the audit here. Use explicit
-    # shutdown(wait=False, cancel_futures=True) on deadline.
-    pool = ThreadPoolExecutor(max_workers=concurrency)
-    try:
-        futures = {
-            pool.submit(_process_batch, i, batch): (i, batch)
-            for i, batch in enumerate(batches)
-        }
-        for fut in _as_completed_with_deadline(futures, deadline):
-            i, batch = futures[fut]
-            try:
-                batch_verdicts = fut.result()
-            except Exception as exc:  # noqa: BLE001 — RC3 isolation
-                log.warning("[validate.l5] batch %d failed: %s", i, exc)
-                batch_verdicts = {}
-            for finding_idx, finding, lang in batch:
-                fid = finding.get("id") or _synthetic_id(finding_idx, finding)
-                v = batch_verdicts.get(fid)
-                if v is None:
-                    check = ValidationCheck(
-                        id="llm_judge", result="error", weight=0.0,
-                        reason="no verdict",
-                        extras={"model": model, "batch_id": i, "language": lang},
-                    )
-                else:
-                    check = _verdict_to_check(v, model=model, batch_id=i, language=lang)
-                out[finding_idx] = [check]
-                verdicts_by_id[fid] = {"batch": i, "check": check}
-                # Append the L5 check to the finding's validation
-                # record so the streaming callback's re-vote includes it.
-                # Issue #5: replace None defensively — `setdefault`
-                # doesn't overwrite an existing-but-None value.
-                v_blob = finding.get("validation")
-                if not isinstance(v_blob, dict):
-                    v_blob = {"checks": []}
-                    finding["validation"] = v_blob
-                checks_list = v_blob.get("checks")
-                if not isinstance(checks_list, list):
-                    checks_list = []
-                    v_blob["checks"] = checks_list
-                checks_list.append(check.to_json())
-
-            completed_batches += 1
-            if emit_batch is not None:
-                emit_batch([t[1] for t in batch])
-    finally:
-        # cancel_futures available in Python 3.9+. Pending workers are
-        # cancelled; in-flight workers keep their existing per-request
-        # openai timeout as the upper bound.
-        try:
-            pool.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            pool.shutdown(wait=False)   # py<3.9 fallback
-
+    deadline = time.monotonic() + rt.total_timeout_s
+    completed, verdicts_by_id = _run_l5_pool(
+        batches, rt, audit_id, deadline, out, emit_batch,
+    )
     log.info("[validate.l5] done batches=%d verdicts=%d",
-             completed_batches, len(verdicts_by_id))
+             completed, len(verdicts_by_id))
     return out
 
 
 # ── Selection ────────────────────────────────────────────────────────
+
+
+_SEV_RANK: dict[str, int] = {
+    "critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0,
+}
+
+
+def _l5_candidate_provisional(
+    checks: list[ValidationCheck],
+) -> Optional[tuple[float, int]]:
+    """Return (confidence, demoting_count) for an L5-eligible candidate,
+    or None if the finding should be skipped (suppression marker or
+    voter-FP rule already satisfied)."""
+    if any(c.id == "suppression" and c.weight < 0 for c in checks):
+        return None
+    conf = max(0.0, min(1.0, 0.5 + sum(c.weight for c in checks)))
+    demoting = sum(1 for c in checks if c.weight < 0)
+    # Mirror V7's likely_fp rule exactly — don't waste an LLM call on
+    # findings the voter would have classified as FP anyway.
+    if conf < 0.30 and demoting >= 2:
+        return None
+    return conf, demoting
+
+
+def _l5_priority(finding: dict[str, Any], confidence: float) -> float:
+    """Score for L5 selection ordering. `+ 1e-6 * rank` is the severity
+    tiebreaker when uncertainty is identical."""
+    sev = (finding.get("severity", "medium") or "medium").lower()
+    rank = _SEV_RANK.get(sev, 2)
+    return rank * max(1.0 - confidence, 0.0) + 1e-6 * rank
 
 
 def _select_findings(
@@ -278,27 +345,13 @@ def _select_findings(
     Single-demoting-check findings with low confidence still reach L5,
     matching the voter's classification behaviour.
     """
-    sev_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
     candidates: list[tuple[float, int]] = []
-
     for i, f in enumerate(findings):
-        checks = l1_results[i]
-        # Skip findings with an authoritative suppression marker.
-        if any(c.id == "suppression" and c.weight < 0 for c in checks):
+        provisional = _l5_candidate_provisional(l1_results[i])
+        if provisional is None:
             continue
-        provisional_conf = max(0.0, min(1.0, 0.5 + sum(c.weight for c in checks)))
-        demoting_count = sum(1 for c in checks if c.weight < 0)
-        # Mirror V7's likely_fp rule exactly — don't waste an LLM call
-        # on findings the voter would have classified as FP anyway.
-        if provisional_conf < 0.30 and demoting_count >= 2:
-            continue
-        sev = (f.get("severity", "medium") or "medium").lower()
-        rank = sev_rank.get(sev, 2)
-        # `+ 1e-6 * rank` is a severity tiebreaker: when uncertainty is
-        # identical, prefer higher-severity findings (issue #8).
-        priority = rank * max(1.0 - provisional_conf, 0.0) + 1e-6 * rank
-        candidates.append((priority, i))
-
+        conf, _demoting = provisional
+        candidates.append((_l5_priority(f, conf), i))
     candidates.sort(key=lambda x: x[0], reverse=True)
     return [idx for _, idx in candidates[:top_n]]
 
@@ -322,6 +375,86 @@ def _batch(
 # ── Per-batch LLM call ───────────────────────────────────────────────
 
 
+def _cache_key_for(finding: dict[str, Any], model: str) -> str:
+    fp = finding.get("file_path", "")
+    return l5_cache.cache_key(
+        file_path=fp,
+        line_start=_safe_int(finding.get("line_start")),
+        line_end=_safe_int(finding.get("line_end") or finding.get("line_start")),
+        check_id=finding.get("check_id") or finding.get("category", ""),
+        model=model,
+        file_sig=_file_signature(fp),
+    )
+
+
+def _partition_batch_by_cache(
+    batch: list[tuple[int, dict[str, Any], str]], model: str,
+) -> tuple[dict[str, dict[str, Any]], list[tuple[int, dict[str, Any], str]]]:
+    """Split a batch into (cache-hit verdicts, uncached entries to call LLM)."""
+    verdicts: dict[str, dict[str, Any]] = {}
+    uncached: list[tuple[int, dict[str, Any], str]] = []
+    for entry in batch:
+        finding_idx, finding, _lang = entry
+        fid = finding.get("id") or _synthetic_id(finding_idx, finding)
+        cached = l5_cache.lookup(_cache_key_for(finding, model))
+        if cached is not None:
+            verdicts[fid] = {
+                "id": fid,
+                "exploitable": cached["exploitable"],
+                "reasoning": cached["reasoning"],
+                "_cached": True,
+            }
+        else:
+            uncached.append(entry)
+    return verdicts, uncached
+
+
+def _call_with_strict_retry(
+    system_prompt: str, user_msg: str, model: str, timeout_s: float,
+    batch_size: int, batch_idx: int,
+) -> list[dict[str, Any]]:
+    """Call LLM; on JSON-parse failure, retry once with a strict-JSON
+    nudge (D14). Returns parsed verdicts or [] on double-failure."""
+    raw = _call_llm(system_prompt, user_msg, model, timeout_s)
+    parsed = _parse_response(raw, batch_size) if raw else None
+    if parsed is not None:
+        return parsed
+    retry_user = user_msg + (
+        "\n\nIMPORTANT: your previous response was not valid JSON. "
+        "Reply with ONLY the JSON object specified, no prose."
+    )
+    raw2 = _call_llm(system_prompt, retry_user, model, timeout_s)
+    parsed = _parse_response(raw2, batch_size) if raw2 else None
+    if parsed is None:
+        log.warning("[validate.l5] batch %d JSON parse failed twice", batch_idx)
+        return []
+    return parsed
+
+
+def _store_verdicts(
+    parsed: list[dict[str, Any]],
+    uncached_batch: list[tuple[int, dict[str, Any], str]],
+    model: str,
+    verdicts: dict[str, dict[str, Any]],
+) -> None:
+    """Write each fresh verdict to the cache and to the verdicts dict."""
+    for v in parsed:
+        if "id" not in v:
+            continue
+        for finding_idx, finding, lang in uncached_batch:
+            fid2 = finding.get("id") or _synthetic_id(finding_idx, finding)
+            if fid2 != v["id"]:
+                continue
+            l5_cache.store(
+                _cache_key_for(finding, model),
+                exploitable=v["exploitable"],
+                reasoning=v.get("reasoning", ""),
+                model=model, language=lang,
+            )
+            break
+        verdicts[v["id"]] = v
+
+
 def _judge_batch(
     *,
     batch_idx: int,
@@ -337,79 +470,17 @@ def _judge_batch(
     fresh verdict skips the LLM round-trip. If every finding in the
     batch hits the cache, the LLM call is skipped entirely.
     """
-    verdicts: dict[str, dict[str, Any]] = {}
-    uncached_batch: list[tuple[int, dict[str, Any], str]] = []
-
-    for entry in batch:
-        finding_idx, finding, lang = entry
-        fid = finding.get("id") or _synthetic_id(finding_idx, finding)
-        fp = finding.get("file_path", "")
-        key = l5_cache.cache_key(
-            file_path=fp,
-            line_start=_safe_int(finding.get("line_start")),
-            line_end=_safe_int(finding.get("line_end") or finding.get("line_start")),
-            check_id=finding.get("check_id") or finding.get("category", ""),
-            model=model,
-            file_sig=_file_signature(fp),
-        )
-        cached = l5_cache.lookup(key)
-        if cached is not None:
-            verdicts[fid] = {
-                "id": fid,
-                "exploitable": cached["exploitable"],
-                "reasoning": cached["reasoning"],
-                "_cached": True,
-            }
-        else:
-            uncached_batch.append(entry)
-
+    verdicts, uncached_batch = _partition_batch_by_cache(batch, model)
     if not uncached_batch:
         log.info("[validate.l5] batch %d fully cached (%d findings)",
                  batch_idx, len(batch))
         return verdicts
-
     user_msg = _render_user_message(audit_id, uncached_batch)
-    raw = _call_llm(system_prompt, user_msg, model, per_batch_timeout_s)
-    parsed = None
-    if raw:
-        parsed = _parse_response(raw, len(uncached_batch))
-        if parsed is None:
-            # One retry with a strict-JSON nudge (D14).
-            retry_user = user_msg + (
-                "\n\nIMPORTANT: your previous response was not valid JSON. "
-                "Reply with ONLY the JSON object specified, no prose."
-            )
-            raw2 = _call_llm(system_prompt, retry_user, model, per_batch_timeout_s)
-            parsed = _parse_response(raw2, len(uncached_batch)) if raw2 else None
-            if parsed is None:
-                log.warning("[validate.l5] batch %d JSON parse failed twice", batch_idx)
-    parsed = parsed or []
-
-    # Post-call cache write for every fresh verdict.
-    for v in parsed:
-        if "id" not in v:
-            continue
-        # Find the matching finding to write the right cache key.
-        for finding_idx, finding, lang in uncached_batch:
-            fid2 = finding.get("id") or _synthetic_id(finding_idx, finding)
-            if fid2 != v["id"]:
-                continue
-            fp = finding.get("file_path", "")
-            key = l5_cache.cache_key(
-                file_path=fp,
-                line_start=_safe_int(finding.get("line_start")),
-                line_end=_safe_int(finding.get("line_end") or finding.get("line_start")),
-                check_id=finding.get("check_id") or finding.get("category", ""),
-                model=model,
-                file_sig=_file_signature(fp),
-            )
-            l5_cache.store(
-                key,
-                exploitable=v["exploitable"], reasoning=v.get("reasoning", ""),
-                model=model, language=lang,
-            )
-            break
-        verdicts[v["id"]] = v
+    parsed = _call_with_strict_retry(
+        system_prompt, user_msg, model, per_batch_timeout_s,
+        len(uncached_batch), batch_idx,
+    )
+    _store_verdicts(parsed, uncached_batch, model, verdicts)
     return verdicts
 
 
@@ -637,16 +708,33 @@ def _render_user_message(
 # ── Response parsing ─────────────────────────────────────────────────
 
 
+def _strip_code_fences(text: str) -> str:
+    """Strip leading/trailing markdown fences a model may wrap JSON with."""
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text
+
+
+def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
+    """Validate + normalise one verdict dict; None if shape is wrong."""
+    if not isinstance(v, dict):
+        return None
+    fid = v.get("id")
+    prob = v.get("exploitable")
+    if not isinstance(fid, str) or not isinstance(prob, (int, float)):
+        return None
+    prob = max(0.0, min(1.0, float(prob)))
+    reasoning = (v.get("reasoning") or "")[:_REASONING_MAX_CHARS]
+    return {"id": fid, "exploitable": prob, "reasoning": reasoning}
+
+
 def _parse_response(raw: str, batch_size: int) -> Optional[list[dict[str, Any]]]:
     """Parse the JSON response. Returns a list of verdicts or None on
     structural failure."""
     if not raw:
         return None
-    # Strip code fences if a model wrapped the JSON despite instructions.
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
+    text = _strip_code_fences(raw.strip())
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -657,16 +745,10 @@ def _parse_response(raw: str, batch_size: int) -> Optional[list[dict[str, Any]]]
     if not isinstance(verdicts, list):
         return None
     cleaned: list[dict[str, Any]] = []
-    for v in verdicts[:batch_size]:    # defensive cap
-        if not isinstance(v, dict):
-            continue
-        fid = v.get("id")
-        prob = v.get("exploitable")
-        if not isinstance(fid, str) or not isinstance(prob, (int, float)):
-            continue
-        prob = max(0.0, min(1.0, float(prob)))
-        reasoning = (v.get("reasoning") or "")[:_REASONING_MAX_CHARS]
-        cleaned.append({"id": fid, "exploitable": prob, "reasoning": reasoning})
+    for v in verdicts[:batch_size]:   # defensive cap
+        coerced = _coerce_verdict(v)
+        if coerced is not None:
+            cleaned.append(coerced)
     return cleaned
 
 
@@ -743,26 +825,26 @@ def _is_embedding_model(model_id: str) -> bool:
     return "embed" in m or "embedding" in m or m.startswith("bge-") or m.startswith("text-embedding")
 
 
-def _auto_detect_model() -> str:
-    """Query the configured LLM provider's `/v1/models` and pick the
-    best chat-completion model loaded (D17). Returns "" on failure."""
-    base_url = os.getenv("OPENAI_BASE_URL", "").rstrip("/")
-    if not base_url:
-        return ""
+def _fetch_v1_models(base_url: str) -> Optional[list[str]]:
+    """Hit `{base_url}/models` and return the list of model IDs, or
+    None on any network / parse failure. 3s timeout."""
     try:
         import urllib.request
-        req = urllib.request.Request(base_url + "/models",
-                                     headers={"Authorization": "Bearer " + os.getenv("OPENAI_API_KEY", "x")})
+        req = urllib.request.Request(
+            base_url + "/models",
+            headers={"Authorization": "Bearer " + os.getenv("OPENAI_API_KEY", "x")},
+        )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
         log.info("[validate.l5] auto-detect /v1/models failed: %s", type(exc).__name__)
-        return ""
-    candidates = [m.get("id", "") for m in (data.get("data") or []) if isinstance(m, dict)]
-    chat_models = [m for m in candidates if m and not _is_embedding_model(m)]
-    if not chat_models:
-        return ""
-    # Preference order: known families first, then anything else.
+        return None
+    return [m.get("id", "") for m in (data.get("data") or []) if isinstance(m, dict)]
+
+
+def _pick_preferred_model(chat_models: list[str]) -> str:
+    """Rank chat models by `_PREFERRED_FAMILIES` substring match,
+    falling back to the first chat model."""
     for family in _PREFERRED_FAMILIES:
         for m in chat_models:
             if family in m.lower():
@@ -770,6 +852,21 @@ def _auto_detect_model() -> str:
                 return m
     log.info("[validate.l5] auto-detected model (fallback): %s", chat_models[0])
     return chat_models[0]
+
+
+def _auto_detect_model() -> str:
+    """Query the configured LLM provider's `/v1/models` and pick the
+    best chat-completion model loaded (D17). Returns "" on failure."""
+    base_url = os.getenv("OPENAI_BASE_URL", "").rstrip("/")
+    if not base_url:
+        return ""
+    candidates = _fetch_v1_models(base_url)
+    if not candidates:
+        return ""
+    chat_models = [m for m in candidates if m and not _is_embedding_model(m)]
+    if not chat_models:
+        return ""
+    return _pick_preferred_model(chat_models)
 
 
 def _resolve_model(config: ValidateConfig) -> str:

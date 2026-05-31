@@ -54,6 +54,231 @@ def _resolve_l5_enabled(cfg: ValidateConfig) -> bool:
     return cfg.enable_l5
 
 
+def _empty_result(event_texts: list[str]) -> ValidationResult:
+    """Short-circuit return for the no-findings case."""
+    return ValidationResult(
+        findings=[], rollups=[],
+        event_texts=event_texts, layers_run=[], duration_ms={},
+    )
+
+
+def _l1_error_checks(
+    findings: list[dict[str, Any]], exc: BaseException,
+) -> list[list[ValidationCheck]]:
+    return [[ValidationCheck(
+        id="path", result="error", weight=0.0,
+        reason=f"L1 outer error: {type(exc).__name__}")] for _ in findings]
+
+
+def _l2_error_checks(
+    findings: list[dict[str, Any]], exc: BaseException,
+) -> list[list[ValidationCheck]]:
+    return [[ValidationCheck(
+        id="rollup", result="error", weight=0.0,
+        reason=f"L2 outer error: {type(exc).__name__}")] for _ in findings]
+
+
+def _run_l1_phase(
+    findings: list[dict[str, Any]], cfg: ValidateConfig,
+    event_texts: list[str], layers_run: list[str], duration_ms: dict[str, int],
+) -> list[list[ValidationCheck]]:
+    """RC3-isolated L1 dispatcher. Returns one check-list per finding."""
+    if not cfg.enable_l1:
+        return [[] for _ in findings]
+    t0 = time.monotonic()
+    clear_l1_cache()
+    try:
+        l1_results = run_l1(findings)
+        layers_run.append("L1")
+    except Exception as exc:
+        event_texts.append(
+            f"[validate] L1 failed: {type(exc).__name__}; "
+            f"contributing weight=0 for all findings")
+        l1_results = _l1_error_checks(findings, exc)
+    finally:
+        duration_ms["L1"] = int((time.monotonic() - t0) * 1000)
+        clear_l1_cache()
+    demoted = sum(1 for checks in l1_results for c in checks if c.weight < 0)
+    event_texts.append(
+        f"[validate] L1 done · {len(findings)} findings · "
+        f"{demoted} demoting signal(s)")
+    return l1_results
+
+
+def _run_l2_phase(
+    findings: list[dict[str, Any]], cfg: ValidateConfig, audit_id: str,
+    event_texts: list[str], layers_run: list[str], duration_ms: dict[str, int],
+) -> tuple[list[list[ValidationCheck]], list[dict[str, Any]]]:
+    """RC3-isolated L2 dispatcher. Returns (per-finding checks, parents)."""
+    if not cfg.enable_l2:
+        return [[] for _ in findings], []
+    t0 = time.monotonic()
+    try:
+        l2_results, rollups = run_l2(findings, audit_id=audit_id)
+        layers_run.append("L2")
+    except Exception as exc:
+        event_texts.append(f"[validate] L2 failed: {type(exc).__name__}")
+        l2_results = _l2_error_checks(findings, exc)
+        rollups = []
+    finally:
+        duration_ms["L2"] = int((time.monotonic() - t0) * 1000)
+    event_texts.append(f"[validate] L2 done · {len(rollups)} rollup parent(s)")
+    return l2_results, rollups
+
+
+def _apply_validation_to_finding(
+    finding: dict[str, Any], checks: list[ValidationCheck], cfg: ValidateConfig,
+) -> dict[str, Any]:
+    """Vote on checks and stamp validation fields onto a copy of the finding."""
+    status, confidence = vote(checks)
+    v = FindingValidation(status=status, confidence=confidence, checks=checks)
+    if cfg.compliance_mode:
+        v = apply_compliance_mode(v)
+    new_f = dict(finding)
+    new_f["validation"] = v.to_json()
+    new_f["validation_status"] = v.status
+    new_f["validation_confidence"] = v.confidence
+    return new_f
+
+
+def _provisional_vote(
+    findings: list[dict[str, Any]],
+    l1_results: list[list[ValidationCheck]],
+    l2_results: list[list[ValidationCheck]],
+    cfg: ValidateConfig,
+    layers_run: list[str], duration_ms: dict[str, int],
+) -> list[dict[str, Any]]:
+    """First-pass vote using L1+L2 only. Populates `validation*` fields."""
+    t0 = time.monotonic()
+    out_findings = [
+        _apply_validation_to_finding(
+            finding, list(l1_results[idx]) + list(l2_results[idx]), cfg,
+        )
+        for idx, finding in enumerate(findings)
+    ]
+    duration_ms["vote"] = int((time.monotonic() - t0) * 1000)
+    layers_run.append("vote")
+    return out_findings
+
+
+def _revote_finding_in_place(
+    finding: dict[str, Any], cfg: ValidateConfig,
+) -> None:
+    """Re-run vote() using the finding's own checks; mutate in place."""
+    revote_checks = [
+        ValidationCheck.from_json(c)
+        for c in finding.get("validation", {}).get("checks", [])
+    ]
+    s, c = vote(revote_checks)
+    fv = FindingValidation(status=s, confidence=c, checks=revote_checks)
+    if cfg.compliance_mode:
+        fv = apply_compliance_mode(fv)
+    finding["validation"] = fv.to_json()
+    finding["validation_status"] = fv.status
+    finding["validation_confidence"] = fv.confidence
+
+
+def _make_l5_stream_callback(
+    cfg: ValidateConfig,
+    emit_validation_update: Callable[[list[dict[str, Any]]], None] | None,
+) -> Callable[[list[dict[str, Any]]], None]:
+    """Build the per-batch callback L5 invokes during streaming.
+
+    D6/D16: re-vote with L5 included and apply V8 before emitting so
+    compliance-mode never leaks `likely_fp` to the SSE stream.
+    """
+    def _stream_batch(updated_findings: list[dict[str, Any]]) -> None:
+        if emit_validation_update is None:
+            return
+        for f in updated_findings:
+            _revote_finding_in_place(f, cfg)
+        emit_validation_update(updated_findings)
+    return _stream_batch
+
+
+def _backfill_l5_offline(
+    out_findings: list[dict[str, Any]],
+    l5_results: list[list[ValidationCheck]],
+    cfg: ValidateConfig,
+) -> None:
+    """When streaming is off, re-vote every L5-judged finding so the
+    final result reflects the LLM verdict. (When streaming is on, the
+    callback already mutated each finding in place — issue #14.)
+    """
+    for idx, l5_checks in enumerate(l5_results):
+        if not l5_checks:
+            continue
+        existing = out_findings[idx].get("validation", {}).get("checks", [])
+        merged = [ValidationCheck.from_json(c) for c in existing]
+        if not any(c.id == "llm_judge" for c in merged):
+            merged.extend(l5_checks)
+        out_findings[idx] = _apply_validation_to_finding(
+            out_findings[idx], merged, cfg,
+        )
+        # _apply_validation_to_finding returns a fresh dict; preserve
+        # the existing keys by merging back so the caller's reference
+        # observes the update.
+        # (Iteration above replaces the slot, which is fine.)
+
+
+def _run_l5_phase(
+    out_findings: list[dict[str, Any]],
+    l1_results: list[list[ValidationCheck]], cfg: ValidateConfig,
+    audit_id: str,
+    emit_validation_update: Callable[[list[dict[str, Any]]], None] | None,
+    event_texts: list[str], layers_run: list[str], duration_ms: dict[str, int],
+) -> None:
+    """RC3-isolated L5 dispatcher. Mutates out_findings in place."""
+    if not _resolve_l5_enabled(cfg):
+        return
+    t0 = time.monotonic()
+    try:
+        _stream_batch = _make_l5_stream_callback(cfg, emit_validation_update)
+        l5_results = run_l5(
+            out_findings, l1_results, cfg,
+            audit_id=audit_id, emit_batch=_stream_batch,
+        )
+        if emit_validation_update is None:
+            _backfill_l5_offline(out_findings, l5_results, cfg)
+        layers_run.append("L5")
+    except Exception as exc:
+        event_texts.append(
+            f"[validate] L5 failed: {type(exc).__name__}; layer disabled")
+    finally:
+        duration_ms["L5"] = int((time.monotonic() - t0) * 1000)
+    judged = sum(
+        1 for f in out_findings
+        if any(c.get("id") == "llm_judge"
+               for c in f.get("validation", {}).get("checks", []))
+    )
+    event_texts.append(f"[validate] L5 done · {judged} finding(s) judged")
+
+
+def _emit_summary(
+    out_findings: list[dict[str, Any]], rollups: list[dict[str, Any]],
+    duration_ms: dict[str, int], event_texts: list[str],
+) -> None:
+    """Append the final summary event text + populate parent status fields."""
+    total_ms = sum(duration_ms.values())
+    counts = {"likely_fp": 0, "suspicious": 0, "high_confidence": 0}
+    for f in out_findings:
+        status = f.get("validation_status", "suspicious")
+        counts[status] = counts.get(status, 0) + 1
+    event_texts.append(
+        f"[validate] done in {total_ms}ms · "
+        f"high={counts['high_confidence']} · "
+        f"susp={counts['suspicious']} · "
+        f"fp={counts['likely_fp']} · "
+        f"rollups={len(rollups)}"
+    )
+    # Mirror status/confidence onto rollup parents so the UI's
+    # status filter doesn't skip parent rows persisted with NULL.
+    for parent in rollups:
+        v_blob = parent.get("validation") or {}
+        parent["validation_status"] = v_blob.get("status", "suspicious")
+        parent["validation_confidence"] = v_blob.get("confidence", 0.4)
+
+
 def validate(
     findings: list[dict[str, Any]],
     source_path: str = "",
@@ -70,187 +295,28 @@ def validate(
     V8: compliance_mode prevents `likely_fp` classifications.
     """
     cfg = config or ValidateConfig()
-
     if not findings:
-        return ValidationResult(
-            findings=[],
-            rollups=[],
-            event_texts=["[validate] no findings to validate"],
-            layers_run=[],
-            duration_ms={},
-        )
+        return _empty_result(["[validate] no findings to validate"])
 
     event_texts: list[str] = []
     layers_run: list[str] = []
     duration_ms: dict[str, int] = {}
 
-    # ── L1 context heuristics ──────────────────────────────────
-    l1_results: list[list[ValidationCheck]]
-    if cfg.enable_l1:
-        t0 = time.monotonic()
-        clear_l1_cache()
-        try:
-            l1_results = run_l1(findings)
-            layers_run.append("L1")
-        except Exception as exc:   # RC3 final safety net
-            event_texts.append(
-                f"[validate] L1 failed: {type(exc).__name__}; "
-                f"contributing weight=0 for all findings")
-            l1_results = [[ValidationCheck(
-                id="path", result="error", weight=0.0,
-                reason=f"L1 outer error: {type(exc).__name__}")] for _ in findings]
-        finally:
-            duration_ms["L1"] = int((time.monotonic() - t0) * 1000)
-            clear_l1_cache()
-        demoted = sum(
-            1 for checks in l1_results
-            for c in checks if c.weight < 0
-        )
-        event_texts.append(
-            f"[validate] L1 done · {len(findings)} findings · "
-            f"{demoted} demoting signal(s)")
-    else:
-        l1_results = [[] for _ in findings]
-
-    # ── L2 rollup ──────────────────────────────────────────────
-    l2_results: list[list[ValidationCheck]]
-    rollups: list[dict[str, Any]]
-    if cfg.enable_l2:
-        t0 = time.monotonic()
-        try:
-            l2_results, rollups = run_l2(findings, audit_id=audit_id)
-            layers_run.append("L2")
-        except Exception as exc:
-            event_texts.append(f"[validate] L2 failed: {type(exc).__name__}")
-            l2_results = [[ValidationCheck(
-                id="rollup", result="error", weight=0.0,
-                reason=f"L2 outer error: {type(exc).__name__}")] for _ in findings]
-            rollups = []
-        finally:
-            duration_ms["L2"] = int((time.monotonic() - t0) * 1000)
-        event_texts.append(
-            f"[validate] L2 done · {len(rollups)} rollup parent(s)")
-    else:
-        l2_results = [[] for _ in findings]
-        rollups = []
-
-    # ── Provisional vote (L1+L2 only) — build out_findings ────
-    t0 = time.monotonic()
-    out_findings: list[dict[str, Any]] = []
-    for idx, finding in enumerate(findings):
-        checks: list[ValidationCheck] = []
-        checks.extend(l1_results[idx])
-        checks.extend(l2_results[idx])
-        status, confidence = vote(checks)
-        v = FindingValidation(
-            status=status, confidence=confidence, checks=checks,
-        )
-        if cfg.compliance_mode:
-            v = apply_compliance_mode(v)
-        new_f = dict(finding)
-        new_f["validation"] = v.to_json()
-        new_f["validation_status"] = v.status
-        new_f["validation_confidence"] = v.confidence
-        out_findings.append(new_f)
-    duration_ms["vote"] = int((time.monotonic() - t0) * 1000)
-    layers_run.append("vote")
-
-    # ── L5 LLM judge (opt-in, feature 0046) ────────────────────
-    if _resolve_l5_enabled(cfg):
-        t0 = time.monotonic()
-        try:
-            # Streaming callback (D6/D16): re-vote with L5 included and
-            # apply V8 BEFORE emitting. Keeps compliance-mode flashes
-            # from leaking to the SSE stream.
-            def _stream_batch(updated_findings: list[dict[str, Any]]) -> None:
-                if emit_validation_update is None:
-                    return
-                for f in updated_findings:
-                    revote_checks = [
-                        ValidationCheck.from_json(c)
-                        for c in f.get("validation", {}).get("checks", [])
-                    ]
-                    s, c = vote(revote_checks)
-                    fv = FindingValidation(status=s, confidence=c, checks=revote_checks)
-                    if cfg.compliance_mode:
-                        fv = apply_compliance_mode(fv)
-                    f["validation"] = fv.to_json()
-                    f["validation_status"] = fv.status
-                    f["validation_confidence"] = fv.confidence
-                emit_validation_update(updated_findings)
-
-            l5_results = run_l5(
-                out_findings, l1_results, cfg,
-                audit_id=audit_id,
-                emit_batch=_stream_batch,
-            )
-            # Backfill loop. Issue #14: if streaming was on, the
-            # `_stream_batch` callback already updated validation +
-            # status + confidence on each finding. Skip the redundant
-            # re-vote in that case — just record the layer ran.
-            #
-            # Streaming = ON: `_stream_batch` mutated every selected
-            # finding's validation in place; the L5 check is already
-            # present. No backfill needed.
-            #
-            # Streaming = OFF: callback never fired; we must re-vote
-            # here so the final result includes L5.
-            streaming_on = emit_validation_update is not None
-            if not streaming_on:
-                for idx, l5_checks in enumerate(l5_results):
-                    if not l5_checks:
-                        continue
-                    existing = out_findings[idx].get("validation", {}).get("checks", [])
-                    merged = [ValidationCheck.from_json(c) for c in existing]
-                    if not any(c.id == "llm_judge" for c in merged):
-                        merged.extend(l5_checks)
-                    s, c = vote(merged)
-                    fv = FindingValidation(status=s, confidence=c, checks=merged)
-                    if cfg.compliance_mode:
-                        fv = apply_compliance_mode(fv)
-                    out_findings[idx]["validation"] = fv.to_json()
-                    out_findings[idx]["validation_status"] = fv.status
-                    out_findings[idx]["validation_confidence"] = fv.confidence
-            layers_run.append("L5")
-        except Exception as exc:  # RC3 outer safety net
-            event_texts.append(
-                f"[validate] L5 failed: {type(exc).__name__}; layer disabled")
-        finally:
-            duration_ms["L5"] = int((time.monotonic() - t0) * 1000)
-        judged = sum(
-            1 for f in out_findings
-            if any(c.get("id") == "llm_judge"
-                   for c in f.get("validation", {}).get("checks", []))
-        )
-        event_texts.append(f"[validate] L5 done · {judged} finding(s) judged")
-
-    total_ms = sum(duration_ms.values())
-    demote_counts: dict[str, int] = {"likely_fp": 0, "suspicious": 0, "high_confidence": 0}
-    for f in out_findings:
-        demote_counts[f.get("validation_status", "suspicious")] = (
-            demote_counts.get(f.get("validation_status", "suspicious"), 0) + 1
-        )
-    event_texts.append(
-        f"[validate] done in {total_ms}ms · "
-        f"high={demote_counts['high_confidence']} · "
-        f"susp={demote_counts['suspicious']} · "
-        f"fp={demote_counts['likely_fp']} · "
-        f"rollups={len(rollups)}"
+    l1_results = _run_l1_phase(findings, cfg, event_texts, layers_run, duration_ms)
+    l2_results, rollups = _run_l2_phase(
+        findings, cfg, audit_id, event_texts, layers_run, duration_ms,
     )
-
-    # Normalise rollup parents so the persisted records carry the
-    # same top-level validation_status / validation_confidence as
-    # members. Without this the rollup parent row ends up with
-    # NULL validation_status and the UI's status filter skips it.
-    for parent in rollups:
-        v_blob = parent.get("validation") or {}
-        parent["validation_status"] = v_blob.get("status", "suspicious")
-        parent["validation_confidence"] = v_blob.get("confidence", 0.4)
+    out_findings = _provisional_vote(
+        findings, l1_results, l2_results, cfg, layers_run, duration_ms,
+    )
+    _run_l5_phase(
+        out_findings, l1_results, cfg, audit_id, emit_validation_update,
+        event_texts, layers_run, duration_ms,
+    )
+    _emit_summary(out_findings, rollups, duration_ms, event_texts)
 
     return ValidationResult(
-        findings=out_findings,
-        rollups=rollups,
-        event_texts=event_texts,
-        layers_run=layers_run,
+        findings=out_findings, rollups=rollups,
+        event_texts=event_texts, layers_run=layers_run,
         duration_ms=duration_ms,
     )

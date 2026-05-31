@@ -46,6 +46,83 @@ def _rollup_status_for(category: str, instance_count: int) -> str:
     return "suspicious"
 
 
+def _group_findings(
+    findings: list[dict[str, Any]],
+) -> dict[tuple[str, str, str], list[int]]:
+    """Group findings by (category, normalised title, file_path)."""
+    groups: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+    for idx, f in enumerate(findings):
+        key = (
+            f.get("category", "") or "",
+            _normalize_title(f.get("title", "") or ""),
+            f.get("file_path", "") or "",
+        )
+        groups[key].append(idx)
+    return groups
+
+
+def _build_rollup_parent(
+    audit_id: str, category: str, file_path: str,
+    members: list[dict[str, Any]], instance_count: int,
+) -> dict[str, Any]:
+    """Construct a single rollup-parent record from its members."""
+    line_start = min((m.get("line_start") or 0) for m in members) or 1
+    line_end = max((m.get("line_end") or 0) for m in members) or line_start
+    severity = _max_severity([m.get("severity", "low") for m in members])
+    title = members[0].get("title", "") or ""
+    parent_id = rollup_id(audit_id, category, title, file_path)
+    return {
+        "id": parent_id,
+        "audit_id": audit_id,
+        "is_rollup": True,
+        "category": category,
+        "title": title,
+        "description": (
+            f"{instance_count} instances rolled up; see member "
+            f"findings for individual line locations."
+        ),
+        "file_path": file_path,
+        "line_start": int(line_start),
+        "line_end": int(line_end),
+        "severity": severity,
+        "instance_count": instance_count,
+        "rolled_up_member_ids": [m.get("id", "") for m in members],
+        "recommendation": members[0].get("recommendation", ""),
+        "validation": {
+            "status": _rollup_status_for(category, instance_count),
+            "confidence": 0.40,
+            "checks": [],
+            "validated_at": "",
+        },
+    }
+
+
+def _mark_rollup_members(
+    per_finding: list[list[ValidationCheck]],
+    indices: list[int], parent_id: str, count: int,
+) -> None:
+    """Replace each member's singleton check with a `rolled_up` ref."""
+    check = ValidationCheck(
+        id="rollup", result="rolled_up", weight=0.0,
+        reason=f"member of rollup ({count} instances)",
+        extras={"rolled_up_into": parent_id},
+    )
+    for i in indices:
+        per_finding[i] = [check]
+
+
+def _l2_error_result(
+    findings: list[dict[str, Any]], exc: BaseException,
+) -> tuple[list[list[ValidationCheck]], list[dict[str, Any]]]:
+    """Layer-isolated fallback when run_l2 hits an unexpected exception."""
+    return (
+        [[ValidationCheck(
+            id="rollup", result="error", weight=0.0,
+            reason=f"L2 error: {type(exc).__name__}")] for _ in findings],
+        [],
+    )
+
+
 def run_l2(
     findings: list[dict[str, Any]], audit_id: str = "",
 ) -> tuple[list[list[ValidationCheck]], list[dict[str, Any]]]:
@@ -60,72 +137,24 @@ def run_l2(
     `(neutral, [])` per finding without aborting.
     """
     try:
-        groups: dict[tuple[str, str, str], list[int]] = defaultdict(list)
-        for idx, f in enumerate(findings):
-            key = (
-                f.get("category", "") or "",
-                _normalize_title(f.get("title", "") or ""),
-                f.get("file_path", "") or "",
-            )
-            groups[key].append(idx)
-
-        # Per-finding checks; default to a singleton marker.
+        groups = _group_findings(findings)
         per_finding: list[list[ValidationCheck]] = [
             [ValidationCheck(id="rollup", result="singleton", weight=0.0)]
             for _ in findings
         ]
         rollup_parents: list[dict[str, Any]] = []
-
-        for (category, norm_title, file_path), indices in groups.items():
+        for (category, _norm_title, file_path), indices in groups.items():
             if len(indices) < 2:
                 continue
-            # Real rollup: build the parent record.
             members = [findings[i] for i in indices]
-            line_start = min((m.get("line_start") or 0) for m in members) or 1
-            line_end = max((m.get("line_end") or 0) for m in members) or line_start
-            severity = _max_severity([m.get("severity", "low") for m in members])
-            title = members[0].get("title", "") or ""
-            parent_id = rollup_id(audit_id, category, title, file_path)
-            parent = {
-                "id": parent_id,
-                "audit_id": audit_id,
-                "is_rollup": True,
-                "category": category,
-                "title": title,
-                "description": (
-                    f"{len(indices)} instances rolled up; see member "
-                    f"findings for individual line locations."
-                ),
-                "file_path": file_path,
-                "line_start": int(line_start),
-                "line_end": int(line_end),
-                "severity": severity,
-                "instance_count": len(indices),
-                "rolled_up_member_ids": [
-                    members[k].get("id", "") for k in range(len(members))
-                ],
-                "recommendation": members[0].get("recommendation", ""),
-                "validation": {
-                    "status": _rollup_status_for(category, len(indices)),
-                    "confidence": 0.40,
-                    "checks": [],
-                    "validated_at": "",
-                },
-            }
+            parent = _build_rollup_parent(
+                audit_id, category, file_path, members, len(indices),
+            )
             rollup_parents.append(parent)
-            for i in indices:
-                per_finding[i] = [ValidationCheck(
-                    id="rollup", result="rolled_up", weight=0.0,
-                    reason=f"member of rollup ({len(indices)} instances)",
-                    extras={"rolled_up_into": parent_id},
-                )]
+            _mark_rollup_members(per_finding, indices, parent["id"], len(indices))
         return per_finding, rollup_parents
     except Exception as exc:    # RC3 layer-isolated
-        return (
-            [[ValidationCheck(id="rollup", result="error", weight=0.0,
-                              reason=f"L2 error: {type(exc).__name__}")] for _ in findings],
-            [],
-        )
+        return _l2_error_result(findings, exc)
 
 
 _SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}

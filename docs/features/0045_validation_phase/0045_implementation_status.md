@@ -1,39 +1,62 @@
 # 0045 — Validation phase · Implementation status
 
-**Status**: PLANNED (post-audit revisions applied 2026-05-20)
-**Last updated**: 2026-05-20
+**Status**: IMPLEMENTED (core pipeline) — UI surface + ops guides pending
+**Last updated**: 2026-05-31
 
 ## Summary
 
-Drafted plan + rollback; post-audit fixes applied (5 critical, 10 high,
-14 medium audit findings resolved). No implementation work has started.
+Core validation pipeline shipped in commit `2b521e3 feat(0045-0052):
+plugin platform + validation phase end-to-end` (2026-05-30). L1-L5
+layers, voter, serialisation, migrations, backend memory_prior, and
+label endpoint all in tree and exercised by 118 passing unit tests
+under `agents/shared/tests/unit/validate/`. Remaining gaps are the
+user-facing UI elements (ValidationBadge, banner), CI gates
+(separation-invariants, perf budget), and the operator guide.
 
 ## Checkpoints
 
 Matches the build sequence in the plan 1:1.
 
-| # | Checkpoint | Owner | Status | Notes |
-|---|---|---|---|---|
-| 1 | Types + `ValidationResult.to_json/from_json` + serialisation round-trip test (V3, V10) | — | not started | Computed fields excluded from equality (M3). |
-| 2 | Voter (`voter.py`) — V7 amended with `AUTHORITATIVE_CHECKS` exception (H3) + unit tests | — | not started | `# nosec` and friends bypass the ≥2-checks rule. |
-| 3 | L1 context_heuristics (path classifier, suppression markers, sanitizer scan) + unit tests | — | not started | Biggest single FP-reduction layer (30–50%). |
-| 4 | L2 rollup (`_normalize(title)` per M1; rollup parents in `result.rollups`) + unit tests | — | not started | Children stay in dataset with `validation.rolled_up_into` (V6). |
-| 5 | Audit-runner integration: buffer-then-validate-then-emit pattern (H2) | — | not started | User-visible: findings appear in burst, progress streamed via text events. |
-| 6 | Validate progress strings via `emitter.text_message` (H5+M8) | — | not started | `[validate]` prefix; no new agui event types in v1. |
-| 7 | Migration `017_validation_columns.sql` (Postgres + SQLite via marker comments) | — | not started | Single file, forward-only; no down script (C5). |
-| 8 | Backend `audit_aggregator.go` + L3 cross-agent merge (extends `CrossAgentOrigins`, H6) | — | not started | Audit existing CrossAgentOrigins plumbing first. |
-| 9 | `POST /api/findings/:id/label` + `DELETE /api/findings/:id/label` (M7) + runtime-log entry | — | not started | Audit-log entry when 0044 S18 wiring ships (M12). |
-| 10 | `ValidationBadge.tsx` + tooltip exposing `checks` array | — | not started | Three states: green / yellow / grey pill; NULL → grey-outline "not validated" (M4). |
-| 11 | FindingsTable column + opt-in `validation_status` query param (H9) + thumbs buttons | — | not started | SPA opts in; API default unchanged. |
-| 12 | AuditResults page banner: "N findings · X high · Y suspicious · Z hidden" | — | not started | One-click filter toggle. |
-| 13 | L4 memory_prior (Go backend, pgvector `<=>` kNN, M1+M13 tenant scope) + Go voter port + parity test | — | not started | `weight = ±0.40 × cos_similarity` (cos_similarity = 1 − cos_distance, H1). |
-| 14 | L5 llm_judge (per-agent Python, opt-in via `VULTURE_USE_VALIDATE_LLM=true`) + prompt versioning (M10) | — | not started | Off by default; cost-controlled. |
-| 15 | Separation-invariants CI test (V2 grep ban, V3 round-trip, V6 length-preserving, V8 compliance-safe) | — | not started | Enforces the V1–V10 contract per PR. |
-| 16 | Perf budget test (V9) — `make perf-baseline` captures pre-feature median (M11); test asserts ≤ +10 % / +15 % / +35 % deltas | — | not started | Baseline file committed; host-signature gate avoids flake. |
-| 17 | Extraction-readiness smoke (`scripts/validate-as-service.sh`) + `agents/validate-stub/main.py` shim (M9) | — | not started | Proves V1+V3+V4 hold; the shim is NOT in compose. |
-| 18 | Operator + user guide (`docs/guides/validation_phase.md`) | — | not started | UX walkthrough; compliance-mode (M6); thumbs-feedback explanation. |
-| 19 | CLAUDE.md update — add validate stage to the audit pipeline section | — | not started | One-line addition to the pipeline diagram. |
-| 20 | Acceptance tests on Vulture self-scan + stackOpen (≥ 30 % / ≥ 30 % demotion rates with all critical findings preserved) | — | not started | Relative targets (L1) not absolute counts. |
+| # | Checkpoint | Status | Evidence |
+|---|---|---|---|
+| 1 | Types + `ValidationResult.to_json/from_json` + serialisation round-trip test (V3, V10) | ✅ done | `agents/shared/shared/validate/types.py`; `tests/unit/validate/test_serialisation_round_trip.py` |
+| 2 | Voter (`voter.py`) — V7 + `AUTHORITATIVE_CHECKS` exception + unit tests | ✅ done | `validate/voter.py`; `test_voter.py` |
+| 3 | L1 context_heuristics (path classifier, suppression markers, sanitizer scan) | ✅ done | `validate/context_heuristics.py` |
+| 4 | L2 rollup (`_normalize(title)`; parents in `result.rollups`) + unit tests | ✅ done | `validate/rollup.py` |
+| 5 | Audit-runner integration: buffer-then-validate-then-emit (H2) | ✅ done | `agents/shared/shared/audit_runner.py` (validate gate + emit loop) |
+| 6 | Validate progress via `emitter.text_message` ([validate] prefix) | ✅ done | `shared/transport/event_emitter.py` |
+| 7 | Migration `017_validation_columns.sql` + sibling `018`, `019` | ✅ done | `backend/internal/repository/migrations/017_validation_columns.sql`, `018_partial_vector_indexes.sql`, `019_l5_verdict_cache.sql` |
+| 8 | Backend L3 cross-agent merge (extends `CrossAgentOrigins`, H6) | ✅ done | `backend/internal/handler/stream_handler.go::deduplicateCrossAgent` (+`applyCrossAgentValidation`) |
+| 9 | `POST /api/findings/:id/label` + `DELETE /api/findings/:id/label` | ✅ done | `backend/internal/handler/finding_label_handler.go` |
+| 10 | `ValidationBadge.tsx` + tooltip exposing `checks` array | ⬜ not started | UI work — surface is wired (`frontend/src/lib/types.ts`, `pages/AuditResults.tsx`) but no dedicated badge component yet |
+| 11 | FindingsTable column + opt-in `validation_status` query param + thumbs buttons | ⬜ not started | API supports it; SPA opt-in deferred |
+| 12 | AuditResults page banner: "N findings · X high · Y suspicious · Z hidden" | ⬜ not started | follows #10/#11 |
+| 13 | L4 memory_prior (Go, pgvector `<=>` kNN, tenant scope) + Go voter port + parity test | ✅ done | `backend/internal/service/validation_memory.go`, `validation_voter.go`; parity covered via Go test suite + Python test_integration |
+| 14 | L5 llm_judge (opt-in via `VULTURE_USE_VALIDATE_LLM=true`) + prompt versioning | ✅ done (feature 0046) | `validate/llm_judge.py`, `validate/l5_cache.py`, `validate/prompts/`; `test_llm_judge.py` |
+| 15 | Separation-invariants CI test (V2 grep ban, V3 round-trip, V6 length-preserving, V8 compliance-safe) | ⬜ partial | round-trip ✅; the other V-invariants not yet CI-gated |
+| 16 | Perf budget test (V9) — `make perf-baseline` + ≤ +10/+15/+35 % deltas | ⬜ not started | baseline-file approach scoped, not implemented |
+| 17 | Extraction-readiness smoke (`scripts/validate-as-service.sh`) + `agents/validate-stub/` shim | ⬜ not started | deferred; in-process module today |
+| 18 | Operator + user guide (`docs/guides/validation_phase.md`) | ⬜ not started | needs UX walkthrough + compliance-mode + thumbs-feedback explanation |
+| 19 | CLAUDE.md update — add validate stage to pipeline section | ⬜ not started | one-line diff |
+| 20 | Acceptance tests on Vulture self-scan + stackOpen (≥ 30 % demotion rates with critical findings preserved) | ⬜ not started | scripts not yet authored |
+
+## What's live as of 2026-05-31
+
+- L1, L2, L3, L4, L5 layers all running end-to-end.
+- Voter (Python + Go) producing `high_confidence` / `suspicious` /
+  `likely_fp` verdicts on every audit.
+- Validation columns persisted across SQLite + Postgres via
+  migrations 017/018/019.
+- Cross-agent corroboration boosts confidence by `+0.10 × N` (cap +0.30).
+- Memory-prior label inheritance via pgvector kNN.
+- L5 LLM judge runs when operator enables `VULTURE_USE_VALIDATE_LLM=true`.
+- Label thumbs endpoint accepting `fp` / `tp` per finding.
+
+## What's still pending
+
+UI polish + CI gates + operator docs (#10-12, #15-20). None block the
+backend pipeline; they're the path to making validation visible and
+governable in the SPA. Tracked as a v1.1 follow-up.
 
 ## Decisions log
 

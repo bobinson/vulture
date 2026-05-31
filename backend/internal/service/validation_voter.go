@@ -29,6 +29,52 @@ type VoteResult struct {
 	Confidence float64
 }
 
+// clampConfidence clamps a raw weight-sum into the [0,1] band.
+func clampConfidence(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// hasAuthoritativeDemotion reports whether any check in
+// AuthoritativeCheckIDs has a negative weight — operator overrides
+// like `# nosec` carry singular weight in the V7 vote.
+func hasAuthoritativeDemotion(checks []VoterCheck) bool {
+	for _, c := range checks {
+		if _, isAuth := AuthoritativeCheckIDs[c.ID]; isAuth && c.Weight < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// countDemoting returns the number of negative-weight checks.
+func countDemoting(checks []VoterCheck) int {
+	n := 0
+	for _, c := range checks {
+		if c.Weight < 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// classify maps (clamped confidence, demoting count) → status.
+// Mirrors validate/voter.py::_classify().
+func classify(confidence float64, demotingCount int) string {
+	if confidence < 0.30 && demotingCount >= 2 {
+		return "likely_fp"
+	}
+	if confidence < 0.55 {
+		return "suspicious"
+	}
+	return "high_confidence"
+}
+
 // Vote applies the V7 rules to a list of check weights and ids.
 // Mirrors `agents/shared/shared/validate/voter.py::vote()` exactly.
 //
@@ -39,39 +85,17 @@ func Vote(checks []VoterCheck) VoteResult {
 	for _, c := range checks {
 		confidence += c.Weight
 	}
-	if confidence < 0 {
-		confidence = 0
-	}
-	if confidence > 1 {
-		confidence = 1
-	}
-
-	// V7 amendment: authoritative-demoting check (a `# nosec` etc.)
-	// alone lands the finding in `likely_fp` regardless of how many
-	// other layers disagree.
-	for _, c := range checks {
-		if _, isAuth := AuthoritativeCheckIDs[c.ID]; isAuth && c.Weight < 0 {
-			if confidence > 0.05 {
-				confidence = 0.05
-			}
-			return VoteResult{Status: "likely_fp", Confidence: confidence}
+	confidence = clampConfidence(confidence)
+	if hasAuthoritativeDemotion(checks) {
+		if confidence > 0.05 {
+			confidence = 0.05
 		}
-	}
-
-	// V7: at least 2 demoting checks required for `likely_fp`.
-	demotingCount := 0
-	for _, c := range checks {
-		if c.Weight < 0 {
-			demotingCount++
-		}
-	}
-	if confidence < 0.30 && demotingCount >= 2 {
 		return VoteResult{Status: "likely_fp", Confidence: confidence}
 	}
-	if confidence < 0.55 {
-		return VoteResult{Status: "suspicious", Confidence: confidence}
+	return VoteResult{
+		Status:     classify(confidence, countDemoting(checks)),
+		Confidence: confidence,
 	}
-	return VoteResult{Status: "high_confidence", Confidence: confidence}
 }
 
 // VoterCheck is the input shape Vote consumes.

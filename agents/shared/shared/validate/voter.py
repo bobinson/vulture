@@ -28,6 +28,34 @@ __all__ = ["AUTHORITATIVE_CHECKS", "vote"]
 AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression"})
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return lo if value < lo else hi if value > hi else value
+
+
+def _has_authoritative_demotion(checks: list[ValidationCheck]) -> bool:
+    """True if any AUTHORITATIVE_CHECKS check has a negative weight.
+
+    Operator overrides (e.g. `# nosec`) carry singular weight: one such
+    check sends the finding to `likely_fp` regardless of agreement.
+    """
+    return any(
+        c.id in AUTHORITATIVE_CHECKS and c.weight < 0 for c in checks
+    )
+
+
+def _count_demoting(checks: list[ValidationCheck]) -> int:
+    return sum(1 for c in checks if c.weight < 0)
+
+
+def _classify(confidence: float, demoting_count: int) -> str:
+    """V7 status classification given a clamped confidence + demoting count."""
+    if confidence < 0.30 and demoting_count >= 2:
+        return "likely_fp"
+    if confidence < 0.55:
+        return "suspicious"
+    return "high_confidence"
+
+
 def vote(checks: Iterable[ValidationCheck]) -> tuple[str, float]:
     """Apply V7 vote rules to a list of validation checks.
 
@@ -35,26 +63,8 @@ def vote(checks: Iterable[ValidationCheck]) -> tuple[str, float]:
     `"high_confidence"`, `"suspicious"`, `"likely_fp"`.
     """
     checks_list = list(checks)
-    confidence = 0.5 + sum(c.weight for c in checks_list)
-    if confidence < 0.0:
-        confidence = 0.0
-    elif confidence > 1.0:
-        confidence = 1.0
-
-    # Authoritative-demoting checks (e.g. explicit `# nosec`) always
-    # land in `likely_fp` regardless of how many other layers disagree.
-    authoritative_negatives = [
-        c for c in checks_list
-        if c.id in AUTHORITATIVE_CHECKS and c.weight < 0
-    ]
-    if authoritative_negatives:
+    confidence = _clamp(0.5 + sum(c.weight for c in checks_list), 0.0, 1.0)
+    if _has_authoritative_demotion(checks_list):
         return "likely_fp", min(confidence, 0.05)
-
-    # V7: require ≥ 2 demoting checks to land in `likely_fp`.
-    # Single-check demotions can only land in `suspicious`.
-    demoting_checks = [c for c in checks_list if c.weight < 0]
-    if confidence < 0.30 and len(demoting_checks) >= 2:
-        return "likely_fp", confidence
-    if confidence < 0.55:
-        return "suspicious", confidence
-    return "high_confidence", confidence
+    status = _classify(confidence, _count_demoting(checks_list))
+    return status, confidence

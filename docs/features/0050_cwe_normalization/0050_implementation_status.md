@@ -14,7 +14,7 @@
 - [x] `go test -race ./... -count=1` — all 19 packages green
 - [x] All 14 acceptance criteria pass independently (verified per-AC in `go test -v`)
 - [x] Layer wired into `server.New` via `stagerouter.NewWithLayer(reg, cfg.Agents, cwe.New(reg))`
-- [x] E2E: live exercise against `/home/user/src/vulture/agents/*/skills/*.py` — 11/11 OWASP A0X categories normalised, all SSDF + XSS + CWE-canonical categories resolved
+- [x] E2E: live exercise against `agents/*/skills/*.py` (in-tree agent skill files) — 11/11 OWASP A0X categories normalised, all SSDF + XSS + CWE-canonical categories resolved
 
 ## Test summary
 
@@ -49,7 +49,7 @@ internal/handler     2 new tests (AC 13) PASS — proxy hardening verified
 
 ```
 $ go run ./cmd/e2e_0050/
-Extracted 142 (agent, category, check_id) emissions from /home/user/src/vulture/agents
+Extracted 142 (agent, category, check_id) emissions from ./agents
 Resolved: 97 / 142 (68.3%)
 ...
 OWASP A0X categories that normalised to a non-empty CWE: 11
