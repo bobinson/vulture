@@ -88,7 +88,9 @@
     "validation": {
       "likely_fp": "Wahrscheinlich Fehlalarm",
       "suspicious": "Verdächtig",
-      "tooltip": "Automatisches Validierungsurteil"
+      "tooltip": "Automatisches Validierungsurteil",
+      "high_confidence": "Hohe Konfidenz",
+      "hidden": "{{count}} ausgeblendet"
     },
     "sortBy": "Sortieren nach",
     "progress": "Fortschritt: {{analyzed}}/{{total}} Dateien, {{count}} Befunde",
@@ -218,7 +220,7 @@
     "verified": "Verifiziert",
     "notReproduced": "Nicht Reproduziert",
     "inconclusive": "Unklar",
-    "skipped": "\u00dcbersprungen",
+    "skipped": "Übersprungen",
     "showEvidence": "Beweis anzeigen",
     "hideEvidence": "Beweis ausblenden",
     "iterations": "{{count}} Iteration(en)",

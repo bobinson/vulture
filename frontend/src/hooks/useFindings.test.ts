@@ -228,6 +228,19 @@ describe("useFindings", () => {
     expect(result.current.page).toBe(0);
   });
 
+  it("reports validationCounts over the full audit (filter-independent)", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    // 2 high_confidence (Real Critical + Triaged FP), 1 suspicious, 1 likely_fp
+    expect(result.current.validationCounts).toEqual({
+      highConfidence: 2,
+      suspicious: 1,
+      likelyFp: 1,
+    });
+    // counts stay stable even with an active severity filter
+    act(() => result.current.setFilterSeverity("critical"));
+    expect(result.current.validationCounts.suspicious).toBe(1);
+  });
+
   it("treats a missing fingerprint set as no lineage FPs", () => {
     const { result } = renderHook(() => useFindings(FP_FINDINGS));
     act(() => result.current.setHideFalsePositives(true));

@@ -77,7 +77,7 @@
     "streamComplete": "Stream complete",
     "showOutput": "Show agent output",
     "hideOutput": "Hide agent output",
-    "pageInfo": "{{from}}\u2013{{to}} of {{total}}",
+    "pageInfo": "{{from}}–{{to}} of {{total}}",
     "severity": "Severity",
     "severityBreakdown": "Severity Breakdown",
     "totalCount": "{{count}} total",
@@ -92,7 +92,9 @@
     "validation": {
       "likely_fp": "Likely false positive",
       "suspicious": "Suspicious",
-      "tooltip": "Automated validation verdict"
+      "tooltip": "Automated validation verdict",
+      "high_confidence": "High confidence",
+      "hidden": "{{count}} hidden"
     },
     "sortBy": "Sort by",
     "progress": "Progress: {{analyzed}}/{{total}} files, {{count}} findings",

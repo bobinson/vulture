@@ -88,7 +88,9 @@
     "validation": {
       "likely_fp": "Faux positif probable",
       "suspicious": "Suspect",
-      "tooltip": "Verdict de validation automatique"
+      "tooltip": "Verdict de validation automatique",
+      "high_confidence": "Confiance élevée",
+      "hidden": "{{count}} masqués"
     },
     "sortBy": "Trier par",
     "progress": "Progression : {{analyzed}}/{{total}} fichiers, {{count}} constatations",
@@ -214,18 +216,18 @@
     "connectionLost": "Connexion perdue. Nouvelle tentative..."
   },
   "prove": {
-    "verificationResults": "R\u00e9sultats de V\u00e9rification",
-    "verified": "V\u00e9rifi\u00e9",
+    "verificationResults": "Résultats de Vérification",
+    "verified": "Vérifié",
     "notReproduced": "Non Reproduit",
     "inconclusive": "Non Concluant",
-    "skipped": "Ignor\u00e9",
+    "skipped": "Ignoré",
     "showEvidence": "Afficher la preuve",
     "hideEvidence": "Masquer la preuve",
-    "iterations": "{{count}} it\u00e9ration(s)",
+    "iterations": "{{count}} itération(s)",
     "stagingUrl": "Staging",
-    "totalVerified": "Constatations V\u00e9rifi\u00e9es",
-    "verificationRate": "Taux de V\u00e9rification",
-    "reproductionSteps": "\u00c9tapes de Reproduction",
+    "totalVerified": "Constatations Vérifiées",
+    "verificationRate": "Taux de Vérification",
+    "reproductionSteps": "Étapes de Reproduction",
     "findingDescription": "Description de la Constatation",
     "copyAllResults": "Copier Tout comme Tickets",
     "noLineage": "Aucune donnée de traçabilité pour cette constatation",

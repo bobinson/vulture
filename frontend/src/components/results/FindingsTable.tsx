@@ -124,6 +124,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
     filterAgent,
     hideFalsePositives,
     falsePositiveCount,
+    validationCounts,
     setFilterSeverity,
     setFilterAgent,
     setHideFalsePositives,
@@ -208,6 +209,38 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
             </div>
           </div>
         </div>
+        {/* 0045 validation-summary banner — per-audit verdict breakdown.
+            Renders only when the validate phase produced verdicts. */}
+        {(validationCounts.highConfidence + validationCounts.suspicious + validationCounts.likelyFp) > 0 && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
+            {validationCounts.highConfidence > 0 && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[#16A34A]" />
+                <span className="tabular-nums font-semibold">{validationCounts.highConfidence}</span>
+                {t("results.validation.high_confidence")}
+              </span>
+            )}
+            {validationCounts.suspicious > 0 && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[#D97706]" />
+                <span className="tabular-nums font-semibold">{validationCounts.suspicious}</span>
+                {t("results.validation.suspicious")}
+              </span>
+            )}
+            {validationCounts.likelyFp > 0 && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[#9333EA]" />
+                <span className="tabular-nums font-semibold">{validationCounts.likelyFp}</span>
+                {t("results.validation.likely_fp")}
+              </span>
+            )}
+            {hideFalsePositives && falsePositiveCount > 0 && (
+              <span className="text-muted-light italic">
+                {t("results.validation.hidden", { count: falsePositiveCount })}
+              </span>
+            )}
+          </div>
+        )}
         {/* Agent type filter — only show when multiple agents */}
         {agentTypes.length > 1 && (
           <div className="flex items-center gap-2">

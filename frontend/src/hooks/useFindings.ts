@@ -68,6 +68,21 @@ export function useFindings(
     [allFindings, falsePositiveFingerprints],
   );
 
+  // Validate-phase (0045) breakdown over the WHOLE audit — drives the
+  // summary banner. Filter-independent so the banner is a stable
+  // per-audit overview, not a per-filter-state readout.
+  const validationCounts = useMemo(() => {
+    let highConfidence = 0;
+    let suspicious = 0;
+    let likelyFp = 0;
+    for (const f of allFindings) {
+      if (f.validation_status === "high_confidence") highConfidence++;
+      else if (f.validation_status === "suspicious") suspicious++;
+      else if (f.validation_status === "likely_fp") likelyFp++;
+    }
+    return { highConfidence, suspicious, likelyFp };
+  }, [allFindings]);
+
   const sorted = useMemo(() => {
     let filtered = allFindings;
 
@@ -122,6 +137,7 @@ export function useFindings(
     filterAgent,
     hideFalsePositives,
     falsePositiveCount,
+    validationCounts,
     setFilterSeverity: setFilterSeverityAndReset,
     setFilterAgent: setFilterAgentAndReset,
     setHideFalsePositives: setHideFalsePositivesAndReset,
