@@ -22,6 +22,10 @@ Providers:
   lmstudio [model]     LM Studio (default: local-model)
   skills               Skills only — no LLM (fastest, no API key needed)
 
+Options:
+  --embed-url <url>      Embedding endpoint (overrides OPENAI_BASE_URL fallback)
+  --embed-model <name>   Embedding model id at that endpoint
+
 Examples:
   scripts/vulture.sh dev openai
   scripts/vulture.sh dev openai gpt-4o
@@ -29,6 +33,11 @@ Examples:
   scripts/vulture.sh dev ollama qwen3:8b
   scripts/vulture.sh dev lmstudio my-model
   scripts/vulture.sh dev skills
+
+  # chat on NVIDIA, embeddings on local LM Studio:
+  OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1 OPENAI_API_KEY=nvapi-... \
+    scripts/vulture.sh dev openai z-ai/glm-5.1 \
+    --embed-url http://localhost:1234/v1 --embed-model text-embedding-nomic-embed-text-v1.5
 EOF
     exit 1
 }
@@ -113,6 +122,33 @@ build_backend() {
 
 [[ $# -lt 1 ]] && usage
 
+# Separate optional flags from the positional (provider, model) args so
+# the embedding endpoint can be pointed at a different server than the
+# chat model — e.g. chat on NVIDIA (OPENAI_BASE_URL) + embeddings on
+# local LM Studio (VULTURE_EMBEDDING_URL). Both space ("--embed-url X")
+# and equals ("--embed-url=X") forms are accepted.
+EMBED_URL=""
+EMBED_MODEL=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --embed-url)
+            [[ $# -ge 2 ]] || { echo "Error: --embed-url needs a value"; exit 1; }
+            EMBED_URL="$2"; shift 2 ;;
+        --embed-url=*)
+            EMBED_URL="${1#*=}"; shift ;;
+        --embed-model)
+            [[ $# -ge 2 ]] || { echo "Error: --embed-model needs a value"; exit 1; }
+            EMBED_MODEL="$2"; shift 2 ;;
+        --embed-model=*)
+            EMBED_MODEL="${1#*=}"; shift ;;
+        *)
+            POSITIONAL+=("$1"); shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]:-}"
+[[ $# -lt 1 || -z "$1" ]] && usage
+
 PROVIDER="$1"
 MODEL="${2:-}"
 
@@ -193,10 +229,30 @@ case "$PROVIDER" in
         ;;
 esac
 
+# Embedding endpoint override. Decouples the pgvector embedding client
+# from OPENAI_BASE_URL — without this it falls back to the chat
+# endpoint (NVIDIA), which has no matching /embeddings route → 404s.
+# Point it at a real embedding server (local LM Studio / Ollama).
+if [[ -n "$EMBED_URL" ]]; then
+    export VULTURE_EMBEDDING_URL="$EMBED_URL"
+fi
+if [[ -n "$EMBED_MODEL" ]]; then
+    export VULTURE_EMBEDDING_MODEL="$EMBED_MODEL"
+fi
+
 echo "  Provider:  $PROVIDER"
 echo "  Model:     $MODEL"
 echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+[[ -n "${VULTURE_EMBEDDING_URL:-}" ]]   && echo "  Embed URL: ${VULTURE_EMBEDDING_URL}"
+[[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "  Embed model: ${VULTURE_EMBEDDING_MODEL}"
 echo
+
+# Test/debug hook: resolve config + print it, but don't boot the
+# backend. Used by scripts/tests/test_embed_flags.sh.
+if [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]]; then
+    echo "  (dry run — backend not started)"
+    exit 0
+fi
 
 build_backend
 exec "$BACKEND_DIR/vulture" local_start

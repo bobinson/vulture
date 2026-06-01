@@ -16,6 +16,11 @@ Providers:
   lmstudio [model]     LM Studio (default: local-model)
   skills               Skills only — no LLM (fastest, no API key needed)
 
+Options:
+  --embed-url <url>      Embedding endpoint (overrides OPENAI_BASE_URL fallback).
+                         In Docker, reach a host server via host.docker.internal.
+  --embed-model <name>   Embedding model id at that endpoint
+
 Examples:
   scripts/vulture.sh server openai
   scripts/vulture.sh server openai gpt-4o
@@ -23,6 +28,8 @@ Examples:
   scripts/vulture.sh server ollama qwen3:8b
   scripts/vulture.sh server lmstudio my-model
   scripts/vulture.sh server skills
+  scripts/vulture.sh server openai z-ai/glm-5.1 \
+    --embed-url http://host.docker.internal:1234/v1 --embed-model nomic-embed-text
 EOF
     exit 1
 }
@@ -147,6 +154,32 @@ wait_for_health() {
 
 [[ $# -lt 1 || "${1:-}" == "--help" || "${1:-}" == "-h" ]] && usage
 
+# Optional --embed-url / --embed-model flags (see start.sh for rationale):
+# point the pgvector embedding client at a different server than the chat
+# model. In Docker (Mode B) a host-local embedding server is reached via
+# host.docker.internal, e.g. --embed-url http://host.docker.internal:1234/v1
+EMBED_URL=""
+EMBED_MODEL=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --embed-url)
+            [[ $# -ge 2 ]] || { echo "Error: --embed-url needs a value"; exit 1; }
+            EMBED_URL="$2"; shift 2 ;;
+        --embed-url=*)
+            EMBED_URL="${1#*=}"; shift ;;
+        --embed-model)
+            [[ $# -ge 2 ]] || { echo "Error: --embed-model needs a value"; exit 1; }
+            EMBED_MODEL="$2"; shift 2 ;;
+        --embed-model=*)
+            EMBED_MODEL="${1#*=}"; shift ;;
+        *)
+            POSITIONAL+=("$1"); shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]:-}"
+[[ $# -lt 1 || -z "$1" ]] && usage
+
 PROVIDER="$1"
 MODEL="${2:-}"
 
@@ -233,9 +266,20 @@ case "$PROVIDER" in
         ;;
 esac
 
+# Embedding endpoint override (see start.sh). Exported here so the
+# .env-generation block below propagates it to the containers.
+if [[ -n "$EMBED_URL" ]]; then
+    export VULTURE_EMBEDDING_URL="$EMBED_URL"
+fi
+if [[ -n "$EMBED_MODEL" ]]; then
+    export VULTURE_EMBEDDING_MODEL="$EMBED_MODEL"
+fi
+
 echo "  Provider:  $PROVIDER"
 echo "  Model:     $MODEL"
 echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+[[ -n "${VULTURE_EMBEDDING_URL:-}" ]]   && echo "  Embed URL: ${VULTURE_EMBEDDING_URL}"
+[[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "  Embed model: ${VULTURE_EMBEDDING_MODEL}"
 echo
 
 # Port conflict pre-check (docker containers are fine; external binds are not)

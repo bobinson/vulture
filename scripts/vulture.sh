@@ -78,7 +78,7 @@ case "$COMMAND" in
 
     # ── Mode A: Dev-local (bare metal) ────────────────────────────────────
     dev)
-        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--pg]"; exit 1; }
+        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--embed-url URL] [--embed-model NAME] [--pg]"; exit 1; }
         # --pg flag (any position): bring up the postgres docker
         # container and export VULTURE_DB_DSN so local_start uses
         # Postgres instead of SQLite.
