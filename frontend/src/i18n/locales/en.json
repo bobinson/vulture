@@ -87,6 +87,13 @@
     "recommendation": "Recommendation",
     "filter": "Filter",
     "all": "All",
+    "hideFalsePositives": "Hide false positives ({{count}})",
+    "showFalsePositives": "Show false positives ({{count}})",
+    "validation": {
+      "likely_fp": "Likely false positive",
+      "suspicious": "Suspicious",
+      "tooltip": "Automated validation verdict"
+    },
     "sortBy": "Sort by",
     "progress": "Progress: {{analyzed}}/{{total}} files, {{count}} findings",
     "auditStarted": "Audit started",

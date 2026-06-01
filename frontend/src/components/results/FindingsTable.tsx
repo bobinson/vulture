@@ -5,6 +5,7 @@ import { useLineage } from "@/hooks/useLineage.ts";
 import { SeverityBadge } from "./SeverityBadge.tsx";
 import { CopyFindingButton } from "./CopyFindingButton.tsx";
 import { LineageStatusBadge } from "./LineageStatusBadge.tsx";
+import { ValidationBadge } from "./ValidationBadge.tsx";
 import { FindingTimeline } from "./FindingTimeline.tsx";
 import { FindingLifecycleBadge } from "./FindingLifecycleBadge.tsx";
 import { CrossAgentBadge } from "./CrossAgentBadge.tsx";
@@ -96,6 +97,21 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
   const { t } = useTranslation();
   const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
 
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const { lineageMap, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId);
+
+  // 0045/0036 follow-up — derive the set of fingerprints manually
+  // triaged as false_positive (lineage current_status). Combined with
+  // each finding's own validation_status === "likely_fp" inside
+  // useFindings, this powers the opt-in "hide false positives" toggle.
+  const falsePositiveFingerprints = useMemo(() => {
+    const s = new Set<string>();
+    for (const [fp, lin] of lineageMap) {
+      if (lin.current_status === "false_positive") s.add(fp);
+    }
+    return s;
+  }, [lineageMap]);
+
   const {
     findings,
     totalFiltered,
@@ -106,13 +122,13 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
     sortDirection,
     filterSeverity,
     filterAgent,
+    hideFalsePositives,
+    falsePositiveCount,
     setFilterSeverity,
     setFilterAgent,
+    setHideFalsePositives,
     toggleSort,
-  } = useFindings(allFindings);
-
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const { lineageMap, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId);
+  } = useFindings(allFindings, falsePositiveFingerprints);
 
   const severities: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
@@ -223,6 +239,28 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                 </button>
               ))}
             </div>
+          </div>
+        )}
+        {/* 0045/0036 follow-up — opt-in hide false positives. Renders
+            only when there's at least one FP to hide (auto likely_fp
+            or manually-triaged false_positive). Defaults OFF. */}
+        {falsePositiveCount > 0 && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={hideFalsePositives}
+              className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
+                hideFalsePositives
+                  ? "bg-foreground text-surface"
+                  : "text-muted hover:text-foreground hover:bg-cream-dark border border-border"
+              }`}
+              onClick={() => setHideFalsePositives(!hideFalsePositives)}
+            >
+              {hideFalsePositives
+                ? t("results.showFalsePositives", { count: falsePositiveCount })
+                : t("results.hideFalsePositives", { count: falsePositiveCount })}
+            </button>
           </div>
         )}
       </div>
@@ -351,6 +389,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                     <td className="px-4 py-2.5 max-w-md">
                       <div className="flex items-center gap-1.5">
                         <p className="text-[13px] text-foreground font-medium truncate">{finding.title}</p>
+                        <ValidationBadge status={finding.validation_status} />
                         <FindingLifecycleBadge
                           lineage={finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined}
                           currentAuditId={auditId}

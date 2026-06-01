@@ -83,6 +83,13 @@
     "recommendation": "Recomendación",
     "filter": "Filtrar",
     "all": "Todo",
+    "hideFalsePositives": "Ocultar falsos positivos ({{count}})",
+    "showFalsePositives": "Mostrar falsos positivos ({{count}})",
+    "validation": {
+      "likely_fp": "Probable falso positivo",
+      "suspicious": "Sospechoso",
+      "tooltip": "Veredicto de validación automática"
+    },
     "sortBy": "Ordenar por",
     "progress": "Progreso: {{analyzed}}/{{total}} archivos, {{count}} hallazgos",
     "auditStarted": "Auditoría iniciada",

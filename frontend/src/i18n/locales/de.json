@@ -83,6 +83,13 @@
     "recommendation": "Empfehlung",
     "filter": "Filtern",
     "all": "Alle",
+    "hideFalsePositives": "Fehlalarme ausblenden ({{count}})",
+    "showFalsePositives": "Fehlalarme anzeigen ({{count}})",
+    "validation": {
+      "likely_fp": "Wahrscheinlich Fehlalarm",
+      "suspicious": "Verdächtig",
+      "tooltip": "Automatisches Validierungsurteil"
+    },
     "sortBy": "Sortieren nach",
     "progress": "Fortschritt: {{analyzed}}/{{total}} Dateien, {{count}} Befunde",
     "auditStarted": "Audit gestartet",

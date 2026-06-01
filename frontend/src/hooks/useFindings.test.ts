@@ -157,4 +157,82 @@ describe("useFindings", () => {
     act(() => result.current.setFilterAgent("chaos"));
     expect(result.current.page).toBe(0);
   });
+
+  // --- 0045/0036 follow-up: hide false positives ---
+  // Two FP signals: validation_status === "likely_fp" (automatic L1-L5
+  // verdict) and lineage current_status === "false_positive" (manual
+  // triage, passed in as a Set of fingerprints). The toggle defaults
+  // OFF (show everything); turning it on drops both.
+
+  const FP_FINDINGS: Finding[] = [
+    makeFinding({ title: "Real Critical", severity: "critical", validation_status: "high_confidence" }),
+    makeFinding({ title: "Auto FP", severity: "medium", validation_status: "likely_fp" }),
+    makeFinding({ title: "Suspicious", severity: "high", validation_status: "suspicious" }),
+    makeFinding({ title: "Triaged FP", severity: "low", fingerprint: "fp-triaged", validation_status: "high_confidence" }),
+  ];
+  const TRIAGED = new Set<string>(["fp-triaged"]);
+
+  it("defaults hideFalsePositives to false (shows everything)", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    expect(result.current.hideFalsePositives).toBe(false);
+    expect(result.current.totalFiltered).toBe(4);
+  });
+
+  it("hides likely_fp findings when toggled on", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    act(() => result.current.setHideFalsePositives(true));
+    const titles = result.current.findings.map((f) => f.title);
+    expect(titles).not.toContain("Auto FP");
+  });
+
+  it("hides lineage false_positive findings (by fingerprint) when toggled on", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    act(() => result.current.setHideFalsePositives(true));
+    const titles = result.current.findings.map((f) => f.title);
+    expect(titles).not.toContain("Triaged FP");
+  });
+
+  it("keeps non-FP findings when toggled on", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    act(() => result.current.setHideFalsePositives(true));
+    const titles = result.current.findings.map((f) => f.title);
+    expect(titles).toContain("Real Critical");
+    expect(titles).toContain("Suspicious");
+    expect(result.current.totalFiltered).toBe(2);
+  });
+
+  it("reports falsePositiveCount as the union of both FP signals", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    // 1 likely_fp + 1 triaged = 2, independent of toggle state.
+    expect(result.current.falsePositiveCount).toBe(2);
+  });
+
+  it("composes the FP filter with the severity filter", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    act(() => {
+      result.current.setHideFalsePositives(true);
+      result.current.setFilterSeverity("low");
+    });
+    // "Triaged FP" is the only low-severity finding and it's an FP →
+    // hidden → zero results.
+    expect(result.current.totalFiltered).toBe(0);
+  });
+
+  it("resets page to 0 when the FP toggle changes", () => {
+    const many = Array.from({ length: 30 }, (_, i) =>
+      makeFinding({ title: `F${i}` }),
+    );
+    const { result } = renderHook(() => useFindings(many));
+    act(() => result.current.setPage(1));
+    act(() => result.current.setHideFalsePositives(true));
+    expect(result.current.page).toBe(0);
+  });
+
+  it("treats a missing fingerprint set as no lineage FPs", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS));
+    act(() => result.current.setHideFalsePositives(true));
+    // Only the likely_fp drops; the triaged one has no set to match.
+    expect(result.current.totalFiltered).toBe(3);
+    expect(result.current.falsePositiveCount).toBe(1);
+  });
 });
