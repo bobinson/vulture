@@ -5,7 +5,7 @@ history of authorship.
 
 ## Maintainers
 
-- Vulture maintainers ([@vulture-project](https://github.com/vulture-project))
+- Vulture maintainers ([@bobinson](https://github.com/bobinson))
 
 ## Acknowledgements
 
