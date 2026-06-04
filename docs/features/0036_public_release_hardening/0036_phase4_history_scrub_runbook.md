@@ -132,7 +132,7 @@ for s in $SECRETS; do echo -n "$s tree: "; git grep -F "$s" $(git rev-list --all
 for s in $SECRETS; do echo -n "$s msg: "; git log --all --format='%H%n%s%n%b' | grep -cF "$s"; done   # all 0
 
 # (d) independent scanner as the final gate (install gitleaks first)
-gitleaks detect --source . --log-opts="--all" --no-banner    # exit 0 / no leaks
+gitleaks detect --source . --config .gitleaks.toml --log-opts="--all" --no-banner    # exit 0 / no leaks
 
 # (e) only master, no stray refs, stale tag gone
 git branch -a            # master only
@@ -161,7 +161,7 @@ cd /home/user/src/vulture-clean        # confirm you are in the CLEAN clone
 pwd                                     # MUST end in /vulture-clean
 
 # Pre-push secret re-scan as a hard gate (belt-and-suspenders).
-gitleaks detect --source . --log-opts="--all" --no-banner || { echo "ABORT: leak"; exit 1; }
+gitleaks detect --source . --config .gitleaks.toml --log-opts="--all" --no-banner || { echo "ABORT: leak"; exit 1; }
 
 git tag -a v0.1.0 -m "Vulture v0.1.0"
 git remote add origin git@github.com:<slug>/vulture.git   # slug: resolve AUTHORS.md first

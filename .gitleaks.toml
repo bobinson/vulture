@@ -1,0 +1,31 @@
+# Vulture gitleaks configuration.
+#
+# Vulture is a security-audit tool whose own test suites and docs are
+# deliberately full of SYNTHETIC secrets (the secret-detector agents
+# need fixtures to detect). Those are not real credentials. This config
+# extends the default ruleset and allowlists the fixture/doc paths plus
+# two specific non-secret constants. Real runtime code/config is still
+# scanned at full strength.
+title = "Vulture"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic test fixtures, docs, and non-secret constants — see CONTRIBUTING.md"
+paths = [
+  '''.*_test\.(go|py|ts|tsx)$''',          # unit tests
+  '''(^|/)tests?/''',                        # any tests/ or test/ dir
+  '''/secret_scan/''',                       # the secret-detector fixture corpus
+  '''.*\.(test|spec)\.(ts|tsx|js|jsx)$''',  # frontend test/spec files
+  '''(^|/)i18n/''',                          # i18n placeholder "sk-..."
+  '''^CONTRIBUTING\.md$''',                  # documents the synthetic fixtures
+  '''^docs/''',                              # planning/guide docs (example creds only)
+  '''(^|/)\.claude/''',                     # local Claude Code session settings (gitignored)
+]
+regexes = [
+  # knownWeakDevPasswordHash: SHA-256 digest, not a credential (server.go)
+  '''acf06e1920ea3a42ab6607d99a359784f0de53e6c9cddff86027aef883c6b533''',
+  # RFC 6455 example WebSocket nonce ("the sample nonce"), a protocol constant
+  '''dGhlIHNhbXBsZSBub25jZQ==''',
+]
