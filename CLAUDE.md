@@ -272,7 +272,7 @@ To add a new audit type (e.g., GDPR):
 | GET | `/api/audits` | List audits |
 | GET | `/api/audits/:id` | Get audit status and results |
 | GET | `/api/audits/:id/stream` | SSE stream (live or replay) |
-| GET | `/api/audits/cached` | Check for cached audit results |
+| GET | `/api/audits/cache` | Check for cached audit results |
 | GET | `/api/agents` | List available agent types |
 | GET | `/api/agents/:type/info` | Get agent config schema & skills |
 | POST | `/api/auth/register` | Register new user |

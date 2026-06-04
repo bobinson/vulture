@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Known limitations
+
+- **Finding triage labels (thumbs FP/TP) are not yet functional.** The
+  `audit_memories` table lacks the `fingerprint` column the label
+  endpoint and the L4 memory-prior validation layer query, so labelling
+  a finding logs a non-fatal error and the L4 layer is skipped. Audits,
+  scanning, and all other validation layers are unaffected. Tracked for
+  a follow-up release.
+
 ### Added
 
 - **Feature 0044 — Native installer (Mode E):** `curl … install.sh | sh`
@@ -52,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SBOM publication as a GitHub release artifact (gating released in
   feature 0044's `release.yml`; pending first tag-push to validate).
 
-## [0.1.0] - YYYY-MM-DD
+## [0.1.0] - 2026-06-05
 
 > Date and tag pinned at release time. See feature 0036 Phase 4.
 
