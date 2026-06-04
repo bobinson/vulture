@@ -2,6 +2,7 @@
 name = "vulture-plugin-semgrep"
 version = "0.1.0"
 description = "Bundled Semgrep reference plugin for Vulture (feature 0053)."
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",

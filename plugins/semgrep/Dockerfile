@@ -1,6 +1,9 @@
-# Single-stage build (NIT #21 fix). Pinned base image — bump
-# explicitly via release process so we know what's shipping.
-FROM semgrep/semgrep:1.84.0
+# Single-stage build (NIT #21 fix). Base image pinned by DIGEST so the
+# verified license (Semgrep 1.84.0 = LGPL-2.1) and contents can't change
+# under a re-pushed tag. The :1.84.0 tag is kept for human readability;
+# Docker resolves the @sha256 digest (multi-arch index). On any version
+# bump, update the digest AND re-verify Semgrep's upstream LICENSE.
+FROM semgrep/semgrep:1.84.0@sha256:e792d418d128c4c7ea3842677192b7a06458747fbdbeda350a5cd2c7abbb7bbe
 WORKDIR /app
 
 # MINOR #15 fix: Semgrep's default rules cache lives under $HOME/.semgrep,
