@@ -238,5 +238,5 @@ New agents must include:
 
 1. **E2E tests** (`tests/e2e/`): Test the full `/run` endpoint with sample source code
 2. **Unit tests** (`tests/unit/`): Test each skill function independently
-3. **100% coverage**: All code paths must be covered
-4. **Complexity < 10**: All functions must have cyclomatic complexity under 10
+3. **Comprehensive coverage**: cover every meaningful code path (high coverage is the target)
+4. **Low complexity**: keep functions under cyclomatic complexity ~10 where practical

@@ -170,15 +170,19 @@ describe("request deduplication", () => {
 });
 
 describe("api.getStreamUrl", () => {
-  it("returns SSE url without token", () => {
-    localStorage.clear();
-    const url = api.getStreamUrl("audit-123");
-    expect(url).toBe("/api/audits/audit-123/stream");
+  // SSE auth uses a short-lived stream_token (issued by POST
+  // /stream-token), NOT the long-lived JWT — the backend reads
+  // ?stream_token= (auth_middleware.go). Putting the JWT in the URL
+  // was the old, less-secure pattern and is no longer supported.
+  it("appends the stream_token query param", () => {
+    const url = api.getStreamUrl("audit-123", "st-abc");
+    expect(url).toContain("/api/audits/audit-123/stream");
+    expect(url).toContain("stream_token=st-abc");
   });
 
-  it("includes token as query param", () => {
-    localStorage.setItem("vulture_token", "jwt-abc");
-    const url = api.getStreamUrl("audit-123");
-    expect(url).toContain("token=jwt-abc");
+  it("url-encodes the stream token", () => {
+    const url = api.getStreamUrl("audit-123", "a/b+c=");
+    expect(url).toContain("stream_token=a%2Fb%2Bc%3D");
+    expect(url).not.toContain("stream_token=a/b+c=");
   });
 });

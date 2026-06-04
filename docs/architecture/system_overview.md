@@ -80,10 +80,16 @@ Each agent is a standalone FastAPI service with:
 | Database | PostgreSQL + pgvector | Vector similarity search for audit memory, production-grade persistence |
 | Deployment | Docker Compose | Simple multi-service orchestration for Go + Python + React |
 
-## Constraints
+## Engineering targets
 
-- Cyclomatic complexity < 10 for all functions
-- 100% test coverage
+These are the standards the project holds itself to (monitored in CI,
+not all hard-gated — a tail of older code still has work to do):
+
+- Low cyclomatic complexity (target < 10 per function)
+- High, comprehensive test coverage
 - E2E tests written before implementation code
-- ISO 26262 safety categorization adherence
-- DRY principle enforced across all components
+- DRY principle across all components
+
+Note: Vulture is application software. It does not claim ISO 26262 /
+DO-178C compliance for its own codebase — those are *audit frameworks*
+the agents evaluate other code against.

@@ -14,8 +14,10 @@ describe("validateGitUrl", () => {
     expect(validateGitUrl("")).toBeTruthy();
   });
 
-  it("rejects URL without .git suffix", () => {
-    expect(validateGitUrl("https://github.com/org/repo")).toBeTruthy();
+  it("accepts an https URL without a .git suffix", () => {
+    // GitHub/GitLab clone fine without the trailing .git; requiring it
+    // would reject valid repositories. Not an error.
+    expect(validateGitUrl("https://github.com/org/repo")).toBeNull();
   });
 
   it("rejects plain text", () => {

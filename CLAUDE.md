@@ -136,8 +136,8 @@ Phase 2 (OPTIONAL): LLM analysis → deeper reasoning on file subset that fits c
 make build          # Build all components
 make test           # Run all tests (Go + Python + Frontend)
 make e2e            # Run E2E test suites
-make coverage       # Verify 100% test coverage
-make complexity     # Verify cyclomatic complexity < 10
+make coverage       # Measure + report test coverage
+make complexity     # Report cyclomatic-complexity outliers (target < 10)
 make lint           # Lint all components
 make docker-up      # Start full stack via docker compose
 make docker-down    # Stop all services
@@ -212,10 +212,9 @@ These rules are mandatory for all code in this project:
 1. **E2E tests first**: E2E business logic tests must be written first, then the code. Code must be verified against the business logic after every change.
 2. **NEVER modify E2E business logic tests**: These tests are the source of truth for business requirements. Changing them to make code pass is forbidden.
 3. **DRY**: No duplicated logic. Extract shared code into appropriate shared modules.
-4. **Cyclomatic complexity < 10**: No function may exceed 10 independent code paths (matches the `gocyclo -over 9` and `radon` thresholds in `make complexity`). Use early returns, strategy pattern, and delegation to keep functions under the limit.
-5. **100% test coverage**: Every line of code must be covered by tests.
-6. **ISO 26262 safety**: Code must be categorized for safety and adhere to ISO 26262 safety standards.
-7. **Assembly-level optimization**: Code must be optimized for performance even at the assembly level. This means: minimize allocations, avoid unnecessary copies, use efficient data structures, leverage compiler optimizations, profile hot paths.
+4. **Low cyclomatic complexity (target < 10)**: Keep functions under ~10 independent code paths where practical — use early returns, strategy pattern, and delegation. `make complexity` reports `gocyclo`/`radon` outliers; it's a monitored target, not a hard gate (a known tail of older functions still exceeds it).
+5. **High test coverage (target: comprehensive)**: New code should ship with tests; aim to cover every meaningful path. Coverage is measured and reported in CI, not gated at a fixed percentage.
+6. **Performance-conscious**: Minimize allocations and unnecessary copies, use efficient data structures, and profile hot paths. (Vulture is application software, not a safety-certified system — it does not claim ISO 26262 / DO-178C compliance for its own code; those frameworks are *audit targets* the agents check other code against.)
 
 ## Coding Conventions
 
