@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -335,14 +336,19 @@ const (
 //     across restarts; written to config/.env by install.sh).
 //  2. CSPRNG-generated 16-byte hex if env var is unset.
 //
-// The literal "REDACTED-DEV-PW" placeholder is explicitly rejected — a
-// historical hardcoded default that, if accidentally exposed via Mode B
-// `VULTURE_LOCAL_MODE=true`, was a public-internet admin backdoor.
+// A historical hardcoded local-dev admin default (an early-commit
+// backdoor that, if exposed via Mode B, was a public-internet admin
+// login) is rejected by hash rather than by literal — the literal was
+// scrubbed from git history (0036 Phase 4), so it must not reappear in
+// source. knownWeakDevPasswordHash is its SHA-256.
+const knownWeakDevPasswordHash = "acf06e1920ea3a42ab6607d99a359784f0de53e6c9cddff86027aef883c6b533"
+
 func resolveLocalDevPassword() (pw string, generated bool, err error) {
 	if v := os.Getenv("VULTURE_LOCAL_DEV_PASSWORD"); v != "" {
-		if v == "REDACTED-DEV-PW" {
+		sum := sha256.Sum256([]byte(v))
+		if hex.EncodeToString(sum[:]) == knownWeakDevPasswordHash {
 			return "", false, fmt.Errorf(
-				"VULTURE_LOCAL_DEV_PASSWORD=REDACTED-DEV-PW is the disallowed historical " +
+				"VULTURE_LOCAL_DEV_PASSWORD is set to a known-weak historical " +
 					"default; unset it or pick a strong value")
 		}
 		return v, false, nil

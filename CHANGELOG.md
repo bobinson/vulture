@@ -30,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Removed hardcoded `REDACTED-DEV-PW` admin backdoor.** The seeded local
+- **Removed a hardcoded admin backdoor password** that shipped in early
+  commits (rejected by hash at startup; the literal was purged from git
+  history in the 0036 Phase 4 release scrub). The seeded local
   dev user (`admin@vulture.local`) now uses
   `$VULTURE_LOCAL_DEV_PASSWORD` if set, or a CSPRNG-generated 16-byte
   hex password logged once at backend startup. The `/api/auth/local-session`

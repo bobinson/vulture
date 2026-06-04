@@ -47,6 +47,34 @@ func TestLocalModeRefusesNonLoopbackBind(t *testing.T) {
 	}
 }
 
+// 0036 Phase 4 — the historical weak local-dev default is rejected by
+// SHA-256 hash, not by literal, so the string can be scrubbed from git
+// history. The preimage is assembled by concatenation here so the
+// contiguous literal never reappears in source (which would defeat the
+// scrub). This test also validates knownWeakDevPasswordHash is correct.
+func TestResolveLocalDevPassword_RejectsKnownWeakDefault(t *testing.T) {
+	weak := "vulture" + "2024"
+	t.Setenv("VULTURE_LOCAL_DEV_PASSWORD", weak)
+	if _, _, err := resolveLocalDevPassword(); err == nil {
+		t.Fatal("expected the known-weak historical default to be rejected")
+	}
+}
+
+func TestResolveLocalDevPassword_AcceptsStrongValue(t *testing.T) {
+	const strong = "a-strong-unique-dev-password-9173"
+	t.Setenv("VULTURE_LOCAL_DEV_PASSWORD", strong)
+	pw, generated, err := resolveLocalDevPassword()
+	if err != nil {
+		t.Fatalf("unexpected error for strong value: %v", err)
+	}
+	if generated {
+		t.Error("password should not be CSPRNG-generated when env is set")
+	}
+	if pw != strong {
+		t.Errorf("got %q, want the provided strong value", pw)
+	}
+}
+
 // 0036 Phase 3 (M9) — JWT secret minimum length.
 // HS256 requires a 32-byte key per RFC 7518 §3.2. Short secrets are
 // brute-forceable; refuse to start.
