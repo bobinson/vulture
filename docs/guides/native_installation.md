@@ -1,18 +1,7 @@
 # Native installation (Mode E)
 
 Feature 0044 ships a one-command native installer for Vulture on
-macOS and Linux. No Docker, no Node required.
-
-> **Current limitation (read first).** This installer sets up the
-> `vulture` CLI + the embedded UI + SQLite. **Agent-based scanning (the
-> multi-framework / LLM audit pipeline) currently requires Docker
-> (Mode A/B)** — the self-contained Python agent runtime is not yet
-> bundled in the released tarball. CLI-only builds install successfully
-> and report this; `vulture start`, the UI, and skill checks work, but
-> for the full agent experience use `docker compose up` today. Bundling
-> the agent runtime (a vendored Python + a hashed dependency lockfile)
-> is tracked in
-> [0055_native_installer_hardening](../features/0055_native_installer_hardening/).
+macOS and Linux. No Docker, no Node, no system Python required.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh
@@ -71,7 +60,7 @@ Windows is not supported in v1; see Phase 2 follow-ups in feature 0044.
 | `VULTURE_OFFLINE_TARBALL` | (unset) | Path to a pre-downloaded tarball; skip the GH download |
 | `VULTURE_REQUIRE_COSIGN` | `false` | Refuse to install without cosign signature verification |
 | `VULTURE_ALLOW_UNSIGNED` | `false` | If cosign is unavailable, allow SHA-only verification with a warning |
-| `VULTURE_PIP_INDEX_URL` | `https://pypi.org/simple` | Alternate PyPI mirror. Use `https://` (TLS verified). A plaintext `http://` mirror is accepted but disables TLS verification for that host (logs a warning) — avoid it outside a trusted network |
+| `VULTURE_PIP_INDEX_URL` | `https://pypi.org/simple` | Alternate PyPI mirror; HTTPS required |
 | `VULTURE_NO_UPDATE_CHECK` | `false` | Disable doctor's GH-API call |
 | `VULTURE_ALLOW_DOWNGRADE` | `false` | Allow `VULTURE_VERSION` older than the hardcoded fallback |
 
@@ -177,12 +166,8 @@ curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | 
 ```
 
 The installer's atomic swap preserves `config/.env` (and your JWT
-secret) across upgrades. The old install moves to
-`~/.vulture.old.<pid>/` and is retained until the *entire* install
-succeeds (deps, permissions, symlink); it is deleted only at that
-commit point. If any step fails partway, the installer automatically
-rolls back to the previous version, so a failed upgrade never leaves
-you without a working install.
+secret) across upgrades. Old install moves to `~/.vulture.old.<pid>/`
+and is cleaned up on success.
 
 ## Troubleshooting
 

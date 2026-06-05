@@ -1,24 +1,12 @@
 # 0044 — Native Installer · Implementation Status
 
-**Status**: PARTIAL — installer scripts implemented; agent-runtime bundle deferred
-**Last updated**: 2026-06-05
+**Status**: PLANNED
+**Last updated**: 2026-05-11
 
 ## Summary
 
-The installer **scripts** are implemented and shipped: `install.sh`,
-`scripts/build-release.sh`, `.github/workflows/release.yml`,
-`scripts/smoke-install.sh`, and the Go `vulture {start,stop,status,logs,
-doctor,uninstall}` subcommands. A native install sets up the CLI + the
-embedded UI + SQLite and passes the smoke gate.
-
-**Deferred (tracked in feature 0055):** the self-contained Python agent
-runtime is NOT yet bundled — `release.yml` does not fetch
-python-build-standalone, and there is no hashed `requirements-frozen.txt`
-lockfile (the agents have no `requirements.txt`). Until that lands,
-agent-based scanning from a native install requires Docker (Mode A/B);
-`install.sh` now detects the CLI-only build and says so. Feature 0055
-also fixed the `install.sh` cosign-verification bug and the Mode-E
-overclaim in the README/guide.
+Drafted the LLD and committed plan/status/rollback. No implementation
+work has started.
 
 ## Checkpoints
 
