@@ -1,12 +1,18 @@
 # 0044 — Native Installer · Implementation Status
 
-**Status**: PLANNED
-**Last updated**: 2026-05-11
+**Status**: PARTIAL — scripts implemented; agent-runtime bundle deferred (see 0055)
+**Last updated**: 2026-06-05
 
 ## Summary
 
-Drafted the LLD and committed plan/status/rollback. No implementation
-work has started.
+The installer *scripts* are implemented and shipped (`install.sh`,
+`scripts/build-release.sh`, `.github/workflows/release.yml`,
+`scripts/smoke-install.sh`): the `vulture` CLI + embedded UI install
+natively and are hardened in feature 0055 (Tier A + hardening pass).
+
+The agent-runtime bundle (python-build-standalone + a hashed dependency
+lockfile) is **deferred to the 0055 Tier-B follow-up**: agent-based
+(multi-framework / LLM) scanning currently requires Docker (Mode A/B).
 
 ## Checkpoints
 

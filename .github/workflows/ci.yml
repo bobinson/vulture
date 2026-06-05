@@ -26,6 +26,19 @@ jobs:
         with:
           working-directory: backend
 
+  # ── Native installer (feature 0055 H8) ──────────────────────
+
+  lint-installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: shellcheck
+        run: shellcheck install.sh scripts/*.sh
+      - name: install.sh branch tests
+        run: sh scripts/tests/test_install_sh.sh
+
   build-backend:
     runs-on: ubuntu-latest
     needs: lint-backend

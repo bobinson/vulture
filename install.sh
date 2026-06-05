@@ -20,8 +20,6 @@
 #
 # This script is shellcheck-clean and POSIX-sh (no bashisms).
 
-set -eu
-
 # Fallback tag bumped on every release per plan H2. install.sh refuses
 # any older version (see resolve_version).
 FALLBACK_TAG="v0.1.0"
@@ -33,6 +31,27 @@ RELEASES_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/l
 log()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 err()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# resolve_path PATH — canonicalise symlinks where possible; echo the result.
+resolve_path() {
+    if command -v readlink >/dev/null 2>&1; then
+        readlink -f "$1" 2>/dev/null || printf '%s' "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# reject_if_system_dir PATH — err() if PATH is a system directory or a child of
+# one. /root is rejected only as an exact target (so /root/.vulture is allowed).
+reject_if_system_dir() {
+    _p=$1
+    case "$_p" in
+        /|/bin|/sbin|/lib|/lib64|/boot|/sys|/proc|/dev|/root|/etc|/usr|/var)
+            err "refusing system directory: $_p" ;;
+        /bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/etc/*|/usr/*|/var/*)
+            err "refusing system directory: $_p" ;;
+    esac
+}
 
 # ─── 1. detect_platform ────────────────────────────────────────────────────
 detect_platform() {
@@ -62,15 +81,8 @@ validate_home() {
             err "VULTURE_HOME contains unsafe characters: $VULTURE_HOME" ;;
     esac
     # Resolve symlinks before checking blacklist.
-    if command -v readlink >/dev/null 2>&1; then
-        RESOLVED=$(readlink -f "$VULTURE_HOME" 2>/dev/null || echo "$VULTURE_HOME")
-    else
-        RESOLVED=$VULTURE_HOME
-    fi
-    case "$RESOLVED" in
-        /|/etc|/usr|/var|/etc/*|/usr/*)
-            err "VULTURE_HOME resolves to a system directory: $RESOLVED" ;;
-    esac
+    RESOLVED=$(resolve_path "$VULTURE_HOME")
+    reject_if_system_dir "$RESOLVED"
     if [ -e "$VULTURE_HOME" ]; then
         OWNER=$(ls -ldn "$VULTURE_HOME" 2>/dev/null | awk '{print $3}')
         ME=$(id -u 2>/dev/null || echo 0)
@@ -115,22 +127,30 @@ download_artifacts() {
         log "using offline tarball: $TARBALL"
         return
     fi
-    TMPDIR=$(mktemp -d)
-    chmod 700 "$TMPDIR"
+    DOWNLOAD_DIR=$(mktemp -d)
+    chmod 700 "$DOWNLOAD_DIR"
     TARBALL_NAME="vulture-${VERSION}-${OS}-${ARCH}.tar.gz"
     URL_BASE="${REPO_URL}/releases/download/${VERSION}"
     log "downloading $TARBALL_NAME"
-    curl -fsSL -o "$TMPDIR/$TARBALL_NAME" "${URL_BASE}/${TARBALL_NAME}" \
+    fetch "$DOWNLOAD_DIR/$TARBALL_NAME" "${URL_BASE}/${TARBALL_NAME}" \
         || err "tarball download failed"
-    curl -fsSL -o "$TMPDIR/SHA256SUMS" "${URL_BASE}/SHA256SUMS" \
+    fetch "$DOWNLOAD_DIR/SHA256SUMS" "${URL_BASE}/SHA256SUMS" \
         || err "SHA256SUMS download failed"
-    curl -fsSL -o "$TMPDIR/SHA256SUMS.sig" "${URL_BASE}/SHA256SUMS.sig" \
+    fetch "$DOWNLOAD_DIR/SHA256SUMS.sig" "${URL_BASE}/SHA256SUMS.sig" \
         2>/dev/null || warn "no cosign signature published"
-    curl -fsSL -o "$TMPDIR/SHA256SUMS.pem" "${URL_BASE}/SHA256SUMS.pem" \
+    fetch "$DOWNLOAD_DIR/SHA256SUMS.pem" "${URL_BASE}/SHA256SUMS.pem" \
         2>/dev/null || true
-    TARBALL=$TMPDIR/$TARBALL_NAME
-    SHASUM_FILE=$TMPDIR/SHA256SUMS
-    SIG_FILE=$TMPDIR/SHA256SUMS.sig
+    TARBALL=$DOWNLOAD_DIR/$TARBALL_NAME
+    SHASUM_FILE=$DOWNLOAD_DIR/SHA256SUMS
+    SIG_FILE=$DOWNLOAD_DIR/SHA256SUMS.sig
+}
+
+# fetch DEST URL — download URL to DEST with a timeout and bounded retries.
+fetch() {
+    _dest=$1
+    _url=$2
+    curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 --retry-delay 2 \
+        -o "$_dest" "$_url"
 }
 
 # ─── 5. verify_signature ──────────────────────────────────────────────────
@@ -151,14 +171,18 @@ verify_signature() {
         warn "no signature file present; SHA-only verification"
         return
     fi
+    PEM="${SHASUM_FILE%/*}/SHA256SUMS.pem"
+    if [ ! -s "$PEM" ]; then
+        warn "no certificate published; SHA-only verification"
+        return
+    fi
     log "verifying release signature (cosign + Rekor)"
     cosign verify-blob \
         --certificate-identity-regexp "^https://github.com/${REPO_OWNER}/${REPO_NAME}/" \
         --certificate-oidc-issuer https://token.actions.githubusercontent.com \
         --rekor-url https://rekor.sigstore.dev \
+        --certificate "$PEM" \
         --signature "$SIG_FILE" \
-        ${SHASUM_FILE%/*}/SHA256SUMS.pem 2>/dev/null \
-        --certificate "${SHASUM_FILE%/*}/SHA256SUMS.pem" \
         "$SHASUM_FILE" || err "cosign verification failed"
 }
 
@@ -181,15 +205,8 @@ verify_checksum() {
 # ─── 7. extract_atomic (with TOCTOU re-validation) ────────────────────────
 extract_atomic() {
     # Re-run the validation immediately before extraction (plan C4).
-    if command -v readlink >/dev/null 2>&1; then
-        REVALIDATED=$(readlink -f "$VULTURE_HOME" 2>/dev/null || echo "$VULTURE_HOME")
-    else
-        REVALIDATED=$VULTURE_HOME
-    fi
-    case "$REVALIDATED" in
-        /|/etc|/usr|/var|/etc/*|/usr/*)
-            err "VULTURE_HOME resolution changed since validate_home; aborting" ;;
-    esac
+    REVALIDATED=$(resolve_path "$VULTURE_HOME")
+    reject_if_system_dir "$REVALIDATED"
     NEW_HOME="${VULTURE_HOME}.new"
     rm -rf "$NEW_HOME"
     mkdir -p "$NEW_HOME"
@@ -199,15 +216,38 @@ extract_atomic() {
     # strip below (M3 — single read, no race window).
     tar -xzvf "$TARBALL" -C "$NEW_HOME" 2>"$NEW_HOME/.filelist" \
         >/dev/null || err "tar extraction failed"
+    # Retain the previous install as OLD_HOME until commit_install (H2):
+    # a crash before commit is rolled back by the EXIT trap.
     if [ -d "$VULTURE_HOME" ]; then
         OLD_HOME="${VULTURE_HOME}.old.$$"
         mv "$VULTURE_HOME" "$OLD_HOME"
     fi
     mv "$NEW_HOME" "$VULTURE_HOME"
-    if [ -n "${OLD_HOME:-}" ]; then
+    log "extracted to $VULTURE_HOME"
+}
+
+# ─── commit_install (H2) ──────────────────────────────────────────────────
+# Final commit point: the new install is good, so drop the retained previous
+# install and mark the upgrade committed (the trap no longer rolls back).
+commit_install() {
+    if [ -n "${OLD_HOME:-}" ] && [ -d "$OLD_HOME" ]; then
         rm -rf "$OLD_HOME"
     fi
-    log "extracted to $VULTURE_HOME"
+    COMMITTED=1
+    INSTALL_COMMITTED=1
+}
+
+# ─── cleanup (H2 EXIT trap) ───────────────────────────────────────────────
+# On an uncommitted abort, restore OLD_HOME -> VULTURE_HOME. Always remove
+# leftover temp/staging dirs.
+cleanup() {
+    if [ "${COMMITTED:-}" != "1" ] && [ "${INSTALL_COMMITTED:-}" != "1" ] \
+       && [ -n "${OLD_HOME:-}" ] && [ -d "$OLD_HOME" ]; then
+        rm -rf "$VULTURE_HOME"
+        mv "$OLD_HOME" "$VULTURE_HOME"
+    fi
+    [ -n "${NEW_HOME:-}" ] && rm -rf "$NEW_HOME"
+    [ -n "${DOWNLOAD_DIR:-}" ] && rm -rf "$DOWNLOAD_DIR"
 }
 
 # ─── 8. generate_jwt_secret ────────────────────────────────────────────────
@@ -234,24 +274,49 @@ generate_jwt_secret() {
 }
 
 # ─── 9. install_python_deps ────────────────────────────────────────────────
+cli_only_note() {
+    log "agent runtime not bundled in this build — 'vulture scan' with"
+    log "LLM/agents requires Docker mode (Mode A/B); the CLI + skills still work."
+}
+
 install_python_deps() {
-    REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
-    if [ ! -f "$REQS" ]; then
-        warn "no requirements-frozen.txt; skipping pip install"
-        return
-    fi
     PIP="$VULTURE_HOME/runtime/python/bin/pip"
-    if [ ! -x "$PIP" ]; then
-        warn "no bundled pip at $PIP; skipping pip install"
-        return
+    REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
+    # CLI-only build: no bundled interpreter, or no/empty frozen manifest.
+    if [ ! -x "$PIP" ] || [ ! -s "$REQS" ]; then
+        cli_only_note
+        return 0
+    fi
+    # Fail-closed hashless detection: any requirement line (non-blank,
+    # non-comment, non-continuation) when the file has no --hash= lines.
+    if ! grep -q -- '--hash=' "$REQS"; then
+        # Confirm there is at least one real requirement line to install.
+        if grep -Eq '^[[:space:]]*[^#[:space:]]' "$REQS"; then
+            err "requirements-frozen.txt has no --hash= lines; refusing hashless install (fail-closed)"
+        fi
+        cli_only_note
+        return 0
     fi
     INDEX=${VULTURE_PIP_INDEX_URL:-https://pypi.org/simple}
-    HOST=$(printf '%s' "$INDEX" | sed -E 's|^https?://||;s|/.*$||')
     log "installing Python deps (this can take a few minutes)"
-    "$PIP" install --require-hashes --no-cache-dir --no-build-isolation \
-        --disable-pip-version-check \
-        --index-url "$INDEX" --trusted-host "$HOST" \
-        -r "$REQS" || err "pip install failed"
+    # Only disable TLS verification (--trusted-host) for an explicit http://
+    # mirror; never for the default/https index.
+    case "$INDEX" in
+        http://*)
+            HOST=$(printf '%s' "$INDEX" | sed -E 's|^http://||;s|/.*$||')
+            warn "VULTURE_PIP_INDEX_URL is http:// ($INDEX); disabling TLS verification for $HOST"
+            "$PIP" install --require-hashes --no-cache-dir --no-build-isolation \
+                --disable-pip-version-check \
+                --index-url "$INDEX" --trusted-host "$HOST" \
+                -r "$REQS" || err "pip install failed"
+            ;;
+        *)
+            "$PIP" install --require-hashes --no-cache-dir --no-build-isolation \
+                --disable-pip-version-check \
+                --index-url "$INDEX" \
+                -r "$REQS" || err "pip install failed"
+            ;;
+    esac
     log "Python deps installed"
 }
 
@@ -288,18 +353,18 @@ link_binary() {
 
 # ─── 12. strip_quarantine (darwin only, narrowed to extracted files) ─────
 strip_quarantine() {
-    [ "$OS" = darwin ] || return 0
-    command -v xattr >/dev/null 2>&1 || return 0
-    # Iterate the filelist captured during extraction (S7).
-    if [ -f "$VULTURE_HOME/.filelist" ]; then
+    # Strip macOS quarantine xattrs using the extraction filelist (darwin only).
+    if [ "$OS" = darwin ] && command -v xattr >/dev/null 2>&1 \
+       && [ -f "$VULTURE_HOME/.filelist" ]; then
         while IFS= read -r entry; do
             # tar -xzvf line format: "x foo/bar/baz" or "foo/bar/baz"
             path=$(printf '%s' "$entry" | sed -E 's|^x[[:space:]]+||')
             full="$VULTURE_HOME/$path"
             [ -e "$full" ] && xattr -d com.apple.quarantine "$full" 2>/dev/null || true
         done < "$VULTURE_HOME/.filelist"
-        rm -f "$VULTURE_HOME/.filelist"
     fi
+    # Remove the temp filelist on ALL platforms (A3).
+    rm -f "$VULTURE_HOME/.filelist"
 }
 
 # ─── 13. verify_install ───────────────────────────────────────────────────
@@ -323,6 +388,12 @@ print_summary() {
 }
 
 main() {
+    # Fail fast / no unset vars during a real install (kept out of top level so
+    # sourcing for tests does not inherit it).
+    set -eu
+    # Install the EXIT trap here (not at top level) so sourcing for tests does
+    # not hijack the harness's own trap.
+    trap cleanup EXIT INT TERM
     detect_platform
     validate_home
     resolve_version
@@ -335,8 +406,13 @@ main() {
     set_permissions
     link_binary
     strip_quarantine
+    commit_install
     verify_install
     print_summary
 }
 
-main "$@"
+# Testability seam: when sourced with VULTURE_INSTALL_SOURCE_ONLY=1, expose the
+# functions for unit tests without running the installer.
+if [ "${VULTURE_INSTALL_SOURCE_ONLY:-}" != "1" ]; then
+    main "$@"
+fi
