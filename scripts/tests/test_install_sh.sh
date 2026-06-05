@@ -594,5 +594,109 @@ test_cleanup_rollback() {
 test_cleanup_rollback
 
 # ---------------------------------------------------------------------------
+# TEST 13 — fresh-install rollback (review #3).
+# On a FRESH install (no prior ~/.vulture, so OLD_HOME never set) that aborts
+# after the swap, cleanup must remove the partial VULTURE_HOME. A swap marker
+# (SWAPPED) distinguishes "we created it" from a pre-existing install.
+# ---------------------------------------------------------------------------
+test_cleanup_fresh_partial() {
+    name="H2-cleanup-fresh-install-partial-removed"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "cleanup unreachable: seam absent"; return; fi
+    target="$SANDBOX/fresh-home"; rm -rf "$target"; mkdir -p "$target"
+    printf 'PARTIAL\n' > "$target/marker"
+    run_in_install '
+        VULTURE_HOME="'"$target"'"
+        OLD_HOME=""; SWAPPED=1; COMMITTED=""; INSTALL_COMMITTED=""
+        export VULTURE_HOME OLD_HOME SWAPPED COMMITTED INSTALL_COMMITTED
+        type cleanup >/dev/null 2>&1 && cleanup
+    ' >/dev/null 2>&1
+    if [ ! -e "$target" ]; then pass "$name"
+    else fail "$name" "partial VULTURE_HOME left on disk after a fresh-install abort"; fi
+}
+test_cleanup_fresh_partial
+
+# TEST 14 — safety: a PRE-swap abort must NOT delete a pre-existing install
+# (guards against an over-broad rm destroying a healthy install if, e.g., the
+# download fails before extraction).
+test_cleanup_preserves_preexisting() {
+    name="H2-cleanup-preserves-untouched-home"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "cleanup unreachable: seam absent"; return; fi
+    target="$SANDBOX/pre-home"; rm -rf "$target"; mkdir -p "$target"
+    printf 'GOOD\n' > "$target/marker"
+    run_in_install '
+        VULTURE_HOME="'"$target"'"
+        OLD_HOME=""; SWAPPED=""; COMMITTED=""; INSTALL_COMMITTED=""
+        export VULTURE_HOME OLD_HOME SWAPPED COMMITTED INSTALL_COMMITTED
+        type cleanup >/dev/null 2>&1 && cleanup
+    ' >/dev/null 2>&1
+    if [ -f "$target/marker" ] && grep -q GOOD "$target/marker"; then pass "$name"
+    else fail "$name" "cleanup deleted a pre-existing install on a pre-swap abort"; fi
+}
+test_cleanup_preserves_preexisting
+
+# TEST 15 — .filelist is POPULATED after extract (review #1). tar -v writes the
+# list to stdout; capturing stderr instead leaves it empty and the macOS
+# quarantine strip becomes a dead no-op.
+test_filelist_populated() {
+    name="A3-filelist-populated-after-extract"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "extract_atomic unreachable: seam absent"; return; fi
+    src="$SANDBOX/tarsrc"; rm -rf "$src"; mkdir -p "$src/bin" "$src/runtime"
+    printf 'x\n' > "$src/bin/vulture"; printf 'y\n' > "$src/runtime/data"
+    tb="$SANDBOX/art.tar.gz"; ( cd "$src" && tar -czf "$tb" . ) 2>/dev/null
+    home="$SANDBOX/extract-home"; rm -rf "$home" "$home.new"
+    run_in_install '
+        VULTURE_HOME="'"$home"'"; TARBALL="'"$tb"'"; OS=linux
+        export VULTURE_HOME TARBALL OS
+        type extract_atomic >/dev/null 2>&1 && extract_atomic
+    ' >/dev/null 2>&1
+    if [ -s "$home/.filelist" ]; then pass "$name"
+    else fail "$name" ".filelist empty/absent after extract (tar verbose redirect bug)"; fi
+}
+test_filelist_populated
+
+# TEST 16 — resolve_version GitHub-API curl carries a timeout (review #4 / H6).
+test_resolve_version_timeout() {
+    name="H6-resolve_version-curl-timeout"
+    if sed -n '/^resolve_version()/,/^}/p' "$INSTALL_SH" | grep 'curl' | grep -q -- '--max-time'; then
+        pass "$name"
+    else
+        fail "$name" "resolve_version curl has no --max-time (can hang on a stalled network)"
+    fi
+}
+test_resolve_version_timeout
+
+# TEST 17 — cosign required but absent must err (review #9 coverage).
+test_cosign_required_absent() {
+    name="A1-cosign-required-but-absent-errs"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "verify_signature unreachable"; return; fi
+    empty="$SANDBOX/nopath"; mkdir -p "$empty"; rc=0
+    run_in_install '
+        PATH="'"$empty"'"; VULTURE_REQUIRE_COSIGN=true
+        export PATH VULTURE_REQUIRE_COSIGN
+        type verify_signature >/dev/null 2>&1 && verify_signature
+    ' >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then pass "$name"
+    else fail "$name" "verify_signature did not err with cosign required+absent"; fi
+}
+test_cosign_required_absent
+
+# TEST 18 — anti-downgrade guard (review #9 coverage; also locks the
+# sort-V → portable-awk refactor). older→err, override→ok, newer→ok.
+test_downgrade_guard() {
+    name="H2-downgrade-guard"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "resolve_version unreachable"; return; fi
+    rc=0
+    run_in_install 'VULTURE_VERSION="v0.0.1"; unset VULTURE_ALLOW_DOWNGRADE; export VULTURE_VERSION; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
+    older_errs=$rc; rc=0
+    run_in_install 'VULTURE_VERSION="v0.0.1"; VULTURE_ALLOW_DOWNGRADE=true; export VULTURE_VERSION VULTURE_ALLOW_DOWNGRADE; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
+    override_ok=$rc; rc=0
+    run_in_install 'VULTURE_VERSION="v9.9.9"; unset VULTURE_ALLOW_DOWNGRADE; export VULTURE_VERSION; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
+    newer_ok=$rc
+    if [ "$older_errs" -ne 0 ] && [ "$override_ok" -eq 0 ] && [ "$newer_ok" -eq 0 ]; then pass "$name"
+    else fail "$name" "older_errs=$older_errs override_ok=$override_ok newer_ok=$newer_ok"; fi
+}
+test_downgrade_guard
+
+# ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

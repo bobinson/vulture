@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 #
-# Vulture native installer — feature 0044.
+# Vulture native installer — feature 0044 (hardened in 0055).
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh
@@ -14,8 +14,9 @@
 #   VULTURE_REQUIRE_COSIGN  If true, refuse to install without cosign
 #   VULTURE_ALLOW_UNSIGNED  If true (and cosign unavailable), allow
 #                           SHA-only verification
-#   VULTURE_PIP_INDEX_URL   Alternate PyPI mirror (must be https://)
-#   VULTURE_NO_UPDATE_CHECK Disable doctor's GH-API call after install
+#   VULTURE_PIP_INDEX_URL   Alternate PyPI mirror. https:// is verified;
+#                           a plaintext http:// mirror is accepted but
+#                           disables TLS verification for that host.
 #   VULTURE_ALLOW_DOWNGRADE  Allow VULTURE_VERSION older than fallback
 #
 # This script is shellcheck-clean and POSIX-sh (no bashisms).
@@ -51,6 +52,26 @@ reject_if_system_dir() {
         /bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/etc/*|/usr/*|/var/*)
             err "refusing system directory: $_p" ;;
     esac
+}
+
+# version_lt A B — true (exit 0) if version A is strictly older than B.
+# Pure awk, so it is portable: avoids `sort -V`, which is GNU-only and behaves
+# differently / is absent on BSD/macOS and BusyBox (where the downgrade guard
+# would otherwise be silently bypassed).
+version_lt() {
+    [ "$1" = "$2" ] && return 1
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        sub(/^v/, "", a); sub(/^v/, "", b);
+        na = split(a, av, "."); nb = split(b, bv, ".");
+        n = (na > nb) ? na : nb;
+        for (i = 1; i <= n; i++) {
+            x = (i <= na) ? av[i] + 0 : 0;
+            y = (i <= nb) ? bv[i] + 0 : 0;
+            if (x < y) exit 0;
+            if (x > y) exit 1;
+        }
+        exit 1;
+    }'
 }
 
 # ─── 1. detect_platform ────────────────────────────────────────────────────
@@ -98,7 +119,8 @@ resolve_version() {
     if [ -n "${VULTURE_VERSION:-}" ]; then
         VERSION=$VULTURE_VERSION
     elif command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -fsSL "$RELEASES_API" 2>/dev/null \
+        VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 \
+            "$RELEASES_API" 2>/dev/null \
             | grep -E '"tag_name"' | head -1 \
             | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
             || true)
@@ -107,13 +129,12 @@ resolve_version() {
         warn "GitHub API unreachable; falling back to $FALLBACK_TAG"
         VERSION=$FALLBACK_TAG
     fi
-    # Fail closed: refuse to install older than fallback unless explicitly allowed.
-    if [ "$VERSION" != "$FALLBACK_TAG" ] && [ "${VULTURE_ALLOW_DOWNGRADE:-}" != "true" ]; then
-        # Lexicographic compare is good enough for vX.Y.Z tags.
-        if [ "$(printf '%s\n%s\n' "$VERSION" "$FALLBACK_TAG" | sort -V | head -1)" = "$VERSION" ] \
-           && [ "$VERSION" != "$FALLBACK_TAG" ]; then
-            err "refusing to downgrade to $VERSION (fallback=$FALLBACK_TAG); set VULTURE_ALLOW_DOWNGRADE=true to override"
-        fi
+    # Fail closed: refuse to install older than the fallback unless explicitly
+    # allowed (portable version compare — see version_lt).
+    if [ "$VERSION" != "$FALLBACK_TAG" ] \
+       && [ "${VULTURE_ALLOW_DOWNGRADE:-}" != "true" ] \
+       && version_lt "$VERSION" "$FALLBACK_TAG"; then
+        err "refusing to downgrade to $VERSION (fallback=$FALLBACK_TAG); set VULTURE_ALLOW_DOWNGRADE=true to override"
     fi
     log "installing version: $VERSION"
 }
@@ -207,15 +228,18 @@ extract_atomic() {
     # Re-run the validation immediately before extraction (plan C4).
     REVALIDATED=$(resolve_path "$VULTURE_HOME")
     reject_if_system_dir "$REVALIDATED"
+    # umask BEFORE mkdir so the staging dir is never world-readable, even
+    # briefly, before extraction populates it.
+    umask 077
     NEW_HOME="${VULTURE_HOME}.new"
     rm -rf "$NEW_HOME"
     mkdir -p "$NEW_HOME"
-    umask 077
     log "extracting tarball"
-    # Single-pass tar -xzvf captures filelist for the quarantine
-    # strip below (M3 — single read, no race window).
-    tar -xzvf "$TARBALL" -C "$NEW_HOME" 2>"$NEW_HOME/.filelist" \
-        >/dev/null || err "tar extraction failed"
+    # Single-pass tar -xzv captures the extracted file list for the macOS
+    # quarantine strip below (S7/M3). tar -v writes that list to STDOUT, so
+    # capture stdout into .filelist and discard stderr.
+    tar -xzvf "$TARBALL" -C "$NEW_HOME" >"$NEW_HOME/.filelist" \
+        2>/dev/null || err "tar extraction failed"
     # Retain the previous install as OLD_HOME until commit_install (H2):
     # a crash before commit is rolled back by the EXIT trap.
     if [ -d "$VULTURE_HOME" ]; then
@@ -223,6 +247,10 @@ extract_atomic() {
         mv "$VULTURE_HOME" "$OLD_HOME"
     fi
     mv "$NEW_HOME" "$VULTURE_HOME"
+    # Mark that VULTURE_HOME now holds OUR freshly-extracted tree, so an abort
+    # before commit can roll it back even on a fresh install (no OLD_HOME).
+    SWAPPED=1
+    NEW_HOME=""
     log "extracted to $VULTURE_HOME"
 }
 
@@ -241,10 +269,19 @@ commit_install() {
 # On an uncommitted abort, restore OLD_HOME -> VULTURE_HOME. Always remove
 # leftover temp/staging dirs.
 cleanup() {
-    if [ "${COMMITTED:-}" != "1" ] && [ "${INSTALL_COMMITTED:-}" != "1" ] \
-       && [ -n "${OLD_HOME:-}" ] && [ -d "$OLD_HOME" ]; then
-        rm -rf "$VULTURE_HOME"
-        mv "$OLD_HOME" "$VULTURE_HOME"
+    if [ "${COMMITTED:-}" != "1" ] && [ "${INSTALL_COMMITTED:-}" != "1" ]; then
+        if [ -n "${OLD_HOME:-}" ] && [ -d "$OLD_HOME" ]; then
+            # Upgrade abort: restore the previous install.
+            rm -rf "$VULTURE_HOME"
+            mv "$OLD_HOME" "$VULTURE_HOME"
+        elif [ "${SWAPPED:-}" = "1" ] && [ -n "${VULTURE_HOME:-}" ] \
+             && [ -d "$VULTURE_HOME" ]; then
+            # Fresh-install abort after the swap (no prior install to restore):
+            # remove the partial new install so a re-run starts clean. Guarded
+            # by SWAPPED so a pre-extraction abort never deletes a pre-existing
+            # healthy install (e.g. when a download fails).
+            rm -rf "$VULTURE_HOME"
+        fi
     fi
     [ -n "${NEW_HOME:-}" ] && rm -rf "$NEW_HOME"
     [ -n "${DOWNLOAD_DIR:-}" ] && rm -rf "$DOWNLOAD_DIR"
@@ -337,7 +374,8 @@ link_binary() {
     if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
         warn "$LINK exists and is not a symlink; not overwriting"
     elif [ -L "$LINK" ]; then
-        TARGET=$(readlink "$LINK")
+        # Canonicalise so a relative existing-symlink target still matches.
+        TARGET=$(resolve_path "$LINK")
         case "$TARGET" in
             "$VULTURE_HOME"/*) ln -sf "$VULTURE_HOME/bin/vulture" "$LINK" ;;
             *) warn "$LINK points outside VULTURE_HOME ($TARGET); not overwriting" ;;

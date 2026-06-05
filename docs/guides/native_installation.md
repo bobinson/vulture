@@ -37,7 +37,7 @@ The installer extracts a per-platform tarball under `~/.vulture/`:
 │   ├── agents/                      # Python audit agents
 │   ├── frontend/                    # SPA assets (also embedded in the binary)
 │   ├── catalogs/                    # CWE + ASVS reference data
-│   └── python/                      # python-build-standalone (portable Python 3.12)
+│   └── python/                      # portable Python 3.12 — PLANNED (0055 Tier B); not in the current build
 ├── data/
 │   ├── vulture.db                   # SQLite database
 │   ├── sources/                     # cached git clones
@@ -184,7 +184,7 @@ and is cleaned up on success.
 |---|---|---|
 | `install.sh: VULTURE_HOME contains unsafe characters` | Special chars in path | Use a path matching `[A-Za-z0-9_./-]+` |
 | `cosign verification failed` | Tampered release or wrong signing identity | Don't bypass; report to the security disclosure channel |
-| `vulture doctor` reports Python FAIL | `runtime/python/bin/python3.12` missing | Re-run install.sh; the bundled Python is shipped in the release tarball |
+| `vulture doctor` reports Python FAIL | bundled Python runtime not present | Expected on the current build — the agent runtime is not yet bundled (0055 Tier B). Use Docker (Mode A/B) for agent scanning; the CLI + UI still work |
 | `vulture start` says port in use | Another process on `:23000` | `vulture stop` first, or set `VULTURE_PORT=...` in `config/.env` |
 | Gatekeeper warning on macOS | Browser-downloaded tarball (quarantine attr) | `xattr -dr com.apple.quarantine ~/.vulture` |
 

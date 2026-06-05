@@ -88,5 +88,19 @@ else
     fail "$name" "no 'Current limitations' + Docker-for-agents note found in native_installation.md"
 fi
 
+# ---------------------------------------------------------------------------
+# C3b — the guide must NOT claim a bundled Python is currently SHIPPED
+#       (review #6: troubleshooting row + directory-tree entry overclaim).
+#       A "planned / not yet / Tier B" mention is fine; a shipped claim is not.
+# ---------------------------------------------------------------------------
+name="C3b-guide-no-bundled-python-shipped-claim"
+if [ ! -f "$GUIDE" ]; then
+    fail "$name" "native_installation.md not found at $GUIDE"
+elif grep -Eqi 'bundled python is shipped|bundled python.*release tarball|no system python required' "$GUIDE"; then
+    fail "$name" "guide still claims a bundled Python is shipped (overclaim; see review #6)"
+else
+    pass "$name"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
