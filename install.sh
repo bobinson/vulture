@@ -14,7 +14,10 @@
 #   VULTURE_REQUIRE_COSIGN  If true, refuse to install without cosign
 #   VULTURE_ALLOW_UNSIGNED  If true (and cosign unavailable), allow
 #                           SHA-only verification
-#   VULTURE_PIP_INDEX_URL   Alternate PyPI mirror (must be https://)
+#   VULTURE_PIP_INDEX_URL   Alternate PyPI mirror (https:// strongly
+#                           preferred; a plaintext http:// mirror is
+#                           allowed but disables TLS verification for
+#                           that host — see install_python_deps)
 #   VULTURE_NO_UPDATE_CHECK Disable doctor's GH-API call after install
 #   VULTURE_ALLOW_DOWNGRADE  Allow VULTURE_VERSION older than fallback
 #
@@ -33,6 +36,60 @@ RELEASES_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/l
 log()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 err()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# ─── shared helpers (single source of truth; used in >1 place) ──────────────
+
+# resolve_path PATH — print PATH with symlinks resolved (best-effort).
+# Falls back to the literal path when readlink is absent or fails.
+resolve_path() {
+    if command -v readlink >/dev/null 2>&1; then
+        readlink -f "$1" 2>/dev/null || printf '%s' "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# reject_if_system_dir PATH — return non-zero if PATH is, or lives
+# directly under, a system directory we must never install into.
+# NOTE: /root is rejected only as an *exact* target, not as a parent —
+# a root user's ~/.vulture (= /root/.vulture) is a legitimate location,
+# so /root/* is intentionally NOT blacklisted (it would break root /
+# container installs that use the default $HOME/.vulture).
+reject_if_system_dir() {
+    case "$1" in
+        /|/bin|/sbin|/lib|/lib64|/boot|/sys|/proc|/dev|/root|/etc|/usr|/var)
+            return 1 ;;
+        /bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/etc/*|/usr/*|/var/*)
+            return 1 ;;
+    esac
+    return 0
+}
+
+# fetch URL OUTFILE — download with bounded retries + a hard timeout so a
+# transient network blip backs off instead of failing the whole install.
+fetch() {
+    curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused \
+        --max-time 300 -o "$2" "$1"
+}
+
+# cleanup — EXIT trap (installed by main). Rolls back a half-applied
+# upgrade and removes transient staging/download dirs. State globals
+# (OLD_HOME, NEW_HOME, DL_TMP, INSTALL_COMMITTED) are set as the install
+# progresses; until commit_install marks the swap durable, an abort here
+# restores the previous version so a failed step never leaves the user
+# with a destroyed old install and a half-built new one.
+cleanup() {
+    code=$?
+    if [ "${INSTALL_COMMITTED:-0}" != "1" ] \
+       && [ -n "${OLD_HOME:-}" ] && [ -d "${OLD_HOME:-/nonexistent}" ]; then
+        warn "install did not complete; rolling back to the previous version"
+        rm -rf "$VULTURE_HOME" 2>/dev/null || true
+        mv "$OLD_HOME" "$VULTURE_HOME" 2>/dev/null || true
+    fi
+    [ -n "${NEW_HOME:-}" ] && rm -rf "${NEW_HOME:-/nonexistent}" 2>/dev/null || true
+    [ -n "${DL_TMP:-}" ]   && rm -rf "${DL_TMP:-/nonexistent}" 2>/dev/null || true
+    return "$code"
+}
 
 # ─── 1. detect_platform ────────────────────────────────────────────────────
 detect_platform() {
@@ -62,15 +119,9 @@ validate_home() {
             err "VULTURE_HOME contains unsafe characters: $VULTURE_HOME" ;;
     esac
     # Resolve symlinks before checking blacklist.
-    if command -v readlink >/dev/null 2>&1; then
-        RESOLVED=$(readlink -f "$VULTURE_HOME" 2>/dev/null || echo "$VULTURE_HOME")
-    else
-        RESOLVED=$VULTURE_HOME
-    fi
-    case "$RESOLVED" in
-        /|/bin|/sbin|/lib|/lib64|/boot|/sys|/proc|/dev|/root|/etc|/usr|/var|/bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/root/*|/etc/*|/usr/*|/var/*)
-            err "VULTURE_HOME resolves to a system directory: $RESOLVED" ;;
-    esac
+    RESOLVED=$(resolve_path "$VULTURE_HOME")
+    reject_if_system_dir "$RESOLVED" \
+        || err "VULTURE_HOME resolves to a system directory: $RESOLVED"
     if [ -e "$VULTURE_HOME" ]; then
         OWNER=$(ls -ldn "$VULTURE_HOME" 2>/dev/null | awk '{print $3}')
         ME=$(id -u 2>/dev/null || echo 0)
@@ -86,7 +137,8 @@ resolve_version() {
     if [ -n "${VULTURE_VERSION:-}" ]; then
         VERSION=$VULTURE_VERSION
     elif command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -fsSL "$RELEASES_API" 2>/dev/null \
+        VERSION=$(curl -fsSL --retry 3 --retry-delay 2 --max-time 30 \
+            "$RELEASES_API" 2>/dev/null \
             | grep -E '"tag_name"' | head -1 \
             | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
             || true)
@@ -115,22 +167,25 @@ download_artifacts() {
         log "using offline tarball: $TARBALL"
         return
     fi
-    TMPDIR=$(mktemp -d)
-    chmod 700 "$TMPDIR"
+    # Own temp dir for downloads; cleaned up by the EXIT trap (cleanup).
+    # Named DL_TMP, not TMPDIR, so we don't clobber the standard env var
+    # that mktemp/tar themselves consult.
+    DL_TMP=$(mktemp -d)
+    chmod 700 "$DL_TMP"
     TARBALL_NAME="vulture-${VERSION}-${OS}-${ARCH}.tar.gz"
     URL_BASE="${REPO_URL}/releases/download/${VERSION}"
     log "downloading $TARBALL_NAME"
-    curl -fsSL -o "$TMPDIR/$TARBALL_NAME" "${URL_BASE}/${TARBALL_NAME}" \
+    fetch "${URL_BASE}/${TARBALL_NAME}" "$DL_TMP/$TARBALL_NAME" \
         || err "tarball download failed"
-    curl -fsSL -o "$TMPDIR/SHA256SUMS" "${URL_BASE}/SHA256SUMS" \
+    fetch "${URL_BASE}/SHA256SUMS" "$DL_TMP/SHA256SUMS" \
         || err "SHA256SUMS download failed"
-    curl -fsSL -o "$TMPDIR/SHA256SUMS.sig" "${URL_BASE}/SHA256SUMS.sig" \
+    fetch "${URL_BASE}/SHA256SUMS.sig" "$DL_TMP/SHA256SUMS.sig" \
         2>/dev/null || warn "no cosign signature published"
-    curl -fsSL -o "$TMPDIR/SHA256SUMS.pem" "${URL_BASE}/SHA256SUMS.pem" \
+    fetch "${URL_BASE}/SHA256SUMS.pem" "$DL_TMP/SHA256SUMS.pem" \
         2>/dev/null || true
-    TARBALL=$TMPDIR/$TARBALL_NAME
-    SHASUM_FILE=$TMPDIR/SHA256SUMS
-    SIG_FILE=$TMPDIR/SHA256SUMS.sig
+    TARBALL=$DL_TMP/$TARBALL_NAME
+    SHASUM_FILE=$DL_TMP/SHA256SUMS
+    SIG_FILE=$DL_TMP/SHA256SUMS.sig
 }
 
 # ─── 5. verify_signature ──────────────────────────────────────────────────
@@ -188,15 +243,9 @@ verify_checksum() {
 # ─── 7. extract_atomic (with TOCTOU re-validation) ────────────────────────
 extract_atomic() {
     # Re-run the validation immediately before extraction (plan C4).
-    if command -v readlink >/dev/null 2>&1; then
-        REVALIDATED=$(readlink -f "$VULTURE_HOME" 2>/dev/null || echo "$VULTURE_HOME")
-    else
-        REVALIDATED=$VULTURE_HOME
-    fi
-    case "$REVALIDATED" in
-        /|/bin|/sbin|/lib|/lib64|/boot|/sys|/proc|/dev|/root|/etc|/usr|/var|/bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/root/*|/etc/*|/usr/*|/var/*)
-            err "VULTURE_HOME resolution changed since validate_home; aborting" ;;
-    esac
+    REVALIDATED=$(resolve_path "$VULTURE_HOME")
+    reject_if_system_dir "$REVALIDATED" \
+        || err "VULTURE_HOME resolution changed since validate_home; aborting"
     NEW_HOME="${VULTURE_HOME}.new"
     rm -rf "$NEW_HOME"
     mkdir -p "$NEW_HOME"
@@ -211,9 +260,11 @@ extract_atomic() {
         mv "$VULTURE_HOME" "$OLD_HOME"
     fi
     mv "$NEW_HOME" "$VULTURE_HOME"
-    if [ -n "${OLD_HOME:-}" ]; then
-        rm -rf "$OLD_HOME"
-    fi
+    NEW_HOME=""   # consumed by the mv; nothing left to clean
+    # NOTE: OLD_HOME is deliberately NOT deleted here. It is the rollback
+    # point and is removed only by commit_install(), after the remaining
+    # steps (deps, perms, symlink) succeed. If any of them fail, the EXIT
+    # trap restores OLD_HOME instead of leaving a half-installed tree.
     log "extracted to $VULTURE_HOME"
 }
 
@@ -265,18 +316,35 @@ install_python_deps() {
         return
     fi
     # A non-empty manifest MUST carry hashes — we install with
-    # --require-hashes and will not silently weaken to a hashless
-    # install in a supply-chain-sensitive path. Fail closed if the
-    # manifest has requirement lines but no --hash= entries.
-    if grep -qE '^[A-Za-z0-9._-]+==' "$REQS" && ! grep -q -- '--hash=' "$REQS"; then
+    # --require-hashes and will not silently weaken to a hashless install
+    # in a supply-chain-sensitive path. Fail closed if the manifest has
+    # ANY requirement line (first non-space char alphanumeric: covers
+    # name==, name[extra]==, name>=, URLs, VCS pins) but no --hash=
+    # anywhere. (A narrow `name==` check would miss extras/URLs and let a
+    # hashless file slip through to an opaque pip --require-hashes error.)
+    if ! grep -q -- '--hash=' "$REQS" \
+       && grep -qE '^[[:space:]]*[A-Za-z0-9]' "$REQS"; then
         err "requirements-frozen.txt has dependencies but no hashes; refusing hashless install (rebuild the tarball with a pip-compile --generate-hashes lockfile)"
     fi
     INDEX=${VULTURE_PIP_INDEX_URL:-https://pypi.org/simple}
-    HOST=$(printf '%s' "$INDEX" | sed -E 's|^https?://||;s|/.*$||')
+    # --trusted-host disables TLS certificate validation for a host, so we
+    # add it ONLY for an explicit plaintext http:// mirror. For https (the
+    # default and documented case) it must be omitted — otherwise it would
+    # re-open a MITM hole on the very channel that pulls executable code.
+    TRUSTED=""
+    case "$INDEX" in
+        http://*)
+            HOST=$(printf '%s' "$INDEX" | sed -E 's|^http://||;s|/.*$||')
+            warn "VULTURE_PIP_INDEX_URL is plaintext http://; disabling TLS verification for $HOST"
+            TRUSTED="--trusted-host $HOST" ;;
+    esac
     log "installing Python deps (this can take a few minutes)"
+    # shellcheck disable=SC2086  # $TRUSTED is intentionally word-split
+    # (empty, or the two tokens "--trusted-host <host>"); HOST is a bare
+    # hostname with no spaces, so the split is safe.
     "$PIP" install --require-hashes --no-cache-dir --no-build-isolation \
         --disable-pip-version-check \
-        --index-url "$INDEX" --trusted-host "$HOST" \
+        --index-url "$INDEX" $TRUSTED \
         -r "$REQS" || err "pip install failed"
     log "Python deps installed"
 }
@@ -331,6 +399,18 @@ strip_quarantine() {
     rm -f "$FILELIST"
 }
 
+# ─── 12b. commit_install ───────────────────────────────────────────────────
+# Mark the upgrade durable: delete the retained previous version and clear
+# the rollback flag so the EXIT trap no longer reverts. Called only after
+# every step that can fail (deps, perms, symlink) has succeeded.
+commit_install() {
+    if [ -n "${OLD_HOME:-}" ] && [ -d "$OLD_HOME" ]; then
+        rm -rf "$OLD_HOME"
+    fi
+    OLD_HOME=""
+    INSTALL_COMMITTED=1
+}
+
 # ─── 13. verify_install ───────────────────────────────────────────────────
 verify_install() {
     if [ -x "$VULTURE_HOME/bin/vulture" ]; then
@@ -352,6 +432,9 @@ print_summary() {
 }
 
 main() {
+    # Roll back a half-applied upgrade and clean temp dirs on any exit.
+    INSTALL_COMMITTED=0
+    trap cleanup EXIT
     detect_platform
     validate_home
     resolve_version
@@ -364,6 +447,7 @@ main() {
     set_permissions
     link_binary
     strip_quarantine
+    commit_install      # past here the swap is durable; trap won't revert
     verify_install
     print_summary
 }
