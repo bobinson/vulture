@@ -68,7 +68,7 @@ validate_home() {
         RESOLVED=$VULTURE_HOME
     fi
     case "$RESOLVED" in
-        /|/etc|/usr|/var|/etc/*|/usr/*)
+        /|/bin|/sbin|/lib|/lib64|/boot|/sys|/proc|/dev|/root|/etc|/usr|/var|/bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/root/*|/etc/*|/usr/*|/var/*)
             err "VULTURE_HOME resolves to a system directory: $RESOLVED" ;;
     esac
     if [ -e "$VULTURE_HOME" ]; then
@@ -151,15 +151,22 @@ verify_signature() {
         warn "no signature file present; SHA-only verification"
         return
     fi
-    log "verifying release signature (cosign + Rekor)"
+    PEM="${SHASUM_FILE%/*}/SHA256SUMS.pem"
+    if [ ! -s "$PEM" ]; then
+        warn "no signing certificate present; SHA-only verification"
+        return
+    fi
+    log "verifying release signature (cosign keyless + Rekor)"
+    # verify-blob takes exactly ONE positional (the signed blob). The
+    # signature and certificate come via flags. (Earlier revisions
+    # passed the PEM as a stray positional, which broke verification.)
     cosign verify-blob \
         --certificate-identity-regexp "^https://github.com/${REPO_OWNER}/${REPO_NAME}/" \
         --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-        --rekor-url https://rekor.sigstore.dev \
+        --certificate "$PEM" \
         --signature "$SIG_FILE" \
-        ${SHASUM_FILE%/*}/SHA256SUMS.pem 2>/dev/null \
-        --certificate "${SHASUM_FILE%/*}/SHA256SUMS.pem" \
-        "$SHASUM_FILE" || err "cosign verification failed"
+        "$SHASUM_FILE" \
+        || err "cosign verification failed"
 }
 
 # ─── 6. verify_checksum ───────────────────────────────────────────────────
@@ -187,7 +194,7 @@ extract_atomic() {
         REVALIDATED=$VULTURE_HOME
     fi
     case "$REVALIDATED" in
-        /|/etc|/usr|/var|/etc/*|/usr/*)
+        /|/bin|/sbin|/lib|/lib64|/boot|/sys|/proc|/dev|/root|/etc|/usr|/var|/bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/root/*|/etc/*|/usr/*|/var/*)
             err "VULTURE_HOME resolution changed since validate_home; aborting" ;;
     esac
     NEW_HOME="${VULTURE_HOME}.new"
@@ -234,16 +241,35 @@ generate_jwt_secret() {
 }
 
 # ─── 9. install_python_deps ────────────────────────────────────────────────
+# CLI-only builds (no bundled Python runtime) are a VALID install: the
+# Go CLI + skill-based scanning work without the Python agents. Only
+# LLM/agent-based scanning needs the agent runtime, which currently
+# ships via Docker (Mode A/B). This function therefore distinguishes
+# "CLI-only build" (success, with a clear note) from a genuinely broken
+# dependency manifest (fail closed).
+cli_only_note() {
+    log ""
+    log "  Note: this build does not bundle the Python agent runtime."
+    log "  The CLI and skill-based scanning work as installed; LLM/agent-"
+    log "  based scanning currently requires Docker (Mode A/B). See"
+    log "  docs/guides/native_installation.md for current limitations."
+    log ""
+}
+
 install_python_deps() {
     REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
-    if [ ! -f "$REQS" ]; then
-        warn "no requirements-frozen.txt; skipping pip install"
+    PIP="$VULTURE_HOME/runtime/python/bin/pip"
+    # CLI-only build: no bundled interpreter and/or no dep manifest.
+    if [ ! -x "$PIP" ] || [ ! -s "$REQS" ]; then
+        cli_only_note
         return
     fi
-    PIP="$VULTURE_HOME/runtime/python/bin/pip"
-    if [ ! -x "$PIP" ]; then
-        warn "no bundled pip at $PIP; skipping pip install"
-        return
+    # A non-empty manifest MUST carry hashes — we install with
+    # --require-hashes and will not silently weaken to a hashless
+    # install in a supply-chain-sensitive path. Fail closed if the
+    # manifest has requirement lines but no --hash= entries.
+    if grep -qE '^[A-Za-z0-9._-]+==' "$REQS" && ! grep -q -- '--hash=' "$REQS"; then
+        err "requirements-frozen.txt has dependencies but no hashes; refusing hashless install (rebuild the tarball with a pip-compile --generate-hashes lockfile)"
     fi
     INDEX=${VULTURE_PIP_INDEX_URL:-https://pypi.org/simple}
     HOST=$(printf '%s' "$INDEX" | sed -E 's|^https?://||;s|/.*$||')
@@ -286,20 +312,23 @@ link_binary() {
     esac
 }
 
-# ─── 12. strip_quarantine (darwin only, narrowed to extracted files) ─────
+# ─── 12. strip_quarantine (darwin xattr strip; filelist cleanup all OSes) ─
 strip_quarantine() {
-    [ "$OS" = darwin ] || return 0
-    command -v xattr >/dev/null 2>&1 || return 0
-    # Iterate the filelist captured during extraction (S7).
-    if [ -f "$VULTURE_HOME/.filelist" ]; then
+    FILELIST="$VULTURE_HOME/.filelist"
+    # macOS only: clear the com.apple.quarantine xattr on extracted files
+    # (narrowed to the captured filelist, S7).
+    if [ "$OS" = darwin ] && command -v xattr >/dev/null 2>&1 && [ -f "$FILELIST" ]; then
         while IFS= read -r entry; do
             # tar -xzvf line format: "x foo/bar/baz" or "foo/bar/baz"
             path=$(printf '%s' "$entry" | sed -E 's|^x[[:space:]]+||')
             full="$VULTURE_HOME/$path"
             [ -e "$full" ] && xattr -d com.apple.quarantine "$full" 2>/dev/null || true
-        done < "$VULTURE_HOME/.filelist"
-        rm -f "$VULTURE_HOME/.filelist"
+        done < "$FILELIST"
     fi
+    # Always remove the transient extraction filelist — on Linux the
+    # darwin block is skipped, so clean up here unconditionally (M-fix:
+    # previously left a stray .filelist in $VULTURE_HOME on Linux).
+    rm -f "$FILELIST"
 }
 
 # ─── 13. verify_install ───────────────────────────────────────────────────
@@ -339,4 +368,8 @@ main() {
     print_summary
 }
 
-main "$@"
+# Allow tests to source this file for per-function testing without
+# running the installer. scripts/tests/test_install_sh.sh sets this.
+if [ "${VULTURE_INSTALL_SOURCE_ONLY:-}" != "1" ]; then
+    main "$@"
+fi

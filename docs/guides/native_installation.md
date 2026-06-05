@@ -1,7 +1,18 @@
 # Native installation (Mode E)
 
 Feature 0044 ships a one-command native installer for Vulture on
-macOS and Linux. No Docker, no Node, no system Python required.
+macOS and Linux. No Docker, no Node required.
+
+> **Current limitation (read first).** This installer sets up the
+> `vulture` CLI + the embedded UI + SQLite. **Agent-based scanning (the
+> multi-framework / LLM audit pipeline) currently requires Docker
+> (Mode A/B)** — the self-contained Python agent runtime is not yet
+> bundled in the released tarball. CLI-only builds install successfully
+> and report this; `vulture start`, the UI, and skill checks work, but
+> for the full agent experience use `docker compose up` today. Bundling
+> the agent runtime (a vendored Python + a hashed dependency lockfile)
+> is tracked in
+> [0055_native_installer_hardening](../features/0055_native_installer_hardening/).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh
