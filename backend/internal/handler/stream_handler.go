@@ -217,10 +217,6 @@ func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter,
 	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
 }
 
-func (h *StreamHandler) consumeEvents(sseWriter *agui.SSEWriter, eventCh <-chan *model.AgUIEvent, auditID string) ([]model.Finding, map[string]int, []model.ProveResult) {
-	return drainEventChannel(eventCh, auditID, sseWriter)
-}
-
 // drainEventChannel processes all events from eventCh and optionally writes to SSE.
 // Shared by both live-streaming (with sseWriter) and pipeline (without) paths.
 //
@@ -968,10 +964,6 @@ func saveFindings(svc service.AuditService, auditID string, findings []model.Fin
 	} else {
 		log.Printf("[persist] saved %d findings to DB", len(findings))
 	}
-}
-
-func completeAudit(svc service.AuditService, audit *model.Audit, findings []model.Finding, scores map[string]int) {
-	completeAuditWithError(svc, audit, findings, scores, "")
 }
 
 // completeAuditWithError records final state. When agentError is

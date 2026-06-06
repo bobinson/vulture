@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -230,7 +229,7 @@ func (s *webhookService) attempt(url string, body []byte, sig, auditID string) e
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		return errors.New(fmt.Sprintf("status %d", resp.StatusCode))
+		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 	return nil
 }

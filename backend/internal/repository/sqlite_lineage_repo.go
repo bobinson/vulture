@@ -69,7 +69,7 @@ func (r *SQLiteLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 	if txErr != nil {
 		return fmt.Errorf("begin lineage insert tx: %w", txErr)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var nextRef int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(ref_number), 0) + 1 FROM finding_lineage`).Scan(&nextRef); err != nil {

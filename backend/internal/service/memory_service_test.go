@@ -638,13 +638,6 @@ func newEmbeddingServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-func newMemoryServiceWithEmbedder(repo *repository.MockMemoryRepository, baseURL string) *memoryService {
-	return &memoryService{
-		repo: repo,
-		embedder: &embedding.Client{},
-	}
-}
-
 func TestNewMemoryService_Constructor(t *testing.T) {
 	repo := &repository.MockMemoryRepository{}
 	svc := NewMemoryService(repo)

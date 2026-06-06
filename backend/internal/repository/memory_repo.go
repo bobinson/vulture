@@ -685,7 +685,7 @@ func (r *PostgresMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (id) DO NOTHING`)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return fmt.Errorf("prepare batch: %w", err)
 	}
 	defer stmt.Close()
@@ -702,7 +702,7 @@ func (r *PostgresMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 			mem.RemediationStatus, now,
 		)
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("batch insert: %w", err)
 		}
 	}

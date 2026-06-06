@@ -22,7 +22,7 @@ func (r *PostgresProveRepo) SaveProveResults(results []model.ProveResult) error 
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(
 		`INSERT INTO prove_results (id, audit_id, finding_id, status, evidence, iterations_used, staging_url, fingerprint, created_at)

@@ -347,7 +347,7 @@ func (r *SQLiteMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO NOTHING`)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return fmt.Errorf("prepare batch: %w", err)
 	}
 	defer stmt.Close()
@@ -364,7 +364,7 @@ func (r *SQLiteMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 			mem.RemediationStatus, now,
 		)
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("batch insert: %w", err)
 		}
 	}
