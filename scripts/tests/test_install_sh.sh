@@ -76,6 +76,130 @@ EOF
 make_pip "$SHIMBIN/pip"
 make_pip "$SHIMBIN/pip3"
 
+# ---------------------------------------------------------------------------
+# make_python — fake host Python interpreter for the Tier B-lite
+# (VULTURE_USE_SYSTEM_PYTHON) unit tests.  Zero network, zero real venv.
+#
+# Contract env-vars exercised by these tests (per 0055 LLD §4.3):
+#   VULTURE_USE_SYSTEM_PYTHON (1|true)  — opt in to the system-Python branch
+#   VULTURE_PYTHON                      — explicit interpreter path/name
+#   VULTURE_PY_MIN_MINOR (default 12)   — minimum acceptable 3.x minor
+#
+# The shim faithfully answers every interpreter call install.sh's
+# detect_system_python / create_system_venv / install_deps_system_venv make:
+#
+#   * version gate (§4.4): the installer asks the interpreter itself via
+#     `sys.version_info` — it runs `<py> - <minor>` with a heredoc script on
+#     stdin (argv[1] = required minor).  The shim reports its version from the
+#     FAKE_PYVER env (e.g. 3.12 / 3.13 / 3.11) and exits 0 iff
+#     major==3 && minor>=argv1, mirroring py_version_ok.  It also handles the
+#     `-c 'import sys; assert sys.version_info[:2] >= (3,12)'` self-check.
+#
+#   * capability probe (§4.5): `<py> -c 'import venv, ensurepip'` succeeds.
+#
+#   * venv build (§4.5): `<py> -m venv [--copies] DIR` materialises
+#       DIR/bin/python3          (interpreter recorder, honours FAKE_PYVER)
+#       DIR/bin/python3.12        (same recorder; the Go-expected name)
+#       DIR/bin/pip               (argv recorder -> $VENV_PIP_LOG)
+#       DIR/pyvenv.cfg            (so a venv-at-path assert can key on it)
+#
+#   * dep install (§4.6): the venv's own pip is the argv recorder; the
+#     interpreter's `-m pip ...` and import self-check (`<py> - <<PY`) succeed.
+#
+# VENV_PIP_LOG names the per-test argv log the venv-pip writes to; it is baked
+# into the generated bin/pip at venv-creation time so it survives the
+# launcher's restricted PATH.  Detection records resolved-interpreter argv to
+# PY_DETECT_LOG (so "shim never invoked" can be asserted in U1).
+# ---------------------------------------------------------------------------
+PY_DETECT_LOG="$SANDBOX/py-detect.argv"
+VENV_PIP_LOG="$SANDBOX/venv-pip.argv"
+export VENV_PIP_LOG
+
+make_python() {
+    _dest=$1
+    mkdir -p "$(dirname "$_dest")"
+    cat > "$_dest" <<EOF
+#!/usr/bin/env sh
+# Fake Python interpreter shim (Tier B-lite tests).  Records its own argv so a
+# test can assert the interpreter was (or was NOT) invoked.
+printf '%s ' "\$@" >> "${PY_DETECT_LOG}"
+printf '\n' >> "${PY_DETECT_LOG}"
+
+# Resolve our version from FAKE_PYVER (default 3.12).  major.minor only.
+_ver="\${FAKE_PYVER:-3.12}"
+_major=\${_ver%%.*}
+_minor=\${_ver#*.}
+case "\$_minor" in *.*) _minor=\${_minor%%.*} ;; esac
+[ "\$_major" = "\$_ver" ] && _minor=0
+
+# --- subcommand dispatch -------------------------------------------------
+case "\$1" in
+  -)
+    # Version/self-check or import self-check script arrives on STDIN.
+    # The version gate passes the required minor as the FIRST positional
+    # ('<py> - <min>').  If a numeric arg is present, gate on it; otherwise
+    # this is an import self-check (uvicorn/fastapi/...) -> just succeed.
+    shift
+    _need="\${1:-}"
+    cat >/dev/null   # consume the heredoc body
+    case "\$_need" in
+      ''|*[!0-9]*) exit 0 ;;   # no numeric arg -> import self-check -> OK
+    esac
+    if [ "\$_major" = "3" ] && [ "\$_minor" -ge "\$_need" ]; then exit 0; fi
+    exit 1
+    ;;
+  -c)
+    # In-line code: capability probe ('import venv, ensurepip'), version
+    # self-check ('assert sys.version_info[:2] >= (3,12)'), or import probe.
+    _code="\${2:-}"
+    case "\$_code" in
+      *version_info*)
+        if [ "\$_major" = "3" ] && [ "\$_minor" -ge 12 ]; then exit 0; fi
+        exit 1
+        ;;
+      *) exit 0 ;;   # import venv,ensurepip / generic import -> OK
+    esac
+    ;;
+  -m)
+    case "\$2" in
+      venv)
+        # '<py> -m venv [--copies] DIR'  — DIR is the last arg.
+        shift 2
+        for _a in "\$@"; do _dir="\$_a"; done
+        mkdir -p "\$_dir/bin"
+        # pyvenv.cfg marks a real venv (venv-at-path assertion).
+        printf 'home = %s\nversion = %s\n' "\$0" "\$_ver" > "\$_dir/pyvenv.cfg"
+        # Interpreter recorders inside the venv (honour FAKE_PYVER): copy this
+        # very shim so the venv python3/python3.12 behave identically.
+        for _n in python3 python3.12 python; do
+            cp "\$0" "\$_dir/bin/\$_n"
+            chmod +x "\$_dir/bin/\$_n"
+        done
+        # The venv's pip is the argv recorder, writing the per-test log path
+        # captured at venv-creation time.
+        _vlog="\${VENV_PIP_LOG:-${VENV_PIP_LOG}}"
+        cat > "\$_dir/bin/pip" <<PIPEOF
+#!/usr/bin/env sh
+printf '%s ' "\\\$@" >> "\$_vlog"
+printf '\n' >> "\$_vlog"
+exit 0
+PIPEOF
+        chmod +x "\$_dir/bin/pip"
+        exit 0
+        ;;
+      pip)
+        # '<py> -m pip install --upgrade pip' (intra-venv bootstrap) -> OK.
+        exit 0
+        ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  *) exit 0 ;;
+esac
+EOF
+    chmod +x "$_dest"
+}
+
 PATH="$SHIMBIN:$PATH"
 export PATH
 
@@ -696,6 +820,417 @@ test_downgrade_guard() {
     else fail "$name" "older_errs=$older_errs override_ok=$override_ok newer_ok=$newer_ok"; fi
 }
 test_downgrade_guard
+
+# ===========================================================================
+# Tier B-lite — "Use an Existing System Python" (VULTURE_USE_SYSTEM_PYTHON).
+#
+# RED unit tests U1–U12 (0055 LLD §7.1).  The system-Python branch in
+# install_python_deps() does NOT exist yet, so U2–U11 must FAIL because that
+# branch is absent (not because of a harness error).  U1 and U12 are
+# regression locks: the CURRENT default/bundled flow already satisfies them,
+# so they may PASS today — this is called out explicitly per test.
+#
+# Shared setup: a $VULTURE_HOME with agents dir + a HASHED frozen lockfile and
+# NO bundled pip (so the bundled branch is not taken); a make_python shim on a
+# dedicated PATH.  Each test truncates the detect + venv-pip argv logs first.
+# ===========================================================================
+
+# Hashed lockfile (carries --hash= lines so reqs_have_hashes() is satisfied).
+write_hashed_reqs() {
+    _f=$1
+    mkdir -p "$(dirname "$_f")"
+    {
+        printf 'requests==2.31.0 \\\n'
+        printf '    --hash=sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
+    } > "$_f"
+}
+
+# Home with agents dir + hashed lockfile, NO bundled runtime/python/bin/pip.
+setup_sys_home() {
+    _h=$1
+    rm -rf "$_h"
+    mkdir -p "$_h/runtime/agents"   # deliberately no runtime/python/bin/pip
+    write_hashed_reqs "$_h/runtime/agents/requirements-frozen.txt"
+    printf '%s' "$_h"
+}
+
+reset_py_logs() { : > "$PY_DETECT_LOG"; : > "$VENV_PIP_LOG"; }
+
+# A dedicated bin dir holding only the python shim(s) for these tests, so a
+# test can construct a PATH that does (or does not) expose a system python.
+PYBIN="$SANDBOX/pybin"
+mkdir -p "$PYBIN"
+make_python "$PYBIN/python3.12"
+make_python "$PYBIN/python3"
+
+# ---------------------------------------------------------------------------
+# U1 — default-off-no-flag (regression lock).
+# Flag UNSET, no bundled pip, hashed reqs present -> CLI-only return 0; the
+# python / venv shims are NEVER invoked.
+# NOTE: the CURRENT default path already does this (no bundled pip -> CLI-only
+# before any python touch), so U1 is expected to PASS today.
+# ---------------------------------------------------------------------------
+test_u1_default_off() {
+    name="U1-default-off-no-flag"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u1-home")
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        unset VULTURE_USE_SYSTEM_PYTHON
+        export PATH VULTURE_HOME
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 (CLI-only) got rc=$rc;"
+    [ -s "$PY_DETECT_LOG" ] && detail="$detail python shim invoked with flag unset;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked with flag unset;"
+    printf '%s' "$out" | grep -Eqi 'agent runtime not bundled|cli' || detail="$detail no CLI-only note;"
+    if [ -z "$detail" ]; then pass "$name"; else fail "$name" "$detail"; fi
+}
+test_u1_default_off
+
+# ---------------------------------------------------------------------------
+# U2 — detects-and-uses-system-python.
+# Flag on, hashed reqs, py3.12 shim on PATH -> resolves python, builds venv,
+# runs the venv-pip (its argv log is non-empty).
+# ---------------------------------------------------------------------------
+test_u2_detect_and_use() {
+    name="U2-detects-and-uses-system-python"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u2-home")
+    reset_py_logs
+    run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+        install_python_deps
+    ' >/dev/null 2>&1
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 got rc=$rc;"
+    [ -s "$PY_DETECT_LOG" ] || detail="$detail system python never resolved/invoked;"
+    [ -s "$VENV_PIP_LOG" ] || detail="$detail venv-pip never invoked (no venv install);"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "system-Python branch absent: $detail"; fi
+}
+test_u2_detect_and_use
+
+# ---------------------------------------------------------------------------
+# U3 — venv-at-expected-runtime-path.
+# The venv must be created at exactly $VULTURE_HOME/runtime/python (assert
+# pyvenv.cfg + the shim-created bin/python3.12 there).
+# ---------------------------------------------------------------------------
+test_u3_venv_path() {
+    name="U3-venv-at-expected-path"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u3-home")
+    reset_py_logs
+    run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+        install_python_deps
+    ' >/dev/null 2>&1
+    detail=""
+    [ -f "$h/runtime/python/pyvenv.cfg" ] || detail="$detail no pyvenv.cfg at runtime/python;"
+    [ -x "$h/runtime/python/bin/python3.12" ] || detail="$detail no bin/python3.12 at runtime/python;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "venv not built at \$VULTURE_HOME/runtime/python: $detail"; fi
+}
+test_u3_venv_path
+
+# ---------------------------------------------------------------------------
+# U4 — version-gate-rejects-3.11.
+# FAKE_PYVER=3.11 -> err (non-zero) mentioning 3.12; no venv, no pip.
+# ---------------------------------------------------------------------------
+test_u4_reject_311() {
+    name="U4-version-gate-rejects-3.11"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u4-home")
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.11
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -ne 0 ] || detail="$detail expected non-zero (refuse) on 3.11 got rc=0;"
+    printf '%s' "$out" | grep -q '3\.12' || detail="$detail refusal did not mention 3.12;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] && detail="$detail venv built despite 3.11;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked despite 3.11;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "version gate absent: $detail"; fi
+}
+test_u4_reject_311
+
+# ---------------------------------------------------------------------------
+# U5 — version-gate-accepts-3.12-and-3.13 (>=, not ==).
+# Both 3.12 and 3.13 hosts must proceed to a venv build.
+# ---------------------------------------------------------------------------
+test_u5_accept_312_313() {
+    name="U5-version-gate-accepts-3.12-and-3.13"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    detail=""
+    for v in 3.12 3.13; do
+        h=$(setup_sys_home "$SANDBOX/u5-home-$v")
+        reset_py_logs
+        run_in_install '
+            PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+            VULTURE_HOME="'"$h"'"
+            VULTURE_USE_SYSTEM_PYTHON=1
+            FAKE_PYVER='"$v"'
+            export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+            install_python_deps
+        ' >/dev/null 2>&1
+        rc=$?
+        [ "$rc" -eq 0 ] || detail="$detail [$v] rc=$rc;"
+        [ -f "$h/runtime/python/pyvenv.cfg" ] || detail="$detail [$v] no venv built;"
+    done
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "version gate not >= (rejected an accepted minor): $detail"; fi
+}
+test_u5_accept_312_313
+
+# ---------------------------------------------------------------------------
+# U6 — explicit-interpreter-path.
+# VULTURE_PYTHON=<shim path> is honored over a PATH search (point it at a shim
+# that is NOT on PATH; PATH carries no python at all).
+# ---------------------------------------------------------------------------
+test_u6_explicit_interp() {
+    name="U6-explicit-interpreter-path"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u6-home")
+    # A python shim in a directory deliberately OFF the search PATH.
+    explicit="$SANDBOX/u6-explicit/mypython"
+    make_python "$explicit"
+    cleanpath="$SANDBOX/u6-clean"; mkdir -p "$cleanpath"
+    # Provide the basic utilities install.sh needs (sed/grep/...) via SHIMBIN's
+    # parent dirs; keep python OFF it by using only system bins + SHIMBIN
+    # (which has cosign/curl/pip but no python).
+    reset_py_logs
+    run_in_install '
+        PATH="'"$SHIMBIN"':/usr/bin:/bin"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        VULTURE_PYTHON="'"$explicit"'"
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON VULTURE_PYTHON FAKE_PYVER
+        install_python_deps
+    ' >/dev/null 2>&1
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail rc=$rc;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] || detail="$detail VULTURE_PYTHON not honored (no venv);"
+    grep -q -- "$explicit" "$PY_DETECT_LOG" 2>/dev/null \
+        || [ -s "$PY_DETECT_LOG" ] || detail="$detail explicit interpreter never invoked;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "VULTURE_PYTHON not recognized: $detail"; fi
+}
+test_u6_explicit_interp
+
+# ---------------------------------------------------------------------------
+# U7 — no-python-found-errs.
+# Flag on, NO python on PATH and no VULTURE_PYTHON -> err; no venv/pip.
+# ---------------------------------------------------------------------------
+test_u7_no_python() {
+    name="U7-no-python-found-errs"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u7-home")
+    nopy="$SANDBOX/u7-nopy"; mkdir -p "$nopy"
+    # Copy ONLY the non-python shims (cosign/curl/pip) so install.sh utilities
+    # work but command -v pythonX finds nothing.  Real /usr/bin is excluded so
+    # a host python3 cannot leak in.
+    cp "$SHIMBIN/cosign" "$SHIMBIN/curl" "$SHIMBIN/pip" "$SHIMBIN/pip3" "$nopy/" 2>/dev/null
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$nopy"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        unset VULTURE_PYTHON
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -ne 0 ] || detail="$detail expected err (no python) got rc=0;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] && detail="$detail venv built with no python;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked with no python;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "no-python fall-through not fail-closed: $detail (out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-100))"; fi
+}
+test_u7_no_python
+
+# ---------------------------------------------------------------------------
+# U8 — fail-closed-no-lockfile ("no unhashed escape hatch" lock).
+# Flag on, hashLESS / empty requirements-frozen.txt -> err; venv-pip NOT
+# invoked with an install.
+# ---------------------------------------------------------------------------
+test_u8_failclosed_no_lockfile() {
+    name="U8-fail-closed-no-lockfile"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u8-home")
+    # Overwrite with a hashLESS (but non-empty) manifest: real requirement
+    # lines, zero --hash= -> must fail closed, never silently install unhashed.
+    {
+        printf 'requests==2.31.0\n'
+        printf 'uvicorn[standard]==0.30.0\n'
+    } > "$h/runtime/agents/requirements-frozen.txt"
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -ne 0 ] || detail="$detail expected err on hashless lockfile got rc=0 (unhashed escape hatch present!);"
+    if grep -q -- 'install' "$VENV_PIP_LOG" 2>/dev/null; then detail="$detail venv-pip ran an install on a hashless lockfile;"; fi
+    printf '%s' "$out" | grep -Eqi 'hash|lockfile|frozen' || detail="$detail refusal did not mention hashes/lockfile;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "fail-closed-no-lockfile not enforced: $detail"; fi
+}
+test_u8_failclosed_no_lockfile
+
+# ---------------------------------------------------------------------------
+# U9 — require-hashes-always.
+# Flag on, hashed reqs, default https index -> venv-pip argv contains
+# --require-hashes AND --only-binary :all: AND NO --trusted-host.
+# ---------------------------------------------------------------------------
+test_u9_require_hashes() {
+    name="U9-require-hashes-always"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u9-home")
+    reset_py_logs
+    run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.12
+        VULTURE_PIP_INDEX_URL="https://pypi.org/simple"
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER VULTURE_PIP_INDEX_URL
+        install_python_deps
+    ' >/dev/null 2>&1
+    if [ ! -s "$VENV_PIP_LOG" ]; then
+        fail "$name" "venv-pip never invoked (system-Python install branch absent)"; return
+    fi
+    detail=""
+    grep -q -- '--require-hashes' "$VENV_PIP_LOG" || detail="$detail missing --require-hashes;"
+    grep -q -- '--only-binary :all:' "$VENV_PIP_LOG" || detail="$detail missing --only-binary :all:;"
+    grep -q -- '--trusted-host' "$VENV_PIP_LOG" && detail="$detail --trusted-host present for https index;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "$detail venv-pip argv: $(tr '\n' '|' < "$VENV_PIP_LOG" | cut -c1-160)"; fi
+}
+test_u9_require_hashes
+
+# ---------------------------------------------------------------------------
+# U10 — http-index-trusted-host.
+# VULTURE_PIP_INDEX_URL=http://mirror:8080/simple + hashed reqs -> argv has
+# --trusted-host mirror, still --require-hashes.
+# ---------------------------------------------------------------------------
+test_u10_http_trusted() {
+    name="U10-http-index-trusted-host"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u10-home")
+    reset_py_logs
+    run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.12
+        VULTURE_PIP_INDEX_URL="http://mirror:8080/simple"
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER VULTURE_PIP_INDEX_URL
+        install_python_deps
+    ' >/dev/null 2>&1
+    if [ ! -s "$VENV_PIP_LOG" ]; then
+        fail "$name" "venv-pip never invoked (system-Python install branch absent)"; return
+    fi
+    detail=""
+    grep -q -- '--require-hashes' "$VENV_PIP_LOG" || detail="$detail missing --require-hashes;"
+    grep -Eq -- '--trusted-host (mirror|mirror:8080)' "$VENV_PIP_LOG" \
+        || detail="$detail missing --trusted-host mirror;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "$detail venv-pip argv: $(tr '\n' '|' < "$VENV_PIP_LOG" | cut -c1-160)"; fi
+}
+test_u10_http_trusted
+
+# ---------------------------------------------------------------------------
+# U11 — idempotent-rerun.
+# Two installs into the SAME $VULTURE_HOME both succeed; no abort on the
+# existing venv.
+# ---------------------------------------------------------------------------
+test_u11_idempotent() {
+    name="U11-idempotent-rerun"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u11-home")
+    _run() {
+        reset_py_logs
+        run_in_install '
+            PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+            VULTURE_HOME="'"$h"'"
+            VULTURE_USE_SYSTEM_PYTHON=1
+            FAKE_PYVER=3.12
+            export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+            install_python_deps
+        ' >/dev/null 2>&1
+    }
+    _run; rc1=$?
+    _run; rc2=$?   # second run over an existing venv must not abort
+    detail=""
+    [ "$rc1" -eq 0 ] || detail="$detail first run rc=$rc1;"
+    [ "$rc2" -eq 0 ] || detail="$detail re-run aborted rc=$rc2;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] || detail="$detail venv missing after re-run;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "not idempotent: $detail"; fi
+}
+test_u11_idempotent
+
+# ---------------------------------------------------------------------------
+# U12 — bundled-python-wins-over-flag (precedence lock).
+# Bundled runtime/python/bin/pip present AND flag set -> the BUNDLED path is
+# used; no fresh system venv built and the system python shim is not invoked.
+# NOTE: the CURRENT bundled branch is taken first ([ -x "$PIP" ]) and never
+# touches the system-python code, so U12 may PASS today.
+# ---------------------------------------------------------------------------
+test_u12_bundled_wins() {
+    name="U12-bundled-python-wins-over-flag"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/u12-home")
+    # Make a bundled pip recorder (separate from the venv-pip log) present.
+    make_pip "$h/runtime/python/bin/pip"
+    : > "$PIP_LOG"
+    reset_py_logs
+    run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+        install_python_deps
+    ' >/dev/null 2>&1
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail rc=$rc;"
+    [ -s "$PIP_LOG" ] || detail="$detail bundled pip NOT used (precedence wrong);"
+    [ -s "$PY_DETECT_LOG" ] && detail="$detail system python invoked despite bundled present;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail fresh system venv built despite bundled present;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "bundled-wins precedence violated: $detail"; fi
+}
+test_u12_bundled_wins
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
