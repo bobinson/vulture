@@ -18,6 +18,20 @@
 #                           a plaintext http:// mirror is accepted but
 #                           disables TLS verification for that host.
 #   VULTURE_ALLOW_DOWNGRADE  Allow VULTURE_VERSION older than fallback
+#   VULTURE_USE_SYSTEM_PYTHON  (1|true) When no bundled Python runtime is
+#                           present, locate a host Python >= 3.12 and build a
+#                           venv at $VULTURE_HOME/runtime/python, then install
+#                           the shipped HASHED requirements-frozen.txt with
+#                           --require-hashes. Off by default; a missing/hashless
+#                           lockfile or no interpreter fails closed (never a
+#                           silent drop to CLI-only). Only the interpreter's
+#                           provenance is relaxed vs the bundled runtime; deps
+#                           stay hash-verified.
+#   VULTURE_PYTHON          Explicit interpreter path/name to use instead of
+#                           PATH auto-detection. Honored only when
+#                           VULTURE_USE_SYSTEM_PYTHON is truthy.
+#   VULTURE_PY_MIN_MINOR    Minimum acceptable 3.x minor (default 12). Major is
+#                           always pinned to 3.
 #
 # This script is shellcheck-clean and POSIX-sh (no bashisms).
 
@@ -316,11 +330,131 @@ cli_only_note() {
     log "LLM/agents requires Docker mode (Mode A/B); the CLI + skills still work."
 }
 
+# reqs_have_hashes FILE — true iff the lockfile carries at least one --hash=.
+reqs_have_hashes() { grep -q -- '--hash=' "$1" 2>/dev/null; }
+
+# py_version_ok INTERP MIN_MINOR — true iff INTERP is CPython 3.<minor> with
+# minor >= MIN_MINOR. Ask the interpreter itself (sys.version_info); never
+# parse --version text (locale / pyenv-shim risk).
+py_version_ok() {
+    "$1" - "$2" <<'PY' >/dev/null 2>&1
+import sys
+need = int(sys.argv[1]); v = sys.version_info
+sys.exit(0 if (v.major == 3 and v.minor >= need) else 1)
+PY
+}
+
+# detect_system_python — honor VULTURE_PYTHON, else search newest-first; gate
+# on >= VULTURE_PY_MIN_MINOR (default 12). Echo the resolved abs path or
+# return non-zero.
+detect_system_python() {
+    _min="${VULTURE_PY_MIN_MINOR:-12}"
+    if [ -n "${VULTURE_PYTHON:-}" ]; then
+        _cands="$VULTURE_PYTHON"
+    else
+        _cands="python3.14 python3.13 python3.12 python3"
+    fi
+    for _c in $_cands; do
+        _bin=$(command -v "$_c" 2>/dev/null) || continue
+        [ -x "$_bin" ] || continue
+        if py_version_ok "$_bin" "$_min"; then printf '%s\n' "$_bin"; return 0; fi
+    done
+    return 1
+}
+
+# create_system_venv INTERP — build (or idempotently reuse) a venv at
+# $VULTURE_HOME/runtime/python with a Go-expected bin/python3.12 name.
+create_system_venv() {
+    _interp="$1"
+    _root="$VULTURE_HOME/runtime/python"
+    _vbin="$_root/bin"
+    # Idempotent: reuse a working venv; rebuild only if broken/partial.
+    if [ -x "$_vbin/python3.12" ] && "$_vbin/python3.12" -c 'import sys' 2>/dev/null; then
+        log "reusing existing runtime venv at $_root"
+    else
+        [ -e "$_root" ] && rm -rf "$_root"
+        if ! "$_interp" -c 'import venv, ensurepip' 2>/dev/null; then
+            err "system Python at $_interp lacks 'venv'/'ensurepip' (e.g. apt-get install python3-venv), or unset VULTURE_USE_SYSTEM_PYTHON for CLI-only."
+        fi
+        log "creating runtime venv (system Python: $_interp) at $_root"
+        "$_interp" -m venv --copies "$_root" || err "venv creation failed at $_root"
+    fi
+    # Guarantee the Go-expected python3.12 name on 3.13/3.14 hosts.
+    [ -e "$_vbin/python3.12" ] || ln -s python3 "$_vbin/python3.12" \
+        || err "could not create python3.12 alias in venv"
+    "$_vbin/python3.12" -c 'import sys; assert sys.version_info[:2] >= (3,12)' \
+        || err "runtime venv interpreter failed version self-check"
+}
+
+# install_deps_system_venv — install the shipped HASHED lockfile into the
+# system-Python venv with --require-hashes (fail-closed on a hashless lock).
+install_deps_system_venv() {
+    _pip="$VULTURE_HOME/runtime/python/bin/pip"
+    _py="$VULTURE_HOME/runtime/python/bin/python3.12"
+    _reqs="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
+    _index="${VULTURE_PIP_INDEX_URL:-https://pypi.org/simple}"
+    # Tier B-lite REQUIRES a hashed lockfile (B1), same rule as the bundled
+    # path. There is no unhashed mode.
+    reqs_have_hashes "$_reqs" || err \
+        "requirements-frozen.txt has no --hash= lines; refusing system-Python install (fail-closed). This build ships no hashed lockfile (Tier B item B1); use a bundled-runtime release."
+    PYTHONNOUSERSITE=1 "$_py" -m pip install --disable-pip-version-check \
+        --no-cache-dir --upgrade pip >/dev/null 2>&1 || true
+    set -- --require-hashes --only-binary :all: --no-cache-dir \
+           --disable-pip-version-check --index-url "$_index"
+    # Only disable TLS verification (--trusted-host) for an explicit http://
+    # mirror; never for the default/https index.
+    case "$_index" in
+        http://*)
+            _h=$(printf '%s' "$_index" | sed -e 's,^http://,,' -e 's,/.*$,,')
+            warn "VULTURE_PIP_INDEX_URL is http:// ($_index); disabling TLS verification for $_h"
+            set -- "$@" --trusted-host "$_h"
+            ;;
+    esac
+    log "installing agent deps (hash-pinned) into runtime venv (system Python)"
+    PYTHONNOUSERSITE=1 "$_pip" install "$@" -r "$_reqs" \
+        || err "pip install (hash-pinned) failed in runtime venv"
+    # Prove the runtime can launch an agent before first 'vulture up'.
+    PYTHONNOUSERSITE=1 "$_py" - <<'PY' || err "runtime venv import self-check failed (uvicorn/fastapi/pydantic)"
+import importlib
+for m in ("uvicorn", "fastapi", "pydantic", "pydantic_core"):
+    importlib.import_module(m)
+PY
+}
+
 install_python_deps() {
     PIP="$VULTURE_HOME/runtime/python/bin/pip"
     REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
-    # CLI-only build: no bundled interpreter, or no/empty frozen manifest.
-    if [ ! -x "$PIP" ] || [ ! -s "$REQS" ]; then
+    # (1) Bundled Python runtime present -> existing strict hash-pinned logic.
+    if [ -x "$PIP" ]; then
+        _install_python_deps_bundled
+        return 0
+    fi
+    # (2) Opt-in system Python (only when no bundled interpreter): require a
+    # non-empty hashed lockfile, detect a host Python >= 3.12, build a venv at
+    # runtime/python, and install --require-hashes. Any failure is fail-closed.
+    if [ "${VULTURE_USE_SYSTEM_PYTHON:-}" = "1" ] || [ "${VULTURE_USE_SYSTEM_PYTHON:-}" = "true" ]; then
+        [ -s "$REQS" ] || err "VULTURE_USE_SYSTEM_PYTHON set but $REQS is missing/empty; this build ships no hashed lockfile (Tier B item B1)."
+        _sys_py=$(detect_system_python) \
+            || err "VULTURE_USE_SYSTEM_PYTHON set but no Python >= 3.${VULTURE_PY_MIN_MINOR:-12} found (set VULTURE_PYTHON to point at one)."
+        log "using system Python at $_sys_py — agent DEPENDENCIES are hash-verified against"
+        log "requirements-frozen.txt; the INTERPRETER is operator-provided and not"
+        log "cosign/PBS-verified. Use a bundled-runtime release for a fully verified stack."
+        create_system_venv "$_sys_py"
+        install_deps_system_venv
+        return 0
+    fi
+    # (3) DEFAULT (unchanged): no bundled interp, no opt-in -> CLI-only.
+    cli_only_note
+    return 0
+}
+
+# Existing bundled-runtime install path (UNCHANGED behavior), factored out so
+# install_python_deps can express the three-way precedence cleanly.
+_install_python_deps_bundled() {
+    PIP="$VULTURE_HOME/runtime/python/bin/pip"
+    REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
+    # CLI-only build: no/empty frozen manifest.
+    if [ ! -s "$REQS" ]; then
         cli_only_note
         return 0
     fi
