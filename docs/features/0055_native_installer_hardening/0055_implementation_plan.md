@@ -335,6 +335,24 @@ uv pip compile build/agent-deps.in \
 ```
 Feeding a derived `agent-deps.in` (rather than the pyprojects directly) sidesteps first-party resolution entirely — the `vulture-*` packages never enter the resolver's input.
 
+**Maintainer workflow (invoke & maintain).** The lockfile is **never hand-edited** (it carries a "GENERATED — do not edit" banner); the *source of truth* is the agents' `pyproject.toml` ranges. A pinned `uv` version (bootstrapped by the script, or `pipx install uv==<pinned>`) is what makes two maintainers — and CI — produce byte-identical output; generation needs Python 3.12 + network to PyPI. The lifecycle:
+
+- **Add / bump a dependency.** Edit the range in the owning `pyproject.toml` (almost always `agents/shared/pyproject.toml`), then regenerate, review, and commit *both* files in the **same PR**:
+  ```sh
+  make freeze-deps                                   # = scripts/gen-lockfile.sh
+  git add agents/*/pyproject.toml agents/requirements-frozen.txt
+  git diff --cached agents/requirements-frozen.txt   # eyeball new pins + hashes
+  ```
+- **Refresh to latest in-range (no range change).** `make freeze-deps UPGRADE=1` (→ `uv pip compile --upgrade`) for everything, or `make freeze-deps UPGRADE_PKG=pydantic` (→ `--upgrade-package`) for one. Review + commit as above.
+- **Forgot to re-lock?** You can't merge it: CI's `check-lockfile.sh` recompiles and diffs, failing with *"lockfile stale — run `make freeze-deps` and commit."* The gate enforces freshness, not maintainer vigilance.
+- **Security bumps.** Dependabot/renovate open the `pyproject` bump as a PR; a renovate `postUpgradeTasks` hook (or a scheduled "relock" CI job that runs `gen-lockfile.sh --upgrade` and opens a PR) regenerates the lockfile so the bot's PR already carries a matching lock. *Plain* Dependabot cannot regenerate a custom hashed lockfile by itself — wiring that hook is an open item below.
+- **Verify before pushing.** Run `scripts/check-lockfile.sh` locally (the exact script CI runs) to confirm determinism; optionally `pip install --require-hashes -r agents/requirements-frozen.txt` into a scratch 3.12 venv to smoke-test resolvability.
+
+```make
+freeze-deps:   ## regenerate the hashed agent lockfile (UPGRADE=1 / UPGRADE_PKG=<name> optional)
+	UPGRADE="$(UPGRADE)" UPGRADE_PKG="$(UPGRADE_PKG)" scripts/gen-lockfile.sh
+```
+
 **Where it lives & how it's consumed.** Commit the result at `agents/requirements-frozen.txt` — reviewable in PRs, diffable, and re-derivable by reproducible-build verification. `build-release.sh` copies the committed file into `runtime/agents/requirements-frozen.txt`, replacing today's empty stub. Both install paths then run `pip install --require-hashes -r requirements-frozen.txt`: Tier B into the bundled PBS interpreter; Tier B-lite into the system-Python venv (with `--only-binary :all:`). `install_python_deps` already **fails closed** when the shipped lockfile lacks `--hash=` lines, so a B1 regression cannot silently weaken to a hashless install.
 
 **Freshness & CVE gates (CI).** Add `scripts/check-lockfile.sh` (mirrors `check-fallback-tag.sh`): re-run the compile in a clean env and `diff` against the committed lockfile — fail the build if a `pyproject` dep bump wasn't re-locked. Run `pip-audit`/`trivy` against the *locked* set and gate releases on HIGH/CRITICAL. Track the lockfile with Dependabot/renovate so bumps arrive as reviewable PRs that re-trigger the freshness gate.
@@ -345,7 +363,7 @@ Feeding a derived `agent-deps.in` (rather than the pyprojects directly) sidestep
 
 **Files touched (B1).** `scripts/gen-lockfile.sh`, `scripts/check-lockfile.sh`, `agents/requirements-frozen.txt` (committed, generated), `scripts/build-release.sh` (copy the real lockfile; drop the empty stub), `.github/workflows/ci.yml` (lockfile-freshness + pip-audit job), `Makefile` (`freeze-deps` target).
 
-**Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor.
+**Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor; **how the dependency bot regenerates the lockfile** (renovate `postUpgradeTasks` running `gen-lockfile.sh` vs a scheduled relock-and-PR CI job vs maintainer-only manual relock); and **which `uv` version to pin** for reproducible generation across maintainers + CI.
 
 ### B2 — bundle PBS + wire `release.yml`
 
