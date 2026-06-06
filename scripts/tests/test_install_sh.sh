@@ -591,11 +591,11 @@ test_reject_system_dir() {
             echo "NO_FN" > "'"$rj"'"
             exit 0
         fi
-        for d in / /etc /usr /var /bin /sbin /lib /boot /sys /proc /dev /root /usr/local; do
+        for d in / /etc /usr /var /bin /sbin /lib /boot /sys /proc /dev /root /usr/local /private/etc /private/var /private/var/log; do
             ( reject_if_system_dir "$d" ) >/dev/null 2>&1
             if [ $? -eq 0 ]; then printf "FAILED-TO-REJECT(%s);" "$d" >> "'"$rj"'"; fi
         done
-        for d in /root/.vulture /home/alice/.vulture /opt/vulture /var/folders/ab/cd/T/vulture-smoke; do
+        for d in /root/.vulture /home/alice/.vulture /opt/vulture /var/folders/ab/cd/T/vulture-smoke /private/var/folders/ab/cd/T/vulture-smoke; do
             ( reject_if_system_dir "$d" ) >/dev/null 2>&1
             if [ $? -ne 0 ]; then printf "WRONGLY-REJECTED(%s);" "$d" >> "'"$rj"'"; fi
         done
