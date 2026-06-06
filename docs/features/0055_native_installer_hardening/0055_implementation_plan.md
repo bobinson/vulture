@@ -811,6 +811,8 @@ warning: dependency hashes still verify artifact integrity, but the transport is
 
 ## 6. Fresh-Docker Test Matrix
 
+> This table is the system-Python **scenario contract**. Its end-to-end realization on real distros (Ubuntu 24.04 + Fedora, with/without Python) lives in the top-level §"Cross-Distro Install Test Matrix"; `python:3.12-slim` here is only a fast stand-in. Reuse §6.1/§6.2 (fabrication + runner) there rather than duplicating.
+
 Anchored on verified install.sh behavior: offline path reads `${TARBALL%.tar.gz}.SHA256SUMS` + `.sig` at the same stem; `VULTURE_ALLOW_UNSIGNED=true` + empty `.sig` accepted; deps key off pip + `requirements-frozen.txt`. `VULTURE_USE_SYSTEM_PYTHON` **does not exist yet** — scenarios 2, 4 and 7 encode the feature's acceptance contract and are *expected-red* until it lands.
 
 | # | Name | Base image | Setup / fixture | Env to install.sh | Expected outcome |
@@ -1111,3 +1113,112 @@ release)
 ## 9. Sequencing
 
 `make freeze-deps`/B1 (committed lockfile) **must precede** delta 2 + delta 4 (both consume it) and Tier B / Tier B-lite. The `vulture.sh release` preflight, the permission/concurrency/timeout/idempotency/secret-gate hardening (§3.3 except 4), and the runner-trust assertions are **independent of B1** and can land first.
+
+---
+
+# Cross-Distro Install Test Matrix (Ubuntu 24.04 + Fedora)
+
+> **STATUS: PROPOSED — awaiting review.** Design only. This is the *canonical* end-to-end installer test harness across two distro families. It supersedes the generic stand-in images in the Tier B-lite §6 matrix: §6 defines the system-Python *scenario contract*; this section defines the *real distros* those scenarios (and the already-shipped CLI-only path) run on. Reuse §6.1 (offline-tarball fabrication) and §6.2 (runner layout) verbatim — do not duplicate them.
+
+## 1. Why these two distros (and not one)
+
+The two families exercise genuinely different installer surfaces; together they cover the Linux matrix that one image hides:
+
+| Axis | Ubuntu 24.04 (`noble`) | Fedora 41 |
+|---|---|---|
+| Package manager | `apt` | `dnf` (dnf5, C++) |
+| Default Python | **3.12** — the support floor; the clean happy path | **3.13** — exercises the `python3.12→python3.13` venv alias + "accept ≥3.12" gate |
+| `venv`/`ensurepip` | **split into a separate `python3-venv` package** → "python3 present but venv missing" is a real Ubuntu failure path | bundled with `python3` → that path cannot occur; Fedora instead covers the newer-minor case |
+| Base image ships python? | **No** (`ubuntu:24.04` is minimal) → natural "without python" host | **Yes** (`fedora:41` includes `python3`) → "without python" is *artificial* (see §3) |
+| libc / wheels | glibc / manylinux (pydantic-core, tiktoken, uvloop wheels install) | glibc / manylinux (same) |
+| Minimal-image prereqs | `apt-get install ca-certificates tar` (+ `curl` for the real `curl\|sh` path) | `curl-minimal` already present; `dnf install ca-certificates tar` |
+| Default container user | root | root |
+
+(musl/Alpine — where manylinux wheels don't apply and `--only-binary :all:` may hard-fail — is a **separate axis, out of scope here**; note it as a future leg.)
+
+## 2. What this matrix validates (whole installer, not just Tier B-lite)
+
+- **CLI-only path (Tier A/C, already shipped):** testable + **gating now**. The current `lint-installer` CI job only runs the *unit* branch tests (`test_install_sh.sh`); it **never runs `install.sh` end-to-end on a real distro**. This matrix closes that gap independent of Tier B-lite.
+- **System-Python path (Tier B-lite + B1):** **expected-red** until those land, then flip to required.
+
+## 3. Distro × python-presence realization
+
+| State | Ubuntu 24.04 | Fedora 41 |
+|---|---|---|
+| **without python** | base image as-is (no `python3`) | python3 is a system dep; **simulate** by invoking `install.sh` with a `PATH` that masks `python3*`, or use `fedora-minimal` with python removed. Marked *simulated* in results. The no-python *logic* is distro-agnostic, so Ubuntu is the authoritative no-python host; Fedora's variant guards against distro-specific surprises. |
+| **with python (happy)** | `apt-get install -y python3 python3-venv` (3.12) | base ships `python3` (3.13) |
+| **python, NO venv** (edge) | `apt-get install -y python3` **without** `python3-venv` → `create_system_venv` must `err` naming the apt package | N/A (bundled) — Fedora instead runs the 3.13 alias path |
+
+## 4. Scenario grid (distro × scenario)
+
+All run as a **non-root user** unless noted; install writes only under `$HOME/.vulture` + `~/.local/bin`. Offline scenarios set `VULTURE_OFFLINE_TARBALL` + `VULTURE_VERSION` (so `resolve_version` makes no network call) and run `--network none`. Assertions reuse `smoke-install.sh` + the per-scenario checks in §6.2.
+
+| # | Scenario | Env | Ubuntu 24.04 | Fedora 41 | Now? |
+|---|---|---|---|---|---|
+| D1 | **no python → CLI-only** | offline, no opt-in | rc 0; `bin/vulture`+`VERSION`; **no** `runtime/python/pyvenv.cfg`; "agent runtime not bundled"; `doctor` rc∈{0,2}; clean uninstall | (simulated no-python) same | **green now** |
+| D2 | **python present, no opt-in → default** | offline | 3.12 present yet still CLI-only (no venv) — proves opt-in required | 3.13 present, same | **green now** |
+| D3 | **python + opt-in + hashed lock → venv** | `VULTURE_USE_SYSTEM_PYTHON=1`, hashed lock (local wheelhouse) | venv at `runtime/python` (`python3.12`+`pyvenv.cfg`); pip argv has `--require-hashes`; import probe + `doctor` rc 0 | venv built by 3.13, **`python3.12`→`python3` alias** present; probe + `doctor` rc 0 | red until B-lite+B1 |
+| D4 | **python + opt-in + hashless/no-lock → fail-closed** | opt-in, hashless manifest | rc≠0, msg C; no venv deps | same | red until B-lite |
+| D5 | **python, NO `python3-venv` + opt-in** | opt-in, `python3` only | rc≠0, error names `python3-venv`; **no half-install**; idempotent after | *N/A* (bundled) | red until B-lite (Ubuntu-only) |
+| D6 | **unsupported python (3.9) + opt-in → gate** | opt-in, py3.9 via `ppa`/`pyenv`(Ubuntu) or `dnf install python3.9`(Fedora) + `VULTURE_PYTHON` | rc≠0 naming `>=3.12`; no venv | same (Fedora ships 3.9 module) | red until B-lite (best-effort) |
+| D7 | **offline (no network)** | `--network none`, offline tarball | rc 0, **zero egress**; binary/VERSION/uninstall as D1 | same | **green now** |
+| D8 | **root install smoke** | offline, **run as root** | `HOME=/root` → `VULTURE_HOME=/root/.vulture` **allowed** (A4/H4 fix); rc 0 | same | **green now** |
+| D9 | **reinstall / idempotency** | offline, install twice | both rc 0; second is a clean upgrade; venv reused (D3 variant) | same | green now (CLI) / red (venv) |
+
+## 5. Dockerfiles / runner
+
+Two thin images (apt vs dnf differ enough to warrant one per family), or one `Dockerfile` parametrized by `ARG BASE_IMAGE` + `ARG PKG=apt|dnf`. **Pin base images by digest** for reproducibility (`ubuntu:24.04@sha256:…`, `fedora:41@sha256:…`).
+
+```dockerfile
+# scripts/tests/docker/Dockerfile.ubuntu
+FROM ubuntu:24.04@sha256:<pinned>
+ARG WITH_PY=0 WITH_VENV=0
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tar \
+ && if [ "$WITH_PY" = 1 ]; then apt-get install -y --no-install-recommends python3 \
+        $( [ "$WITH_VENV" = 1 ] && echo python3-venv ); fi \
+ && useradd -m tester && rm -rf /var/lib/apt/lists/*
+USER tester
+# scripts/tests/docker/Dockerfile.fedora
+FROM fedora:41@sha256:<pinned>
+RUN dnf install -y --setopt=install_weak_deps=0 ca-certificates tar python3 \
+ && useradd -m tester && dnf clean all
+USER tester
+```
+
+`runner.sh` (from §6.2) reads `$SCENARIO`, exports the offline + opt-in env, runs `sh /repo/install.sh`, and asserts rc / `bin/vulture` / `VERSION` / `pyvenv.cfg` presence-or-absence / `--require-hashes` argv (D3) / refusal message (D4–D6) / zero-egress (D7) / `uninstall` residue / **system `python3 -m pip list` unchanged** (isolation). `run-matrix.sh` drives `{distro} × {scenario}`.
+
+**Hermetic deps for D3:** use a committed **local wheelhouse** + `--index-url file://…` (§6.1 option ii) so the venv install needs no PyPI and `--network none` still holds; D3 then proves the `--require-hashes` path end-to-end offline.
+
+## 6. CI integration
+
+A `install-distro-matrix` job (in `ci.yml` or a dedicated `test-install-distro.yml`), `strategy.fail-fast: false`, matrix `{distro: [ubuntu-2404, fedora-41]} × {scenario}`, each running `docker run` of the scenario image on a `ubuntu-latest` host (so no Fedora *runner* is needed — Fedora is the *container*). Apply the §"Release Process" GHA best practices: `permissions: contents: read`, `timeout-minutes`, pinned action SHAs, base-image digests.
+
+- **Required now:** D1, D2, D7, D8 (+ D9 CLI) on **both** distros — they gate the shipped installer.
+- **`continue-on-error: true` until Tier B-lite + B1 land:** D3, D4, D5(Ubuntu), D6, D9(venv) — then flip to required.
+
+## 7. Chaos / reliability of the harness itself
+
+| Concern | Mitigation |
+|---|---|
+| Non-reproducible base images | pin by digest; refresh digests deliberately (renovate). |
+| Network flake polluting "offline" claims | D1/D2/D7/D8 use `--network none`; D3 uses a local wheelhouse, also `--network none`. |
+| Fedora-without-python artificiality | mark D1-Fedora *simulated*; Ubuntu is the authoritative no-python host. |
+| dnf/apt pulling python transitively | `--no-install-recommends` (apt) / `--setopt=install_weak_deps=0` (dnf) to keep "no python" actually python-free on Ubuntu and minimal on Fedora. |
+| Hung scenario | `timeout-minutes` per matrix leg + a `timeout` around `docker run`. |
+| Root-vs-non-root drift | D8 runs as root; D1–D7/D9 as `tester`; assert install never writes outside `$HOME`/`~/.local/bin`. |
+| SELinux | Fedora containers run with SELinux not enforced by default; note it; install touches only `$HOME`, so no policy interaction expected. |
+
+## 8. Open decisions
+
+- **Fedora version pin.** Fedora 41 (3.13, exercises the alias) — keep it, or also add Fedora 40 (3.12) as a non-Ubuntu 3.12 host? Track "current stable" via renovate.
+- **Fedora "without python"** — simulate via PATH-mask (recommended, deterministic) vs `fedora-minimal` with python removed vs skip (rely on Ubuntu for no-python).
+- **py3.9 source for D6** — distro module (`dnf install python3.9`) / deadsnakes PPA / `pyenv`; pick the most deterministic.
+- **CI execution model** — `docker run` on a `ubuntu-latest` host (recommended; no Fedora runner) vs job-level `container:`.
+- **Alpine/musl leg** — add later as a separate axis (manylinux→musllinux wheel availability; `--only-binary :all:` may hard-fail) or document as unsupported.
+
+## 9. Files touched
+
+- `scripts/tests/docker/Dockerfile.ubuntu`, `Dockerfile.fedora` (or one parametrized) — pinned by digest.
+- `scripts/tests/docker/runner.sh`, `run-matrix.sh`, `build-fixture-tarball.sh`, `wheelhouse/` — shared with Tier B-lite §6.2.
+- `.github/workflows/ci.yml` (or `test-install-distro.yml`) — the `install-distro-matrix` job.
+- docs — this section.
