@@ -105,7 +105,7 @@ check_ports_free() {
     done
     if [[ -n "$busy" ]]; then
         echo "Error: ports in use by non-docker processes:$busy"
-        echo "  Identify with: ss -tlnp | grep -E '$(echo $busy | tr ' ' '|')'"
+        echo "  Identify with: ss -tlnp | grep -E '$(echo "$busy" | tr ' ' '|')'"
         echo "  Stop them, then retry. If they are root-owned stale processes, try:"
         echo "    sudo kill -9 \$(pgrep -f \"vulture|uvicorn.*agent|vite.*2300\")"
         exit 1

@@ -806,15 +806,17 @@ test_cosign_required_absent
 
 # TEST 18 — anti-downgrade guard (review #9 coverage; also locks the
 # sort-V → portable-awk refactor). older→err, override→ok, newer→ok.
+# Pins a known FALLBACK_TAG inside the run so the test is independent of
+# whatever fallback install.sh currently ships (which changes per release).
 test_downgrade_guard() {
     name="H2-downgrade-guard"
     if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "resolve_version unreachable"; return; fi
     rc=0
-    run_in_install 'VULTURE_VERSION="v0.0.1"; unset VULTURE_ALLOW_DOWNGRADE; export VULTURE_VERSION; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
+    run_in_install 'FALLBACK_TAG=v1.0.0; VULTURE_VERSION="v0.9.0"; unset VULTURE_ALLOW_DOWNGRADE; export VULTURE_VERSION; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
     older_errs=$rc; rc=0
-    run_in_install 'VULTURE_VERSION="v0.0.1"; VULTURE_ALLOW_DOWNGRADE=true; export VULTURE_VERSION VULTURE_ALLOW_DOWNGRADE; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
+    run_in_install 'FALLBACK_TAG=v1.0.0; VULTURE_VERSION="v0.9.0"; VULTURE_ALLOW_DOWNGRADE=true; export VULTURE_VERSION VULTURE_ALLOW_DOWNGRADE; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
     override_ok=$rc; rc=0
-    run_in_install 'VULTURE_VERSION="v9.9.9"; unset VULTURE_ALLOW_DOWNGRADE; export VULTURE_VERSION; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
+    run_in_install 'FALLBACK_TAG=v1.0.0; VULTURE_VERSION="v9.9.9"; unset VULTURE_ALLOW_DOWNGRADE; export VULTURE_VERSION; type resolve_version >/dev/null 2>&1 && resolve_version' >/dev/null 2>&1 || rc=$?
     newer_ok=$rc
     if [ "$older_errs" -ne 0 ] && [ "$override_ok" -eq 0 ] && [ "$newer_ok" -eq 0 ]; then pass "$name"
     else fail "$name" "older_errs=$older_errs override_ok=$override_ok newer_ok=$newer_ok"; fi

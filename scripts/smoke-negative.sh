@@ -56,6 +56,7 @@ expect_fail "VULTURE_HOME=/etc" "system directory" \
     /usr/bin/env VULTURE_HOME=/etc sh "$REPO_ROOT/install.sh"
 
 # Test 3 & 4 require a real built tarball; gated on its presence
+# shellcheck disable=SC2012  # globbing dist/ for the newest tarball; ls is fine here
 TARBALL=$(ls "$REPO_ROOT"/dist/vulture-*.tar.gz 2>/dev/null | head -1 || true)
 if [ -n "$TARBALL" ]; then
     # Test 3: tampered tarball (rewrite a byte at the end).

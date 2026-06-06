@@ -119,6 +119,7 @@ validate_home() {
     RESOLVED=$(resolve_path "$VULTURE_HOME")
     reject_if_system_dir "$RESOLVED"
     if [ -e "$VULTURE_HOME" ]; then
+        # shellcheck disable=SC2012  # single validated path; ls -ldn is fine here
         OWNER=$(ls -ldn "$VULTURE_HOME" 2>/dev/null | awk '{print $3}')
         ME=$(id -u 2>/dev/null || echo 0)
         if [ -n "$OWNER" ] && [ "$OWNER" != "$ME" ]; then
@@ -498,9 +499,9 @@ _install_python_deps_bundled() {
 
 # ─── 10. set_permissions ──────────────────────────────────────────────────
 set_permissions() {
-    chmod 700 "$VULTURE_HOME" \
-              "$VULTURE_HOME/data" 2>/dev/null \
-              "$VULTURE_HOME/config" 2>/dev/null || true
+    chmod 700 "$VULTURE_HOME" 2>/dev/null || true
+    if [ -d "$VULTURE_HOME/data" ]; then chmod 700 "$VULTURE_HOME/data" 2>/dev/null || true; fi
+    if [ -d "$VULTURE_HOME/config" ]; then chmod 700 "$VULTURE_HOME/config" 2>/dev/null || true; fi
     [ -f "$VULTURE_HOME/config/.env" ] && chmod 600 "$VULTURE_HOME/config/.env"
     [ -f "$VULTURE_HOME/bin/vulture" ] && chmod 755 "$VULTURE_HOME/bin/vulture"
 }
@@ -537,7 +538,7 @@ strip_quarantine() {
             # tar -xzvf line format: "x foo/bar/baz" or "foo/bar/baz"
             path=$(printf '%s' "$entry" | sed -E 's|^x[[:space:]]+||')
             full="$VULTURE_HOME/$path"
-            [ -e "$full" ] && xattr -d com.apple.quarantine "$full" 2>/dev/null || true
+            if [ -e "$full" ]; then xattr -d com.apple.quarantine "$full" 2>/dev/null || true; fi
         done < "$VULTURE_HOME/.filelist"
     fi
     # Remove the temp filelist on ALL platforms (A3).

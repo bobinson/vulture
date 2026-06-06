@@ -93,7 +93,10 @@ case "$COMMAND" in
         done
         if [[ $use_pg -eq 1 ]]; then
             if [[ -f "$PROJECT_ROOT/.env" ]]; then
-                set -a; source "$PROJECT_ROOT/.env"; set +a
+                set -a
+                # shellcheck disable=SC1091
+                source "$PROJECT_ROOT/.env"
+                set +a
             fi
             : "${VULTURE_DB_USER:=vulture}"
             : "${VULTURE_DB_NAME:=vulture}"
@@ -125,7 +128,10 @@ case "$COMMAND" in
 
         # Validate required env vars
         if [[ -f "$PROJECT_ROOT/.env" ]]; then
-            set -a; source "$PROJECT_ROOT/.env"; set +a
+            set -a
+            # shellcheck disable=SC1091
+            source "$PROJECT_ROOT/.env"
+            set +a
         fi
         if [[ -z "${VULTURE_DB_DSN:-}" ]]; then
             echo "Error: VULTURE_DB_DSN must be set in .env (remote Postgres/Neon DSN)"
