@@ -86,10 +86,11 @@ jobs:
         # and didn't handle arm64 or macOS.
         run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
       - name: install pip-audit
-        # --break-system-packages: macOS runners ship a PEP-668 (Homebrew)
-        # Python that refuses plain pip installs; the runner is ephemeral so
-        # overriding is safe. Harmless on the Linux runners.
-        run: python3 -m pip install --break-system-packages pip-audit
+        # PEP-668 varies by runner: macOS + ubuntu-24.04 refuse plain installs
+        # (need --break-system-packages), but ubuntu-22.04-arm's older pip
+        # doesn't support that flag and doesn't enforce PEP 668. Try plain
+        # first, fall back to the flag only where it's both needed and present.
+        run: python3 -m pip install pip-audit || python3 -m pip install --break-system-packages pip-audit
       - name: install GNU tar (macOS)
         # build-release.sh needs GNU tar for reproducible-tarball flags
         # (--sort/--mtime/--owner); macOS ships BSD tar. gnu-tar provides gtar.
