@@ -40,7 +40,13 @@ export VULTURE_ALLOW_UNSIGNED=true   # local builds aren't cosign-signed
 # Prepare offline-companion SHA256SUMS file at the expected path.
 SHASUM_PATH=${TARBALL_REAL%.tar.gz}.SHA256SUMS
 TARBALL_NAME=$(basename "$TARBALL_REAL")
-{ printf '%s  %s\n' "$(sha256sum "$TARBALL_REAL" | awk '{print $1}')" "$TARBALL_NAME"; } > "$SHASUM_PATH"
+# Portable SHA-256: GNU coreutils (Linux) or BSD shasum (macOS).
+if command -v sha256sum >/dev/null 2>&1; then
+    SUM=$(sha256sum "$TARBALL_REAL" | awk '{print $1}')
+else
+    SUM=$(shasum -a 256 "$TARBALL_REAL" | awk '{print $1}')
+fi
+printf '%s  %s\n' "$SUM" "$TARBALL_NAME" > "$SHASUM_PATH"
 : > "${TARBALL_REAL%.tar.gz}.sig"   # empty sig OK with ALLOW_UNSIGNED
 
 # Run installer. Note: we run a shell-piped invocation rather than

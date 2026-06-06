@@ -90,6 +90,11 @@ jobs:
         # Python that refuses plain pip installs; the runner is ephemeral so
         # overriding is safe. Harmless on the Linux runners.
         run: python3 -m pip install --break-system-packages pip-audit
+      - name: install GNU tar (macOS)
+        # build-release.sh needs GNU tar for reproducible-tarball flags
+        # (--sort/--mtime/--owner); macOS ships BSD tar. gnu-tar provides gtar.
+        if: runner.os == 'macOS'
+        run: brew install gnu-tar
       - name: build tarball
         run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
       - name: generate SBOM

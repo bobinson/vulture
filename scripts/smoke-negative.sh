@@ -63,11 +63,14 @@ if [ -n "$TARBALL" ]; then
     TAMPER=$(mktemp -d)/tampered.tar.gz
     cp "$TARBALL" "$TAMPER"
     printf 'X' >> "$TAMPER"
-    {
-        printf '%s  %s\n' \
-            "$(sha256sum "$TARBALL" | awk '{print $1}')" \
-            "$(basename "$TAMPER")"
-    } > "${TAMPER%.tar.gz}.SHA256SUMS"
+    # Portable SHA-256: GNU coreutils (Linux) or BSD shasum (macOS).
+    if command -v sha256sum >/dev/null 2>&1; then
+        REAL_SUM=$(sha256sum "$TARBALL" | awk '{print $1}')
+    else
+        REAL_SUM=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
+    fi
+    printf '%s  %s\n' "$REAL_SUM" "$(basename "$TAMPER")" \
+        > "${TAMPER%.tar.gz}.SHA256SUMS"
     : > "${TAMPER%.tar.gz}.sig"
     expect_fail "tampered tarball" "SHA256" \
         /usr/bin/env VULTURE_HOME="$(mktemp -d)/vulture" \

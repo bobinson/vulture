@@ -100,14 +100,30 @@ echo "$VERSION" > "$STAGE/VERSION"
 
 echo "==> Building reproducible tarball"
 # Reproducible: sorted, fixed mtime, no owners, gzip -n strips
-# timestamp metadata.
+# timestamp metadata. --sort/--mtime/--owner require GNU tar; macOS
+# runners ship BSD tar, so prefer gtar (Homebrew 'gnu-tar') and fall
+# back to a GNU 'tar' if it is the default.
+if command -v gtar >/dev/null 2>&1; then
+    TAR=gtar
+elif tar --version 2>/dev/null | grep -q 'GNU tar'; then
+    TAR=tar
+else
+    echo "Error: GNU tar required for reproducible tarballs" \
+         "(install 'gnu-tar', which provides gtar)" >&2
+    exit 1
+fi
 ( cd "$STAGE" && \
-  tar --sort=name \
+  "$TAR" --sort=name \
       --mtime='2020-01-01 00:00:00Z' \
       --owner=0 --group=0 --numeric-owner \
       -cf - . | gzip -9n > "$TARBALL" )
 
-SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
+# Portable SHA-256: GNU coreutils (Linux) or BSD shasum (macOS).
+if command -v sha256sum >/dev/null 2>&1; then
+    SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
+else
+    SHA=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
+fi
 echo "${SHA}  $(basename "$TARBALL")" >> "$DIST/SHA256SUMS"
 
 rm -rf "$STAGE"
