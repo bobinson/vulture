@@ -301,31 +301,51 @@ to indygreg).
 
 ## Design
 
-### B1 — real hashed lockfile from the agents' `pyproject.toml`s
+### B1 — Hashed dependency lockfile (shared prerequisite)
 
-The agents are 11 editable packages (`shared`, `asvs`,
-`chaos_engineering`, `cwe`, `discover`, `do178c`, `owasp`, `prove`,
-`soc2`, `ssdf`, `xss`) installed in CI via `pip install -e`. Tier B
-compiles their resolved transitive closure into one
-`requirements-frozen.txt` **with hashes**:
+> **Now load-bearing.** B1 is the single unit of supply-chain trust for agent dependencies and is a **hard prerequisite for BOTH** the bundled runtime (Tier B) **and** the system-Python path (Tier B-lite). Until B1 ships a hash-pinned `requirements-frozen.txt`, both agent-install paths fail closed. **Sequence B1 first.**
 
-- Use `uv pip compile` (fast, deterministic) or `pip-compile
-  --generate-hashes` over the union of the pyprojects' dependencies
-  (`uv pip compile pyproject1 pyproject2 … --generate-hashes -o
-  requirements-frozen.txt`), pinning to the bundled Python's minor
-  version (3.12).
-- **Platform-specific wheels** (e.g. `pydantic-core`, any native
-  extension): list **all** target-platform wheel hashes per package so a
-  single lockfile validates on all four platforms, OR emit per-platform
-  lockfiles (`requirements-frozen-${OS}-${ARCH}.txt`) if cross-platform
-  resolution diverges. Decision at build time: start with one
-  all-platform lockfile; split only if `uv pip compile --universal`
-  can't satisfy a package.
-- The lockfile is committed (or generated in CI and attached as a build
-  artifact) so reproducible-build verification (`verify-release.sh`) can
-  re-derive it. `install_python_deps` already **fails closed** if the
-  shipped lockfile lacks `--hash=` lines, so a regression here can't
-  silently weaken to a hashless install.
+**What goes in the lockfile (and what does not).** The agents form a *star*: each of the 10 agent packages (`vulture-{asvs,chaos,cwe,discover,do178c,owasp,prove,soc2,ssdf,xss}-agent`) declares exactly one dependency — first-party `vulture-shared` — and `vulture-shared` carries the only real third-party deps:
+`fastapi`, `uvicorn[standard]`, `pydantic`, `openai-agents`, `litellm`, `sse-starlette`, `httpx`, `tiktoken`, `pathspec` (all `>=` ranges; `requires-python >=3.12`; hatchling backend).
+
+The 11 first-party `vulture-*` packages are **never pip-installed** in install mode — the launcher puts them on `PYTHONPATH=$VULTURE_HOME/runtime/agents` and imports them directly (`env.go`). Therefore **the lockfile contains only the third-party transitive closure**, and the compile must **exclude** all 11 first-party names (they are unpublished and would fail to resolve from any index). The generator aggregates `[project.dependencies]` across *all* agent pyprojects and strips `vulture-*` entries, so if a future agent adds a third-party dep beyond `vulture-shared`'s, it flows into the lockfile automatically.
+
+**Tool & cross-platform strategy.** Use `uv pip compile` (fast, deterministic, `--generate-hashes`, `--universal`); pip-tools `pip-compile --generate-hashes` is the documented fallback. Pin the `uv` version. The closure has several native wheels — `pydantic-core` (Rust), `tiktoken` (Rust), and via `uvicorn[standard]`: `uvloop`/`httptools`/`websockets`/`watchfiles`; `litellm` also pulls a large sub-tree. Strategy: produce **one universal lockfile** (`--universal`) that lists **every target-platform wheel hash per package**, so a single `requirements-frozen.txt` validates on all four supported targets (linux amd64/arm64, darwin amd64/arm64). Fall back to per-`(os,arch)` lockfiles (`requirements-frozen-<os>-<arch>.txt`, selected by `install.sh`) only if `--universal` cannot satisfy a package. Resolve targeting the floor interpreter (`--python-version 3.12`); the native wheels in scope ship `cp312-abi3`/pure-`py3` wheels usable on 3.13/3.14 hosts, which is what lets one 3.12 resolution serve newer minors — re-checked on every dep bump.
+
+**Generator — `scripts/gen-lockfile.sh` (a.k.a. `make freeze-deps`):**
+```sh
+# 1. Collect every third-party requirement across all agent pyprojects,
+#    dropping first-party 'vulture-*' deps (PYTHONPATH-loaded, never pip-installed).
+python3 - <<'PY' > build/agent-deps.in
+import glob, tomllib
+specs = {}
+for f in glob.glob("agents/*/pyproject.toml"):
+    for dep in tomllib.load(open(f, "rb"))["project"].get("dependencies", []):
+        name = dep.replace("[", " ").split()[0]
+        name = name.split(">")[0].split("=")[0].split("<")[0].split("~")[0].strip()
+        if not name.startswith("vulture-"):
+            specs[dep] = None            # de-dup, preserve the spec
+print("\n".join(specs))
+PY
+# 2. Resolve to a universal, fully hash-pinned lockfile targeting the 3.12 floor.
+uv pip compile build/agent-deps.in \
+    --universal --generate-hashes --python-version 3.12 \
+    --emit-index-url --no-header -o agents/requirements-frozen.txt
+# 3. Prepend a "GENERATED by scripts/gen-lockfile.sh — do not edit by hand" banner.
+```
+Feeding a derived `agent-deps.in` (rather than the pyprojects directly) sidesteps first-party resolution entirely — the `vulture-*` packages never enter the resolver's input.
+
+**Where it lives & how it's consumed.** Commit the result at `agents/requirements-frozen.txt` — reviewable in PRs, diffable, and re-derivable by reproducible-build verification. `build-release.sh` copies the committed file into `runtime/agents/requirements-frozen.txt`, replacing today's empty stub. Both install paths then run `pip install --require-hashes -r requirements-frozen.txt`: Tier B into the bundled PBS interpreter; Tier B-lite into the system-Python venv (with `--only-binary :all:`). `install_python_deps` already **fails closed** when the shipped lockfile lacks `--hash=` lines, so a B1 regression cannot silently weaken to a hashless install.
+
+**Freshness & CVE gates (CI).** Add `scripts/check-lockfile.sh` (mirrors `check-fallback-tag.sh`): re-run the compile in a clean env and `diff` against the committed lockfile — fail the build if a `pyproject` dep bump wasn't re-locked. Run `pip-audit`/`trivy` against the *locked* set and gate releases on HIGH/CRITICAL. Track the lockfile with Dependabot/renovate so bumps arrive as reviewable PRs that re-trigger the freshness gate.
+
+**Reproducibility.** `verify-release.sh` re-runs `gen-lockfile.sh` and diffs; a match proves the lockfile is mechanically derived from the pyprojects, not hand-edited.
+
+**Test (TDD).** B1 is mostly tooling, but it has assertable contracts: (a) the generator's output is non-empty and **every** requirement line carries `--hash=sha256:`; (b) **no** first-party `vulture-*` name appears in the lockfile; (c) `check-lockfile.sh` is green immediately after generation and red after an un-relocked dep bump; (d) `pip install --require-hashes` into a throwaway 3.12 venv succeeds **offline** against a local wheelhouse. (a)–(c) are fast unit checks; (d) is the hermetic e2e shared with Tier B-lite docker scenario 2.
+
+**Files touched (B1).** `scripts/gen-lockfile.sh`, `scripts/check-lockfile.sh`, `agents/requirements-frozen.txt` (committed, generated), `scripts/build-release.sh` (copy the real lockfile; drop the empty stub), `.github/workflows/ci.yml` (lockfile-freshness + pip-audit job), `Makefile` (`freeze-deps` target).
+
+**Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor.
 
 ### B2 — bundle PBS + wire `release.yml`
 
