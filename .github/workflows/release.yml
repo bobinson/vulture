@@ -80,15 +80,16 @@ jobs:
       - name: install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
       - name: install trivy
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            curl -fsSL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz \
-              | tar -xz -C /usr/local/bin trivy
-          else
-            brew install trivy
-          fi
+        # Official cross-platform installer: detects OS/arch and fetches the
+        # latest release. Replaces the hardcoded amd64 `latest/download/
+        # trivy_Linux-64bit.tar.gz` URL, which 404'd (asset names are versioned)
+        # and didn't handle arm64 or macOS.
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
       - name: install pip-audit
-        run: python3 -m pip install pip-audit
+        # --break-system-packages: macOS runners ship a PEP-668 (Homebrew)
+        # Python that refuses plain pip installs; the runner is ephemeral so
+        # overriding is safe. Harmless on the Linux runners.
+        run: python3 -m pip install --break-system-packages pip-audit
       - name: build tarball
         run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
       - name: generate SBOM
