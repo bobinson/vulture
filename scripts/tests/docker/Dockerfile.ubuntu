@@ -1,0 +1,17 @@
+# Cross-distro installer e2e — Ubuntu 24.04 (Python 3.12). Feature 0055.
+# WITH_PY=1 installs python3; WITH_VENV=1 also installs the split python3-venv
+# package (Debian/Ubuntu ship venv/ensurepip separately — the omitted case is a
+# real failure path the matrix exercises).
+FROM ubuntu:24.04
+ARG WITH_PY=0
+ARG WITH_VENV=0
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tar \
+ && if [ "$WITH_PY" = "1" ]; then \
+        apt-get install -y --no-install-recommends python3 \
+        && if [ "$WITH_VENV" = "1" ]; then apt-get install -y --no-install-recommends python3-venv; fi; \
+    fi \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -m tester
+USER tester
+WORKDIR /home/tester

@@ -1,14 +1,33 @@
 # 0044 — Native Installer · Implementation Status
 
-**Status**: PLANNED
-**Last updated**: 2026-05-11
+**Status**: PARTIAL — scripts implemented; agent-runtime bundle deferred (see 0055)
+**Last updated**: 2026-06-05
 
 ## Summary
 
-Drafted the LLD and committed plan/status/rollback. No implementation
-work has started.
+The installer *scripts* are implemented and shipped (`install.sh`,
+`scripts/build-release.sh`, `.github/workflows/release.yml`,
+`scripts/smoke-install.sh`): the `vulture` CLI + embedded UI install
+natively and are hardened in feature 0055 (Tier A + hardening pass).
+
+The agent-runtime bundle (python-build-standalone + a hashed dependency
+lockfile) is **deferred to the 0055 Tier-B follow-up**: agent-based
+(multi-framework / LLM) scanning currently requires Docker (Mode A/B).
 
 ## Checkpoints
+
+> **Reconciliation note (2026-06-05).** The table below is the *original*
+> planning tracker captured on 2026-05-11 (statuses frozen at that date).
+> It is superseded by the **Summary** above and by feature 0055: the
+> installer **scripts have since shipped** — `install.sh`,
+> `scripts/build-release.sh`, `.github/workflows/release.yml`,
+> `.github/workflows/vendor-pbs.yml` + `vendor-cosign.yml` — and `install.sh`
+> was hardened in 0055 (Tier A + hardening pass; cosign/Rekor verify,
+> system-dir blacklist, crash-consistent swap, portable downgrade guard,
+> single-pass tar filelist). The remaining gap is the **agent-runtime
+> bundle** (python-build-standalone + a hashed lockfile + a real smoke
+> scan), tracked as **0055 Tier B (deferred / demand-gated)**. The
+> per-row "not started" values are historical and not re-audited here.
 
 | # | Checkpoint | Owner | Status | Notes |
 |---|---|---|---|---|
@@ -81,7 +100,8 @@ work has started.
 
 ## Blocking issues
 
-None yet.
+None. The installer scripts are shipped + hardened (0055); the only
+deferred scope is the agent-runtime bundle (0055 Tier B, demand-gated).
 
 ## Test plan progress
 
@@ -103,11 +123,13 @@ None yet.
 
 ## Notes for the next session
 
-- Start with checkpoint 1 (path resolution); everything else compiles
-  cleanly only after `Mode` + `ResolveHome` land.
-- Watch cyclomatic-complexity gate on `launcher.go`; pre-feature it's
-  already close to the limit. Plan extracts `Daemonize` and
-  `LaunchEphemeral` into sibling files before adding new logic.
-- Pin python-build-standalone tag explicitly in
-  `scripts/build-release.sh`; do not chase `latest`. Vendor the SHA so
-  reproducible-build verification is mechanical.
+The installer scripts are shipped + hardened (0055). The remaining work
+is **0055 Tier B** (deferred / demand-gated) — see
+`docs/features/0055_native_installer_hardening/`:
+
+- Bundle python-build-standalone (consume the signed `vendor-pbs-*`
+  release in `release.yml`; pin the SHA in `scripts/pbs-shas.txt`, never
+  chase `latest`).
+- Generate a hashed `requirements-frozen.txt` from the agents'
+  `pyproject.toml`s (`uv pip compile --generate-hashes`).
+- Make `scripts/smoke-install.sh` run a real `vulture scan` end-to-end.
