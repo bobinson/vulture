@@ -595,7 +595,7 @@ test_reject_system_dir() {
             ( reject_if_system_dir "$d" ) >/dev/null 2>&1
             if [ $? -eq 0 ]; then printf "FAILED-TO-REJECT(%s);" "$d" >> "'"$rj"'"; fi
         done
-        for d in /root/.vulture /home/alice/.vulture /opt/vulture; do
+        for d in /root/.vulture /home/alice/.vulture /opt/vulture /var/folders/ab/cd/T/vulture-smoke; do
             ( reject_if_system_dir "$d" ) >/dev/null 2>&1
             if [ $? -ne 0 ]; then printf "WRONGLY-REJECTED(%s);" "$d" >> "'"$rj"'"; fi
         done

@@ -58,9 +58,12 @@ resolve_path() {
 
 # reject_if_system_dir PATH — err() if PATH is a system directory or a child of
 # one. /root is rejected only as an exact target (so /root/.vulture is allowed).
+# Exception: /var/folders/... is macOS's per-user $TMPDIR (user-writable
+# scratch, not a system dir) — allowed, matched before the /var/* rejection.
 reject_if_system_dir() {
     _p=$1
     case "$_p" in
+        /var/folders/*) : ;;
         /|/bin|/sbin|/lib|/lib64|/boot|/sys|/proc|/dev|/root|/etc|/usr|/var)
             err "refusing system directory: $_p" ;;
         /bin/*|/sbin/*|/lib/*|/lib64/*|/boot/*|/sys/*|/proc/*|/dev/*|/etc/*|/usr/*|/var/*)
