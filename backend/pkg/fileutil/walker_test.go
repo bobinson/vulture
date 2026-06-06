@@ -8,10 +8,10 @@ import (
 
 func TestCountFiles(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.go"), []byte("package b"), 0644)
-	os.MkdirAll(filepath.Join(dir, "sub"), 0755)
-	os.WriteFile(filepath.Join(dir, "sub", "c.go"), []byte("package c"), 0644)
+	mustWrite(t, filepath.Join(dir, "a.go"), "package a")
+	mustWrite(t, filepath.Join(dir, "b.go"), "package b")
+	mustMkdir(t, filepath.Join(dir, "sub"))
+	mustWrite(t, filepath.Join(dir, "sub", "c.go"), "package c")
 
 	count, err := CountFiles(dir)
 	if err != nil {
@@ -24,9 +24,9 @@ func TestCountFiles(t *testing.T) {
 
 func TestCountFilesIgnoresGit(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a"), 0644)
-	os.MkdirAll(filepath.Join(dir, ".git", "objects"), 0755)
-	os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/main"), 0644)
+	mustWrite(t, filepath.Join(dir, "a.go"), "package a")
+	mustMkdir(t, filepath.Join(dir, ".git", "objects"))
+	mustWrite(t, filepath.Join(dir, ".git", "HEAD"), "ref: refs/heads/main")
 
 	count, err := CountFiles(dir)
 	if err != nil {
@@ -41,5 +41,19 @@ func TestCountFilesNonexistent(t *testing.T) {
 	_, err := CountFiles("/nonexistent/path/12345")
 	if err == nil {
 		t.Fatal("expected error for nonexistent path")
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustMkdir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
 	}
 }

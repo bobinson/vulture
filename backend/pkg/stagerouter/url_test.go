@@ -7,11 +7,6 @@ import (
 	"github.com/vulture/backend/pkg/pluginregistry"
 )
 
-// fakeResolver is a test double that always returns the same URL.
-type fakeResolver struct{ url string }
-
-func (f *fakeResolver) Resolve(p pluginregistry.Plugin) string { return f.url }
-
 func TestResolveURL_EnvWinsOverConfig(t *testing.T) {
 	// Review MAJOR #7: env vars must win over config.ini values
 	// (twelve-factor). Snapshot env at construction time, build a
