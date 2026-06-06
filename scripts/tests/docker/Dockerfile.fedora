@@ -1,0 +1,12 @@
+# Cross-distro installer e2e — Fedora 41 (Python 3.13). Feature 0055.
+# The fedora:41 base ships NO python3, so WITH_PY=0 is a genuine no-python host.
+# WITH_PY=1 installs python3 (3.13) — venv/ensurepip are bundled with it on
+# Fedora, so this exercises the python3.12-name-alias path on a newer minor.
+FROM fedora:41
+ARG WITH_PY=0
+RUN dnf install -y --setopt=install_weak_deps=0 tar ca-certificates \
+ && if [ "$WITH_PY" = "1" ]; then dnf install -y --setopt=install_weak_deps=0 python3; fi \
+ && dnf clean all \
+ && useradd -m tester
+USER tester
+WORKDIR /home/tester
