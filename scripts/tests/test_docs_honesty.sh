@@ -19,7 +19,7 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); printf 'PASS [%s]\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf 'FAIL [%s] %s\n' "$1" "$2"; }
 
-REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 README="$REPO_ROOT/README.md"
 GUIDE="$REPO_ROOT/docs/guides/native_installation.md"
 STATUS44="$REPO_ROOT/docs/features/0044_native_installer/0044_implementation_status.md"

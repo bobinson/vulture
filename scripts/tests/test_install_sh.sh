@@ -27,7 +27,7 @@ fail() { FAIL=$((FAIL + 1)); printf 'FAIL [%s] %s\n' "$1" "$2"; }
 # ---------------------------------------------------------------------------
 # Sandbox
 # ---------------------------------------------------------------------------
-REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 INSTALL_SH="$REPO_ROOT/install.sh"
 
 SANDBOX=$(mktemp -d 2>/dev/null || mktemp -d -t vulture-test)
@@ -273,6 +273,7 @@ run_in_install() {
 
 # Probe once whether the seam is honored at all (functions reachable).
 SEAM_OK=0
+# shellcheck disable=SC2016  # single-quoted on purpose: $SANDBOX expands inside install.sh, not here
 if run_in_install 'type verify_signature >/dev/null 2>&1 && echo SEAM > "$SANDBOX/seam.probe"' >/dev/null 2>&1; then :; fi
 [ -f "$SANDBOX/seam.probe" ] && SEAM_OK=1
 
@@ -531,7 +532,7 @@ test_deps_hashed_https() {
     if [ -z "$detail" ]; then
         pass "$name"
     else
-        fail "$name" "$detail pip argv: $(cat "$PIP_LOG" | tr '\n' '|' | cut -c1-160)"
+        fail "$name" "$detail pip argv: $(tr '\n' '|' < "$PIP_LOG" | cut -c1-160)"
     fi
 }
 test_deps_hashed_https
@@ -565,7 +566,7 @@ test_deps_http_trusted() {
     if grep -q -- '--trusted-host' "$PIP_LOG"; then
         pass "$name"
     else
-        fail "$name" "no --trusted-host for an explicit http:// index; pip argv: $(cat "$PIP_LOG" | tr '\n' '|' | cut -c1-160)"
+        fail "$name" "no --trusted-host for an explicit http:// index; pip argv: $(tr '\n' '|' < "$PIP_LOG" | cut -c1-160)"
     fi
 }
 test_deps_http_trusted
@@ -584,6 +585,7 @@ test_reject_system_dir() {
     rj="$SANDBOX/reject.out"
     : > "$rj"
     # Inside one sourced subshell: probe each dir, append result to $rj.
+    # shellcheck disable=SC2016  # '"$rj"' injects the outer value into the single-quoted probe
     run_in_install '
         if ! type reject_if_system_dir >/dev/null 2>&1; then
             echo "NO_FN" > "'"$rj"'"
@@ -652,6 +654,7 @@ test_commit_install() {
     printf 'old\n' > "$old/marker"
     flagfile="$SANDBOX/committed.flag"
     rm -f "$flagfile"
+    # shellcheck disable=SC2016  # '"$new"'/'"$old"' inject outer values into the single-quoted block
     run_in_install '
         VULTURE_HOME="'"$new"'"
         OLD_HOME="'"$old"'"
