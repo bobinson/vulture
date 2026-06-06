@@ -4,7 +4,7 @@
        docker-up docker-down \
        gen-env config-check \
        verify verify-proofs verify-simulate verify-all \
-       release-local install-local smoke-install smoke-negative freeze-deps
+       release-local install-local smoke-install smoke-negative freeze-deps check-lockfile
 
 # Build targets (parallel)
 build:
@@ -126,9 +126,15 @@ smoke-install:
 smoke-negative:
 	scripts/smoke-negative.sh
 
-# Re-generate the pinned-hashes requirements file CI uses.
+# Re-generate the single hash-pinned agent lockfile (feature 0055 B1).
+# Aggregates third-party deps across the agents' pyprojects (first-party
+# vulture-* excluded; they load via PYTHONPATH) into agents/requirements-frozen.txt.
+# UPGRADE=1 refreshes to latest in-range; UPGRADE_PKG=<name> bumps one.
 freeze-deps:
-	bash -c 'cd agents && for d in shared chaos_engineering owasp soc2 cwe xss ssdf asvs do178c discover prove; do \
-	    [ -f "$$d/pyproject.toml" ] || continue; \
-	    pip-compile --quiet --generate-hashes -o "$$d/requirements-frozen.txt" "$$d/pyproject.toml"; \
-	  done'
+	@if [ -n "$(UPGRADE_PKG)" ]; then scripts/gen-lockfile.sh --upgrade-pkg "$(UPGRADE_PKG)"; \
+	 elif [ "$(UPGRADE)" = "1" ]; then scripts/gen-lockfile.sh --upgrade; \
+	 else scripts/gen-lockfile.sh; fi
+
+# Fail if the committed lockfile is stale (CI + vulture.sh release gate).
+check-lockfile:
+	scripts/check-lockfile.sh
