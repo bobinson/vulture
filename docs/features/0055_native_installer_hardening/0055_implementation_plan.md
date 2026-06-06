@@ -475,18 +475,26 @@ gates.
 
 ## 1. Status
 
-> **STATUS: DEFERRED / PROPOSED — awaiting review.** No code in this section is implemented. The unit-test seam, env-flag names, and the `install_python_deps` extension point named below are the *contract* a future implementation must honor, not existing behavior.
+> **STATUS: DEFERRED / PROPOSED — awaiting review.** No code in this section is implemented. The env-flag names, the unit-test seam, and the `install_python_deps` extension point named below are the *contract* a future implementation must honor, not existing behavior.
 
-**Relationship to Tier B.** Tier B ships a hermetic, pinned, hash/cosign-verified Python-Build-Standalone (PBS) interpreter inside the release tarball at `$VULTURE_HOME/runtime/python`. **Tier B-lite is the lighter "bring-your-own-Python" variant**: when no PBS interpreter is bundled (e.g. CLI-only local builds, or platforms without a PBS artifact), the installer can — *only on explicit opt-in* — locate a host Python ≥ 3.12 and materialize a venv at the **same** runtime path the daemon already expects. It is strictly a fallback below Tier B and strictly above the existing CLI-only path. It trades supply-chain guarantees for the ability to run agents on a machine that already has a suitable interpreter.
+**Relationship to Tier B.** Tier B ships a hermetic, pinned, hash/cosign-verified Python-Build-Standalone (PBS) interpreter inside the release tarball at `$VULTURE_HOME/runtime/python`. **Tier B-lite is the lighter "bring-your-own-Python" variant**: when no PBS interpreter is bundled, the installer can — *only on explicit opt-in* — locate a host Python ≥ 3.12 and materialize a venv at the **same** runtime path the daemon already expects. It is strictly a fallback below Tier B and strictly above the existing CLI-only path.
+
+**Dependency verification is identical to Tier B.** Tier B-lite installs the **same shipped hashed `requirements-frozen.txt`** with `pip install --require-hashes` into the system-Python venv. Hashes live in the lockfile, not in the interpreter, so `--require-hashes` works regardless of which Python runs it. **The only thing relaxed vs Tier B is the interpreter's provenance** — it is the operator's host Python, not our pinned, cosign-verified PBS. Dependencies stay pinned + hash-verified on both paths.
+
+**Hard prerequisite: the B1 hashed lockfile.** This is the decisive revision from the first draft. Tier B-lite **requires** the shipped `requirements-frozen.txt` to carry `--hash=` lines — i.e. it depends on Tier B's item **B1** (generate a hashed lockfile from the agents' `pyproject.toml`s via `pip-compile --generate-hashes` / `uv pip compile`, committed and staged into the tarball by `build-release.sh`). **Tier B-lite cannot ship before B1.** If the lockfile is absent or hashless, the system-Python path **fails closed** exactly like the bundled path — there is no "install unhashed from PyPI ranges" mode. Rationale below.
+
+### Why an unhashed escape hatch was rejected
+
+An earlier draft proposed a `VULTURE_ALLOW_UNHASHED_DEPS` opt-out that would resolve the agents' `pyproject` version *ranges* live from PyPI when no lockfile was present. **It has been removed.** Hash verification is a property of the *requirements file*, not the interpreter — `--require-hashes` works on any Python — so "use my system Python" never actually required dropping hashes. The draft coupled them only because no lockfile existed yet (B1 undone). Generating hashes locally from the live download is circular (you would hash whatever PyPI served, including a tampered artifact) and yields no tamper-evidence. The correct design is therefore: **do B1, require the lockfile, and verify hashes on every path.** A "trust-me" unhashed mode is not offered. An operator on a private network may still point `VULTURE_PIP_INDEX_URL` at a controlled mirror, but the installer will still demand a hashed lockfile to verify against.
 
 ## 2. Trigger / Scope
 
-**Build it when:** a deployment cannot use bundled PBS (no artifact for the platform, air-gapped re-builds from source, or a smaller download is required) **and** the operator accepts an unverified interpreter + range-resolved dependencies. It is the executable answer to "I already have Python 3.12, just use it."
+**Build it when:** B1 (the hashed lockfile) has landed **and** a deployment wants to run agents on a machine that already has Python 3.12+ without downloading/bundling a ~40 MB PBS interpreter (smaller download, re-use of an existing interpreter, or a platform with no PBS artifact). It is the executable answer to "I already have Python 3.12 — use it, but don't weaken anything."
 
 **Explicitly out of scope / what it does NOT do:**
 - It does **not** provide an LLM. Agents still require a configured endpoint (OpenAI/Anthropic/Gemini/Ollama keys + model config), exactly as Tier A/B.
-- It does **not** preserve Tier B's supply-chain posture. By design it resolves agent dependencies from PyPI by version *range* (`>=3.12`-style `pyproject` constraints), so unless a hashed lock is shipped, the install is **unpinned and unhashed** — a deliberate, gated trade-off (see §5).
-- It does **not** sandbox or attest the host interpreter, its stdlib, or `sitecustomize.py` (see §5 residual risk).
+- It does **not** relax dependency verification. It installs the **same hashed lockfile with `--require-hashes`** as Tier B; a missing/hashless lockfile is fail-closed.
+- It does **not** verify or sandbox the **interpreter**. The host Python binary, its stdlib, and any `sitecustomize.py` are trusted as-is — this is the one provenance relaxation vs PBS and the only residual the opt-in accepts (see §5).
 - It does **not** change the Go daemon contract. No edits to `mode.go`/`launcher.go`/`doctor.go` are required for the happy path (one optional doctor tolerance noted in §4/§7).
 - It is **off by default.** With no opt-in flag, installer behavior is byte-for-byte unchanged.
 
@@ -497,14 +505,14 @@ From the runtime investigation (all paths in `/home/user/src/vulture-gh`):
 - **Daemon's expected install-mode interpreter is hardcoded** at `$VULTURE_HOME/runtime/python/bin/python3.12` — `backend/internal/localdev/mode.go:86-91` (`PythonBin()`), with `$VULTURE_HOME` defaulting to `$HOME/.vulture` (`mode.go:28-37`).
 - **`vulture doctor` literally `os.Stat`s that path** — `backend/cmd/vulture/doctor.go:59-77` (`checkPython()`): dev mode is skipped; install mode probes `PythonBin(mode)` and returns WARN/exit 2 if absent.
 - **The agent launcher runs `<python> -m uvicorn <module> --host 0.0.0.0 --port <port>`** under a *restricted* `PATH = $VULTURE_HOME/runtime/python/bin:/usr/bin:/bin` and `PYTHONPATH = $VULTURE_HOME/runtime/agents`, scrubbing `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`/`PYTHONUSERBASE` — `backend/internal/localdev/launcher.go:316-319`, `env.go:38-86` (`BuildAgentEnv()`). Console scripts (`uvicorn`) and the interpreter must therefore live under `runtime/python/bin`.
-- **The installer extension point is `install_python_deps()`** — `install.sh:319-358`. Today it is a 3-state machine keyed on (a) an executable `$VULTURE_HOME/runtime/python/bin/pip` and (b) a non-empty `$VULTURE_HOME/runtime/agents/requirements-frozen.txt`:
+- **The installer extension point is `install_python_deps()`** — `install.sh` (the function near the `runtime/python/bin/pip` + `requirements-frozen.txt` logic). Today it is a 3-state machine keyed on (a) an executable `$VULTURE_HOME/runtime/python/bin/pip` and (b) a non-empty `$VULTURE_HOME/runtime/agents/requirements-frozen.txt`:
   - State 1 — pip absent **or** reqs empty → `cli_only_note()`; `return 0`.
   - State 2 — pip+reqs present but **no `--hash=` lines** → `err(...)` fail-closed (no override).
   - State 3 — pip+reqs present **with hashes** → `pip install --require-hashes --no-cache-dir --no-build-isolation --index-url <idx> [--trusted-host <host>] -r <reqs>`.
-- Agent packages (1 `vulture-shared` + 10 agents) all declare `requires-python = ">=3.12"`. Native wheels needed: **pydantic-core (Rust)**, plus `tiktoken`, `uvloop` (via `uvicorn[standard]`), `websockets`. No vendored deps; full transitive closure comes from PyPI.
+- Agent packages (1 `vulture-shared` + 10 agents) all declare `requires-python = ">=3.12"`. Native wheels needed: **pydantic-core (Rust)**, plus `tiktoken`, `uvloop` (via `uvicorn[standard]`), `websockets`. No vendored deps; full transitive closure comes from PyPI — which is exactly why a generated, hash-pinned lockfile (B1) is the unit of trust.
 - A venv created by a 3.12 interpreter yields exactly `bin/python3.12`, `bin/python3`, `bin/python`, and `bin/pip` — i.e. **the precise layout `PythonBin()` and `doctor` already expect.** This is the load-bearing observation that makes a zero-Go-change integration possible.
 
-**Precise extension point:** a new opt-in branch slots into `install_python_deps()` *after* the CLI-only short-circuit and *before* (or in place of) the early `return 0`, so the bundled-PBS path (States 2/3) is unaffected and the default fall-through to `cli_only_note()` is preserved when the flag is unset.
+**Precise extension point:** a new opt-in branch slots into `install_python_deps()` *after* the bundled-PBS handling and *before* the default CLI-only `return 0`, so the bundled path is unaffected and the default fall-through is preserved when the flag is unset.
 
 ## 4. Design
 
@@ -519,38 +527,40 @@ install_python_deps():
   1. BUNDLED PBS present  ($VULTURE_HOME/runtime/python/bin/pip is -x)
        -> existing State 2/3 logic, UNTOUCHED. Strict --require-hashes.   (Tier B)
   2. else if VULTURE_USE_SYSTEM_PYTHON truthy
-       -> NEW: detect system >=3.12, build venv at runtime/python, install deps.
-          On any hard failure -> err (DO NOT silently downgrade to CLI-only:
-          the operator explicitly asked for agents).                      (Tier B-lite)
+       -> NEW: REQUIRE a shipped HASHED requirements-frozen.txt; detect a
+          system Python >=3.12; build a venv at runtime/python; install the
+          lockfile with --require-hashes. Missing/hashless lockfile, no
+          interpreter, unsupported version, or any install failure -> err
+          (fail-closed; never a silent drop to CLI-only).                 (Tier B-lite)
   3. else
        -> existing State 1: cli_only_note(); return 0.   (DEFAULT, unchanged)
 ```
 
-A real bundled interpreter is the most reproducible, so it always wins. System Python is an explicit opt-in compromise. CLI-only remains the safe default.
+Dependency verification is **identical** in branches 1 and 2 (same hashed lockfile, same `--require-hashes`). The only difference between them is the interpreter's provenance. A real bundled interpreter is the most reproducible, so it always wins; CLI-only remains the safe default.
 
 ### 4.3 Env-flag contract
 
+A single new opt-in flag (plus two advanced knobs). **`VULTURE_ALLOW_UNHASHED_DEPS` from the first draft is removed** — there is no unhashed path to gate.
+
 | Flag | Meaning | Default |
 |---|---|---|
-| `VULTURE_USE_SYSTEM_PYTHON` (`1`\|`true`) | Opt in: when no bundled PBS pip exists, locate a host Python ≥ 3.12 and build a venv at `$VULTURE_HOME/runtime/python`. Selects *which interpreter* runs agents. | unset → bundled PBS, else CLI-only |
-| `VULTURE_ALLOW_UNHASHED_DEPS` (`1`\|`true`) | Permit installing deps **without** `--require-hashes` (range-resolved from PyPI). Governs *verification strength* only. **Required** iff the only dependency source is an unhashed manifest on the system-Python path. **No-op** when a hashed lock is present (never downgrades). **Never** rescues a hashless *bundled* lock. | unset → require hashes / fail-closed |
+| `VULTURE_USE_SYSTEM_PYTHON` (`1`\|`true`) | Opt in: when no bundled PBS pip exists, locate a host Python ≥ 3.12 and build a venv at `$VULTURE_HOME/runtime/python`, then install the shipped **hashed** lockfile with `--require-hashes`. | unset → bundled PBS, else CLI-only |
 | `VULTURE_PYTHON` (optional) | Explicit interpreter path/name to use instead of PATH auto-detection (e.g. `/opt/py/bin/python3.13` or `python3.12`). Honored only when `VULTURE_USE_SYSTEM_PYTHON` is truthy. | unset → auto-detect |
-| `VULTURE_PY_MIN_MINOR` (advanced) | Minimum acceptable 3.x minor. Major always pinned to 3. Exists so a future bump to 3.13-only is a one-line change. | `12` |
+| `VULTURE_PY_MIN_MINOR` (advanced) | Minimum acceptable 3.x minor. Major always pinned to 3. Lets a future bump to 3.13-only be a one-line change. | `12` |
 
-> **Naming is an open decision (see §9).** Investigation inputs also proposed `VULTURE_SYSTEM_PYTHON` (≈ `VULTURE_PYTHON`) and `VULTURE_ALLOW_UNHASHED_SYSTEM`/`VULTURE_SYSTEM_PYTHON_ALLOW_HASHLESS` (≈ `VULTURE_ALLOW_UNHASHED_DEPS`). This LLD adopts `VULTURE_USE_SYSTEM_PYTHON` / `VULTURE_ALLOW_UNHASHED_DEPS` / `VULTURE_PYTHON` as canonical; the implementation must commit to one set and document it in `install.sh:8-21`.
+> **Naming is an open decision (see §11).** Investigation inputs also proposed `VULTURE_SYSTEM_PYTHON` (≈ `VULTURE_PYTHON`). This LLD adopts `VULTURE_USE_SYSTEM_PYTHON` / `VULTURE_PYTHON` as canonical; the implementation must commit to one set and document it in the `install.sh` env header.
 
-**Two-flag truth table (load-bearing):**
+**Truth table (single opt-in flag; hashes always required):**
 
-| `USE_SYSTEM_PYTHON` | `ALLOW_UNHASHED_DEPS` | Bundled PBS? | Manifest | Result |
-|---|---|---|---|---|
-| unset | unset | yes | hashed | Normal hashed install (unchanged). |
-| unset | unset | yes | hashless | **FAIL-CLOSED** `err` (unchanged). |
-| unset | unset | no/empty | — | CLI-only, `return 0` (unchanged). |
-| **true** | unset | n/a | n/a | **FAIL-CLOSED** `err` — system Python implies range install; refuse without acknowledgement. |
-| **true** | **true** | n/a | hashed lock present | Prefer the lock: install `--require-hashes` into the system venv. Hashes still win. |
-| **true** | **true** | n/a | absent/empty | Unhashed range install into isolated venv, with loud banner. |
-| unset | true | yes | hashed | No-op; normal hashed path. |
-| unset | true | yes | hashless | **STILL FAIL-CLOSED** — flag does not rescue a corrupt bundled lock. |
+| `USE_SYSTEM_PYTHON` | Bundled PBS? | Lockfile | Result |
+|---|---|---|---|
+| unset | yes | hashed | Bundled hashed install (unchanged). |
+| unset | yes | hashless | **FAIL-CLOSED** `err` (unchanged). |
+| unset | no/empty | — | CLI-only, `return 0` (unchanged). |
+| **true** | no | **hashed** | Detect Python ≥3.12 → venv → `--require-hashes` install. **Deps hash-verified.** |
+| **true** | no | hashless/absent | **FAIL-CLOSED** `err` — no lockfile to verify against (do B1 / use a bundled release). |
+| **true** | yes | (any) | Bundled wins (precedence); the system-Python branch is not taken. |
+| unset | no | hashed | CLI-only — the flag is required to act on the lockfile. |
 
 ### 4.4 Detection + version gate
 
@@ -613,9 +623,9 @@ create_system_venv() {  # <interp>
 }
 ```
 
-### 4.6 Dependency install
+### 4.6 Dependency install — always hash-verified
 
-Venv built **without** `--system-site-packages` (no host-package leak by construction). `PYTHONNOUSERSITE=1` and `--no-cache-dir` for the install; pip upgraded **inside the venv only**. The bundled path's `--no-build-isolation` is **dropped here** — on a non-3.12 host a source build may be triggered, and isolation must be ON so pip can fetch a build backend. Wheels are still auto-preferred. Prefer `--only-binary :all:` where feasible to avoid sdist build-time code execution (T3).
+Venv built **without** `--system-site-packages` (no host-package leak by construction). `PYTHONNOUSERSITE=1` and `--no-cache-dir` for the install; pip upgraded **inside the venv only**. Installation is **always `--require-hashes`** against the shipped lockfile; there is no unhashed branch. The bundled path's `--no-build-isolation` is **dropped here** — on a non-3.12 host a source build may be triggered and isolation must be ON so pip can fetch a build backend. Prefer `--only-binary :all:` so only wheels are used: it avoids sdist build-time code execution (T3) **and** keeps `--require-hashes` simple (no unhashed transient build deps); a platform with no wheel then fails clearly rather than silently building.
 
 ```sh
 install_deps_system_venv() {
@@ -624,28 +634,25 @@ install_deps_system_venv() {
     _reqs="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
     _index="${VULTURE_PIP_INDEX_URL:-https://pypi.org/simple}"
 
+    # Fail closed: Tier B-lite REQUIRES a hashed lockfile (B1), same rule as the
+    # bundled path. There is no unhashed mode.
+    reqs_have_hashes "$_reqs" || err \
+        "requirements-frozen.txt has no --hash= lines; refusing system-Python install (fail-closed). This build ships no hashed lockfile (Tier B item B1); use a bundled-runtime release."
+
     PYTHONNOUSERSITE=1 "$_py" -m pip install --disable-pip-version-check \
         --no-cache-dir --upgrade pip >/dev/null 2>&1 || true
 
-    set -- --no-cache-dir --disable-pip-version-check --index-url "$_index"
+    set -- --require-hashes --only-binary :all: --no-cache-dir \
+           --disable-pip-version-check --index-url "$_index"
     case "$_index" in   # http:// mirror -> scope --trusted-host (existing TLS gate; never relaxed otherwise)
         http://*) _h=$(printf '%s' "$_index" | sed -e 's,^http://,,' -e 's,/.*$,,')
+                  warn "VULTURE_PIP_INDEX_URL is http:// ($_index); disabling TLS verification for $_h"
                   set -- "$@" --trusted-host "$_h" ;;
     esac
 
-    if reqs_have_hashes "$_reqs"; then
-        log "installing agent deps (hash-pinned) into runtime venv"
-        PYTHONNOUSERSITE=1 "$_pip" install --require-hashes "$@" -r "$_reqs" \
-            || err "pip install (hash-pinned) failed in runtime venv"
-    else
-        if [ "${VULTURE_ALLOW_UNHASHED_DEPS:-}" = "1" ] || [ "${VULTURE_ALLOW_UNHASHED_DEPS:-}" = "true" ]; then
-            log "installing agent deps (HASHLESS - explicitly allowed) into runtime venv"
-            PYTHONNOUSERSITE=1 "$_pip" install "$@" -r "$_reqs" \
-                || err "pip install (hashless) failed in runtime venv"
-        else
-            err "requirements-frozen.txt has no --hash= lines and VULTURE_ALLOW_UNHASHED_DEPS is not set; refusing hashless system-Python install (fail-closed)."
-        fi
-    fi
+    log "installing agent deps (hash-pinned) into runtime venv (system Python)"
+    PYTHONNOUSERSITE=1 "$_pip" install "$@" -r "$_reqs" \
+        || err "pip install (hash-pinned) failed in runtime venv"
 
     # Prove the runtime can launch an agent before first `vulture up`.
     PYTHONNOUSERSITE=1 "$_py" - <<'PY' || err "runtime venv import self-check failed (uvicorn/fastapi/pydantic)"
@@ -673,12 +680,12 @@ install_python_deps() {
 
     # NEW: opt-in system Python (only when no bundled interpreter).
     if [ "${VULTURE_USE_SYSTEM_PYTHON:-}" = "1" ] || [ "${VULTURE_USE_SYSTEM_PYTHON:-}" = "true" ]; then
-        [ -s "$REQS" ] || err "VULTURE_USE_SYSTEM_PYTHON set but $REQS is missing/empty; this build ships no agent sources."
+        [ -s "$REQS" ] || err "VULTURE_USE_SYSTEM_PYTHON set but $REQS is missing/empty; this build ships no hashed lockfile (Tier B item B1)."
         _sys_py=$(detect_system_python) \
             || err "VULTURE_USE_SYSTEM_PYTHON set but no Python >= 3.${VULTURE_PY_MIN_MINOR:-12} found (set VULTURE_PYTHON to point at one)."
         log "using system Python: $_sys_py"
         create_system_venv "$_sys_py"
-        install_deps_system_venv
+        install_deps_system_venv     # enforces --require-hashes / fail-closed
         return 0
     fi
 
@@ -691,20 +698,19 @@ install_python_deps() {
 ### 4.8 Idempotency / upgrade
 
 - **Re-run:** `create_system_venv` reuses a venv that passes `python3.12 -c 'import sys'`; otherwise it `rm -rf`'s the stale/partial dir and rebuilds. `pip install -r` is itself idempotent.
-- **Upgrade:** a new tarball overwrites `runtime/agents` (sources + new frozen manifest) but the venv at `runtime/python` is reused; `install_deps_system_venv` re-runs against the new reqs, so dependency changes are picked up without rebuilding the interpreter. A minimum-Python bump still satisfies the reused venv's `>=3.12` self-check.
+- **Upgrade:** a new tarball overwrites `runtime/agents` (sources + new hashed frozen manifest) but the venv at `runtime/python` is reused; `install_deps_system_venv` re-runs `--require-hashes` against the new lockfile, so dependency changes are picked up without rebuilding the interpreter. A minimum-Python bump still satisfies the reused venv's `>=3.12` self-check.
 - **Host interpreter removed/upgraded after install:** `--copies` keeps the venv working (the core justification for `--copies`).
 
 ## 5. Security & Fail-Closed
 
-The opt-out converts two independent guarantees — *verified deps* and *verified interpreter* — from enforced to operator-accepted. We retain transport security, write confinement, version sanity, and full-removal uninstall. We cannot defend the interpreter binary, the system stdlib's `sitecustomize`, or sdist build-time code execution; these are stated as residual and surfaced in the banner.
+With the unhashed path removed, the **dependency supply chain is fully preserved** on the system-Python path: deps are pinned + hash-verified by the same lockfile and `--require-hashes` as the bundled path. The opt-in converts exactly **one** guarantee from enforced to operator-accepted: the **interpreter's provenance** (host Python instead of pinned/cosign-verified PBS). We retain dependency hash verification, transport security, write confinement, version sanity, and full-removal uninstall. We cannot defend the interpreter binary, the system stdlib's `sitecustomize`, or any sdist build-time code execution (mitigated by `--only-binary :all:`); these are the stated residuals and are surfaced in the install message.
 
 ### 5.1 What stays fail-closed (non-negotiable)
 
-1. **Present-but-hashless *bundled* lock still refuses** — a malformed/tampered release artifact; `err`. `VULTURE_ALLOW_UNHASHED_DEPS` does not apply.
-2. **System Python without `VULTURE_ALLOW_UNHASHED_DEPS` refuses** — the two flags are deliberately separate so "my interpreter" cannot implicitly mean "unverified deps."
-3. **Hashes win when present** — even on the system-Python path, a hashed lock installs `--require-hashes`. The flag raises a ceiling, never lowers a floor.
-4. **No silent fallback** — unresolved interpreter, unsupported version, or venv/pip failure → `err`, never a quiet drop to CLI-only or bundled.
-5. **TLS to the index stays mandatory** — `--trusted-host` is gated solely on an explicit `http://` `VULTURE_PIP_INDEX_URL`; unhashed mode never relaxes index TLS.
+1. **Hashless/absent lockfile refuses on BOTH paths** — bundled *and* system-Python. No flag rescues it; the system-Python branch errs identically to the bundled one.
+2. **Hashes required everywhere** — `--require-hashes` is used on the bundled and system-Python paths alike. There is no mode that installs without hashes.
+3. **No silent fallback** — unresolved interpreter, unsupported version, or venv/pip failure → `err`, never a quiet drop to CLI-only or bundled.
+4. **TLS to the index stays mandatory** — `--trusted-host` is gated solely on an explicit `http://` `VULTURE_PIP_INDEX_URL`; nothing about the system-Python path relaxes index TLS.
 
 ### 5.2 venv isolation guarantees
 
@@ -716,29 +722,29 @@ The opt-out converts two independent guarantees — *verified deps* and *verifie
 
 ### 5.3 Threat-model table
 
-| # | Threat | Mitigation | Residual (accepted under opt-in) |
+| # | Threat | Mitigation | Residual |
 |---|---|---|---|
-| T1 | Unpinned PyPI resolution drifts to a newer/yanked/back-doored release | Default fail-closed; `ALLOW_UNHASHED_DEPS` + loud banner; honor hashed lock; pinned `--index-url` | Resolved versions = whatever PyPI serves at that instant; no reproducibility/hash gate |
-| T2 | Unhashed-artifact tampering / wheel MITM | Mandatory index TLS (no `--trusted-host` except explicit `http://` mirror, separately warned) | TLS-valid-but-compromised mirror, or malicious typo-transitive dep, undetected without hashes |
-| T3 | Build-from-source executes attacker code at install (`setup.py`/PEP517) | Prefer `--only-binary :all:` / wheels; runs as unprivileged install user, never root | sdist-only deps still run build code; not sandboxed |
-| T4 | Malicious/hijacked system interpreter (shim, PATH poison) | Resolve via `command -v`; log absolute resolved path + version; refuse non-`>=3.12`; never search CWD | Cannot attest the binary; the operator's machine and choice — explicitly out of scope |
-| T5 | `sitecustomize`/`usercustomize`/`PYTHONSTARTUP` injection at runtime | venv without system-site; `PYTHONNOUSERSITE=1`; launcher scrubs `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`/`PYTHONUSERBASE` + restricts PATH | `sitecustomize.py` inside the *system stdlib dir* still inherited; not removable without owning the interpreter |
-| T6 | Version skew (3.13/3.14 behavior change, or 3.9 unsupported) | Hard `>=3.12` gate (`err` on <3.12); >3.12 proceeds with a "tested on 3.12" warning | Newer-minor runtime incompatibilities not caught at install |
-| T7 | Native-wheel ABI mismatch (pydantic-core/uvloop/tiktoken vs libc/arch) | pip selects the right wheel; failure → hard `err`, no partial state | musl/uncommon-arch may have no wheel → sdist build (folds into T3) or hard fail |
-| T8 | Stale/orphaned venv across reinstall or in-place interpreter upgrade | `--copies` self-contained; reinstall rebuilds; idempotent reuse-or-rebuild; venv self-check | In-place host upgrade may require a reinstall — degraded, not a security exposure |
-| T9 | Privilege / write-path confinement | venv + libs only under `$VULTURE_HOME`; reject HOME = system dir; HOME perms 700 | None notable |
+| T1 | Dependency version drift / yanked / back-doored release | **`--require-hashes` against the shipped B1 lockfile — same as bundled.** Pinned `--index-url`. | **None beyond Tier B** — resolution is hash-pinned identically to the bundled path. |
+| T2 | Unhashed-artifact tampering / wheel MITM | **Mandatory hashes** reject any artifact whose bytes don't match the lockfile; index TLS mandatory. | **None beyond Tier B** — a tampered wheel fails the hash check. |
+| T3 | Build-from-source executes attacker code at install (`setup.py`/PEP517) | `--only-binary :all:` (wheels only); unprivileged install user, never root. | A platform with no wheel fails clearly (no silent build); no sdist code runs. |
+| T4 | Malicious/hijacked system interpreter (shim, PATH poison) | Resolve via `command -v`; log absolute resolved path + version; refuse non-`>=3.12`; never search CWD. | Cannot attest the binary; the operator's machine and choice — the one accepted relaxation. |
+| T5 | `sitecustomize`/`usercustomize`/`PYTHONSTARTUP` injection at runtime | venv without system-site; `PYTHONNOUSERSITE=1`; launcher scrubs `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`/`PYTHONUSERBASE` + restricts PATH. | `sitecustomize.py` inside the *system stdlib dir* still inherited; not removable without owning the interpreter. |
+| T6 | Version skew (3.13/3.14 behavior change, or 3.9 unsupported) | Hard `>=3.12` gate (`err` on <3.12); >3.12 proceeds with a "tested on 3.12" warning. | Newer-minor runtime incompatibilities not caught at install. |
+| T7 | Native-wheel ABI mismatch (pydantic-core/uvloop/tiktoken vs libc/arch) | pip selects the right wheel; `--only-binary` + hard `err` on no-wheel, no partial state. | musl/uncommon-arch may have no wheel → hard fail (operator must use bundled/Docker). |
+| T8 | Stale/orphaned venv across reinstall or in-place interpreter upgrade | `--copies` self-contained; reinstall rebuilds; idempotent reuse-or-rebuild; venv self-check. | In-place host upgrade may require a reinstall — degraded, not a security exposure. |
+| T9 | Privilege / write-path confinement | venv + libs only under `$VULTURE_HOME`; reject HOME = system dir; HOME perms 700. | None notable. |
 
-### 5.4 Required warnings (exact strings)
+The decisive change from the first draft: **T1 and T2 are now fully mitigated** (required hashes), so the system-Python path is no weaker than bundled *for dependencies*. The accepted residual is confined to the interpreter (T4/T5) and platform wheel availability (T7).
+
+### 5.4 Required messages (exact strings)
 
 Using existing `log()` / `warn()` (stderr, `warning:`) / `err()` (stderr, `error:`, exit 1).
 
-**A — `USE_SYSTEM_PYTHON` without `ALLOW_UNHASHED_DEPS` (refuse):**
+**A — system Python selected; one-line provenance notice (info):**
 ```
-error: VULTURE_USE_SYSTEM_PYTHON=true requires VULTURE_ALLOW_UNHASHED_DEPS=true.
-error: System-Python installs resolve agent dependencies from PyPI UNPINNED and
-error: UNHASHED - this disables Vulture's supply-chain hash verification. Set
-error: VULTURE_ALLOW_UNHASHED_DEPS=true to acknowledge and proceed, or install a
-error: bundled-runtime release for hash-verified, reproducible dependencies.
+log: using system Python at <resolved-abspath> (Python <X.Y>) — agent DEPENDENCIES are
+log: hash-verified against requirements-frozen.txt; the INTERPRETER is operator-provided
+log: and not cosign/PBS-verified. Use a bundled-runtime release for a fully verified stack.
 ```
 
 **B — unsupported interpreter version (refuse):**
@@ -747,59 +753,45 @@ error: system Python is <X.Y> at <resolved-abspath>; Vulture agents require >=3.
 error: install a Python >=3.12 and re-run, or use the bundled-runtime release.
 ```
 
-**C — proceeding into unhashed system-Python install (loud banner, warn):**
+**C — system-Python opt-in but no hashed lockfile in this build (refuse):**
 ```
-warning: ========================= SUPPLY-CHAIN NOTICE =========================
-warning: Installing agent dependencies with SYSTEM PYTHON in UNHASHED mode.
-warning:   interpreter : <resolved-abspath> (Python <X.Y>)   [user-controlled, unverified]
-warning:   deps source : PyPI <index-url>, version RANGES (no --require-hashes)
-warning: This DISABLES dependency hash pinning. Resolved versions are whatever
-warning: PyPI serves now; builds are NOT reproducible and NOT tamper-evident.
-warning: All libraries install ONLY under <VULTURE_HOME>/runtime/python and are
-warning: removed by 'vulture uninstall'. Your system site-packages are untouched.
-warning: For verified, reproducible installs use the bundled-runtime release.
-warning: =======================================================================
+error: VULTURE_USE_SYSTEM_PYTHON is set but requirements-frozen.txt has no --hash= lines.
+error: Tier B-lite installs ONLY a hash-pinned lockfile (Tier B item B1); this build ships
+error: none. Use a bundled-runtime release, or build a tarball with a --generate-hashes lock.
 ```
 
-**D — hashed lock present on the system-Python path (info; flag is not silently a no-op):**
+**D — present-but-hashless BUNDLED lock (unchanged):**
 ```
-log: VULTURE_ALLOW_UNHASHED_DEPS is set, but a hashed requirements-frozen.txt was found;
-log: keeping --require-hashes (hash verification is NOT downgraded).
-```
-
-**E — present-but-hashless BUNDLED lock (unchanged, not rescuable):**
-```
-error: requirements-frozen.txt has no --hash= lines; refusing hashless install (fail-closed)
-error: (VULTURE_ALLOW_UNHASHED_DEPS does not apply to a bundled lock; this indicates a
-error:  corrupt or incomplete release artifact.)
+error: requirements-frozen.txt has no --hash= lines; refusing hashless install (fail-closed).
 ```
 
-**F — `http://` mirror in unhashed mode (compose, do not relax):**
+**E — `http://` mirror (compose with the existing TLS gate; do not relax):**
 ```
-warning: VULTURE_PIP_INDEX_URL is http:// (<index>); disabling TLS verification for <host>
-warning: combined with unhashed mode this provides NO integrity guarantee for dependencies.
+warning: VULTURE_PIP_INDEX_URL is http:// (<index>); disabling TLS verification for <host>.
+warning: dependency hashes still verify artifact integrity, but the transport is unauthenticated.
 ```
 
 ## 6. Fresh-Docker Test Matrix
 
-Anchored on verified install.sh behavior: offline path reads `${TARBALL%.tar.gz}.SHA256SUMS` + `.sig` at the same stem (install.sh:144-147); `VULTURE_ALLOW_UNSIGNED=true` + empty `.sig` accepted (178-207); deps key off pip + `requirements-frozen.txt` (319-358). `VULTURE_USE_SYSTEM_PYTHON` **does not exist yet** — scenarios 2 and 4 encode the feature's acceptance contract and are *expected-red* until it lands.
+Anchored on verified install.sh behavior: offline path reads `${TARBALL%.tar.gz}.SHA256SUMS` + `.sig` at the same stem; `VULTURE_ALLOW_UNSIGNED=true` + empty `.sig` accepted; deps key off pip + `requirements-frozen.txt`. `VULTURE_USE_SYSTEM_PYTHON` **does not exist yet** — scenarios 2, 4 and 7 encode the feature's acceptance contract and are *expected-red* until it lands.
 
 | # | Name | Base image | Setup / fixture | Env to install.sh | Expected outcome |
 |---|---|---|---|---|---|
-| 1 | `no-python-cli-only` | `ubuntu:24.04` + purge `python3*` (or `debian:12-slim`) | CLI-only tarball: empty `runtime/python/bin/`, `PBS_NOT_BUNDLED`, **empty** frozen manifest | offline tarball, `ALLOW_UNSIGNED`, `NO_UPDATE_CHECK`, `VULTURE_HOME` | rc 0; `bin/vulture` + `VERSION` present; no `runtime/python/bin/python3*`; no `pyvenv.cfg`; stdout has `agent runtime not bundled`; `doctor` rc ∈ {0,2}; `uninstall --yes` leaves no residue. **Green today.** |
-| 2 | `py312-optin-system` | `python:3.12-slim` | Agents source + **hashless** frozen manifest (system path relaxes via opt-out) | + `VULTURE_USE_SYSTEM_PYTHON=1` + `VULTURE_ALLOW_UNHASHED_DEPS=1` | rc 0; venv at `runtime/python` (`bin/python3.12` + `pyvenv.cfg`); `runtime/python/bin/python3.12 -c "import fastapi,pydantic,uvicorn"` rc 0; `doctor` rc 0. **Expected-red until flag lands.** |
+| 1 | `no-python-cli-only` | `ubuntu:24.04` purged of `python3*` (or `debian:12-slim`) | CLI-only tarball: empty `runtime/python/bin/`, `PBS_NOT_BUNDLED`, **empty** frozen manifest | offline tarball, `ALLOW_UNSIGNED`, `NO_UPDATE_CHECK`, `VULTURE_HOME` | rc 0; `bin/vulture` + `VERSION` present; no `runtime/python/bin/python3*`; no `pyvenv.cfg`; stdout has `agent runtime not bundled`; `doctor` rc ∈ {0,2}; `uninstall --yes` leaves no residue. **Green today.** |
+| 2 | `py312-optin-hashed` | `python:3.12-slim` | Agents source + **hashed** frozen lockfile (a small real `--hash=` fixture, or a local wheelhouse — see §6.1) | + `VULTURE_USE_SYSTEM_PYTHON=1` | rc 0; venv at `runtime/python` (`bin/python3.12` + `pyvenv.cfg`); pip invoked **with `--require-hashes`**; `runtime/python/bin/python3.12 -c "import fastapi,pydantic,uvicorn"` rc 0; `doctor` rc 0. **Expected-red until flag lands.** |
 | 3 | `py312-no-optin-default` | `python:3.12-slim` | Same CLI-only tarball as #1 | offline tarball only (NO opt-in) | Default unchanged though 3.12 present: rc 0, `agent runtime not bundled`, **no** venv. Proves opt-in is required. **Green today.** |
-| 4 | `py39-optin-refuse` | `python:3.9-slim` | Agents source + frozen manifest (as #2) | as #2 | rc **non-zero** with a message naming `>=3.12`; **no** `pyvenv.cfg`, no partial `site-packages`; idempotent after refusal. **Expected-red until flag lands.** |
+| 4 | `py39-optin-refuse` | `python:3.9-slim` | Agents source + hashed lockfile (as #2) | + `VULTURE_USE_SYSTEM_PYTHON=1` | rc **non-zero** naming `>=3.12`; **no** `pyvenv.cfg`, no partial `site-packages`; idempotent after refusal. **Expected-red until flag lands.** |
 | 5 | `offline-no-network` | `python:3.12-slim`, run `--network none` | CLI-only tarball; companions mounted read-only | as #1 | rc 0 with **zero** egress; same binary/VERSION/uninstall assertions as #1. **Green today.** |
-| 6 | `hashless-failclosed` (security) | `python:3.12-slim` | Tarball with **executable** stub `runtime/python/bin/pip` + non-empty **hashless** manifest | as #1 (no opt-in) | rc **non-zero**; stderr has `refusing hashless install (fail-closed)`; no deps installed. **Green today.** |
+| 6 | `hashless-failclosed-bundled` (security) | `python:3.12-slim` | Tarball with **executable** stub `runtime/python/bin/pip` + non-empty **hashless** manifest | as #1 (no opt-in) | rc **non-zero**; stderr has `refusing hashless install (fail-closed)`; no deps installed. **Green today.** |
+| 7 | `py312-optin-no-lockfile-failclosed` (security) | `python:3.12-slim` | Agents source + **empty/hashless** frozen manifest (no bundled pip) | + `VULTURE_USE_SYSTEM_PYTHON=1` | rc **non-zero**; stderr has the no-hashed-lockfile refusal (msg C); **no** venv deps installed. Encodes the "no unhashed escape hatch" rule. **Expected-red until flag lands.** |
 
 ### 6.1 Offline-tarball fabrication recipe
 
-No real release / cosign / Go binary needed. A POSIX-sh `vulture` stub satisfies `version`/`doctor`/`uninstall` (doctor returns 2 unless `runtime/python/bin/python3.12` exists, mimicking real doctor). Three variants:
+No real release / cosign / Go binary needed. A POSIX-sh `vulture` stub satisfies `version`/`doctor`/`uninstall` (doctor returns 2 unless `runtime/python/bin/python3.12` exists, mimicking real doctor). Variants:
 
 - **A — CLI-only** (#1, #3, #5): stub `bin/vulture`, `VERSION`, `runtime/python/PBS_NOT_BUNDLED`, empty `runtime/python/bin/`, **empty** `requirements-frozen.txt`.
-- **B — agents-with-reqs** (#2, #4): same + real `runtime/agents/shared/...` + non-empty **hashless** manifest (`fastapi>=0.115.0`, `uvicorn[standard]>=0.32.0`, `pydantic>=2.10.0`).
-- **C — bundled-pip hashless** (#6): executable stub `runtime/python/bin/pip` (`#!/bin/sh\nexit 0`) + non-empty hashless manifest, to force the fail-closed branch.
+- **B — agents + hashed lock** (#2, #4): same + real `runtime/agents/shared/...` + a **hashed** `requirements-frozen.txt`. Because scenario 2 actually runs `pip --require-hashes`, the fixture lockfile must carry **real** hashes for whatever it installs. Two hermetic options: (i) a *tiny* real lockfile of a couple of pure-Python wheels pinned with real `--hash=` (generated once via `pip-compile --generate-hashes`, committed as a fixture), or (ii) a local PEP 503 wheelhouse + `--index-url file://…` so the e2e never touches PyPI. Pick (ii) for the full agent set; (i) suffices to prove the `--require-hashes` argv + venv path.
+- **C — bundled-pip hashless** (#6) and **agents hashless** (#7): non-empty **hashless** manifest to force the respective fail-closed branches (no real hashes needed — install must refuse before downloading).
 
 Fabricator `build-fixture-tarball.sh <variant> <out.tar.gz>` stages the tree, then produces a reproducible tarball matching `build-release.sh` flags and the companion files at the same stem:
 
@@ -817,20 +809,21 @@ sha256sum "$OUT" | awk -v n="$(basename "$OUT")" '{print $1"  "n}' > "$BASE.SHA2
 scripts/tests/docker/
 ├── Dockerfile                  # single parametrized image: ARG BASE_IMAGE, ARG PURGE_PY
 ├── vulture-stub.sh             # stub binary baked into fixtures
-├── build-fixture-tarball.sh    # fabricator (cli-only|agents|hashless)
+├── build-fixture-tarball.sh    # fabricator (cli-only|agents-hashed|agents-hashless|bundled-hashless)
+├── wheelhouse/                 # optional local wheels for the hermetic hashed scenario (2)
 ├── runner.sh                   # in-container: runs install.sh + per-scenario asserts
 └── run-matrix.sh / run-one.sh  # host driver (builds fixtures + images, runs scenarios)
 ```
 
-`runner.sh` reads `$SCENARIO`, exports the offline env (and, for scenarios 2/4, the two opt-in flags), runs `sh /repo/install.sh`, captures `$?`, and per-scenario asserts: rc, `bin/vulture` + `VERSION`, presence/absence of `runtime/python/pyvenv.cfg`, venv import probe, `doctor` rc, and `uninstall` residue. Companions bind-mount to `/fix/vt.SHA256SUMS` + `/fix/vt.sig` so they line up with `${TARBALL%.tar.gz}` = `/fix/vt`.
+`runner.sh` reads `$SCENARIO`, exports the offline env (and, for 2/4/7, `VULTURE_USE_SYSTEM_PYTHON=1`), runs `sh /repo/install.sh`, captures `$?`, and per-scenario asserts: rc, `bin/vulture` + `VERSION`, presence/absence of `runtime/python/pyvenv.cfg`, the `--require-hashes` argv (scenario 2, via a pip wrapper log), venv import probe, `doctor` rc, refusal message (4/7), and `uninstall` residue. Companions bind-mount to `/fix/vt.SHA256SUMS` + `/fix/vt.sig` so they line up with `${TARBALL%.tar.gz}` = `/fix/vt`.
 
 ### 6.3 CI integration
 
-Add an `install-docker-matrix` job to `.github/workflows/ci.yml` (gated after the installer-lint job), `strategy.fail-fast: false`, one matrix entry per scenario. Scenarios 1/3/5/6 are **required now**; 2/4 carry `continue-on-error: true` (expected-red) until `VULTURE_USE_SYSTEM_PYTHON` ships, then flip to required.
+Add an `install-docker-matrix` job to `.github/workflows/ci.yml` (gated after the installer-lint job), `strategy.fail-fast: false`, one matrix entry per scenario. Scenarios 1/3/5/6 are **required now**; 2/4/7 carry `continue-on-error: true` (expected-red) until `VULTURE_USE_SYSTEM_PYTHON` ships (which itself is gated on B1), then flip to required.
 
 ## 7. TDD Plan
 
-Feature contract: when `VULTURE_USE_SYSTEM_PYTHON=true` and no bundled pip exists, resolve a system Python ≥ 3.12 (`VULTURE_PYTHON` first, then PATH), build a venv at `$VULTURE_HOME/runtime/python`, install the frozen deps into it — preserving fail-closed/TLS/default-off/idempotent properties. Extend `scripts/tests/test_install_sh.sh` (reusing its `VULTURE_INSTALL_SOURCE_ONLY=1` seam, `run_in_install`, `setup_home`, `make_pip`, `SHIMBIN`, argv-log, `SEAM_OK` guard) for fast unit tests; use the §6 docker matrix for real e2e.
+Feature contract: when `VULTURE_USE_SYSTEM_PYTHON=true`, no bundled pip exists, **and a hashed lockfile is present**, resolve a system Python ≥ 3.12 (`VULTURE_PYTHON` first, then PATH), build a venv at `$VULTURE_HOME/runtime/python`, and install the lockfile with `--require-hashes` — preserving fail-closed/TLS/default-off/idempotent properties. A missing/hashless lockfile fails closed. Extend `scripts/tests/test_install_sh.sh` (reusing its `VULTURE_INSTALL_SOURCE_ONLY=1` seam, `run_in_install`, `setup_home`, `make_pip`, `SHIMBIN`, argv-log, `SEAM_OK` guard) for fast unit tests; use the §6 docker matrix for real e2e.
 
 ### 7.1 RED unit tests (append to `scripts/tests/test_install_sh.sh`)
 
@@ -838,80 +831,85 @@ Add a `make_python` shim (honors `FAKE_PYVER` + `VULTURE_PYTHON`; on `-m venv DI
 
 | # | Test | Asserts | RED reason |
 |---|---|---|---|
-| U1 | `default-off-no-flag` | Flag unset, no bundled pip → CLI-only `return 0`; `python`/`venv` shims never invoked. Regression lock for "default unchanged." | Guards GREEN. |
-| U2 | `detects-and-uses-system-python` | Flag on, hashed manifest, 3.12 shim → resolves python, creates venv, runs venv-pip (log non-empty). | Flag ignored today; early CLI-only return. |
+| U1 | `default-off-no-flag` | Flag unset, no bundled pip → CLI-only `return 0`; `python`/`venv` shims never invoked. | Guards GREEN (regression lock). |
+| U2 | `detects-and-uses-system-python` | Flag on, **hashed** manifest, 3.12 shim → resolves python, creates venv, runs venv-pip (log non-empty). | Flag ignored today; early CLI-only return. |
 | U3 | `venv-at-expected-runtime-path` | venv at exactly `$VULTURE_HOME/runtime/python`; pip lives under it. | No venv code exists. |
 | U4 | `version-gate-rejects-3.11` | `FAKE_PYVER=3.11` → `err` naming 3.12; no venv, no pip. | No gate. |
 | U5 | `version-gate-accepts-3.12-and-3.13` | 3.12 then 3.13 both proceed (`>=`, not `==`). | No gate. |
 | U6 | `explicit-interpreter-path` | `VULTURE_PYTHON=<shim>` honored over PATH. | Var unrecognized. |
 | U7 | `no-python-found-errs` | Flag on, none on PATH, no `VULTURE_PYTHON` → `err`; no venv/pip. | Falls through silently. |
-| U8 | `fail-closed-unhashed` | Flag on, hashless manifest, no opt-out → `err`; venv-pip NOT invoked. | System branch absent; existing guard unreachable. |
-| U9 | `fail-closed-opt-out` | Flag on + `VULTURE_ALLOW_UNHASHED_DEPS`, hashless → proceeds WITHOUT `--require-hashes`, rc 0. | Neither flag exists. |
-| U10 | `require-hashes-when-hashed` | Hashed manifest, https → venv-pip argv has `--require-hashes`, no `--trusted-host`. | Path absent. |
-| U11 | `http-index-trusted-host` | `http://mirror:8080/simple` → argv has `--trusted-host mirror`. | Path absent. |
-| U12 | `idempotent-rerun` | Two installs into same HOME both rc 0; valid venv after second; no abort on existing venv. | No venv code; naive `venv` on existing dir fails. |
-| U13 | `bundled-python-wins-over-flag` | Bundled pip present AND flag set → bundled path used, no fresh venv. Regression lock for precedence. | Precedence undefined today. |
+| U8 | `fail-closed-no-lockfile` | Flag on, **hashless/empty** manifest → `err` (msg C); venv-pip NOT invoked. **This is the "no unhashed escape hatch" lock.** | System branch absent. |
+| U9 | `require-hashes-always` | Flag on, **hashed** manifest, https → venv-pip argv contains `--require-hashes` and `--only-binary :all:`, no `--trusted-host`. | Path absent. |
+| U10 | `http-index-trusted-host` | `http://mirror:8080/simple` + hashed lock → argv has `--trusted-host mirror`, still `--require-hashes`. | Path absent. |
+| U11 | `idempotent-rerun` | Two installs into same HOME both rc 0; valid venv after second; no abort on existing venv. | No venv code; naive `venv` on existing dir fails. |
+| U12 | `bundled-python-wins-over-flag` | Bundled pip present AND flag set → bundled path used, no fresh venv. | Precedence undefined today. |
 
-### 7.2 RED docker e2e (`tests/docker-install/` or `scripts/tests/docker/`)
+(The first draft's `fail-closed-unhashed` + `fail-closed-opt-out` pair collapses into a single U8: with the escape hatch gone, a hashless lockfile simply refuses.)
 
-E1 `no-python` (flag on → fast `err`, no venv); E2 `python312` (venv at runtime path, hashed deps, `doctor` 0, probe import OK); E3 `python39` (gate rejects, no venv); E4 `offline --network none` (local index, no egress, or clean fail); E5 `python312-rerun` (idempotent in a real venv); E6 `python312-unhashed` (default fail-closed; opt-out proceeds). All red until install.sh implements the feature.
+### 7.2 RED docker e2e
+
+E1 `no-python` (flag on, hashless → fast `err`, no venv); E2 `python312-hashed` (venv at runtime path, `--require-hashes` install, `doctor` 0, probe import OK); E3 `python39` (gate rejects, no venv); E4 `offline --network none`; E5 `python312-rerun` (idempotent); E6 `python312-no-lockfile` (msg C fail-closed). All red until install.sh implements the feature.
 
 ### 7.3 RED-agent brief
 
-**Goal:** add failing tests only; do not implement. **MUST:** append U1–U13 to `scripts/tests/test_install_sh.sh` following existing conventions (`pass`/`fail`, `SEAM_OK`, `run_in_install`, sandboxed `SHIMBIN`, per-test argv logs, final count + non-zero exit); add the `make_python` shim near `make_pip`; create the docker scaffolding (`Dockerfile.*`, `runner.sh`, `build-fixture-tarball.sh`, CI workflow) with a hash-pinned **and** a hashless manifest variant and no bundled interpreter; document the contract env-var names (`VULTURE_USE_SYSTEM_PYTHON`, `VULTURE_PYTHON`, `VULTURE_ALLOW_UNHASHED_DEPS`) in comments; run the harness and capture RED output proving each fails for the stated reason. **MUST NOT:** touch `install.sh` or any Go; weaken assertions to pass; add a real interpreter to the unit layer (shims only). **Return:** absolute file paths + captured RED output.
+**Goal:** add failing tests only; do not implement. **MUST:** append U1–U12 to `scripts/tests/test_install_sh.sh` following existing conventions (`pass`/`fail`, `SEAM_OK`, `run_in_install`, sandboxed `SHIMBIN`, per-test argv logs, final count + non-zero exit); add the `make_python` shim near `make_pip`; create the docker scaffolding (`Dockerfile`, `runner.sh`, `build-fixture-tarball.sh`, wheelhouse-or-tiny-hashed fixture, CI workflow) with a **hashed** and a **hashless** manifest variant and no bundled interpreter; document the contract env-var names (`VULTURE_USE_SYSTEM_PYTHON`, `VULTURE_PYTHON`) in comments; run the harness and capture RED output proving each fails for the stated reason. **MUST NOT:** touch `install.sh` or any Go; weaken assertions to pass; add a real interpreter to the unit layer (shims only). **Return:** absolute file paths + captured RED output.
 
 ### 7.4 GREEN-agent brief
 
-**Goal:** make the whole suite pass with minimal change. **MUST:** edit `install_python_deps()` (install.sh:319-358) to add the system-Python branch preserving precedence (bundled wins → opt-in system → CLI-only), the `>=3.12` gate, venv at `$VULTURE_HOME/runtime/python` with the `python3.12` alias + `--copies`, hash/TLS reuse, the `VULTURE_ALLOW_UNHASHED_DEPS` opt-out, and idempotency; keep it POSIX-sh + shellcheck-clean; document the new vars in install.sh:8-21; make the *minimal* `doctor.go`/`mode.go` change only if E2's `doctor` rc-0 assertion requires it. **MUST NOT:** edit any test/fixture/shim to force a pass; change existing safety behaviors (bundled flow, hashless fail-closed default, http-only `--trusted-host` gate, the `VULTURE_INSTALL_SOURCE_ONLY` seam, `main()` sequence); add a second seam; broaden TLS-disable or hash-bypass beyond the one documented opt-out. **Return:** diff summary (absolute paths + load-bearing branch logic) + full green output for both layers.
+**Goal:** make the whole suite pass with minimal change. **MUST:** edit `install_python_deps()` to add the system-Python branch preserving precedence (bundled wins → opt-in system → CLI-only), the `>=3.12` gate, venv at `$VULTURE_HOME/runtime/python` with the `python3.12` alias + `--copies`, **`--require-hashes` + `--only-binary :all:`** install, the **hashless/absent-lockfile fail-closed refusal (msg C)**, TLS reuse, and idempotency; keep it POSIX-sh + shellcheck-clean; document the new vars in the `install.sh` env header; make the *minimal* `doctor.go`/`mode.go` change only if E2's `doctor` rc-0 assertion requires it. **MUST NOT:** edit any test/fixture/shim to force a pass; introduce any unhashed install path; change existing safety behaviors (bundled flow, hashless fail-closed, http-only `--trusted-host` gate, the `VULTURE_INSTALL_SOURCE_ONLY` seam, `main()` sequence); add a second seam. **Return:** diff summary (absolute paths + load-bearing branch logic) + full green output for both layers.
 
 ## 8. Files Touched
 
-- `/home/user/src/vulture-gh/install.sh` — new `detect_system_python`, `py_version_ok`, `create_system_venv`, `install_deps_system_venv`, `reqs_have_hashes` helpers; new opt-in branch in `install_python_deps()` (319-358); env-var doc header (8-21).
-- `/home/user/src/vulture-gh/scripts/tests/test_install_sh.sh` — U1–U13 + `make_python` shim.
-- `/home/user/src/vulture-gh/scripts/tests/docker/` (or `tests/docker-install/`) — `Dockerfile`(s), `vulture-stub.sh`, `build-fixture-tarball.sh`, `runner.sh`, `run-matrix.sh`/`run-one.sh`.
+- `/home/user/src/vulture-gh/install.sh` — new `detect_system_python`, `py_version_ok`, `create_system_venv`, `install_deps_system_venv`, `reqs_have_hashes` helpers; new opt-in branch in `install_python_deps()`; env-var doc header.
+- `/home/user/src/vulture-gh/scripts/tests/test_install_sh.sh` — U1–U12 + `make_python` shim.
+- `/home/user/src/vulture-gh/scripts/tests/docker/` — `Dockerfile`, `vulture-stub.sh`, `build-fixture-tarball.sh`, wheelhouse-or-hashed-fixture, `runner.sh`, `run-matrix.sh`/`run-one.sh`.
 - `/home/user/src/vulture-gh/.github/workflows/ci.yml` (or new `test-install-docker.yml`) — `install-docker-matrix` job.
-- *Conditionally* `/home/user/src/vulture-gh/backend/cmd/vulture/doctor.go` and/or `backend/internal/localdev/mode.go` — only if an e2e `doctor` assertion forces a tolerance change (kept minimal).
+- *Conditionally* `backend/cmd/vulture/doctor.go` and/or `backend/internal/localdev/mode.go` — only if an e2e `doctor` assertion forces a tolerance change (kept minimal).
+- **Prerequisite (not in this feature):** Tier B item **B1** — a hashed `requirements-frozen.txt` generated from the agents' `pyproject.toml`s and staged by `build-release.sh`. Tier B-lite is blocked on B1.
 
 ## 9. Risks & Mitigations
 
 | Risk | Mitigation |
 |---|---|
-| Operator opts in and unknowingly loses supply-chain guarantees | Dual-flag gate + loud banner (msg C); refuse on single flag (msg A); honor hashed lock when present (msg D). |
+| Operator assumes "system Python" = weaker deps | It isn't — deps are hash-verified identically to bundled. The one-line provenance notice (msg A) states exactly what is and isn't verified (deps yes, interpreter no). |
+| Tier B-lite shipped before B1 → nothing to hash-verify | Hard prerequisite + fail-closed refusal (msg C, U8, scenario 7): without a hashed lockfile the path refuses, so a premature ship degrades to "refuse", never "unhashed install". |
 | `python3.12` alias on a 3.13 host hides a real version mismatch | venv self-check asserts `>=3.12`; import self-check proves runnable; doctor still stats the path. |
 | Broken venv passes doctor's existence-only stat | `--copies` self-contained venv + import self-check at install time; idempotent rebuild on next run. |
-| sdist-only / missing-wheel native dep triggers build (T3/T7) | Prefer `--only-binary :all:`; isolation ON; hard `err` on failure (no partial state). |
+| Missing wheel for a native dep on an exotic platform | `--only-binary :all:` → hard `err` (no silent sdist build); operator falls back to bundled/Docker. |
 | Debian/Ubuntu split `python3-venv` not installed | Pre-check `import venv, ensurepip`; `err` names the apt package. |
-| Flag-name churn between this LLD and implementation | §3 of TDD encodes names as the contract; GREEN must commit + document them; aliases listed as open decisions below. |
-| Expected-red CI scenarios masking unrelated breakage | `continue-on-error` scoped to scenarios 2/4 only; flip to required immediately on landing. |
+| Hermetic hashed e2e (scenario 2) is heavy | Use a local wheelhouse + `--index-url file://` (no PyPI), or a tiny real hashed fixture to prove argv/path. |
+| Expected-red CI scenarios masking unrelated breakage | `continue-on-error` scoped to scenarios 2/4/7 only; flip to required immediately on landing. |
 
 ## 10. Rollback
 
-- **Feature is off by default**, so rollback is to ship without the branch or to leave the flags unset — installer behavior is byte-for-byte the current CLI-only/bundled flow.
-- **Code rollback:** revert the `install_python_deps` branch + helpers and the doc-header edit; the test additions (U1–U13, docker scenarios 2/4) can stay as expected-red. No Go change ships unless E2 forced one; if it did, revert that minimal tolerance too.
+- **Feature is off by default**, so rollback is to ship without the branch or to leave the flag unset — installer behavior is byte-for-byte the current CLI-only/bundled flow.
+- **Code rollback:** revert the `install_python_deps` branch + helpers and the doc-header edit; the test additions can stay as expected-red. No Go change ships unless E2 forced one; if it did, revert that minimal tolerance too.
 - **Operator-side rollback after a system-Python install:** `vulture uninstall --yes` removes `$VULTURE_HOME` (including the venv) entirely; the host interpreter and its site-packages are untouched. Re-installing a bundled release transparently supersedes the venv (bundled pip wins per §4.2).
 
 ## 11. Open Decisions for the Reviewer
 
-- **Flag names.** Adopt `VULTURE_USE_SYSTEM_PYTHON` / `VULTURE_ALLOW_UNHASHED_DEPS` / `VULTURE_PYTHON` (this LLD) or the investigation aliases (`VULTURE_SYSTEM_PYTHON`, `VULTURE_ALLOW_UNHASHED_SYSTEM` / `VULTURE_SYSTEM_PYTHON_ALLOW_HASHLESS`)? One set must be canonical.
-- **Is unhashed BYO allowed at all?** Permit the `VULTURE_ALLOW_UNHASHED_DEPS` escape hatch, or require a shipped hashed lock and refuse otherwise (system Python usable only with hashes)? This is the central supply-chain policy call.
+- **Flag names.** Adopt `VULTURE_USE_SYSTEM_PYTHON` / `VULTURE_PYTHON` (this LLD) or the investigation alias `VULTURE_SYSTEM_PYTHON`? One set must be canonical and documented in the `install.sh` env header.
 - **venv interpreter strategy.** `--copies` (upgrade-stable, +few MB, recommended) vs symlinked base (smaller, fragile under host upgrades). Confirm `--copies`.
 - **`python3.12` name alias.** Acceptable to alias `python3.12 → python3` inside the venv on 3.13/3.14 hosts, or should the daemon/`PythonBin()` instead learn to glob `python3.*`? (Latter is a Go change; former is zero-Go.)
 - **Version ceiling.** Accept any `>=3.12` (3.13/3.14 with a warning), or pin an upper bound until each minor is tested?
-- **Docker base images.** Confirm `ubuntu:24.04`/`debian:12-slim` (no-python), `python:3.12-slim`, `python:3.9-slim`, `alpine:3.19` (offline) — note Alpine/musl native-wheel availability for the offline scenario.
+- **`--only-binary :all:`.** Confirm wheels-only (rejects no-wheel platforms cleanly, blocks sdist code execution, keeps `--require-hashes` simple) vs allowing hashed sdists.
+- **Docker base images.** Confirm `ubuntu:24.04`/`debian:12-slim` (no-python), `python:3.12-slim`, `python:3.9-slim`; and the hermetic-hashed approach for scenario 2 (local wheelhouse vs tiny real fixture).
 - **Doctor tolerance.** Should `doctor` additionally verify the recorded interpreter still *resolves/runs* (not just `os.Stat`), given T8? If yes, that is a small intentional Go change beyond the happy path.
-- **CI gating.** Confirm scenarios 2/4 ship `continue-on-error` until the flag lands, and the flip-to-required is tracked.
+- **Sequencing.** Confirm B1 (hashed lockfile) is scheduled **before** Tier B-lite, since the latter is fail-closed without it.
+
+> **RESOLVED (was open decision #1):** *Is an unhashed BYO install allowed?* **No.** The hashed lockfile is the required path; there is no `VULTURE_ALLOW_UNHASHED_DEPS` escape hatch. Hash verification is interpreter-independent, so "use my Python" keeps full dependency verification. See §1 "Why an unhashed escape hatch was rejected".
 
 ## 12. Review Checklist
 
 - [ ] Default-off confirmed: with no flag, install behavior is byte-for-byte unchanged (U1, scenario 3).
-- [ ] Precedence is bundled PBS > opt-in system Python > CLI-only; bundled wins even with the flag set (U13).
-- [ ] Single-flag (`USE_SYSTEM_PYTHON` only) refuses with msg A; two-flag truth table matches §4.3.
-- [ ] Fail-closed preserved: hashless bundled lock still errs (msg E, scenario 6); hashes win when present (msg D, U10).
-- [ ] TLS gate unchanged: `--trusted-host` only on explicit `http://` index; never relaxed by unhashed mode (U11, msg F).
+- [ ] Precedence is bundled PBS > opt-in system Python > CLI-only; bundled wins even with the flag set (U12).
+- [ ] **Hashes required on the system-Python path**: pip argv has `--require-hashes` (+ `--only-binary :all:`) for a hashed lockfile (U9, scenario 2).
+- [ ] **No unhashed path exists**: a hashless/absent lockfile with the flag set refuses (msg C, U8, scenario 7); bundled-hashless still refuses (msg D, scenario 6).
+- [ ] TLS gate unchanged: `--trusted-host` only on explicit `http://` index; hashes still verify integrity (U10, msg E).
 - [ ] venv at exactly `$VULTURE_HOME/runtime/python`; `python3.12` resolvable; `--copies` used; no `--system-site-packages`; `PYTHONNOUSERSITE=1` (U3, §5.2).
 - [ ] Version gate rejects <3.12 cleanly with no half-install; accepts ≥3.12 (U4, U5, scenario 4).
-- [ ] Idempotent re-run and tarball-upgrade reuse the venv and pick up new reqs (U12, scenario 5/rerun).
+- [ ] Idempotent re-run and tarball-upgrade reuse the venv and pick up the new lockfile (U11).
 - [ ] `vulture uninstall --yes` removes the venv; system interpreter/site-packages untouched.
 - [ ] No Go change ships unless an e2e doctor assertion requires it, and any such change is minimal.
-- [ ] Flag names + unhashed-policy decisions (§11) signed off and documented in `install.sh:8-21`.
-- [ ] Expected-red CI scenarios (2, 4) tracked for flip-to-required on landing.
+- [ ] Flag names signed off and documented in the `install.sh` env header.
+- [ ] **B1 (hashed lockfile) sequenced before Tier B-lite**; expected-red CI scenarios (2, 4, 7) tracked for flip-to-required on landing.
