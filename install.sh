@@ -37,7 +37,7 @@
 
 # Fallback tag bumped on every release per plan H2. install.sh refuses
 # any older version (see resolve_version).
-FALLBACK_TAG="v0.1.0"
+FALLBACK_TAG="v0.0.0"
 REPO_OWNER="bobinson"
 REPO_NAME="vulture"
 REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
