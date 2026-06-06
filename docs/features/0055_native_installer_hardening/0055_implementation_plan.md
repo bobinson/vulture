@@ -951,3 +951,163 @@ E1 `no-python` (flag on, hashless → fast `err`, no venv); E2 `python312-hashed
 - [ ] No Go change ships unless an e2e doctor assertion requires it, and any such change is minimal.
 - [ ] Flag names signed off and documented in the `install.sh` env header.
 - [ ] **B1 (hashed lockfile) sequenced before Tier B-lite**; expected-red CI scenarios (2, 4, 7) tracked for flip-to-required on landing.
+
+---
+
+# Release Process — `scripts/vulture.sh release` + GitHub Actions
+
+> **STATUS: PROPOSED — awaiting review.** Design only; no code implemented. Several `release.yml` "deltas" below are *fixes to pre-existing gaps* in the current workflow (confirmed by review against the live file).
+
+## 1. Core principle — split by trust domain, not by convenience
+
+Release prerequisites fall into two classes that must stay in **different hands and different times**:
+
+| Class | Examples | Producer | When | Property |
+|---|---|---|---|---|
+| **Inputs** (decide *what* ships) | hashed lockfile (B1), `FALLBACK_TAG`, version | a **maintainer**, in a reviewed PR (`make freeze-deps`) | *before* the tag | human-reviewed, committed, reproducible |
+| **Outputs** (derived from inputs) | per-platform tarballs, `SHA256SUMS`, SBOM, cosign sig | **GitHub Actions** (`release.yml`) | *at* tag time | built in an isolated hosted runner |
+
+The lockfile is an **input** → generated + reviewed + committed *before* release, never produced during it. Decisive constraint: **cosign keyless signing requires the Actions OIDC identity** (`https://github.com/${OWNER}/${REPO}/.github/workflows/release.yml@…`, issuer `token.actions.githubusercontent.com`) that `install.sh` pins via `--certificate-identity-regexp`. That signature **cannot** be reproduced on a maintainer laptop, so the *authoritative* release is necessarily a GitHub Actions responsibility. `vulture.sh release` is a **local preflight + tag-cut**, not the artifact authority.
+
+## 2. `scripts/vulture.sh release [--check] vX.Y.Z` — local preflight + cut
+
+A new `release)` case in the existing `case "$COMMAND"` dispatch. It is a **gate, not a generator**: it verifies every input is met-and-committed, then cuts the tag that triggers `release.yml`. It MUST NOT generate or bake the lockfile into anything.
+
+Conventions: `vulture.sh` already runs `set -euo pipefail` and uses `[[ ]]` tests; this feature adds small `die()`/`log()` helpers (the script currently only has `usage()`). **DRY:** every gate is a *standalone script* (`check-lockfile.sh`, `check-fallback-tag.sh`, `release-version-check.sh`, `verify-no-secrets-in-logs.sh`) invoked by **both** the CI `lint` job (canonical, exhaustive) and this preflight (a curated subset) — no check is inlined into either caller, so they cannot drift.
+
+**Gate sequence (fail-closed; aborts before tagging on any failure):**
+1. Tag format is `vX.Y.Z`; refuse otherwise (don't push a malformed tag that all later gates would still accept).
+2. Working tree clean; `HEAD` on `main` (not detached); local in sync with `origin/main`; `origin` is the expected repo (don't tag a fork).
+3. Tag does not already exist locally or on `origin`. *(This `git ls-remote` check is advisory — there is a TOCTOU window before `git push`; the definitive guard against a moved/duplicate tag is GitHub **tag protection**, §5.)*
+4. `scripts/check-fallback-tag.sh vX.Y.Z` — verifies the `FALLBACK_TAG` in `install.sh` is **not newer** than the tag being cut (warns if equal). **Known gap:** despite its docstring, the script does **not** currently enforce the H2 *"≥ latest−1"* floor — a fallback many versions behind still passes. Strengthening it to compare against the *previous published tag* (so a CVE yank actually forces a bump) is a required fix tracked in Open decisions; it also shares the `sort -V` portability issue fixed in `install.sh` (use a pure-awk compare).
+5. `scripts/check-lockfile.sh` — B1 freshness (re-compile + diff; on failure: "run `make freeze-deps` and commit").
+6. `scripts/release-version-check.sh vX.Y.Z` — `./VERSION` ↔ `FALLBACK_TAG` ↔ requested tag agree.
+7. CI-mirroring gates so a bad tag fails *locally* first: `shellcheck install.sh scripts/*.sh scripts/tests/*.sh`, `sh scripts/tests/test_install_sh.sh`, backend `go test ./...`, agent `pytest`, `verify-no-secrets-in-logs.sh`. (Heavy suites may be sampled locally; CI remains authoritative — see Open decisions.)
+8. *(Tier B only)* assert vendored `vendor-pbs-*` assets + `scripts/pbs-shas.txt` cover all four platforms for this release.
+9. `--check` ⇒ stop (dry-run, exit 0). Otherwise: `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z` → triggers `release.yml`.
+
+**Acceptable shortcut (solo maintainer):** step 5 *may* run `make freeze-deps` itself and **halt if it produced a diff** ("lockfile was stale — commit it, then re-run"). That is verify-by-regenerate, never generate-and-ship; it must never tag with an uncommitted lock.
+
+```sh
+# vulture.sh is already `set -euo pipefail`; this feature adds die()/log().
+release)
+    CHECK=0
+    [[ "${1:-}" == "--check" ]] && { CHECK=1; shift; }
+    TAG="${1:?usage: vulture.sh release [--check] vX.Y.Z}"
+    [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "tag must match vX.Y.Z (got: $TAG)"
+    [[ -z "$(git status --porcelain)" ]]               || die "working tree not clean"
+    [[ "$(git rev-parse --abbrev-ref HEAD)" == main ]] || die "not on main"
+    git fetch -q origin
+    [[ "$(git rev-parse @)" == "$(git rev-parse '@{u}')" ]] || die "main not in sync with origin"
+    git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists locally"
+    git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1 && die "tag $TAG exists on origin"  # advisory (TOCTOU) — see §5 tag protection
+    scripts/check-fallback-tag.sh "$TAG"
+    scripts/check-lockfile.sh                          # B1 freshness gate
+    scripts/release-version-check.sh "$TAG"            # VERSION <-> FALLBACK_TAG <-> tag
+    shellcheck install.sh scripts/*.sh scripts/tests/*.sh
+    sh scripts/tests/test_install_sh.sh
+    ( cd backend && go test ./... )
+    command -v pytest >/dev/null || die "pytest not found — prepare the agent dev env first; CI is authoritative"
+    ( cd agents && python -m pytest -q )
+    scripts/verify-no-secrets-in-logs.sh "$HOME/.vulture-smoke"   # exits 0 when no smoke dir; GATES on a real leak (no '|| true')
+    [[ "$CHECK" == 1 ]] && { log "preflight OK (dry-run); not tagging"; exit 0; }
+    git tag -a "$TAG" -m "$TAG"
+    git push origin "$TAG"                             # fires release.yml
+    log "pushed $TAG — release.yml builds, signs, and publishes a DRAFT for human review"
+    ;;
+```
+
+## 3. GitHub Actions (`release.yml`) — authoritative build + sign
+
+**Runner trust.** The matrix uses `ubuntu-latest`, `ubuntu-22.04-arm`, `macos-13`, `macos-14`. All must be **GitHub-Actions-hosted** (not self-hosted) so the cosign OIDC issuer is `token.actions.githubusercontent.com` and the certificate identity matches `install.sh`'s `--certificate-identity-regexp`. A self-hosted runner under one of those labels would silently break signature verification for clients.
+
+### 3.1 What the current workflow already does well (keep)
+- **Actions pinned by full commit SHA.**
+- **`fail-fast: false`** matrix + a separate `release` job that **gathers all `dist-*` artifacts and publishes once** (`needs: build-binary` → a failed leg blocks publish) → no partial multi-platform release.
+- **Draft release** → a human reviews SBOM/vulns/signature before it goes public.
+- **cosign keyless** signing of each tarball and of `SHA256SUMS`; SBOM (syft); a Trivy CVE scan that gates via `--exit-code 1`. *(Caveat: Trivy is installed unpinned — `releases/latest` on Linux, `brew` on macOS — so the gate runs against a floating scanner version on every leg; delta 6 pins it.)*
+
+### 3.2 Required deltas (this feature)
+1. **Add the B1 freshness gate** to the `lint` job: `scripts/check-lockfile.sh` beside `check-fallback-tag.sh`; extend the shellcheck glob to `scripts/tests/*.sh`.
+2. **[Blocked on B1]** Once B1 ships the committed `agents/requirements-frozen.txt`, `build-release.sh` copies it into `runtime/agents/` (never generates it). **Until B1 lands this delta is NOT implemented** — the `cp` would fail; the current empty-stub behavior stands and the installer stays CLI-only/fail-closed. Do not land delta 2 before B1.
+
+### 3.3 Required hardening (fixes pre-existing gaps confirmed by review)
+3. **Least-privilege permissions.** Currently `id-token|contents|attestations: write` is granted **workflow-wide**, so `lint`/`build-frontend` get write tokens they never use. Set default `permissions: contents: read`; elevate per job: `build-binary` → `id-token: write` (signs each tarball); `release` → `contents: write` + `id-token: write` (publish + sign `SHA256SUMS`). `lint`/`build-frontend` stay read-only. (`upload-artifact` needs no `contents` write — it uses the artifacts API.)
+4. **`pip-audit` must gate and target the real lockfile. [depends on B1]** Today it runs `pip-audit -r agents/requirements.txt … || true`: the `|| true` makes it **non-gating**, and **`agents/requirements.txt` does not exist** (confirmed) so it audits nothing. Fix: audit the hashed `requirements-frozen.txt` and **drop `|| true`**. The lockfile is a B1 prerequisite; when it is absent the step is a **hard failure** (never re-add `|| true`). Honor `.pip-audit-ignore` (90-day expiry).
+5. **`verify-no-secrets-in-logs` must run and gate.** Today it is `if: env.VULTURE_HOME != ''` (never set at workflow scope → **always skipped**) + `continue-on-error: true`. Fix: pass the smoke-install `VULTURE_HOME` explicitly and remove `continue-on-error`.
+6. **Pin + verify Trivy** on every leg (drop `releases/latest` and bare `brew`): a version-pinned + checksum-verified install, or the pinned-SHA `aquasecurity/trivy-action`.
+7. **`concurrency`**: `group: release-${{ github.ref }}`, `cancel-in-progress: false` (serialize re-pushes; never abort an in-flight publish).
+8. **`timeout-minutes`** on every job (e.g. 20–30) so a hung runner fails fast.
+9. **Idempotent publish — without clobbering signatures.** `gh release create` fails if the release exists (re-run after a transient failure). Because the release is a **draft** (not yet trusted) and a re-run produces *different* per-leg cosign certs, do **not** `--clobber` individual signed assets into an existing draft (that mixes artifacts/signatures from two runs and breaks immutability). Instead, on re-run **replace the draft wholesale**:
+   ```sh
+   if gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null | grep -qx true; then
+       gh release delete "$TAG" --yes --cleanup-tag=false   # draft only; NEVER a published release
+   fi
+   gh release create "$TAG" --draft --title "$TAG" --notes "…" dist/*
+   ```
+10. **Clean up a dangling draft on failure.** If the `release` job fails after creating the draft but before all assets upload, add an `if: failure()` step: `gh release delete "${GITHUB_REF_NAME}" --yes --cleanup-tag=false 2>/dev/null || true`. *(The `|| true` here is acceptable — this is best-effort cleanup, not a security gate.)*
+11. **Script-injection hygiene.** Keep passing refs via env (`$GITHUB_REF_NAME`) and quoting; never interpolate `${{ github.event.* }}` into `run:`. Matrix values are literals (safe); `on: push: tags: v*` limits exposure.
+
+## 4. Chaos engineering / failure modes
+
+| Failure | Behavior / mitigation |
+|---|---|
+| One platform leg fails | `release` `needs: build-binary` (all legs) → **no partial publish**; re-run after fix. |
+| `release` job fails mid-publish | Idempotent wholesale-replace of the draft on re-run (delta 9) + `if: failure()` draft cleanup (delta 10) → no dangling/partial draft. |
+| PyPI / download flake during build | bounded retries on downloads; a `--require-hashes` install failure **fails the build** (never ship a partial runtime). |
+| Re-run for an existing tag | `concurrency` (delta 7) serializes; idempotent publish (delta 9). |
+| **Tag moved / re-pushed to a different commit** | GitHub **tag protection / immutable `v*` tags** so a published version can't be re-pointed at different bytes; `vulture.sh release` also refuses to re-tag (§2.3, advisory). |
+| Vendored PBS asset missing (Tier B) | build verifies SHA against `pbs-shas.txt` → fail fast, no upstream fallback. |
+| Bad release after publish | Draft-first review is the primary guard. To yank a *published* bad release: delete the Release + tag and ship a fixed **higher** version — never reuse a version. `install.sh`'s downgrade guard (H2) means clients won't auto-accept an older replacement, so recovery is **roll-forward** to vX.Y.(Z+1). |
+| Hosted-runner trust | GitHub-hosted runners only (the matrix is); never self-hosted for signing (§3 runner trust). |
+| Reproducibility | `build-release.sh` already tars with `--sort=name --mtime=… --numeric-owner`; `verify-release.sh` re-derives + diffs. |
+
+## 5. GitHub Actions best-practices checklist
+
+- [ ] All actions pinned by full commit SHA. *(current: yes)*
+- [ ] `permissions:` default `contents: read`; write elevated **per job**. *(current: no — workflow-wide write)*
+- [ ] `id-token: write` only on signing jobs (`build-binary`, `release`). *(current: workflow-wide)*
+- [ ] `concurrency` with `cancel-in-progress: false`. *(current: missing)*
+- [ ] `timeout-minutes` on every job. *(current: missing)*
+- [ ] Third-party CLIs (trivy/syft/cosign) pinned + verified. *(current: trivy floating both legs)*
+- [ ] No untrusted `${{ … }}` in `run:`; refs via env + quoted. *(current: ok)*
+- [ ] Security gates fail-closed — no `|| true` / dead `if:` on CVE/secret/audit steps. *(current: pip-audit + secrets check are no-ops)*
+- [ ] CVE + dependency audit run against the **hashed lockfile**, not a stale/absent file. *(current: targets nonexistent agents/requirements.txt)*
+- [ ] Draft release + human publish; cosign keyless; SBOM attached. *(current: yes)*
+- [ ] Idempotent re-run that does **not** clobber signed assets. *(current: non-idempotent)*
+- [ ] Tag protection / immutable `v*` tags enabled (repo setting).
+- [ ] Runner labels confirmed GitHub-Actions-hosted (OIDC identity). *(current: yes, but assert it)*
+- [ ] (Phase 2) `actions/attest-build-provenance` for SLSA provenance — **note:** delta 3 removes the workflow-wide `attestations: write`, so the provenance step must add `attestations: write` to the `build-binary` job's per-job permissions.
+
+## 6. Anti-patterns (do NOT)
+
+- `vulture.sh release` (or any local/CI step) **generating** the lockfile and shipping it without a reviewed commit.
+- CI running `gen-lockfile.sh` at release and baking the result into the tarball.
+- Signing with cosign **locally** (breaks the OIDC identity `install.sh` trusts).
+- `|| true` / `continue-on-error: true` / dead `if:` on a *security* gate (CVE, secret-scan, audit). *(Best-effort cleanup steps like delta 10 are not security gates and may use `|| true`.)*
+- Workflow-wide `*: write` permissions.
+- Floating tool installs (`releases/latest`, bare `brew`) in the builder.
+- `--clobber`-ing signed assets into an existing release, or moving/re-pushing an existing tag.
+
+## 7. Open decisions for the reviewer
+
+- **Publish approval.** Gate the `release` job behind a `release` GitHub **Environment** with required reviewers (mirrors `vendor-pbs.yml`)? Adds friction; strengthens dual-control.
+- **Tag protection.** Enable immutable/protected `v*` tags (repo setting)?
+- **`check-fallback-tag.sh` floor.** Strengthen it to actually enforce *"≥ latest−1"* against the previous published tag (it currently does not), and replace its `sort -V` with the portable awk compare used in `install.sh`.
+- **Preflight depth.** How much of the heavy suite runs in `vulture.sh release` (fast subset) vs left authoritative to CI, and which Python env the agent tests assume.
+- **Provenance now or later.** Wire `attest-build-provenance` in this feature or keep it the Phase-2 hook (then it needs per-job `attestations: write`).
+- **Trivy pinning mechanism.** Pinned-SHA `trivy-action` vs version-pinned + checksum-verified `curl`/`brew`.
+
+## 8. Files touched
+
+- `scripts/vulture.sh` — new `release)` subcommand + `die()`/`log()` helpers.
+- `scripts/check-lockfile.sh` — B1 freshness gate (shared by CI `lint` + preflight).
+- `scripts/release-version-check.sh` — new helper. Contract: reads `./VERSION` (must equal `<tag>`, including the `v` prefix); reads `FALLBACK_TAG=` from `install.sh` (must be semver ≤ `<tag>`); exits 1 with a diff-style message on any mismatch.
+- `.github/workflows/release.yml` — deltas §3.2 (item 1 now; item 2 after B1) + hardening §3.3.
+- `scripts/build-release.sh` — copy the committed lockfile (B1; delta 2).
+- `scripts/check-fallback-tag.sh` — strengthen the floor + portable version compare (Open decisions).
+- docs — this section.
+
+## 9. Sequencing
+
+`make freeze-deps`/B1 (committed lockfile) **must precede** delta 2 + delta 4 (both consume it) and Tier B / Tier B-lite. The `vulture.sh release` preflight, the permission/concurrency/timeout/idempotency/secret-gate hardening (§3.3 except 4), and the runner-trust assertions are **independent of B1** and can land first.
