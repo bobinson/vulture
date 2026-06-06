@@ -1232,6 +1232,20 @@ test_u12_bundled_wins() {
 }
 test_u12_bundled_wins
 
+# U13 — cleanup() must return 0 on a clean/committed exit. The EXIT trap's last
+# command status becomes the script's exit code; on the OFFLINE path DOWNLOAD_DIR
+# is never set, so a trailing `[ -n "${DOWNLOAD_DIR:-}" ] && rm` evaluates false
+# and a successful install would exit non-zero. (Caught by the cross-distro e2e.)
+test_cleanup_returns_zero() {
+    name="H2-cleanup-returns-zero-on-clean-exit"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "cleanup unreachable: seam absent"; return; fi
+    rc=0
+    run_in_install 'COMMITTED=1; INSTALL_COMMITTED=1; export COMMITTED INSTALL_COMMITTED; cleanup' >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then pass "$name"
+    else fail "$name" "cleanup returned $rc on a committed no-op — a successful offline install would exit non-zero"; fi
+}
+test_cleanup_returns_zero
+
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -299,6 +299,11 @@ cleanup() {
     fi
     [ -n "${NEW_HOME:-}" ] && rm -rf "$NEW_HOME"
     [ -n "${DOWNLOAD_DIR:-}" ] && rm -rf "$DOWNLOAD_DIR"
+    # Return 0 explicitly: this is the EXIT trap, so its last command's status
+    # becomes the script's exit code. On the offline path DOWNLOAD_DIR is unset,
+    # so the guard above would otherwise leave a non-zero status and make a
+    # SUCCESSFUL install exit non-zero.
+    return 0
 }
 
 # ─── 8. generate_jwt_secret ────────────────────────────────────────────────
