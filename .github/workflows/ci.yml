@@ -25,6 +25,7 @@ jobs:
         uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
         with:
           working-directory: backend
+          version: v1.64.8   # pin for reproducible lint (matches backend/.golangci.yml schema)
 
   # ── Native installer (feature 0055 H8) ──────────────────────
 
@@ -101,7 +102,17 @@ jobs:
       - name: Install dependencies
         run: cd agents && pip install -e shared/ && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/
       - name: Test agents
-        run: cd agents && python -m pytest shared/tests/ chaos_engineering/tests/ owasp/tests/ soc2/tests/ cwe/tests/ prove/tests/ xss/tests/ ssdf/tests/ discover/tests/ -v
+        # Run each package separately: collecting all trees in one pytest
+        # invocation collides on duplicate test-file basenames (e.g.
+        # test_skills.py) under prepend import mode, since the test dirs have
+        # no __init__.py. Per-package runs avoid the collision.
+        run: |
+          cd agents
+          for pkg in shared chaos_engineering owasp soc2 cwe prove xss ssdf discover; do
+            echo "::group::pytest $pkg"
+            python -m pytest "$pkg/tests/" -v || exit 1
+            echo "::endgroup::"
+          done
       - name: Complexity report (target < C; informational, not gated)
         run: |
           pip install radon
