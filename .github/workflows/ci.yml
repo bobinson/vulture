@@ -100,7 +100,10 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
       - name: Install dependencies
-        run: cd agents && pip install -e shared/ && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/
+        # shared[dev] pulls the test stack (pytest, pytest-asyncio, pytest-cov,
+        # httpx, anyio) at the versions pinned in shared/pyproject.toml; the
+        # other packages share that stack, so plain editable installs suffice.
+        run: cd agents && pip install -e "shared/[dev]" && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/
       - name: Test agents
         # Run each package separately: collecting all trees in one pytest
         # invocation collides on duplicate test-file basenames (e.g.
@@ -174,6 +177,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build agent base image
+        # The agent images are FROM vulture-agent-base:latest, a locally-built
+        # base (agents/Dockerfile.base), not a registry image; it must exist
+        # before `docker compose build` or the agent targets fail to resolve it.
+        run: docker build -t vulture-agent-base:latest -f agents/Dockerfile.base agents/
       - name: Build all Docker images
         env:
           VULTURE_DB_PASSWORD: ci-test-password
