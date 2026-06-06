@@ -31,7 +31,10 @@ test:
 test-backend:
 	cd backend && go test ./...
 
-test-agents:
+# Depends on build-agents: the agents import each other (e.g. chaos_agent imports
+# `shared`), so they must be installed editable in the test interpreter first.
+# Without it, cross-package imports fail at collection ("No module named 'shared'").
+test-agents: build-agents
 	cd agents/shared && python -m pytest tests/unit/ -v
 	cd agents/chaos_engineering && python -m pytest tests/unit/ -v
 	cd agents/owasp && python -m pytest tests/unit/ -v
