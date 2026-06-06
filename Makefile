@@ -13,8 +13,13 @@ build:
 build-backend:
 	cd backend && go build -o bin/vulture ./cmd/vulture/
 
+# Use `python -m pip` (not bare `pip`) so deps install into the SAME interpreter
+# that `make test` runs pytest with. Bare `pip` can resolve to a different
+# (e.g. system, PEP-668 externally-managed) Python, which both fails to install
+# and leaves the test interpreter missing deps like `pathspec` → silent
+# file-scanner test failures. Run `make build-agents` before `make test`.
 build-agents:
-	cd agents && pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/ -e do178c/ -e asvs/
+	cd agents && python -m pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/ -e do178c/ -e asvs/
 
 build-frontend:
 	cd frontend && npm ci && npm run build
