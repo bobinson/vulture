@@ -1,7 +1,23 @@
 # 0055 — Native Installer Hardening + Honesty · Implementation Status
 
-**Status**: IMPLEMENTED (Tier A + C + hardening pass); Tier B deferred
-**Last updated**: 2026-06-05
+**Status**: IMPLEMENTED — Tier A + C + hardening pass + **B1 (lockfile)** + **Tier
+B-lite (system-Python install)** + **cross-distro Docker e2e**. Tier B (bundled PBS)
+and the `vulture.sh release` preflight remain designed-only (see plan).
+**Last updated**: 2026-06-07
+
+## Implemented since 2026-06-05 (B1, Tier B-lite, cross-distro e2e)
+
+| # | Task | Status |
+|---|---|---|
+| B1 | Hashed lockfile generator + freshness gate | ✅ `scripts/gen-lockfile.sh` (uv pip compile --universal --generate-hashes; third-party only, vulture-* excluded) → `agents/requirements-frozen.txt` (77 pkgs / 2090 hashes); `scripts/check-lockfile.sh` (deterministic re-derive + diff); `make freeze-deps` / `make check-lockfile` |
+| B-lite | System-Python install path in `install.sh` | ✅ TDD; `install_python_deps` precedence bundled-PBS > opt-in `VULTURE_USE_SYSTEM_PYTHON` > CLI-only; detect ≥3.12, `--copies` venv at `runtime/python` with `python3.12` alias, `pip --require-hashes --only-binary :all:`; fail-closed on missing/hashless lock, no interpreter, bad version. 31/31 unit tests |
+| bugfix | `cleanup` EXIT trap returned non-zero → successful **offline** install exited 1 | ✅ fixed (`return 0`) + unit-locked; **found by the cross-distro e2e** |
+| E2E | Fresh-Docker install matrix (Ubuntu 24.04 + Fedora 41, with/without Python) | ✅ `scripts/tests/docker/` (Dockerfiles, offline fixtures, runner, run-one/run-matrix); **9/9 scenarios pass** on real Docker; gated in CI via `.github/workflows/test-install-docker.yml` |
+
+**Not yet built (designed-only):** Tier B (bundle python-build-standalone via the
+signed vendor pipeline — needs the release-signing flow, not sandbox-runnable) and
+the `scripts/vulture.sh release` preflight + `release.yml` hardening deltas. System
+Python (Tier B-lite) fully covers the "run agents with an existing Python" case.
 
 ## Checklist
 

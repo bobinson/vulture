@@ -1,0 +1,49 @@
+name: install-docker-e2e
+
+# Feature 0055 — cross-distro install.sh end-to-end tests in fresh containers
+# (Ubuntu 24.04 + Fedora 41, with/without Python 3.12). Runs the real installer
+# offline against a fabricated tarball; the system-Python scenarios build a venv
+# and install a hash-pinned dep set. Fedora is the CONTAINER, so no Fedora runner
+# is needed — docker on a GitHub-hosted ubuntu runner drives both distros.
+
+on:
+  push:
+    paths:
+      - 'install.sh'
+      - 'scripts/tests/docker/**'
+      - 'agents/**/pyproject.toml'
+      - '.github/workflows/test-install-docker.yml'
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'scripts/tests/docker/**'
+      - 'agents/**/pyproject.toml'
+      - '.github/workflows/test-install-docker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: ${{ matrix.distro }} / ${{ matrix.scenario }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: ubuntu, scenario: no-python }
+          - { distro: ubuntu, scenario: py-no-optin }
+          - { distro: ubuntu, scenario: py-optin-hashed }
+          - { distro: ubuntu, scenario: py-optin-hashless }
+          - { distro: ubuntu, scenario: py-no-venv }
+          - { distro: fedora, scenario: no-python }
+          - { distro: fedora, scenario: py-no-optin }
+          - { distro: fedora, scenario: py-optin-hashed }
+          - { distro: fedora, scenario: py-optin-hashless }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # matrix.distro/scenario are fixed literals above (no untrusted input).
+      - name: install.sh e2e
+        run: scripts/tests/docker/run-one.sh "${{ matrix.distro }}" "${{ matrix.scenario }}"
