@@ -173,8 +173,13 @@ def test_run_l5_no_model_returns_empty():
     findings = [_f(0)]
     l1 = [[]]
     cfg = ValidateConfig(enable_l5=True, l5_model_override="")
+    # Hermetic: clear the endpoint too. _auto_detect_model reads OPENAI_BASE_URL
+    # at call time and hits {base}/v1/models, so an ambient endpoint (e.g. a
+    # configured NVIDIA/LM-Studio URL) would otherwise make "no model" detect one.
     with patch.dict(os.environ, {"VULTURE_LLM_MODEL": "",
-                                 "VULTURE_VALIDATE_LLM_MODEL": ""}, clear=False):
+                                 "VULTURE_VALIDATE_LLM_MODEL": "",
+                                 "OPENAI_BASE_URL": "",
+                                 "OPENAI_API_BASE": ""}, clear=False):
         out = run_l5(findings, l1, cfg)
     assert out == [[]]
 

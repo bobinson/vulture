@@ -23,9 +23,16 @@ def test_get_model_ollama_models():
     assert get_model("mistral") == "litellm/ollama/mistral"
 
 
-def test_get_model_passthrough():
+def test_get_model_passthrough(monkeypatch):
+    import shared.llm.provider as provider
     from shared.llm.provider import get_model
-    # Unknown model strings pass through unchanged
+    # Hermetic: with NO custom OpenAI-compatible endpoint configured, unknown
+    # model strings pass through unchanged. When OPENAI_BASE_URL is set, get_model
+    # intentionally routes them via litellm/openai/ — and _CUSTOM_BASE_URL is read
+    # at import time, so reset the module global, not just the env var.
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VULTURE_LLM_MODEL", raising=False)
+    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
     assert get_model("custom/my-model") == "custom/my-model"
 
 
