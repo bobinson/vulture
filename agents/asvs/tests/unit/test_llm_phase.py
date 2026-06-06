@@ -59,7 +59,8 @@ def test_llm_catalog_context_contains_critical_chapter_reqs():
 def test_run_audit_generator_wires_phase_2_correctly():
     """Verify run_audit yields SSE events and passes use_llm through."""
     from asvs_agent.agent import run_audit
-    import tempfile, pathlib
+    import tempfile
+    import pathlib
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "empty.py").write_text("x = 1\n")
         # With use_llm=False, Phase 2 is suppressed — must still yield events.
@@ -140,7 +141,8 @@ def test_phase_2_toggle_via_config_overrides_env(monkeypatch):
     """use_llm=True in config forces Phase 2 regardless of env default."""
     monkeypatch.setenv("VULTURE_USE_LLM", "false")
     from asvs_agent.agent import run_audit
-    import tempfile, pathlib
+    import tempfile
+    import pathlib
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "x.py").write_text("x = 1\n")
         # use_llm=False in config — Phase 2 MUST be skipped regardless of env.

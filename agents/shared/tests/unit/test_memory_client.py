@@ -2,7 +2,6 @@
 
 from unittest.mock import patch
 
-import pytest
 
 from shared.tools.memory_client import (
     _adapt_prior_findings,
@@ -10,11 +9,8 @@ from shared.tools.memory_client import (
     _fetch_edge_clusters,
     _filter_and_dedup,
     _get_encoder,
-    _HALF_LIFE_DAYS,
     _MAX_CONTEXT_FINDINGS,
     _normalize_title,
-    _SEVERITY_RANK,
-    _SKIP_STATUSES,
     _staleness_weight,
     build_prior_context,
     estimate_tokens,

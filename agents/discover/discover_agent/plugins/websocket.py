@@ -5,7 +5,6 @@ where possible, falling back to HTTP upgrade header probing.
 Detects Socket.IO, ActionCable, Phoenix Channel frameworks.
 """
 
-import asyncio
 import logging
 
 from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
@@ -136,7 +135,7 @@ async def _try_ws_connect(
         import websockets
         async with websockets.connect(
             ws_url, open_timeout=5, close_timeout=2,
-        ) as ws:
+        ):
             result.endpoints.append(path)
             result.urls.append(path)
             result.technologies.append("WebSocket")

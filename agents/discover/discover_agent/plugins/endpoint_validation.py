@@ -6,9 +6,7 @@ via HTTP GET (removes 404s) and probes for hidden HTTP methods via OPTIONS.
 
 import asyncio
 import logging
-import re
 
-from shared.discovery.helpers import is_static_path
 from shared.discovery.plugin_base import (
     DiscoveryContext,
     DiscoveryPlugin,

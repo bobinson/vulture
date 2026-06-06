@@ -63,7 +63,6 @@ async def test_client_rate_limit_blocks():
     from server import VultureClient
     client = VultureClient("http://localhost:28080", None, rate_limit=2)
     # Exhaust rate limit without making real requests
-    import asyncio
     # We need to mock actual requests for rate limit to trigger
     # Just test the rate limit mechanism directly
     from collections import deque

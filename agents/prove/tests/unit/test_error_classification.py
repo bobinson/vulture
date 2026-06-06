@@ -1,6 +1,5 @@
 """Tests for error classification (ported from prior deployment's FailoverReason)."""
 
-import pytest
 
 from prove_agent.strategies.base import FailureReason
 from prove_agent.strategies.shared import classify_failure

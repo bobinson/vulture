@@ -1,6 +1,5 @@
 """Unit tests for chaos engineering skills."""
 
-import os
 import pytest
 
 from chaos_agent.skills.retry_analysis import (

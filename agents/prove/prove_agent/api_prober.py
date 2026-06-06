@@ -334,7 +334,7 @@ async def _probe_graphql(
                     f"gql-complexity-{ep.replace('/', '-')}",
                     f"No query complexity limit at {ep}",
                     "LOW", "dos_vulnerability", ep,
-                    f"GraphQL accepted query with 100 fields without rate limiting",
+                    "GraphQL accepted query with 100 fields without rate limiting",
                 ))
         except Exception:
             pass
@@ -351,7 +351,7 @@ async def _probe_graphql(
                     f"gql-mutation-auth-{ep.replace('/', '-')}",
                     f"GraphQL mutations accessible without auth at {ep}",
                     "HIGH", "auth_bypass", ep,
-                    f"Mutation endpoint accessible without authentication",
+                    "Mutation endpoint accessible without authentication",
                 ))
         except Exception:
             pass
@@ -542,7 +542,7 @@ async def _probe_jwt(
                             f"jwt-none-{ep.replace('/', '-')}",
                             f"JWT with 'none' algorithm at {ep}",
                             "CRITICAL", "crypto_failure", ep,
-                            f"JWT token uses 'none' algorithm — signature bypass",
+                            "JWT token uses 'none' algorithm — signature bypass",
                         ))
                     elif alg in ("HS256", "HS384", "HS512"):
                         findings.append(_make_finding(

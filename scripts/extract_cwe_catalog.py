@@ -154,9 +154,9 @@ def _is_hardware_only(w: ET.Element) -> bool:
     )
     langs = w.findall(f"{NS}Applicable_Platforms/{NS}Language")
     has_sw_lang = any(
-        l.get("Class") in ("Not Language-Specific", "Language-Independent", None)
-        or l.get("Name")
-        for l in langs
+        lang.get("Class") in ("Not Language-Specific", "Language-Independent", None)
+        or lang.get("Name")
+        for lang in langs
     )
     return has_hw_tech and not has_sw_lang
 

@@ -1,8 +1,6 @@
 """E2E tests for shared tools. These define the business contract."""
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest

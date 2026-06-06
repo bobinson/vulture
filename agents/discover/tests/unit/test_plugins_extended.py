@@ -1,6 +1,5 @@
 """Tests for the 7 new discovery plugins."""
 
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +8,7 @@ import pytest
 
 from shared.discovery.sitemap import SiteMap
 from discover_agent.learning_store import SessionLearnings
-from discover_agent.plugins import DiscoveryContext, DiscoveryResult
+from discover_agent.plugins import DiscoveryContext
 from discover_agent.plugins.blockchain_rpc import BlockchainRPCPlugin
 from discover_agent.plugins.grpc_reflection import GRPCReflectionPlugin
 from discover_agent.plugins.infra_config import InfraConfigPlugin

@@ -5,11 +5,8 @@ subprocess.run mocked — no real Semgrep process ever starts.
 """
 
 import json
-import os
 import subprocess
-import threading
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import httpx

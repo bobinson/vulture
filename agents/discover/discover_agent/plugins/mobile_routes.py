@@ -9,7 +9,6 @@ import re
 from pathlib import Path
 
 from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
-from discover_agent.plugins._shared import extract_urls_from_text
 
 logger = logging.getLogger(__name__)
 

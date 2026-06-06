@@ -7,7 +7,6 @@ from learnings and records reachable endpoints.
 
 import asyncio
 import logging
-import re
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
 
@@ -19,7 +18,6 @@ from shared.discovery.helpers import (
     extract_json_urls,
     extract_links,
     extract_technologies,
-    is_static_path,
 )
 from discover_agent.learning_store import record_known_404, record_reachable_endpoint
 from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin

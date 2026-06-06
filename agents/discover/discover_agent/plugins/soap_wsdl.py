@@ -5,7 +5,6 @@ from Content-Type headers and XML response bodies.
 """
 
 import logging
-import re
 from pathlib import Path
 
 from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe, scan_code_files
+from shared.tools.file_scanner import read_file_safe
 
 _POLICY_FILES = {
     "security.md", "security.txt", "security.rst",

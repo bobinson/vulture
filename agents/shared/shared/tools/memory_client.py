@@ -12,11 +12,11 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+import httpx
+
 # Safety margin for token estimates: code is ~3 chars/token (not 4), so a 1.2x
 # multiplier prevents context overflow when packing prompts.
 _SAFETY_MARGIN = max(1.0, float(os.environ.get("VULTURE_TOKEN_SAFETY_MARGIN", "1.2")))
-
-import httpx
 
 logger = logging.getLogger(__name__)
 

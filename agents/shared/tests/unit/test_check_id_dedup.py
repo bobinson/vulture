@@ -1,6 +1,5 @@
 """Unit tests for check_id-enhanced deduplication in audit_runner."""
 
-import pytest
 
 from shared.audit_runner import _dedup_key, _deduplicate_findings
 from shared.tools.memory_client import _normalize_title

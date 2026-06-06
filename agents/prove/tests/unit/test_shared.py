@@ -1,8 +1,7 @@
 """Tests for shared strategy utilities."""
 
-import pytest
 
-from prove_agent.strategies.base import AttemptRecord, ProofPlan
+from prove_agent.strategies.base import AttemptRecord
 from prove_agent.strategies.shared import (
     build_fallback_plan,
     build_prior_context,

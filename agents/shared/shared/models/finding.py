@@ -1,7 +1,6 @@
 """Finding model for audit results."""
 
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 

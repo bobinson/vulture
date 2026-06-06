@@ -1,9 +1,7 @@
 """Tests for 8 new framework extractors in source_analyzer.py."""
 
-import pytest
 
 from discover_agent.source_analyzer import (
-    SourceRoute,
     _extract_aspnet_routes,
     _extract_fastapi_routes,
     _extract_laravel_routes,

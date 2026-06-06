@@ -1,6 +1,5 @@
 """Tests for the 8 wave-2 discovery plugins."""
 
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,7 +8,7 @@ import pytest
 
 from shared.discovery.sitemap import SiteMap
 from discover_agent.learning_store import SessionLearnings
-from discover_agent.plugins import DiscoveryContext, DiscoveryResult, DISCOVERY_PLUGINS
+from discover_agent.plugins import DiscoveryContext, DISCOVERY_PLUGINS
 from discover_agent.plugins._shared import find_files_by_name, read_source_file
 from discover_agent.plugins.env_service_urls import EnvServiceURLsPlugin
 from discover_agent.plugins.nextauth_routes import NextAuthRoutesPlugin

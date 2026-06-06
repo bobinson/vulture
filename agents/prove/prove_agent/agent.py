@@ -28,7 +28,6 @@ from prove_agent.api_prober import probe_api_endpoints
 from prove_agent.config import ALL_TYPES
 from prove_agent.discover_client import call_discover
 from prove_agent.discovery import discover_incremental
-from prove_agent.endpoint_analyzer import analyze_endpoints, format_endpoint_analysis
 from prove_agent.protocols.detection import TargetCapabilities, detect_capabilities
 from prove_agent.prove_learnings import (
     ProveSessionLearnings,
@@ -109,7 +108,7 @@ def run_prove(
         return
 
     # Reset token tracking for this session
-    from prove_agent.llm_helper import get_token_usage, reset_token_usage
+    from prove_agent.llm_helper import reset_token_usage
     reset_token_usage()
 
     # Validate LLM availability; allow config to override model

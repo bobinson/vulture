@@ -1,6 +1,5 @@
 """E2E tests for the SSDF audit agent."""
 
-import json
 from pathlib import Path
 
 import pytest

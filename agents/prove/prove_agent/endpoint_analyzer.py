@@ -9,7 +9,6 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
 import httpx
 

@@ -2,7 +2,6 @@
 
 import json
 
-import pytest
 
 from shared.audit_runner import (
     AuditFinding,
@@ -614,7 +613,7 @@ def _parse_result_from_events(events: list[str]) -> dict:
     import json
     for event in events:
         if "event: result" in event:
-            data_line = [l for l in event.split("\n") if l.startswith("data:")][0]
+            data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
             return json.loads(data_line[5:])
     raise AssertionError("No result event found")
 
@@ -675,7 +674,7 @@ class TestRunSkillAuditDedup:
         ))
         dedup_events = [e for e in events if "event: dedup_stats" in e]
         assert len(dedup_events) == 1
-        data_line = [l for l in dedup_events[0].split("\n") if l.startswith("data:")][0]
+        data_line = [line for line in dedup_events[0].split("\n") if line.startswith("data:")][0]
         data = json.loads(data_line[5:])
         assert data["findings_deduped"] == 1
 

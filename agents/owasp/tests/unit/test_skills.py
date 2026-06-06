@@ -18,19 +18,12 @@ from owasp_agent.skills.security_misconfig import (
 )
 from owasp_agent.skills.auth_check import (
     check_authentication,
-    WEAK_AUTH_PATTERNS,
-    MISSING_AUTH_PATTERNS,
-    AUTH_DECORATOR_PATTERNS,
 )
 from owasp_agent.skills.crypto_check import (
     check_cryptography,
-    WEAK_CRYPTO_PATTERNS,
-    HARDCODED_SECRET_PATTERNS,
 )
 from owasp_agent.skills.access_control import (
     check_access_control,
-    IDOR_PATTERNS,
-    AUTHZ_CHECK_PATTERNS,
 )
 from owasp_agent.config import ALL_CATEGORIES, AGENT_INFO, CONFIG_SCHEMA
 

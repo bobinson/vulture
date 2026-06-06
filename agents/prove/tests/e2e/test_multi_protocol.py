@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from prove_agent.protocols.detection import TargetCapabilities, detect_capabilities
+from prove_agent.protocols.detection import TargetCapabilities
 from prove_agent.protocols.dispatcher import execute_plan
 from prove_agent.protocols.fallback import execute_with_fallback
 from prove_agent.strategies.base import (

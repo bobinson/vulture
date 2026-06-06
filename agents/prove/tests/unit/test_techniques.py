@@ -1,11 +1,8 @@
 """Tests for technique library with fallback chains."""
 
-import pytest
 
 from prove_agent.techniques import (
-    FILE_UPLOAD_CHAIN,
     SQL_INJECTION_CHAIN,
-    XSS_CHAIN,
     Technique,
     get_technique_chain,
     pick_next_technique,

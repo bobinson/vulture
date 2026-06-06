@@ -1,9 +1,8 @@
 """Tests for the discover_client module — HTTP SSE client for discover agent."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from prove_agent.discover_client import call_discover
 

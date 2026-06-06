@@ -88,7 +88,6 @@ def analyze_response(
     Returns ExecutionResult if a rule fires, or None if no rule matched
     (in which case the caller should fall through to LLM analysis).
     """
-    lower_body = body.lower()
     lower_title = finding_title.lower()
 
     # --- SQL Injection ---
@@ -190,7 +189,7 @@ def _check_sql_injection(
         return ExecutionResult(
             conclusive=True,
             reproduced=True,
-            evidence=f"HTTP 500 triggered by SQL injection payload",
+            evidence="HTTP 500 triggered by SQL injection payload",
             status_code=status_code,
             response_snippet=body[:500],
         )

@@ -4,10 +4,7 @@ Covers: token tracking, cooldown/fallback, max_iterations cap,
 model resolution, model passthrough, context window awareness.
 """
 
-import os
-from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------

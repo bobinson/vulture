@@ -1,6 +1,5 @@
 """Tests for the discovery module — filtering, classification, and deduplication."""
 
-import json
 
 import pytest
 

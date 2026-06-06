@@ -3,7 +3,6 @@
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from discover_agent.source_analyzer import (
     SourceAnalysisResult,

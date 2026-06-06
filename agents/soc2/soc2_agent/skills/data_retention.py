@@ -1,7 +1,6 @@
 """Data retention audit skill for SOC2."""
 
 import re
-from pathlib import Path
 
 from agents import function_tool
 

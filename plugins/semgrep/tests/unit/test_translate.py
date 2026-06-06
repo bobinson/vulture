@@ -8,7 +8,6 @@ phase ships the implementation.
 import json
 from pathlib import Path
 
-import pytest
 
 # Imports will fail at RED time — that is the correct RED state for TDD.
 from src.translate import (  # noqa: E402  (import at top is fine; failure is intentional in RED)

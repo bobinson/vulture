@@ -3,7 +3,6 @@
 import re
 from pathlib import Path
 
-import pytest
 
 from shared.tools.suppression import (
     AUTH_CHECK_SUPPRESSIONS,

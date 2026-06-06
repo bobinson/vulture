@@ -7,13 +7,11 @@ from cwe_agent.skills.injection_check import (
     SQL_INJECTION_PATTERNS,
     COMMAND_INJECTION_PATTERNS,
     XSS_PATTERNS,
-    CODE_INJECTION_PATTERNS,
     SSRF_PATTERNS,
 )
 from cwe_agent.skills.buffer_check import (
     check_buffer_handling,
     UNBOUNDED_COPY_PATTERNS,
-    OOB_WRITE_PATTERNS,
     USE_AFTER_FREE_PATTERNS,
     INTEGER_OVERFLOW_PATTERNS,
 )
@@ -24,7 +22,6 @@ from cwe_agent.skills.auth_check import (
 )
 from cwe_agent.skills.crypto_check import (
     check_cryptography,
-    BROKEN_CRYPTO_PATTERNS,
     WEAK_RANDOM_PATTERNS,
     HARDCODED_KEY_PATTERNS,
 )
@@ -60,7 +57,6 @@ from cwe_agent.skills.error_handling_check import (
 from cwe_agent.skills.concurrency_check import (
     check_concurrency,
     TOCTOU_CHECK_PATTERNS,
-    TOCTOU_USE_PATTERNS,
     LOCK_ACQUIRE,
 )
 from cwe_agent.config import ALL_CATEGORIES, AGENT_INFO, CONFIG_SCHEMA

@@ -1,6 +1,5 @@
 """Unit tests for prove agent enhancements — timeout evidence, adaptive backoff, enums."""
 
-import pytest
 
 from prove_agent.runner import ProvePhase, _synthesize_timeout_evidence
 from prove_agent.strategies.base import AttemptRecord, FailureReason

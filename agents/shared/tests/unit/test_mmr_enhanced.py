@@ -1,6 +1,5 @@
 """Unit tests for enhanced MMR with embedding similarity and confidence feedback."""
 
-import pytest
 
 from shared.tools.memory_client import (
     _cosine_similarity,
@@ -8,7 +7,6 @@ from shared.tools.memory_client import (
     _prove_confidence_boost,
     _similarity,
     _title_tokens,
-    _jaccard,
 )
 
 

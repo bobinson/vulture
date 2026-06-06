@@ -14,7 +14,6 @@ Covers:
 - AC7: empty input → still emits valid (empty-entries) JSON
 - AC8: rule.id missing (malformed rule) → skipped, doesn't crash
 """
-from pathlib import Path
 import json
 import textwrap
 

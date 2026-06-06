@@ -1,6 +1,5 @@
 """Tests for deterministic rule-based response analysis."""
 
-import pytest
 
 from prove_agent.strategies.rule_analyzer import analyze_response
 

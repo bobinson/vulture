@@ -5,10 +5,8 @@ known_404_paths, reachable_endpoints, and the new helper functions
 record_known_404 and record_reachable_endpoint.
 """
 
-import json
 import time
 
-import pytest
 
 from discover_agent.learning_store import (
     GraphQLSchemaCache,

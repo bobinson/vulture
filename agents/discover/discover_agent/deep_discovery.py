@@ -5,7 +5,6 @@ traffic, submit forms, and detect GraphQL, REST, OpenAPI, RPC endpoints.
 Static assets (JS, CSS, images, fonts) are filtered out.
 """
 
-import asyncio
 import logging
 import re
 from urllib.parse import urlparse

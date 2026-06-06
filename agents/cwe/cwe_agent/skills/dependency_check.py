@@ -89,15 +89,20 @@ def _spec_matches(installed: str, spec: str) -> bool:
     op, ver = m.groups()
     a = _parse_version(installed)
     b = _parse_version(ver)
-    if op == "==": return a == b
-    if op == "!=": return a != b
-    if op == "<":  return a < b
-    if op == "<=": return a <= b
-    if op == ">":  return a > b
-    if op == ">=": return a >= b
+    if op == "==":
+        return a == b
+    if op == "!=":
+        return a != b
+    if op == "<":
+        return a < b
+    if op == "<=":
+        return a <= b
+    if op == ">":
+        return a > b
+    if op == ">=":
+        return a >= b
     if op == "~=":
         # Python compatible release: ~=1.4 means >=1.4,<2.0
-        prefix = b[:-1]
         next_major = b[:-1] + (b[-1] + 1,) if b else b
         return a >= b and a < next_major
     return False

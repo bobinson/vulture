@@ -6,11 +6,9 @@ Verifies:
 - Issue #21: _emit_token_savings accepts pre-split lines to avoid redundant splitting.
 """
 
-import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from shared.audit_runner import (
     _emit_token_savings,

@@ -5,7 +5,6 @@ Tests verify the fix is in place without modifying any business logic.
 """
 
 import os
-import re
 from unittest.mock import patch
 
 import pytest
@@ -397,8 +396,7 @@ class TestIssue17CacheClear:
     def test_clear_caches_actually_clears(self):
         """Calling clear_caches should not raise and should clear LRU caches."""
         from shared.tools.file_scanner import (
-            clear_caches, _scan_code_files_cached,
-            _read_file_cached, _splitlines_cached,
+            clear_caches, _read_file_cached,
         )
         # Fill caches with dummy data
         _read_file_cached("/nonexistent/test/file.py", 512000)
@@ -484,7 +482,7 @@ class TestIssue20TokenSavingsFieldNames:
             duplicates_removed=2,
         )
         # Parse the SSE data
-        data_line = [l for l in event.split("\n") if l.startswith("data:")][0]
+        data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
         data = json.loads(data_line[len("data: "):])
 
         # Original fields
@@ -507,7 +505,7 @@ class TestIssue20TokenSavingsFieldNames:
             actual_input_tokens=400, actual_output_tokens=200,
             cost_usd=0.001,
         )
-        data_line = [l for l in event.split("\n") if l.startswith("data:")][0]
+        data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
         data = json.loads(data_line[len("data: "):])
 
         assert "context_tokens" in data
@@ -578,7 +576,6 @@ class TestIssue22OllamaTokenUsageWarning:
     """_extract_token_usage should warn when returning (0,0) for local models."""
 
     def test_extract_token_usage_warns_for_ollama(self, monkeypatch):
-        import logging
         from shared.audit_runner import _extract_token_usage
 
         monkeypatch.setenv("VULTURE_LLM_MODEL", "qwen3:1.7b")
@@ -640,7 +637,7 @@ class TestIssue24ResultEventFindings:
         findings = [{"title": f"Finding {i}", "severity": "high"} for i in range(50)]
         event = emitter.result_event(findings=findings, summary="test", score=75.0)
 
-        data_line = [l for l in event.split("\n") if l.startswith("data:")][0]
+        data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
         data = json.loads(data_line[len("data: "):])
 
         assert data["findings_count"] == 50

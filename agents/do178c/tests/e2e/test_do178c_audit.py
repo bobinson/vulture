@@ -1,6 +1,5 @@
 """E2E tests for DO-178C audit agent."""
 
-import json
 
 from do178c_agent.agent import run_audit
 

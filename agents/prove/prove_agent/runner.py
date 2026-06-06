@@ -23,7 +23,6 @@ from prove_agent.strategies.base import (
     AttemptRecord,
     BaseStrategy,
     FailureReason,
-    ProbeProtocol,
     ReflectionResult,
 )
 from prove_agent.strategies.shared import stepped_backoff_delay_adaptive

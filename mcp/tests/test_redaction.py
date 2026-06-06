@@ -1,5 +1,4 @@
 """RED team: redaction tests. These must FAIL until server.py implements redact_secrets."""
-import pytest
 
 
 def test_redacts_password_in_snippet():

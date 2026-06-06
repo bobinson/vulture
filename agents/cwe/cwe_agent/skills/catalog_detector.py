@@ -22,10 +22,10 @@ from typing import Any
 from agents import function_tool
 
 from shared.tools.file_scanner import (
+    SCANNER_DEF_LINE as _SCANNER_DEF,
     is_generated_file,
     is_test_file,
     read_file_lines,
-
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
@@ -118,8 +118,6 @@ _IMPORT = re.compile(r"^\s*(?:from|import|require|use|#\s*include)\s")
 
 # Pre-compiled regex for keyword extraction (Issue #6: avoid per-call recompilation)
 _LINE_KEYWORD_RE = re.compile(r"[a-zA-Z_]\w{2,}")
-
-from shared.tools.file_scanner import SCANNER_DEF_LINE as _SCANNER_DEF  # DRY
 
 # Generic programming tokens that match nearly every source line and cause
 # false positives when used as CWE keyword matches.

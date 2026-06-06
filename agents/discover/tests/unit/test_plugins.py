@@ -2,9 +2,8 @@
 
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 
 from shared.discovery.sitemap import SiteMap
@@ -15,7 +14,6 @@ from discover_agent.plugins import (
     DiscoveryResult,
     DISCOVERY_PLUGINS,
     _merge_result,
-    register_plugin,
     run_discovery,
 )
 from discover_agent.plugins.crawl import CrawlPlugin

@@ -1,6 +1,5 @@
 """E2E tests for the Chaos Engineering audit agent."""
 
-import json
 from pathlib import Path
 
 import pytest

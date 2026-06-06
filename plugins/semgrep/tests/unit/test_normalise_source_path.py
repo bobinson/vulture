@@ -6,7 +6,6 @@ escape). RED phase (feature 0053).
 
 import os
 
-import pytest
 
 # RED-phase import — will fail until GREEN ships src/translate.py.
 from src.translate import normalise_source_path  # noqa: E402
