@@ -175,8 +175,11 @@ jobs:
     needs: [test-backend, test-agents, test-frontend]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      # NOTE: deliberately NOT using docker/setup-buildx-action. It creates an
+      # isolated docker-container builder that can't see the locally-built
+      # vulture-agent-base:latest, so the agent images (FROM it) would try to
+      # pull it from a registry and fail. The default 'docker' driver shares
+      # the daemon image store, so the base built below is visible to compose.
       - name: Build agent base image
         # The agent images are FROM vulture-agent-base:latest, a locally-built
         # base (agents/Dockerfile.base), not a registry image; it must exist
