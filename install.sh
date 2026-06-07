@@ -58,10 +58,11 @@ resolve_path() {
 
 # reject_if_system_dir PATH — err() if PATH is a system directory or a child of
 # one. /root is rejected only as an exact target (so /root/.vulture is allowed).
-# macOS firmlinks /etc->/private/etc and /var->/private/var, and resolve_path
-# canonicalises to those, so the /private/* forms are rejected too.
+# macOS firmlinks /etc->/private/etc and /var->/private/var. BSD readlink has
+# no -f, so resolve_path may NOT canonicalise to those; the /private/* forms
+# are therefore blacklisted explicitly below (not relied upon to resolve).
 # Exception: /var/folders (macOS per-user $TMPDIR, and its /private/var/folders
-# resolution) is user-writable scratch, not a system dir — allowed first.
+# form) is user-writable scratch, not a system dir — allowed first.
 reject_if_system_dir() {
     _p=$1
     case "$_p" in
