@@ -36,9 +36,11 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: shellcheck
-        run: shellcheck install.sh scripts/*.sh scripts/tests/*.sh
+        run: shellcheck install.sh scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
       - name: install.sh branch tests
         run: sh scripts/tests/test_install_sh.sh
+      - name: hash-helper tests
+        run: sh scripts/tests/test_hash_sh.sh
       - name: docs-honesty tests
         run: sh scripts/tests/test_docs_honesty.sh
 

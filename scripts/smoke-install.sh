@@ -25,6 +25,8 @@ if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
 fi
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/hash.sh"
 SMOKE_HOME=$(mktemp -d)/vulture-smoke
 SMOKE_HOME_REAL=$(readlink -f "$SMOKE_HOME" 2>/dev/null || echo "$SMOKE_HOME")
 TARBALL_REAL=$(readlink -f "$TARBALL" 2>/dev/null || echo "$TARBALL")
@@ -40,12 +42,7 @@ export VULTURE_ALLOW_UNSIGNED=true   # local builds aren't cosign-signed
 # Prepare offline-companion SHA256SUMS file at the expected path.
 SHASUM_PATH=${TARBALL_REAL%.tar.gz}.SHA256SUMS
 TARBALL_NAME=$(basename "$TARBALL_REAL")
-# Portable SHA-256: GNU coreutils (Linux) or BSD shasum (macOS).
-if command -v sha256sum >/dev/null 2>&1; then
-    SUM=$(sha256sum "$TARBALL_REAL" | awk '{print $1}')
-else
-    SUM=$(shasum -a 256 "$TARBALL_REAL" | awk '{print $1}')
-fi
+SUM=$(sha256_of "$TARBALL_REAL")
 printf '%s  %s\n' "$SUM" "$TARBALL_NAME" > "$SHASUM_PATH"
 : > "${TARBALL_REAL%.tar.gz}.sig"   # empty sig OK with ALLOW_UNSIGNED
 
