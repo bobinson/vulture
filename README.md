@@ -1,6 +1,7 @@
 # Vulture
 
 [![CI](https://github.com/bobinson/vulture/actions/workflows/ci.yml/badge.svg)](https://github.com/bobinson/vulture/actions/workflows/ci.yml)
+[![release](https://github.com/bobinson/vulture/actions/workflows/release.yml/badge.svg)](https://github.com/bobinson/vulture/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go 1.24+](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev/)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg)](https://www.python.org/)
