@@ -167,7 +167,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --draft --title "${GITHUB_REF_NAME}" \
+          # Fail loudly on any empty asset (e.g. a bad cosign sig) — GitHub's
+          # upload API otherwise rejects it with an opaque "Bad Content-Length".
+          if find dist -maxdepth 1 -type f -empty | grep -q .; then
+            echo "error: empty release asset(s):" >&2
+            find dist -maxdepth 1 -type f -empty >&2
+            exit 1
+          fi
+          # Idempotent: create the draft if absent, else reuse it; then upload
+          # assets with --clobber so re-runs (or a single flaky upload) don't
+          # abort the whole release.
+          gh release create "${GITHUB_REF_NAME}" --draft --title "${GITHUB_REF_NAME}" \
             --notes "Automated draft release. Review SBOM, vulns, and signature before publishing." \
-            dist/*
+            || gh release edit "${GITHUB_REF_NAME}" --draft
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
