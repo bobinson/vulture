@@ -63,7 +63,10 @@ jobs:
         include:
           - { os: linux,  arch: amd64, runner: ubuntu-latest }
           - { os: linux,  arch: arm64, runner: ubuntu-22.04-arm }
-          - { os: darwin, arch: amd64, runner: macos-13 }
+          # macos-13 (Intel) was retired 2025-12-08; macos-15-intel is its
+          # x86_64 replacement. Intel macOS support ends with macos-15 (~Fall
+          # 2027). arm64 stays on macos-14 (still supported).
+          - { os: darwin, arch: amd64, runner: macos-15-intel }
           - { os: darwin, arch: arm64, runner: macos-14 }
     runs-on: ${{ matrix.runner }}
     steps:
