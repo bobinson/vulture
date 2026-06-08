@@ -31,20 +31,28 @@ SMOKE_HOME=$(mktemp -d)/vulture-smoke
 SMOKE_HOME_REAL=$(readlink -f "$SMOKE_HOME" 2>/dev/null || echo "$SMOKE_HOME")
 TARBALL_REAL=$(readlink -f "$TARBALL" 2>/dev/null || echo "$TARBALL")
 
+# Work on an isolated COPY of the tarball: the offline-install path writes
+# companion fixtures (SHA256SUMS + an empty .sig) next to it, and we must NOT
+# pollute the tarball's source dir — in CI that dir is dist/, which is uploaded
+# verbatim as the release assets (an empty .sig there breaks the GH upload).
+SMOKE_WORK=$(mktemp -d)
+cp "$TARBALL_REAL" "$SMOKE_WORK/"
+OFFLINE_TARBALL="$SMOKE_WORK/$(basename "$TARBALL_REAL")"
+
 echo "==> smoke install into $SMOKE_HOME"
 
 # Use the offline-tarball path so we don't need a real GH release.
 export VULTURE_HOME="$SMOKE_HOME_REAL"
-export VULTURE_OFFLINE_TARBALL="$TARBALL_REAL"
+export VULTURE_OFFLINE_TARBALL="$OFFLINE_TARBALL"
 export VULTURE_NO_UPDATE_CHECK=true
 export VULTURE_ALLOW_UNSIGNED=true   # local builds aren't cosign-signed
 
-# Prepare offline-companion SHA256SUMS file at the expected path.
-SHASUM_PATH=${TARBALL_REAL%.tar.gz}.SHA256SUMS
-TARBALL_NAME=$(basename "$TARBALL_REAL")
-SUM=$(sha256_of "$TARBALL_REAL")
+# Prepare offline-companion fixtures beside the COPY (never the source dir).
+SHASUM_PATH=${OFFLINE_TARBALL%.tar.gz}.SHA256SUMS
+TARBALL_NAME=$(basename "$OFFLINE_TARBALL")
+SUM=$(sha256_of "$OFFLINE_TARBALL")
 printf '%s  %s\n' "$SUM" "$TARBALL_NAME" > "$SHASUM_PATH"
-: > "${TARBALL_REAL%.tar.gz}.sig"   # empty sig OK with ALLOW_UNSIGNED
+: > "${OFFLINE_TARBALL%.tar.gz}.sig"   # empty sig OK with ALLOW_UNSIGNED
 
 # Run installer. Note: we run a shell-piped invocation rather than
 # bash -x so we can see real failure paths.
