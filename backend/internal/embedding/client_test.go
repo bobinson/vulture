@@ -141,7 +141,7 @@ func TestEmbed_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -195,7 +195,7 @@ func TestEmbed_OllamaNoAuthHeader(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -219,7 +219,7 @@ func TestEmbed_OllamaNoAuthHeader(t *testing.T) {
 func TestEmbed_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+		w.Write([]byte(`{"error":"rate limited"}`))
 	}))
 	defer server.Close()
 
@@ -243,7 +243,7 @@ func TestEmbed_EmptyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := embeddingResponse{Data: nil}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -307,7 +307,7 @@ func TestEmbedBatch_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -401,7 +401,7 @@ func TestEmbed_RetriesOn503ThenSucceeds(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(embeddingResponse{
+		json.NewEncoder(w).Encode(embeddingResponse{
 			Data: []struct {
 				Embedding []float32 `json:"embedding"`
 			}{{Embedding: expectedVec}},
@@ -433,7 +433,7 @@ func TestEmbed_RetriesOn429ThenSucceeds(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(embeddingResponse{
+		json.NewEncoder(w).Encode(embeddingResponse{
 			Data: []struct {
 				Embedding []float32 `json:"embedding"`
 			}{{Embedding: expectedVec}},
@@ -500,7 +500,7 @@ func TestEmbedBatch_RetriesOn503(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(embeddingResponse{
+		json.NewEncoder(w).Encode(embeddingResponse{
 			Data: []struct {
 				Embedding []float32 `json:"embedding"`
 			}{{Embedding: []float32{0.1}}, {Embedding: []float32{0.2}}},

@@ -19,6 +19,8 @@
 set -uo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/hash.sh"
 PASS=0
 FAIL=0
 
@@ -63,12 +65,7 @@ if [ -n "$TARBALL" ]; then
     TAMPER=$(mktemp -d)/tampered.tar.gz
     cp "$TARBALL" "$TAMPER"
     printf 'X' >> "$TAMPER"
-    # Portable SHA-256: GNU coreutils (Linux) or BSD shasum (macOS).
-    if command -v sha256sum >/dev/null 2>&1; then
-        REAL_SUM=$(sha256sum "$TARBALL" | awk '{print $1}')
-    else
-        REAL_SUM=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
-    fi
+    REAL_SUM=$(sha256_of "$TARBALL")
     printf '%s  %s\n' "$REAL_SUM" "$(basename "$TAMPER")" \
         > "${TAMPER%.tar.gz}.SHA256SUMS"
     : > "${TAMPER%.tar.gz}.sig"

@@ -32,6 +32,8 @@ case "$ARCH" in
 esac
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/hash.sh"
 DIST=$REPO_ROOT/dist
 STAGE=$(mktemp -d)
 TARBALL=$DIST/vulture-${VERSION}-${OS}-${ARCH}.tar.gz
@@ -118,12 +120,7 @@ fi
       --owner=0 --group=0 --numeric-owner \
       -cf - . | gzip -9n > "$TARBALL" )
 
-# Portable SHA-256: GNU coreutils (Linux) or BSD shasum (macOS).
-if command -v sha256sum >/dev/null 2>&1; then
-    SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
-else
-    SHA=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
-fi
+SHA=$(sha256_of "$TARBALL")
 echo "${SHA}  $(basename "$TARBALL")" >> "$DIST/SHA256SUMS"
 
 rm -rf "$STAGE"

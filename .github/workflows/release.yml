@@ -63,7 +63,10 @@ jobs:
         include:
           - { os: linux,  arch: amd64, runner: ubuntu-latest }
           - { os: linux,  arch: arm64, runner: ubuntu-22.04-arm }
-          - { os: darwin, arch: amd64, runner: macos-13 }
+          # macos-13 (Intel) was retired 2025-12-08; macos-15-intel is its
+          # x86_64 replacement. Intel macOS support ends with macos-15 (~Fall
+          # 2027). arm64 stays on macos-14 (still supported).
+          - { os: darwin, arch: amd64, runner: macos-15-intel }
           - { os: darwin, arch: arm64, runner: macos-14 }
     runs-on: ${{ matrix.runner }}
     steps:
@@ -80,11 +83,11 @@ jobs:
       - name: install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
       - name: install trivy
-        # Official cross-platform installer: detects OS/arch and fetches the
-        # latest release. Replaces the hardcoded amd64 `latest/download/
-        # trivy_Linux-64bit.tar.gz` URL, which 404'd (asset names are versioned)
-        # and didn't handle arm64 or macOS.
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+        # Official cross-platform installer (detects OS/arch). PINNED to the
+        # v0.71.0 tag of contrib/install.sh *and* the installed version, so we
+        # never pipe a moving 'main'-ref script into sh — keeping parity with
+        # the SHA-pinned actions in this workflow (supply-chain hardening).
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.71.0
       - name: install pip-audit
         # PEP-668 varies by runner: macOS + ubuntu-24.04 refuse plain installs
         # (need --break-system-packages), but ubuntu-22.04-arm's older pip
