@@ -21,11 +21,15 @@ the `scripts/vulture.sh release` preflight + `release.yml` hardening deltas.
 Tier B-lite covers the **dependency install** half of "run agents with an existing
 Python": after the 2026-06-09 audit fix, releases now ship the hashed lockfile and
 `VULTURE_USE_SYSTEM_PYTHON=1` builds the venv + installs with `--require-hashes`.
-Native agent **execution** is NOT yet end-to-end — the install-mode launcher still
-derives `PYTHONPATH`/ProjectRoot from the dev tree (`launcher.go`) instead of
-`AgentsRoot`/`PythonBin` (`mode.go`), and agent source is copied nested
-(`runtime/agents/<a>/<pkg>`) rather than flat — so even with deps installed, agents
-won't import until that wiring lands (tracked under Deferred below).
+Native agent **execution** is NOT yet end-to-end — and the gap is bigger than the
+env: the whole install-mode `vulture start` is unwired. `runStart → runLocalStart →
+findProjectRoot() (= CWD) → Launcher.Start()`, and the Launcher never branches on
+mode — `startBackend` `go build`s from `CWD/backend`, `startFrontend` runs vite from
+`CWD/frontend`, and `startAgents`/`installAgentDeps` use `CWD/agents` + the detected
+host python (never `AgentsRoot`/`PythonBin`/`BuildAgentEnv`). So `vulture start` fails
+on a native install. (The agent **packaging** is fine — the nested
+`runtime/agents/<a>/<pkg>` layout matches the launcher's `<root>/shared:<agentDir>`
+PYTHONPATH; no repackaging is needed.) See Deferred below.
 
 ## Checklist
 
@@ -73,11 +77,17 @@ remaining work:
   `vendor-pbs-*` asset and extract it into `runtime/python/`. The
   `vendor-pbs.yml` workflow exists but **nothing consumes it**;
   `build-release.sh` only writes a `PBS_NOT_BUNDLED` marker.
-- Fix install-mode agent **execution**: make the launcher use
-  `AgentsRoot`/`PythonBin` (`mode.go`) instead of the CWD-derived dev
-  `ProjectRoot`, and copy agent packages flat under `runtime/agents/` to
-  match `BuildAgentEnv`'s `PYTHONPATH`. (Without this, even a PBS-bundled
-  release with deps installed cannot import the agents.)
+- Implement **install-mode `local_start`** (the launcher is currently dev-only;
+  a Go change is required — the plan's "no Go change" claim applies only to the
+  dependency *install*, see plan §3 correction). Install mode must:
+  (a) run the backend via the installed binary's `serve` (no `go build`),
+  serving the static SPA shipped at `runtime/frontend`;
+  (b) start agents from `AgentsRoot(install)` = `$VULTURE_HOME/runtime/agents`
+  with the venv `PythonBin(install)` (nested packaging is already correct —
+  no repackaging, and do NOT route through `BuildAgentEnv`, whose single-dir
+  PYTHONPATH would require flat packaging);
+  (c) skip the vite frontend dev server (SPA is static);
+  (d) skip `installAgentDeps` (the venv is pre-provisioned with `--require-hashes`).
 - Make `smoke-install.sh` run a real `vulture scan`.
 
 **Build it only when the Trigger in the LLD is met** (real demand for
