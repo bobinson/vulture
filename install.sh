@@ -35,9 +35,11 @@
 #
 # This script is shellcheck-clean and POSIX-sh (no bashisms).
 
-# Fallback tag bumped on every release per plan H2. install.sh refuses
-# any older version (see resolve_version).
-FALLBACK_TAG="v0.0.0"
+# Fallback tag bumped on every release per plan H2 (enforced by
+# scripts/check-fallback-tag.sh). MUST be a real PUBLISHED release: install.sh
+# downloads it when the GitHub API is unreachable, and refuses any older
+# VULTURE_VERSION (see resolve_version). v0.0.0 was never released.
+FALLBACK_TAG="v0.0.1"
 REPO_OWNER="bobinson"
 REPO_NAME="vulture"
 REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -209,14 +211,23 @@ verify_signature() {
         warn "proceeding with SHA-only verification"
         return
     fi
+    # cosign IS installed: a published release must carry sig + cert. A missing
+    # one is a downgrade signal (e.g. a mirror that dropped them), so refuse it
+    # rather than silently falling back to SHA-only — unless explicitly allowed.
     if [ ! -s "${SIG_FILE:-}" ]; then
-        warn "no signature file present; SHA-only verification"
-        return
+        if [ "${VULTURE_ALLOW_UNSIGNED:-}" = "true" ]; then
+            warn "no signature file present; VULTURE_ALLOW_UNSIGNED=true; SHA-only verification"
+            return
+        fi
+        err "cosign is installed but no signature was published for this release; refusing silent downgrade to SHA-only (set VULTURE_ALLOW_UNSIGNED=true to override)"
     fi
     PEM="${SHASUM_FILE%/*}/SHA256SUMS.pem"
     if [ ! -s "$PEM" ]; then
-        warn "no certificate published; SHA-only verification"
-        return
+        if [ "${VULTURE_ALLOW_UNSIGNED:-}" = "true" ]; then
+            warn "no certificate published; VULTURE_ALLOW_UNSIGNED=true; SHA-only verification"
+            return
+        fi
+        err "cosign is installed but no certificate was published for this release; refusing silent downgrade to SHA-only (set VULTURE_ALLOW_UNSIGNED=true to override)"
     fi
     log "verifying release signature (cosign + Rekor)"
     cosign verify-blob \
