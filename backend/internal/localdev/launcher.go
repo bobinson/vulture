@@ -65,6 +65,14 @@ func NewLauncher(cfg *Config) *Launcher {
 
 // Start launches all components and returns the process manager.
 func (l *Launcher) Start(ctx context.Context) error {
+	// Install mode (Mode E) runs a different stack than the dev tree: a prebuilt
+	// backend binary + embedded SPA + bundled-venv agents. The dev flow below
+	// (go build, vite, pip-install-editable from the project tree) does not
+	// apply. See docs/features/0055 §3 correction.
+	if DetectMode() == ModeInstall {
+		return l.startInstallMode(ctx)
+	}
+
 	det, err := CheckPrereqs(l.cfg.ProjectRoot)
 	if err != nil {
 		return fmt.Errorf("prerequisites: %w", err)
@@ -174,6 +182,51 @@ func (l *Launcher) Manager() *Manager {
 	return l.mgr
 }
 
+// agentRuntime resolves the python interpreter and agents-source root for the
+// current mode. Install mode uses the bundled venv (PythonBin) + runtime/agents;
+// dev mode uses the detected interpreter + the project tree. (Closes the
+// install-mode launcher gap — see docs/features/0055 §3 correction.)
+func (l *Launcher) agentRuntime() (pythonBin, agentsDir string) {
+	mode := DetectMode()
+	agentsDir = AgentsRoot(mode, l.cfg.ProjectRoot)
+	pythonBin = PythonBin(mode)
+	if pythonBin == "" {
+		pythonBin = l.detect.PythonPath
+	}
+	return
+}
+
+// startInstallMode runs the install-mode local stack: the prebuilt backend
+// binary (API + embedded SPA), plus bundled-venv agents when a runtime is
+// present. No go build, no vite, no pip-install-editable — the venv is
+// pre-provisioned by install.sh (--require-hashes); first-party packages load
+// via PYTHONPATH=runtime/agents.
+func (l *Launcher) startInstallMode(ctx context.Context) error {
+	det, err := CheckInstallPrereqs()
+	if err != nil {
+		return fmt.Errorf("prerequisites: %w", err)
+	}
+	l.detect = det
+	l.setupOllama(ctx)
+	printBanner(l.cfg)
+
+	if det.PythonPath != "" && det.UvicornOK {
+		if err := l.startAgents(ctx); err != nil {
+			return fmt.Errorf("start agents: %w", err)
+		}
+		reportLLMHealthOrAbort(ctx, l.agentURLs())
+	} else {
+		log.Printf("agents unavailable (no bundled Python runtime at %s); "+
+			"starting backend + skills only — reinstall with VULTURE_USE_SYSTEM_PYTHON=1 "+
+			"and a hashed lockfile, or use Docker for agent scanning", PythonBin(ModeInstall))
+	}
+
+	if err := l.startBackend(ctx); err != nil {
+		return fmt.Errorf("start backend: %w", err)
+	}
+	return nil
+}
+
 func (l *Launcher) installAgentDeps(ctx context.Context) error {
 	// Skip if the venv (or system Python) already has uvicorn installed —
 	// the typical case after a successful `scripts/vulture.sh build`. This
@@ -243,7 +296,7 @@ func (l *Launcher) agentURLs() []string {
 }
 
 func (l *Launcher) startAgents(ctx context.Context) error {
-	agentsDir := filepath.Join(l.cfg.ProjectRoot, "agents")
+	pythonBin, agentsDir := l.agentRuntime()
 
 	for _, entry := range config.AllAgents {
 		agentDir := filepath.Join(agentsDir, entry.DirName)
@@ -314,7 +367,7 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		env = append(env, "OPENAI_AGENTS_DISABLE_TRACING=1")
 
 		err := l.mgr.Start(ctx, "agent-"+entry.Type, agentDir, env,
-			l.detect.PythonPath, "-m", "uvicorn", entry.Module,
+			pythonBin, "-m", "uvicorn", entry.Module,
 			"--host", "0.0.0.0", "--port", port,
 		)
 		if err != nil {
@@ -364,21 +417,33 @@ func (l *Launcher) startBackend(ctx context.Context) error {
 		}
 	}
 
-	backendDir := filepath.Join(l.cfg.ProjectRoot, "backend")
-	binPath := filepath.Join(backendDir, "bin", "vulture")
-
-	// Build if binary doesn't exist
-	if _, err := os.Stat(binPath); os.IsNotExist(err) {
-		log.Println("building backend binary...")
-		buildCmd := fmt.Sprintf("cd %s && %s build -o bin/vulture ./cmd/vulture/", backendDir, l.detect.GoPath)
-		buildProc := NewManager()
-		if err := buildProc.Start(ctx, "go-build", backendDir, nil, "sh", "-c", buildCmd); err != nil {
-			return fmt.Errorf("build backend: %w", err)
+	var bin, wd string
+	var args []string
+	if DetectMode() == ModeInstall {
+		// Install mode: the prebuilt installed binary serves the API + embedded
+		// SPA. Run it via `serve` (no go build, no project tree).
+		exe, exeErr := os.Executable()
+		if exeErr != nil {
+			return fmt.Errorf("locate vulture binary: %w", exeErr)
 		}
-		buildProc.WaitAll()
+		bin, wd, args = exe, ResolveHome(), []string{"serve"}
+	} else {
+		backendDir := filepath.Join(l.cfg.ProjectRoot, "backend")
+		bin, wd = filepath.Join(backendDir, "bin", "vulture"), backendDir
+		// Build if binary doesn't exist
+		if _, err := os.Stat(bin); os.IsNotExist(err) {
+			log.Println("building backend binary...")
+			buildCmd := fmt.Sprintf("cd %s && %s build -o bin/vulture ./cmd/vulture/", backendDir, l.detect.GoPath)
+			buildProc := NewManager()
+			if err := buildProc.Start(ctx, "go-build", backendDir, nil, "sh", "-c", buildCmd); err != nil {
+				return fmt.Errorf("build backend: %w", err)
+			}
+			buildProc.WaitAll()
+		}
 	}
 
-	err := l.mgr.Start(ctx, "backend", backendDir, env, binPath)
+	cmdline := append([]string{bin}, args...)
+	err := l.mgr.Start(ctx, "backend", wd, env, cmdline...)
 	if err != nil {
 		return fmt.Errorf("start backend: %w", err)
 	}

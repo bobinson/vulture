@@ -81,6 +81,26 @@ func CheckPrereqs(projectRoot string) (*Detect, error) {
 	return d, nil
 }
 
+// CheckInstallPrereqs validates the bundled runtime for an INSTALLED Vulture
+// (Mode E). Unlike CheckPrereqs it never requires go/node/npm — the backend is
+// a prebuilt binary serving an embedded SPA. Agents are conditional: present
+// only when a bundled venv interpreter (PythonBin) exists with uvicorn
+// importable. Never hard-fails on a missing venv, so CLI-only installs still
+// run the backend + skills.
+func CheckInstallPrereqs() (*Detect, error) {
+	d := &Detect{}
+	py := PythonBin(ModeInstall)
+	if _, err := os.Stat(py); err == nil {
+		d.PythonPath = py
+		d.UvicornOK = checkPythonModule(py, "uvicorn")
+	}
+	if p, err := exec.LookPath("ollama"); err == nil {
+		d.OllamaPath = p
+		d.OllamaOK = checkOllamaRunning(ollamaBaseURL())
+	}
+	return d, nil
+}
+
 // ollamaBaseURL returns the Ollama API base URL from env or default.
 func ollamaBaseURL() string {
 	if u := os.Getenv("OLLAMA_HOST"); u != "" {
