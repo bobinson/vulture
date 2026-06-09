@@ -88,10 +88,12 @@ remaining work:
   `DataDir(ModeInstall)`=`$VULTURE_HOME/data` so the backend's DB migrates in
   place. **Verified:** venv deps install (`--require-hashes`), install-mode
   backend serves, and `chaos_agent`/`shared` resolve from the shipped
-  `runtime/agents` via the launcher PYTHONPATH (find_spec). **Still to verify
-  on a clean host:** a live `vulture start` binding all 10 agent ports + a
-  scan dispatching to them with an LLM (the local e2e ports 28001-28010 were
-  occupied by a pre-existing install, so agents couldn't bind).
+  `runtime/agents` via the launcher PYTHONPATH (find_spec). **Verified live
+  (2026-06-09, clean-port run):** a real `VULTURE_USE_SYSTEM_PYTHON` install +
+  `vulture start` bound **all 10 agents** (custom ports 38001-38010, each
+  `/health` 200) + the backend (38080, SQLite routes up). The earlier
+  28001-28010 failure was a pre-existing install owning those ports, not a #10
+  bug. (A full LLM scan-with-findings is an optional remaining confirmation.)
 - **PBS bundling** for installs WITHOUT system Python (the no-`VULTURE_USE_SYSTEM_PYTHON`
   case) remains deferred — see the Bundle-PBS item above.
 - Make `smoke-install.sh` run a real `vulture scan`.
