@@ -255,6 +255,21 @@ verify_checksum() {
     log "SHA256 verified"
 }
 
+# ─── install lock (serialize concurrent installs to one VULTURE_HOME) ─────
+# Two `curl | sh` runs against the same VULTURE_HOME would otherwise race on
+# the staging dir and the swap (one run's rollback could delete the other's
+# freshly-committed install). mkdir is atomically exclusive on POSIX and
+# portable across macOS + Linux (flock is not), so use it as the lock. Held
+# from just before extraction through commit; the EXIT trap releases it.
+acquire_install_lock() {
+    LOCK_DIR="${VULTURE_HOME}.lock"
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        LOCK_HELD=1
+        return 0
+    fi
+    err "another vulture install appears to be in progress (lock dir: $LOCK_DIR). If none is running, remove that directory and retry."
+}
+
 # ─── 7. extract_atomic (with TOCTOU re-validation) ────────────────────────
 extract_atomic() {
     # Re-run the validation immediately before extraction (plan C4).
@@ -263,7 +278,9 @@ extract_atomic() {
     # umask BEFORE mkdir so the staging dir is never world-readable, even
     # briefly, before extraction populates it.
     umask 077
-    NEW_HOME="${VULTURE_HOME}.new"
+    # PID-suffixed (like OLD_HOME below) so concurrent runs never share a
+    # staging dir even if the lock is bypassed.
+    NEW_HOME="${VULTURE_HOME}.new.$$"
     rm -rf "$NEW_HOME"
     mkdir -p "$NEW_HOME"
     log "extracting tarball"
@@ -317,6 +334,8 @@ cleanup() {
     fi
     [ -n "${NEW_HOME:-}" ] && rm -rf "$NEW_HOME"
     [ -n "${DOWNLOAD_DIR:-}" ] && rm -rf "$DOWNLOAD_DIR"
+    # Release the install lock if WE acquired it (never another run's lock).
+    [ "${LOCK_HELD:-}" = "1" ] && [ -n "${LOCK_DIR:-}" ] && rm -rf "$LOCK_DIR"
     # Return 0 explicitly: this is the EXIT trap, so its last command's status
     # becomes the script's exit code. On the offline path DOWNLOAD_DIR is unset,
     # so the guard above would otherwise leave a non-zero status and make a
@@ -596,6 +615,7 @@ main() {
     download_artifacts
     verify_signature
     verify_checksum
+    acquire_install_lock
     extract_atomic
     generate_jwt_secret
     install_python_deps

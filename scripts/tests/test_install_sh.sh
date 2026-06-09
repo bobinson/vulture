@@ -805,6 +805,35 @@ test_filelist_populated() {
 }
 test_filelist_populated
 
+# TEST 17 — install lock (G2): acquire succeeds with no lock, refuses when held.
+test_install_lock() {
+    name="G2-install-lock-mutex"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "acquire_install_lock unreachable: seam absent"; return; fi
+    lhome="$SANDBOX/lock-home"; rm -rf "$lhome" "$lhome.lock"
+    # (a) first acquire succeeds and creates the lock dir.
+    rc1=0
+    run_in_install '
+        VULTURE_HOME="'"$lhome"'"; export VULTURE_HOME
+        type acquire_install_lock >/dev/null 2>&1 && acquire_install_lock
+    ' >/dev/null 2>&1 || rc1=$?
+    if [ "$rc1" -ne 0 ]; then
+        fail "$name" "first acquire failed (rc=$rc1) with no pre-existing lock"; return
+    fi
+    if [ ! -d "$lhome.lock" ]; then
+        fail "$name" "acquire_install_lock did not create $lhome.lock"; return
+    fi
+    # (b) second acquire (lock dir present) must refuse with non-zero.
+    rc2=0
+    run_in_install '
+        VULTURE_HOME="'"$lhome"'"; export VULTURE_HOME
+        type acquire_install_lock >/dev/null 2>&1 && acquire_install_lock
+    ' >/dev/null 2>&1 || rc2=$?
+    rm -rf "$lhome.lock"
+    if [ "$rc2" -ne 0 ]; then pass "$name"
+    else fail "$name" "second acquire succeeded despite existing lock (rc=$rc2)"; fi
+}
+test_install_lock
+
 # TEST 16 — resolve_version GitHub-API curl carries a timeout (review #4 / H6).
 test_resolve_version_timeout() {
     name="H6-resolve_version-curl-timeout"
