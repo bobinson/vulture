@@ -41,7 +41,9 @@ if [ -z "$CURRENT" ]; then
     exit 0
 fi
 
-# Compare via sort -V — newest is last.
+# Compare via sort -V — newest is last. (CI-only lint on a GNU runner, so
+# sort -V is fine here; install.sh's runtime version_lt deliberately avoids it
+# for BSD/BusyBox portability — do not "reconcile" the two.)
 ORDERED=$(printf '%s\n%s\n' "$FALLBACK" "$CURRENT" | sort -V)
 NEWEST=$(printf '%s\n' "$ORDERED" | tail -1)
 if [ "$NEWEST" = "$FALLBACK" ] && [ "$FALLBACK" != "$CURRENT" ]; then
@@ -61,7 +63,7 @@ cur_major=${cur_mm%% *}; cur_minor=${cur_mm##* }
 case "$fb_major$fb_minor$cur_major$cur_minor" in
     *[!0-9]*) ;;  # non-numeric (unexpected tag shape) — skip the minor check
     *)
-        if [ "$fb_major" = "$cur_major" ] && [ "$((cur_minor - fb_minor))" -gt 1 ]; then
+        if [ "$fb_major" = "$cur_major" ] && [ "$((10#$cur_minor - 10#$fb_minor))" -gt 1 ]; then
             echo "error: FALLBACK_TAG ($FALLBACK) is more than one minor behind current ($CURRENT)" >&2
             exit 1
         fi ;;

@@ -142,7 +142,7 @@ resolve_version() {
     if [ -n "${VULTURE_VERSION:-}" ]; then
         VERSION=$VULTURE_VERSION
     elif command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 \
+        VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --retry-delay 2 \
             "$RELEASES_API" 2>/dev/null \
             | grep -E '"tag_name"' | head -1 \
             | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
@@ -483,7 +483,8 @@ _install_python_deps_bundled() {
     fi
     # Fail-closed hashless detection: any requirement line (non-blank,
     # non-comment, non-continuation) when the file has no --hash= lines.
-    if ! grep -q -- '--hash=' "$REQS"; then
+    # Use the shared predicate so "what counts as hashed" lives in one place.
+    if ! reqs_have_hashes "$REQS"; then
         # Confirm there is at least one real requirement line to install.
         if grep -Eq '^[[:space:]]*[^#[:space:]]' "$REQS"; then
             err "requirements-frozen.txt has no --hash= lines; refusing hashless install (fail-closed)"

@@ -115,8 +115,9 @@ detail=""
 if [ ! -s "$LOCK" ] || ! grep -q -- '--hash=' "$LOCK"; then
     detail="$detail agents/requirements-frozen.txt missing or unhashed;"
 fi
-# shellcheck disable=SC2016  # grepping for the literal shell text 'cp "$_lock"' in build-release.sh
-if ! grep -q 'cp "$_lock"' "$BR"; then
+# Assert build-release.sh copies a requirements-frozen.txt (behavioural anchor,
+# not the exact variable name — survives a benign refactor of the cp line).
+if ! grep -qE 'cp[[:space:]].*requirements-frozen\.txt' "$BR"; then
     detail="$detail build-release.sh no longer copies the hashed lockfile into the tarball;"
 fi
 if [ -z "$detail" ]; then
