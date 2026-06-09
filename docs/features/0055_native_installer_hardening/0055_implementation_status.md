@@ -3,7 +3,7 @@
 **Status**: IMPLEMENTED — Tier A + C + hardening pass + **B1 (lockfile)** + **Tier
 B-lite (system-Python install)** + **cross-distro Docker e2e**. Tier B (bundled PBS)
 and the `vulture.sh release` preflight remain designed-only (see plan).
-**Last updated**: 2026-06-07
+**Last updated**: 2026-06-09
 
 ## Implemented since 2026-06-05 (B1, Tier B-lite, cross-distro e2e)
 
@@ -16,8 +16,16 @@ and the `vulture.sh release` preflight remain designed-only (see plan).
 
 **Not yet built (designed-only):** Tier B (bundle python-build-standalone via the
 signed vendor pipeline — needs the release-signing flow, not sandbox-runnable) and
-the `scripts/vulture.sh release` preflight + `release.yml` hardening deltas. System
-Python (Tier B-lite) fully covers the "run agents with an existing Python" case.
+the `scripts/vulture.sh release` preflight + `release.yml` hardening deltas.
+
+Tier B-lite covers the **dependency install** half of "run agents with an existing
+Python": after the 2026-06-09 audit fix, releases now ship the hashed lockfile and
+`VULTURE_USE_SYSTEM_PYTHON=1` builds the venv + installs with `--require-hashes`.
+Native agent **execution** is NOT yet end-to-end — the install-mode launcher still
+derives `PYTHONPATH`/ProjectRoot from the dev tree (`launcher.go`) instead of
+`AgentsRoot`/`PythonBin` (`mode.go`), and agent source is copied nested
+(`runtime/agents/<a>/<pkg>`) rather than flat — so even with deps installed, agents
+won't import until that wiring lands (tracked under Deferred below).
 
 ## Checklist
 
@@ -58,11 +66,18 @@ test plan, effort — lives in `0055_implementation_plan.md`
 §"Tier B (DEFERRED) — embedded Python agent runtime". Summary of the
 remaining work:
 
-- Generate a **hashed** `requirements-frozen.txt` from the agents'
-  `pyproject.toml`s (`uv pip compile --generate-hashes`).
-- Wire `release.yml` to fetch+verify the already-built `vendor-pbs-*`
-  PBS asset and compile the lockfile (`build-release.sh` has stubs;
-  `install_python_deps` already consumes the result).
+- ~~Generate a **hashed** `requirements-frozen.txt`~~ — DONE
+  (`scripts/gen-lockfile.sh`); as of 2026-06-09 `build-release.sh` also
+  **ships** it into the tarball (was a 0-byte stub before — see AU1).
+- Bundle PBS: wire `release.yml` to fetch+verify the already-built
+  `vendor-pbs-*` asset and extract it into `runtime/python/`. The
+  `vendor-pbs.yml` workflow exists but **nothing consumes it**;
+  `build-release.sh` only writes a `PBS_NOT_BUNDLED` marker.
+- Fix install-mode agent **execution**: make the launcher use
+  `AgentsRoot`/`PythonBin` (`mode.go`) instead of the CWD-derived dev
+  `ProjectRoot`, and copy agent packages flat under `runtime/agents/` to
+  match `BuildAgentEnv`'s `PYTHONPATH`. (Without this, even a PBS-bundled
+  release with deps installed cannot import the agents.)
 - Make `smoke-install.sh` run a real `vulture scan`.
 
 **Build it only when the Trigger in the LLD is met** (real demand for
@@ -70,6 +85,23 @@ Docker-less agent scanning). When built, it graduates to its own feature
 (suggested `0056_native_agent_runtime`). Until then, Mode E installs the
 CLI + embedded SPA; agent-based scanning requires Docker (Mode A/B), and
 even with Tier B an external LLM endpoint is still required.
+
+## Post-release audit fixes (2026-06-09)
+
+A post-v0.0.1 end-to-end audit of the native-runtime shipping chain found
+several pieces that were generated/designed but not actually delivered:
+
+| Ref | Sev | Fix |
+|---|---|---|
+| AU1 | Blocker | `build-release.sh` globbed nonexistent `agents/*/requirements.txt` → shipped a **0-byte** lockfile. Now copies the committed hashed `agents/requirements-frozen.txt` (2090 hashes); empty CLI-only marker only if it's absent/unhashed. Tier B-lite's dep install now works from a real release. |
+| AU2 | Major | `release.yml` `pip-audit -r agents/requirements.txt` targeted a nonexistent file (silent no-op) → repointed at `agents/requirements-frozen.txt`. |
+| AU3 | Major | `FALLBACK_TAG=v0.0.0` (never released) made the API-down path 404 → bumped to `v0.0.1`; `check-fallback-tag.sh` now rejects `v0.0.0` and enforces the "≤1 minor behind" rule its header promised. |
+| AU4 | Major | `verify_signature` silently downgraded to SHA-only when cosign was present but the sig/cert was missing → now fail-closed unless `VULTURE_ALLOW_UNSIGNED=true` (the no-cosign `curl\|sh` path is unchanged). |
+| AU5 | Major | Misleading "In CI this is generated…/fetches PBS…" comments in `build-release.sh` (CI ran the same stub path) → corrected to the deferred reality. |
+| AU6 | Major | Tests didn't catch the shipping gap (docs-honesty checked only wording; the docker e2e used a hand-injected fixture). Added `test_docs_honesty.sh` **C5** asserting `build-release.sh` ships the hashed lockfile + the committed file is hashed. |
+
+**Still deferred** (Tier B native runtime, see Deferred section): PBS bundling
+and the install-mode launcher/packaging wiring so agents execute natively.
 
 ## Decisions
 

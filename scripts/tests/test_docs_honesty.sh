@@ -102,5 +102,28 @@ else
     pass "$name"
 fi
 
+# ---------------------------------------------------------------------------
+# C5 — build-release.sh must SHIP the committed hashed lockfile (0055 B1),
+#      not regenerate a stub. Catches the audit's "claimed-but-not-shipped"
+#      gap: the committed lockfile must be hashed AND build-release.sh must
+#      copy it into the tarball. (Static check — no Go build needed here.)
+# ---------------------------------------------------------------------------
+name="C5-build-release-ships-hashed-lockfile"
+LOCK="$REPO_ROOT/agents/requirements-frozen.txt"
+BR="$REPO_ROOT/scripts/build-release.sh"
+detail=""
+if [ ! -s "$LOCK" ] || ! grep -q -- '--hash=' "$LOCK"; then
+    detail="$detail agents/requirements-frozen.txt missing or unhashed;"
+fi
+# shellcheck disable=SC2016  # grepping for the literal shell text 'cp "$_lock"' in build-release.sh
+if ! grep -q 'cp "$_lock"' "$BR"; then
+    detail="$detail build-release.sh no longer copies the hashed lockfile into the tarball;"
+fi
+if [ -z "$detail" ]; then
+    pass "$name"
+else
+    fail "$name" "$detail"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
