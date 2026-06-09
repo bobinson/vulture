@@ -24,7 +24,16 @@ type Config struct {
 // DefaultConfig returns default local development configuration,
 // reading port overrides from <projectRoot>/config.ini when present.
 func DefaultConfig(projectRoot string) *Config {
-	dataDir, _ := DefaultDataDir()
+	// Install mode keeps data under the install's VULTURE_HOME (so the backend's
+	// SQLite DB is created + migrated there); dev keeps the historical
+	// $HOME/.vulture location.
+	var dataDir string
+	if DetectMode() == ModeInstall {
+		dataDir = DataDir(ModeInstall, projectRoot) // $VULTURE_HOME/data
+		_ = os.MkdirAll(dataDir, 0o700)
+	} else {
+		dataDir, _ = DefaultDataDir()
+	}
 	ini := loadLocalINI(filepath.Join(projectRoot, "config.ini"))
 
 	port := func(iniKey, fallback string) string {

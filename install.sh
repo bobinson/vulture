@@ -166,7 +166,14 @@ resolve_version() {
 download_artifacts() {
     if [ -n "${VULTURE_OFFLINE_TARBALL:-}" ]; then
         TARBALL=$VULTURE_OFFLINE_TARBALL
+        # Prefer a per-tarball sidecar (vulture-<ver>-<os>-<arch>.SHA256SUMS),
+        # else fall back to an aggregate SHA256SUMS in the tarball's dir — which
+        # is what releases actually publish. verify_checksum greps this
+        # tarball's basename out of whichever file is found.
         SHASUM_FILE=${VULTURE_OFFLINE_TARBALL%.tar.gz}.SHA256SUMS
+        if [ ! -f "$SHASUM_FILE" ]; then
+            SHASUM_FILE="$(dirname "$VULTURE_OFFLINE_TARBALL")/SHA256SUMS"
+        fi
         SIG_FILE=${VULTURE_OFFLINE_TARBALL%.tar.gz}.sig
         log "using offline tarball: $TARBALL"
         return
