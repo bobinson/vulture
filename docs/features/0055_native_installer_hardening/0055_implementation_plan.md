@@ -550,13 +550,48 @@ From the runtime investigation (all paths in `/home/user/src/vulture-gh`):
 - Agent packages (1 `vulture-shared` + 10 agents) all declare `requires-python = ">=3.12"`. Native wheels needed: **pydantic-core (Rust)**, plus `tiktoken`, `uvloop` (via `uvicorn[standard]`), `websockets`. No vendored deps; full transitive closure comes from PyPI — which is exactly why a generated, hash-pinned lockfile (B1) is the unit of trust.
 - A venv created by a 3.12 interpreter yields exactly `bin/python3.12`, `bin/python3`, `bin/python`, and `bin/pip` — i.e. **the precise layout `PythonBin()` and `doctor` already expect.** This is the load-bearing observation that makes a zero-Go-change integration possible.
 
+> ⚠️ **CORRECTION (2026-06-09 audit).** The launcher claim above (and the
+> "no Go change" premise in §2 and §4.1) is **inaccurate against the code**, and
+> verifying agent *execution* end-to-end exposed that the whole install-mode
+> `vulture start` path is unwired — not just the agent env:
+> - `startAgents` (`launcher.go:245-326`) sources agents from
+>   `l.cfg.ProjectRoot + "/agents"` and runs them with `l.detect.PythonPath`
+>   (the *detected host* interpreter), `PYTHONPATH=<root>/agents/shared:<agentDir>`.
+>   It does **not** use `runtime/agents`, `PythonBin()`, or `BuildAgentEnv()` —
+>   `BuildAgentEnv`/`AgentsRoot` are defined but **never called by the launcher**
+>   (only `doctor.go` uses `PythonBin`). So `env.go:38-86 (BuildAgentEnv())` is
+>   NOT the live launch path.
+> - `runStart → runLocalStart → findProjectRoot() (= CWD in install mode) →
+>   Launcher.Start()`, and the **Launcher never branches on mode**:
+>   `startBackend` `go build`s from `CWD/backend`, `startFrontend` runs
+>   `npm ci`/vite from `CWD/frontend`, `installAgentDeps` pip-installs editable
+>   from `CWD/agents`. None exist for a native install → `vulture start` fails.
+>
+> **A Go change IS required.** Install-mode `local_start` must: (a) run the
+> backend via the installed binary's `serve` (no `go build`), serving the static
+> SPA already shipped at `runtime/frontend`; (b) start agents from
+> `AgentsRoot(install)` = `$VULTURE_HOME/runtime/agents` with the venv
+> `PythonBin(install)` — the **nested** copy (`runtime/agents/<a>/<pkg>`) is
+> correct for the existing `<root>/shared:<agentDir>` PYTHONPATH, so **no
+> repackaging is needed**; (c) skip the vite frontend dev server (the SPA is
+> static); (d) skip `installAgentDeps` (the venv is pre-provisioned with
+> `--require-hashes`; first-party packages load via PYTHONPATH). This is the
+> deferred Tier-B *execution* work (status doc → Deferred).
+
 **Precise extension point:** a new opt-in branch slots into `install_python_deps()` *after* the bundled-PBS handling and *before* the default CLI-only `return 0`, so the bundled path is unaffected and the default fall-through is preserved when the flag is unset.
 
 ## 4. Design
 
 ### 4.1 Core decision
 
-**Do not change the Go contract.** Instead of teaching Go a new interpreter location, the installer materializes a venv whose layout *is* what Go already expects: `python3.12` + `pip` under `$VULTURE_HOME/runtime/python/bin`. Doctor's `os.Stat` passes, the launcher's restricted `PATH` finds the interpreter and `uvicorn`, and no Go edit is required for the happy path.
+**Do not change the Go contract** *(for dependency INSTALL only — see below).* Instead of teaching Go a new interpreter location, the installer materializes a venv whose layout *is* what Go already expects: `python3.12` + `pip` under `$VULTURE_HOME/runtime/python/bin`. Doctor's `os.Stat` passes, and no Go edit is required to **install** the deps.
+
+> ⚠️ **Superseded for EXECUTION (2026-06-09 correction, §3).** The "no Go edit"
+> conclusion holds only for the dependency *install* (the venv + `doctor`).
+> Actually *running* agents from a native install **does** require a Go change:
+> the launcher today is dev-only (sources from `CWD`, `go build`s the backend,
+> runs vite). See the §3 correction for the required install-mode `local_start`
+> wiring.
 
 ### 4.2 Fallback order (precedence)
 

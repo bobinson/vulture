@@ -356,12 +356,14 @@ test_cosign_argshape() {
 test_cosign_argshape
 
 # ---------------------------------------------------------------------------
-# TEST 3 — verify_signature no-signature -> SHA-only (cosign NOT called).
-# When no .pem/sig is published, verify must warn + fall back to SHA-only and
-# must NOT invoke cosign.  (This branch may already pass on pristine code.)
+# TEST 3 — verify_signature with cosign present but NO signature/cert.
+# Security posture (0055 audit #6): cosign installed + missing sig is a
+# downgrade signal, so verify must REFUSE (fail-closed) by default and only
+# fall back to SHA-only when VULTURE_ALLOW_UNSIGNED=true. cosign must never be
+# invoked when there is nothing to verify.
 # ---------------------------------------------------------------------------
 test_verify_nosig() {
-    name="A1-no-sig-sha-only"
+    name="A1-no-sig-refuses-downgrade"
     if [ "$SEAM_OK" -ne 1 ]; then
         fail "$name" "verify_signature unreachable: seam absent (main ran on source)"
         return
@@ -370,7 +372,7 @@ test_verify_nosig() {
     mkdir -p "$work"
     SHASUM_FILE="$work/SHA256SUMS"
     printf 'deadbeef  vulture\n' > "$SHASUM_FILE"
-    # No .pem, no .sig present.
+    # (a) Default (cosign stubbed on PATH, no .pem/.sig) -> refuse, no cosign.
     : > "$COSIGN_LOG"
     : > "$COSIGN_LOG.lines"
     run_in_install '
@@ -378,14 +380,36 @@ test_verify_nosig() {
         SIG_FILE="'"$work"'/SHA256SUMS.sig"
         REPO_OWNER="freedomledger"
         REPO_NAME="vulture"
+        unset VULTURE_ALLOW_UNSIGNED
         export SHASUM_FILE SIG_FILE REPO_OWNER REPO_NAME
         verify_signature
     ' >/dev/null 2>&1
     rc=$?
     if [ -s "$COSIGN_LOG" ]; then
-        fail "$name" "cosign was invoked despite missing certificate (should be SHA-only fallback)"
+        fail "$name" "cosign was invoked despite missing signature"
+    elif [ "$rc" -eq 0 ]; then
+        fail "$name" "verify_signature returned 0 on missing sig with cosign present; expected fail-closed refusal"
+    else
+        pass "$name"
+    fi
+
+    # (b) Explicit opt-out VULTURE_ALLOW_UNSIGNED=true -> graceful SHA-only.
+    name="A1b-no-sig-allow-unsigned-sha-only"
+    : > "$COSIGN_LOG"
+    run_in_install '
+        SHASUM_FILE="'"$SHASUM_FILE"'"
+        SIG_FILE="'"$work"'/SHA256SUMS.sig"
+        REPO_OWNER="freedomledger"
+        REPO_NAME="vulture"
+        VULTURE_ALLOW_UNSIGNED=true
+        export SHASUM_FILE SIG_FILE REPO_OWNER REPO_NAME VULTURE_ALLOW_UNSIGNED
+        verify_signature
+    ' >/dev/null 2>&1
+    rc=$?
+    if [ -s "$COSIGN_LOG" ]; then
+        fail "$name" "cosign was invoked despite missing signature (should be SHA-only)"
     elif [ "$rc" -ne 0 ]; then
-        fail "$name" "verify_signature returned non-zero ($rc) on no-sig; expected graceful SHA-only return"
+        fail "$name" "verify_signature returned non-zero ($rc) with ALLOW_UNSIGNED; expected graceful SHA-only"
     else
         pass "$name"
     fi
@@ -780,6 +804,50 @@ test_filelist_populated() {
     else fail "$name" ".filelist empty/absent after extract (tar verbose redirect bug)"; fi
 }
 test_filelist_populated
+
+# TEST 17 — install lock (G2): acquire succeeds with no lock, refuses when held.
+test_install_lock() {
+    name="G2-install-lock-mutex"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "acquire_install_lock unreachable: seam absent"; return; fi
+    lhome="$SANDBOX/lock-home"; rm -rf "$lhome" "$lhome.lock"
+    # (a) first acquire succeeds and creates the lock dir.
+    rc1=0
+    run_in_install '
+        VULTURE_HOME="'"$lhome"'"; export VULTURE_HOME
+        type acquire_install_lock >/dev/null 2>&1 && acquire_install_lock
+    ' >/dev/null 2>&1 || rc1=$?
+    if [ "$rc1" -ne 0 ]; then
+        fail "$name" "first acquire failed (rc=$rc1) with no pre-existing lock"; return
+    fi
+    if [ ! -d "$lhome.lock" ]; then
+        fail "$name" "acquire_install_lock did not create $lhome.lock"; return
+    fi
+    # (b) second acquire (lock dir present) must refuse with non-zero.
+    rc2=0
+    run_in_install '
+        VULTURE_HOME="'"$lhome"'"; export VULTURE_HOME
+        type acquire_install_lock >/dev/null 2>&1 && acquire_install_lock
+    ' >/dev/null 2>&1 || rc2=$?
+    rm -rf "$lhome.lock"
+    if [ "$rc2" -ne 0 ]; then pass "$name"
+    else fail "$name" "second acquire succeeded despite existing lock (rc=$rc2)"; fi
+}
+test_install_lock
+
+# TEST 18 — quickstart order: print_summary lists 'start' before 'scan' (the
+# service/daemon must be up before 'scan' submits to it).
+test_summary_order() {
+    name="UX-summary-start-before-scan"
+    body=$(sed -n '/print_summary()/,/^}/p' "$INSTALL_SH")
+    start_ln=$(printf '%s\n' "$body" | grep -n 'vulture start' | head -1 | cut -d: -f1)
+    scan_ln=$(printf '%s\n' "$body" | grep -n 'vulture scan' | head -1 | cut -d: -f1)
+    if [ -n "$start_ln" ] && [ -n "$scan_ln" ] && [ "$start_ln" -lt "$scan_ln" ]; then
+        pass "$name"
+    else
+        fail "$name" "print_summary must list 'vulture start' before 'vulture scan' (start=$start_ln scan=$scan_ln)"
+    fi
+}
+test_summary_order
 
 # TEST 16 — resolve_version GitHub-API curl carries a timeout (review #4 / H6).
 test_resolve_version_timeout() {

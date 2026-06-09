@@ -35,9 +35,11 @@
 #
 # This script is shellcheck-clean and POSIX-sh (no bashisms).
 
-# Fallback tag bumped on every release per plan H2. install.sh refuses
-# any older version (see resolve_version).
-FALLBACK_TAG="v0.0.0"
+# Fallback tag bumped on every release per plan H2 (enforced by
+# scripts/check-fallback-tag.sh). MUST be a real PUBLISHED release: install.sh
+# downloads it when the GitHub API is unreachable, and refuses any older
+# VULTURE_VERSION (see resolve_version). v0.0.0 was never released.
+FALLBACK_TAG="v0.0.1"
 REPO_OWNER="bobinson"
 REPO_NAME="vulture"
 REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -140,7 +142,7 @@ resolve_version() {
     if [ -n "${VULTURE_VERSION:-}" ]; then
         VERSION=$VULTURE_VERSION
     elif command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 \
+        VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --retry-delay 2 \
             "$RELEASES_API" 2>/dev/null \
             | grep -E '"tag_name"' | head -1 \
             | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
@@ -164,7 +166,14 @@ resolve_version() {
 download_artifacts() {
     if [ -n "${VULTURE_OFFLINE_TARBALL:-}" ]; then
         TARBALL=$VULTURE_OFFLINE_TARBALL
+        # Prefer a per-tarball sidecar (vulture-<ver>-<os>-<arch>.SHA256SUMS),
+        # else fall back to an aggregate SHA256SUMS in the tarball's dir — which
+        # is what releases actually publish. verify_checksum greps this
+        # tarball's basename out of whichever file is found.
         SHASUM_FILE=${VULTURE_OFFLINE_TARBALL%.tar.gz}.SHA256SUMS
+        if [ ! -f "$SHASUM_FILE" ]; then
+            SHASUM_FILE="$(dirname "$VULTURE_OFFLINE_TARBALL")/SHA256SUMS"
+        fi
         SIG_FILE=${VULTURE_OFFLINE_TARBALL%.tar.gz}.sig
         log "using offline tarball: $TARBALL"
         return
@@ -209,14 +218,23 @@ verify_signature() {
         warn "proceeding with SHA-only verification"
         return
     fi
+    # cosign IS installed: a published release must carry sig + cert. A missing
+    # one is a downgrade signal (e.g. a mirror that dropped them), so refuse it
+    # rather than silently falling back to SHA-only — unless explicitly allowed.
     if [ ! -s "${SIG_FILE:-}" ]; then
-        warn "no signature file present; SHA-only verification"
-        return
+        if [ "${VULTURE_ALLOW_UNSIGNED:-}" = "true" ]; then
+            warn "no signature file present; VULTURE_ALLOW_UNSIGNED=true; SHA-only verification"
+            return
+        fi
+        err "cosign is installed but no signature was published for this release; refusing silent downgrade to SHA-only (set VULTURE_ALLOW_UNSIGNED=true to override)"
     fi
     PEM="${SHASUM_FILE%/*}/SHA256SUMS.pem"
     if [ ! -s "$PEM" ]; then
-        warn "no certificate published; SHA-only verification"
-        return
+        if [ "${VULTURE_ALLOW_UNSIGNED:-}" = "true" ]; then
+            warn "no certificate published; VULTURE_ALLOW_UNSIGNED=true; SHA-only verification"
+            return
+        fi
+        err "cosign is installed but no certificate was published for this release; refusing silent downgrade to SHA-only (set VULTURE_ALLOW_UNSIGNED=true to override)"
     fi
     log "verifying release signature (cosign + Rekor)"
     cosign verify-blob \
@@ -244,6 +262,21 @@ verify_checksum() {
     log "SHA256 verified"
 }
 
+# ─── install lock (serialize concurrent installs to one VULTURE_HOME) ─────
+# Two `curl | sh` runs against the same VULTURE_HOME would otherwise race on
+# the staging dir and the swap (one run's rollback could delete the other's
+# freshly-committed install). mkdir is atomically exclusive on POSIX and
+# portable across macOS + Linux (flock is not), so use it as the lock. Held
+# from just before extraction through commit; the EXIT trap releases it.
+acquire_install_lock() {
+    LOCK_DIR="${VULTURE_HOME}.lock"
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        LOCK_HELD=1
+        return 0
+    fi
+    err "another vulture install appears to be in progress (lock dir: $LOCK_DIR). If none is running, remove that directory and retry."
+}
+
 # ─── 7. extract_atomic (with TOCTOU re-validation) ────────────────────────
 extract_atomic() {
     # Re-run the validation immediately before extraction (plan C4).
@@ -252,7 +285,9 @@ extract_atomic() {
     # umask BEFORE mkdir so the staging dir is never world-readable, even
     # briefly, before extraction populates it.
     umask 077
-    NEW_HOME="${VULTURE_HOME}.new"
+    # PID-suffixed (like OLD_HOME below) so concurrent runs never share a
+    # staging dir even if the lock is bypassed.
+    NEW_HOME="${VULTURE_HOME}.new.$$"
     rm -rf "$NEW_HOME"
     mkdir -p "$NEW_HOME"
     log "extracting tarball"
@@ -306,6 +341,8 @@ cleanup() {
     fi
     [ -n "${NEW_HOME:-}" ] && rm -rf "$NEW_HOME"
     [ -n "${DOWNLOAD_DIR:-}" ] && rm -rf "$DOWNLOAD_DIR"
+    # Release the install lock if WE acquired it (never another run's lock).
+    [ "${LOCK_HELD:-}" = "1" ] && [ -n "${LOCK_DIR:-}" ] && rm -rf "$LOCK_DIR"
     # Return 0 explicitly: this is the EXIT trap, so its last command's status
     # becomes the script's exit code. On the offline path DOWNLOAD_DIR is unset,
     # so the guard above would otherwise leave a non-zero status and make a
@@ -472,7 +509,8 @@ _install_python_deps_bundled() {
     fi
     # Fail-closed hashless detection: any requirement line (non-blank,
     # non-comment, non-continuation) when the file has no --hash= lines.
-    if ! grep -q -- '--hash=' "$REQS"; then
+    # Use the shared predicate so "what counts as hashed" lives in one place.
+    if ! reqs_have_hashes "$REQS"; then
         # Confirm there is at least one real requirement line to install.
         if grep -Eq '^[[:space:]]*[^#[:space:]]' "$REQS"; then
             err "requirements-frozen.txt has no --hash= lines; refusing hashless install (fail-closed)"
@@ -564,10 +602,10 @@ print_summary() {
     log ""
     log "  Vulture $VERSION installed to $VULTURE_HOME"
     log ""
-    log "  Try:"
-    log "    vulture scan ./some-repo"
-    log "    vulture start"
-    log "    vulture stop"
+    log "  Quickstart — start the service (and agents) before scanning:"
+    log "    vulture start              # backend + agents + UI (backgrounds in install mode)"
+    log "    vulture scan ./some-repo   # scan a repo (submits to the running service)"
+    log "    vulture stop               # stop the service"
     log ""
 }
 
@@ -584,6 +622,7 @@ main() {
     download_artifacts
     verify_signature
     verify_checksum
+    acquire_install_lock
     extract_atomic
     generate_jwt_secret
     install_python_deps
