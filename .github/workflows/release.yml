@@ -119,8 +119,12 @@ jobs:
           else
             IGN=""
           fi
+          # Audit the actual hashed lockfile — `agents/requirements.txt` never
+          # existed (agents use pyproject.toml), so this step audited nothing.
+          # Advisory: Trivy above is the hard CVE gate; .pip-audit-ignore holds
+          # time-boxed, codeowner-reviewed waivers.
           # shellcheck disable=SC2086
-          pip-audit -r agents/requirements.txt --strict $IGN || true
+          pip-audit -r agents/requirements-frozen.txt --strict $IGN || true
       - name: cosign sign tarball
         run: |
           cosign sign-blob --yes \
