@@ -595,10 +595,10 @@ print_summary() {
     log ""
     log "  Vulture $VERSION installed to $VULTURE_HOME"
     log ""
-    log "  Try:"
-    log "    vulture scan ./some-repo"
-    log "    vulture start"
-    log "    vulture stop"
+    log "  Quickstart — start the service (and agents) before scanning:"
+    log "    vulture start              # backend + agents + UI (backgrounds in install mode)"
+    log "    vulture scan ./some-repo   # scan a repo (submits to the running service)"
+    log "    vulture stop               # stop the service"
     log ""
 }
 

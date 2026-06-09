@@ -834,6 +834,21 @@ test_install_lock() {
 }
 test_install_lock
 
+# TEST 18 — quickstart order: print_summary lists 'start' before 'scan' (the
+# service/daemon must be up before 'scan' submits to it).
+test_summary_order() {
+    name="UX-summary-start-before-scan"
+    body=$(sed -n '/print_summary()/,/^}/p' "$INSTALL_SH")
+    start_ln=$(printf '%s\n' "$body" | grep -n 'vulture start' | head -1 | cut -d: -f1)
+    scan_ln=$(printf '%s\n' "$body" | grep -n 'vulture scan' | head -1 | cut -d: -f1)
+    if [ -n "$start_ln" ] && [ -n "$scan_ln" ] && [ "$start_ln" -lt "$scan_ln" ]; then
+        pass "$name"
+    else
+        fail "$name" "print_summary must list 'vulture start' before 'vulture scan' (start=$start_ln scan=$scan_ln)"
+    fi
+}
+test_summary_order
+
 # TEST 16 — resolve_version GitHub-API curl carries a timeout (review #4 / H6).
 test_resolve_version_timeout() {
     name="H6-resolve_version-curl-timeout"
