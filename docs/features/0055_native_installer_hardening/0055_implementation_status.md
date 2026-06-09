@@ -77,17 +77,23 @@ remaining work:
   `vendor-pbs-*` asset and extract it into `runtime/python/`. The
   `vendor-pbs.yml` workflow exists but **nothing consumes it**;
   `build-release.sh` only writes a `PBS_NOT_BUNDLED` marker.
-- Implement **install-mode `local_start`** (the launcher is currently dev-only;
-  a Go change is required — the plan's "no Go change" claim applies only to the
-  dependency *install*, see plan §3 correction). Install mode must:
-  (a) run the backend via the installed binary's `serve` (no `go build`),
-  serving the static SPA shipped at `runtime/frontend`;
-  (b) start agents from `AgentsRoot(install)` = `$VULTURE_HOME/runtime/agents`
-  with the venv `PythonBin(install)` (nested packaging is already correct —
-  no repackaging, and do NOT route through `BuildAgentEnv`, whose single-dir
-  PYTHONPATH would require flat packaging);
-  (c) skip the vite frontend dev server (SPA is static);
-  (d) skip `installAgentDeps` (the venv is pre-provisioned with `--require-hashes`).
+- ~~Implement **install-mode `local_start`**~~ — IMPLEMENTED (#10, commit
+  range on feature/004-tweaks). `Start()` branches to `startInstallMode`:
+  (a) backend via the installed binary's `serve` (no `go build`; serves the
+  embedded SPA); (b) agents from `AgentsRoot(install)`=`$VULTURE_HOME/runtime/agents`
+  with the venv `PythonBin(install)` via `agentRuntime()`; (c) no vite;
+  (d) no `installAgentDeps` (`CheckInstallPrereqs` is soft on a missing venv).
+  Two follow-on gaps the e2e surfaced were also fixed: the offline-install SHA
+  fallback to the aggregate `SHA256SUMS`, and `DefaultConfig` using
+  `DataDir(ModeInstall)`=`$VULTURE_HOME/data` so the backend's DB migrates in
+  place. **Verified:** venv deps install (`--require-hashes`), install-mode
+  backend serves, and `chaos_agent`/`shared` resolve from the shipped
+  `runtime/agents` via the launcher PYTHONPATH (find_spec). **Still to verify
+  on a clean host:** a live `vulture start` binding all 10 agent ports + a
+  scan dispatching to them with an LLM (the local e2e ports 28001-28010 were
+  occupied by a pre-existing install, so agents couldn't bind).
+- **PBS bundling** for installs WITHOUT system Python (the no-`VULTURE_USE_SYSTEM_PYTHON`
+  case) remains deferred — see the Bundle-PBS item above.
 - Make `smoke-install.sh` run a real `vulture scan`.
 
 **Build it only when the Trigger in the LLD is met** (real demand for
