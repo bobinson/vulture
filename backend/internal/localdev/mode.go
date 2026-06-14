@@ -90,6 +90,17 @@ func PythonBin(mode Mode) string {
 	return ""
 }
 
+// UIPort returns the port that serves the web UI for the given mode.
+// In install mode there is ONE server: the backend on cfg.BackendPort serves
+// both the API and the embedded SPA, so the UI lives at the backend port. In
+// dev mode the UI is the separate vite dev server on cfg.FrontendPort.
+func UIPort(mode Mode, cfg *Config) string {
+	if mode == ModeInstall {
+		return cfg.BackendPort
+	}
+	return cfg.FrontendPort
+}
+
 // AgentsRoot returns the directory containing per-agent Python source.
 func AgentsRoot(mode Mode, projectRoot string) string {
 	if mode == ModeInstall {

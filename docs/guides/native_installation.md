@@ -7,20 +7,39 @@ macOS and Linux. No Docker and no Node required for the CLI + UI.
 curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh
 ```
 
+## Agent runtime — auto-detected
+
+The native install always sets up the `vulture` CLI (scan/start/stop/doctor)
+and the embedded UI. For agent + skill scanning it needs a local Python agent
+runtime, and the installer **auto-detects** one:
+
+- `VULTURE_USE_SYSTEM_PYTHON` **unset** (the default) = **AUTO**: the installer
+  searches for a host Python >= 3.12. If found, it builds a private venv under
+  `~/.vulture/runtime/python` and installs the audit agents from a
+  **hash-verified** lockfile (`--require-hashes`), so agents + skills run
+  locally via `vulture start` — no Docker. If no suitable Python is found (or
+  the lockfile is unhashed), it falls back to a clean CLI-only install.
+- `VULTURE_USE_SYSTEM_PYTHON=1` = **require**: same as AUTO but fail-closed —
+  the install errors if no Python >= 3.12 or no hashed lockfile is present.
+- `VULTURE_USE_SYSTEM_PYTHON=0` = **disable**: never build a local runtime.
+
+Only the interpreter is operator-provided; the agent dependencies stay
+hash-verified either way.
+
 ## Current limitations
 
-The native install sets up the `vulture` CLI (scan/start/stop/doctor) and the
-embedded UI. **Agents require Docker** — agent-based (multi-framework / LLM)
-scanning currently requires Docker (Mode A or B); the native build does not yet
-bundle a Python agent runtime; that is a planned follow-up (see feature 0055
-Tier B). The agent pipeline is LLM-driven and needs a configured LLM endpoint
-regardless of mode.
+When **no local Python >= 3.12 is present** (and `VULTURE_USE_SYSTEM_PYTHON` is
+not set to `1`), the install is CLI-only and **agents require Docker** —
+agent-based (multi-framework / LLM) scanning then needs Docker (Mode A or B).
+Install Python 3.12+ and re-run the installer to enable local agents instead.
+The agent pipeline is LLM-driven and needs a configured LLM endpoint
+(`OPENAI_API_KEY` / an LLM endpoint) regardless of mode.
 
 After install:
 
 ```sh
-vulture scan ./some-repo        # quick scan
-vulture start                   # run the daemon (UI at 127.0.0.1:23000)
+vulture scan ./some-repo        # quick scan (submits to the running service)
+vulture start                   # run the daemon (UI at 127.0.0.1:28080)
 vulture stop
 vulture doctor                  # health check
 vulture uninstall               # remove everything
@@ -37,7 +56,7 @@ The installer extracts a per-platform tarball under `~/.vulture/`:
 │   ├── agents/                      # Python audit agents
 │   ├── frontend/                    # SPA assets (also embedded in the binary)
 │   ├── catalogs/                    # CWE + ASVS reference data
-│   └── python/                      # portable Python 3.12 — PLANNED (0055 Tier B); not in the current build
+│   └── python/                      # venv built from a host Python >= 3.12 when one is auto-detected at install (else absent → CLI-only)
 ├── data/
 │   ├── vulture.db                   # SQLite database
 │   ├── sources/                     # cached git clones
@@ -184,8 +203,8 @@ and is cleaned up on success.
 |---|---|---|
 | `install.sh: VULTURE_HOME contains unsafe characters` | Special chars in path | Use a path matching `[A-Za-z0-9_./-]+` |
 | `cosign verification failed` | Tampered release or wrong signing identity | Don't bypass; report to the security disclosure channel |
-| `vulture doctor` reports Python FAIL | bundled Python runtime not present | Expected on the current build — the agent runtime is not yet bundled (0055 Tier B). Use Docker (Mode A/B) for agent scanning; the CLI + UI still work |
-| `vulture start` says port in use | Another process on `:23000` | `vulture stop` first, or set `VULTURE_PORT=...` in `config/.env` |
+| `vulture doctor` reports Python WARN | no local agent runtime (CLI-only install) | A CLI-only install is a valid state. Install Python 3.12+ and re-run the installer to add local agents, or use Docker (Mode A/B) for agent scanning; the CLI + UI work either way |
+| `vulture start` says port in use | Another process on the backend port | `vulture stop` first, or set `VULTURE_PORT=...` in `config/.env` |
 | Gatekeeper warning on macOS | Browser-downloaded tarball (quarantine attr) | `xattr -dr com.apple.quarantine ~/.vulture` |
 
 ## Related modes

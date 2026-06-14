@@ -3,7 +3,25 @@
 **Status**: IMPLEMENTED — Tier A + C + hardening pass + **B1 (lockfile)** + **Tier
 B-lite (system-Python install)** + **cross-distro Docker e2e**. Tier B (bundled PBS)
 and the `vulture.sh release` preflight remain designed-only (see plan).
-**Last updated**: 2026-06-09
+**Last updated**: 2026-06-14
+
+## v0.0.3 install-mode UX fixes (auto-detect + audit #1–#8)
+
+Post-implementation audit (2026-06-14) of the install-mode UX surfaced eight
+issues, fixed in this pass. Headline change: the system-Python path is now the
+**auto-detect default**, not an opt-in.
+
+| # | Fix | Status |
+|---|---|---|
+| auto | `install_python_deps`: `VULTURE_USE_SYSTEM_PYTHON` is now TRI-STATE — unset=AUTO (use a present ≥3.12 system Python when a hashed lockfile ships), `1`=REQUIRE (loud-fail), `0`=DISABLE (force CLI-only). AUTO sub-cases: no-lockfile / no-Python / hashless-lockfile all degrade to CLI-only (warn, never abort); `--require-hashes` + `>=3.12` gate enforced on every venv install. | ✅ |
+| #1/#2/#7/#8 | New `localdev.UIPort(mode, cfg)` helper (install → `BackendPort`; dev → `FrontendPort`) + unit test; the backend serves both API and embedded SPA in install mode (no separate UI port). | ✅ |
+| #1 | `start.go` prints the UI URL via `UIPort(...)` (was the phantom 23000). | ✅ |
+| #2 | `main.go runScan` "View results" URL uses `UIPort(mode,lcfg)` → `…/audit/<id>`. | ✅ |
+| #7 | `main.go runStatus`: in install mode no separate "frontend" row at `FrontendPort` (nothing listens there); the backend row serves the UI. | ✅ |
+| #8 | `launcher.go printBanner`: install mode prints "INSTALL MODE", UI line at the backend port, no separate Frontend line, Agents line only when agents are actually started. | ✅ |
+| #3 | `runScan` agent-health guard: probes each `cfg.Agents` `/health` (~1s); if zero reachable, prints a loud, actionable warning (no findings; install Python 3.12+ or use Docker), then CONTINUES (warn, not refuse, so remote/centralized submissions still work). | ✅ |
+| #5 | `doctor.go checkPython`: install-mode missing `PythonBin` path now returns WARN (not hard FAIL) per plan line 544 — CLI-only is a documented-valid state; fix string updated; test updated. | ✅ |
+| #4/#6 | `cli_only_note()` rewritten to be honest — removed the false "CLI + skills still work"; states agent/LLM scanning needs a local Python ≥3.12 (auto-detected; install + re-run, or set `=1`) OR Docker, and that the CLI + web UI are installed and work. Quickstart + post-install summary made conditional on an `AGENTS_INSTALLED` state flag; `launcher.go:228-230` log corrected to "backend + embedded SPA only (no agent runtime…)". | ✅ |
 
 ## Implemented since 2026-06-05 (B1, Tier B-lite, cross-distro e2e)
 

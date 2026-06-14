@@ -77,7 +77,8 @@ func runStart() {
 	}
 	writePIDFile(pidPath, cmd.Process.Pid)
 	fmt.Printf("vulture daemon started (pid %d), bind=%s\n", cmd.Process.Pid, bindAddr)
-	fmt.Printf("UI: http://%s:23000/\n", bindAddr)
+	uiPort := localdev.UIPort(mode, localdev.DefaultConfig(findProjectRoot()))
+	fmt.Printf("UI: http://%s:%s/\n", bindAddr, uiPort)
 }
 
 func hasFlag(args []string, flag string) bool {

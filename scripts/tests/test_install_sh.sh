@@ -937,30 +937,35 @@ make_python "$PYBIN/python3.12"
 make_python "$PYBIN/python3"
 
 # ---------------------------------------------------------------------------
-# U1 — default-off-no-flag (regression lock).
-# Flag UNSET, no bundled pip, hashed reqs present -> CLI-only return 0; the
+# U1 — explicit-off-no-build (regression lock).
+# RECONCILED for the v3 AUTO-detect default: under the new tri-state
+# VULTURE_USE_SYSTEM_PYTHON semantics, an UNSET flag means AUTO (opt in when a
+# hashed lockfile + python>=3.12 are present — see U-auto1), so "no opt-in =>
+# no build" is now expressed via the EXPLICIT-OFF value (=0). The original U1
+# intent (no opt-in => CLI-only, python/venv shims NEVER invoked) is preserved
+# verbatim; only the trigger moves from `unset` to `=0`. The unset/AUTO case is
+# covered by U-auto1 (builds) and U-auto2 (CLI-only when no python).
+# Flag =0, no bundled pip, hashed reqs present -> CLI-only return 0; the
 # python / venv shims are NEVER invoked.
-# NOTE: the CURRENT default path already does this (no bundled pip -> CLI-only
-# before any python touch), so U1 is expected to PASS today.
 # ---------------------------------------------------------------------------
 test_u1_default_off() {
-    name="U1-default-off-no-flag"
+    name="U1-explicit-off-no-build"
     if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
     h=$(setup_sys_home "$SANDBOX/u1-home")
     reset_py_logs
     out=$(run_in_install '
         PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
         VULTURE_HOME="'"$h"'"
-        unset VULTURE_USE_SYSTEM_PYTHON
-        export PATH VULTURE_HOME
+        VULTURE_USE_SYSTEM_PYTHON=0
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON
         install_python_deps 2>&1
     ')
     rc=$?
     detail=""
     [ "$rc" -eq 0 ] || detail="$detail expected rc 0 (CLI-only) got rc=$rc;"
-    [ -s "$PY_DETECT_LOG" ] && detail="$detail python shim invoked with flag unset;"
-    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked with flag unset;"
-    printf '%s' "$out" | grep -Eqi 'agent runtime not bundled|cli' || detail="$detail no CLI-only note;"
+    [ -s "$PY_DETECT_LOG" ] && detail="$detail python shim invoked with flag off;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked with flag off;"
+    printf '%s' "$out" | grep -Eqi 'cli|docker' || detail="$detail no CLI-only note;"
     if [ -z "$detail" ]; then pass "$name"; else fail "$name" "$detail"; fi
 }
 test_u1_default_off
@@ -1318,6 +1323,181 @@ test_cleanup_returns_zero() {
     else fail "$name" "cleanup returned $rc on a committed no-op — a successful offline install would exit non-zero"; fi
 }
 test_cleanup_returns_zero
+
+# ===========================================================================
+# v3 — AUTO-detect system Python (tri-state VULTURE_USE_SYSTEM_PYTHON).
+#
+# New DEFAULT (flag UNSET/empty) is AUTO: if a hashed lockfile AND a host
+# Python >= 3.12 are present, the system-Python venv is built and deps
+# installed; otherwise a clean CLI-only fall-through (exit 0, no error).
+# Tri-state: "0"/"false"/"no" DISABLE -> CLI-only; "1"/"true" REQUIRE ->
+# strict (errors on missing python/lockfile); unset/empty -> AUTO.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# U-auto1 — unset flag + hashed lockfile + python>=3.12 on PATH -> venv built
+# and the venv-pip install is invoked (AUTO opts IN automatically).
+# ---------------------------------------------------------------------------
+test_uauto1_auto_builds() {
+    name="U-auto1-auto-builds-when-python-present"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/uauto1-home")
+    reset_py_logs
+    run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        unset VULTURE_USE_SYSTEM_PYTHON
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME FAKE_PYVER
+        install_python_deps
+    ' >/dev/null 2>&1
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 got rc=$rc;"
+    [ -s "$PY_DETECT_LOG" ] || detail="$detail system python never resolved (AUTO did not detect);"
+    [ -s "$VENV_PIP_LOG" ] || detail="$detail venv-pip never invoked (AUTO did not install);"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] || detail="$detail no venv built under AUTO;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "AUTO default did not build/install: $detail"; fi
+}
+test_uauto1_auto_builds
+
+# ---------------------------------------------------------------------------
+# U-auto2 — unset flag + NO python found -> CLI-only, exit 0, NO error
+# (AUTO fails soft, never aborts the install).
+# ---------------------------------------------------------------------------
+test_uauto2_auto_no_python() {
+    name="U-auto2-auto-no-python-cli-only"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/uauto2-home")
+    nopy="$SANDBOX/uauto2-nopy"; mkdir -p "$nopy"
+    cp "$SHIMBIN/cosign" "$SHIMBIN/curl" "$SHIMBIN/pip" "$SHIMBIN/pip3" "$nopy/" 2>/dev/null
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$nopy"'"
+        VULTURE_HOME="'"$h"'"
+        unset VULTURE_USE_SYSTEM_PYTHON VULTURE_PYTHON
+        export PATH VULTURE_HOME
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 (CLI-only soft) got rc=$rc;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] && detail="$detail venv built despite no python;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked despite no python;"
+    printf '%s' "$out" | grep -Eqi 'cli|docker|python' || detail="$detail no CLI-only note;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "AUTO-no-python not a soft CLI-only fall-through: $detail"; fi
+}
+test_uauto2_auto_no_python
+
+# ---------------------------------------------------------------------------
+# U-auto3 — VULTURE_USE_SYSTEM_PYTHON=0 + python present -> CLI-only (DISABLED).
+# Explicit opt-out must NOT build a venv even though a suitable python exists.
+# ---------------------------------------------------------------------------
+test_uauto3_disabled() {
+    name="U-auto3-explicit-disable-cli-only"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/uauto3-home")
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=0
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 (disabled) got rc=$rc;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] && detail="$detail venv built despite explicit disable;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked despite explicit disable;"
+    printf '%s' "$out" | grep -Eqi 'cli|docker' || detail="$detail no CLI-only note;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "explicit disable (=0) not honored: $detail"; fi
+}
+test_uauto3_disabled
+
+# ---------------------------------------------------------------------------
+# U-auto4 — VULTURE_USE_SYSTEM_PYTHON=1 + NO python -> errs (strict preserved).
+# REQUIRE mode keeps the current fail-closed behavior (regression lock for U7).
+# ---------------------------------------------------------------------------
+test_uauto4_require_no_python() {
+    name="U-auto4-require-no-python-errs"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/uauto4-home")
+    nopy="$SANDBOX/uauto4-nopy"; mkdir -p "$nopy"
+    cp "$SHIMBIN/cosign" "$SHIMBIN/curl" "$SHIMBIN/pip" "$SHIMBIN/pip3" "$nopy/" 2>/dev/null
+    reset_py_logs
+    rc=0
+    run_in_install '
+        PATH="'"$nopy"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        unset VULTURE_PYTHON
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON
+        install_python_deps
+    ' >/dev/null 2>&1 || rc=$?
+    detail=""
+    [ "$rc" -ne 0 ] || detail="$detail expected err (REQUIRE+no python) got rc=0;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] && detail="$detail venv built with no python;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "REQUIRE strictness not preserved: $detail"; fi
+}
+test_uauto4_require_no_python
+
+# ---------------------------------------------------------------------------
+# U-auto5 — AUTO + present-but-hashLESS lockfile -> warn + CLI-only, exit 0
+# (NOT a hard error). AUTO refuses an unverified install but must not abort.
+# ---------------------------------------------------------------------------
+test_uauto5_auto_hashless_soft() {
+    name="U-auto5-auto-hashless-soft-cli-only"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/uauto5-home")
+    # Overwrite the hashed lockfile with a hashLESS (non-empty) one.
+    {
+        printf 'requests==2.31.0\n'
+        printf 'uvicorn[standard]==0.30.0\n'
+    } > "$h/runtime/agents/requirements-frozen.txt"
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        unset VULTURE_USE_SYSTEM_PYTHON
+        FAKE_PYVER=3.12
+        export PATH VULTURE_HOME FAKE_PYVER
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 (soft) got rc=$rc (AUTO must not abort on hashless);"
+    grep -q -- 'install' "$VENV_PIP_LOG" 2>/dev/null && detail="$detail venv-pip ran an install on a hashless lockfile;"
+    [ -s "$out" ] || true
+    printf '%s' "$out" | grep -Eqi 'cli|docker' || detail="$detail no CLI-only note;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "AUTO-hashless not a soft refusal: $detail"; fi
+}
+test_uauto5_auto_hashless_soft
+
+# ---------------------------------------------------------------------------
+# msg — cli_only_note must NOT claim "skills still work" (audit #4/#6). The
+# CLI + UI work, but agent/skill SCANNING needs a local Python runtime or
+# Docker; skills run only inside the Python agents.
+# ---------------------------------------------------------------------------
+test_msg_cli_only_no_skills_claim() {
+    name="msg-cli-only-no-skills-still-work-claim"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "cli_only_note unreachable: seam absent"; return; fi
+    out=$(run_in_install 'type cli_only_note >/dev/null 2>&1 && cli_only_note 2>&1')
+    if printf '%s' "$out" | grep -Eqi 'skills (still|also)? *work|cli \+ skills'; then
+        fail "$name" "cli_only_note still claims skills work without agents: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)"
+    elif printf '%s' "$out" | grep -Eqi 'docker|python'; then
+        pass "$name"
+    else
+        fail "$name" "cli_only_note missing the Docker/Python guidance: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)"
+    fi
+}
+test_msg_cli_only_no_skills_claim
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

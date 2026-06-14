@@ -63,7 +63,7 @@ func checkPython(mode localdev.Mode) (c struct {
 	fix  string
 }) {
 	c.name = "Python runtime reachable"
-	c.fix = "vulture uninstall --keep-data && curl … install.sh | sh"
+	c.fix = "install Python 3.12+ and re-run the installer, or use Docker for agent scanning"
 	bin := localdev.PythonBin(mode)
 	if bin == "" {
 		// Dev mode: skip (the launcher detects system python).
@@ -72,7 +72,11 @@ func checkPython(mode localdev.Mode) (c struct {
 	}
 	if _, err := os.Stat(bin); err == nil {
 		c.ok = true
+		return
 	}
+	// Install mode with no bundled interpreter: a CLI-only install is a
+	// documented-valid state (0055 plan line 544: WARN/exit 2), not a hard FAIL.
+	c.warn = true
 	return
 }
 

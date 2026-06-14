@@ -92,7 +92,8 @@ func (l *Launcher) Start(ctx context.Context) error {
 	// Must run before printBanner so env vars are set for banner display.
 	l.setupOllama(ctx)
 
-	printBanner(l.cfg)
+	// Dev mode always launches the full stack (backend + agents + vite frontend).
+	printBanner(l.cfg, ModeDev, true)
 
 	// 1. Install Python agent dependencies if needed. Fatal: agents can't
 	// start without uvicorn, and the previous warn-and-continue behavior
@@ -217,17 +218,20 @@ func (l *Launcher) startInstallMode(ctx context.Context) error {
 	}
 	l.detect = det
 	l.setupOllama(ctx)
-	printBanner(l.cfg)
 
-	if det.PythonPath != "" && det.UvicornOK {
+	agentsStarting := det.PythonPath != "" && det.UvicornOK
+	printBanner(l.cfg, ModeInstall, agentsStarting)
+
+	if agentsStarting {
 		if err := l.startAgents(ctx); err != nil {
 			return fmt.Errorf("start agents: %w", err)
 		}
 		reportLLMHealthOrAbort(ctx, l.agentURLs())
 	} else {
 		log.Printf("agents unavailable (no bundled Python runtime at %s); "+
-			"starting backend + skills only — reinstall with VULTURE_USE_SYSTEM_PYTHON=1 "+
-			"and a hashed lockfile, or use Docker for agent scanning", PythonBin(ModeInstall))
+			"starting backend + embedded SPA only (no agent runtime; agent scanning needs "+
+			"Docker or a system-Python reinstall with VULTURE_USE_SYSTEM_PYTHON=1 and a "+
+			"hashed lockfile)", PythonBin(ModeInstall))
 	}
 
 	if err := l.startBackend(ctx); err != nil {
@@ -513,25 +517,38 @@ func (l *Launcher) startFrontend(ctx context.Context) error {
 	return nil
 }
 
-func printBanner(cfg *Config) {
+func printBanner(cfg *Config, mode Mode, agentsStarting bool) {
+	header := "  LOCAL DEVELOPMENT MODE"
+	if mode == ModeInstall {
+		header = "  INSTALL MODE"
+	}
 	fmt.Println(`
  _    __      ____
 | |  / /_  __/ / /___  __________
 | | / / / / / / __/ / / / ___/ _ \
 | |/ / /_/ / / /_/ /_/ / /  /  __/
 |___/\__,_/_/\__/\__,_/_/   \___/
-
-  LOCAL DEVELOPMENT MODE`)
+` + "\n" + header)
 	fmt.Println()
 	fmt.Printf("  Backend:   http://localhost:%s\n", cfg.BackendPort)
-	fmt.Printf("  Frontend:  http://localhost:%s\n", cfg.FrontendPort)
-
-	// Build agent port display from registry
-	agentParts := make([]string, 0, len(config.AllAgents))
-	for _, entry := range config.AllAgents {
-		agentParts = append(agentParts, entry.Type+":"+cfg.AgentPorts[entry.Type])
+	// In install mode the backend serves the embedded SPA — the UI is the
+	// backend port and there's no separate frontend server. In dev mode the
+	// UI is the vite dev server on FrontendPort.
+	if mode == ModeInstall {
+		fmt.Printf("  UI:        http://localhost:%s\n", UIPort(mode, cfg))
+	} else {
+		fmt.Printf("  Frontend:  http://localhost:%s\n", cfg.FrontendPort)
 	}
-	fmt.Printf("  Agents:    %s\n", strings.Join(agentParts, "  "))
+
+	// Agents line only when agents are actually being started (a CLI-only
+	// install runs the backend + embedded SPA with no agent runtime).
+	if agentsStarting {
+		agentParts := make([]string, 0, len(config.AllAgents))
+		for _, entry := range config.AllAgents {
+			agentParts = append(agentParts, entry.Type+":"+cfg.AgentPorts[entry.Type])
+		}
+		fmt.Printf("  Agents:    %s\n", strings.Join(agentParts, "  "))
+	}
 
 	fmt.Printf("  Data:      %s\n", cfg.DataDir)
 

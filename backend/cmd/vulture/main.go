@@ -160,8 +160,13 @@ func runStatus() {
 	cfg := config.Load()
 	lcfg := localdev.DefaultConfig(findProjectRoot())
 	ports := map[string]string{
-		"backend":  cfg.Port,
-		"frontend": lcfg.FrontendPort,
+		"backend": cfg.Port,
+	}
+	// In install mode the backend serves the UI directly (embedded SPA) — there
+	// is no separate frontend server listening on FrontendPort, so don't probe
+	// a row that will always read DOWN. Dev mode runs the vite dev server.
+	if localdev.DetectMode() == localdev.ModeDev {
+		ports["frontend"] = lcfg.FrontendPort
 	}
 	for name, agent := range cfg.Agents {
 		// Extract port from URL like "http://agent-chaos:28001"
@@ -194,6 +199,11 @@ func runScan() {
 	fmt.Printf("Scanning: %s\n", target)
 	fmt.Printf("API: %s\n", apiURL)
 
+	// Scan guard: with no agent runtime reachable, NOTHING scans (skills run
+	// inside the Python agents). Warn loudly but continue, so submissions to a
+	// remote/centralized server still work.
+	warnIfNoAgentsReachable(cfg)
+
 	// Determine source type
 	sourceType := "local"
 	if isGitURL(target) {
@@ -219,9 +229,35 @@ func runScan() {
 		log.Fatalf("create audit: %v", err)
 	}
 	fmt.Printf("Audit ID: %s\n", auditID)
+	mode := localdev.DetectMode()
+	lcfg := localdev.DefaultConfig(findProjectRoot())
 	fmt.Printf("\nView results: http://localhost:%s/audit/%s\n",
-		localdev.DefaultConfig(findProjectRoot()).FrontendPort, auditID)
+		localdev.UIPort(mode, lcfg), auditID)
 	fmt.Printf("Stream API:   %s/api/audits/%s/stream\n", apiURL, auditID)
+}
+
+// warnIfNoAgentsReachable probes every configured agent's /health endpoint with
+// a short timeout. If ZERO are reachable, it prints a loud, actionable warning:
+// with no agent runtime the scan produces no findings (skills run inside the
+// agents). It warns rather than refusing, so remote/centralized submissions
+// still work.
+func warnIfNoAgentsReachable(cfg *config.Config) {
+	if len(cfg.Agents) == 0 {
+		return
+	}
+	client := &http.Client{Timeout: 1 * time.Second}
+	for _, agent := range cfg.Agents {
+		resp, err := client.Get(agent.URL + "/health")
+		if err == nil {
+			resp.Body.Close()
+			return // at least one agent reachable
+		}
+	}
+	fmt.Fprintln(os.Stderr,
+		"WARNING: no audit agents are reachable at the local API — this scan will produce "+
+			"NO findings. Install Python 3.12+ and reinstall (or set VULTURE_USE_SYSTEM_PYTHON=1), "+
+			"or use Docker (Mode A/B) for agent scanning. Continuing anyway "+
+			"(a remote/centralized server may still process this submission).")
 }
 
 func findProjectRoot() string {

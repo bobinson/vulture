@@ -374,9 +374,17 @@ generate_jwt_secret() {
 }
 
 # ─── 9. install_python_deps ────────────────────────────────────────────────
+# cli_only_note [REASON] — print the honest CLI-only caveat. The vulture CLI
+# and the web UI ARE installed and work; what is unavailable is agent/LLM
+# SCANNING, because no local agent runtime is present (skills run only inside
+# the Python agents — there is no Go-native skill path). Enable it with EITHER
+# a local Python >= 3.12 (auto-detected at install) OR Docker (Mode A/B).
 cli_only_note() {
-    log "agent runtime not bundled in this build — 'vulture scan' with"
-    log "LLM/agents requires Docker mode (Mode A/B); the CLI + skills still work."
+    [ -n "${1:-}" ] && log "agent scanning unavailable: $1"
+    log "The 'vulture' CLI and the web UI are installed and work."
+    log "Agent/LLM scanning needs a local agent runtime, which is not present."
+    log "Enable it by EITHER installing Python >= 3.12 and re-running the"
+    log "installer (or set VULTURE_USE_SYSTEM_PYTHON=1), OR using Docker (Mode A/B)."
 }
 
 # reqs_have_hashes FILE — true iff the lockfile carries at least one --hash=.
@@ -470,6 +478,57 @@ for m in ("uvicorn", "fastapi", "pydantic", "pydantic_core"):
 PY
 }
 
+# _interp_provenance_note — the 3-line note shared by the REQUIRE and AUTO
+# system-Python paths: deps are hash-verified, only the interpreter is
+# operator-provided. (DRY — printed before every system-venv build.)
+_interp_provenance_note() {
+    log "using system Python at $1 — agent DEPENDENCIES are hash-verified against"
+    log "requirements-frozen.txt; the INTERPRETER is operator-provided and not"
+    log "cosign/PBS-verified. Use a bundled-runtime release for a fully verified stack."
+}
+
+# _system_python_build INTERP — shared tail for the REQUIRE and AUTO paths:
+# note provenance, build the venv, install the hashed deps, mark agents
+# installed. Hash verification + the >=3.12 gate stay enforced downstream.
+_system_python_build() {
+    _interp_provenance_note "$1"
+    create_system_venv "$1"
+    install_deps_system_venv
+    AGENTS_INSTALLED=1
+}
+
+# _install_python_deps_require — strict opt-in path (VULTURE_USE_SYSTEM_PYTHON
+# truthy). Any missing prerequisite is fail-closed (err), preserving existing
+# behavior and error strings.
+_install_python_deps_require() {
+    [ -s "$REQS" ] || err "VULTURE_USE_SYSTEM_PYTHON set but $REQS is missing/empty; this build ships no hashed lockfile (Tier B item B1)."
+    _sys_py=$(detect_system_python) \
+        || err "VULTURE_USE_SYSTEM_PYTHON set but no Python >= 3.${VULTURE_PY_MIN_MINOR:-12} found (set VULTURE_PYTHON to point at one)."
+    _system_python_build "$_sys_py"
+}
+
+# _install_python_deps_auto — AUTO path (flag unset/empty). Opts in only when a
+# hashed lockfile AND a host Python >= 3.12 are both present; otherwise it is a
+# SOFT CLI-only fall-through (exit 0, never aborts the whole install). The
+# --require-hashes gate is still enforced: a hashless lockfile is refused, but
+# softly (warn + CLI-only) rather than as a hard error.
+_install_python_deps_auto() {
+    if [ ! -s "$REQS" ]; then
+        cli_only_note "no agent lockfile in this build"
+        return 0
+    fi
+    _sys_py=$(detect_system_python) || {
+        cli_only_note "no suitable Python >= 3.${VULTURE_PY_MIN_MINOR:-12} found"
+        return 0
+    }
+    if ! reqs_have_hashes "$REQS"; then
+        warn "agent lockfile carries no --hash= lines; refusing unverified install"
+        cli_only_note "agent lockfile is not hash-verified (fail-closed)"
+        return 0
+    fi
+    _system_python_build "$_sys_py"
+}
+
 install_python_deps() {
     PIP="$VULTURE_HOME/runtime/python/bin/pip"
     REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
@@ -478,22 +537,21 @@ install_python_deps() {
         _install_python_deps_bundled
         return 0
     fi
-    # (2) Opt-in system Python (only when no bundled interpreter): require a
-    # non-empty hashed lockfile, detect a host Python >= 3.12, build a venv at
-    # runtime/python, and install --require-hashes. Any failure is fail-closed.
-    if [ "${VULTURE_USE_SYSTEM_PYTHON:-}" = "1" ] || [ "${VULTURE_USE_SYSTEM_PYTHON:-}" = "true" ]; then
-        [ -s "$REQS" ] || err "VULTURE_USE_SYSTEM_PYTHON set but $REQS is missing/empty; this build ships no hashed lockfile (Tier B item B1)."
-        _sys_py=$(detect_system_python) \
-            || err "VULTURE_USE_SYSTEM_PYTHON set but no Python >= 3.${VULTURE_PY_MIN_MINOR:-12} found (set VULTURE_PYTHON to point at one)."
-        log "using system Python at $_sys_py — agent DEPENDENCIES are hash-verified against"
-        log "requirements-frozen.txt; the INTERPRETER is operator-provided and not"
-        log "cosign/PBS-verified. Use a bundled-runtime release for a fully verified stack."
-        create_system_venv "$_sys_py"
-        install_deps_system_venv
-        return 0
-    fi
-    # (3) DEFAULT (unchanged): no bundled interp, no opt-in -> CLI-only.
-    cli_only_note
+    # (2) Tri-state VULTURE_USE_SYSTEM_PYTHON (only when no bundled interpreter):
+    #   0|false|no  -> DISABLE -> CLI-only.
+    #   1|true      -> REQUIRE -> strict opt-in (fail-closed on any gap).
+    #   unset/empty -> AUTO    -> opt in iff hashed lockfile + python>=3.12.
+    case "${VULTURE_USE_SYSTEM_PYTHON:-}" in
+        0|false|no)
+            cli_only_note "VULTURE_USE_SYSTEM_PYTHON explicitly disabled"
+            ;;
+        1|true)
+            _install_python_deps_require
+            ;;
+        *)
+            _install_python_deps_auto
+            ;;
+    esac
     return 0
 }
 
@@ -538,6 +596,7 @@ _install_python_deps_bundled() {
                 -r "$REQS" || err "pip install failed"
             ;;
     esac
+    AGENTS_INSTALLED=1
     log "Python deps installed"
 }
 
@@ -602,8 +661,19 @@ print_summary() {
     log ""
     log "  Vulture $VERSION installed to $VULTURE_HOME"
     log ""
-    log "  Quickstart — start the service (and agents) before scanning:"
-    log "    vulture start              # backend + agents + UI (backgrounds in install mode)"
+    if [ "${AGENTS_INSTALLED:-}" = "1" ]; then
+        log "  Agents + skills are installed and run locally via 'vulture start'."
+        log "  (LLM analysis additionally needs OPENAI_API_KEY or an LLM endpoint.)"
+        log ""
+        log "  Quickstart — start the service before scanning:"
+        log "    vulture start              # backend + agents + UI (backgrounds in install mode)"
+    else
+        log "  CLI-only install: the CLI + web UI work; agent scanning needs Docker"
+        log "  (Mode A/B) or a Python >= 3.12 reinstall (VULTURE_USE_SYSTEM_PYTHON=1)."
+        log ""
+        log "  Quickstart — start the service before scanning:"
+        log "    vulture start              # backend + UI (agent scanning via Docker)"
+    fi
     log "    vulture scan ./some-repo   # scan a repo (submits to the running service)"
     log "    vulture stop               # stop the service"
     log ""

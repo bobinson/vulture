@@ -595,29 +595,66 @@ From the runtime investigation (all paths in `/home/user/src/vulture-gh`):
 
 ### 4.2 Fallback order (precedence)
 
+**Precedence (NEW DEFAULT — auto-detect, no opt-in flag):**
+`bundled PBS > AUTO-detected system Python (when a hashed lockfile ships) > CLI-only`.
+
 ```
 install_python_deps():
   1. BUNDLED PBS present  ($VULTURE_HOME/runtime/python/bin/pip is -x)
        -> existing State 2/3 logic, UNTOUCHED. Strict --require-hashes.   (Tier B)
-  2. else if VULTURE_USE_SYSTEM_PYTHON truthy
-       -> NEW: REQUIRE a shipped HASHED requirements-frozen.txt; detect a
-          system Python >=3.12; build a venv at runtime/python; install the
-          lockfile with --require-hashes. Missing/hashless lockfile, no
-          interpreter, unsupported version, or any install failure -> err
-          (fail-closed; never a silent drop to CLI-only).                 (Tier B-lite)
-  3. else
-       -> existing State 1: cli_only_note(); return 0.   (DEFAULT, unchanged)
+  2. else read VULTURE_USE_SYSTEM_PYTHON as a TRI-STATE:
+       0|false|no -> DISABLE: cli_only_note (reason: explicitly disabled); return 0.
+       1|true     -> REQUIRE: keep the strict behavior — err if the lockfile is
+                     missing/empty, err if detect_system_python fails, then
+                     create_system_venv + install_deps_system_venv; return 0.
+       unset/empty -> AUTO (THE NEW DEFAULT):
+            a. lockfile missing/empty            -> cli_only_note (no agent lockfile
+                                                    in this build); return 0.
+            b. detect_system_python fails (no >=3.12) -> cli_only_note (no suitable
+                                                    Python found; how to enable); return 0.
+            c. lockfile present but NOT hashed   -> warn + cli_only_note (fail-closed:
+                                                    refuse unverified install); return 0
+                                                    (do NOT abort the whole install).
+            d. Python found + hashed lockfile    -> log the interpreter-provenance note,
+                                                    create_system_venv + install_deps_system_venv;
+                                                    mark agents installed; return 0.
 ```
 
-Dependency verification is **identical** in branches 1 and 2 (same hashed lockfile, same `--require-hashes`). The only difference between them is the interpreter's provenance. A real bundled interpreter is the most reproducible, so it always wins; CLI-only remains the safe default.
+Dependency verification is **identical** in branches 1 and the AUTO/REQUIRE
+venv install (same hashed lockfile, same `--require-hashes` — see §4.6). The
+only difference between them is the interpreter's provenance. A real bundled
+interpreter is the most reproducible, so it always wins; AUTO opportunistically
+uses a present system Python; CLI-only remains the safe fall-through. **Hash
+verification (`--require-hashes`) and the `>=3.12` gate stay enforced on every
+install path** — AUTO never weakens to a hashless install (sub-case c
+fails-closed to CLI-only).
 
 ### 4.3 Env-flag contract
 
-A single new opt-in flag (plus two advanced knobs). **`VULTURE_ALLOW_UNHASHED_DEPS` from the first draft is removed** — there is no unhashed path to gate.
+`VULTURE_USE_SYSTEM_PYTHON` is now a **TRI-STATE** (plus two advanced knobs).
+**`VULTURE_ALLOW_UNHASHED_DEPS` from the first draft is removed** — there is no
+unhashed path to gate.
+
+**Tri-state semantics for `VULTURE_USE_SYSTEM_PYTHON`:**
+
+| Value | State | Behavior (when no bundled PBS pip exists) |
+|---|---|---|
+| unset / empty | **AUTO** (NEW DEFAULT) | Opportunistically use a present system Python. Sub-cases (a)–(d) below; any blocker resolves to CLI-only (never aborts the install). |
+| `1` \| `true` | **REQUIRE** (loud-fail) | Strict: `err` if the lockfile is missing/empty, `err` if `detect_system_python` fails, else build the venv + `--require-hashes` install. A blocker hard-fails the install. |
+| `0` \| `false` \| `no` | **DISABLE** (force CLI-only) | Skip system-Python entirely → `cli_only_note` (reason: explicitly disabled) → `return 0`. |
+
+**AUTO sub-cases (default path):**
+
+- **(a) lockfile missing/empty** → `cli_only_note` ("no agent lockfile in this build") → `return 0`.
+- **(b) `detect_system_python` fails** (no Python ≥ 3.12 on PATH / via `VULTURE_PYTHON`) → `cli_only_note` ("no suitable Python found"; how to enable) → `return 0`.
+- **(c) lockfile present but NOT hashed** → `warn(...)` + `cli_only_note` (fail-closed: refuse the unverified install) → `return 0`. **Hashless lockfile in AUTO ⇒ warn + CLI-only, NOT abort** — AUTO degrades gracefully rather than killing the whole install.
+- **(d) Python found + hashed lockfile** → log the 3-line interpreter-provenance note (§5.4 A), `create_system_venv` + `install_deps_system_venv`, mark agents installed → `return 0`.
+
+REQUIRE keeps the original strict messages; where they hint "unset `VULTURE_USE_SYSTEM_PYTHON` for CLI-only," that hint is preserved. `--require-hashes` and the `>=3.12` gate apply on every venv-install path (AUTO-d and REQUIRE alike).
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `VULTURE_USE_SYSTEM_PYTHON` (`1`\|`true`) | Opt in: when no bundled PBS pip exists, locate a host Python ≥ 3.12 and build a venv at `$VULTURE_HOME/runtime/python`, then install the shipped **hashed** lockfile with `--require-hashes`. | unset → bundled PBS, else CLI-only |
+| `VULTURE_USE_SYSTEM_PYTHON` (tri-state) | `unset`=AUTO (use system Python when a hashed lockfile + ≥3.12 interpreter are both present); `1`/`true`=REQUIRE (loud-fail if either is absent); `0`/`false`/`no`=DISABLE (force CLI-only). | unset → AUTO |
 | `VULTURE_PYTHON` (optional) | Explicit interpreter path/name to use instead of PATH auto-detection (e.g. `/opt/py/bin/python3.13` or `python3.12`). Honored only when `VULTURE_USE_SYSTEM_PYTHON` is truthy. | unset → auto-detect |
 | `VULTURE_PY_MIN_MINOR` (advanced) | Minimum acceptable 3.x minor. Major always pinned to 3. Lets a future bump to 3.13-only be a one-line change. | `12` |
 
@@ -634,6 +671,36 @@ A single new opt-in flag (plus two advanced knobs). **`VULTURE_ALLOW_UNHASHED_DE
 | **true** | no | hashless/absent | **FAIL-CLOSED** `err` — no lockfile to verify against (do B1 / use a bundled release). |
 | **true** | yes | (any) | Bundled wins (precedence); the system-Python branch is not taken. |
 | unset | no | hashed | CLI-only — the flag is required to act on the lockfile. |
+
+> **NOTE (v2 supersedes the "unset = CLI-only" rows above).** The truth table
+> reflects the original opt-in design. Under the **v2 auto-detect default**,
+> `unset` + no-bundled-PBS + **hashed** lockfile + a ≥3.12 interpreter present
+> now installs the venv automatically (AUTO sub-case d); only a missing/hashless
+> lockfile or no suitable Python falls through to CLI-only. See
+> "Tier B-lite v2 — auto-detect (no opt-in flag)" below.
+
+### Tier B-lite v2 — auto-detect (no opt-in flag)
+
+**Decision.** The system-Python path is **no longer opt-in.** With `unset`
+`VULTURE_USE_SYSTEM_PYTHON` (the default), the installer now auto-detects a host
+Python ≥ 3.12 and, **when a hashed lockfile ships**, provisions the agent venv
+automatically — so agents + skills work out-of-the-box on any machine that
+already has a suitable Python, without the user setting a flag.
+
+**Rationale (user directive).** Agents should run out-of-the-box when a local
+Python is present; requiring an opt-in flag left the default install
+silently CLI-only even on capable machines. The two escape valves remain:
+`=1` to *require* the venv (loud-fail if it can't be built — for CI/operators who
+want a hard guarantee), and `=0` to *force* CLI-only (for operators who
+deliberately keep the install Python-free).
+
+**Safety is unchanged.** AUTO only *relaxes when to act*, never *what is
+verified*: the `>=3.12` interpreter gate and `--require-hashes` dependency
+verification still apply on every venv-install path. The single residual the
+default now accepts — **interpreter provenance** (host Python vs. cosign/PBS) —
+is surfaced in the install message (§5.4 A), and `=0` opts out of it entirely.
+A hashless lockfile in AUTO **warns + falls back to CLI-only** (never a hashless
+install, never an aborted install); REQUIRE still hard-fails it.
 
 ### 4.4 Detection + version gate
 
@@ -777,6 +844,18 @@ install_python_deps() {
 ## 5. Security & Fail-Closed
 
 With the unhashed path removed, the **dependency supply chain is fully preserved** on the system-Python path: deps are pinned + hash-verified by the same lockfile and `--require-hashes` as the bundled path. The opt-in converts exactly **one** guarantee from enforced to operator-accepted: the **interpreter's provenance** (host Python instead of pinned/cosign-verified PBS). We retain dependency hash verification, transport security, write confinement, version sanity, and full-removal uninstall. We cannot defend the interpreter binary, the system stdlib's `sitecustomize`, or any sdist build-time code execution (mitigated by `--only-binary :all:`); these are the stated residuals and are surfaced in the install message.
+
+**v2 auto-detect & fail-closed.** Under the new AUTO default (§4.3),
+the installer accepts interpreter **provenance by default — but only when a
+suitable Python ≥ 3.12 is actually present** (and a hashed lockfile ships); on
+any other machine the default is unchanged CLI-only. Crucially, **dependency
+hash-verification (`--require-hashes`) and the `>=3.12` gate remain enforced on
+every install path** — AUTO changes *when* the venv is built, never *what* is
+verified. The provenance residual is surfaced in the install message (§5.4 A)
+on the AUTO-install path, and `VULTURE_USE_SYSTEM_PYTHON=0` is the explicit
+opt-out that forces CLI-only and accepts no provenance relaxation. A hashless
+lockfile in AUTO **warns and degrades to CLI-only** (§4.3 sub-case c) rather
+than aborting — it never installs unverified deps and never kills the install.
 
 ### 5.1 What stays fail-closed (non-negotiable)
 

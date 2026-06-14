@@ -47,6 +47,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hex password logged once at backend startup. The `/api/auth/local-session`
   endpoint uses a new password-less `IssueLocalAdminToken` helper.
 - Unified all repo-URL references to `github.com/bobinson/vulture`.
+- **Native install (Mode E) now auto-detects a system Python for agents.**
+  `VULTURE_USE_SYSTEM_PYTHON` became a tri-state: **unset = AUTO** (the new
+  default — when a hashed agent lockfile ships and a host Python ≥ 3.12 is
+  present, the installer provisions the agent venv automatically so agents +
+  skills run via `vulture start` out of the box); `1` = REQUIRE (loud-fail if
+  either is absent); `0` = DISABLE (force CLI-only). `--require-hashes`
+  dependency verification and the `>=3.12` gate stay enforced on every install
+  path; a hashless lockfile under AUTO warns and degrades to CLI-only rather
+  than aborting. See
+  [docs/features/0055_native_installer_hardening](docs/features/0055_native_installer_hardening/).
+- **Honest install messaging.** Rewrote the CLI-only note (removed the false
+  "CLI + skills still work" — skills run inside the agents): it now states that
+  agent/LLM scanning needs a local Python ≥ 3.12 or Docker, while the CLI and
+  web UI are installed and work. The post-install summary and quickstart adapt
+  to whether agents were actually installed.
+
+### Fixed
+
+- **Install-mode UI/URL reporting.** Added a `localdev.UIPort` helper so the
+  CLI reports the correct UI address — in install mode the backend serves both
+  the API and the embedded SPA on one port (the phantom `23000` is gone).
+  `vulture start`, `vulture scan` ("View results"), `vulture status`, and the
+  launcher banner now print the backend port as the UI, with no bogus separate
+  "frontend" row/line in install mode and an Agents line only when agents are
+  actually started.
+- **`vulture scan` agent-health guard.** Before relying on results, `scan` now
+  probes each configured agent `/health`; if none are reachable it prints a
+  loud, actionable warning (the scan will produce no findings — install Python
+  3.12+ and reinstall, or use Docker) and continues, so submissions to a
+  remote/centralized server still work.
+- **`vulture doctor`.** In install mode a missing bundled-Python path is now a
+  WARN (exit 2), not a hard FAIL — a CLI-only install is a documented-valid
+  state; the fix hint points to installing Python 3.12+ or using Docker.
 
 ### Planned
 

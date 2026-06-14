@@ -110,7 +110,7 @@ by environment variables. The default `make docker-up` starts **Mode A**.
 | **B — Centralized server** | Ops VM | `docker compose up -d` + Neon DSN + `VULTURE_API_KEYS_ENABLED=true` | See [docs/guides/central_server_deployment.md](docs/guides/central_server_deployment.md). ⚠️ Mode B hardening is tracked in feature 0036 Phase 3 / 0037; review SECURITY.md before exposing publicly. |
 | **C — Read-only viewer** | Ops VM | `docker compose -f docker-compose.readonly.yml up -d` | Optional. Set `VULTURE_READONLY=true`. See [docs/guides/neon_deployment.md](docs/guides/neon_deployment.md). |
 | **D — CI client** | GitHub Actions etc. | `vulture scan <git-url> --api-key X --server Y --wait` | See [docs/guides/ci_integration.md](docs/guides/ci_integration.md). |
-| **E — Native install** | Single-user laptop, no Docker | `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh \| sh` | One-shot installer in the style of nuclei: per-platform tarball + SQLite, all under `~/.vulture/`. Installs the `vulture` CLI (scan/start/stop/doctor) + the embedded UI. **Current limitation:** agent-based (multi-framework / LLM) scanning currently requires Docker (Mode A or B); a self-contained Python agent runtime is a planned follow-up. See [docs/guides/native_installation.md](docs/guides/native_installation.md). |
+| **E — Native install** | Single-user laptop, no Docker | `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh \| sh` | One-shot installer in the style of nuclei: per-platform tarball + SQLite, all under `~/.vulture/`. Installs the `vulture` CLI (scan/start/stop/doctor) + the embedded UI. The installer **auto-detects a local Python >= 3.12** and, when present, installs the audit agents locally (hash-verified deps) so agent scanning runs without Docker. **Current limitation:** if no suitable Python is found, agent-based (multi-framework / LLM) scanning requires Docker (Mode A or B). See [docs/guides/native_installation.md](docs/guides/native_installation.md). |
 
 ## Native install (no Docker)
 
@@ -128,19 +128,27 @@ unique JWT secret with `/dev/urandom`, and drops a symlink at
 
 ```bash
 vulture scan ./some-repo        # nuclei-style one-shot
-vulture start                   # daemon + UI on http://127.0.0.1:23000
+vulture start                   # daemon + UI on http://127.0.0.1:28080
 vulture stop
 vulture doctor                  # diagnose install health
 vulture uninstall
 ```
 
-The installed CLI runs `vulture scan` (Go-native checks + skills), `vulture
-start`/`stop` (daemon + UI), and `vulture doctor`.
+The installed CLI runs `vulture scan` (submits to the running service),
+`vulture start`/`stop` (daemon + UI), and `vulture doctor`.
 
-**Current limitation:** agent-based (multi-framework / LLM) scanning currently
-requires Docker (Mode A or B). The native install does not yet bundle a Python
-agent runtime — that is a planned follow-up (see 0055 Tier B). Note that the
-agent pipeline is LLM-driven and still needs a configured endpoint either way.
+**Agent runtime — auto-detected.** The installer looks for a local Python
+>= 3.12 (`VULTURE_USE_SYSTEM_PYTHON` unset = auto). When one is found, it builds
+a private venv under `~/.vulture/runtime/python` and installs the audit agents
+from a hash-verified lockfile, so agent + skill scanning runs locally via
+`vulture start` — no Docker. Set `VULTURE_USE_SYSTEM_PYTHON=0` to skip this, or
+`=1` to require it (fail-closed if no suitable Python is found).
+
+**Current limitation:** when no local Python >= 3.12 is present, agent-based
+(multi-framework / LLM) scanning requires Docker (Mode A or B) — install
+Python 3.12+ and re-run the installer to enable local agents instead. The
+agent pipeline is LLM-driven and still needs a configured endpoint
+(`OPENAI_API_KEY` / an LLM endpoint) either way.
 
 Full security model (19 invariants — JWT CSPRNG, bind 127.0.0.1, env
 scrubbing, audit log, etc.) is documented in

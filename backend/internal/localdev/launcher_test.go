@@ -6,8 +6,10 @@ import (
 
 func TestPrintBanner(t *testing.T) {
 	cfg := DefaultConfig("/test")
-	// Should not panic
-	printBanner(cfg)
+	// Should not panic in any mode / agent-state combination.
+	printBanner(cfg, ModeDev, true)
+	printBanner(cfg, ModeInstall, true)
+	printBanner(cfg, ModeInstall, false)
 }
 
 func TestNewLauncher(t *testing.T) {
