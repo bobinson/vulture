@@ -32,6 +32,11 @@
 #                           VULTURE_USE_SYSTEM_PYTHON is truthy.
 #   VULTURE_PY_MIN_MINOR    Minimum acceptable 3.x minor (default 12). Major is
 #                           always pinned to 3.
+#   VULTURE_PY_MAX_MINOR    Maximum acceptable 3.x minor (default 13). The agent
+#                           dependency closure caps here (litellm requires
+#                           Python <3.14); a newer host Python is rejected so
+#                           the hashed lockfile stays installable. Bump when the
+#                           closure gains support for a newer minor.
 #
 # This script is shellcheck-clean and POSIX-sh (no bashisms).
 
@@ -383,38 +388,45 @@ cli_only_note() {
     [ -n "${1:-}" ] && log "agent scanning unavailable: $1"
     log "The 'vulture' CLI and the web UI are installed and work."
     log "Agent/LLM scanning needs a local agent runtime, which is not present."
-    log "Enable it by EITHER installing Python >= 3.12 and re-running the"
+    log "Enable it by EITHER installing Python 3.12 or 3.13 and re-running the"
     log "installer (or set VULTURE_USE_SYSTEM_PYTHON=1), OR using Docker (Mode A/B)."
 }
 
 # reqs_have_hashes FILE — true iff the lockfile carries at least one --hash=.
 reqs_have_hashes() { grep -q -- '--hash=' "$1" 2>/dev/null; }
 
-# py_version_ok INTERP MIN_MINOR — true iff INTERP is CPython 3.<minor> with
-# minor >= MIN_MINOR. Ask the interpreter itself (sys.version_info); never
-# parse --version text (locale / pyenv-shim risk).
+# py_version_ok INTERP MIN_MINOR MAX_MINOR — true iff INTERP is CPython 3.<minor>
+# with MIN_MINOR <= minor <= MAX_MINOR. Ask the interpreter itself
+# (sys.version_info); never parse --version text (locale / pyenv-shim risk).
+# The upper bound is REQUIRED: the agent dependency closure has a ceiling
+# (litellm pins Requires-Python <3.14), so a too-new interpreter (e.g. 3.14)
+# cannot satisfy the hashed lockfile and must be rejected, not picked.
 py_version_ok() {
-    "$1" - "$2" <<'PY' >/dev/null 2>&1
+    "$1" - "$2" "$3" <<'PY' >/dev/null 2>&1
 import sys
-need = int(sys.argv[1]); v = sys.version_info
-sys.exit(0 if (v.major == 3 and v.minor >= need) else 1)
+lo = int(sys.argv[1]); hi = int(sys.argv[2]); v = sys.version_info
+sys.exit(0 if (v.major == 3 and lo <= v.minor <= hi) else 1)
 PY
 }
 
-# detect_system_python — honor VULTURE_PYTHON, else search newest-first; gate
-# on >= VULTURE_PY_MIN_MINOR (default 12). Echo the resolved abs path or
-# return non-zero.
+# detect_system_python — honor VULTURE_PYTHON, else search newest-SUPPORTED
+# first; gate on VULTURE_PY_MIN_MINOR (default 12) <= minor <=
+# VULTURE_PY_MAX_MINOR (default 13; bump when the agent closure supports a newer
+# Python). Echo the resolved abs path or return non-zero. python3.14 is
+# deliberately NOT in the default search — it's above the closure ceiling — but
+# an unversioned `python3` that resolves to 3.14 is still rejected by the gate.
 detect_system_python() {
     _min="${VULTURE_PY_MIN_MINOR:-12}"
+    _max="${VULTURE_PY_MAX_MINOR:-13}"
     if [ -n "${VULTURE_PYTHON:-}" ]; then
         _cands="$VULTURE_PYTHON"
     else
-        _cands="python3.14 python3.13 python3.12 python3"
+        _cands="python3.13 python3.12 python3"
     fi
     for _c in $_cands; do
         _bin=$(command -v "$_c" 2>/dev/null) || continue
         [ -x "$_bin" ] || continue
-        if py_version_ok "$_bin" "$_min"; then printf '%s\n' "$_bin"; return 0; fi
+        if py_version_ok "$_bin" "$_min" "$_max"; then printf '%s\n' "$_bin"; return 0; fi
     done
     return 1
 }
@@ -503,22 +515,25 @@ _system_python_build() {
 _install_python_deps_require() {
     [ -s "$REQS" ] || err "VULTURE_USE_SYSTEM_PYTHON set but $REQS is missing/empty; this build ships no hashed lockfile (Tier B item B1)."
     _sys_py=$(detect_system_python) \
-        || err "VULTURE_USE_SYSTEM_PYTHON set but no Python >= 3.${VULTURE_PY_MIN_MINOR:-12} found (set VULTURE_PYTHON to point at one)."
+        || err "VULTURE_USE_SYSTEM_PYTHON set but no supported Python found (need 3.${VULTURE_PY_MIN_MINOR:-12}–3.${VULTURE_PY_MAX_MINOR:-13}; the agent stack does not support 3.14 yet — set VULTURE_PYTHON to a 3.12/3.13 interpreter)."
     _system_python_build "$_sys_py"
 }
 
 # _install_python_deps_auto — AUTO path (flag unset/empty). Opts in only when a
-# hashed lockfile AND a host Python >= 3.12 are both present; otherwise it is a
-# SOFT CLI-only fall-through (exit 0, never aborts the whole install). The
-# --require-hashes gate is still enforced: a hashless lockfile is refused, but
-# softly (warn + CLI-only) rather than as a hard error.
+# hashed lockfile AND a host Python in [3.MIN, 3.MAX] (default 3.12–3.13) are
+# both present; otherwise it is a SOFT CLI-only fall-through (exit 0, never
+# aborts the whole install). The --require-hashes gate is still enforced: a
+# hashless lockfile is refused, but softly (warn + CLI-only) rather than as a
+# hard error. A too-new interpreter (e.g. 3.14) is treated as "no suitable
+# Python" — the agent closure can't install on it — so AUTO degrades to
+# CLI-only instead of failing the whole install.
 _install_python_deps_auto() {
     if [ ! -s "$REQS" ]; then
         cli_only_note "no agent lockfile in this build"
         return 0
     fi
     _sys_py=$(detect_system_python) || {
-        cli_only_note "no suitable Python >= 3.${VULTURE_PY_MIN_MINOR:-12} found"
+        cli_only_note "no suitable Python found (need 3.${VULTURE_PY_MIN_MINOR:-12}–3.${VULTURE_PY_MAX_MINOR:-13}; 3.14 is not yet supported by the agent stack)"
         return 0
     }
     if ! reqs_have_hashes "$REQS"; then
