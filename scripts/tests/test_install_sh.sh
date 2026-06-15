@@ -136,17 +136,23 @@ case "\$_minor" in *.*) _minor=\${_minor%%.*} ;; esac
 case "\$1" in
   -)
     # Version/self-check or import self-check script arrives on STDIN.
-    # The version gate passes the required minor as the FIRST positional
-    # ('<py> - <min>').  If a numeric arg is present, gate on it; otherwise
-    # this is an import self-check (uvicorn/fastapi/...) -> just succeed.
+    # The version gate passes the required minor as the FIRST positional and an
+    # optional MAX minor as the SECOND ('<py> - <min> [<max>]').  If a numeric
+    # arg is present, gate on [min,max]; otherwise this is an import self-check
+    # (uvicorn/fastapi/...) -> just succeed.
     shift
     _need="\${1:-}"
+    _needmax="\${2:-}"
     cat >/dev/null   # consume the heredoc body
     case "\$_need" in
       ''|*[!0-9]*) exit 0 ;;   # no numeric arg -> import self-check -> OK
     esac
-    if [ "\$_major" = "3" ] && [ "\$_minor" -ge "\$_need" ]; then exit 0; fi
-    exit 1
+    [ "\$_major" = "3" ] && [ "\$_minor" -ge "\$_need" ] || exit 1
+    case "\$_needmax" in
+      ''|*[!0-9]*) ;;                              # no max bound supplied
+      *) [ "\$_minor" -le "\$_needmax" ] || exit 1 ;;
+    esac
+    exit 0
     ;;
   -c)
     # In-line code: capability probe ('import venv, ensurepip'), version
@@ -1079,6 +1085,65 @@ test_u5_accept_312_313() {
     else fail "$name" "version gate not >= (rejected an accepted minor): $detail"; fi
 }
 test_u5_accept_312_313
+
+# ---------------------------------------------------------------------------
+# U-maxgate — version-gate-rejects-3.14 (the agent closure caps at <3.14:
+# litellm Requires-Python <3.14). REQUIRE mode (opt-in) + FAKE_PYVER=3.14 ->
+# err (non-zero) mentioning the supported 3.12/3.13 range; no venv, no pip.
+# Regression for the darwin-amd64 smoke-install failure where AUTO picked the
+# runner's python3.14 and the hash-pinned litellm had no 3.14 distribution.
+# ---------------------------------------------------------------------------
+test_umax_reject_314() {
+    name="U-maxgate-version-gate-rejects-3.14"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/umax-home")
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        VULTURE_USE_SYSTEM_PYTHON=1
+        FAKE_PYVER=3.14
+        export PATH VULTURE_HOME VULTURE_USE_SYSTEM_PYTHON FAKE_PYVER
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -ne 0 ] || detail="$detail expected non-zero (refuse) on 3.14 got rc=0;"
+    printf '%s' "$out" | grep -q '3\.13' || detail="$detail refusal did not mention the 3.13 ceiling;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] && detail="$detail venv built despite 3.14;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked despite 3.14;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "max version gate absent: $detail"; fi
+}
+test_umax_reject_314
+
+# ---------------------------------------------------------------------------
+# U-auto-max — AUTO (flag unset) on a host whose only Python is 3.14 ->
+# SOFT CLI-only (rc 0, no venv, no pip, CLI-only note). AUTO must NOT abort the
+# whole install just because the sole interpreter is above the closure ceiling.
+# ---------------------------------------------------------------------------
+test_uauto_max_cli_only_on_314() {
+    name="U-auto-max-cli-only-on-3.14"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/uauto-max-home")
+    reset_py_logs
+    out=$(run_in_install '
+        PATH="'"$PYBIN"':'"$SHIMBIN"':'"$PATH"'"
+        VULTURE_HOME="'"$h"'"
+        FAKE_PYVER=3.14
+        export PATH VULTURE_HOME FAKE_PYVER
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 (soft CLI-only) got rc=$rc;"
+    [ -f "$h/runtime/python/pyvenv.cfg" ] && detail="$detail venv built on 3.14 under AUTO;"
+    [ -s "$VENV_PIP_LOG" ] && detail="$detail venv-pip invoked on 3.14 under AUTO;"
+    printf '%s' "$out" | grep -Eqi 'cli|docker' || detail="$detail no CLI-only note;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "AUTO did not degrade to CLI-only on 3.14: $detail"; fi
+}
+test_uauto_max_cli_only_on_314
 
 # ---------------------------------------------------------------------------
 # U6 — explicit-interpreter-path.

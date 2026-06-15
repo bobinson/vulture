@@ -36,7 +36,7 @@ case "$SCENARIO" in
         [ -f "$VHOME/bin/vulture" ] || fail "bin/vulture missing"
         [ -f "$VHOME/VERSION" ] || fail "VERSION missing"
         venv_built && fail "venv was built but should not be (CLI-only)"
-        grep -qi 'agent runtime not bundled' "$OUT" || fail "missing CLI-only note"
+        grep -qi 'web UI are installed' "$OUT" || fail "missing CLI-only note"
         # doctor reports python WARN (rc 2) but install succeeded
         "$VHOME/bin/vulture" doctor >/dev/null 2>&1; drc=$?
         [ "$drc" -eq 2 ] || fail "doctor expected WARN(2) for CLI-only, got $drc"

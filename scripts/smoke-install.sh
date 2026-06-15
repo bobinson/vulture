@@ -46,6 +46,14 @@ export VULTURE_HOME="$SMOKE_HOME_REAL"
 export VULTURE_OFFLINE_TARBALL="$OFFLINE_TARBALL"
 export VULTURE_NO_UPDATE_CHECK=true
 export VULTURE_ALLOW_UNSIGNED=true   # local builds aren't cosign-signed
+# Force CLI-only so the smoke test stays fast and deterministic: with AUTO
+# detect (the default), a runner that happens to have Python 3.12/3.13 would
+# pull the entire hash-pinned agent closure (~80 PyPI wheels) on every release
+# build × platform, making releases slow and PyPI-flaky. The smoke test verifies
+# installer MECHANICS (download/verify/extract/CLI/doctor/uninstall); the
+# system-Python agent-install path is covered by the docker e2e matrix
+# (scripts/tests/docker) on controlled interpreters.
+export VULTURE_USE_SYSTEM_PYTHON=0
 
 # Prepare offline-companion fixtures beside the COPY (never the source dir).
 SHASUM_PATH=${OFFLINE_TARBALL%.tar.gz}.SHA256SUMS
