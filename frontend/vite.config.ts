@@ -36,9 +36,19 @@ export default defineConfig({
         // the user changes language. Splitting keeps the main bundle
         // small and lets the browser cache vendor chunks across deploys
         // when only application code changed.
-        manualChunks: {
-          react: ["react", "react-dom", "react-router-dom"],
-          i18n: ["react-i18next", "i18next", "i18next-browser-languagedetector"],
+        //
+        // Function form (vite 8 / rollup narrowed `manualChunks` to a
+        // ManualChunksFunction; the object-map form no longer type-checks).
+        // Match i18n FIRST so `react-i18next` lands in the i18n chunk, not react.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (/[\\/]node_modules[\\/](react-i18next|i18next|i18next-browser-languagedetector)[\\/]/.test(id)) {
+            return "i18n";
+          }
+          if (/[\\/]node_modules[\\/](react-router-dom|react-router|react-dom|react)[\\/]/.test(id)) {
+            return "react";
+          }
+          return undefined;
         },
       },
     },
