@@ -225,6 +225,18 @@ No Go/Python source changes; no migration; no dependency changes.
 - All 11 cases run in CI via `lint-installer` (H8).
 - Docs: grep that README/guide no longer claim "bundled Python" as a
   shipped fact and that the Docker-for-agents caveat is present.
+- **UI-load e2e (Plan A — real binary, not the stub).** The
+  `scripts/tests/docker/` matrix (`run-matrix.sh` + stub `vulture`) tests
+  install.sh *mechanics* and CANNOT exercise the served UI. To guard the
+  embedded-SPA path, `scripts/tests/docker/ui-smoke.sh <ubuntu|fedora>
+  <real-tarball>` installs a REAL `build-release.sh` tarball in the distro
+  container, runs `vulture start --foreground`, and asserts the install-mode
+  backend serves the real embedded SPA — NOT the "Frontend assets not bundled"
+  placeholder — at `/` AND a client route (`/audit/<id>`, SPA fallback).
+  `scripts/tests/docker/run-ui-matrix.sh` builds the tarball once and runs both
+  distros. Complements the build-time guard in `build-release.sh` (which fails
+  the build if the binary still embeds the placeholder): the guard catches the
+  *build*; ui-smoke proves the *served* result in each distro.
 
 ## Rollback
 
@@ -568,8 +580,10 @@ From the runtime investigation (all paths in `/home/user/src/vulture-gh`):
 >   from `CWD/agents`. None exist for a native install → `vulture start` fails.
 >
 > **A Go change IS required.** Install-mode `local_start` must: (a) run the
-> backend via the installed binary's `serve` (no `go build`), serving the static
-> SPA already shipped at `runtime/frontend`; (b) start agents from
+> backend via the installed binary's `serve` (no `go build`), serving the
+> **embedded** SPA — `assets.FrontendFS()` (`//go:embed all:frontend`), mounted
+> at `/` by `server.go` `registerStaticHandler` — NOT a disk copy at
+> `runtime/frontend`; (b) start agents from
 > `AgentsRoot(install)` = `$VULTURE_HOME/runtime/agents` with the venv
 > `PythonBin(install)` — the **nested** copy (`runtime/agents/<a>/<pkg>`) is
 > correct for the existing `<root>/shared:<agentDir>` PYTHONPATH, so **no
@@ -577,6 +591,21 @@ From the runtime investigation (all paths in `/home/user/src/vulture-gh`):
 > static); (d) skip `installAgentDeps` (the venv is pre-provisioned with
 > `--require-hashes`; first-party packages load via PYTHONPATH). This is the
 > deferred Tier-B *execution* work (status doc → Deferred).
+
+> ⚠️ **CORRECTION (2026-06-15, Plan A — SPA is EMBEDDED, not served from disk).**
+> The "shipped at `runtime/frontend`" phrasing above was wrong. The install-mode
+> daemon serves the SPA from the **binary** via `assets.FrontendFS()`
+> (`//go:embed all:frontend` → `backend/internal/assets/frontend/`), mounted at
+> `/` by `registerStaticHandler`. The repo tracks only a *placeholder*
+> `index.html` in that dir, and `build-release.sh` ran `go build` **before**
+> staging the built dist — so every prior release embedded the placeholder and
+> Mode-E rendered "Frontend assets not bundled in this build". **Fix (Plan A):**
+> `build-release.sh` now (1) builds the frontend first; (2) swaps `frontend/dist`
+> into the embed dir, restoring the placeholder via an `EXIT`/`INT`/`TERM` trap so
+> local trees stay clean; (3) runs `go build` (embedding the real SPA); (4) a
+> post-build guard fails the release if the binary still contains the placeholder
+> string. The previously-staged, never-served `runtime/frontend/` copy is dropped.
+> Takes effect only in builds cut after this change.
 
 **Precise extension point:** a new opt-in branch slots into `install_python_deps()` *after* the bundled-PBS handling and *before* the default CLI-only `return 0`, so the bundled path is unaffected and the default fall-through is preserved when the flag is unset.
 

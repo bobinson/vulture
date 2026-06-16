@@ -40,7 +40,37 @@ TARBALL=$DIST/vulture-${VERSION}-${OS}-${ARCH}.tar.gz
 
 mkdir -p "$DIST"
 
-echo "==> Cross-compiling Go binary for ${OS}/${ARCH}"
+echo "==> Building frontend"
+if [ -d "$REPO_ROOT/frontend/dist" ]; then
+    echo "    using existing frontend/dist/"
+else
+    ( cd "$REPO_ROOT/frontend" && npm ci --silent && npm run build --silent )
+fi
+if [ ! -f "$REPO_ROOT/frontend/dist/index.html" ]; then
+    echo "Error: frontend/dist/index.html missing after build" >&2
+    exit 1
+fi
+
+# Embed the built SPA into the binary. `//go:embed all:frontend` bakes
+# backend/internal/assets/frontend/ at COMPILE time; the repo ships only a
+# placeholder index.html there, so the real dist must be swapped in BEFORE
+# `go build` and the placeholder restored afterward (the dir is git-tracked, so
+# restoring keeps local/dev trees clean). The install-mode daemon serves this
+# embedded FS via assets.FrontendFS() (server.go registerStaticHandler) — there
+# is NO separate runtime/frontend served from disk.
+EMBED_DIR="$REPO_ROOT/backend/internal/assets/frontend"
+EMBED_BAK=$(mktemp -d)
+cp -R "$EMBED_DIR/." "$EMBED_BAK/"
+restore_embed() {
+    rm -rf "${EMBED_DIR:?}"/*
+    cp -R "$EMBED_BAK/." "$EMBED_DIR/"
+    rm -rf "$EMBED_BAK"
+}
+trap restore_embed EXIT INT TERM
+rm -rf "${EMBED_DIR:?}"/*
+cp -R "$REPO_ROOT/frontend/dist/." "$EMBED_DIR/"
+
+echo "==> Cross-compiling Go binary for ${OS}/${ARCH} (embedding SPA)"
 mkdir -p "$STAGE/bin"
 ( cd "$REPO_ROOT/backend" && \
   GOOS="$OS" GOARCH="$ARCH" CGO_ENABLED=0 \
@@ -48,14 +78,14 @@ mkdir -p "$STAGE/bin"
     -ldflags "-s -w -buildid= -X main.Version=${VERSION}" \
     -o "$STAGE/bin/vulture" ./cmd/vulture )
 
-echo "==> Building frontend"
-if [ -d "$REPO_ROOT/frontend/dist" ]; then
-    echo "    using existing frontend/dist/"
-else
-    ( cd "$REPO_ROOT/frontend" && npm ci --silent && npm run build --silent )
+# Regression guard: the binary MUST embed the real SPA, not the placeholder.
+# (Before this ordering fix, `go build` ran before the dist was staged, so every
+# release embedded the placeholder and Mode-E showed "Frontend assets not
+# bundled".) Cross-arch safe — we scan the binary's bytes, never run it.
+if grep -qa 'Frontend assets not bundled' "$STAGE/bin/vulture"; then
+    echo "Error: built binary still embeds the placeholder SPA — frontend not bundled" >&2
+    exit 1
 fi
-mkdir -p "$STAGE/runtime/frontend"
-cp -r "$REPO_ROOT/frontend/dist/." "$STAGE/runtime/frontend/"
 
 echo "==> Copying agents source"
 mkdir -p "$STAGE/runtime/agents"
