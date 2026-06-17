@@ -3,6 +3,7 @@ package repository
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -1188,5 +1189,21 @@ func TestListAudits_ScanRow(t *testing.T) {
 		if a.FindingsCount != 1 {
 			t.Errorf("audit %s: expected findings_count=1, got %d", a.ID, a.FindingsCount)
 		}
+	}
+}
+
+func TestNewSQLiteRepo_DBFileIs0600(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "perm.db")
+	repo, err := NewSQLiteRepo(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteRepo: %v", err)
+	}
+	defer repo.Close()
+	fi, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat db: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("vulture.db mode = %o, want 600 (holds audit findings)", got)
 	}
 }

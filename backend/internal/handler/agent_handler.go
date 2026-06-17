@@ -8,11 +8,17 @@ import (
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/pkg/agentregistry"
+	"github.com/vulture/backend/pkg/pluginregistry"
 )
 
 type AgentHandler struct {
 	agents   map[string]config.AgentConfig
 	readOnly bool
+	// G1: when wired, enabled registry plugins (e.g. semgrep) are surfaced in
+	// /api/agents alongside the built-in agents. nil-safe — when unset the
+	// handler behaves exactly as before (built-ins only).
+	reg       pluginregistry.Registry
+	pluginURL func(pluginregistry.Plugin) string
 }
 
 func NewAgentHandler(agents map[string]config.AgentConfig) *AgentHandler {
@@ -22,6 +28,15 @@ func NewAgentHandler(agents map[string]config.AgentConfig) *AgentHandler {
 // SetReadOnly enables read-only mode. When true, List returns an empty
 // agent list without probing agent health endpoints.
 func (h *AgentHandler) SetReadOnly(v bool) { h.readOnly = v }
+
+// SetPluginRegistry makes /api/agents registry-aware (G1): enabled plugins not
+// already present as a built-in agent are appended to the listing. urlFor
+// resolves a plugin's base URL for the health probe (typically
+// stagerouter.NewURLResolver(cfg.Agents).Resolve).
+func (h *AgentHandler) SetPluginRegistry(reg pluginregistry.Registry, urlFor func(pluginregistry.Plugin) string) {
+	h.reg = reg
+	h.pluginURL = urlFor
+}
 
 func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 	if h.readOnly {
@@ -63,7 +78,11 @@ func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	infos := make([]model.AgentInfo, 0, len(h.agents))
+	// Built-in types already listed — used to dedupe registry plugins, which
+	// also carry the in-tree agents as virtual plugins.
+	builtinTypes := make(map[string]bool, len(h.agents))
 	for key, a := range h.agents {
+		builtinTypes[a.Type] = true
 		infos = append(infos, model.AgentInfo{
 			ID:       key,
 			Name:     a.Name,
@@ -71,6 +90,31 @@ func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 			Status:   statusMap[key],
 			Optional: optional[a.Type],
 		})
+	}
+
+	// G1: append ENABLED registry plugins that aren't already built-ins
+	// (e.g. semgrep), so they appear in the UI selector / agent list.
+	if h.reg != nil {
+		for _, p := range h.reg.Enabled() {
+			name := p.Name()
+			if name == "" || builtinTypes[name] {
+				continue
+			}
+			url := ""
+			if h.pluginURL != nil {
+				url = h.pluginURL(p)
+			}
+			display := p.Manifest.Plugin.DisplayName
+			if display == "" {
+				display = name
+			}
+			infos = append(infos, model.AgentInfo{
+				ID:     name,
+				Name:   display,
+				Type:   name,
+				Status: checkAgentHealth(url),
+			})
+		}
 	}
 	writeJSON(w, http.StatusOK, infos)
 }

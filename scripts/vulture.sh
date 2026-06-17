@@ -11,6 +11,7 @@
 #   build installer    Build a native-installer tarball for the current host (Mode E, feature 0044)
 #
 #   dev <provider>     Mode A: Dev-local — bare metal, everything on one machine
+#                      Options: [--pg] [--plugins all|none|<comma-list>]
 #   server <provider>  Mode B: Central server — Docker + remote DB
 #   viewer             Mode C: Read-only viewer VM — Docker, no agents
 #
@@ -33,6 +34,7 @@
 #   scripts/vulture.sh dev skills                # Dev-local, skills only
 #   scripts/vulture.sh dev lmstudio              # Dev-local + LM Studio (SQLite)
 #   scripts/vulture.sh dev lmstudio --pg         # Dev-local + LM Studio + Postgres container
+#   scripts/vulture.sh dev skills --plugins all  # Dev-local + activate all discovered plugins
 #   scripts/vulture.sh dev openai gpt-4o         # Dev-local + OpenAI
 #   scripts/vulture.sh server lmstudio           # Central server + LM Studio (Docker)
 #   scripts/vulture.sh server skills             # Central server, skills only (Docker)
@@ -78,19 +80,46 @@ case "$COMMAND" in
 
     # ── Mode A: Dev-local (bare metal) ────────────────────────────────────
     dev)
-        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--embed-url URL] [--embed-model NAME] [--pg]"; exit 1; }
+        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--embed-url URL] [--embed-model NAME] [--pg] [--plugins <comma-list>]"; exit 1; }
         # --pg flag (any position): bring up the postgres docker
         # container and export VULTURE_DB_DSN so local_start uses
         # Postgres instead of SQLite.
+        #
+        # --plugins <comma-list>: export VULTURE_PLUGINS=<list> (all|none|<list>)
+        # for the declarative activation overlay. Precedence: this flag wins over
+        # any VULTURE_PLUGINS already set in the env/.env; absent the flag, an
+        # existing VULTURE_PLUGINS is left untouched.
         args=()
         use_pg=0
+        plugins=""
+        want_plugins=0
+        expect_plugins=0
         for a in "$@"; do
-            if [[ "$a" == "--pg" || "$a" == "--postgres" ]]; then
+            if [[ $expect_plugins -eq 1 ]]; then
+                plugins="$a"
+                want_plugins=1
+                expect_plugins=0
+            elif [[ "$a" == "--pg" || "$a" == "--postgres" ]]; then
                 use_pg=1
+            elif [[ "$a" == "--plugins" ]]; then
+                expect_plugins=1
+            elif [[ "$a" == --plugins=* ]]; then
+                plugins="${a#--plugins=}"
+                want_plugins=1
             else
                 args+=("$a")
             fi
         done
+        if [[ $expect_plugins -eq 1 ]]; then
+            echo "Error: --plugins requires a value (all|none|<comma-list>)"; exit 1
+        fi
+        # In dev mode the in-tree plugins/ dir is the built-in manifest source.
+        : "${VULTURE_BUILTIN_PLUGINS_DIR:=$PROJECT_ROOT/plugins}"
+        export VULTURE_BUILTIN_PLUGINS_DIR
+        # --plugins flag wins; otherwise leave any existing VULTURE_PLUGINS as-is.
+        if [[ $want_plugins -eq 1 ]]; then
+            export VULTURE_PLUGINS="$plugins"
+        fi
         if [[ $use_pg -eq 1 ]]; then
             if [[ -f "$PROJECT_ROOT/.env" ]]; then
                 set -a

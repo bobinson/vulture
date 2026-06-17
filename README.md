@@ -137,18 +137,37 @@ vulture uninstall
 The installed CLI runs `vulture scan` (submits to the running service),
 `vulture start`/`stop` (daemon + UI), and `vulture doctor`.
 
-**Agent runtime — auto-detected.** The installer looks for a local Python
+**Agent runtime — bundled Python (Tier B) or auto-detected system Python.**
+A PBS-bundled release (built with `VULTURE_BUNDLE_PBS=1`) ships a private
+CPython 3.12 runtime — built from a SHA-256-verified
+[python-build-standalone](https://github.com/indygreg/python-build-standalone)
+tarball with the audit-agent deps pre-installed — so `vulture start` runs the
+Python agents with **NO system Python and NO Docker**. On such a release the
+skill-based audit phase (deterministic pattern matching, 100% file coverage)
+runs fully locally. Bundling is **opt-in at build time** and currently
+**linux/amd64-verified**; lean default releases ship no interpreter.
+
+When a release does not bundle Python, the installer looks for a local Python
 >= 3.12 (`VULTURE_USE_SYSTEM_PYTHON` unset = auto). When one is found, it builds
 a private venv under `~/.vulture/runtime/python` and installs the audit agents
 from a hash-verified lockfile, so agent + skill scanning runs locally via
 `vulture start` — no Docker. Set `VULTURE_USE_SYSTEM_PYTHON=0` to skip this, or
 `=1` to require it (fail-closed if no suitable Python is found).
 
-**Current limitation:** when no local Python >= 3.12 is present, agent-based
-(multi-framework / LLM) scanning requires Docker (Mode A or B) — install
-Python 3.12+ and re-run the installer to enable local agents instead. The
-agent pipeline is LLM-driven and still needs a configured endpoint
-(`OPENAI_API_KEY` / an LLM endpoint) either way.
+**Current limitation:** when neither a bundled interpreter nor a local
+Python >= 3.12 is present, agent-based (multi-framework) scanning requires
+Docker (Mode A or B) — install Python 3.12+ and re-run the installer to enable
+local agents instead. The deeper **LLM analysis phase** always needs an external
+endpoint and key regardless of how Python is provided: set `VULTURE_USE_LLM=true`
+with `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL` for an OpenAI-compatible
+endpoint). Container plugins also still require Docker.
+
+**Config & plugins (`~/.vulture/config/.env`).** `vulture start` loads this file
+(parsed, never sourced — no code execution), so it can hold your
+`VULTURE_USE_LLM` / `OPENAI_API_KEY` / `VULTURE_EMBEDDING_*` settings and a
+`VULTURE_PLUGINS` allow-list. The installer seeds an empty `VULTURE_PLUGINS=`
+(no plugins by default); set e.g. `VULTURE_PLUGINS=semgrep` to enable one.
+Container plugins still require Docker — see [Plugins](#plugins).
 
 Full security model (19 invariants — JWT CSPRNG, bind 127.0.0.1, env
 scrubbing, audit log, etc.) is documented in
@@ -239,6 +258,8 @@ make docker-down    # Stop all services
 | `VULTURE_AGENT_ASVS_URL` | `http://agent-asvs:28010` | ASVS agent endpoint |
 | `VULTURE_EMBEDDING_URL` | -- | Custom embedding endpoint |
 | `VULTURE_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `VULTURE_PLUGINS` | -- | Plugin activation allow-list: `all`, `none`, or a comma-separated list of slugs (e.g. `semgrep`). Unset = stored state; empty = no external plugins. Built-in agents are never affected by this. See [Plugins](#plugins). |
+| `VULTURE_BUILTIN_PLUGINS_DIR` | -- | Directory scanned for bundled plugin manifests. Auto-set to `~/.vulture/runtime/plugins` in install mode when present. |
 
 #### Python Agents
 
@@ -264,6 +285,30 @@ make docker-down    # Stop all services
 ### Configuration File
 
 Vulture uses a `config.ini` file at the project root as the single source of truth for ports, database settings, and service defaults. Run `make gen-env` to generate the `.env` file consumed by `docker compose`.
+
+### Plugins
+
+Optional plugins (e.g. **Semgrep**) extend scanning beyond the built-in agents.
+They are activated **explicitly** via the `VULTURE_PLUGINS` allow-list —
+discovery alone never auto-runs them.
+
+```bash
+# Dev: activate by name (or "all" / "none") — flag wins over .env
+./scripts/vulture.sh dev openai gpt-4o --plugins semgrep
+
+# Or persist it — project .env (dev) or ~/.vulture/config/.env (native install):
+VULTURE_PLUGINS=semgrep
+```
+
+`VULTURE_PLUGINS=all` activates every discovered plugin; `none` (or an empty
+value) activates none. The list governs **external** plugins only — built-in
+agents (chaos, owasp, …) are never disabled by it. Verify with
+`curl localhost:28080/api/agents` (an enabled plugin appears in the list).
+
+> **Container plugins need Docker.** Semgrep runs as a container, so it requires
+> Docker (Mode A/B) to execute. Without Docker it is still discovered and listed
+> in `GET /api/agents` as `unhealthy`, and `vulture doctor` reports it as a
+> WARN (not a failure) — it simply won't run.
 
 ## Adding New Audit Types
 

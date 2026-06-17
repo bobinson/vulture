@@ -1565,5 +1565,106 @@ test_msg_cli_only_no_skills_claim() {
 test_msg_cli_only_no_skills_claim
 
 # ---------------------------------------------------------------------------
+# CKPT5 — config/.env seeding (declarative plugin activation + correct port).
+# generate_jwt_secret must write a VULTURE_PLUGINS= line (empty default =
+# external plugins off until the operator opts in) and the BACKEND port
+# VULTURE_PORT=28080 (NOT the stale dormant 23000).
+# ---------------------------------------------------------------------------
+test_env_seeds_plugins_and_port() {
+    name="CKPT5-env-seeds-plugins-and-port"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "generate_jwt_secret unreachable: seam absent"; return; fi
+    eh="$SANDBOX/env-home"; rm -rf "$eh"
+    run_in_install '
+        VULTURE_HOME="'"$eh"'"
+        export VULTURE_HOME
+        type generate_jwt_secret >/dev/null 2>&1 && generate_jwt_secret
+    ' >/dev/null 2>&1
+    envf="$eh/config/.env"
+    if [ ! -f "$envf" ]; then
+        fail "$name" "config/.env not generated at $envf"; return
+    fi
+    detail=""
+    grep -q '^VULTURE_PLUGINS=' "$envf" || detail="$detail missing VULTURE_PLUGINS= line;"
+    grep -q '^VULTURE_PORT=28080$' "$envf" || detail="$detail VULTURE_PORT is not 28080;"
+    grep -q '^VULTURE_PORT=23000' "$envf" && detail="$detail stale VULTURE_PORT=23000 still present;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "$detail seeded .env: $(tr '\n' '|' < "$envf" | cut -c1-160)"; fi
+}
+test_env_seeds_plugins_and_port
+
+# ---------------------------------------------------------------------------
+# U14 — bundled-deps-present -> SKIP pip install (offline/idempotent).
+# Tier B ships a PBS interpreter with the agent deps PRE-INSTALLED at build, so
+# the bundled python3.12 can already `import uvicorn`. The bundled branch must
+# detect that and SKIP the pip install entirely (zero egress, re-run no-op).
+# Setup: bundled pip recorder + a bundled python3.12 whose `-c "import uvicorn"`
+# succeeds (the make_python shim returns 0 for generic imports). Assert: rc 0
+# AND the bundled pip was NEVER invoked.
+# ---------------------------------------------------------------------------
+test_u14_bundled_deps_skip() {
+    name="U14-bundled-deps-present-skips-pip"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_home "$SANDBOX/u14-home")
+    write_hashed_reqs "$h/runtime/agents/requirements-frozen.txt"
+    make_pip "$h/runtime/python/bin/pip"
+    # Bundled interpreter whose `import uvicorn` succeeds (offline-ready build).
+    make_python "$h/runtime/python/bin/python3.12"
+    : > "$PIP_LOG"
+    out=$(run_in_install '
+        VULTURE_HOME="'"$h"'"
+        FAKE_PYVER=3.12
+        export VULTURE_HOME FAKE_PYVER
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 got rc=$rc;"
+    [ -s "$PIP_LOG" ] && detail="$detail pip ran despite deps already present (not offline/idempotent);"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "bundled-deps-present did not skip pip: $detail out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-120)"; fi
+}
+test_u14_bundled_deps_skip
+
+# ---------------------------------------------------------------------------
+# U15 — bundled-deps-MISSING -> pip install STILL runs (--require-hashes path
+# preserved). Bundled pip present, hashed lockfile present, but the bundled
+# interpreter CANNOT `import uvicorn` (deps not pre-installed). The skip probe
+# must NOT fire; the strict hash-pinned install must proceed. Regression lock so
+# the U14 fast path never swallows a genuinely install-needed build.
+# ---------------------------------------------------------------------------
+test_u15_bundled_deps_missing_installs() {
+    name="U15-bundled-deps-missing-still-installs"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "install_python_deps unreachable: seam absent"; return; fi
+    h=$(setup_home "$SANDBOX/u15-home")
+    write_hashed_reqs "$h/runtime/agents/requirements-frozen.txt"
+    make_pip "$h/runtime/python/bin/pip"
+    # Bundled python3.12 whose `import uvicorn` FAILS (deps absent). FAKE_NO_IMPORT
+    # makes the shim exit non-zero on a `-c import ...` probe.
+    cat > "$h/runtime/python/bin/python3.12" <<'PYEOF'
+#!/usr/bin/env sh
+# Bundled interpreter that has NO agent deps: any `-c import ...` probe fails.
+case "$1" in
+  -c) exit 1 ;;
+  *)  exit 0 ;;
+esac
+PYEOF
+    chmod +x "$h/runtime/python/bin/python3.12"
+    : > "$PIP_LOG"
+    out=$(run_in_install '
+        VULTURE_HOME="'"$h"'"
+        export VULTURE_HOME
+        install_python_deps 2>&1
+    ')
+    rc=$?
+    detail=""
+    [ "$rc" -eq 0 ] || detail="$detail expected rc 0 got rc=$rc;"
+    [ -s "$PIP_LOG" ] || detail="$detail pip NOT invoked though deps missing (skip fired wrongly);"
+    grep -q -- '--require-hashes' "$PIP_LOG" 2>/dev/null || detail="$detail install lacked --require-hashes;"
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "bundled-deps-missing did not install strictly: $detail out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-120)"; fi
+}
+test_u15_bundled_deps_missing_installs
+
+# ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

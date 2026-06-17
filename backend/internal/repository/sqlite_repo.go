@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -49,9 +50,28 @@ func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// The DB holds audit findings — restrict it (and its WAL/SHM sidecars) to
+	// owner-only 0600, matching config/.env. Best-effort: :memory:/absent files
+	// are skipped. (vulture doctor checks this; defense-in-depth even though
+	// $VULTURE_HOME is itself 0700.)
+	secureDBFiles(dbPath)
 	repo := &SQLiteRepo{db: db, proveRepo: &SQLiteProveRepo{db: db}}
 	repo.prepareStatements()
 	return repo, nil
+}
+
+// secureDBFiles tightens the SQLite DB file and its WAL/SHM sidecars to 0600.
+// Best-effort and idempotent: directories, :memory:, and absent paths are
+// skipped, and chmod errors are non-fatal (the DB is usable regardless).
+func secureDBFiles(dbPath string) {
+	if dbPath == "" || strings.Contains(dbPath, ":memory:") {
+		return
+	}
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			_ = os.Chmod(p, 0o600)
+		}
+	}
 }
 
 func configureSQLite(db *sql.DB) error {
