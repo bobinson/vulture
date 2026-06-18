@@ -328,6 +328,12 @@ func migrateAddColumns(db *sql.DB) {
 	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN labelled_at TIMESTAMP`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_memories_label
 		ON audit_memories(user_label)`)
+	// Migration 021 parity: the L4 memory-prior lookup queries
+	// audit_memories.fingerprint; 017 added the label columns but not
+	// this one. Without it the lookup errors on every audit.
+	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN fingerprint TEXT`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_memories_fingerprint
+		ON audit_memories(fingerprint)`)
 }
 
 // prepareStatements pre-compiles frequently executed queries for reuse.
