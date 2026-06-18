@@ -19,9 +19,23 @@ var dotenvProviderKeys = map[string]struct{}{
 	"OLLAMA_API_BASE":   {},
 }
 
+// dotenvDenied are VULTURE_* keys a config file must NOT be able to set, even
+// though they share the prefix. The loopback-bind guard (server.go H9) already
+// refuses a non-loopback bind in local mode, but keeping bind/listen controls
+// out of the file-loaded path is defense-in-depth: config/.env never widens the
+// daemon's network exposure.
+var dotenvDenied = map[string]struct{}{
+	"VULTURE_LISTEN_ADDR": {},
+	"VULTURE_BIND_ADDR":   {},
+}
+
 // dotenvForwardable reports whether a key parsed from config/.env may be
-// injected into the environment: any VULTURE_* var, or a known provider key.
+// injected into the environment: any VULTURE_* var (except the bind/listen
+// denylist), or a known provider key.
 func dotenvForwardable(key string) bool {
+	if _, no := dotenvDenied[key]; no {
+		return false
+	}
 	if _, ok := dotenvProviderKeys[key]; ok {
 		return true
 	}

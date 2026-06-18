@@ -582,14 +582,16 @@ _install_python_deps_bundled() {
     REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
     # OFFLINE/idempotent fast path (Tier B): a PBS-bundled tarball pre-installs
     # the agent deps into runtime/python at BUILD time, so the interpreter can
-    # already `import uvicorn`. When that holds, SKIP the pip install entirely —
-    # the install needs zero egress and re-running install.sh is a no-op. The
-    # --require-hashes + fail-closed gate below still governs the install-needed
-    # case (e.g. a future bundled build that ships the interpreter but not deps).
+    # already import the core stack. When that holds, SKIP the pip install
+    # entirely — zero egress, re-running install.sh is a no-op. The self-check
+    # imports the SAME core set as the system-venv self-check (uvicorn, fastapi,
+    # pydantic, pydantic_core), NOT just uvicorn — so a PARTIAL bundle (e.g.
+    # uvicorn present but fastapi/annotated_doc missing) does NOT skip and falls
+    # through to the --require-hashes install below instead of shipping broken.
     if [ -x "$PYBIN" ] && \
-       PYTHONNOUSERSITE=1 "$PYBIN" -c 'import uvicorn' >/dev/null 2>&1; then
+       PYTHONNOUSERSITE=1 "$PYBIN" -c 'import uvicorn, fastapi, pydantic, pydantic_core' >/dev/null 2>&1; then
         AGENTS_INSTALLED=1
-        log "bundled Python runtime already has agent deps (uvicorn import OK) — skipping pip install (offline)"
+        log "bundled Python runtime already has the agent deps (core import OK) — skipping pip install (offline)"
         return 0
     fi
     # CLI-only build: no/empty frozen manifest.

@@ -40,7 +40,10 @@ func TestParseDotenvLine(t *testing.T) {
 
 func TestDotenvForwardable(t *testing.T) {
 	yes := []string{"VULTURE_PLUGINS", "VULTURE_USE_LLM", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL"}
-	no := []string{"PATH", "HOME", "PYTHONPATH", "LD_PRELOAD", "FOO", "TERM"}
+	// PATH/HOME/etc. never forwardable; VULTURE_LISTEN_ADDR/BIND_ADDR are denied
+	// even though they're VULTURE_*-prefixed (S2 defense-in-depth).
+	no := []string{"PATH", "HOME", "PYTHONPATH", "LD_PRELOAD", "FOO", "TERM",
+		"VULTURE_LISTEN_ADDR", "VULTURE_BIND_ADDR"}
 	for _, k := range yes {
 		if !dotenvForwardable(k) {
 			t.Errorf("dotenvForwardable(%q) = false, want true", k)

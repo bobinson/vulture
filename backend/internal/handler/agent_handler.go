@@ -44,32 +44,7 @@ func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	type result struct {
-		key    string
-		status string
-	}
-
-	// Run health checks concurrently with a 2s timeout per agent.
-	var wg sync.WaitGroup
-	ch := make(chan result, len(h.agents))
-	for key, a := range h.agents {
-		wg.Add(1)
-		go func(k string, url string) {
-			defer wg.Done()
-			ch <- result{key: k, status: checkAgentHealth(url)}
-		}(key, a.URL)
-	}
-	wg.Wait()
-	close(ch)
-
-	statusMap := make(map[string]string, len(h.agents))
-	for r := range ch {
-		statusMap[r.key] = r.status
-	}
-
-	// Index registry entries by Type so we can flag Optional agents on
-	// the response. The frontend uses Optional to badge opt-in agents
-	// in the audit type selector.
+	// Flag Optional built-in agents (the UI badges opt-in agents in the selector).
 	optional := make(map[string]bool, len(agentregistry.AllAgents))
 	for _, e := range agentregistry.AllAgents {
 		if e.Optional {
@@ -77,23 +52,23 @@ func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	infos := make([]model.AgentInfo, 0, len(h.agents))
-	// Built-in types already listed — used to dedupe registry plugins, which
-	// also carry the in-tree agents as virtual plugins.
+	// Collect every probe target — built-in agents PLUS enabled registry plugins
+	// (G1) that aren't already built-ins (the registry also carries in-tree
+	// agents as virtual plugins, so dedupe by type). They are health-checked in
+	// ONE concurrent wave so /api/agents latency stays ~one 2s timeout, not N.
+	type target struct {
+		url  string
+		info model.AgentInfo
+	}
+	targets := make([]target, 0, len(h.agents)+4)
 	builtinTypes := make(map[string]bool, len(h.agents))
 	for key, a := range h.agents {
 		builtinTypes[a.Type] = true
-		infos = append(infos, model.AgentInfo{
-			ID:       key,
-			Name:     a.Name,
-			Type:     a.Type,
-			Status:   statusMap[key],
-			Optional: optional[a.Type],
+		targets = append(targets, target{
+			url:  a.URL,
+			info: model.AgentInfo{ID: key, Name: a.Name, Type: a.Type, Optional: optional[a.Type]},
 		})
 	}
-
-	// G1: append ENABLED registry plugins that aren't already built-ins
-	// (e.g. semgrep), so they appear in the UI selector / agent list.
 	if h.reg != nil {
 		for _, p := range h.reg.Enabled() {
 			name := p.Name()
@@ -108,13 +83,29 @@ func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 			if display == "" {
 				display = name
 			}
-			infos = append(infos, model.AgentInfo{
-				ID:     name,
-				Name:   display,
-				Type:   name,
-				Status: checkAgentHealth(url),
+			targets = append(targets, target{
+				url:  url,
+				info: model.AgentInfo{ID: name, Name: display, Type: name},
 			})
 		}
+	}
+
+	// Concurrent health probe — one goroutine per target (2s timeout each).
+	var wg sync.WaitGroup
+	statuses := make([]string, len(targets))
+	for i := range targets {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			statuses[i] = checkAgentHealth(targets[i].url)
+		}(i)
+	}
+	wg.Wait()
+
+	infos := make([]model.AgentInfo, len(targets))
+	for i := range targets {
+		infos[i] = targets[i].info
+		infos[i].Status = statuses[i]
 	}
 	writeJSON(w, http.StatusOK, infos)
 }

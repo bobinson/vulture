@@ -53,7 +53,13 @@ pre-installs the hashed `requirements-frozen.txt` with `--require-hashes
 --only-binary :all:`. So a bundled tarball runs the Python agents OFFLINE with no
 system Python and no Docker. `install.sh`'s `_install_python_deps_bundled` skips
 pip when the bundled interpreter can already `import uvicorn`. Flag UNSET → lean
-default (only the `PBS_NOT_BUNDLED` marker). E2E:
+default (only the `PBS_NOT_BUNDLED` marker). **`release.yml` wires it:** the
+`build tarball` step sets `VULTURE_BUNDLE_PBS=1` **only for linux/amd64**
+(`${{ matrix.os=='linux' && matrix.arch=='amd64' && '1' || '' }}`) — the platform
+with a committed PBS SHA pin; every other matrix entry stays lean (and
+build-release gracefully skips bundling even if the flag were set, verified on
+linux/arm64). Implications: the linux/amd64 release asset grows to ~180 MB and the
+SBOM/Trivy steps now also scan the bundled Python deps (stricter CVE gate). E2E:
 `scripts/tests/docker/pbs-bundle-smoke.sh` (bare ubuntu/fedora, no python3) —
 **GREEN on both distros** (bundled `python3.12` present, agents healthy on it
 offline, `doctor` OK). The e2e caught + drove two fixes: (1) **hermetic build** —

@@ -147,61 +147,54 @@ fi
 # cosign-signed vendor pipeline (vendor-pbs.yml), which stays CI-only/deferred.
 # Linux/amd64 build host only; darwin + the cosign vendor flow are out of scope.
 mkdir -p "$STAGE/runtime/python/bin"
-if [ "${VULTURE_BUNDLE_PBS:-}" = "1" ] || [ "${VULTURE_BUNDLE_PBS:-}" = "true" ]; then
-    echo "==> python-build-standalone (VULTURE_BUNDLE_PBS set — bundling CPython 3.12)"
-    if [ "$OS" != linux ] || [ "$ARCH" != amd64 ]; then
-        echo "Error: VULTURE_BUNDLE_PBS only supports linux/amd64 build hosts" \
-             "(got ${OS}/${ARCH}); darwin is deferred" >&2
-        exit 1
-    fi
+# Decide whether to bundle: opt-in flag AND a supported build host. A non-
+# linux/amd64 host (e.g. the darwin release matrix) does NOT error — it falls
+# through to the unbundled marker, so VULTURE_BUNDLE_PBS can be set globally in
+# release.yml without breaking darwin jobs (darwin/arm64 bundling is deferred).
+_bundle_pbs=0
+case "${VULTURE_BUNDLE_PBS:-}" in
+    1|true)
+        if [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+            _bundle_pbs=1
+        else
+            echo "==> VULTURE_BUNDLE_PBS set, but build host is ${OS}/${ARCH};" \
+                 "PBS bundling is linux/amd64-only — shipping the unbundled marker" \
+                 "(darwin/arm64 deferred)" >&2
+        fi
+        ;;
+esac
 
+if [ "$_bundle_pbs" = 1 ]; then
+    echo "==> python-build-standalone (bundling CPython 3.12, linux/amd64)"
     PBS_REPO=${VULTURE_PBS_REPO:-indygreg/python-build-standalone}
     PBS_TRIPLE=x86_64-unknown-linux-gnu
-    # Resolve a real recent PBS tag carrying a CPython 3.12.x install_only build
-    # for our triple. Pinned fallback (verified to exist) keeps the build
-    # deterministic if the releases API is unreachable.
-    PBS_TAG=${VULTURE_PBS_TAG:-}
-    PBS_PYVER=${VULTURE_PBS_PYVER:-}
-    if [ -z "$PBS_TAG" ] || [ -z "$PBS_PYVER" ]; then
-        echo "    resolving latest PBS 3.12.x ${PBS_TRIPLE} tag via releases API"
-        _api="https://api.github.com/repos/${PBS_REPO}/releases?per_page=20"
-        _asset=$(curl -fsSL "$_api" 2>/dev/null \
-            | grep -oE "cpython-3\.12\.[0-9]+\+[0-9]+-${PBS_TRIPLE}-install_only\.tar\.gz" \
-            | head -n1 || true)
-        if [ -n "$_asset" ]; then
-            # cpython-<pyver>+<tag>-<triple>-install_only.tar.gz
-            PBS_PYVER=$(printf '%s' "$_asset" | sed -E 's/^cpython-([0-9.]+)\+.*/\1/')
-            PBS_TAG=$(printf '%s' "$_asset" | sed -E 's/^cpython-[0-9.]+\+([0-9]+)-.*/\1/')
-            echo "    resolved PBS tag=$PBS_TAG python=$PBS_PYVER"
-        else
-            PBS_TAG=20260610
-            PBS_PYVER=3.12.13
-            echo "    releases API unavailable — using pinned PBS tag=$PBS_TAG python=$PBS_PYVER" >&2
-        fi
-    fi
-
+    # PINNED version. The trust anchor is a REPO-COMMITTED SHA pin
+    # (scripts/pbs-shas-<tag>.txt), reviewed at commit time — NOT the release's
+    # own self-published SHA256SUMS (which an upstream-release compromise could
+    # rewrite alongside the asset). Bump both the pin file and these on upgrade.
+    PBS_TAG=${VULTURE_PBS_TAG:-20260610}
+    PBS_PYVER=${VULTURE_PBS_PYVER:-3.12.13}
     PBS_ASSET="cpython-${PBS_PYVER}+${PBS_TAG}-${PBS_TRIPLE}-install_only.tar.gz"
     PBS_BASE="https://github.com/${PBS_REPO}/releases/download/${PBS_TAG}"
+
+    PBS_PIN="$REPO_ROOT/scripts/pbs-shas-${PBS_TAG}.txt"
+    [ -f "$PBS_PIN" ] || { echo "Error: no committed PBS SHA pin at $PBS_PIN (fail-closed — commit the SHA before bundling)" >&2; exit 1; }
+    PBS_EXPECTED=$(awk -v f="$PBS_ASSET" '$2==f {print $1}' "$PBS_PIN")
+    [ -n "$PBS_EXPECTED" ] || { echo "Error: $PBS_ASSET not listed in committed pin $PBS_PIN (fail-closed)" >&2; exit 1; }
+
     PBS_DL=$(mktemp -d)
     echo "    downloading $PBS_ASSET"
-    curl -fsSL -o "$PBS_DL/$PBS_ASSET" "$PBS_BASE/$PBS_ASSET" \
+    curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused --max-time 600 \
+        -o "$PBS_DL/$PBS_ASSET" "$PBS_BASE/$PBS_ASSET" \
         || { echo "Error: failed to download PBS asset $PBS_ASSET" >&2; exit 1; }
-    echo "    downloading published SHA256SUMS"
-    curl -fsSL -o "$PBS_DL/SHA256SUMS" "$PBS_BASE/SHA256SUMS" \
-        || { echo "Error: failed to download PBS SHA256SUMS" >&2; exit 1; }
 
-    # Fail-closed SHA-256 verification against the release's published sums.
-    PBS_EXPECTED=$(awk -v f="$PBS_ASSET" '$2==f {print $1}' "$PBS_DL/SHA256SUMS")
-    if [ -z "$PBS_EXPECTED" ]; then
-        echo "Error: no SHA256 for $PBS_ASSET in published SHA256SUMS (fail-closed)" >&2
-        exit 1
-    fi
+    # Fail-closed verification against the COMMITTED pin (not a fetched sums file).
     PBS_ACTUAL=$(sha256_of "$PBS_DL/$PBS_ASSET")
     if [ "$PBS_EXPECTED" != "$PBS_ACTUAL" ]; then
-        echo "Error: PBS SHA256 mismatch (fail-closed): got $PBS_ACTUAL want $PBS_EXPECTED" >&2
+        echo "Error: PBS SHA256 mismatch vs committed pin (fail-closed): got $PBS_ACTUAL want $PBS_EXPECTED" >&2
         exit 1
     fi
-    echo "    SHA256 verified: $PBS_ACTUAL"
+    echo "    SHA256 verified against committed pin $PBS_PIN: $PBS_ACTUAL"
 
     # Extract + flatten: the PBS tarball lays everything under a top-level
     # 'python/' dir, so extracting into runtime/ lands bin/ directly under

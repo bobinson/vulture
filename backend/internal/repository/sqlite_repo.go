@@ -33,6 +33,15 @@ func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
 		dsn += "&"
 	}
 	dsn += "_pragma=journal_mode(WAL)&_pragma=busy_timeout(30000)&_pragma=synchronous(NORMAL)"
+	// Pre-create the DB file 0600 so SQLite opens an already-restricted file,
+	// closing the brief world-readable window between creation and the
+	// post-migrate chmod. (secureDBFiles below still tightens the WAL/SHM
+	// sidecars, which SQLite creates on first write.)
+	if dbPath != "" && !strings.Contains(dbPath, ":memory:") {
+		if f, ferr := os.OpenFile(dbPath, os.O_CREATE, 0o600); ferr == nil {
+			_ = f.Close()
+		}
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)

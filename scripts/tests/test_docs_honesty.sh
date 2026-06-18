@@ -173,7 +173,11 @@ else
             || detail="$detail PBS_NOT_BUNDLED not co-located with VULTURE_BUNDLE_PBS guard;"
     fi
     # Real fetch of a 3.12 install_only PBS dist (not a placeholder marker).
-    grep -Eiq 'cpython.*3\.12.*install_only|3\.12.*install_only.*tar' "$BR" \
+    # Behavioural anchor: an install_only cpython asset AND a pinned 3.12.x
+    # version both appear — they need not share a line (the asset name is now
+    # assembled from PBS_PYVER), so this survives the build-release refactor.
+    { grep -Eiq 'cpython-.*install_only|install_only.*\.tar' "$BR" \
+        && grep -Eiq 'PBS_PYVER.*3\.12|3\.12\.[0-9]+' "$BR"; } \
         || detail="$detail no cpython 3.12 install_only PBS download;"
     # SHA verification of the fetched tarball (fail-closed), per design item 2.
     grep -Eiq 'SHA256SUMS|sha256sum|sha256_of|--require-hashes' "$BR" \
