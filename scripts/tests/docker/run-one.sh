@@ -22,7 +22,7 @@ case "$SCENARIO" in
     py-no-venv)       WITH_PY=1; WITH_VENV=0; VARIANT=agents-hashed;  NET=none ;;
     *) echo "unknown scenario: $SCENARIO" >&2; exit 2 ;;
 esac
-[ "$DISTRO" = ubuntu ] && [ "$DISTRO" != fedora ] || true   # py-no-venv is Ubuntu-only (Fedora bundles venv)
+# py-no-venv is Ubuntu-only (Fedora bundles venv with python3), so skip it there.
 if [ "$SCENARIO" = py-no-venv ] && [ "$DISTRO" = fedora ]; then
     echo "SKIP [$DISTRO/$SCENARIO] Fedora bundles venv with python3 — N/A"; exit 0
 fi

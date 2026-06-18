@@ -190,11 +190,22 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 	out := []Action{}
 
 	entry.sm.Force(StatePulling)
-	if err := s.docker.Pull(ctx, plug.Manifest.Runtime.Image); err != nil {
-		s.markFailed(name, fmt.Sprintf("pull: %v", err))
-		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
+	image := plug.Manifest.Runtime.Image
+	if err := s.docker.Pull(ctx, image); err != nil {
+		// Pull is best-effort: it refreshes the image, but a registry
+		// failure (auth "denied", offline, rate limit) must NOT block a
+		// plugin whose image is already present locally. Fall back to the
+		// cached image; fail only when it is genuinely absent (0055).
+		present, ierr := s.docker.Inspect(ctx, image)
+		if ierr != nil || !present {
+			s.markFailed(name, fmt.Sprintf("pull: %v", err))
+			return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
+		}
+		s.logger.Printf("[supervisor] pull failed for %s (%v); using local image %s", name, err, image)
+		out = append(out, Action{Plugin: name, Kind: "pull", Detail: "local image (pull failed: " + err.Error() + ")"})
+	} else {
+		out = append(out, Action{Plugin: name, Kind: "pull", Detail: image})
 	}
-	out = append(out, Action{Plugin: name, Kind: "pull", Detail: plug.Manifest.Runtime.Image})
 
 	argv, err := BuildDockerRunArgv(plug, s.opts)
 	if err != nil {
@@ -202,6 +213,11 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
 	}
 	entry.sm.Force(StateStarting)
+	// Idempotent (re)start: a prior session may have left a *stopped*
+	// container holding this name (StopAll stops but does not remove), and
+	// `docker run --name` would then fail with a name conflict. Remove any
+	// existing container first; "no such container" is benign and ignored.
+	_ = s.docker.Remove(ctx, "vulture-agent-"+pluginregistry.SanitiseDNSName(name))
 	if _, err := s.docker.Run(ctx, argv); err != nil {
 		s.markFailed(name, fmt.Sprintf("run: %v", err))
 		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
@@ -209,22 +225,20 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 	out = append(out, Action{Plugin: name, Kind: "run", Detail: plug.Manifest.Runtime.Image})
 
 	entry.sm.Force(StateProbing)
-	probeURL := buildProbeURL(plug)
+	probeURL := buildProbeURL(plug, s.opts.LocalMode)
 	s.prober.Start(name, probeURL, func(st PluginState) {
 		s.handleProbeState(name, st)
 	})
 	return out
 }
 
-func buildProbeURL(plug pluginregistry.Plugin) string {
+func buildProbeURL(plug pluginregistry.Plugin, localMode bool) string {
 	endpoint := plug.Manifest.Runtime.HealthEndpoint
 	if endpoint == "" {
 		endpoint = "/health"
 	}
-	alias := pluginregistry.SanitiseDNSName(plug.Name())
-	return fmt.Sprintf("http://%s%s:%d%s",
-		pluginregistry.NetworkAliasPrefix, alias,
-		plug.Manifest.Runtime.Port, endpoint)
+	host := pluginregistry.PluginContainerHost(localMode, plug.Name())
+	return fmt.Sprintf("http://%s:%d%s", host, plug.Manifest.Runtime.Port, endpoint)
 }
 
 func (s *Supervisor) markFailed(name, msg string) {

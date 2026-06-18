@@ -126,5 +126,71 @@ else
     fail "$name" "$detail"
 fi
 
+# ---------------------------------------------------------------------------
+# C6 — build-release.sh must STAGE plugin manifests into runtime/plugins/ so a
+#      native install can discover them (0055 plugin-activation ckpt 3). Ships
+#      manifests + rule sidecars only — NOT container images.
+# ---------------------------------------------------------------------------
+name="C6-build-release-ships-plugin-manifests"
+BR="$REPO_ROOT/scripts/build-release.sh"
+if grep -qE 'runtime/plugins' "$BR" && grep -qE 'plugin\.toml' "$BR"; then
+    pass "$name"
+else
+    fail "$name" "build-release.sh no longer stages plugin manifests into runtime/plugins/"
+fi
+
+# ---------------------------------------------------------------------------
+# C7 — Tier B (bundle python-build-standalone). build-release.sh must have an
+#      OPT-IN VULTURE_BUNDLE_PBS code path that, WHEN SET, fetches + extracts a
+#      REAL CPython 3.12 interpreter into runtime/python/ and does NOT leave the
+#      PBS_NOT_BUNDLED marker. When UNSET it keeps today's lean behaviour (write
+#      PBS_NOT_BUNDLED). This is a static, build-free assertion on the script.
+#
+#      Anchors (behavioural, survive benign refactors):
+#        - references the VULTURE_BUNDLE_PBS opt-in env var;
+#        - the bundle path is GUARDED by that var (so the default release stays
+#          lean — PBS_NOT_BUNDLED is only written when the var is NOT set);
+#        - downloads a cpython ... 3.12 ... install_only PBS tarball;
+#        - SHA256-verifies the download (fail-closed) — must not just curl|tar;
+#        - results in a runnable bin/python3.12 under runtime/python/.
+# ---------------------------------------------------------------------------
+name="C7-build-release-has-pbs-bundle-optin"
+BR="$REPO_ROOT/scripts/build-release.sh"
+detail=""
+if [ ! -f "$BR" ]; then
+    fail "$name" "build-release.sh not found at $BR"
+else
+    grep -q 'VULTURE_BUNDLE_PBS' "$BR" \
+        || detail="$detail no VULTURE_BUNDLE_PBS opt-in;"
+    # The PBS_NOT_BUNDLED marker must be CONDITIONAL on the opt-in being unset
+    # (i.e. an else/guard), not unconditionally written like today.
+    if grep -q 'PBS_NOT_BUNDLED' "$BR"; then
+        grep -Eq 'VULTURE_BUNDLE_PBS.*(=|!=).*(1|true)|if[[:space:]].*VULTURE_BUNDLE_PBS|else|\bfi\b' "$BR" \
+            || detail="$detail PBS_NOT_BUNDLED is not guarded by VULTURE_BUNDLE_PBS;"
+        # Heuristic: the marker write must sit inside a conditional block that
+        # mentions the opt-in var, so a bundled build does NOT emit it.
+        grep -Pzoq '(?s)VULTURE_BUNDLE_PBS.*PBS_NOT_BUNDLED' "$BR" 2>/dev/null \
+            || detail="$detail PBS_NOT_BUNDLED not co-located with VULTURE_BUNDLE_PBS guard;"
+    fi
+    # Real fetch of a 3.12 install_only PBS dist (not a placeholder marker).
+    # Behavioural anchor: an install_only cpython asset AND a pinned 3.12.x
+    # version both appear — they need not share a line (the asset name is now
+    # assembled from PBS_PYVER), so this survives the build-release refactor.
+    { grep -Eiq 'cpython-.*install_only|install_only.*\.tar' "$BR" \
+        && grep -Eiq 'PBS_PYVER.*3\.12|3\.12\.[0-9]+' "$BR"; } \
+        || detail="$detail no cpython 3.12 install_only PBS download;"
+    # SHA verification of the fetched tarball (fail-closed), per design item 2.
+    grep -Eiq 'SHA256SUMS|sha256sum|sha256_of|--require-hashes' "$BR" \
+        || detail="$detail no SHA256 verification of the PBS download;"
+    # Extract/flatten so a runnable bin/python3.12 lands under runtime/python/.
+    grep -Eq 'runtime/python/bin/python3\.12|bin/python3\.12' "$BR" \
+        || detail="$detail no runtime/python/bin/python3.12 produced;"
+    if [ -z "$detail" ]; then
+        pass "$name"
+    else
+        fail "$name" "$detail"
+    fi
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

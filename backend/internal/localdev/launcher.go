@@ -206,12 +206,35 @@ func (l *Launcher) agentRuntime() (pythonBin, agentsDir string) {
 	return
 }
 
+// ensureBuiltinPluginsDir defaults VULTURE_BUILTIN_PLUGINS_DIR to the shipped
+// $VULTURE_HOME/runtime/plugins (install mode) when the operator hasn't set it
+// and the directory exists. This lets plugin discovery + VULTURE_PLUGINS act on
+// the manifests shipped in the tarball. Set via os.Setenv so the serve child
+// (spawned with os.Environ() as its base) inherits it.
+func ensureBuiltinPluginsDir() {
+	if os.Getenv("VULTURE_BUILTIN_PLUGINS_DIR") != "" {
+		return
+	}
+	dir := filepath.Join(ResolveHome(), "runtime", "plugins")
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		_ = os.Setenv("VULTURE_BUILTIN_PLUGINS_DIR", dir)
+	}
+}
+
 // startInstallMode runs the install-mode local stack: the prebuilt backend
 // binary (API + embedded SPA), plus bundled-venv agents when a runtime is
 // present. No go build, no vite, no pip-install-editable — the venv is
 // pre-provisioned by install.sh (--require-hashes); first-party packages load
 // via PYTHONPATH=runtime/agents.
 func (l *Launcher) startInstallMode(ctx context.Context) error {
+	// Pick up VULTURE_* / provider keys (LLM, embeddings, VULTURE_PLUGINS, …)
+	// from $VULTURE_HOME/config/.env before spawning the backend + agents, so
+	// they inherit the config. Parsed, not sourced — no code execution.
+	LoadInstallEnv()
+	// Default plugin discovery to the shipped manifests so VULTURE_PLUGINS can
+	// activate them. Inherited by the serve child via os.Environ().
+	ensureBuiltinPluginsDir()
+
 	det, err := CheckInstallPrereqs()
 	if err != nil {
 		return fmt.Errorf("prerequisites: %w", err)

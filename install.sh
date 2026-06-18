@@ -372,7 +372,11 @@ generate_jwt_secret() {
     {
         printf 'VULTURE_JWT_SECRET=%s\n' "$SECRET"
         printf 'VULTURE_LOCAL_MODE=true\n'
-        printf 'VULTURE_PORT=23000\n'
+        printf 'VULTURE_PORT=28080\n'
+        # Declarative plugin activation. Empty = no external plugins (in-tree
+        # built-ins always run); set to all|none|a,comma,list to opt in.
+        # NOTE: container (Docker) plugins additionally require Docker to run.
+        printf 'VULTURE_PLUGINS=\n'
     } > "$ENVFILE"
     chmod 600 "$ENVFILE"
     log "generated JWT secret to $ENVFILE (0600)"
@@ -574,7 +578,22 @@ install_python_deps() {
 # install_python_deps can express the three-way precedence cleanly.
 _install_python_deps_bundled() {
     PIP="$VULTURE_HOME/runtime/python/bin/pip"
+    PYBIN="$VULTURE_HOME/runtime/python/bin/python3.12"
     REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
+    # OFFLINE/idempotent fast path (Tier B): a PBS-bundled tarball pre-installs
+    # the agent deps into runtime/python at BUILD time, so the interpreter can
+    # already import the core stack. When that holds, SKIP the pip install
+    # entirely — zero egress, re-running install.sh is a no-op. The self-check
+    # imports the SAME core set as the system-venv self-check (uvicorn, fastapi,
+    # pydantic, pydantic_core), NOT just uvicorn — so a PARTIAL bundle (e.g.
+    # uvicorn present but fastapi/annotated_doc missing) does NOT skip and falls
+    # through to the --require-hashes install below instead of shipping broken.
+    if [ -x "$PYBIN" ] && \
+       PYTHONNOUSERSITE=1 "$PYBIN" -c 'import uvicorn, fastapi, pydantic, pydantic_core' >/dev/null 2>&1; then
+        AGENTS_INSTALLED=1
+        log "bundled Python runtime already has the agent deps (core import OK) — skipping pip install (offline)"
+        return 0
+    fi
     # CLI-only build: no/empty frozen manifest.
     if [ ! -s "$REQS" ]; then
         cli_only_note
@@ -691,6 +710,9 @@ print_summary() {
     fi
     log "    vulture scan ./some-repo   # scan a repo (submits to the running service)"
     log "    vulture stop               # stop the service"
+    log ""
+    log "  Plugins: edit VULTURE_PLUGINS in $VULTURE_HOME/config/.env to enable them"
+    log "  (all|none|comma,list). Container plugins additionally require Docker."
     log ""
 }
 

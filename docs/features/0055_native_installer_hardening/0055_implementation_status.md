@@ -1,9 +1,14 @@
 # 0055 — Native Installer Hardening + Honesty · Implementation Status
 
 **Status**: IMPLEMENTED — Tier A + C + hardening pass + **B1 (lockfile)** + **Tier
-B-lite (system-Python install)** + **cross-distro Docker e2e**. Tier B (bundled PBS)
-and the `vulture.sh release` preflight remain designed-only (see plan).
-**Last updated**: 2026-06-14
+B-lite (system-Python install)** + **Tier B PBS bundling (linux/amd64, opt-in
+`VULTURE_BUNDLE_PBS=1`)** + **cross-distro Docker e2e**. Tier B now bundles a
+SHA-256-verified CPython 3.12 python-build-standalone runtime with the agent deps
+pre-installed, so a bundled release runs the Python agents OFFLINE with no system
+Python and no Docker. **Still deferred:** the cosign-signed vendor pipeline
+(`vendor-pbs.yml` → `release.yml`), darwin/arm64 bundling, and the `vulture.sh
+release` preflight (see plan).
+**Last updated**: 2026-06-17
 
 ## v0.0.3 install-mode UX fixes (auto-detect + audit #1–#8)
 
@@ -22,6 +27,13 @@ issues, fixed in this pass. Headline change: the system-Python path is now the
 | #3 | `runScan` agent-health guard: probes each `cfg.Agents` `/health` (~1s); if zero reachable, prints a loud, actionable warning (no findings; install Python 3.12+ or use Docker), then CONTINUES (warn, not refuse, so remote/centralized submissions still work). | ✅ |
 | #5 | `doctor.go checkPython`: install-mode missing `PythonBin` path now returns WARN (not hard FAIL) per plan line 544 — CLI-only is a documented-valid state; fix string updated; test updated. | ✅ |
 | #4/#6 | `cli_only_note()` rewritten to be honest — removed the false "CLI + skills still work"; states agent/LLM scanning needs a local Python ≥3.12 (auto-detected; install + re-run, or set `=1`) OR Docker, and that the CLI + web UI are installed and work. Quickstart + post-install summary made conditional on an `AGENTS_INSTALLED` state flag; `launcher.go:228-230` log corrected to "backend + embedded SPA only (no agent runtime…)". | ✅ |
+| SPA (Plan A) | `build-release.sh` now embeds the real `frontend/dist` into the `//go:embed` source (`backend/internal/assets/frontend/`) BEFORE `go build` — reordered to frontend→embed→build with a placeholder-restore trap, plus a post-build guard that fails the release if the binary still embeds the placeholder. Prior releases ran `go build` first and shipped the placeholder → Mode-E rendered "Frontend assets not bundled". The unused, never-served `runtime/frontend/` tarball copy is dropped. | ✅ |
+| dotenv (plugins ckpt 1) | Safe install-mode `config/.env` loader: `localdev.LoadInstallEnv()` PARSES `KEY=VALUE` (never `source` — no code execution) and injects forwardable keys (`VULTURE_*` + provider keys `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`OPENAI_BASE_URL`/`OLLAMA_*`; **excludes** `PATH`/`HOME`/`PYTHONPATH`/`LD_PRELOAD`). Explicit env wins over the file; called at the top of `startInstallMode` so backend + agents inherit it. Also fixes the standing "`VULTURE_USE_LLM`/`OPENAI_*`/`VULTURE_EMBEDDING_*` not loaded in install mode" gap. First checkpoint of the `VULTURE_PLUGINS` activation LLD. 6 unit tests incl. a command-substitution-not-executed security assertion. | ✅ |
+| VULTURE_PLUGINS (plugins ckpt 2) | Activation overlay in `pluginregistry.Build()`: when `VULTURE_PLUGINS` is set it is the **authoritative** allow-list for EXTERNAL plugins — `all` (enable all external), `""`/`none` (disable all external), or `a,b,c` (exactly those). **In-tree built-in agents are never touched** (load-bearing safety: `VULTURE_PLUGINS=semgrep` must not switch off chaos/owasp/…). Unknown names warned + skipped, never fatal. Runtime-only — applied AFTER `SaveState`, so it never rewrites `state.toml`. 7 unit tests incl. the in-tree-not-disabled invariant + no-mutation. Still inert until ckpt 3 ships manifests + sets `VULTURE_BUILTIN_PLUGINS_DIR` for native installs. | ✅ |
+| discovery (plugins ckpt 3) | `build-release.sh` stages plugin **manifests** into `runtime/plugins/<name>/` (`plugin.toml` + `rules/*.json`) — discovery metadata only, **not** container images (pull at runtime, like PBS). Install-mode launcher `ensureBuiltinPluginsDir()` defaults `VULTURE_BUILTIN_PLUGINS_DIR=$VULTURE_HOME/runtime/plugins` when unset + present (inherited by the serve child via `os.Environ()`). Verified: a real tarball ships `runtime/plugins/semgrep/{plugin.toml,rules}` (no image). Supervisor degrades gracefully when Docker is absent (`docker ps` err → log + `return nil`, no crash). 3 launcher unit tests + docs-honesty **C6** guard. **Now `VULTURE_PLUGINS` is live on native installs** (discovery + activation wired end-to-end; running container plugins still needs Docker). | ✅ |
+| activation UX (plugins ckpts 4-6) | **ckpt 4** `vulture.sh --plugins all\|none\|<list>` → exports `VULTURE_PLUGINS` (existing value untouched when flag absent) + dev defaults `VULTURE_BUILTIN_PLUGINS_DIR=$PROJECT_ROOT/plugins`. **ckpt 5** `install.sh` seeds `VULTURE_PLUGINS=` (empty = quiet/safe default: external plugins off until opted in) + fixed the stale `VULTURE_PORT=23000`→`28080` (dormant until ckpt 1 made `.env` loadable) + summary note. **ckpt 6** `doctor` `checkPluginsReachable()` builds the registry, probes enabled non-in-tree plugins' `/health`, **WARN never FAIL** (CLI/Docker-less is valid); 3 unit tests. | ✅ |
+| activation e2e | New `scripts/tests/docker/plugin-smoke.sh`: real-tarball install in ubuntu:24.04, then via real `vulture start` — CASE A (empty `VULTURE_PLUGINS=`) → semgrep ABSENT from `/api/agents`; CASE B (`VULTURE_PLUGINS=semgrep`) → semgrep PRESENT (`{"id":"semgrep","status":"unhealthy"}` — graceful: no docker-in-docker; asserts presence, not health). Proves discovery → allow-list → /api/agents end-to-end. Plus `ui-smoke` ubuntu+fedora green (embedded SPA loads). | ✅ |
+| SPA e2e (Plan A) | New `scripts/tests/docker/ui-smoke.sh <distro> <real-tarball>` + `run-ui-matrix.sh`: installs a REAL release tarball in ubuntu:24.04 / fedora:41, runs `vulture start --foreground`, and asserts the embedded SPA loads (real app, not the placeholder) at `/` and `/audit/<id>` (SPA fallback). Unlike `runner.sh` (stub binary, install.sh mechanics) this runs the real Go binary. Verified live: ubuntu ✅ (fedora via the dynamic-workflow e2e run). | ✅ |
 
 ## Implemented since 2026-06-05 (B1, Tier B-lite, cross-distro e2e)
 
@@ -32,9 +44,35 @@ issues, fixed in this pass. Headline change: the system-Python path is now the
 | bugfix | `cleanup` EXIT trap returned non-zero → successful **offline** install exited 1 | ✅ fixed (`return 0`) + unit-locked; **found by the cross-distro e2e** |
 | E2E | Fresh-Docker install matrix (Ubuntu 24.04 + Fedora 41, with/without Python) | ✅ `scripts/tests/docker/` (Dockerfiles, offline fixtures, runner, run-one/run-matrix); **9/9 scenarios pass** on real Docker; gated in CI via `.github/workflows/test-install-docker.yml` |
 
-**Not yet built (designed-only):** Tier B (bundle python-build-standalone via the
-signed vendor pipeline — needs the release-signing flow, not sandbox-runnable) and
-the `scripts/vulture.sh release` preflight + `release.yml` hardening deltas.
+**Tier B PBS bundling — IMPLEMENTED (linux/amd64, opt-in):** `build-release.sh`,
+when `VULTURE_BUNDLE_PBS=1`, resolves a real recent CPython **3.12.x**
+`install_only` python-build-standalone tag for `x86_64-unknown-linux-gnu`,
+downloads + **SHA-256-verifies** it (fail-closed) against the release's published
+`SHA256SUMS`, extracts/flattens it to `runtime/python/bin/python3.12`, then
+pre-installs the hashed `requirements-frozen.txt` with `--require-hashes
+--only-binary :all:`. So a bundled tarball runs the Python agents OFFLINE with no
+system Python and no Docker. `install.sh`'s `_install_python_deps_bundled` skips
+pip when the bundled interpreter can already `import uvicorn`. Flag UNSET → lean
+default (only the `PBS_NOT_BUNDLED` marker). **`release.yml` wires it:** the
+`build tarball` step sets `VULTURE_BUNDLE_PBS=1` **only for linux/amd64**
+(`${{ matrix.os=='linux' && matrix.arch=='amd64' && '1' || '' }}`) — the platform
+with a committed PBS SHA pin; every other matrix entry stays lean (and
+build-release gracefully skips bundling even if the flag were set, verified on
+linux/arm64). Implications: the linux/amd64 release asset grows to ~180 MB and the
+SBOM/Trivy steps now also scan the bundled Python deps (stricter CVE gate). E2E:
+`scripts/tests/docker/pbs-bundle-smoke.sh` (bare ubuntu/fedora, no python3) —
+**GREEN on both distros** (bundled `python3.12` present, agents healthy on it
+offline, `doctor` OK). The e2e caught + drove two fixes: (1) **hermetic build** —
+the build-time pip needs `PYTHONNOUSERSITE=1 PYTHONPATH=''`, else it sees the
+build host's `~/.local` site-packages, marks ~19 deps "already satisfied", and
+ships an incomplete runtime (`annotated_doc` missing → fastapi import fails on the
+target); (2) **`NewSQLiteRepo` now chmods `vulture.db` (+ WAL/SHM) to 0600** — it
+holds audit findings and `doctor` flags it — surfaced once `doctor` ran post-`start`.
+
+**Still deferred (designed-only):** the **cosign-signed vendor pipeline**
+(`vendor-pbs.yml` → `release.yml`; the build-time direct fetch above is the
+sandbox-runnable equivalent), **darwin/arm64** bundling, and the
+`scripts/vulture.sh release` preflight + `release.yml` hardening deltas.
 
 Tier B-lite covers the **dependency install** half of "run agents with an existing
 Python": after the 2026-06-09 audit fix, releases now ship the hashed lockfile and
@@ -78,23 +116,28 @@ eight further issues; all fixed in the same feature:
 | H7 | Low (hygiene) | Download temp dir renamed `TMPDIR`→`DL_TMP` (no longer clobbers the standard env var) and is removed by the EXIT trap |
 | H8 | Low (completeness) | Added a `lint-installer` CI job (`shellcheck install.sh scripts/*.sh` + the branch tests) so the installer is linted on every PR, not only at release-tag time |
 
-## Deferred (Tier B — DEFERRED / demand-gated)
+## Tier B (PARTIALLY IMPLEMENTED) — embedded Python agent runtime
 
 Tier B (embedded Python agent runtime so native installs run agent scans
-without Docker) is **fully designed but not scheduled**. The complete
-LLD — trigger, current scaffolding vs. missing wiring, install strategy
-(build-time pre-install vs. install-time pip), security, size, risks,
-test plan, effort — lives in `0055_implementation_plan.md`
-§"Tier B (DEFERRED) — embedded Python agent runtime". Summary of the
-remaining work:
+without Docker) is **IMPLEMENTED for linux/amd64** as an opt-in build; the
+cosign-signed vendor pipeline and darwin/arm64 remain deferred. The complete
+LLD — trigger, scaffolding, install strategy (build-time pre-install vs.
+install-time pip), security, size, risks, test plan, effort — lives in
+`0055_implementation_plan.md` §"Tier B (PARTIALLY IMPLEMENTED) — embedded
+Python agent runtime". Status of the pieces:
 
 - ~~Generate a **hashed** `requirements-frozen.txt`~~ — DONE
   (`scripts/gen-lockfile.sh`); as of 2026-06-09 `build-release.sh` also
   **ships** it into the tarball (was a 0-byte stub before — see AU1).
-- Bundle PBS: wire `release.yml` to fetch+verify the already-built
-  `vendor-pbs-*` asset and extract it into `runtime/python/`. The
-  `vendor-pbs.yml` workflow exists but **nothing consumes it**;
-  `build-release.sh` only writes a `PBS_NOT_BUNDLED` marker.
+- ~~Bundle PBS into the release tarball~~ — **DONE (linux/amd64, opt-in
+  `VULTURE_BUNDLE_PBS=1`)**: `build-release.sh` fetches the upstream indygreg
+  CPython 3.12.x `install_only` PBS tarball directly, **SHA-256-verifies** it
+  (fail-closed) against the release's published `SHA256SUMS`, extracts it into
+  `runtime/python/`, and pre-installs the hashed deps so it installs OFFLINE.
+  No `release.yml` change is needed for this path. **DEFERRED:** wiring the
+  cosign-signed `vendor-pbs.yml` artifact into `release.yml` (the
+  `vendor-pbs.yml` workflow exists but nothing consumes it), and darwin/arm64.
+  Flag unset → `build-release.sh` writes only the `PBS_NOT_BUNDLED` marker.
 - ~~Implement **install-mode `local_start`**~~ — IMPLEMENTED (#10, commit
   range on feature/004-tweaks). `Start()` branches to `startInstallMode`:
   (a) backend via the installed binary's `serve` (no `go build`; serves the
@@ -113,14 +156,21 @@ remaining work:
   28001-28010 failure was a pre-existing install owning those ports, not a #10
   bug. (A full LLM scan-with-findings is an optional remaining confirmation.)
 - **PBS bundling** for installs WITHOUT system Python (the no-`VULTURE_USE_SYSTEM_PYTHON`
-  case) remains deferred — see the Bundle-PBS item above.
+  case) is now **DONE for linux/amd64** via the opt-in build above — a bundled
+  release runs agents with no system Python; darwin/arm64 + the cosign vendor flow
+  remain deferred (see the Bundle-PBS item above).
 - Make `smoke-install.sh` run a real `vulture scan`.
 
-**Build it only when the Trigger in the LLD is met** (real demand for
-Docker-less agent scanning). When built, it graduates to its own feature
-(suggested `0056_native_agent_runtime`). Until then, Mode E installs the
-CLI + embedded SPA; agent-based scanning requires Docker (Mode A/B), and
-even with Tier B an external LLM endpoint is still required.
+**Tier B is now shipping for linux/amd64** (opt-in `VULTURE_BUNDLE_PBS=1`):
+a bundled release installs the CLI + embedded SPA and runs the Python agents
+with no system Python and no Docker — the skill-based audit phase runs fully
+locally. The remaining deferred pieces (cosign vendor pipeline, darwin/arm64,
+real `vulture scan` in `smoke-install.sh`) would graduate to their own feature
+(suggested `0056_native_agent_runtime`). On a non-bundled (lean) release, Mode E
+installs the CLI + embedded SPA and agent-based scanning needs a system Python
+(`VULTURE_USE_SYSTEM_PYTHON=1`) or Docker (Mode A/B). **Regardless of how Python
+is provided, the deeper LLM analysis phase still requires an external endpoint and
+key** (`VULTURE_USE_LLM=true` + `OPENAI_API_KEY` / `OPENAI_BASE_URL`).
 
 ## Post-release audit fixes (2026-06-09)
 
@@ -136,8 +186,10 @@ several pieces that were generated/designed but not actually delivered:
 | AU5 | Major | Misleading "In CI this is generated…/fetches PBS…" comments in `build-release.sh` (CI ran the same stub path) → corrected to the deferred reality. |
 | AU6 | Major | Tests didn't catch the shipping gap (docs-honesty checked only wording; the docker e2e used a hand-injected fixture). Added `test_docs_honesty.sh` **C5** asserting `build-release.sh` ships the hashed lockfile + the committed file is hashed. |
 
-**Still deferred** (Tier B native runtime, see Deferred section): PBS bundling
-and the install-mode launcher/packaging wiring so agents execute natively.
+**Resolved since this audit** (see Tier B section): PBS bundling now ships for
+linux/amd64 (opt-in `VULTURE_BUNDLE_PBS=1`, build-time fetch+SHA-verify+pre-install)
+and the install-mode launcher/packaging wiring (#10) lands so agents execute
+natively. **Still deferred:** the cosign-signed vendor pipeline and darwin/arm64.
 
 ## Decisions
 

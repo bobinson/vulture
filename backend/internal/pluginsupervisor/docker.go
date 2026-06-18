@@ -21,6 +21,7 @@ type DockerClient interface {
 	Inspect(ctx context.Context, image string) (bool, error)
 	Run(ctx context.Context, argv []string) (containerID string, err error)
 	Stop(ctx context.Context, name string, timeout time.Duration) error
+	Remove(ctx context.Context, name string) error
 	PS(ctx context.Context) ([]RunningContainer, error)
 	Info(ctx context.Context) error
 }
@@ -128,6 +129,15 @@ func (d *dockerExec) Stop(ctx context.Context, name string, timeout time.Duratio
 		secs = 1
 	}
 	_, _, err := d.run(ctx, []string{"stop", "--time", strconv.Itoa(secs), name})
+	return err
+}
+
+// Remove force-removes a container by name. Used before `docker run
+// --name` to clear a stale stopped container of the same name (a prior
+// StopAll leaves containers stopped, not removed). "no such container"
+// is benign — the caller ignores the error.
+func (d *dockerExec) Remove(ctx context.Context, name string) error {
+	_, _, err := d.run(ctx, []string{"rm", "-f", name})
 	return err
 }
 

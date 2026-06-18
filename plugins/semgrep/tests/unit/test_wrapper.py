@@ -317,3 +317,19 @@ def test_wrapper_uses_run_in_executor_BLOCKER2(patched_realpath):
             )
 
     asyncio.run(_drive())
+
+
+def test_semgrep_argv_bounds_scan_excludes_and_memory():
+    """0055: --no-git-ignore makes semgrep walk node_modules/build dirs,
+    which OOMs the container on real projects. The argv must exclude
+    vendored/build dirs and cap memory so the scan is bounded."""
+    from src.wrapper import _semgrep_argv
+    argv = _semgrep_argv("/audit-inputs/x", {})
+    # heavy/vendored dirs excluded
+    for d in ("node_modules", ".git", "vendor", ".venv", "target", "dist", "build"):
+        assert ["--exclude", d] == [argv[i], argv[i + 1]] or d in argv, f"missing --exclude {d}: {argv}"
+    # memory cap present
+    assert "--max-memory" in argv, f"missing --max-memory: {argv}"
+    # config-overridable memory
+    argv2 = _semgrep_argv("/x", {"max_memory_mb": 3000})
+    assert "3000" in argv2

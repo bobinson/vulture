@@ -80,6 +80,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 			supervisor = pluginsupervisor.New(reg, pluginsupervisor.Options{
 				Network:   envOrDefault("VULTURE_SUPERVISOR_NETWORK", "vulture"),
 				AuditsDir: envOrDefault("VULTURE_SUPERVISOR_AUDITS_DIR", "/tmp/vulture-audit-inputs"),
+				LocalMode: cfg.LocalMode,
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
@@ -118,6 +119,11 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
+	// G1: surface enabled registry plugins (e.g. semgrep) in /api/agents so the
+	// UI selector and results filter can see them — not just the built-ins.
+	if reg != nil {
+		agentH.SetPluginRegistry(reg, stagerouter.NewURLResolver(cfg.Agents).Resolve)
+	}
 	llmHealthH := handler.NewLLMHealthHandler(cfg.Agents)
 	auditH.SetLLMHealth(llmHealthH)
 	fsH := handler.NewFilesystemHandler()

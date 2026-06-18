@@ -2,10 +2,15 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/localdev"
+	"github.com/vulture/backend/pkg/pluginregistry"
+	"github.com/vulture/backend/pkg/stagerouter"
 )
 
 // runDoctor implements `vulture doctor` (M8). Every check returns
@@ -30,6 +35,7 @@ func runDoctor() {
 		checkFileMode(filepath.Join(localdev.DataDir(mode, "."), "vulture.db"), 0o600,
 			"chmod 600 $VULTURE_HOME/data/vulture.db*"),
 		checkAuditLog(mode),
+		checkPluginsReachable(),
 	}
 	fmt.Printf("vulture doctor (mode=%s)\n", mode)
 	for _, c := range checks {
@@ -141,6 +147,75 @@ func checkAuditLog(mode localdev.Mode) (c struct {
 	}
 	if info.Mode().Perm() == 0o600 {
 		c.ok = true
+	}
+	return
+}
+
+// doctorHealthClient is a short-timeout client for probing plugin /health,
+// mirroring handler.checkAgentHealth.
+var doctorHealthClient = &http.Client{Timeout: 2 * time.Second}
+
+// pluginReachable probes <baseURL>/health with a short-timeout GET.
+func pluginReachable(baseURL string) bool {
+	if baseURL == "" {
+		return false
+	}
+	resp, err := doctorHealthClient.Get(baseURL + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// checkPluginsReachable builds the registry (honouring VULTURE_PLUGINS) and
+// delegates to checkPluginsList. External plugins are out-of-tree manifests;
+// in-tree built-ins are never probed (they run in-process).
+func checkPluginsReachable() (c struct {
+	name string
+	ok   bool
+	warn bool
+	fix  string
+}) {
+	reg, err := pluginregistry.Build(pluginregistry.DefaultLoadOptions(), pluginregistry.DefaultStatePath())
+	if err != nil {
+		// A registry build error is not a plugin-availability problem;
+		// other checks cover config/state. Treat as OK (skip).
+		c.name = "plugins reachable"
+		c.ok = true
+		return
+	}
+	resolve := stagerouter.NewURLResolver(config.Load().Agents).Resolve
+	return checkPluginsList(reg.Enabled(), resolve, pluginReachable)
+}
+
+// checkPluginsList reports whether every ENABLED external (non-in-tree) plugin
+// is reachable. Probing CLI-less and Docker-less installs is valid, so an
+// unreachable enabled plugin is a WARN, never a hard FAIL. With no enabled
+// external plugins the check is OK (skip).
+func checkPluginsList(enabled []pluginregistry.Plugin,
+	resolve func(pluginregistry.Plugin) string, probe func(string) bool) (c struct {
+	name string
+	ok   bool
+	warn bool
+	fix  string
+}) {
+	c.name = "plugins reachable"
+	c.ok = true
+	var unreachable string
+	for _, p := range enabled {
+		if p.IsInTree() {
+			continue
+		}
+		if probe(resolve(p)) {
+			continue
+		}
+		c.ok = false
+		c.warn = true
+		unreachable = p.Name()
+		c.name = fmt.Sprintf("plugin %q enabled but not running", unreachable)
+		c.fix = "container plugins need Docker; or VULTURE_PLUGINS lists an unavailable plugin"
+		return
 	}
 	return
 }

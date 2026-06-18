@@ -32,9 +32,14 @@ var writePathStaticWhitelist = []string{
 // not relevant to argv generation (e.g. DaemonPingInterval) are
 // ignored by BuildDockerRunArgv.
 type Options struct {
-	DockerBinary       string
-	Network            string
-	AuditsDir          string
+	DockerBinary string
+	Network      string
+	AuditsDir    string
+	// LocalMode mirrors VULTURE_LOCAL_MODE: when true the backend runs
+	// on the host (native launcher), so the supervisor's health probe
+	// dials host-network plugins at localhost rather than the compose
+	// DNS alias (Feature 0055).
+	LocalMode          bool
 	Logger             interface{ Printf(string, ...any) }
 	DaemonPingInterval time.Duration
 	Tunables           *Tunables
@@ -54,6 +59,15 @@ func BuildDockerRunArgv(plug pluginregistry.Plugin, opts Options) ([]string, err
 	}
 	alias := pluginregistry.SanitiseDNSName(plug.Name())
 	argv := []string{"run", "-d", "--name", "vulture-agent-" + alias}
+	if opts.LocalMode {
+		// Native launcher: the source is bind-mounted from the host user's
+		// tree, often under a 0750 home dir the image's default `nobody`
+		// user cannot traverse. Run as the host uid:gid — exactly the
+		// access the user already has — so the plugin can read the source.
+		// Compose mode keeps the image's hardened default user (the source
+		// lives in a shared volume nobody can read). Feature 0055.
+		argv = append(argv, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
+	}
 
 	for _, builder := range argvBuilders(plug, opts, alias) {
 		fragment, err := builder()
@@ -157,7 +171,17 @@ func buildFSArgs(plug pluginregistry.Plugin, opts Options) ([]string, error) {
 		if err := validateReadPath(p); err != nil {
 			return nil, err
 		}
-		out = append(out, "-v", fmt.Sprintf("%s:%s:ro", opts.AuditsDir, p))
+		// Native launcher (LocalMode): the backend references sources by
+		// their real host path (local-dir scans, /tmp git clones), which
+		// are NOT staged into AuditsDir. Mount host / read-only so any
+		// host path resolves under the plugin's audit-inputs mount; the
+		// stream dispatch prefixes source_path to match (Feature 0055).
+		// docker-compose keeps the staged AuditsDir volume.
+		src := opts.AuditsDir
+		if opts.LocalMode {
+			src = "/"
+		}
+		out = append(out, "-v", fmt.Sprintf("%s:%s:ro", src, p))
 	}
 	for _, p := range writePaths {
 		if err := validateWritePath(p, plug.Name()); err != nil {
@@ -227,7 +251,13 @@ func buildEnvArgs(plug pluginregistry.Plugin) ([]string, error) {
 	r := plug.Manifest.Runtime
 	required := toStringSlice(r.Env, "required")
 	optional := toStringSlice(r.Env, "optional")
-	out := []string{}
+	// Container images run as a non-root user (e.g. nobody, uid 65534)
+	// with no home directory, so CLI tools that write a per-user config/
+	// cache dir — semgrep's ~/.semgrep → /.semgrep — crash with EACCES.
+	// Default HOME to a writable path. A manifest-declared HOME (appended
+	// below from the host env) takes precedence via docker's last-wins
+	// rule (Feature 0055).
+	out := []string{"-e", "HOME=/tmp"}
 	for _, name := range required {
 		if _, ok := os.LookupEnv(name); !ok {
 			return nil, fmt.Errorf("plugin %s: required env %s not set", plug.Name(), name)

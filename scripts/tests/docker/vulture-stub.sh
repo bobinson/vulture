@@ -9,7 +9,9 @@
 # system-Python install flips doctor 2 -> 0), else WARN/2.
 set -u
 # Resolve the install root from this binary's location ($HOME/.vulture/bin/vulture).
-HOME_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd || echo "${VULTURE_HOME:-$HOME/.vulture}")
+# Clear CDPATH so `cd` cannot resolve to an unexpected directory.
+CDPATH=''
+HOME_DIR=$(cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd || echo "${VULTURE_HOME:-$HOME/.vulture}")
 
 case "${1:-}" in
     version|--version|-v)

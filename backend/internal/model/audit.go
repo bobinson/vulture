@@ -20,6 +20,7 @@ type Audit struct {
 	SourcePath     string            `json:"source_path,omitempty"`
 	Types          []string          `json:"types"`
 	Config         json.RawMessage   `json:"config"`
+	LLMModel       string            `json:"llm_model,omitempty"` // LLM recorded at creation: VULTURE_LLM_MODEL when enabled, else "skills-only" (see auditLLMModel)
 	Status         AuditStatus       `json:"status"`
 	Findings       []Finding         `json:"findings,omitempty"`
 	FindingsCount  int               `json:"findings_count"`

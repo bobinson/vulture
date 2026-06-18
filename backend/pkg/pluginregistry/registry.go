@@ -2,6 +2,8 @@ package pluginregistry
 
 import (
 	"log"
+	"os"
+	"strings"
 	"sync/atomic"
 )
 
@@ -42,24 +44,31 @@ func (r *registry) ByName(name string) (Plugin, bool) {
 // re-reads state.toml — production code generally calls this once at
 // startup via Default().
 func Build(opts LoadOptions, statePath string) (Registry, error) {
+	logger := opts.Logger
+	if logger == nil {
+		logger = log.Default()
+	}
 	plugins := Load(opts)
 	state, err := LoadState(statePath)
 	if err != nil {
-		logger := opts.Logger
-		if logger == nil {
-			logger = log.Default()
-		}
 		logger.Printf("[plugin] state load failed; using defaults: %v", err)
 		state = StateFile{Plugins: map[string]PluginState{}}
 	}
 	plugins, state = ApplyState(plugins, state)
 	if statePath != "" {
 		if err := SaveState(statePath, state); err != nil {
-			logger := opts.Logger
-			if logger == nil {
-				logger = log.Default()
-			}
 			logger.Printf("[plugin] state save failed (continuing read-only): %v", err)
+		}
+	}
+	// VULTURE_PLUGINS env override: an authoritative activation allow-list for
+	// EXTERNAL plugins (in-tree built-in agents are untouched). Applied AFTER
+	// SaveState so it is runtime-only and never rewrites state.toml. Absent
+	// (unset) => current state.toml behaviour; present (incl. "") => override.
+	if spec, ok := os.LookupEnv("VULTURE_PLUGINS"); ok {
+		var unknown []string
+		plugins, unknown = applyActivationList(plugins, spec)
+		if len(unknown) > 0 {
+			logger.Printf("[plugin] VULTURE_PLUGINS: ignoring unknown plugin(s): %s", strings.Join(unknown, ", "))
 		}
 	}
 	return &registry{plugins: plugins}, nil

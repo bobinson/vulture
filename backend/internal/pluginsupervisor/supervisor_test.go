@@ -41,7 +41,9 @@ type fakeDocker struct {
 	pulls       []string
 	runs        [][]string
 	stops       []stopCall
-	psResult    []pluginsupervisor.RunningContainer
+	psResult       []pluginsupervisor.RunningContainer
+	removes        []string
+	inspectPresent bool
 	pullErr     map[string]error
 	runErr      map[string]error // keyed by image
 	stopErr     error
@@ -95,6 +97,13 @@ func (f *fakeDocker) Stop(ctx context.Context, name string, timeout time.Duratio
 	return f.stopErr
 }
 
+func (f *fakeDocker) Remove(ctx context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removes = append(f.removes, name)
+	return nil
+}
+
 func (f *fakeDocker) PS(ctx context.Context) ([]pluginsupervisor.RunningContainer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -109,7 +118,7 @@ func (f *fakeDocker) Info(ctx context.Context) error {
 }
 
 func (f *fakeDocker) Inspect(ctx context.Context, image string) (bool, error) {
-	return false, nil // force pull
+	return f.inspectPresent, nil
 }
 
 // fakeProber is a no-op HealthProber for tests that don't care about
@@ -431,4 +440,66 @@ func keysOf(m map[string]pluginsupervisor.PluginStatus) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestSupervisor_LaunchRemovesStaleNameBeforeRun_0055(t *testing.T) {
+	plugin := newPlugin("semgrep", "on-failure")
+	reg := &fakeRegistry{enabled: []pluginregistry.Plugin{plugin}}
+	dk := &fakeDocker{}
+	sup := newSupervisor(t, reg, dk, &fakeProber{})
+
+	if _, err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// A `docker rm -f vulture-agent-semgrep` must precede `docker run`
+	// so a stale stopped container of the same name can't block start.
+	found := false
+	for _, n := range dk.removes {
+		if n == "vulture-agent-semgrep" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pre-run Remove of vulture-agent-semgrep; removes=%v", dk.removes)
+	}
+	if len(dk.runs) != 1 {
+		t.Errorf("expected 1 docker run; got %d", len(dk.runs))
+	}
+}
+
+func TestSupervisor_PullDeniedFallsBackToLocalImage_0055(t *testing.T) {
+	plugin := newPlugin("semgrep", "on-failure")
+	reg := &fakeRegistry{enabled: []pluginregistry.Plugin{plugin}}
+	// Pull fails (registry "denied"), but the image is present locally.
+	dk := &fakeDocker{
+		pullErr:        map[string]error{"ghcr.io/x/semgrep:1": errors.New("denied")},
+		inspectPresent: true,
+	}
+	sup := newSupervisor(t, reg, dk, &fakeProber{})
+
+	if _, err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// Must NOT abort: it should fall back to the local image and run.
+	if len(dk.runs) != 1 {
+		t.Errorf("expected 1 docker run despite pull denial (local image present); got %d", len(dk.runs))
+	}
+}
+
+func TestSupervisor_PullDeniedNoLocalImageFails_0055(t *testing.T) {
+	plugin := newPlugin("semgrep", "on-failure")
+	reg := &fakeRegistry{enabled: []pluginregistry.Plugin{plugin}}
+	// Pull fails AND the image is absent → must fail (no run).
+	dk := &fakeDocker{
+		pullErr:        map[string]error{"ghcr.io/x/semgrep:1": errors.New("denied")},
+		inspectPresent: false,
+	}
+	sup := newSupervisor(t, reg, dk, &fakeProber{})
+
+	if _, err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(dk.runs) != 0 {
+		t.Errorf("expected 0 docker run when pull fails and image absent; got %d", len(dk.runs))
+	}
 }

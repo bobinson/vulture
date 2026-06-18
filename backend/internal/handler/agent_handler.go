@@ -8,11 +8,17 @@ import (
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/pkg/agentregistry"
+	"github.com/vulture/backend/pkg/pluginregistry"
 )
 
 type AgentHandler struct {
 	agents   map[string]config.AgentConfig
 	readOnly bool
+	// G1: when wired, enabled registry plugins (e.g. semgrep) are surfaced in
+	// /api/agents alongside the built-in agents. nil-safe — when unset the
+	// handler behaves exactly as before (built-ins only).
+	reg       pluginregistry.Registry
+	pluginURL func(pluginregistry.Plugin) string
 }
 
 func NewAgentHandler(agents map[string]config.AgentConfig) *AgentHandler {
@@ -23,38 +29,22 @@ func NewAgentHandler(agents map[string]config.AgentConfig) *AgentHandler {
 // agent list without probing agent health endpoints.
 func (h *AgentHandler) SetReadOnly(v bool) { h.readOnly = v }
 
+// SetPluginRegistry makes /api/agents registry-aware (G1): enabled plugins not
+// already present as a built-in agent are appended to the listing. urlFor
+// resolves a plugin's base URL for the health probe (typically
+// stagerouter.NewURLResolver(cfg.Agents).Resolve).
+func (h *AgentHandler) SetPluginRegistry(reg pluginregistry.Registry, urlFor func(pluginregistry.Plugin) string) {
+	h.reg = reg
+	h.pluginURL = urlFor
+}
+
 func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 	if h.readOnly {
 		writeJSON(w, http.StatusOK, []model.AgentInfo{})
 		return
 	}
 
-	type result struct {
-		key    string
-		status string
-	}
-
-	// Run health checks concurrently with a 2s timeout per agent.
-	var wg sync.WaitGroup
-	ch := make(chan result, len(h.agents))
-	for key, a := range h.agents {
-		wg.Add(1)
-		go func(k string, url string) {
-			defer wg.Done()
-			ch <- result{key: k, status: checkAgentHealth(url)}
-		}(key, a.URL)
-	}
-	wg.Wait()
-	close(ch)
-
-	statusMap := make(map[string]string, len(h.agents))
-	for r := range ch {
-		statusMap[r.key] = r.status
-	}
-
-	// Index registry entries by Type so we can flag Optional agents on
-	// the response. The frontend uses Optional to badge opt-in agents
-	// in the audit type selector.
+	// Flag Optional built-in agents (the UI badges opt-in agents in the selector).
 	optional := make(map[string]bool, len(agentregistry.AllAgents))
 	for _, e := range agentregistry.AllAgents {
 		if e.Optional {
@@ -62,15 +52,60 @@ func (h *AgentHandler) List(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	infos := make([]model.AgentInfo, 0, len(h.agents))
+	// Collect every probe target — built-in agents PLUS enabled registry plugins
+	// (G1) that aren't already built-ins (the registry also carries in-tree
+	// agents as virtual plugins, so dedupe by type). They are health-checked in
+	// ONE concurrent wave so /api/agents latency stays ~one 2s timeout, not N.
+	type target struct {
+		url  string
+		info model.AgentInfo
+	}
+	targets := make([]target, 0, len(h.agents)+4)
+	builtinTypes := make(map[string]bool, len(h.agents))
 	for key, a := range h.agents {
-		infos = append(infos, model.AgentInfo{
-			ID:       key,
-			Name:     a.Name,
-			Type:     a.Type,
-			Status:   statusMap[key],
-			Optional: optional[a.Type],
+		builtinTypes[a.Type] = true
+		targets = append(targets, target{
+			url:  a.URL,
+			info: model.AgentInfo{ID: key, Name: a.Name, Type: a.Type, Optional: optional[a.Type]},
 		})
+	}
+	if h.reg != nil {
+		for _, p := range h.reg.Enabled() {
+			name := p.Name()
+			if name == "" || builtinTypes[name] {
+				continue
+			}
+			url := ""
+			if h.pluginURL != nil {
+				url = h.pluginURL(p)
+			}
+			display := p.Manifest.Plugin.DisplayName
+			if display == "" {
+				display = name
+			}
+			targets = append(targets, target{
+				url:  url,
+				info: model.AgentInfo{ID: name, Name: display, Type: name},
+			})
+		}
+	}
+
+	// Concurrent health probe — one goroutine per target (2s timeout each).
+	var wg sync.WaitGroup
+	statuses := make([]string, len(targets))
+	for i := range targets {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			statuses[i] = checkAgentHealth(targets[i].url)
+		}(i)
+	}
+	wg.Wait()
+
+	infos := make([]model.AgentInfo, len(targets))
+	for i := range targets {
+		infos[i] = targets[i].info
+		infos[i].Status = statuses[i]
 	}
 	writeJSON(w, http.StatusOK, infos)
 }

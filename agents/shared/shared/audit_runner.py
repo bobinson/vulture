@@ -1029,7 +1029,7 @@ async def _collect_llm_findings_async(
 ) -> tuple[list[dict], str | None, int, int]:
     """Async helper: run LLM agent and return (findings, error, input_tokens, output_tokens)."""
     from agents import Agent, ModelSettings, Runner
-    from shared.llm.provider import get_model_with_fallback, get_model_settings, uses_custom_endpoint
+    from shared.llm.provider import get_model_with_fallback, get_model_settings, supports_structured_output
     from shared.tools.file_reader import read_file_tool
     from shared.tools.file_lister import list_files_tool
     from shared.tools.pattern_matcher import search_pattern_tool
@@ -1082,10 +1082,11 @@ async def _collect_llm_findings_async(
     else:
         augmented_instructions = instructions
 
-    # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) may not
-    # support structured output (response_format with JSON schema).  Skip
-    # output_type and rely on prompt-based JSON + _parse_llm_findings fallback.
-    use_structured = not uses_custom_endpoint()
+    # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may
+    # not support structured output (response_format with JSON schema) alongside
+    # the function-calling tools we always attach.  Skip output_type in those
+    # cases and rely on prompt-based JSON + _parse_llm_findings fallback.
+    use_structured = supports_structured_output(resolved_model)
     if not use_structured:
         augmented_instructions += (
             "\n\nIMPORTANT: Return findings as a JSON array. Each object must have: "

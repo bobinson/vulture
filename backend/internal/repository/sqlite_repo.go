@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -32,6 +33,15 @@ func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
 		dsn += "&"
 	}
 	dsn += "_pragma=journal_mode(WAL)&_pragma=busy_timeout(30000)&_pragma=synchronous(NORMAL)"
+	// Pre-create the DB file 0600 so SQLite opens an already-restricted file,
+	// closing the brief world-readable window between creation and the
+	// post-migrate chmod. (secureDBFiles below still tightens the WAL/SHM
+	// sidecars, which SQLite creates on first write.)
+	if dbPath != "" && !strings.Contains(dbPath, ":memory:") {
+		if f, ferr := os.OpenFile(dbPath, os.O_CREATE, 0o600); ferr == nil {
+			_ = f.Close()
+		}
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -49,9 +59,28 @@ func NewSQLiteRepo(dbPath string) (*SQLiteRepo, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// The DB holds audit findings — restrict it (and its WAL/SHM sidecars) to
+	// owner-only 0600, matching config/.env. Best-effort: :memory:/absent files
+	// are skipped. (vulture doctor checks this; defense-in-depth even though
+	// $VULTURE_HOME is itself 0700.)
+	secureDBFiles(dbPath)
 	repo := &SQLiteRepo{db: db, proveRepo: &SQLiteProveRepo{db: db}}
 	repo.prepareStatements()
 	return repo, nil
+}
+
+// secureDBFiles tightens the SQLite DB file and its WAL/SHM sidecars to 0600.
+// Best-effort and idempotent: directories, :memory:, and absent paths are
+// skipped, and chmod errors are non-fatal (the DB is usable regardless).
+func secureDBFiles(dbPath string) {
+	if dbPath == "" || strings.Contains(dbPath, ":memory:") {
+		return
+	}
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			_ = os.Chmod(p, 0o600)
+		}
+	}
 }
 
 func configureSQLite(db *sql.DB) error {
@@ -255,6 +284,10 @@ func migrateAddColumns(db *sql.DB) {
 	// Feature 0039: per-audit degraded-mode reason (LLM unreachable at submit time)
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN degraded_reason TEXT NOT NULL DEFAULT ''`)
 
+	// 0055: LLM model recorded at creation — which model the scan ran against
+	// (VULTURE_LLM_MODEL when enabled, else "skills-only").
+	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN llm_model TEXT NOT NULL DEFAULT ''`)
+
 	// Feature 0031: webhook deliveries
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN webhook_url TEXT`)
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS audit_webhook_deliveries (
@@ -403,8 +436,8 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 	}
 	scoresJSON, _ := json.Marshal(audit.Scores)
 	_, err := r.db.Exec(
-		`INSERT INTO audits (id, source_id, types, config, status, scores, webhook_url, degraded_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		audit.ID, audit.SourceID, string(typesJSON), cfgStr, string(audit.Status), string(scoresJSON), audit.WebhookURL, audit.DegradedReason, audit.CreatedAt.Format(time.RFC3339),
+		`INSERT INTO audits (id, source_id, types, config, status, scores, webhook_url, degraded_reason, llm_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		audit.ID, audit.SourceID, string(typesJSON), cfgStr, string(audit.Status), string(scoresJSON), audit.WebhookURL, audit.DegradedReason, audit.LLMModel, audit.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("insert audit: %w", err)
@@ -414,12 +447,12 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = ?`, id)
 	var audit model.Audit
 	var typesStr, cfgStr, scoresStr, createdAt string
 	var completedAt sql.NullString
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &createdAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &createdAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

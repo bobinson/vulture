@@ -12,6 +12,7 @@ Usage: scripts/vulture.sh server <provider> [model]
 Providers:
   openai [model]       OpenAI API (default: gpt-4o)
   anthropic [model]    Anthropic API (default: claude-sonnet)
+  gemini [model]       Remote Google Gemini via GEMINI_API_KEY (default: gemini-pro)
   ollama [model]       Local Ollama (default: qwen3:1.7b)
   lmstudio [model]     LM Studio (default: local-model)
   skills               Skills only — no LLM (fastest, no API key needed)
@@ -215,6 +216,24 @@ case "$PROVIDER" in
         export VULTURE_LLM_MODEL="$MODEL"
         ;;
 
+    gemini)
+        # Remote Google Gemini via LiteLLM's NATIVE provider (GEMINI_API_KEY) —
+        # NOT an OpenAI-compat shim. Clear any inherited OPENAI_BASE_URL so the
+        # .env-generation block below does not propagate a stale base URL to the
+        # containers (which would re-route Gemini calls to the wrong endpoint).
+        MODEL="${MODEL:-gemini-pro}"
+        require_key GEMINI_API_KEY "Gemini"
+        unset OPENAI_BASE_URL 2>/dev/null || true
+        # `gemini-pro` is a built-in alias (provider.py → litellm/gemini/...).
+        # Any other Gemini model gets the litellm/gemini/ prefix so LiteLLM routes
+        # it to Google (parallels the lmstudio arm's openai/ prefixing).
+        if [[ "$MODEL" != "gemini-pro" && "$MODEL" != litellm/* ]]; then
+            MODEL="litellm/gemini/${MODEL#gemini/}"
+        fi
+        export VULTURE_USE_LLM=true
+        export VULTURE_LLM_MODEL="$MODEL"
+        ;;
+
     ollama)
         MODEL="${MODEL:-qwen3:1.7b}"
         check_ollama
@@ -297,6 +316,7 @@ echo "  Generating .env..."
     [[ -n "${VULTURE_LLM_MODEL:-}" ]] && echo "VULTURE_LLM_MODEL=$VULTURE_LLM_MODEL"
     [[ -n "${OPENAI_API_KEY:-}" ]] && echo "OPENAI_API_KEY=$OPENAI_API_KEY"
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
+    [[ -n "${GEMINI_API_KEY:-}" ]] && echo "GEMINI_API_KEY=$GEMINI_API_KEY"
     [[ -n "${OPENAI_BASE_URL:-}" ]] && echo "OPENAI_BASE_URL=$OPENAI_BASE_URL"
     [[ -n "${OLLAMA_API_BASE:-}" ]] && echo "OLLAMA_API_BASE=$OLLAMA_API_BASE"
     [[ -n "${VULTURE_EMBEDDING_URL:-}" ]] && echo "VULTURE_EMBEDDING_URL=$VULTURE_EMBEDDING_URL"

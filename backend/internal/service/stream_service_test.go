@@ -8,6 +8,8 @@ import (
 
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/pkg/pluginregistry"
+	"github.com/vulture/backend/pkg/stagerouter"
 )
 
 // mockAgentProxyService implements AgentProxyService for testing.
@@ -222,3 +224,46 @@ func TestStreamService_AgentError(t *testing.T) {
 	}
 }
 
+
+// fakeRouter returns a fixed set of dispatch targets (0055 path-rewrite test).
+type fakeRouter struct{ targets []stagerouter.DispatchTarget }
+
+func (f *fakeRouter) Route(stagerouter.RouteRequest) ([]stagerouter.DispatchTarget, error) {
+	return f.targets, nil
+}
+
+func TestStreamService_LocalModeContainerPathRewrite_0055(t *testing.T) {
+	t.Setenv("VULTURE_LOCAL_MODE", "true")
+	var mu sync.Mutex
+	gotSource := map[string]string{}
+	proxy := &mockAgentProxyService{
+		runAgentWithContextFn: func(ctx context.Context, agentURL, agentType, runID, sourcePath string, cfg json.RawMessage, prior []model.PriorFinding, eventCh chan<- *model.AgUIEvent) error {
+			mu.Lock()
+			gotSource[agentType] = sourcePath
+			mu.Unlock()
+			return nil
+		},
+	}
+	router := &fakeRouter{targets: []stagerouter.DispatchTarget{
+		{PluginName: "semgrep", URL: "http://localhost:28011", Phase: "scan", RuntimeType: pluginregistry.RuntimeContainer},
+		{PluginName: "chaos", URL: "http://localhost:28001", Phase: "scan", RuntimeType: pluginregistry.RuntimeInTree},
+	}}
+	svc := &streamService{proxy: proxy, router: router}
+
+	audit := &model.Audit{ID: "a1", Types: []string{"semgrep", "chaos"}, Config: json.RawMessage(`{}`)}
+	eventCh := make(chan *model.AgUIEvent, 100)
+	svc.Stream(context.Background(), audit, "/home/user/src/vulture-gh", nil, eventCh)
+	for range eventCh {
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Container plugin: path remapped to the audit-inputs mount.
+	if gotSource["semgrep"] != "/audit-inputs/home/user/src/vulture-gh" {
+		t.Errorf("semgrep source_path = %q, want /audit-inputs/home/user/src/vulture-gh", gotSource["semgrep"])
+	}
+	// In-tree (native) agent: raw host path, unchanged.
+	if gotSource["chaos"] != "/home/user/src/vulture-gh" {
+		t.Errorf("chaos source_path = %q, want /home/user/src/vulture-gh (unchanged)", gotSource["chaos"])
+	}
+}

@@ -237,6 +237,28 @@ def uses_custom_endpoint() -> bool:
     return bool(_CUSTOM_BASE_URL)
 
 
+def supports_structured_output(model: str | None = None) -> bool:
+    """Whether the model+endpoint support the SDK's structured output
+    (``output_type`` → a ``response_format`` JSON schema).
+
+    Returns False when:
+      - A custom OpenAI-compatible endpoint is configured (vLLM/LM Studio may
+        reject ``response_format`` JSON schema with 'lazy grammar' errors), or
+      - The model is Google Gemini.  Gemini's API rejects function calling
+        combined with a JSON response mime type ("Function calling with a
+        response mime type: 'application/json' is unsupported"), and our audit
+        agents always attach tools.
+
+    When this returns False the caller falls back to prompt-based JSON and
+    parses with ``_parse_llm_findings``.
+    """
+    if uses_custom_endpoint():
+        return False
+    if "gemini" in get_model(model):
+        return False
+    return True
+
+
 # Cost per 1M tokens: (input_cost_usd, output_cost_usd).
 COST_PER_1M_TOKENS: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),

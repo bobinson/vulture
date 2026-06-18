@@ -36,8 +36,9 @@ type URLResolver interface {
 // the backend to pick up VULTURE_AGENT_*_URL changes — consistent
 // with how the rest of the config is reloaded.
 type defaultResolver struct {
-	envURLs map[string]string
-	agents  map[string]config.AgentConfig
+	envURLs   map[string]string
+	agents    map[string]config.AgentConfig
+	localMode bool
 }
 
 // NewURLResolver constructs the default resolver. The env snapshot
@@ -45,8 +46,9 @@ type defaultResolver struct {
 // keyed by lowercased plugin name (matching plugin.Name slugs).
 func NewURLResolver(agents map[string]config.AgentConfig) URLResolver {
 	return &defaultResolver{
-		envURLs: snapshotEnvURLs(),
-		agents:  agents,
+		envURLs:   snapshotEnvURLs(),
+		agents:    agents,
+		localMode: os.Getenv("VULTURE_LOCAL_MODE") == "true",
 	}
 }
 
@@ -60,10 +62,12 @@ func (d *defaultResolver) Resolve(p pluginregistry.Plugin) string {
 	}
 	if p.Manifest.Runtime.Type == pluginregistry.RuntimeContainer && p.Manifest.Runtime.Port > 0 {
 		// Feature 0052 BLOCKER #1: alias and URL must agree on the
-		// DNS-sanitised slug. Both call SanitiseDNSName + use the
-		// shared NetworkAliasPrefix constant so they cannot drift.
-		alias := pluginregistry.SanitiseDNSName(name)
-		return fmt.Sprintf("http://%s%s:%d", pluginregistry.NetworkAliasPrefix, alias, p.Manifest.Runtime.Port)
+		// DNS-sanitised slug — both go through pluginregistry so they
+		// cannot drift. In LocalMode (native launcher) the compose alias
+		// doesn't resolve on the host, so a host-network plugin is dialed
+		// at localhost:<port> instead (Feature 0055).
+		host := pluginregistry.PluginContainerHost(d.localMode, name)
+		return fmt.Sprintf("http://%s:%d", host, p.Manifest.Runtime.Port)
 	}
 	return ""
 }
