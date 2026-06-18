@@ -190,11 +190,22 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 	out := []Action{}
 
 	entry.sm.Force(StatePulling)
-	if err := s.docker.Pull(ctx, plug.Manifest.Runtime.Image); err != nil {
-		s.markFailed(name, fmt.Sprintf("pull: %v", err))
-		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
+	image := plug.Manifest.Runtime.Image
+	if err := s.docker.Pull(ctx, image); err != nil {
+		// Pull is best-effort: it refreshes the image, but a registry
+		// failure (auth "denied", offline, rate limit) must NOT block a
+		// plugin whose image is already present locally. Fall back to the
+		// cached image; fail only when it is genuinely absent (0055).
+		present, ierr := s.docker.Inspect(ctx, image)
+		if ierr != nil || !present {
+			s.markFailed(name, fmt.Sprintf("pull: %v", err))
+			return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
+		}
+		s.logger.Printf("[supervisor] pull failed for %s (%v); using local image %s", name, err, image)
+		out = append(out, Action{Plugin: name, Kind: "pull", Detail: "local image (pull failed: " + err.Error() + ")"})
+	} else {
+		out = append(out, Action{Plugin: name, Kind: "pull", Detail: image})
 	}
-	out = append(out, Action{Plugin: name, Kind: "pull", Detail: plug.Manifest.Runtime.Image})
 
 	argv, err := BuildDockerRunArgv(plug, s.opts)
 	if err != nil {

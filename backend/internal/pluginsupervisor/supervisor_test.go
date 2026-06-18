@@ -41,8 +41,9 @@ type fakeDocker struct {
 	pulls       []string
 	runs        [][]string
 	stops       []stopCall
-	psResult    []pluginsupervisor.RunningContainer
-	removes     []string
+	psResult       []pluginsupervisor.RunningContainer
+	removes        []string
+	inspectPresent bool
 	pullErr     map[string]error
 	runErr      map[string]error // keyed by image
 	stopErr     error
@@ -117,7 +118,7 @@ func (f *fakeDocker) Info(ctx context.Context) error {
 }
 
 func (f *fakeDocker) Inspect(ctx context.Context, image string) (bool, error) {
-	return false, nil // force pull
+	return f.inspectPresent, nil
 }
 
 // fakeProber is a no-op HealthProber for tests that don't care about
@@ -463,5 +464,42 @@ func TestSupervisor_LaunchRemovesStaleNameBeforeRun_0055(t *testing.T) {
 	}
 	if len(dk.runs) != 1 {
 		t.Errorf("expected 1 docker run; got %d", len(dk.runs))
+	}
+}
+
+func TestSupervisor_PullDeniedFallsBackToLocalImage_0055(t *testing.T) {
+	plugin := newPlugin("semgrep", "on-failure")
+	reg := &fakeRegistry{enabled: []pluginregistry.Plugin{plugin}}
+	// Pull fails (registry "denied"), but the image is present locally.
+	dk := &fakeDocker{
+		pullErr:        map[string]error{"ghcr.io/x/semgrep:1": errors.New("denied")},
+		inspectPresent: true,
+	}
+	sup := newSupervisor(t, reg, dk, &fakeProber{})
+
+	if _, err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// Must NOT abort: it should fall back to the local image and run.
+	if len(dk.runs) != 1 {
+		t.Errorf("expected 1 docker run despite pull denial (local image present); got %d", len(dk.runs))
+	}
+}
+
+func TestSupervisor_PullDeniedNoLocalImageFails_0055(t *testing.T) {
+	plugin := newPlugin("semgrep", "on-failure")
+	reg := &fakeRegistry{enabled: []pluginregistry.Plugin{plugin}}
+	// Pull fails AND the image is absent → must fail (no run).
+	dk := &fakeDocker{
+		pullErr:        map[string]error{"ghcr.io/x/semgrep:1": errors.New("denied")},
+		inspectPresent: false,
+	}
+	sup := newSupervisor(t, reg, dk, &fakeProber{})
+
+	if _, err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(dk.runs) != 0 {
+		t.Errorf("expected 0 docker run when pull fails and image absent; got %d", len(dk.runs))
 	}
 }

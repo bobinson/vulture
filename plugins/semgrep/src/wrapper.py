@@ -39,6 +39,19 @@ app = FastAPI()
 # by monkeypatching this module attribute directly.
 AUDIT_INPUTS_ROOT = os.environ.get("VULTURE_SEMGREP_AUDIT_ROOT", "/audit-inputs")
 
+# 0055: vendored/build/VCS dirs to skip. With --no-git-ignore Semgrep
+# would otherwise walk these (e.g. a multi-GB node_modules), producing
+# noise and OOM-killing the container. A SAST tool should audit first-
+# party source, not third-party dependencies.
+_SCAN_EXCLUDES = [
+    "node_modules", ".git", "vendor", ".venv", "venv", "__pycache__",
+    "target", "dist", "build", "out", ".next", ".nuxt", ".gradle", ".mvn",
+]
+
+# Cap Semgrep's analysis memory (MB) so a huge tree can't OOM the
+# container. Overridable per-audit via config.max_memory_mb.
+_DEFAULT_MAX_MEMORY_MB = 2000
+
 _SEMGREP_TIMEOUT_S = 1500
 
 
@@ -101,6 +114,14 @@ def _semgrep_argv(source_path: str, config: dict) -> list[str]:
     # scanned" results. Disabling git-ignore makes the scan
     # deterministic regardless of how the host volume was mounted.
     args = ["semgrep", "scan", "--json", "--quiet", "--no-git-ignore"]
+    # 0055: --no-git-ignore makes Semgrep walk EVERYTHING, including
+    # vendored/build dirs (node_modules, target, .git, ...). On a real
+    # project that is both noise (a SAST tool should not audit third-party
+    # deps) and a hard OOM — a 3 GB node_modules killed the 4 GB container.
+    # Exclude those dirs and cap analysis memory so the scan stays bounded.
+    for pattern in _SCAN_EXCLUDES:
+        args += ["--exclude", pattern]
+    args += ["--max-memory", str(config.get("max_memory_mb") or _DEFAULT_MAX_MEMORY_MB)]
     for pack in rule_packs:
         args += ["--config", pack]
     args.append(source_path)

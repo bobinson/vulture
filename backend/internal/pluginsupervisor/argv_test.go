@@ -6,6 +6,8 @@ package pluginsupervisor_test
 // (BuildDockerRunArgv, Options, etc.) is the correct RED state.
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -375,4 +377,49 @@ func TestBuildDockerRunArgv_LocalModeMountsHostRoot_0055(t *testing.T) {
 	if argvContains(argv, "-v", "/host/audits:/audit-inputs:ro") {
 		t.Errorf("local mode must NOT mount AuditsDir; argv=%v", argv)
 	}
+}
+
+func TestBuildDockerRunArgv_SetsWritableHome_0055(t *testing.T) {
+	// Container images run as non-root (e.g. nobody) with no home, so
+	// tools like semgrep crash creating ~/.semgrep. The supervisor must
+	// give them a writable HOME.
+	p := containerPlugin("semgrep")
+	argv, err := pluginsupervisor.BuildDockerRunArgv(p, defaultOpts())
+	if err != nil {
+		t.Fatalf("BuildDockerRunArgv: %v", err)
+	}
+	if !argvContains(argv, "-e", "HOME=/tmp") {
+		t.Errorf("expected -e HOME=/tmp; argv=%v", argv)
+	}
+}
+
+func TestBuildDockerRunArgv_LocalModeRunsAsHostUser_0055(t *testing.T) {
+	// Source is mounted from the host user's tree (0750 home dirs the
+	// image's default nobody user can't traverse). In LocalMode the
+	// container must run as the host uid:gid to read it.
+	p := containerPlugin("semgrep")
+	wantUser := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+
+	opts := defaultOpts()
+	opts.LocalMode = true
+	argv, err := pluginsupervisor.BuildDockerRunArgv(p, opts)
+	if err != nil {
+		t.Fatalf("BuildDockerRunArgv: %v", err)
+	}
+	if !argvContains(argv, "--user", wantUser) {
+		t.Errorf("local mode: expected --user %s; argv=%v", wantUser, argv)
+	}
+	// Non-local (compose) keeps the image's default user (no --user).
+	if argvContains(defaultOpts2Argv(t, p), "--user") {
+		t.Errorf("compose mode must not set --user")
+	}
+}
+
+func defaultOpts2Argv(t *testing.T, p pluginregistry.Plugin) []string {
+	t.Helper()
+	argv, err := pluginsupervisor.BuildDockerRunArgv(p, defaultOpts())
+	if err != nil {
+		t.Fatalf("BuildDockerRunArgv: %v", err)
+	}
+	return argv
 }
