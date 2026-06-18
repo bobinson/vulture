@@ -39,11 +39,12 @@ func (r *PostgresMemoryRepo) StoreMemory(mem *model.AuditMemory) error {
 	tags := coalesceSlice(mem.Tags)
 	filePaths := coalesceSlice(mem.FilePaths)
 	_, err := r.db.Exec(`
-		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, fingerprint, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO NOTHING`,
 		mem.ID, mem.AuditID, mem.AgentType, mem.CodebasePath,
 		mem.FindingType, mem.Title, mem.Content, string(mem.Severity),
+		sql.NullString{String: mem.Fingerprint, Valid: mem.Fingerprint != ""},
 		mem.ComplianceRef, mem.Category,
 		pq.Array(keywords), pq.Array(tags), pq.Array(filePaths),
 		mem.RemediationStatus, time.Now().UTC(),
@@ -681,8 +682,8 @@ func (r *PostgresMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 		return fmt.Errorf("begin batch: %w", err)
 	}
 	stmt, err := tx.Prepare(`
-		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, fingerprint, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO NOTHING`)
 	if err != nil {
 		_ = tx.Rollback()
@@ -697,6 +698,7 @@ func (r *PostgresMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 		_, err = stmt.Exec(
 			mem.ID, mem.AuditID, mem.AgentType, mem.CodebasePath,
 			mem.FindingType, mem.Title, mem.Content, string(mem.Severity),
+			sql.NullString{String: mem.Fingerprint, Valid: mem.Fingerprint != ""},
 			mem.ComplianceRef, mem.Category,
 			pq.Array(keywords), pq.Array(tags), pq.Array(filePaths),
 			mem.RemediationStatus, now,

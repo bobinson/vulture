@@ -86,8 +86,12 @@ func TestParseSnapshot(t *testing.T) {
 	if findings[0].ID == "" {
 		t.Error("expected auto-generated ID for finding without ID")
 	}
-	if findings[1].ID != "existing-id" {
-		t.Errorf("expected existing-id preserved, got %s", findings[1].ID)
+	// Plugin-supplied (non-empty, non-rollup) IDs are now namespaced per audit
+	// so re-scans of an unchanged repo don't collide on the findings PK and get
+	// dropped by ON CONFLICT DO NOTHING. The namespaced ID is deterministic
+	// within an audit run.
+	if want := namespaceFindingID("audit-1", "existing-id"); findings[1].ID != want {
+		t.Errorf("expected namespaced existing-id %s, got %s", want, findings[1].ID)
 	}
 	if scores["owasp"] != 75 {
 		t.Errorf("expected score 75, got %d", scores["owasp"])

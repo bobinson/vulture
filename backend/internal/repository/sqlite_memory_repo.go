@@ -34,6 +34,7 @@ func migrateMemory(db *sql.DB) error {
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
 			severity TEXT NOT NULL,
+			fingerprint TEXT,
 			compliance_ref TEXT NOT NULL DEFAULT '',
 			category TEXT NOT NULL DEFAULT '',
 			keywords TEXT NOT NULL DEFAULT '[]',
@@ -87,11 +88,12 @@ func (r *SQLiteMemoryRepo) StoreMemory(mem *model.AuditMemory) error {
 		return fmt.Errorf("marshal file_paths: %w", err)
 	}
 	_, err = r.db.Exec(`
-		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, fingerprint, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO NOTHING`,
 		mem.ID, mem.AuditID, mem.AgentType, mem.CodebasePath,
 		mem.FindingType, mem.Title, mem.Content, string(mem.Severity),
+		sql.NullString{String: mem.Fingerprint, Valid: mem.Fingerprint != ""},
 		mem.ComplianceRef, mem.Category,
 		string(keywordsJSON), string(tagsJSON), string(filePathsJSON),
 		mem.RemediationStatus, time.Now().UTC().Format(time.RFC3339),
@@ -343,8 +345,8 @@ func (r *SQLiteMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 		return fmt.Errorf("begin batch: %w", err)
 	}
 	stmt, err := tx.Prepare(`
-		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO audit_memories (id, audit_id, agent_type, codebase_path, finding_type, title, content, severity, fingerprint, compliance_ref, category, keywords, tags, file_paths, remediation_status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO NOTHING`)
 	if err != nil {
 		_ = tx.Rollback()
@@ -359,6 +361,7 @@ func (r *SQLiteMemoryRepo) StoreBatch(memories []*model.AuditMemory) error {
 		_, err = stmt.Exec(
 			mem.ID, mem.AuditID, mem.AgentType, mem.CodebasePath,
 			mem.FindingType, mem.Title, mem.Content, string(mem.Severity),
+			sql.NullString{String: mem.Fingerprint, Valid: mem.Fingerprint != ""},
 			mem.ComplianceRef, mem.Category,
 			string(keywordsJSON), string(tagsJSON), string(filePathsJSON),
 			mem.RemediationStatus, now,

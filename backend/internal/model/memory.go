@@ -12,6 +12,7 @@ type AuditMemory struct {
 	Title             string    `json:"title"`
 	Content           string    `json:"content"`
 	Severity          Severity  `json:"severity"`
+	Fingerprint       string    `json:"fingerprint,omitempty"`
 	ComplianceRef     string    `json:"compliance_ref,omitempty"`
 	Category          string    `json:"category"`
 	Keywords          []string  `json:"keywords"`
