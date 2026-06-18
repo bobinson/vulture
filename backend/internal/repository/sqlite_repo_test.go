@@ -1207,3 +1207,27 @@ func TestNewSQLiteRepo_DBFileIs0600(t *testing.T) {
 		t.Errorf("vulture.db mode = %o, want 600 (holds audit findings)", got)
 	}
 }
+
+func TestCreateAndGetAudit_LLMModelRoundTrip(t *testing.T) {
+	repo := newTestRepo(t)
+	if err := repo.CreateSource(&model.Source{
+		ID: "src-llm", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	audit := &model.Audit{
+		ID: "audit-llm", SourceID: "src-llm", Types: []string{"chaos"},
+		Config: json.RawMessage(`{}`), Status: model.AuditStatusPending,
+		Scores: map[string]int{}, LLMModel: "gemini-2.5-flash", CreatedAt: time.Now().UTC(),
+	}
+	if err := repo.CreateAudit(audit); err != nil {
+		t.Fatalf("create audit: %v", err)
+	}
+	got, err := repo.GetAudit("audit-llm")
+	if err != nil || got == nil {
+		t.Fatalf("get audit: %v (nil=%v)", err, got == nil)
+	}
+	if got.LLMModel != "gemini-2.5-flash" {
+		t.Errorf("LLMModel = %q, want gemini-2.5-flash", got.LLMModel)
+	}
+}

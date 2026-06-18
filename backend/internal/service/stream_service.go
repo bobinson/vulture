@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
 	"sync"
 
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/pkg/pluginregistry"
 	"github.com/vulture/backend/pkg/stagerouter"
 )
 
@@ -113,6 +115,11 @@ func (s *streamService) dispatchViaRouter(ctx context.Context, audit *model.Audi
 		s.dispatchLegacy(ctx, audit, sourcePath, agents, priorByAgent, eventCh)
 		return
 	}
+	// LocalMode (native launcher): container plugins see the host
+	// filesystem re-mounted under AuditInputsMount, so their source_path
+	// must be remapped there. Native agents (and docker-compose) keep the
+	// raw path. Computed once; applied per-target by runtime type (0055).
+	localMode := os.Getenv("VULTURE_LOCAL_MODE") == "true"
 	var wg sync.WaitGroup
 	seen := make(map[string]bool, len(targets))
 	for _, t := range targets {
@@ -122,8 +129,9 @@ func (s *streamService) dispatchViaRouter(ctx context.Context, audit *model.Audi
 		seen[t.PluginName] = true
 		agentConfig := extractAgentConfig(cfgMap, t.PluginName)
 		prior := priorByAgent[t.PluginName]
-		log.Printf("[stream-svc] router dispatch agent=%s url=%s", t.PluginName, t.URL)
-		s.launch(ctx, &wg, t.URL, t.PluginName, audit.ID, sourcePath, agentConfig, prior, eventCh)
+		src := pluginregistry.ContainerSourcePath(localMode, t.RuntimeType == pluginregistry.RuntimeContainer, sourcePath)
+		log.Printf("[stream-svc] router dispatch agent=%s url=%s source=%s", t.PluginName, t.URL, src)
+		s.launch(ctx, &wg, t.URL, t.PluginName, audit.ID, src, agentConfig, prior, eventCh)
 	}
 	wg.Wait()
 	log.Printf("[stream-svc] all router-dispatched agents done for audit=%s", audit.ID)

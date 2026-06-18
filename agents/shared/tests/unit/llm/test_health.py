@@ -748,3 +748,25 @@ def test_as_dict_serialisable():
     assert parsed["provider"] == "ollama"
     assert parsed["reachable"] is True
     assert parsed["detail"]["model_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_gemini_litellm_prefixed_model_matches(monkeypatch):
+    # Real-world: the native launcher sets
+    # VULTURE_LLM_MODEL=litellm/gemini/gemini-2.5-flash, but the API lists
+    # names as models/gemini-2.5-flash. The health check must compare bare
+    # model ids (last path segment), not the litellm routing prefix, or it
+    # falsely reports "not in account" and drops to skills-only.
+    _make_gemini_env(monkeypatch, model="litellm/gemini/gemini-2.5-flash")
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "models": [
+                {"name": "models/gemini-2.5-flash"},
+                {"name": "models/gemini-2.5-pro"},
+            ]
+        })
+    _patch_async_client(monkeypatch, handler)
+
+    r = await check_llm_health(timeout=1.0)
+    assert r.reachable is True, r.error

@@ -202,6 +202,11 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
 	}
 	entry.sm.Force(StateStarting)
+	// Idempotent (re)start: a prior session may have left a *stopped*
+	// container holding this name (StopAll stops but does not remove), and
+	// `docker run --name` would then fail with a name conflict. Remove any
+	// existing container first; "no such container" is benign and ignored.
+	_ = s.docker.Remove(ctx, "vulture-agent-"+pluginregistry.SanitiseDNSName(name))
 	if _, err := s.docker.Run(ctx, argv); err != nil {
 		s.markFailed(name, fmt.Sprintf("run: %v", err))
 		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
@@ -209,22 +214,20 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 	out = append(out, Action{Plugin: name, Kind: "run", Detail: plug.Manifest.Runtime.Image})
 
 	entry.sm.Force(StateProbing)
-	probeURL := buildProbeURL(plug)
+	probeURL := buildProbeURL(plug, s.opts.LocalMode)
 	s.prober.Start(name, probeURL, func(st PluginState) {
 		s.handleProbeState(name, st)
 	})
 	return out
 }
 
-func buildProbeURL(plug pluginregistry.Plugin) string {
+func buildProbeURL(plug pluginregistry.Plugin, localMode bool) string {
 	endpoint := plug.Manifest.Runtime.HealthEndpoint
 	if endpoint == "" {
 		endpoint = "/health"
 	}
-	alias := pluginregistry.SanitiseDNSName(plug.Name())
-	return fmt.Sprintf("http://%s%s:%d%s",
-		pluginregistry.NetworkAliasPrefix, alias,
-		plug.Manifest.Runtime.Port, endpoint)
+	host := pluginregistry.PluginContainerHost(localMode, plug.Name())
+	return fmt.Sprintf("http://%s:%d%s", host, plug.Manifest.Runtime.Port, endpoint)
 }
 
 func (s *Supervisor) markFailed(name, msg string) {

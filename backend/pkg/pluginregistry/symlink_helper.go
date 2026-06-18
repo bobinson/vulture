@@ -3,8 +3,36 @@ package pluginregistry
 import (
 	"fmt"
 	"os"
+	"path"
 	"strings"
 )
+
+// AuditInputsMount is the in-container path where a container plugin's
+// source tree is exposed. It is the platform convention declared by
+// plugins in runtime.fs.read (e.g. semgrep) and the default root the
+// plugin wrappers validate against. The supervisor mounts the source
+// here; ContainerSourcePath rewrites dispatched paths to match.
+const AuditInputsMount = "/audit-inputs"
+
+// ContainerSourcePath maps a host source path to the path a container
+// plugin sees.
+//
+// In LocalMode (native launcher) the backend runs on the host and
+// references sources by their real host path. A native agent reads that
+// path directly, but a container plugin only sees the host filesystem
+// re-mounted under AuditInputsMount, so its source_path must be prefixed
+// with that mount point — otherwise the wrapper's path-safety check
+// (resolve-under-root) rejects it with HTTP 400.
+//
+// For non-container plugins, when not in LocalMode, or for an empty
+// path, the host path is returned unchanged (docker-compose stages
+// sources into the shared volume, so paths already resolve there).
+func ContainerSourcePath(localMode, isContainer bool, hostPath string) string {
+	if !localMode || !isContainer || hostPath == "" {
+		return hostPath
+	}
+	return path.Join(AuditInputsMount, hostPath)
+}
 
 // NetworkAliasPrefix is the single source of truth for the
 // `agent-<sanitised-name>` prefix shared by:
@@ -29,6 +57,30 @@ func SanitiseDNSName(name string) string {
 	out = strings.ReplaceAll(out, "_", "-")
 	out = strings.ReplaceAll(out, ".", "-")
 	return out
+}
+
+// PluginContainerHost returns the network host that a container-runtime
+// plugin answers on, given the deployment mode:
+//
+//   - localMode (native launcher, VULTURE_LOCAL_MODE=true): the backend
+//     runs directly on the host, and a host-network plugin container
+//     binds 127.0.0.1:<port> there, so it is reached at "localhost".
+//   - otherwise (docker-compose): the backend is a peer on the compose
+//     network and reaches the plugin via its DNS alias
+//     "agent-<sanitised-name>".
+//
+// Both the stagerouter URL builder and the supervisor health probe call
+// this, so the URL the proxy dials and the alias the container answers
+// to never drift across deployment modes (Feature 0052 BLOCKER #1).
+//
+// Note: bridge-network plugins under localMode are not reachable on
+// localhost without published ports — a separate gap; the only shipped
+// container plugin (semgrep) declares network=host.
+func PluginContainerHost(localMode bool, name string) string {
+	if localMode {
+		return "localhost"
+	}
+	return NetworkAliasPrefix + SanitiseDNSName(name)
 }
 
 // RejectSymlink returns a non-nil error if `path` is a symlink (or

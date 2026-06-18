@@ -358,3 +358,21 @@ func TestBuildDockerRunArgv_NoResources_NoCPUNoMemoryFlags(t *testing.T) {
 		t.Errorf("unset memory should not emit --memory; argv=%v", argv)
 	}
 }
+
+func TestBuildDockerRunArgv_LocalModeMountsHostRoot_0055(t *testing.T) {
+	p := containerPlugin("semgrep")
+	opts := defaultOpts()
+	opts.LocalMode = true
+	argv, err := pluginsupervisor.BuildDockerRunArgv(p, opts)
+	if err != nil {
+		t.Fatalf("BuildDockerRunArgv: %v", err)
+	}
+	// LocalMode mounts host / (so any host source path resolves under
+	// /audit-inputs) — NOT the staged AuditsDir.
+	if !argvContains(argv, "-v", "/:/audit-inputs:ro") {
+		t.Errorf("local mode: expected -v /:/audit-inputs:ro; argv=%v", argv)
+	}
+	if argvContains(argv, "-v", "/host/audits:/audit-inputs:ro") {
+		t.Errorf("local mode must NOT mount AuditsDir; argv=%v", argv)
+	}
+}

@@ -68,7 +68,12 @@ type DispatchTarget struct {
 	PluginName string
 	URL        string
 	Phase      string
-	Capability pluginregistry.Capability
+	// RuntimeType mirrors the plugin's runtime.type ("container",
+	// "in-tree", …). The stream service uses it to decide whether a
+	// dispatched source_path must be remapped to the container's
+	// audit-inputs mount in LocalMode (Feature 0055).
+	RuntimeType string
+	Capability  pluginregistry.Capability
 
 	// MatchedFindings is populated only for prove targets: it is the
 	// subset of PriorFindings whose CWE / check_id matched this
@@ -151,6 +156,7 @@ func (r *router) Route(req RouteRequest) ([]DispatchTarget, error) {
 				PluginName:      p.Name(),
 				URL:             url,
 				Phase:           c.Phase,
+				RuntimeType:     p.Manifest.Runtime.Type,
 				Capability:      c,
 				MatchedFindings: matched,
 			})

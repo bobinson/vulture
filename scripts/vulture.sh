@@ -24,6 +24,7 @@
 #   ollama [model]     Local Ollama (default: qwen3:1.7b)
 #   openai [model]     OpenAI API (default: gpt-4o)
 #   anthropic [model]  Anthropic API (default: claude-sonnet)
+#   gemini [model]     Google Gemini API — remote (default: gemini-pro); needs GEMINI_API_KEY
 #
 # CI client (Mode D) doesn't need this script — use the CLI directly:
 #   vulture scan <git-url> --api-key <key> --server <url> --wait --exit-on high

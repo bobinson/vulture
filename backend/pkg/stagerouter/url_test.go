@@ -94,3 +94,23 @@ func TestSnapshotEnvURLs_ExtractsAndNormalises(t *testing.T) {
 		t.Errorf("non-AGENT env var leaked into snapshot: %v", got)
 	}
 }
+
+func TestResolveURL_LocalModeUsesLocalhost(t *testing.T) {
+	// Native launcher (VULTURE_LOCAL_MODE=true): the backend runs on the
+	// host, so a host-network container plugin is reached at localhost,
+	// not the compose DNS alias.
+	r := &defaultResolver{localMode: true}
+	p := pluginregistry.Plugin{
+		Manifest: pluginregistry.Manifest{
+			Plugin:  pluginregistry.PluginBlock{Name: "semgrep"},
+			Runtime: pluginregistry.RuntimeBlock{Type: pluginregistry.RuntimeContainer, Port: 28011},
+		},
+	}
+	if got := r.Resolve(p); got != "http://localhost:28011" {
+		t.Errorf("local mode resolve = %q, want http://localhost:28011", got)
+	}
+	// And the default (compose) resolver still uses the alias.
+	if got := (&defaultResolver{}).Resolve(p); got != "http://agent-semgrep:28011" {
+		t.Errorf("compose resolve = %q, want http://agent-semgrep:28011", got)
+	}
+}

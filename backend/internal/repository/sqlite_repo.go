@@ -284,6 +284,10 @@ func migrateAddColumns(db *sql.DB) {
 	// Feature 0039: per-audit degraded-mode reason (LLM unreachable at submit time)
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN degraded_reason TEXT NOT NULL DEFAULT ''`)
 
+	// 0055: LLM model recorded at creation — which model the scan ran against
+	// (VULTURE_LLM_MODEL when enabled, else "skills-only").
+	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN llm_model TEXT NOT NULL DEFAULT ''`)
+
 	// Feature 0031: webhook deliveries
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN webhook_url TEXT`)
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS audit_webhook_deliveries (
@@ -432,8 +436,8 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 	}
 	scoresJSON, _ := json.Marshal(audit.Scores)
 	_, err := r.db.Exec(
-		`INSERT INTO audits (id, source_id, types, config, status, scores, webhook_url, degraded_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		audit.ID, audit.SourceID, string(typesJSON), cfgStr, string(audit.Status), string(scoresJSON), audit.WebhookURL, audit.DegradedReason, audit.CreatedAt.Format(time.RFC3339),
+		`INSERT INTO audits (id, source_id, types, config, status, scores, webhook_url, degraded_reason, llm_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		audit.ID, audit.SourceID, string(typesJSON), cfgStr, string(audit.Status), string(scoresJSON), audit.WebhookURL, audit.DegradedReason, audit.LLMModel, audit.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("insert audit: %w", err)
@@ -443,12 +447,12 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = ?`, id)
 	var audit model.Audit
 	var typesStr, cfgStr, scoresStr, createdAt string
 	var completedAt sql.NullString
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &createdAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &createdAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

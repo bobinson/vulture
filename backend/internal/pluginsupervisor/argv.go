@@ -32,9 +32,14 @@ var writePathStaticWhitelist = []string{
 // not relevant to argv generation (e.g. DaemonPingInterval) are
 // ignored by BuildDockerRunArgv.
 type Options struct {
-	DockerBinary       string
-	Network            string
-	AuditsDir          string
+	DockerBinary string
+	Network      string
+	AuditsDir    string
+	// LocalMode mirrors VULTURE_LOCAL_MODE: when true the backend runs
+	// on the host (native launcher), so the supervisor's health probe
+	// dials host-network plugins at localhost rather than the compose
+	// DNS alias (Feature 0055).
+	LocalMode          bool
 	Logger             interface{ Printf(string, ...any) }
 	DaemonPingInterval time.Duration
 	Tunables           *Tunables
@@ -157,7 +162,17 @@ func buildFSArgs(plug pluginregistry.Plugin, opts Options) ([]string, error) {
 		if err := validateReadPath(p); err != nil {
 			return nil, err
 		}
-		out = append(out, "-v", fmt.Sprintf("%s:%s:ro", opts.AuditsDir, p))
+		// Native launcher (LocalMode): the backend references sources by
+		// their real host path (local-dir scans, /tmp git clones), which
+		// are NOT staged into AuditsDir. Mount host / read-only so any
+		// host path resolves under the plugin's audit-inputs mount; the
+		// stream dispatch prefixes source_path to match (Feature 0055).
+		// docker-compose keeps the staged AuditsDir volume.
+		src := opts.AuditsDir
+		if opts.LocalMode {
+			src = "/"
+		}
+		out = append(out, "-v", fmt.Sprintf("%s:%s:ro", src, p))
 	}
 	for _, p := range writePaths {
 		if err := validateWritePath(p, plug.Name()); err != nil {

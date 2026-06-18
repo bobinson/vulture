@@ -1181,11 +1181,13 @@ class TestCustomEndpointStructuredOutputBypass:
     to prompt-based JSON and parse via _parse_llm_findings."""
 
     def test_no_output_type_when_custom_endpoint(self):
-        """Agent(...) must NOT receive output_type when uses_custom_endpoint() is True."""
+        """Agent(...) must NOT receive output_type when structured output is
+        unsupported (custom endpoint OR Gemini). The decision is delegated to
+        provider.supports_structured_output()."""
         import inspect
         source = inspect.getsource(_collect_llm_findings_async)
         # The code must conditionally decide structured vs unstructured
-        assert "uses_custom_endpoint" in source
+        assert "supports_structured_output" in source
         assert "use_structured" in source
 
     def test_json_instruction_appended_for_custom_endpoint(self):

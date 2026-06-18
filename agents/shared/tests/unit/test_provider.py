@@ -377,3 +377,26 @@ class TestCostDict:
         for model in local_models:
             inp, out = COST_PER_1M_TOKENS[model]
             assert inp == 0.0 and out == 0.0, f"Local model {model} should be free"
+
+
+def test_supports_structured_output_standard_openai(monkeypatch):
+    """Standard OpenAI endpoint + gpt-4o → structured output supported."""
+    import shared.llm.provider as provider
+    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
+    assert provider.supports_structured_output("gpt-4o") is True
+
+
+def test_supports_structured_output_false_for_gemini(monkeypatch):
+    """Gemini rejects function-calling + JSON response mime, so structured
+    output (output_type) must be disabled even on the native endpoint."""
+    import shared.llm.provider as provider
+    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
+    assert provider.supports_structured_output("gemini-2.5-flash") is False
+    assert provider.supports_structured_output("gemini-pro") is False
+
+
+def test_supports_structured_output_false_for_custom_endpoint(monkeypatch):
+    """Custom OpenAI-compatible endpoints may reject response_format schema."""
+    import shared.llm.provider as provider
+    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
+    assert provider.supports_structured_output("gpt-4o") is False

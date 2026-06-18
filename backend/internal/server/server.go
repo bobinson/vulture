@@ -80,6 +80,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 			supervisor = pluginsupervisor.New(reg, pluginsupervisor.Options{
 				Network:   envOrDefault("VULTURE_SUPERVISOR_NETWORK", "vulture"),
 				AuditsDir: envOrDefault("VULTURE_SUPERVISOR_AUDITS_DIR", "/tmp/vulture-audit-inputs"),
+				LocalMode: cfg.LocalMode,
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()

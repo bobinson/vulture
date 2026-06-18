@@ -42,6 +42,7 @@ type fakeDocker struct {
 	runs        [][]string
 	stops       []stopCall
 	psResult    []pluginsupervisor.RunningContainer
+	removes     []string
 	pullErr     map[string]error
 	runErr      map[string]error // keyed by image
 	stopErr     error
@@ -93,6 +94,13 @@ func (f *fakeDocker) Stop(ctx context.Context, name string, timeout time.Duratio
 	defer f.mu.Unlock()
 	f.stops = append(f.stops, stopCall{name: name, timeout: timeout})
 	return f.stopErr
+}
+
+func (f *fakeDocker) Remove(ctx context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removes = append(f.removes, name)
+	return nil
 }
 
 func (f *fakeDocker) PS(ctx context.Context) ([]pluginsupervisor.RunningContainer, error) {
@@ -431,4 +439,29 @@ func keysOf(m map[string]pluginsupervisor.PluginStatus) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestSupervisor_LaunchRemovesStaleNameBeforeRun_0055(t *testing.T) {
+	plugin := newPlugin("semgrep", "on-failure")
+	reg := &fakeRegistry{enabled: []pluginregistry.Plugin{plugin}}
+	dk := &fakeDocker{}
+	sup := newSupervisor(t, reg, dk, &fakeProber{})
+
+	if _, err := sup.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// A `docker rm -f vulture-agent-semgrep` must precede `docker run`
+	// so a stale stopped container of the same name can't block start.
+	found := false
+	for _, n := range dk.removes {
+		if n == "vulture-agent-semgrep" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pre-run Remove of vulture-agent-semgrep; removes=%v", dk.removes)
+	}
+	if len(dk.runs) != 1 {
+		t.Errorf("expected 1 docker run; got %d", len(dk.runs))
+	}
 }

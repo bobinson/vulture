@@ -365,7 +365,15 @@ async def _probe_gemini(model: str, timeout: float) -> LLMHealthStatus:
                     "gemini", endpoint, model, False,
                     "endpoint returned non-JSON", {},
                 )
-            ok = (not model) or any(model in n for n in names if n)
+            # The configured model may carry a litellm routing prefix
+            # (e.g. "litellm/gemini/gemini-2.5-flash") while the API lists
+            # names as "models/gemini-2.5-flash". Compare on the bare model
+            # id (last path segment) so the prefixes don't cause a false
+            # "not in account" → skills-only downgrade.
+            bare = model.rsplit("/", 1)[-1] if model else ""
+            ok = (not model) or any(
+                bare and bare in n.rsplit("/", 1)[-1] for n in names if n
+            )
             return LLMHealthStatus(
                 "gemini", endpoint, model, ok,
                 "" if ok else (

@@ -3,12 +3,33 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/pkg/gitutil"
 )
+
+// auditLLMModel reports the LLM this audit runs against, captured from the
+// backend env (which mirrors the agents, both spawned from the same launcher
+// config): the configured VULTURE_LLM_MODEL when VULTURE_USE_LLM is truthy, else
+// "skills-only". Recorded into the audit config so /api/audits/<id> shows which
+// LLM each scan used. Note: it reflects the backend's configured model — in the
+// normal flow identical to the agents'; it is not a per-agent runtime readback.
+func auditLLMModel() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("VULTURE_USE_LLM"))) {
+	case "true", "1", "yes":
+		if m := strings.TrimSpace(os.Getenv("VULTURE_LLM_MODEL")); m != "" {
+			return m
+		}
+		return "(default)"
+	default:
+		return "skills-only"
+	}
+}
+
 
 type AuditService interface {
 	Create(req *model.AuditRequest) (*model.Audit, error)
@@ -68,6 +89,7 @@ func (s *auditService) Create(req *model.AuditRequest) (*model.Audit, error) {
 		SourceID:       req.SourceID,
 		Types:          req.Types,
 		Config:         cfg,
+		LLMModel:       auditLLMModel(),
 		Status:         model.AuditStatusPending,
 		Scores:         map[string]int{},
 		WebhookURL:     req.WebhookURL,
