@@ -331,7 +331,12 @@ docker build -t vulture-agent-base:latest -f "$PROJECT_ROOT/agents/Dockerfile.ba
 # Launch docker compose
 echo "  Starting docker compose..."
 echo
-docker compose -f "$PROJECT_ROOT/docker-compose.yml" up -d --build
+# COMPOSE_BAKE=false: agents build FROM the locally-built
+# vulture-agent-base:latest (above), which is never pushed to a registry.
+# Compose's bake delegation uses a buildx builder that does not share the
+# daemon image store and would try to PULL the base (403). The classic
+# daemon build path resolves it from the local image store.
+COMPOSE_BAKE=false docker compose -f "$PROJECT_ROOT/docker-compose.yml" up -d --build
 
 echo
 

@@ -130,7 +130,14 @@ if ! docker image inspect vulture-agent-base:latest >/dev/null 2>&1; then
 fi
 
 # --wait blocks until all healthchecks pass; --wait-timeout caps the wait.
-docker compose up -d --build --wait --wait-timeout 600
+# COMPOSE_BAKE=false: the agents build FROM the locally-built
+# vulture-agent-base:latest (above), which is never pushed to a registry.
+# Compose's bake delegation builds via a buildx builder that does NOT share
+# the daemon's image store, so it resolves `FROM vulture-agent-base:latest`
+# as a registry pull and 403s ("pull access denied … docker.io/library/
+# vulture-agent-base"). Forcing the classic daemon build path resolves the
+# base from the local image store.
+COMPOSE_BAKE=false docker compose up -d --build --wait --wait-timeout 600
 ok "compose stack healthy"
 
 # ---------------------------------------------------------------------------

@@ -476,8 +476,13 @@ func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, f
 	for i := range result.Findings {
 		f := &result.Findings[i]
 		// Preserve rollup-parent IDs (deterministic SHA-derived).
-		if f.ID == "" && !f.IsRollup {
+		if f.IsRollup {
+			// preserve rollup-parent id verbatim — cross-audit stable by design
+		} else if f.ID == "" {
 			f.ID = generateFindingID(auditID, f.Title, f.FilePath, baseIndex+i)
+		} else {
+			// Namespace plugin-supplied IDs by audit so re-scans don't collide.
+			f.ID = namespaceFindingID(auditID, f.ID)
 		}
 		f.AuditID = auditID
 		// Feature 0050 BLOCKER #2: unconditional overwrite — a
@@ -505,6 +510,17 @@ func truncate(s string, maxLen int) string {
 
 func generateFindingID(auditID, title, filePath string, index int) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%s:%d", auditID, title, filePath, index)))
+	return fmt.Sprintf("%x", h[:16])
+}
+
+// namespaceFindingID scopes a pre-set (plugin-supplied) finding ID by audit.
+// Plugins (e.g. semgrep) emit deterministic IDs like "{check_id}:{path}:{line}"
+// that are byte-identical across audits of an unchanged repo. Without this,
+// re-scans collide with prior audit rows on the findings PK and get dropped
+// (Postgres ON CONFLICT DO NOTHING). The result is unique per audit yet stable
+// within a single audit run, and deterministic for the same (auditID, rawID).
+func namespaceFindingID(auditID, rawID string) string {
+	h := sha256.Sum256([]byte(auditID + "\x00" + rawID))
 	return fmt.Sprintf("%x", h[:16])
 }
 
@@ -856,8 +872,13 @@ func extractDeltaFindings(delta json.RawMessage, auditID string, agentType strin
 			f.AgentType = agentType
 			// V6 (feature 0045): preserve rollup-parent IDs verbatim
 			// (SHA-derived, used for cross-audit idempotency).
-			if f.ID == "" && !f.IsRollup {
+			if f.IsRollup {
+				// preserve rollup-parent id verbatim — cross-audit stable by design
+			} else if f.ID == "" {
 				f.ID = generateFindingID(auditID, f.Title, f.FilePath, len(*findings))
+			} else {
+				// Namespace plugin-supplied IDs by audit so re-scans don't collide.
+				f.ID = namespaceFindingID(auditID, f.ID)
 			}
 			if f.IsRollup {
 				f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, "rollup-parent")

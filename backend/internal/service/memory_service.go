@@ -248,6 +248,7 @@ func (s *memoryService) StoreFindingsAsMemories(auditID string, sourcePath strin
 			Title:             f.Title,
 			Content:           f.Description,
 			Severity:          f.Severity,
+			Fingerprint:       f.Fingerprint,
 			Category:          f.Category,
 			Keywords:          extractKeywords(f.Title, f.Description),
 			Tags:              []string{string(f.Severity), f.AgentType, f.Category},
