@@ -100,6 +100,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install gnu-tar
       - name: build tarball
+        env:
+          # Tier B: bundle python-build-standalone into the linux/amd64 tarball so
+          # a native install runs the agents with no system Python and no Docker.
+          # Set only for linux/amd64 — that's the platform with a committed PBS
+          # SHA pin (scripts/pbs-shas-*.txt); on every other platform build-release
+          # gracefully skips bundling and ships a lean tarball (arm64 + darwin PBS
+          # are deferred). NOTE: bundling pulls the agent deps into the tarball, so
+          # the Trivy/SBOM steps below now also cover the Python runtime.
+          VULTURE_BUNDLE_PBS: ${{ (matrix.os == 'linux' && matrix.arch == 'amd64') && '1' || '' }}
         run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
       - name: generate SBOM
         run: |
