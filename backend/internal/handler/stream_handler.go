@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vulture/backend/internal/agui"
@@ -35,6 +36,16 @@ type StreamHandler struct {
 	proveH           *ProveHandler
 	discoverH        *DiscoverHandler
 	agents           map[string]config.AgentConfig
+
+	// runMu/inFlight guard against concurrent runs of the SAME audit.
+	// Multiple stream connections (e.g. a CLI scan + an open UI tab, or a
+	// React-StrictMode double-mount opening two EventSources) would each
+	// call runLiveAudit and re-dispatch every agent to the shared plugin
+	// containers, racing on persistence — dropping slow agents' findings
+	// (semgrep) and clobbering scores. The first runner wins; the rest
+	// wait for completion and replay (Feature 0055).
+	runMu    sync.Mutex
+	inFlight map[string]bool
 }
 
 func NewStreamHandler(auditSvc service.AuditService, sourceSvc service.SourceService, streamSvc service.StreamService, agents map[string]config.AgentConfig) *StreamHandler {
@@ -43,6 +54,52 @@ func NewStreamHandler(auditSvc service.AuditService, sourceSvc service.SourceSer
 		sourceSvc: sourceSvc,
 		streamSvc: streamSvc,
 		agents:    agents,
+		inFlight:  map[string]bool{},
+	}
+}
+
+// tryAcquireRun atomically marks an audit as running. Returns false if a
+// run is already in flight for that audit.
+func (h *StreamHandler) tryAcquireRun(auditID string) bool {
+	h.runMu.Lock()
+	defer h.runMu.Unlock()
+	if h.inFlight[auditID] {
+		return false
+	}
+	h.inFlight[auditID] = true
+	return true
+}
+
+func (h *StreamHandler) releaseRun(auditID string) {
+	h.runMu.Lock()
+	delete(h.inFlight, auditID)
+	h.runMu.Unlock()
+}
+
+// awaitAndReplay waits for an in-flight run (started by another connection)
+// to finish, then replays the persisted result to this client. Bounded by
+// the request context and a hard ceiling so a stuck run can't block forever.
+func (h *StreamHandler) awaitAndReplay(ctx context.Context, sseWriter *agui.SSEWriter, auditID string) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(15 * time.Minute)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			log.Printf("[stream] await timeout for in-flight audit=%s", auditID)
+			return
+		case <-ticker.C:
+			a, err := h.auditSvc.Get(auditID)
+			if err != nil {
+				continue
+			}
+			if a.Status == model.AuditStatusCompleted || a.Status == model.AuditStatusFailed {
+				h.replayCompletedAudit(sseWriter, a)
+				return
+			}
+		}
 	}
 }
 
@@ -191,6 +248,16 @@ func initSSEWriter(w http.ResponseWriter) *agui.SSEWriter {
 }
 
 func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter, audit *model.Audit) {
+	// Only one run per audit. If another connection is already running it,
+	// don't re-dispatch (that races persistence and double-scans the shared
+	// plugin containers) — wait for it and replay the result instead.
+	if !h.tryAcquireRun(audit.ID) {
+		log.Printf("[stream] audit=%s already running; attaching (await+replay) instead of re-dispatching", audit.ID)
+		h.awaitAndReplay(r.Context(), sseWriter, audit.ID)
+		return
+	}
+	defer h.releaseRun(audit.ID)
+
 	// Source is optional (discover-only audits may have no source)
 	var source *model.Source
 	var sourcePath string
@@ -922,6 +989,15 @@ func (h *StreamHandler) RunPipelineStage(auditID string) {
 }
 
 func (h *StreamHandler) runPipelineAudit(auditID string) {
+	// Guard against a concurrent run of the same audit (e.g. a stream
+	// connection also driving it). First runner wins; this returns if one
+	// is already in flight.
+	if !h.tryAcquireRun(auditID) {
+		log.Printf("[pipeline] audit=%s already running; skipping duplicate dispatch", auditID)
+		return
+	}
+	defer h.releaseRun(auditID)
+
 	audit, err := h.auditSvc.Get(auditID)
 	if err != nil {
 		log.Printf("[pipeline] get audit %s: %v", auditID, err)
