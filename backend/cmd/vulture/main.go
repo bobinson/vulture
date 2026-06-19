@@ -229,11 +229,26 @@ func runScan() {
 		log.Fatalf("create audit: %v", err)
 	}
 	fmt.Printf("Audit ID: %s\n", auditID)
+
+	// Trigger + run the audit. A plain audit is not auto-run on creation;
+	// opening its stream is what kicks off the run on the backend. Drain it
+	// to completion, then print a result summary (Feature 0055 — previously
+	// the CLI submitted and exited, leaving the audit stuck 'pending').
+	fmt.Println("\nRunning audit...")
+	if err := runAuditViaStream(apiURL, auditID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: run/stream: %v\n", err)
+	}
+	if status, total, byAgent, err := auditSummary(apiURL, auditID); err == nil {
+		fmt.Printf("Status: %s | findings: %d\n", status, total)
+		if total > 0 {
+			fmt.Printf("By agent: %v\n", byAgent)
+		}
+	}
+
 	mode := localdev.DetectMode()
 	lcfg := localdev.DefaultConfig(findProjectRoot())
-	fmt.Printf("\nView results: http://localhost:%s/audit/%s\n",
+	fmt.Printf("View results: http://localhost:%s/audit/%s\n",
 		localdev.UIPort(mode, lcfg), auditID)
-	fmt.Printf("Stream API:   %s/api/audits/%s/stream\n", apiURL, auditID)
 }
 
 // warnIfNoAgentsReachable probes every configured agent's /health endpoint with
@@ -242,15 +257,28 @@ func runScan() {
 // agents). It warns rather than refusing, so remote/centralized submissions
 // still work.
 func warnIfNoAgentsReachable(cfg *config.Config) {
-	if len(cfg.Agents) == 0 {
-		return
-	}
 	client := &http.Client{Timeout: 1 * time.Second}
+	// Install/local mode: agents run as native processes on localhost:<port>.
+	// Probe those FIRST — cfg.Agents[*].URL carries docker-compose hostnames
+	// (http://agent-chaos:NNNN) that never resolve on the host, which made
+	// this warning a false negative (and the scan a no-op) on native installs.
+	lcfg := localdev.DefaultConfig(findProjectRoot())
+	for _, port := range lcfg.AgentPorts {
+		if port == "" {
+			continue
+		}
+		resp, err := client.Get("http://localhost:" + port + "/health")
+		if err == nil {
+			resp.Body.Close()
+			return // at least one agent reachable
+		}
+	}
+	// Fall back to the configured agent URLs (docker-compose / Mode B).
 	for _, agent := range cfg.Agents {
 		resp, err := client.Get(agent.URL + "/health")
 		if err == nil {
 			resp.Body.Close()
-			return // at least one agent reachable
+			return
 		}
 	}
 	fmt.Fprintln(os.Stderr,

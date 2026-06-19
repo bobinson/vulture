@@ -38,7 +38,6 @@ interface AuthContextValue extends AuthState {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 const TOKEN_KEY = "vulture_token";
-const LOCAL_MODE = import.meta.env.VITE_LOCAL_MODE === "true";
 
 function getInitialToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -47,14 +46,20 @@ function getInitialToken(): string | null {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(() => {
     const token = getInitialToken();
-    return { user: null, token, loading: !!token || LOCAL_MODE };
+    // Always start in loading: we resolve auth (existing token OR a
+    // passwordless local session) before deciding to show /login.
+    return { user: null, token, loading: true };
   });
 
   useEffect(() => {
     let cancelled = false;
 
-    // Local mode: auto-obtain session without credentials
-    if (LOCAL_MODE && !state.token) {
+    // Passwordless local session — RUNTIME-detected (not a build flag): the
+    // backend returns a token only when VULTURE_LOCAL_MODE is on AND the host
+    // is loopback; otherwise it 404s and we fall through to /login. This makes
+    // a native/local install auto-login with no credentials, while a
+    // centralized (Mode B) server still requires sign-in (0055).
+    const tryLocalSession = () => {
       api
         .localSession()
         .then((resp) => {
@@ -65,11 +70,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .catch(() => {
           if (!cancelled) setState({ user: null, token: null, loading: false });
         });
+    };
+
+    // No token: attempt a local session.
+    if (!state.token) {
+      tryLocalSession();
       return () => { cancelled = true; };
     }
 
-    // Normal mode: validate existing token
-    if (!state.token) return;
+    // Have a token: validate it; on failure drop it and retry a local session.
     const token = state.token;
     api
       .me(token)
@@ -77,20 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         if (cancelled) return;
         localStorage.removeItem(TOKEN_KEY);
-        // In local mode, retry with local session
-        if (LOCAL_MODE) {
-          api.localSession()
-            .then((resp) => {
-              if (cancelled) return;
-              localStorage.setItem(TOKEN_KEY, resp.token);
-              setState({ user: resp.user, token: resp.token, loading: false });
-            })
-            .catch(() => {
-              if (!cancelled) setState({ user: null, token: null, loading: false });
-            });
-        } else {
-          setState({ user: null, token: null, loading: false });
-        }
+        tryLocalSession();
       });
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

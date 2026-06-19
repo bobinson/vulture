@@ -8,6 +8,7 @@ vi.mock("./api.ts", () => ({
     me: vi.fn(),
     login: vi.fn(),
     register: vi.fn(),
+    localSession: vi.fn(),
   },
 }));
 
@@ -16,6 +17,7 @@ import { api } from "./api.ts";
 const mockMe = vi.mocked(api.me);
 const mockLogin = vi.mocked(api.login);
 const mockRegister = vi.mocked(api.register);
+const mockLocalSession = vi.mocked(api.localSession);
 
 const SAMPLE_USER = {
   id: "user-1",
@@ -33,6 +35,11 @@ beforeEach(() => {
   mockMe.mockReset();
   mockLogin.mockReset();
   mockRegister.mockReset();
+  mockLocalSession.mockReset();
+  // Default: no local session (simulates a non-local/centralized server,
+  // where /api/auth/local-session 404s). Tests that exercise local-mode
+  // auto-login override this to resolve.
+  mockLocalSession.mockRejectedValue(new Error("not found"));
   localStorage.clear();
 });
 
@@ -43,14 +50,29 @@ describe("useAuth", () => {
     }).toThrow("useAuth must be used within AuthProvider");
   });
 
-  it("starts with loading=true then resolves to no user when no token", async () => {
+  it("starts loading, probes local session, resolves to no user when none", async () => {
     const { result } = renderHook(() => useAuth(), { wrapper });
 
     await waitFor(() => {
       expect(result.current.loading).toBe(false);
     });
+    // Runtime detection: it ALWAYS probes the passwordless local session;
+    // here it 404s (non-local) so we land unauthenticated → /login.
+    expect(mockLocalSession).toHaveBeenCalled();
     expect(result.current.user).toBeNull();
     expect(result.current.token).toBeNull();
+  });
+
+  it("auto-logs-in via local session (local mode) with no token", async () => {
+    mockLocalSession.mockResolvedValue({ user: SAMPLE_USER, token: "local-jwt" });
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.user).toEqual(SAMPLE_USER);
+    expect(result.current.token).toBe("local-jwt");
+    expect(localStorage.getItem("vulture_token")).toBe("local-jwt");
+    expect(mockMe).not.toHaveBeenCalled(); // no token → straight to local session
   });
 
   it("fetches user profile when token exists in localStorage", async () => {

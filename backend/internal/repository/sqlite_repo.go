@@ -498,6 +498,25 @@ func (r *SQLiteRepo) UpdateAudit(audit *model.Audit) error {
 }
 
 func (r *SQLiteRepo) SaveFindings(auditID string, findings []model.Finding) error {
+	// SQLite caps bound parameters at 32766; each finding uses 19, so a single
+	// multi-row INSERT exceeds the limit past ~1724 rows and fails with "too
+	// many SQL variables" — which dropped EVERY finding on large native-install
+	// scans (thousands of findings → 0 persisted). Chunk so each INSERT stays
+	// well under the cap (Feature 0055).
+	const chunk = 500 // 500 × 19 = 9500 params, comfortably < 32766
+	for start := 0; start < len(findings); start += chunk {
+		end := start + chunk
+		if end > len(findings) {
+			end = len(findings)
+		}
+		if err := r.saveFindingsChunk(auditID, findings[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding) error {
 	if len(findings) == 0 {
 		return nil
 	}
@@ -532,9 +551,14 @@ func (r *SQLiteRepo) SaveFindings(auditID string, findings []model.Finding) erro
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
 			is_rollup, rolled_up_into, instance_count
-		) VALUES %s`,
+		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
+	// ON CONFLICT DO NOTHING (parity with the Postgres repo): a single
+	// duplicate row (id PK or a unique index) must skip just that row, NOT
+	// fail the whole multi-row batch. Without it, one dup finding dropped
+	// EVERY finding for the audit on SQLite (native installs) — the agents
+	// produced thousands but the table stayed empty (Feature 0055).
 	_, err := r.db.Exec(stmt, valueArgs...)
 	if err != nil {
 		return fmt.Errorf("insert findings: %w", err)

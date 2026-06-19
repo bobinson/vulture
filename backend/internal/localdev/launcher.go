@@ -350,6 +350,13 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 			"VULTURE_AGENT_PORT=" + port,
 			"VULTURE_BACKEND_URL=http://localhost:" + l.cfg.BackendPort,
 			"PYTHONPATH=" + pythonPath,
+			// Hermetic interpreter: ignore the host user-site
+			// (~/.local/lib/pythonX/site-packages). Otherwise the bundled
+			// PBS runtime (and venvs) pick up conflicting host packages —
+			// e.g. a host `griffe` that needs `colorama` shadowed the
+			// bundled `griffelib`, crashing agents on startup so only 2/10
+			// came up. Mirrors the hermetic build-release pip step (0055).
+			"PYTHONNOUSERSITE=1",
 		}
 		// Cross-agent URL: prove → discover. Defaults to the docker
 		// hostname `http://agent-discover:28008` (compose mode), which
