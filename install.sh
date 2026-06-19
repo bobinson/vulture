@@ -366,8 +366,10 @@ generate_jwt_secret() {
     chmod 700 "$VULTURE_HOME/config"
     if command -v openssl >/dev/null 2>&1; then
         SECRET=$(openssl rand -hex 32)
+        DEVPW=$(openssl rand -hex 12)
     else
         SECRET=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        DEVPW=$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
     fi
     {
         printf 'VULTURE_JWT_SECRET=%s\n' "$SECRET"
@@ -377,9 +379,16 @@ generate_jwt_secret() {
         # built-ins always run); set to all|none|a,comma,list to opt in.
         # NOTE: container (Docker) plugins additionally require Docker to run.
         printf 'VULTURE_PLUGINS=\n'
+        # Pin a KNOWN local-dev admin password (admin@vulture.local). The web UI
+        # auto-logs-in via the passwordless local session, so this is normally
+        # unused — but it guarantees a recoverable credential for explicit
+        # sign-in. Pinned at install time (before first start) so it isn't the
+        # random, /dev/null-logged value the daemon would otherwise mint. 0055.
+        printf 'VULTURE_LOCAL_DEV_PASSWORD=%s\n' "$DEVPW"
     } > "$ENVFILE"
     chmod 600 "$ENVFILE"
     log "generated JWT secret to $ENVFILE (0600)"
+    log "local-dev login (if prompted): admin@vulture.local / $DEVPW"
 }
 
 # ─── 9. install_python_deps ────────────────────────────────────────────────

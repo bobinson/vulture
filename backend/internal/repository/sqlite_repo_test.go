@@ -1231,3 +1231,51 @@ func TestCreateAndGetAudit_LLMModelRoundTrip(t *testing.T) {
 		t.Errorf("LLMModel = %q, want gemini-2.5-flash", got.LLMModel)
 	}
 }
+
+func TestSaveFindings_DuplicateIdDoesNotDropBatch_0055(t *testing.T) {
+	repo := newTestRepo(t)
+	_ = repo.CreateSource(&model.Source{ID: "src-d", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1, CreatedAt: time.Now().UTC()})
+	_ = repo.CreateAudit(&model.Audit{ID: "audit-d", SourceID: "src-d", Types: []string{"chaos"}, Config: json.RawMessage("{}"), Status: model.AuditStatusRunning, Scores: map[string]int{}, CreatedAt: time.Now().UTC()})
+
+	// A batch with a DUPLICATE id (f-dup x2) plus a distinct one. Without
+	// ON CONFLICT DO NOTHING the dup PK fails the WHOLE multi-row INSERT and
+	// nothing persists (the native-install 0-findings bug).
+	findings := []model.Finding{
+		{ID: "f-dup", AuditID: "audit-d", AgentType: "chaos", Severity: model.SeverityHigh, Title: "A", FilePath: "a.go", LineStart: 1},
+		{ID: "f-dup", AuditID: "audit-d", AgentType: "chaos", Severity: model.SeverityHigh, Title: "A-again", FilePath: "a.go", LineStart: 1},
+		{ID: "f-uniq", AuditID: "audit-d", AgentType: "owasp", Severity: model.SeverityMedium, Title: "B", FilePath: "b.go", LineStart: 2},
+	}
+	if err := repo.SaveFindings("audit-d", findings); err != nil {
+		t.Fatalf("SaveFindings must not error on a dup id (ON CONFLICT DO NOTHING): %v", err)
+	}
+	got, _ := repo.GetAudit("audit-d")
+	if len(got.Findings) != 2 {
+		t.Fatalf("expected 2 persisted (dup skipped, rest kept), got %d", len(got.Findings))
+	}
+}
+
+func TestSaveFindings_LargeBatchChunks_0055(t *testing.T) {
+	repo := newTestRepo(t)
+	_ = repo.CreateSource(&model.Source{ID: "src-big", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1, CreatedAt: time.Now().UTC()})
+	_ = repo.CreateAudit(&model.Audit{ID: "audit-big", SourceID: "src-big", Types: []string{"do178c"}, Config: json.RawMessage("{}"), Status: model.AuditStatusRunning, Scores: map[string]int{}, CreatedAt: time.Now().UTC()})
+
+	// 2000 findings × 19 cols = 38000 bind params — exceeds SQLite's 32766
+	// limit in a single INSERT. Chunking must persist all of them (this is
+	// the native-install "thousands of findings → 0 persisted" bug).
+	n := 2000
+	findings := make([]model.Finding, n)
+	for i := 0; i < n; i++ {
+		findings[i] = model.Finding{
+			ID: fmt.Sprintf("big-%d", i), AuditID: "audit-big", AgentType: "do178c",
+			Severity: model.SeverityHigh, Category: "traceability", Title: "missing tag",
+			FilePath: fmt.Sprintf("f%d.go", i), LineStart: i,
+		}
+	}
+	if err := repo.SaveFindings("audit-big", findings); err != nil {
+		t.Fatalf("SaveFindings(%d) must chunk under the param limit: %v", n, err)
+	}
+	got, _ := repo.GetAudit("audit-big")
+	if len(got.Findings) != n {
+		t.Fatalf("expected %d persisted, got %d", n, len(got.Findings))
+	}
+}

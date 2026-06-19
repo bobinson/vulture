@@ -77,7 +77,11 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; "+
 				"script-src 'self'; "+
-				"style-src 'self' 'unsafe-inline'; "+
+				// Google Fonts: the SPA links fonts.googleapis.com (CSS) which
+				// pulls font files from fonts.gstatic.com. Without these the CSP
+				// blocked the stylesheet (console error; fonts fell back). 0055.
+				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
+				"font-src 'self' https://fonts.gstatic.com; "+
 				"img-src 'self' data:; "+
 				"connect-src 'self'; "+
 				"frame-ancestors 'none'")
