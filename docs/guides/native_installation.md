@@ -54,10 +54,11 @@ runtime, which the installer auto-detects via `VULTURE_USE_SYSTEM_PYTHON`:
 - **`=1` = require**: as AUTO, but fail the install if no Python ≥ 3.12 is found.
 - **`=0` = disable**: never build a local runtime (CLI-only).
 
-A CLI-only install is valid: the CLI and UI work, but agent scanning then needs
-Docker (see [Related modes](#related-modes)). Install Python 3.12+ and re-run
-`install.sh` to add local agents. Skill-based scanning (deterministic pattern
-matching, 100% file coverage) runs without any LLM.
+**Current limitation:** a CLI-only install is valid — the CLI and UI work — but
+agents then require Docker (see [Related modes](#related-modes)). Install
+Python 3.12+ and re-run `install.sh` to add local agents instead. Skill-based
+scanning (deterministic pattern matching, 100% file coverage) runs without any
+LLM.
 
 ## Enable an LLM (optional)
 

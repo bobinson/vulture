@@ -44,7 +44,7 @@
 # scripts/check-fallback-tag.sh). MUST be a real PUBLISHED release: install.sh
 # downloads it when the GitHub API is unreachable, and refuses any older
 # VULTURE_VERSION (see resolve_version). v0.0.0 was never released.
-FALLBACK_TAG="v0.0.2"
+FALLBACK_TAG="v0.0.6"
 REPO_OWNER="bobinson"
 REPO_NAME="vulture"
 REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
