@@ -1666,5 +1666,65 @@ PYEOF
 test_u15_bundled_deps_missing_installs
 
 # ---------------------------------------------------------------------------
+# TEST L1 — link_binary warns when a DIFFERENT vulture earlier on PATH will
+# shadow the freshly-installed one (0055 follow-up). It must still create the
+# ~/.local/bin symlink to the installed binary AND emit an actionable warning
+# naming the shadowing path. RED today: link_binary never checks PATH shadowing.
+# ---------------------------------------------------------------------------
+test_link_binary_shadow() {
+    name="L1-link_binary-warns-on-PATH-shadow"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "link_binary unreachable: seam absent"; return; fi
+    lbhome="$SANDBOX/lb-coll"; rm -rf "$lbhome"
+    mkdir -p "$lbhome/.vulture/bin" "$lbhome/stale"
+    printf '#!/bin/sh\necho real\n'  > "$lbhome/.vulture/bin/vulture"; chmod +x "$lbhome/.vulture/bin/vulture"
+    printf '#!/bin/sh\necho stale\n' > "$lbhome/stale/vulture";        chmod +x "$lbhome/stale/vulture"
+    # shellcheck disable=SC2016  # outer $lbhome/$PATH inject into the sourced body on purpose
+    out=$(run_in_install '
+        HOME="'"$lbhome"'"
+        VULTURE_HOME="'"$lbhome"'/.vulture"
+        PATH="'"$lbhome"'/stale:'"$lbhome"'/.local/bin:'"$PATH"'"
+        export HOME VULTURE_HOME PATH
+        link_binary 2>&1
+        printf "LINK_TARGET=%s\n" "$(resolve_path "$HOME/.local/bin/vulture" 2>/dev/null)"
+    ')
+    detail=""
+    printf '%s' "$out" | grep -Eq "LINK_TARGET=.*/\.vulture/bin/vulture" \
+        || detail="$detail ~/.local/bin/vulture not linked to the installed binary;"
+    if printf '%s' "$out" | grep -Eqi 'shadows|resolves to'; then
+        printf '%s' "$out" | grep -q "$lbhome/stale/vulture" \
+            || detail="$detail shadow warning did not name the shadowing path;"
+    else
+        detail="$detail no PATH-shadow warning emitted (a stale vulture silently wins);"
+    fi
+    if [ -z "$detail" ]; then pass "$name"
+    else fail "$name" "$detail out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"; fi
+}
+test_link_binary_shadow
+
+# ---------------------------------------------------------------------------
+# TEST L2 — link_binary must NOT cry shadow when ~/.local/bin/vulture (its own
+# symlink) is what 'vulture' actually resolves to. Guards against over-warning.
+# ---------------------------------------------------------------------------
+test_link_binary_no_shadow() {
+    name="L2-link_binary-no-false-shadow-warning"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "link_binary unreachable: seam absent"; return; fi
+    lbhome="$SANDBOX/lb-clean"; rm -rf "$lbhome"; mkdir -p "$lbhome/.vulture/bin"
+    printf '#!/bin/sh\necho real\n' > "$lbhome/.vulture/bin/vulture"; chmod +x "$lbhome/.vulture/bin/vulture"
+    out=$(run_in_install '
+        HOME="'"$lbhome"'"
+        VULTURE_HOME="'"$lbhome"'/.vulture"
+        PATH="'"$lbhome"'/.local/bin:'"$PATH"'"
+        export HOME VULTURE_HOME PATH
+        link_binary 2>&1
+    ')
+    if printf '%s' "$out" | grep -Eqi 'shadows|resolves to'; then
+        fail "$name" "false shadow warning when ~/.local/bin/vulture is the resolved binary; out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+    else
+        pass "$name"
+    fi
+}
+test_link_binary_no_shadow
+
+# ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -17,6 +17,16 @@ import (
 	"github.com/vulture/backend/internal/server"
 )
 
+// Version is the build version reported by `vulture version`. It defaults to a
+// "dev" sentinel and is overridden at release-build time via the linker:
+//
+//	go build -ldflags "-X main.Version=<git-tag>" ...
+//
+// (scripts/build-release.sh injects ${VERSION}). The symbol name here MUST stay
+// `main.Version` to match that ldflag — otherwise the injection is a silent
+// no-op and the binary misreports its version. 0055 follow-up.
+var Version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		runServer()
@@ -45,7 +55,7 @@ func main() {
 	case "plugin":
 		os.Exit(dispatchPlugin(os.Args[1:], os.Stdout, os.Stderr))
 	case "version":
-		fmt.Println("vulture v0.1.0")
+		fmt.Println("vulture " + Version)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -76,8 +86,16 @@ Environment:
   VULTURE_PORT             Backend port (default: from config.ini)
   VULTURE_DB_PATH          SQLite database path (default: /data/vulture.db)
   VULTURE_DB_DSN           PostgreSQL DSN (if set, uses Postgres instead of SQLite)
-  OPENAI_API_KEY           API key for LLM-powered audits
-  VULTURE_LLM_MODEL        LLM model name (default: gpt-4o)`)
+  VULTURE_USE_LLM          Enable LLM analysis (true|false; default false = skills-only)
+  VULTURE_LLM_MODEL        LLM model name (e.g. gpt-4o, claude-sonnet, gemini-pro, qwen3:1.7b)
+  OPENAI_API_KEY           API key for OpenAI / OpenAI-compatible LLM audits
+  OPENAI_BASE_URL          Custom OpenAI-compatible endpoint (LM Studio, vLLM, proxies)
+  ANTHROPIC_API_KEY        API key for Claude models
+  GEMINI_API_KEY           API key for Google Gemini models
+  OLLAMA_API_BASE          Ollama endpoint for local models (default http://localhost:11434)
+
+In install mode these may also be set in $VULTURE_HOME/config/.env (loaded at
+'vulture start'). Run 'vulture doctor' to see the resolved LLM provider/model.`)
 }
 
 func runServer() {

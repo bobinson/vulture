@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/vulture/backend/internal/config"
@@ -35,6 +36,7 @@ func runDoctor() {
 		checkFileMode(filepath.Join(localdev.DataDir(mode, "."), "vulture.db"), 0o600,
 			"chmod 600 $VULTURE_HOME/data/vulture.db*"),
 		checkAuditLog(mode),
+		checkLLMConfig(mode),
 		checkPluginsReachable(),
 	}
 	fmt.Printf("vulture doctor (mode=%s)\n", mode)
@@ -149,6 +151,68 @@ func checkAuditLog(mode localdev.Mode) (c struct {
 		c.ok = true
 	}
 	return
+}
+
+// checkLLMConfig reports the EFFECTIVE LLM-analysis configuration the daemon
+// would use. It loads config/.env first (install mode, env-wins) so the report
+// matches what `vulture start` would forward to the agents. LLM analysis is
+// opt-in: when off, scanning runs skills-only (OK). When on, the credential the
+// resolved provider needs must be present, else WARN — a scan still runs, just
+// skills-only, so this is never a hard FAIL.
+func checkLLMConfig(mode localdev.Mode) (c struct {
+	name string
+	ok   bool
+	warn bool
+	fix  string
+}) {
+	_ = mode
+	localdev.LoadInstallEnv() // reflect config/.env (no-op outside install mode)
+	c.name, c.ok, c.warn, c.fix = llmStatus(os.Getenv)
+	return
+}
+
+// llmStatus is the pure core of checkLLMConfig (getenv injected for testing).
+func llmStatus(getenv func(string) string) (name string, ok, warn bool, fix string) {
+	switch getenv("VULTURE_USE_LLM") {
+	case "true", "1":
+	default:
+		return "LLM analysis disabled (skills-only)", true, false, ""
+	}
+	model := getenv("VULTURE_LLM_MODEL")
+	if model == "" {
+		model = "gpt-4o"
+	}
+	provider, keyVar := llmProviderForModel(model, getenv)
+	name = fmt.Sprintf("LLM analysis: %s (model %s)", provider, model)
+	if keyVar == "" {
+		return name, true, false, "" // local/ollama or a custom endpoint: no key required
+	}
+	if getenv(keyVar) != "" {
+		return name, true, false, ""
+	}
+	return name, false, true,
+		fmt.Sprintf("set %s in $VULTURE_HOME/config/.env (or export it before 'vulture start')", keyVar)
+}
+
+// llmProviderForModel maps a model string to a human label and the env var
+// holding its credential ("" when none is needed). A custom OPENAI_BASE_URL is
+// treated as a (typically local) OpenAI-compatible endpoint where the key is
+// optional, so it does not WARN on a missing key.
+func llmProviderForModel(model string, getenv func(string) string) (provider, keyVar string) {
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "gemini"):
+		return "Gemini", "GEMINI_API_KEY"
+	case strings.Contains(m, "claude"), strings.Contains(m, "anthropic"):
+		return "Anthropic", "ANTHROPIC_API_KEY"
+	case strings.Contains(m, "ollama"), strings.Contains(m, "qwen"), strings.Contains(m, "llama"):
+		return "Ollama (local)", ""
+	default:
+		if getenv("OPENAI_BASE_URL") != "" {
+			return "OpenAI-compatible endpoint", ""
+		}
+		return "OpenAI", "OPENAI_API_KEY"
+	}
 }
 
 // doctorHealthClient is a short-timeout client for probing plugin /health,

@@ -39,7 +39,7 @@ func TestParseDotenvLine(t *testing.T) {
 }
 
 func TestDotenvForwardable(t *testing.T) {
-	yes := []string{"VULTURE_PLUGINS", "VULTURE_USE_LLM", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL"}
+	yes := []string{"VULTURE_PLUGINS", "VULTURE_USE_LLM", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY"}
 	// PATH/HOME/etc. never forwardable; VULTURE_LISTEN_ADDR/BIND_ADDR are denied
 	// even though they're VULTURE_*-prefixed (S2 defense-in-depth).
 	no := []string{"PATH", "HOME", "PYTHONPATH", "LD_PRELOAD", "FOO", "TERM",
@@ -116,6 +116,28 @@ func TestApplyDotenv_InjectsAllowedKeysSafely(t *testing.T) {
 	}
 	if os.Getenv("HOME") != origHome {
 		t.Errorf("HOME overwritten from .env: %q", os.Getenv("HOME"))
+	}
+}
+
+// Native Gemini: a GEMINI_API_KEY placed in config/.env must propagate (the
+// launcher forwards it to the agents). Regression lock for the 0055 follow-up
+// that added it to the provider allow-list.
+func TestApplyDotenv_InjectsGeminiKey(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	content := "VULTURE_LLM_MODEL=gemini-pro\n" +
+		"VULTURE_USE_LLM=true\n" +
+		"GEMINI_API_KEY=AIza-test-key\n"
+	if err := os.WriteFile(envFile, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsetForTest(t, "VULTURE_LLM_MODEL", "VULTURE_USE_LLM", "GEMINI_API_KEY")
+	applyDotenv(envFile)
+	if got := os.Getenv("GEMINI_API_KEY"); got != "AIza-test-key" {
+		t.Errorf("GEMINI_API_KEY = %q, want AIza-test-key (config/.env Gemini key must propagate)", got)
+	}
+	if got := os.Getenv("VULTURE_LLM_MODEL"); got != "gemini-pro" {
+		t.Errorf("VULTURE_LLM_MODEL = %q, want gemini-pro", got)
 	}
 }
 

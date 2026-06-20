@@ -658,13 +658,13 @@ link_binary() {
     mkdir -p "$LOCAL_BIN"
     LINK="$LOCAL_BIN/vulture"
     if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
-        warn "$LINK exists and is not a symlink; not overwriting"
+        warn "$LINK exists and is not a symlink; not overwriting (remove it to let vulture manage it)"
     elif [ -L "$LINK" ]; then
         # Canonicalise so a relative existing-symlink target still matches.
         TARGET=$(resolve_path "$LINK")
         case "$TARGET" in
             "$VULTURE_HOME"/*) ln -sf "$VULTURE_HOME/bin/vulture" "$LINK" ;;
-            *) warn "$LINK points outside VULTURE_HOME ($TARGET); not overwriting" ;;
+            *) warn "$LINK points outside VULTURE_HOME ($TARGET); not overwriting (remove it to let vulture manage it)" ;;
         esac
     else
         ln -sf "$VULTURE_HOME/bin/vulture" "$LINK"
@@ -673,6 +673,18 @@ link_binary() {
         *":$LOCAL_BIN:"*) ;;
         *) log "add this to your shell rc: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
     esac
+    # A stale `vulture` earlier on PATH (e.g. an old /usr/local/bin/vulture from
+    # a previous manual install) would silently shadow the binary we just
+    # linked, so `vulture ...` runs the OLD code. Detect and warn actionably.
+    _resolved=$(command -v vulture 2>/dev/null || true)
+    if [ -n "$_resolved" ]; then
+        _resolved_real=$(resolve_path "$_resolved")
+        _want_real=$(resolve_path "$VULTURE_HOME/bin/vulture")
+        if [ "$_resolved_real" != "$_want_real" ]; then
+            warn "'vulture' on your PATH resolves to $_resolved, which shadows the freshly-installed $VULTURE_HOME/bin/vulture"
+            warn "remove the stale binary ($_resolved), or run $VULTURE_HOME/bin/vulture directly"
+        fi
+    fi
 }
 
 # ─── 12. strip_quarantine (darwin only, narrowed to extracted files) ─────

@@ -28,6 +28,62 @@ func TestCheckPythonInstallMissingIsWarn(t *testing.T) {
 	}
 }
 
+// TestLLMStatus exercises the doctor LLM-config check via the pure helper
+// (hermetic getenv). Contract: disabled => OK; enabled => the resolved
+// provider's credential must be present, else WARN (never a hard FAIL — a
+// scan still runs skills-only).
+func TestLLMStatus(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       map[string]string
+		wantOK    bool
+		wantWarn  bool
+		nameMatch string // substring the check name must contain
+	}{
+		{"disabled-is-ok", map[string]string{}, true, false, "disabled"},
+		{"gemini-with-key-ok", map[string]string{
+			"VULTURE_USE_LLM": "true", "VULTURE_LLM_MODEL": "gemini-2.5-flash", "GEMINI_API_KEY": "AIza-x",
+		}, true, false, "Gemini"},
+		{"gemini-missing-key-warns", map[string]string{
+			"VULTURE_USE_LLM": "true", "VULTURE_LLM_MODEL": "gemini-pro",
+		}, false, true, "Gemini"},
+		{"openai-default-missing-key-warns", map[string]string{
+			"VULTURE_USE_LLM": "true",
+		}, false, true, "OpenAI"},
+		{"openai-compat-endpoint-no-key-ok", map[string]string{
+			"VULTURE_USE_LLM": "true", "OPENAI_BASE_URL": "http://localhost:1234/v1",
+		}, true, false, "endpoint"},
+		{"ollama-needs-no-key", map[string]string{
+			"VULTURE_USE_LLM": "true", "VULTURE_LLM_MODEL": "qwen3:1.7b",
+		}, true, false, "Ollama"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			getenv := func(k string) string { return tc.env[k] }
+			name, ok, warn, _ := llmStatus(getenv)
+			if ok != tc.wantOK || warn != tc.wantWarn {
+				t.Errorf("llmStatus(%v) ok=%v warn=%v, want ok=%v warn=%v", tc.env, ok, warn, tc.wantOK, tc.wantWarn)
+			}
+			if tc.nameMatch != "" && !contains(name, tc.nameMatch) {
+				t.Errorf("llmStatus name = %q, want substring %q", name, tc.nameMatch)
+			}
+		})
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(sub) == 0 || (len(s) >= len(sub) && stringIndex(s, sub) >= 0)
+}
+
+func stringIndex(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
 // extPlugin builds an enabled, non-in-tree container plugin for test use.
 func extPlugin(name string, port int) pluginregistry.Plugin {
 	var m pluginregistry.Manifest

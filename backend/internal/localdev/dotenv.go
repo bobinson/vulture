@@ -14,6 +14,7 @@ import (
 var dotenvProviderKeys = map[string]struct{}{
 	"OPENAI_API_KEY":    {},
 	"ANTHROPIC_API_KEY": {},
+	"GEMINI_API_KEY":    {}, // native Gemini: forwarded to agents by the launcher
 	"OPENAI_BASE_URL":   {},
 	"OLLAMA_HOST":       {},
 	"OLLAMA_API_BASE":   {},
