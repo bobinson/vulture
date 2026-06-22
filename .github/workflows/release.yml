@@ -119,8 +119,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PBS_TARBALL=$(scripts/fetch-vendored-pbs.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${RUNNER_TEMP}/vendored-pbs")
-          echo "VULTURE_PBS_TARBALL=${PBS_TARBALL}" >> "$GITHUB_ENV"
+          # OPTIONAL: the vendored PBS release (produced by vendor-pbs.yml, a
+          # manual workflow_dispatch) may not exist for this tag. On ANY
+          # fetch/verify failure, leave VULTURE_PBS_TARBALL unset so build-release.sh
+          # falls back to a direct upstream fetch — BOTH paths SHA-verify against
+          # the committed pin (scripts/pbs-shas-*.txt), so either is fail-closed.
+          # Only export the override on a verified hit.
+          if PBS_TARBALL=$(scripts/fetch-vendored-pbs.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${RUNNER_TEMP}/vendored-pbs"); then
+            echo "VULTURE_PBS_TARBALL=${PBS_TARBALL}" >> "$GITHUB_ENV"
+            echo "using vendored (cosign-verified) PBS: ${PBS_TARBALL}"
+          else
+            echo "vendored PBS unavailable for ${{ matrix.os }}-${{ matrix.arch }} — build-release.sh will fetch upstream directly (still pin-verified)"
+          fi
       - name: build tarball
         env:
           # Tier B: bundle python-build-standalone into EVERY platform tarball so
