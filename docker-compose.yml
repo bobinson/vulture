@@ -81,6 +81,10 @@ services:
       - VULTURE_AGENT_DO178C_URL=http://agent-do178c:${VULTURE_AGENT_DO178C_PORT:-28009}
       - VULTURE_AGENT_ASVS_URL=http://agent-asvs:${VULTURE_AGENT_ASVS_PORT:-28010}
       - "VULTURE_JWT_SECRET=${VULTURE_JWT_SECRET:?VULTURE_JWT_SECRET must be set - generate with openssl rand -hex 32}"
+      # Shared agent secret. REQUIRED in non-local mode — the backend fails
+      # closed at startup without it (security.go); when set it's sent to agents
+      # as X-Vulture-Agent-Token. Empty default keeps local-mode dev unaffected.
+      - VULTURE_AGENT_TOKEN=${VULTURE_AGENT_TOKEN:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL}
       - VULTURE_EMBEDDING_URL=${VULTURE_EMBEDDING_URL}
