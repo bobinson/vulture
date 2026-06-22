@@ -69,6 +69,13 @@ jobs:
           - { os: darwin, arch: amd64, runner: macos-15-intel }
           - { os: darwin, arch: arm64, runner: macos-14 }
     runs-on: ${{ matrix.runner }}
+    env:
+      # Single source of truth for the vendored PBS coordinates: the same
+      # VULTURE_PBS_TAG/PYVER drive both the cosign-verified download of the
+      # vendored asset (fetch-vendored-pbs.sh) and build-release.sh's pin
+      # lookup, so the fetched tarball always matches the committed SHA pin.
+      VULTURE_PBS_TAG: '20260610'
+      VULTURE_PBS_PYVER: '3.12.13'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -87,7 +94,9 @@ jobs:
         # v0.71.0 tag of contrib/install.sh *and* the installed version, so we
         # never pipe a moving 'main'-ref script into sh — keeping parity with
         # the SHA-pinned actions in this workflow (supply-chain hardening).
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.71.0
+        # Retry + cap connect/total time so a flaky CDN can't hang the job
+        # (matches build-release.sh's curl posture).
+        run: curl -sfL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 30 --max-time 120 https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.71.0
       - name: install pip-audit
         # PEP-668 varies by runner: macOS + ubuntu-24.04 refuse plain installs
         # (need --break-system-packages), but ubuntu-22.04-arm's older pip
@@ -99,16 +108,31 @@ jobs:
         # (--sort/--mtime/--owner); macOS ships BSD tar. gnu-tar provides gtar.
         if: runner.os == 'macOS'
         run: brew install gnu-tar
+      - name: fetch + cosign-verify vendored PBS
+        # Consume our own cosign-signed, vendored python-build-standalone
+        # (vendor-pbs.yml) instead of fetching from indygreg at build time.
+        # The helper downloads the platform tarball + signed SHA256SUMS, keyless
+        # cosign-verifies them, and prints the verified tarball path; we hand
+        # that to build-release.sh via VULTURE_PBS_TARBALL. build-release.sh
+        # still SHA-verifies it against the committed pin (defence in depth) and
+        # falls back to a direct upstream fetch if this override is unset.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PBS_TARBALL=$(scripts/fetch-vendored-pbs.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${RUNNER_TEMP}/vendored-pbs")
+          echo "VULTURE_PBS_TARBALL=${PBS_TARBALL}" >> "$GITHUB_ENV"
       - name: build tarball
         env:
-          # Tier B: bundle python-build-standalone into the linux/amd64 tarball so
+          # Tier B: bundle python-build-standalone into EVERY platform tarball so
           # a native install runs the agents with no system Python and no Docker.
-          # Set only for linux/amd64 — that's the platform with a committed PBS
-          # SHA pin (scripts/pbs-shas-*.txt); on every other platform build-release
-          # gracefully skips bundling and ships a lean tarball (arm64 + darwin PBS
-          # are deferred). NOTE: bundling pulls the agent deps into the tarball, so
-          # the Trivy/SBOM steps below now also cover the Python runtime.
-          VULTURE_BUNDLE_PBS: ${{ (matrix.os == 'linux' && matrix.arch == 'amd64') && '1' || '' }}
+          # All four triples (linux/darwin × amd64/arm64) now have a committed PBS
+          # SHA pin (scripts/pbs-shas-*.txt); build-release derives the triple from
+          # (os,arch) and verifies fail-closed against that pin. If a platform ever
+          # lacks a triple, build-release gracefully ships a lean (unbundled)
+          # tarball instead of erroring. NOTE: bundling pulls the agent deps into
+          # the tarball, so the Trivy/SBOM steps below now also cover the Python
+          # runtime on every platform.
+          VULTURE_BUNDLE_PBS: '1'
         run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
       - name: generate SBOM
         run: |

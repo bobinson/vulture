@@ -13,13 +13,15 @@ on:
       pbs_version:
         description: "python-build-standalone tag (e.g. 20240814)"
         required: true
+        default: "20260610"
       python_version:
-        description: "Python version (e.g. 3.12.5)"
+        description: "Python version (e.g. 3.12.13)"
         required: true
-        default: "3.12.5"
+        default: "3.12.13"
 
 permissions:
-  contents: write
+  contents: write     # release upload
+  id-token: write     # cosign keyless OIDC (mirrors release.yml)
 
 jobs:
   vendor:
@@ -42,14 +44,21 @@ jobs:
       - name: download upstream PBS
         run: |
           URL="https://github.com/indygreg/python-build-standalone/releases/download/${{ inputs.pbs_version }}/cpython-${{ inputs.python_version }}+${{ inputs.pbs_version }}-${{ matrix.triple }}-install_only.tar.gz"
-          curl -fsSL -o pbs.tar.gz "$URL"
+          # Retry + cap runtime so a flaky/hanging upstream can't stall the job
+          # (matches build-release.sh's curl posture).
+          curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused --max-time 600 \
+            -o pbs.tar.gz "$URL"
       - name: verify SHA against committed manifest
         run: |
-          # scripts/pbs-shas.txt: one line per platform: <sha256>  <triple>
+          # scripts/pbs-shas-<tag>.txt: one line per asset: <sha256>  <asset-filename>
+          # Column 2 is the FULL upstream asset name (cpython-<pyver>+<tag>-<triple>-install_only.tar.gz),
+          # so key the lookup on that exact name — NOT the bare triple — mirroring
+          # build-release.sh's `awk -v f="$PBS_ASSET" '$2==f'` against the same pin.
           MANIFEST="scripts/pbs-shas-${{ inputs.pbs_version }}.txt"
           [ -f "$MANIFEST" ] || { echo "missing $MANIFEST"; exit 1; }
-          EXPECTED=$(awk -v t="${{ matrix.triple }}" '$2==t {print $1}' "$MANIFEST")
-          [ -n "$EXPECTED" ] || { echo "no SHA committed for triple ${{ matrix.triple }}"; exit 1; }
+          ASSET="cpython-${{ inputs.python_version }}+${{ inputs.pbs_version }}-${{ matrix.triple }}-install_only.tar.gz"
+          EXPECTED=$(awk -v f="$ASSET" '$2==f {print $1}' "$MANIFEST")
+          [ -n "$EXPECTED" ] || { echo "no SHA committed for asset $ASSET"; exit 1; }
           ACTUAL=$(sha256sum pbs.tar.gz | awk '{print $1}')
           if [ "$EXPECTED" != "$ACTUAL" ]; then
             echo "SHA mismatch: $ACTUAL != $EXPECTED"; exit 1
@@ -74,6 +83,17 @@ jobs:
           merge-multiple: true
       - name: aggregate SHA256SUMS
         run: sha256sum cpython-*.tar.gz > SHA256SUMS
+      - name: install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: cosign sign SHA256SUMS
+        # Keyless/OIDC signature over the aggregate SHA256SUMS (mirrors how
+        # release.yml signs its SHA256SUMS). Consumers verify the vendored
+        # tarballs by checking this signature over SHA256SUMS, then matching
+        # each tarball's digest against it.
+        run: |
+          cosign sign-blob --yes SHA256SUMS \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem
       - name: create immutable vendor release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,5 +101,5 @@ jobs:
           TAG="vendor-pbs-${{ inputs.pbs_version }}"
           gh release create "$TAG" \
             --title "python-build-standalone ${{ inputs.pbs_version }} (vendored)" \
-            --notes "Re-hosted upstream artifacts for installer use. See feature 0044 S9." \
-            cpython-*.tar.gz SHA256SUMS
+            --notes "Re-hosted upstream artifacts for installer use. Cosign-signed (keyless). See feature 0044 S9." \
+            cpython-*.tar.gz SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem
