@@ -31,6 +31,47 @@ case "$ARCH" in
     aarch64) ARCH=arm64 ;;
 esac
 
+# pbs_triple_for <os> <arch> — map a (os,arch) build host to its
+# python-build-standalone target triple. Prints the triple on stdout for the
+# four supported platforms; prints nothing (and returns 1) for any other host,
+# so callers can fall through to the unbundled marker. Keeps the single source
+# of truth for the os/arch→triple mapping (DRY) and stays low-complexity.
+pbs_triple_for() {
+    case "$1/$2" in
+        linux/amd64)  echo x86_64-unknown-linux-gnu ;;
+        linux/arm64)  echo aarch64-unknown-linux-gnu ;;
+        darwin/amd64) echo x86_64-apple-darwin ;;
+        darwin/arm64) echo aarch64-apple-darwin ;;
+        *) return 1 ;;
+    esac
+}
+
+# pbs_upstream_url <repo> <tag> <asset> — assemble the upstream (indygreg)
+# python-build-standalone download URL from its parts. This direct fetch is only
+# the FALLBACK: release.yml's primary path passes a pre-fetched, cosign-verified
+# vendored tarball via VULTURE_PBS_TARBALL (vendor-pbs.yml), and this helper is
+# used only when that override is unset. Assembling from positional parts keeps
+# the host/repo/tag out of one hardcoded literal and stays low-complexity.
+pbs_upstream_url() {
+    printf 'https://github.com/%s/releases/download/%s/%s\n' "$1" "$2" "$3"
+}
+
+# pbs_acquire <override> <repo> <tag> <asset> <dest> — place the PBS tarball at
+# <dest>. If <override> is a non-empty path to an existing file, copy it (the
+# vendored, cosign-verified artifact) instead of reaching the network; else fall
+# back to fetching it from upstream. SHA verification against the committed pin
+# happens in the caller, so BOTH paths stay fail-closed.
+pbs_acquire() {
+    if [ -n "$1" ] && [ -f "$1" ]; then
+        echo "    using pre-fetched PBS tarball from VULTURE_PBS_TARBALL=$1"
+        cp "$1" "$5"
+        return 0
+    fi
+    echo "    downloading $4"
+    curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused --max-time 600 \
+        -o "$5" "$(pbs_upstream_url "$2" "$3" "$4")"
+}
+
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/hash.sh"
@@ -112,12 +153,16 @@ fi
 
 echo "==> Copying catalogs"
 mkdir -p "$STAGE/runtime/catalogs"
-if [ -f "$REPO_ROOT/agents/cwe/cwe_agent/data/cwe_catalog.json" ]; then
-    cp "$REPO_ROOT/agents/cwe/cwe_agent/data/cwe_catalog.json" "$STAGE/runtime/catalogs/"
-fi
-if [ -f "$REPO_ROOT/agents/asvs/asvs_agent/data/asvs_catalog.json" ]; then
-    cp "$REPO_ROOT/agents/asvs/asvs_agent/data/asvs_catalog.json" "$STAGE/runtime/catalogs/"
-fi
+# Stage each agent's JSON catalog when present (skipped if the agent isn't in
+# this tree). One loop over the catalog paths keeps the two near-identical
+# copies DRY — add a path here to ship another catalog.
+for _catalog in \
+    "agents/cwe/cwe_agent/data/cwe_catalog.json" \
+    "agents/asvs/asvs_agent/data/asvs_catalog.json"; do
+    if [ -f "$REPO_ROOT/$_catalog" ]; then
+        cp "$REPO_ROOT/$_catalog" "$STAGE/runtime/catalogs/"
+    fi
+done
 
 echo "==> Staging requirements-frozen.txt (hashed lockfile)"
 # Ship the committed, hashed lockfile (scripts/gen-lockfile.sh via
@@ -143,31 +188,40 @@ fi
 # NO system Python and NO Docker. When the flag is UNSET the default release
 # stays LEAN — we only write the PBS_NOT_BUNDLED marker (today's behaviour).
 #
-# The fetch+SHA-verify here is the sandbox-runnable equivalent of the
-# cosign-signed vendor pipeline (vendor-pbs.yml), which stays CI-only/deferred.
-# Linux/amd64 build host only; darwin + the cosign vendor flow are out of scope.
-mkdir -p "$STAGE/runtime/python/bin"
-# Decide whether to bundle: opt-in flag AND a supported build host. A non-
-# linux/amd64 host (e.g. the darwin release matrix) does NOT error — it falls
-# through to the unbundled marker, so VULTURE_BUNDLE_PBS can be set globally in
-# release.yml without breaking darwin jobs (darwin/arm64 bundling is deferred).
+# Sourcing is two-tier: release.yml's primary path passes the cosign-verified
+# vendored tarball (vendor-pbs.yml) via VULTURE_PBS_TARBALL; absent that, we fall
+# back to a direct upstream fetch. EITHER source is SHA-verified against the
+# committed pin below (fail-closed). The triple is derived per platform, so all
+# four (linux/darwin × amd64/arm64) build hosts are supported.
+#
+# runtime/python is NOT pre-created here: the bundle branch rm's+mv's the whole
+# dir into place, so only the unbundled (else) branch — which writes the
+# PBS_NOT_BUNDLED marker — needs to mkdir it (done there).
+# Decide whether to bundle: opt-in flag AND a supported build host. The host's
+# PBS target triple is DERIVED from (os,arch) via pbs_triple_for for all four
+# platforms (linux/darwin × amd64/arm64). An UNSUPPORTED host does NOT error —
+# pbs_triple_for returns empty, so we fall through to the unbundled marker and
+# VULTURE_BUNDLE_PBS can be set globally in release.yml without breaking jobs.
 _bundle_pbs=0
+PBS_TRIPLE=
 case "${VULTURE_BUNDLE_PBS:-}" in
     1|true)
-        if [ "$OS" = linux ] && [ "$ARCH" = amd64 ]; then
+        if PBS_TRIPLE=$(pbs_triple_for "$OS" "$ARCH"); then
             _bundle_pbs=1
         else
-            echo "==> VULTURE_BUNDLE_PBS set, but build host is ${OS}/${ARCH};" \
-                 "PBS bundling is linux/amd64-only — shipping the unbundled marker" \
-                 "(darwin/arm64 deferred)" >&2
+            echo "==> VULTURE_BUNDLE_PBS set, but build host ${OS}/${ARCH} has no" \
+                 "python-build-standalone triple — shipping the unbundled marker" >&2
         fi
         ;;
 esac
 
 if [ "$_bundle_pbs" = 1 ]; then
-    echo "==> python-build-standalone (bundling CPython 3.12, linux/amd64)"
-    PBS_REPO=${VULTURE_PBS_REPO:-indygreg/python-build-standalone}
-    PBS_TRIPLE=x86_64-unknown-linux-gnu
+    echo "==> python-build-standalone (bundling CPython 3.12 for ${OS}/${ARCH} → ${PBS_TRIPLE})"
+    # UPSTREAM PBS repo for the direct-fetch fallback (indygreg). NOT the vendor
+    # repo fetch-vendored-pbs.sh uses (that is VULTURE_PBS_VENDOR_REPO).
+    PBS_REPO=${VULTURE_PBS_UPSTREAM_REPO:-indygreg/python-build-standalone}
+    # PBS_TRIPLE is derived from (os,arch) above by pbs_triple_for, so this block
+    # bundles the correct interpreter for any of the four supported platforms.
     # PINNED version. The trust anchor is a REPO-COMMITTED SHA pin
     # (scripts/pbs-shas-<tag>.txt), reviewed at commit time — NOT the release's
     # own self-published SHA256SUMS (which an upstream-release compromise could
@@ -175,18 +229,19 @@ if [ "$_bundle_pbs" = 1 ]; then
     PBS_TAG=${VULTURE_PBS_TAG:-20260610}
     PBS_PYVER=${VULTURE_PBS_PYVER:-3.12.13}
     PBS_ASSET="cpython-${PBS_PYVER}+${PBS_TAG}-${PBS_TRIPLE}-install_only.tar.gz"
-    PBS_BASE="https://github.com/${PBS_REPO}/releases/download/${PBS_TAG}"
 
     PBS_PIN="$REPO_ROOT/scripts/pbs-shas-${PBS_TAG}.txt"
     [ -f "$PBS_PIN" ] || { echo "Error: no committed PBS SHA pin at $PBS_PIN (fail-closed — commit the SHA before bundling)" >&2; exit 1; }
     PBS_EXPECTED=$(awk -v f="$PBS_ASSET" '$2==f {print $1}' "$PBS_PIN")
     [ -n "$PBS_EXPECTED" ] || { echo "Error: $PBS_ASSET not listed in committed pin $PBS_PIN (fail-closed)" >&2; exit 1; }
 
+    # Acquire the tarball: prefer the pre-fetched, cosign-verified vendored
+    # artifact (VULTURE_PBS_TARBALL, supplied by release.yml from vendor-pbs.yml);
+    # otherwise fall back to a direct upstream fetch. EITHER source is then
+    # SHA-verified below against the COMMITTED pin (fail-closed).
     PBS_DL=$(mktemp -d)
-    echo "    downloading $PBS_ASSET"
-    curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused --max-time 600 \
-        -o "$PBS_DL/$PBS_ASSET" "$PBS_BASE/$PBS_ASSET" \
-        || { echo "Error: failed to download PBS asset $PBS_ASSET" >&2; exit 1; }
+    pbs_acquire "${VULTURE_PBS_TARBALL:-}" "$PBS_REPO" "$PBS_TAG" "$PBS_ASSET" "$PBS_DL/$PBS_ASSET" \
+        || { echo "Error: failed to obtain PBS asset $PBS_ASSET" >&2; exit 1; }
 
     # Fail-closed verification against the COMMITTED pin (not a fetched sums file).
     PBS_ACTUAL=$(sha256_of "$PBS_DL/$PBS_ASSET")
@@ -245,6 +300,8 @@ else
     # marker. Native agent execution then requires VULTURE_USE_SYSTEM_PYTHON=1
     # against a host python3.12 (using the hashed lockfile staged above); else
     # the install is CLI-only. See docs/features/0055_native_installer_hardening/.
+    # The bundle branch creates runtime/python by mv; this branch must mkdir it.
+    mkdir -p "$STAGE/runtime/python"
     PBS_NOTE="$STAGE/runtime/python/PBS_NOT_BUNDLED"
     cat > "$PBS_NOTE" <<EOF
 This tarball does NOT bundle python-build-standalone (built without
