@@ -12,7 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | 
 The script detects your OS/arch, downloads the matching release tarball from
 GitHub, verifies it (cosign + Rekor transparency log, falling back to SHA-256
 if cosign isn't on `PATH`), extracts it under `~/.vulture/`, generates a unique
-JWT secret, and symlinks `~/.local/bin/vulture`.
+JWT secret, and symlinks `~/.local/bin/vulture`. To verify a download yourself,
+see [Verifying releases with cosign](cosign_verification.md).
 
 If `~/.local/bin` isn't on your `PATH`, add it (the installer prints this):
 
