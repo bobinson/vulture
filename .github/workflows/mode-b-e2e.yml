@@ -37,9 +37,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
+      # NOTE: deliberately NOT using docker/setup-buildx-action. It creates an
+      # isolated docker-container builder that can't see the locally-built
+      # vulture-agent-base:latest (mode-b-smoke.sh builds it with the default
+      # daemon driver), so the agent images (FROM it) would try to pull it from
+      # a registry and fail with "pull access denied". The default 'docker'
+      # driver shares the daemon image store. Mirrors ci.yml's docker-build job.
       - name: Run Mode-B smoke
         run: bash scripts/mode-b-smoke.sh
 

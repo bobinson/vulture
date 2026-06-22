@@ -41,6 +41,16 @@ jobs:
         run: sh scripts/tests/test_install_sh.sh
       - name: hash-helper tests
         run: sh scripts/tests/test_hash_sh.sh
+      - name: release-artifacts tests
+        run: sh scripts/tests/test_release_artifacts.sh
+      - name: pbs multiplatform tests
+        run: sh scripts/tests/test_pbs_multiplatform.sh
+      - name: pbs vendor wiring tests
+        run: sh scripts/tests/test_pbs_vendor_wiring.sh
+      - name: release preflight tests
+        run: sh scripts/tests/test_release_preflight.sh
+      - name: smoke-scan contract tests
+        run: sh scripts/tests/test_smoke_scan.sh
 
   build-backend:
     runs-on: ubuntu-latest

@@ -12,7 +12,7 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
-VERSION=${1:-v0.0.4}        # any value >= install.sh's FALLBACK_TAG (downgrade guard)
+VERSION=${1:-v9.9.9}        # must be >= install.sh's FALLBACK_TAG (anti-downgrade guard); v0.0.4 went stale once FALLBACK_TAG advanced to v0.0.6
 ARCH=${2:-amd64}
 TARBALL="$REPO/dist/vulture-${VERSION}-linux-${ARCH}.tar.gz"
 
