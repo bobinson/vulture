@@ -46,7 +46,13 @@ PY
 
 # 2. Resolve to a hash-pinned lockfile targeting the 3.12 floor. Prefer a single
 #    universal lockfile; fall back to the host platform if universal can't resolve.
+#    The constraint file (LLD 0055 B1a) marker-splits the few packages whose latest
+#    version lacks a wheel on some target — currently cryptography on Intel macOS;
+#    uv forks those into per-platform pins. It is the only hand-maintained lockfile
+#    input, and check-lockfile.sh inherits it by calling this script.
+CONSTRAINTS="agents/lockfile-constraints.txt"
 UV_ARGS=(pip compile "$IN" --generate-hashes --no-header --quiet --python-version 3.12)
+[ -f "$CONSTRAINTS" ] && UV_ARGS+=(--constraint "$CONSTRAINTS")
 case "${1:-}" in
     --upgrade)     UV_ARGS+=(--upgrade) ;;
     --upgrade-pkg) UV_ARGS+=(--upgrade-package "${2:?--upgrade-pkg needs a name}") ;;

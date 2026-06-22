@@ -34,6 +34,20 @@ portable `sha256_verify_in_sums`. Docker e2e gate (Ubuntu 24.04 + Fedora 41):
 install matrix, bundled-PBS agents-run-offline, UI loads, plugin activation, and
 the real-scan smoke — all green.
 
+### v0.0.10 release attempt — two real-runner blockers fixed (2026-06-22)
+
+Cutting `v0.0.10` from the branch exercised the full `release.yml` `build-binary`
+matrix on real runners for the first time and surfaced two blockers the linux
+sandbox could not (items #1/#3 above were verified "CI-only" for exactly this
+reason). Both fixed test-first; **not yet committed/merged/released**.
+
+| Leg(s) | Blocker | Fix | Verified |
+|---|---|---|---|
+| `darwin/amd64` | `cryptography==49.0.0` ships a macOS **arm64-only** wheel; the bundled `pip install --only-binary :all:` on `macos-15-intel` failed (*"no usable wheels"*) | **Marker-split pin (LLD [B1a](0055_implementation_plan.md))**: a committed `agents/lockfile-constraints.txt` caps Darwin to `48.0.1` (newest with a `universal2` wheel); `gen-lockfile.sh` passes `--constraint`, so the one universal lockfile forks cryptography into `48.0.1 ; sys_platform == 'darwin'` + `49.0.0 ; sys_platform != 'darwin'`. Zero `build-release.sh`/`release.yml` change (pip evaluates the marker on each runner); both versions CVE-clean (OSV) so no Trivy/pip-audit waiver | `test_lockfile_platform_split.sh` (6/6); `uv` cross-resolve → 48.0.1 on both mac arches, 49.0.0 on linux; `check-lockfile.sh` fresh; diff is cryptography-only |
+| `linux/amd64`, `linux/arm64`, `darwin/arm64` | `smoke-install.sh` real-scan asserted `findings>0` after only the **first** agent reported healthy; the light `prove`/`discover` agents win that race while the 8 heavy audit agents are still importing `openai-agents`+`litellm` → all dispatched agents `connection refused` → 0 findings | `agents_all_up` predicate: the bundled branch now waits for **every** agent healthy (≥1 healthy + none `unhealthy`/`unknown`) with a ~120s budget; lean branch keeps the loose `agents_up` probe | `shellcheck` clean; `test_smoke_scan.sh` (4/4) static contract unchanged |
+
+Full installer suite after both fixes: **9 suites / 86 assertions, 0 failed.**
+
 ## v0.0.8 release — verified shipping + follow-ups (2026-06-21)
 
 End-to-end verification of the **public** installer against the v0.0.8 release

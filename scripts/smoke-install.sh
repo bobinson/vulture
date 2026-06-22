@@ -143,12 +143,26 @@ health_up() {
     api_get health >/dev/null
 }
 
-# agents_up — true (0) when at least one audit agent reports "healthy" at the
-# local API (GET /api/agents sets status=healthy only when the agent's /health
-# returns 200). A lean (agent-less) tarball never satisfies this, which is how
-# we decide whether findings>0 is required or we degrade gracefully.
+# agents_up — true (0) when AT LEAST ONE agent reports "healthy" at the local API
+# (GET /api/agents sets status=healthy only when the agent's /health returns 200).
+# Used by the lean branch purely to DETECT whether any agents exist at all; a lean
+# (agent-less) tarball never satisfies it, which is how we decide whether findings>0
+# is required or we degrade gracefully.
 agents_up() {
     api_get api/agents | grep -q '"status":"healthy"'
+}
+
+# agents_all_up — true (0) only when EVERY agent reports "healthy": at least one
+# healthy AND none still "unhealthy"/"unknown" (the only other status values the
+# backend emits — see agent_handler.go agentHealth()). A real scan dispatches to
+# all audit agents at once, and the light agents (prove/discover) report healthy
+# seconds before the heavy ones (chaos/owasp/… import openai-agents+litellm) finish
+# booting. Gating on ANY-healthy raced the scan ahead of those still-booting audit
+# agents (connection refused → 0 findings); requiring ALL-healthy closes that race.
+agents_all_up() {
+    _j=$(api_get api/agents) || return 1
+    printf '%s' "$_j" | grep -q '"status":"healthy"' || return 1
+    ! printf '%s' "$_j" | grep -qE '"status":"(unhealthy|unknown)"'
 }
 
 # wait_for <predicate> [max_tries] — poll <predicate> every 0.5s up to max_tries
@@ -250,10 +264,14 @@ HAVE_AGENTS=0
 if is_bundled; then
     BUNDLED=1
     echo "    bundled python runtime detected — agents REQUIRED, findings>0 will be asserted"
-    if wait_for agents_up 120; then   # ~60s: bundled agents warm up slower
+    # Wait for ALL agents, not just the first: the scan dispatches to every audit
+    # agent at once, and the heavy ones (openai-agents+litellm imports) boot well
+    # after prove/discover. ~120s budget covers a cold CI runner warming up 10
+    # uvicorn processes from a freshly-extracted bundled interpreter.
+    if wait_for agents_all_up 240; then
         HAVE_AGENTS=1
     else
-        echo "FAIL: bundled tarball but no agent reported healthy within ~60s at $API"
+        echo "FAIL: bundled tarball but not all agents reported healthy within ~120s at $API"
         cat "$SMOKE_WORK/daemon.log"; exit 1
     fi
 else

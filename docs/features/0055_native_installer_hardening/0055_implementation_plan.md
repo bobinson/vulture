@@ -415,6 +415,37 @@ freeze-deps:   ## regenerate the hashed agent lockfile (UPGRADE=1 / UPGRADE_PKG=
 
 **Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor; **how the dependency bot regenerates the lockfile** (renovate `postUpgradeTasks` running `gen-lockfile.sh` vs a scheduled relock-and-PR CI job vs maintainer-only manual relock); and **which `uv` version to pin** for reproducible generation across maintainers + CI.
 
+### B1a — Platform-split pins: the macOS `cryptography` wheel gap (added 2026-06-22)
+
+> **Why this exists.** The B1 strategy above resolves to **one universal lockfile** and only falls back to per-`(os,arch)` files "if `--universal` cannot satisfy a package." Shipping Tier B to all four targets surfaced the first package where the single universal *pin* can't install everywhere: **`cryptography`** (transitive in the closure, via `openai-agents` → `pyjwt[crypto]`). The latest release, `cryptography==49.0.0`, **dropped the macOS x86_64 (Intel) wheel** — it ships `macosx_11_0_arm64` only — so the `darwin/amd64` release leg (`macos-15-intel`) cannot `pip install --only-binary :all:` it. Reproduced locally via `uv pip install --python-platform x86_64-apple-darwin`: *"cryptography==49.0.0 has no usable wheels."* linux (both arches, manylinux) and `darwin/arm64` are unaffected.
+
+**Decision — a marker-split pin, not a global downgrade or a per-arch file.** Keep `49.0.0` everywhere a wheel exists; pin **only Darwin** down to **`48.0.1`** — the newest release that still ships a `macosx_10_9_universal2` wheel (covers Intel **and** Apple Silicon). This is the lightweight realization of B1's anticipated fallback: a *single* universal lockfile that carries **two marker-gated, hash-pinned `cryptography` lines** instead of four separate `requirements-frozen-<os>-<arch>.txt` files.
+
+**Mechanism — a committed `uv` constraint; the generator does the rest.** Add `agents/lockfile-constraints.txt` (a `uv --constraint` input) with one marker-gated line:
+```
+cryptography==48.0.1; sys_platform == "darwin"
+```
+`gen-lockfile.sh` passes `--constraint agents/lockfile-constraints.txt` to `uv pip compile --universal`. uv **forks the resolution on the marker** and emits two hashed lines:
+```
+cryptography==48.0.1 ; sys_platform == 'darwin'    --hash=...   # Intel + Apple Silicon (universal2)
+cryptography==49.0.0 ; sys_platform != 'darwin'    --hash=...   # manylinux (both arches)
+```
+Non-darwin is **left unpinned in the constraint**, so the complement line tracks the latest in-range version — `make freeze-deps --upgrade` can still bump linux without editing the constraint. The lockfile stays **never-hand-edited** (the split is mechanically reproducible from the constraint), so `check-lockfile.sh` — which regenerates via `gen-lockfile.sh` and diffs — stays green with no change.
+
+**Why it needs zero build/CI change.** Each platform's tarball is built **on that platform's runner** (the `release.yml` `build-binary` matrix). `pip install --require-hashes` therefore evaluates the marker **locally**: Intel-mac and Apple-Silicon installs select the `48.0.1` line + its `universal2` wheel; linux selects `49.0.0`. `--require-hashes` is satisfied because **both** lines are hashed and the marker-inactive line is simply skipped. `build-release.sh` is untouched.
+
+**Trust / gates.** Both `48.0.1` and `49.0.0` are **CVE-clean** (OSV: 0 vulns each), so the Trivy `HIGH,CRITICAL --exit-code 1` gate and the advisory `pip-audit` both pass with **no `.trivyignore`/`.pip-audit-ignore` waiver** (the allowlist policy requires SECURITY-codeowner review + 90-day expiry — avoided). The fork is isolated to `cryptography`: its only conditional runtime dep, `cffi`, resolves to a single version across both branches (no cascade).
+
+**Marker scope.** `sys_platform == "darwin"` covers **both** mac arches — chosen for consistency (both mac tarballs carry the same `cryptography`) and because `48.0.1` is CVE-clean, so arm-mac loses nothing. A narrower Intel-only marker (`sys_platform == "darwin" and platform_machine == "x86_64"`, leaving arm-mac on `49.0.0`) is available but not used.
+
+**Removal trigger.** Delete `agents/lockfile-constraints.txt`, drop the `--constraint` flag, and re-lock when **either**: (a) `cryptography` ships an Intel-macOS wheel again, **or** (b) the `darwin/amd64` leg is dropped from `release.yml` (Intel-mac runner EOL ~Fall 2027 — see the build matrix comment). Until then the split is the supported state.
+
+**Validation (proven before merge, not assumed).** `uv 0.11.21` cross-platform resolution confirmed: `48.0.1` installs on `x86_64-apple-darwin` + `aarch64-apple-darwin`; `49.0.0` installs on `x86_64`/`aarch64-unknown-linux-gnu`; the constraint forks `cryptography` (and **only** `cryptography`) into the two lines above; OSV reports 0 vulns for both versions.
+
+**Files touched (B1a).** `agents/lockfile-constraints.txt` (new), `scripts/gen-lockfile.sh` (+`--constraint`), `agents/requirements-frozen.txt` (regenerated — the one `cryptography` line forks into two), `scripts/tests/test_lockfile_platform_split.sh` (new).
+
+**Test (TDD).** Static contract (matches the B1 test style): the lockfile carries both a `cryptography==… ; sys_platform == 'darwin'` line and a `… ; sys_platform != 'darwin'` line, each followed by `--hash=`; the two pinned versions differ; `agents/lockfile-constraints.txt` exists; `gen-lockfile.sh` wires `--constraint`. RED against today's single-pin lockfile, GREEN after regeneration.
+
 ### B2 — bundle PBS + wire `release.yml`
 
 Two CI steps in the `build-tarball` matrix job, before
