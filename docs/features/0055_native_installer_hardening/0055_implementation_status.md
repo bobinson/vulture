@@ -14,6 +14,31 @@ with no system Python and no Docker; all four are cosign-signed + Rekor-logged
 `vulture.sh release` preflight, and the `smoke-install.sh` real-scan.
 **Last updated**: 2026-06-23 (0055 complete; shipped in v0.0.9).
 
+## ✅ Feature complete — end-to-end (2026-06-24)
+
+**0055 is done end-to-end and shipping.** Verified:
+
+- **All scope delivered + shipped in v0.0.9** — Tier A (installer correctness),
+  Tier C (honesty), the review-driven hardening pass, **B1** (hashed lockfile +
+  freshness gate + pinned `uv`), **Tier B-lite** (system-Python install), and
+  **Tier B PBS bundling on all four platforms** (linux + darwin × amd64/arm64).
+  Every v0.0.9 tarball bundles CPython 3.12.13 + the agent deps and is
+  **cosign-signed + Rekor-logged**; darwin/amd64 bundles at ~98 MB (the macOS
+  `cryptography` wheel split works in production).
+- **The two real-runner release blockers are fixed + shipped** (the `cryptography`
+  marker-split `e31ca1a`; the `smoke-install` agent-readiness race) — see the
+  v0.0.10 section below.
+- **No open 0055-scoped items**, no uncommitted 0055 work; the installer test
+  suite is green (9 suites).
+
+**The one tail is a separate feature, not 0055.** The supply-chain *release
+hardening* around the pipeline (CI lockfile gate, scheduled relock, pre-tag
+security gate, Dependabot-alert digest) is **feature 0056** —
+[`0056_release_hardening/`](../0056_release_hardening/). (The earlier
+`0056_native_agent_runtime` idea is moot — those pieces landed in 0055.)
+
+The history below is retained as the build record.
+
 ## Pending-items branch — the deferred tail (2026-06-22)
 
 The five remaining 0055 pending items were implemented test-first on branch
@@ -160,13 +185,15 @@ fallback), **darwin/arm64** bundling, and the
 Tier B-lite covers the **dependency install** half of "run agents with an existing
 Python": after the 2026-06-09 audit fix, releases now ship the hashed lockfile and
 `VULTURE_USE_SYSTEM_PYTHON=1` builds the venv + installs with `--require-hashes`.
-Native agent **execution** is NOT yet end-to-end — and the gap is bigger than the
-env: the whole install-mode `vulture start` is unwired. `runStart → runLocalStart →
-findProjectRoot() (= CWD) → Launcher.Start()`, and the Launcher never branches on
+**[RESOLVED by #10 — shipped in v0.0.9; the diagnosis below is the pre-fix
+analysis, retained as the build record.]** At the time of this note, native agent
+**execution** was NOT end-to-end — and the gap was bigger than the env: the whole
+install-mode `vulture start` was unwired. `runStart → runLocalStart →
+findProjectRoot() (= CWD) → Launcher.Start()`, and the Launcher never branched on
 mode — `startBackend` `go build`s from `CWD/backend`, `startFrontend` runs vite from
 `CWD/frontend`, and `startAgents`/`installAgentDeps` use `CWD/agents` + the detected
-host python (never `AgentsRoot`/`PythonBin`/`BuildAgentEnv`). So `vulture start` fails
-on a native install. (The agent **packaging** is fine — the nested
+host python (never `AgentsRoot`/`PythonBin`/`BuildAgentEnv`). So `vulture start` then
+failed on a native install — until `startInstallMode` wired it (see the #10 entry). (The agent **packaging** is fine — the nested
 `runtime/agents/<a>/<pkg>` layout matches the launcher's `<root>/shared:<agentDir>`
 PYTHONPATH; no repackaging is needed.) See Deferred below.
 
@@ -250,7 +277,7 @@ matrix leg): a bundled release installs the CLI + embedded SPA and runs the
 Python agents with no system Python and no Docker — the skill-based audit phase
 runs fully locally. The pieces once earmarked for a follow-up feature (cosign
 vendor pipeline, darwin/arm64, real `vulture scan` in `smoke-install.sh`) all
-landed in 0055 itself, so `0056_native_agent_runtime` is no longer needed. On a
+landed in 0055 itself, so the once-suggested `0056_native_agent_runtime` is unnecessary (feature 0056 is instead the supply-chain release-hardening tail — see [`0056_release_hardening/`](../0056_release_hardening/)). On a
 non-bundled (lean) release, Mode E
 installs the CLI + embedded SPA and agent-based scanning needs a system Python
 (`VULTURE_USE_SYSTEM_PYTHON=1`) or Docker (Mode A/B). **Regardless of how Python

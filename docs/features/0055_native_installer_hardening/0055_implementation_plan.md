@@ -284,19 +284,19 @@ See `0055_rollback_plan.md`.
 
 ---
 
-# Tier B (PARTIALLY IMPLEMENTED) — embedded Python agent runtime
+# Tier B (SHIPPED, all platforms) — embedded Python agent runtime
 
-> **Status: IMPLEMENTED for linux/amd64 (opt-in `VULTURE_BUNDLE_PBS=1`);
-> the cosign-signed vendor pipeline and darwin/arm64 remain DEFERRED.**
-> The shipping path fetches the upstream indygreg PBS CPython 3.12 tarball
-> at build time, SHA-256-verifies it (fail-closed) against the release's
-> published `SHA256SUMS`, extracts it into `runtime/python/`, and
-> pre-installs the hashed agent deps so the tarball installs OFFLINE. The
-> design below is retained for the deferred pieces (the cosign-signed
-> `vendor-pbs.yml` → `release.yml` wiring, darwin/arm64, and a real
-> `vulture scan` in `smoke-install.sh`) and as the seed LLD if Tier B
-> graduates to its own feature folder (suggested:
-> `0056_native_agent_runtime`).
+> **Status: SHIPPED in v0.0.9 on all four platforms.** The bundling path
+> fetches the upstream indygreg PBS CPython 3.12 tarball at build time,
+> SHA-256-verifies it (fail-closed) against the committed pin, extracts it
+> into `runtime/python/`, and pre-installs the hashed agent deps so the
+> tarball installs OFFLINE. The pieces once deferred at v0.0.8 — the
+> cosign-signed `vendor-pbs.yml` → `release.yml` wiring, darwin/arm64
+> bundling, and a real `vulture scan` in `smoke-install.sh` — all landed
+> (PR #32 + `e31ca1a`). The design below is retained as the build record.
+> (The supply-chain *release hardening* around this pipeline is now feature
+> [`0056_release_hardening`](../0056_release_hardening/), not the
+> once-suggested `0056_native_agent_runtime`.)
 
 ## Trigger (when to build this)
 
@@ -598,7 +598,7 @@ gates.
 
 ## 1. Status
 
-> **STATUS: DEFERRED / PROPOSED — awaiting review.** No code in this section is implemented. The env-flag names, the unit-test seam, and the `install_python_deps` extension point named below are the *contract* a future implementation must honor, not existing behavior.
+> **STATUS: SHIPPED in v0.0.9.** Tier B-lite (system-Python install) is implemented and shipping; the env-flag contract, the unit-test seam, and the `install_python_deps` extension point described below reflect the **shipped** behavior. (Originally written as a forward design; reconciled 2026-06-24.)
 
 **Relationship to Tier B.** Tier B ships a hermetic, pinned, hash/cosign-verified Python-Build-Standalone (PBS) interpreter inside the release tarball at `$VULTURE_HOME/runtime/python`. **Tier B-lite is the lighter "bring-your-own-Python" variant**: when no PBS interpreter is bundled, the installer can — *only on explicit opt-in* — locate a host Python ≥ 3.12 and materialize a venv at the **same** runtime path the daemon already expects. It is strictly a fallback below Tier B and strictly above the existing CLI-only path.
 
@@ -622,6 +622,11 @@ An earlier draft proposed a `VULTURE_ALLOW_UNHASHED_DEPS` opt-out that would res
 - It is **off by default.** With no opt-in flag, installer behavior is byte-for-byte unchanged.
 
 ## 3. Current-State Recap
+
+> **Pre-implementation snapshot (resolved).** This recap describes the state
+> *before* the Tier B-lite + #10 work; the gaps it lists (notably the unwired
+> install-mode `vulture start`) were fixed and **shipped in v0.0.9** — see §1's
+> SHIPPED status. Retained as the build record.
 
 From the runtime investigation (all paths in `/home/user/src/vulture-gh`):
 
@@ -1341,7 +1346,7 @@ release)
 
 # Cross-Distro Install Test Matrix (Ubuntu 24.04 + Fedora)
 
-> **STATUS: PROPOSED — awaiting review.** Design only. This is the *canonical* end-to-end installer test harness across two distro families. It supersedes the generic stand-in images in the Tier B-lite §6 matrix: §6 defines the system-Python *scenario contract*; this section defines the *real distros* those scenarios (and the already-shipped CLI-only path) run on. Reuse §6.1 (offline-tarball fabrication) and §6.2 (runner layout) verbatim — do not duplicate them.
+> **STATUS: SHIPPED.** The cross-distro Docker e2e (Ubuntu 24.04 + Fedora) is implemented and gated in CI (`.github/workflows/test-install-docker.yml`); the status doc records 9/9 scenarios passing. This is the *canonical* end-to-end installer test harness across two distro families: §6 defines the system-Python *scenario contract*; this section defines the *real distros* those scenarios (and the already-shipped CLI-only path) run on. Reuse §6.1 (offline-tarball fabrication) and §6.2 (runner layout) verbatim — do not duplicate them.
 
 ## 1. Why these two distros (and not one)
 
