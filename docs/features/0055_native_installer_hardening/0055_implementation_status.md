@@ -1,23 +1,24 @@
 # 0055 — Native Installer Hardening + Honesty · Implementation Status
 
-**Status**: IMPLEMENTED & SHIPPING — Tier A + C + hardening pass + **B1 (lockfile)**
-+ **Tier B-lite (system-Python install)** + **Tier B PBS bundling (linux/amd64)** +
-**cross-distro Docker e2e**. **Verified shipping in v0.0.8**: the public
-linux/amd64 release tarball bundles a SHA-pinned CPython **3.12.13**
-python-build-standalone runtime with the agent deps pre-installed, so
-`curl … | sh` → `vulture start` runs the Python agents OFFLINE with no system
-Python and no Docker (confirmed by tarball inspection + a fresh clean-host e2e —
-see "v0.0.8 release" below). **Deferred as of v0.0.8 — now IMPLEMENTED on branch
-`feature/0055-pending-items` (pending merge + release):** the cosign-signed vendor
-pipeline (`vendor-pbs.yml` → `release.yml`), darwin + arm64 PBS bundling, and the
-`vulture.sh release` preflight (see "Pending-items branch" below).
-**Last updated**: 2026-06-22 (pending-items branch: the deferred tail, TDD + reviewed + docker-gated)
+**Status**: COMPLETE & SHIPPED — Tier A + C + hardening pass + **B1 (lockfile)**
++ **Tier B-lite (system-Python install)** + **Tier B PBS bundling (ALL FOUR
+platforms)** + **cross-distro Docker e2e**. **Verified shipping in v0.0.9**: every
+release tarball (linux amd64/arm64, darwin amd64/arm64) bundles a SHA-pinned
+CPython **3.12.13** python-build-standalone runtime with the agent deps
+pre-installed, so `curl … | sh` → `vulture start` runs the Python agents OFFLINE
+with no system Python and no Docker; all four are cosign-signed + Rekor-logged
+(darwin/amd64 ships at ~98 MB — proof the macOS `cryptography` wheel split works).
+**The items deferred at v0.0.8 are now SHIPPED in v0.0.9** (merged via PR #32
+`7b63231` + the macOS fix `e31ca1a`): the cosign-signed vendor pipeline
+(`vendor-pbs.yml` → `release.yml`), darwin + arm64 PBS bundling, the
+`vulture.sh release` preflight, and the `smoke-install.sh` real-scan.
+**Last updated**: 2026-06-23 (0055 complete; shipped in v0.0.9).
 
 ## Pending-items branch — the deferred tail (2026-06-22)
 
 The five remaining 0055 pending items were implemented test-first on branch
 `feature/0055-pending-items` (RED → /simplify → GREEN → /simplify → adversarial
-review → Docker e2e gate). **Not yet merged or released.**
+review → Docker e2e gate). **Merged via PR #32 (`7b63231`) and shipped in v0.0.9.**
 
 | # | Item | What landed | Verified |
 |---|---|---|---|
@@ -39,7 +40,9 @@ the real-scan smoke — all green.
 Cutting `v0.0.10` from the branch exercised the full `release.yml` `build-binary`
 matrix on real runners for the first time and surfaced two blockers the linux
 sandbox could not (items #1/#3 above were verified "CI-only" for exactly this
-reason). Both fixed test-first; **not yet committed/merged/released**.
+reason). Both fixed test-first; **committed (`e31ca1a`) and shipped in v0.0.9** —
+the v0.0.9 darwin/amd64 tarball bundles successfully (~98 MB), confirming the
+`cryptography` split is live.
 
 | Leg(s) | Blocker | Fix | Verified |
 |---|---|---|---|
@@ -149,9 +152,9 @@ ships an incomplete runtime (`annotated_doc` missing → fastapi import fails on
 target); (2) **`NewSQLiteRepo` now chmods `vulture.db` (+ WAL/SHM) to 0600** — it
 holds audit findings and `doctor` flags it — surfaced once `doctor` ran post-`start`.
 
-**Still deferred (designed-only):** the **cosign-signed vendor pipeline**
-(`vendor-pbs.yml` → `release.yml`; the build-time direct fetch above is the
-sandbox-runnable equivalent), **darwin/arm64** bundling, and the
+**Shipped in v0.0.9 (PR #32 + `e31ca1a`):** the **cosign-signed vendor pipeline**
+(`vendor-pbs.yml` → `release.yml`; the build-time direct fetch above remains the
+fallback), **darwin/arm64** bundling, and the
 `scripts/vulture.sh release` preflight + `release.yml` hardening deltas.
 
 Tier B-lite covers the **dependency install** half of "run agents with an existing
@@ -196,15 +199,16 @@ eight further issues; all fixed in the same feature:
 | H7 | Low (hygiene) | Download temp dir renamed `TMPDIR`→`DL_TMP` (no longer clobbers the standard env var) and is removed by the EXIT trap |
 | H8 | Low (completeness) | Added a `lint-installer` CI job (`shellcheck install.sh scripts/*.sh` + the branch tests) so the installer is linted on every PR, not only at release-tag time |
 
-## Tier B (PARTIALLY IMPLEMENTED) — embedded Python agent runtime
+## Tier B (SHIPPED, all platforms) — embedded Python agent runtime
 
 Tier B (embedded Python agent runtime so native installs run agent scans
-without Docker) is **IMPLEMENTED for linux/amd64** as an opt-in build; the
-cosign-signed vendor pipeline and darwin/arm64 remain deferred. The complete
+without Docker) is **SHIPPED for all four platforms** in v0.0.9; the
+cosign-signed vendor pipeline and darwin/arm64 bundling that were deferred at
+v0.0.8 landed via PR #32 (`7b63231`) + the macOS fix (`e31ca1a`). The complete
 LLD — trigger, scaffolding, install strategy (build-time pre-install vs.
 install-time pip), security, size, risks, test plan, effort — lives in
-`0055_implementation_plan.md` §"Tier B (PARTIALLY IMPLEMENTED) — embedded
-Python agent runtime". Status of the pieces:
+`0055_implementation_plan.md` §"Tier B — embedded Python agent runtime".
+Status of the pieces:
 
 - ~~Generate a **hashed** `requirements-frozen.txt`~~ — DONE
   (`scripts/gen-lockfile.sh`); as of 2026-06-09 `build-release.sh` also
@@ -214,9 +218,9 @@ Python agent runtime". Status of the pieces:
   CPython 3.12.x `install_only` PBS tarball directly, **SHA-256-verifies** it
   (fail-closed) against the release's published `SHA256SUMS`, extracts it into
   `runtime/python/`, and pre-installs the hashed deps so it installs OFFLINE.
-  No `release.yml` change is needed for this path. **DEFERRED:** wiring the
-  cosign-signed `vendor-pbs.yml` artifact into `release.yml` (the
-  `vendor-pbs.yml` workflow exists but nothing consumes it), and darwin/arm64.
+  No `release.yml` change is needed for this path. **Now SHIPPED (v0.0.9):**
+  `release.yml` fetches + cosign-verifies the `vendor-pbs.yml` artifact (with the
+  direct upstream fetch as fallback), and darwin/arm64 bundling.
   Flag unset → `build-release.sh` writes only the `PBS_NOT_BUNDLED` marker.
 - ~~Implement **install-mode `local_start`**~~ — IMPLEMENTED (#10, commit
   range on feature/004-tweaks). `Start()` branches to `startInstallMode`:
@@ -236,17 +240,18 @@ Python agent runtime". Status of the pieces:
   28001-28010 failure was a pre-existing install owning those ports, not a #10
   bug. (A full LLM scan-with-findings is an optional remaining confirmation.)
 - **PBS bundling** for installs WITHOUT system Python (the no-`VULTURE_USE_SYSTEM_PYTHON`
-  case) is now **DONE for linux/amd64** via the opt-in build above — a bundled
-  release runs agents with no system Python; darwin/arm64 + the cosign vendor flow
-  remain deferred (see the Bundle-PBS item above).
+  case) is **DONE for all four platforms** as of v0.0.9 — a bundled release runs
+  agents with no system Python; the cosign vendor flow ships too (with the direct
+  upstream fetch as fallback).
 - Make `smoke-install.sh` run a real `vulture scan`.
 
-**Tier B is now shipping for linux/amd64** (opt-in `VULTURE_BUNDLE_PBS=1`):
-a bundled release installs the CLI + embedded SPA and runs the Python agents
-with no system Python and no Docker — the skill-based audit phase runs fully
-locally. The remaining deferred pieces (cosign vendor pipeline, darwin/arm64,
-real `vulture scan` in `smoke-install.sh`) would graduate to their own feature
-(suggested `0056_native_agent_runtime`). On a non-bundled (lean) release, Mode E
+**Tier B ships on all four platforms in v0.0.9** (`VULTURE_BUNDLE_PBS=1` on every
+matrix leg): a bundled release installs the CLI + embedded SPA and runs the
+Python agents with no system Python and no Docker — the skill-based audit phase
+runs fully locally. The pieces once earmarked for a follow-up feature (cosign
+vendor pipeline, darwin/arm64, real `vulture scan` in `smoke-install.sh`) all
+landed in 0055 itself, so `0056_native_agent_runtime` is no longer needed. On a
+non-bundled (lean) release, Mode E
 installs the CLI + embedded SPA and agent-based scanning needs a system Python
 (`VULTURE_USE_SYSTEM_PYTHON=1`) or Docker (Mode A/B). **Regardless of how Python
 is provided, the deeper LLM analysis phase still requires an external endpoint and
@@ -269,7 +274,8 @@ several pieces that were generated/designed but not actually delivered:
 **Resolved since this audit** (see Tier B section): PBS bundling now ships for
 linux/amd64 (opt-in `VULTURE_BUNDLE_PBS=1`, build-time fetch+SHA-verify+pre-install)
 and the install-mode launcher/packaging wiring (#10) lands so agents execute
-natively. **Still deferred:** the cosign-signed vendor pipeline and darwin/arm64.
+natively. **Now shipped in v0.0.9:** the cosign-signed vendor pipeline and
+darwin/arm64 bundling (PR #32 + `e31ca1a`).
 
 ## Decisions
 

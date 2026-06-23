@@ -19,6 +19,19 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 OUT="agents/requirements-frozen.txt"
 
+# Pin uv for reproducible lockfiles: a different uv can resolve different versions
+# or order hashes differently, which would make check-lockfile.sh's
+# re-derive-and-diff flap. Use exactly this uv; set VULTURE_ALLOW_UV_MISMATCH=true
+# to override (expect a lockfile diff if you do).
+UV_VERSION="0.11.21"
+_uv_have=$(uv --version 2>/dev/null | awk '{print $2}') || true
+if [ "$_uv_have" != "$UV_VERSION" ] && [ "${VULTURE_ALLOW_UV_MISMATCH:-}" != "true" ]; then
+    echo "error: gen-lockfile.sh needs uv $UV_VERSION for reproducible output (found '${_uv_have:-none}')." >&2
+    echo "       install it (e.g. 'pipx install uv==$UV_VERSION'), or set" >&2
+    echo "       VULTURE_ALLOW_UV_MISMATCH=true to bypass (the lockfile may then differ)." >&2
+    exit 1
+fi
+
 # Stable input path (NOT mktemp): uv records the input path in '# via -r <path>'
 # provenance comments, so a random temp name makes the lockfile non-deterministic
 # and breaks check-lockfile.sh. A fixed relative path keeps those comments stable.

@@ -14,8 +14,8 @@ python-build-standalone tarball, SHA-256-verifies it (fail-closed) against
 the release's published `SHA256SUMS`, extracts it into `runtime/python/`,
 and pre-installs the hashed agent deps so the tarball installs OFFLINE
 (`install.sh` skips pip when the bundled interpreter can already
-`import uvicorn`). **Still deferred:** the cosign-signed vendor pipeline
-(`vendor-pbs.yml` → `release.yml`) and darwin/arm64 — see Non-goals.
+`import uvicorn`). **Shipped in v0.0.9** (PR #32 + `e31ca1a`): the cosign-signed vendor pipeline
+(`vendor-pbs.yml` → `release.yml`) and darwin/arm64 — see Non-goals (now historical).
 
 ## Problem
 
@@ -77,7 +77,11 @@ installs and runs; agent-based scanning currently requires Docker
 Mode A/B). Leave a clear, signposted path to full Mode-E functionality
 (Tier B) without blocking the v0.1.0 launch on it.
 
-## Non-goals (still deferred)
+## Non-goals at design time (all since SHIPPED in v0.0.9)
+
+> **Update (2026-06-23):** all three items below were deferred when this LLD was
+> written and have since **shipped in v0.0.9** (PR #32 `7b63231` + the macOS fix
+> `e31ca1a`). The bullets are kept for the original deferral rationale.
 
 - **The cosign-signed vendor pipeline** (`vendor-pbs.yml` re-hosting
   python-build-standalone as our own signed release, consumed by a
@@ -92,9 +96,9 @@ Mode A/B). Leave a clear, signposted path to full Mode-E functionality
   proves the bundled interpreter brings agents up with no system Python;
   see `scripts/tests/docker/pbs-bundle-smoke.sh`.)
 
-These remain follow-up work. The Python-runtime bundle itself and a real
-hashed `requirements-frozen.txt` (`pip-compile --generate-hashes`) are now
-**DONE** — see the Tier B status below.
+These were follow-up work and are now **DONE** (shipped in v0.0.9), as is the
+Python-runtime bundle itself and the hashed `requirements-frozen.txt`
+(`uv pip compile --generate-hashes`) — see the Tier B status below.
 
 ### What Tier B now delivers (linux/amd64, opt-in)
 
@@ -116,10 +120,9 @@ the `PBS_NOT_BUNDLED` marker is written); Mode E is then "CLI +
 skills-capable binary; agents need a bundled-runtime release, a system
 Python via `VULTURE_USE_SYSTEM_PYTHON=1`, or Docker."
 
-**Tier B is documented in full below** (§"Tier B (DEFERRED) — embedded
-Python agent runtime") so the design exists on paper and can be picked
-up directly if demand materialises — but it is **not scheduled**. Build
-it only when the trigger in that section is met.
+**Tier B is documented in full below** so the design exists on paper — it has
+since **shipped in v0.0.9** across all four platforms; that section records how
+it was built (its heading's "(DEFERRED)" label predates the implementation).
 
 A lighter **"bring-your-own-Python"** variant — detect an existing host
 Python ≥ 3.12 and build an isolated venv at the daemon-expected runtime
@@ -413,7 +416,8 @@ freeze-deps:   ## regenerate the hashed agent lockfile (UPGRADE=1 / UPGRADE_PKG=
 
 **Files touched (B1).** `scripts/gen-lockfile.sh`, `scripts/check-lockfile.sh`, `agents/requirements-frozen.txt` (committed, generated), `scripts/build-release.sh` (copy the real lockfile; drop the empty stub), `.github/workflows/ci.yml` (lockfile-freshness + pip-audit job), `Makefile` (`freeze-deps` target).
 
-**Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor; **how the dependency bot regenerates the lockfile** (renovate `postUpgradeTasks` running `gen-lockfile.sh` vs a scheduled relock-and-PR CI job vs maintainer-only manual relock); and **which `uv` version to pin** for reproducible generation across maintainers + CI.
+**Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor; **how the dependency bot regenerates the lockfile** (renovate `postUpgradeTasks` running `gen-lockfile.sh` vs a scheduled relock-and-PR CI job vs maintainer-only manual relock); and **which `uv` version to pin** — RESOLVED: `gen-lockfile.sh` pins `uv==0.11.21`
+(bypass with `VULTURE_ALLOW_UV_MISMATCH=true`).
 
 ### B1a — Platform-split pins: the macOS `cryptography` wheel gap (added 2026-06-22)
 
@@ -1170,7 +1174,14 @@ E1 `no-python` (flag on, hashless → fast `err`, no venv); E2 `python312-hashed
 
 # Release Process — `scripts/vulture.sh release` + GitHub Actions
 
-> **STATUS: PROPOSED — awaiting review.** Design only; no code implemented. Several `release.yml` "deltas" below are *fixes to pre-existing gaps* in the current workflow (confirmed by review against the live file).
+> **STATUS: IMPLEMENTED & SHIPPED (v0.0.9).** The local preflight
+> (`scripts/vulture.sh release` → `release-preflight.sh`) and the authoritative
+> `release.yml` build/sign pipeline are live; v0.0.9 was cut through them and the
+> `release.yml` deltas below landed via PR #32. **The supply-chain + vulnerability
+> hardening _around_ this pipeline** (CI lockfile-freshness gate, scheduled relock,
+> pre-tag security gate, Dependabot-alert digest) is planned as **feature 0056** —
+> see [`../0056_release_hardening/`](../0056_release_hardening/) and the operational
+> runbook [`docs/guides/release_process.md`](../../guides/release_process.md).
 
 ## 1. Core principle — split by trust domain, not by convenience
 
