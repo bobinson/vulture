@@ -175,6 +175,108 @@ test_release_fails_on_dirty_tree() {
 }
 test_release_fails_on_dirty_tree
 
+# ===========================================================================
+# 0056 C4 — the SIXTH gate "security" must be wired into the preflight, and the
+# gate must appear in ALL THREE hand-synced lists that the LLD §13 (audit
+# "3 places") requires to agree:
+#   (1) the file-header comment's enumerated gate list,
+#   (2) the print_gates heredoc (the --help contract),
+#   (3) the run_gate dispatch (the actual wiring).
+# These are STATIC assertions over scripts/release-preflight.sh (the delegate
+# `vulture.sh release` exec's). Against the 5-gate tree they FAIL (expected RED):
+# there is no security gate in any of the three lists yet.
+# ---------------------------------------------------------------------------
+PREFLIGHT_SH="$REPO_ROOT/scripts/release-preflight.sh"
+
+# header_block — the leading comment block (lines before the first non-comment,
+# non-blank shell statement), where the gate list is enumerated.
+header_block() {
+    sed -n '1,/^[^#[:space:]]/p' "$PREFLIGHT_SH"
+}
+
+# print_gates_block — the body of the print_gates heredoc (between the opening
+# `<<'EOF'` and its closing `EOF`), i.e. the --help contract text.
+print_gates_block() {
+    sed -n "/print_gates()/,/^EOF/p" "$PREFLIGHT_SH"
+}
+
+# rungate_block — the run_gate DISPATCH lines only (the actual wiring): lines
+# that, after optional leading whitespace, invoke `run_gate <label> ...`. This
+# excludes the function definition (`run_gate() {`) and prose comments that
+# merely mention run_gate, so the parity count reflects real gate invocations.
+rungate_block() {
+    grep -E '^[[:space:]]*run_gate[[:space:]]+"' "$PREFLIGHT_SH"
+}
+
+# ---------------------------------------------------------------------------
+# TEST 5 — the security gate is present in the FILE-HEADER comment list.
+# ---------------------------------------------------------------------------
+test_security_in_header() {
+    name="security-gate-in-file-header-comment-list"
+    require_file_or_bail "$name" "$PREFLIGHT_SH"
+    if header_block | grep -Eqi 'security'; then
+        pass "$name"
+    else
+        fail "$name" "the file-header gate list does not enumerate a 'security' gate (3-list parity)"
+    fi
+}
+test_security_in_header
+
+# ---------------------------------------------------------------------------
+# TEST 6 — the security gate is present in the print_gates heredoc (--help).
+# It must name both the gate ("security") and its helper (security-preflight.sh).
+# ---------------------------------------------------------------------------
+test_security_in_print_gates() {
+    name="security-gate-in-print_gates-help-heredoc"
+    require_file_or_bail "$name" "$PREFLIGHT_SH"
+    detail=""
+    print_gates_block | grep -Eqi 'security' \
+        || detail="$detail print_gates heredoc omits the 'security' gate;"
+    print_gates_block | grep -q 'security-preflight.sh' \
+        || detail="$detail print_gates heredoc omits scripts/security-preflight.sh;"
+    if [ -z "$detail" ]; then pass "$name"; else fail "$name" "$detail"; fi
+}
+test_security_in_print_gates
+
+# ---------------------------------------------------------------------------
+# TEST 7 — the security gate is actually WIRED via run_gate "security" pointing
+# at security-preflight.sh (the 6th gate).
+# ---------------------------------------------------------------------------
+test_security_run_gate_wired() {
+    name="security-gate-wired-via-run_gate"
+    require_file_or_bail "$name" "$PREFLIGHT_SH"
+    detail=""
+    rungate_block | grep -Eqi 'run_gate[[:space:]]+.?security' \
+        || detail="$detail no run_gate \"security\" dispatch;"
+    rungate_block | grep -q 'security-preflight.sh' \
+        || detail="$detail run_gate \"security\" does not invoke security-preflight.sh;"
+    if [ -z "$detail" ]; then pass "$name"; else fail "$name" "$detail"; fi
+}
+test_security_run_gate_wired
+
+# ---------------------------------------------------------------------------
+# TEST 8 — 3-LIST PARITY: the count of gates declared in the header, the
+# print_gates heredoc, and the run_gate dispatch must AGREE (LLD §13: all three
+# hand-synced lists must stay in lockstep). We count the numbered gate lines in
+# the header + heredoc (`N. `) and the run_gate calls, and require all three to
+# be equal AND >= 6 (the security gate brought it to six).
+# ---------------------------------------------------------------------------
+test_three_list_parity() {
+    name="gate-lists-agree-in-all-three-places"
+    require_file_or_bail "$name" "$PREFLIGHT_SH"
+    _h=$(header_block      | grep -Ec '^#[[:space:]]*[0-9]+\.[[:space:]]')
+    _p=$(print_gates_block | grep -Ec '^[[:space:]]*[0-9]+\.[[:space:]]')
+    _r=$(rungate_block     | grep -Ec 'run_gate')
+    detail=""
+    [ "$_h" -ge 6 ] || detail="$detail header lists $_h gates (want >=6);"
+    [ "$_p" -ge 6 ] || detail="$detail print_gates lists $_p gates (want >=6);"
+    [ "$_r" -ge 6 ] || detail="$detail run_gate dispatches $_r gates (want >=6);"
+    { [ "$_h" -eq "$_p" ] && [ "$_p" -eq "$_r" ]; } \
+        || detail="$detail counts disagree (header=$_h print_gates=$_p run_gate=$_r);"
+    if [ -z "$detail" ]; then pass "$name"; else fail "$name" "$detail"; fi
+}
+test_three_list_parity
+
 # ---------------------------------------------------------------------------
 # Tally.
 # ---------------------------------------------------------------------------

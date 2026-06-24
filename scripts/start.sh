@@ -4,7 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
-ENV_FILE="$PROJECT_ROOT/.env"
+# Overridable so tests (and CI) can isolate from a developer's local .env, which
+# load_env sources with `set -a` and would otherwise clobber exported vars.
+ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
 
 # Ensure pyenv shims are on PATH when running non-interactively.
 if [[ -d "$HOME/.pyenv/shims" ]] && [[ ":$PATH:" != *":$HOME/.pyenv/shims:"* ]]; then

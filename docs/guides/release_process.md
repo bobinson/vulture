@@ -28,7 +28,7 @@ and `install.sh` (which resolves `releases/latest`) ignores drafts until then.
 | On `main`, clean working tree | the tag must point at reviewed, merged code |
 | Lockfile fresh (`make check-lockfile`) | the bundled agent deps match `pyproject.toml` |
 | Version ≥ `FALLBACK_TAG` (semver) | `install.sh`'s anti-downgrade guard refuses a lower tag |
-| `uv 0.11.21` installed *(only if re-locking)* | reproducible `requirements-frozen.txt` (pinned in `gen-lockfile.sh`) |
+| The pinned `uv` installed *(only if re-locking)* | reproducible `requirements-frozen.txt` (the uv version pinned in `gen-lockfile.sh` / `scripts/uv-version.sh`) |
 | No un-waived HIGH/CRITICAL CVE in deps | the release build's Trivy gate will otherwise go red (see [Vulnerabilities](#vulnerabilities)) |
 
 ## Step 1 — Preflight (local, before tagging)
@@ -37,13 +37,14 @@ and `install.sh` (which resolves `releases/latest`) ignores drafts until then.
 sh scripts/vulture.sh release vX.Y.Z
 ```
 
-Runs five fail-fast gates (`scripts/release-preflight.sh`):
+Runs six fail-fast gates (`scripts/release-preflight.sh`):
 
 1. **clean git tree** — no uncommitted changes.
 2. **lockfile freshness** — `check-lockfile.sh` re-derives `requirements-frozen.txt` and diffs.
 3. **fallback-tag validity** — `check-fallback-tag.sh` enforces the "≤1 minor behind" rule.
-4. **shellcheck** — `install.sh` + `scripts/*.sh`.
+4. **shellcheck** — `install.sh` + `scripts/*.sh` + `scripts/lib/*.sh`.
 5. **installer branch tests** — `scripts/tests/test_install_sh.sh`.
+6. **security** — `security-preflight.sh`: `pip-audit` over the locked deps (+ open Dependabot alerts when a PAT is configured); a HIGH/CRITICAL finding with no `.pip-audit-ignore` waiver fails **before** you tag (feature 0056).
 
 `==> release preflight: ALL GATES PASSED` ⇒ safe to tag.
 
@@ -109,7 +110,7 @@ How a vulnerable dependency is caught and handled:
 | Stage | Signal | Action |
 |-------|--------|--------|
 | **Continuous** | Dependabot **alert** (Security tab + notification) | the canonical inventory: package, severity, patched version |
-| **Pre-tag** *(planned, feature 0056)* | preflight security gate lists open alerts + `pip-audit` | plan the fix **before** tagging, not after a red build |
+| **Pre-tag** | the preflight **security gate** (`security-preflight.sh`, gate 6) runs `pip-audit` over the locked deps + lists open Dependabot alerts (PAT) | plan + verify the fix **before** tagging, not after a red build |
 | **Release build** | **Trivy** `HIGH,CRITICAL --exit-code 1` | hard backstop — a vulnerable bundled dep fails the build with the CVE + package |
 
 **Fixing:**
@@ -120,24 +121,54 @@ How a vulnerable dependency is caught and handled:
    `lockfile-constraints.txt` won't auto-bump; hand-pick a patched version that
    still ships a macOS wheel and edit the constraint.
 3. **No patch yet** → add a time-boxed waiver to `.trivyignore` / `.pip-audit-ignore`
-   (CVE id + justification + ≤90-day expiry). **CODEOWNERS routes it to the SECURITY
-   owner** for review; the gate re-fires when the waiver expires.
+   (CVE/GHSA/PYSEC id + justification + ≤90-day expiry). **CODEOWNERS routes it to
+   the SECURITY owner** for review; the gate re-fires when the waiver expires.
+
+### Handling a Dependabot Python-package alert (the standard loop)
+
+Dependabot alerts are monitored continuously (Security tab + notification). When
+one names a **Python package** in the agents' dependency closure, follow this loop
+— **upgrade locally and TEST before anything is committed, tagged, or pushed:**
+
+1. **Triage** — note the package, severity, and patched version; confirm it's in
+   the closure: `pip-audit -r agents/requirements-frozen.txt` (or
+   `sh scripts/security-preflight.sh`).
+2. **Upgrade + re-lock locally** — bump the range in the owning
+   `agents/*/pyproject.toml` *only if* the patched version is out of range, then
+   `make freeze-deps` (pinned uv + constraint → correct hashes + the Darwin split).
+   For Darwin-capped `cryptography`, hand-pick a patched macOS-wheel version and
+   edit `agents/lockfile-constraints.txt`.
+3. **Test locally FIRST** — *before* committing or tagging:
+   - agent unit tests for the touched component — `cd agents/<component> && python -m pytest tests/unit/ -q`;
+   - the lockfile is fresh and the split survived — `make check-lockfile`;
+   - the installer/release suite is green — `for t in scripts/tests/test_*.sh; do sh "$t"; done`;
+   - (optional) a real scan to confirm the agents still run.
+4. **Preflight** — `sh scripts/vulture.sh release vX.Y.Z`; the **security gate**
+   (gate 6) must show the advisory resolved (or carry a reviewed
+   `.pip-audit-ignore` waiver). Green ⇒ safe to ship.
+5. **PR + CI** — open a PR with **both** the `pyproject.toml` and the regenerated
+   `requirements-frozen.txt`; the **lockfile gate** (`.github/workflows/lockfile.yml`)
+   re-derives + diffs in CI, so a mis-lock or a dropped Darwin split goes red.
+6. **Release** — tag as usual; the build's **Trivy** `--exit-code 1` gate is the
+   final backstop, and the patched dependency ships in every tarball.
 
 ## Dependency updates / re-locking
 
 `agents/requirements-frozen.txt` is **generated** — never hand-edit it.
 
 ```sh
-make freeze-deps              # re-lock to current in-range versions (pinned uv 0.11.21)
+make freeze-deps              # re-lock to current in-range versions (uses the uv version pinned in scripts/uv-version.sh)
 make freeze-deps UPGRADE=1    # refresh all to latest in-range
 make check-lockfile           # the exact freshness check the preflight runs
 ```
 
-> **Today's gap (closing in feature 0056):** Dependabot edits the lockfile
-> *directly*, bypassing `gen-lockfile.sh` and the marker-split constraint, and
-> `check-lockfile.sh` is not yet a CI gate. Until 0056 lands, **re-run
-> `make freeze-deps` after any Dependabot dependency PR** and confirm the
-> preflight is green before tagging.
+> **Feature 0056 (shipped):** Dependabot no longer edits the lockfile — its
+> `pip`/`uv` updater is disabled (`.github/dependabot.yml`), so every refresh goes
+> through `gen-lockfile.sh` (pinned uv + the marker-split constraint).
+> `check-lockfile.sh` now runs as a **CI gate on every PR**
+> (`.github/workflows/lockfile.yml`), and the preflight **security gate** (gate 6)
+> surfaces advisories before you tag. Dependabot still raises **alerts** (Security
+> tab) — handle Python-package alerts via [the loop above](#handling-a-dependabot-python-package-alert-the-standard-loop).
 
 ## Rollback
 
@@ -161,4 +192,4 @@ make check-lockfile           # the exact freshness check the preflight runs
 - [`cosign_verification.md`](cosign_verification.md) — verify a download.
 - [`native_installation.md`](native_installation.md) — what end users run.
 - [feature 0055](../features/0055_native_installer_hardening/) — the native-installer + release pipeline design.
-- [feature 0056](../features/0056_release_hardening/) — the release/supply-chain hardening this guide anticipates.
+- [feature 0056](../features/0056_release_hardening/) — the release/supply-chain hardening behind this guide (implemented).

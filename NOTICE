@@ -57,5 +57,17 @@ This product redistributes the following third-party content:
                     Operators who modify Semgrep itself must comply
                     with LGPL-2.1 separately at the container layer.
 
+    - Bundled CPython runtime (native-install tarballs, feature 0055)
+      Each release tarball bundles a python-build-standalone CPython
+      3.12.13 runtime (runtime/python/) and the third-party C libraries it
+      statically links — all permissive: CPython itself (PSF License
+      Agreement), OpenSSL (Apache-2.0), SQLite (public domain), zlib,
+      xz/liblzma, bzip2, libffi (MIT), expat (MIT), libmpdec (BSD-2),
+      ncurses (MIT/X11), libedit (BSD-2 — NOT GNU readline), and Tcl/Tk 9.0
+      (BSD-style). The `_dbm` (dbm.ndbm) extension — which linked GPL-3.0 GNU
+      gdbm on macOS and Berkeley DB on Linux — is STRIPPED from every platform
+      at build (build-release.sh -> scripts/lib/runtime_strip.sh), so no
+      copyleft native code is redistributed. See THIRD_PARTY_LICENSES.md §6.
+
 Full per-source attribution, modification summaries, and license texts
 are in THIRD_PARTY_LICENSES.md.
