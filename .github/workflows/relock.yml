@@ -1,0 +1,67 @@
+# .github/workflows/relock.yml — 0056 C2: dispatch-only agent-dependency relock.
+#
+# Regenerates agents/requirements-frozen.txt THROUGH the pinned generator (never
+# a hand-edit) and opens/updates ONE rolling PR for human review. This is the
+# sole sanctioned writer of the lockfile (C3 disables all Dependabot pip updates).
+#
+# workflow_dispatch ONLY — NO cron (LLD §0/§7). A solo-maintainer repo cannot
+# safely run this on a schedule: GitHub disables schedules after 60 days of repo
+# inactivity (and an Actions outage stops them too), so a cron'd relock + a cron'd
+# digest would die together — the "staleness" detector killed by the very event
+# it is meant to detect. Run this in the pre-tag ritual / ad-hoc; add cron only
+# once a maintainer team exists.
+
+name: relock-agents
+
+on:
+  workflow_dispatch: {}          # dispatch-only; add `schedule:` when a team exists
+
+permissions:
+  contents: write                # push the relock branch
+  pull-requests: write           # open/update the rolling PR
+  # NO id-token / signing scope — this workflow never touches release artifacts.
+
+concurrency:
+  group: relock                  # serialize racing dispatches onto one branch
+  cancel-in-progress: false
+
+jobs:
+  relock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # Single-source pinned uv (same composite C1 uses). In-repo, so not pinned.
+      - uses: ./.github/actions/setup-pinned-uv
+      # Advance the frozen index cutoff BEFORE the upgrade. gen-lockfile.sh always
+      # resolves under `--exclude-newer $(cat scripts/lock-date.txt)`, so without
+      # this bump `make freeze-deps UPGRADE=1` is capped at the OLD date and
+      # re-resolves to the identical pins — a silent no-op. Bumping to "now"
+      # lets the upgrade actually pull in-range releases; the new date is staged
+      # in the same relock PR for review. The committed past-dated cutoff keeps
+      # C1 deterministic between relocks.
+      - name: Advance the lock-date cutoff to now (UTC)
+        run: date -u +%Y-%m-%dT%H:%M:%SZ > scripts/lock-date.txt
+      - name: Relock agent dependencies (upgrade)
+        run: make freeze-deps UPGRADE=1
+      # R5: a PR opened with the default GITHUB_TOKEN does NOT trigger other
+      # workflows, so C1 (lockfile.yml) will not auto-run on this PR. Validate
+      # the freshly-generated lockfile HERE so the relock is self-checked; the
+      # human review is the final gate.
+      - name: Self-check the regenerated lockfile
+        run: scripts/check-lockfile.sh
+      # SHA verified to upstream release tag v7.0.8.
+      - name: Open / update the relock PR
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          branch: chore/relock-agents     # one rolling branch — idempotent, no churn
+          title: "chore(deps): relock agent dependencies"
+          commit-message: "chore(deps): relock agent dependencies"
+          labels: dependencies
+          body: |
+            Automated relock of `agents/requirements-frozen.txt` via
+            `make freeze-deps UPGRADE=1` (workflow: relock.yml, dispatch-only).
+
+            This PR was opened with the default `GITHUB_TOKEN`, so the C1
+            lockfile gate (`lockfile.yml`) does NOT run on it automatically; the
+            relock job self-ran `scripts/check-lockfile.sh`. Please review the
+            dependency diff before merging.

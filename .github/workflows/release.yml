@@ -158,7 +158,10 @@ jobs:
       - name: pip-audit
         run: |
           if [ -f .pip-audit-ignore ]; then
-            IGN=$(awk -F: '/^CVE-/ {print "--ignore-vuln "$1}' .pip-audit-ignore)
+            # Accept all four advisory prefixes (CVE/GHSA/PYSEC/OSV — audit M9),
+            # matching scripts/security-preflight.sh and security-digest.yml. The
+            # old CVE-only parser silently dropped GHSA/PYSEC/OSV-only waivers.
+            IGN=$(awk '/^[[:space:]]*(CVE|GHSA|PYSEC|OSV)-/ {sub(/^[[:space:]]+/,""); split($0,p,/[: \t]/); if (p[1]!="") printf " --ignore-vuln %s", p[1]}' .pip-audit-ignore)
           else
             IGN=""
           fi
