@@ -18,6 +18,7 @@
 #   3. fallback-tag validity  scripts/check-fallback-tag.sh <tag>
 #   4. shellcheck             install.sh + scripts/*.sh + scripts/lib/*.sh
 #   5. installer branch tests scripts/tests/test_install_sh.sh
+#   6. security               scripts/security-preflight.sh (pip-audit + alerts)
 #
 # POSIX sh, no bashisms. Tiny functions (cyclomatic < 5), DRY.
 set -eu
@@ -35,6 +36,7 @@ release preflight — pre-tag gates (all must pass before tagging; clean-tree fi
   3. fallback-tag validity   scripts/check-fallback-tag.sh <tag>
   4. shellcheck              install.sh + scripts/*.sh + scripts/lib/*.sh
   5. installer branch tests  scripts/tests/test_install_sh.sh
+  6. security                scripts/security-preflight.sh (pip-audit + Dependabot alerts)
 EOF
 }
 
@@ -98,5 +100,9 @@ run_gate "lockfile freshness"     "$SCRIPT_DIR/check-lockfile.sh"
 run_gate "fallback-tag validity"  "$SCRIPT_DIR/check-fallback-tag.sh" "$TAG"
 run_gate "shellcheck"             gate_shellcheck
 run_gate "installer branch tests" "$SCRIPT_DIR/tests/test_install_sh.sh"
+# Security LAST: pip-audit + Dependabot alerts over the locked deps (C4). It is
+# self-locating (reads agents/requirements-frozen.txt + .pip-audit-ignore from
+# the repo root) and carries its own sh shebang.
+run_gate "security"               "$SCRIPT_DIR/security-preflight.sh"
 
 echo "==> release preflight: ALL GATES PASSED"

@@ -75,6 +75,7 @@ pbs_acquire() {
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/hash.sh"
+. "$REPO_ROOT/scripts/lib/runtime_strip.sh"
 DIST=$REPO_ROOT/dist
 STAGE=$(mktemp -d)
 TARBALL=$DIST/vulture-${VERSION}-${OS}-${ARCH}.tar.gz
@@ -271,6 +272,14 @@ if [ "$_bundle_pbs" = 1 ]; then
             exit 1
         fi
     fi
+
+    # Keep the bundled runtime permissive-only (uniform installer, no license
+    # violations): _dbm (dbm.ndbm) links GNU gdbm (GPL-3.0) on macOS / Berkeley DB
+    # on Linux, and nothing here uses dbm.ndbm (dbm.open falls back to dbm.dumb).
+    # Strip it on every platform, then HARD-FAIL the build if copyleft remains.
+    strip_copyleft_modules "$STAGE/runtime/python"
+    assert_no_copyleft_native "$STAGE/runtime/python" \
+        || { echo "Error: bundled runtime carries copyleft native code (above)" >&2; exit 1; }
 
     # Pre-install the hashed agent deps into the bundled interpreter so the
     # shipped tarball installs OFFLINE (install.sh skips pip when uvicorn imports).
