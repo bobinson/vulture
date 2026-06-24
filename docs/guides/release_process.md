@@ -124,6 +124,12 @@ How a vulnerable dependency is caught and handled:
    (CVE/GHSA/PYSEC id + justification + ≤90-day expiry). **CODEOWNERS routes it to
    the SECURITY owner** for review; the gate re-fires when the waiver expires.
 
+**Disclose fixed vulnerabilities in the release notes.** Any release that fixes a
+security issue MUST record it in [`CHANGELOG.md`](../../CHANGELOG.md) under a
+`### Security` heading — the advisory id (CVE / GHSA / PYSEC), affected versions,
+and the fix — and that entry MUST appear in the GitHub release notes for the tag
+(OpenSSF Best Practices: release notes identify fixed vulnerabilities).
+
 ### Handling a Dependabot Python-package alert (the standard loop)
 
 Dependabot alerts are monitored continuously (Security tab + notification). When

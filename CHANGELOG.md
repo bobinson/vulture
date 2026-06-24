@@ -5,6 +5,11 @@ All notable changes to Vulture will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+**Security fixes** are recorded under a `### Security` heading naming the advisory
+identifier (CVE / GHSA / PYSEC), the affected versions, and the remediation, and
+are surfaced in the corresponding GitHub release notes — so every release that
+fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
+
 ## [Unreleased]
 
 ### Known limitations
