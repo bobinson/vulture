@@ -170,6 +170,18 @@ make check-lockfile           # the exact freshness check the preflight runs
 > surfaces advisories before you tag. Dependabot still raises **alerts** (Security
 > tab) — handle Python-package alerts via [the loop above](#handling-a-dependabot-python-package-alert-the-standard-loop).
 
+**Refresh cadence & ownership.** With the pip updater disabled (C3) and relock
+`workflow_dispatch`-only (no cron), **nothing auto-refreshes the lockfile** — the CI
+gate *blocks* drift but won't *fix* it. A maintainer (the **SECURITY codeowner**, per
+CODEOWNERS) must run the relock:
+- **on a Dependabot alert** for a Python package — via the alert loop above;
+- **as part of the pre-tag ritual**, before cutting a release — run `relock.yml`
+  (or `make freeze-deps`), review the diff, and confirm `make check-lockfile` is fresh.
+
+Trigger the `security-digest` workflow on the same cadence so open advisories aren't
+missed. Without a named owner, enforcing the lockfile gate just converts silent
+dependency drift into unexpectedly-blocked PRs.
+
 ## Rollback
 
 | Situation | Action |
