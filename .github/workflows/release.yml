@@ -24,7 +24,10 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: shellcheck
-        run: shellcheck install.sh scripts/*.sh
+        # Match ci.yml: lint scripts/lib/ + scripts/tests/ too (not just top-level
+        # scripts/*.sh) so the libs build-release.sh sources are covered and their
+        # `. scripts/lib/*.sh` sources resolve (no SC1091).
+        run: shellcheck install.sh scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
       - name: check fallback tag
         run: scripts/check-fallback-tag.sh "${GITHUB_REF_NAME}"
 
