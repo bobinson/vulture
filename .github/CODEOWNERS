@@ -46,6 +46,20 @@
 /.github/workflows/vendor-pbs.yml                 @bobinson
 /.github/workflows/vendor-cosign.yml              @bobinson
 
+# Supply-chain hardening (feature 0056): the CI lockfile gate, the dispatch-only
+# relock + security-digest workflows, the pinned-uv composite action, the uv-pin
+# source, the pre-tag security gate, and the Dependabot config all route to
+# SECURITY review. (The `* @bobinson` wildcard already owns them; these explicit
+# entries match the existing security-routing convention and become load-bearing
+# once a maintainer team exists.)
+/.github/dependabot.yml                           @bobinson
+/.github/workflows/lockfile.yml                   @bobinson
+/.github/workflows/relock.yml                     @bobinson
+/.github/workflows/security-digest.yml            @bobinson
+/.github/actions/setup-pinned-uv/                 @bobinson
+/scripts/security-preflight.sh                    @bobinson
+/scripts/uv-version.sh                            @bobinson
+
 # CVE allowlists — entries require SECURITY review with date-stamped
 # justification per feature 0044 plan H3.
 /.trivyignore                                     @bobinson

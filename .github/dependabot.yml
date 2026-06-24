@@ -1,0 +1,33 @@
+# .github/dependabot.yml — 0056 C3: Dependabot version-update config.
+#
+# DELIBERATELY no `pip`/`uv` updater (LLD §0/§5 C3). Dependabot used to edit
+# agents/requirements-frozen.txt directly, bypassing the pinned generator and the
+# marker-split lockfile-constraints.txt — which could silently drop the Darwin
+# cryptography split and re-break the darwin/amd64 release leg. ALL pip updates
+# (version AND security) are therefore disabled here; the relock workflow (C2,
+# relock.yml) is the SOLE writer of the lockfile. A vulnerability in a pinned dep
+# still surfaces as a Dependabot ALERT (Security tab + the C5 digest) and is
+# fixed by re-running C2.
+#
+# The three ecosystems below ARE handled by Dependabot because it edits them
+# safely (no generated-lockfile split to protect):
+#   - github-actions : keeps the SHA-pinned `uses:` in every workflow current
+#                      (without this, the pins rot — a real long-term cost).
+#   - npm            : frontend (frontend/).
+#   - gomod          : backend (backend/) + CLI (cli/).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"

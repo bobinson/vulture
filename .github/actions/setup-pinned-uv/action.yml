@@ -1,0 +1,69 @@
+# .github/actions/setup-pinned-uv — 0056 C1/C2 composite action.
+#
+# Installs the SINGLE-SOURCE pinned `uv` for the lockfile gate (C1) and the
+# relock workflow (C2). The pinned version lives in ONE place — scripts/
+# uv-version.sh — and this action reads it from the TRUSTED BASE-BRANCH CONTENT,
+# never from the (possibly attacker-controlled) PR checkout.
+#
+# Why read from the base ref's content (audit M3):
+#   A default `pull_request` checkout is a SHALLOW clone of the merge ref, so
+#   `origin/<base>` does NOT exist locally and the PR's own tree is untrusted.
+#   A fork PR that edited scripts/uv-version.sh could otherwise choose which uv
+#   binary CI executes (code-exec). We therefore:
+#     1. `git fetch --depth=1 origin main` — pinned to the LITERAL `main`, NEVER
+#        ${{ github.base_ref }} (which a malicious PR can target).
+#     2. read the pin from `git show FETCH_HEAD:scripts/uv-version.sh` (base
+#        content, not the PR tree).
+#     3. extract + validate it against `^[0-9]+\.[0-9]+\.[0-9]+$` and FAIL the
+#        step on any mismatch — we never default to "latest".
+#     4. hand the validated version to a SHA-pinned astral-sh/setup-uv.
+#
+# Consumers (lockfile.yml, relock.yml) run from a checkout of the repo, so
+# `.git` and the `main` remote ref are available to fetch.
+
+name: "setup-pinned-uv"
+description: "Install the single-source pinned uv (read from scripts/uv-version.sh on the trusted base ref)."
+
+runs:
+  using: "composite"
+  steps:
+    # Resolve the pin from the BASE ref's content (M3). Pinned to literal `main`.
+    - name: Resolve pinned uv version from base ref
+      id: pin
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Fetch ONLY the base branch tip; pin to the literal `main` — never
+        # github.base_ref, which an attacker PR could point elsewhere.
+        git fetch --depth=1 origin main
+        # Read the pin file from the fetched base content, not the PR tree.
+        if ! raw="$(git show FETCH_HEAD:scripts/uv-version.sh 2>/dev/null)"; then
+          echo "::error::cannot read scripts/uv-version.sh from the base ref (FETCH_HEAD)" >&2
+          exit 1
+        fi
+        # Extract the pin from the `UV_VERSION=` assignment specifically — NOT
+        # the first semver-shaped token in the file. Anchoring to the assignment
+        # keys on the same single-source contract test_uv_single_source.sh
+        # asserts (UV_VERSION=<x.y.z>), so a future maintainer adding a comment
+        # with a version-like token cannot silently desync the CI uv from the pin.
+        version="$(printf '%s\n' "$raw" \
+          | grep -E '^[[:space:]]*UV_VERSION=' \
+          | head -n1 \
+          | tr -d '"'\''' \
+          | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+          | head -n1 || true)"
+        # Validate the EXACT semver shape before trusting it. Fail closed — do
+        # NOT fall back to latest.
+        if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          echo "::error::uv pin from scripts/uv-version.sh is not exact semver (got '${version:-<empty>}'); refusing to default to latest" >&2
+          exit 1
+        fi
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+        echo "resolved pinned uv version: ${version}"
+
+    # Install exactly that version. SHA-pinned (Dependabot github-actions keeps
+    # the pin current). SHA verified to upstream release tag v6.1.0.
+    - name: Install pinned uv
+      uses: astral-sh/setup-uv@f0ec1fc3b38f5e7cd731bb6ce540c5af426746bb # v6.1.0
+      with:
+        version: ${{ steps.pin.outputs.version }}
