@@ -75,6 +75,7 @@ pbs_acquire() {
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/hash.sh"
+# shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/runtime_strip.sh"
 DIST=$REPO_ROOT/dist
 STAGE=$(mktemp -d)
