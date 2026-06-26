@@ -5,10 +5,12 @@ Implements a two-phase audit pipeline:
   Phase 2 (LLM): Self-learning analysis with catalog context injection
 """
 
+import asyncio
 import os
 from collections.abc import Generator
 from typing import Any
 
+from shared.llm import health as _health
 from shared.audit_runner import run_combined_audit
 from shared.llm.provider import get_max_findings
 from shared.tools.memory_client import build_prior_context
@@ -84,6 +86,81 @@ def _build_llm_catalog_context() -> str:
     return build_catalog_context(_CATALOG_CWE_IDS, max_chars=3000)
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("true", "1", "yes")
+
+
+def _probe_llm_health() -> Any:
+    """Run the async provider health probe from this sync generator.
+
+    Feature 0057 P1a fix: CWE runs the LLM phase by default and has ALREADY
+    decided it wants the LLM — so the probe must key on *provider/model
+    availability*, NOT on the global ``VULTURE_USE_LLM`` flag (which defaults
+    ``false`` for the agent-cwe service). ``check_llm_health`` short-circuits
+    to ``provider=disabled / reachable=False`` whenever ``VULTURE_USE_LLM !=
+    "true"`` (health.py); left alone, that would silently keep CWE skills-only
+    even with a perfectly usable model configured, defeating R1.
+
+    We therefore force ``VULTURE_USE_LLM=true`` for the duration of the probe
+    only, so it proceeds to the real provider-reachability checks, then restore
+    the original value. The actual LLM-phase toggle is still CWE-scoped via
+    ``_resolve_cwe_llm`` / the per-request override — this does not flip the
+    global default for any other agent.
+
+    Calls ``health.check_llm_health`` via the module attribute so test
+    monkeypatching of the source module takes effect regardless of import
+    style. Returns the status object, or None if the probe itself errors
+    (treated as unreachable by the caller).
+    """
+    _sentinel = object()
+    _prev = os.environ.get("VULTURE_USE_LLM", _sentinel)
+    os.environ["VULTURE_USE_LLM"] = "true"
+    try:
+        return asyncio.run(_health.check_llm_health())
+    except Exception:  # noqa: BLE001 — any probe failure ⇒ treat as no model
+        return None
+    finally:
+        if _prev is _sentinel:
+            os.environ.pop("VULTURE_USE_LLM", None)
+        else:
+            os.environ["VULTURE_USE_LLM"] = _prev
+
+
+def _resolve_cwe_llm(config: dict) -> tuple[bool, str | None]:
+    """Feature 0057 P1a: resolve the CWE agent's effective LLM toggle.
+
+    CWE runs the LLM phase BY DEFAULT (model-gated). Resolution order:
+      1. ``VULTURE_CWE_DISABLE_LLM`` escape hatch → always skills-only.
+      2. Explicit per-request ``use_llm`` bool wins over the default.
+      3. Default (unset) → want LLM on.
+      4. If LLM is wanted, gate on provider availability: an unreachable
+         model degrades gracefully to skills-only + a notice (R5, exit 0).
+
+    Returns ``(effective_use_llm, notice_or_None)``.
+    """
+    if _env_truthy("VULTURE_CWE_DISABLE_LLM"):
+        return False, None
+
+    requested = config.get("use_llm")
+    want_llm = requested if isinstance(requested, bool) else True
+    if not want_llm:
+        return False, None
+
+    status = _probe_llm_health()
+    reachable = bool(getattr(status, "reachable", False))
+    if reachable:
+        return True, None
+
+    # Graceful degradation: keep the audit running skills-only with an
+    # explicit notice so the Mode-E no-key user still gets a clean result.
+    base = (
+        status.message() if status is not None and hasattr(status, "message")
+        else "LLM unavailable — no usable model configured."
+    )
+    notice = f"{base} Running skills-only (no LLM phase)."
+    return False, notice
+
+
 def run_audit(
     run_id: str,
     source_path: str,
@@ -106,10 +183,23 @@ def run_audit(
             + catalog_ctx
         )
 
-    use_llm_val = config.get("use_llm")
-    # Feature 0046: per-audit override for L5 LLM judge.
+    # Feature 0057 P1a: CWE runs the LLM phase by default, model-gated.
+    effective_use_llm, llm_notice = _resolve_cwe_llm(config)
+
+    # Feature 0046 / 0057 P1b: per-audit override for the L5 LLM judge.
+    # When LLM is on and the request doesn't specify, L5 defaults ON for CWE
+    # (the generate-verify control on LLM findings — R4).
     _v = config.get("validate")
-    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
+    explicit_l5 = _v.get("llm") if isinstance(_v, dict) else None
+    if isinstance(explicit_l5, bool):
+        validate_use_llm = explicit_l5
+    else:
+        validate_use_llm = effective_use_llm
+
+    if llm_notice:
+        from shared.transport.event_emitter import AgUiEventEmitter
+        yield AgUiEventEmitter(run_id).text_message(llm_notice)
+
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
@@ -120,6 +210,6 @@ def run_audit(
         skill_tools=SKILL_TOOLS,
         instructions=enhanced_instructions,
         model=os.environ.get("VULTURE_LLM_MODEL"),
-        use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
-        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
+        use_llm=effective_use_llm,
+        validate_use_llm=validate_use_llm,
     )

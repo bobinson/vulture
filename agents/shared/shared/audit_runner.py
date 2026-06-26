@@ -11,6 +11,7 @@ from typing import Any
 
 from shared.llm.errors import retry_skill
 from shared.tools.file_scanner import scan_code_files, read_file_safe, is_entry_or_config, clear_caches
+from shared.tools.snippet import extract_snippet
 from pydantic import BaseModel
 
 from shared.tools.memory_client import estimate_tokens, safe_estimate_tokens, _normalize_title
@@ -53,6 +54,11 @@ class AuditFinding(BaseModel):
     line_end: int = 0
     recommendation: str = ""
     check_id: str = ""
+    # Feature 0057 P0.1: in-memory-only code window read from the source.
+    # Used to ground the L5 judge (R4) so it never judges blind. Not
+    # persisted to the DB / SSE result schema (R7) — populated centrally by
+    # _attach_code_snippet() just before validation.
+    code_snippet: str = ""
 
 
 class AuditOutput(BaseModel):
@@ -317,8 +323,13 @@ def _get_max_source_chars(model: str | None = None) -> int:
     ctx_tokens = get_context_window(model)
     # Scale source allocation: small models need more headroom for output + SDK overhead.
     source_fraction = 0.35 if ctx_tokens <= 32_000 else 0.5
+    # Cap: read VULTURE_MAX_SOURCE_CHARS dynamically (feature 0057 P1f — tests
+    # and operators tune the per-batch budget at runtime) so the batch loop's
+    # window size honours the env without an import-time freeze. Falls back to
+    # the module default when unset.
+    cap = _safe_int_env("VULTURE_MAX_SOURCE_CHARS", _MAX_SOURCE_CHARS)
     # ~3 chars per token for code. Safety margin applied later by safe_estimate_tokens().
-    return min(max(2000, int(ctx_tokens * source_fraction * 3)), _MAX_SOURCE_CHARS)
+    return min(max(2000, int(ctx_tokens * source_fraction * 3)), cap)
 
 
 def _safe_stat_size(p: Path) -> int:
@@ -506,6 +517,93 @@ def _pack_files(
     return "\n\n".join(parts), included_paths
 
 
+# Feature 0057 P1f: per-batch file cap so a single batch can't pack the whole
+# tree when files are tiny (keeps batches bounded by file count too, not only
+# by char budget). The USD budget + context window remain the real throttles.
+_LLM_FILES_PER_BATCH = _safe_int_env("VULTURE_LLM_FILES_PER_BATCH", 40)
+
+
+def _format_file_block(
+    fpath: Any,
+    source_path: str,
+    findings_by_path: dict[str, list[dict]],
+) -> tuple[str, str] | None:
+    """Format one file into a ``(rel_path, "--- rel ---\\ncontent")`` block,
+    using snippet extraction for files that carry skill findings. Returns None
+    when the file is empty / unreadable."""
+    content = read_file_safe(fpath)
+    if content is None or not content.strip():
+        return None
+    rel = _safe_rel(fpath, source_path)
+    if findings_by_path:
+        file_findings = findings_by_path.get(rel, [])
+        if not file_findings:
+            file_findings = [
+                f for fp_key, flist in findings_by_path.items()
+                for f in flist
+                if fp_key.endswith(rel)
+            ]
+        if file_findings:
+            content = _extract_file_snippet(content, file_findings, rel)
+    return rel, f"--- {rel} ---\n{content}"
+
+
+def _build_source_batches(
+    ordered_files: list,
+    source_path: str,
+    max_chars: int,
+    skill_findings: list[dict] | None = None,
+    files_per_batch: int = _LLM_FILES_PER_BATCH,
+) -> list[tuple[str, list[str]]]:
+    """Partition the ordered file list into context-window-sized batches.
+
+    Feature 0057 P1f: the LLM phase sweeps the WHOLE tree by iterating over
+    these batches, instead of a single context window that silently tail-drops
+    the rest. Each batch's packed text is ≤ ``max_chars`` and holds ≤
+    ``files_per_batch`` files. A single file larger than the whole budget still
+    gets its own (over-budget) batch so it is never dropped — truncation to the
+    real context window happens later per call.
+
+    Returns a list of ``(batch_text, included_relpaths)``; empty if no files.
+    """
+    findings_by_path: dict[str, list[dict]] = {}
+    if skill_findings:
+        for f in skill_findings:
+            fp = f.get("file_path", "")
+            if fp:
+                findings_by_path.setdefault(fp, []).append(f)
+
+    batches: list[tuple[str, list[str]]] = []
+    cur_parts: list[str] = []
+    cur_paths: list[str] = []
+    cur_total = 0
+
+    def _flush() -> None:
+        nonlocal cur_parts, cur_paths, cur_total
+        if cur_parts:
+            batches.append(("\n\n".join(cur_parts), cur_paths))
+            cur_parts, cur_paths, cur_total = [], [], 0
+
+    for fpath in ordered_files:
+        block = _format_file_block(fpath, source_path, findings_by_path)
+        if block is None:
+            continue
+        rel, text = block
+        entry_len = len(text) + 2
+        # Start a new batch when the current one is full (by chars or count)
+        # — but never emit an empty batch just because one file is huge.
+        if cur_parts and (
+            cur_total + entry_len > max_chars
+            or len(cur_paths) >= files_per_batch
+        ):
+            _flush()
+        cur_parts.append(text)
+        cur_paths.append(rel)
+        cur_total += entry_len
+    _flush()
+    return batches
+
+
 def _build_source_context(
     source_path: str,
     max_chars: int = 0,
@@ -543,39 +641,186 @@ def _build_source_context(
     return text
 
 
-def _dedup_key(f: dict) -> tuple[str, str]:
-    """Build dedup key preferring check_id over normalized title."""
+def _normalize_dedup_path(fp: str, source_path: str = "") -> str:
+    """Normalize a finding path to a canonical *source-root-relative* token so
+    absolute and source-relative forms of the SAME file collapse to one dedup
+    key — WITHOUT collapsing two genuinely different files that merely share a
+    basename.
+
+    Feature 0057 P1f: the LLM phase reports repo-RELATIVE paths (``src/app.py``)
+    while skills report ABSOLUTE paths (``/repo/src/app.py``) for the same file.
+    Earlier this used a basename fallback, which was wrong in two ways:
+      * over-dedup (data loss): ``a/util.py`` and ``b/util.py`` both collapsed
+        to ``util.py`` → a real net-new finding in a different directory was
+        dropped as a duplicate;
+      * under-dedup (double-report): an LLM dupe at ``src/app.py`` (→ basename
+        ``app.py``) did not match the skill's root-stripped ``src/app.py``, so
+        the same vuln surfaced twice.
+
+    Fix: normalise BOTH forms to a source-root-relative path. Absolute paths
+    under the root are made relative; already-relative paths are normalised
+    in place (and only resolved against the root when that actually locates
+    the file, so we never invent a wrong directory). The directory structure
+    is preserved, so distinct directories stay distinct.
+    """
+    if not fp:
+        return ""
+    # Backward-compat: when no source root is known (direct unit-test calls),
+    # preserve the exact path so the historical (check_id, file_path) key is
+    # unchanged. Normalization only kicks in for the real audit pipeline,
+    # which always passes source_path.
+    if not source_path:
+        return fp
+
+    root = source_path.rstrip("/")
+    # Absolute path under the root → strip the root, keep the full subpath.
+    if fp.startswith(root):
+        rel = fp[len(root):].lstrip("/")
+        return os.path.normpath(rel) if rel else ""
+    # Already source-relative (the LLM's normal output): normalise in place,
+    # stripping any leading "./". Keep the FULL relative path (not the
+    # basename) so same-basename files in different directories stay distinct.
+    cleaned = fp.lstrip("/")
+    if cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return os.path.normpath(cleaned) if cleaned else ""
+
+
+def _dedup_key(f: dict, source_path: str = "") -> tuple[str, str]:
+    """Build dedup key preferring check_id over normalized title.
+
+    The path component is normalized (P1f) so absolute vs relative forms of
+    the same file do not defeat cross-phase dedup.
+    """
     cid = f.get("check_id", "")
-    fp = f.get("file_path", "")
+    fp = _normalize_dedup_path(f.get("file_path", ""), source_path)
     if cid:
         return (cid, fp)
     return (_normalize_title(f.get("title", "")), fp)
 
 
-def _deduplicate_findings(base: list[dict], new: list[dict]) -> list[dict]:
+def _deduplicate_findings(
+    base: list[dict], new: list[dict], source_path: str = "",
+) -> list[dict]:
     """Return findings from ``new`` not already in ``base``.
 
-    Uses ``check_id`` + ``file_path`` when check_id is present (stable,
-    hierarchical). Falls back to normalized title + file_path otherwise.
+    Uses ``check_id`` + normalized ``file_path`` when check_id is present
+    (stable, hierarchical). Falls back to normalized title + file_path
+    otherwise. Path normalization (P1f) makes the match robust to
+    absolute-vs-relative path forms of the same file.
 
     Args:
         base: Existing findings (e.g. from skill scan).
         new: New findings (e.g. from LLM pass) to filter.
+        source_path: Audit source root, used to normalize paths.
 
     Returns:
         Subset of ``new`` that don't duplicate any entry in ``base``.
     """
     seen: set[tuple[str, str]] = set()
     for f in base:
-        seen.add(_dedup_key(f))
+        seen.add(_dedup_key(f, source_path))
 
     unique: list[dict] = []
     for f in new:
-        key = _dedup_key(f)
+        key = _dedup_key(f, source_path)
         if key not in seen:
             unique.append(f)
             seen.add(key)
     return unique
+
+
+def _is_within_root(candidate: Path, root: Path) -> bool:
+    """True iff ``candidate`` (already resolved) is inside ``root`` (resolved).
+
+    Uses ``Path.resolve()`` on both so symlink escapes (a finding path that
+    points at a symlink inside the tree resolving to ``/etc/...``) are caught.
+    Falls back to a string-prefix check on Python versions / paths where
+    ``is_relative_to`` is unavailable.
+    """
+    try:
+        return candidate.resolve().is_relative_to(root)
+    except AttributeError:  # pragma: no cover — py<3.9
+        try:
+            candidate.resolve().relative_to(root)
+            return True
+        except ValueError:
+            return False
+    except OSError:
+        return False
+
+
+def _resolve_finding_path(file_path: str, source_path: str) -> Path | None:
+    """Resolve a finding's file_path to an existing file on disk, CONFINED to
+    the audit source root.
+
+    Findings report paths in several forms: absolute, source-root-relative,
+    or a bare basename. The LLM-phase ``file_path`` is fully model-controlled
+    (parsed raw from model output), so a prompt-injected / hallucinating model
+    could emit ``/etc/passwd`` or ``~/.aws/credentials`` and have its content
+    read into ``code_snippet`` — which then leaks into the SSE result event.
+    To prevent that arbitrary-file-read → exfiltration channel, we reject any
+    resolved path that is not under ``source_path`` (symlink-escape safe via
+    ``Path.resolve()``).
+
+    When no source root is known (direct unit-test calls), the confinement is
+    skipped and the historical absolute/relative resolution applies.
+    """
+    if not file_path:
+        return None
+    if not source_path:
+        # No root to confine against (e.g. unit tests calling validate with
+        # source_path=""). Preserve the historical resolution behaviour.
+        p = Path(file_path)
+        return p if p.is_file() else None
+
+    root = Path(source_path).resolve()
+    p = Path(file_path)
+    # Absolute paths are taken verbatim; relative paths are resolved against
+    # the source root. Either way the result must be IN-TREE (root-confined).
+    candidate = p if p.is_absolute() else (Path(source_path) / file_path)
+    if candidate.is_file() and _is_within_root(candidate, root):
+        return candidate
+    return None
+
+
+def _attach_code_snippet(
+    findings: list[dict[str, Any]],
+    source_path: str,
+) -> None:
+    """Feature 0057 P0.2: populate a real code window on every finding that
+    lacks one, read from the referenced source line.
+
+    Central choke point applied to ``all_findings`` (skill + LLM) just before
+    the validate stage so the L5 judge always sees a grounded window (R4).
+    Mutates findings in place. Additive / no-op for findings that already
+    carry a non-empty ``code_snippet`` (several skills set it directly).
+
+    A finding whose path cannot be resolved or whose line is missing/zero is
+    left with an empty snippet — the L5 selection layer then SKIPS it (P0.3)
+    rather than judging blind.
+    """
+    from shared.tools.file_scanner import read_file_lines
+
+    for f in findings:
+        if f.get("code_snippet"):
+            continue
+        line_start = f.get("line_start", 0) or 0
+        try:
+            line_start = int(line_start)
+        except (TypeError, ValueError):
+            line_start = 0
+        if line_start < 1:
+            continue
+        resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
+        if resolved is None:
+            continue
+        lines = read_file_lines(resolved)
+        if not lines:
+            continue
+        snippet = extract_snippet(lines, line_start, context=2)
+        if snippet:
+            f["code_snippet"] = snippet
 
 
 def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> None:
@@ -717,17 +962,14 @@ def run_combined_audit(
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
 
-        # Mechanism 6: Build source context once, pass through to LLM collector
-        source_context = _build_source_context(source_path, skill_findings=skill_findings, model=model)
-        file_count = source_context.count("\n--- ") + (
-            1 if source_context.startswith("--- ") else 0
-        )
-        if source_context:
-            yield emitter.text_message(
-                f"Loaded {file_count} file(s) into LLM context."
-            )
-
-        llm_findings, llm_error, actual_input_tokens, actual_output_tokens = _collect_llm_findings(
+        # Feature 0057 P1f: the collector now sweeps the whole tree in
+        # context-window-sized batches (no single pre-built context / silent
+        # tail-drop). It returns a partial-results notice (P1d) when a cap hit.
+        (
+            llm_findings, llm_error,
+            actual_input_tokens, actual_output_tokens,
+            llm_notice,
+        ) = _collect_llm_findings(
             run_id=run_id,
             source_path=source_path,
             categories=categories,
@@ -737,11 +979,14 @@ def run_combined_audit(
             prior_context=prior_context,
             model=model,
             skill_findings=skill_findings,
-            source_context=source_context,
         )
+        if llm_notice:
+            yield emitter.text_message(llm_notice)
         if llm_error:
             yield emitter.text_message(llm_error)
-        llm_new_findings = _deduplicate_findings(skill_findings, llm_findings)
+        llm_new_findings = _deduplicate_findings(
+            skill_findings, llm_findings, source_path=source_path,
+        )
 
         if llm_new_findings:
             yield emitter.text_message(
@@ -751,6 +996,10 @@ def run_combined_audit(
             # remain unique across phases. (Feature 0046 issue #1.)
             base_idx = len(skill_findings)
             for offset, finding in enumerate(llm_new_findings):
+                # Feature 0057: tag LLM findings so the validate stage knows
+                # they are non-deterministic (L5-demotable), while skill
+                # findings stay deterministic/trusted (R2 voter floor).
+                finding.setdefault("provenance", "llm")
                 _assign_finding_id(finding, run_id, base_idx + offset)
                 yield emitter.finding_event(**finding)
         elif not llm_error:
@@ -758,6 +1007,15 @@ def run_combined_audit(
 
     # --- Combine & emit final result ---
     all_findings = skill_findings + llm_new_findings
+
+    # --- Feature 0057 P0.2: code-grounding -----------------------
+    # Populate a real code window on every finding lacking one (read from
+    # source) so the L5 judge is never blind (R4). Additive / no-op when a
+    # finding already carries a snippet. Skipped if the source is gone.
+    try:
+        _attach_code_snippet(all_findings, source_path)
+    except Exception as exc:  # noqa: BLE001 — grounding is best-effort
+        logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
 
     # --- Validate stage (feature 0045) ---------------------------
     # Annotates each finding with validation_status + validation_confidence
@@ -908,20 +1166,145 @@ def _collect_llm_findings(
     model: str | None = None,
     skill_findings: list[dict] | None = None,
     source_context: str = "",
-) -> tuple[list[dict], str | None, int, int]:
-    """Run the LLM audit and collect findings (without SSE wrapping).
+) -> tuple[list[dict], str | None, int, int, str | None]:
+    """Run the LLM audit (batch-looped) and collect findings (no SSE wrapping).
 
-    Returns (findings, error_message, actual_input_tokens, actual_output_tokens).
-    error_message is None on success.
+    Returns ``(findings, error_message, input_tokens, output_tokens, notice)``.
+    ``error_message`` is None on success; ``notice`` carries a partial-results
+    message when the sweep stopped early on the budget / work cap (P1d).
+    Uses ``asyncio.run`` per issue #19.
     """
     return asyncio.run(
-        _collect_llm_findings_async(
+        _collect_llm_findings_batched_async(
             run_id, source_path, categories, skill_tools,
             instructions, domain_label, prior_context, model,
             skill_findings=skill_findings,
-            source_context=source_context,
         )
     )
+
+
+def _resolve_llm_budget_usd() -> float:
+    """Parse VULTURE_LLM_BUDGET_USD; <= 0 / unset / invalid ⇒ no USD cap."""
+    raw = os.environ.get("VULTURE_LLM_BUDGET_USD", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        val = float(raw)
+    except (ValueError, TypeError):
+        logger.warning("invalid_budget_usd value=%r ignoring", raw)
+        return 0.0
+    return val if val > 0 else 0.0
+
+
+async def _collect_llm_findings_batched_async(
+    run_id: str,
+    source_path: str,
+    categories: list[str],
+    skill_tools: list[Any],
+    instructions: str,
+    domain_label: str,
+    prior_context: str = "",
+    model: str | None = None,
+    skill_findings: list[dict] | None = None,
+) -> tuple[list[dict], str | None, int, int, str | None]:
+    """Feature 0057 P1f + P1d: sweep the WHOLE tree in context-window-sized
+    batches instead of a single shot that silently tail-drops files.
+
+    For each batch it runs one agent call (delegating to
+    ``_collect_llm_findings_async``), dedups findings across batches, and
+    accumulates real token usage. The loop stops when the tree is covered, the
+    per-audit file cap (``VULTURE_LLM_MAX_FILES``) is hit, or the estimated USD
+    spend crosses ``VULTURE_LLM_BUDGET_USD`` — emitting a partial-results
+    notice in the latter two cases.
+
+    Returns ``(findings, error, input_tokens, output_tokens, notice)``.
+    """
+    max_files = _safe_int_env("VULTURE_LLM_MAX_FILES", 10000)
+    budget_usd = _resolve_llm_budget_usd()
+
+    # Feature 0057 P1d: the LLM sweep is bounded by VULTURE_LLM_MAX_FILES, the
+    # operative ceiling for the whole-codebase pass. Without passing it here the
+    # sweep would silently cap at the smaller global scan limit
+    # (VULTURE_MAX_FILES, default 500) and the documented LLM cap could never
+    # trip. We take the larger of the two so the LLM phase can sweep beyond the
+    # per-skill scan cap up to its own ceiling.
+    from shared.tools.file_scanner import MAX_FILES as _SCAN_MAX_FILES
+    scan_cap = max(max_files, _SCAN_MAX_FILES)
+    ordered = _prioritize_files(
+        scan_code_files(source_path, max_files=scan_cap), source_path, skill_findings,
+    )
+    max_chars = _get_max_source_chars(model)
+    # Budget-aware batching: with a USD budget configured the sweep batches
+    # cautiously (smaller batches) so cost accrues incrementally and the cap
+    # can halt it mid-tree before over-spending; with no budget it packs large
+    # batches for efficiency (file count is not the throttle — the context
+    # window + budget are; plan §7).
+    files_per_batch = (
+        _safe_int_env("VULTURE_LLM_FILES_PER_BATCH", 1)
+        if budget_usd > 0 else _LLM_FILES_PER_BATCH
+    )
+    batches = _build_source_batches(
+        ordered, source_path, max_chars, skill_findings,
+        files_per_batch=files_per_batch,
+    )
+    # No readable source files → still make ONE tool-enabled call so the LLM
+    # can read/list/grep the tree itself (preserves prior single-shot behaviour).
+    if not batches:
+        batches = [("", [])]
+
+    from shared.llm.provider import estimate_cost
+
+    acc: list[dict] = []
+    total_in = 0
+    total_out = 0
+    files_seen = 0
+    notice: str | None = None
+    first_error: str | None = None
+
+    for batch_idx, (batch_text, batch_paths) in enumerate(batches):
+        findings, error, in_tok, out_tok = await _collect_llm_findings_async(
+            run_id, source_path, categories, skill_tools,
+            instructions, domain_label, prior_context, model,
+            skill_findings=skill_findings,
+            source_context=batch_text,
+        )
+        total_in += in_tok
+        total_out += out_tok
+        files_seen += len(batch_paths)
+        if error and first_error is None:
+            first_error = error
+        if findings:
+            # Dedup across batches AND against skill findings so one vuln seen
+            # in two overlapping windows isn't double-reported (P1f).
+            new = _deduplicate_findings(
+                (skill_findings or []) + acc, findings, source_path=source_path,
+            )
+            acc.extend(new)
+
+        # --- Caps (P1d): evaluate AFTER the batch so its tokens count ---
+        if budget_usd > 0:
+            spent = estimate_cost(total_in, total_out, model)
+            if spent > budget_usd and batch_idx + 1 < len(batches):
+                notice = (
+                    f"[partial results] LLM budget cap reached "
+                    f"(${spent:.4f} > ${budget_usd:.4f}); stopped after "
+                    f"{batch_idx + 1} of {len(batches)} file batch(es). "
+                    f"Remaining files were not analyzed by the LLM."
+                )
+                logger.warning("llm_budget_cap run_id=%s %s", run_id, notice)
+                break
+        if files_seen >= max_files and batch_idx + 1 < len(batches):
+            notice = (
+                f"[partial results] LLM file cap reached "
+                f"({files_seen} >= VULTURE_LLM_MAX_FILES={max_files}); "
+                f"stopped after {batch_idx + 1} of {len(batches)} batch(es)."
+            )
+            logger.warning("llm_file_cap run_id=%s %s", run_id, notice)
+            break
+
+    # Surface a per-call error only when the sweep produced nothing useful.
+    err = first_error if (first_error and not acc) else None
+    return acc, err, total_in, total_out, notice
 
 
 def _build_llm_prompt(
@@ -1030,20 +1413,37 @@ async def _collect_llm_findings_async(
     """Async helper: run LLM agent and return (findings, error, input_tokens, output_tokens)."""
     from agents import Agent, ModelSettings, Runner
     from shared.llm.provider import get_model_with_fallback, get_model_settings, supports_structured_output
-    from shared.tools.file_reader import read_file_tool
-    from shared.tools.file_lister import list_files_tool
-    from shared.tools.pattern_matcher import search_pattern_tool
+    from shared.tools.file_reader import make_read_file_tool
+    from shared.tools.file_lister import make_list_files_tool
+    from shared.tools.pattern_matcher import make_search_pattern_tool
 
     resolved_model = get_model_with_fallback(model)
 
     if not source_context:
         source_context = _build_source_context(source_path, skill_findings=skill_findings, model=model)
-    # Only register file tools when source is NOT embedded inline — avoids
-    # redundant tool-call round trips that waste tokens re-reading files.
-    if source_context:
-        all_tools = list(skill_tools)
+    # Feature 0057 P1c: always attach the read-only file + grep tools, even on
+    # the inline-source path. The inline context is a budget-bounded subset of
+    # the tree; giving the LLM read/list/grep lets it follow cross-file
+    # dataflow into files that didn't fit the window (the batch loop covers
+    # breadth; the tools cover depth). The model decides whether to call them.
+    #
+    # Security: the tools are CONFINED to the audit source root (built per
+    # audit) so a prompt-injected / hallucinating model cannot read or grep
+    # outside the scanned tree (e.g. /etc/passwd, ~/.aws/credentials) and
+    # exfiltrate it via a finding. Falls back to the unconfined module tools
+    # only when no source root is known (should not happen in the real pipeline).
+    if source_path:
+        extra_tools = [
+            make_read_file_tool(source_path),
+            make_list_files_tool(source_path),
+            make_search_pattern_tool(source_path),
+        ]
     else:
-        all_tools = list(skill_tools) + [read_file_tool, list_files_tool, search_pattern_tool]
+        from shared.tools.file_reader import read_file_tool
+        from shared.tools.file_lister import list_files_tool
+        from shared.tools.pattern_matcher import search_pattern_tool
+        extra_tools = [read_file_tool, list_files_tool, search_pattern_tool]
+    all_tools = list(skill_tools) + extra_tools
 
     source_in_system = "anthropic" in resolved_model and bool(source_context)
     prompt_text = _build_llm_prompt(

@@ -221,6 +221,19 @@ def _backfill_l5_offline(
         # (Iteration above replaces the slot, which is fine.)
 
 
+def _revote_l5_judged(
+    out_findings: list[dict[str, Any]], cfg: ValidateConfig,
+) -> None:
+    """Re-vote every finding carrying an ``llm_judge`` check from its current
+    in-place checks. Used on the streaming path so the final status reflects
+    the feature-0057 P1b safeguards that run after the L5 pool (issue: the
+    streaming callback voted before the safeguards neutralised demotions)."""
+    for f in out_findings:
+        checks = f.get("validation", {}).get("checks", [])
+        if any(isinstance(c, dict) and c.get("id") == "llm_judge" for c in checks):
+            _revote_finding_in_place(f, cfg)
+
+
 def _run_l5_phase(
     out_findings: list[dict[str, Any]],
     l1_results: list[list[ValidationCheck]], cfg: ValidateConfig,
@@ -240,6 +253,15 @@ def _run_l5_phase(
         )
         if emit_validation_update is None:
             _backfill_l5_offline(out_findings, l5_results, cfg)
+        else:
+            # Streaming path: run_l5's per-batch callback already re-voted +
+            # emitted intermediate states for the live UI. But the feature
+            # 0057 P1b safeguards (RC6 cap / trusted / crypto exemption) run
+            # *after* the pool, neutralising demoting verdicts in place. Re-
+            # vote every judged finding from its (now safe-guarded) checks so
+            # the FINAL stored status reflects the safeguards, not the pre-
+            # safeguard streamed status.
+            _revote_l5_judged(out_findings, cfg)
         layers_run.append("L5")
     except Exception as exc:
         event_texts.append(

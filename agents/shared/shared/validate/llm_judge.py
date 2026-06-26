@@ -297,7 +297,174 @@ def run_l5(
     )
     log.info("[validate.l5] done batches=%d verdicts=%d",
              completed, len(verdicts_by_id))
+
+    # Feature 0057 P1b: apply L5 safeguards AFTER all verdicts are in so the
+    # global blast-radius cap (RC6) and the per-finding trusted / crypto
+    # exemptions can neutralise demoting verdicts. Mutates both `out` and the
+    # in-place finding validation so the offline backfill + final result see
+    # the safe-guarded state.
+    _apply_l5_safeguards(findings, selected_idx, out)
     return out
+
+
+# ── L5 safeguards (feature 0057 P1b: RC6 cap + trusted/crypto exemption) ──
+
+# Crypto / policy CWEs that must NEVER be auto-suppressed by the L5 judge
+# alone (R2 extension). A weak-crypto / hardcoded-secret / cleartext finding
+# is a deterministic policy violation; the judge's exploitability score is
+# the wrong axis for it.
+_CRYPTO_POLICY_CWES: frozenset[str] = frozenset({
+    "CWE-326", "CWE-327", "CWE-328", "CWE-330", "CWE-798", "CWE-319",
+})
+
+# RC6 blast-radius cap. The cap freezes the L5 layer when the judge demotes
+# a large share of the judged findings — a signal that a miscalibrated /
+# aggressive judge is gutting the result.
+#   * demote fraction > 0.5 → freeze (the layer's demoting verdicts are
+#     discarded), with one carefully-scoped carve-out below.
+#   * a UNANIMOUS demotion (100%) where EVERY judged finding is a
+#     non-deterministic LLM-tier finding is an internally-consistent verdict
+#     (e.g. the judge legitimately decided a small batch of LLM candidates are
+#     all false positives, or a genuinely clean tree) — NOT a blast-radius
+#     anomaly — so it is NOT frozen. This carve-out is intentionally narrow:
+#     the moment a unanimous run includes ANY deterministic / crypto-policy
+#     finding (which is authoritative and must not be gutted en masse), RC6
+#     freezes the whole layer. Deterministic findings are ALSO protected
+#     per-finding by the exemption below; the carve-out only governs whether
+#     the global freeze fires, not whether an individual det finding survives.
+#   * a minority demotion (<= 50%) applies normally.
+# A small minimum population avoids calling a 1-2 finding run a "blast radius".
+_RC6_DEMOTE_FRACTION = 0.5
+_RC6_MIN_JUDGED = 3
+
+
+def _l5_check_is_demoting(check: ValidationCheck) -> bool:
+    return check.id == "llm_judge" and check.weight < 0
+
+
+def _finding_category(finding: dict[str, Any]) -> str:
+    return (finding.get("category") or "").strip().upper()
+
+
+def _is_deterministic(finding: dict[str, Any]) -> bool:
+    """True for skill / signature (deterministic) findings — the
+    authoritative tier (R2). A deterministic finding carries a ``check_id``
+    and is NOT tagged ``provenance == "llm"``. LLM findings (set by the audit
+    runner) are non-deterministic and remain L5-demotable.
+    """
+    if finding.get("provenance") == "llm":
+        return False
+    return bool(finding.get("check_id"))
+
+
+def _is_l5_exempt(finding: dict[str, Any]) -> bool:
+    """True if a demoting L5 verdict must be neutralised for this finding.
+
+    Two exemptions:
+      * Deterministic / trusted findings (skill/signature: a ``check_id`` and
+        no ``provenance == "llm"``) — the deterministic tier is authoritative
+        (R2); the non-deterministic judge may not suppress it alone.
+      * Crypto / policy CWEs — never auto-suppressed regardless of provenance.
+    """
+    if _finding_category(finding) in _CRYPTO_POLICY_CWES:
+        return True
+    return _is_deterministic(finding)
+
+
+def _neutralize_l5_check(check: ValidationCheck, reason: str) -> ValidationCheck:
+    """Return a zero-weight, non-demoting copy of an llm_judge check so the
+    voter no longer counts it as a demotion. Preserves the verdict metadata
+    for transparency."""
+    extras = dict(check.extras)
+    extras["safeguard"] = reason
+    return ValidationCheck(
+        id="llm_judge",
+        result="advisory",
+        weight=0.0,
+        reason=f"{check.reason} [L5 demotion suppressed: {reason}]".strip(),
+        extras=extras,
+    )
+
+
+def _rewrite_l5_check_in_finding(
+    finding: dict[str, Any], new_check: ValidationCheck,
+) -> None:
+    """Replace the existing in-place ``llm_judge`` check on the finding with
+    ``new_check`` (the safe-guarded version). No-op if none present."""
+    v_blob = finding.get("validation")
+    if not isinstance(v_blob, dict):
+        return
+    checks_list = v_blob.get("checks")
+    if not isinstance(checks_list, list):
+        return
+    for i, c in enumerate(checks_list):
+        if isinstance(c, dict) and c.get("id") == "llm_judge":
+            checks_list[i] = new_check.to_json()
+
+
+def _apply_l5_safeguards(
+    findings: list[dict[str, Any]],
+    selected_idx: list[int],
+    out: list[list[ValidationCheck]],
+) -> None:
+    """RC6 blast-radius cap + trusted/crypto exemption.
+
+    1. RC6: if L5 would demote MORE THAN 50% of the judged findings, freeze
+       the whole L5 layer — discard every demoting verdict so a mass-FP run
+       cannot gut the result.
+    2. Otherwise, per-finding: neutralise a demoting verdict on any
+       trusted (deterministic) or crypto/policy finding (R2).
+
+    Mutates both ``out`` and each finding's in-place validation checks.
+    """
+    judged_idx = [i for i in selected_idx if any(
+        c.id == "llm_judge" for c in out[i]
+    )]
+    if not judged_idx:
+        return
+    demoting_idx = [i for i in judged_idx if any(
+        _l5_check_is_demoting(c) for c in out[i]
+    )]
+
+    n_judged = len(judged_idx)
+    n_demoted = len(demoting_idx)
+    demote_frac = n_demoted / n_judged if n_judged else 0.0
+    # A unanimous (100%) demotion is exempt from the global freeze ONLY when
+    # every judged finding is a non-deterministic LLM-tier finding — then it is
+    # an internally-consistent "all these candidates are FPs" verdict, not a
+    # blast-radius anomaly. If any judged finding is deterministic / crypto
+    # (authoritative), a unanimous wipe IS treated as an anomaly and frozen.
+    unanimous = n_demoted == n_judged and n_judged > 0
+    unanimous_all_nondet = unanimous and all(
+        not _is_l5_exempt(findings[i]) for i in judged_idx
+    )
+    rc6_tripped = (
+        n_judged >= _RC6_MIN_JUDGED
+        and demote_frac > _RC6_DEMOTE_FRACTION
+        and not unanimous_all_nondet
+    )
+    if rc6_tripped:
+        log.warning(
+            "[validate.l5] RC6 blast-radius cap tripped — %d/%d judged findings "
+            "would be demoted (> %.0f%%); freezing L5 layer",
+            len(demoting_idx), len(judged_idx), _RC6_DEMOTE_FRACTION * 100,
+        )
+
+    for i in judged_idx:
+        for slot, check in enumerate(out[i]):
+            if not _l5_check_is_demoting(check):
+                continue
+            if rc6_tripped:
+                reason = "rc6_blast_radius_cap"
+            elif _finding_category(findings[i]) in _CRYPTO_POLICY_CWES:
+                reason = "crypto_policy_exempt"
+            elif _is_deterministic(findings[i]):
+                reason = "deterministic_authoritative"
+            else:
+                continue
+            safe = _neutralize_l5_check(check, reason)
+            out[i][slot] = safe
+            _rewrite_l5_check_in_finding(findings[i], safe)
 
 
 # ── Selection ────────────────────────────────────────────────────────
@@ -306,6 +473,17 @@ def run_l5(
 _SEV_RANK: dict[str, int] = {
     "critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0,
 }
+
+
+def _has_code_window(finding: dict[str, Any]) -> bool:
+    """Feature 0057 P0.3: True iff the finding carries a non-empty code
+    window the judge can ground its verdict on.
+
+    Mirrors what `_format_code_window` would render — a snippet that is
+    whitespace-only produces an empty window and must NOT be judged.
+    """
+    snippet = finding.get("code_snippet") or ""
+    return bool(snippet.strip())
 
 
 def _l5_candidate_provisional(
@@ -347,6 +525,11 @@ def _select_findings(
     """
     candidates: list[tuple[float, int]] = []
     for i, f in enumerate(findings):
+        # Feature 0057 P0.3: never judge blind. A finding whose code window
+        # is empty (path unresolved / line missing) is skipped — the judge
+        # would otherwise reason about a `<<<CODE\n\nCODE>>>` empty block.
+        if not _has_code_window(f):
+            continue
         provisional = _l5_candidate_provisional(l1_results[i])
         if provisional is None:
             continue
