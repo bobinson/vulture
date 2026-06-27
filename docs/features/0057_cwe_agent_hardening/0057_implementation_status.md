@@ -3,71 +3,76 @@
 | | |
 |---|---|
 | **Feature** | 0057_cwe_agent_hardening (LLM-on + signatures + verified coverage) |
-| **Status** | 🟢 Phase 0 + Phase 1 IMPLEMENTED & GREEN (T1–T12). Phases 4–7 not started. |
+| **Status** | 🟢 **Phases 0–6 COMPLETE & GREEN** (T1–T24). **N=10 corpus-verified.** Phase 7 (soak) ongoing. |
 | **Last updated** | 2026-06-27 |
+| **Branch** | `feature/0057-cwe-agent-hardening` — Phase 0+1 committed (`da07f8d`); **Phases 2–6 uncommitted** (14 modified + 13 new, incl. `signatures/`, `tests/corpus/` 128 fixtures, `VERIFIED_CWES.md`) |
+| **Suites** | agents/cwe **586 passed / 1 skip** · agents/shared **922 passed** · owasp/soc2 regression green |
 
 > Tests are written **before** the implementation in every phase (CLAUDE.md). An item is
 > "done" only when its tests pass **and** the full existing CWE + shared suites still pass.
-> **N is gate-computed (≈50–65 ship → ~80 ceiling), never asserted.** Phases are
+> **N is gate-computed, never asserted — seed N=10 verified** (growth path to ~80). Phases are
 > independently shippable — gate each before the next.
 
 ## Checkpoints
 
-### Phase 0 — Code-grounding (shared infra; prerequisite)
+### Phase 0 — Code-grounding (shared infra; prerequisite) ✅
 | # | Item | Tests | Status |
 |---|------|-------|--------|
 | 0.1 | `code_snippet` field on the in-memory finding (`audit_runner.py` `AuditFinding`) | T1 | ✅ Done |
 | 0.2 | `_attach_code_snippet()` central populator before `_validate` | T1 | ✅ Done |
-| 0.3 | L5 skips empty-window findings (`_has_code_window` in `_select_findings`) | T2 | ✅ Done |
+| 0.3 | L5 skips empty-window findings (`_has_code_window`) | T2 | ✅ Done |
 
-### Phase 1 — LLM phase on, safely
+### Phase 1 — LLM phase on, safely ✅
 | # | Item | Tests | Status |
 |---|------|-------|--------|
-| 1a | CWE `use_llm` default True (model-gated via `check_llm_health`) + graceful skills-only notice + `VULTURE_CWE_DISABLE_LLM` hatch | T6, T8 | ✅ Done |
-| 1b | L5 default-on for CWE when LLM on; RC6 blast-radius cap; crypto/policy exemption (`_apply_l5_safeguards`) | T3, T5, T10 | ✅ Done |
-| 1c | LLM read/grep tools attached on the inline path too | T9 | ✅ Done |
-| 1d | Cost/work cap (`VULTURE_LLM_BUDGET_USD`, `VULTURE_LLM_MAX_FILES`) + honest token reporting + partial notice | T7 | ✅ Done |
-| 1f | Whole-codebase batch-loop sweep + cross-batch/skill dedup; tail-drop eliminated (`_build_source_batches` + `_collect_llm_findings_batched_async`) | T4, T12 | ✅ Done |
-| **Gate** | Soak: recall/FP/cost telemetry | T3–T12 | ☐ (pending real-audit soak) |
+| 1a | CWE `use_llm` default True (model-gated) + graceful skills-only notice + `VULTURE_CWE_DISABLE_LLM` hatch | T6, T8 | ✅ Done |
+| 1b | L5 default-on; RC6 blast-radius cap; crypto/policy exemption (`_apply_l5_safeguards`) | T3, T5, T10 | ✅ Done |
+| 1c | LLM read/grep tools on the inline path (source-root confined, `confine.py`) | T9 | ✅ Done |
+| 1d | Cost/work cap (`VULTURE_LLM_BUDGET_USD`, `VULTURE_LLM_MAX_FILES`) + honest tokens + partial notice | T7 | ✅ Done |
+| 1f | Whole-codebase batch-loop sweep + cross-batch/skill dedup; tail-drop eliminated | T4, T12 | ✅ Done |
+| **Gate** | Soak: recall/FP/cost telemetry | T3–T12 | ☐ Phase-7 soak (operational) |
 
-### Phase 2 — Snippet redaction + tune from soak
+### Phase 2 — Snippet redaction ✅
 | # | Item | Tests | Status |
 |---|------|-------|--------|
-| 2.0 | **Redact `code_snippet` for secret-bearing CWEs (798/319)** before SSE/DB persist | T-redact | ☐ Not started |
-| 2.1 | RC6 threshold, crypto-exempt set, budget defaults (soak) | — | ☐ Not started |
+| 2.0 | **Redact `code_snippet` for secret-bearing CWEs** before SSE/DB persist | T-redact | ✅ Done — `_redact_finding_inplace` at all 3 egress points; set `{256,259,312,319,321,522,798}` (review-widened) |
+| 2.1 | RC6 threshold, crypto-exempt set, budget defaults | — | ☐ Phase-7 soak (operational) |
 
-### Phase 3 — LLM-on docs
-| 3.1 | Default + generate-verify flow + env vars (agent.py, CLAUDE.md) | — | ☐ Not started |
+### Phase 3 — LLM-on docs ✅
+| 3.1 | Default + generate-verify flow + env vars (agent.py, CLAUDE.md) | — | ✅ Done |
 
-### Phase 4 — Signature registry + detector (land as `candidate`)
+### Phase 4 — Signature registry + detector (land as `candidate`) ✅
 | # | Item | Tests | Status |
 |---|------|-------|--------|
 | 4a | `CweSignature` schema (compiled-regex py modules) | T13 | ✅ Done — `skills/signatures/schema.py` (frozen dataclass) |
 | 4b | Generic 3-step matcher, ext-indexed | T13 | ✅ Done — `skills/signatures/detector.py` (`_SIGS_BY_EXT`, sink→source→sanitizer, line length-capped) |
-| 4c | Registry + family modules | T13 | ✅ Done — `skills/signatures/registry.py` + `families/{redos,injection_ldap_xpath,el_injection,nosql,log_injection,dir_listing}.py`; `covered_cwe_ids()` introspectable |
-| 4d | **(BLOCKING)** route via `check_catalog_generic` + `_DEDICATED_SKILL_CWES` | T14 | ✅ Done — `_apply_signatures()` in `catalog_detector.py`; signature CWEs added to `_BASE_DEDICATED_CWES`. **R12 strategy (B) ADDITIVE: keyword path RETAINED, removal deferred to Phase 6 — zero test edits** |
-| 4e | Validation tiering (trusted/candidate) | T15 | ✅ Done — `_is_deterministic` reads `signature_status` in `validate/llm_judge.py` (candidate → L5-demotable; trusted/skill → authoritative). `voter.py` unchanged (no Go parity change) |
-| 4f | Seed net-new signatures as `candidate` | T13 | ✅ Done — 7 shipped (1333/90/91/917/943/117/548). **CWE-489 DROPPED** (collides with `configuration` skill CWE-1188/1295); deferred to Phase-5 corpus decision |
+| 4c | Registry + family modules | T13 | ✅ Done — `registry.py` + `families/{redos,injection_ldap_xpath,el_injection,nosql,log_injection,dir_listing}.py`; `covered_cwe_ids()` introspectable |
+| 4d | **(BLOCKING)** route via `check_catalog_generic` + `_DEDICATED_SKILL_CWES` | T14 | ✅ Done — `_apply_signatures()` in `catalog_detector.py`. **R12 strategy (B) ADDITIVE: keyword path RETAINED (reframed as low-yield metadata in Phase 6, not removed) — zero test edits** |
+| 4e | Validation tiering (trusted/candidate) | T15 | ✅ Done — `_is_deterministic` reads `signature_status` (candidate → L5-demotable; trusted → authoritative) |
+| 4f | Seed net-new signatures as `candidate` | T13 | ✅ Done — 7 shipped (1333/90/91/917/943/117/548). **CWE-489 DROPPED** (collides with `configuration` skill CWE-1188/1295) |
 
-### Phase 5 — Corpus + per-CWE gates
+### Phase 5 — Corpus + per-CWE gates ✅  → **N=10**
 | # | Item | Tests | Status |
 |---|------|-------|--------|
-| 5a | Corpus tree + `manifest.yaml` (Apache-2.0 + Juliet CC0) | T16 | ☐ Not started |
-| 5b | `gates.yaml` + `corpus_runner.py` (deterministic) | T16–T19 | ☐ Not started |
-| 5c | `promote_signatures.py` (data-driven) | T21 | ☐ Not started |
-| 5d | License rows; no GPL/unlicensed | — | ☐ Not started |
-| 5e | CI: PR curated subset (<~60s) + nightly full lane | — | ☐ Not started |
+| 5a | Corpus tree + `manifest.d/*.yaml` (**128 first-party Apache-2.0 fixtures**, 10 CWEs × 6 pos + 6 clean) | T16 | ✅ Done — Juliet CC0 deferred to Phase 7 |
+| 5b | `gates.yaml` + `corpus_runner.py` (deterministic, no LLM; strict recall=1.0/fp=0.0/min_fixtures=3) | T16–T19 | ✅ Done |
+| 5c | `promote_signatures.py` (data-driven) | T21 | ✅ Done — **all 7 signatures promoted to `trusted`** |
+| 5d | License rows; no GPL/unlicensed | — | ✅ Done — all first-party Apache-2.0; corpus in `.vultureignore` |
+| 5e | CI: PR curated subset + nightly full lane | — | ☐ Phase-7 (CI wiring) |
+| **Result** | **N=10 VERIFIED** {78,89,90,91,117,548,798,917,943,1333}; below-gate band empty | T16–T21 | ✅ |
 
-### Phase 6 — Attestation + doc reconciliation
+### Phase 6 — Attestation + doc reconciliation ✅
 | # | Item | Tests | Status |
 |---|------|-------|--------|
-| 6a | `report_coverage.py` → golden `VERIFIED_CWES.md`; stale→CI fail | T22, T24 | ☐ Not started |
-| 6b | Per-finding `provenance` tag (in-memory) | T23 | ☐ Not started |
-| 6c | Replace "846/400+" with attested N | — | ☐ Not started |
+| 6a | `report_coverage.py` → golden `VERIFIED_CWES.md` (4 buckets); stale→CI fail | T22, T24 | ✅ Done — N=10; DECLARED-ONLY=70; below-gate=0; LLM-ASSISTED=0 |
+| 6b | Per-finding `provenance` tag (6-value vocabulary, in-memory) | T23 | ✅ Done — `skill/signature_trusted/signature_candidate/catalog_rollup/llm/llm_l5_verified` |
+| 6c | Replace "846/400+" with honest multi-tier statement (846 kept as catalog metadata, not collapsed to 10) | — | ✅ Done — agent.py/config.py/SKILLS.md + lockstep test corrections |
 
-### Phase 7 — Soak (signatures)
-| 7.1 | Run signatures + gate on real audits; tune `gates.yaml`; decide CWE-489 | — | ☐ Not started |
-| 7.2 | Measure T25 LLM recall-lift (opt-in, never gated) | T25 | ☐ Not started |
+### Phase 7 — Soak (ongoing / operational)
+| 7.1 | Real-audit soak; tune `gates.yaml`/RC6/budget from telemetry | — | ☐ ongoing |
+| 7.2 | **Juliet CC0 ingestion** — grow DECLARED-ONLY (70) → VERIFIED toward ~80 | — | ☐ ongoing |
+| 7.3 | Line-precision gate (currently file-level recall/fp) | — | ☐ ongoing |
+| 7.4 | T25 LLM recall-lift (opt-in, never gated) | T25 | ☐ ongoing (needs a live model) |
 
 ## Test ledger
 | ID | Contract | Tier | Status |
@@ -84,51 +89,41 @@
 | T10 | crypto CWE not auto-suppressed | det | ✅ |
 | T11 | clean code stays within FP gate | det | ✅ |
 | T12 | LLM sweeps beyond one context window | llm-fake | ✅ |
-| T13 | signature detects cross-line gap, LLM OFF | det | ☐ |
-| T14 | dedup precedence — no double-report (R11) | det | ☐ |
-| T15 | candidate demotable / trusted needs 2 checks | det | ☐ |
-| T16 | corpus runner scores per-CWE | det | ☐ |
-| T17 | recall gate fails on regression | det | ☐ |
-| T18 | per-CWE precision gate | det | ☐ |
-| T19 | min_fixtures anti-vacuity guard | det | ☐ |
-| T20 | weak candidate measured, not gating | det | ☐ |
-| T21 | promotion is data-driven | det | ☐ |
-| T22 | VERIFIED_CWES.md golden not stale | det | ☐ |
-| T23 | provenance tagged | det | ☐ |
-| T24 | attestation counts reconcile | det | ☐ |
-| T25 | LLM raises recall on dataflow fixtures (opt-in, not gating) | llm | ☐ |
+| T-redact | secret-bearing snippet masked, structure preserved | det | ✅ |
+| T13 | signature detects cross-line gap, LLM OFF | det | ✅ |
+| T14 | dedup precedence — no double-report (R11) | det | ✅ |
+| T15 | candidate demotable / trusted needs 2 checks | det | ✅ |
+| T16 | corpus runner scores per-CWE | det | ✅ |
+| T17 | recall gate fails on regression | det | ✅ |
+| T18 | per-CWE precision gate | det | ✅ |
+| T19 | min_fixtures anti-vacuity guard | det | ✅ |
+| T20 | weak candidate measured, not gating | det | ✅ |
+| T21 | promotion is data-driven | det | ✅ |
+| T22 | VERIFIED_CWES.md golden not stale | det | ✅ |
+| T23 | provenance tagged (every finding, one tag) | det | ✅ |
+| T24 | attestation counts reconcile (3 ways, disjoint buckets) | det | ✅ |
+| T25 | LLM raises recall on dataflow fixtures (opt-in, not gating) | llm | ☐ Phase-7 (needs live model) |
+
+## Honest coverage summary
+- **Detects:** ~73–84 declared skill CWE-IDs **+ 7 trusted signature CWEs** (90/91/117/548/917/943/1333).
+- **Corpus-VERIFIED (provable N): 10** — {78,89,90,91,117,548,798,917,943,1333}, strict gate, CI-reproducible.
+- **846 catalog:** reframed as metadata/context (keyword path fires ~0; not counted).
+- **Caveats:** corpus is first-party + author-aligned (a real regression gate, not independent-benchmark validation — Juliet is Phase 7); recall/fp are file-level; no live model here so the LLM path is proven by fakes + the graceful E2E.
 
 ## Decisions log
-- **§12.1 (2026-06-26):** `VULTURE_LLM_MAX_FILES=10000` (per user) — file count not the cap;
-  context window + USD budget bound the sweep.
+- **§12.1 (2026-06-26):** `VULTURE_LLM_MAX_FILES=10000` (per user) — file count not the cap; context window + USD budget bound the sweep.
 - **#15 folded in (2026-06-26):** LLM batch-loop sweep in scope (P1f).
-- **#4 + #2 folded in (2026-06-26):** signatures + corpus + per-CWE gates kept **in 0057** as
-  Phases 4–7 (per user — the design workflow had recommended a 0058 split). Standalone 0058
-  docs removed.
-- **Tranche-1 = 8 signatures** (7 solid + CWE-489 provisional); CWE-77/119/120/377 dropped
-  (overlap), CWE-121/73 deferred (need AST/dataflow).
-- **N gate-computed ≈50–65 → ~80 ceiling** — not 87, not 846.
-- **RC6 cap shape (2026-06-27, impl):** the blast-radius cap freezes L5 only when the
-  demotion fraction is in the OPEN band `(0.5, 1.0)` with `≥3` judged findings — a *majority
-  but not unanimous* demotion (the inconsistent signal RC6 guards against). A **unanimous**
-  100%-demote is treated as an internally-consistent verdict (clean tree) and applies
-  normally; this is what keeps the pre-existing L5 unit tests (single-finding + all-demoted
-  batch) green while satisfying T5/T5b. Tunable in Phase 2 from soak.
-- **Provenance marker (impl):** the audit runner tags LLM findings `provenance="llm"`; the
-  validate stage treats a finding as deterministic/trusted (R2 voter floor + L5-exempt) iff
-  it carries a `check_id` AND is not `provenance=="llm"`. Crypto/policy CWEs
-  (326/327/328/330/798/319) are L5-exempt regardless of provenance.
-- **Budget-aware batching (impl):** with `VULTURE_LLM_BUDGET_USD` set, the sweep batches
-  cautiously (`VULTURE_LLM_FILES_PER_BATCH`, default 1 in budget mode) so cost accrues
-  incrementally and the cap halts it mid-tree; with no budget it packs large batches
-  (default 40 files/batch) for efficiency — file count is not the throttle.
-- **R7 corrected (2026-06-27):** `code_snippet` **persists** to the SSE result + the
-  pre-existing `code_snippet` DB column (`001_init.sql:73`) — no migration; the plan's
-  original "in-memory only" was wrong. **Redaction** for secret-bearing CWEs (798/319) added
-  as **Phase 2 work item P2a** (snippets must not persist secrets).
-- _(§12.3–6 pending review)_
+- **#4 + #2 folded in (2026-06-26):** signatures + corpus + per-CWE gates kept **in 0057** as Phases 4–7 (per user — the design workflow had recommended a 0058 split). Standalone 0058 docs removed.
+- **Tranche (2026-06-27, impl):** **7 signatures shipped** (1333/90/91/917/943/117/548); CWE-489 dropped (overlaps `configuration`); CWE-77/119/120/377 dropped (overlap); CWE-121/73 deferred (need AST/dataflow).
+- **R12 strategy (B) ADDITIVE (2026-06-27, impl):** keyword path retained (reframed as metadata, not removed) — zero existing-test edits.
+- **RC6 cap shape (2026-06-27, impl):** freezes L5 only when the demotion fraction is in the OPEN band `(0.5, 1.0)` with `≥3` judged findings; a unanimous 100%-demote is treated as an internally-consistent verdict. Tunable in Phase 7 soak.
+- **Provenance marker (impl):** 6-value vocabulary set at a single central choke point; LLM findings surviving a non-demoting L5 check re-tag to `llm_l5_verified`; crypto/policy CWEs (326/327/328/330/798/319) L5-exempt regardless of provenance.
+- **Budget-aware batching (impl):** with `VULTURE_LLM_BUDGET_USD` set, the sweep batches cautiously (`VULTURE_LLM_FILES_PER_BATCH`, default 1 in budget mode); with no budget it packs ~40 files/batch.
+- **R7 corrected (2026-06-27):** `code_snippet` **persists** to the SSE result + the pre-existing `code_snippet` DB column (`001_init.sql:73`) — no migration; the plan's original "in-memory only" was wrong. Redaction for secret-bearing CWEs added (Phase 2 P2a).
+- **N=10 (2026-06-27, gate-computed):** the seed corpus (10 CWEs × 6+6 first-party fixtures) yields N=10 under the strict gate; honest, not inflated toward the aspirational ~50–65. Growth to ~80 via more fixtures + Juliet CC0 (Phase 7).
+- **§12.4 Juliet:** deferred to Phase 7 (CC0-compatible; needs network + per-pair vetting against the file-level detector). **§12.6 PR-gate enforcement:** advisory→enforce, wiring is Phase-7 5e.
 
 ## Notes / blockers
-- Awaiting review sign-off on §12 (esp. tranche size, Juliet go/no-go, gate strictness, PR
-  enforcement) before implementation begins.
-- Phases 4–6 depend on Phase 0 (`code_snippet`). Phases 0–1 are shippable independently.
+- **0057 code complete (Phases 0–6); all green.** Phase 7 is operational/ongoing (soak, Juliet ingestion, line-precision, live-model T25).
+- **Phases 2–6 are uncommitted** on the branch (Phase 0+1 = `da07f8d`) — awaiting the maintainer's commit (per no-commit-without-asking).
+- Adversarial review across the 5 phase-workflows caught + fixed real issues: an arbitrary-file-read exfil, a raw-secret SSE leak, untagged rollup parents, and 4 signature false-positive sources.
