@@ -65,6 +65,13 @@ _DEFAULT_BATCH = 10
 _DEFAULT_CONCURRENCY = 5
 _DEFAULT_TOTAL_TIMEOUT_S = 300.0
 _DEFAULT_BATCH_TIMEOUT_S = 30.0  # local 30B models routinely take 10-20 s/batch
+# Output-token cap for a verdict call. Reasoning ("thinking") models (e.g. qwen3)
+# spend most of the budget on hidden reasoning_content, truncating the verdict
+# JSON at the old hard 2000 cap (finish_reason=length → "JSON parse failed twice").
+# Raise + make tunable; non-reasoning models stop early so a higher ceiling is
+# harmless. For reasoning models also lower VULTURE_VALIDATE_LLM_BATCH_SIZE so each
+# batch's JSON fits within reasoning + output.
+_DEFAULT_MAX_OUTPUT_TOKENS = 4000
 
 # Per-process cache of file_path → 12-hex-char sha256 prefix. Used so
 # cache keys for L5 invalidate automatically when source files change
@@ -773,7 +780,7 @@ def _call_llm(
                 {"role": "user", "content": user_msg},
             ],
             "temperature": 0.1,
-            "max_tokens": 2000,
+            "max_tokens": _max_output_tokens(),
             "timeout": timeout_s,  # per-request timeout (issue #6)
         }
         if use_json_format:
@@ -783,6 +790,13 @@ def _call_llm(
         # empty choices. Treat as no-response (caller retries / stubs).
         if not getattr(resp, "choices", None):
             return ""
+        if getattr(resp.choices[0], "finish_reason", None) == "length":
+            log.warning(
+                "[validate.l5] hit max_tokens=%d (finish_reason=length) — verdict JSON "
+                "likely truncated; raise VULTURE_VALIDATE_LLM_MAX_TOKENS and/or lower "
+                "VULTURE_VALIDATE_LLM_BATCH_SIZE (reasoning models burn the budget on thinking)",
+                _max_output_tokens(),
+            )
         text = (resp.choices[0].message.content or "") if resp.choices[0].message else ""
         if len(text.encode("utf-8")) > _MAX_RESPONSE_BYTES:
             log.warning("[validate.l5] response exceeded %d bytes; truncating",
@@ -998,6 +1012,16 @@ def _resolve_per_batch_timeout(config: ValidateConfig) -> float:
     if env.isdigit():
         return int(env) / 1000.0
     return getattr(config, "l5_per_batch_timeout_s", _DEFAULT_BATCH_TIMEOUT_S)
+
+
+def _max_output_tokens() -> int:
+    """Output-token cap for a verdict call (env > default). See
+    `_DEFAULT_MAX_OUTPUT_TOKENS` — raised + tunable so reasoning models don't
+    truncate the verdict JSON."""
+    env = os.getenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return _DEFAULT_MAX_OUTPUT_TOKENS
 
 
 # Known instruction-tuned families, in preference order. Used by the

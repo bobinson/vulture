@@ -13,9 +13,11 @@ import pytest
 
 from shared.validate import validate
 from shared.validate.llm_judge import (
+    _DEFAULT_MAX_OUTPUT_TOKENS,
     _clear_file_hash_cache,
     _file_signature,
     _format_code_window,
+    _max_output_tokens,
     _parse_response,
     _render_user_message,
     _safe_int,
@@ -27,6 +29,18 @@ from shared.validate.llm_judge import (
     run_l5,
 )
 from shared.validate.types import ValidateConfig, ValidationCheck
+
+
+def test_max_output_tokens_env_and_default(monkeypatch):
+    """L5 max_tokens is tunable (env > default). Reasoning models (e.g. qwen3)
+    burn the budget on hidden reasoning; too low a cap truncates the verdict
+    JSON (finish_reason=length) → 0 llm_l5_verified. Raised default + env knob."""
+    monkeypatch.delenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", raising=False)
+    assert _max_output_tokens() == _DEFAULT_MAX_OUTPUT_TOKENS == 4000
+    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "16000")
+    assert _max_output_tokens() == 16000
+    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "0")  # invalid → default
+    assert _max_output_tokens() == _DEFAULT_MAX_OUTPUT_TOKENS
 
 
 # ── Parsing ──────────────────────────────────────────────────────────

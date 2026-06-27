@@ -31,7 +31,11 @@ from __future__ import annotations
 import pytest
 
 import shared.audit_runner as audit_runner
-from shared.validate import _apply_validation_to_finding, validate
+from shared.validate import (
+    _apply_validation_to_finding,
+    _revote_finding_in_place,
+    validate,
+)
 from shared.validate.llm_judge import _is_deterministic, _is_l5_exempt
 from shared.validate.types import ValidationCheck, ValidateConfig
 
@@ -163,6 +167,46 @@ class TestL5VerifiedRetag:
         assert "validation_status" in out
         assert "validation_confidence" in out
         assert "validation" in out
+
+
+# ── L5 STREAMING path re-tag: the live audit finalises L5 verdicts through
+#    _revote_finding_in_place (called by _revote_l5_judged when an
+#    emit_validation_update callback is wired), NOT _apply_validation_to_finding.
+#    The promotion to llm_l5_verified must happen on THIS path too, otherwise the
+#    re-tag is unreachable in the real streaming audit even though the offline
+#    set-point tests above pass. (Regression guard for the streaming-path gap.)
+def _finding_with_l5_check(provenance: str, weight: float) -> dict:
+    return {
+        "provenance": provenance,
+        "check_id": None if provenance == "llm" else "cwe.injection.sql",
+        "validation": {
+            "checks": [_llm_judge_check(weight).to_json()],
+        },
+    }
+
+
+class TestL5StreamingRetag:
+    def test_streaming_revote_promotes_surviving_llm_finding(self):
+        f = _finding_with_l5_check("llm", 0.4)  # non-demoting verdict
+        _revote_finding_in_place(f, ValidateConfig())
+        assert f["provenance"] == "llm_l5_verified"
+
+    def test_streaming_revote_promotes_on_neutralised_verdict(self):
+        # An RC6-/exemption-neutralised verdict carries weight 0 (non-demoting);
+        # a survivor at weight 0 is still re-tagged on the streaming path.
+        f = _finding_with_l5_check("llm", 0.0)
+        _revote_finding_in_place(f, ValidateConfig())
+        assert f["provenance"] == "llm_l5_verified"
+
+    def test_streaming_revote_keeps_llm_on_demoting_verdict(self):
+        f = _finding_with_l5_check("llm", -0.4)  # demoting verdict
+        _revote_finding_in_place(f, ValidateConfig())
+        assert f["provenance"] == "llm"
+
+    def test_streaming_revote_never_retags_skill_finding(self):
+        f = _finding_with_l5_check("skill", 0.4)
+        _revote_finding_in_place(f, ValidateConfig())
+        assert f["provenance"] == "skill"
 
 
 # ── END-TO-END: EVERY emitted record (findings + L2 rollup parents) carries

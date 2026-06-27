@@ -61,18 +61,22 @@
 | 5e | CI: PR curated subset + nightly full lane | — | ☐ Phase-7 (CI wiring) |
 | **Result** | **N=10 VERIFIED** {78,89,90,91,117,548,798,917,943,1333}; below-gate band empty | T16–T21 | ✅ |
 
-### Phase 6 — Attestation + doc reconciliation ✅
+### Phase 6 — Attestation + doc reconciliation (6a–c ✅; 6d ⏳ provenance persistence)
 | # | Item | Tests | Status |
 |---|------|-------|--------|
 | 6a | `report_coverage.py` → golden `VERIFIED_CWES.md` (4 buckets); stale→CI fail | T22, T24 | ✅ Done — N=10; DECLARED-ONLY=70; below-gate=0; LLM-ASSISTED=0 |
 | 6b | Per-finding `provenance` tag (6-value vocabulary, in-memory) | T23 | ✅ Done — `skill/signature_trusted/signature_candidate/catalog_rollup/llm/llm_l5_verified` |
 | 6c | Replace "846/400+" with honest multi-tier statement (846 kept as catalog metadata, not collapsed to 10) | — | ✅ Done — agent.py/config.py/SKILLS.md + lockstep test corrections |
+| 6d | **Provenance persistence (backend, R18)** — surface provenance at `GET /api/audits/:id` + findings table (model + migration 022 + sqlite/postgres repos) | T26 | ✅ Done — **proven live** at the API. Also fixed a real bug: `_retag_l5_verified` was wired only on the OFFLINE validate path → `llm_l5_verified` was **dead code on live (streaming) audits**; now called on both paths (+4 `TestL5StreamingRetag` tests) |
 
 ### Phase 7 — Soak (ongoing / operational)
 | 7.1 | Real-audit soak; tune `gates.yaml`/RC6/budget from telemetry | — | ☐ ongoing |
 | 7.2 | **Juliet CC0 ingestion** — grow DECLARED-ONLY (70) → VERIFIED toward ~80 | — | ☐ ongoing |
 | 7.3 | Line-precision gate (currently file-level recall/fp) | — | ☐ ongoing |
 | 7.4 | T25 LLM recall-lift (opt-in, never gated) | T25 | ☐ ongoing (needs a live model) |
+| 7.5 | **Widen the L5 code window for LLM-tier (cross-function) findings** — ±2 lines can't show a cross-function source→sink flow, so the judge can't *affirmatively* confirm them (they reach `llm_l5_verified` via the RC6 survival path, not `exploitable>0.5`) | — | ☐ ongoing (real-model E2E finding) |
+| 7.6 | **Finish L5 truncation hardening for reasoning models** — even at max_tokens=16000/batch≤2, qwen3.6-35b occasionally truncates a batch's verdict JSON under load | — | ☐ ongoing |
+| 7.7 | **Generate-phase token tuning for reasoning models** — the thinking model can burn the whole output budget on hidden reasoning → empty answer → 0 LLM findings (~33% reliable on the 35B); the generate-side analog of the L5 fix | — | ☐ ongoing |
 
 ## Test ledger
 | ID | Contract | Tier | Status |
@@ -103,6 +107,7 @@
 | T23 | provenance tagged (every finding, one tag) | det | ✅ |
 | T24 | attestation counts reconcile (3 ways, disjoint buckets) | det | ✅ |
 | T25 | LLM raises recall on dataflow fixtures (opt-in, not gating) | llm | ☐ Phase-7 (needs live model) |
+| T26 | provenance round-trips agent → backend → GET /api/audits/:id (sqlite + postgres) | det | ✅ (proven live: API histogram {skill:2, llm_l5_verified:7}) |
 
 ## Honest coverage summary
 - **Detects:** ~73–84 declared skill CWE-IDs **+ 7 trusted signature CWEs** (90/91/117/548/917/943/1333).
@@ -118,6 +123,8 @@
 - **R12 strategy (B) ADDITIVE (2026-06-27, impl):** keyword path retained (reframed as metadata, not removed) — zero existing-test edits.
 - **RC6 cap shape (2026-06-27, impl):** freezes L5 only when the demotion fraction is in the OPEN band `(0.5, 1.0)` with `≥3` judged findings; a unanimous 100%-demote is treated as an internally-consistent verdict. Tunable in Phase 7 soak.
 - **Provenance marker (impl):** 6-value vocabulary set at a single central choke point; LLM findings surviving a non-demoting L5 check re-tag to `llm_l5_verified`; crypto/policy CWEs (326/327/328/330/798/319) L5-exempt regardless of provenance.
+- **Provenance persistence — SCOPE CORRECTED (2026-06-27, per maintainer):** P6b's "in-memory only" is superseded by **R18 / P6d** — provenance MUST surface at `GET /api/audits/:id` + the findings table (multi-impl backend change). Real-model E2E (LM Studio `qwen3.6-35b-a3b` on `woofy/app`) confirmed the agent emits **6 `provenance="llm"` findings**; the live-stack proof of `llm_l5_verified` + API-surfaced provenance is pending the **L5-on restart + the P6d plumbing**.
+- **Real-model E2E CLOSED (2026-06-27, LM Studio qwen3.6-35b-a3b):** (1) **`llm_l5_verified` produced + live at the API** (audit `54505115`, histogram {skill:2, llm_l5_verified:7}, incl. 4 cross-line `export_route.ts` findings the regex skills miss). (2) **Found + fixed a real dead-code bug** — the streaming validate path never retagged `llm_l5_verified` (P6b was wired/tested offline-only), so it never worked on live audits; fixed + 4 regression tests (`TestL5StreamingRetag`). (3) **L5 `max_tokens` fix** (default 4000, tunable) resolves the thinking-model verdict-JSON truncation that returned 0 verdicts. **Honest caveats:** the promotions survived via the RC6 safeguard (weight=0), NOT affirmative confirmation (0 verdicts `exploitable>0.5`) — the ±2-line L5 window can't see cross-function flows (7.5); generate is ~33% reliable on this thinking model without token tuning (7.7); L5 still occasionally truncates under load (7.6). **Net: caveat 2's mechanism is proven and a real bug was fixed; quality/reliability are Phase-7 follow-ups.**
 - **Budget-aware batching (impl):** with `VULTURE_LLM_BUDGET_USD` set, the sweep batches cautiously (`VULTURE_LLM_FILES_PER_BATCH`, default 1 in budget mode); with no budget it packs ~40 files/batch.
 - **R7 corrected (2026-06-27):** `code_snippet` **persists** to the SSE result + the pre-existing `code_snippet` DB column (`001_init.sql:73`) — no migration; the plan's original "in-memory only" was wrong. Redaction for secret-bearing CWEs added (Phase 2 P2a).
 - **N=10 (2026-06-27, gate-computed):** the seed corpus (10 CWEs × 6+6 first-party fixtures) yields N=10 under the strict gate; honest, not inflated toward the aspirational ~50–65. Growth to ~80 via more fixtures + Juliet CC0 (Phase 7).

@@ -187,7 +187,18 @@ def _provisional_vote(
 def _revote_finding_in_place(
     finding: dict[str, Any], cfg: ValidateConfig,
 ) -> None:
-    """Re-run vote() using the finding's own checks; mutate in place."""
+    """Re-run vote() using the finding's own checks; mutate in place.
+
+    Feature 0057 P6b: this is the finaliser on the L5 *streaming* path
+    (``_run_l5_phase`` calls it via ``_revote_l5_judged`` when an
+    ``emit_validation_update`` callback is wired). The offline backfill path
+    finalises through ``_apply_validation_to_finding`` which already promotes
+    a surviving LLM finding to ``llm_l5_verified``; the streaming revote must
+    apply the SAME promotion or the re-tag is unreachable in the live audit
+    (it only ever appeared in unit tests of the offline set-point). Mirror it
+    here so a streamed LLM finding that carries a non-demoting ``llm_judge``
+    verdict is re-tagged identically.
+    """
     revote_checks = [
         ValidationCheck.from_json(c)
         for c in finding.get("validation", {}).get("checks", [])
@@ -199,6 +210,7 @@ def _revote_finding_in_place(
     finding["validation"] = fv.to_json()
     finding["validation_status"] = fv.status
     finding["validation_confidence"] = fv.confidence
+    _retag_l5_verified(finding, revote_checks)
 
 
 def _make_l5_stream_callback(

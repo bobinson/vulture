@@ -75,6 +75,10 @@ feature delivers both.
   **redacted** in the snippet before persist (Phase 2, P2a). *(Corrected 2026-06-27: the
   original "in-memory only" was wrong — the column predated this feature, so no migration.)*
 - **R8** Other agents unchanged — the flip is CWE-scoped via the per-request override.
+- **R18** *(provenance persists — scope-corrected 2026-06-27, per maintainer)* the agent's
+  per-finding `provenance` MUST surface end-to-end at `GET /api/audits/:id` and the findings
+  table (P6d). Supersedes P6b's original "in-memory only". Multi-implementation (sqlite +
+  postgres + the migration runner).
 - **R9** Determinism: skills + signatures stay deterministic; LLM is not. Business-logic
   tests use a **fake provider**; CI gates never call a live LLM.
 
@@ -210,8 +214,9 @@ Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
 | Item | What | Where | Effort |
 |---|---|---|---|
 | P6a | `report_coverage.py` → golden `VERIFIED_CWES.md` (4 buckets); **N = VERIFIED rows**; stale → CI fail | **add** `tests/corpus/report_coverage.py`, `VERIFIED_CWES.md` | M |
-| P6b | Per-finding `provenance` tag (in-memory only) | **change** `audit_runner.py:760` | S |
+| P6b | Per-finding `provenance` tag (agent-side, 6-value vocabulary) | **change** `audit_runner.py:760` | S |
 | P6c | Replace "846/400+" with the attested N (docs + `test_catalog_detector.py`) | **change** docs + tests | S |
+| P6d | **Provenance persistence (backend, R18)** — surface the agent's per-finding `provenance` at `GET /api/audits/:id` + the findings table. Multi-impl: add `Provenance` to `model.Finding` (mirror `CodeSnippet`); carry it through `stream_handler.go` (`parseSnapshot`/`extractDeltaFindings`); INSERT/SELECT in `sqlite_repo.go` + `postgres_repo.go`; add a `provenance` column (sqlite inline `ALTER TABLE` + a new gated postgres migration per `docs/guides/migration_authoring.md`). TDD: provenance round-trips. | **change** `backend/internal/model/finding.go`, `handler/stream_handler.go`, `repository/{sqlite,postgres}_repo.go` + migration | M |
 
 **Honest total: ~5–8 person-weeks** (Phase 0–1 ≈ 1–2wk; Phase 4 ≈ 1.5wk; Phase 5 ≈ 2–3wk,
 corpus + license review dominate; Phase 6 ≈ 2–3d). Large — hence the per-phase gates.
