@@ -1,0 +1,26 @@
+# Group: sig_b — NoSQL injection + log injection + directory listing.
+# First-party Apache-2.0 fixtures (feature 0057 Phase 5). Paths relative to ../fixtures/.
+
+# ── CWE-943 NoSQL injection (signature cwe.sig.nosql) ──
+- {file: sig_b/cwe_943_1.js, language: JavaScript, cwe: "943", expectation: positive, line: 5}
+- {file: sig_b/cwe_943_2.py, language: Python, cwe: "943", expectation: positive, line: 4}
+- {file: sig_b/cwe_943_3.js, language: JavaScript, cwe: "943", expectation: positive, line: 5}
+- {file: sig_b/cwe_943_1_clean.js, language: JavaScript, cwe: "943", expectation: negative}
+- {file: sig_b/cwe_943_2_clean.py, language: Python, cwe: "943", expectation: negative}
+- {file: sig_b/cwe_943_3_clean.js, language: JavaScript, cwe: "943", expectation: negative}
+
+# ── CWE-117 log injection (signature cwe.sig.loginj) ──
+- {file: sig_b/cwe_117_1.java, language: Java, cwe: "117", expectation: positive, line: 5}
+- {file: sig_b/cwe_117_2.py, language: Python, cwe: "117", expectation: positive, line: 4}
+- {file: sig_b/cwe_117_3.js, language: JavaScript, cwe: "117", expectation: positive, line: 5}
+- {file: sig_b/cwe_117_1_clean.java, language: Java, cwe: "117", expectation: negative}
+- {file: sig_b/cwe_117_2_clean.py, language: Python, cwe: "117", expectation: negative}
+- {file: sig_b/cwe_117_3_clean.js, language: JavaScript, cwe: "117", expectation: negative}
+
+# ── CWE-548 directory listing (signature cwe.sig.dirlist) ──
+- {file: sig_b/cwe_548_1.js, language: JavaScript, cwe: "548", expectation: positive, line: 5}
+- {file: sig_b/cwe_548_2.java, language: Java, cwe: "548", expectation: positive, line: 4}
+- {file: sig_b/cwe_548_3.py, language: Python, cwe: "548", expectation: positive, line: 4}
+- {file: sig_b/cwe_548_1_clean.js, language: JavaScript, cwe: "548", expectation: negative}
+- {file: sig_b/cwe_548_2_clean.java, language: Java, cwe: "548", expectation: negative}
+- {file: sig_b/cwe_548_3_clean.py, language: Python, cwe: "548", expectation: negative}

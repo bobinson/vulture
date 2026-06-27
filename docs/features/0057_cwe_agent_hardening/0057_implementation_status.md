@@ -30,8 +30,11 @@
 | 1f | Whole-codebase batch-loop sweep + cross-batch/skill dedup; tail-drop eliminated (`_build_source_batches` + `_collect_llm_findings_batched_async`) | T4, T12 | ✅ Done |
 | **Gate** | Soak: recall/FP/cost telemetry | T3–T12 | ☐ (pending real-audit soak) |
 
-### Phase 2 — Tune from soak
-| 2.1 | RC6 threshold, crypto-exempt set, budget defaults | — | ☐ Not started |
+### Phase 2 — Snippet redaction + tune from soak
+| # | Item | Tests | Status |
+|---|------|-------|--------|
+| 2.0 | **Redact `code_snippet` for secret-bearing CWEs (798/319)** before SSE/DB persist | T-redact | ☐ Not started |
+| 2.1 | RC6 threshold, crypto-exempt set, budget defaults (soak) | — | ☐ Not started |
 
 ### Phase 3 — LLM-on docs
 | 3.1 | Default + generate-verify flow + env vars (agent.py, CLAUDE.md) | — | ☐ Not started |
@@ -39,12 +42,12 @@
 ### Phase 4 — Signature registry + detector (land as `candidate`)
 | # | Item | Tests | Status |
 |---|------|-------|--------|
-| 4a | `CweSignature` schema (compiled-regex py modules) | T13 | ☐ Not started |
-| 4b | Generic 3-step matcher, ext-indexed | T13 | ☐ Not started |
-| 4c | Registry + family modules | T13 | ☐ Not started |
-| 4d | **(BLOCKING)** route via `check_catalog_generic` + `_DEDICATED_SKILL_CWES`; remove keyword path | T14 | ☐ Not started |
-| 4e | Validation tiering (trusted/candidate) | T15 | ☐ Not started |
-| 4f | Seed 7–8 net-new signatures as `candidate` | T13 | ☐ Not started |
+| 4a | `CweSignature` schema (compiled-regex py modules) | T13 | ✅ Done — `skills/signatures/schema.py` (frozen dataclass) |
+| 4b | Generic 3-step matcher, ext-indexed | T13 | ✅ Done — `skills/signatures/detector.py` (`_SIGS_BY_EXT`, sink→source→sanitizer, line length-capped) |
+| 4c | Registry + family modules | T13 | ✅ Done — `skills/signatures/registry.py` + `families/{redos,injection_ldap_xpath,el_injection,nosql,log_injection,dir_listing}.py`; `covered_cwe_ids()` introspectable |
+| 4d | **(BLOCKING)** route via `check_catalog_generic` + `_DEDICATED_SKILL_CWES` | T14 | ✅ Done — `_apply_signatures()` in `catalog_detector.py`; signature CWEs added to `_BASE_DEDICATED_CWES`. **R12 strategy (B) ADDITIVE: keyword path RETAINED, removal deferred to Phase 6 — zero test edits** |
+| 4e | Validation tiering (trusted/candidate) | T15 | ✅ Done — `_is_deterministic` reads `signature_status` in `validate/llm_judge.py` (candidate → L5-demotable; trusted/skill → authoritative). `voter.py` unchanged (no Go parity change) |
+| 4f | Seed net-new signatures as `candidate` | T13 | ✅ Done — 7 shipped (1333/90/91/917/943/117/548). **CWE-489 DROPPED** (collides with `configuration` skill CWE-1188/1295); deferred to Phase-5 corpus decision |
 
 ### Phase 5 — Corpus + per-CWE gates
 | # | Item | Tests | Status |
@@ -119,6 +122,10 @@
   cautiously (`VULTURE_LLM_FILES_PER_BATCH`, default 1 in budget mode) so cost accrues
   incrementally and the cap halts it mid-tree; with no budget it packs large batches
   (default 40 files/batch) for efficiency — file count is not the throttle.
+- **R7 corrected (2026-06-27):** `code_snippet` **persists** to the SSE result + the
+  pre-existing `code_snippet` DB column (`001_init.sql:73`) — no migration; the plan's
+  original "in-memory only" was wrong. **Redaction** for secret-bearing CWEs (798/319) added
+  as **Phase 2 work item P2a** (snippets must not persist secrets).
 - _(§12.3–6 pending review)_
 
 ## Notes / blockers

@@ -68,8 +68,12 @@ feature delivers both.
 - **R6b** The LLM phase **covers the whole codebase**, not just the first context window — it
   iterates over file batches until the tree is analyzed or the budget (R6) is hit, never
   silently truncating.
-- **R7** Python-only, **no DB migration** (`code_snippet` is in-memory; not in the persisted
-  model / SSE this feature).
+- **R7** Python-only, **no DB migration**: `code_snippet` populates the **pre-existing**
+  `code_snippet` column (`backend/internal/repository/migrations/001_init.sql:73`,
+  `backend/internal/model/finding.go:28`) — it flows to the SSE `result` + the findings table
+  (useful UI context). Secret-bearing CWEs (**798 hardcoded creds / 319 cleartext**) are
+  **redacted** in the snippet before persist (Phase 2, P2a). *(Corrected 2026-06-27: the
+  original "in-memory only" was wrong — the column predated this feature, so no migration.)*
 - **R8** Other agents unchanged — the flip is CWE-scoped via the per-request override.
 - **R9** Determinism: skills + signatures stay deterministic; LLM is not. Business-logic
   tests use a **fake provider**; CI gates never call a live LLM.
@@ -171,6 +175,12 @@ Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
 | P1c | LLM gets read/grep tools on the inline path (`audit_runner.py:~1043`) | `audit_runner.py` | M |
 | P1d | Cost/work cap (`VULTURE_LLM_MAX_FILES`, `VULTURE_LLM_BUDGET_USD`); honest token counts (incl. local) | `audit_runner.py:289-293,716-757,992-999` | M |
 | P1f | **Whole-codebase batch-loop** — replace the single-shot `Runner.run` (`:1122`) with a batch loop (context-window-sized batches; dedup across batches + skills; stop at tree-covered or budget). Eliminates the silent tail-drop (`:289-293`) | `audit_runner.py:289-293,1122` | M |
+
+### Phase 2 — Snippet redaction + soak-tuning
+| Item | What | Where | Effort |
+|---|---|---|---|
+| P2a | **Redact `code_snippet` for secret-bearing findings** (CWE-798 hardcoded creds, CWE-319 cleartext): mask quoted string literals / assignment RHS in the window **before** it reaches the SSE `result` + the DB. TDD: a CWE-798 finding's snippet has the secret masked, structure preserved; non-secret findings untouched. | `audit_runner.py` (`_redact_snippet` in/around `_attach_code_snippet`) | M |
+| P2b | Tune RC6 threshold, crypto-exempt set, budget defaults from real-audit soak telemetry | config/docs | — (soak) |
 
 ### Phase 3 — Docs (LLM-on)
 | Item | What | Where | Effort |
@@ -276,7 +286,7 @@ raises recall on dataflow fixtures, ranges not counts, never folded into N.
 1. **MAX_FILES** — ✅ **decided (2026-06-26):** `VULTURE_LLM_MAX_FILES=10000` (uncapped by
    file count; context window + USD budget bound the sweep). USD cap off by default — confirm.
 2. **LLM defaults** — CWE-only · on-when-model-available · L5 on · L5 only re-ranks skill
-   findings within the 2-check floor · `code_snippet` internal-only. Confirm.
+   findings within the 2-check floor · `code_snippet` **persists** to SSE+DB (pre-existing column; R7 corrected) **with redaction** for secret-bearing CWEs. ✅ confirmed.
 3. **Signature tranche** — 7 solid net-new, or include the provisional CWE-489 from the start
    (gate decides either way)?
 4. **Juliet supplement** — vendor a curated CC0 Juliet subset for C/C++/Java (bigger N), or

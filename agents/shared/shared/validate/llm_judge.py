@@ -347,12 +347,20 @@ def _finding_category(finding: dict[str, Any]) -> str:
 
 
 def _is_deterministic(finding: dict[str, Any]) -> bool:
-    """True for skill / signature (deterministic) findings — the
+    """True for skill / trusted-signature (deterministic) findings — the
     authoritative tier (R2). A deterministic finding carries a ``check_id``
     and is NOT tagged ``provenance == "llm"``. LLM findings (set by the audit
     runner) are non-deterministic and remain L5-demotable.
+
+    Feature 0057 P4e (R13) extends the Phase-1 logic with the signature tier:
+    a finding carrying ``signature_status == "candidate"`` is NOT yet
+    corpus-verified, so it is NON-deterministic and L5-demotable like an LLM
+    finding. A ``trusted`` signature (corpus-gated) and any plain skill
+    finding (no ``signature_status``) remain deterministic-authoritative.
     """
     if finding.get("provenance") == "llm":
+        return False
+    if finding.get("signature_status") == "candidate":
         return False
     return bool(finding.get("check_id"))
 

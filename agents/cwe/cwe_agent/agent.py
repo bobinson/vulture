@@ -3,6 +3,34 @@
 Implements a two-phase audit pipeline:
   Phase 1 (Skills): 22 concurrent skills including catalog-driven detector
   Phase 2 (LLM): Self-learning analysis with catalog context injection
+
+LLM phase policy (feature 0057 P1a — LLM-on-by-default, model-gated,
+generate-then-verify):
+
+  * Unlike other agents (whose LLM phase keys off the global
+    ``VULTURE_USE_LLM`` flag, default ``false``), the CWE agent runs the LLM
+    phase BY DEFAULT. ``_resolve_cwe_llm`` decides the effective toggle in
+    order: ``VULTURE_CWE_DISABLE_LLM`` escape hatch (always skills-only) >
+    explicit per-request ``use_llm`` bool > default ON.
+  * "Model-gated": when the LLM phase is wanted it is gated on a provider
+    health probe (``_probe_llm_health``). If no usable model is reachable the
+    audit degrades GRACEFULLY to skills-only with a notice and still exits
+    cleanly (R5) — no key / no model is not an error for the Mode-E user.
+  * "Generate-then-verify": when the LLM phase is on, the L5 LLM judge
+    (``validate_use_llm``) defaults ON for CWE, so model-generated findings
+    are independently verified before they are reported (R4). A per-request
+    ``validate.llm`` bool overrides this.
+  * The LLM sweep is bounded (feature 0057 P1d): it stops at
+    ``VULTURE_LLM_MAX_FILES`` files (default 10000) or when estimated spend
+    crosses ``VULTURE_LLM_BUDGET_USD`` (unset / <= 0 ⇒ no USD cap), emitting
+    partial results rather than running unbounded.
+
+Snippet handling (feature 0057 P0/P2a): the shared runner back-fills a code
+window onto every finding and, for secret-bearing CWEs (CWE-798/319/312/256/
+259/321/522), masks the secret VALUE in that window. Redaction is applied at
+EVERY snippet egress point — the per-finding ``finding`` SSE event (live
+frontend view), the ``result`` snapshot event, and the persisted DB
+``code_snippet`` column — so the raw secret never leaves the agent.
 """
 
 import asyncio
@@ -24,11 +52,17 @@ _CATALOG_CWE_IDS = [e["id"] for e in get_static_detectable(min_score=0.3)][:80]
 
 INSTRUCTIONS = """You are a CWE (Common Weakness Enumeration) Security Auditor using CWE v4.19.1.
 
-## Catalog Coverage
-The CWE v4.19.1 catalog contains 846 software-relevant weaknesses. The skill phase
-already ran 22 concurrent detectors covering:
-- 21 dedicated skills with hand-crafted regex patterns (~86 CWE IDs)
-- 1 catalog-driven generic detector using keyword matching (~400+ CWE IDs)
+## Catalog Coverage (honest, multi-tier)
+The CWE v4.19.1 catalog has 846 entries — that figure is CONTEXT/metadata
+(names, consequences, rollup parents), NOT a detection-coverage claim. What the
+deterministic skill phase actually DETECTS:
+- 21 dedicated regex skills emitting ~73 distinct CWE-ID `category` literals,
+  plus 7 corpus-trusted signature CWE-IDs.
+- Of those, N=10 CWE types are CORPUS-VERIFIED (recall 1.0 / fp 0.0 on the
+  labeled corpus) — see tests/corpus/VERIFIED_CWES.md; N is computed by the
+  gate, not asserted.
+- 1 catalog-driven generic detector keyword-matches against the 846-entry
+  catalog, but that path fires ~0 findings on real code (metadata/context only).
 
 ## Your Role (LLM Phase)
 You augment the skill phase with deeper semantic analysis that regex cannot perform:
@@ -68,7 +102,7 @@ When prior findings are provided:
 - Insufficient logging: CWE-778 (except/catch without log)
 - Uncaught exception: CWE-248 (Java throws Exception / Python except Exception: pass)
 - Weak entropy: CWE-331/332 (random.random/Math.random flowing into token|key|nonce...)
-- Catalog generic: 400+ additional CWEs via keyword matching + rollup for Class/Pillar parents
+- Catalog generic: keyword-matches against the 846-entry catalog + rollup for Class/Pillar parents — metadata/context path that fires ~0 findings on real code (not a coverage claim)
 
 ## Reporting Format
 For each finding, provide:
@@ -167,7 +201,17 @@ def run_audit(
     config: dict,
     prior_findings: list[dict[str, Any]] | None = None,
 ) -> Generator[str, None, None]:
-    """Execute the CWE weakness audit and yield SSE events."""
+    """Execute the CWE weakness audit and yield SSE events.
+
+    Runs the skill phase (full coverage) and then the LLM phase under the
+    LLM-on-by-default, model-gated, generate-then-verify policy described in
+    the module docstring: ``_resolve_cwe_llm`` resolves the effective LLM
+    toggle (``VULTURE_CWE_DISABLE_LLM`` escape hatch > per-request ``use_llm``
+    > default ON) and gates it on provider health, degrading to skills-only
+    with a notice when no model is reachable; when the LLM phase is on, the L5
+    judge (``validate_use_llm``) defaults ON so model findings are verified
+    before being reported.
+    """
     categories = config.get("categories", ALL_CATEGORIES)
     preloaded = prior_findings if prior_findings else None
     max_f = get_max_findings()

@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
-from .llm_judge import run_l5
+from .llm_judge import _l5_check_is_demoting, run_l5
 from .rollup import run_l2
 from .types import (
     FindingValidation,
@@ -126,6 +126,28 @@ def _run_l2_phase(
     return l2_results, rollups
 
 
+def _retag_l5_verified(
+    new_f: dict[str, Any], checks: list[ValidationCheck],
+) -> None:
+    """Feature 0057 P6b: re-tag an LLM finding that SURVIVES L5.
+
+    An ``llm``-provenance finding that carries a NON-demoting ``llm_judge``
+    (L5) check is promoted to ``llm_l5_verified`` — it was model-generated and
+    independently confirmed by the judge. A demoting or absent L5 verdict
+    leaves the ``llm`` tag in place. Deterministic findings (any non-``llm``
+    provenance) are NEVER re-tagged to an ``llm_*`` provenance. Mutates in
+    place; the validation* fields stamped by the caller are untouched.
+    """
+    if new_f.get("provenance") != "llm":
+        return
+    l5_checks = [c for c in checks if c.id == "llm_judge"]
+    if not l5_checks:
+        return
+    if any(_l5_check_is_demoting(c) for c in l5_checks):
+        return
+    new_f["provenance"] = "llm_l5_verified"
+
+
 def _apply_validation_to_finding(
     finding: dict[str, Any], checks: list[ValidationCheck], cfg: ValidateConfig,
 ) -> dict[str, Any]:
@@ -138,6 +160,7 @@ def _apply_validation_to_finding(
     new_f["validation"] = v.to_json()
     new_f["validation_status"] = v.status
     new_f["validation_confidence"] = v.confidence
+    _retag_l5_verified(new_f, checks)
     return new_f
 
 

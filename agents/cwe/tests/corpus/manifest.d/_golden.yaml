@@ -1,0 +1,25 @@
+# Golden fragment — a TINY, self-contained slice used ONLY by the unit tests
+# (T16-T21) so they are deterministic and do not depend on the full seed corpus.
+#
+# Two genuine CWEs, each with the structure the gate needs:
+#   CWE-78   : 1 positive + 1 clean (deliberately < min_fixtures, for the
+#              anti-vacuity test T19 — it must NOT be counted in N).
+#   CWE-1333 : 3 positive + 3 clean (meets min_fixtures, used for the
+#              recall/precision/promotion tests).
+#
+# NOTE: this fragment is loaded by name in the unit tests (not via the
+# production glob). corpus_runner's full-corpus run must EXCLUDE files whose
+# basename starts with "g_" / fragments named "_golden" so the golden slice
+# never pollutes the real N. The unit tests pass this fragment explicitly.
+
+# ── CWE-78 (under-min on purpose: only 1+1) ──
+- {file: _golden/g_078_1.py, language: Python, cwe: "78", expectation: positive, line: 6}
+- {file: _golden/g_078_1_clean.py, language: Python, cwe: "78", expectation: negative}
+
+# ── CWE-1333 (meets min_fixtures: 3 positive + 3 clean) ──
+- {file: _golden/g_1333_1.js, language: JavaScript, cwe: "1333", expectation: positive, line: 2}
+- {file: _golden/g_1333_2.py, language: Python, cwe: "1333", expectation: positive, line: 4}
+- {file: _golden/g_1333_3.js, language: JavaScript, cwe: "1333", expectation: positive, line: 2}
+- {file: _golden/g_1333_1_clean.js, language: JavaScript, cwe: "1333", expectation: negative}
+- {file: _golden/g_1333_2_clean.py, language: Python, cwe: "1333", expectation: negative}
+- {file: _golden/g_1333_3_clean.js, language: JavaScript, cwe: "1333", expectation: negative}

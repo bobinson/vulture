@@ -1,0 +1,34 @@
+# Group: sig_a — ReDoS + LDAP/XPath/EL signature CWEs (first-party, Apache-2.0).
+# Distinct shapes/languages from the signatures_a group. Paths relative to ../fixtures/.
+
+# ── CWE-1333 ReDoS (signature cwe.sig.redos) ──
+- {file: sig_a/cwe_1333_1.java, language: Java, cwe: "1333", expectation: positive, line: 4}
+- {file: sig_a/cwe_1333_2.go, language: Go, cwe: "1333", expectation: positive, line: 6}
+- {file: sig_a/cwe_1333_3.ts, language: TypeScript, cwe: "1333", expectation: positive, line: 2}
+- {file: sig_a/cwe_1333_1_clean.java, language: Java, cwe: "1333", expectation: negative}
+- {file: sig_a/cwe_1333_2_clean.go, language: Go, cwe: "1333", expectation: negative}
+- {file: sig_a/cwe_1333_3_clean.ts, language: TypeScript, cwe: "1333", expectation: negative}
+
+# ── CWE-90 LDAP injection (signature cwe.sig.ldap) ──
+- {file: sig_a/cwe_090_1.java, language: Java, cwe: "90", expectation: positive, line: 5}
+- {file: sig_a/cwe_090_2.js, language: JavaScript, cwe: "90", expectation: positive, line: 4}
+- {file: sig_a/cwe_090_3.py, language: Python, cwe: "90", expectation: positive, line: 4}
+- {file: sig_a/cwe_090_1_clean.java, language: Java, cwe: "90", expectation: negative}
+- {file: sig_a/cwe_090_2_clean.js, language: JavaScript, cwe: "90", expectation: negative}
+- {file: sig_a/cwe_090_3_clean.py, language: Python, cwe: "90", expectation: negative}
+
+# ── CWE-91 XPath injection (signature cwe.sig.xpath) ──
+- {file: sig_a/cwe_091_1.py, language: Python, cwe: "91", expectation: positive, line: 4}
+- {file: sig_a/cwe_091_2.java, language: Java, cwe: "91", expectation: positive, line: 5}
+- {file: sig_a/cwe_091_3.java, language: Java, cwe: "91", expectation: positive, line: 7}
+- {file: sig_a/cwe_091_1_clean.py, language: Python, cwe: "91", expectation: negative}
+- {file: sig_a/cwe_091_2_clean.java, language: Java, cwe: "91", expectation: negative}
+- {file: sig_a/cwe_091_3_clean.java, language: Java, cwe: "91", expectation: negative}
+
+# ── CWE-917 EL/SpEL/OGNL/MVEL injection (signature cwe.sig.spel, Java) ──
+- {file: sig_a/cwe_917_1.java, language: Java, cwe: "917", expectation: positive, line: 7}
+- {file: sig_a/cwe_917_2.java, language: Java, cwe: "917", expectation: positive, line: 5}
+- {file: sig_a/cwe_917_3.java, language: Java, cwe: "917", expectation: positive, line: 8}
+- {file: sig_a/cwe_917_1_clean.java, language: Java, cwe: "917", expectation: negative}
+- {file: sig_a/cwe_917_2_clean.java, language: Java, cwe: "917", expectation: negative}
+- {file: sig_a/cwe_917_3_clean.java, language: Java, cwe: "917", expectation: negative}

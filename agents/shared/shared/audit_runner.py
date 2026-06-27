@@ -784,6 +784,225 @@ def _resolve_finding_path(file_path: str, source_path: str) -> Path | None:
     return None
 
 
+# Feature 0057 P2a: CWEs whose findings embed an actual secret VALUE in the
+# offending source line (credential, key, password, cleartext URL). For these,
+# the secret must be masked out of ``code_snippet`` before it reaches the SSE
+# ``result`` event or the DB column. Non-secret CWEs are left verbatim.
+_SECRET_BEARING_CWES: frozenset[str] = frozenset({
+    "CWE-798",  # use of hard-coded credentials
+    "CWE-319",  # cleartext transmission of sensitive information
+    "CWE-312",  # cleartext storage of sensitive information
+    "CWE-256",  # plaintext storage of a password
+    "CWE-259",  # use of a hard-coded password
+    "CWE-321",  # use of a hard-coded cryptographic key (crypto_check embeds key)
+    "CWE-522",  # insufficiently protected credentials
+})
+
+_REDACTION_PLACEHOLDER = "***REDACTED***"
+
+# A quoted string literal: capture the opening quote so we can re-emit it while
+# masking the body. Handles both single- and double-quoted literals.
+_QUOTED_LITERAL_RE = re.compile(r"""(['"])(?:\\.|(?!\1).)*\1""")
+
+# An assignment / key-value right-hand side whose value is NOT a fully quoted
+# literal (e.g. ``token = abcd1234``, ``password: hunter2``, ``export KEY=v``,
+# or a truncated ``api_key = "AKIA`` whose closing quote was cut). Captures any
+# leading indentation plus the variable/key and operator so structure is
+# preserved; masks the value. ``^\s*`` lets the branch fire on INDENTED source
+# lines; an optional ``export``/``set`` shell prefix is tolerated.
+_ASSIGN_RHS_RE = re.compile(
+    r"""^(?P<indent>\s*(?:export\s+|set\s+)?)"""
+    r"""(?P<lhs>[A-Za-z_][\w.\[\]'"-]*\s*[:=]\s*)"""
+    r"""(?P<val>\S.*?)(?P<tail>\s*(?:#.*)?)$"""
+)
+
+# A trailing comment body (``# ...`` / ``// ...``). For secret-bearing findings
+# a secret can hide in a comment; mask the comment body while keeping the marker.
+_COMMENT_BODY_RE = re.compile(r"""(?P<marker>#|//)(?P<body>\s*\S.*)$""")
+
+
+def _has_unterminated_quote(text: str) -> int:
+    """Return the index of a dangling opening quote (a quote char with no
+    matching close before end-of-line), or -1 if every quote is balanced.
+
+    Handles the 200-char-truncation leak: when ``extract_snippet`` cuts a long
+    secret line, the closing quote (and the secret tail) fall past the cut, so
+    the value after the LAST opening quote was never masked by the
+    complete-literal pass and would leak its PREFIX.
+    """
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "'\"":
+            close = text.find(c, i + 1)
+            if close == -1:
+                return i  # opening quote never closed → dangling
+            i = close + 1
+        else:
+            i += 1
+    return -1
+
+
+def _redact_secret_line(line: str) -> str:
+    """Mask secret VALUES in a single source line while preserving structure.
+
+    The numbered-snippet line prefix (``"3: "``) is left untouched by callers;
+    this operates on the code portion only. Masks:
+      * the BODY of every quoted string VALUE (keeps the quotes; a quoted
+        literal in dict-KEY position — immediately followed by ``:`` — is
+        preserved so keys survive),
+      * an unquoted assignment / key-value RHS (keeps the lhs + operator),
+        including INDENTED and ``export``-prefixed lines, and
+      * an unterminated opening quote (truncated long-secret lines), and
+      * a trailing comment body (a secret hidden in a comment).
+    Variable names, keys, quotes and line shape survive so the finding stays
+    useful for triage.
+    """
+    trailing_nl = "\n" if line.endswith("\n") else ""
+    body = line.rstrip("\n")
+
+    if _QUOTED_LITERAL_RE.search(body):
+        # At least one COMPLETE quoted literal: mask each literal's body, keep
+        # quotes. Preserve quoted literals sitting in dict-KEY position (the
+        # literal is immediately followed by ``:``) so keys stay readable.
+        def _mask(m: re.Match[str]) -> str:
+            q = m.group(1)
+            after = body[m.end():]
+            if after.lstrip().startswith(":"):
+                return m.group(0)  # dict key — preserve verbatim
+            return f"{q}{_REDACTION_PLACEHOLDER}{q}"
+
+        masked = _QUOTED_LITERAL_RE.sub(_mask, body)
+        # After masking complete literals, a dangling opening quote means the
+        # closing quote was truncated away — mask its leaked tail to EOL.
+        dangling = _has_unterminated_quote(masked)
+        if dangling != -1:
+            masked = masked[: dangling + 1] + _REDACTION_PLACEHOLDER
+        return masked + trailing_nl
+
+    # No complete quoted literal. If there's a lone (truncated) opening quote,
+    # mask from it to EOL so the secret prefix is removed.
+    dangling = _has_unterminated_quote(body)
+    if dangling != -1:
+        return body[: dangling + 1] + _REDACTION_PLACEHOLDER + trailing_nl
+
+    # Try to mask an unquoted assignment RHS (indent / export aware).
+    m = _ASSIGN_RHS_RE.match(body)
+    if m:
+        return (
+            f"{m.group('indent')}{m.group('lhs')}{_REDACTION_PLACEHOLDER}"
+            f"{m.group('tail')}{trailing_nl}"
+        )
+
+    # No assignment either — mask a trailing comment body (secret-in-comment).
+    cm = _COMMENT_BODY_RE.search(body)
+    if cm:
+        prefix = body[: cm.start()]
+        return f"{prefix}{cm.group('marker')} {_REDACTION_PLACEHOLDER}{trailing_nl}"
+    return line
+
+
+def _redact_snippet(snippet: str) -> str:
+    """Redact secret values in a numbered code-window snippet (P2a).
+
+    Each line is of the form ``"<n>: <code>"`` (see ``extract_snippet``). The
+    ``"<n>: "`` prefix — carrying the line number and shape — is preserved and
+    only the code portion is run through :func:`_redact_secret_line`.
+    """
+    if not snippet:
+        return snippet
+    out_lines: list[str] = []
+    for raw in snippet.split("\n"):
+        # Split off the "<n>: " numbered prefix produced by extract_snippet so
+        # the line number is preserved exactly.
+        m = re.match(r"^(\s*\d+:\s?)(.*)$", raw)
+        if m:
+            out_lines.append(f"{m.group(1)}{_redact_secret_line(m.group(2))}")
+        else:
+            out_lines.append(_redact_secret_line(raw))
+    return "\n".join(out_lines)
+
+
+def _redact_finding_inplace(finding: dict[str, Any]) -> None:
+    """Mask the secret VALUE in a single finding's ``code_snippet`` when the
+    finding is secret-bearing (P2a). Idempotent and DRY: this is the single
+    redaction primitive invoked from EVERY snippet egress point —
+
+      * the per-finding ``finding`` SSE event (skill + LLM phases), and
+      * the ``_attach_code_snippet`` finalisation choke point (SSE ``result``
+        + DB row),
+
+    so a secret never reaches the frontend live view, the result snapshot, or
+    the persisted ``code_snippet`` column. No-op for non-secret CWEs and for
+    findings without a snippet. Re-redacting an already-masked snippet is safe
+    (the placeholder carries no secret).
+    """
+    if str(finding.get("category", "")).strip().upper() not in _SECRET_BEARING_CWES:
+        return
+    existing = finding.get("code_snippet")
+    if existing:
+        finding["code_snippet"] = _redact_snippet(existing)
+
+
+# --- Feature 0057 P6b: provenance vocabulary -----------------------------
+# Exactly ONE of these tags is stamped on every finding. The deterministic
+# tiers are set centrally at the finalisation choke point (``_set_provenance``,
+# applied in ``_attach_code_snippet`` BEFORE validate); the ``llm`` tag is set
+# at LLM-finding emission time (run_combined_audit) and PRESERVED here via
+# ``setdefault`` semantics; ``llm_l5_verified`` is the L5-survival re-tag set
+# at the validate vote choke point (``validate._apply_validation_to_finding``).
+#
+# The tags are ADDITIVE metadata: they must NOT change the
+# ``validate.llm_judge._is_deterministic`` / ``_is_l5_exempt`` determinations,
+# which key off ``check_id`` / ``signature_status`` / ``provenance == "llm"``.
+PROVENANCE_VALUES: frozenset[str] = frozenset(
+    {
+        "skill",
+        "signature_trusted",
+        "signature_candidate",
+        "catalog_rollup",
+        "llm",
+        "llm_l5_verified",
+    }
+)
+
+
+def _classify_deterministic_provenance(finding: dict[str, Any]) -> str:
+    """Map a DETERMINISTIC-tier finding to its provenance tag.
+
+    Precedence (most specific first):
+      * ``signature_status == "trusted"``    → ``signature_trusted``
+      * ``signature_status == "candidate"``  → ``signature_candidate``
+      * ``check_id`` ending ``.rollup``      → ``catalog_rollup``
+        (built by ``catalog_detector._build_rollup_finding`` as
+        ``cwe.catalog.cwe_<id>.rollup``)
+      * anything else carrying a ``check_id`` → ``skill`` (the dedicated
+        skills + keyword catalog hits)
+    """
+    sig_status = finding.get("signature_status")
+    if sig_status == "trusted":
+        return "signature_trusted"
+    if sig_status == "candidate":
+        return "signature_candidate"
+    if str(finding.get("check_id", "")).endswith(".rollup"):
+        return "catalog_rollup"
+    return "skill"
+
+
+def _set_provenance(finding: dict[str, Any]) -> None:
+    """Stamp exactly one ``provenance`` tag on a finding (Feature 0057 P6b).
+
+    ``setdefault`` semantics: a pre-set ``provenance`` (the Phase-1 ``llm`` tag
+    on LLM findings) is preserved untouched; only deterministic-tier findings
+    that arrive WITHOUT a provenance are classified here. Mutates in place;
+    idempotent.
+    """
+    if finding.get("provenance"):
+        return
+    finding["provenance"] = _classify_deterministic_provenance(finding)
+
+
 def _attach_code_snippet(
     findings: list[dict[str, Any]],
     source_path: str,
@@ -796,31 +1015,48 @@ def _attach_code_snippet(
     Mutates findings in place. Additive / no-op for findings that already
     carry a non-empty ``code_snippet`` (several skills set it directly).
 
+    Feature 0057 P6b: this is also the central provenance set-point —
+    ``_set_provenance`` is applied to every finding here (BEFORE validate), so
+    the emitted ``result`` carries the full deterministic provenance vocabulary
+    while preserving the pre-set ``llm`` tag (setdefault semantics).
+
     A finding whose path cannot be resolved or whose line is missing/zero is
     left with an empty snippet — the L5 selection layer then SKIPS it (P0.3)
     rather than judging blind.
     """
     from shared.tools.file_scanner import read_file_lines
 
+    # P6b: stamp the deterministic provenance tag on EVERY finding first, in a
+    # standalone pass with no I/O. This is decoupled from the best-effort snippet
+    # loop below so that a snippet/read failure (which the caller catches and
+    # logs) can never strip provenance from the whole batch — provenance is a
+    # pure in-memory classification and must always complete. (no-op if `llm`.)
     for f in findings:
-        if f.get("code_snippet"):
-            continue
-        line_start = f.get("line_start", 0) or 0
-        try:
-            line_start = int(line_start)
-        except (TypeError, ValueError):
-            line_start = 0
-        if line_start < 1:
-            continue
-        resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
-        if resolved is None:
-            continue
-        lines = read_file_lines(resolved)
-        if not lines:
-            continue
-        snippet = extract_snippet(lines, line_start, context=2)
-        if snippet:
-            f["code_snippet"] = snippet
+        _set_provenance(f)
+
+    for f in findings:
+        if not f.get("code_snippet"):
+            line_start = f.get("line_start", 0) or 0
+            try:
+                line_start = int(line_start)
+            except (TypeError, ValueError):
+                line_start = 0
+            if line_start >= 1:
+                resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
+                if resolved is not None:
+                    lines = read_file_lines(resolved)
+                    if lines:
+                        snippet = extract_snippet(lines, line_start, context=2)
+                        if snippet:
+                            f["code_snippet"] = snippet
+
+        # P2a: mask secret VALUES for secret-bearing CWEs, whether the snippet
+        # was back-filled above OR pre-set by a skill (e.g. auth_check). This
+        # runs at the finalisation choke point so both the SSE result and the
+        # DB row carry the redacted form. (The per-finding `finding` SSE events
+        # are independently redacted at emission time — see run_combined_audit —
+        # so the live frontend view never sees the raw secret either.)
+        _redact_finding_inplace(f)
 
 
 def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> None:
@@ -934,6 +1170,13 @@ def run_combined_audit(
             for finding in findings:
                 _assign_finding_id(finding, run_id, len(skill_findings))
                 skill_findings.append(finding)
+                # Feature 0057 P2a: redact secret-bearing snippets BEFORE the
+                # per-finding SSE event so the live frontend view (and any
+                # delta-finding DB persistence on a stalled stream) never sees
+                # the raw secret. Mutates the dict that is also kept in
+                # skill_findings, so the finalisation choke point re-sees the
+                # already-masked form (idempotent).
+                _redact_finding_inplace(finding)
                 yield emitter.finding_event(**finding)
 
             completed += 1
@@ -1001,6 +1244,10 @@ def run_combined_audit(
                 # findings stay deterministic/trusted (R2 voter floor).
                 finding.setdefault("provenance", "llm")
                 _assign_finding_id(finding, run_id, base_idx + offset)
+                # Feature 0057 P2a: redact secret-bearing LLM-finding snippets
+                # before the per-finding SSE event (LLM is the realistic source
+                # of unquoted / env-style / comment-embedded secrets).
+                _redact_finding_inplace(finding)
                 yield emitter.finding_event(**finding)
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")

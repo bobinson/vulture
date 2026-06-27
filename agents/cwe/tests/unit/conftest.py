@@ -1,5 +1,21 @@
 """Shared CWE unit-test fixtures."""
+import sys
+from pathlib import Path
+
 import pytest
+
+# Feature 0057 Phase 5 — make the corpus runner (tests/corpus/corpus_runner.py)
+# and the promotion script (scripts/promote_signatures.py) importable by their
+# bare module names from the corpus/promotion tests (T16-T21). The modules are
+# implemented by the harness author in a later step; until then the corpus tests
+# RED with "No module named corpus_runner" / "promote_signatures", which is the
+# intended TDD failure. These dirs are not packages, so they are added to
+# sys.path rather than imported as packages.
+_AGENT_ROOT = Path(__file__).resolve().parents[2]  # agents/cwe/
+for _p in (_AGENT_ROOT / "tests" / "corpus", _AGENT_ROOT / "scripts"):
+    _ps = str(_p)
+    if _ps not in sys.path:
+        sys.path.insert(0, _ps)
 
 
 @pytest.fixture(autouse=True)

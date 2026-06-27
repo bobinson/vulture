@@ -1,6 +1,6 @@
 # CWE Weakness Auditor - Skills
 
-Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities across 22 categories covering 846 software-relevant CWE IDs with catalog-driven detection, self-learning confidence scoring, and MMR-based memory retrieval with embedding similarity.
+Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities. The deterministic skill phase detects ~73 declared CWE-ID `category` literals across 21 dedicated skills plus 7 corpus-trusted signature CWEs; of those, N=10 CWE types are corpus-VERIFIED (recall 1.0 / fp 0.0 — see `tests/corpus/VERIFIED_CWES.md`, computed by the gate, not asserted). The 846-entry CWE v4.19.1 catalog is metadata/context (names, consequences, rollup parents) — NOT a detection-coverage claim; it drives self-learning confidence scoring and MMR-based memory retrieval with embedding similarity.
 
 ## injection_check
 
@@ -269,7 +269,7 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 ## catalog_detector
 
 - **Function**: `check_catalog_generic(source_path: str) -> dict`
-- **Purpose**: Catalog-driven generic CWE detection engine covering 400+ additional CWE IDs beyond the 21 dedicated skills using enriched CWE v4.19.1 metadata
+- **Purpose**: Catalog-driven generic CWE detection engine that keyword-matches against the enriched CWE v4.19.1 metadata. HONESTY NOTE: this path fires ~0 findings on real code — it is metadata/context (catalog names, consequences, rollup parents), NOT a detection-coverage claim. The deterministic detection surface is the 21 dedicated skills (~73 declared CWE-ID categories) plus 7 trusted signatures; N=10 of those are corpus-VERIFIED (see `tests/corpus/VERIFIED_CWES.md`).
 - **Mechanism**:
   - Loads all CWEs with static-detectability score >= 0.3 from enriched catalog
   - Builds keyword-to-CWE inverted index for fast file-level matching
@@ -280,7 +280,7 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
   - Severity derived from CWE catalog consequences (impact → severity mapping)
   - Skips Pillar/Class abstractions (too generic) and all 67 dedicated-skill CWEs (avoid duplication)
   - Limits to 15 findings per file to avoid noise
-- **CWE Coverage**: ~400+ CWE IDs not covered by dedicated skills, including:
+- **CWE Coverage**: keyword-scannable catalog entries not covered by dedicated skills (metadata/context — fires ~0 on real code, NOT counted in N), nominally spanning:
   - Uncommon injection variants, race conditions, API misuse
   - Platform-specific weaknesses, deprecated function usage
   - Framework-specific patterns, configuration weaknesses
