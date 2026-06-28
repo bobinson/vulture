@@ -934,17 +934,78 @@ def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
     return {"id": fid, "exploitable": prob, "reasoning": reasoning}
 
 
+def _iter_balanced_objects(text: str):
+    """Yield each top-level balanced ``{...}`` substring of `text`.
+
+    Tracks JSON string literals (double-quoted, with ``\\`` escapes) so braces
+    inside strings — or inside leaked reasoning prose like ``{"role":"x"}`` —
+    don't throw off the depth count. A single O(n) pass.
+    """
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                yield text[start:i + 1]
+
+
+def _loads_object(text: str) -> Optional[dict[str, Any]]:
+    """Parse `text` as a JSON object, tolerant of surrounding prose.
+
+    Reasoning ("thinking") models put most reasoning in `reasoning_content`,
+    but intermittently leak text into `content` around the `{"verdicts":...}`
+    object — a stray ``<think>`` tag, a sentence, sometimes itself containing
+    JSON-ish braces, occasionally more than one object. A strict whole-string
+    ``json.loads`` then drops the verdict as "no verdict" (live-observed: 2/4
+    L5 batches with qwen3.6-35b). So: try the whole string first; otherwise scan
+    for balanced ``{...}`` spans and return the one that holds ``verdicts``
+    (falling back to the first object that parses). Returns the dict, or None.
+    """
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    fallback: Optional[dict[str, Any]] = None
+    for span in _iter_balanced_objects(text):
+        try:
+            obj = json.loads(span)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if "verdicts" in obj:
+            return obj
+        if fallback is None:
+            fallback = obj
+    return fallback
+
+
 def _parse_response(raw: str, batch_size: int) -> Optional[list[dict[str, Any]]]:
     """Parse the JSON response. Returns a list of verdicts or None on
     structural failure."""
     if not raw:
         return None
-    text = _strip_code_fences(raw.strip())
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
+    data = _loads_object(_strip_code_fences(raw.strip()))
+    if data is None:
         return None
     verdicts = data.get("verdicts")
     if not isinstance(verdicts, list):

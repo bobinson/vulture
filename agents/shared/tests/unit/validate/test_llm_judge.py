@@ -93,6 +93,68 @@ def test_parse_caps_at_batch_size():
     assert len(out) == 10
 
 
+# ── Prose-wrapped JSON (thinking models) ─────────────────────────────
+# A reasoning model (qwen3 etc.) usually emits clean JSON in `content`, but
+# intermittently leaks a sentence around the object. The parser must EXTRACT
+# the verdict object rather than require the whole string to be JSON, or those
+# verdicts are silently lost as "no verdict" (live-observed: 2/4 L5 batches).
+
+_VERDICT = '{"verdicts":[{"id":"f1","exploitable":0.7,"reasoning":"reaches a sink"}]}'
+
+
+def test_parse_extracts_json_with_leading_prose():
+    out = _parse_response(f"Based on my analysis:\n{_VERDICT}", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_extracts_json_with_trailing_prose():
+    out = _parse_response(f"{_VERDICT}\nLet me know if you need more detail.", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_extracts_json_with_think_tag_leak():
+    out = _parse_response(f"<think>tracing dataflow...</think>\n{_VERDICT}", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_extracts_json_with_prose_both_sides():
+    out = _parse_response(f"Here is the result.\n{_VERDICT}\nHope this helps!", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_prose_without_any_json_object_returns_none():
+    # No braces at all → nothing to extract → None (no false positives).
+    assert _parse_response("I could not produce a verdict for this finding.", batch_size=10) is None
+
+
+def test_parse_prose_with_unparseable_braces_returns_none():
+    # Braces present but the span isn't valid JSON → None (no crash, no garbage).
+    assert _parse_response("note: {this is not json at all}", batch_size=10) is None
+
+
+# Harder cases: the leaked prose itself contains JSON-ish braces, or there are
+# multiple objects. A naive first-`{`-to-last-`}` span over-captures and fails;
+# the parser must locate the balanced object that actually holds "verdicts".
+
+
+def test_parse_extracts_verdicts_when_reasoning_prose_has_braces():
+    raw = '<think>the object {"role":"x"} flows to a sink</think>\n' + _VERDICT
+    out = _parse_response(raw, batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_picks_verdicts_object_among_multiple():
+    raw = '{"note":"ignore me"}\n' + _VERDICT
+    out = _parse_response(raw, batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_trailing_braces_prose_after_verdicts():
+    raw = _VERDICT + '\nFor reference the config was {"debug": true}.'
+    out = _parse_response(raw, batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
 # ── Verdict → check conversion ──────────────────────────────────────
 
 
