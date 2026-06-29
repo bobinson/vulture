@@ -66,10 +66,23 @@ def main() -> int:
                     help="audit type (repeatable); default: cwe")
     ap.add_argument("--base", default=os.environ.get("VULTURE_BACKEND_URL", "http://localhost:28080"))
     ap.add_argument("--timeout", type=int, default=900, help="SSE stream timeout (seconds)")
+    ap.add_argument("--fresh", action="store_true",
+                    help="clean-room scan: ignore prior-findings memory so the LLM "
+                         "isn't steered by (and the result isn't masked by) earlier "
+                         "audits of this path. Use for critical tests / new models.")
+    ap.add_argument("--llm-tier3", action="store_true",
+                    help="include Tier-3 files (no deterministic findings, not "
+                         "entry/config) in the LLM sweep — full-tree coverage. Off by "
+                         "default (cost guard); deterministic skills scan all files regardless.")
     args = ap.parse_args()
 
     base = args.base.rstrip("/")
     types = args.types or ["cwe"]
+    config: dict = {}
+    if args.fresh:
+        config["fresh"] = True
+    if args.llm_tier3:
+        config["llm_tier3"] = True
 
     src = _post(base, "/api/sources", {"type": "local", "path": os.path.abspath(args.path)})
     src_id = src.get("id") or src.get("source", {}).get("id")
@@ -78,9 +91,10 @@ def main() -> int:
         return 2
     print(f"[scan] source id={src_id} file_count={src.get('file_count')}", flush=True)
 
-    aud = _post(base, "/api/audits", {"source_id": src_id, "types": types, "config": {}})
+    aud = _post(base, "/api/audits", {"source_id": src_id, "types": types, "config": config})
     aud_id = aud.get("id") or aud.get("audit", {}).get("id")
-    print(f"[scan] audit id={aud_id} types={types} model={aud.get('llm_model')}", flush=True)
+    notes = ("  [FRESH]" if args.fresh else "") + ("  [LLM-TIER3: full-tree]" if args.llm_tier3 else "")
+    print(f"[scan] audit id={aud_id} types={types} model={aud.get('llm_model')}{notes}", flush=True)
 
     prov_stream: dict = {}
     llm_text: list = []

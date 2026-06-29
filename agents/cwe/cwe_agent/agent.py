@@ -256,4 +256,6 @@ def run_audit(
         model=os.environ.get("VULTURE_LLM_MODEL"),
         use_llm=effective_use_llm,
         validate_use_llm=validate_use_llm,
+        # 0059: per-audit Tier-3 LLM toggle (config > VULTURE_LLM_TIER3 env > OFF).
+        llm_tier3=config.get("llm_tier3"),
     )

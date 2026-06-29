@@ -414,6 +414,9 @@ class TestT7BudgetCap:
         monkeypatch.setenv("VULTURE_LLM_MODEL", "gpt-4o")
         # A tiny budget that the very first batch's token usage blows past.
         monkeypatch.setenv("VULTURE_LLM_BUDGET_USD", "0.0000001")
+        # 0059: exercises the multi-file budget cap → needs the full sweep
+        # (Tier-3 on); the generic test files are Tier 3, off by default.
+        monkeypatch.setenv("VULTURE_LLM_TIER3", "on")
 
         # Many files so the sweep WOULD otherwise issue several batches.
         for i in range(8):
@@ -473,6 +476,9 @@ class TestT12BatchSweep:
         # Force a very small source budget so the file set spans many batches.
         monkeypatch.setenv("VULTURE_MAX_SOURCE_CHARS", "400")
         monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "2000")
+        # 0059: this asserts the WHOLE-TREE sweep (R6b), which requires Tier-3
+        # ON. The generic test files are Tier 3, skipped under the new default.
+        monkeypatch.setenv("VULTURE_LLM_TIER3", "on")
 
         # Several reasonably-sized files; one window cannot hold them all. With
         # this budget each file lands in its own batch, so n_files == n_batches.

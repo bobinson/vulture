@@ -354,12 +354,18 @@ def _prioritize_files(
     files: list,
     source_path: str,
     skill_findings: list[dict] | None = None,
+    include_tier3: bool = True,
 ) -> list:
     """Sort files into priority tiers for LLM context packing.
 
     Tier 1: Files that appear in skill_findings (highest signal).
     Tier 2: Entry points and config files (structural importance).
     Tier 3: Remaining files, sorted by size ascending (smaller = more likely focused).
+
+    Feature 0059: when ``include_tier3`` is False, Tier 3 is dropped entirely
+    (the LLM sees only flagged + entry/config files) — the cost guard. The
+    deterministic phase is upstream and unaffected: skills/signatures still
+    scan every file regardless.
 
     Args:
         files: List of Path objects from scan_code_files.
@@ -393,6 +399,9 @@ def _prioritize_files(
             tier2.append(fpath)
         else:
             tier3.append(fpath)
+
+    if not include_tier3:
+        return tier1 + tier2
 
     # Sort tier3 by file size ascending (smaller files first)
     # Pre-compute stat results to avoid repeated syscalls during sort comparisons
@@ -1087,6 +1096,7 @@ def run_combined_audit(
     model: str | None = None,
     use_llm: bool | None = None,
     validate_use_llm: bool | None = None,
+    llm_tier3: bool | None = None,
 ) -> Generator[str, None, None]:
     """Run skills first (full coverage), then optionally LLM (deeper analysis).
 
@@ -1224,6 +1234,7 @@ def run_combined_audit(
             prior_context=prior_context,
             model=model,
             skill_findings=skill_findings,
+            llm_tier3=llm_tier3,
         )
         if llm_notice:
             yield emitter.text_message(llm_notice)
@@ -1415,19 +1426,21 @@ def _collect_llm_findings(
     model: str | None = None,
     skill_findings: list[dict] | None = None,
     source_context: str = "",
+    llm_tier3: bool | None = None,
 ) -> tuple[list[dict], str | None, int, int, str | None]:
     """Run the LLM audit (batch-looped) and collect findings (no SSE wrapping).
 
     Returns ``(findings, error_message, input_tokens, output_tokens, notice)``.
     ``error_message`` is None on success; ``notice`` carries a partial-results
-    message when the sweep stopped early on the budget / work cap (P1d).
-    Uses ``asyncio.run`` per issue #19.
+    message when the sweep stopped early on the budget / work cap (P1d), or
+    when Tier-3 was skipped (0059 cost guard). Uses ``asyncio.run`` per issue #19.
     """
     return asyncio.run(
         _collect_llm_findings_batched_async(
             run_id, source_path, categories, skill_tools,
             instructions, domain_label, prior_context, model,
             skill_findings=skill_findings,
+            llm_tier3=llm_tier3,
         )
     )
 
@@ -1445,6 +1458,20 @@ def _resolve_llm_budget_usd() -> float:
     return val if val > 0 else 0.0
 
 
+def _llm_tier3_enabled(config_value: bool | None = None) -> bool:
+    """Feature 0059: should the LLM generate phase analyze Tier-3 files
+    (no deterministic findings, not entry/config)?
+
+    Precedence: explicit per-request ``config_value`` > ``VULTURE_LLM_TIER3``
+    env (on/true/1/yes) > built-in default **OFF** (the cost guard). OFF scopes
+    the LLM sweep to Tier 1 (flagged) + Tier 2 (entry/config); deterministic
+    skills/signatures still scan every file regardless.
+    """
+    if isinstance(config_value, bool):
+        return config_value
+    return os.environ.get("VULTURE_LLM_TIER3", "").strip().lower() in ("on", "true", "1", "yes")
+
+
 async def _collect_llm_findings_batched_async(
     run_id: str,
     source_path: str,
@@ -1455,6 +1482,7 @@ async def _collect_llm_findings_batched_async(
     prior_context: str = "",
     model: str | None = None,
     skill_findings: list[dict] | None = None,
+    llm_tier3: bool | None = None,
 ) -> tuple[list[dict], str | None, int, int, str | None]:
     """Feature 0057 P1f + P1d: sweep the WHOLE tree in context-window-sized
     batches instead of a single shot that silently tail-drops files.
@@ -1479,9 +1507,15 @@ async def _collect_llm_findings_batched_async(
     # per-skill scan cap up to its own ceiling.
     from shared.tools.file_scanner import MAX_FILES as _SCAN_MAX_FILES
     scan_cap = max(max_files, _SCAN_MAX_FILES)
+    # Feature 0059: Tier-3 cost guard (default OFF). When off, the LLM sweep
+    # is scoped to flagged + entry/config files; the long tail is skipped (and
+    # reported via the notice below). Deterministic skills already scanned all.
+    include_tier3 = _llm_tier3_enabled(llm_tier3)
+    scanned = scan_code_files(source_path, max_files=scan_cap)
     ordered = _prioritize_files(
-        scan_code_files(source_path, max_files=scan_cap), source_path, skill_findings,
+        scanned, source_path, skill_findings, include_tier3=include_tier3,
     )
+    tier3_skipped = (len(scanned) - len(ordered)) if not include_tier3 else 0
     max_chars = _get_max_source_chars(model)
     # Budget-aware batching: with a USD budget configured the sweep batches
     # cautiously (smaller batches) so cost accrues incrementally and the cap
@@ -1553,6 +1587,14 @@ async def _collect_llm_findings_batched_async(
 
     # Surface a per-call error only when the sweep produced nothing useful.
     err = first_error if (first_error and not acc) else None
+    # Feature 0059: never silently reduce scope — report the skipped Tier-3 tail.
+    if tier3_skipped > 0:
+        tier3_notice = (
+            f"[llm-scope] Tier-3 skipped: {tier3_skipped} file(s) (no deterministic "
+            f"findings, not entry/config) were NOT sent to the LLM — cost guard. "
+            f"Set VULTURE_LLM_TIER3=on or scan --llm-tier3 for full-tree LLM coverage."
+        )
+        notice = f"{tier3_notice}\n{notice}" if notice else tier3_notice
     return acc, err, total_in, total_out, notice
 
 
