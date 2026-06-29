@@ -91,7 +91,7 @@ def test_T16_run_deterministic_does_not_invoke_llm(monkeypatch):
 
     monkeypatch.setattr(audit_runner, "run_combined_audit", _boom, raising=False)
 
-    entries = corpus_runner.load_manifest(fragments=["_golden"])
+    corpus_runner.load_manifest(fragments=["_golden"])
     path = corpus_runner.CORPUS_DIR / "fixtures" / "_golden" / "g_1333_2.py"
     cats = corpus_runner.run_deterministic(str(path))
     assert "CWE-1333" in cats

@@ -29,8 +29,6 @@ N = the number of VERIFIED CWEs — computed here, never hard-coded.
 from __future__ import annotations
 
 import argparse
-import glob
-import os
 import shutil
 import tempfile
 from collections import defaultdict

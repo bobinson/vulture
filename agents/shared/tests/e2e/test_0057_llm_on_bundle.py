@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from shared.audit_runner import run_combined_audit
 from tests._fake_llm import (

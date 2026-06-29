@@ -22,7 +22,6 @@ Deterministic. NO model.
 
 from __future__ import annotations
 
-import pytest
 
 from cwe_agent.skills.catalog_detector import (
     check_catalog_generic,

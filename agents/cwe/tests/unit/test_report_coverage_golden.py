@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 import report_coverage  # noqa: E402 — sys.path injected by conftest
 

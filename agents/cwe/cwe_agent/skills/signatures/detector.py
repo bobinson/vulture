@@ -19,7 +19,6 @@ regex touches it, on top of the bounded quantifiers the signatures already use.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 
 from shared.tools.snippet import extract_snippet

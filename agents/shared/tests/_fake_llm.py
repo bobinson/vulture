@@ -53,7 +53,7 @@ Usage (L5 judge / T2, T5, T10)::
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 
 # --------------------------------------------------------------------------- #
