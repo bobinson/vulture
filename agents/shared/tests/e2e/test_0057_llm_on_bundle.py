@@ -474,8 +474,10 @@ class TestT12BatchSweep:
         monkeypatch.setenv("VULTURE_MAX_SOURCE_CHARS", "400")
         monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "2000")
 
-        # Several reasonably-sized files; one window cannot hold them all.
-        for i in range(6):
+        # Several reasonably-sized files; one window cannot hold them all. With
+        # this budget each file lands in its own batch, so n_files == n_batches.
+        n_files = 6
+        for i in range(n_files):
             (tmp_path / f"file{i}.py").write_text(
                 f"# file {i}\n" + "\n".join(f"x{i}_{j} = {j}" for j in range(30))
             )
@@ -486,7 +488,7 @@ class TestT12BatchSweep:
             [fake_finding(title=f"finding in file{i}", category="CWE-89",
                           file_path=f"file{i}.py", line_start=1, line_end=1,
                           check_id=f"cwe.sweep.{i}")]
-            for i in range(6)
+            for i in range(n_files)
         ])
         install_fake_runner(monkeypatch, fake)
 
@@ -501,21 +503,30 @@ class TestT12BatchSweep:
             use_llm=True,
         ))
 
-        # The sweep must issue more than one batch (today it is single-shot).
-        assert fake.calls > 1, (
-            f"LLM phase must batch-loop over multiple windows; made {fake.calls} call(s)"
+        # R6b full coverage: the sweep must issue exactly one batch PER file
+        # (no single-shot tail-drop, no redundant re-sweep). Each file is its
+        # own window under this budget, so calls == windows == n_files.
+        assert fake.calls == n_files, (
+            f"LLM phase must batch-loop once per window with no tail-drop; "
+            f"expected {n_files} calls, made {fake.calls}"
         )
+        # Every batch the loop issued is recorded.
+        assert len(fake.inputs) == fake.calls
 
-        # Findings from at least two distinct batches must surface (proves the
-        # sweep moved beyond the first window and didn't tail-drop the rest).
+        # FULL coverage: the net-new finding from EVERY batch must surface — not
+        # just "at least two". Under R6b the sweep covers the whole tree, so all
+        # n_files findings reach the result with none dropped.
         titles = {f["title"] for f in _result_findings(events)}
-        covered = sum(1 for i in range(6) if f"finding in file{i}" in titles)
-        assert covered >= 2, (
-            f"net-new findings from multiple batches must surface; covered={covered}"
+        covered = sum(1 for i in range(n_files) if f"finding in file{i}" in titles)
+        assert covered == n_files, (
+            f"R6b: net-new findings from ALL {n_files} batches must surface; "
+            f"covered={covered}, titles={sorted(titles)}"
         )
 
-        # Successive batches must carry different file content (the sweep moved).
-        assert len(fake.inputs) >= 2
-        assert fake.inputs[0] != fake.inputs[1], (
-            "successive batches must carry different files (sweep must advance)"
+        # Every window must be distinct — no batch repeats a previous window's
+        # file set (proves the sweep advances through the whole tree, never
+        # spinning on the same content).
+        assert len(set(fake.inputs)) == n_files, (
+            "each batch must carry a distinct file window (sweep must advance, "
+            f"not repeat); distinct windows={len(set(fake.inputs))} of {n_files}"
         )

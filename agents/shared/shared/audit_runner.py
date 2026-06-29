@@ -54,10 +54,12 @@ class AuditFinding(BaseModel):
     line_end: int = 0
     recommendation: str = ""
     check_id: str = ""
-    # Feature 0057 P0.1: in-memory-only code window read from the source.
-    # Used to ground the L5 judge (R4) so it never judges blind. Not
-    # persisted to the DB / SSE result schema (R7) — populated centrally by
-    # _attach_code_snippet() just before validation.
+    # Feature 0057 P0.1: code window read from the source, used to ground the
+    # L5 judge (R4) so it never judges blind. Populated centrally by
+    # _attach_code_snippet() just before validation, then egresses into the SSE
+    # ``result`` event and the pre-existing DB ``code_snippet`` column (R7). For
+    # secret-bearing CWEs (CWE-798/CWE-319 etc.) the secret VALUE is redacted at
+    # that same choke point so neither the SSE payload nor the DB row carries it.
     code_snippet: str = ""
 
 

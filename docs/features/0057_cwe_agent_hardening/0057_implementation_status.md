@@ -5,8 +5,8 @@
 | **Feature** | 0057_cwe_agent_hardening (LLM-on + signatures + verified coverage) |
 | **Status** | 🟢 **Phases 0–6 COMPLETE & GREEN** (T1–T24). **N=10 corpus-verified.** Phase 7 (soak) ongoing. |
 | **Last updated** | 2026-06-27 |
-| **Branch** | `feature/0057-cwe-agent-hardening` — Phase 0+1 committed (`da07f8d`); **Phases 2–6 uncommitted** (14 modified + 13 new, incl. `signatures/`, `tests/corpus/` 128 fixtures, `VERIFIED_CWES.md`) |
-| **Suites** | agents/cwe **586 passed / 1 skip** · agents/shared **922 passed** · owasp/soc2 regression green |
+| **Branch** | `feature/0057-cwe-agent-hardening` — **Phases 0–6 committed** (Phase 0+1 `da07f8d`; signatures `642096f`; migration 022 `26c9cd5`; reconciliation `6c4acda`; HEAD `9ab0b72`), incl. `signatures/`, `tests/corpus/` (128 fixtures), `VERIFIED_CWES.md` |
+| **Suites** | agents/cwe **586 passed / 1 skip** · agents/shared **938 passed** · owasp/soc2 regression green |
 
 > Tests are written **before** the implementation in every phase (CLAUDE.md). An item is
 > "done" only when its tests pass **and** the full existing CWE + shared suites still pass.
@@ -54,7 +54,7 @@
 ### Phase 5 — Corpus + per-CWE gates ✅  → **N=10**
 | # | Item | Tests | Status |
 |---|------|-------|--------|
-| 5a | Corpus tree + `manifest.d/*.yaml` (**128 first-party Apache-2.0 fixtures**, 10 CWEs × 6 pos + 6 clean) | T16 | ✅ Done — Juliet CC0 deferred to Phase 7 |
+| 5a | Corpus tree + `manifest.d/*.yaml` (**128 first-party Apache-2.0 fixtures total** = **120 production** [10 CWEs × 6 pos + 6 clean = 120, feed N] + **8 `_golden`** unit-test fixtures) | T16 | ✅ Done — Juliet CC0 deferred to Phase 7 |
 | 5b | `gates.yaml` + `corpus_runner.py` (deterministic, no LLM; strict recall=1.0/fp=0.0/min_fixtures=3) | T16–T19 | ✅ Done |
 | 5c | `promote_signatures.py` (data-driven) | T21 | ✅ Done — **all 7 signatures promoted to `trusted`** |
 | 5d | License rows; no GPL/unlicensed | — | ✅ Done — all first-party Apache-2.0; corpus in `.vultureignore` |
@@ -132,5 +132,5 @@
 
 ## Notes / blockers
 - **0057 code complete (Phases 0–6); all green.** Phase 7 is operational/ongoing (soak, Juliet ingestion, line-precision, live-model T25).
-- **Phases 2–6 are uncommitted** on the branch (Phase 0+1 = `da07f8d`) — awaiting the maintainer's commit (per no-commit-without-asking).
+- **Phases 0–6 are committed** on the branch (Phase 0+1 = `da07f8d`; signatures `642096f`; migration 022 `26c9cd5`; reconciliation `6c4acda`; HEAD `9ab0b72`).
 - Adversarial review across the 5 phase-workflows caught + fixed real issues: an arbitrary-file-read exfil, a raw-secret SSE leak, untagged rollup parents, and 4 signature false-positive sources.

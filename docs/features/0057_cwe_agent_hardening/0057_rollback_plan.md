@@ -50,7 +50,7 @@ misleads — the gate is itself a rollback mechanism.
 ## Data considerations
 - **None at the DB/schema level** — no migration. Removal leaves no orphaned state.
 - The corpus is the only third-party-licensed asset (Juliet CC0); removal is a file delete.
-- `VERIFIED_CWES.md` is generated; regenerate via `pytest agents/cwe/tests/corpus/`.
+- `VERIFIED_CWES.md` is generated; regenerate via `cd agents/cwe/tests/corpus && python report_coverage.py --write` (the staleness check is enforced by the unit tests under `agents/cwe/tests/unit/`: `pytest agents/cwe/tests/unit/test_report_coverage_*.py`).
 
 ## Verification after rollback
 - `agents/cwe`: `python -m pytest tests/unit/ -q` green.

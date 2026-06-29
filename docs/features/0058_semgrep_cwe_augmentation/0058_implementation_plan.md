@@ -112,7 +112,7 @@ Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
 ### Phase 4 — Corpus gating + attestation
 | Item | What | Where | Effort |
 |---|---|---|---|
-| P4a | Extend the 0057 corpus runner to score **Semgrep-derived CWEs** (per-CWE recall + precision) on the deterministic corpus; candidate→trusted promotion | `agents/cwe/tests/corpus/corpus_runner.py`, `scripts/promote_signatures.py` | M |
+| P4a | Extend the 0057 corpus runner to score **Semgrep-derived CWEs** (per-CWE recall + precision) on the deterministic corpus; candidate→trusted promotion | `agents/cwe/tests/corpus/corpus_runner.py`, `agents/cwe/scripts/promote_signatures.py` | M |
 | P4b | `VERIFIED_CWES.md` gains a **`semgrep`** tier in the breakdown; N includes corpus-gated Semgrep CWEs; add a **DETECTED (below-gate)** band for Semgrep CWEs that fire but miss the strict gate (not counted in N) | `agents/cwe/tests/corpus/report_coverage.py` | S |
 | P4c | Coverage-roadmap doc tying skills → signatures (0057) → Semgrep (0058) to the ~85 → ~250–350 trajectory | `docs/` | S |
 

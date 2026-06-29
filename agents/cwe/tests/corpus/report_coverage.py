@@ -28,8 +28,9 @@ The skill ``category`` literals are derived deterministically by scanning the
 skill module source files at runtime (reproducible in the venv) — never a
 hand-typed count. The trusted-signature CWE-ids come from ``SIGNATURES``.
 
-CLI: ``python report_coverage.py`` prints the markdown (and, with
-``--write``, rewrites the committed golden in place).
+CLI: ``python report_coverage.py`` prints the markdown; ``--write`` rewrites
+the committed golden in place; ``--check`` regenerates in memory and exits
+nonzero if the committed golden is stale (drifted) or missing — the CI gate.
 """
 
 from __future__ import annotations
@@ -251,14 +252,59 @@ def build_markdown() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _normalize(text: str) -> str:
+    """Normalize a single trailing newline so the stale-check is robust to an
+    editor's final-newline policy but otherwise byte-exact. Mirrors the T22
+    golden test so the ``--check`` gate and the unit test agree exactly."""
+    return text.rstrip("\n") + "\n"
+
+
+def check_golden() -> int:
+    """``--check``: regenerate in memory and compare to the committed golden.
+
+    Returns 0 when the committed ``VERIFIED_CWES.md`` is byte-identical (up to a
+    trailing newline) to a fresh regeneration, and 1 when it is STALE or MISSING.
+    Read-only: never writes. This is the deterministic CI stale-golden gate
+    (P5e / R17) that runs alongside ``make cwe-corpus``.
+    """
+    regenerated = _normalize(build_markdown())
+    if not GOLDEN_PATH.is_file():
+        print(
+            f"FAIL: committed golden missing: {GOLDEN_PATH}\n"
+            "Regenerate via the venv: agents/.venv/bin/python "
+            "agents/cwe/tests/corpus/report_coverage.py --write",
+        )
+        return 1
+    committed = _normalize(GOLDEN_PATH.read_text(encoding="utf-8"))
+    if committed != regenerated:
+        print(
+            f"FAIL: {GOLDEN_PATH} is STALE (drifted from the gate result).\n"
+            "Regenerate via the venv: agents/.venv/bin/python "
+            "agents/cwe/tests/corpus/report_coverage.py --write\n"
+            "and commit the result.",
+        )
+        return 1
+    print(f"OK: {GOLDEN_PATH} is current (golden matches the gate result).")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "--write",
         action="store_true",
         help="rewrite the committed VERIFIED_CWES.md golden in place",
     )
+    group.add_argument(
+        "--check",
+        action="store_true",
+        help="regenerate in memory and exit nonzero if the committed golden is "
+        "stale or missing (read-only; the CI gate)",
+    )
     args = parser.parse_args(argv)
+    if args.check:
+        return check_golden()
     md = build_markdown()
     if args.write:
         GOLDEN_PATH.write_text(md, encoding="utf-8")

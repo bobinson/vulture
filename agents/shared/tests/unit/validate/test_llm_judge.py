@@ -17,6 +17,7 @@ from shared.validate.llm_judge import (
     _clear_file_hash_cache,
     _file_signature,
     _format_code_window,
+    _has_code_window,
     _max_output_tokens,
     _parse_response,
     _render_user_message,
@@ -199,6 +200,67 @@ def _f(idx: int, sev: str = "medium") -> dict:
         "description": "x",
         "code_snippet": "x = 1\n",
     }
+
+
+# ── _has_code_window (P0.3 grounding gate) ───────────────────────────
+# Direct coverage for the predicate that keeps the judge from reasoning
+# about a blank `<<<CODE\n\nCODE>>>` block. The whitespace-only and
+# missing/None branches were entirely uncovered (audit T2).
+
+
+def test_has_code_window_true_for_real_snippet():
+    assert _has_code_window({"code_snippet": "bad = f'SELECT {x}'"}) is True
+    # Even a single non-blank char on an otherwise-blank line counts.
+    assert _has_code_window({"code_snippet": "\n  x\n"}) is True
+
+
+def test_has_code_window_false_for_empty_string():
+    assert _has_code_window({"code_snippet": ""}) is False
+
+
+def test_has_code_window_false_for_whitespace_only():
+    # The whitespace branch: spaces / tabs / newlines strip to "" → no window.
+    assert _has_code_window({"code_snippet": "   "}) is False
+    assert _has_code_window({"code_snippet": "\n\n"}) is False
+    assert _has_code_window({"code_snippet": "\t \n \t"}) is False
+
+
+def test_has_code_window_false_for_none_value():
+    # `code_snippet` present but explicitly None (`get(...) or ""` path).
+    assert _has_code_window({"code_snippet": None}) is False
+
+
+def test_has_code_window_false_for_missing_key():
+    # No `code_snippet` key at all → default "" → no window.
+    assert _has_code_window({}) is False
+    assert _has_code_window({"title": "no snippet here"}) is False
+
+
+def test_selection_skips_finding_with_empty_code_window():
+    """P0.3: a finding with an empty/whitespace code window is never selected
+    for L5 — the judge must never be asked to reason blind. The grounded
+    sibling is still selected, proving it's the window (not the index) that
+    gates."""
+    grounded = _f(0)                       # has "x = 1\n"
+    blind = _f(1)
+    blind["code_snippet"] = "   "          # whitespace-only → no window
+    findings = [grounded, blind]
+    l1 = [[], []]
+    selected = _select_findings(findings, l1, top_n=10)
+    assert 1 not in selected, "blind finding (empty window) must be skipped"
+    assert 0 in selected, "grounded finding must still be selected"
+
+
+def test_selection_skips_finding_with_missing_code_window():
+    """P0.3 companion: a finding missing `code_snippet` entirely is also
+    skipped — never judged blind."""
+    grounded = _f(0)
+    blind = _f(1)
+    del blind["code_snippet"]
+    selected = _select_findings([grounded, blind], [[], []], top_n=10)
+    assert selected == [0], (
+        f"only the grounded finding may be selected; got {selected}"
+    )
 
 
 def test_selection_skips_findings_with_suppression():

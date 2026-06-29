@@ -9,11 +9,13 @@ the hand-crafted regex patterns in individual skill modules. The engine:
 4. Context-aware exclusions reduce false positives
 5. Produces enriched findings with catalog confidence scores
 
-This gives broad coverage of 400+ additional CWEs that the 15 hand-crafted
-skills don't explicitly cover. Findings from this engine carry a
-``catalog_confidence`` field reflecting detection reliability.
+The 846-entry CWE catalog is metadata/context (names, consequences, rollup
+parents), NOT a detection-coverage claim — this keyword path fires ~0 findings
+on real code. Findings from this engine carry a ``catalog_confidence`` field
+reflecting detection reliability.
 """
 
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -36,6 +38,24 @@ from cwe_agent.catalog import (
     load_catalog,
 )
 from cwe_agent.skills.signatures.detector import match_signatures
+
+
+def _env_truthy(name: str) -> bool:
+    """True iff env var ``name`` is set to a truthy token.
+
+    Mirrors ``agent.py._env_truthy`` (the ``VULTURE_CWE_DISABLE_LLM`` pattern)
+    so the signature-tier kill switches read identically to the LLM one.
+    """
+    return os.environ.get(name, "").strip().lower() in ("true", "1", "yes")
+
+
+# Signature-tier escape hatches (audit MEDIUM "ROLLBACK-killswitch"), read at
+# scan time so a per-request env change takes effect without reimport:
+#   VULTURE_CWE_DISABLE_SIGNATURES        — skip the signature tier entirely.
+#   VULTURE_CWE_SIGNATURES_CANDIDATE_OFF  — run trusted signatures only
+#                                           (drop signature_status=="candidate").
+_ENV_DISABLE_SIGNATURES = "VULTURE_CWE_DISABLE_SIGNATURES"
+_ENV_SIGNATURES_CANDIDATE_OFF = "VULTURE_CWE_SIGNATURES_CANDIDATE_OFF"
 
 # CWE IDs already covered by dedicated skill modules — skip to avoid
 # dupes. Includes direct skill CWEs AND their child/variant CWEs to
@@ -381,9 +401,21 @@ def _apply_signatures(
     rollup machinery exactly like a keyword hit. ``check_id`` stays the
     ``sig_id`` (deterministic, hierarchical); ``signature_status`` rides along
     for the voter's candidate/trusted tiering (P4e).
+
+    Two kill switches gate this tier (audit MEDIUM "ROLLBACK-killswitch"),
+    mirroring ``VULTURE_CWE_DISABLE_LLM`` for the LLM phase:
+      * ``VULTURE_CWE_DISABLE_SIGNATURES`` → skip the tier entirely.
+      * ``VULTURE_CWE_SIGNATURES_CANDIDATE_OFF`` → run trusted signatures only
+        (drop any finding carrying ``signature_status == "candidate"``).
     """
+    if _env_truthy(_ENV_DISABLE_SIGNATURES):
+        return
+
+    candidate_off = _env_truthy(_ENV_SIGNATURES_CANDIDATE_OFF)
     file_key = str(file_path)
     for finding in match_signatures(lines, file_ext):
+        if candidate_off and finding.get("signature_status") == "candidate":
+            continue
         cwe_id = finding["category"].removeprefix("CWE-")
         if cwe_id in seen_per_file[file_key]:
             continue

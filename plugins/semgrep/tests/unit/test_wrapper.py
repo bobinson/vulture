@@ -325,9 +325,10 @@ def test_semgrep_argv_bounds_scan_excludes_and_memory():
     vendored/build dirs and cap memory so the scan is bounded."""
     from src.wrapper import _semgrep_argv
     argv = _semgrep_argv("/audit-inputs/x", {})
-    # heavy/vendored dirs excluded
+    # heavy/vendored dirs excluded as adjacent `--exclude <dir>` argv pairs
+    pairs = list(zip(argv, argv[1:]))
     for d in ("node_modules", ".git", "vendor", ".venv", "target", "dist", "build"):
-        assert ["--exclude", d] == [argv[i], argv[i + 1]] or d in argv, f"missing --exclude {d}: {argv}"
+        assert ("--exclude", d) in pairs, f"missing --exclude {d}: {argv}"
     # memory cap present
     assert "--max-memory" in argv, f"missing --max-memory: {argv}"
     # config-overridable memory

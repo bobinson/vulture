@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-# Feature 0057 Phase 5 — make the corpus runner (tests/corpus/corpus_runner.py)
-# and the promotion script (scripts/promote_signatures.py) importable by their
+# Feature 0057 Phase 5 — make the corpus runner (agents/cwe/tests/corpus/corpus_runner.py)
+# and the promotion script (agents/cwe/scripts/promote_signatures.py) importable by their
 # bare module names from the corpus/promotion tests (T16-T21). The modules are
 # implemented by the harness author in a later step; until then the corpus tests
 # RED with "No module named corpus_runner" / "promote_signatures", which is the
