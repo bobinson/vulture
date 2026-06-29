@@ -132,6 +132,29 @@ jobs:
           echo "Functions at complexity grade C or worse (target < C; monitored, not gated):"
           (cd agents && radon cc . -nc --exclude=".venv/*") || true
 
+  # ── CWE corpus gate (feature 0057 P5e / R17) ────────────────
+  # PR lane: the CURATED subset only (`make cwe-corpus`) — deterministic,
+  # <~60s, no live LLM. The FULL sweep (Juliet included once vendored) runs on
+  # cwe-corpus-nightly.yml so the heavyweight corpus NEVER hits a PR (R17).
+  # Standalone job (no other job needs it) so it stays purely additive.
+  cwe-corpus:
+    runs-on: ubuntu-latest
+    needs: lint-agents
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      - name: Install agent deps (shared pulls openai-agents → `agents` SDK)
+        # The corpus runner imports cwe_agent.skills, which needs
+        # `function_tool` from the openai-agents SDK (a vulture-shared dep).
+        run: cd agents && pip install -e "shared/[dev]" && pip install -e cwe/
+      - name: Curated CWE corpus subset + stale-golden gate
+        # `make cwe-corpus` = curated fragments (deterministic, <~60s) +
+        # `report_coverage.py --check` (fails CI if VERIFIED_CWES.md drifted).
+        run: make cwe-corpus
+
   # ── Frontend ────────────────────────────────────────────────
 
   lint-frontend:
