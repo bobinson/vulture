@@ -4,14 +4,17 @@ Implements a two-phase audit pipeline:
   Phase 1 (Skills): 22 concurrent skills including catalog-driven detector
   Phase 2 (LLM): Self-learning analysis with catalog context injection
 
-LLM phase policy (feature 0057 P1a — LLM-on-by-default, model-gated,
+LLM phase policy (feature 0057/0059 — uniform opt-in, model-gated,
 generate-then-verify):
 
-  * Unlike other agents (whose LLM phase keys off the global
-    ``VULTURE_USE_LLM`` flag, default ``false``), the CWE agent runs the LLM
-    phase BY DEFAULT. ``_resolve_cwe_llm`` decides the effective toggle in
-    order: ``VULTURE_CWE_DISABLE_LLM`` escape hatch (always skills-only) >
-    explicit per-request ``use_llm`` bool > default ON.
+  * Uniform with every other scan agent (feature 0059): the CWE agent respects
+    the global ``VULTURE_USE_LLM`` flag (default ``false``) — the LLM phase is
+    OPT-IN, NOT on-by-default. ``_resolve_cwe_llm`` decides the effective
+    toggle in order: ``VULTURE_CWE_DISABLE_LLM`` escape hatch (always
+    skills-only) > explicit per-request ``use_llm`` bool > the
+    ``VULTURE_USE_LLM`` environment default (default ``false`` ⇒ skills-only).
+    Enable the LLM phase with ``VULTURE_USE_LLM=true`` or a per-request
+    ``use_llm=true``.
   * "Model-gated": when the LLM phase is wanted it is gated on a provider
     health probe (``_probe_llm_health``). If no usable model is reachable the
     audit degrades GRACEFULLY to skills-only with a notice and still exits
@@ -127,19 +130,21 @@ def _env_truthy(name: str) -> bool:
 def _probe_llm_health() -> Any:
     """Run the async provider health probe from this sync generator.
 
-    Feature 0057 P1a fix: CWE runs the LLM phase by default and has ALREADY
-    decided it wants the LLM — so the probe must key on *provider/model
-    availability*, NOT on the global ``VULTURE_USE_LLM`` flag (which defaults
-    ``false`` for the agent-cwe service). ``check_llm_health`` short-circuits
-    to ``provider=disabled / reachable=False`` whenever ``VULTURE_USE_LLM !=
-    "true"`` (health.py); left alone, that would silently keep CWE skills-only
-    even with a perfectly usable model configured, defeating R1.
+    This probe is only reached AFTER ``_resolve_cwe_llm`` has decided the LLM
+    phase is wanted (via ``VULTURE_USE_LLM=true`` or a per-request
+    ``use_llm=true``). At that point the probe must key on *provider/model
+    availability*, NOT re-read the global ``VULTURE_USE_LLM`` flag.
+    ``check_llm_health`` short-circuits to ``provider=disabled /
+    reachable=False`` whenever ``VULTURE_USE_LLM != "true"`` (health.py); if a
+    per-request ``use_llm=true`` enabled the phase while the env flag is unset,
+    that short-circuit would falsely report "no model" even with a usable model
+    configured.
 
     We therefore force ``VULTURE_USE_LLM=true`` for the duration of the probe
     only, so it proceeds to the real provider-reachability checks, then restore
-    the original value. The actual LLM-phase toggle is still CWE-scoped via
-    ``_resolve_cwe_llm`` / the per-request override — this does not flip the
-    global default for any other agent.
+    the original value. The effective LLM-phase toggle is still owned by
+    ``_resolve_cwe_llm`` / the per-request override — this temporary override
+    does not flip the global default for any other agent.
 
     Calls ``health.check_llm_health`` via the module attribute so test
     monkeypatching of the source module takes effect regardless of import
@@ -161,12 +166,16 @@ def _probe_llm_health() -> Any:
 
 
 def _resolve_cwe_llm(config: dict) -> tuple[bool, str | None]:
-    """Feature 0057 P1a: resolve the CWE agent's effective LLM toggle.
+    """Feature 0057/0059: resolve the CWE agent's effective LLM toggle.
 
-    CWE runs the LLM phase BY DEFAULT (model-gated). Resolution order:
+    Uniform with every other scan agent (feature 0059): the CWE agent respects
+    ``VULTURE_USE_LLM`` (default ``false``) — the LLM phase is OPT-IN, not
+    on-by-default. Resolution order:
       1. ``VULTURE_CWE_DISABLE_LLM`` escape hatch → always skills-only.
-      2. Explicit per-request ``use_llm`` bool wins over the default.
-      3. Default (unset) → want LLM on.
+      2. Explicit per-request ``use_llm`` bool wins over the global default.
+      3. Otherwise (unset) → the ``VULTURE_USE_LLM`` environment default,
+         read at RUNTIME (mirrors ``audit_runner``'s ``USE_LLM`` expression) so
+         it is monkeypatch-testable; default ``false`` ⇒ skills-only.
       4. If LLM is wanted, gate on provider availability: an unreachable
          model degrades gracefully to skills-only + a notice (R5, exit 0).
 
@@ -176,7 +185,12 @@ def _resolve_cwe_llm(config: dict) -> tuple[bool, str | None]:
         return False, None
 
     requested = config.get("use_llm")
-    want_llm = requested if isinstance(requested, bool) else True
+    if isinstance(requested, bool):
+        want_llm = requested
+    else:
+        # Mirror audit_runner's USE_LLM expression, read at runtime so the
+        # default tracks VULTURE_USE_LLM uniformly with the rest of the fleet.
+        want_llm = os.environ.get("VULTURE_USE_LLM", "false").lower() == "true"
     if not want_llm:
         return False, None
 
@@ -203,14 +217,15 @@ def run_audit(
 ) -> Generator[str, None, None]:
     """Execute the CWE weakness audit and yield SSE events.
 
-    Runs the skill phase (full coverage) and then the LLM phase under the
-    LLM-on-by-default, model-gated, generate-then-verify policy described in
-    the module docstring: ``_resolve_cwe_llm`` resolves the effective LLM
-    toggle (``VULTURE_CWE_DISABLE_LLM`` escape hatch > per-request ``use_llm``
-    > default ON) and gates it on provider health, degrading to skills-only
-    with a notice when no model is reachable; when the LLM phase is on, the L5
-    judge (``validate_use_llm``) defaults ON so model findings are verified
-    before being reported.
+    Runs the skill phase (full coverage) and then, when enabled, the LLM phase
+    under the uniform opt-in, model-gated, generate-then-verify policy
+    described in the module docstring: ``_resolve_cwe_llm`` resolves the
+    effective LLM toggle (``VULTURE_CWE_DISABLE_LLM`` escape hatch >
+    per-request ``use_llm`` > the ``VULTURE_USE_LLM`` environment default,
+    which is ``false``) and gates it on provider health, degrading to
+    skills-only with a notice when the LLM is wanted but no model is reachable;
+    when the LLM phase is on, the L5 judge (``validate_use_llm``) defaults ON
+    so model findings are verified before being reported.
     """
     categories = config.get("categories", ALL_CATEGORIES)
     preloaded = prior_findings if prior_findings else None

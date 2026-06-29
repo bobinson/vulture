@@ -5,7 +5,7 @@
 | **Feature** | 0059_fresh_scan_memory_bypass (scope broadened 2026-06-29 to two LLM-scan knobs) |
 | **Status** | 🟢 `--fresh` implemented · 🟢 **Tier‑3 toggle implemented** (default OFF, decision (a) — see §6) |
 | **Date** | 2026-06-29 |
-| **Depends on** | 0045 (validation/memory), 0057 (LLM-on bundle + file tiering / `_prioritize_files`) |
+| **Depends on** | 0045 (validation/memory), 0057 (LLM-when-enabled bundle, fleet-uniform + file tiering / `_prioritize_files`) |
 | **Motivation** | Two independent findings from this session's audits. (1) **Memory** — on a same-path re-scan the backend loads prior findings and steers the LLM away from re-reporting them, masking re-discovery; bad for critical tests / new models → `--fresh`. (2) **Cost** — the LLM generate phase sweeps the **whole tree** by default (all scannable files, `VULTURE_LLM_MAX_FILES=10000`, **no USD budget by default**), so a large repo on a paid cloud model can be exorbitant → a **Tier‑3 toggle** that, off by default, scopes the LLM to the high-signal + structural files. |
 
 ## 1. Goal — two orthogonal, composable LLM-scan knobs
@@ -42,7 +42,7 @@ Today **all three tiers reach the LLM**; the order only governs what survives a 
 - **R8** OFF → the LLM analyzes only **Tier 1 (snippets) + Tier 2 (full)**. ON → current whole-tree behavior (T1+T2+T3).
 - **R9 (load-bearing)** The toggle is **LLM-scope only**. The **deterministic phase is unchanged** — skills + signatures still scan **every** file, so all deterministic/skill-detectable findings on Tier‑3 files still surface, and the **corpus-gated verified-N is unaffected**. What OFF forgoes is *only* the LLM's semantic/dataflow analysis of the non-flagged, non-entry tail.
 - **R10 (honesty)** When OFF and ≥1 file is skipped, the agent emits a **clear notice** (count of skipped files + how to enable). Reduced scope is **never silent**.
-- **R11 (control surface + precedence)** env `VULTURE_LLM_TIER3` (`on`|`off`, deployment default) · per-audit `config.llm_tier3` (bool, per-scan override) · CLI/driver `--llm-tier3`. **Precedence: per-request config > env > built-in default (OFF).**
+- **R11 (control surface + precedence — FLEET-WIDE)** env `VULTURE_LLM_TIER3` (`on`|`off`, deployment default) · per-audit `config.llm_tier3` (bool, per-scan override) · CLI/driver `--llm-tier3`. **Precedence: per-request config > env > built-in default (OFF).** All three knobs are uniform across **every** scan agent (`cwe, chaos_engineering, asvs, owasp, xss, soc2, ssdf, do178c`) — the per-request `config.llm_tier3` / `--llm-tier3` is honored fleet-wide, not CWE-only (updated 2026-06-29). Default still OFF.
 - **R12 (composability)** Orthogonal to `--fresh`, `VULTURE_LLM_BUDGET_USD`, `VULTURE_LLM_MAX_FILES`. The Tier‑3 filter applies **before** batching, so the budget/file caps then bound the smaller T1+T2 set (belt-and-suspenders).
 - **R13 (determinism)** Gate is config/env-driven; business-logic tests use the fake provider, no live LLM.
 
@@ -74,7 +74,7 @@ Every file lands in exactly one tier, so the caller derives the skipped count as
 
 ### 4.3 Wiring (both LLM-input paths)
 - `_collect_llm_findings_batched_async` (batched sweep) and `_build_source_context` (inline path): call `_prioritize_files(..., include_tier3=tier3_on)` where `tier3_on = _llm_tier3_enabled(cfg_llm_tier3)`.
-- **Threading the per-audit override:** the agent reads `llm_tier3` from its received per-audit config and threads it into `run_combined_audit(..., llm_tier3=…)` → the collectors — mirroring how `validate_use_llm` is threaded. Absent a config value, the env default applies.
+- **Threading the per-audit override (FLEET-WIDE, updated 2026-06-29):** **every** scan agent — `cwe, chaos_engineering, asvs, owasp, xss, soc2, ssdf, do178c` (all callers of `run_combined_audit`; `discover` does not scan) — reads `llm_tier3` from its received per-audit config and threads it into `run_combined_audit(..., llm_tier3=…)` → the collectors, mirroring how `validate_use_llm` is threaded. Absent a config value, the `VULTURE_LLM_TIER3` env default applies (default OFF). *(Earlier drafts wired the per-request `config.llm_tier3` override on the CWE agent only; the uniformity change makes it fleet-wide so the `--llm-tier3` flag / `config.llm_tier3` is honored by all scan agents, not just CWE.)*
 - **Notice (R10):** when `not tier3_on` and `skipped > 0`:
   > `[llm-scope] Tier‑3 skipped: <N> file(s) (no deterministic findings, not entry/config) were NOT sent to the LLM — cost guard. Set VULTURE_LLM_TIER3=on or scan --llm-tier3 for full-tree LLM coverage.`
   Emitted as a `thinking`/text event **and** recorded on the result (so the API/CLI surface it, like the existing partial-results/budget notices).
@@ -88,6 +88,8 @@ Every file lands in exactly one tier, so the caller derives the skipped count as
 | Deployment | env `VULTURE_LLM_TIER3=on\|off` | off |
 | Per-audit | `config.llm_tier3: true` | (falls to env) |
 | CLI / driver | `vulture scan --llm-tier3` · `scan.py --llm-tier3` → sets config | off |
+
+All three layers apply **fleet-wide** — every scan agent (`cwe, chaos_engineering, asvs, owasp, xss, soc2, ssdf, do178c`) honors the per-request `config.llm_tier3` / `--llm-tier3` override and the `VULTURE_LLM_TIER3` env (updated 2026-06-29; previously the per-request override was wired on CWE only).
 
 ## 5. Cost vs. recall — the explicit trade-off
 

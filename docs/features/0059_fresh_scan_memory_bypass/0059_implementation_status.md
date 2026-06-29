@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | 🟢 **`--fresh` + Tier‑3 toggle BOTH Implemented & GREEN.** Default policy = **(a) unconditional OFF** (decision resolved §6; smarter routing deferred to future). Uncommitted on `feature/0057-cwe-agent-hardening`. |
+| **Status** | 🟢 **`--fresh` + Tier‑3 toggle BOTH Implemented & GREEN.** Default policy = **(a) unconditional OFF** (decision resolved §6; smarter routing deferred to future). **Per-request Tier‑3 config (`config.llm_tier3` / `--llm-tier3`) is now honored FLEET-WIDE** (all scan agents, not CWE-only — uniformity change 2026-06-29). Uncommitted on `feature/0057-cwe-agent-hardening`. |
 | **Date** | 2026-06-29 |
 
 ## Part A — `--fresh` (memory bypass) — ✅ DONE
@@ -19,7 +19,7 @@
 |---|---|---|---|
 | B1 | `_llm_tier3_enabled(config>env>OFF)` resolver (`audit_runner.py`) | `TestLlmTier3Enabled` (4 cases) | ✅ |
 | B2 | `_prioritize_files(..., include_tier3=False)` drops Tier 3 | `test_tier3_excluded_when_disabled` | ✅ |
-| B3 | Threaded `llm_tier3`: cwe `agent.py` (`config.get("llm_tier3")`) → `run_combined_audit` → `_collect_llm_findings` → batched collector | shared suite green | ✅ |
+| B3 | Threaded `llm_tier3` **fleet-wide** (updated 2026-06-29): **all** scan agents `agent.py` (`config.get("llm_tier3")`) — `cwe, chaos_engineering, asvs, owasp, xss, soc2, ssdf, do178c` — → `run_combined_audit` → `_collect_llm_findings` → batched collector. *(Was CWE-only; the uniformity change forwards the per-request override from every scan agent.)* | shared suite green | ✅ |
 | B4 | Skip **notice** with file count (R10) folded into the collector's `notice` return | shared suite green | ✅ |
 | B5 | CLI `vulture scan --llm-tier3` + `scan.py --llm-tier3` → `config.llm_tier3` | CLI build+vet; `scan.py --help` | ✅ |
 | B6 | Deterministic coverage unaffected (R9) — the 2 full-sweep tests (`TestT12BatchSweep`, `TestT7BudgetCap`) keep their assertions, now with an explicit `VULTURE_LLM_TIER3=on` precondition | both green | ✅ |

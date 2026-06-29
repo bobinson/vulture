@@ -1,4 +1,4 @@
-# Feature 0057 — CWE Agent Hardening: LLM-On + Signature Detection + Verified Coverage
+# Feature 0057 — CWE Agent Hardening: LLM-When-Enabled (Fleet-Uniform) + Signature Detection + Verified Coverage
 
 | | |
 |---|---|
@@ -12,8 +12,17 @@
 > #2 (labeled corpus + per-CWE recall gates) as **Phases 4–7**, per the maintainer's
 > decision. The design workflow had recommended splitting these into a separate feature 0058;
 > the maintainer chose to keep them in 0057. **The phases remain independently shippable** —
-> Phases 0–1 (LLM-on) can land and roll back without Phases 4–6 (signatures/corpus). This is
-> now a large, multi-phase feature (~5–8 person-weeks total); gate each phase before the next.
+> Phases 0–1 (LLM-when-enabled) can land and roll back without Phases 4–6 (signatures/corpus).
+> This is now a large, multi-phase feature (~5–8 person-weeks total); gate each phase before the next.
+
+> **Uniformity reversal (2026-06-29, maintainer):** R1 is **REVERSED**. The CWE agent **no
+> longer runs the LLM phase by default** — it now respects `VULTURE_USE_LLM` (default
+> `false`) **exactly like every other scan agent**; the LLM phase is **opt-in**, fleet-uniform.
+> The graceful model-health gate and the `VULTURE_CWE_DISABLE_LLM` escape hatch are
+> **retained** (they apply only when the LLM phase IS enabled). See the dated decision-log
+> entry in `0057_implementation_status.md` ("R1 REVERSED — fleet uniformity, 2026-06-29").
+> Everywhere this LLD said "LLM-on bundle / on by default", read **"LLM-when-enabled,
+> fleet-uniform"**.
 
 > **Numbering:** requirements R1–R9 + R10–R17, work items P0–P3 + P4–P6, tests T1–T12 +
 > T13–T25, rollout Phases 0–7. Risks are numbered to avoid the `R`-prefix collision.
@@ -24,10 +33,13 @@
 
 Two coupled goals:
 
-1. **LLM phase on by default, after the deterministic phase** — so the LLM finds weaknesses
-   the regex skills structurally cannot (dataflow, cross-file, semantic), batch-looped to
-   sweep the whole codebase, and **verified** by the L5 judge so it doesn't flood. Skills
-   stay authoritative.
+1. **LLM phase available (opt-in via `VULTURE_USE_LLM`, fleet-uniform), running after the
+   deterministic phase** — so that *when enabled* the LLM finds weaknesses the regex skills
+   structurally cannot (dataflow, cross-file, semantic), batch-looped to sweep the whole
+   codebase, and **verified** by the L5 judge so it doesn't flood. Skills stay authoritative.
+   *(Reversal 2026-06-29: this phase is no longer on by default — CWE keys off `VULTURE_USE_LLM`
+   like every agent. The model-health gate + `VULTURE_CWE_DISABLE_LLM` hatch still apply when
+   it IS enabled.)*
 2. **A deterministic signature tier + corpus-gated verified coverage** — sink/source/
    sanitizer signatures for high-value CWEs the skills miss, with **every counted CWE backed
    by a labeled corpus and a per-CWE recall/precision gate**, so we publish a **real, tested
@@ -35,9 +47,14 @@ Two coupled goals:
 
 ## 2. Motivation (verified by the research)
 
-1. **The LLM phase is OFF by default.** `USE_LLM` defaults `false` (`audit_runner.py:64`);
-   CWE passes `use_llm=None` (`agent.py:109,123`) → falls back to that false. The agent ships
-   skills-only.
+1. **The LLM phase is opt-in (`VULTURE_USE_LLM`, default `false`).** `USE_LLM` defaults
+   `false` (`audit_runner.py:64`); CWE passes `use_llm=None` (`agent.py:109,123`) → falls back
+   to that flag. The agent ships skills-only and turns the LLM phase on only when an operator
+   sets `VULTURE_USE_LLM=true` (or the per-request override) — **fleet-uniform** with every
+   other scan agent. *(Originally this LLD treated off-by-default as the gap to close by
+   flipping CWE on; the 2026-06-29 reversal restores fleet uniformity, so opt-in is the
+   intended state — what this feature still delivers is the safe **bundle** for when the LLM
+   phase IS enabled: code-grounding + L5 judge + cap + whole-tree sweep + tests.)*
 2. **The skills are the real coverage but cap at single-line lexical matching** — no AST/
    dataflow (`parse_ast` exported, never wired). They miss cross-line/semantic weaknesses.
 3. **Turning the LLM on naively is net-negative** (28–88% FP vs Bandit,
@@ -48,14 +65,19 @@ Two coupled goals:
    (`catalog_detector.py:181-236`) fires **~0 findings** on real vulnerable code (reproduced
    empirically). Declared coverage ≠ verified coverage.
 
-**Conclusion:** "LLM on" is only correct as a bundle (on + code-grounding + judge + cap +
-sweep + tests); and "846 verified" is only honest if a corpus gate proves each CWE. This
-feature delivers both.
+**Conclusion:** the LLM phase is only correct **when enabled as a bundle**
+(code-grounding + judge + cap + sweep + tests) — and that bundle is now exposed
+**fleet-uniform** via `VULTURE_USE_LLM` (opt-in, not CWE-on-by-default); and "846 verified" is
+only honest if a corpus gate proves each CWE. This feature delivers both.
 
 ## 3. Requirements
 
-### LLM-on bundle
-- **R1** CWE runs the LLM phase by default after the skill phase.
+### LLM-when-enabled bundle (fleet-uniform)
+- **R1** *(REVERSED 2026-06-29)* CWE runs the LLM phase **only when `VULTURE_USE_LLM=true`**
+  (or the per-request `use_llm` override), after the skill phase — **exactly like every other
+  scan agent**. It is **opt-in, off by default**; CWE no longer defaults the LLM phase on. The
+  graceful model-health gate and `VULTURE_CWE_DISABLE_LLM` hatch are retained and apply when
+  the LLM phase IS enabled.
 - **R2** The deterministic phase stays **authoritative**: no skill (or `trusted`-signature)
   finding is suppressed by the LLM phase alone (V6 voter 2-demoting-check floor, `voter.py:50`).
 - **R3** LLM findings are **deduplicated** against deterministic findings (`audit_runner.py:744`).
@@ -74,7 +96,10 @@ feature delivers both.
   (useful UI context). Secret-bearing CWEs (**798 hardcoded creds / 319 cleartext**) are
   **redacted** in the snippet before persist (Phase 2, P2a). *(Corrected 2026-06-27: the
   original "in-memory only" was wrong — the column predated this feature, so no migration.)*
-- **R8** Other agents unchanged — the flip is CWE-scoped via the per-request override.
+- **R8** *(updated 2026-06-29)* Fleet-uniform: CWE and every other scan agent gate the LLM
+  phase on `VULTURE_USE_LLM` (default off) plus the per-request `use_llm` override. There is no
+  CWE-only default flip anymore — the only CWE-specific knob is the `VULTURE_CWE_DISABLE_LLM`
+  escape hatch (force CWE skills-only even when `VULTURE_USE_LLM=true`).
 - **R18** *(provenance persists — scope-corrected 2026-06-27, per maintainer)* the agent's
   per-finding `provenance` MUST surface end-to-end at `GET /api/audits/:id` and the findings
   table (P6d). Supersedes P6b's original "in-memory only". Multi-implementation (sqlite +
@@ -141,7 +166,7 @@ Phase 1 — Deterministic detection (ALWAYS, authoritative)
         → deterministic findings, 100% file coverage
         │
         ▼
-Phase 2 — LLM enhancement (ON by default WHEN a usable model is configured)
+Phase 2 — LLM enhancement (OPT-IN: runs when VULTURE_USE_LLM=true AND a usable model is configured)
     batch-loop over context-window-sized batches until the tree is covered or the budget
     is hit, WITH read/grep tools → candidates → dedup across batches AND vs deterministic
         │
@@ -158,7 +183,8 @@ Result: skills + trusted-signatures (authoritative) + judge-verified net-new LLM
         all code-grounded; deterministic coverage ATTESTED by the corpus gate (N)
 ```
 
-No usable model → Phase 2 + L5 skipped, skills + signatures run, explicit notice, exit 0.
+`VULTURE_USE_LLM` unset/false (default) OR no usable model → Phase 2 + L5 skipped, skills +
+signatures run, explicit notice when a model was expected but unusable, exit 0.
 
 ## 6. Detailed changes
 
@@ -171,10 +197,10 @@ Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
 | P0.2 | `_attach_code_snippet()` central populator before `_validate` | `audit_runner.py:~760` | S |
 | P0.3 | L5 skips findings with an empty window | `validate/llm_judge.py` | S |
 
-### Phase 1 — LLM phase on, safely (CWE-scoped)
+### Phase 1 — LLM phase, safely (fleet-uniform opt-in)
 | Item | What | Where | Effort |
 |---|---|---|---|
-| P1a | CWE `use_llm` defaults True (model-gated) + provider-availability gate → graceful skills-only | `agent.py:109`; `shared/llm/health.py:93-104` | M |
+| P1a *(REVERSED 2026-06-29)* | CWE `use_llm` resolves to the `VULTURE_USE_LLM` default (off) when the request omits it — fleet-uniform, no CWE default-on; provider-availability gate → graceful skills-only when LLM IS enabled but the model is unusable; `VULTURE_CWE_DISABLE_LLM` hatch retained | `agent.py:109`; `shared/llm/health.py:93-104` | M |
 | P1b | L5 judge defaults on when LLM on; **RC6 blast-radius cap**; **crypto/policy CWE exemption** | `validate/llm_judge.py:249`, `validate/__init__.py:224` | M |
 | P1c | LLM gets read/grep tools on the inline path (`audit_runner.py:~1043`) | `audit_runner.py` | M |
 | P1d | Cost/work cap (`VULTURE_LLM_MAX_FILES`, `VULTURE_LLM_BUDGET_USD`); honest token counts (incl. local) | `audit_runner.py:289-293,716-757,992-999` | M |
@@ -186,7 +212,7 @@ Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
 | P2a | **Redact `code_snippet` for secret-bearing findings** (CWE-798 hardcoded creds, CWE-319 cleartext): mask quoted string literals / assignment RHS in the window **before** it reaches the SSE `result` + the DB. TDD: a CWE-798 finding's snippet has the secret masked, structure preserved; non-secret findings untouched. | `audit_runner.py` (`_redact_snippet` in/around `_attach_code_snippet`) | M |
 | P2b | Tune RC6 threshold, crypto-exempt set, budget defaults from real-audit soak telemetry | config/docs | — (soak) |
 
-### Phase 3 — Docs (LLM-on)
+### Phase 3 — Docs (LLM-when-enabled, fleet-uniform)
 | Item | What | Where | Effort |
 |---|---|---|---|
 | P3 | Document the new default + generate-verify + every env var | `agent.py`, `CLAUDE.md` | S |
@@ -225,9 +251,9 @@ corpus + license review dominate; Phase 6 ≈ 2–3d). Large — hence the per-p
 
 | Env var | Default | Notes |
 |---|---|---|
-| `VULTURE_USE_LLM` (global) | `false` | unchanged; CWE overrides per-request |
-| CWE `use_llm` | **True** (model-gated) | `false`/request override wins |
-| CWE `validate_use_llm` (L5) | **True** when LLM on | request override wins |
+| `VULTURE_USE_LLM` (global) | `false` | **fleet-uniform** — CWE keys off this exactly like every other scan agent (reversal 2026-06-29) |
+| CWE `use_llm` | **falls to `VULTURE_USE_LLM`** (off by default) | per-request `use_llm` override wins; no CWE default-on |
+| CWE `validate_use_llm` (L5) | **True** when the LLM phase is on | request override wins |
 | `VULTURE_LLM_MAX_FILES` | **10000** | high ceiling by design — file count is *not* the throttle; the context window + budget are |
 | `VULTURE_LLM_BUDGET_USD` | off | hard stop on estimated spend (the real cost guard) |
 | `VULTURE_CWE_DISABLE_LLM` | — | escape hatch: force skills+signatures only |
@@ -236,10 +262,11 @@ corpus + license review dominate; Phase 6 ≈ 2–3d). Large — hence the per-p
 
 ## 8. Test plan — E2E business-logic first (fake provider; gate is LLM-free)
 
-**LLM-on contracts (shared + cwe):** T1 code_snippet populated · T2 L5 skips blind ·
+**LLM-when-enabled contracts (shared + cwe):** T1 code_snippet populated · T2 L5 skips blind ·
 T3 skills authoritative · T4 LLM deduped · T5 RC6 cap · T6 graceful no-model · T7 budget cap ·
-T8 CWE LLM on by default · T9 LLM finds a cross-line gap skills miss · T10 crypto not
-auto-suppressed · T11 clean-code FP gate · T12 LLM sweeps beyond one context window.
+**T8 (REVERSED 2026-06-29) CWE LLM phase OFF by default + ON only when `VULTURE_USE_LLM=true`**
+(fleet-uniform; was "on by default") · T9 LLM finds a cross-line gap skills miss · T10 crypto
+not auto-suppressed · T11 clean-code FP gate · T12 LLM sweeps beyond one context window.
 
 **Signature + corpus contracts:** T13 signature detects cross-line gap (LLM OFF) · T14 dedup
 precedence, no double-report (R11) · T15 candidate demotable / trusted needs 2 checks ·
@@ -252,9 +279,9 @@ raises recall on dataflow fixtures, ranges not counts, never folded into N.
 ## 9. Rollout (soak → enforce; gate each phase)
 
 0. **Phase 0** — code-grounding; T1/T2 green; no behavior flip. *(shippable alone)*
-1. **Phase 1** — LLM-on + batch-loop + L5 behind the model-gated default; T3–T12 green. Soak. *(shippable alone)*
+1. **Phase 1** — LLM phase (opt-in via `VULTURE_USE_LLM`, fleet-uniform) + batch-loop + L5 behind the model gate; T3–T12 green. Soak. *(shippable alone)*
 2. **Phase 2** — tune RC6/crypto-exempt/budget from soak.
-3. **Phase 3** — LLM-on doc updates.
+3. **Phase 3** — LLM-when-enabled (fleet-uniform) doc updates.
 4. **Phase 4** — signatures land as `candidate` only; T13–T15; contributes 0 to N.
 5. **Phase 5** — corpus + gates; promotion on; first `VERIFIED_CWES.md`; T16–T22.
 6. **Phase 6** — attestation + "846/400+" reconciliation; T22–T24.
@@ -290,8 +317,11 @@ raises recall on dataflow fixtures, ranges not counts, never folded into N.
 
 1. **MAX_FILES** — ✅ **decided (2026-06-26):** `VULTURE_LLM_MAX_FILES=10000` (uncapped by
    file count; context window + USD budget bound the sweep). USD cap off by default — confirm.
-2. **LLM defaults** — CWE-only · on-when-model-available · L5 on · L5 only re-ranks skill
-   findings within the 2-check floor · `code_snippet` **persists** to SSE+DB (pre-existing column; R7 corrected) **with redaction** for secret-bearing CWEs. ✅ confirmed.
+2. **LLM defaults** — *(superseded 2026-06-29: fleet-uniform opt-in, not CWE-default-on)*
+   gated on `VULTURE_USE_LLM` like every agent · on-when-flag-set-and-model-available · L5 on
+   when the LLM phase is on · L5 only re-ranks skill findings within the 2-check floor ·
+   `code_snippet` **persists** to SSE+DB (pre-existing column; R7 corrected) **with redaction**
+   for secret-bearing CWEs. ✅ confirmed (with the R1 reversal applied).
 3. **Signature tranche** — 7 solid net-new, or include the provisional CWE-489 from the start
    (gate decides either way)?
 4. **Juliet supplement** — vendor a curated CC0 Juliet subset for C/C++/Java (bigger N), or
@@ -303,8 +333,9 @@ raises recall on dataflow fixtures, ranges not counts, never folded into N.
 ## 13. Acceptance criteria
 
 - ☐ T1–T24 green; existing CWE + shared suites still green.
-- ☐ With a usable model, CWE runs LLM by default + reports ≥1 finding on the T9 dataflow
-  fixture that skills-only misses; with no model, skills+signatures only + notice, exit 0.
+- ☐ With `VULTURE_USE_LLM=true` and a usable model, CWE runs the LLM phase + reports ≥1
+  finding on the T9 dataflow fixture that skills-only misses; with the flag off (default) or no
+  model, skills+signatures only + notice, exit 0.
 - ☐ Every finding entering L5 carries a real window (or is skipped); a repo larger than one
   context window is swept in multiple batches.
 - ☐ The 7–8 signatures route through `check_catalog_generic`; **no** double-reporting (T14).

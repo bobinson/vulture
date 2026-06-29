@@ -315,8 +315,8 @@ VULTURE_EMBEDDING_MODEL=                             # Embedding model override
 OPENAI_API_KEY=sk-...                                # LLM API key
 OPENAI_BASE_URL=                                     # Custom OpenAI-compatible endpoint (LM Studio, vLLM)
 VULTURE_LLM_MODEL=gpt-4o                            # Model: gpt-4o, claude-sonnet, gemini-pro, qwen3:1.7b, etc.
-VULTURE_USE_LLM=false                               # Enable LLM phase for most agents (true = skills + LLM, false = skills only). NOTE: the CWE agent runs the LLM phase ON BY DEFAULT, model-gated (does NOT key off this flag)
-VULTURE_CWE_DISABLE_LLM=false                        # CWE agent only: escape hatch to force skills-only, overriding the LLM-on-by-default behaviour
+VULTURE_USE_LLM=false                               # Enable LLM phase for ALL agents (true = skills + LLM, false = skills only). Default skills-only; opt-in via VULTURE_USE_LLM=true. The CWE agent keys off this flag like every other agent (when enabled, CWE still applies its graceful model-health gate)
+VULTURE_CWE_DISABLE_LLM=false                        # CWE agent only: escape hatch to force CWE skills-only even when VULTURE_USE_LLM=true
 VULTURE_LLM_CTX_SIZE=                                # Override context window (tokens); auto-detected from model if unset
 VULTURE_LLM_MAX_FILES=10000                          # Cap on files swept by the LLM phase (partial results emitted when hit)
 VULTURE_LLM_BUDGET_USD=                              # Optional USD spend cap for the LLM phase; unset / <= 0 = no cap

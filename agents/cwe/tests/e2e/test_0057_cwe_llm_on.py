@@ -1,19 +1,28 @@
-"""Feature 0057 Phase 1 — CWE-agent LLM-on contracts (TDD, RED-first).
+"""Feature 0057/0059 — CWE-agent LLM contracts (TDD).
 
-These tests define the business contract for the CWE agent's LLM-on-by-default
-behaviour. They MUST currently FAIL because the feature is unimplemented — and
-fail for the RIGHT reason (the LLM default / gate / exemption is missing), never
-on an unrelated import/setup error.
+These tests define the business contract for the CWE agent's LLM phase.
+
+UNIFORMITY decision (feature 0059, maintainer-approved): the CWE agent no
+longer runs its LLM phase BY DEFAULT. It respects ``VULTURE_USE_LLM`` (default
+``false``) EXACTLY like every other scan agent — the LLM phase is OPT-IN
+(``VULTURE_USE_LLM=true`` in the environment, or a per-request ``use_llm=true``
+in the audit config). The graceful model-health gate (when LLM IS wanted but no
+model is reachable ⇒ skills-only + notice, exit 0) and the
+``VULTURE_CWE_DISABLE_LLM`` escape hatch (force skills-only) are RETAINED.
 
 All LLM behaviour runs through the deterministic, network-free seams in
 agents/shared/tests/_fake_llm.py (R9 — the gate never calls a live model).
 
-Test map (plan §8):
-    T6  graceful no-model — LLM-on default + no usable model => skills-only + notice, exit 0
-    T8  CWE runs the LLM phase by default (model-gated) — no explicit use_llm
-    T9  the LLM finds a cross-line / dataflow gap the regex skills structurally miss
+Test map:
+    T6  graceful no-model — LLM enabled + no usable model => skills-only + notice, exit 0
+    T8a default OFF — VULTURE_USE_LLM unset + no per-request use_llm => skills-only (LLM phase never runs)
+    T8b opt-in ON via env — VULTURE_USE_LLM=true + reachable model => LLM phase runs
+    T8c opt-in ON via request — config use_llm=true + reachable model => LLM phase runs
+    T8d escape hatch — VULTURE_CWE_DISABLE_LLM forces skills-only even when use_llm=True
+    T8e sample-code TDD — vulnerable sample: default => skills-only; VULTURE_USE_LLM=true => LLM runs
+    T9  the LLM finds a cross-line / dataflow gap the regex skills structurally miss (LLM enabled)
     T10 crypto/policy CWEs (326/327/328/330/798/319) are never auto-suppressed by L5
-    T11 clean-code FP gate — on clean source the LLM phase adds no findings
+    T11 clean-code FP gate — on clean source the (enabled) LLM phase adds no findings
 """
 
 from __future__ import annotations
@@ -115,13 +124,16 @@ def _all_text(events: list[str]) -> str:
 
 
 class TestT6GracefulNoModel:
-    """When the CWE agent's LLM-on default meets NO usable model, it must
-    degrade gracefully: run skills-only, emit an explicit notice, and complete
-    (exit 0). Mode-E no-key users are protected. The model gate (P1a) uses the
-    provider health probe; here it reports unreachable. The FakeLLM explodes if
-    the LLM phase is ever entered, proving it was skipped."""
+    """When the LLM phase is ENABLED but meets NO usable model, the CWE agent
+    must degrade gracefully: run skills-only, emit an explicit notice, and
+    complete (exit 0). Mode-E no-key users are protected. The model gate uses
+    the provider health probe; here it reports unreachable. The FakeLLM records
+    0 calls, proving the phase was skipped despite being requested."""
 
     def test_no_usable_model_runs_skills_only_with_notice(self, tmp_path, monkeypatch):
+        # LLM phase explicitly requested (per-request use_llm=True) so the
+        # model-health gate is reached — under the uniform default it would
+        # otherwise be off and this test would not exercise the gate at all.
         # Strip every provider credential / endpoint so no model is usable.
         for var in ("VULTURE_LLM_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                     "GEMINI_API_KEY", "OLLAMA_API_BASE", "OPENAI_BASE_URL"):
@@ -159,7 +171,9 @@ class TestT6GracefulNoModel:
         fake = FakeLLMProvider(scripted=[])
         install_fake_runner(monkeypatch, fake)
 
-        events = list(run_audit("t6", str(tmp_path), {}))
+        # Request the LLM phase explicitly; the unreachable model gate must
+        # still degrade it to skills-only.
+        events = list(run_audit("t6", str(tmp_path), {"use_llm": True}))
 
         # Completed (exit 0) — a result event was produced.
         result = _parse_event(events, "result")
@@ -174,16 +188,61 @@ class TestT6GracefulNoModel:
 
 
 # --------------------------------------------------------------------------- #
-# T8 — CWE LLM phase on by default (model-gated)
+# T8 — uniform LLM toggle: OFF by default, opt-in via env or request
 # --------------------------------------------------------------------------- #
 
 
-class TestT8LlmOnByDefault:
-    """With a usable model and NO explicit use_llm in the request config, the
-    CWE agent runs the LLM phase by default. (Today CWE passes use_llm=None ->
-    the global VULTURE_USE_LLM=false default, so the LLM phase never runs.)"""
+class TestT8UniformLlmToggle:
+    """Feature 0059 uniformity: the CWE agent respects VULTURE_USE_LLM (default
+    false) like every other scan agent. The LLM phase is OPT-IN — it runs only
+    when VULTURE_USE_LLM=true in the environment OR the per-request config sets
+    use_llm=true. The VULTURE_CWE_DISABLE_LLM escape hatch still forces it off.
+    """
 
-    def test_llm_phase_runs_without_explicit_flag(self, tmp_path, usable_model, monkeypatch):
+    def test_default_off_no_per_request_flag_runs_skills_only(
+        self, tmp_path, usable_model, monkeypatch
+    ):
+        """T8a: VULTURE_USE_LLM unset + no per-request use_llm => the LLM phase
+        does NOT run, even though a usable model is reachable. This is the
+        uniform default that the old CWE LLM-on-by-default behaviour violated.
+        """
+        # Ensure the global flag is unset so the runtime default (false) applies.
+        monkeypatch.delenv("VULTURE_USE_LLM", raising=False)
+        (tmp_path / "app.py").write_text(
+            "import sqlite3\n"
+            "def q(uid):\n"
+            "    return db.execute(f\"SELECT * FROM t WHERE id={uid}\")\n"
+        )
+
+        # Recording (non-raising) fake — calls == 0 proves the phase was
+        # skipped (a raising fake would be swallowed and falsely read as 0).
+        fake = FakeLLMProvider(scripted=[
+            fake_finding(title="LLM net-new", category="CWE-89",
+                         file_path="app.py", line_start=3, line_end=3,
+                         check_id="cwe.llm.netnew"),
+        ])
+        install_fake_runner(monkeypatch, fake)
+
+        # NOTE: config has no "use_llm" key and VULTURE_USE_LLM is unset.
+        events = list(run_audit("t8a", str(tmp_path), {}))
+
+        # Completed (exit 0) on the skills-only path.
+        result = _parse_event(events, "result")
+        assert result["findings"], "skills-only result must still carry findings"
+        assert fake.calls == 0, (
+            "CWE must NOT run the LLM phase by default — it respects "
+            f"VULTURE_USE_LLM (default false); fake.calls={fake.calls}"
+        )
+        titles = [f["title"] for f in result["findings"]]
+        assert "LLM net-new" not in titles, (
+            "the LLM-sourced finding must NOT surface when the LLM phase is off"
+        )
+
+    def test_env_opt_in_runs_llm_phase(self, tmp_path, usable_model, monkeypatch):
+        """T8b: VULTURE_USE_LLM=true + a reachable model => the LLM phase runs,
+        with no per-request use_llm needed (env opt-in, uniform with the fleet).
+        """
+        monkeypatch.setenv("VULTURE_USE_LLM", "true")
         (tmp_path / "app.py").write_text(
             "import sqlite3\n"
             "def q(uid):\n"
@@ -197,18 +256,44 @@ class TestT8LlmOnByDefault:
         ])
         install_fake_runner(monkeypatch, fake)
 
-        # NOTE: config has no "use_llm" key — default must turn it on.
-        events = list(run_audit("t8", str(tmp_path), {}))
+        # config has no "use_llm" key — the env flag turns it on.
+        events = list(run_audit("t8b", str(tmp_path), {}))
 
         assert fake.calls >= 1, (
-            "CWE must run the LLM phase by default when a usable model exists "
-            f"(use_llm defaults True, model-gated); fake.calls={fake.calls}"
+            "CWE must run the LLM phase when VULTURE_USE_LLM=true and a usable "
+            f"model exists (model-gated); fake.calls={fake.calls}"
         )
         titles = [f["title"] for f in _result_findings(events)]
-        assert "LLM net-new" in titles, "the default-on LLM finding must surface"
+        assert "LLM net-new" in titles, "the opt-in LLM finding must surface"
+
+    def test_request_opt_in_runs_llm_phase(self, tmp_path, usable_model, monkeypatch):
+        """T8c: per-request use_llm=true + a reachable model => the LLM phase
+        runs even with VULTURE_USE_LLM unset (request override turns it on)."""
+        monkeypatch.delenv("VULTURE_USE_LLM", raising=False)
+        (tmp_path / "app.py").write_text(
+            "import sqlite3\n"
+            "def q(uid):\n"
+            "    return db.execute(f\"SELECT * FROM t WHERE id={uid}\")\n"
+        )
+
+        fake = FakeLLMProvider(scripted=[
+            fake_finding(title="LLM net-new", category="CWE-89",
+                         file_path="app.py", line_start=3, line_end=3,
+                         check_id="cwe.llm.netnew"),
+        ])
+        install_fake_runner(monkeypatch, fake)
+
+        events = list(run_audit("t8c", str(tmp_path), {"use_llm": True}))
+
+        assert fake.calls >= 1, (
+            "per-request use_llm=true must run the LLM phase even when "
+            f"VULTURE_USE_LLM is unset; fake.calls={fake.calls}"
+        )
+        titles = [f["title"] for f in _result_findings(events)]
+        assert "LLM net-new" in titles, "the request-opt-in LLM finding must surface"
 
     def test_disable_escape_hatch_forces_skills_only(self, tmp_path, usable_model, monkeypatch):
-        """VULTURE_CWE_DISABLE_LLM forces skills-only even when the request
+        """T8d: VULTURE_CWE_DISABLE_LLM forces skills-only even when the request
         explicitly turns the LLM ON (the escape hatch wins)."""
         monkeypatch.setenv("VULTURE_CWE_DISABLE_LLM", "true")
         (tmp_path / "app.py").write_text("x = eval(input())\n")
@@ -219,12 +304,81 @@ class TestT8LlmOnByDefault:
         install_fake_runner(monkeypatch, fake)
 
         # Request explicitly asks for the LLM phase; the env hatch must override.
-        events = list(run_audit("t8b", str(tmp_path), {"use_llm": True}))
+        events = list(run_audit("t8d", str(tmp_path), {"use_llm": True}))
         # Completed (exit 0) and LLM never invoked.
         _parse_event(events, "result")
         assert fake.calls == 0, (
             "VULTURE_CWE_DISABLE_LLM must force skills-only (no LLM call) even "
             "when use_llm=True is requested"
+        )
+
+    def test_sample_code_default_off_then_env_on(self, tmp_path, usable_model, monkeypatch):
+        """T8e (sample-code TDD): run the CWE agent over a small vulnerable
+        sample file with the FAKE provider and assert the uniform toggle end to
+        end. (a) default (VULTURE_USE_LLM unset, no per-request flag) =>
+        skills-only, no LLM-phase findings; (b) VULTURE_USE_LLM=true => the LLM
+        phase runs and its net-new finding surfaces."""
+        sample = tmp_path / "vuln_sample.py"
+        sample.write_text(
+            "import hashlib\n"
+            "import sqlite3\n"
+            "\n"
+            "def login(conn, user, password):\n"
+            "    # weak hash (CWE-328) — caught by the skill phase\n"
+            "    digest = hashlib.md5(password.encode()).hexdigest()\n"
+            "    # SQL injection via f-string (CWE-89)\n"
+            "    return conn.execute(f\"SELECT * FROM users WHERE name='{user}'\")\n"
+        )
+
+        # (a) Default OFF: VULTURE_USE_LLM unset, config has no use_llm.
+        monkeypatch.delenv("VULTURE_USE_LLM", raising=False)
+        fake_off = FakeLLMProvider(scripted=[
+            fake_finding(title="LLM-only dataflow", category="CWE-89",
+                         file_path="vuln_sample.py", line_start=8, line_end=8,
+                         check_id="cwe.llm.dataflow"),
+        ])
+        install_fake_runner(monkeypatch, fake_off)
+
+        events_off = list(run_audit("t8e-off", str(tmp_path), {}))
+        result_off = _parse_event(events_off, "result")
+        assert result_off["findings"], (
+            "skills-only must still report the deterministic weak-hash/SQLi findings"
+        )
+        assert fake_off.calls == 0, (
+            "default path (VULTURE_USE_LLM unset) must NOT run the LLM phase; "
+            f"fake.calls={fake_off.calls}"
+        )
+        off_titles = [f["title"] for f in result_off["findings"]]
+        assert "LLM-only dataflow" not in off_titles, (
+            "no LLM-phase finding may appear on the skills-only default path"
+        )
+        off_llm_marked = [
+            f["title"] for f in result_off["findings"]
+            if str(f.get("check_id", "")).startswith("cwe.llm")
+            or f.get("provenance") == "llm"
+        ]
+        assert off_llm_marked == [], (
+            f"no llm-provenance findings on the default path; got {off_llm_marked}"
+        )
+
+        # (b) Opt-in ON: VULTURE_USE_LLM=true makes the LLM phase run.
+        monkeypatch.setenv("VULTURE_USE_LLM", "true")
+        fake_on = FakeLLMProvider(scripted=[
+            fake_finding(title="LLM-only dataflow", category="CWE-89",
+                         file_path="vuln_sample.py", line_start=8, line_end=8,
+                         check_id="cwe.llm.dataflow"),
+        ])
+        install_fake_runner(monkeypatch, fake_on)
+        patch_l5_judge(monkeypatch, default_exploitable=0.95)
+
+        events_on = list(run_audit("t8e-on", str(tmp_path), {}))
+        assert fake_on.calls >= 1, (
+            "VULTURE_USE_LLM=true must run the LLM phase over the sample; "
+            f"fake.calls={fake_on.calls}"
+        )
+        on_titles = [f["title"] for f in _result_findings(events_on)]
+        assert "LLM-only dataflow" in on_titles, (
+            "the LLM-phase finding must surface when VULTURE_USE_LLM=true"
         )
 
 
@@ -273,6 +427,8 @@ class TestT9LlmFindsCrossLineGap:
         # Make the L5 judge confirm the LLM finding so it is not demoted away.
         patch_l5_judge(monkeypatch, default_exploitable=0.95)
 
+        # LLM phase must be explicitly enabled (uniform default is off).
+        monkeypatch.setenv("VULTURE_USE_LLM", "true")
         events = list(run_audit("t9", str(tmp_path), {}))
         titles = [f["title"] for f in _result_findings(events)]
         assert "Command injection via tainted dataflow" in titles, (
@@ -341,8 +497,8 @@ class TestT10CryptoNotAutoSuppressed:
 
 class TestT11CleanCodeFpGate:
     """On clean source the LLM phase must not invent findings. When the LLM
-    returns nothing, the audit surfaces no net-new LLM findings — the LLM-on
-    default does not flood a clean tree."""
+    returns nothing, the audit surfaces no net-new LLM findings — the enabled
+    LLM phase does not flood a clean tree."""
 
     def test_clean_code_no_llm_findings(self, tmp_path, usable_model, monkeypatch):
         (tmp_path / "clean.py").write_text(
@@ -357,11 +513,13 @@ class TestT11CleanCodeFpGate:
         fake = FakeLLMProvider(scripted=[])
         install_fake_runner(monkeypatch, fake)
 
+        # Enable the LLM phase explicitly (uniform default is off).
+        monkeypatch.setenv("VULTURE_USE_LLM", "true")
         events = list(run_audit("t11", str(tmp_path), {}))
 
-        # The LLM phase ran (default-on, model-gated) ...
+        # The LLM phase ran (opt-in via env, model-gated) ...
         assert fake.calls >= 1, (
-            "LLM phase should run on the default-on path "
+            "LLM phase should run on the opt-in path "
             f"(fake.calls={fake.calls})"
         )
         # ... but produced zero findings: result carries no LLM-sourced finding.
