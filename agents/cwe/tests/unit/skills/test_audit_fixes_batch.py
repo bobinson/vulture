@@ -19,7 +19,7 @@ from cwe_agent.skills.input_validation_check import (
     NO_VALIDATION_PATTERNS, CSRF_PATTERNS, SAFE_XXE_PATTERNS,
 )
 from cwe_agent.skills.access_control_check import IDOR_PATTERNS
-from cwe_agent.skills.dangerous_function_check import _STRING_FN, _classify_match
+from cwe_agent.skills.dangerous_function_check import _C_STRING
 from cwe_agent.skills.error_handling_check import BARE_EXCEPT_PATTERNS
 from cwe_agent.skills.weak_entropy_check import _WEAK_RNG
 from cwe_agent.skills.path_equivalence_check import _VARIANTS
@@ -317,7 +317,7 @@ class TestDangerousLibcAdded:
     ])
     def test_unsafe_libc(self, fn: str) -> None:
         line = f"char *p = {fn}(arg);"
-        assert _STRING_FN.search(line) is not None, fn
+        assert _C_STRING.search(line) is not None, fn
 
 
 class TestBaseExceptionFlagged:
@@ -427,12 +427,22 @@ class TestPathTraversalEncoded:
 # ---------------------------------------------------------------------------
 
 class TestDangerousFnSeverityTuning:
-    """#33 — exec() with constant string literal is high, not critical."""
+    """#33 — feature 0060: exec/os.system severity tuning moved to the injection
+    skill together with ownership of command/code execution. dangerous_function
+    now carries per-sink severity for memory-unsafe *library* functions:
+    gets() has no safe bound (CWE-242, critical); the bounded-alternative
+    string-handling family is CWE-676 high."""
 
-    def test_constant_arg_is_high(self) -> None:
-        result = _classify_match('os.system("ls -la")')
-        assert result == ("676", "high")
+    def test_gets_is_critical_242(self, tmp_path) -> None:
+        from cwe_agent.skills.dangerous_function_check import check_dangerous_function
+        (tmp_path / "v.c").write_text("void f(char *b){ gets(b); }\n")
+        f = check_dangerous_function(str(tmp_path))["findings"][0]
+        assert (f["category"], f["severity"]) == ("CWE-242", "critical")
 
-    def test_dynamic_arg_is_critical(self) -> None:
-        result = _classify_match('os.system(user_input)')
-        assert result == ("676", "critical")
+    def test_strcpy_is_high_676(self, tmp_path) -> None:
+        from cwe_agent.skills.dangerous_function_check import check_dangerous_function
+        (tmp_path / "v.c").write_text(
+            "void f(char *b, const char *s){ strcpy(b, s); }\n"
+        )
+        f = check_dangerous_function(str(tmp_path))["findings"][0]
+        assert (f["category"], f["severity"]) == ("CWE-676", "high")

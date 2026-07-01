@@ -317,9 +317,13 @@ OPENAI_BASE_URL=                                     # Custom OpenAI-compatible 
 VULTURE_LLM_MODEL=gpt-4o                            # Model: gpt-4o, claude-sonnet, gemini-pro, qwen3:1.7b, etc.
 VULTURE_USE_LLM=false                               # Enable LLM phase for ALL agents (true = skills + LLM, false = skills only). Default skills-only; opt-in via VULTURE_USE_LLM=true. The CWE agent keys off this flag like every other agent (when enabled, CWE still applies its graceful model-health gate)
 VULTURE_CWE_DISABLE_LLM=false                        # CWE agent only: escape hatch to force CWE skills-only even when VULTURE_USE_LLM=true
+VULTURE_CWE_DISABLE_DANGEROUS_FN=false               # CWE agent only: kill switch for the language-aware dangerous_function skill (CWE-676/242); one-release rollback safety (feature 0060)
 VULTURE_LLM_CTX_SIZE=                                # Override context window (tokens); auto-detected from model if unset
 VULTURE_LLM_MAX_FILES=10000                          # Cap on files swept by the LLM phase (partial results emitted when hit)
 VULTURE_LLM_BUDGET_USD=                              # Optional USD spend cap for the LLM phase; unset / <= 0 = no cap
+VULTURE_AGENT_MAX_AUDIT_SECONDS=900                  # Feature 0061: whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Must be >= backend per-agent timeout (600s); 0 disables (removes the hard guarantee)
+VULTURE_LLM_CALL_TIMEOUT_SEC=120                     # Feature 0061: per-LLM-call timeout so a hung model can't starve the between-batch cancel/deadline checks
+VULTURE_AUDIT_EXECUTOR_WORKERS=8                     # Feature 0061: dedicated audit-producer thread pool size = per-agent concurrent-audit cap
 VULTURE_AGENT_PORT=8001                              # Service port (varies per agent)
 VULTURE_BACKEND_URL=http://backend:8080              # Backend URL for memory API
 OLLAMA_API_BASE=http://localhost:11434               # Ollama endpoint (local models)

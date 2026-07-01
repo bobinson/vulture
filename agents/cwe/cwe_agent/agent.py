@@ -45,6 +45,7 @@ from shared.llm import health as _health
 from shared.audit_runner import run_combined_audit
 from shared.llm.provider import get_max_findings
 from shared.tools.memory_client import build_prior_context
+from shared.env import env_truthy
 
 from cwe_agent.catalog import build_catalog_context, get_static_detectable
 from cwe_agent.config import ALL_CATEGORIES
@@ -123,10 +124,6 @@ def _build_llm_catalog_context() -> str:
     return build_catalog_context(_CATALOG_CWE_IDS, max_chars=3000)
 
 
-def _env_truthy(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in ("true", "1", "yes")
-
-
 def _probe_llm_health() -> Any:
     """Run the async provider health probe from this sync generator.
 
@@ -181,7 +178,7 @@ def _resolve_cwe_llm(config: dict) -> tuple[bool, str | None]:
 
     Returns ``(effective_use_llm, notice_or_None)``.
     """
-    if _env_truthy("VULTURE_CWE_DISABLE_LLM"):
+    if env_truthy("VULTURE_CWE_DISABLE_LLM"):
         return False, None
 
     requested = config.get("use_llm")

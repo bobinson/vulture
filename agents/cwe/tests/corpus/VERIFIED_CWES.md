@@ -2,11 +2,11 @@
 
 <!-- GENERATED FILE — do NOT edit by hand. Regenerate via the venv: agents/.venv/bin/python agents/cwe/tests/corpus/report_coverage.py --write -->
 
-**N = 10** corpus-VERIFIED CWE types. N is the count of VERIFIED rows the deterministic gate produced (skills + signatures, NO LLM); it is computed, never asserted as a literal.
+**N = 12** corpus-VERIFIED CWE types. N is the count of VERIFIED rows the deterministic gate produced (skills + signatures, NO LLM); it is computed, never asserted as a literal.
 
 This document is the honest, four-bucket picture of what the CWE agent detects — in BOTH directions (no overclaim, no underclaim). It is regenerated from the corpus gate and committed; a stale copy fails CI.
 
-## VERIFIED — corpus-gated (N = 10)
+## VERIFIED — corpus-gated (N = 12)
 
 Each of these CWE types passed the per-CWE promotion gate on the labeled corpus: recall 1.0, false-positive rate 0.0, over independent positive and clean fixtures. These — and ONLY these — are counted in N.
 
@@ -17,7 +17,9 @@ Each of these CWE types passed the per-CWE promotion gate on the labeled corpus:
 | CWE-90 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
 | CWE-91 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
 | CWE-117 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
+| CWE-242 | VERIFIED | 4 | 4 | 1.000 | 0.000 |
 | CWE-548 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
+| CWE-676 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
 | CWE-798 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
 | CWE-917 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
 | CWE-943 | VERIFIED | 6 | 6 | 1.000 | 0.000 |

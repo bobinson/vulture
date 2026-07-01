@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from shared.cancellation import current_audit_deadline, current_cancel_token
+
 from . import l5_cache
 from .language import detect_language
 from .types import ValidateConfig, ValidationCheck
@@ -212,6 +214,10 @@ def _run_l5_pool(
     (completed_count, verdicts_by_id). Mutates `out` in place."""
     verdicts_by_id: dict[str, dict[str, Any]] = {}
     completed = 0
+    # feature 0061: stop consuming (and cancel pending batches via the finally's
+    # cancel_futures shutdown) when the audit is cancelled. In-flight batches
+    # keep their per-request timeout as the upper bound.
+    _cancel = current_cancel_token()
 
     def _process_batch(
         batch_idx: int, batch: list[tuple[int, dict[str, Any], str]],
@@ -219,7 +225,7 @@ def _run_l5_pool(
         return _judge_batch(
             batch_idx=batch_idx, batch=batch, audit_id=audit_id,
             system_prompt=rt.system_prompt, model=rt.model,
-            per_batch_timeout_s=rt.per_batch_timeout_s,
+            per_batch_timeout_s=rt.per_batch_timeout_s, cancel=_cancel,
         )
 
     # Manual pool lifecycle (issue #2): the deadline-bounded loop
@@ -232,6 +238,9 @@ def _run_l5_pool(
             for i, batch in enumerate(batches)
         }
         for fut in _as_completed_with_deadline(futures, deadline):
+            if _cancel is not None and _cancel.cancelled():
+                log.info("[validate.l5] cancelled — stopping after %d batch(es)", completed)
+                break
             i, batch = futures[fut]
             try:
                 batch_verdicts = fut.result()
@@ -299,6 +308,11 @@ def run_l5(
             rt.total_timeout_s,
         )
     deadline = time.monotonic() + rt.total_timeout_s
+    # feature 0061 (F11a): never exceed the shared whole-audit ceiling — cap L5's
+    # own deadline at the ambient audit deadline so generate + L5 can't stack.
+    _ad = current_audit_deadline()
+    if _ad is not None:
+        deadline = min(deadline, _ad)
     completed, verdicts_by_id = _run_l5_pool(
         batches, rt, audit_id, deadline, out, emit_batch,
     )
@@ -609,7 +623,7 @@ def _partition_batch_by_cache(
 
 def _call_with_strict_retry(
     system_prompt: str, user_msg: str, model: str, timeout_s: float,
-    batch_size: int, batch_idx: int,
+    batch_size: int, batch_idx: int, cancel: Any = None,
 ) -> list[dict[str, Any]]:
     """Call LLM; on JSON-parse failure, retry once with a strict-JSON
     nudge (D14). Returns parsed verdicts or [] on double-failure."""
@@ -617,6 +631,11 @@ def _call_with_strict_retry(
     parsed = _parse_response(raw, batch_size) if raw else None
     if parsed is not None:
         return parsed
+    # feature 0061: an in-flight batch must not issue a SECOND (retry) LLM call
+    # once the audit is cancelled — the token is passed in (not ambient) because
+    # this runs on an L5 pool worker that does not inherit contextvars.
+    if cancel is not None and cancel.cancelled():
+        return []
     retry_user = user_msg + (
         "\n\nIMPORTANT: your previous response was not valid JSON. "
         "Reply with ONLY the JSON object specified, no prose."
@@ -661,6 +680,7 @@ def _judge_batch(
     system_prompt: str,
     model: str,
     per_batch_timeout_s: float,
+    cancel: Any = None,
 ) -> dict[str, dict[str, Any]]:
     """Run one LLM call for `batch`; return {finding_id: verdict_dict}.
 
@@ -676,7 +696,7 @@ def _judge_batch(
     user_msg = _render_user_message(audit_id, uncached_batch)
     parsed = _call_with_strict_retry(
         system_prompt, user_msg, model, per_batch_timeout_s,
-        len(uncached_batch), batch_idx,
+        len(uncached_batch), batch_idx, cancel=cancel,
     )
     _store_verdicts(parsed, uncached_batch, model, verdicts)
     return verdicts

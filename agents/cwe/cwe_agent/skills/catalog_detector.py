@@ -15,7 +15,6 @@ on real code. Findings from this engine carry a ``catalog_confidence`` field
 reflecting detection reliability.
 """
 
-import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -31,6 +30,7 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
+from shared.env import env_truthy
 
 from cwe_agent.catalog import (
     enrich_finding,
@@ -38,15 +38,6 @@ from cwe_agent.catalog import (
     load_catalog,
 )
 from cwe_agent.skills.signatures.detector import match_signatures
-
-
-def _env_truthy(name: str) -> bool:
-    """True iff env var ``name`` is set to a truthy token.
-
-    Mirrors ``agent.py._env_truthy`` (the ``VULTURE_CWE_DISABLE_LLM`` pattern)
-    so the signature-tier kill switches read identically to the LLM one.
-    """
-    return os.environ.get(name, "").strip().lower() in ("true", "1", "yes")
 
 
 # Signature-tier escape hatches (audit MEDIUM "ROLLBACK-killswitch"), read at
@@ -408,10 +399,10 @@ def _apply_signatures(
       * ``VULTURE_CWE_SIGNATURES_CANDIDATE_OFF`` → run trusted signatures only
         (drop any finding carrying ``signature_status == "candidate"``).
     """
-    if _env_truthy(_ENV_DISABLE_SIGNATURES):
+    if env_truthy(_ENV_DISABLE_SIGNATURES):
         return
 
-    candidate_off = _env_truthy(_ENV_SIGNATURES_CANDIDATE_OFF)
+    candidate_off = env_truthy(_ENV_SIGNATURES_CANDIDATE_OFF)
     file_key = str(file_path)
     for finding in match_signatures(lines, file_ext):
         if candidate_off and finding.get("signature_status") == "candidate":
