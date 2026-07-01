@@ -984,6 +984,19 @@ func isLocalMode(frontendURL string) bool {
 	return strings.Contains(frontendURL, "localhost") || strings.Contains(frontendURL, "127.0.0.1")
 }
 
+// uiURL returns the base URL where the web UI is served: an explicit
+// VULTURE_FRONTEND_URL override, else the configured frontend host. In dev and
+// Docker deployments the SPA is served by a SEPARATE server on the frontend host
+// (Vite dev server / frontend container) — the backend port serves the API only,
+// so pointing there yields a 404. (Native install embeds the SPA in the backend,
+// but that mode is served by the backend binary, not this CLI.)
+func uiURL() string {
+	if env := os.Getenv("VULTURE_FRONTEND_URL"); env != "" {
+		return env
+	}
+	return defaultFrontendURL
+}
+
 func isProjectRoot(dir string) bool {
 	if fi, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err != nil || fi.IsDir() {
 		return false
@@ -1958,10 +1971,7 @@ func printAuditSummary(a audit) {
 	}
 
 	// Show UI link
-	frontendURL := os.Getenv("VULTURE_FRONTEND_URL")
-	if frontendURL == "" {
-		frontendURL = defaultFrontendURL
-	}
+	frontendURL := uiURL()
 	fmt.Printf("\n  View in UI: %s/audit/%s\n", frontendURL, a.ID)
 
 	// Show local dev credentials if frontend is running locally. The
