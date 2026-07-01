@@ -8,7 +8,7 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **Purpose**: Detects code injection vulnerabilities across SQL, OS command, XSS, dynamic code execution, and SSRF
 - **CWE Coverage**:
   - **CWE-89** SQL Injection: f-string/format SQL queries, Sprintf-based queries
-  - **CWE-78** OS Command Injection: `os.system()`, `os.popen()`, `subprocess` with `shell=True`
+  - **CWE-78** OS Command Injection: `os.system()`, `os.popen()`, `subprocess` with `shell=True`, Go `exec.Command("sh"…)`; **and (feature 0060)** Java `Runtime.getRuntime().exec()` / `new ProcessBuilder()`, PHP `shell_exec`/`passthru`/`proc_open` and language-scoped bare `system()` (PHP/Ruby only) — moved here from `dangerous_function_check`
   - **CWE-79** Cross-Site Scripting: `innerHTML`, `document.write`, `dangerouslySetInnerHTML`, `v-html`
   - **CWE-94** Code Injection: `eval()`, `exec()`, `new Function()`, string-based `setTimeout`/`setInterval`
   - **CWE-918** Server-Side Request Forgery (SSRF): `requests.get(user_input)`, `urllib.request.urlopen(user_input)`, `http.Get(user_input)`, `fetch(user_input)`
@@ -229,11 +229,16 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 ## dangerous_function_check
 
 - **Function**: `check_dangerous_function(source_path: str) -> dict`
-- **CWE Coverage**: **CWE-676** Use of Potentially Dangerous Function, **CWE-242** Use of Inherently Dangerous Function.
-- **Detection**: Unbounded string APIs `strcpy|strcat|sprintf|vsprintf|gets|scanf|sscanf` (high) and command-execution APIs `system|popen|eval|exec|Runtime.getRuntime().exec|os.system|os.popen` (critical).
-- **Safe-context** (5-line window): `strncpy`, `strlcpy`, `snprintf`, `subprocess.run([...])`, `shlex.quote`, `html.escape`, `ast.literal_eval`.
-- **Language-gate**: all languages (regex is API-specific).
-- **Severity**: critical for execution APIs, high for string APIs.
+- **CWE Coverage**: **CWE-676** Use of Potentially Dangerous Function, **CWE-242** Use of Inherently Dangerous Function. Both are **corpus-VERIFIED** (feature 0060): recall 1.0 / fp-rate 0.0 over the labeled `dangerous_functions` corpus — this measures precision/recall on those fixtures, **not** exhaustive sink coverage.
+- **Scope (feature 0060)**: memory-unsafe *library* functions in systems languages only. **Command/code execution (`eval`/`exec`/`os.system`/`os.popen`/`Runtime.exec`) is NOT here — it is owned by `injection_check`** (CWE-78 / CWE-94), which applies a receiver-boundary that excludes benign method calls like `RegExp.exec()` and ioredis `pipeline.exec()`. This split removed the historical CWE-676↔CWE-78 double-report and a class of `.exec()` false positives.
+- **Detection (language-scoped via `detect_language`)**:
+  - **C / C++ / Objective-C** (`.c .h .cpp .cc .cxx .hpp .m .mm`): `gets` → CWE-242 (critical); `strcpy strcat sprintf vsprintf scanf sscanf strdup strndup vfprintf vprintf tmpnam tempnam mktemp alloca getwd` → CWE-676 (high).
+  - **Go** (`.go`): `unsafe.Pointer|Sizeof|Alignof|Offsetof` → CWE-676 (high).
+  - **Rust** (`.rs`): `transmute`, `.get_unchecked(_mut)`, `ptr::read|write*` → CWE-676 (high).
+- **Boundary rules**: bare C sinks carry a receiver-reject lookbehind (`obj.strcpy(` is not matched); a sink token that is the function being *defined* (`fn transmute(...)`) is not matched; pure comment lines are skipped; C string-handling is suppressed by a bounded alternative (`strncpy`/`strlcpy`/`snprintf`/`strlcat`) in the prior 5-line window.
+- **Language-gate**: only C/C++/Objective-C, Go, Rust files are scanned for these sinks; other languages produce no `dangerous_function` findings (their dangerous ops are execution sinks, owned by `injection`).
+- **Severity**: `gets` critical (242); all other sinks high (676).
+- **Kill switch**: `VULTURE_CWE_DISABLE_DANGEROUS_FN=true` disables the skill for one release (rollback safety).
 
 ## insufficient_logging_check
 

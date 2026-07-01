@@ -1,0 +1,31 @@
+# Group: dangerous_functions — feature 0060. Inherently-dangerous *library*
+# functions in memory-unsafe systems languages, owned by the `dangerous_function`
+# skill (CWE-676 general; CWE-242 gets()). Execution sinks (eval/exec/os.system)
+# are NOT here — they belong to the `injection` skill (CWE-78/94).
+# Paths are relative to ../fixtures/. `line` is diagnostic only (positives).
+# Fixtures are single-target: each clean twin fires ZERO CWE-676/CWE-242.
+
+# ── CWE-676 use of inherently-dangerous function (C/C++, Go, Rust) ──
+- {file: dangerous_functions/cwe_676_1.c, language: C, cwe: "676", expectation: positive, line: 3}
+- {file: dangerous_functions/cwe_676_2.c, language: C, cwe: "676", expectation: positive, line: 3}
+- {file: dangerous_functions/cwe_676_3.go, language: Go, cwe: "676", expectation: positive, line: 6}
+- {file: dangerous_functions/cwe_676_4.go, language: Go, cwe: "676", expectation: positive, line: 6}
+- {file: dangerous_functions/cwe_676_5.rs, language: Rust, cwe: "676", expectation: positive, line: 2}
+- {file: dangerous_functions/cwe_676_6.rs, language: Rust, cwe: "676", expectation: positive, line: 2}
+# clean twins — bounded C alt, comment-only mention, and the idattestor .exec() FP shapes
+- {file: dangerous_functions/cwe_676_1_clean.c, language: C, cwe: "676", expectation: negative}
+- {file: dangerous_functions/cwe_676_2_clean.c, language: C, cwe: "676", expectation: negative}
+- {file: dangerous_functions/cwe_676_3_clean.ts, language: TypeScript, cwe: "676", expectation: negative}
+- {file: dangerous_functions/cwe_676_4_clean.ts, language: TypeScript, cwe: "676", expectation: negative}
+- {file: dangerous_functions/cwe_676_5_clean.go, language: Go, cwe: "676", expectation: negative}
+- {file: dangerous_functions/cwe_676_6_clean.rs, language: Rust, cwe: "676", expectation: negative}
+
+# ── CWE-242 use of gets() — no safe bound (C) ──
+- {file: dangerous_functions/cwe_242_1.c, language: C, cwe: "242", expectation: positive, line: 3}
+- {file: dangerous_functions/cwe_242_2.c, language: C, cwe: "242", expectation: positive, line: 3}
+- {file: dangerous_functions/cwe_242_3.c, language: C, cwe: "242", expectation: positive, line: 4}
+- {file: dangerous_functions/cwe_242_4.c, language: C, cwe: "242", expectation: positive, line: 4}
+- {file: dangerous_functions/cwe_242_1_clean.c, language: C, cwe: "242", expectation: negative}
+- {file: dangerous_functions/cwe_242_2_clean.c, language: C, cwe: "242", expectation: negative}
+- {file: dangerous_functions/cwe_242_3_clean.c, language: C, cwe: "242", expectation: negative}
+- {file: dangerous_functions/cwe_242_4_clean.c, language: C, cwe: "242", expectation: negative}

@@ -53,9 +53,10 @@ SKIP_FILES = frozenset({
 
 # Code file extensions we care about
 CODE_EXTENSIONS = frozenset({
-    ".py", ".go", ".js", ".ts", ".jsx", ".tsx",
-    ".java", ".rs", ".rb", ".php", ".cs", ".cpp",
-    ".c", ".h", ".swift", ".kt", ".scala",
+    ".py", ".pyw", ".go", ".js", ".ts", ".jsx", ".tsx",
+    ".mjs", ".cjs", ".mts", ".cts",
+    ".java", ".rs", ".rb", ".erb", ".php", ".phtml", ".cs", ".cpp",
+    ".c", ".h", ".m", ".mm", ".swift", ".kt", ".scala",
     ".yaml", ".yml", ".toml", ".json", ".xml",
     ".sh", ".bash", ".dockerfile",
 })

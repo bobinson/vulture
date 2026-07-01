@@ -1,13 +1,21 @@
 """Shared audit runner with concurrent skill execution and file caching."""
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
+import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+
+from shared.cancellation import (
+    current_audit_deadline,
+    current_cancel_token,
+    set_audit_deadline,
+)
 
 from shared.llm.errors import retry_skill
 from shared.tools.file_scanner import scan_code_files, read_file_safe, is_entry_or_config, clear_caches
@@ -1130,6 +1138,23 @@ def run_combined_audit(
     logger.info("audit_start run_id=%s source=%s categories=%s use_llm=%s",
                 run_id, source_path, categories, effective_use_llm)
 
+    # feature 0061: cooperative cancellation. `cancel` is the ambient token the
+    # transport flips on client disconnect; `_deadline_val` is the single
+    # wall-clock ceiling shared across the skill, generate, and L5 phases so
+    # their timeouts cannot stack (F11a). Bound ambiently so the generate
+    # (asyncio.run) and L5 (copy_context thread) phases both see it.
+    cancel = current_cancel_token()
+    _max_audit_s = _safe_int_env("VULTURE_AGENT_MAX_AUDIT_SECONDS", 900)
+    _deadline_val: float | None = None
+    if _max_audit_s > 0:
+        _deadline_val = time.monotonic() + _max_audit_s
+        set_audit_deadline(_deadline_val)
+
+    def _cancelled_or_expired() -> bool:
+        return (cancel is not None and cancel.cancelled()) or (
+            _deadline_val is not None and time.monotonic() > _deadline_val
+        )
+
     # Emit prior findings context if available
     if prior_context:
         yield emitter.text_message(prior_context)
@@ -1141,6 +1166,7 @@ def run_combined_audit(
     total = len(categories)
     completed = 0
 
+    _skill_aborted = False  # feature 0061: set on cancel / skill-phase deadline
     pool_workers = min(total, _SKILL_WORKERS)
     # Manual pool management (no `with` / no CM-driven shutdown-with-wait)
     # so that generator GC — which can fire from a worker thread when an
@@ -1155,56 +1181,74 @@ def run_combined_audit(
                 continue
             futures[pool.submit(retry_skill, fn, source_path)] = cat
 
-        for future in as_completed(futures):
-            cat = futures[future]
-            yield emitter.text_message(f"Analyzing {cat} patterns...")
+        # feature 0061: bound the skill wait by the shared whole-audit deadline
+        # and honor cancel, so a hung skill or a client disconnect cannot pin
+        # this phase (F2). `as_completed(timeout=)` caps the total wait.
+        _skill_timeout = (
+            max(0.1, _deadline_val - time.monotonic())
+            if _deadline_val is not None else None
+        )
+        try:
+            for future in as_completed(futures, timeout=_skill_timeout):
+                if cancel is not None and cancel.cancelled():
+                    _skill_aborted = True
+                    break
+                cat = futures[future]
+                yield emitter.text_message(f"Analyzing {cat} patterns...")
 
-            try:
-                result = future.result()
-            except Exception as exc:
-                yield emitter.text_message(f"Skill {cat} failed: {str(exc)[:200]}")
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    yield emitter.text_message(f"Skill {cat} failed: {str(exc)[:200]}")
+                    completed += 1
+                    yield emitter.progress_event(
+                        files_analyzed=completed,
+                        total_files=total,
+                        findings_count=len(skill_findings),
+                    )
+                    continue
+
+                findings = result.get("findings", [])
+                # Feature 0046 issue #1: assign deterministic IDs at emission
+                # time so L5 streaming `validation_update` events can later
+                # reference the same finding via id. The backend's
+                # `extractDeltaFindings` only auto-generates IDs when the
+                # incoming finding has an empty id field — non-empty IDs are
+                # preserved verbatim. Hash matches backend's
+                # `generateFindingID(auditID, title, file_path, index)`.
+                for finding in findings:
+                    _assign_finding_id(finding, run_id, len(skill_findings))
+                    skill_findings.append(finding)
+                    # Feature 0057 P2a: redact secret-bearing snippets BEFORE the
+                    # per-finding SSE event so the live frontend view (and any
+                    # delta-finding DB persistence on a stalled stream) never sees
+                    # the raw secret. Mutates the dict that is also kept in
+                    # skill_findings, so the finalisation choke point re-sees the
+                    # already-masked form (idempotent).
+                    _redact_finding_inplace(finding)
+                    yield emitter.finding_event(**finding)
+
                 completed += 1
                 yield emitter.progress_event(
                     files_analyzed=completed,
                     total_files=total,
                     findings_count=len(skill_findings),
                 )
-                continue
-
-            findings = result.get("findings", [])
-            # Feature 0046 issue #1: assign deterministic IDs at emission
-            # time so L5 streaming `validation_update` events can later
-            # reference the same finding via id. The backend's
-            # `extractDeltaFindings` only auto-generates IDs when the
-            # incoming finding has an empty id field — non-empty IDs are
-            # preserved verbatim. Hash matches backend's
-            # `generateFindingID(auditID, title, file_path, index)`.
-            for finding in findings:
-                _assign_finding_id(finding, run_id, len(skill_findings))
-                skill_findings.append(finding)
-                # Feature 0057 P2a: redact secret-bearing snippets BEFORE the
-                # per-finding SSE event so the live frontend view (and any
-                # delta-finding DB persistence on a stalled stream) never sees
-                # the raw secret. Mutates the dict that is also kept in
-                # skill_findings, so the finalisation choke point re-sees the
-                # already-masked form (idempotent).
-                _redact_finding_inplace(finding)
-                yield emitter.finding_event(**finding)
-
-            completed += 1
-            yield emitter.progress_event(
-                files_analyzed=completed,
-                total_files=total,
-                findings_count=len(skill_findings),
+        except TimeoutError:
+            _skill_aborted = True
+            yield emitter.text_message(
+                "[partial results] skill phase wall-clock cap reached; "
+                "remaining skills not analyzed."
             )
     finally:
-        # If we're being GC'd from inside a worker thread (the typical
-        # disconnect path), wait=True would join that very thread.
-        # Use wait=False to skip the join; Python's thread teardown
-        # still cleans up daemon pool threads on process exit.
+        # feature 0061: on cancel/expiry, cancel pending futures and don't block
+        # on in-flight skills. Otherwise wait normally. (If GC'd from a worker
+        # thread, wait=True would join that very thread — the RuntimeError
+        # fallback drops to wait=False.)
+        _drain = _skill_aborted or _cancelled_or_expired()
         try:
-            pool.shutdown(wait=True)
-        except RuntimeError:
+            pool.shutdown(wait=not _drain, cancel_futures=_drain)
+        except (RuntimeError, TypeError):
             pool.shutdown(wait=False)
 
     logger.info("skill_phase_done run_id=%s findings=%d", run_id, len(skill_findings))
@@ -1213,7 +1257,7 @@ def run_combined_audit(
     llm_new_findings: list[dict] = []
     actual_input_tokens = 0
     actual_output_tokens = 0
-    if effective_use_llm and skill_tools and instructions:
+    if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
 
@@ -1316,6 +1360,11 @@ def run_combined_audit(
                 _l5_enabled = (
                     os.environ.get("VULTURE_USE_VALIDATE_LLM", "").lower() == "true"
                 )
+            # feature 0061 (F11): skip the L5 *LLM* judge when the audit is
+            # already cancelled / past the shared deadline. Deterministic L1/L2
+            # still annotate the partial findings cheaply.
+            if _cancelled_or_expired():
+                _l5_enabled = False
             _vcfg = _ValidateConfig(
                 compliance_mode=(
                     os.environ.get("VULTURE_COMPLIANCE_MODE", "").lower() == "true"
@@ -1341,7 +1390,14 @@ def run_combined_audit(
                 finally:
                     _stream_q.put(None)        # sentinel
 
-            _vthread = _threading.Thread(target=_run_validate_in_thread, daemon=True)
+            # feature 0061 (F11c): a raw threading.Thread does NOT inherit
+            # contextvars, so copy the current context (carrying the cancel
+            # token + shared whole-audit deadline) into the L5 thread. run_l5
+            # reads them to cap its deadline and stop early on cancel.
+            _vctx = contextvars.copy_context()
+            _vthread = _threading.Thread(
+                target=lambda: _vctx.run(_run_validate_in_thread), daemon=True,
+            )
             _vthread.start()
 
             # Drain the queue: emit one validation_update SSE event per
@@ -1352,7 +1408,14 @@ def run_combined_audit(
                 if batch is None:
                     break
                 yield emitter.validation_update_event(batch)
-            _vthread.join()
+            # feature 0061: bounded join — L5 self-terminates by the shared
+            # deadline (it caps its own on `current_audit_deadline`), so never
+            # pin the generator/producer indefinitely.
+            _join_timeout = (
+                max(1.0, _deadline_val - time.monotonic()) + 5.0
+                if _deadline_val is not None else None
+            )
+            _vthread.join(timeout=_join_timeout)
             if _v_exc_box[0] is not None:
                 raise _v_exc_box[0]
             v_result = _v_result_box[0]
@@ -1544,13 +1607,48 @@ async def _collect_llm_findings_batched_async(
     notice: str | None = None
     first_error: str | None = None
 
+    # feature 0061: honor cancel + the shared whole-audit deadline BEFORE each
+    # call, and bound each call so a hung/slow model cannot starve these checks.
+    _cancel = current_cancel_token()
+    _deadline = current_audit_deadline()
+    _call_timeout = _safe_int_env("VULTURE_LLM_CALL_TIMEOUT_SEC", 120)
+    if _call_timeout <= 0:  # 0/negative would make asyncio.wait_for insta-timeout every call
+        _call_timeout = 120
     for batch_idx, (batch_text, batch_paths) in enumerate(batches):
-        findings, error, in_tok, out_tok = await _collect_llm_findings_async(
-            run_id, source_path, categories, skill_tools,
-            instructions, domain_label, prior_context, model,
-            skill_findings=skill_findings,
-            source_context=batch_text,
-        )
+        if _cancel is not None and _cancel.cancelled():
+            notice = (
+                f"[partial results] audit cancelled ({_cancel.reason}); "
+                f"stopped after {batch_idx} of {len(batches)} batch(es)."
+            )
+            logger.warning("audit_cancelled run_id=%s reason=%s batches=%d/%d",
+                           run_id, _cancel.reason, batch_idx, len(batches))
+            break
+        if _deadline is not None and time.monotonic() > _deadline:
+            notice = (
+                f"[partial results] wall-clock cap reached; "
+                f"stopped after {batch_idx} of {len(batches)} batch(es)."
+            )
+            logger.warning("audit_deadline run_id=%s batches=%d/%d",
+                           run_id, batch_idx, len(batches))
+            break
+        try:
+            findings, error, in_tok, out_tok = await asyncio.wait_for(
+                _collect_llm_findings_async(
+                    run_id, source_path, categories, skill_tools,
+                    instructions, domain_label, prior_context, model,
+                    skill_findings=skill_findings,
+                    source_context=batch_text,
+                ),
+                timeout=_call_timeout,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            # A hung/slow call is bounded here so the loop regains control to
+            # re-check cancel/deadline on the next iteration. The injected
+            # CancelledError escapes _collect_llm_findings_async's `except
+            # Exception`, so no model cooldown/failure is recorded (F7).
+            findings, error, in_tok, out_tok = (
+                [], f"llm call timed out after {_call_timeout}s", 0, 0,
+            )
         total_in += in_tok
         total_out += out_tok
         files_seen += len(batch_paths)

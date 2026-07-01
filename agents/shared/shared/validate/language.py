@@ -14,16 +14,17 @@ import os
 
 # Extension → canonical language name.
 _LANGUAGE_BY_EXT: dict[str, str] = {
-    ".py":   "python",  ".pyi":  "python",
+    ".py":   "python",  ".pyi":  "python", ".pyw": "python",
     ".go":   "go",
-    ".ts":   "typescript", ".tsx": "typescript",
-    ".js":   "javascript", ".jsx": "javascript", ".mjs": "javascript",
+    ".ts":   "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
+    ".js":   "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".java": "java",
+    ".m":    "objc", ".mm": "objc",
     ".kt":   "kotlin", ".kts": "kotlin",
     ".rs":   "rust",
-    ".rb":   "ruby",
+    ".rb":   "ruby", ".erb": "ruby",
     ".cs":   "csharp",
-    ".php":  "php",
+    ".php":  "php", ".phtml": "php",
     ".c":    "c",   ".h":   "c",
     ".cpp":  "cpp", ".hpp": "cpp", ".cc":  "cpp", ".cxx": "cpp",
     ".swift": "swift",
