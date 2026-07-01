@@ -813,7 +813,7 @@ _REDACTION_PLACEHOLDER = "***REDACTED***"
 
 # A quoted string literal: capture the opening quote so we can re-emit it while
 # masking the body. Handles both single- and double-quoted literals.
-_QUOTED_LITERAL_RE = re.compile(r"""(['"])(?:\\.|(?!\1).)*\1""")
+_QUOTED_LITERAL_RE = re.compile(r"""(['"])(?:\\.|(?!\1)[^\\])*\1""")
 
 # An assignment / key-value right-hand side whose value is NOT a fully quoted
 # literal (e.g. ``token = abcd1234``, ``password: hunter2``, ``export KEY=v``,
