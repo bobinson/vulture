@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | 🟢 **`--fresh` + Tier‑3 toggle BOTH Implemented & GREEN.** Default policy = **(a) unconditional OFF** (decision resolved §6; smarter routing deferred to future). **Per-request Tier‑3 config (`config.llm_tier3` / `--llm-tier3`) is now honored FLEET-WIDE** (all scan agents, not CWE-only — uniformity change 2026-06-29). Uncommitted on `feature/0057-cwe-agent-hardening`. |
-| **Date** | 2026-06-29 |
+| **Status** | 🟢 **`--fresh` + Tier‑3 toggle BOTH Implemented, GREEN & COMMITTED.** Default policy = **(a) unconditional OFF** (decision resolved §6; smarter routing deferred to future). **Per-request Tier‑3 config (`config.llm_tier3` / `--llm-tier3`) is honored FLEET-WIDE** (all scan agents, not CWE-only — uniformity change 2026-06-29). Committed as `6168a1a` (base `--fresh` + Tier‑3 + entry-point tiering) + `37338a8` (fleet-wide `llm_tier3` uniformity), on `feature/0057-cwe-agent-hardening` (current HEAD `86dc9a0`). |
+| **Date** | 2026-06-29 (commit state reconciled against git 2026-07-02) |
 
 ## Part A — `--fresh` (memory bypass) — ✅ DONE
 | # | Item | Test | Status |

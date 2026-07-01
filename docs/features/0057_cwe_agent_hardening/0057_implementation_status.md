@@ -4,9 +4,21 @@
 |---|---|
 | **Feature** | 0057_cwe_agent_hardening (LLM-when-enabled, fleet-uniform + signatures + verified coverage) |
 | **Status** | 🟢 **Phases 0–6 COMPLETE & GREEN** (T1–T24 + T26; T25 = Phase-7). **N=10 corpus-verified.** **End-to-end audited (32-agent), 13 findings all fixed.** Phase 7 (soak) ongoing — open cluster is reasoning-model LLM reliability (7.5–7.7). **R1 reversed 2026-06-29 — CWE LLM phase now off by default, opt-in via `VULTURE_USE_LLM` (fleet-uniform); that change is in the working tree, UNCOMMITTED.** |
-| **Last updated** | 2026-06-29 |
+| **Last updated** | 2026-07-02 |
 | **Branch** | `feature/0057-cwe-agent-hardening` — **Phases 0–6 + the audit-fixes committed** (Phase 0+1 `da07f8d`; signatures `642096f`; migration 022 `26c9cd5`; reconciliation `6c4acda`; audit-fixes `a3f051e`/`9ab0b72`; R17 CI lane `2690a10`; HEAD `d19bfc6`). **UNCOMMITTED (working tree, 15 files): the 2026-06-29 R1-reversal + fleet-tier3 uniformity change** — implemented & green but not yet committed (committed HEAD still has the old CWE LLM-on-by-default). |
-| **Suites** | agents/cwe **604 passed / 1 skip** · agents/shared **976 passed** · 7 non-CWE scan agents + owasp/soc2 regression green · `ruff` clean (re-verified 2026-06-29) |
+| **Suites** | (0057 baseline, 2026-06-29) agents/cwe **604 passed / 1 skip** · agents/shared **976 passed** · non-CWE agents + owasp/soc2 green · `ruff` clean. **Current branch tree (with 0060, 2026-07-02): cwe 632 / shared 977** — see the 2026-07-02 note below. |
+
+> **2026-07-02 — commit state reconciled against git; branch co-hosts 0060.**
+> Verified against `git log`: 0057's **R1-reversal is COMMITTED** (`37338a8 feat(0057/0059): CWE
+> LLM opt-in (fleet-uniform) + fleet-wide llm_tier3`) — the earlier "UNCOMMITTED (15 files)" note
+> below was stale. Feature **0059** (`--fresh` + Tier-3 toggle) is likewise committed
+> (`6168a1a` + `37338a8`). Feature **0060** (language-aware `dangerous_function`; CWE-676/242)
+> was built on this same branch and is now **also committed** (via the branch's parallel "CWE
+> agent hardering" commits `444ae3c`/`99faef3`/`d8eacbb` + merge `86dc9a0`). Net effect on 0057's
+> artifacts: **N = 10 → 12** (0060 corpus-gated CWE-676 + CWE-242; 0057's own contribution
+> remains N=10), `VERIFIED_CWES.md` regenerated, `dangerous_function`/`injection` skills changed.
+> 0057's Phases 0–6 status is unchanged. Current HEAD: `86dc9a0`. See
+> `docs/features/0060_cwe676_language_aware/`.
 
 > Tests are written **before** the implementation in every phase (CLAUDE.md). An item is
 > "done" only when its tests pass **and** the full existing CWE + shared suites still pass.
@@ -156,5 +168,5 @@
 ## Notes / blockers
 - **0057 code complete (Phases 0–6); all green + end-to-end audited (32-agent) with all 13 findings fixed.** Phase 7 is operational/ongoing — the substantive open cluster is **reasoning-model LLM reliability** (7.5 cross-function L5 window · 7.6 L5 truncation under load · 7.7 generate-phase token burn, ~33% reliable on the 35B), plus Juliet ingestion (7.2), line-precision (7.3), and live-model T25.
 - **Committed** on the branch through HEAD `d19bfc6` (Phases 0–6 `da07f8d`→`6c4acda`; audit-fixes `a3f051e`/`9ab0b72`; R17 CI `2690a10`; 0059 scan-controls `6168a1a`).
-- **UNCOMMITTED (working tree, 15 files):** the 2026-06-29 R1-reversal + fleet-tier3 uniformity change — green but not committed; the committed HEAD still ships the old CWE LLM-on-by-default. Until committed, the headline "CWE LLM opt-in" holds only in the working tree (and is not yet live in the `~/.vulture/runtime` stack, which serves a stale copy).
+- **COMMITTED (reconciled 2026-07-02):** the 2026-06-29 R1-reversal + fleet-tier3 uniformity landed in `37338a8`; feature 0059 in `6168a1a`+`37338a8`; feature 0060 in the branch's `444ae3c`/`99faef3`/`d8eacbb` + merge `86dc9a0`. Current HEAD `86dc9a0`. The earlier "UNCOMMITTED (15 files) — HEAD still ships old CWE-LLM-on-by-default" note was stale as of 2026-06-29 and is superseded. (Note: the `~/.vulture/runtime` stack may still serve a stale build until redeployed.)
 - Adversarial review across the 5 phase-workflows caught + fixed real issues: an arbitrary-file-read exfil, a raw-secret SSE leak, untagged rollup parents, and 4 signature false-positive sources.
