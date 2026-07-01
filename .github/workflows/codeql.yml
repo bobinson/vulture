@@ -1,0 +1,60 @@
+name: "CodeQL"
+
+# Advanced setup (replaces GitHub "default setup") so scanning can exclude the
+# CWE agent's INTENTIONALLY-vulnerable test corpus via paths-ignore below.
+#
+# IMPORTANT: after this merges, turn OFF "Default setup" in
+#   Settings > Code security > Code scanning
+# otherwise CodeQL runs twice (default + this) and double-reports every alert.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: "27 4 * * 1" # weekly, Monday 04:27 UTC
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          # Buildless extraction — the repo has 4 Go modules and no root
+          # go.mod, so autobuild can't build the tree; `none` avoids the build.
+          - language: go
+            build-mode: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Initialize CodeQL
+        # TODO: pin to a commit SHA to match this repo's action-pinning convention.
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # The cwe_1333* corpus files are deliberately-vulnerable ReDoS samples
+          # used to test the CWE agent; scanning them is pure noise.
+          config: |
+            paths-ignore:
+              - 'agents/**/tests/corpus/fixtures/**'
+
+      - name: Perform CodeQL Analysis
+        # TODO: pin to a commit SHA to match this repo's action-pinning convention.
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

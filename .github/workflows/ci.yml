@@ -113,7 +113,7 @@ jobs:
         # shared[dev] pulls the test stack (pytest, pytest-asyncio, pytest-cov,
         # httpx, anyio) at the versions pinned in shared/pyproject.toml; the
         # other packages share that stack, so plain editable installs suffice.
-        run: cd agents && pip install -e "shared/[dev]" && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/
+        run: cd agents && pip install -e "shared/[dev]" && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/ && pip install -e asvs/ && pip install -e do178c/
       - name: Test agents
         # Run each package separately: collecting all trees in one pytest
         # invocation collides on duplicate test-file basenames (e.g.
@@ -121,7 +121,7 @@ jobs:
         # no __init__.py. Per-package runs avoid the collision.
         run: |
           cd agents
-          for pkg in shared chaos_engineering owasp soc2 cwe prove xss ssdf discover; do
+          for pkg in shared chaos_engineering owasp soc2 cwe prove xss ssdf discover asvs do178c; do
             echo "::group::pytest $pkg"
             python -m pytest "$pkg/tests/" -v || exit 1
             echo "::endgroup::"
