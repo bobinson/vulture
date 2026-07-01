@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from shared.cancellation import current_audit_deadline, current_cancel_token
+
 from . import l5_cache
 from .language import detect_language
 from .types import ValidateConfig, ValidationCheck
@@ -65,6 +67,13 @@ _DEFAULT_BATCH = 10
 _DEFAULT_CONCURRENCY = 5
 _DEFAULT_TOTAL_TIMEOUT_S = 300.0
 _DEFAULT_BATCH_TIMEOUT_S = 30.0  # local 30B models routinely take 10-20 s/batch
+# Output-token cap for a verdict call. Reasoning ("thinking") models (e.g. qwen3)
+# spend most of the budget on hidden reasoning_content, truncating the verdict
+# JSON at the old hard 2000 cap (finish_reason=length → "JSON parse failed twice").
+# Raise + make tunable; non-reasoning models stop early so a higher ceiling is
+# harmless. For reasoning models also lower VULTURE_VALIDATE_LLM_BATCH_SIZE so each
+# batch's JSON fits within reasoning + output.
+_DEFAULT_MAX_OUTPUT_TOKENS = 4000
 
 # Per-process cache of file_path → 12-hex-char sha256 prefix. Used so
 # cache keys for L5 invalidate automatically when source files change
@@ -205,6 +214,10 @@ def _run_l5_pool(
     (completed_count, verdicts_by_id). Mutates `out` in place."""
     verdicts_by_id: dict[str, dict[str, Any]] = {}
     completed = 0
+    # feature 0061: stop consuming (and cancel pending batches via the finally's
+    # cancel_futures shutdown) when the audit is cancelled. In-flight batches
+    # keep their per-request timeout as the upper bound.
+    _cancel = current_cancel_token()
 
     def _process_batch(
         batch_idx: int, batch: list[tuple[int, dict[str, Any], str]],
@@ -212,7 +225,7 @@ def _run_l5_pool(
         return _judge_batch(
             batch_idx=batch_idx, batch=batch, audit_id=audit_id,
             system_prompt=rt.system_prompt, model=rt.model,
-            per_batch_timeout_s=rt.per_batch_timeout_s,
+            per_batch_timeout_s=rt.per_batch_timeout_s, cancel=_cancel,
         )
 
     # Manual pool lifecycle (issue #2): the deadline-bounded loop
@@ -225,6 +238,9 @@ def _run_l5_pool(
             for i, batch in enumerate(batches)
         }
         for fut in _as_completed_with_deadline(futures, deadline):
+            if _cancel is not None and _cancel.cancelled():
+                log.info("[validate.l5] cancelled — stopping after %d batch(es)", completed)
+                break
             i, batch = futures[fut]
             try:
                 batch_verdicts = fut.result()
@@ -292,12 +308,192 @@ def run_l5(
             rt.total_timeout_s,
         )
     deadline = time.monotonic() + rt.total_timeout_s
+    # feature 0061 (F11a): never exceed the shared whole-audit ceiling — cap L5's
+    # own deadline at the ambient audit deadline so generate + L5 can't stack.
+    _ad = current_audit_deadline()
+    if _ad is not None:
+        deadline = min(deadline, _ad)
     completed, verdicts_by_id = _run_l5_pool(
         batches, rt, audit_id, deadline, out, emit_batch,
     )
     log.info("[validate.l5] done batches=%d verdicts=%d",
              completed, len(verdicts_by_id))
+
+    # Feature 0057 P1b: apply L5 safeguards AFTER all verdicts are in so the
+    # global blast-radius cap (RC6) and the per-finding trusted / crypto
+    # exemptions can neutralise demoting verdicts. Mutates both `out` and the
+    # in-place finding validation so the offline backfill + final result see
+    # the safe-guarded state.
+    _apply_l5_safeguards(findings, selected_idx, out)
     return out
+
+
+# ── L5 safeguards (feature 0057 P1b: RC6 cap + trusted/crypto exemption) ──
+
+# Crypto / policy CWEs that must NEVER be auto-suppressed by the L5 judge
+# alone (R2 extension). A weak-crypto / hardcoded-secret / cleartext finding
+# is a deterministic policy violation; the judge's exploitability score is
+# the wrong axis for it.
+_CRYPTO_POLICY_CWES: frozenset[str] = frozenset({
+    "CWE-326", "CWE-327", "CWE-328", "CWE-330", "CWE-798", "CWE-319",
+})
+
+# RC6 blast-radius cap. The cap freezes the L5 layer when the judge demotes
+# a large share of the judged findings — a signal that a miscalibrated /
+# aggressive judge is gutting the result.
+#   * demote fraction > 0.5 → freeze (the layer's demoting verdicts are
+#     discarded), with one carefully-scoped carve-out below.
+#   * a UNANIMOUS demotion (100%) where EVERY judged finding is a
+#     non-deterministic LLM-tier finding is an internally-consistent verdict
+#     (e.g. the judge legitimately decided a small batch of LLM candidates are
+#     all false positives, or a genuinely clean tree) — NOT a blast-radius
+#     anomaly — so it is NOT frozen. This carve-out is intentionally narrow:
+#     the moment a unanimous run includes ANY deterministic / crypto-policy
+#     finding (which is authoritative and must not be gutted en masse), RC6
+#     freezes the whole layer. Deterministic findings are ALSO protected
+#     per-finding by the exemption below; the carve-out only governs whether
+#     the global freeze fires, not whether an individual det finding survives.
+#   * a minority demotion (<= 50%) applies normally.
+# A small minimum population avoids calling a 1-2 finding run a "blast radius".
+_RC6_DEMOTE_FRACTION = 0.5
+_RC6_MIN_JUDGED = 3
+
+
+def _l5_check_is_demoting(check: ValidationCheck) -> bool:
+    return check.id == "llm_judge" and check.weight < 0
+
+
+def _finding_category(finding: dict[str, Any]) -> str:
+    return (finding.get("category") or "").strip().upper()
+
+
+def _is_deterministic(finding: dict[str, Any]) -> bool:
+    """True for skill / trusted-signature (deterministic) findings — the
+    authoritative tier (R2). A deterministic finding carries a ``check_id``
+    and is NOT tagged ``provenance == "llm"``. LLM findings (set by the audit
+    runner) are non-deterministic and remain L5-demotable.
+
+    Feature 0057 P4e (R13) extends the Phase-1 logic with the signature tier:
+    a finding carrying ``signature_status == "candidate"`` is NOT yet
+    corpus-verified, so it is NON-deterministic and L5-demotable like an LLM
+    finding. A ``trusted`` signature (corpus-gated) and any plain skill
+    finding (no ``signature_status``) remain deterministic-authoritative.
+    """
+    if finding.get("provenance") == "llm":
+        return False
+    if finding.get("signature_status") == "candidate":
+        return False
+    return bool(finding.get("check_id"))
+
+
+def _is_l5_exempt(finding: dict[str, Any]) -> bool:
+    """True if a demoting L5 verdict must be neutralised for this finding.
+
+    Two exemptions:
+      * Deterministic / trusted findings (skill/signature: a ``check_id`` and
+        no ``provenance == "llm"``) — the deterministic tier is authoritative
+        (R2); the non-deterministic judge may not suppress it alone.
+      * Crypto / policy CWEs — never auto-suppressed regardless of provenance.
+    """
+    if _finding_category(finding) in _CRYPTO_POLICY_CWES:
+        return True
+    return _is_deterministic(finding)
+
+
+def _neutralize_l5_check(check: ValidationCheck, reason: str) -> ValidationCheck:
+    """Return a zero-weight, non-demoting copy of an llm_judge check so the
+    voter no longer counts it as a demotion. Preserves the verdict metadata
+    for transparency."""
+    extras = dict(check.extras)
+    extras["safeguard"] = reason
+    return ValidationCheck(
+        id="llm_judge",
+        result="advisory",
+        weight=0.0,
+        reason=f"{check.reason} [L5 demotion suppressed: {reason}]".strip(),
+        extras=extras,
+    )
+
+
+def _rewrite_l5_check_in_finding(
+    finding: dict[str, Any], new_check: ValidationCheck,
+) -> None:
+    """Replace the existing in-place ``llm_judge`` check on the finding with
+    ``new_check`` (the safe-guarded version). No-op if none present."""
+    v_blob = finding.get("validation")
+    if not isinstance(v_blob, dict):
+        return
+    checks_list = v_blob.get("checks")
+    if not isinstance(checks_list, list):
+        return
+    for i, c in enumerate(checks_list):
+        if isinstance(c, dict) and c.get("id") == "llm_judge":
+            checks_list[i] = new_check.to_json()
+
+
+def _apply_l5_safeguards(
+    findings: list[dict[str, Any]],
+    selected_idx: list[int],
+    out: list[list[ValidationCheck]],
+) -> None:
+    """RC6 blast-radius cap + trusted/crypto exemption.
+
+    1. RC6: if L5 would demote MORE THAN 50% of the judged findings, freeze
+       the whole L5 layer — discard every demoting verdict so a mass-FP run
+       cannot gut the result.
+    2. Otherwise, per-finding: neutralise a demoting verdict on any
+       trusted (deterministic) or crypto/policy finding (R2).
+
+    Mutates both ``out`` and each finding's in-place validation checks.
+    """
+    judged_idx = [i for i in selected_idx if any(
+        c.id == "llm_judge" for c in out[i]
+    )]
+    if not judged_idx:
+        return
+    demoting_idx = [i for i in judged_idx if any(
+        _l5_check_is_demoting(c) for c in out[i]
+    )]
+
+    n_judged = len(judged_idx)
+    n_demoted = len(demoting_idx)
+    demote_frac = n_demoted / n_judged if n_judged else 0.0
+    # A unanimous (100%) demotion is exempt from the global freeze ONLY when
+    # every judged finding is a non-deterministic LLM-tier finding — then it is
+    # an internally-consistent "all these candidates are FPs" verdict, not a
+    # blast-radius anomaly. If any judged finding is deterministic / crypto
+    # (authoritative), a unanimous wipe IS treated as an anomaly and frozen.
+    unanimous = n_demoted == n_judged and n_judged > 0
+    unanimous_all_nondet = unanimous and all(
+        not _is_l5_exempt(findings[i]) for i in judged_idx
+    )
+    rc6_tripped = (
+        n_judged >= _RC6_MIN_JUDGED
+        and demote_frac > _RC6_DEMOTE_FRACTION
+        and not unanimous_all_nondet
+    )
+    if rc6_tripped:
+        log.warning(
+            "[validate.l5] RC6 blast-radius cap tripped — %d/%d judged findings "
+            "would be demoted (> %.0f%%); freezing L5 layer",
+            len(demoting_idx), len(judged_idx), _RC6_DEMOTE_FRACTION * 100,
+        )
+
+    for i in judged_idx:
+        for slot, check in enumerate(out[i]):
+            if not _l5_check_is_demoting(check):
+                continue
+            if rc6_tripped:
+                reason = "rc6_blast_radius_cap"
+            elif _finding_category(findings[i]) in _CRYPTO_POLICY_CWES:
+                reason = "crypto_policy_exempt"
+            elif _is_deterministic(findings[i]):
+                reason = "deterministic_authoritative"
+            else:
+                continue
+            safe = _neutralize_l5_check(check, reason)
+            out[i][slot] = safe
+            _rewrite_l5_check_in_finding(findings[i], safe)
 
 
 # ── Selection ────────────────────────────────────────────────────────
@@ -306,6 +502,17 @@ def run_l5(
 _SEV_RANK: dict[str, int] = {
     "critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0,
 }
+
+
+def _has_code_window(finding: dict[str, Any]) -> bool:
+    """Feature 0057 P0.3: True iff the finding carries a non-empty code
+    window the judge can ground its verdict on.
+
+    Mirrors what `_format_code_window` would render — a snippet that is
+    whitespace-only produces an empty window and must NOT be judged.
+    """
+    snippet = finding.get("code_snippet") or ""
+    return bool(snippet.strip())
 
 
 def _l5_candidate_provisional(
@@ -347,6 +554,11 @@ def _select_findings(
     """
     candidates: list[tuple[float, int]] = []
     for i, f in enumerate(findings):
+        # Feature 0057 P0.3: never judge blind. A finding whose code window
+        # is empty (path unresolved / line missing) is skipped — the judge
+        # would otherwise reason about a `<<<CODE\n\nCODE>>>` empty block.
+        if not _has_code_window(f):
+            continue
         provisional = _l5_candidate_provisional(l1_results[i])
         if provisional is None:
             continue
@@ -411,7 +623,7 @@ def _partition_batch_by_cache(
 
 def _call_with_strict_retry(
     system_prompt: str, user_msg: str, model: str, timeout_s: float,
-    batch_size: int, batch_idx: int,
+    batch_size: int, batch_idx: int, cancel: Any = None,
 ) -> list[dict[str, Any]]:
     """Call LLM; on JSON-parse failure, retry once with a strict-JSON
     nudge (D14). Returns parsed verdicts or [] on double-failure."""
@@ -419,6 +631,11 @@ def _call_with_strict_retry(
     parsed = _parse_response(raw, batch_size) if raw else None
     if parsed is not None:
         return parsed
+    # feature 0061: an in-flight batch must not issue a SECOND (retry) LLM call
+    # once the audit is cancelled — the token is passed in (not ambient) because
+    # this runs on an L5 pool worker that does not inherit contextvars.
+    if cancel is not None and cancel.cancelled():
+        return []
     retry_user = user_msg + (
         "\n\nIMPORTANT: your previous response was not valid JSON. "
         "Reply with ONLY the JSON object specified, no prose."
@@ -463,6 +680,7 @@ def _judge_batch(
     system_prompt: str,
     model: str,
     per_batch_timeout_s: float,
+    cancel: Any = None,
 ) -> dict[str, dict[str, Any]]:
     """Run one LLM call for `batch`; return {finding_id: verdict_dict}.
 
@@ -478,7 +696,7 @@ def _judge_batch(
     user_msg = _render_user_message(audit_id, uncached_batch)
     parsed = _call_with_strict_retry(
         system_prompt, user_msg, model, per_batch_timeout_s,
-        len(uncached_batch), batch_idx,
+        len(uncached_batch), batch_idx, cancel=cancel,
     )
     _store_verdicts(parsed, uncached_batch, model, verdicts)
     return verdicts
@@ -582,7 +800,7 @@ def _call_llm(
                 {"role": "user", "content": user_msg},
             ],
             "temperature": 0.1,
-            "max_tokens": 2000,
+            "max_tokens": _max_output_tokens(),
             "timeout": timeout_s,  # per-request timeout (issue #6)
         }
         if use_json_format:
@@ -592,6 +810,13 @@ def _call_llm(
         # empty choices. Treat as no-response (caller retries / stubs).
         if not getattr(resp, "choices", None):
             return ""
+        if getattr(resp.choices[0], "finish_reason", None) == "length":
+            log.warning(
+                "[validate.l5] hit max_tokens=%d (finish_reason=length) — verdict JSON "
+                "likely truncated; raise VULTURE_VALIDATE_LLM_MAX_TOKENS and/or lower "
+                "VULTURE_VALIDATE_LLM_BATCH_SIZE (reasoning models burn the budget on thinking)",
+                _max_output_tokens(),
+            )
         text = (resp.choices[0].message.content or "") if resp.choices[0].message else ""
         if len(text.encode("utf-8")) > _MAX_RESPONSE_BYTES:
             log.warning("[validate.l5] response exceeded %d bytes; truncating",
@@ -729,17 +954,78 @@ def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
     return {"id": fid, "exploitable": prob, "reasoning": reasoning}
 
 
+def _iter_balanced_objects(text: str):
+    """Yield each top-level balanced ``{...}`` substring of `text`.
+
+    Tracks JSON string literals (double-quoted, with ``\\`` escapes) so braces
+    inside strings — or inside leaked reasoning prose like ``{"role":"x"}`` —
+    don't throw off the depth count. A single O(n) pass.
+    """
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                yield text[start:i + 1]
+
+
+def _loads_object(text: str) -> Optional[dict[str, Any]]:
+    """Parse `text` as a JSON object, tolerant of surrounding prose.
+
+    Reasoning ("thinking") models put most reasoning in `reasoning_content`,
+    but intermittently leak text into `content` around the `{"verdicts":...}`
+    object — a stray ``<think>`` tag, a sentence, sometimes itself containing
+    JSON-ish braces, occasionally more than one object. A strict whole-string
+    ``json.loads`` then drops the verdict as "no verdict" (live-observed: 2/4
+    L5 batches with qwen3.6-35b). So: try the whole string first; otherwise scan
+    for balanced ``{...}`` spans and return the one that holds ``verdicts``
+    (falling back to the first object that parses). Returns the dict, or None.
+    """
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    fallback: Optional[dict[str, Any]] = None
+    for span in _iter_balanced_objects(text):
+        try:
+            obj = json.loads(span)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if "verdicts" in obj:
+            return obj
+        if fallback is None:
+            fallback = obj
+    return fallback
+
+
 def _parse_response(raw: str, batch_size: int) -> Optional[list[dict[str, Any]]]:
     """Parse the JSON response. Returns a list of verdicts or None on
     structural failure."""
     if not raw:
         return None
-    text = _strip_code_fences(raw.strip())
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
+    data = _loads_object(_strip_code_fences(raw.strip()))
+    if data is None:
         return None
     verdicts = data.get("verdicts")
     if not isinstance(verdicts, list):
@@ -807,6 +1093,16 @@ def _resolve_per_batch_timeout(config: ValidateConfig) -> float:
     if env.isdigit():
         return int(env) / 1000.0
     return getattr(config, "l5_per_batch_timeout_s", _DEFAULT_BATCH_TIMEOUT_S)
+
+
+def _max_output_tokens() -> int:
+    """Output-token cap for a verdict call (env > default). See
+    `_DEFAULT_MAX_OUTPUT_TOKENS` — raised + tunable so reasoning models don't
+    truncate the verdict JSON."""
+    env = os.getenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return _DEFAULT_MAX_OUTPUT_TOKENS
 
 
 # Known instruction-tuned families, in preference order. Used by the

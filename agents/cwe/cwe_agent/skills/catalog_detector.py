@@ -9,9 +9,10 @@ the hand-crafted regex patterns in individual skill modules. The engine:
 4. Context-aware exclusions reduce false positives
 5. Produces enriched findings with catalog confidence scores
 
-This gives broad coverage of 400+ additional CWEs that the 15 hand-crafted
-skills don't explicitly cover. Findings from this engine carry a
-``catalog_confidence`` field reflecting detection reliability.
+The 846-entry CWE catalog is metadata/context (names, consequences, rollup
+parents), NOT a detection-coverage claim — this keyword path fires ~0 findings
+on real code. Findings from this engine carry a ``catalog_confidence`` field
+reflecting detection reliability.
 """
 
 import re
@@ -29,12 +30,23 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
+from shared.env import env_truthy
 
 from cwe_agent.catalog import (
     enrich_finding,
     get_static_detectable,
     load_catalog,
 )
+from cwe_agent.skills.signatures.detector import match_signatures
+
+
+# Signature-tier escape hatches (audit MEDIUM "ROLLBACK-killswitch"), read at
+# scan time so a per-request env change takes effect without reimport:
+#   VULTURE_CWE_DISABLE_SIGNATURES        — skip the signature tier entirely.
+#   VULTURE_CWE_SIGNATURES_CANDIDATE_OFF  — run trusted signatures only
+#                                           (drop signature_status=="candidate").
+_ENV_DISABLE_SIGNATURES = "VULTURE_CWE_DISABLE_SIGNATURES"
+_ENV_SIGNATURES_CANDIDATE_OFF = "VULTURE_CWE_SIGNATURES_CANDIDATE_OFF"
 
 # CWE IDs already covered by dedicated skill modules — skip to avoid
 # dupes. Includes direct skill CWEs AND their child/variant CWEs to
@@ -64,6 +76,12 @@ _BASE_DEDICATED_CWES = frozenset({
     "1104", "1188", "1275", "1295", "1321", "1336",
     # --- Task 4 narrow skills: divide/dangerous/logging/exception/entropy ---
     "242", "248", "331", "332", "338", "369", "676", "778",
+    # --- Feature 0057 P4d (R11): the signature tier OWNS these CWEs, so the
+    #     keyword path must never also emit them (no signature-vs-keyword
+    #     double-report under the (check_id, file_path) dedup key). The
+    #     signature registry is the source of truth; this list mirrors
+    #     signatures.registry.covered_cwe_ids() for the tranche-1 7 CWEs.
+    "90", "91", "117", "548", "917", "943", "1333",
     # --- Path traversal family (children of CWE-22) ---
     "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33",
     "34", "35", "36", "37", "38", "39", "40",
@@ -356,6 +374,50 @@ def _emit_parent_rollups(
         cwe_file_counts[parent_id] = cwe_file_counts.get(parent_id, 0) + 1
 
 
+def _apply_signatures(
+    file_path: Path,
+    file_ext: str,
+    lines: list[str],
+    findings: list[dict],
+    seen_per_file: dict[str, set[str]],
+    cwe_file_counts: dict[str, int],
+) -> None:
+    """Feature 0057 P4d (R11): run the deterministic SIGNATURE tier and route
+    its findings through this same ``check_catalog_generic`` output.
+
+    Signatures are NOT a parallel skill category — they ride here so they share
+    the single catalog output and the ``(check_id, file_path)`` audit dedup
+    key. Each fired CWE registers in ``seen_per_file`` so it (a) is not
+    re-emitted by the keyword path and (b) participates in the parent/child
+    rollup machinery exactly like a keyword hit. ``check_id`` stays the
+    ``sig_id`` (deterministic, hierarchical); ``signature_status`` rides along
+    for the voter's candidate/trusted tiering (P4e).
+
+    Two kill switches gate this tier (audit MEDIUM "ROLLBACK-killswitch"),
+    mirroring ``VULTURE_CWE_DISABLE_LLM`` for the LLM phase:
+      * ``VULTURE_CWE_DISABLE_SIGNATURES`` → skip the tier entirely.
+      * ``VULTURE_CWE_SIGNATURES_CANDIDATE_OFF`` → run trusted signatures only
+        (drop any finding carrying ``signature_status == "candidate"``).
+    """
+    if env_truthy(_ENV_DISABLE_SIGNATURES):
+        return
+
+    candidate_off = env_truthy(_ENV_SIGNATURES_CANDIDATE_OFF)
+    file_key = str(file_path)
+    for finding in match_signatures(lines, file_ext):
+        if candidate_off and finding.get("signature_status") == "candidate":
+            continue
+        cwe_id = finding["category"].removeprefix("CWE-")
+        if cwe_id in seen_per_file[file_key]:
+            continue
+        if cwe_file_counts.get(cwe_id, 0) >= _MAX_FILES_PER_CWE:
+            continue
+        finding["file_path"] = file_key
+        findings.append(enrich_finding(finding, cwe_id))
+        seen_per_file[file_key].add(cwe_id)
+        cwe_file_counts[cwe_id] = cwe_file_counts.get(cwe_id, 0) + 1
+
+
 def _analyze_file(
     file_path: Path,
     kw_index: dict[str, list[dict[str, Any]]],
@@ -364,7 +426,7 @@ def _analyze_file(
     cwe_file_counts: dict[str, int],
     catalog: dict[str, Any] | None = None,
 ) -> None:
-    """Analyze a file using catalog keyword matching."""
+    """Analyze a file using catalog keyword matching + the signature tier."""
     lines = read_file_lines(file_path)
     if lines is None:
         return
@@ -374,6 +436,14 @@ def _analyze_file(
 
     if file_key not in seen_per_file:
         seen_per_file[file_key] = set()
+
+    # Feature 0057 P4d: the deterministic signature tier runs FIRST so its
+    # owned CWEs register in seen_per_file before the keyword loop (which is
+    # already suppressed from those CWEs via _DEDICATED_SKILL_CWES) and before
+    # the rollup pass, sharing the single catalog output (R11).
+    _apply_signatures(
+        file_path, file_ext, lines, findings, seen_per_file, cwe_file_counts,
+    )
     for line_num, line in enumerate(lines, start=1):
         if _COMMENT.match(line):
             continue

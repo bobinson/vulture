@@ -18,6 +18,7 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.obfuscation import check_obfuscation
 from shared.tools.snippet import extract_snippet
+from shared.validate.language import detect_language
 
 from cwe_agent.catalog import enrich_finding
 
@@ -69,6 +70,13 @@ COMMAND_INJECTION_PATTERNS = [
     re.compile(r"os\.popen\("),
     re.compile(r"subprocess\.(?:call|run|Popen)\([^)]*shell\s*=\s*True"),
     re.compile(r'exec\.Command\(\s*"(?:sh|bash|zsh|/bin/(?:sh|bash|zsh))"\s*,'),
+    # Feature 0060: cross-language OS-command sinks moved here from the
+    # dangerous_function skill (were mis-attributed as CWE-676). Each is an
+    # unambiguous shell/command-execution API — receiver-anchored so benign
+    # same-named method calls (e.g. Statement.exec()) are not matched.
+    re.compile(r"Runtime\.getRuntime\(\)\.exec\s*\("),          # Java
+    re.compile(r"\bnew\s+ProcessBuilder\s*\("),                 # Java
+    re.compile(r"(?<![\w.>])(?:shell_exec|passthru|proc_open)\s*\("),  # PHP
 ]
 
 # Validation-guard patterns. If any of these match within the radius of
@@ -141,8 +149,22 @@ SAFE_SSRF_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-SAFE_STATIC_CALL = re.compile(r"""(?:exec|eval)\(\s*(?:'[^']*'|"[^"]*")\s*[,)]""")
+# Audit #2: anchor to BARE exec/eval (code-injection, CWE-94) so it does not
+# substring-match the command sinks `shell_exec("x")` / `Runtime….exec("x")` and
+# silently suppress a real static-string shell invocation.
+SAFE_STATIC_CALL = re.compile(r"""(?<![\w.>])(?:exec|eval)\(\s*(?:'[^']*'|"[^"]*")\s*[,)]""")
 SHELL_FUNC_DEF = re.compile(r"^\s*\w+\s*\(\s*\)\s*\{")
+
+# Feature 0060: bare `system(` is a shell sink in PHP/Ruby (Kernel#system /
+# PHP system()) but a benign local call elsewhere (e.g. a Python def system()).
+# Applied ONLY to PHP/Ruby files (receiver-anchored) to avoid cross-language FPs.
+_BARE_SYSTEM = re.compile(r"(?<![\w.>])system\s*\(")
+_PHP_RUBY_COMMAND_PATTERNS = COMMAND_INJECTION_PATTERNS + [_BARE_SYSTEM]
+
+# Audit #1: a same-named function DEFINITION (Ruby `def system`, PHP
+# `function system`) is a declaration, not a call — skip when a def keyword
+# immediately precedes the matched command sink.
+_CMD_DEF_BEFORE = re.compile(r"\b(?:def|function)\s+$")
 
 
 def check_injection(source_path: str) -> dict:
@@ -171,6 +193,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     lines = read_file_lines(file_path)
     if lines is None:
         return
+    lang = detect_language(str(file_path))
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
             continue
@@ -179,7 +202,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         if SCANNER_DEF_LINE.search(line):
             continue
         _check_sql(file_path, line, line_num, lines, findings)
-        _check_command(file_path, line, line_num, lines, findings)
+        _check_command(file_path, line, line_num, lines, findings, lang)
         _check_xss(file_path, line, line_num, lines, findings)
         _check_code_injection(file_path, line, line_num, lines, findings)
         _check_ssrf(file_path, line, line_num, lines, findings)
@@ -229,13 +252,24 @@ def _has_validation_context(lines: list[str], line_num: int, radius: int = 10) -
 
 def _check_command(
     file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict],
+    findings: list[dict], lang: str,
 ) -> None:
-    """Check for CWE-78 OS command injection."""
+    """Check for CWE-78 OS command injection. ``lang`` is the file's language
+    (resolved once per file by the caller) — used to language-scope the bare
+    PHP/Ruby ``system(`` sink."""
     if SHELL_FUNC_DEF.match(line):
         return
-    for pattern in COMMAND_INJECTION_PATTERNS:
-        if pattern.search(line):
+    patterns = (
+        _PHP_RUBY_COMMAND_PATTERNS
+        if lang in ("php", "ruby")
+        else COMMAND_INJECTION_PATTERNS
+    )
+    for pattern in patterns:
+        m = pattern.search(line)
+        if m is not None:
+            # Skip a same-named function DEFINITION (audit #1).
+            if _CMD_DEF_BEFORE.search(line[:m.start()]):
+                continue
             if SAFE_STATIC_CALL.search(line):
                 return
             if _has_validation_context(lines, line_num):

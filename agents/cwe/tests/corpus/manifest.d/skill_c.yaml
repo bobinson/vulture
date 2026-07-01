@@ -1,0 +1,29 @@
+# Group: skill_c — skill-tier CWEs (78 OS-command, 89 SQL, 798 hardcoded creds).
+# A second, independent set of GENUINE fixtures for the three high-value skill
+# CWEs, using distinct sinks/shapes from the `injection` group. Paths are
+# relative to ../fixtures/. `line` is the expected vuln line (diagnostic only,
+# positives) per the design schema.
+
+# ── CWE-78 OS command injection (Python, skill `injection`) ──
+- {file: skill_c/cwe_078_1.py, language: Python, cwe: "78", expectation: positive, line: 6}
+- {file: skill_c/cwe_078_2.py, language: Python, cwe: "78", expectation: positive, line: 6}
+- {file: skill_c/cwe_078_3.py, language: Python, cwe: "78", expectation: positive, line: 6}
+- {file: skill_c/cwe_078_1_clean.py, language: Python, cwe: "78", expectation: negative}
+- {file: skill_c/cwe_078_2_clean.py, language: Python, cwe: "78", expectation: negative}
+- {file: skill_c/cwe_078_3_clean.py, language: Python, cwe: "78", expectation: negative}
+
+# ── CWE-89 SQL injection (Python, skill `injection`) ──
+- {file: skill_c/cwe_089_1.py, language: Python, cwe: "89", expectation: positive, line: 3}
+- {file: skill_c/cwe_089_2.py, language: Python, cwe: "89", expectation: positive, line: 3}
+- {file: skill_c/cwe_089_3.py, language: Python, cwe: "89", expectation: positive, line: 3}
+- {file: skill_c/cwe_089_1_clean.py, language: Python, cwe: "89", expectation: negative}
+- {file: skill_c/cwe_089_2_clean.py, language: Python, cwe: "89", expectation: negative}
+- {file: skill_c/cwe_089_3_clean.py, language: Python, cwe: "89", expectation: negative}
+
+# ── CWE-798 hardcoded credentials (Python, skill `secrets`/`auth`) ──
+- {file: skill_c/cwe_798_1.py, language: Python, cwe: "798", expectation: positive, line: 2}
+- {file: skill_c/cwe_798_2.py, language: Python, cwe: "798", expectation: positive, line: 2}
+- {file: skill_c/cwe_798_3.py, language: Python, cwe: "798", expectation: positive, line: 2}
+- {file: skill_c/cwe_798_1_clean.py, language: Python, cwe: "798", expectation: negative}
+- {file: skill_c/cwe_798_2_clean.py, language: Python, cwe: "798", expectation: negative}
+- {file: skill_c/cwe_798_3_clean.py, language: Python, cwe: "798", expectation: negative}
