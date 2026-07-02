@@ -90,6 +90,14 @@ jobs:
           path: frontend/dist/
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY, not just the action. Without this the
+          # installer pulls the latest cosign, which now defaults to
+          # --new-bundle-format: that IGNORES --output-signature/-certificate
+          # and requires --bundle, breaking the separate .sig/.pem contract
+          # that install.sh's verify_signature depends on. Hold at the last
+          # v2 line that emits .sig/.pem by default.
+          cosign-release: 'v2.4.3'
       - name: install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
       - name: install trivy
@@ -206,6 +214,14 @@ jobs:
           path: dist/
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY, not just the action. Without this the
+          # installer pulls the latest cosign, which now defaults to
+          # --new-bundle-format: that IGNORES --output-signature/-certificate
+          # and requires --bundle, breaking the separate .sig/.pem contract
+          # that install.sh's verify_signature depends on. Hold at the last
+          # v2 line that emits .sig/.pem by default.
+          cosign-release: 'v2.4.3'
       - name: aggregate SHA256SUMS
         run: |
           cd dist

@@ -85,6 +85,11 @@ jobs:
         run: sha256sum cpython-*.tar.gz > SHA256SUMS
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY (see release.yml): latest cosign defaults to
+          # --new-bundle-format and ignores --output-signature/-certificate,
+          # breaking the .sig/.pem contract consumers verify. Hold at v2.
+          cosign-release: 'v2.4.3'
       - name: cosign sign SHA256SUMS
         # Keyless/OIDC signature over the aggregate SHA256SUMS (mirrors how
         # release.yml signs its SHA256SUMS). Consumers verify the vendored
