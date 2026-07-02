@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
-from .llm_judge import run_l5
+from .llm_judge import _l5_check_is_demoting, run_l5
 from .rollup import run_l2
 from .types import (
     FindingValidation,
@@ -126,6 +126,28 @@ def _run_l2_phase(
     return l2_results, rollups
 
 
+def _retag_l5_verified(
+    new_f: dict[str, Any], checks: list[ValidationCheck],
+) -> None:
+    """Feature 0057 P6b: re-tag an LLM finding that SURVIVES L5.
+
+    An ``llm``-provenance finding that carries a NON-demoting ``llm_judge``
+    (L5) check is promoted to ``llm_l5_verified`` — it was model-generated and
+    independently confirmed by the judge. A demoting or absent L5 verdict
+    leaves the ``llm`` tag in place. Deterministic findings (any non-``llm``
+    provenance) are NEVER re-tagged to an ``llm_*`` provenance. Mutates in
+    place; the validation* fields stamped by the caller are untouched.
+    """
+    if new_f.get("provenance") != "llm":
+        return
+    l5_checks = [c for c in checks if c.id == "llm_judge"]
+    if not l5_checks:
+        return
+    if any(_l5_check_is_demoting(c) for c in l5_checks):
+        return
+    new_f["provenance"] = "llm_l5_verified"
+
+
 def _apply_validation_to_finding(
     finding: dict[str, Any], checks: list[ValidationCheck], cfg: ValidateConfig,
 ) -> dict[str, Any]:
@@ -138,6 +160,7 @@ def _apply_validation_to_finding(
     new_f["validation"] = v.to_json()
     new_f["validation_status"] = v.status
     new_f["validation_confidence"] = v.confidence
+    _retag_l5_verified(new_f, checks)
     return new_f
 
 
@@ -164,7 +187,18 @@ def _provisional_vote(
 def _revote_finding_in_place(
     finding: dict[str, Any], cfg: ValidateConfig,
 ) -> None:
-    """Re-run vote() using the finding's own checks; mutate in place."""
+    """Re-run vote() using the finding's own checks; mutate in place.
+
+    Feature 0057 P6b: this is the finaliser on the L5 *streaming* path
+    (``_run_l5_phase`` calls it via ``_revote_l5_judged`` when an
+    ``emit_validation_update`` callback is wired). The offline backfill path
+    finalises through ``_apply_validation_to_finding`` which already promotes
+    a surviving LLM finding to ``llm_l5_verified``; the streaming revote must
+    apply the SAME promotion or the re-tag is unreachable in the live audit
+    (it only ever appeared in unit tests of the offline set-point). Mirror it
+    here so a streamed LLM finding that carries a non-demoting ``llm_judge``
+    verdict is re-tagged identically.
+    """
     revote_checks = [
         ValidationCheck.from_json(c)
         for c in finding.get("validation", {}).get("checks", [])
@@ -176,6 +210,7 @@ def _revote_finding_in_place(
     finding["validation"] = fv.to_json()
     finding["validation_status"] = fv.status
     finding["validation_confidence"] = fv.confidence
+    _retag_l5_verified(finding, revote_checks)
 
 
 def _make_l5_stream_callback(
@@ -221,6 +256,19 @@ def _backfill_l5_offline(
         # (Iteration above replaces the slot, which is fine.)
 
 
+def _revote_l5_judged(
+    out_findings: list[dict[str, Any]], cfg: ValidateConfig,
+) -> None:
+    """Re-vote every finding carrying an ``llm_judge`` check from its current
+    in-place checks. Used on the streaming path so the final status reflects
+    the feature-0057 P1b safeguards that run after the L5 pool (issue: the
+    streaming callback voted before the safeguards neutralised demotions)."""
+    for f in out_findings:
+        checks = f.get("validation", {}).get("checks", [])
+        if any(isinstance(c, dict) and c.get("id") == "llm_judge" for c in checks):
+            _revote_finding_in_place(f, cfg)
+
+
 def _run_l5_phase(
     out_findings: list[dict[str, Any]],
     l1_results: list[list[ValidationCheck]], cfg: ValidateConfig,
@@ -240,6 +288,15 @@ def _run_l5_phase(
         )
         if emit_validation_update is None:
             _backfill_l5_offline(out_findings, l5_results, cfg)
+        else:
+            # Streaming path: run_l5's per-batch callback already re-voted +
+            # emitted intermediate states for the live UI. But the feature
+            # 0057 P1b safeguards (RC6 cap / trusted / crypto exemption) run
+            # *after* the pool, neutralising demoting verdicts in place. Re-
+            # vote every judged finding from its (now safe-guarded) checks so
+            # the FINAL stored status reflects the safeguards, not the pre-
+            # safeguard streamed status.
+            _revote_l5_judged(out_findings, cfg)
         layers_run.append("L5")
     except Exception as exc:
         event_texts.append(

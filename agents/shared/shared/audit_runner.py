@@ -1,16 +1,25 @@
 """Shared audit runner with concurrent skill execution and file caching."""
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
+import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from shared.cancellation import (
+    current_audit_deadline,
+    current_cancel_token,
+    set_audit_deadline,
+)
+
 from shared.llm.errors import retry_skill
 from shared.tools.file_scanner import scan_code_files, read_file_safe, is_entry_or_config, clear_caches
+from shared.tools.snippet import extract_snippet
 from pydantic import BaseModel
 
 from shared.tools.memory_client import estimate_tokens, safe_estimate_tokens, _normalize_title
@@ -53,6 +62,13 @@ class AuditFinding(BaseModel):
     line_end: int = 0
     recommendation: str = ""
     check_id: str = ""
+    # Feature 0057 P0.1: code window read from the source, used to ground the
+    # L5 judge (R4) so it never judges blind. Populated centrally by
+    # _attach_code_snippet() just before validation, then egresses into the SSE
+    # ``result`` event and the pre-existing DB ``code_snippet`` column (R7). For
+    # secret-bearing CWEs (CWE-798/CWE-319 etc.) the secret VALUE is redacted at
+    # that same choke point so neither the SSE payload nor the DB row carries it.
+    code_snippet: str = ""
 
 
 class AuditOutput(BaseModel):
@@ -317,8 +333,13 @@ def _get_max_source_chars(model: str | None = None) -> int:
     ctx_tokens = get_context_window(model)
     # Scale source allocation: small models need more headroom for output + SDK overhead.
     source_fraction = 0.35 if ctx_tokens <= 32_000 else 0.5
+    # Cap: read VULTURE_MAX_SOURCE_CHARS dynamically (feature 0057 P1f — tests
+    # and operators tune the per-batch budget at runtime) so the batch loop's
+    # window size honours the env without an import-time freeze. Falls back to
+    # the module default when unset.
+    cap = _safe_int_env("VULTURE_MAX_SOURCE_CHARS", _MAX_SOURCE_CHARS)
     # ~3 chars per token for code. Safety margin applied later by safe_estimate_tokens().
-    return min(max(2000, int(ctx_tokens * source_fraction * 3)), _MAX_SOURCE_CHARS)
+    return min(max(2000, int(ctx_tokens * source_fraction * 3)), cap)
 
 
 def _safe_stat_size(p: Path) -> int:
@@ -341,12 +362,18 @@ def _prioritize_files(
     files: list,
     source_path: str,
     skill_findings: list[dict] | None = None,
+    include_tier3: bool = True,
 ) -> list:
     """Sort files into priority tiers for LLM context packing.
 
     Tier 1: Files that appear in skill_findings (highest signal).
     Tier 2: Entry points and config files (structural importance).
     Tier 3: Remaining files, sorted by size ascending (smaller = more likely focused).
+
+    Feature 0059: when ``include_tier3`` is False, Tier 3 is dropped entirely
+    (the LLM sees only flagged + entry/config files) — the cost guard. The
+    deterministic phase is upstream and unaffected: skills/signatures still
+    scan every file regardless.
 
     Args:
         files: List of Path objects from scan_code_files.
@@ -380,6 +407,9 @@ def _prioritize_files(
             tier2.append(fpath)
         else:
             tier3.append(fpath)
+
+    if not include_tier3:
+        return tier1 + tier2
 
     # Sort tier3 by file size ascending (smaller files first)
     # Pre-compute stat results to avoid repeated syscalls during sort comparisons
@@ -506,6 +536,93 @@ def _pack_files(
     return "\n\n".join(parts), included_paths
 
 
+# Feature 0057 P1f: per-batch file cap so a single batch can't pack the whole
+# tree when files are tiny (keeps batches bounded by file count too, not only
+# by char budget). The USD budget + context window remain the real throttles.
+_LLM_FILES_PER_BATCH = _safe_int_env("VULTURE_LLM_FILES_PER_BATCH", 40)
+
+
+def _format_file_block(
+    fpath: Any,
+    source_path: str,
+    findings_by_path: dict[str, list[dict]],
+) -> tuple[str, str] | None:
+    """Format one file into a ``(rel_path, "--- rel ---\\ncontent")`` block,
+    using snippet extraction for files that carry skill findings. Returns None
+    when the file is empty / unreadable."""
+    content = read_file_safe(fpath)
+    if content is None or not content.strip():
+        return None
+    rel = _safe_rel(fpath, source_path)
+    if findings_by_path:
+        file_findings = findings_by_path.get(rel, [])
+        if not file_findings:
+            file_findings = [
+                f for fp_key, flist in findings_by_path.items()
+                for f in flist
+                if fp_key.endswith(rel)
+            ]
+        if file_findings:
+            content = _extract_file_snippet(content, file_findings, rel)
+    return rel, f"--- {rel} ---\n{content}"
+
+
+def _build_source_batches(
+    ordered_files: list,
+    source_path: str,
+    max_chars: int,
+    skill_findings: list[dict] | None = None,
+    files_per_batch: int = _LLM_FILES_PER_BATCH,
+) -> list[tuple[str, list[str]]]:
+    """Partition the ordered file list into context-window-sized batches.
+
+    Feature 0057 P1f: the LLM phase sweeps the WHOLE tree by iterating over
+    these batches, instead of a single context window that silently tail-drops
+    the rest. Each batch's packed text is ≤ ``max_chars`` and holds ≤
+    ``files_per_batch`` files. A single file larger than the whole budget still
+    gets its own (over-budget) batch so it is never dropped — truncation to the
+    real context window happens later per call.
+
+    Returns a list of ``(batch_text, included_relpaths)``; empty if no files.
+    """
+    findings_by_path: dict[str, list[dict]] = {}
+    if skill_findings:
+        for f in skill_findings:
+            fp = f.get("file_path", "")
+            if fp:
+                findings_by_path.setdefault(fp, []).append(f)
+
+    batches: list[tuple[str, list[str]]] = []
+    cur_parts: list[str] = []
+    cur_paths: list[str] = []
+    cur_total = 0
+
+    def _flush() -> None:
+        nonlocal cur_parts, cur_paths, cur_total
+        if cur_parts:
+            batches.append(("\n\n".join(cur_parts), cur_paths))
+            cur_parts, cur_paths, cur_total = [], [], 0
+
+    for fpath in ordered_files:
+        block = _format_file_block(fpath, source_path, findings_by_path)
+        if block is None:
+            continue
+        rel, text = block
+        entry_len = len(text) + 2
+        # Start a new batch when the current one is full (by chars or count)
+        # — but never emit an empty batch just because one file is huge.
+        if cur_parts and (
+            cur_total + entry_len > max_chars
+            or len(cur_paths) >= files_per_batch
+        ):
+            _flush()
+        cur_parts.append(text)
+        cur_paths.append(rel)
+        cur_total += entry_len
+    _flush()
+    return batches
+
+
 def _build_source_context(
     source_path: str,
     max_chars: int = 0,
@@ -543,39 +660,422 @@ def _build_source_context(
     return text
 
 
-def _dedup_key(f: dict) -> tuple[str, str]:
-    """Build dedup key preferring check_id over normalized title."""
+def _normalize_dedup_path(fp: str, source_path: str = "") -> str:
+    """Normalize a finding path to a canonical *source-root-relative* token so
+    absolute and source-relative forms of the SAME file collapse to one dedup
+    key — WITHOUT collapsing two genuinely different files that merely share a
+    basename.
+
+    Feature 0057 P1f: the LLM phase reports repo-RELATIVE paths (``src/app.py``)
+    while skills report ABSOLUTE paths (``/repo/src/app.py``) for the same file.
+    Earlier this used a basename fallback, which was wrong in two ways:
+      * over-dedup (data loss): ``a/util.py`` and ``b/util.py`` both collapsed
+        to ``util.py`` → a real net-new finding in a different directory was
+        dropped as a duplicate;
+      * under-dedup (double-report): an LLM dupe at ``src/app.py`` (→ basename
+        ``app.py``) did not match the skill's root-stripped ``src/app.py``, so
+        the same vuln surfaced twice.
+
+    Fix: normalise BOTH forms to a source-root-relative path. Absolute paths
+    under the root are made relative; already-relative paths are normalised
+    in place (and only resolved against the root when that actually locates
+    the file, so we never invent a wrong directory). The directory structure
+    is preserved, so distinct directories stay distinct.
+    """
+    if not fp:
+        return ""
+    # Backward-compat: when no source root is known (direct unit-test calls),
+    # preserve the exact path so the historical (check_id, file_path) key is
+    # unchanged. Normalization only kicks in for the real audit pipeline,
+    # which always passes source_path.
+    if not source_path:
+        return fp
+
+    root = source_path.rstrip("/")
+    # Absolute path under the root → strip the root, keep the full subpath.
+    if fp.startswith(root):
+        rel = fp[len(root):].lstrip("/")
+        return os.path.normpath(rel) if rel else ""
+    # Already source-relative (the LLM's normal output): normalise in place,
+    # stripping any leading "./". Keep the FULL relative path (not the
+    # basename) so same-basename files in different directories stay distinct.
+    cleaned = fp.lstrip("/")
+    if cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return os.path.normpath(cleaned) if cleaned else ""
+
+
+def _dedup_key(f: dict, source_path: str = "") -> tuple[str, str]:
+    """Build dedup key preferring check_id over normalized title.
+
+    The path component is normalized (P1f) so absolute vs relative forms of
+    the same file do not defeat cross-phase dedup.
+    """
     cid = f.get("check_id", "")
-    fp = f.get("file_path", "")
+    fp = _normalize_dedup_path(f.get("file_path", ""), source_path)
     if cid:
         return (cid, fp)
     return (_normalize_title(f.get("title", "")), fp)
 
 
-def _deduplicate_findings(base: list[dict], new: list[dict]) -> list[dict]:
+def _deduplicate_findings(
+    base: list[dict], new: list[dict], source_path: str = "",
+) -> list[dict]:
     """Return findings from ``new`` not already in ``base``.
 
-    Uses ``check_id`` + ``file_path`` when check_id is present (stable,
-    hierarchical). Falls back to normalized title + file_path otherwise.
+    Uses ``check_id`` + normalized ``file_path`` when check_id is present
+    (stable, hierarchical). Falls back to normalized title + file_path
+    otherwise. Path normalization (P1f) makes the match robust to
+    absolute-vs-relative path forms of the same file.
 
     Args:
         base: Existing findings (e.g. from skill scan).
         new: New findings (e.g. from LLM pass) to filter.
+        source_path: Audit source root, used to normalize paths.
 
     Returns:
         Subset of ``new`` that don't duplicate any entry in ``base``.
     """
     seen: set[tuple[str, str]] = set()
     for f in base:
-        seen.add(_dedup_key(f))
+        seen.add(_dedup_key(f, source_path))
 
     unique: list[dict] = []
     for f in new:
-        key = _dedup_key(f)
+        key = _dedup_key(f, source_path)
         if key not in seen:
             unique.append(f)
             seen.add(key)
     return unique
+
+
+def _is_within_root(candidate: Path, root: Path) -> bool:
+    """True iff ``candidate`` (already resolved) is inside ``root`` (resolved).
+
+    Uses ``Path.resolve()`` on both so symlink escapes (a finding path that
+    points at a symlink inside the tree resolving to ``/etc/...``) are caught.
+    Falls back to a string-prefix check on Python versions / paths where
+    ``is_relative_to`` is unavailable.
+    """
+    try:
+        return candidate.resolve().is_relative_to(root)
+    except AttributeError:  # pragma: no cover — py<3.9
+        try:
+            candidate.resolve().relative_to(root)
+            return True
+        except ValueError:
+            return False
+    except OSError:
+        return False
+
+
+def _resolve_finding_path(file_path: str, source_path: str) -> Path | None:
+    """Resolve a finding's file_path to an existing file on disk, CONFINED to
+    the audit source root.
+
+    Findings report paths in several forms: absolute, source-root-relative,
+    or a bare basename. The LLM-phase ``file_path`` is fully model-controlled
+    (parsed raw from model output), so a prompt-injected / hallucinating model
+    could emit ``/etc/passwd`` or ``~/.aws/credentials`` and have its content
+    read into ``code_snippet`` — which then leaks into the SSE result event.
+    To prevent that arbitrary-file-read → exfiltration channel, we reject any
+    resolved path that is not under ``source_path`` (symlink-escape safe via
+    ``Path.resolve()``).
+
+    When no source root is known (direct unit-test calls), the confinement is
+    skipped and the historical absolute/relative resolution applies.
+    """
+    if not file_path:
+        return None
+    if not source_path:
+        # No root to confine against (e.g. unit tests calling validate with
+        # source_path=""). Preserve the historical resolution behaviour.
+        p = Path(file_path)
+        return p if p.is_file() else None
+
+    root = Path(source_path).resolve()
+    p = Path(file_path)
+    # Absolute paths are taken verbatim; relative paths are resolved against
+    # the source root. Either way the result must be IN-TREE (root-confined).
+    candidate = p if p.is_absolute() else (Path(source_path) / file_path)
+    if candidate.is_file() and _is_within_root(candidate, root):
+        return candidate
+    return None
+
+
+# Feature 0057 P2a: CWEs whose findings embed an actual secret VALUE in the
+# offending source line (credential, key, password, cleartext URL). For these,
+# the secret must be masked out of ``code_snippet`` before it reaches the SSE
+# ``result`` event or the DB column. Non-secret CWEs are left verbatim.
+_SECRET_BEARING_CWES: frozenset[str] = frozenset({
+    "CWE-798",  # use of hard-coded credentials
+    "CWE-319",  # cleartext transmission of sensitive information
+    "CWE-312",  # cleartext storage of sensitive information
+    "CWE-256",  # plaintext storage of a password
+    "CWE-259",  # use of a hard-coded password
+    "CWE-321",  # use of a hard-coded cryptographic key (crypto_check embeds key)
+    "CWE-522",  # insufficiently protected credentials
+})
+
+_REDACTION_PLACEHOLDER = "***REDACTED***"
+
+# A quoted string literal: capture the opening quote so we can re-emit it while
+# masking the body. Handles both single- and double-quoted literals.
+_QUOTED_LITERAL_RE = re.compile(r"""(['"])(?:\\.|(?!\1)[^\\])*\1""")
+
+# An assignment / key-value right-hand side whose value is NOT a fully quoted
+# literal (e.g. ``token = abcd1234``, ``password: hunter2``, ``export KEY=v``,
+# or a truncated ``api_key = "AKIA`` whose closing quote was cut). Captures any
+# leading indentation plus the variable/key and operator so structure is
+# preserved; masks the value. ``^\s*`` lets the branch fire on INDENTED source
+# lines; an optional ``export``/``set`` shell prefix is tolerated.
+_ASSIGN_RHS_RE = re.compile(
+    r"""^(?P<indent>\s*(?:export\s+|set\s+)?)"""
+    r"""(?P<lhs>[A-Za-z_][\w.\[\]'"-]*\s*[:=]\s*)"""
+    r"""(?P<val>\S.*?)(?P<tail>\s*(?:#.*)?)$"""
+)
+
+# A trailing comment body (``# ...`` / ``// ...``). For secret-bearing findings
+# a secret can hide in a comment; mask the comment body while keeping the marker.
+_COMMENT_BODY_RE = re.compile(r"""(?P<marker>#|//)(?P<body>\s*\S.*)$""")
+
+
+def _has_unterminated_quote(text: str) -> int:
+    """Return the index of a dangling opening quote (a quote char with no
+    matching close before end-of-line), or -1 if every quote is balanced.
+
+    Handles the 200-char-truncation leak: when ``extract_snippet`` cuts a long
+    secret line, the closing quote (and the secret tail) fall past the cut, so
+    the value after the LAST opening quote was never masked by the
+    complete-literal pass and would leak its PREFIX.
+    """
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "'\"":
+            close = text.find(c, i + 1)
+            if close == -1:
+                return i  # opening quote never closed → dangling
+            i = close + 1
+        else:
+            i += 1
+    return -1
+
+
+def _redact_secret_line(line: str) -> str:
+    """Mask secret VALUES in a single source line while preserving structure.
+
+    The numbered-snippet line prefix (``"3: "``) is left untouched by callers;
+    this operates on the code portion only. Masks:
+      * the BODY of every quoted string VALUE (keeps the quotes; a quoted
+        literal in dict-KEY position — immediately followed by ``:`` — is
+        preserved so keys survive),
+      * an unquoted assignment / key-value RHS (keeps the lhs + operator),
+        including INDENTED and ``export``-prefixed lines, and
+      * an unterminated opening quote (truncated long-secret lines), and
+      * a trailing comment body (a secret hidden in a comment).
+    Variable names, keys, quotes and line shape survive so the finding stays
+    useful for triage.
+    """
+    trailing_nl = "\n" if line.endswith("\n") else ""
+    body = line.rstrip("\n")
+
+    if _QUOTED_LITERAL_RE.search(body):
+        # At least one COMPLETE quoted literal: mask each literal's body, keep
+        # quotes. Preserve quoted literals sitting in dict-KEY position (the
+        # literal is immediately followed by ``:``) so keys stay readable.
+        def _mask(m: re.Match[str]) -> str:
+            q = m.group(1)
+            after = body[m.end():]
+            if after.lstrip().startswith(":"):
+                return m.group(0)  # dict key — preserve verbatim
+            return f"{q}{_REDACTION_PLACEHOLDER}{q}"
+
+        masked = _QUOTED_LITERAL_RE.sub(_mask, body)
+        # After masking complete literals, a dangling opening quote means the
+        # closing quote was truncated away — mask its leaked tail to EOL.
+        dangling = _has_unterminated_quote(masked)
+        if dangling != -1:
+            masked = masked[: dangling + 1] + _REDACTION_PLACEHOLDER
+        return masked + trailing_nl
+
+    # No complete quoted literal. If there's a lone (truncated) opening quote,
+    # mask from it to EOL so the secret prefix is removed.
+    dangling = _has_unterminated_quote(body)
+    if dangling != -1:
+        return body[: dangling + 1] + _REDACTION_PLACEHOLDER + trailing_nl
+
+    # Try to mask an unquoted assignment RHS (indent / export aware).
+    m = _ASSIGN_RHS_RE.match(body)
+    if m:
+        return (
+            f"{m.group('indent')}{m.group('lhs')}{_REDACTION_PLACEHOLDER}"
+            f"{m.group('tail')}{trailing_nl}"
+        )
+
+    # No assignment either — mask a trailing comment body (secret-in-comment).
+    cm = _COMMENT_BODY_RE.search(body)
+    if cm:
+        prefix = body[: cm.start()]
+        return f"{prefix}{cm.group('marker')} {_REDACTION_PLACEHOLDER}{trailing_nl}"
+    return line
+
+
+def _redact_snippet(snippet: str) -> str:
+    """Redact secret values in a numbered code-window snippet (P2a).
+
+    Each line is of the form ``"<n>: <code>"`` (see ``extract_snippet``). The
+    ``"<n>: "`` prefix — carrying the line number and shape — is preserved and
+    only the code portion is run through :func:`_redact_secret_line`.
+    """
+    if not snippet:
+        return snippet
+    out_lines: list[str] = []
+    for raw in snippet.split("\n"):
+        # Split off the "<n>: " numbered prefix produced by extract_snippet so
+        # the line number is preserved exactly.
+        m = re.match(r"^(\s*\d+:\s?)(.*)$", raw)
+        if m:
+            out_lines.append(f"{m.group(1)}{_redact_secret_line(m.group(2))}")
+        else:
+            out_lines.append(_redact_secret_line(raw))
+    return "\n".join(out_lines)
+
+
+def _redact_finding_inplace(finding: dict[str, Any]) -> None:
+    """Mask the secret VALUE in a single finding's ``code_snippet`` when the
+    finding is secret-bearing (P2a). Idempotent and DRY: this is the single
+    redaction primitive invoked from EVERY snippet egress point —
+
+      * the per-finding ``finding`` SSE event (skill + LLM phases), and
+      * the ``_attach_code_snippet`` finalisation choke point (SSE ``result``
+        + DB row),
+
+    so a secret never reaches the frontend live view, the result snapshot, or
+    the persisted ``code_snippet`` column. No-op for non-secret CWEs and for
+    findings without a snippet. Re-redacting an already-masked snippet is safe
+    (the placeholder carries no secret).
+    """
+    if str(finding.get("category", "")).strip().upper() not in _SECRET_BEARING_CWES:
+        return
+    existing = finding.get("code_snippet")
+    if existing:
+        finding["code_snippet"] = _redact_snippet(existing)
+
+
+# --- Feature 0057 P6b: provenance vocabulary -----------------------------
+# Exactly ONE of these tags is stamped on every finding. The deterministic
+# tiers are set centrally at the finalisation choke point (``_set_provenance``,
+# applied in ``_attach_code_snippet`` BEFORE validate); the ``llm`` tag is set
+# at LLM-finding emission time (run_combined_audit) and PRESERVED here via
+# ``setdefault`` semantics; ``llm_l5_verified`` is the L5-survival re-tag set
+# at the validate vote choke point (``validate._apply_validation_to_finding``).
+#
+# The tags are ADDITIVE metadata: they must NOT change the
+# ``validate.llm_judge._is_deterministic`` / ``_is_l5_exempt`` determinations,
+# which key off ``check_id`` / ``signature_status`` / ``provenance == "llm"``.
+PROVENANCE_VALUES: frozenset[str] = frozenset(
+    {
+        "skill",
+        "signature_trusted",
+        "signature_candidate",
+        "catalog_rollup",
+        "llm",
+        "llm_l5_verified",
+    }
+)
+
+
+def _classify_deterministic_provenance(finding: dict[str, Any]) -> str:
+    """Map a DETERMINISTIC-tier finding to its provenance tag.
+
+    Precedence (most specific first):
+      * ``signature_status == "trusted"``    → ``signature_trusted``
+      * ``signature_status == "candidate"``  → ``signature_candidate``
+      * ``check_id`` ending ``.rollup``      → ``catalog_rollup``
+        (built by ``catalog_detector._build_rollup_finding`` as
+        ``cwe.catalog.cwe_<id>.rollup``)
+      * anything else carrying a ``check_id`` → ``skill`` (the dedicated
+        skills + keyword catalog hits)
+    """
+    sig_status = finding.get("signature_status")
+    if sig_status == "trusted":
+        return "signature_trusted"
+    if sig_status == "candidate":
+        return "signature_candidate"
+    if str(finding.get("check_id", "")).endswith(".rollup"):
+        return "catalog_rollup"
+    return "skill"
+
+
+def _set_provenance(finding: dict[str, Any]) -> None:
+    """Stamp exactly one ``provenance`` tag on a finding (Feature 0057 P6b).
+
+    ``setdefault`` semantics: a pre-set ``provenance`` (the Phase-1 ``llm`` tag
+    on LLM findings) is preserved untouched; only deterministic-tier findings
+    that arrive WITHOUT a provenance are classified here. Mutates in place;
+    idempotent.
+    """
+    if finding.get("provenance"):
+        return
+    finding["provenance"] = _classify_deterministic_provenance(finding)
+
+
+def _attach_code_snippet(
+    findings: list[dict[str, Any]],
+    source_path: str,
+) -> None:
+    """Feature 0057 P0.2: populate a real code window on every finding that
+    lacks one, read from the referenced source line.
+
+    Central choke point applied to ``all_findings`` (skill + LLM) just before
+    the validate stage so the L5 judge always sees a grounded window (R4).
+    Mutates findings in place. Additive / no-op for findings that already
+    carry a non-empty ``code_snippet`` (several skills set it directly).
+
+    Feature 0057 P6b: this is also the central provenance set-point —
+    ``_set_provenance`` is applied to every finding here (BEFORE validate), so
+    the emitted ``result`` carries the full deterministic provenance vocabulary
+    while preserving the pre-set ``llm`` tag (setdefault semantics).
+
+    A finding whose path cannot be resolved or whose line is missing/zero is
+    left with an empty snippet — the L5 selection layer then SKIPS it (P0.3)
+    rather than judging blind.
+    """
+    from shared.tools.file_scanner import read_file_lines
+
+    # P6b: stamp the deterministic provenance tag on EVERY finding first, in a
+    # standalone pass with no I/O. This is decoupled from the best-effort snippet
+    # loop below so that a snippet/read failure (which the caller catches and
+    # logs) can never strip provenance from the whole batch — provenance is a
+    # pure in-memory classification and must always complete. (no-op if `llm`.)
+    for f in findings:
+        _set_provenance(f)
+
+    for f in findings:
+        if not f.get("code_snippet"):
+            line_start = f.get("line_start", 0) or 0
+            try:
+                line_start = int(line_start)
+            except (TypeError, ValueError):
+                line_start = 0
+            if line_start >= 1:
+                resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
+                if resolved is not None:
+                    lines = read_file_lines(resolved)
+                    if lines:
+                        snippet = extract_snippet(lines, line_start, context=2)
+                        if snippet:
+                            f["code_snippet"] = snippet
+
+        # P2a: mask secret VALUES for secret-bearing CWEs, whether the snippet
+        # was back-filled above OR pre-set by a skill (e.g. auth_check). This
+        # runs at the finalisation choke point so both the SSE result and the
+        # DB row carry the redacted form. (The per-finding `finding` SSE events
+        # are independently redacted at emission time — see run_combined_audit —
+        # so the live frontend view never sees the raw secret either.)
+        _redact_finding_inplace(f)
 
 
 def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> None:
@@ -604,6 +1104,7 @@ def run_combined_audit(
     model: str | None = None,
     use_llm: bool | None = None,
     validate_use_llm: bool | None = None,
+    llm_tier3: bool | None = None,
 ) -> Generator[str, None, None]:
     """Run skills first (full coverage), then optionally LLM (deeper analysis).
 
@@ -637,6 +1138,23 @@ def run_combined_audit(
     logger.info("audit_start run_id=%s source=%s categories=%s use_llm=%s",
                 run_id, source_path, categories, effective_use_llm)
 
+    # feature 0061: cooperative cancellation. `cancel` is the ambient token the
+    # transport flips on client disconnect; `_deadline_val` is the single
+    # wall-clock ceiling shared across the skill, generate, and L5 phases so
+    # their timeouts cannot stack (F11a). Bound ambiently so the generate
+    # (asyncio.run) and L5 (copy_context thread) phases both see it.
+    cancel = current_cancel_token()
+    _max_audit_s = _safe_int_env("VULTURE_AGENT_MAX_AUDIT_SECONDS", 900)
+    _deadline_val: float | None = None
+    if _max_audit_s > 0:
+        _deadline_val = time.monotonic() + _max_audit_s
+        set_audit_deadline(_deadline_val)
+
+    def _cancelled_or_expired() -> bool:
+        return (cancel is not None and cancel.cancelled()) or (
+            _deadline_val is not None and time.monotonic() > _deadline_val
+        )
+
     # Emit prior findings context if available
     if prior_context:
         yield emitter.text_message(prior_context)
@@ -648,6 +1166,7 @@ def run_combined_audit(
     total = len(categories)
     completed = 0
 
+    _skill_aborted = False  # feature 0061: set on cancel / skill-phase deadline
     pool_workers = min(total, _SKILL_WORKERS)
     # Manual pool management (no `with` / no CM-driven shutdown-with-wait)
     # so that generator GC — which can fire from a worker thread when an
@@ -662,49 +1181,74 @@ def run_combined_audit(
                 continue
             futures[pool.submit(retry_skill, fn, source_path)] = cat
 
-        for future in as_completed(futures):
-            cat = futures[future]
-            yield emitter.text_message(f"Analyzing {cat} patterns...")
+        # feature 0061: bound the skill wait by the shared whole-audit deadline
+        # and honor cancel, so a hung skill or a client disconnect cannot pin
+        # this phase (F2). `as_completed(timeout=)` caps the total wait.
+        _skill_timeout = (
+            max(0.1, _deadline_val - time.monotonic())
+            if _deadline_val is not None else None
+        )
+        try:
+            for future in as_completed(futures, timeout=_skill_timeout):
+                if cancel is not None and cancel.cancelled():
+                    _skill_aborted = True
+                    break
+                cat = futures[future]
+                yield emitter.text_message(f"Analyzing {cat} patterns...")
 
-            try:
-                result = future.result()
-            except Exception as exc:
-                yield emitter.text_message(f"Skill {cat} failed: {str(exc)[:200]}")
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    yield emitter.text_message(f"Skill {cat} failed: {str(exc)[:200]}")
+                    completed += 1
+                    yield emitter.progress_event(
+                        files_analyzed=completed,
+                        total_files=total,
+                        findings_count=len(skill_findings),
+                    )
+                    continue
+
+                findings = result.get("findings", [])
+                # Feature 0046 issue #1: assign deterministic IDs at emission
+                # time so L5 streaming `validation_update` events can later
+                # reference the same finding via id. The backend's
+                # `extractDeltaFindings` only auto-generates IDs when the
+                # incoming finding has an empty id field — non-empty IDs are
+                # preserved verbatim. Hash matches backend's
+                # `generateFindingID(auditID, title, file_path, index)`.
+                for finding in findings:
+                    _assign_finding_id(finding, run_id, len(skill_findings))
+                    skill_findings.append(finding)
+                    # Feature 0057 P2a: redact secret-bearing snippets BEFORE the
+                    # per-finding SSE event so the live frontend view (and any
+                    # delta-finding DB persistence on a stalled stream) never sees
+                    # the raw secret. Mutates the dict that is also kept in
+                    # skill_findings, so the finalisation choke point re-sees the
+                    # already-masked form (idempotent).
+                    _redact_finding_inplace(finding)
+                    yield emitter.finding_event(**finding)
+
                 completed += 1
                 yield emitter.progress_event(
                     files_analyzed=completed,
                     total_files=total,
                     findings_count=len(skill_findings),
                 )
-                continue
-
-            findings = result.get("findings", [])
-            # Feature 0046 issue #1: assign deterministic IDs at emission
-            # time so L5 streaming `validation_update` events can later
-            # reference the same finding via id. The backend's
-            # `extractDeltaFindings` only auto-generates IDs when the
-            # incoming finding has an empty id field — non-empty IDs are
-            # preserved verbatim. Hash matches backend's
-            # `generateFindingID(auditID, title, file_path, index)`.
-            for finding in findings:
-                _assign_finding_id(finding, run_id, len(skill_findings))
-                skill_findings.append(finding)
-                yield emitter.finding_event(**finding)
-
-            completed += 1
-            yield emitter.progress_event(
-                files_analyzed=completed,
-                total_files=total,
-                findings_count=len(skill_findings),
+        except TimeoutError:
+            _skill_aborted = True
+            yield emitter.text_message(
+                "[partial results] skill phase wall-clock cap reached; "
+                "remaining skills not analyzed."
             )
     finally:
-        # If we're being GC'd from inside a worker thread (the typical
-        # disconnect path), wait=True would join that very thread.
-        # Use wait=False to skip the join; Python's thread teardown
-        # still cleans up daemon pool threads on process exit.
+        # feature 0061: on cancel/expiry, cancel pending futures and don't block
+        # on in-flight skills. Otherwise wait normally. (If GC'd from a worker
+        # thread, wait=True would join that very thread — the RuntimeError
+        # fallback drops to wait=False.)
+        _drain = _skill_aborted or _cancelled_or_expired()
         try:
-            pool.shutdown(wait=True)
-        except RuntimeError:
+            pool.shutdown(wait=not _drain, cancel_futures=_drain)
+        except (RuntimeError, TypeError):
             pool.shutdown(wait=False)
 
     logger.info("skill_phase_done run_id=%s findings=%d", run_id, len(skill_findings))
@@ -713,21 +1257,18 @@ def run_combined_audit(
     llm_new_findings: list[dict] = []
     actual_input_tokens = 0
     actual_output_tokens = 0
-    if effective_use_llm and skill_tools and instructions:
+    if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
 
-        # Mechanism 6: Build source context once, pass through to LLM collector
-        source_context = _build_source_context(source_path, skill_findings=skill_findings, model=model)
-        file_count = source_context.count("\n--- ") + (
-            1 if source_context.startswith("--- ") else 0
-        )
-        if source_context:
-            yield emitter.text_message(
-                f"Loaded {file_count} file(s) into LLM context."
-            )
-
-        llm_findings, llm_error, actual_input_tokens, actual_output_tokens = _collect_llm_findings(
+        # Feature 0057 P1f: the collector now sweeps the whole tree in
+        # context-window-sized batches (no single pre-built context / silent
+        # tail-drop). It returns a partial-results notice (P1d) when a cap hit.
+        (
+            llm_findings, llm_error,
+            actual_input_tokens, actual_output_tokens,
+            llm_notice,
+        ) = _collect_llm_findings(
             run_id=run_id,
             source_path=source_path,
             categories=categories,
@@ -737,11 +1278,15 @@ def run_combined_audit(
             prior_context=prior_context,
             model=model,
             skill_findings=skill_findings,
-            source_context=source_context,
+            llm_tier3=llm_tier3,
         )
+        if llm_notice:
+            yield emitter.text_message(llm_notice)
         if llm_error:
             yield emitter.text_message(llm_error)
-        llm_new_findings = _deduplicate_findings(skill_findings, llm_findings)
+        llm_new_findings = _deduplicate_findings(
+            skill_findings, llm_findings, source_path=source_path,
+        )
 
         if llm_new_findings:
             yield emitter.text_message(
@@ -751,13 +1296,30 @@ def run_combined_audit(
             # remain unique across phases. (Feature 0046 issue #1.)
             base_idx = len(skill_findings)
             for offset, finding in enumerate(llm_new_findings):
+                # Feature 0057: tag LLM findings so the validate stage knows
+                # they are non-deterministic (L5-demotable), while skill
+                # findings stay deterministic/trusted (R2 voter floor).
+                finding.setdefault("provenance", "llm")
                 _assign_finding_id(finding, run_id, base_idx + offset)
+                # Feature 0057 P2a: redact secret-bearing LLM-finding snippets
+                # before the per-finding SSE event (LLM is the realistic source
+                # of unquoted / env-style / comment-embedded secrets).
+                _redact_finding_inplace(finding)
                 yield emitter.finding_event(**finding)
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
 
     # --- Combine & emit final result ---
     all_findings = skill_findings + llm_new_findings
+
+    # --- Feature 0057 P0.2: code-grounding -----------------------
+    # Populate a real code window on every finding lacking one (read from
+    # source) so the L5 judge is never blind (R4). Additive / no-op when a
+    # finding already carries a snippet. Skipped if the source is gone.
+    try:
+        _attach_code_snippet(all_findings, source_path)
+    except Exception as exc:  # noqa: BLE001 — grounding is best-effort
+        logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
 
     # --- Validate stage (feature 0045) ---------------------------
     # Annotates each finding with validation_status + validation_confidence
@@ -798,6 +1360,11 @@ def run_combined_audit(
                 _l5_enabled = (
                     os.environ.get("VULTURE_USE_VALIDATE_LLM", "").lower() == "true"
                 )
+            # feature 0061 (F11): skip the L5 *LLM* judge when the audit is
+            # already cancelled / past the shared deadline. Deterministic L1/L2
+            # still annotate the partial findings cheaply.
+            if _cancelled_or_expired():
+                _l5_enabled = False
             _vcfg = _ValidateConfig(
                 compliance_mode=(
                     os.environ.get("VULTURE_COMPLIANCE_MODE", "").lower() == "true"
@@ -823,7 +1390,14 @@ def run_combined_audit(
                 finally:
                     _stream_q.put(None)        # sentinel
 
-            _vthread = _threading.Thread(target=_run_validate_in_thread, daemon=True)
+            # feature 0061 (F11c): a raw threading.Thread does NOT inherit
+            # contextvars, so copy the current context (carrying the cancel
+            # token + shared whole-audit deadline) into the L5 thread. run_l5
+            # reads them to cap its deadline and stop early on cancel.
+            _vctx = contextvars.copy_context()
+            _vthread = _threading.Thread(
+                target=lambda: _vctx.run(_run_validate_in_thread), daemon=True,
+            )
             _vthread.start()
 
             # Drain the queue: emit one validation_update SSE event per
@@ -834,7 +1408,14 @@ def run_combined_audit(
                 if batch is None:
                     break
                 yield emitter.validation_update_event(batch)
-            _vthread.join()
+            # feature 0061: bounded join — L5 self-terminates by the shared
+            # deadline (it caps its own on `current_audit_deadline`), so never
+            # pin the generator/producer indefinitely.
+            _join_timeout = (
+                max(1.0, _deadline_val - time.monotonic()) + 5.0
+                if _deadline_val is not None else None
+            )
+            _vthread.join(timeout=_join_timeout)
             if _v_exc_box[0] is not None:
                 raise _v_exc_box[0]
             v_result = _v_result_box[0]
@@ -908,20 +1489,211 @@ def _collect_llm_findings(
     model: str | None = None,
     skill_findings: list[dict] | None = None,
     source_context: str = "",
-) -> tuple[list[dict], str | None, int, int]:
-    """Run the LLM audit and collect findings (without SSE wrapping).
+    llm_tier3: bool | None = None,
+) -> tuple[list[dict], str | None, int, int, str | None]:
+    """Run the LLM audit (batch-looped) and collect findings (no SSE wrapping).
 
-    Returns (findings, error_message, actual_input_tokens, actual_output_tokens).
-    error_message is None on success.
+    Returns ``(findings, error_message, input_tokens, output_tokens, notice)``.
+    ``error_message`` is None on success; ``notice`` carries a partial-results
+    message when the sweep stopped early on the budget / work cap (P1d), or
+    when Tier-3 was skipped (0059 cost guard). Uses ``asyncio.run`` per issue #19.
     """
     return asyncio.run(
-        _collect_llm_findings_async(
+        _collect_llm_findings_batched_async(
             run_id, source_path, categories, skill_tools,
             instructions, domain_label, prior_context, model,
             skill_findings=skill_findings,
-            source_context=source_context,
+            llm_tier3=llm_tier3,
         )
     )
+
+
+def _resolve_llm_budget_usd() -> float:
+    """Parse VULTURE_LLM_BUDGET_USD; <= 0 / unset / invalid ⇒ no USD cap."""
+    raw = os.environ.get("VULTURE_LLM_BUDGET_USD", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        val = float(raw)
+    except (ValueError, TypeError):
+        logger.warning("invalid_budget_usd value=%r ignoring", raw)
+        return 0.0
+    return val if val > 0 else 0.0
+
+
+def _llm_tier3_enabled(config_value: bool | None = None) -> bool:
+    """Feature 0059: should the LLM generate phase analyze Tier-3 files
+    (no deterministic findings, not entry/config)?
+
+    Precedence: explicit per-request ``config_value`` > ``VULTURE_LLM_TIER3``
+    env (on/true/1/yes) > built-in default **OFF** (the cost guard). OFF scopes
+    the LLM sweep to Tier 1 (flagged) + Tier 2 (entry/config); deterministic
+    skills/signatures still scan every file regardless.
+    """
+    if isinstance(config_value, bool):
+        return config_value
+    return os.environ.get("VULTURE_LLM_TIER3", "").strip().lower() in ("on", "true", "1", "yes")
+
+
+async def _collect_llm_findings_batched_async(
+    run_id: str,
+    source_path: str,
+    categories: list[str],
+    skill_tools: list[Any],
+    instructions: str,
+    domain_label: str,
+    prior_context: str = "",
+    model: str | None = None,
+    skill_findings: list[dict] | None = None,
+    llm_tier3: bool | None = None,
+) -> tuple[list[dict], str | None, int, int, str | None]:
+    """Feature 0057 P1f + P1d: sweep the WHOLE tree in context-window-sized
+    batches instead of a single shot that silently tail-drops files.
+
+    For each batch it runs one agent call (delegating to
+    ``_collect_llm_findings_async``), dedups findings across batches, and
+    accumulates real token usage. The loop stops when the tree is covered, the
+    per-audit file cap (``VULTURE_LLM_MAX_FILES``) is hit, or the estimated USD
+    spend crosses ``VULTURE_LLM_BUDGET_USD`` — emitting a partial-results
+    notice in the latter two cases.
+
+    Returns ``(findings, error, input_tokens, output_tokens, notice)``.
+    """
+    max_files = _safe_int_env("VULTURE_LLM_MAX_FILES", 10000)
+    budget_usd = _resolve_llm_budget_usd()
+
+    # Feature 0057 P1d: the LLM sweep is bounded by VULTURE_LLM_MAX_FILES, the
+    # operative ceiling for the whole-codebase pass. Without passing it here the
+    # sweep would silently cap at the smaller global scan limit
+    # (VULTURE_MAX_FILES, default 500) and the documented LLM cap could never
+    # trip. We take the larger of the two so the LLM phase can sweep beyond the
+    # per-skill scan cap up to its own ceiling.
+    from shared.tools.file_scanner import MAX_FILES as _SCAN_MAX_FILES
+    scan_cap = max(max_files, _SCAN_MAX_FILES)
+    # Feature 0059: Tier-3 cost guard (default OFF). When off, the LLM sweep
+    # is scoped to flagged + entry/config files; the long tail is skipped (and
+    # reported via the notice below). Deterministic skills already scanned all.
+    include_tier3 = _llm_tier3_enabled(llm_tier3)
+    scanned = scan_code_files(source_path, max_files=scan_cap)
+    ordered = _prioritize_files(
+        scanned, source_path, skill_findings, include_tier3=include_tier3,
+    )
+    tier3_skipped = (len(scanned) - len(ordered)) if not include_tier3 else 0
+    max_chars = _get_max_source_chars(model)
+    # Budget-aware batching: with a USD budget configured the sweep batches
+    # cautiously (smaller batches) so cost accrues incrementally and the cap
+    # can halt it mid-tree before over-spending; with no budget it packs large
+    # batches for efficiency (file count is not the throttle — the context
+    # window + budget are; plan §7).
+    files_per_batch = (
+        _safe_int_env("VULTURE_LLM_FILES_PER_BATCH", 1)
+        if budget_usd > 0 else _LLM_FILES_PER_BATCH
+    )
+    batches = _build_source_batches(
+        ordered, source_path, max_chars, skill_findings,
+        files_per_batch=files_per_batch,
+    )
+    # No readable source files → still make ONE tool-enabled call so the LLM
+    # can read/list/grep the tree itself (preserves prior single-shot behaviour).
+    if not batches:
+        batches = [("", [])]
+
+    from shared.llm.provider import estimate_cost
+
+    acc: list[dict] = []
+    total_in = 0
+    total_out = 0
+    files_seen = 0
+    notice: str | None = None
+    first_error: str | None = None
+
+    # feature 0061: honor cancel + the shared whole-audit deadline BEFORE each
+    # call, and bound each call so a hung/slow model cannot starve these checks.
+    _cancel = current_cancel_token()
+    _deadline = current_audit_deadline()
+    _call_timeout = _safe_int_env("VULTURE_LLM_CALL_TIMEOUT_SEC", 120)
+    if _call_timeout <= 0:  # 0/negative would make asyncio.wait_for insta-timeout every call
+        _call_timeout = 120
+    for batch_idx, (batch_text, batch_paths) in enumerate(batches):
+        if _cancel is not None and _cancel.cancelled():
+            notice = (
+                f"[partial results] audit cancelled ({_cancel.reason}); "
+                f"stopped after {batch_idx} of {len(batches)} batch(es)."
+            )
+            logger.warning("audit_cancelled run_id=%s reason=%s batches=%d/%d",
+                           run_id, _cancel.reason, batch_idx, len(batches))
+            break
+        if _deadline is not None and time.monotonic() > _deadline:
+            notice = (
+                f"[partial results] wall-clock cap reached; "
+                f"stopped after {batch_idx} of {len(batches)} batch(es)."
+            )
+            logger.warning("audit_deadline run_id=%s batches=%d/%d",
+                           run_id, batch_idx, len(batches))
+            break
+        try:
+            findings, error, in_tok, out_tok = await asyncio.wait_for(
+                _collect_llm_findings_async(
+                    run_id, source_path, categories, skill_tools,
+                    instructions, domain_label, prior_context, model,
+                    skill_findings=skill_findings,
+                    source_context=batch_text,
+                ),
+                timeout=_call_timeout,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            # A hung/slow call is bounded here so the loop regains control to
+            # re-check cancel/deadline on the next iteration. The injected
+            # CancelledError escapes _collect_llm_findings_async's `except
+            # Exception`, so no model cooldown/failure is recorded (F7).
+            findings, error, in_tok, out_tok = (
+                [], f"llm call timed out after {_call_timeout}s", 0, 0,
+            )
+        total_in += in_tok
+        total_out += out_tok
+        files_seen += len(batch_paths)
+        if error and first_error is None:
+            first_error = error
+        if findings:
+            # Dedup across batches AND against skill findings so one vuln seen
+            # in two overlapping windows isn't double-reported (P1f).
+            new = _deduplicate_findings(
+                (skill_findings or []) + acc, findings, source_path=source_path,
+            )
+            acc.extend(new)
+
+        # --- Caps (P1d): evaluate AFTER the batch so its tokens count ---
+        if budget_usd > 0:
+            spent = estimate_cost(total_in, total_out, model)
+            if spent > budget_usd and batch_idx + 1 < len(batches):
+                notice = (
+                    f"[partial results] LLM budget cap reached "
+                    f"(${spent:.4f} > ${budget_usd:.4f}); stopped after "
+                    f"{batch_idx + 1} of {len(batches)} file batch(es). "
+                    f"Remaining files were not analyzed by the LLM."
+                )
+                logger.warning("llm_budget_cap run_id=%s %s", run_id, notice)
+                break
+        if files_seen >= max_files and batch_idx + 1 < len(batches):
+            notice = (
+                f"[partial results] LLM file cap reached "
+                f"({files_seen} >= VULTURE_LLM_MAX_FILES={max_files}); "
+                f"stopped after {batch_idx + 1} of {len(batches)} batch(es)."
+            )
+            logger.warning("llm_file_cap run_id=%s %s", run_id, notice)
+            break
+
+    # Surface a per-call error only when the sweep produced nothing useful.
+    err = first_error if (first_error and not acc) else None
+    # Feature 0059: never silently reduce scope — report the skipped Tier-3 tail.
+    if tier3_skipped > 0:
+        tier3_notice = (
+            f"[llm-scope] Tier-3 skipped: {tier3_skipped} file(s) (no deterministic "
+            f"findings, not entry/config) were NOT sent to the LLM — cost guard. "
+            f"Set VULTURE_LLM_TIER3=on or scan --llm-tier3 for full-tree LLM coverage."
+        )
+        notice = f"{tier3_notice}\n{notice}" if notice else tier3_notice
+    return acc, err, total_in, total_out, notice
 
 
 def _build_llm_prompt(
@@ -1030,20 +1802,37 @@ async def _collect_llm_findings_async(
     """Async helper: run LLM agent and return (findings, error, input_tokens, output_tokens)."""
     from agents import Agent, ModelSettings, Runner
     from shared.llm.provider import get_model_with_fallback, get_model_settings, supports_structured_output
-    from shared.tools.file_reader import read_file_tool
-    from shared.tools.file_lister import list_files_tool
-    from shared.tools.pattern_matcher import search_pattern_tool
+    from shared.tools.file_reader import make_read_file_tool
+    from shared.tools.file_lister import make_list_files_tool
+    from shared.tools.pattern_matcher import make_search_pattern_tool
 
     resolved_model = get_model_with_fallback(model)
 
     if not source_context:
         source_context = _build_source_context(source_path, skill_findings=skill_findings, model=model)
-    # Only register file tools when source is NOT embedded inline — avoids
-    # redundant tool-call round trips that waste tokens re-reading files.
-    if source_context:
-        all_tools = list(skill_tools)
+    # Feature 0057 P1c: always attach the read-only file + grep tools, even on
+    # the inline-source path. The inline context is a budget-bounded subset of
+    # the tree; giving the LLM read/list/grep lets it follow cross-file
+    # dataflow into files that didn't fit the window (the batch loop covers
+    # breadth; the tools cover depth). The model decides whether to call them.
+    #
+    # Security: the tools are CONFINED to the audit source root (built per
+    # audit) so a prompt-injected / hallucinating model cannot read or grep
+    # outside the scanned tree (e.g. /etc/passwd, ~/.aws/credentials) and
+    # exfiltrate it via a finding. Falls back to the unconfined module tools
+    # only when no source root is known (should not happen in the real pipeline).
+    if source_path:
+        extra_tools = [
+            make_read_file_tool(source_path),
+            make_list_files_tool(source_path),
+            make_search_pattern_tool(source_path),
+        ]
     else:
-        all_tools = list(skill_tools) + [read_file_tool, list_files_tool, search_pattern_tool]
+        from shared.tools.file_reader import read_file_tool
+        from shared.tools.file_lister import list_files_tool
+        from shared.tools.pattern_matcher import search_pattern_tool
+        extra_tools = [read_file_tool, list_files_tool, search_pattern_tool]
+    all_tools = list(skill_tools) + extra_tools
 
     source_in_system = "anthropic" in resolved_model and bool(source_context)
     prompt_text = _build_llm_prompt(

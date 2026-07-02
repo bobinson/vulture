@@ -47,3 +47,11 @@ backend/bin/
 cli/bin/
 
 # ── Add project-specific patterns below this line ──────────────────
+
+# Feature 0057 Phase 5: the CWE detection corpus is genuine vulnerable
+# code authored to TEST the detectors — it must never be self-audited.
+agents/cwe/tests/corpus/fixtures/
+
+# Local scratchpad — throwaway test drivers, evidence, scan slices (incl.
+# woofy example code). Git-ignored; also excluded from self-audit.
+scratchpad/

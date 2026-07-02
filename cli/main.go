@@ -323,11 +323,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache] [CI flags]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
 			os.Exit(1)
 		}
-		types, noCache, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[3:])
+		types, noCache, fresh, tier3, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[3:])
 		if ci.server != "" {
 			apiURL = ci.server
 		}
-		cmdScan(apiURL, os.Args[2], types, noCache, ci, validateLLM, validateLLMTopN)
+		cmdScan(apiURL, os.Args[2], types, noCache, fresh, tier3, ci, validateLLM, validateLLMTopN)
 	case "discover", "discovery":
 		df := parseDiscoverFlags(os.Args[2:])
 		cmdDiscover(apiURL, df)
@@ -363,16 +363,16 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		types, noCache, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[2:])
+		types, noCache, fresh, tier3, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[2:])
 		if ci.server != "" {
 			apiURL = ci.server
 		}
-		cmdScan(apiURL, cmd, types, noCache, ci, validateLLM, validateLLMTopN)
+		cmdScan(apiURL, cmd, types, noCache, fresh, tier3, ci, validateLLM, validateLLMTopN)
 	}
 }
 
 // parseScanFlags extracts --types, --no-cache, and CI flags from arguments.
-func parseScanFlags(args []string) (types []string, noCache bool, validateLLM bool, validateLLMTopN int, ci ciFlags) {
+func parseScanFlags(args []string) (types []string, noCache bool, fresh bool, tier3 bool, validateLLM bool, validateLLMTopN int, ci ciFlags) {
 	types = agentregistry.ScanAgentTypes()
 	ci.output = "text"
 	for i := 0; i < len(args); i++ {
@@ -384,6 +384,17 @@ func parseScanFlags(args []string) (types []string, noCache bool, validateLLM bo
 			}
 		case "--no-cache":
 			noCache = true
+		case "--fresh":
+			// Clean-room scan: ignore the prior-findings memory so the LLM
+			// isn't steered by (nor the result masked by) earlier audits of
+			// this source. Implies --no-cache — a fresh run must re-execute,
+			// not return a cached result. For critical tests / new models.
+			fresh = true
+			noCache = true
+		case "--llm-tier3":
+			// 0059: include Tier-3 (non-flagged, non-entry) files in the LLM
+			// sweep — full-tree coverage. Off by default (cost guard).
+			tier3 = true
 		case "--validate-llm":
 			// Feature 0046: opt in to L5 LLM judge for this audit.
 			validateLLM = true
@@ -468,6 +479,10 @@ Usage:
 Scan Options:
   --types %s  Comma-separated audit types (default: all)
   --no-cache                        Force fresh audit, skip cached results
+  --fresh                           Clean-room scan: ignore prior-findings memory
+                                    (implies --no-cache). For critical tests / new models.
+  --llm-tier3                       Send Tier-3 (non-flagged, non-entry) files to the LLM
+                                    too — full-tree coverage. Off by default (cost guard).
 
 Discover Options:
   --target-url <url>                Target URL to discover (required)
@@ -969,6 +984,19 @@ func isLocalMode(frontendURL string) bool {
 	return strings.Contains(frontendURL, "localhost") || strings.Contains(frontendURL, "127.0.0.1")
 }
 
+// uiURL returns the base URL where the web UI is served: an explicit
+// VULTURE_FRONTEND_URL override, else the configured frontend host. In dev and
+// Docker deployments the SPA is served by a SEPARATE server on the frontend host
+// (Vite dev server / frontend container) — the backend port serves the API only,
+// so pointing there yields a 404. (Native install embeds the SPA in the backend,
+// but that mode is served by the backend binary, not this CLI.)
+func uiURL() string {
+	if env := os.Getenv("VULTURE_FRONTEND_URL"); env != "" {
+		return env
+	}
+	return defaultFrontendURL
+}
+
 func isProjectRoot(dir string) bool {
 	if fi, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err != nil || fi.IsDir() {
 		return false
@@ -1078,7 +1106,7 @@ func cmdLogin(apiURL string) {
 	fmt.Printf("\n  Logged in as %s (%s)\n  Token saved to ~/%s/%s\n\n", auth.User.Name, auth.User.Email, configDir, tokenFile)
 }
 
-func cmdScan(apiURL string, target string, types []string, noCache bool, ci ciFlags, validateLLM bool, validateLLMTopN int) {
+func cmdScan(apiURL string, target string, types []string, noCache bool, fresh bool, tier3 bool, ci ciFlags, validateLLM bool, validateLLMTopN int) {
 	token := resolveToken(ci.apiKey, apiURL)
 
 	// Determine source type
@@ -1123,13 +1151,25 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, ci ciFl
 
 	// Create audit
 	auditReq := buildAuditBody(src.ID, types, ci)
+	cfg := map[string]interface{}{}
 	if validateLLM {
 		// Feature 0046 §L: per-audit config override for L5 LLM judge.
 		validateCfg := map[string]interface{}{"llm": true}
 		if validateLLMTopN > 0 {
 			validateCfg["llm_top_n"] = validateLLMTopN
 		}
-		auditReq["config"] = map[string]interface{}{"validate": validateCfg}
+		cfg["validate"] = validateCfg
+	}
+	if fresh {
+		// Clean-room: backend skips the prior-findings memory for this audit.
+		cfg["fresh"] = true
+	}
+	if tier3 {
+		// 0059: include the Tier-3 long tail in the LLM sweep (full-tree).
+		cfg["llm_tier3"] = true
+	}
+	if len(cfg) > 0 {
+		auditReq["config"] = cfg
 	}
 	auditBody, _ := json.Marshal(auditReq)
 	a := apiPost[audit](apiURL+"/api/audits", auditBody, token)
@@ -1931,10 +1971,7 @@ func printAuditSummary(a audit) {
 	}
 
 	// Show UI link
-	frontendURL := os.Getenv("VULTURE_FRONTEND_URL")
-	if frontendURL == "" {
-		frontendURL = defaultFrontendURL
-	}
+	frontendURL := uiURL()
 	fmt.Printf("\n  View in UI: %s/audit/%s\n", frontendURL, a.ID)
 
 	// Show local dev credentials if frontend is running locally. The

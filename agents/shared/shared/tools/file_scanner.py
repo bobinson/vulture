@@ -53,9 +53,10 @@ SKIP_FILES = frozenset({
 
 # Code file extensions we care about
 CODE_EXTENSIONS = frozenset({
-    ".py", ".go", ".js", ".ts", ".jsx", ".tsx",
-    ".java", ".rs", ".rb", ".php", ".cs", ".cpp",
-    ".c", ".h", ".swift", ".kt", ".scala",
+    ".py", ".pyw", ".go", ".js", ".ts", ".jsx", ".tsx",
+    ".mjs", ".cjs", ".mts", ".cts",
+    ".java", ".rs", ".rb", ".erb", ".php", ".phtml", ".cs", ".cpp",
+    ".c", ".h", ".m", ".mm", ".swift", ".kt", ".scala",
     ".yaml", ".yml", ".toml", ".json", ".xml",
     ".sh", ".bash", ".dockerfile",
 })
@@ -429,6 +430,28 @@ _ENTRY_POINT_STEMS = frozenset({
     "manage", "wsgi", "asgi",
 })
 
+# Handler-family stem TOKENS — matched per-token after splitting the stem on
+# `_ - .` — so non-standard entry points the exact name/stem lists miss are
+# still caught (user_handler.py, auth_controller.rb, api_routes.go,
+# lambda_function.py, user_resolver.py). Token (not substring) matching keeps
+# "rapid" from hitting on "api". Deliberately EXCLUDES main/app/index (those
+# stay exact-stem only) so test_main.py / main_helper.py are NOT entry points.
+_ENTRY_POINT_STEM_TOKENS = frozenset({
+    "handler", "handlers", "route", "routes", "router",
+    "controller", "controllers", "endpoint", "endpoints",
+    "webhook", "webhooks", "middleware", "resolver", "resolvers",
+    "lambda", "view", "views", "urls", "api", "serializer", "serializers",
+})
+
+# Directory names whose contents are entry points regardless of filename —
+# Go `cmd/`, Rails/Express `routes/`+`controllers/`, Next.js `app/api`+`pages/api`
+# style `api/`, serverless `functions/`, etc. Kept focused (no app/src/pages)
+# so the Tier-2 set doesn't balloon.
+_ENTRY_POINT_DIRS = frozenset({
+    "cmd", "api", "routes", "controllers", "handlers", "endpoints",
+    "functions", "webhooks", "resolvers", "middleware", "views",
+})
+
 
 def clear_caches() -> None:
     """Clear all LRU caches for file scanning.
@@ -449,6 +472,13 @@ def clear_caches() -> None:
 def is_entry_or_config(path: Path) -> bool:
     """Check if a file is an entry point or configuration file.
 
+    Used to PRIORITIZE files for the LLM phase (Tier 2), not to filter them.
+    Matches in order: exact filename, exact stem, a handler-family stem token
+    (handler/route/controller/...), or residence under an entry-point directory
+    (cmd/, routes/, api/, ...). The last two catch non-standard handlers like
+    `cmd/api/handler.go`, `routes/users.rb`, or `app/api/users/route.ts` that
+    the exact name/stem lists miss.
+
     Args:
         path: File path to check.
 
@@ -457,4 +487,13 @@ def is_entry_or_config(path: Path) -> bool:
     """
     if path.name in _ENTRY_POINT_NAMES:
         return True
-    return path.stem.lower() in _ENTRY_POINT_STEMS
+    stem = path.stem.lower()
+    if stem in _ENTRY_POINT_STEMS:
+        return True
+    # Non-standard handlers: any stem TOKEN is a handler-family keyword.
+    tokens = stem.replace("-", "_").replace(".", "_").split("_")
+    if any(tok in _ENTRY_POINT_STEM_TOKENS for tok in tokens):
+        return True
+    # ...or the file lives under an entry-point directory. Check parent
+    # components only (path.parts[:-1]) — never the filename itself.
+    return any(part.lower() in _ENTRY_POINT_DIRS for part in path.parts[:-1])

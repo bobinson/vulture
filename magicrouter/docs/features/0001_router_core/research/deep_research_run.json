@@ -1,0 +1,370 @@
+{
+  "summary": "Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.",
+  "agentCount": 107,
+  "logs": [
+    "Q: Research methodologies for LLM orchestration and routing: how to build a router …",
+    "Decomposed into 6 angles: broad/primary — core routing & cascading techniques, academic/taxonomy — survey & classification of routers, seed-paper paradigm — learned multi-LLM orchestration in agentic harnesses, benchmarks & cost-quality evaluation methodology, privacy / compliance / data-sovereignty-aware routing, production tooling & gateways",
+    "broad/primary — core routing & cascading techniques: 6 results",
+    "academic/taxonomy — survey & classification of routers: 6 results",
+    "privacy / compliance / data-sovereignty-aware routing: 6 results",
+    "privacy / compliance / data-sovereignty-aware routing: 3 novel (3 filtered)",
+    "seed-paper paradigm — learned multi-LLM orchestration in agentic harnesses: 6 results",
+    "seed-paper paradigm — learned multi-LLM orchestration in agentic harnesses: 3 novel (3 filtered)",
+    "benchmarks & cost-quality evaluation methodology: 6 results",
+    "benchmarks & cost-quality evaluation methodology: 2 novel (4 filtered)",
+    "production tooling & gateways: 6 results",
+    "production tooling & gateways: 4 novel (2 filtered)",
+    "Fetched 24 sources → 118 claims → verifying top 25",
+    "\"RouteLLM frames model selection as binary routing …\": 3-0 ✓",
+    "\"RouteLLM evaluates four distinct router architectu…\": 3-0 ✓",
+    "\"The paper proposes 'cascade routing', a unified fr…\": 3-0 ✓",
+    "\"RouterBench is a standardized evaluation framework…\": 3-0 ✓",
+    "\"RouteLLM routers trained on Chatbot Arena human pr…\": 2-1 ✓",
+    "[v1:Top routing methods deliver measurable c] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:Learned predictive routers (KNN and MLP ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:Top routing methods deliver measurable c] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:Many recent learned/commercial routers f] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:Learned predictive routers (KNN and MLP ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:xRouter casts LLM routing as a sequentia] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:Many recent learned/commercial routers f] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:Many recent learned/commercial routers f] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"Many recent learned/commercial routers fail to bea…\": 0-0 (3 abstain) ✗",
+    "[v1:xRouter casts LLM routing as a sequentia] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:xRouter's RL objective is a success-gate] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:xRouter's RL objective is a success-gate] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:xRouter casts LLM routing as a sequentia] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"xRouter casts LLM routing as a sequential decision…\": 0-0 (3 abstain) ✗",
+    "[v0:Top routing methods deliver measurable c] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"Top routing methods deliver measurable cost-qualit…\": 0-0 (3 abstain) ✗",
+    "[v2:xRouter's RL objective is a success-gate] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"xRouter's RL objective is a success-gated, cost-se…\": 0-0 (3 abstain) ✗",
+    "[v0:LLMRouterBench is a large-scale benchmar] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:xRouter achieves large cost reductions w] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:xRouter achieves large cost reductions w] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:MixLLM is a dynamic contextual-bandit-ba] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:Cascade routing empirically outperforms ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"Cascade routing empirically outperforms standalone…\": 2-0 (1 abstain) ✓",
+    "[v1:MixLLM uses query tags to enhance query ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:MixLLM is a dynamic contextual-bandit-ba] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:LLMRouterBench is a large-scale benchmar] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:MixLLM uses query tags to enhance query ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:xRouter achieves large cost reductions w] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"xRouter achieves large cost reductions while retai…\": 0-0 (3 abstain) ✗",
+    "[v0:MixLLM uses query tags to enhance query ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"MixLLM uses query tags to enhance query embeddings…\": 0-0 (3 abstain) ✗",
+    "[v0:MixLLM is a dynamic contextual-bandit-ba] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"MixLLM is a dynamic contextual-bandit-based routin…\": 0-0 (3 abstain) ✗",
+    "[v2:The survey proposes a taxonomy that clas] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:The survey classifies router implementat] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:The survey proposes a taxonomy that clas] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:MixLLM achieves 97.25% of GPT-4's respon] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:The survey proposes a taxonomy that clas] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"The survey proposes a taxonomy that classifies LLM…\": 0-0 (3 abstain) ✗",
+    "[v2:The survey classifies router implementat] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:The survey classifies router implementat] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"The survey classifies router implementations into …\": 0-0 (3 abstain) ✗",
+    "[v1:The paper formalizes a theoretical routi] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:RouteLLM achieves over 2x cost reduction] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"RouteLLM achieves over 2x cost reduction without s…\": 2-0 (1 abstain) ✓",
+    "[v0:MixLLM achieves 97.25% of GPT-4's respon] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:FrugalGPT, a post-generation cascade rou] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:FrugalGPT, a post-generation cascade rou] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:The survey proposes a three-dimensional ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:FrugalGPT, a post-generation cascade rou] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"FrugalGPT, a post-generation cascade router that i…\": 0-0 (3 abstain) ✗",
+    "[v1:The survey proposes a three-dimensional ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v0:The survey distinguishes model routing (] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v2:The survey proposes a three-dimensional ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"The survey proposes a three-dimensional conceptual…\": 0-0 (3 abstain) ✗",
+    "[v1:The survey distinguishes model routing (] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "[v1:MixLLM achieves 97.25% of GPT-4's respon] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"MixLLM achieves 97.25% of GPT-4's response quality…\": 0-0 (3 abstain) ✗",
+    "[v2:The survey distinguishes model routing (] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"The survey distinguishes model routing (a single p…\": 0-0 (3 abstain) ✗",
+    "[v0:The paper formalizes a theoretical routi] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"The paper formalizes a theoretical routing taxonom…\": 1-0 (2 abstain) ✗",
+    "[v0:The paper identifies the accuracy of qua] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"The paper identifies the accuracy of quality estim…\": 2-0 (1 abstain) ✓",
+    "[v1:RouterBench evaluates routers on a cost-] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"RouterBench evaluates routers on a cost-quality tr…\": 0-2 (1 abstain) ✗",
+    "[v0:Learned predictive routers (KNN and MLP ] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"Learned predictive routers (KNN and MLP routers) c…\": 0-0 (3 abstain) ✗",
+    "[v1:LLMRouterBench is a large-scale benchmar] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)",
+    "\"LLMRouterBench is a large-scale benchmark and unif…\": 0-0 (3 abstain) ✗",
+    "Verify done: 25 claims → 8 confirmed, 17 killed",
+    "[synthesize] failed: You've hit your session limit · resets 12:30am (Asia/Kolkata)"
+  ],
+  "result": {
+    "question": "Research methodologies for LLM orchestration and routing: how to build a router that, given a task/problem, selects the optimal LLM from a pool of candidate models. The driving concern is controlling token/inference cost in an agentic harness that orchestrates specialized agents.\n\nSelection criteria the router must weigh: (1) model capability/ability matched to task type and difficulty, (2) cost / token-cost optimization, (3) data protection, privacy, and compliance guidelines, (4) data sovereignty (jurisdiction / data-residency constraints, on-prem vs cloud, regional model hosting), and (5) other aspects such as latency, reliability, context-window fit, and output quality.\n\nEnd goal: design a novel LLM router for an agentic harness that orchestrates specialized agents while minimizing token cost without sacrificing quality.\n\nCover thoroughly:\n- Existing LLM routing, cascading, and model-selection techniques (e.g., RouteLLM, FrugalGPT, LLM cascades, predictive/learned routers, mixture-of-experts routing at the model-selection level, hybrid local+cloud routing).\n- Academic taxonomies of LLM routing and orchestration; how the field categorizes routers (predictive vs cascading vs non-predictive, etc.).\n- Benchmarks and evaluation methodologies for routers (RouterBench and similar), cost-quality tradeoff frameworks (the cost-quality Pareto frontier).\n- Privacy-, compliance-, and sovereignty-aware routing — how data-residency / regulatory constraints can be encoded as routing constraints.\n- Production frameworks and tools for multi-LLM routing/orchestration (LiteLLM, gateways, RouteLLM OSS, commercial routers).\n- Harness/agent orchestration patterns that pair task decomposition with per-task model selection.\n\nSeed sources to incorporate explicitly: https://arxiv.org/abs/2512.04695 and https://arxiv.org/abs/2512.04388 — identify what each paper proposes and how it informs the design of a capability/cost/sovereignty-aware router.",
+    "summary": "Synthesis step was skipped or failed — returning 8 verified claims unmerged.",
+    "findings": [],
+    "confirmed": [
+      {
+        "claim": "RouteLLM frames model selection as binary routing between a strong/expensive and weak/cheap LLM, using a learned win-prediction model P(win_strong | query) combined with a cost threshold alpha in [0,1] that converts the predicted probability into a per-query routing decision — directly the threshold-based predictive-router design the research question targets.",
+        "source": "https://arxiv.org/pdf/2406.18665",
+        "quote": "we introduce a training framework for learning efficient router models that dynamically select between a stronger and weaker LLM during inference... 2) Cost Threshold a in [0,1]: This threshold translates the predicted winning probability into a routing decision between Mweak and Mstrong.",
+        "vote": "3-0"
+      },
+      {
+        "claim": "RouteLLM achieves over 2x cost reduction without sacrificing quality; concretely on MT Bench its routers reach a score at the 50%-strong-call point (CPT(50%)=8.8) that is 95% of GPT-4's score (9.3), and on GSM8K the CPT(50%) score (75) is 87% of GPT-4's (86) — quantifying the cost-quality (Pareto) tradeoff a cost-minimizing router can capture.",
+        "source": "https://arxiv.org/pdf/2406.18665",
+        "quote": "the MT Bench score at CPT(50%), 8.8, is 95% that of GPT-4's score (9.3)... reducing costs by up to 75% as compared to the random router.",
+        "vote": "2-0"
+      },
+      {
+        "claim": "RouteLLM evaluates four distinct router architectures — similarity-weighted (Bradley-Terry) ranking, matrix factorization, a BERT classifier, and a causal-LLM classifier — providing a concrete menu of learned-router parameterizations and showing high-capacity classifiers underperform in low-data regimes (a design tradeoff for a custom router).",
+        "source": "https://arxiv.org/pdf/2406.18665",
+        "quote": "our BERT and causal LLM classifiers perform close to random when trained on the Arena dataset, which we attribute to high capacity approaches performing worse in a low-data regime.",
+        "vote": "3-0"
+      },
+      {
+        "claim": "RouteLLM routers trained on Chatbot Arena human preference data plus GPT-4-judge data augmentation generalize at inference time to entirely new strong/weak model pairs (Claude 3 Opus/Sonnet, Llama 3.1 70B/8B) with no retraining, retaining performance comparable to the trained pair — evidence that a single learned router can be reused across an evolving model pool.",
+        "source": "https://arxiv.org/pdf/2406.18665",
+        "quote": "We use the exact same routers as before trained on Darena + Djudge. Our routers generalize very well across different model pairs without any retraining.",
+        "vote": "2-1"
+      },
+      {
+        "claim": "The paper proposes 'cascade routing', a unified framework that generalizes both routing (one model chosen per query) and cascading (sequential escalation through increasingly larger models), and proves it is a theoretically optimal model-selection strategy; it derives the optimal strategies by framing model selection as a linear optimization that maximizes output quality subject to a cost budget.",
+        "source": "https://files.sri.inf.ethz.ch/website/papers/dekoninck2024cascaderouting.pdf",
+        "quote": "we propose cascade routing, a unified framework that integrates routing and cascading into a theoretically optimal strategy... we first derive optimal routing and cascading strategies by framing them as linear optimization problems aimed at maximizing output quality while remaining within a given cost budget.",
+        "vote": "3-0"
+      },
+      {
+        "claim": "Cascade routing empirically outperforms standalone routing and cascading by up to 8% on RouterBench and up to 14% on SWE-Bench, and the paper's new cascading strategy beats existing cascades by over 10% in some scenarios.",
+        "source": "https://files.sri.inf.ethz.ch/website/papers/dekoninck2024cascaderouting.pdf",
+        "quote": "cascade routing consistently outperforms other methods, improving performance by up to 8% on the RouterBench benchmark (Hu et al., 2024) and by 14% on the SWE-Bench benchmark (Jimenez et al., 2024). Further, we show that our new cascading strategy outperforms existing cascades in several scenarios by over 10%.",
+        "vote": "2-0"
+      },
+      {
+        "claim": "The paper identifies the accuracy of quality estimators (predicting model output quality before/after running a model) as the single critical factor determining whether routing and/or cascading improve the cost-performance tradeoff.",
+        "source": "https://files.sri.inf.ethz.ch/website/papers/dekoninck2024cascaderouting.pdf",
+        "quote": "we identify good quality estimators as the critical factor for the success of model selection paradigms... we find that accurate estimates of model performance and response quality are most important.",
+        "vote": "2-0"
+      },
+      {
+        "claim": "RouterBench is a standardized evaluation framework/benchmark for LLM routing systems, backed by a dataset of over 405,000 inference outcomes from representative LLMs, created to fill the absence of a standard router benchmark.",
+        "source": "https://www.semanticscholar.org/paper/RouterBench:-A-Benchmark-for-Multi-LLM-Routing-Hu-Bieker/a2ca6f085007d0dceafbc09c2df24e70e771eac5",
+        "quote": "we present RouterBench, a novel evaluation framework designed to systematically assess the efficacy of LLM routing systems, along with a comprehensive dataset comprising over 405k inference outcomes from representative LLMs",
+        "vote": "3-0"
+      }
+    ],
+    "refuted": [
+      {
+        "claim": "RouterBench evaluates routers on a cost-quality tradeoff using the AIQ (Average Inference Quality) metric, defined as the normalized area under the non-decreasing convex hull of the cost-quality curve, enabling direct comparison of routers' Pareto performance.",
+        "vote": "0-2",
+        "source": "https://www.semanticscholar.org/paper/RouterBench:-A-Benchmark-for-Multi-LLM-Routing-Hu-Bieker/a2ca6f085007d0dceafbc09c2df24e70e771eac5"
+      },
+      {
+        "claim": "The paper formalizes a theoretical routing taxonomy distinguishing predictive routers (which estimate model performance without generating outputs) from non-predictive/cascading routers (which generate and evaluate outputs sequentially before escalating to a stronger model).",
+        "vote": "1-0",
+        "source": "https://www.semanticscholar.org/paper/RouterBench:-A-Benchmark-for-Multi-LLM-Routing-Hu-Bieker/a2ca6f085007d0dceafbc09c2df24e70e771eac5"
+      },
+      {
+        "claim": "Learned predictive routers (KNN and MLP routers) can match the quality of the single best individual LLM at lower or comparable cost, demonstrating that routing yields cost savings without quality loss.",
+        "vote": "0-0",
+        "source": "https://www.semanticscholar.org/paper/RouterBench:-A-Benchmark-for-Multi-LLM-Routing-Hu-Bieker/a2ca6f085007d0dceafbc09c2df24e70e771eac5"
+      },
+      {
+        "claim": "LLMRouterBench is a large-scale benchmark and unified framework for LLM routing comprising over 400K instances drawn from 21 datasets and 33 models, organized around two paradigms: performance-oriented routing and performance-cost tradeoff routing.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2601.07206v1"
+      },
+      {
+        "claim": "Top routing methods deliver measurable cost-quality gains: up to a 4% average accuracy improvement over the Best Single model, and up to a 31.7% cost reduction while still matching Best Single performance — concrete numbers a router designer can target on the cost-quality Pareto frontier.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2601.07206v1"
+      },
+      {
+        "claim": "Many recent learned/commercial routers fail to beat a trivial baseline (always picking the single best model), establishing 'Best Single model' as the critical control any novel router must outperform to justify its complexity.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2601.07206v1"
+      },
+      {
+        "claim": "xRouter casts LLM routing as a sequential decision-making problem solved with reinforcement learning, training a tool-calling router agent (fine-tuned on Qwen2.5-7B-Instruct) that either answers a query directly or delegates it via tool calls to one or more external models — explicitly contrasting with rule-based escalation trees (cascades).",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2510.08439v1"
+      },
+      {
+        "claim": "xRouter's RL objective is a success-gated, cost-sensitive reward of the form Rfinal = Rbinary x (K - lambdaC), where a correct answer is required before any reward is given and, conditional on success, lower cost yields higher reward — operationalizing the cost-quality tradeoff via a tunable lambda parameter.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2510.08439v1"
+      },
+      {
+        "claim": "xRouter achieves large cost reductions while retaining most of a frontier model's accuracy: roughly 80-90% of GPT-5's accuracy at about one-fifth of the cost on benchmarks like GPQA, and near-GPT-5 accuracy on Olympiad Bench at roughly one-eighth of the cost.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2510.08439v1"
+      },
+      {
+        "claim": "MixLLM is a dynamic contextual-bandit-based routing system that assigns each incoming query to the most suitable LLM from a pool of mixed models, jointly optimizing response quality, cost, and latency.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/pdf/2502.18482"
+      },
+      {
+        "claim": "MixLLM uses query tags to enhance query embeddings and trains lightweight prediction models to estimate per-LLM response quality and cost, then a meta-decision maker selects the assignment — a learned/predictive routing architecture rather than a cascade.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/pdf/2502.18482"
+      },
+      {
+        "claim": "MixLLM achieves 97.25% of GPT-4's response quality at only 24.18% of GPT-4's cost under a latency constraint, demonstrating a favorable cost-quality tradeoff (Pareto improvement) versus using the single strongest model.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/pdf/2502.18482"
+      },
+      {
+        "claim": "The survey proposes a taxonomy that classifies LLM routing strategies along a timing dimension into pre-generation routing (predictive: estimating in advance whether an LLM will give an adequate answer, before generating any response) and post-generation routing (cascade: evaluating already-generated responses to decide whether to escalate).",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2502.00409v3"
+      },
+      {
+        "claim": "The survey classifies router implementations into four methodological categories: similarity-based (routing by semantically similar queries), supervised (using established LLM performance profiles), reinforcement-learning-based (routing as a sequential decision-making problem), and generative-based (using LLMs' emergent capabilities to make routing decisions).",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2502.00409v3"
+      },
+      {
+        "claim": "FrugalGPT, a post-generation cascade router that infers answer-correctness probability via a DistilBERT regression model, can save between 59% and 98% of inference costs while maintaining similar accuracy — quantifying how much cost a cascading router can cut without quality loss.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/html/2502.00409v3"
+      },
+      {
+        "claim": "The survey proposes a three-dimensional conceptual framework for categorizing LLM routers — (1) WHEN the decision is made (pre-generation, post-generation, or multi-stage), (2) WHAT information is used (query features, model metadata, response-level signals, accumulated feedback), and (3) HOW it is computed (heuristic, supervised classifier, bandit, or RL policy) — layered over six paradigms (difficulty-aware, preference-aligned, clustering-based, reinforcement-learning, uncertainty-based, cascading). This is the academic taxonomy the research question asks for.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/abs/2603.04445"
+      },
+      {
+        "claim": "The survey distinguishes model routing (a single pre-generation decision mapping a query to one model) from model cascading (sequential escalation from smaller/cheaper to larger models gated by a post-generation quality estimate), and states production systems combine both to optimize the performance-cost trade-off — directly supporting a hybrid router+cascade design for an agentic harness.",
+        "vote": "0-0",
+        "source": "https://arxiv.org/abs/2603.04445"
+      }
+    ],
+    "sources": [
+      {
+        "url": "https://arxiv.org/pdf/2406.18665",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://files.sri.inf.ethz.ch/website/papers/dekoninck2024cascaderouting.pdf",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://www.semanticscholar.org/paper/RouterBench:-A-Benchmark-for-Multi-LLM-Routing-Hu-Bieker/a2ca6f085007d0dceafbc09c2df24e70e771eac5",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/html/2601.07206v1",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/html/2510.08439v1",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/pdf/2502.18482",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/html/2502.00409v3",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/abs/2603.04445",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/pdf/2403.12031",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://aclanthology.org/2025.emnlp-industry.28/",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/pdf/2512.00595",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/abs/2512.04695",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/abs/2512.04388",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://sakana.ai/trinity/",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/pdf/2506.09033",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://www.researchgate.net/publication/397426224_RouterEval_A_Comprehensive_Benchmark_for_Routing_LLMs_to_Explore_Model-level_Scaling_Up_in_LLMs",
+        "quality": "primary",
+        "claimCount": 4
+      },
+      {
+        "url": "https://arxiv.org/pdf/2603.04445",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://arxiv.org/abs/2511.22788",
+        "quality": "primary",
+        "claimCount": 4
+      },
+      {
+        "url": "https://dev.to/micelclaw/pii-aware-routing-how-to-use-cloud-ai-and-keep-your-sensitive-data-local-1m40",
+        "quality": "blog",
+        "claimCount": 5
+      },
+      {
+        "url": "https://medium.com/@adnanmasood/llm-gateways-for-enterprise-risk-building-an-ai-control-plane-e7bed1fdcd9c",
+        "quality": "blog",
+        "claimCount": 5
+      },
+      {
+        "url": "https://github.com/BerriAI/litellm",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://github.com/lm-sys/routellm",
+        "quality": "primary",
+        "claimCount": 5
+      },
+      {
+        "url": "https://www.helicone.ai/blog/top-llm-gateways-comparison-2025",
+        "quality": "blog",
+        "claimCount": 5
+      },
+      {
+        "url": "https://openrouter.ai/blog/insights/llm-gateway/",
+        "quality": "blog",
+        "claimCount": 5
+      }
+    ],
+    "stats": {
+      "angles": 6,
+      "sources": 24,
+      "claims": 118,
+      "verified": 25,
+      "confirmed": 8,
+      "killed": 17,
+      "afterSynthesis": 0
+    }
+  }
+}

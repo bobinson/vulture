@@ -75,6 +75,12 @@ def _build_rollup_parent(
         "id": parent_id,
         "audit_id": audit_id,
         "is_rollup": True,
+        # Feature 0057 P6b: the L2 grouping parent ships to the frontend/DB
+        # AFTER the central _set_provenance choke point has run, so stamp its
+        # provenance here. A rollup parent carries no check_id / signature_status
+        # (so _classify_deterministic_provenance would mislabel it "skill"); the
+        # vocabulary reserves "catalog_rollup" for exactly this grouping record.
+        "provenance": "catalog_rollup",
         "category": category,
         "title": title,
         "description": (

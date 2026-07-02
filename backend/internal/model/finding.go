@@ -26,6 +26,7 @@ type Finding struct {
 	Fingerprint       string   `json:"fingerprint,omitempty"`
 	CheckID           string   `json:"check_id,omitempty"`
 	CodeSnippet       string   `json:"code_snippet,omitempty"`
+	Provenance        string   `json:"provenance,omitempty"`
 	VerificationHints  []string `json:"verification_hints,omitempty"`
 	RequiresContext    bool     `json:"requires_context,omitempty"`
 	CrossAgentOrigins  []string `json:"cross_agent_origins,omitempty"`

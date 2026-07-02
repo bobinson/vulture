@@ -359,8 +359,20 @@ class TestEnhancedConfig:
         assert len(AGENT_INFO["skills"]) == len(ALL_CATEGORIES)
 
     def test_description_mentions_846(self):
+        # Feature 0057 P6c (honest reconciliation): 846 STAYS — it is the true
+        # CWE v4.19.1 catalog SIZE (catalog metadata), which is a fact. What was
+        # corrected is the prior IMPLICATION that 846 = detection coverage. The
+        # description must now carry the honest multi-tier framing (the corpus-
+        # VERIFIED tier) so 846 cannot be read as a coverage claim.
         from cwe_agent.config import AGENT_INFO
-        assert "846" in AGENT_INFO["description"]
+        description = AGENT_INFO["description"]
+        # catalog-size fact retained (not removed — removing it would understate
+        # the catalog and violate "honest in both directions")
+        assert "846" in description
+        # honest multi-tier / verified framing now present (corrects the false
+        # "detects across all 846" implication)
+        assert "VERIFIED" in description
+        assert "metadata" in description
 
     def test_skill_map_has_catalog_generic(self):
         from cwe_agent.skills import SKILL_MAP
@@ -387,9 +399,16 @@ class TestEnhancedAgent:
         assert "DEMOTE" in INSTRUCTIONS
 
     def test_instructions_mention_catalog(self):
+        # Feature 0057 P6c (honest reconciliation): v4.19.1 + 846 STAY (true
+        # catalog version + size = metadata). The INSTRUCTIONS must additionally
+        # state the honest multi-tier picture (the corpus-VERIFIED tier) so 846
+        # is no longer presented as detection coverage.
         from cwe_agent.agent import INSTRUCTIONS
         assert "v4.19.1" in INSTRUCTIONS
+        # catalog-size fact retained (removing it would understate the catalog)
         assert "846" in INSTRUCTIONS
+        # honest multi-tier / verified framing now present
+        assert "VERIFIED" in INSTRUCTIONS
 
     def test_build_llm_catalog_context(self):
         from cwe_agent.agent import _build_llm_catalog_context

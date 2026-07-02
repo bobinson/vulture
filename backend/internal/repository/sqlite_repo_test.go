@@ -173,6 +173,44 @@ func TestSaveAndGetFindings(t *testing.T) {
 	}
 }
 
+func TestSaveAndGetFindings_ProvenanceRoundTrip_0057(t *testing.T) {
+	repo := newTestRepo(t)
+
+	src := &model.Source{
+		ID: "src-prov", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1,
+		CreatedAt: time.Now().UTC(),
+	}
+	_ = repo.CreateSource(src)
+
+	audit := &model.Audit{
+		ID: "audit-prov", SourceID: "src-prov", Types: []string{"cwe"},
+		Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
+		Scores: map[string]int{}, CreatedAt: time.Now().UTC(),
+	}
+	_ = repo.CreateAudit(audit)
+
+	findings := []model.Finding{
+		{
+			ID: "f-prov", AuditID: "audit-prov", AgentType: "cwe",
+			Severity: model.SeverityCritical, Category: "injection",
+			Title: "SQL Injection", Description: "Tainted query",
+			FilePath: "db.py", LineStart: 42, LineEnd: 42,
+			Provenance: "llm_l5_verified",
+		},
+	}
+	if err := repo.SaveFindings("audit-prov", findings); err != nil {
+		t.Fatalf("save findings: %v", err)
+	}
+
+	got, _ := repo.GetAudit("audit-prov")
+	if len(got.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(got.Findings))
+	}
+	if got.Findings[0].Provenance != "llm_l5_verified" {
+		t.Fatalf("Provenance = %q, want llm_l5_verified", got.Findings[0].Provenance)
+	}
+}
+
 func TestSaveEmptyFindings(t *testing.T) {
 	repo := newTestRepo(t)
 	if err := repo.SaveFindings("audit-1", nil); err != nil {

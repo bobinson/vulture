@@ -1,0 +1,18 @@
+# Feature 0057 Phase 5 — per-CWE promotion gates (R15).
+#
+# A CWE is VERIFIED (counted in N) iff, on the DETERMINISTIC tiers only
+# (skills + signatures, NO live LLM):
+#   |positive fixtures| >= min_fixtures   AND
+#   |clean    fixtures| >= min_fixtures   AND
+#   recall   >= min_recall                AND
+#   fp_rate  <= max_fp_rate
+#
+# Defaults are the strict + uniform 0057 bar. Any per-CWE override under
+# `overrides:` MUST carry a documented `reason:` — an override without a
+# reason is a gate-config error (the runner/loader rejects it).
+defaults:
+  min_recall: 1.0      # every positive of this CWE must be detected
+  max_fp_rate: 0.0     # no clean twin of this CWE may be flagged
+  min_fixtures: 3      # >=3 positive AND >=3 clean required (anti-vacuity)
+
+overrides: {}
