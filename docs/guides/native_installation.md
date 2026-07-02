@@ -63,7 +63,9 @@ LLM.
 
 ## Enable an LLM (optional)
 
-By default scans run **skills-only** — fast, deterministic, no API key. To add
+By default scans run **skills-only** for **every** agent — CWE included — fast,
+deterministic, no API key, no surprise spend. (Enabling the LLM is uniform
+fleet-wide: nothing runs the LLM phase unless `VULTURE_USE_LLM=true`.) To add
 the LLM analysis phase, set the variables below in `~/.vulture/config/.env`
 (loaded at `vulture start`) or `export` them first; the daemon forwards them to
 every agent.
@@ -92,6 +94,42 @@ vulture scan ./path/to/repo
 
 `vulture doctor` resolves the provider from `VULTURE_LLM_MODEL` and **warns** if
 the matching key is missing (the scan still runs, skills-only).
+
+### Bounding the LLM phase (cost & scope)
+
+When the LLM phase is on it analyzes files **in priority order** — files the
+deterministic phase flagged first, then entry points / config / handlers, then
+the rest. These knobs bound the work (local models cost $0; the guards matter
+most on paid cloud models):
+
+| Option | Default | Effect |
+|---|---|---|
+| `VULTURE_LLM_TIER3` | `off` | `off`: the LLM analyzes only flagged + entry/config/handler files (cheaper, high-signal). `on`: whole-tree coverage. |
+| `VULTURE_LLM_BUDGET_USD` | off | Hard stop on estimated spend — the sweep emits partial results when hit. |
+| `VULTURE_LLM_MAX_FILES` | `10000` | Cap on the number of files the LLM phase sweeps. |
+
+Escape hatches (the deterministic skill + signature phase always runs regardless):
+
+| Option | Effect |
+|---|---|
+| `VULTURE_CWE_DISABLE_LLM=true` | Force the CWE agent skills-only even when `VULTURE_USE_LLM=true`. |
+| `VULTURE_CWE_DISABLE_SIGNATURES=true` | Skip the CWE signature tier. |
+| `VULTURE_CWE_SIGNATURES_CANDIDATE_OFF=true` | Run only corpus-verified (`trusted`) signatures. |
+
+## Scan options
+
+`vulture scan <path-or-git-url>` accepts:
+
+| Flag | Effect |
+|---|---|
+| `--types a,b` | Limit to specific audit types (default: all). |
+| `--no-cache` | Force a fresh audit — ignore any cached result for an unchanged source. |
+| `--fresh` | **Clean-room scan** — ignore the prior-findings memory so a re-scan isn't steered by (nor its result masked by) earlier audits. Implies `--no-cache`. Use for critical re-runs or when evaluating a new model. |
+| `--llm-tier3` | Send the long-tail (non-flagged, non-entry) files to the LLM too — full-tree coverage. Off by default (cost guard); the per-scan equivalent of `VULTURE_LLM_TIER3=on`. |
+| `--validate-llm` | Opt into the L5 judge — LLM-verify LLM findings before they're reported. |
+
+`--fresh` and `--llm-tier3` are independent and compose: a thorough re-audit on
+a new model is `vulture scan <path> --fresh --llm-tier3`.
 
 ## What gets installed
 
@@ -131,7 +169,10 @@ install touches only `$VULTURE_HOME` and `~/.local/bin` — no sudo.
 | `VULTURE_ALLOW_DOWNGRADE` | `false` | Allow `VULTURE_VERSION` older than the built-in fallback |
 
 LLM variables (`VULTURE_USE_LLM`, `VULTURE_LLM_MODEL`, `OPENAI_API_KEY`,
-`OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_BASE`) are
+`OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_BASE`), the
+scope/cost knobs (`VULTURE_LLM_TIER3`, `VULTURE_LLM_BUDGET_USD`,
+`VULTURE_LLM_MAX_FILES`), and the escape hatches (`VULTURE_CWE_DISABLE_LLM`,
+`VULTURE_CWE_DISABLE_SIGNATURES`, `VULTURE_CWE_SIGNATURES_CANDIDATE_OFF`) are
 covered in [Enable an LLM](#enable-an-llm-optional).
 
 ## Pin a specific version

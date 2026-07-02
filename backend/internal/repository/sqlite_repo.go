@@ -321,6 +321,10 @@ func migrateAddColumns(db *sql.DB) {
 	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN is_rollup BOOLEAN DEFAULT 0`)
 	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN rolled_up_into TEXT`)
 	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN instance_count INTEGER DEFAULT 1`)
+	// Feature 0057 (P6d): per-finding provenance (skill / signature_trusted /
+	// signature_candidate / catalog_rollup / llm / llm_l5_verified) emitted by
+	// the agents — persisted so GET /api/audits/:id can carry it.
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN provenance TEXT`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_findings_validation_status
 		ON findings(audit_id, validation_status)`)
 	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN user_label TEXT`)
@@ -346,7 +350,8 @@ func (r *SQLiteRepo) prepareStatements() {
 		COALESCE(validation, ''),
 		COALESCE(is_rollup, 0),
 		COALESCE(rolled_up_into, ''),
-		COALESCE(instance_count, 1)
+		COALESCE(instance_count, 1),
+		COALESCE(provenance, '')
 		FROM findings WHERE audit_id = ?`
 	stmt, err := r.db.Prepare(getFindingsSQL)
 	if err != nil {
@@ -498,12 +503,12 @@ func (r *SQLiteRepo) UpdateAudit(audit *model.Audit) error {
 }
 
 func (r *SQLiteRepo) SaveFindings(auditID string, findings []model.Finding) error {
-	// SQLite caps bound parameters at 32766; each finding uses 19, so a single
-	// multi-row INSERT exceeds the limit past ~1724 rows and fails with "too
+	// SQLite caps bound parameters at 32766; each finding uses 20, so a single
+	// multi-row INSERT exceeds the limit past ~1638 rows and fails with "too
 	// many SQL variables" — which dropped EVERY finding on large native-install
 	// scans (thousands of findings → 0 persisted). Chunk so each INSERT stays
 	// well under the cap (Feature 0055).
-	const chunk = 500 // 500 × 19 = 9500 params, comfortably < 32766
+	const chunk = 500 // 500 × 20 = 10000 params, comfortably < 32766
 	for start := 0; start < len(findings); start += chunk {
 		end := start + chunk
 		if end > len(findings) {
@@ -521,10 +526,10 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 		return nil
 	}
 	valueStrings := make([]string, 0, len(findings))
-	valueArgs := make([]interface{}, 0, len(findings)*19)
+	valueArgs := make([]interface{}, 0, len(findings)*20)
 	for _, f := range findings {
 		valueStrings = append(valueStrings,
-			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		refsJSON, _ := json.Marshal(f.References)
 		var validationJSON string
 		if f.Validation != nil {
@@ -543,6 +548,7 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			f.IsRollup,
 			nullableString(f.RolledUpInto),
 			f.InstanceCount,
+			nullableString(f.Provenance),
 		)
 	}
 	stmt := fmt.Sprintf(
@@ -550,7 +556,7 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			id, audit_id, agent_type, severity, category, title, description,
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
-			is_rollup, rolled_up_into, instance_count
+			is_rollup, rolled_up_into, instance_count, provenance
 		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
@@ -862,7 +868,8 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 			        COALESCE(validation, ''),
 			        COALESCE(is_rollup, 0),
 			        COALESCE(rolled_up_into, ''),
-			        COALESCE(instance_count, 1)
+			        COALESCE(instance_count, 1),
+			        COALESCE(provenance, '')
 			 FROM findings WHERE audit_id = ?`,
 			auditID,
 		)
@@ -881,7 +888,7 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 			&f.Title, &f.Description, &f.FilePath, &f.LineStart, &f.LineEnd,
 			&f.Recommendation, &refsStr, &f.Fingerprint,
 			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
-			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount)
+			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}

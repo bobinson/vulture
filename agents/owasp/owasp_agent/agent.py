@@ -46,4 +46,6 @@ def run_audit(
         model=os.environ.get("VULTURE_LLM_MODEL"),
         use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
         validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
+        # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
+        llm_tier3=config.get("llm_tier3"),
     )

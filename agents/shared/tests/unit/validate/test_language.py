@@ -71,3 +71,16 @@ def test_detect_language_ignores_query_strings_via_basename() -> None:
     # os.path.splitext sees `.py?query` as the extension, which
     # should NOT match. Defensive: result is `unknown`, not `python`.
     assert detect_language("foo.py?query") == "unknown"
+
+
+def test_feature_0060_extension_additions():
+    """Feature 0060: close detect_language coverage cliffs (RED-1)."""
+    from shared.validate.language import detect_language
+    assert detect_language("a.cjs") == "javascript"
+    assert detect_language("a.mts") == "typescript"
+    assert detect_language("a.cts") == "typescript"
+    assert detect_language("a.pyw") == "python"
+    assert detect_language("a.phtml") == "php"
+    assert detect_language("a.erb") == "ruby"
+    assert detect_language("a.m") == "objc"
+    assert detect_language("a.mm") == "objc"

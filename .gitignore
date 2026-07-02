@@ -71,6 +71,10 @@ docs/cwe_version_4.19.1/
 .claude/
 frontend/playwright-report/
 
+# Scratchpad — local throwaway files (test drivers, evidence, scan slices,
+# woofy example data, probes). Git-ignored; never committed.
+scratchpad/
+
 # Editor / AI tooling
 .aider*
 .cursor/
@@ -104,3 +108,5 @@ docker-compose.override.yml
 # *.xsd patterns above do not match *.md files, so no negation is needed —
 # this comment is a reminder, not a rule.
 frontend/test-results/
+
+magicrouter

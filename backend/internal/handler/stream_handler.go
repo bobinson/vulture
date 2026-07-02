@@ -275,7 +275,12 @@ func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter,
 	_ = h.auditSvc.Update(audit)
 
 	eventCh := make(chan *model.AgUIEvent, 256*len(audit.Types))
-	priorByAgent := h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
+	var priorByAgent map[string][]model.PriorFinding
+	if auditRequestsFresh(audit.Config) {
+		log.Printf("[stream] fresh mode: skipping prior-findings memory (audit=%s)", audit.ID)
+	} else {
+		priorByAgent = h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
+	}
 	go h.streamSvc.StreamWithContext(r.Context(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
 	res := drainResult(eventCh, audit.ID, sseWriter)
@@ -1040,7 +1045,12 @@ func (h *StreamHandler) runPipelineAudit(auditID string) {
 	_ = h.auditSvc.Update(audit)
 
 	eventCh := make(chan *model.AgUIEvent, 256*len(audit.Types))
-	priorByAgent := h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
+	var priorByAgent map[string][]model.PriorFinding
+	if auditRequestsFresh(audit.Config) {
+		log.Printf("[stream] fresh mode: skipping prior-findings memory (audit=%s)", audit.ID)
+	} else {
+		priorByAgent = h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
+	}
 	go h.streamSvc.StreamWithContext(context.Background(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
 	res := drainResult(eventCh, audit.ID, nil)
@@ -1225,6 +1235,27 @@ func priorFindingsLimit() int {
 		}
 	}
 	return 50
+}
+
+// auditRequestsFresh reports whether the audit config opts this run out of the
+// prior-findings memory (`{"fresh": true}`). A "fresh" scan loads NO prior
+// findings, so the LLM phase isn't steered by — and the L4 voter doesn't
+// inherit labels from — earlier audits of the same source. Intended for
+// critical test runs and new-model evaluation, where prior findings must not
+// bias or mask the result. Absent / false / malformed / non-bool config keeps
+// memory ON (the default). Deterministic skills + signatures are unaffected
+// either way (they never consult prior findings).
+func auditRequestsFresh(cfg json.RawMessage) bool {
+	if len(cfg) == 0 {
+		return false
+	}
+	var probe struct {
+		Fresh bool `json:"fresh"`
+	}
+	if err := json.Unmarshal(cfg, &probe); err != nil {
+		return false
+	}
+	return probe.Fresh
 }
 
 func firstOrEmpty(ss []string) string {

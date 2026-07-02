@@ -1,0 +1,55 @@
+# .github/workflows/cwe-corpus-nightly.yml
+# Feature 0057 Phase 5e (R17) — the FULL CWE corpus sweep on a nightly lane.
+#
+# The PR lane (ci.yml -> cwe-corpus job) runs only the CURATED subset via
+# `make cwe-corpus` (<~60s, deterministic). This workflow runs the FULL
+# deterministic sweep (`make cwe-corpus-full` — every production manifest
+# fragment, the full Juliet CC0 slice included ONCE it is vendored in Phase 7)
+# so that the heavyweight corpus (Juliet is 64,295 cases) NEVER touches a PR.
+#
+# Triggers: a nightly cron AND manual workflow_dispatch. NOTE (dead-cron caveat,
+# same as relock.yml / security-digest.yml): GitHub silently disables a solo
+# repo's `schedule:` after ~60 days of repo inactivity. workflow_dispatch is the
+# always-available manual fallback; re-enable the schedule from the Actions tab
+# if it goes dormant. This lane is advisory — a missed nightly blocks nothing;
+# the PR lane (curated subset + stale-golden gate) is the enforcement.
+#
+# Deterministic + offline: the corpus runner calls the pure-regex skill/signature
+# tiers directly and NEVER a live LLM (no API keys, no network model calls).
+
+name: cwe-corpus-nightly
+
+on:
+  schedule:
+    - cron: "27 5 * * *"   # 05:27 UTC nightly (off the top-of-hour rush)
+  workflow_dispatch: {}     # always-available manual trigger (dead-cron fallback)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cwe-corpus-nightly  # one full sweep at a time
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  cwe-corpus-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      - name: Install agent deps (shared pulls openai-agents → `agents` SDK)
+        # The corpus runner imports cwe_agent.skills, which imports
+        # `function_tool` from the openai-agents SDK (a dependency of
+        # vulture-shared). Editable-install shared + cwe into the runner's
+        # python so `make cwe-corpus-full` (bare `python`) resolves them.
+        run: cd agents && pip install -e "shared/[dev]" && pip install -e cwe/
+      - name: Full deterministic corpus sweep + stale-golden gate
+        # `make cwe-corpus-full` = full sweep (all production fragments) +
+        # `report_coverage.py --check` (fails if VERIFIED_CWES.md drifted).
+        run: make cwe-corpus-full

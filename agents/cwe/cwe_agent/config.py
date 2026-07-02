@@ -46,9 +46,11 @@ AGENT_INFO: dict = {
     "type": "cwe",
     "description": (
         "Analyzes code for Common Weakness Enumeration (CWE v4.19.1) "
-        "vulnerabilities across 846 software-relevant CWE IDs in 22 categories "
-        "with catalog-driven detection, self-learning confidence scoring, "
-        "and MMR-based memory retrieval"
+        "vulnerabilities. Deterministic skills detect ~73 declared CWE-ID "
+        "categories plus 7 trusted signature CWEs; N=10 CWE types are "
+        "corpus-VERIFIED (see VERIFIED_CWES.md). The 846-entry CWE catalog is "
+        "metadata/context (not a detection-coverage claim); it drives "
+        "self-learning confidence scoring and MMR-based memory retrieval"
     ),
     "config_schema": CONFIG_SCHEMA,
     "skills": [
