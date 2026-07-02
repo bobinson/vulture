@@ -55,3 +55,11 @@ agents/cwe/tests/corpus/fixtures/
 # Local scratchpad — throwaway test drivers, evidence, scan slices (incl.
 # woofy example code). Git-ignored; also excluded from self-audit.
 scratchpad/
+
+# magicrouter research corpora (fetched paper/source extracts + deep-research
+# run logs + recovered claim dumps) — reference material, not audit surface.
+magicrouter/docs/features/0001_router_core/research/sources/
+magicrouter/docs/features/0001_router_core/research/deep_research_run.json
+magicrouter/docs/features/0002_security_privacy_routing/research/deep_research_run.json
+magicrouter/docs/features/0002_security_privacy_routing/research/claims_by_source.json
+magicrouter/docs/features/0003_generalized_multimodel_routing/research/deep_research_run.json

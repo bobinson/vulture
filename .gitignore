@@ -108,3 +108,5 @@ docker-compose.override.yml
 # *.xsd patterns above do not match *.md files, so no negation is needed —
 # this comment is a reminder, not a rule.
 frontend/test-results/
+
+magicrouter
