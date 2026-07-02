@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main, master]
 
+# Least-privilege default for every job (CodeQL "actions/missing-workflow-permissions").
+# All CI jobs only checkout + build/test/lint locally — none push images, publish
+# packages, or comment on PRs — so read-only content access is sufficient. Grant a
+# narrower/broader scope per-job if a future job needs it.
+permissions:
+  contents: read
+
 env:
   GO_VERSION: "1.24"
   PYTHON_VERSION: "3.12"

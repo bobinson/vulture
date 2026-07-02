@@ -48,10 +48,11 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           # The cwe_1333* corpus files are deliberately-vulnerable ReDoS samples
-          # used to test the CWE agent; scanning them is pure noise.
+          # used to test the CWE agent; scanning them is pure noise. Depth-agnostic
+          # glob so every agent's fixtures dir is excluded regardless of nesting.
           config: |
             paths-ignore:
-              - 'agents/**/tests/corpus/fixtures/**'
+              - '**/tests/corpus/fixtures/**'
 
       - name: Perform CodeQL Analysis
         # TODO: pin to a commit SHA to match this repo's action-pinning convention.
