@@ -7,10 +7,12 @@
 ## Done
 
 - [x] Deep-research run on security/privacy/prompt-injection routing (2026-07-02, 109 agents,
-      6 angles, 26 sources, 127 claims, 25 verified, 10 confirmed 3-0, 1 refuted; verification
-      pass interrupted by session token limit, remaining claims recovered from the run journal
-      as primary-unverified). Report: `research/0002_research_report.md`; claims:
-      `research/claims_by_source.json`; run log: `research/deep_research_run.json`.
+      6 angles, 26 sources). Originally interrupted by a session token limit mid-verify, then
+      **resumed and completed cleanly (109/109, 0 errors)**: the attacks-on-routers,
+      injection-detector, and privacy-attack-surface clusters cleared **3-0**; **1 claim
+      refuted** (PRISM DP-budget-inside-router, 1-2, both passes). Report:
+      `research/0002_research_report.md`; per-claim verdicts: `research/verified_verdicts.json`;
+      claims: `research/claims_by_source.json`; run log: `research/deep_research_run.json`.
 - [x] Synthesis: extended decision model, new ModelCard/Request/Decision fields, and the
       detect/decide/enforce boundary table (the direct answer to "what fits a pure router vs
       the gateway").
@@ -24,10 +26,11 @@
   (✅ R2A 2604.15022, ✅ confounder gadgets 2501.01818); perplexity filtering fails; static
   budget caps only throttle. Defenses that fit a pure router: cumulative-spend predicates,
   escalation rate-limits, suffix-resistant difficulty, escalation logging.
-- **Injection detection cannot live in the router** — it needs 100M+ params or an LLM and is
-  evadable/base-rate-fragile (📄 2501.15145, 2606.22659, 2510.01529). The router consumes a
-  guard flag and carries independently-benchmarked robustness scores; it may run only cheap
-  partial pattern predicates (unicode-smuggling), honestly labeled.
+- **Injection detection cannot live in the router** — it needs 100M+ params or an LLM (✅ 3-0
+  via 2501.15145 PromptShield + 2505.03574 PromptGuard-2) and is evadable/base-rate-fragile
+  (📄 2606.22659). The router consumes a guard flag and carries independently-benchmarked
+  robustness scores; it may run only cheap partial pattern predicates (unicode-smuggling),
+  honestly labeled.
 - **Privacy beyond static tiers** — entity-level (NER) sensitivity + execution-mode routing
   (cloud/split/local) is a *deterministic* decision (✅ PRISM gate); the DP/pseudonymization/MPC
   *mechanisms* are gateway work (⚠️ the "DP budget inside the router" claim was refuted 1-2).
@@ -46,9 +49,11 @@
 
 ## Known caveats carried from research
 
-- ~14 report claims are 📄 *primary-source-but-unverified* (verification interrupted); only 1
-  claim was refuted (PRISM DP-budget-inside-router, 1-2). The injection-detection conclusion is
-  robust despite 📄 status because three independent primary sources converge on it.
+- The verification pass was **completed on resume** (109/109, 0 errors): 35 claims verified,
+  most 3-0; only 1 refuted (PRISM DP-budget-inside-router, 1-2, both passes). Residual 📄 claims
+  (JailbreakBench, MLCommons, CycloneDX, 2606.22659, 2510.01529, gateway docs) fell outside the
+  top-ranked verifier budget or (2510.01529) were not re-fetched on resume — descriptive
+  primary facts, low adversarial risk; a targeted third pass could harden them.
 - Regulatory specifics (EU AI Act, GDPR articles) are the thinnest part of the corpus — the
   standards sources support auditability + posture scoring, not statute-level requirements.
   Docs must not overclaim there.

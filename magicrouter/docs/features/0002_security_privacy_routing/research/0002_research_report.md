@@ -6,18 +6,28 @@ layer, given magicrouter is a **pure, deterministic decision engine that makes n
 
 ## How to read this (confidence markers)
 
-The deep-research run (6 angles → 26 sources → 127 claims) was interrupted by a session token
-limit *during* the adversarial-verification phase — the same failure mode as the feature-0001
-run. Evidence therefore comes at graded confidence, and every claim below is marked:
+The deep-research run (6 angles → 26 sources → 127 claims) was originally interrupted by a
+session token limit *during* the adversarial-verification phase. It was then **resumed and
+completed cleanly** (109/109 agents, 0 errors) — so the verification below is the result of that
+second, full pass. Evidence is marked:
 
-- ✅ **Verified** — survived 3 independent adversarial verifiers, 3-0 (10 claims)
-- ⚠️ **Refuted** — voted down (1 claim; noted where relevant)
-- 📄 **Primary, unverified** — extracted verbatim from a primary/standards source, but its
-  verifiers errored out on the token limit (NOT refuted — just unchecked). Recovered from the
-  run journal. The bulk of the detail below.
+- ✅ **Verified** — survived independent adversarial verifiers, ≥2-0 (35 claims across the
+  re-verified set; the entire attacks-on-routers, injection-detector, and privacy-attack-surface
+  clusters cleared 3-0).
+- ⚠️ **Refuted** — voted down. **One** claim, both in the original pass and on re-verification:
+  that PRISM's formal (ε₁+ε₂)-LDP privacy-*budget* mechanism can be operationalized *inside* the
+  router (1-2). Take PRISM's split-*mode* routing decision as in-scope; treat the DP-budget
+  mechanism as gateway work.
+- 📄 **Primary, unverified** — from a primary/standards source but *not in the re-verified
+  panel* (the verifier budget covers the top-ranked claims; these were fetched and extracted but
+  not adversarially checked). Applies to the posture-*sourcing* standards (JailbreakBench,
+  MLCommons, CycloneDX ML-BOM), one detector-evasion paper (2606.22659), the resource-asymmetry
+  paper (2510.01529, which the resume did not re-fetch — see §10), and the gateway-implementation
+  docs (LiteLLM/Kong/Cloudflare/Portkey). These are descriptive/low-controversy primary claims;
+  their *conclusions* are corroborated by verified claims from adjacent sources.
 
-Raw claims + quotes per source: `research/claims_by_source.json`. Run log:
-`research/deep_research_run.json`.
+Raw claims + quotes per source: `research/claims_by_source.json`. Per-claim re-verification
+verdicts: `research/verified_verdicts.json`. Run log: `research/deep_research_run.json`.
 
 ---
 
@@ -50,7 +60,7 @@ Three findings reframe the whole design:
    fail-closed policy, cost-amplification guards, and a handful of cheap pattern checks.
 
 The clean articulation of the boundary, from the routing-attack paper, is **"LLM control
-plane integrity"** 📄 ([2501.01818](https://arxiv.org/abs/2501.01818)): the router/gateway is a
+plane integrity"** ✅ ([2501.01818](https://arxiv.org/abs/2501.01818)): the router/gateway is a
 control plane, and its robustness to adversarial input is a distinct, first-class safety
 problem. magicrouter is that control plane's *decision* half.
 
@@ -129,22 +139,24 @@ deterministic and therefore *in-scope* for magicrouter.
 
 - ✅ **Confounder gadgets** ([2501.01818](https://arxiv.org/abs/2501.01818)): query-independent
   token sequences that, appended to *any* query, force escalation to the expensive model.
-  Works **white-box AND black-box** across multiple open-source and commercial routers 📄.
+  Works **white-box AND black-box** across multiple open-source and commercial routers (✅ 3-0).
 - ✅ **R2A / Route to Rome** ([2604.15022](https://arxiv.org/abs/2604.15022)): black-box
-  adversarial-suffix optimization via a surrogate router. Raises escalation-success from 📄
-  **0.26→0.78 (RouteLLM-Bert), →1.00 (RouterDC), 0.12→0.89 (OpenRouter)**; amplifies cost
-  **~2.7–2.9× per M tokens**; the universal suffix costs **~$0.98** to train over 120 queries.
-- 📄 **MCP metadata amplification** ([2601.10955v2](https://arxiv.org/html/2601.10955v2)):
-  manipulating only *text-visible fields* of a tool server amplifies per-query cost **up to
-  658×** while preserving task correctness (96.2% ASR) — so outcome-based monitoring can't see
-  it.
+  adversarial-suffix optimization via a surrogate router. **Transfers to commercial routers
+  (0.89 ASR on OpenRouter, ✅ 3-0)**; escalation-success also rises 0.26→0.78 (RouteLLM-Bert)
+  and →1.00 (RouterDC) 📄; amplifies cost **~2.7–2.9× per M tokens**; the universal suffix
+  costs **~$0.98** to train over 120 queries.
+- ✅ **MCP metadata amplification** ([2601.10955v2](https://arxiv.org/html/2601.10955v2)): a
+  protocol-compliant black-box attack manipulating only *text-visible fields* of a tool server
+  (✅ 3-0); it amplifies per-query cost **up to 658×** 📄 while preserving task correctness
+  (96.2% ASR) — so outcome-based monitoring can't see it.
 
 **Two defense findings that shape the design:**
 
-- ✅/📄 **Perplexity filtering does not work.** Gadgets/suffixes are crafted to stay within the
+- ✅ **Perplexity filtering does not work.** Gadgets/suffixes are crafted to stay within the
   benign perplexity distribution ([2501.01818](https://arxiv.org/abs/2501.01818)); against MCP
-  amplification, perplexity filters and output/trajectory monitors flag it "<3% of the time"
-  ([2601.10955v2](https://arxiv.org/html/2601.10955v2)). A naive perplexity predicate is a
+  amplification, "content-based defenses (prompt filters, output/trajectory monitors, perplexity
+  filters)" fail — flagging it "<3% of the time" (✅ 3-0,
+  [2601.10955v2](https://arxiv.org/html/2601.10955v2)). A naive perplexity predicate is a
   false comfort — **do not ship it as *the* defense.**
 - 📄 Static budget caps **throttle but do not prevent** amplification — "routing-layer budget
   caps are a mitigation, not a defense" ([2601.10955v2](https://arxiv.org/html/2601.10955v2)).
@@ -183,10 +195,11 @@ filter, honestly labeled as partial.
 
 ### Why real detection can't live in the router (must be a consumed flag)
 
-- 📄 **It needs a model.** Strong low-FPR detection "required fine-tuned models of roughly
-  100M+ parameters (best: 8B Llama-3.1, AUC 0.998, 94.8% TPR at 1% FPR)"
-  ([2501.15145](https://arxiv.org/pdf/2501.15145)). PromptGuard-2 is 86M/22M mDeBERTa, ~19–92ms
-  on an A100 📄 ([2505.03574](https://arxiv.org/pdf/2505.03574),
+- ✅ **It needs a model.** PromptShield's low-FPR detector gains come from a *fine-tuned model*,
+  strongest in the low-FPR regime (✅ 3-0, [2501.15145](https://arxiv.org/pdf/2501.15145)); best
+  results at 8B Llama-3.1 (AUC 0.998, 94.8% TPR at 1% FPR) 📄. PromptGuard-2 is a lightweight
+  86M/22M mDeBERTa binary classifier, 0.998 AUC / 97.5% recall at 1% FPR, ~19–92ms on an A100
+  (✅ 3-0, [2505.03574](https://arxiv.org/pdf/2505.03574),
   [HF](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M)) — cheap enough to run
   per-request, but still an inference step. Cloudflare's guardrail is Llama Guard 3 8B, **~500ms
   per request** 📄 ([cloudflare](https://developers.cloudflare.com/ai-gateway/features/guardrails/)).
@@ -233,16 +246,19 @@ to a **per-prompt, entity-level, sometimes-cryptographic** dimension — and, cr
   classifier with softmax… top-1 selection, not an LLM call" — explicitly "compatible with a
   pure decision-engine boundary like magicrouter's." Cost is real and must be exposed: 📄
   1.54× latency, 2.32× energy, quality 6.88 vs 8.14 cloud-only.
-  - ⚠️ **Refuted (1-2):** the specific claim that PRISM's *formal (ε₁+ε₂)-LDP privacy-budget
-    mechanism* can be "operationalized inside a router's decision pipeline" was voted down. Take
-    the split-mode *routing decision* as in-scope; treat the **DP-budget mechanism as
-    gateway/execution work**, not router logic.
-- 📄 **Split-N-Denoise** ([2310.09130](https://arxiv.org/pdf/2404.01318), ICML 2024): a concrete
-  client-side split — token-embedding layer on the client, LDP noise before transmission,
-  client-side denoise. So "supports client-side split inference with LDP" is a **real,
-  implementable deployment mode** a router can model as an eligibility/PII-tier dimension, and
-  privacy budgets are a "quantifiable, comparable axis" that could sit as a numeric ModelCard
-  score. The mechanism lives in the caller; the router needs only a flag that it's available.
+  - ⚠️ **Refuted (1-2, both passes):** the specific claim that PRISM's *formal (ε₁+ε₂)-LDP
+    privacy-budget mechanism* can be "operationalized inside a router's decision pipeline" was
+    voted down on both the original and the re-verification pass. Take the split-mode *routing
+    decision* as in-scope; treat the **DP-budget mechanism as gateway/execution work**, not
+    router logic.
+- ✅ **Split-inference as per-chunk local-vs-cloud routing** ([2510.16054v2](https://arxiv.org/html/2510.16054v2),
+  verified 3-0 on re-run; corroborates Split-N-Denoise [2310.09130](https://arxiv.org/abs/2310.09130),
+  ICML 2024 📄): privacy-aware routing "can be framed as per-chunk local-vs-cloud split
+  inference," and **static privacy-rewriting/anonymization pipelines are inadequate** for it
+  (✅ 3-0) — which is *why* per-request routing is needed rather than a fixed scrubber. So
+  "supports client-side split inference" is a **real, implementable deployment mode** a router
+  can model as an eligibility/PII-tier dimension. The mechanism (embedding split, LDP noise)
+  lives in the caller; the router needs only a flag that it's available.
 - ✅ **PPRoute** ([2604.15728](https://arxiv.org/html/2604.15728v1)) addresses the router-as-
   leak-point (§1): it runs the *routing model itself* under **2-party MPC** so the routing
   provider "cannot know the user query or the generated query embedding," at 📄 ~20× speedup
@@ -345,21 +361,23 @@ deterministic flag it *consumes* rather than a model it *runs* — that's the co
 
 ## 9. Sources
 
-**✅ Verified (3-0):**
-- Router routes jailbreaks to weak models; router backdoors — [2504.07113](https://arxiv.org/abs/2504.07113)
-- Cost-routing = new attack surface; R2A black-box escalation — [2604.15022](https://arxiv.org/abs/2604.15022)
-- Confounder-gadget router attack — [2501.01818](https://arxiv.org/abs/2501.01818)
+**✅ Verified 3-0 on the completed re-verification pass** (35 claims total; representative sources):
+- Router routes jailbreaks to weak models; router backdoors; cross-category robustness eval — [2504.07113](https://arxiv.org/abs/2504.07113)
+- Cost-routing = new attack surface; R2A black-box escalation, **0.89 ASR on OpenRouter**, adversarial suffixes — [2604.15022](https://arxiv.org/abs/2604.15022)
+- Confounder-gadget router attack, **white-box AND black-box**, "LLM control plane integrity" framing — [2501.01818](https://arxiv.org/abs/2501.01818)
+- MCP black-box cost-amplification; **content/perplexity defenses fail (<3%)** — [2601.10955v2](https://arxiv.org/html/2601.10955v2)
 - PRISM 3-way privacy routing; entity-level NER; deterministic gate — [2511.22788](https://arxiv.org/html/2511.22788v1)
 - Routing stage as privacy leak point; PPRoute MPC routing — [2604.15728](https://arxiv.org/html/2604.15728v1)
+- Split-inference as per-chunk local/cloud routing; static anonymization inadequate — [2510.16054v2](https://arxiv.org/html/2510.16054v2)
+- PromptShield fine-tuned detector, strongest in low-FPR regime — [2501.15145](https://arxiv.org/pdf/2501.15145)
+- PromptGuard 2 (86M/22M mDeBERTa, 0.998 AUC / 97.5% recall @1%FPR), two attack classes — [2505.03574](https://arxiv.org/pdf/2505.03574) · [HF card](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M)
 
-**⚠️ Refuted (1-2):** PRISM formal DP-budget operationalizable *inside* the router — [2511.22788](https://arxiv.org/html/2511.22788v1) (take split-mode routing as in-scope, DP budget as gateway work)
+**⚠️ Refuted (1-2, both passes):** PRISM formal DP-budget operationalizable *inside* the router — [2511.22788](https://arxiv.org/html/2511.22788v1) (take split-mode routing as in-scope, DP budget as gateway work)
 
-**📄 Primary/standards, verification-interrupted:**
-- Injection detector low-FPR failures, vendor-metric unreliability — [2501.15145](https://arxiv.org/pdf/2501.15145)
+**📄 Primary/standards, extracted but not in the re-verified panel** (descriptive/low-controversy; conclusions corroborated by verified sources above):
 - Detector calibration/paraphrase-evasion, indirect-injection blind spot — [2606.22659](https://arxiv.org/pdf/2606.22659)
-- Resource-asymmetry / controlled-release prompting (USENIX Sec 2026) — [2510.01529](https://arxiv.org/pdf/2510.01529)
-- PromptGuard 2 (86M/22M mDeBERTa), LlamaFirewall layered pipeline — [2505.03574](https://arxiv.org/pdf/2505.03574) · [HF card](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M)
-- MCP metadata cost-amplification (658×) — [2601.10955v2](https://arxiv.org/html/2601.10955v2)
+- Resource-asymmetry / controlled-release prompting (USENIX Sec 2026; **not re-fetched on resume**) — [2510.01529](https://arxiv.org/pdf/2510.01529)
+- MCP amplification 658× figure (the black-box attack itself is ✅) — [2601.10955v2](https://arxiv.org/html/2601.10955v2)
 - JailbreakBench per-model robustness — [2404.01318](https://arxiv.org/pdf/2404.01318)
 - MLCommons v0.5 Jailbreak Benchmark / Resilience Gap — [MLCommons PDF](https://mlcommons.org/wp-content/uploads/2025/12/MLCommons-Security-Jailbreak-0.5.1.pdf)
 - CycloneDX ML-BOM (provenance metadata) — [cyclonedx.org](https://cyclonedx.org/capabilities/mlbom/)
@@ -369,14 +387,19 @@ deterministic flag it *consumes* rather than a model it *runs* — that's the co
 
 ## 10. Caveats about this run
 
-- Stats: 6 angles → 26 sources → 127 claims; **25 reached verification, 10 confirmed 3-0, 1
-  refuted**, the remainder interrupted by the session token limit mid-verify and recovered as
-  📄 from the run journal (`research/deep_research_run.json`,
-  `research/claims_by_source.json`). Treat 📄 as "from a primary/standards source but not
-  independently cross-checked in this run."
-- The injection-detection evidence is unusually *consistent* across independent primary sources
-  (2501.15145, 2606.22659, 2510.01529 all converge on "detection is a model workload and is
-  evadable"), so the boundary conclusion is robust even though those specific claims are 📄.
+- **The run was resumed and completed cleanly** (109/109 agents, 0 errors). The verification
+  numbers above are from that full second pass: the entire attacks-on-routers, injection-detector,
+  and privacy-attack-surface clusters cleared **3-0**; **one** claim refuted (PRISM DP-budget,
+  1-2, consistent across both passes). Per-claim verdicts: `research/verified_verdicts.json`.
+- The resume re-ran search/fetch, so the source set shifted slightly vs. the original pass: it
+  added [2510.16054v2](https://arxiv.org/html/2510.16054v2) and [2602.02386](https://arxiv.org/abs/2602.02386)
+  and did **not** re-fetch [2510.01529](https://arxiv.org/pdf/2510.01529) (resource-asymmetry).
+  That paper's specific claims therefore remain 📄 here, but its conclusion ("injection detection
+  is a model workload and is evadable") is independently supported by verified claims from
+  2501.15145 and 2505.03574.
+- Residual 📄 claims (JailbreakBench, MLCommons, CycloneDX, gateway docs) are descriptive
+  primary-source facts outside the top-ranked verifier budget, not contested findings. A targeted
+  third pass could harden them, but they carry low adversarial risk.
 - Regulatory specifics (EU AI Act, GDPR articles) are the **thinnest** part of the corpus — the
   standards sources (ML-BOM, MLCommons, ISO/IEC 42001) support *auditability and posture
   scoring* but do not pin down statute-level requirements. Don't overclaim there.

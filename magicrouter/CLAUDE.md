@@ -64,10 +64,22 @@ magicrouter/
 ```
 
 Pipeline: **Stage 1 eligibility filter** (deterministic predicates over
-`(ModelCard, PolicyContext)`) → **Stage 2 cost-quality optimizer** (pluggable quality
-estimate + α threshold → cheapest model clearing the bar; remaining eligible models ordered
-into the fallback/escalation chain) → **RoutingDecision**. PII tiers: low/normal → full
-pool; high → cloud with `pseudonymize=true` flag; critical → local-only or blocked.
+`(ModelCard, PolicyContext, RoutingRequest)` — incl. **capability match**: the task's
+per-dimension `requirements` vector must be dominated by the ModelCard's `capabilities`, no
+averaging) → **Stage 2 value/cost optimizer over the eligible pool** (pluggable value estimate
++ α threshold → cheapest model clearing the bar; remaining eligible models ordered into the
+fallback/escalation chain, doubling as an N-way bake-off candidate set) → **RoutingDecision**.
+PII tiers: low/normal → full pool; high → cloud with `pseudonymize=true` flag; critical →
+local-only or blocked.
+
+**Capability is a HARD constraint, not "value."** A model that categorically can't do the task
+is disqualified in Stage 1, before any cost/value tradeoff — never out-competed on value. Value
+only ranks genuinely-capable models, with diminishing returns on surplus capability (so the
+router won't over-provision). Capability match is vector dominance (per-dimension floors),
+never a scalar that lets cheapness paper over a missing capability. Capability scores are
+consumer-supplied data on the ModelCard (benchmarks / learned win-rate priors / manifests),
+indexed per-`(task_type, model)`; the router never measures capability. Full treatment: the
+0001 implementation plan.
 
 ## Research Context
 
@@ -116,16 +128,40 @@ Under `docs/features/0002_security_privacy_routing/research/` (`0002_research_re
   per-tenant/session cumulative-spend predicates, escalation rate-limits, suffix-resistant
   difficulty, escalation logging in `reasons`.
 - **Injection detection cannot live in the router** — it is a model-inference workload (100M+
-  params or an LLM) and is evadable/base-rate-fragile (📄 2501.15145, 2606.22659, 2510.01529).
-  The router *consumes* a guard flag and carries independently-benchmarked robustness scores
-  (never vendor self-reports); it may run only cheap *partial* pattern predicates
-  (unicode-smuggling), honestly labeled.
+  params or an LLM, ✅ 3-0 via PromptShield 2501.15145 + PromptGuard-2 2505.03574) and is
+  evadable/base-rate-fragile (📄 2606.22659). The router *consumes* a guard flag and carries
+  independently-benchmarked robustness scores (never vendor self-reports); it may run only
+  cheap *partial* pattern predicates (unicode-smuggling), honestly labeled.
 - **Privacy beyond static tiers**: entity-level (NER) sensitivity + execution-mode routing
   (cloud/split/local) is a deterministic decision (✅ PRISM); the DP/pseudonymization/MPC
   *mechanisms* are gateway work (⚠️ "DP budget inside the router" was refuted 1-2).
 - **The organizing seam: detect / decide / enforce.** Guard = detect (gateway); magicrouter =
   decide (library); gateway = enforce (execute). This is the direct answer to "what belongs in a
   pure decision library vs the execution gateway" — see the boundary table in the 0002 report §7.
+
+### Feature 0003 — domain-general core + subjective/post-generation quality (2026-07-02: 110 agents, 27 sources, 25 verified, 0 refuted — clean run)
+
+Under `docs/features/0003_generalized_multimodel_routing/research/` (`0003_research_report.md`,
+`deep_research_run.json`). All 9 findings unanimous 3-0. Key takeaways that bind design decisions:
+- **The router core is a pure, domain-agnostic constrained optimization** — `arg min cost over
+  the feasible set { c | gate(r̂,c) ≥ 0 }` (✅ F5, IPR 2509.06274 + RouteLLM 2406.18665). This is
+  the 0001 Stage-1-filter → Stage-2-min-cost pipeline, independently reproduced. Generality comes
+  from consuming per-`(task_type, model)` scores it never generates — swap data, not code.
+- **Subjective quality relocates to the caller, doesn't break purity** (✅ F1/F2): captured
+  post-generation by an out-of-band evaluator/reward model; winner chosen by a best-of-N
+  **bake-off**. The router emits the ordered candidate set (a `decision_shape`); the caller runs
+  the N generations + evaluation. **Anti-pattern to reject** (✅ F9): a model call inside the
+  routing decision (Q-Router's request-time VLM router).
+- **Uncertainty is a consumable escalation signal** (✅ F4): compute it caller-side, feed the value
+  to a deterministic escalation gate; uncertainty-targeted escalation beats random at equal cost.
+- **Two prior sources, both consumer-supplied** (✅ F6/F7): a learned win-rate table, or a
+  pre-generation predictive score (IPR single forward pass, no generation). Same router core,
+  swappable `QualityEstimator`.
+- **Priors generalize to unseen/new models without retraining** (✅ F8) → hot-swappable ModelCard
+  registry + graceful-unknown rule; the key to fast-churning pools.
+- Honest limit: domain-generality is **structural, not empirically shown** across verticals
+  (no source spans creative + enterprise end-to-end) — 0003 makes it a test property via
+  multi-domain fixtures, but there is still no production non-vulture consumer.
 
 ## Development Workflow (MANDATORY — inherited from vulture)
 
@@ -150,6 +186,8 @@ Feature docs follow vulture's conventions exactly: each feature gets a folder
 |---|---|---|
 | 0001 | `0001_router_core` — contracts, eligibility filter, cost-quality optimizer | DESIGN |
 | 0002 | `0002_security_privacy_routing` — security/privacy as first-class dimensions; injection & denial-of-wallet at the routing layer | DESIGN |
+| 0003 | `0003_generalized_multimodel_routing` — domain-agnostic core; subjective/post-generation quality (bake-off); learned priors; unseen-model generalization | DESIGN |
+| 0004 | `0004_project_synthesis` — unified project report: capability-vs-value answer, possible routes (R1–R4 + decision shapes), pre-implementation "what to do first" plan | SYNTHESIS (start here) |
 
 Vulture-side integration work (the `routing_adapter.py`, `VULTURE_ROUTER_*` env knobs,
 `run_combined_audit()` wiring) is documented in **vulture's** `docs/features/` sequence,

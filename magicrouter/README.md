@@ -34,9 +34,19 @@ Routing is **constrained multi-objective selection**. For a task `t` with policy
 choose model `m`:
 
 ```
-maximize   E[quality(m, t)]  −  λ · cost(m, t)     # soft: the cost-quality dial (RouteLLM α / xRouter λ)
-subject to m ∈ Eligible(p)                          # hard: sovereignty, residency, PII-tier, compliance, ctx-fit
+maximize   E[value(m, t)]  −  λ · cost(m, t)       # soft: fitness-for-task dial (RouteLLM α / xRouter λ), over Eligible only
+subject to m ∈ Eligible(p, capability, t)           # hard: sovereignty, residency, PII-tier, compliance, ctx-fit,
+                                                    #       AND capability-match to the task's requirement vector
 ```
+
+**Capability is a hard constraint, not part of "value."** A model that categorically can't do
+the task (an LTX-class video model asked for photoreal + complex camera motion; a small model
+asked for a capability it lacks) is *disqualified in the eligibility filter* by the task's
+per-dimension requirement vector — it never reaches the value/cost comparison. Value only ranks
+models that are all genuinely capable; surplus capability beyond the requirement has diminishing
+returns, so the optimizer won't over-provision. Capability match is **vector dominance, never a
+scalar** — cheapness can't paper over a missing capability. See
+`docs/features/0001_router_core/0001_implementation_plan.md` for the full treatment.
 
 Implemented as a staged pipeline (the coordinator layer above and the execution layer below
 are explicitly OUT of scope):
@@ -91,8 +101,8 @@ sidecar speaking the same JSON — without a rewrite.
 | Interface | Contract | Default shipped |
 |---|---|---|
 | `ModelRegistry` | the model pool as `ModelCard`s | static config (dict/YAML/env) |
-| `PolicyFilter` | `(ModelCard, PolicyContext) → eligible?` | PII-tier + jurisdiction + allowlist + ctx-fit predicates |
-| `QualityEstimator` | `(RoutingRequest, ModelCard) → P(good enough)` | trivial heuristics (size/tier); real estimators are consumer-side |
+| `PolicyFilter` | `(ModelCard, PolicyContext, RoutingRequest) → eligible?` | PII-tier + jurisdiction + allowlist + ctx-fit + **capability-match** (vector dominance over the request's requirement vector) |
+| `QualityEstimator` | `(RoutingRequest, ModelCard) → value/P(good enough)` | trivial heuristics (size/tier); real estimators (difficulty, win-rate priors) are consumer-side |
 | `CostModel` | `(RoutingRequest, ModelCard) → expected USD` | token-estimate × per-1M pricing |
 | `HealthSignal` | `(model_id) → available?` | always-available; consumers plug cooldown/health state |
 
