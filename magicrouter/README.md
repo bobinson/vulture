@@ -101,6 +101,39 @@ high → cloud only with pseudonymization flag set on the decision; critical →
 blocked.** Classification is deterministic (regex/domain rules) — never an LLM ("sending data
 to an LLM to decide if it's too sensitive to send to an LLM is a circular problem").
 
+## Security & privacy as first-class dimensions (feature 0002)
+
+Cost and capability are not enough — **a cost/quality-only router is actively unsafe**: it
+routes jailbreak attempts to the weakest, cheapest, least-robust models. So security and
+privacy are hard dimensions layered onto the same decision model, and the router itself is
+treated as an attack surface (denial-of-wallet). The organizing principle is a
+**detect / decide / enforce** seam:
+
+> **guard = detect** (gateway runs the guard model) → **magicrouter = decide** (library routes
+> on the resulting flag) → **gateway = enforce** (execute / block / mask).
+
+What this adds, all pure and deterministic:
+
+- **Robustness as ModelCard attributes** — `jailbreak_robustness`, `injection_robustness`
+  (distinct dimensions; sourced from *independent* low-FPR benchmarks like JailbreakBench /
+  MLCommons, never vendor self-reports), plus `hosting_locality`, `split_inference_ok`,
+  `certifications`, `provenance` (CycloneDX ML-BOM).
+- **Safe-by-construction predicates** — a flagged-injection input can never be routed to a
+  below-robustness-floor model; a `critical` privacy prompt can never be assigned a cloud-only
+  model. These are invariants, not heuristics.
+- **Anti-denial-of-wallet** — per-tenant/session cumulative-spend predicates, escalation
+  rate-limits, and suffix-resistant difficulty estimation (adversarial suffixes that force
+  expensive-model escalation cost ~$0.98 to train and beat perplexity filters — see 0002 report).
+- **Privacy execution-mode routing** — `execution_mode ∈ {cloud, split, local}` and
+  `require_pseudonymization` selected deterministically from an entity-level `privacy_tier`; the
+  actual masking / DP / MPC mechanisms stay in the gateway.
+- **Consumed guard signals** — an `injection_suspicion` flag from a caller-run guard model is a
+  first-class `RoutingRequest` input. The router may additionally run only *cheap partial*
+  pattern predicates (unicode-smuggling), honestly scoped as advisory, never as the detector.
+
+Full evidence + the complete "what fits a pure router vs the execution gateway" boundary table:
+`docs/features/0002_security_privacy_routing/`.
+
 ## What magicrouter is NOT
 
 - **Not a gateway.** LiteLLM/OpenRouter already do execution, failover, budgets,
@@ -110,6 +143,9 @@ to an LLM to decide if it's too sensitive to send to an LLM is a circular proble
   here turns the library into "an agent framework" and it never ships.
 - **Not magic, despite the name.** The learned smarts (difficulty estimators, capability
   profiles) are consumer-supplied. The library is well-factored scaffolding + a policy engine.
+- **Not a guardrail / injection detector.** Detection strong enough to gate on is a
+  model-inference workload (100M+ params or an LLM) and is evadable — it lives in the
+  caller/gateway. magicrouter *consumes* the guard's verdict as a flag; it never runs one.
 
 ## The honest bar
 

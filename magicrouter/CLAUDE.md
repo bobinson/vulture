@@ -69,11 +69,15 @@ estimate + α threshold → cheapest model clearing the bar; remaining eligible 
 into the fallback/escalation chain) → **RoutingDecision**. PII tiers: low/normal → full
 pool; high → cloud with `pseudonymize=true` flag; critical → local-only or blocked.
 
-## Research Context (feature 0001)
+## Research Context
 
-The design is grounded in a deep-research run (2026-06-30: 107 agents, 6 angles, 24 sources,
-118 claims, 25 adversarially verified). Everything lives under
-`docs/features/0001_router_core/research/`:
+The design is grounded in two deep-research runs, each persisted under its feature's
+`research/` folder with the synthesized report, the raw claims, and the run log. Read the
+reports first — they are confidence-marked (✅ verified 3-0 / 📄 primary-unverified / ⚠️ refuted).
+
+### Feature 0001 — cost/capability/sovereignty (2026-06-30: 107 agents, 24 sources, 25 verified)
+
+Under `docs/features/0001_router_core/research/`:
 
 - **`0001_research_report.md`** — the synthesized, cited report (READ THIS FIRST). Covers:
   taxonomy (pre-generation routing vs. post-generation cascades; WHEN/WHAT/HOW framework),
@@ -90,7 +94,7 @@ The design is grounded in a deep-research run (2026-06-30: 107 agents, 6 angles,
   the repo `.vultureignore`.
 - **`deep_research_run.json`** — the research run log (angles, verification votes, failures).
 
-Key research takeaways that bind design decisions:
+Key 0001 takeaways that bind design decisions:
 - The **quality estimator is the make-or-break component** (cascade-routing finding) and is
   irreducibly domain-specific → interface here, smarts in consumers.
 - **Sovereignty is the white space**: academic routers optimize cost-quality only; compliance
@@ -98,6 +102,30 @@ Key research takeaways that bind design decisions:
   eligibility constraints, per-task capability profiles, and a domain difficulty estimator —
   is magicrouter's novel contribution.
 - The **α threshold** (RouteLLM) is the operator's cost dial; expose it as a knob.
+
+### Feature 0002 — security / privacy / prompt injection (2026-07-02: 109 agents, 26 sources, 25 verified)
+
+Under `docs/features/0002_security_privacy_routing/research/` (`0002_research_report.md`,
+`claims_by_source.json`, `deep_research_run.json`). Key takeaways that bind design decisions:
+- **Security must be explicit, not emergent.** A cost/quality-only router routes jailbreak
+  attempts to the *weakest* (cheapest, least-robust) models (✅ 2504.07113). Jailbreak/injection
+  robustness become distinct numeric ModelCard attributes with a hard robustness-floor predicate.
+- **The router is itself an attack surface** (denial-of-wallet): black-box adversarial suffixes
+  force expensive-model escalation (✅ R2A 2604.15022, ✅ confounder gadgets 2501.01818).
+  Perplexity filtering fails; budget caps only throttle. In-scope defenses are deterministic:
+  per-tenant/session cumulative-spend predicates, escalation rate-limits, suffix-resistant
+  difficulty, escalation logging in `reasons`.
+- **Injection detection cannot live in the router** — it is a model-inference workload (100M+
+  params or an LLM) and is evadable/base-rate-fragile (📄 2501.15145, 2606.22659, 2510.01529).
+  The router *consumes* a guard flag and carries independently-benchmarked robustness scores
+  (never vendor self-reports); it may run only cheap *partial* pattern predicates
+  (unicode-smuggling), honestly labeled.
+- **Privacy beyond static tiers**: entity-level (NER) sensitivity + execution-mode routing
+  (cloud/split/local) is a deterministic decision (✅ PRISM); the DP/pseudonymization/MPC
+  *mechanisms* are gateway work (⚠️ "DP budget inside the router" was refuted 1-2).
+- **The organizing seam: detect / decide / enforce.** Guard = detect (gateway); magicrouter =
+  decide (library); gateway = enforce (execute). This is the direct answer to "what belongs in a
+  pure decision library vs the execution gateway" — see the boundary table in the 0002 report §7.
 
 ## Development Workflow (MANDATORY — inherited from vulture)
 
@@ -121,6 +149,7 @@ Feature docs follow vulture's conventions exactly: each feature gets a folder
 | # | Feature | Status |
 |---|---|---|
 | 0001 | `0001_router_core` — contracts, eligibility filter, cost-quality optimizer | DESIGN |
+| 0002 | `0002_security_privacy_routing` — security/privacy as first-class dimensions; injection & denial-of-wallet at the routing layer | DESIGN |
 
 Vulture-side integration work (the `routing_adapter.py`, `VULTURE_ROUTER_*` env knobs,
 `run_combined_audit()` wiring) is documented in **vulture's** `docs/features/` sequence,

@@ -1,0 +1,819 @@
+[
+ {
+  "source": "https://prompt.security/vulnerabilities/denial-of-wallet-service",
+  "quality": "blog",
+  "date": null,
+  "claims": [
+   {
+    "claim": "Denial of Wallet is a distinct attack class against LLM applications in which an attacker excessively engages the application so that it consumes substantial paid LLM resources, making cost exhaustion (not just availability) the attack objective.",
+    "quote": "Denial of Wallet Attacks, alongside Denial of Service, are critical security concerns where an attacker excessively engages with a Large Language Model (LLM) applications, leading to substantial resource consumption.",
+    "importance": "central"
+   },
+   {
+    "claim": "A concrete Denial-of-Wallet vector is abusing an application's LLM integration as an unauthenticated proxy, letting attackers covertly consume the victim's third-party LLM quota (e.g., OpenAI GPT) at the victim's expense.",
+    "quote": "covertly access third-party LLMs like OpenAI's GPT, essentially utilizing your application as a free proxy",
+    "importance": "central"
+   },
+   {
+    "claim": "The vendor's mitigation for Denial of Wallet is runtime, per-identity behavioral anomaly detection with automatic blocking \u2014 i.e., a stateful monitoring function performed at the gateway/execution layer rather than a static pre-dispatch decision.",
+    "quote": "We closely monitor for any abnormal usage or increased activity from specific identities, and instantly block them if they deviate from normal parameters.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The consequences of Denial of Wallet/Service attacks span three categories: application downtime, performance degradation, and financial cost (\"Potential for incurring high operational costs\").",
+    "quote": "Potential for incurring high operational costs",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The vendor claims real-time DoW/DoS detection can be performed with sub-200ms latency, implying inline pre-dispatch screening is feasible without materially degrading request latency.",
+    "quote": "a response time below 200 milliseconds",
+    "importance": "tangential"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/html/2604.15022",
+  "quality": "primary",
+  "date": "2026-04-16",
+  "claims": [
+   {
+    "claim": "A universal adversarial suffix (up to 30 tokens) can be learned in a black-box setting to reroute LLM routers toward expensive models, forcing costly-model escalation without white-box access.",
+    "quote": "a black-box routing attack that learns a universal suffix to reroute LLM routers",
+    "importance": "central"
+   },
+   {
+    "claim": "The Route to Rome attack raises routing-to-expensive-model success rates dramatically: RouteLLM-Bert from 0.26 to 0.78, RouterDC to 1.00, and OpenRouter from 0.12 to 0.89.",
+    "quote": "RouteLLM-Bert: Attack success rate improved from 0.26 (clean) to 0.78 ... OpenRouter: Increased from 0.12 to 0.89 success rate",
+    "importance": "central"
+   },
+   {
+    "claim": "The attack amplifies inference cost roughly 2.7x-2.9x per million tokens relative to the clean baseline, constituting a denial-of-wallet / cost-amplification threat against routers.",
+    "quote": "Average cost per million tokens increases by approximately 2.7\u00d7 compared to the clean baseline ... with OpenRouter costs rising 2.9\u00d7 on out-of-distribution data",
+    "importance": "central"
+   },
+   {
+    "claim": "The attack is cheap to mount, costing only about $0.98 to train the universal suffix over 120 training queries.",
+    "quote": "Attack setup costs only \"$0.98\" for 120 training queries",
+    "importance": "supporting"
+   },
+   {
+    "claim": "A whitespace-injection defense fails to neutralize the attack, with post-defense success rates remaining high (0.71-1.00).",
+    "quote": "Whitespace injection defense showed \"slight decrease\" but didn't eliminate attacks (success rates remained 0.71-1.00)",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://www.a10networks.com/glossary/llm-unbounded-consumption/",
+  "quality": "secondary",
+  "date": "unknown",
+  "claims": [
+   {
+    "claim": "Denial of Wallet (DoW) is a distinct, financially motivated attack class specific to pay-per-use cloud AI services, in which attackers deliberately generate excessive API operations to inflate the victim's bill \u2014 directly relevant to routers, since a router that escalates queries to expensive models is the cost-decision point such attacks would exploit.",
+    "quote": "A financially motivated attack unique to cloud-based AI services, where attackers generate excessive API operations specifically to exploit pay-per-use billing.",
+    "importance": "central"
+   },
+   {
+    "claim": "Adversaries can craft resource-intensive queries that trigger the most computationally expensive operations (e.g., complex reasoning chains), meaning input complexity itself is an attack vector \u2014 a cost-quality router whose alpha threshold escalates 'hard' queries to premium models can be adversarially steered toward expensive-model dispatch.",
+    "quote": "Specially crafted prompts trigger \"the most computationally expensive operations, such as complex reasoning chains.\"",
+    "importance": "central"
+   },
+   {
+    "claim": "Unbounded consumption is defined as an LLM application allowing excessive or uncontrolled inference operations, with consequences spanning resource exhaustion, financial loss, service degradation, and model theft \u2014 establishing that consumption controls are a security dimension, not just an ops concern.",
+    "quote": "Unbounded consumption occurs when an LLM application allows excessive or uncontrolled inference operations, leading to resource exhaustion, financial loss, service degradation, or model theft.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The recommended mitigations for unbounded consumption are runtime enforcement mechanisms \u2014 strict input size/structure validation, per-user/per-IP request quotas and rate limiting, dynamic resource caps, processing timeouts, and sandboxed model access \u2014 which map to the execution gateway layer rather than a pure routing-decision library, though per-tenant quota/budget state could inform a router's eligibility predicates.",
+    "quote": "Rate Limiting: \"Enforce request quotas, limit per-user or per-IP usage.\" ... Timeouts: \"Set processing time limits and throttle long-running requests.\" ... Sandboxing: \"Restrict model access to internal services.\"",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Model extraction via API \u2014 systematically querying a model to reconstruct a shadow model \u2014 is listed as a consequence of unbounded consumption, and restricting/obfuscating logit and logprob outputs is a recommended countermeasure; this is an output-side control outside the scope of a pre-dispatch routing decision.",
+    "quote": "Attackers systematically query the model to \"collect outputs and reconstruct a partial or shadow model\" ... Logit/Logprob Obfuscation: \"Restrict or obfuscate detailed probability outputs.\"",
+    "importance": "tangential"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/html/2601.10955v2",
+  "quality": "primary",
+  "date": "2026-03-11 (arXiv v2)",
+  "claims": [
+   {
+    "claim": "Adversarial manipulation of only the text-visible fields of an MCP tool server (no changes to function signatures or payloads) can amplify per-query LLM cost by up to 658x, demonstrating that denial-of-wallet/cost-amplification attacks are feasible without any payload-level anomaly a router could inspect.",
+    "quote": "increases per-query cost by up to 658\u00d7 ... \u00d7658.10 on Mistral-Large (BFCL; 57,255 vs. 87)",
+    "importance": "central"
+   },
+   {
+    "claim": "The resource-amplification attack preserves task correctness (96.2% attack success rate vs 98.1% benign task success rate on ToolBench with Llama-3.3-70B), meaning correctness-based or outcome-based monitoring cannot distinguish attacked from benign runs.",
+    "quote": "on ToolBench, Llama-3.3-70B-Instruct achieves 96.2% ASR versus 98.1% benign TSR while averaging 81,830 tokens per query",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Deterministic pre-dispatch detectors of the kind a pure routing layer could host \u2014 specifically prompt perplexity filters \u2014 fail to detect this attack because the adversarial inputs stay within the benign perplexity distribution; output and trajectory monitors flag it below 3% of the time.",
+    "quote": "output and trajectory monitors seldom flag our attack (again below 3%) ... our attack remains well within this benign-derived envelope",
+    "importance": "central"
+   },
+   {
+    "claim": "Static budget controls (per-session token caps and tool-call limits) throttle but do not reliably prevent the resource-amplification attack, implying routing-layer budget caps are a mitigation, not a defense.",
+    "quote": "Per-session token caps and tool-call limits (act as throttles but do not reliably prevent the attack)",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The attack imposes cross-tenant collateral damage on shared serving infrastructure, halving throughput of co-running benign tasks and pushing GPU KV-cache occupancy to 35-74%, which is relevant to per-tenant isolation and privacy-budget/quota design in multi-tenant routing systems.",
+    "quote": "consistently halve[s] the throughput (measured in tokens/s) of a co-running benign task, causing an average performance drop of approximately 50% across both ToolBench and BFCL",
+    "importance": "tangential"
+   }
+  ]
+ },
+ {
+  "source": "https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M",
+  "quality": "primary",
+  "date": "2025-04 (Llama 4 Community License effective April 5, 2025; model released alongside Llama 4)",
+  "claims": [
+   {
+    "claim": "A small (86M-parameter, mDeBERTa-based) non-generative classifier can detect prompt injection and jailbreak attempts pre-dispatch with near-perfect discrimination on English inputs: AUC 0.998 and 97.5% recall at a 1% false-positive rate, a large jump from Prompt Guard 1 (21.2% recall at 1% FPR).",
+    "quote": "AUC (English): .998 (compared to .987 for v1) ... Recall @ 1% FPR (English): \"97.5%\" (vs. 21.2% in v1)",
+    "importance": "central"
+   },
+   {
+    "claim": "Inline classification latency is roughly 92.4 ms per prompt on an A100 GPU for the 86M model, and a companion 22M-parameter variant cuts latency/compute by about 75% \u2014 meaning guard-model screening is cheap enough to run before every dispatch, but it is a runtime inference step (it belongs in the caller/gateway, not inside a pure deterministic decision library like magicrouter; the router can instead consume its output as an input flag).",
+    "quote": "Latency: \"92.4 ms\" per classification on A100 GPU ... New 22M parameter variant offering \"75%\" latency/compute reduction",
+    "importance": "central"
+   },
+   {
+    "claim": "Prompt Guard 2 outputs a simple binary label (benign vs. malicious), having dropped Prompt Guard 1's separate 'injection' sub-label \u2014 so the signal a router would receive from this guard is a single suspicion flag/score rather than an attack-type taxonomy.",
+    "quote": "It classifies prompts as either \"benign\" or \"malicious.\" ... Dropped the specific \"injection\" sub-label for simplified binary classification",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Under adaptive adversarial evaluation, the model achieves an 81.2% attack prevention rate at only a 3% utility reduction, and uses adversarial-attack-resistant tokenization to counter whitespace/token-fragmentation evasion \u2014 quantifying both the protection ceiling and the false-positive cost a routing/gateway layer should budget for when blocking or rerouting suspicious inputs.",
+    "quote": "Attack Prevention Rate @ 3% utility reduction: \"81.2%\" ... \"Adversarial-attack resistant tokenization\" mitigating whitespace and token fragmentation attacks",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The 86M model detects attacks multilingually across eight languages (English, French, German, Hindi, Italian, Portuguese, Spanish, Thai), so a pre-dispatch injection signal need not assume English-only traffic.",
+    "quote": "The 86M model \"is trained to detect both English and non-English injections and jailbreaks\" across eight languages: English, French, German, Hindi, Italian, Portuguese, Spanish, and Thai.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/abs/2501.01818",
+  "quality": "primary",
+  "date": "2025-01-03",
+  "claims": [
+   {
+    "claim": "LLM routers are vulnerable to a query-independent adversarial attack: attacker-crafted 'confounder gadget' token sequences that, appended to any query, force the router to escalate it to the expensive/strong model \u2014 a concrete cost-amplification / denial-of-wallet attack targeting the routing layer itself.",
+    "quote": "we demonstrate that an adversary can generate query-independent token sequences we call ``confounder gadgets'' that, when added to any query, cause LLM routers to send the query to a strong LLM.",
+    "importance": "central"
+   },
+   {
+    "claim": "The confounder-gadget attack succeeds in BOTH white-box and black-box settings against multiple open-source and commercial routers, showing router manipulation is not limited to full-knowledge adversaries and generalizes across real routing implementations.",
+    "quote": "Our quantitative evaluation shows that this attack is successful both in white-box and black-box settings against a variety of open-source and commercial routers, and that confounding queries do not affect the quality of LLM responses.",
+    "importance": "central"
+   },
+   {
+    "claim": "Perplexity-based filtering is not an effective defense against router manipulation, because gadgets can be crafted to maintain low perplexity \u2014 meaning a pure decision router cannot rely on a simple perplexity predicate to detect adversarial escalation inputs.",
+    "quote": "we demonstrate that gadgets can be effective while maintaining low perplexity, thus perplexity-based filtering is not an effective defense.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The paper defines 'LLM control plane integrity' \u2014 robustness of LLM orchestration (routers/gateways) to adversarial inputs \u2014 as a distinct, first-class AI safety problem, framing routers as a control plane that is itself an attack surface.",
+    "quote": "We first define LLM control plane integrity, i.e., robustness of LLM orchestration to adversarial inputs, as a distinct problem in AI safety.",
+    "importance": "central"
+   }
+  ]
+ },
+ {
+  "source": "https://docs.litellm.ai/docs/proxy/guardrails/custom_guardrail",
+  "quality": "primary",
+  "date": null,
+  "claims": [
+   {
+    "claim": "LiteLLM's proxy exposes a pre-dispatch guardrail hook (async_pre_call_hook) that runs before the LLM API call and can both reject the request and modify input (e.g., mask sensitive strings) \u2014 demonstrating that production gateways already implement pre-dispatch input screening as a hook separate from routing, which maps to what a pure decision library like magicrouter would delegate to the caller/gateway.",
+    "quote": "async_pre_call_hook: \"Runs before the LLM API call\" on input only, allowing modification before the request reaches the LLM provider.",
+    "importance": "central"
+   },
+   {
+    "claim": "LiteLLM offers a during-call moderation hook (async_moderation_hook) that runs in parallel with the LLM API call to reduce latency; it can reject the call but cannot modify inputs \u2014 showing that latency pressure pushes gateways to run injection/content scanning concurrently with dispatch rather than strictly before it.",
+    "quote": "async_moderation_hook: \"Runs in parallel to LLM API call\" on input only. This hook cannot modify inputs but can reject calls. The documentation notes this approach \"helps lower latency\" compared to sequential pre-call processing.",
+    "importance": "central"
+   },
+   {
+    "claim": "Guardrails in LiteLLM are configured declaratively (config.yaml) with an explicit mode field of pre_call, during_call, or post_call, and can be enabled per-request via a guardrails parameter \u2014 i.e., guardrail placement in the request lifecycle is a first-class, configurable attribute in a production gateway, not hardcoded.",
+    "quote": "Guardrails are enabled per-request through the `guardrails` parameter or configured in `config.yaml` with three mode options: \"pre_call\" \u2013 runs pre-call hook, \"during_call\" \u2013 runs moderation hook, \"post_call\" \u2013 runs post-call hook",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Custom guardrails are implemented by subclassing a CustomGuardrail base class whose apply_guardrail method blocks requests by raising an exception \u2014 the enforcement mechanism is imperative code executing at request time (runtime scanning), which is precisely the category of work that must live in the execution gateway rather than inside a pure/deterministic decision engine.",
+    "quote": "Custom guardrails extend `CustomGuardrail` base class. The simplest approach implements the `apply_guardrail` method: \"This method is called to check text content and can block requests by raising an exception.\"",
+    "importance": "supporting"
+   },
+   {
+    "claim": "For streaming responses, LiteLLM's post_call guardrails run only on the fully assembled response after all chunks have already been delivered to the client, making them audit-only \u2014 a concrete limitation showing output-side filtering cannot be relied on to block harmful streamed content, which strengthens the case for pre-dispatch (routing-time or pre_call) controls.",
+    "quote": "\"For streaming responses, `post_call` guardrails run on the fully assembled response **after** all chunks have been delivered to the client. This means `post_call` guardrails on streaming are **audit-only**\"",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/pdf/2510.01529",
+  "quality": "primary",
+  "date": "2026-06-10 (arXiv v4; appeared in USENIX Security 2026; original arXiv 2510.01529 October 2025)",
+  "claims": [
+   {
+    "claim": "Prompt filtering as a defense architecture is fundamentally limited by a 'resource asymmetry': guard models run under stricter computational/latency constraints than the models they protect, and this gap is exploitable \u2014 an inherent design flaw, not an implementation bug that can be patched.",
+    "quote": "The resource asymmetry vulnerability is not a bug to be patched but a fundamental consequence of the design pattern that separates filtering from generation. While input filters remain valuable for many attacks, they cannot serve as the sole line of defense.",
+    "importance": "central"
+   },
+   {
+    "claim": "A deterministic pre-dispatch guard/classifier cannot reliably distinguish adversarial prompts from benign ones when malicious content is encoded so that only the more powerful main model can decode it; the authors demonstrate this empirically against production systems using 'controlled-release prompting' requiring only two conversational turns and no model access.",
+    "quote": "Our approach uses simple encodings that force the main LLM to expend computational resources during decoding that exceed guard model budgets... Our attack requires no specialized knowledge, expensive computation, system prompt modification, or model access beyond the standard chat interface.",
+    "importance": "central"
+   },
+   {
+    "claim": "The attack succeeded against four major production chat platforms (Google Gemini, DeepSeek Chat, xAI Grok, Mistral Le Chat) at near-perfect rates: 12/12 malicious intents for three platforms and 11/12 for Mistral Le Chat, where baseline jailbreak methods failed.",
+    "quote": "Our attack achieves near-perfect success rates (12/12 malicious intents for three platforms, 11/12 for Mistral Le Chat) where baseline approaches fail.",
+    "importance": "central"
+   },
+   {
+    "claim": "A systematic evaluation of 14 open-weight prompt guard models (including Llama Prompt Guard, ProtectAI, PIGuard, ShieldGemma, plus LLM-based classifiers Qwen3-32B, DeepSeek-V3, DeepSeek-R1) over 4,000 attack prompts found even reasoning-capable filters cannot reliably detect the attack without 3x-70x latency overhead \u2014 i.e., effective defense requires resources comparable to the protected model.",
+    "quote": "We find that even powerful reasoning models like DeepSeek-R1 cannot reliably detect our attacks without incurring 3\u00d7 to 70\u00d7 latency overhead, suggesting that effective defense requires computational resources comparable to the protected model.",
+    "importance": "central"
+   },
+   {
+    "claim": "The authors conclude the field should shift from pre-dispatch malicious-input detection to output prevention, because input filters typically only scan new user messages, not the model's own prior outputs, allowing decoded jailbreaks in context ('context contamination') to activate.",
+    "quote": "Our results support transitioning from malicious input detection to malicious output prevention.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://developer.konghq.com/plugins/ai-prompt-guard/",
+  "quality": "primary",
+  "date": "",
+  "claims": [
+   {
+    "claim": "Kong's AI Prompt Guard plugin implements prompt guarding as a purely deterministic mechanism \u2014 PCRE-compatible regular expression allow/deny lists applied to LLM requests \u2014 demonstrating that a production gateway performs injection-relevant input filtering with no LLM call in the decision path.",
+    "quote": "PCRE-compatible regular expressions as allow or deny lists, to guard against misuse of text completion requests.",
+    "importance": "central"
+   },
+   {
+    "claim": "Kong's official guidance treats deterministic pattern matching as a viable prompt-injection countermeasure, recommending deny patterns that detect hidden unicode (zero-width and bidirectional control characters) commonly used to embed malicious instructions \u2014 an injection heuristic that could equally be expressed as a pre-dispatch predicate in a pure decision library.",
+    "quote": "detect hidden unicode characters that attackers commonly use to embed malicious instructions ... Zero-width and bidirectional control characters.",
+    "importance": "central"
+   },
+   {
+    "claim": "On a guard match the plugin blocks the request before dispatch with an HTTP 400, and deny rules override allow rules \u2014 i.e., the gateway's decision on suspicious input is block-before-model, not route-to-hardened-model.",
+    "quote": "If a request matches any `deny` pattern, it receives \"a 400 Bad Request response\" ... `deny` condition takes precedence over `allow`",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The plugin's scanning scope is role-aware and history-aware: for chat models it scans all messages with role 'user' and can be configured to ignore prior chat history and scan only the latest user message, while for completion models the whole prompt is scanned on every request.",
+    "quote": "all chat messages where the role is `user` ... ignore existing chat history ... the whole prompt is scanned on every request",
+    "importance": "supporting"
+   },
+   {
+    "claim": "AI Prompt Guard is an execution-layer capability: it requires the AI Proxy (or AI Proxy Advanced) plugin and Kong Gateway 3.6+, placing this guardrail in the request-forwarding gateway rather than in a standalone routing decision component.",
+    "quote": "Requires AI Proxy or AI Proxy Advanced as a prerequisite ... Minimum Gateway version: 3.6",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://www.deepinspect.ai/blog/open-source-llm-guardrails",
+  "quality": "blog",
+  "date": "2026-05-27",
+  "claims": [
+   {
+    "claim": "The open-source Rebuff library detects prompt injection on the request side (before dispatch) using a layered approach that combines deterministic and model-based detectors: heuristics, vector similarity against known injection patterns, an LLM-based detector, and a canary-word check. This implies only a subset of injection detection (heuristics, similarity lookups) is compatible with a pure/deterministic router like magicrouter, while the LLM-based detector layer must live in the caller/gateway.",
+    "quote": "The library applies multiple detection layers (heuristics, vector-similarity to known injection patterns, an LLM-based detector, and a canary-word check).",
+    "importance": "central"
+   },
+   {
+    "claim": "Prompt-injection detection and enforcement are architecturally separable: a detector emits a signal, and a separate component must decide what to do with it. This directly supports a design where a routing library consumes or emits detection flags/scores as decision inputs while enforcement (block, sanitize, reroute execution) happens in the calling application or gateway.",
+    "quote": "Detection is not the same as enforcement. The application has to act on the signal.",
+    "importance": "central"
+   },
+   {
+    "claim": "NVIDIA NeMo Guardrails is an application-side orchestration layer whose rails can perform routing-adjacent actions on suspicious or out-of-policy input \u2014 routing the conversation, refusing topics, sanitizing input, or invoking external tools \u2014 showing that 'route suspicious inputs elsewhere or block' already exists as a pattern, but implemented at the application/orchestration layer rather than in a model-selection decision engine.",
+    "quote": "The rails can route the conversation, refuse certain topics, sanitize input, or call out to external tools.",
+    "importance": "central"
+   },
+   {
+    "claim": "Llama Guard is a Meta-released fine-tuned classifier model for judging prompts and responses against an unsafe-content taxonomy; because it is itself a model that sits model-side in the inference path, using it for pre-dispatch screening requires an LLM call and therefore cannot be embedded inside a pure decision library \u2014 it belongs in the execution gateway, with only its verdict fed to the router.",
+    "quote": "Llama Guard is a Meta-released model fine-tuned for classifying prompts and responses against a taxonomy of unsafe content.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "None of the surveyed open-source guardrail libraries (Llama Guard, NeMo Guardrails, Guardrails AI, LMQL/Outlines, Rebuff) provide independent, audit-grade inspection at the HTTP request boundary, because they run inside the application or inference path; the author argues regulators expect an independent record series at that boundary \u2014 a vendor-motivated but checkable claim about where compliance-grade inspection must sit relative to a router.",
+    "quote": "The libraries do not satisfy the regulator's expectation for an independent record series at the HTTP request boundary.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/pdf/2606.22659",
+  "quality": "primary",
+  "date": "2026-06-21",
+  "claims": [
+   {
+    "claim": "Released prompt-injection detectors (ProtectAI-v2 and two Prompt-Guard-2 checkpoints), evaluated at a frozen threshold transported across five distribution shifts, miss attacks with near-certain confidence: severity on missed attacks stays at 0.99-1.00 while false-negative rates range from 0.01 to 0.97 \u2014 meaning a router that trusts a low guard-model score as a safety signal will trust exactly the misses.",
+    "quote": "Across every shift and every detector, severity on the missed attacks stays between 0.99 and 1.00 while the false-negative rate ranges from 0.01 to 0.97: when these detectors miss, they miss with near-certainty.",
+    "importance": "central"
+   },
+   {
+    "claim": "All three detectors confidently pass indirect behavior-hijack injections (encoding, cipher, reverse-text, emoji, translation overrides embedded in host documents) \u2014 a unanimous blind spot across two vendors and a fourfold parameter-size range, so pre-dispatch classifier screening fails precisely on the indirect-injection class most relevant to agentic/RAG traffic.",
+    "quote": "All three confidently pass indirect behavior-hijack injection, a blind spot unanimous across two vendors and a fourfold size range.",
+    "importance": "central"
+   },
+   {
+    "claim": "Standard pooled calibration error cannot certify a detector for routing/gating use: a detector rated well-calibrated at 0.06 pooled ECE is miscalibrated at 0.91 on attacks alone, because confident false negatives are diluted by the benign majority \u2014 so an 'injection-robustness score' on a ModelCard derived from pooled benchmark calibration is misleading.",
+    "quote": "Standard pooled calibration error does not register this; one detector it rates well-calibrated, at 0.06, is miscalibrated at 0.91 on the attacks alone.",
+    "importance": "central"
+   },
+   {
+    "claim": "The detectors key on harmful surface content rather than injection structure, and this is exploitable by a black-box adversary with no access to detector internals that rewrites genuine injections into innocuous prose, driving miss rates close to one \u2014 i.e., a deterministic pre-dispatch classifier in a router is defeatable by paraphrase-level evasion.",
+    "quote": "A black-box severity-maximizing adversary that exploits the content-keying to rewrite genuine injections into innocuous prose, driving the detectors' miss rate close to one",
+    "importance": "central"
+   },
+   {
+    "claim": "The confidently-missed injections are not benign borderline cases: run against live target models, they succeed downstream at the same rate as the attacks the detectors catch, so detector misses translate directly into working exploits leaking past a routing-layer gate.",
+    "quote": "Run against live models, the missed injections leak the majority of working exploits, passing them at the rate they catch others.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/pdf/2501.15145",
+  "quality": "primary",
+  "date": "2025-04-12 (arXiv v2; v1 2025-01-25)",
+  "claims": [
+   {
+    "claim": "Prompt injection detectors are architecturally suited to sit at a pre-dispatch decision point: they are plug-and-play binary classifiers that inspect queries before the foundation model is called, forwarding benign queries unaltered and blocking malicious ones, without requiring retraining of the back-end model.",
+    "quote": "Prompt injection detectors are binary classifiers that observe queries to a LLM and try to detect attacks. Queries that are considered benign are forwarded to the back-end foundation model without alteration. Queries deemed to be malicious are blocked and trigger a refusal... prompt injection detectors are significantly more practical to deploy in real-world applications due to their \"plug-and-play\" functionality: in particular, they can be used with existing foundation models, without requiring any re-training or modification to the back-end model.",
+    "importance": "central"
+   },
+   {
+    "claim": "Deployable pre-dispatch injection detection requires an extremely low false positive rate because benign traffic vastly outweighs injection traffic (base rate problem), and most existing detectors fail in this low-FPR regime: at 0.1% FPR, PromptShield detects 65.3% of attacks while Meta's PromptGuard detects only 9.4%, InjecGuard 6.6%, and ProtectAI 0%.",
+    "quote": "the volume of benign traffic often greatly outweighs injection traffic (the base rate problem), so a deployable prompt injection detector needs to have an extremely low false positive rate (FPR). Existing schemes are unable to achieve such low FPRs... our model detects 65.3% of prompt injection attacks with 0.1% FPR on our benchmark's evaluation split, whereas PromptGuard (a prominent prior scheme) detects only 9.4% of attacks at 0.1% FPR",
+    "importance": "central"
+   },
+   {
+    "claim": "Vendor-reported detector metrics are unreliable for routing-layer trust decisions: on an out-of-distribution benchmark PromptGuard achieved only 12.8% TPR when its threshold was tuned to 1% FPR, versus the 71% TPR at 1% FPR reported in Meta's own evaluation \u2014 implying an 'injection robustness' or detector-quality attribute on a ModelCard must come from independent low-FPR benchmarking, not vendor self-reports.",
+    "quote": "It is possible to reduce the FPR to at most 1% by adjusting the decision threshold, but at the cost of significantly reducing the TPR to 12.8%. This result is far worse than what PromptGuard reports on their own evaluations: they report a TPR of 71% and FPR of 1%.",
+    "importance": "central"
+   },
+   {
+    "claim": "Where the detector is deployed changes what it must handle: a client/application-side detector only needs to distinguish benign application-structured data from injections, while a provider/gateway-side detector must also avoid false alarms on conversational chatbot traffic that carries little injection risk \u2014 a placement taxonomy directly applicable to deciding what belongs in a pure routing library versus the execution gateway.",
+    "quote": "It is easier to build a detector that can be client-deployed, as the detector only has to distinguish between benign application-structured data and injection attacks. The provider-deployed setting is more difficult to support; it requires the detector to simultaneously deal with application-structured data and conversational chatbot-style interaction",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Effective injection detection is not a lightweight deterministic predicate: strong low-FPR performance required fine-tuned models of roughly 100M+ parameters (best results with an 8B Llama-3.1 model, AUC 0.998, 94.8% TPR at 1% FPR), and even then the detector is not robust to optimized adversarial attacks crafted to bypass it \u2014 so runtime injection scanning is a model-inference workload that cannot live inside a pure, no-LLM-call decision engine.",
+    "quote": "in general, fine-tuning models in the ~100 million parameter regime (or higher) is necessary to achieve strong performance on our benchmark... the training setup does not account for concept drift or optimized adversarial attacks specifically crafted to bypass detection. As attacker strategies evolve, our detector's performance may degrade without ongoing adaptation.",
+    "importance": "central"
+   }
+  ]
+ },
+ {
+  "source": "https://layerxsecurity.com/generative-ai/denial-of-wallet-attacks/",
+  "quality": "blog",
+  "date": "2025-08-28",
+  "claims": [
+   {
+    "claim": "Denial-of-wallet (DoW) attacks weaponize the consumption-based pricing of GenAI APIs to inflict direct financial damage on the operator, and they typically evade traditional availability-focused security monitoring because no outage or classic intrusion signature occurs.",
+    "quote": "attackers can inflict significant monetary damage, often without triggering traditional security alarms.",
+    "importance": "central"
+   },
+   {
+    "claim": "A primary DoW technique is submitting resource-intensive queries deliberately crafted to force maximal compute per request \u2014 exactly the input class that would trip a cost-quality router's 'hard query' heuristic and escalate traffic to expensive models, making complexity-based escalation an exploitable cost-amplification surface.",
+    "quote": "Attackers submit prompts that force the model to perform computationally expensive tasks, such as writing thousands of lines of code, analyzing vast documents, or solving complex mathematical problems.",
+    "importance": "central"
+   },
+   {
+    "claim": "Recursive prompting attacks can produce exponential (not linear) token-consumption growth by feeding model output back as input, meaning per-request cost caps alone are insufficient and budget enforcement must track cumulative per-tenant/per-session spend \u2014 supporting privacy-budget-style accounting as a routing-decision input.",
+    "quote": "A malicious user can craft an input that causes the LLM to enter a loop, where its own output becomes the input for the next query, leading to exponential growth in token use.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Network- and identity-level controls (firewalls, secure web gateways, CASBs) cannot detect DoW or prompt-abuse because they cannot inspect prompt content \u2014 implying that cost-abuse and injection detection must live at a layer with prompt visibility (the gateway/router path), while a pure decision library like magicrouter can only consume flags/scores produced there.",
+    "quote": "They cannot analyze the content of a prompt to determine if it is designed to trigger excessive token usage or if an employee is pasting sensitive data.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Attackers monetize DoW at scale via 'LLMjacking' \u2014 using stolen API keys or compromised non-human-identity credentials \u2014 so credential/key hygiene at the execution gateway is a prerequisite threat control that sits outside the routing decision itself.",
+    "quote": "LLMjacking,' where attackers use stolen API keys or compromised non-human identity credentials to orchestrate unauthorized LLM usage.",
+    "importance": "tangential"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/abs/2511.22788",
+  "quality": "primary",
+  "date": "2025-11-27",
+  "claims": [
+   {
+    "claim": "Existing cloud-edge LLM inference approaches apply uniform privacy protection regardless of input sensitivity, which degrades utility on non-sensitive tokens \u2014 motivating sensitivity-adaptive routing rather than static PII tiers.",
+    "quote": "existing cloud-edge inference approaches apply uniform privacy protection without considering input sensitivity, resulting in unnecessary perturbation and degraded utility even for non-sensitive tokens",
+    "importance": "central"
+   },
+   {
+    "claim": "PRISM makes privacy a first-class routing dimension: an edge-side soft gating module selects among three execution modes (cloud, edge, or cloud-edge collaboration) based on entity-level sensitivity profiling of the input.",
+    "quote": "the edge device profiles entity-level sensitivity; (2) a soft gating module on the edge selects an execution mode - cloud, edge, or collaboration",
+    "importance": "central"
+   },
+   {
+    "claim": "For collaborative (split) inference paths, PRISM applies adaptive two-layer local differential privacy calibrated to per-entity risk, i.e., DP noise on prompts is graded by detected sensitivity rather than applied at a fixed budget.",
+    "quote": "for collaborative paths, the edge applies adaptive two-layer local differential privacy based on entity risks",
+    "importance": "central"
+   },
+   {
+    "claim": "PRISM uses a semantic-sketch split-inference pattern: the cloud LLM computes over a perturbed (privacy-protected) prompt to produce a sketch, and an edge-side small language model refines it with the raw local context, so sensitive data never leaves the device in cleartext.",
+    "quote": "the cloud LLM generates a semantic sketch from the perturbed prompt, which is then refined by the edge-side small language model (SLM) using local context",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Privacy-adaptive routing is claimed to be cheap enough for production: PRISM reduces energy consumption and latency to 40-50% of uniform/selective LDP baselines while maintaining output quality under strong privacy constraints.",
+    "quote": "reducing energy consumption and latency to 40-50% of baseline methods such as Uniform and Selective LDP, while maintaining high output quality under strong privacy constraints",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/pdf/2505.03574",
+  "quality": "primary",
+  "date": "2025-05-06",
+  "claims": [
+   {
+    "claim": "Prompt injection/jailbreak detection can be done pre-dispatch with a small non-LLM classifier: PromptGuard 2 is a fine-tuned DeBERTa (BERT-style) model shipped in 86M and 22M parameter variants that runs in real time on user prompts and untrusted tool/data inputs, deployable locally on CPU \u2014 i.e., it fits inside a deterministic decision layer without any LLM call.",
+    "quote": "PromptGuard 2 is a lightweight classifier model designed to detect explicit jailbreaking techniques in LLM inputs. Like its predecessor, PromptGuard 2 is built using BERT-based architectures, specifically the DeBERTa series of models... including mDeBERTa-base (86M parameters) and DeBERTa-xsmall (22M parameters). Due to its small scale, PromptGuard 2 can be easily deployed locally on both CPU and GPU, allowing for real-time processing of LLM inputs.",
+    "importance": "central"
+   },
+   {
+    "claim": "Pre-dispatch injection scanning is fast enough for a routing hot path: PromptGuard 2 22M classifies in 19.3ms per 512-token input on an A100 GPU with 0.995 AUC (English), and the 86M variant achieves 0.98 AUC with 97.5% recall at 1% false-positive rate at 92.4ms per classification.",
+    "quote": "PromptGuard 2 86M | .98 | 97.5% | .995 | 92.4ms ... PromptGuard 2 22M | .995 | 88.7% | .942 | 19.3ms [Latency per classification (A100 GPU, 512 tokens)]",
+    "importance": "central"
+   },
+   {
+    "claim": "A lightweight pattern-based pre-dispatch classifier alone cuts attack success substantially but not fully: on the AgentDojo benchmark, PromptGuard 2 86M alone reduced attack success rate from 17.6% to 7.5% (a 57% drop) with utility nearly unchanged (47.7% to 47.0%), while the full layered setup adding an LLM-based auditor reached 1.75% ASR (>90% reduction) at 42.7% utility.",
+    "quote": "The baseline AgentDojo Eval set without any defense exhibited an attack success rate (ASR) of 17.6% and a task utility of 47.7%. Applying PromptGuard V2 86M alone reduced the ASR to 7.5%, a 57% drop, while maintaining utility at 47.0%... The combined configuration PromptGuard + AlignmentCheck delivered the best defensive performance, reducing ASR to 1.75%, a >90% reduction from the baseline.",
+    "importance": "central"
+   },
+   {
+    "claim": "Semantic injection defense (chain-of-thought alignment auditing) requires a large LLM at runtime and incurs significant latency, so it cannot live inside a pure deterministic decision library: AlignmentCheck uses few-shot prompting on models like Llama 4 Maverick or Llama 3.3 70B and inspects the agent's full execution trace, placing it in the execution/gateway layer rather than pre-dispatch routing.",
+    "quote": "AlignmentCheck using Llama4 Maverick achieved a more aggressive reduction in ASR to 2.89% - an 84% drop relative to baseline, but at the cost of lower utility (43.1%) and significantly higher latency due to its semantic reasoning overhead.",
+    "importance": "central"
+   },
+   {
+    "claim": "Layered, conditional guardrail pipelines with pre-dispatch blocking are viable in production: LlamaFirewall lets developers compose custom pipelines (regex/scanner-based and LLM-based detectors) where detected injections are dropped before entering model context, and the framework is used in production at Meta.",
+    "quote": "PromptGuard scans text for universal jailbreak-style phrasing \u2022 IF PromptGuard detects injection, the page is dropped from context... LlamaFirewall is utilized in production at Meta.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://github.com/portkey-ai/gateway",
+  "quality": "primary",
+  "date": "2026-01-12 (latest release v1.15.2; repo continuously updated)",
+  "claims": [
+   {
+    "claim": "Portkey AI Gateway ships 50+ built-in guardrail checks that can be applied to both LLM inputs and outputs at the gateway (execution) layer, configured declaratively in JSON config objects rather than requiring LLM calls for basic checks.",
+    "quote": "\"50+ AI Guardrails\" ... \"output_guardrails\": [{\"default.contains\": {\"operator\": \"none\", \"words\": [\"Apple\"]}}] ... \"Verify your LLM inputs and outputs to adhere to your specified checks.\"",
+    "importance": "central"
+   },
+   {
+    "claim": "Guardrail verdicts in Portkey can deny/suppress responses as part of the request pipeline, demonstrating that guardrail enforcement (runtime scanning and blocking) is implemented in the execution gateway, not in a separate routing decision step.",
+    "quote": "This would always response with 'Bat' as the guardrail denies all replies containing 'Apple'.",
+    "importance": "central"
+   },
+   {
+    "claim": "Portkey implements routing-adjacent reliability features \u2014 fallbacks to another provider/model on failure, automatic retries up to 5 times, load balancing across API keys/providers, and conditional routing \u2014 all defined via declarative JSON configs.",
+    "quote": "\"Fallback to another provider or model on failed requests\" ... \"Automatically retry failed requests up to 5 times\" ... \"Distribute LLM requests across multiple API keys or AI providers\"",
+    "importance": "supporting"
+   },
+   {
+    "claim": "PII redaction in Portkey is an enterprise-only gateway feature that automatically removes sensitive data from requests, i.e., privacy transformation is positioned as runtime middleware rather than a pure routing-decision concern.",
+    "quote": "PII Redaction - to automatically remove sensitive data from your requests",
+    "importance": "central"
+   },
+   {
+    "claim": "Portkey claims sub-millisecond gateway latency with a 122kb footprint and SOC2/HIPAA/GDPR/CCPA compliance, indicating that deterministic guardrail and routing logic can run with negligible latency overhead and that provider/gateway compliance certifications are marketed as first-class attributes.",
+    "quote": "\"Blazing fast (<1ms latency)\" ... \"with a tiny footprint (122kb)\" ... \"SOC2, HIPAA, GDPR, and CCPA compliant\"",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/abs/2310.09130",
+  "quality": "primary",
+  "date": "2023-10-13 (v1); revised 2024-08-27 (v4); published at ICML 2024 (Proceedings of the 41st International Conference on Machine Learning)",
+  "claims": [
+   {
+    "claim": "Split-N-Denoise (SnD) demonstrates a concrete local-vs-cloud split-inference architecture for privacy: the token embedding layer runs on the client, the client perturbs embeddings with local differential privacy noise before transmission, and denoises the server's output \u2014 meaning a routing layer could treat 'supports client-side split inference with LDP' as a real, implementable deployment mode rather than a hypothetical, relevant to magicrouter modeling local/split-inference targets as an eligibility or PII-tier dimension.",
+    "quote": "we introduce Split-N-Denoise (SnD), an private inference framework that splits the model to execute the token embedding layer on the client side at minimal computational cost. This allows the client to introduce noise prior to transmitting the embeddings to the server, and subsequently receive and denoise the perturbed output embeddings for downstream tasks.",
+    "importance": "central"
+   },
+   {
+    "claim": "Privacy budgets are a quantifiable, comparable axis for LLM inference: SnD reports over 10% average utility improvement at the same privacy budget versus baselines, showing that privacy-utility tradeoffs can be measured per-mechanism \u2014 supporting the idea that a router's ModelCard could carry numeric privacy-budget/utility scores as deterministic routing inputs.",
+    "quote": "The results reveal an improvement in performance under the same privacy budget compared to the baselines by over 10% on average, offering clients a privacy-preserving solution for local privacy protection.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "SnD operates purely at inference time with no changes to model parameters, implying that DP-based privacy protection for prompts/embeddings can be layered onto existing hosted models \u2014 i.e., it is a property of the client/gateway execution path, not of the model itself, which bears on magicrouter's boundary question (this mechanism belongs in the caller/gateway, while the router only needs a flag/score indicating its availability).",
+    "quote": "Our approach is designed for the inference stage of LLMs and requires no modifications to the model parameters.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The paper frames direct transmission of raw text (or text-derived data) to remote LLM servers as a critical privacy-leakage risk in the Embedding-as-a-Service model, which motivates making privacy posture a first-class dimension when deciding whether a prompt may be dispatched to a remote provider at all.",
+    "quote": "However, the risk of privacy leakage due to direct text transmission to servers remains a critical concern.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The client-side portion of the split (token embedding layer only) is claimed to impose minimal computational cost, which affects feasibility of routing low-resource tenants/devices to a split-inference privacy tier.",
+    "quote": "splits the model to execute the token embedding layer on the client side at minimal computational cost",
+    "importance": "tangential"
+   }
+  ]
+ },
+ {
+  "source": "https://docs.litellm.ai/docs/tutorials/presidio_pii_masking",
+  "quality": "primary",
+  "date": null,
+  "claims": [
+   {
+    "claim": "LiteLLM implements PII protection as guardrail hooks attached at specific points in the request execution lifecycle (pre_call before the LLM request, during_call in parallel with it, and logging_only), meaning PII handling in this production gateway is a runtime execution-layer concern rather than a routing-decision concern.",
+    "quote": "mode: 'pre_call' \u2013 masking occurs before LLM request; mode: 'during_call' \u2013 runs in parallel with LLM execution; mode: 'logging_only' ... \"Apply PII masking only to logs (not to actual LLM requests)\"",
+    "importance": "central"
+   },
+   {
+    "claim": "LiteLLM supports reversible pseudonymization: PII is replaced with placeholder tokens (e.g., <CREDIT_CARD>) before dispatch, and with output_parse_pii enabled the gateway restores the original values in the LLM's response, so the model never sees raw PII while the end user sees unmasked output.",
+    "quote": "Enable output parsing to automatically replace masked tokens in LLM responses with original values",
+    "importance": "central"
+   },
+   {
+    "claim": "The gateway supports per-entity-type policy actions \u2014 MASK (substitute placeholder) or BLOCK (reject the entire request with an error) \u2014 configured in pii_entities_config, so entity-level sensitivity can deterministically gate whether a request proceeds at all.",
+    "quote": "Blocked PII entity detected: US_SSN by Guardrail: presidio-block-guard.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "PII guardrails can be scoped per-request (by naming the guardrail in the request payload) or per-API-key (per-tenant via virtual keys), enabling tenant-level privacy policy differentiation at the gateway layer.",
+    "quote": "\"guardrails\": [\"presidio-pii-guard\"] in request payload ... Configure per-key guardrails",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The Presidio integration detects a fixed catalog of structured PII entity types (CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER, PERSON, US_SSN, MEDICAL_LICENSE, US_BANK_NUMBER, DATE_TIME, US_DRIVER_LICENSE) with per-request language configuration via presidio_language.",
+    "quote": "Languages configured via presidio_language (e.g., \"es\" for Spanish, \"de\" for German) with per-request override support.",
+    "importance": "tangential"
+   }
+  ]
+ },
+ {
+  "source": "https://cyclonedx.org/capabilities/mlbom/",
+  "quality": "primary",
+  "date": "unknown (page footer: \u00a9 2026 OWASP Foundation; guide identified as \\\"First Edition (Revision 1)\\\")",
+  "claims": [
+   {
+    "claim": "CycloneDX defines an ML-BOM (Machine Learning Bill of Materials) capability that provides a standardized, machine-readable way to represent models, datasets, and configurations for AI/ML systems \u2014 exactly the kind of structured model metadata a policy-first router could consume as ModelCard attributes for eligibility filtering.",
+    "quote": "Represents datasets, models, and configurations for AI and machine learning systems. Documents provenance and ethical considerations for datasets.",
+    "importance": "central"
+   },
+   {
+    "claim": "ML-BOM explicitly covers training-data/dataset provenance documentation, meaning training-data provenance (one of the proposed security-posture routing dimensions for magicrouter) already has a standards-backed machine-readable representation rather than needing an ad-hoc schema.",
+    "quote": "Documents provenance and ethical considerations for datasets.",
+    "importance": "central"
+   },
+   {
+    "claim": "CycloneDX frames ML-BOM transparency as serving security and privacy purposes (not only ethics), which supports treating model transparency metadata as a legitimate input to security- and privacy-aware routing decisions.",
+    "quote": "Model and dataset transparency for security, privacy, safety and ethical considerations.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "CycloneDX claims ML-BOM adoption improves accountability and regulatory compliance for AI systems, suggesting a router that records which model metadata (ML-BOM-derived attributes) drove each RoutingDecision would aid compliance/audit trails; however, the page does not name specific regulations such as the EU AI Act.",
+    "quote": "Improved accountability and trust in AI systems. Greater compliance with ethical and regulatory standards.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "CycloneDX is an OWASP Foundation project and is linked to the ECMA-424 standard, giving ML-BOM formal standards-body backing (relevant when citing it as the interchange format for model security-posture attributes); SPDX and ISO are not referenced on this page.",
+    "quote": "ECMA-424 (linked as related standard) ... footer shows \"\u00a9 2026 OWASP Foundation.\"",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://developers.cloudflare.com/ai-gateway/features/guardrails/",
+  "quality": "primary",
+  "date": "2026-06-05 (page last updated)",
+  "claims": [
+   {
+    "claim": "Cloudflare AI Gateway implements guardrails as an inline proxy layer that intercepts both prompts and model responses before delivery, positioned between the user and the AI model \u2014 i.e., safety evaluation is a runtime execution-path concern at the gateway, not a pre-dispatch routing decision.",
+    "quote": "AI Gateway proxies requests and responses, sitting between the user and the AI model. ... Flagged content is logged for review, while blocked content is prevented from proceeding.",
+    "importance": "central"
+   },
+   {
+    "claim": "Cloudflare Guardrails' content evaluation is powered by a dedicated guard LLM \u2014 Llama Guard 3 8B running on Workers AI \u2014 meaning the gateway makes an LLM call per guarded request; this class of detection cannot live inside a pure/deterministic decision library like magicrouter.",
+    "quote": "Guardrails relies on Llama Guard 3 8B running on Workers AI for content evaluation. ... The underlying model may be updated in the future, and we will reflect those changes within Guardrails.",
+    "importance": "central"
+   },
+   {
+    "claim": "Guard-model evaluation at the gateway adds roughly 500 ms of latency per request, with additional overhead for long content that must be chunked \u2014 a concrete cost datum for deciding whether injection/safety scanning belongs on every routed request.",
+    "quote": "evaluations using Llama Guard 3 8B on Workers AI add approximately 500 milliseconds per request",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Cloudflare's guardrail failure semantics are fail-closed for block-mode categories and fail-open for flag-mode categories when the guard model is unreachable \u2014 a policy pattern (per-category fail-open/fail-closed flags) that IS expressible as deterministic configuration in a routing/policy engine.",
+    "quote": "If at least one hazard category is set to `block`, but AI Gateway is unable to receive a response from Workers AI, the request will be blocked. ... If a hazard category is set to `flag` and AI Gateway cannot obtain a response from Workers AI, the request will proceed without evaluation.",
+    "importance": "central"
+   },
+   {
+    "claim": "Enabling gateway guardrails is incompatible with streaming responses in Cloudflare AI Gateway, illustrating a functional trade-off imposed by in-path content scanning that a decision-only router would not incur.",
+    "quote": "Streaming is not supported when using Guardrails.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/abs/2504.07113",
+  "quality": "primary",
+  "date": "April 2025 (arXiv 2504.07113; abstract page lists submission March 20, 2025)",
+  "claims": [
+   {
+    "claim": "Preference-data-based LLM routers systematically route jailbreak attempts to weaker (less safety-robust) models, meaning a cost/quality-only router actively increases safety risk \u2014 direct evidence that safety/injection-robustness must be an explicit routing dimension rather than an emergent property.",
+    "quote": "a BERT-based router directs all coding and mathematics queries to the most powerful LLM even when simpler models would suffice, while routing jailbreaking attempts to weaker models, thereby elevating safety risks.",
+    "importance": "central"
+   },
+   {
+    "claim": "Routers trained on preference data can carry backdoor vulnerabilities introduced through that preference data \u2014 an attack class targeting the router itself (routing manipulation), which current router evaluation benchmarks do not test for.",
+    "quote": "current evaluation benchmarks remain limited. They largely focus on general model capabilities while overlooking task-specific behaviors and critical concerns such as privacy, safety, and potential backdoor vulnerabilities introduced through preference data.",
+    "importance": "central"
+   },
+   {
+    "claim": "Learned routers make coarse category-driven decisions \u2014 e.g., sending ALL coding and mathematics queries to the most powerful (most expensive) model even when simpler models suffice \u2014 implying query-category features can be exploited to force expensive-model escalation (cost-amplification / denial-of-wallet vector).",
+    "quote": "while these systems improve efficiency, they often make suboptimal, category-driven decisions. For instance, a BERT-based router directs all coding and mathematics queries to the most powerful LLM even when simpler models would suffice",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The paper proposes the DSC benchmark, which explicitly integrates privacy and safety assessments (including an LLM-jailbreaking query category) into router evaluation across three preference-based routers and two commercial routers \u2014 a concrete methodology for producing the kind of per-router/per-model safety scores a decision engine like magicrouter could consume as ModelCard attributes.",
+    "quote": "we propose the DSC benchmark: Diverse, Simple, and Categorized, an evaluation framework that categorizes router performance across a broad spectrum of query types, including coding, translation, mathematics, human instructions, general knowledge, and LLM jailbreaking. Additionally, it integrates privacy and safety assessments to reveal hidden risks.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/abs/2604.15022",
+  "quality": "primary",
+  "date": "2026-04-16",
+  "claims": [
+   {
+    "claim": "Cost-aware LLM routing introduces a new attack surface: an adversary can manipulate the router into consistently selecting expensive high-capability models, creating a denial-of-wallet / cost-amplification threat that targets the routing layer itself.",
+    "quote": "the routing strategy introduces a new security concern that adversaries may manipulate the router to consistently select expensive high-capability models",
+    "importance": "central"
+   },
+   {
+    "claim": "The R2A attack forces expensive-model escalation in a black-box setting (no white-box access to the router) using adversarial suffix optimization, showing routing manipulation is practical against real production routers rather than only white-box or heuristic-prompt scenarios.",
+    "quote": "Existing routing attacks depend on either white-box access or heuristic prompts, rendering them ineffective in real-world black-box scenarios. In this work, we propose R\u00b2A, which aims to mislead black-box LLM routers to expensive models via adversarial suffix optimization.",
+    "importance": "central"
+   },
+   {
+    "claim": "R2A builds a hybrid ensemble surrogate router to imitate the target black-box router, then adapts a suffix optimization algorithm against that surrogate to transfer the attack.",
+    "quote": "R\u00b2A deploys a hybrid ensemble surrogate router to mimic the black-box router. A suffix optimization algorithm is further adapted for the ensemble-based surrogate.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The attack generalizes across query distributions and against multiple deployed routing systems, meaning adversarial cost-amplification is not limited to a single router implementation.",
+    "quote": "Extensive experiments on multiple open-source and commercial routing systems demonstrate that R\u00b2A significantly increases the routing rate to expensive models on queries of different distributions.",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/html/2511.22788v1",
+  "quality": "primary",
+  "date": "2025-11 (arXiv preprint, v1; identifier 2511.22788 indicates November 2025 submission)",
+  "claims": [
+   {
+    "claim": "PRISM demonstrates a three-way privacy-aware routing scheme where an edge-side gate assigns each prompt to direct cloud inference, sketch-based cloud-edge collaboration, or fully local generation based on assessed privacy risk \u2014 i.e., local-vs-cloud split inference selected at the routing layer.",
+    "quote": "soft gating mechanism on the edge device to assess each user prompt and route it to one of three execution modes: (1) direct cloud inference for low-risk prompts; (2) sketch-based collaboration for moderately sensitive prompts; and (3) fully local generation for high-risk, privacy-critical queries",
+    "importance": "central"
+   },
+   {
+    "claim": "PRISM's privacy sensitivity assessment goes beyond static PII tiers: it uses a named entity recognition engine to profile sensitivity at the entity level per prompt, with a binary indicator that fires when any private linguistic cue is detected.",
+    "quote": "extracts a set of named entities using a named entity recognition (NER) engine ... defines a binary indicator that activates when any private linguistic cue is detected",
+    "importance": "central"
+   },
+   {
+    "claim": "PRISM applies formal per-prompt privacy budgets via an adaptive two-layer local differential privacy mechanism, splitting a total budget across entity category and entity value with a proven (\u03b51+\u03b52)-LDP guarantee, and allocating budget by category sensitivity weight \u2014 evidence that DP privacy budgets can be operationalized inside a router's decision pipeline.",
+    "quote": "applies Adaptive Two-Layer LDP based on entity risks ... total budget is preserved: \u03b5total=\u03b51+\u03b52 ... satisfies (\u03f51+\u03f52)-local differential privacy over the pair (ci,ei)",
+    "importance": "central"
+   },
+   {
+    "claim": "The routing decision itself is lightweight and deterministic at inference time \u2014 a linear classifier with softmax over the three execution strategies followed by a top-1 selection, not an LLM call \u2014 which is compatible with a pure decision-engine boundary like magicrouter's.",
+    "quote": "soft gating module ... a routing distribution over the three execution strategies ... softmax normalization ... top-1 decision from the soft routing distribution",
+    "importance": "central"
+   },
+   {
+    "claim": "Privacy-aware routing carries measurable cost: PRISM incurs 1.54x latency overhead (7.92s vs 5.13s cloud-only), 2.32x energy overhead (687J vs 296J), and lower quality (6.88/10 vs 8.14 cloud-only), while cutting energy to 40-50% of uniform/selective LDP baselines \u2014 quantifying the privacy-cost-quality tradeoff a security/privacy-first router must expose.",
+    "quote": "Reduces energy to \"40\u201350% of baseline methods such as Uniform and Selective LDP\"",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/html/2604.15728v1",
+  "quality": "primary",
+  "date": "2026-04-17",
+  "claims": [
+   {
+    "claim": "The routing layer itself is a distinct privacy attack surface: adding a routing stage introduces a new point of data leakage in the LLM inference pipeline, and because routing is often operated by a third party (not the model providers), it complicates the chain of control over sensitive query data.",
+    "quote": "the integration of a routing stage adds potential data leakage within the inference pipeline ... LLM routing is typically managed by a third party rather than by the primary model providers, complicating the chain of control for sensitive data",
+    "importance": "central"
+   },
+   {
+    "claim": "PPRoute executes the routing model itself under secure 2-party computation (semi-honest MPC, secret sharing between the user party and the routing provider's encoder), so the routing provider learns neither the user query nor the query embedding while still producing a routing decision.",
+    "quote": "2-Party Computation (2PC), including the input query from the user party and the encoder from the LLM routing provider ... the LLM routing provider cannot know the user query or the generated query embedding",
+    "importance": "central"
+   },
+   {
+    "claim": "Privacy-preserving routing can be made practical by replacing MPC-expensive operations (Softmax and GeLU, which consume 67.8% and 18.6% of BERT-BASE inference time) with ReLU-based approximations, yielding roughly a 20x speedup over naive MPC routing (e.g., 21.26x for CSCR on EmbedLLM, 23.31x for UniRoute on MixInstruct).",
+    "quote": "Softmax and GeLU consume 67.8% and 18.6% of the total inference time ... approximately a 20\u00d7 speedup over na\u00efve MPC implementations",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Encrypting the routing computation does not degrade routing quality: PPRoute matches plaintext routing performance across AUDC, QNC, and Peak metrics on the EmbedLLM, MixInstruct, and RouterBench benchmarks, using multi-stage training that combines routing training with model distillation.",
+    "quote": "PPRoute achieves the performance of plaintext counterparts",
+    "importance": "supporting"
+   },
+   {
+    "claim": "As of this paper's writing (April 2026), privacy-preserving techniques specifically for the LLM routing stage were largely absent from the literature, i.e., prior routing work treated the router as trusted with plaintext queries.",
+    "quote": "currently, privacy-preserving methodologies for LLM routing remain largely unexplored",
+    "importance": "supporting"
+   }
+  ]
+ },
+ {
+  "source": "https://arxiv.org/pdf/2404.01318",
+  "quality": "primary",
+  "date": "2024-10-31 (arXiv v5; first submitted 2024-03-28; NeurIPS 2024 Datasets and Benchmarks Track)",
+  "claims": [
+   {
+    "claim": "JailbreakBench provides a standardized, reproducible framework and public leaderboard that scores per-model jailbreak robustness (attack success rates for attacks and defenses across LLMs), demonstrating that jailbreak-robustness can be encoded as a comparable, benchmark-derived model attribute \u2014 exactly the kind of static score a routing library could store on a ModelCard.",
+    "quote": "we introduce JailbreakBench, an open-sourced benchmark with the following components: (1) an evolving repository of state-of-the-art adversarial prompts... (3) a standardized evaluation framework that includes a clearly defined threat model, system prompts, chat templates, and scoring functions; and (4) a leaderboard that tracks the performance of attacks and defenses for various LLMs.",
+    "importance": "central"
+   },
+   {
+    "claim": "Measured jailbreak robustness varies enormously across models under identical attacks \u2014 e.g. the 'Prompt with RS' attack achieves 90% attack success rate on Llama-2 and 78% on GPT-4, while PAIR achieves 0% on Llama-2 but 71% on GPT-3.5 \u2014 so a security-aware router conditioning on robustness scores would make materially different model selections.",
+    "quote": "Prompt with RS is on average the most effective attack, achieving 90% ASR on Llama-2 and 78% GPT-4... Overall, these results show that even recent and closed-source undefended models are highly vulnerable to jailbreaks.",
+    "importance": "central"
+   },
+   {
+    "claim": "Guard-model classifiers for detecting jailbroken content have quantified, imperfect accuracy: against majority-vote human ground truth on 300 prompt-response pairs, Llama-3-70B (custom prompt) reached 90.7% agreement (11.6% FPR, 5.5% FNR), while Llama Guard reached only 72.0% agreement with a 60.9% false negative rate \u2014 bounding what routing-layer or gateway-layer guard models can reliably catch.",
+    "quote": "Table 1 shows that Llama-3-70B and GPT-4 achieve the highest agreement (above 90%) with the annotators, as well as close to the best FPR and FNR... The HarmBench and Llama Guard models have significantly lower agreement rates, at 78.3% and 72.0% respectively.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Deterministic, LLM-free defenses such as perplexity filtering only stop optimization-based attacks (GCG-style adversarial suffixes) and fail against natural-language jailbreaks like PAIR and hand-crafted templates \u2014 implying a pure/deterministic decision layer can filter some adversarial input classes pre-dispatch but cannot substitute for runtime guard models in the execution gateway.",
+    "quote": "We observe that Perplexity Filter is only effective against GCG. Conversely, SmoothLLM successfully reduces the ASR of GCG, PAIR, while might not work well against JB-Chat and Prompt with RS",
+    "importance": "supporting"
+   },
+   {
+    "claim": "Test-time jailbreak defenses (SmoothLLM, Erase-and-Check, etc.) carry a substantial inference-time cost, meaning defense availability on a route is a cost/latency trade-off a cost-quality optimizer should price in, not a free security attribute.",
+    "quote": "Finally, we note that using some of these defenses incurs a substantial increase in inference time, which should be considered when analyzing the results.",
+    "importance": "tangential"
+   }
+  ]
+ },
+ {
+  "source": "https://mlcommons.org/wp-content/uploads/2025/12/MLCommons-Security-Jailbreak-0.5.1.pdf",
+  "quality": "primary",
+  "date": "2025-12-09",
+  "claims": [
+   {
+    "claim": "MLCommons' v0.5 Jailbreak Benchmark defines a standardized, quantitative 'Resilience Gap' metric (baseline safe-rate minus under-attack safe-rate), reported per hazard and overall on comparable five-tier grade bands \u2014 i.e., jailbreak robustness is now expressible as a machine-readable score suitable for a ModelCard attribute that a deterministic router could filter or optimize on.",
+    "quote": "We report a Resilience Gap per hazard and overall, defined as the difference between baseline non-violating-rate and under-attack non-violating-rate, using identical evaluators and five-tier grade bands to ensure strict comparability.",
+    "importance": "central"
+   },
+   {
+    "claim": "Safety alignment and jailbreak resistance are treated (and observed) as independent characteristics of an AI system, so a router cannot infer injection/jailbreak robustness from a model's safety grade alone \u2014 they must be separate ModelCard dimensions.",
+    "quote": "Safety and security, in general, and jailbreaking, in particular, are treated as separate benchmarks because we have observed that for many AI systems, resistance to adversarial methods is often considered separately from core alignment. Furthermore, systems can demonstrate either strong safety or security characteristics without necessarily being strong in both.",
+    "importance": "central"
+   },
+   {
+    "claim": "In the v0.5 results across 39 text-to-text systems, jailbreak attacks degraded every system: no system scored better under attack than at baseline, and 35 of 39 dropped at least one grade band (29 by one level, six by two levels), with overall safety score falling from 79.89% to 60.07%.",
+    "quote": "Of the 39 SUTs tested, no SUTs scored better for jailbreak resistance than for safety. Of the 39 SUTs tested, only four SUTs did not receive a lower grade for jailbreak resistance than for safety. Of the 35 SUTs that were graded lower for jailbreak resistance than for safety, 29 were reduced by one grade level and six were reduced by two grade levels",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The v0.5 release cannot yet supply named per-model jailbreak grades for a production routing table: it evaluates only open-weight models, reports all results anonymously (deidentified SUTs), and defers reliable broad grading to a v1.0 release planned for Q1 2026.",
+    "quote": "Consistent with MLCommons policy for in-development benchmarks, we analyze only open-weight models and report results anonymously.",
+    "importance": "supporting"
+   },
+   {
+    "claim": "The benchmark frames jailbreaking as a user-provided special case of prompt injection (following the forthcoming ISO/IEC 22989 update) and explicitly designs its grades to drive ISO/IEC 42001 AI Management System risk-treatment and release-gating decisions \u2014 supporting the pattern of gating routing eligibility on certified security posture rather than runtime LLM checks.",
+    "quote": "Jailbreaking is thus a special case of prompt injection focused on safety-policy circumvention. While jailbreaks cannot be eliminated entirely, their occurrence and impact can be reduced through defense-in-depth and continuous testing, which is the motivation for this benchmark's safety-to-security measurement and its alignment with ISO/IEC 42001 AIMS.",
+    "importance": "supporting"
+   }
+  ]
+ }
+]
