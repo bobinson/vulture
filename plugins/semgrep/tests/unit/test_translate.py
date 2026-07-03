@@ -169,3 +169,38 @@ def test_translate_findings_title_truncated_to_200_chars():
     assert len(findings) == 1
     assert len(findings[0]["title"]) <= 200
     assert findings[0]["description"].startswith(long_first_line)
+
+
+# ---------------------------------------------------------------------------
+# 0058 audit fixes — C1 (path normalization) + C4 (severity location), both
+# written to be correct whether Semgrep emits absolute or relative paths and
+# whether severity is under extra (documented) or top-level.
+# ---------------------------------------------------------------------------
+
+def test_path_normalized_to_repo_relative_C1():
+    doc = {"results": [
+        {"check_id": "r1", "path": "/audit-inputs/app/views.py",
+         "start": {"line": 3}, "end": {"line": 3},
+         "extra": {"message": "m", "severity": "ERROR", "metadata": {"cwe": ["CWE-89: x"]}}},
+        {"check_id": "r2", "path": "app/models.py",  # already repo-relative
+         "start": {"line": 5}, "end": {"line": 5},
+         "extra": {"message": "m2", "severity": "WARNING", "metadata": {}}},
+    ]}
+    fs = translate_findings(doc, agent_type="semgrep", root="/audit-inputs")
+    paths = sorted(f["file_path"] for f in fs)
+    # absolute prefix stripped; already-relative left intact (idempotent)
+    assert paths == ["app/models.py", "app/views.py"]
+    # the id also uses the normalized path so cross-agent keys line up
+    assert any(f["id"].startswith("r1:app/views.py:") for f in fs)
+
+
+def test_severity_prefers_extra_then_toplevel_C4():
+    from src.translate import _translate_one
+    r_extra = {"check_id": "r", "path": "a", "start": {"line": 1}, "end": {"line": 1},
+               "extra": {"severity": "ERROR", "message": "m", "metadata": {}}}
+    assert _translate_one(r_extra, "semgrep")["severity"] == "high"
+    # defensive: if a Semgrep version puts severity top-level, still map it
+    r_top = {"check_id": "r", "path": "a", "severity": "WARNING",
+             "start": {"line": 1}, "end": {"line": 1},
+             "extra": {"message": "m", "metadata": {}}}
+    assert _translate_one(r_top, "semgrep")["severity"] == "medium"

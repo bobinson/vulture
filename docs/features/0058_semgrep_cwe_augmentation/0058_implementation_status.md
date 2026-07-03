@@ -3,8 +3,26 @@
 | | |
 |---|---|
 | **Feature** | 0058_semgrep_cwe_augmentation |
-| **Status** | 🟡 DRAFT — awaiting review approval. No code written. |
-| **Last updated** | 2026-06-26 |
+| **Status** | 🟡 PARTIAL — the bundled Semgrep plugin (feature 0053 + 0055 hardening) exists and runs when the `semgrep` audit type is explicitly selected. **0058-specific work (R2 auto-activation in CWE scans, R3 taint rulesets, R6 provenance, R7 corpus gating, R5b CWE-taxonomy reconcile) is NOT done.** A 2026-07-03 audit fixed several pre-existing defects (below). |
+| **Last updated** | 2026-07-03 |
+
+> **⚠️ Correction (2026-07-03):** the prior "No code written" was wrong — the
+> 0053 reference plugin + a ~50-entry `rule_to_cwe.json` already shipped. The
+> plan §2 "current state (2 CWEs, near-empty)" is likewise stale.
+
+## Audit fixes applied (2026-07-03) — test-first, all green (43 plugin unit tests)
+- **H2/S1 (security):** `config.rule_packs` now allowlisted to pinned `p/<name>` registry packs — URLs / local paths / `auto` rejected (was an SSRF / arbitrary-`--config` sink; audit config is client-controlled). `max_memory_mb` clamped to [256, 4000]. (`wrapper.py`)
+- **C1 (correctness):** Semgrep paths normalized to **repo-relative** (strip scan-root prefix, idempotent) so they match the in-tree agents' paths in the cross-agent dedup key — closes the guaranteed double-reporting that defeated the augment-not-duplicate goal. (`translate.py`)
+- **C4 (correctness):** severity read from `extra.severity` with a top-level fallback (defensive against schema drift). (`translate.py`)
+- **H1 (partial):** `--pro` engine enabled when `SEMGREP_APP_TOKEN` is set (interprocedural taint); OSS still runs intraprocedural taint from the security packs. Dedicated vendored taint rulesets (R3/P2d) remain TODO. (`wrapper.py`)
+- **L2:** `--` terminator before `source_path`. **L3:** memory clamp (above). **REL1:** hostile/malformed `config` can no longer crash argv-building mid-stream. **L4:** `tools/` test import fixed (collects standalone). **C2:** manifest `emits` corrected to the actually-emitted event set. **C3:** removed dead `rules/prefix_to_cwe.json`. **S4:** README network section corrected (host network + egress, not "internal").
+
+## Still OPEN (require scoped work / product decisions — NOT bug fixes)
+- **R2** — auto-activate Semgrep inside a CWE scan (today it runs only when the `semgrep` audit type is explicitly selected; `stagerouter/scanagents.go` skips in-tree registry plugins). Behavior change → product decision.
+- **R3** — vendored taint rulesets + pinning (`rules/vulture/`).
+- **R6/R7/R5b** — `provenance: semgrep` tag, corpus gating (candidate→trusted, below-gate band, `VERIFIED_CWES.md` semgrep tier), CWE-taxonomy reconciliation.
+- **S2 (HIGH, backend security)** — `/run` is unauthenticated on the host network; **S3 (backend)** — local mode mounts host `/` at `/audit-inputs`, making `normalise_source_path`'s guard a no-op there. Both are backend-architecture changes, not plugin-local, and need a design decision.
+- **R8** — pin the Semgrep image (mutable `:0.1.0` tag) + ruleset snapshot so gated N is reproducible.
 | **Depends on** | 0051–0053 (plugin arch + bundled Semgrep), 0057 (corpus harness + attestation + provenance) |
 
 > Semgrep is a **standalone, supervised plugin** that **augments** the CWE agent's

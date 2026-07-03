@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import time
 from typing import Any, AsyncIterator
@@ -102,29 +103,64 @@ def _resolve_source_path(body: dict) -> str:
     return resolved
 
 
+_DEFAULT_RULE_PACKS = ["p/security-audit"]
+
+# H2 (0058 audit): allowlist for config.rule_packs. Only PINNED Semgrep
+# registry packs (`p/<name>`) are permitted to reach `--config`. Semgrep's
+# `--config` also accepts URLs, local file paths, and `auto`; since the audit
+# `config` is client-controlled and this container runs on the host network
+# with egress, an unfiltered value is an SSRF / remote-ruleset / arbitrary-file
+# sink. Anything not matching this pattern is dropped.
+_RULE_PACK_RE = re.compile(r"^p/[a-z0-9._-]+$")
+
+_MIN_MEMORY_MB = 256
+_MAX_MEMORY_MB = 4000  # matches plugin.toml runtime.resources.memory = 4g
+
+
+def _allowed_rule_packs(config: dict) -> list[str]:
+    """Return the client-requested packs filtered to the pinned-registry
+    allowlist, or the safe default if none survive (never zero-config)."""
+    raw = config.get("rule_packs")
+    if not isinstance(raw, list):
+        return list(_DEFAULT_RULE_PACKS)
+    safe = [p for p in raw if isinstance(p, str) and _RULE_PACK_RE.match(p)]
+    return safe or list(_DEFAULT_RULE_PACKS)
+
+
+def _clamp_memory_mb(config: dict) -> int:
+    """Coerce config.max_memory_mb to a bounded positive int (L3)."""
+    try:
+        n = int(config.get("max_memory_mb"))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_MEMORY_MB
+    return max(_MIN_MEMORY_MB, min(n, _MAX_MEMORY_MB))
+
+
 def _semgrep_argv(source_path: str, config: dict) -> list[str]:
-    # p/security-audit is more useful than p/auto on mixed-language
-    # repos (auto can produce zero findings when language-detection
-    # picks a pack with few rules for the file mix). Operators can
-    # override via config.rule_packs.
-    rule_packs = config.get("rule_packs") or ["p/security-audit"]
-    # --no-git-ignore: by default Semgrep scans only git-tracked
-    # files. Inside the container the bind-mount may not preserve
-    # the host's git ownership semantics, leading to silent "0 files
-    # scanned" results. Disabling git-ignore makes the scan
-    # deterministic regardless of how the host volume was mounted.
+    # p/security-audit is more useful than p/auto on mixed-language repos and
+    # ships the `mode: taint` (dataflow) rules Semgrep OSS runs intra-
+    # procedurally. Operators override via config.rule_packs (allowlisted, H2).
+    # --no-git-ignore: inside the container the bind-mount may not preserve the
+    # host's git ownership, causing silent "0 files scanned"; disabling it makes
+    # the scan deterministic regardless of how the volume was mounted.
     args = ["semgrep", "scan", "--json", "--quiet", "--no-git-ignore"]
-    # 0055: --no-git-ignore makes Semgrep walk EVERYTHING, including
-    # vendored/build dirs (node_modules, target, .git, ...). On a real
-    # project that is both noise (a SAST tool should not audit third-party
-    # deps) and a hard OOM — a 3 GB node_modules killed the 4 GB container.
-    # Exclude those dirs and cap analysis memory so the scan stays bounded.
+    # H1: cross-file/interprocedural taint needs the Semgrep Pro engine, which
+    # is only available with a token (runtime.env.optional SEMGREP_APP_TOKEN).
+    # OSS still runs intraprocedural taint from the packs above; enable Pro when
+    # a token is present so the augmentation reaches dataflow CWEs skills miss.
+    if os.environ.get("SEMGREP_APP_TOKEN"):
+        args.append("--pro")
+    # 0055: --no-git-ignore makes Semgrep walk EVERYTHING (node_modules, target,
+    # .git, ...) — noise + a hard OOM (a 3 GB node_modules killed the 4 GB
+    # container). Exclude vendored/build dirs and cap analysis memory.
     for pattern in _SCAN_EXCLUDES:
         args += ["--exclude", pattern]
-    args += ["--max-memory", str(config.get("max_memory_mb") or _DEFAULT_MAX_MEMORY_MB)]
-    for pack in rule_packs:
+    args += ["--max-memory", str(_clamp_memory_mb(config))]
+    for pack in _allowed_rule_packs(config):
         args += ["--config", pack]
-    args.append(source_path)
+    # L2: terminate options so source_path can never be parsed as a flag
+    # (defence-in-depth atop normalise_source_path's leading-dash guard).
+    args += ["--", source_path]
     return args
 
 
@@ -194,7 +230,9 @@ async def _stream_run(run_id: str, source_path: str, config: dict) -> AsyncItera
             yield ev
         return
 
-    findings = translate_findings(semgrep_json, agent_type="semgrep")
+    # root=source_path so Semgrep's file paths are normalized to repo-relative
+    # and line up with the in-tree agents' paths in cross-agent dedup (C1).
+    findings = translate_findings(semgrep_json, agent_type="semgrep", root=source_path)
     for f in findings:
         yield write_event("finding", f)
         await asyncio.sleep(0)  # cooperative yield to the event loop

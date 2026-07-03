@@ -132,10 +132,17 @@ env var rather than the raw cryptic stderr (MINOR #16 fix).
 
 ### Network
 
-`runtime.network = "internal"` — the container does not have egress.
-The base ruleset is pre-warmed at image build time. Custom rule packs
-that require runtime download need `network = "host"` or a registry
-mirror.
+This plugin runs with **`runtime.network = "host"`** and declares the
+`network-egress` + `host-network` trust acks — it **does** have egress, because
+Semgrep fetches its registry rule packs (`p/security-audit`, and any
+`config.rule_packs`) from the network at scan time. Two consequences an operator
+must weigh: (1) `config.rule_packs` is allowlisted to pinned `p/<name>` registry
+packs only (URLs / local paths / `auto` are rejected) so it cannot be turned
+into an SSRF or arbitrary-file sink; (2) host networking means `/run` is
+reachable on the host interface — run the plugin only on trusted hosts, or put
+it behind the supervisor's network controls. Rulesets are **not** currently
+version-pinned (feature 0058 R8 tracks pinning), so findings can drift with the
+upstream registry.
 
 ## Migration path (when extracted)
 

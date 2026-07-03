@@ -334,3 +334,66 @@ def test_semgrep_argv_bounds_scan_excludes_and_memory():
     # config-overridable memory
     argv2 = _semgrep_argv("/x", {"max_memory_mb": 3000})
     assert "3000" in argv2
+
+
+# ---------------------------------------------------------------------------
+# 0058 audit fixes — argv hardening (H2 rule_packs allowlist, L2 --, L3 mem,
+# H1 Pro-taint wiring)
+# ---------------------------------------------------------------------------
+
+def _configs(argv):
+    return [argv[i + 1] for i, a in enumerate(argv) if a == "--config"]
+
+
+def test_rulepacks_allowlist_rejects_url_path_and_auto_H2():
+    from src.wrapper import _semgrep_argv
+    argv = _semgrep_argv("/audit-inputs/x", {"rule_packs": [
+        "https://evil.example/rules.yml",   # SSRF / remote fetch
+        "http://169.254.169.254/x",          # metadata SSRF
+        "/etc/passwd",                        # local path read
+        "../../secret",                       # traversal
+        "auto",                               # unpinned
+        "r/generic",                          # non-p/ registry ref
+        "p/security-audit",                   # the ONLY legit one
+    ]})
+    assert _configs(argv) == ["p/security-audit"]
+
+
+def test_rulepacks_all_rejected_falls_back_to_default_H2():
+    from src.wrapper import _semgrep_argv
+    argv = _semgrep_argv("/audit-inputs/x", {"rule_packs": ["https://evil/x.yml"]})
+    # never zero-config; never the attacker value
+    assert _configs(argv) == ["p/security-audit"]
+
+
+def test_argv_terminates_options_before_path_L2():
+    from src.wrapper import _semgrep_argv
+    argv = _semgrep_argv("/audit-inputs/x", {})
+    assert "--" in argv
+    assert argv[-1] == "/audit-inputs/x"
+    assert argv[argv.index("--") + 1] == "/audit-inputs/x"
+
+
+def test_max_memory_clamped_to_bounds_L3():
+    from src.wrapper import _semgrep_argv
+    for bad in [-5, 0, "garbage", None, 10**9]:
+        argv = _semgrep_argv("/audit-inputs/x", {"max_memory_mb": bad})
+        mem = argv[argv.index("--max-memory") + 1]
+        assert mem.isdigit() and 1 <= int(mem) <= 4000, (bad, mem)
+
+
+def test_pro_engine_only_when_token_present_H1(monkeypatch):
+    from src.wrapper import _semgrep_argv
+    monkeypatch.delenv("SEMGREP_APP_TOKEN", raising=False)
+    assert "--pro" not in _semgrep_argv("/audit-inputs/x", {})
+    monkeypatch.setenv("SEMGREP_APP_TOKEN", "tok")
+    assert "--pro" in _semgrep_argv("/audit-inputs/x", {})
+
+
+def test_malformed_config_does_not_crash_argv_REL1():
+    from src.wrapper import _semgrep_argv
+    # dict rule_packs, list max_memory, non-string pack items — all hostile
+    for cfg in [{"rule_packs": {"a": 1}}, {"rule_packs": [1, None, "p/ok"]},
+                {"max_memory_mb": [1, 2]}, {"rule_packs": "p/x"}]:
+        argv = _semgrep_argv("/audit-inputs/x", cfg)  # must not raise
+        assert argv[0] == "semgrep" and argv[-1] == "/audit-inputs/x"

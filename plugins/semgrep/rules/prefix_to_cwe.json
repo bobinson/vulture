@@ -1,9 +1,0 @@
-{
-  "schema_version": "1",
-  "entries": {
-    "python.django.security.unsafe-raw-sql": "CWE-89",
-    "python.cryptography.fernet": "CWE-310",
-    "javascript.express.security.audit": "CWE-1004",
-    "java.spring.security.web.cors-csrf": "CWE-352"
-  }
-}
