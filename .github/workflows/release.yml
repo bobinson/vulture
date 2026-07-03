@@ -24,7 +24,10 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: shellcheck
-        run: shellcheck install.sh scripts/*.sh
+        # Match ci.yml: lint scripts/lib/ + scripts/tests/ too (not just top-level
+        # scripts/*.sh) so the libs build-release.sh sources are covered and their
+        # `. scripts/lib/*.sh` sources resolve (no SC1091).
+        run: shellcheck install.sh scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh
       - name: check fallback tag
         run: scripts/check-fallback-tag.sh "${GITHUB_REF_NAME}"
 
@@ -69,17 +72,32 @@ jobs:
           - { os: darwin, arch: amd64, runner: macos-15-intel }
           - { os: darwin, arch: arm64, runner: macos-14 }
     runs-on: ${{ matrix.runner }}
+    env:
+      # Single source of truth for the vendored PBS coordinates: the same
+      # VULTURE_PBS_TAG/PYVER drive both the cosign-verified download of the
+      # vendored asset (fetch-vendored-pbs.sh) and build-release.sh's pin
+      # lookup, so the fetched tarball always matches the committed SHA pin.
+      VULTURE_PBS_TAG: '20260610'
+      VULTURE_PBS_PYVER: '3.12.13'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.24'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: frontend-dist
           path: frontend/dist/
       - name: install cosign
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY, not just the action. Without this the
+          # installer pulls the latest cosign, which now defaults to
+          # --new-bundle-format: that IGNORES --output-signature/-certificate
+          # and requires --bundle, breaking the separate .sig/.pem contract
+          # that install.sh's verify_signature depends on. Hold at the last
+          # v2 line that emits .sig/.pem by default.
+          cosign-release: 'v2.4.3'
       - name: install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
       - name: install trivy
@@ -87,7 +105,9 @@ jobs:
         # v0.71.0 tag of contrib/install.sh *and* the installed version, so we
         # never pipe a moving 'main'-ref script into sh — keeping parity with
         # the SHA-pinned actions in this workflow (supply-chain hardening).
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.71.0
+        # Retry + cap connect/total time so a flaky CDN can't hang the job
+        # (matches build-release.sh's curl posture).
+        run: curl -sfL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 30 --max-time 120 https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.71.0
       - name: install pip-audit
         # PEP-668 varies by runner: macOS + ubuntu-24.04 refuse plain installs
         # (need --break-system-packages), but ubuntu-22.04-arm's older pip
@@ -99,7 +119,41 @@ jobs:
         # (--sort/--mtime/--owner); macOS ships BSD tar. gnu-tar provides gtar.
         if: runner.os == 'macOS'
         run: brew install gnu-tar
+      - name: fetch + cosign-verify vendored PBS
+        # Consume our own cosign-signed, vendored python-build-standalone
+        # (vendor-pbs.yml) instead of fetching from indygreg at build time.
+        # The helper downloads the platform tarball + signed SHA256SUMS, keyless
+        # cosign-verifies them, and prints the verified tarball path; we hand
+        # that to build-release.sh via VULTURE_PBS_TARBALL. build-release.sh
+        # still SHA-verifies it against the committed pin (defence in depth) and
+        # falls back to a direct upstream fetch if this override is unset.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # OPTIONAL: the vendored PBS release (produced by vendor-pbs.yml, a
+          # manual workflow_dispatch) may not exist for this tag. On ANY
+          # fetch/verify failure, leave VULTURE_PBS_TARBALL unset so build-release.sh
+          # falls back to a direct upstream fetch — BOTH paths SHA-verify against
+          # the committed pin (scripts/pbs-shas-*.txt), so either is fail-closed.
+          # Only export the override on a verified hit.
+          if PBS_TARBALL=$(scripts/fetch-vendored-pbs.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${RUNNER_TEMP}/vendored-pbs"); then
+            echo "VULTURE_PBS_TARBALL=${PBS_TARBALL}" >> "$GITHUB_ENV"
+            echo "using vendored (cosign-verified) PBS: ${PBS_TARBALL}"
+          else
+            echo "vendored PBS unavailable for ${{ matrix.os }}-${{ matrix.arch }} — build-release.sh will fetch upstream directly (still pin-verified)"
+          fi
       - name: build tarball
+        env:
+          # Tier B: bundle python-build-standalone into EVERY platform tarball so
+          # a native install runs the agents with no system Python and no Docker.
+          # All four triples (linux/darwin × amd64/arm64) now have a committed PBS
+          # SHA pin (scripts/pbs-shas-*.txt); build-release derives the triple from
+          # (os,arch) and verifies fail-closed against that pin. If a platform ever
+          # lacks a triple, build-release gracefully ships a lean (unbundled)
+          # tarball instead of erroring. NOTE: bundling pulls the agent deps into
+          # the tarball, so the Trivy/SBOM steps below now also cover the Python
+          # runtime on every platform.
+          VULTURE_BUNDLE_PBS: '1'
         run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
       - name: generate SBOM
         run: |
@@ -115,7 +169,10 @@ jobs:
       - name: pip-audit
         run: |
           if [ -f .pip-audit-ignore ]; then
-            IGN=$(awk -F: '/^CVE-/ {print "--ignore-vuln "$1}' .pip-audit-ignore)
+            # Accept all four advisory prefixes (CVE/GHSA/PYSEC/OSV — audit M9),
+            # matching scripts/security-preflight.sh and security-digest.yml. The
+            # old CVE-only parser silently dropped GHSA/PYSEC/OSV-only waivers.
+            IGN=$(awk '/^[[:space:]]*(CVE|GHSA|PYSEC|OSV)-/ {sub(/^[[:space:]]+/,""); split($0,p,/[: \t]/); if (p[1]!="") printf " --ignore-vuln %s", p[1]}' .pip-audit-ignore)
           else
             IGN=""
           fi
@@ -150,13 +207,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist/
       - name: install cosign
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY, not just the action. Without this the
+          # installer pulls the latest cosign, which now defaults to
+          # --new-bundle-format: that IGNORES --output-signature/-certificate
+          # and requires --bundle, breaking the separate .sig/.pem contract
+          # that install.sh's verify_signature depends on. Hold at the last
+          # v2 line that emits .sig/.pem by default.
+          cosign-release: 'v2.4.3'
       - name: aggregate SHA256SUMS
         run: |
           cd dist

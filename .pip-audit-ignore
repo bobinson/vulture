@@ -1,9 +1,11 @@
 # Vulture Python CVE allowlist (feature 0044 H3).
 #
-# Format: CVE-XXXX-YYYY: <one-line justification> (expires YYYY-MM-DD)
+# Format: <ADVISORY-ID>: <one-line justification> (expires YYYY-MM-DD)
 #
-# CI parses lines starting with `CVE-` and feeds the IDs to
-# `pip-audit --ignore-vuln`. Same 90-day expiry + codeowner-review
-# policy as .trivyignore.
+# CI parses lines beginning with an advisory ID — CVE-, GHSA-, PYSEC-, or OSV-
+# (audit M9) — and feeds the IDs to `pip-audit --ignore-vuln`. The same parser
+# is used by scripts/security-preflight.sh, security-digest.yml, and the
+# release.yml pip-audit step. Same 90-day expiry + codeowner-review policy as
+# .trivyignore.
 #
 # No active allowlist entries.

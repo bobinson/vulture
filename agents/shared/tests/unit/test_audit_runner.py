@@ -17,6 +17,7 @@ from shared.audit_runner import (
     _emit_token_savings,
     _extract_dupe_count,
     _get_max_source_chars,
+    _llm_tier3_enabled,
     _normalize_finding,
     _pack_files,
     _parse_llm_findings,
@@ -1056,6 +1057,60 @@ class TestIsEntryOrConfig:
         from pathlib import Path
         assert is_entry_or_config(Path("manage.py")) is True
 
+    # --- non-standard handlers (extended entry-point detection) ---
+    def test_go_cmd_handler(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("cmd/api/handler.go")) is True
+
+    def test_routes_dir_file(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("routes/users.rb")) is True
+
+    def test_handlers_dir_file(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("internal/handlers/auth.py")) is True
+
+    def test_stem_token_handler(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("src/user_handler.py")) is True
+
+    def test_stem_token_controller(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("app/auth_controller.rb")) is True
+
+    def test_lambda_function_in_api_dir(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("api/lambda_function.py")) is True
+
+    def test_nextjs_app_api_route(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("app/api/users/route.ts")) is True
+
+    def test_graphql_resolver_stem(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("graphql/user_resolver.py")) is True
+
+    def test_absolute_path_under_cmd(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("/repo/cmd/server/run.go")) is True
+
+    # --- negative guards: the broadening must NOT over-match ---
+    def test_substring_api_does_not_false_match(self):
+        # "api" is a token keyword but must match per-token, not as a substring
+        # of "rapid" — the token split is what prevents the false positive.
+        from pathlib import Path
+        assert is_entry_or_config(Path("src/rapid_prototype.py")) is False
+
+    def test_model_file_not_entry(self):
+        from pathlib import Path
+        assert is_entry_or_config(Path("models/user.py")) is False
+
+    def test_main_stays_exact_stem_only(self):
+        # 'main' is an exact-stem entry point, NOT a token keyword — otherwise
+        # main_helper.py / test_main.py would wrongly become entry points.
+        from pathlib import Path
+        assert is_entry_or_config(Path("src/main_helper.py")) is False
+
 
 class TestPrioritizeFiles:
     """Tests for _prioritize_files tiered file ordering."""
@@ -1108,6 +1163,47 @@ class TestPrioritizeFiles:
         assert result[0] == tmp_path / "vuln.py"   # tier1
         assert result[1] == tmp_path / "main.py"   # tier2
         assert result[2] == tmp_path / "lib.py"    # tier3
+
+    def test_tier3_excluded_when_disabled(self, tmp_path):
+        """0059: include_tier3=False drops the long tail (no findings, not
+        entry/config), keeping only Tier 1 (flagged) + Tier 2 (entry/config)."""
+        (tmp_path / "vuln.py").write_text("vuln\n")      # tier1 (flagged)
+        (tmp_path / "main.py").write_text("main\n")      # tier2 (entry)
+        (tmp_path / "lib.py").write_text("lib\n")        # tier3
+        (tmp_path / "helper.py").write_text("helper\n")  # tier3
+        findings = [{"file_path": str(tmp_path / "vuln.py"), "title": "Bug"}]
+        files = [tmp_path / "lib.py", tmp_path / "main.py",
+                 tmp_path / "vuln.py", tmp_path / "helper.py"]
+        # default include_tier3=True → all four
+        assert len(_prioritize_files(files, str(tmp_path), skill_findings=findings)) == 4
+        # disabled → only Tier 1 + Tier 2 survive
+        kept = _prioritize_files(files, str(tmp_path), skill_findings=findings,
+                                 include_tier3=False)
+        assert {p.name for p in kept} == {"vuln.py", "main.py"}
+
+
+class TestLlmTier3Enabled:
+    """0059: Tier-3 LLM toggle — precedence config > VULTURE_LLM_TIER3 env > OFF."""
+
+    def test_default_off(self, monkeypatch):
+        monkeypatch.delenv("VULTURE_LLM_TIER3", raising=False)
+        assert _llm_tier3_enabled() is False
+
+    def test_config_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("VULTURE_LLM_TIER3", "on")
+        assert _llm_tier3_enabled(False) is False   # per-request config wins
+        monkeypatch.setenv("VULTURE_LLM_TIER3", "off")
+        assert _llm_tier3_enabled(True) is True
+
+    def test_env_on_variants(self, monkeypatch):
+        for v in ("on", "true", "1", "yes"):
+            monkeypatch.setenv("VULTURE_LLM_TIER3", v)
+            assert _llm_tier3_enabled() is True, v
+
+    def test_env_off_or_garbage_is_false(self, monkeypatch):
+        for v in ("off", "false", "0", "no", "garbage", ""):
+            monkeypatch.setenv("VULTURE_LLM_TIER3", v)
+            assert _llm_tier3_enabled() is False, v
 
 
 class TestPackFiles:

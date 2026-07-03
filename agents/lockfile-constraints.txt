@@ -1,0 +1,17 @@
+# Platform-split version constraints fed to `uv pip compile --constraint` by
+# scripts/gen-lockfile.sh (LLD 0055 B1a). This is the ONLY hand-maintained input
+# to the otherwise-universal lockfile; the lockfile itself stays generated.
+#
+# cryptography: 49.x dropped the macOS x86_64 (Intel) wheel — it ships
+# macosx_11_0_arm64 only — so the darwin/amd64 release leg (macos-15-intel) cannot
+# `pip install --only-binary :all:` it. Cap Darwin to 48.0.1, the newest release
+# that still ships a macosx_10_9_universal2 wheel (covers Intel AND Apple Silicon).
+# Non-Darwin is left UNpinned here so uv emits the complement marker automatically
+# and `make freeze-deps --upgrade` can still bump linux. Both 48.0.1 and 49.x are
+# CVE-clean (OSV), so this trips no Trivy/pip-audit gate and needs no allowlist.
+#
+# REMOVE this constraint (and re-lock) when EITHER:
+#   (a) cryptography ships a macOS x86_64 wheel again, OR
+#   (b) the darwin/amd64 leg is dropped from .github/workflows/release.yml
+#       (Intel-mac runner EOL ~Fall 2027 — see the build-binary matrix comment).
+cryptography==48.0.1; sys_platform == "darwin"

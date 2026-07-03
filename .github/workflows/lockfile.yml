@@ -1,0 +1,60 @@
+# .github/workflows/lockfile.yml — 0056 C1 (keystone): CI lockfile-freshness gate.
+#
+# Catches lockfile drift on EVERY relevant PR (not only at release time): a PR
+# that changes an agent dependency — or the generator itself — without re-running
+# `make freeze-deps` makes this check go red.
+#
+# This is a SEPARATE workflow (not a ci.yml job) ON PURPOSE (audit M4): ci.yml has
+# no `on.paths`, so only a standalone workflow can path-scope the gate to just the
+# lockfile inputs without running the rest of CI.
+#
+# Fork-PR safety (LLD §9):
+#   - `pull_request` (NEVER `pull_request_target`): runs against untrusted fork
+#     code but with NO secrets and NO write scope — the well-known exfil foot-gun
+#     of `_target` does not apply.
+#   - `permissions: contents: read` only.
+#   - the uv pin is read from the TRUSTED BASE-BRANCH CONTENT via the
+#     setup-pinned-uv composite (literal `main`, semver-validated) — a fork PR
+#     cannot move the pin to choose the uv binary CI executes (audit M3).
+
+name: lockfile-freshness
+
+on:
+  pull_request:
+    # Scope to main-targeted PRs only: the setup-pinned-uv composite reads the uv
+    # pin from the literal `main` ref (M3 anti-exfil), so the gate is only correct
+    # where `main` IS the PR's true base. A PR targeting another base would be
+    # re-resolved with main's toolchain against that base's inputs and could flap.
+    branches: [main]
+    paths:
+      # Agent dependency declarations (the resolver inputs).
+      - 'agents/**'
+      # Generator inputs — a PR editing ONLY these (with no agents/** file) must
+      # still be gated, so they are listed explicitly (audit M4 / LLD §5 C1).
+      - 'scripts/gen-lockfile.sh'
+      - 'scripts/check-lockfile.sh'
+      - 'scripts/uv-version.sh'
+      - 'scripts/lock-date.txt'
+      - 'agents/lockfile-constraints.txt'
+      # And the gate's own wiring.
+      - '.github/workflows/lockfile.yml'
+      - '.github/actions/setup-pinned-uv/**'
+
+permissions:
+  contents: read          # least privilege: no write, no secrets -> fork-PR-safe
+
+jobs:
+  lockfile-freshness:
+    runs-on: ubuntu-latest
+    # ADVISORY-FIRST (LLD §7 step 1): ship non-blocking for a ~1-week soak to
+    # surface the current divergence backlog without blocking PRs.
+    # TODO(0056-soak): flip to enforcing — remove this `continue-on-error: true`
+    # after the one-week advisory soak confirms the gate is quiet on clean PRs.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # Single-source pinned uv, read from the trusted base ref (M3). The local
+      # composite is in-repo, so it is not SHA-pinned (it is not a 3rd-party ref).
+      - uses: ./.github/actions/setup-pinned-uv
+      - name: Check lockfile freshness
+        run: scripts/check-lockfile.sh

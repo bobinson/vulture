@@ -18,3 +18,30 @@ sha256_of() {
         return 1
     fi
 }
+
+# sha256_verify_in_sums FILE SUMSFILE — verify FILE against the entry in SUMSFILE
+# whose filename column is FILE's basename, fail-closed. Selects that entry with
+# an EXACT awk field match ($2==basename) — NOT a regex — because PBS filenames
+# contain '+' (an ERE quantifier) and '.' (ERE any-char), so the old
+# `grep -E "[[:space:]]<base>$"` could mis-select or false-match. Mirrors
+# build-release.sh's `awk -v f="$PBS_ASSET" '$2==f'` against the committed pin.
+# The actual digest is computed via sha256_of, which carries the sha256sum/shasum
+# two-tool portability AND the no-tool-on-PATH fail-closed case. Returns non-zero
+# on: no matching entry, a digest mismatch, or no checksum tool present — so
+# callers stay fail-closed.
+sha256_verify_in_sums() {
+    _svis_file=$1
+    _svis_sums=$2
+    _svis_base=$(basename "$_svis_file")
+    # Exact field match on column 2 (the filename) — '+' and '.' are literal here,
+    # unlike in an ERE. END{exit !f} fails closed when no line matched.
+    _svis_exp=$(awk -v b="$_svis_base" '$2==b {print $1; f=1} END{exit !f}' "$_svis_sums") || {
+        echo "error: no SHA256SUMS entry for $_svis_base in $_svis_sums" >&2
+        return 1
+    }
+    _svis_act=$(sha256_of "$_svis_file") || return 1
+    [ "$_svis_exp" = "$_svis_act" ] || {
+        echo "error: SHA256 mismatch for $_svis_base (got $_svis_act want $_svis_exp)" >&2
+        return 1
+    }
+}

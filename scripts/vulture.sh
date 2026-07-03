@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 # ─────────────────────────────────────────────────────────────────────────────
 # Vulture — Unified launcher for all deployment modes.
 #
@@ -9,6 +9,9 @@
 #   build              Build all components (Go backend + CLI + Python agents + frontend)
 #   build docker       Build Docker images (base + all services)
 #   build installer    Build a native-installer tarball for the current host (Mode E, feature 0044)
+#
+#   release [<tag>]    Run the pre-tag release preflight GATES (feature 0055)
+#   release --help     LIST the release gates without running them
 #
 #   dev <provider>     Mode A: Dev-local — bare metal, everything on one machine
 #                      Options: [--pg] [--plugins all|none|<comma-list>]
@@ -32,6 +35,8 @@
 # Examples:
 #   scripts/vulture.sh build                     # Build everything locally
 #   scripts/vulture.sh build docker              # Build Docker images
+#   scripts/vulture.sh release v0.2.0            # Run pre-tag release gates
+#   scripts/vulture.sh release --help            # List the release gates
 #   scripts/vulture.sh dev skills                # Dev-local, skills only
 #   scripts/vulture.sh dev lmstudio              # Dev-local + LM Studio (SQLite)
 #   scripts/vulture.sh dev lmstudio --pg         # Dev-local + LM Studio + Postgres container
@@ -44,7 +49,7 @@
 #   scripts/vulture.sh stop docker               # Stop Docker services
 #   scripts/vulture.sh stop docker --volumes     # Stop + delete DB volumes
 # ─────────────────────────────────────────────────────────────────────────────
-set -euo pipefail
+set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -54,7 +59,8 @@ usage() {
     exit 1
 }
 
-[[ $# -lt 1 || "${1:-}" == "--help" || "${1:-}" == "-h" ]] && usage
+[ $# -lt 1 ] && usage
+case "${1:-}" in -h|--help) usage ;; esac
 
 COMMAND="$1"; shift
 
@@ -62,11 +68,11 @@ case "$COMMAND" in
 
     # ── Build ─────────────────────────────────────────────────────────────
     build)
-        if [[ "${1:-}" == "docker" ]]; then
+        if [ "${1:-}" = "docker" ]; then
             shift
             exec "$SCRIPT_DIR/build-docker.sh" "$@"
         fi
-        if [[ "${1:-}" == "installer" ]]; then
+        if [ "${1:-}" = "installer" ]; then
             shift
             # Mode E: native installer tarball — feature 0044.
             # Usage: scripts/vulture.sh build installer [<version>] [<os>] [<arch>]
@@ -79,9 +85,18 @@ case "$COMMAND" in
         exec "$SCRIPT_DIR/build.sh" "$@"
         ;;
 
+    # ── Release preflight (feature 0055) ──────────────────────────────────
+    # Pre-tag GATES: lockfile freshness, fallback-tag validity, shellcheck of
+    # install.sh + scripts, the installer branch tests, and a clean-git-tree
+    # check. Fails LOUDLY (non-zero) on any gate. `release --help` LISTS the
+    # gates without running them. Delegates to scripts/release-preflight.sh.
+    release)
+        exec "$SCRIPT_DIR/release-preflight.sh" "$@"
+        ;;
+
     # ── Mode A: Dev-local (bare metal) ────────────────────────────────────
     dev)
-        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--embed-url URL] [--embed-model NAME] [--pg] [--plugins <comma-list>]"; exit 1; }
+        [ $# -lt 1 ] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--embed-url URL] [--embed-model NAME] [--pg] [--plugins <comma-list>]"; exit 1; }
         # --pg flag (any position): bring up the postgres docker
         # container and export VULTURE_DB_DSN so local_start uses
         # Postgres instead of SQLite.
@@ -90,48 +105,59 @@ case "$COMMAND" in
         # for the declarative activation overlay. Precedence: this flag wins over
         # any VULTURE_PLUGINS already set in the env/.env; absent the flag, an
         # existing VULTURE_PLUGINS is left untouched.
-        args=()
+        #
+        # POSIX arg accumulation: kept (non-flag) args are re-appended to the
+        # positional params via a rotation, so "$@" ends up holding exactly the
+        # forwarded args after the loop (no bash arrays).
         use_pg=0
         plugins=""
         want_plugins=0
         expect_plugins=0
-        for a in "$@"; do
-            if [[ $expect_plugins -eq 1 ]]; then
+        argc=$#
+        i=0
+        while [ "$i" -lt "$argc" ]; do
+            a=$1; shift; i=$((i + 1))
+            if [ "$expect_plugins" -eq 1 ]; then
                 plugins="$a"
                 want_plugins=1
                 expect_plugins=0
-            elif [[ "$a" == "--pg" || "$a" == "--postgres" ]]; then
+            elif [ "$a" = "--pg" ] || [ "$a" = "--postgres" ]; then
                 use_pg=1
-            elif [[ "$a" == "--plugins" ]]; then
+            elif [ "$a" = "--plugins" ]; then
                 expect_plugins=1
-            elif [[ "$a" == --plugins=* ]]; then
-                plugins="${a#--plugins=}"
-                want_plugins=1
             else
-                args+=("$a")
+                case "$a" in
+                    --plugins=*)
+                        plugins="${a#--plugins=}"
+                        want_plugins=1
+                        ;;
+                    *)
+                        set -- "$@" "$a"  # keep: rotate to the tail of "$@"
+                        ;;
+                esac
             fi
         done
-        if [[ $expect_plugins -eq 1 ]]; then
+        if [ "$expect_plugins" -eq 1 ]; then
             echo "Error: --plugins requires a value (all|none|<comma-list>)"; exit 1
         fi
         # In dev mode the in-tree plugins/ dir is the built-in manifest source.
         : "${VULTURE_BUILTIN_PLUGINS_DIR:=$PROJECT_ROOT/plugins}"
         export VULTURE_BUILTIN_PLUGINS_DIR
         # --plugins flag wins; otherwise leave any existing VULTURE_PLUGINS as-is.
-        if [[ $want_plugins -eq 1 ]]; then
+        if [ "$want_plugins" -eq 1 ]; then
             export VULTURE_PLUGINS="$plugins"
         fi
-        if [[ $use_pg -eq 1 ]]; then
-            if [[ -f "$PROJECT_ROOT/.env" ]]; then
+        if [ "$use_pg" -eq 1 ]; then
+            if [ -f "$PROJECT_ROOT/.env" ]; then
                 set -a
                 # shellcheck disable=SC1091
-                source "$PROJECT_ROOT/.env"
+                . "$PROJECT_ROOT/.env"
                 set +a
             fi
             : "${VULTURE_DB_USER:=vulture}"
             : "${VULTURE_DB_NAME:=vulture}"
             : "${VULTURE_POSTGRES_HOST_PORT:=25433}"
-            if [[ -z "${VULTURE_DB_PASSWORD:-}" ]]; then
+            if [ -z "${VULTURE_DB_PASSWORD:-}" ]; then
                 echo "Error: VULTURE_DB_PASSWORD must be set (in $PROJECT_ROOT/.env or env)"
                 exit 1
             fi
@@ -141,12 +167,12 @@ case "$COMMAND" in
             export VULTURE_DB_DSN="postgres://${VULTURE_DB_USER}:${VULTURE_DB_PASSWORD}@localhost:${VULTURE_POSTGRES_HOST_PORT}/${VULTURE_DB_NAME}?sslmode=disable"
             echo "  DB: $VULTURE_DB_DSN" | sed -E 's#(:)[^@/]+(@)#\1***\2#'
         fi
-        exec "$SCRIPT_DIR/start.sh" "${args[@]}"
+        exec "$SCRIPT_DIR/start.sh" "$@"
         ;;
 
     # ── Mode B: Central server (Docker) ───────────────────────────────────
     server)
-        [[ $# -lt 1 ]] && { echo "Usage: scripts/vulture.sh server <provider> [model]"; exit 1; }
+        [ $# -lt 1 ] && { echo "Usage: scripts/vulture.sh server <provider> [model]"; exit 1; }
         exec "$SCRIPT_DIR/prod_start.sh" "$@"
         ;;
 
@@ -157,18 +183,18 @@ case "$COMMAND" in
         echo
 
         # Validate required env vars
-        if [[ -f "$PROJECT_ROOT/.env" ]]; then
+        if [ -f "$PROJECT_ROOT/.env" ]; then
             set -a
             # shellcheck disable=SC1091
-            source "$PROJECT_ROOT/.env"
+            . "$PROJECT_ROOT/.env"
             set +a
         fi
-        if [[ -z "${VULTURE_DB_DSN:-}" ]]; then
+        if [ -z "${VULTURE_DB_DSN:-}" ]; then
             echo "Error: VULTURE_DB_DSN must be set in .env (remote Postgres/Neon DSN)"
             echo "  Example: VULTURE_DB_DSN=postgres://user:pass@ep-xxx-pooler.neon.tech/vulture?sslmode=require"
             exit 1
         fi
-        if [[ -z "${VULTURE_JWT_SECRET:-}" ]]; then
+        if [ -z "${VULTURE_JWT_SECRET:-}" ]; then
             echo "Error: VULTURE_JWT_SECRET must be set in .env (must match the writer server)"
             exit 1
         fi
@@ -194,7 +220,7 @@ case "$COMMAND" in
 
     # ── Stop ──────────────────────────────────────────────────────────────
     stop)
-        if [[ "${1:-}" == "docker" ]]; then
+        if [ "${1:-}" = "docker" ]; then
             shift
             exec "$SCRIPT_DIR/prod_stop.sh" "$@"
         fi

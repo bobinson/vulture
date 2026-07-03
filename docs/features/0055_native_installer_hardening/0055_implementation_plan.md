@@ -14,8 +14,8 @@ python-build-standalone tarball, SHA-256-verifies it (fail-closed) against
 the release's published `SHA256SUMS`, extracts it into `runtime/python/`,
 and pre-installs the hashed agent deps so the tarball installs OFFLINE
 (`install.sh` skips pip when the bundled interpreter can already
-`import uvicorn`). **Still deferred:** the cosign-signed vendor pipeline
-(`vendor-pbs.yml` → `release.yml`) and darwin/arm64 — see Non-goals.
+`import uvicorn`). **Shipped in v0.0.9** (PR #32 + `e31ca1a`): the cosign-signed vendor pipeline
+(`vendor-pbs.yml` → `release.yml`) and darwin/arm64 — see Non-goals (now historical).
 
 ## Problem
 
@@ -77,7 +77,11 @@ installs and runs; agent-based scanning currently requires Docker
 Mode A/B). Leave a clear, signposted path to full Mode-E functionality
 (Tier B) without blocking the v0.1.0 launch on it.
 
-## Non-goals (still deferred)
+## Non-goals at design time (all since SHIPPED in v0.0.9)
+
+> **Update (2026-06-23):** all three items below were deferred when this LLD was
+> written and have since **shipped in v0.0.9** (PR #32 `7b63231` + the macOS fix
+> `e31ca1a`). The bullets are kept for the original deferral rationale.
 
 - **The cosign-signed vendor pipeline** (`vendor-pbs.yml` re-hosting
   python-build-standalone as our own signed release, consumed by a
@@ -92,9 +96,9 @@ Mode A/B). Leave a clear, signposted path to full Mode-E functionality
   proves the bundled interpreter brings agents up with no system Python;
   see `scripts/tests/docker/pbs-bundle-smoke.sh`.)
 
-These remain follow-up work. The Python-runtime bundle itself and a real
-hashed `requirements-frozen.txt` (`pip-compile --generate-hashes`) are now
-**DONE** — see the Tier B status below.
+These were follow-up work and are now **DONE** (shipped in v0.0.9), as is the
+Python-runtime bundle itself and the hashed `requirements-frozen.txt`
+(`uv pip compile --generate-hashes`) — see the Tier B status below.
 
 ### What Tier B now delivers (linux/amd64, opt-in)
 
@@ -116,10 +120,9 @@ the `PBS_NOT_BUNDLED` marker is written); Mode E is then "CLI +
 skills-capable binary; agents need a bundled-runtime release, a system
 Python via `VULTURE_USE_SYSTEM_PYTHON=1`, or Docker."
 
-**Tier B is documented in full below** (§"Tier B (DEFERRED) — embedded
-Python agent runtime") so the design exists on paper and can be picked
-up directly if demand materialises — but it is **not scheduled**. Build
-it only when the trigger in that section is met.
+**Tier B is documented in full below** so the design exists on paper — it has
+since **shipped in v0.0.9** across all four platforms; that section records how
+it was built (its heading's "(DEFERRED)" label predates the implementation).
 
 A lighter **"bring-your-own-Python"** variant — detect an existing host
 Python ≥ 3.12 and build an isolated venv at the daemon-expected runtime
@@ -281,19 +284,19 @@ See `0055_rollback_plan.md`.
 
 ---
 
-# Tier B (PARTIALLY IMPLEMENTED) — embedded Python agent runtime
+# Tier B (SHIPPED, all platforms) — embedded Python agent runtime
 
-> **Status: IMPLEMENTED for linux/amd64 (opt-in `VULTURE_BUNDLE_PBS=1`);
-> the cosign-signed vendor pipeline and darwin/arm64 remain DEFERRED.**
-> The shipping path fetches the upstream indygreg PBS CPython 3.12 tarball
-> at build time, SHA-256-verifies it (fail-closed) against the release's
-> published `SHA256SUMS`, extracts it into `runtime/python/`, and
-> pre-installs the hashed agent deps so the tarball installs OFFLINE. The
-> design below is retained for the deferred pieces (the cosign-signed
-> `vendor-pbs.yml` → `release.yml` wiring, darwin/arm64, and a real
-> `vulture scan` in `smoke-install.sh`) and as the seed LLD if Tier B
-> graduates to its own feature folder (suggested:
-> `0056_native_agent_runtime`).
+> **Status: SHIPPED in v0.0.9 on all four platforms.** The bundling path
+> fetches the upstream indygreg PBS CPython 3.12 tarball at build time,
+> SHA-256-verifies it (fail-closed) against the committed pin, extracts it
+> into `runtime/python/`, and pre-installs the hashed agent deps so the
+> tarball installs OFFLINE. The pieces once deferred at v0.0.8 — the
+> cosign-signed `vendor-pbs.yml` → `release.yml` wiring, darwin/arm64
+> bundling, and a real `vulture scan` in `smoke-install.sh` — all landed
+> (PR #32 + `e31ca1a`). The design below is retained as the build record.
+> (The supply-chain *release hardening* around this pipeline is now feature
+> [`0056_release_hardening`](../0056_release_hardening/), not the
+> once-suggested `0056_native_agent_runtime`.)
 
 ## Trigger (when to build this)
 
@@ -413,7 +416,39 @@ freeze-deps:   ## regenerate the hashed agent lockfile (UPGRADE=1 / UPGRADE_PKG=
 
 **Files touched (B1).** `scripts/gen-lockfile.sh`, `scripts/check-lockfile.sh`, `agents/requirements-frozen.txt` (committed, generated), `scripts/build-release.sh` (copy the real lockfile; drop the empty stub), `.github/workflows/ci.yml` (lockfile-freshness + pip-audit job), `Makefile` (`freeze-deps` target).
 
-**Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor; **how the dependency bot regenerates the lockfile** (renovate `postUpgradeTasks` running `gen-lockfile.sh` vs a scheduled relock-and-PR CI job vs maintainer-only manual relock); and **which `uv` version to pin** for reproducible generation across maintainers + CI.
+**Open decisions (B1).** Universal single lockfile vs per-`(os,arch)`; `uv` vs `pip-tools`; whether to also hash-pin PEP 517 build backends (only needed if a dep is sdist-only — avoided by `--only-binary :all:` on the Tier B-lite path); how far to rely on `abi3` wheels for 3.13/3.14 vs re-compiling per minor; **how the dependency bot regenerates the lockfile** (renovate `postUpgradeTasks` running `gen-lockfile.sh` vs a scheduled relock-and-PR CI job vs maintainer-only manual relock); and **which `uv` version to pin** — RESOLVED: `gen-lockfile.sh` pins `uv==0.11.21`
+(bypass with `VULTURE_ALLOW_UV_MISMATCH=true`).
+
+### B1a — Platform-split pins: the macOS `cryptography` wheel gap (added 2026-06-22)
+
+> **Why this exists.** The B1 strategy above resolves to **one universal lockfile** and only falls back to per-`(os,arch)` files "if `--universal` cannot satisfy a package." Shipping Tier B to all four targets surfaced the first package where the single universal *pin* can't install everywhere: **`cryptography`** (transitive in the closure, via `openai-agents` → `pyjwt[crypto]`). The latest release, `cryptography==49.0.0`, **dropped the macOS x86_64 (Intel) wheel** — it ships `macosx_11_0_arm64` only — so the `darwin/amd64` release leg (`macos-15-intel`) cannot `pip install --only-binary :all:` it. Reproduced locally via `uv pip install --python-platform x86_64-apple-darwin`: *"cryptography==49.0.0 has no usable wheels."* linux (both arches, manylinux) and `darwin/arm64` are unaffected.
+
+**Decision — a marker-split pin, not a global downgrade or a per-arch file.** Keep `49.0.0` everywhere a wheel exists; pin **only Darwin** down to **`48.0.1`** — the newest release that still ships a `macosx_10_9_universal2` wheel (covers Intel **and** Apple Silicon). This is the lightweight realization of B1's anticipated fallback: a *single* universal lockfile that carries **two marker-gated, hash-pinned `cryptography` lines** instead of four separate `requirements-frozen-<os>-<arch>.txt` files.
+
+**Mechanism — a committed `uv` constraint; the generator does the rest.** Add `agents/lockfile-constraints.txt` (a `uv --constraint` input) with one marker-gated line:
+```
+cryptography==48.0.1; sys_platform == "darwin"
+```
+`gen-lockfile.sh` passes `--constraint agents/lockfile-constraints.txt` to `uv pip compile --universal`. uv **forks the resolution on the marker** and emits two hashed lines:
+```
+cryptography==48.0.1 ; sys_platform == 'darwin'    --hash=...   # Intel + Apple Silicon (universal2)
+cryptography==49.0.0 ; sys_platform != 'darwin'    --hash=...   # manylinux (both arches)
+```
+Non-darwin is **left unpinned in the constraint**, so the complement line tracks the latest in-range version — `make freeze-deps --upgrade` can still bump linux without editing the constraint. The lockfile stays **never-hand-edited** (the split is mechanically reproducible from the constraint), so `check-lockfile.sh` — which regenerates via `gen-lockfile.sh` and diffs — stays green with no change.
+
+**Why it needs zero build/CI change.** Each platform's tarball is built **on that platform's runner** (the `release.yml` `build-binary` matrix). `pip install --require-hashes` therefore evaluates the marker **locally**: Intel-mac and Apple-Silicon installs select the `48.0.1` line + its `universal2` wheel; linux selects `49.0.0`. `--require-hashes` is satisfied because **both** lines are hashed and the marker-inactive line is simply skipped. `build-release.sh` is untouched.
+
+**Trust / gates.** Both `48.0.1` and `49.0.0` are **CVE-clean** (OSV: 0 vulns each), so the Trivy `HIGH,CRITICAL --exit-code 1` gate and the advisory `pip-audit` both pass with **no `.trivyignore`/`.pip-audit-ignore` waiver** (the allowlist policy requires SECURITY-codeowner review + 90-day expiry — avoided). The fork is isolated to `cryptography`: its only conditional runtime dep, `cffi`, resolves to a single version across both branches (no cascade).
+
+**Marker scope.** `sys_platform == "darwin"` covers **both** mac arches — chosen for consistency (both mac tarballs carry the same `cryptography`) and because `48.0.1` is CVE-clean, so arm-mac loses nothing. A narrower Intel-only marker (`sys_platform == "darwin" and platform_machine == "x86_64"`, leaving arm-mac on `49.0.0`) is available but not used.
+
+**Removal trigger.** Delete `agents/lockfile-constraints.txt`, drop the `--constraint` flag, and re-lock when **either**: (a) `cryptography` ships an Intel-macOS wheel again, **or** (b) the `darwin/amd64` leg is dropped from `release.yml` (Intel-mac runner EOL ~Fall 2027 — see the build matrix comment). Until then the split is the supported state.
+
+**Validation (proven before merge, not assumed).** `uv 0.11.21` cross-platform resolution confirmed: `48.0.1` installs on `x86_64-apple-darwin` + `aarch64-apple-darwin`; `49.0.0` installs on `x86_64`/`aarch64-unknown-linux-gnu`; the constraint forks `cryptography` (and **only** `cryptography`) into the two lines above; OSV reports 0 vulns for both versions.
+
+**Files touched (B1a).** `agents/lockfile-constraints.txt` (new), `scripts/gen-lockfile.sh` (+`--constraint`), `agents/requirements-frozen.txt` (regenerated — the one `cryptography` line forks into two), `scripts/tests/test_lockfile_platform_split.sh` (new).
+
+**Test (TDD).** Static contract (matches the B1 test style): the lockfile carries both a `cryptography==… ; sys_platform == 'darwin'` line and a `… ; sys_platform != 'darwin'` line, each followed by `--hash=`; the two pinned versions differ; `agents/lockfile-constraints.txt` exists; `gen-lockfile.sh` wires `--constraint`. RED against today's single-pin lockfile, GREEN after regeneration.
 
 ### B2 — bundle PBS + wire `release.yml`
 
@@ -563,7 +598,7 @@ gates.
 
 ## 1. Status
 
-> **STATUS: DEFERRED / PROPOSED — awaiting review.** No code in this section is implemented. The env-flag names, the unit-test seam, and the `install_python_deps` extension point named below are the *contract* a future implementation must honor, not existing behavior.
+> **STATUS: SHIPPED in v0.0.9.** Tier B-lite (system-Python install) is implemented and shipping; the env-flag contract, the unit-test seam, and the `install_python_deps` extension point described below reflect the **shipped** behavior. (Originally written as a forward design; reconciled 2026-06-24.)
 
 **Relationship to Tier B.** Tier B ships a hermetic, pinned, hash/cosign-verified Python-Build-Standalone (PBS) interpreter inside the release tarball at `$VULTURE_HOME/runtime/python`. **Tier B-lite is the lighter "bring-your-own-Python" variant**: when no PBS interpreter is bundled, the installer can — *only on explicit opt-in* — locate a host Python ≥ 3.12 and materialize a venv at the **same** runtime path the daemon already expects. It is strictly a fallback below Tier B and strictly above the existing CLI-only path.
 
@@ -587,6 +622,11 @@ An earlier draft proposed a `VULTURE_ALLOW_UNHASHED_DEPS` opt-out that would res
 - It is **off by default.** With no opt-in flag, installer behavior is byte-for-byte unchanged.
 
 ## 3. Current-State Recap
+
+> **Pre-implementation snapshot (resolved).** This recap describes the state
+> *before* the Tier B-lite + #10 work; the gaps it lists (notably the unwired
+> install-mode `vulture start`) were fixed and **shipped in v0.0.9** — see §1's
+> SHIPPED status. Retained as the build record.
 
 From the runtime investigation (all paths in `/home/user/src/vulture-gh`):
 
@@ -1139,7 +1179,14 @@ E1 `no-python` (flag on, hashless → fast `err`, no venv); E2 `python312-hashed
 
 # Release Process — `scripts/vulture.sh release` + GitHub Actions
 
-> **STATUS: PROPOSED — awaiting review.** Design only; no code implemented. Several `release.yml` "deltas" below are *fixes to pre-existing gaps* in the current workflow (confirmed by review against the live file).
+> **STATUS: IMPLEMENTED & SHIPPED (v0.0.9).** The local preflight
+> (`scripts/vulture.sh release` → `release-preflight.sh`) and the authoritative
+> `release.yml` build/sign pipeline are live; v0.0.9 was cut through them and the
+> `release.yml` deltas below landed via PR #32. **The supply-chain + vulnerability
+> hardening _around_ this pipeline** (CI lockfile-freshness gate, scheduled relock,
+> pre-tag security gate, Dependabot-alert digest) is planned as **feature 0056** —
+> see [`../0056_release_hardening/`](../0056_release_hardening/) and the operational
+> runbook [`docs/guides/release_process.md`](../../guides/release_process.md).
 
 ## 1. Core principle — split by trust domain, not by convenience
 
@@ -1299,7 +1346,7 @@ release)
 
 # Cross-Distro Install Test Matrix (Ubuntu 24.04 + Fedora)
 
-> **STATUS: PROPOSED — awaiting review.** Design only. This is the *canonical* end-to-end installer test harness across two distro families. It supersedes the generic stand-in images in the Tier B-lite §6 matrix: §6 defines the system-Python *scenario contract*; this section defines the *real distros* those scenarios (and the already-shipped CLI-only path) run on. Reuse §6.1 (offline-tarball fabrication) and §6.2 (runner layout) verbatim — do not duplicate them.
+> **STATUS: SHIPPED.** The cross-distro Docker e2e (Ubuntu 24.04 + Fedora) is implemented and gated in CI (`.github/workflows/test-install-docker.yml`); the status doc records 9/9 scenarios passing. This is the *canonical* end-to-end installer test harness across two distro families: §6 defines the system-Python *scenario contract*; this section defines the *real distros* those scenarios (and the already-shipped CLI-only path) run on. Reuse §6.1 (offline-tarball fabrication) and §6.2 (runner layout) verbatim — do not duplicate them.
 
 ## 1. Why these two distros (and not one)
 

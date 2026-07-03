@@ -1,0 +1,26 @@
+# Group: signatures_b — NoSQL + log-injection + directory-listing signature CWEs.
+# Paths relative to ../fixtures/.
+
+# ── CWE-943 NoSQL injection (signature cwe.sig.nosql) ──
+- {file: signatures_b/cwe_943_1.js, language: JavaScript, cwe: "943", expectation: positive, line: 3}
+- {file: signatures_b/cwe_943_2.js, language: JavaScript, cwe: "943", expectation: positive, line: 3}
+- {file: signatures_b/cwe_943_3.py, language: Python, cwe: "943", expectation: positive, line: 4}
+- {file: signatures_b/cwe_943_1_clean.js, language: JavaScript, cwe: "943", expectation: negative}
+- {file: signatures_b/cwe_943_2_clean.js, language: JavaScript, cwe: "943", expectation: negative}
+- {file: signatures_b/cwe_943_3_clean.py, language: Python, cwe: "943", expectation: negative}
+
+# ── CWE-117 log injection (signature cwe.sig.loginj) ──
+- {file: signatures_b/cwe_117_1.java, language: Java, cwe: "117", expectation: positive, line: 5}
+- {file: signatures_b/cwe_117_2.js, language: JavaScript, cwe: "117", expectation: positive, line: 4}
+- {file: signatures_b/cwe_117_3.py, language: Python, cwe: "117", expectation: positive, line: 4}
+- {file: signatures_b/cwe_117_1_clean.java, language: Java, cwe: "117", expectation: negative}
+- {file: signatures_b/cwe_117_2_clean.js, language: JavaScript, cwe: "117", expectation: negative}
+- {file: signatures_b/cwe_117_3_clean.py, language: Python, cwe: "117", expectation: negative}
+
+# ── CWE-548 directory listing (signature cwe.sig.dirlist) ──
+- {file: signatures_b/cwe_548_1.js, language: JavaScript, cwe: "548", expectation: positive, line: 3}
+- {file: signatures_b/cwe_548_2.js, language: JavaScript, cwe: "548", expectation: positive, line: 3}
+- {file: signatures_b/cwe_548_3.py, language: Python, cwe: "548", expectation: positive, line: 4}
+- {file: signatures_b/cwe_548_1_clean.js, language: JavaScript, cwe: "548", expectation: negative}
+- {file: signatures_b/cwe_548_2_clean.js, language: JavaScript, cwe: "548", expectation: negative}
+- {file: signatures_b/cwe_548_3_clean.py, language: Python, cwe: "548", expectation: negative}

@@ -13,9 +13,12 @@ import pytest
 
 from shared.validate import validate
 from shared.validate.llm_judge import (
+    _DEFAULT_MAX_OUTPUT_TOKENS,
     _clear_file_hash_cache,
     _file_signature,
     _format_code_window,
+    _has_code_window,
+    _max_output_tokens,
     _parse_response,
     _render_user_message,
     _safe_int,
@@ -27,6 +30,18 @@ from shared.validate.llm_judge import (
     run_l5,
 )
 from shared.validate.types import ValidateConfig, ValidationCheck
+
+
+def test_max_output_tokens_env_and_default(monkeypatch):
+    """L5 max_tokens is tunable (env > default). Reasoning models (e.g. qwen3)
+    burn the budget on hidden reasoning; too low a cap truncates the verdict
+    JSON (finish_reason=length) → 0 llm_l5_verified. Raised default + env knob."""
+    monkeypatch.delenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", raising=False)
+    assert _max_output_tokens() == _DEFAULT_MAX_OUTPUT_TOKENS == 4000
+    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "16000")
+    assert _max_output_tokens() == 16000
+    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "0")  # invalid → default
+    assert _max_output_tokens() == _DEFAULT_MAX_OUTPUT_TOKENS
 
 
 # ── Parsing ──────────────────────────────────────────────────────────
@@ -79,6 +94,68 @@ def test_parse_caps_at_batch_size():
     assert len(out) == 10
 
 
+# ── Prose-wrapped JSON (thinking models) ─────────────────────────────
+# A reasoning model (qwen3 etc.) usually emits clean JSON in `content`, but
+# intermittently leaks a sentence around the object. The parser must EXTRACT
+# the verdict object rather than require the whole string to be JSON, or those
+# verdicts are silently lost as "no verdict" (live-observed: 2/4 L5 batches).
+
+_VERDICT = '{"verdicts":[{"id":"f1","exploitable":0.7,"reasoning":"reaches a sink"}]}'
+
+
+def test_parse_extracts_json_with_leading_prose():
+    out = _parse_response(f"Based on my analysis:\n{_VERDICT}", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_extracts_json_with_trailing_prose():
+    out = _parse_response(f"{_VERDICT}\nLet me know if you need more detail.", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_extracts_json_with_think_tag_leak():
+    out = _parse_response(f"<think>tracing dataflow...</think>\n{_VERDICT}", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_extracts_json_with_prose_both_sides():
+    out = _parse_response(f"Here is the result.\n{_VERDICT}\nHope this helps!", batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_prose_without_any_json_object_returns_none():
+    # No braces at all → nothing to extract → None (no false positives).
+    assert _parse_response("I could not produce a verdict for this finding.", batch_size=10) is None
+
+
+def test_parse_prose_with_unparseable_braces_returns_none():
+    # Braces present but the span isn't valid JSON → None (no crash, no garbage).
+    assert _parse_response("note: {this is not json at all}", batch_size=10) is None
+
+
+# Harder cases: the leaked prose itself contains JSON-ish braces, or there are
+# multiple objects. A naive first-`{`-to-last-`}` span over-captures and fails;
+# the parser must locate the balanced object that actually holds "verdicts".
+
+
+def test_parse_extracts_verdicts_when_reasoning_prose_has_braces():
+    raw = '<think>the object {"role":"x"} flows to a sink</think>\n' + _VERDICT
+    out = _parse_response(raw, batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_picks_verdicts_object_among_multiple():
+    raw = '{"note":"ignore me"}\n' + _VERDICT
+    out = _parse_response(raw, batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
+def test_parse_trailing_braces_prose_after_verdicts():
+    raw = _VERDICT + '\nFor reference the config was {"debug": true}.'
+    out = _parse_response(raw, batch_size=10)
+    assert out is not None and out[0]["id"] == "f1"
+
+
 # ── Verdict → check conversion ──────────────────────────────────────
 
 
@@ -123,6 +200,67 @@ def _f(idx: int, sev: str = "medium") -> dict:
         "description": "x",
         "code_snippet": "x = 1\n",
     }
+
+
+# ── _has_code_window (P0.3 grounding gate) ───────────────────────────
+# Direct coverage for the predicate that keeps the judge from reasoning
+# about a blank `<<<CODE\n\nCODE>>>` block. The whitespace-only and
+# missing/None branches were entirely uncovered (audit T2).
+
+
+def test_has_code_window_true_for_real_snippet():
+    assert _has_code_window({"code_snippet": "bad = f'SELECT {x}'"}) is True
+    # Even a single non-blank char on an otherwise-blank line counts.
+    assert _has_code_window({"code_snippet": "\n  x\n"}) is True
+
+
+def test_has_code_window_false_for_empty_string():
+    assert _has_code_window({"code_snippet": ""}) is False
+
+
+def test_has_code_window_false_for_whitespace_only():
+    # The whitespace branch: spaces / tabs / newlines strip to "" → no window.
+    assert _has_code_window({"code_snippet": "   "}) is False
+    assert _has_code_window({"code_snippet": "\n\n"}) is False
+    assert _has_code_window({"code_snippet": "\t \n \t"}) is False
+
+
+def test_has_code_window_false_for_none_value():
+    # `code_snippet` present but explicitly None (`get(...) or ""` path).
+    assert _has_code_window({"code_snippet": None}) is False
+
+
+def test_has_code_window_false_for_missing_key():
+    # No `code_snippet` key at all → default "" → no window.
+    assert _has_code_window({}) is False
+    assert _has_code_window({"title": "no snippet here"}) is False
+
+
+def test_selection_skips_finding_with_empty_code_window():
+    """P0.3: a finding with an empty/whitespace code window is never selected
+    for L5 — the judge must never be asked to reason blind. The grounded
+    sibling is still selected, proving it's the window (not the index) that
+    gates."""
+    grounded = _f(0)                       # has "x = 1\n"
+    blind = _f(1)
+    blind["code_snippet"] = "   "          # whitespace-only → no window
+    findings = [grounded, blind]
+    l1 = [[], []]
+    selected = _select_findings(findings, l1, top_n=10)
+    assert 1 not in selected, "blind finding (empty window) must be skipped"
+    assert 0 in selected, "grounded finding must still be selected"
+
+
+def test_selection_skips_finding_with_missing_code_window():
+    """P0.3 companion: a finding missing `code_snippet` entirely is also
+    skipped — never judged blind."""
+    grounded = _f(0)
+    blind = _f(1)
+    del blind["code_snippet"]
+    selected = _select_findings([grounded, blind], [[], []], top_n=10)
+    assert selected == [0], (
+        f"only the grounded finding may be selected; got {selected}"
+    )
 
 
 def test_selection_skips_findings_with_suppression():

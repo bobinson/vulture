@@ -30,3 +30,12 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["cwe_agent"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# Corpus fixtures are intentionally-incomplete VULNERABLE code samples, scanned
+# as text by the corpus runner (never imported/executed). They legitimately
+# reference undefined framework symbols (e.g. StaticHandler), so do not lint
+# them as real modules.
+extend-exclude = ["tests/corpus/fixtures"]

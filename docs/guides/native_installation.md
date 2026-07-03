@@ -12,7 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | 
 The script detects your OS/arch, downloads the matching release tarball from
 GitHub, verifies it (cosign + Rekor transparency log, falling back to SHA-256
 if cosign isn't on `PATH`), extracts it under `~/.vulture/`, generates a unique
-JWT secret, and symlinks `~/.local/bin/vulture`.
+JWT secret, and symlinks `~/.local/bin/vulture`. To verify a download yourself,
+see [Verifying releases with cosign](cosign_verification.md).
 
 If `~/.local/bin` isn't on your `PATH`, add it (the installer prints this):
 
@@ -54,14 +55,17 @@ runtime, which the installer auto-detects via `VULTURE_USE_SYSTEM_PYTHON`:
 - **`=1` = require**: as AUTO, but fail the install if no Python ≥ 3.12 is found.
 - **`=0` = disable**: never build a local runtime (CLI-only).
 
-A CLI-only install is valid: the CLI and UI work, but agent scanning then needs
-Docker (see [Related modes](#related-modes)). Install Python 3.12+ and re-run
-`install.sh` to add local agents. Skill-based scanning (deterministic pattern
-matching, 100% file coverage) runs without any LLM.
+**Current limitation:** a CLI-only install is valid — the CLI and UI work — but
+agents then require Docker (see [Related modes](#related-modes)). Install
+Python 3.12+ and re-run `install.sh` to add local agents instead. Skill-based
+scanning (deterministic pattern matching, 100% file coverage) runs without any
+LLM.
 
 ## Enable an LLM (optional)
 
-By default scans run **skills-only** — fast, deterministic, no API key. To add
+By default scans run **skills-only** for **every** agent — CWE included — fast,
+deterministic, no API key, no surprise spend. (Enabling the LLM is uniform
+fleet-wide: nothing runs the LLM phase unless `VULTURE_USE_LLM=true`.) To add
 the LLM analysis phase, set the variables below in `~/.vulture/config/.env`
 (loaded at `vulture start`) or `export` them first; the daemon forwards them to
 every agent.
@@ -91,45 +95,10 @@ vulture scan ./path/to/repo
 `vulture doctor` resolves the provider from `VULTURE_LLM_MODEL` and **warns** if
 the matching key is missing (the scan still runs, skills-only).
 
-## What gets installed
-
-```
-~/.vulture/
-├── bin/vulture                # Go binary (the SPA is embedded inside it)
-├── config/.env                # JWT secret + settings (mode 0600)
-├── data/
-│   ├── vulture.db             # SQLite database
-│   ├── run/                   # PID files
-│   ├── sources/               # cached git clones (created on first scan)
-│   └── logs/                  # backend + audit log (created on first run)
-├── plugins/state.toml         # enabled-plugin state
-├── runtime/
-│   ├── agents/                # Python audit agents
-│   ├── catalogs/              # CWE + ASVS reference data
-│   ├── plugins/               # bundled plugin manifests
-│   └── python/                # venv (present only when a host Python was detected)
-└── VERSION
-```
-
-The `~/.local/bin/vulture` symlink lets you run `vulture` from anywhere. The
-install touches only `$VULTURE_HOME` and `~/.local/bin` — no sudo.
-
-## Environment variables
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `VULTURE_HOME` | `~/.vulture` | Install location |
-| `VULTURE_PORT` | `28080` | Backend + UI port |
-| `VULTURE_VERSION` | (latest release) | Pin a specific release tag |
-| `VULTURE_USE_SYSTEM_PYTHON` | (unset = auto) | `1` require / `0` disable the local Python runtime |
-| `VULTURE_OFFLINE_TARBALL` | (unset) | Path to a pre-downloaded tarball; skip the GitHub download |
-| `VULTURE_REQUIRE_COSIGN` | `false` | Refuse to install without cosign signature verification |
-| `VULTURE_ALLOW_UNSIGNED` | `false` | If cosign is unavailable, allow SHA-only verification with a warning |
-| `VULTURE_PIP_INDEX_URL` | `https://pypi.org/simple` | Alternate PyPI mirror (HTTPS required) |
-| `VULTURE_ALLOW_DOWNGRADE` | `false` | Allow `VULTURE_VERSION` older than the built-in fallback |
-
-LLM variables (`VULTURE_USE_LLM`, `VULTURE_LLM_MODEL`, `OPENAI_API_KEY`,
-`OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_BASE`) are
+`OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_BASE`), the
+scope/cost knobs (`VULTURE_LLM_TIER3`, `VULTURE_LLM_BUDGET_USD`,
+`VULTURE_LLM_MAX_FILES`), and the escape hatches (`VULTURE_CWE_DISABLE_LLM`,
+`VULTURE_CWE_DISABLE_SIGNATURES`, `VULTURE_CWE_SIGNATURES_CANDIDATE_OFF`) are
 covered in [Enable an LLM](#enable-an-llm-optional).
 
 ## Pin a specific version

@@ -4,7 +4,8 @@
        docker-up docker-down \
        gen-env config-check \
        verify verify-proofs verify-simulate verify-all \
-       release-local install-local smoke-install smoke-negative freeze-deps check-lockfile
+       release-local install-local smoke-install smoke-negative freeze-deps check-lockfile \
+       cwe-corpus cwe-corpus-full
 
 # Build targets (parallel)
 build:
@@ -156,3 +157,33 @@ freeze-deps:
 # Fail if the committed lockfile is stale (CI + vulture.sh release gate).
 check-lockfile:
 	scripts/check-lockfile.sh
+
+# ─── Feature 0057 Phase 5e (R17): CWE corpus gate lanes ──────────────────
+# The corpus runner is DETERMINISTIC (regex skills + signatures, NO live LLM).
+#
+# CWE_CORPUS_FRAGMENTS is the CURATED PR subset: the signature + skill manifest
+# fragments only. It is an EXPLICIT list (passed via `--fragments`) so the PR
+# lane stays pinned and fast (<~60s) — a future full-Juliet fragment dropped
+# into manifest.d/ does NOT silently leak onto the PR lane (R17: full Juliet,
+# 64,295 cases, MUST NOT hit the PR lane; it runs on the nightly lane only).
+# The `_golden` slice is excluded (it backs the unit tests, never production N).
+CWE_CORPUS_FRAGMENTS := injection sig_a sig_b signatures_a signatures_b skill_c
+CWE_CORPUS_DIR := agents/cwe/tests/corpus
+
+# Interpreter: prefer the project venv (agents/.venv — the canonical local test
+# interpreter, has openai-agents/shared installed) when present; otherwise fall
+# back to bare `python` (the interpreter CI populates via its editable installs
+# in the test-agents job). Resolved here so both lanes share one definition.
+CWE_CORPUS_PY := $(shell if [ -x agents/.venv/bin/python ]; then echo $(CURDIR)/agents/.venv/bin/python; else echo python; fi)
+
+# PR lane: run the curated subset deterministically + fail on a stale golden.
+# Fast (<~60s) and deterministic — safe for every PR.
+cwe-corpus:
+	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) corpus_runner.py --fragments $(CWE_CORPUS_FRAGMENTS)
+	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) report_coverage.py --check
+
+# Nightly / label lane: the FULL deterministic sweep (every production fragment,
+# Juliet included once vendored) + the stale-golden gate. Slower; never on PRs.
+cwe-corpus-full:
+	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) corpus_runner.py
+	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) report_coverage.py --check

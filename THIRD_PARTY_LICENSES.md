@@ -196,5 +196,48 @@ Direct dependencies of note:
 - `vite`, `vitest`, `@playwright/test` — MIT
 - `tailwindcss` — MIT
 
-No copyleft (GPL/AGPL/SSPL) or source-available-with-restrictions (Commons
-Clause, BUSL) dependencies are present in the Vulture v0.1.0 lockfiles.
+**Copyleft status (corrected 2026-06-24).** The Python / Go / npm *application*
+dependencies in the lockfiles are permissive (MIT / BSD / Apache-2.0). The earlier
+blanket "no copyleft present" statement was **inaccurate and is withdrawn**: the
+bundled Semgrep plugin is LGPL-2.1 (see NOTICE), and the **bundled native-install
+runtime** (§6) ships a GPL-3.0 component on macOS.
+
+---
+
+## 6. Bundled native-install runtime (Mode E tarballs)
+
+`release.yml` bundles a python-build-standalone (PBS) CPython 3.12 runtime into
+every native-install tarball (`runtime/python/`), so the components below are
+**redistributed in the release binaries** and must be attributed. Inventory
+verified 2026-06-24 against the pinned build `cpython-3.12.13+20260610`
+(SHA-matched to `scripts/pbs-shas-20260610.txt`).
+
+| Component | Version | License | Where |
+|-----------|---------|---------|-------|
+| CPython | 3.12.13 | PSF License Agreement | the interpreter |
+| OpenSSL | 3.x | Apache-2.0 | `_ssl`, `_hashlib` |
+| SQLite | 3.x | public domain | `_sqlite3` |
+| zlib | 1.3.1 | zlib | `zlib` |
+| xz / liblzma | 5.x | 0BSD / public domain | `_lzma` |
+| bzip2 | 1.0.8 | bzip2 (BSD-like) | `_bz2` |
+| libffi | — | MIT | `_ctypes` |
+| expat | 2.8.1 | MIT | `pyexpat` |
+| libmpdec | 2.5.x | BSD-2-Clause | `_decimal` |
+| ncurses | 6.5 | MIT/X11-style | `_curses` |
+| **libedit** | — | BSD-2-Clause | `readline` — **NOT** GNU readline (no GPL) |
+| Tcl/Tk | 9.0 | Tcl/Tk (BSD-style) | `_tkinter` (`libtcl9*.so`) |
+| ~~Berkeley DB / GNU gdbm~~ | — | — | **REMOVED** — these backed `_dbm` (`dbm.ndbm`): Berkeley DB on Linux, **GPL-3.0 GNU gdbm on macOS**. `_dbm.*.so` is now **stripped on every platform** at build. See ✅ below. |
+
+> **✅ Resolved (2026-06-24) — `_dbm` is stripped at build.** The macOS PBS
+> `_dbm.cpython-312-darwin.so` statically linked **GNU gdbm (GPL-3.0)** as its ndbm
+> backend (Linux used Berkeley DB / Sleepycat). Since nothing in Vulture uses
+> `dbm.ndbm` (`dbm.open()` falls back to the pure-Python `dbm.dumb`),
+> `build-release.sh` now **removes `_dbm.*.so` from the bundled runtime on every
+> platform** via `strip_copyleft_modules` (`scripts/lib/runtime_strip.sh`), and
+> `assert_no_copyleft_native` **hard-fails the build** if any GPL/AGPL native code
+> remains. Result: **every release tarball is permissive-only** — verified against
+> the real macOS `_dbm.so`, guarded by `scripts/tests/test_runtime_strip.sh`.
+
+PBS `install_only` archives ship only CPython's own `LICENSE.txt` — not the
+upstream libraries' license texts. Source those from the full PBS build's
+`licenses/` manifest (or upstream) and vendor them for completeness.

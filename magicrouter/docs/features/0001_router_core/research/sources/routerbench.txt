@@ -1,0 +1,1200 @@
+                                                       ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+
+                                                 Qitian Jason Hu 1 Jacob Bieker 1 Xiuyu Li 2 Nan Jiang 3 Benjamin Keigwin 1 Gaurav Ranganath 1
+                                                                          Kurt Keutzer 2 Shriyash Kaustubh Upadhyay 1
+
+
+                                                                   Abstract                                 duce new LLMs, designed for both generic and specialized
+                                                                                                            use cases, on a near-daily basis 1 . However, the proliferation
+arXiv:2403.12031v2 [cs.LG] 28 Mar 2024
+
+
+
+
+                                                As the range of applications for Large Language             of LLMs presents a challenge for LLM application builders
+                                                Models (LLMs) continues to grow, the demand                 to identify the most suitable model for their applications.
+                                                for effective serving solutions becomes increas-            While some proprietary models, such as GPT-4, are distin-
+                                                ingly critical. Despite the versatility of LLMs,            guished by their superior performance, they often incur high
+                                                no single model can optimally address all tasks             economic costs due to the high API prices.
+                                                and applications, particularly when balancing per-
+                                                formance with cost. This limitation has led to              Many prior works focus on improving the capabilities of
+                                                the development of LLM routing systems, which               individual LLMs while maintaining low costs. Techniques
+                                                combine the strengths of various models to over-            such as prompting (Wei et al., 2022), quantization (Lin et al.,
+                                                come the constraints of individual LLMs. Yet,               2023; Kim et al., 2023), and system optimization (Kwon
+                                                the absence of a standardized benchmark for                 et al., 2023) may reduce a single model’s serving cost, yet
+                                                evaluating the performance of LLM routers hin-              with new models emerging daily, these approaches may not
+                                                ders progress in this area. To bridge this gap,             remain feasible or scalable in long term. Moreover, the
+                                                we present ROUTER B ENCH, a novel evaluation                diversity of choices of LLMs available at various price and
+                                                framework designed to systematically assess the             performance tiers can be daunting for users attempting to
+                                                efficacy of LLM routing systems, along with a               select and optimize an appropriate model2 .
+                                                comprehensive dataset comprising over 405k in-              An alternative solution aims to select to optimal LLM for
+                                                ference outcomes from representative LLMs to                each input through ”routing.” (Chen et al., 2023; Shnitzer
+                                                support the development of routing strategies. We           et al., 2023; Šakota et al., 2023). Routing offers several
+                                                further propose a theoretical framework for LLM             advantages over single-LLM optimization. First, it is a
+                                                routing, and deliver a comparative analysis of vari-        lightweight process, which treats each LLM as an input-
+                                                ous routing approaches through ROUTER B ENCH,               output black box, avoiding the need to delve into intricate
+                                                highlighting their potentials and limitations within        infrastructure details, thus making it flexible and broadly
+                                                our evaluation framework. This work not only                applicable. Second, routing systems benefit from the diver-
+                                                formalizes and advances the development of                  sity of LLMs, while single-LLM methods may struggle to
+                                                LLM routing systems but also sets a standard                keep pace with the expanding LLM landscape. Lastly, while
+                                                for their assessment, paving the way for more               single-LLM strategies often face a compromise between per-
+                                                accessible and economically viable LLM de-                  formance and other factors such as per-token costs, routing
+                                                ployments. The code and data are available at               systems adeptly balance a spectrum of user demands.
+                                                https://github.com/withmartian/routerbench.
+                                                                                                            The rise in routing-related research has improved cost
+                                                                                                            efficiency, enhanced performance, and broadened acces-
+                                                                                                            sibility (Chen et al., 2023; Lee et al., 2023; Lu et al.,
+                                         1. Introduction                                                    2023). Despite these advances, a comprehensive bench-
+                                                                                                            mark for evaluating routing techniques remains absent. We
+                                         Large Language Models (LLMs) have exhibited remarkable             introduce ROUTER B ENCH, the first comprehensive bench-
+                                         capabilities in addressing a wide range of tasks across aca-       mark designed specifically for assessing router mecha-
+                                         demic and industrial scenarios (Bubeck et al., 2023). This         nisms in terms of inference dollar cost and performance.
+                                         has motivated both researchers and practitioners to intro-
+                                                                                                               1
+                                                                                                                 As of January 16th, 2024, there are 469,848 models listed on
+                                            1
+                                             Martian 2 UC Berkeley 3 UC San Diego. Correspondence to:       huggingface.com
+                                         Qitian Jason Hu <jason@withmartian.com>.                              2
+                                                                                                                 As of January 29th, 2024, there are 22,177 language models
+                                                                                                            with 7 billion parameters listed on huggingface.com
+                                         Preprint.
+
+                                                                                                        1
+                                 ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+
+   ROUTERBENCH Construction Process                          Model Routing Process
+
+
+                                                                                       <PROMPT>                      High WTp
+                                                                     Claude            "The following are multiple
+       MMLU                                                                            choice questions ..."
+                                       RouterBench
+                                                                       GPT-4                                         best performance
+      GSM8k
+                                       Format                         llama
+                                                                                               router
+                                        Prompt                                         ROUTER IS trained on MARS
+                                                                                                                     Fastest inference
+                                        response
+                                        gold_response
+       MBPP                                                          Mistral
+                                        cost
+                                                                                                                     LOW WTp
+
+
+                                                                                                                                   *WTP: Willingness to pay.
+
+
+
+
+Figure 1. Left: The ROUTER B ENCH Construction Process integrates eight datasets with eleven distinct models to develop
+ROUTER B ENCH. Detailed format can be found in Appendix A.3. Right: The Model Routing Process shows the method of rout-
+ing prompts through a router to various LLMs based on specific requests, demonstrating the dynamic allocation of resources.
+
+ROUTER B ENCH encompasses a diverse array of tasks and                2. Related Work
+domains, with pre-generated LLM response and quality
+metrics, on which different routing mechanisms can be effi-           Various strategies have been proposed to optimize the cost
+ciently tested without inference. Our experiments revealed            and performance of current LLMs. We provide an overview
+that while some previous routing mechanisms have difficulty           of them with a focus on routing-related approaches.
+generalizing to complex tasks and up-to-date models, there            Single LLM Enhancement Fine-tuning is used to improve
+are several promising fields on which even simple routing             models for specific tasks, which requires additional training
+demonstrated outstanding performance.                                 and domain-specific data (Rafailov et al., 2023). Prompt-
+In conclusion, we present the following key contributions:            ing mechanisms like Chain-of-Thought (CoT) (Wei et al.,
+                                                                      2022; Zhou et al., 2023; Wang et al., 2022) and Tree of
+                                                                      Thoughts (ToT) (Yao et al., 2023) could bolster LLM perfor-
+  1. We have developed a comprehensive benchmark for                  mance without additional fine-tuning. Mixture-of-Experts
+     LLM routing covering major tasks for LLMs, which                 (MoE) (Eigen et al., 2014; Shazeer et al., 2017; Fedus et al.,
+     includes a wide range of both open-source and propri-            2022; Du et al., 2022; Shen et al., 2023; Si et al., 2023) is an-
+     etary models. ROUTER B ENCH enables efficient train-             other line of work that explores routing within the model to
+     ing and testing of model routers without inference, and          enhance performance efficiently, which contains specialized
+     can be flexibly extended to cover new tasks and mod-             ”experts” and routes the input to the best expert. Neverthe-
+     els.                                                             less, these single-LLM enhancements are usually model and
+                                                                      scenario specific, and could not benefit from the explosion
+                                                                      in the number of LLMs.
+  2. We introduce a theoretical framework designed to as-
+                                                                      LLM Synthesis Beyond single LLM approaches, LLM
+     sess the efficacy of routers across several metrics, with
+                                                                      synthesis utilizes the ensemble of multiple LLMs, integrat-
+     a particular emphasis on inference cost (expressed in
+                                                                      ing their outputs into an enhanced final result (Jiang et al.,
+     dollars) and performance. This framework includes
+                                                                      2023b). Another approach has shown that a strategic com-
+     mathematical formulations that enable the seamless
+                                                                      bination of smaller models can match or even outperform
+     integration and comparative analysis of various routers
+                                                                      larger models (Lu et al., 2024). However, these methods
+     and LLMs.
+                                                                      require at least two steps: text generation and synthesis,
+                                                                      which increases costs and latency, creating challenges to
+  3. We evaluate the efficiency of routing strategies across          applying this approach in production.
+     a broad range of tasks. Our results provide insights             Routing Unlike LLM Synthesis, routing can select the suit-
+     into the performance of various routers in different con-        able model for specific input without performing inference
+     texts and demonstrate that the monetary costs of LLM             on every candidate model. Routing can be classified into
+     services can routinely vary by factors of 2-5× for com-          two categories, non-predictive routing and predictive rout-
+     parable levels of performance. This underscores the              ing. Non-predictive routing strategies retrieve outputs from
+     significance and utility of our benchmark, highlighting          LLMs and directly pick one without a model-assisted syn-
+     promising areas for future enhancements.
+
+                                                                 2
+                                ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+thesis step. FrugalGPT (Chen et al., 2023) presents an inau-           The parameters θ typically include the maximum price the
+gural application of this type of strategy, which employs a            user is willing to pay, the desired latency, or a number of
+generation judger that assesses the quality of responses from          layers of neural networks for the router model, etc. More
+various LLMs to a given query, invoking LLMs sequentially              details of router parameters will be elaborated and discussed
+until an answer meets a predefined quality threshold. Sev-             in Section 5.1.
+eral studies (Madaan et al., 2023; Yue et al., 2023; Lee et al.,
+                                                                       The expected cost of a router Rθ1 across dataset D is defined
+2023) also have explored systems that integrate small lan-
+                                                                       as
+guage models with LLMs. Another methodology involves
+a layered inference framework, re-routing more complex                             cRθ1 (D) = E[c(Rθ1 (x))|x ∈ D]
+queries to an advanced model for improved results (Wang                and the expected performance of a router Rθ1 can be defined
+et al., 2023). Predictive routing selects the optimal LLM              similarly.
+without requiring to evaluate the output. One line of research
+has implemented routers utilizing supervised learning algo-            By experimenting with various router parame-
+rithms (Shnitzer et al., 2023), while some others use reward           ters θ1 , ..., θk , we obtain a series of data points
+model-based techniques (Hari & Thomson, 2023; Lu et al.,               (cRθ1 , qRθ1 ), ..., (cRθk , qRθk ) which can be graphi-
+2023). Furthermore, meta-model, trained on inputs along                cally represented in the cost-quality (c − q) plane alongside
+with a model-specific token to predict the performance score,          the results of LLMs for comparative analysis.
+represents another approach to determining the most appro-             Linear Interpolation The initial operation we introduce
+priate LLM for use (Šakota et al., 2023). In short, predictive        within this framework is linear interpolation, which enables
+routers could bring substantial cost and performance im-               the computation of a weighted average between any two
+provement without sacrificing latency, with a number of                points on the cost-quality (c − q) plane.
+early works dedicated to this field.
+While many routers currently exist, a systematic benchmark             As illustrated by an example in the left of Figure 2, consider
+for their evaluation has been lacking. Our work aims to                two routers, Rθ1 and Rθ2 , we can formulate a third router,
+address this issue and introduce a benchmark for router                Rint (Rθ1 , Rθ2 ), based on the following principle: given a
+evaluation.                                                            prompt x select t ∈ [0, 1] such that:
+                                                                                                         (
+                                                                                                             Rθ1 (x), w.p. t
+3. Math Formulation for Router Evaluation                                    Rint (Rθ1 , Rθ2 , t)(x) =
+                                                                                                             Rθ2 (x), w.p. 1 − t
+The primary challenge in assessing the performance of rout-
+ing systems lies in balancing two conflicting objectives:              Through the principle of linearity of expectation, we can
+maximizing efficiency and minimizing cost. To effectively              deduce the expected cost of Rint (Rθ1 , Rθ2 , t)(x) in terms
+compare routers, we have developed a framework that cap-               of LLM1 and LLM2 :
+tures the multi-faceted nature with one metric.
+                                                                              E[cRint (x) |x ∈ D] = t · cRθ1 + (1 − t) · cRθ2
+3.1. Setup and Basic Operations
+                                                                       and the expected performance of Rint (Rθ1 , Rθ2 , t)(x) can
+Consider a set of models L = {LLM1 , . . . , LLMm } a                  be defined similarly.
+dataset D consisting of examples xi ∈ {x1 , ..., x|D| }. For
+each model LLMj , we evaluate its performance by generat-              Notably, for two data points (c1 , q1 ) and (c2 , q2 ) correspond-
+ing an output oji = LLMj (xi ) for each example xi . Each              ing to Rθ1 and Rθ2 respectively, Rint (t) can precisely inter-
+                                                                       polate any point along the line segment connecting (c1 , q1 )
+output oji has two associated quantities: the cost c(oji ) of
+                                                                       and (c2 , q2 ).
+generating that output and the quality or performance q(oji )
+of the output itself. Through this process, we establish an            Extrapolation To ensure all routers can enrich our math-
+expected cost cm and an expected quality qm for each model             ematical framework, we also introduce the extrapolation
+LLMm across the dataset D.                                             operation, which enables all routers to extend to the cost
+                                                                       domain [0, ∞]. For a given router Rθ , we can trivially add
+              cm = E[c(LLMm (x))|x ∈ D]                                more cost to the system without adding performance (for
+              qm = E[q(LLMm (x))|x ∈ D]                                example repeat LLM generation k times and only take the
+                                                                       last generation as final output) and thus extend the cost to
+A router R, define as a function, takes in a prompt x and a
+                                                                       ∞. To extend the router to a smaller cost domain, we simply
+set of parameters θ, subsequently selecting the most suitable
+                                                                       interpolate the null router (zero cost, zero performance) and
+model LLMi from a set L to complete the prompt, i.e.
+                                                                       Rθ1 . Thus we are able to achieve any cost level between
+                   Rθ (x) 7→ LLMi ∈ L.                                 [0, ∞] to when comparing routers with different domains.
+
+                                                                   3
+                                                       ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+
+
+
+               Performance
+
+
+
+
+                                                                                     Performance
+
+
+
+
+                                                                                                                                                   Performance
+                             1                                                                     1                                                             1
+
+
+                                                                                                                              B       E’                                                       B           F
+                             0.8                                                                   0.8                   D’                                      0.8
+
+                                                                     B (0.8, 0.8)
+
+                                                                                                                                      E
+                             0.6                                                                   0.6         C                                                 0.6             C
+
+                                                                                                                                                                                           E
+                                                      C (0.5, 0.5)
+                             0.4                                                                   0.4                                                           0.4
+                                                                                                                         D
+
+
+                                                                                                                                                                       D
+                             0.2                                                                   0.2                                                           0.2       A
+                                     A (0.2, 0.2)                                                          A
+
+
+
+                             0                                                                     0                                                             0
+                                   0.2          0.4      0.6         0.8      Cost                       0.2       0.4        0.6     0.8   Cost                           0.2       0.4       0.6   0.8       Cost
+
+
+
+
+Figure 2. Left: linear interpolation is the process of achieving the cost-performance trade-off between any concrete routers. Point A
+and B are routers with different input parameters. To achieve the average of A and B, we build router C which routes to A or B with
+50% probability each, and it performs the average of A and B in expectation. Middle: Consider points A to E, we can construct the
+non-decreasing convex hull consisting of points A, B, and C. D and E as they can be replaced by a strictly superior affine combination of
+A, B, and C. Right: ABC and DEF are two routing systems (already convexified with ABC extrapolated to (0.1,0) for a fair comparison).
+To compare, we interpolate A and B to cmin = 0.1 and cmax = 0.8, respectively, and then calculate the area under the curve normalized
+by cmax − cmin to derive AIQ.
+
+It is essential to note that the routers discussed are function-                                                                  {LLM1 , . . . , LLMm } based on their collective non-
+ally analogous to LLMs within this context, as both can be                                                                        decreasing convex hull. For a specified cost c, Rzero pro-
+represented as coordinates in the cost-quality (c − q) plane.                                                                     vides a probabilistic mix of LLMs that maximizes expected
+                                                                                                                                  output quality with a simple, mathematics-driven routing
+3.2. Non-Decreasing Convex Hull                                                                                                   strategy. Rzero serves as a basic benchmark for assessing
+                                                                                                                                  the efficacy of other routing systems; a router is deemed
+When working with multiple routers, it’s feasible to con-                                                                         significant only if it demonstrates superior performance
+struct any affine combination of points through linear inter-                                                                     compared to Rzero .
+polation among them. Specifically, for a set S of points in
+the cost-quality (c − q) plane, these affine combinations can
+                                                                                                                                  3.3. Comparing Different Routing Systems
+target any point (c, q) in R2 lying within the convex hull
+formed by S. We identify Sch ⊆ S as the subset of points                                                                          Given the agnostic nature of our comparison framework
+that delineate the vertices of this convex hull.                                                                                  towards the router’s structure, routing systems can produce
+                                                                                                                                  an assorted set of points on the c − q plane that may be
+Furthermore, it’s possible to configure a non-decreasing
+                                                                                                                                  non-deterministic and non-parametric, complicating direct
+convex hull from Sch , ensuring that for any two points
+                                                                                                                                  comparisons. Leveraging the methodologies delineated
+(c1 , q1 ) and (c2 , q2 ) where c2 ≥ c1 , it follows that q2 ≥
+                                                                                                                                  previously, we have the capacity to condense these dis-
+q1 . Intuitively, if the extra cost of c2 − c1 does not bring
+                                                                                                                                  parate points into a streamlined function—specifically, a
+any performance improvement, it is advisable to simply
+                                                                                                                                  non-decreasing convex hull—and subsequently distill this
+extrapolate (c1 , q1 ) to the domain of c2 , and (c2 , q2 ) could
+                                                                                                                                  representation into a singular metric that encapsulates the
+be (c2 , q1 ). An example is shown in the middle of Figure 2.
+                                                                                                                                  system’s characteristics.
+For a given routing system R1 , constituted by LLMs
+                                                                                                                                  Routing systems often generate multiple points on the cost-
+and routers plotted in the c − q plane for dataset D, we
+                                                                                                                                  quality (c − q) plane, making it difficult to compare the
+can conceptualize a new routing system R            f1 . This in-
+                                                                                                                                  underlying systems. However, our framework allows us to
+volves constructing routers Rθ1 , ..., Rθk , yielding points                                                                      transform these non-parametric points into a simpler func-
+(c1 , q1 ), ..., (ck , qk ). By establishing a non-decreasing con-                                                                tion, specifically a non-decreasing convex hull, which can
+vex hull Sndch from these points and for any cost c within                                                                        be characterized by a single numerical value.
+the range [cmin , cmax ], optimal performance is attainable
+by interpolating between the two closest cost points. This                                                                        Let’s consider two different routing systems (for example
+process effectively creates a new routing system that spans                                                                       KNN and MLP-based routers), Rθ where θ ∈ Θ, and
+the complete domain [cmin , cmax ].                                                                                               Rλ where λ ∈ Λ. To compare their effectiveness, we
+                                                                                                                                  parametrize them by sampling from Θ, Λ to generate a set
+Given the framework established, we define the Zero                                                                               of points: Rθ1 , . . . , Rθk , and Rλ1 , . . . , Rλk . Then, we con-
+router (Rzero ) as a router that selects LLMs from
+                                                                                                                                  struct a non-decreasing convex hull for both groups, R       fθ and
+
+                                                                                                                         4
+                                ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+R
+fλ , defined on a shared domain [cmin , cmax ].                          • Commonsense Reasoning: Hellaswag (Zellers et al.,
+                                                                           2019), Winogrande (Sakaguchi et al., 2021), and ARC
+We define AIQ (Average Improvement in Quality) for one
+                                                                           Challenge (Clark et al., 2018)
+of the routing systems as follows:
+
+                         1
+                                       Z cmax                            • Knowledge-based Language                Understanding:
+         AIQ(Rθ ) =                             R
+                                                fθ dc                      MMLU (Hendrycks et al., 2021)
+                    cmax − cmin         cmin
+
+                                                                         • Conversation: MT-Bench (Zheng et al., 2023b)
+With the equation above, we can calculate AIQs for any
+group of routing systems to get a clear understanding of
+                                                                         • Math: GSM8K (Cobbe et al., 2021)
+their relative performance, which is demonstrated in the
+right of Figure 2. Rather than performing complex graphic
+                                                                         • Coding: MBPP (Austin et al., 2021)
+analysis, AIQ allows users to measure router performance
+in a straightforward way.
+                                                                      RAG Dataset: To evaluate routers in a more practical set-
+4. Benchmark Construction - ROUTER B ENCH                             ting, we collected 800 user queries from one of Martian’s
+                                                                      clients, an LLM-assisted search company, and constructed
+To systematically assess router performance, we have de-              an RAG dataset based on these queries. These queries
+veloped a dataset, ROUTER B ENCH. This comprehensive                  cover topics including sports, history, media & art, and poli-
+dataset consists of a broad spectrum of tasks, includ-                tics, and all have ground truth answers. We then manually
+ing commonsense reasoning, knowledge-based language                   collected the ground truths, which were used to evaluate
+understanding, conversation, math, coding and retrieval-              answers from selected groups of LLM and LLM-assisted
+augmented generation (RAG). ROUTER B ENCH is con-                     search engines. This initiative is designed to assess the
+structed by leveraging existing datasets that are widely              routers’ performance in a complex ”compound system” set-
+recognized and utilized in the evaluation of leading                  ting (Zaharia et al., 2024) – determining whether routers
+LLMs, such as GPT-4, Gemini (Team et al., 2023), and                  can adeptly navigate when retrieval abilities are also in play.
+Claude (Anthropic, 2023). This approach ensures that                  For instance, when dealing with news published after the
+ROUTER B ENCH is representative of the diverse challenges             GPT-4 knowledge cutoff, routers are expected to more fre-
+and requirements pertinent to mainstream LLM perfor-                  quently opt for models that can access and search the latest
+mance evaluation.                                                     internet-based information (e.g. sonar-medium-online).
+
+4.1. Principles in benchmark construction                             4.3. Dataset Construction Process
+The construction of ROUTER B ENCH is guided by the fol-               For the compilation of our benchmark dataset, we perform
+lowing principles:                                                    inference with 14 different LLMs, with 3 of them specific
+                                                                      to the RAG dataset3 , including both open-source and propri-
+   • Extensive Coverage: Our selection process identified a           etary models. This process was applied to each of the eight
+     diverse array of fields where LLMs are widely utilized,          datasets and the RAG dataset enumerated in Section 4.2,
+     aiming for wide-ranging applicability.                           which is also illustrated in Figure 1. The selected LLMs are
+                                                                      as follows and more details are in Appendix A.1:
+   • Practical Relevance: The benchmarks chosen are of
+     considerable significance to the industry’s current ap-          Open Source Model: Llama-70B-chat (Touvron et al.,
+     plications of LLM systems, presenting a balanced chal-           2023), Mixtral-8x7B-chat (Madaan et al., 2023), Yi-34B-
+     lenge to the state-of-the-art LLMs, that is not too diffi-       chat (AI et al., 2024), Code Llama-34B (Rozière et al.,
+     cult nor too simplistic.                                         2023), Mistral-7B-chat (Jiang et al., 2023a), WizardLM-
+                                                                      13B (Xu et al., 2024)
+   • Extensibility: ROUTER B ENCH is designed for seam-
+     less integration of additional metrics, such as latencies        Proprietary Model: GPT-4, GPT-3.5-turbo (OpenAI,
+     and throughputs, ensuring adaptability to the evolving           2023), Claude-instant-v1, Claude-v1, Claude-v2 (Anthropic,
+     landscape of LLM.                                                2023), You.com API, sonar-small-online, sonar-medium-
+                                                                      online.
+4.2. Benchmark Dataset                                                In total, there are 405,467 samples in ROUTER B ENCH, cov-
+                                                                      ering 11 models, 8 datasets, and 64 tasks.
+For the initial release, we have curated a selection of 8 rep-
+resentative datasets from multiple different tasks. Detailed              3
+                                                                            sonar-small-online and sonar-medium-online from Perplexity
+descriptions are in Appendix A.2.                                     AI, You.com API
+
+                                                                  5
+                                                          ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+               1.0
+% Accuracy →
+                           Oracle
+
+                                                                                                                           MMLU 0.14 0.52 0.14 0.03 0.04 0.01 0.02 0.01 0.01 0.01 0.01 0.03
+               0.9
+                                                                                                                        MT-Bench 0.11 0.2 0.21 0.08 0.09 0.12 0.02 0.02 0.0 0.01 0.12 0.0
+                                                                                                   GPT-4                   MBPP 0.13 0.33 0.12 0.11 0.02 0.07 0.03 0.0 0.0 0.02 0.02 0.13
+               0.8
+
+                                                                                                                       HellaSwag 0.23 0.54 0.09 0.02 0.08 0.01 0.01 0.01 0.0 0.0 0.01 0.02
+                           Yi 34B
+               0.7
+                                                                                                                      Winogrande 0.27 0.57 0.09 0.03 0.01 0.0 0.01 0.01 0.0 0.0 0.0 0.0
+                              GPT-3.5
+                                                                        Claude 1
+                         Mixtral 8x7b                                                                                     GSM8k 0.25 0.29 0.15 0.05 0.07 0.04 0.04 0.05 0.02 0.01 0.01 0.0
+                            Llama 70b
+               0.6
+                                                                                                                    ARC-Challenge 0.11 0.66 0.13 0.01 0.04 0.01 0.01 0.0 0.0 0.0 0.01 0.01
+                           Claude Instant 1
+                                                                               Claude 2
+                         Wizard LM 13B
+
+
+
+
+                                                                                                                                               B
+                                                                                                                                    Mis 3B
+
+                                                                                                                             Co tral B
+                                                                                                                                   Lla 7B
+
+                                                                                                                                               B
+
+
+                                                                                                                                     ns 5
+                                                                                                                                   Lla t V1
+                                                                                                                                    Cla 70B
+                                                                                                                                    Cla V1
+                                                                                                                                                2
+                                                                                                                                   No PT-4
+                                                                                                                                               ct
+                                                                                                                                  e I 3.
+
+
+
+
+                                                                                                                                            eV
+                                                                                                                                            34
+                                                                                                                                  Mix l 7
+
+
+                                                                                                                                            34
+
+
+
+
+                                                                                                                                           rre
+                            Code Llama 34B
+
+
+
+
+                                                                                                                                            1
+
+
+                                                                                                                                 de 8x
+  Mistral 7B
+
+
+
+
+                                                                                                                                ud GPT-
+
+
+
+
+                                                                                                                                            e
+                                                                                                                                        tra
+
+
+
+
+                                                                                                                                       tan
+
+
+
+
+                                                                                                                                         G
+                                                                                                                                       ud
+                                                                                                                                       ud
+                                                                                                                                         Yi
+                                                                                                                                        M
+
+
+
+
+                                                                                                                                       ma
+
+
+
+
+                                                                                                                                       ma
+
+
+
+
+                                                                                                                                       Co
+         0.5
+
+
+
+
+                                                                                                                            za       rdL
+                     0                  $0.002   $0.004        $0.006                     $0.008           $0.010
+
+
+
+
+                                                                                                                         Wi
+                                                                                               Total Cost →
+
+
+
+
+                                                                                                                            Cla
+Figure 3. Left: Accuracy vs Total Cost of all the 11 LLMs on ROUTER B ENCH. Right: The Oracle LLMs selection frequency across the
+7 subsets in ROUTER B ENCH.
+
+ 4.4. A Pilot Study: The Oracle Router                                                                               calculated via:
+We assessed the performance of various models across the                                                                         performance scoreij = λ · Pij − costj
+eight datasets, with more details in ( A.4 and 7) while aggre-
+gate results are illustrated in Figure 3. The Oracle represents                                                      P denotes the predicted performance of LLMj on sample
+the best possible router: the one that always routes to the                                                          xi , with λ representing the willingness to pay (WTP) pa-
+best-performing LLM (if there are multiple of them, then                                                             rameter that delineates the cost-performance trade-off. A
+route to the cheapest one).                                                                                          higher λ indicates a preference for superior performance at a
+                                                                                                                     higher cost. We approximate the total cost using the cost per
+Result: We note that the Oracle router achieves near-                                                                token metric. The routing decision for the predictive router
+optimal performance at a low cost, highlighting the potential                                                        is thus formulated as selecting the LLM that optimizes the
+for efficient routing among LLMs. Although proprietary                                                               performance score.
+models like GPT-4 offer superior performance, their higher
+cost than open-source alternatives is a significant drawback.                                                       To estimate P for each input across models, we implemented
+Factors such as overalignment could also hurt the generation                                                        two supervised regression approaches: k-nearest neighbors
+quality of proprietary models such as Claude 2 (refer to Ap-                                                        (KNN) and multi-layer perceptron (MLP) inspired by
+pendix C). The heatmap in Figure 3 illustrates that, despite                                                        (Shnitzer et al., 2023). We allocated a fraction of the dataset
+WizardLM-13B and Mistral-7B achieving only about 50%                                                                for training a performance predictor for each task, assessing
+accuracy across tasks, their affordability leads to frequent                                                        its efficacy on the remainder.
+selection by the Oracle, prioritizing them when they pro-                                                            Specifically,       the     KNN        router       estimates
+vide correct responses. Moreover, the surprising observation                                                         performance scoreij by identifying the k nearest samples in
+that GPT-4 is seldom chosen suggests the existence of less                                                           the training set Dtrain and opting for LLMi , demonstrating
+expensive LLMs that can deliver high-quality answers for                                                             optimal performance within this subset.
+most queries. This underscores the substantial opportunity
+                                                                                                                                              1        X
+for enhancing LLM systems through cost-effective routing                                                                        PKNN (xi ) =                     q(oij )
+without sacrificing quality.                                                                                                                  k
+                                                                                                                                                    xj ∈NNk (xi ,Dtrain )
+
+                                                                                                                    Where N Nk (xi , Dtrain ) signifies the subset of k near-
+ 5. Experiments                                                                                                     est neighbors to the sample xi within the training dataset
+ 5.1. Predictive Router                                                                                             Dtrain .
+                                                                                                                     Similarly, for the MLP router, we have trained a set of
+We propose a novel set of predictive routers that do not
+                                                                                                                     MLP models to predict the performance
+require the pre-generation of LLM outputs. Specifically,
+we introduce a router R : xi → LLM, constructed as fol-                                                                  PMLP (xi ) = f (Wn · σ(... · σ(W1 · xi + b1 )... + bn )
+lows: for an input xi , the performance score for LLMj is
+                                                                                                                    Those series of KNN and MLP routers are trained with
+                                                                                                                    varying hyperparameters, and we present the experimental
+
+                                                                                                                6
+                                                    ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+                                                                          Cost vs. Performance for Routers and LLMs
+                                     eval: MMLU                                                     eval: ARC-Challenge                                                                eval: MBPP
+                                                                                                                                                        0.9
+              0.9
+                                                                           0.9                                                                          0.8
+              0.8
+Performance
+
+
+
+
+                                                                                                                                                        0.7
+              0.7                                                          0.8
+                                                       AIQ values
+                                                    Zero router: 0.763
+                                                                                                                                   AIQ values
+                                                                                                                                Zero router: 0.877      0.6                                                AIQ values
+                                                                                                                                                                                                        Zero router: 0.660
+              0.6                                   KNN router: 0.773
+                                                    MLP router: 0.769      0.7                                                  KNN router: 0.871
+                                                                                                                                MLP router: 0.875       0.5
+                                                                                                                                                                                                        KNN router: 0.644
+                                                                                                                                                                                                        MLP router: 0.642
+              0.5                                                                                                                                       0.4
+                                                                           0.6
+              0.4                                                                                                                                       0.3
+                    0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0                          0.0         0.5           1.0          1.5           2.0                     0.0    0.2         0.4      0.6     0.8    1.0        1.2
+                                   Total Cost ($)                                                        Total Cost ($)                                                            Total Cost ($)
+                                  eval: HellaSwag                                                    eval: Winogrande                                                                  eval: GSM8k
+              1.0                                                          1.0                                                                         0.75
+              0.9                                                          0.9                                                                         0.70
+                                                                                                                                                       0.65
+Performance
+
+
+
+
+              0.8                                                          0.8
+                                                       AIQ values                                                                  AIQ values
+                                                                                                                                                       0.60                                                AIQ values
+              0.7                                   Zero router: 0.588     0.7                                                  Zero router: 0.778                                                      Zero router: 0.632
+                                                    KNN router: 0.588                                                           KNN router: 0.780      0.55                                             KNN router: 0.632
+              0.6                                   MLP router: 0.588                                                           MLP router: 0.778                                                       MLP router: 0.623
+                                                                           0.6                                                                         0.50
+              0.5                                                          0.5                                                                         0.45
+              0.4                                                                                                                                      0.40
+                    0      5         10       15      20             25          0.0   0.2         0.4     0.6    0.8         1.0      1.2       1.4          0.0   2.5    5.0         7.5 10.0 12.5 15.0 17.5 20.0
+                                   Total Cost ($)                                                        Total Cost ($)                                                            Total Cost ($)
+                               WizardLM 13B              Claude V2                 Code Llama 34B                  Mixtral 8x7B                      Zero router (LLMs NDCH)                    MLP NDCH
+                               Claude Instant V1         GPT-3.5                   Llama 70B                       Oracle                            KNN NDCH                                   MLP router
+                               Claude V1                 GPT-4                     Mistral 7B                      Yi 34B                            KNN router
+
+Figure 4. Total Cost vs. Performance for eleven models and KNN, MLP, and Zero routers on ROUTER B ENCHexcept for MT-Bench. For
+KNN and MLP, we tested different hyper-parameters, and the optimal results are displayed above. The AIQ values are calculated for
+all 3 routers. NDCH stands for non-decreasing convex hull, represented by the solid lines. Dotted lines connect points with increasing
+willingness to pay.
+
+ results derived from the optimal hyperparameter configura-                                                      ϵ ∈ [0, 1]. The adjusted scoring function gϵ (o) is defined as:
+ tions.                                                                                                                           (
+                                                                                                                                    1 − g(o) with probability ϵ
+                                                                                                                         gϵ (o) =
+ 5.2. Non-Predictive Routers                                                                                                        g(o)        with probability 1 − ϵ
+This category of routers generates answers from a sequence
+                                                                                                                 A variant of the non-predictive router is overgenerate-and-
+of Large Language Models (LLMs), evaluates these an-
+                                                                                                                 rerank, which generates all potential outcomes from the
+swers, and bases routing decisions on the evaluation out-
+                                                                                                                 LLM, assesses each, and outputs the optimal one as de-
+comes. Drawing inspiration from (Chen et al., 2023; Wang
+                                                                                                                 termined by a designated reward function. Although its
+et al., 2023), we introduce a cascading router comprising
+                                                                                                                 practical application is limited due to significant costs, we
+of a total cost parameter T , and a sequence of m LLMs, de-
+                                                                                                                 will present its results for demonstration.
+noted as LLMj : text → text, ranked from the least to the
+most expensive in terms of computational cost and expected
+                                                                                                                 5.3. Main Results
+accuracy. A key component of its operation is a scoring
+function g : text → [0, 1] paired with a threshold t (the                                                        Predictive Router With the KNN and MLP router design,
+”judge”). Upon receiving a request, it is initially processed                                                    we present the performances of predictive routers across all
+by LLM1 . If g(o1)¿t, the output o1 is selected, and the                                                         tasks (other than MT-Bench). The dataset for each task is
+process terminates; otherwise, if the cumulative cost is still                                                   randomly partitioned into two splits, where the routers are
+less than the total cost T, the router proceeds to the next                                                      trained on 70% and evaluated on the rest 30%. We exclude
+LLM in the sequence and returns the current output if not.                                                       MT-Bench in this set of experiments due to its limited size
+Although developing an effective scoring function g for a                                                        in performing such a train-test partition. As shown in Fig-
+specific task in a production setting presents challenges,                                                       ure 4, both KNN routers and MLP routers achieve the level
+within the context of this paper, the router possesses perfect                                                   of performance to the best individual LLMs with lower or
+knowledge of the final score, enabling it to consistently se-                                                    similar costs, demonstrating the effectiveness of the pro-
+lect the most cost-effective model that yields a satisfactory                                                    posed routing solutions, despite their simplicity. However,
+response (akin to an oracle). To simulate real-world per-                                                        none of the routing algorithms significantly outperform the
+formance more accurately, we introduce an error parameter                                                        baseline Zero router (The routers exhibit higher AIQ than
+                                                                                                                 the Zero router for MMLU and Winogrande, achieved com-
+
+                                                                                                             7
+                                                      ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+                                                           Cost vs. Performance for Cascading Routers
+                                eval: MMLU                                    eval: MBPP                                         eval: GSM8k                    WizardLM 13B
+                                                                                                                                                                Claude Instant V1
+                                                                                                                                                                Claude V1
+              0.9                                           0.8                                                0.7                                              Claude V2
+              0.8                                                                                                                                               GPT-3.5
+Performance
+
+
+
+                                                                                                                                                                GPT-4
+              0.7                                                                                              0.6                                              Code Llama 34B
+                                                            0.6
+                                                                                                                                                                Llama 70B
+              0.6                                                                                              0.5                                              Mistral 7B
+                        AIQ values                          0.4               AIQ values                                         AIQ values                     Mixtral 8x7B
+              0.5       zero router: 0.763                                    zero router: 0.660                                 zero router: 0.628             Oracle
+                        cascading router: 0.901                               cascading router: 0.862                            cascading router: 0.680        Yi 34B
+              0.4                                                                                              0.4
+                                                                                                                                                                Zero router
+                    0      1          2           3    4          0.00 0.25 0.50 0.75 1.00 1.25                      0       5           10          15    20
+                               Total Cost ($)                               Total Cost ($)                                    Total Cost ($)
+                          Cascading router error: 0.0              Cascading router error: 0.05               Cascading router error: 0.2
+                          Cascading router error: 0.01             Cascading router error: 0.1                Cascading router error: 0.4
+Figure 5. Total Cost vs Performance for eleven models and cascading routers on MMLU, MBPP, and GSM8K. Different error rates are
+tested, and the AIQ value is computed for Zero Router and zero error rate cascading router. The solid lines represent the non-decreasing
+convex hull and the dotted line represents points with increasing the maximum cost parameter.
+
+parable AIQ for Hellaswag and GSM8K, and underperform                                                   5.4. RAG Results
+on ARC-Challenge and MBPP), the oracle router consis-
+                                                                                                        Building on the results above, we simultaneously compared
+tently exceeds all other routers and LLMs in performance,
+                                                                                                        various router types, including predictive and cascading
+underscoring the room for further advancements in routing
+                                                                                                        routers, on the RAG dataset. We used the same setting for
+algorithms design.
+                                                                                                        KNN and MLP routers while selecting an error rate 0.2
+Cascading Router We present results for cascading routers                                               for cascading routers. We randomly partitioned the RAG
+on MMLU, MBPP, and GSM8K in Figure 5. The results                                                       dataset into two splits: 70% for training predictive routers
+indicate that with each error rate, as the total cost T in-                                             and 30% for evaluating all routers. Figure 6 demonstrates
+creases, the cascading router’s performance improves due                                                that all routers significantly improve compared to the Zero
+to the availability of a larger budget for selecting more ap-                                           Router. Further analysis shows that the routers can iden-
+propriate models. For lower error rates, the cascading router                                           tify time-sensitive features (like ”2024”) in user queries
+performs better than the Zero router, as evidenced by the                                               and route to online models for time-sensitive queries and
+higher AIQ value. The router with a zero error rate judge                                               GPT-4/GPT-3.5 for time-insensitive queries. Our findings
+quickly approximates the performance of the Oracle at the                                               highlight the potential of model routing to enhance LLM
+same cost and achieves comparable results as the cost further                                           applications within the ”Compound AI Systems” (Zaharia
+increases. Figure 5 illustrates the cascading routers’ effec-                                           et al., 2024) scenario.
+tiveness, showing they surpass both individual LLMs and
+the Zero router by a significant margin when the router’s
+                                                                                                        6. Limitations and Future Work
+judge has an error rate of up to 0.1. This indicates the
+routing technique’s potential when paired with an effective                                             ROUTER B ENCH currently only focuses on performance and
+judge.                                                                                                  economic cost. It is meaningful to include more evaluation
+                                                                                                        criteria, such as latency, throughput, and others, to capture
+However, as the judge’s error rates increase, the performance
+                                                                                                        a more comprehensive understanding of router capabilities
+of the cascading router may deteriorate rapidly, particularly
+                                                                                                        and limitations. There are also many LLMs and tasks that
+when the error rate exceeds 0.2. Achieving a sufficiently
+                                                                                                        are not included in ROUTER B ENCH due to the limitation of
+low error rate for certain real-world tasks to benefit from
+                                                                                                        time, and future iterations of this benchmark would include
+cascading routers might be challenging. Additionally, the
+                                                                                                        datasets that cover more tasks to evaluate the ever-growing
+sequence in which LLMs are chosen plays a crucial role in
+                                                                                                        capability of LLMs effectively and also to add newer LLMs
+performance and offers room for optimization (Chen et al.,
+                                                                                                        as they are being released.
+2023). Our findings present a simulated upper limit for
+this method, highlighting the potential and the necessity of                                            Our current work only evaluates the efficacy of predic-
+exploring the optimal implementation of cascading routers                                               tive and cascading routers, yet considerable scope exists
+for specific applications.                                                                              for investigating further router designs, as highlighted in
+                                                                                                        Section 5.3. Delving into more advanced router designs
+                                                                                                        is crucial for enhancing routing efficiency. Notably, our
+                                                                                                        evaluation within the RAG context was limited to models
+                                                                                                        possessing inherent retrieval capabilities. Addressing the
+
+                                                                                                8
+                                                               ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+                           Cost vs. Performance for Routers and LLMs                                           References
+                                eval: Public information retrieval
+                                                                                        mlp NDCH
+                                                                                        mlp router             01. AI, :, Alex Young, Bei Chen, Chao Li, Chengen Huang,
+              0.85                                                                      Cascading NDCH
+                                                                                        Cascading router
+                                                                                        knn NDCH
+                                                                                                                 Ge Zhang, Guanwei Zhang, Heng Li, Jiangcheng Zhu,
+                                                                                        knn router               Jianqun Chen, Jing Chang, Kaidong Yu, Peng Liu, Qiang
+                                                                                        GPT 3.5
+              0.80
+                           AIQ Values                                                   GPT 4
+                           Cascading router: 0.657                                      Sonar Medium             Liu, Shawn Yue, Senbin Yang, Shiming Yang, Tao Yu,
+                           MLP router: 0.675                                            Sonar Small
+                           KNN router: 0.695                                            You.com                  Wen Xie, Wenhao Huang, Xiaohui Hu, Xiaoyi Ren,
+              0.75         Zero router: 0.632                                           Oracle
+Performance
+
+
+
+
+                                                                                        Zero router
+                                                                                                                 Xinyao Niu, Pengcheng Nie, Yuchi Xu, Yudong Liu,
+              0.70                                                                                               Yue Wang, Yuxuan Cai, Zhenyu Gu, Zhiyuan Liu, and
+                                                                                                                 Zonghong Dai. Yi: Open foundation models by 01.ai.
+              0.65                                                                                               arXiv preprint arXiv: 2403.04652, 2024.
+
+              0.60                                                                                             Norah Alzahrani, Hisham Abdullah Alyahya, Yazeed Al-
+                                                                                                                 numay, Sultan Alrashed, Shaykhah Alsubaie, Yusef
+              0.55                                                                                              Almushaykeh, Faisal Mirza, Nouf Alotaibi, Nora Alt-
+                     0.0      0.2      0.4       0.6     0.8   1.0    1.2   1.4   1.6                           wairesh, Areeb Alowisheq, M Saiful Bari, and Haidar
+                                                     Total Cost ($)                                              Khan. When benchmarks are targets: Revealing the
+                                                                                                                 sensitivity of large language model leaderboards. arXiv
+Figure 6. Total Cost vs Performance for five models and four                                                     preprint arXiv: 2402.01781, 2024.
+routers on the RAG dataset. The AIQ values are also calculated
+for all four routers. NDCH represents the non-decreasing convex                                                Anthropic. Model card and evaluations for claude
+hull.                                                                                                            models, 2023.      URL https://www-cdn.
+                                                                                                                 anthropic.com/files/4zrzovbb/website/
+                                                                                                                 bd2a28d2535bfb0494cc8e2a3bf135d2e7523226.
+                                                                                                                 pdf.
+
+ challenge of implementing two-stage routing, which encom-                                                     Jacob Austin, Augustus Odena, Maxwell Nye, Maarten
+ passes retrievers and LLMs, remains critical. This approach                                                     Bosma, Henryk Michalewski, David Dohan, Ellen Jiang,
+ could significantly refine router evaluations on standard                                                       Carrie Cai, Michael Terry, Quoc Le, and Charles Sutton.
+ RAG tasks, including HotpotQA (Yang et al., 2018) and                                                           Program synthesis with large language models. 2021.
+ NaturalQuestions (Kwiatkowski et al., 2019), by ensuring
+                                                                                                               Sébastien Bubeck, Varun Chandrasekaran, Ronen Eldan,
+ more precise assessments.
+                                                                                                                  Johannes Gehrke, Eric Horvitz, Ece Kamar, Peter Lee,
+Furthermore,         although       the    seven     datasets                                                     Yin Tat Lee, Yuanzhi Li, Scott Lundberg, et al. Sparks
+in ROUTER B ENCHoffer broad coverage across vari-                                                                 of artificial general intelligence: Early experiments with
+ous tasks, incorporating domain-specific tasks that require                                                       gpt-4. arXiv preprint arXiv:2303.12712, 2023.
+long-tail skills, like translation of low-resource languages,
+could reveal additional intriguing aspects of LLM routing.                                                     Lingjiao Chen, Matei Zaharia, and James Zou. Frugalgpt:
+This enhancement would align the benchmark more closely                                                          How to use large language models while reducing cost
+with real-world application scenarios. Efforts to integrate                                                      and improving performance. arXiv preprint arXiv: Arxiv-
+such tasks in future versions are planned.                                                                       2305.05176, 2023.
+
+                                                                                                               Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot,
+ 7. Conclusion                                                                                                   Ashish Sabharwal, Carissa Schoenick, and Oyvind
+                                                                                                                 Tafjord. Think you have solved question answering?
+We present ROUTER B ENCH, a benchmark specifically de-
+                                                                                                                 try arc, the ai2 reasoning challenge. arXiv preprint
+signed to evaluate routers for multi-LLM systems. By ad-
+                                                                                                                 arXiv:1803.05457, 2018.
+dressing the critical need for standardized evaluation in this
+domain, our benchmark provides a comprehensive dataset                                                         Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark
+and a theoretical framework designed for the nuanced anal-                                                       Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert,
+ysis of router cost-efficiency and performance. The insights                                                     Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christo-
+from our study shed light on the effectiveness of various                                                        pher Hesse, and John Schulman. Training verifiers to
+routing strategies and revealed promising early results in                                                       solve math word problems. 2021.
+some tasks. This work establishes a robust and scalable
+benchmark for router evaluation and aims to facilitate future                                                  Nan Du, Yanping Huang, Andrew M. Dai, Simon Tong,
+progress in the efficient and cost-effective deployment of                                                       Dmitry Lepikhin, Yuanzhong Xu, Maxim Krikun, Yanqi
+Large Language Models.                                                                                           Zhou, Adams Wei Yu, Orhan Firat, Barret Zoph, Liam
+
+                                                                                                           9
+                               ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+  Fedus, Maarten Bosma, Zongwei Zhou, Tao Wang,                      Sehoon Kim, Coleman Hooper, Amir Gholami, Zhen Dong,
+  Yu Emma Wang, Kellie Webster, Marie Pellat, Kevin                    Xiuyu Li, Sheng Shen, Michael W. Mahoney, and Kurt
+  Robinson, Kathleen Meier-Hellstern, Toju Duke, Lucas                 Keutzer. Squeezellm: Dense-and-sparse quantization.
+  Dixon, Kun Zhang, Quoc V Le, Yonghui Wu, Zhifeng                     arXiv preprint arXiv: 2306.07629, 2023.
+  Chen, and Claire Cui. Glam: Efficient scaling of language
+  models with mixture-of-experts. 2022.                              Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield,
+                                                                       Michael Collins, Ankur Parikh, Chris Alberti, Danielle
+David Eigen, Marc’Aurelio Ranzato, and Ilya Sutskever.                 Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee,
+  Learning factored representations in a deep mixture of               Kristina Toutanova, Llion Jones, Matthew Kelcey, Ming-
+  experts. 2014.                                                       Wei Chang, Andrew M. Dai, Jakob Uszkoreit, Quoc
+                                                                       Le, and Slav Petrov. Natural questions: A bench-
+William Fedus, Barret Zoph, and Noam Shazeer. Switch                   mark for question answering research. Transactions of
+ transformers: Scaling to trillion parameter models with               the Association for Computational Linguistics, 7:452–
+ simple and efficient sparsity. 2022.                                  466, 2019. doi: 10.1162/tacl a 00276. URL https:
+                                                                       //aclanthology.org/Q19-1026.
+Surya Narayanan Hari and Matt Thomson. Tryage: Real-
+                                                                     Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng,
+  time, intelligent routing of user prompts to large language
+                                                                      Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao
+  models. 2023.
+                                                                      Zhang, and Ion Stoica. Efficient memory management
+                                                                      for large language model serving with pagedattention. In
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou,
+                                                                      Proceedings of the 29th Symposium on Operating Systems
+  Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Mea-
+                                                                      Principles, SOSP ’23, pp. 611–626, 2023.
+  suring massive multitask language understanding. In 9th
+  International Conference on Learning Representations,              Chia-Hsuan Lee, Hao Cheng, and Mari Ostendorf. Orches-
+  2021. URL https://openreview.net/forum?                              trallm: Efficient orchestration of language models for
+  id=d7KBjmI3GmQ.                                                      dialogue state tracking. 2023.
+
+Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch,              Hector Levesque, Ernest Davis, and Leora Morgenstern.
+  Chris Bamford, Devendra Singh Chaplot, Diego de las                  The winograd schema challenge. In Thirteenth interna-
+  Casas, Florian Bressand, Gianna Lengyel, Guillaume                   tional conference on the principles of knowledge repre-
+  Lample, Lucile Saulnier, Lélio Renard Lavaud, Marie-                sentation and reasoning, 2012.
+  Anne Lachaux, Pierre Stock, Teven Le Scao, Thibaut
+                                                                     Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Xingyu
+  Lavril, Thomas Wang, Timothée Lacroix, and William El
+                                                                        Dang, and Song Han. Awq: Activation-aware weight
+  Sayed. Mistral 7b. arXiv preprint arXiv: 2310.06825,
+                                                                        quantization for llm compression and acceleration. arXiv
+  2023a.
+                                                                        preprint arXiv: 2306.00978, 2023.
+Dongfu Jiang, Xiang Ren, and Bill Yuchen Lin. LLM-                   Keming Lu, Hongyi Yuan, Runji Lin, Junyang Lin, Zheng
+  blender: Ensembling large language models with pair-                 Yuan, Chang Zhou, and Jingren Zhou. Routing to the ex-
+ wise ranking and generative fusion. In Anna Rogers,                   pert: Efficient reward-guided ensemble of large language
+ Jordan Boyd-Graber, and Naoaki Okazaki (eds.), Pro-                   models. 2023.
+  ceedings of the 61st Annual Meeting of the Association
+  for Computational Linguistics (Volume 1: Long Papers),             Xiaoding Lu, Zongyi Liu, Adian Liusie, Vyas Raina, Vi-
+  pp. 14165–14178, Toronto, Canada, July 2023b. Associ-                neet Mudupalli, Yuwen Zhang, and William Beauchamp.
+  ation for Computational Linguistics. doi: 10.18653/v1/               Blending is all you need: Cheaper, better alterna-
+  2023.acl-long.792. URL https://aclanthology.                         tive to trillion-parameters llm. arXiv preprint arXiv:
+  org/2023.acl-long.792.                                               2401.02994, 2024.
+                                                                     Aman Madaan, Pranjal Aggarwal, Ankit Anand, Sriv-
+Omar Khattab, Arnav Singhvi, Paridhi Maheshwari,                      idya Pranavi Potharaju, Swaroop Mishra, Pei Zhou,
+ Zhiyuan Zhang, Keshav Santhanam, Sri Vardhamanan A,                  Aditya Gupta, Dheeraj Rajagopal, Karthik Kappaganthu,
+ Saiful Haq, Ashutosh Sharma, Thomas T. Joshi, Hanna                  Yiming Yang, Shyam Upadhyay, Mausam, and Manaal
+ Moazam, Heather Miller, Matei Zaharia, and Christo-                  Faruqui. Automix: Automatically mixing language mod-
+ pher Potts. DSPy: Compiling declarative language model               els. 2023.
+ calls into state-of-the-art pipelines. In The Twelfth In-
+ ternational Conference on Learning Representations,                 OpenAI. GPT-4 technical report. CoRR, abs/2303.08774,
+ 2024. URL https://openreview.net/forum?                               2023. doi: 10.48550/ARXIV.2303.08774. URL https:
+ id=sY5N0zY5Od.                                                       //doi.org/10.48550/arXiv.2303.08774.
+
+                                                                10
+                              ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Er-            language model reasoning experts. Conference on Empir-
+  mon, Christopher D. Manning, and Chelsea Finn. Direct               ical Methods in Natural Language Processing, 2023. doi:
+  preference optimization: Your language model is secretly            10.18653/v1/2023.findings-emnlp.552.
+  a reward model. 2023.
+                                                                    Arnav Singhvi, Manish Shetty, Shangyin Tan, Christopher
+Nils Reimers and Iryna Gurevych. Sentence-bert: Sen-                  Potts, Koushik Sen, Matei Zaharia, and Omar Khat-
+  tence embeddings using siamese bert-networks. In Pro-               tab. Dspy assertions: Computational constraints for self-
+  ceedings of the 2019 Conference on Empirical Meth-                  refining language model pipelines. arXiv preprint arXiv:
+  ods in Natural Language Processing. Association for                 2312.13382, 2023.
+  Computational Linguistics, 11 2019. URL https:
+                                                                    Rohan Taori, Ishaan Gulrajani, Tianyi Zhang, Yann Dubois,
+  //arxiv.org/abs/1908.10084.
+                                                                      Xuechen Li, Carlos Guestrin, Percy Liang, and Tat-
+Baptiste Rozière, Jonas Gehring, Fabian Gloeckle, Sten               sunori B Hashimoto. Stanford alpaca: An instruction-
+  Sootla, Itai Gat, Xiaoqing Ellen Tan, Yossi Adi, Jingyu             following llama model. 2023.
+  Liu, Romain Sauvestre, Tal Remez, Jérémy Rapin,                 Gemini Team, Rohan Anil, Sebastian Borgeaud, Yonghui
+  Artyom Kozhevnikov, Ivan Evtimov, Joanna Bitton, Man-              Wu, Jean-Baptiste Alayrac, Jiahui Yu, Radu Soricut, Jo-
+  ish Bhatt, Cristian Canton Ferrer, Aaron Grattafiori, Wen-          han Schalkwyk, Andrew M Dai, Anja Hauth, et al. Gem-
+  han Xiong, Alexandre Défossez, Jade Copet, Faisal                  ini: a family of highly capable multimodal models. arXiv
+  Azhar, Hugo Touvron, Louis Martin, Nicolas Usunier,                 preprint arXiv:2312.11805, 2023.
+  Thomas Scialom, and Gabriel Synnaeve. Code llama:
+  Open foundation models for code. arXiv preprint arXiv:            Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert,
+  2308.12950, 2023.                                                  Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov,
+                                                                      Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan
+Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula,                Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen,
+  and Yejin Choi. Winogrande: An adversarial winograd                 Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy
+  schema challenge at scale. Communications of the ACM,               Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj
+  64(9):99–106, 2021.                                                 Goswami, Naman Goyal, Anthony Hartshorn, Saghar
+                                                                      Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor
+Marija Šakota, Maxime Peyrard, and Robert West. Fly-
+                                                                      Kerkez, Madian Khabsa, Isabel Kloumann, Artem Ko-
+ swat or cannon? cost-effective language model choice
+                                                                      renev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut
+ via meta-modeling. arXiv preprint arXiv:2308.06077,
+                                                                      Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yun-
+ 2023.
+                                                                      ing Mao, Xavier Martinet, Todor Mihaylov, Pushkar
+Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy              Mishra, Igor Molybog, Yixin Nie, Andrew Poulton,
+  Davis, Quoc V. Le, Geoffrey E. Hinton, and Jeff Dean.              Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan
+  Outrageously large neural networks: The sparsely-gated              Schelten, Ruan Silva, Eric Michael Smith, Ranjan Sub-
+  mixture-of-experts layer. In 5th International Confer-              ramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor,
+  ence on Learning Representations, ICLR 2017, Toulon,               Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan,
+ France, April 24-26, 2017, Conference Track Proceedings.             Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kam-
+  OpenReview.net, 2017. URL https://openreview.                       badur, Sharan Narang, Aurelien Rodriguez, Robert Sto-
+  net/forum?id=B1ckMDqlg.                                             jnic, Sergey Edunov, and Thomas Scialom. Llama 2:
+                                                                      Open foundation and fine-tuned chat models. 2023.
+Sheng Shen, Le Hou, Yanqi Zhou, Nan Du, Shayne Long-
+  pre, Jason Wei, Hyung Won Chung, Barret Zoph, William             Xuezhi Wang, Jason Wei, D. Schuurmans, Quoc Le, E. Chi,
+  Fedus, Xinyun Chen, Tu Vu, Yuexin Wu, Wuyang Chen,                  and Denny Zhou. Self-consistency improves chain of
+  Albert Webson, Yunxuan Li, Vincent Zhao, Hongkun Yu,                thought reasoning in language models. International
+  Kurt Keutzer, Trevor Darrell, and Denny Zhou. Mixture-              Conference on Learning Representations, 2022. doi: 10.
+  of-experts meets instruction tuning: A winning combina-             48550/arXiv.2203.11171.
+  tion for large language models. 2023.                             Yiding Wang, Kai Chen, Haisheng Tan, and Kun Guo.
+Tal Shnitzer, Anthony Ou, Mı́rian Silva, Kate Soule, Yuekai           Tabi: An efficient multi-level inference system for large
+  Sun, Justin Solomon, Neil Thompson, and Mikhail                     language models. In Proceedings of the Eighteenth
+  Yurochkin. Large language model routing with bench-                 European Conference on Computer Systems, EuroSys
+  mark datasets. 2023.                                                ’23, pp. 233–248, New York, NY, USA, 2023. Associa-
+                                                                      tion for Computing Machinery. ISBN 9781450394871.
+Chenglei Si, Weijia Shi, Chen Zhao, Luke Zettlemoyer, and             doi: 10.1145/3552326.3587438. URL https://doi.
+  Jordan L. Boyd-Graber. Getting more out of mixture of               org/10.1145/3552326.3587438.
+
+                                                               11
+                             ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten                  Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan
+  Bosma, E. Chi, F. Xia, Quoc Le, and Denny Zhou. Chain-            Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuo-
+  of-thought prompting elicits reasoning in large language          han Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E.
+  models. Neural Information Processing Systems, 2022.              Gonzalez, and Ion Stoica. Judging llm-as-a-judge with
+                                                                    mt-bench and chatbot arena. 2023b.
+Can Xu, Qingfeng Sun, Kai Zheng, Xiubo Geng, Pu Zhao,
+  Jiazhan Feng, Chongyang Tao, Qingwei Lin, and Daxin             Denny Zhou, Nathanael Schärli, Le Hou, Jason Wei, Nathan
+  Jiang. WizardLM: Empowering large pre-trained lan-                Scales, Xuezhi Wang, Dale Schuurmans, Claire Cui,
+  guage models to follow complex instructions. In The               Olivier Bousquet, Quoc Le, and Ed Chi. Least-to-most
+  Twelfth International Conference on Learning Represen-            prompting enables complex reasoning in large language
+  tations, 2024. URL https://openreview.net/                        models. 2023.
+  forum?id=CfXh93NDgH.
+
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio,
+  William W. Cohen, R. Salakhutdinov, and Christopher D.
+  Manning. Hotpotqa: A dataset for diverse, explainable
+  multi-hop question answering. Conference on Empirical
+  Methods in Natural Language Processing, 2018. doi:
+  10.18653/v1/D18-1259.
+
+Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, T. Grif-
+  fiths, Yuan Cao, and Karthik Narasimhan. Tree of
+  thoughts: Deliberate problem solving with large language
+  models. Neural Information Processing Systems, 2023.
+  doi: 10.48550/arXiv.2305.10601.
+
+Murong Yue, Jie Zhao, Min Zhang, Liang Du, and Ziyu Yao.
+ Large language model cascades with mixture of thoughts
+ representations for cost-efficient reasoning. 2023.
+
+Matei Zaharia, Omar Khattab, Lingjiao Chen, Jared Quincy
+ Davis, Heather Miller, Chris Potts, James Zou, Michael
+ Carbin, Jonathan Frankle, Naveen Rao, and Ali Gh-
+ odsi. The shift from models to compound ai sys-
+ tems.      https://bair.berkeley.edu/blog/
+ 2024/02/18/compound-ai-systems/, 2024.
+
+Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi,
+  and Yejin Choi. Hellaswag: Can a machine really fin-
+  ish your sentence? Annual Meeting of the Association
+  for Computational Linguistics, 2019. doi: 10.18653/v1/
+  P19-1472.
+
+Chujie Zheng, Hao Zhou, Fandong Meng, Jie Zhou, and
+  Minlie Huang. Large language models are not ro-
+  bust multiple choice selectors. In The Twelfth In-
+  ternational Conference on Learning Representations,
+  2024. URL https://openreview.net/forum?
+  id=shr9PXz7T0.
+
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan
+  Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuo-
+  han Li, Dacheng Li, Eric Xing, et al. Judging llm-as-a-
+  judge with mt-bench and chatbot arena. arXiv preprint
+  arXiv:2306.05685, 2023a.
+
+                                                             12
+                                  ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+A. Additional Dataset Details
+A.1. Model Details & Cost Estimation
+For all proprietary models, we calculate the cost of input and output results based on their API pricing. For open-source
+models, we utilize Together AI 4 to obtain results and reference costs. For the RAG experiment, we refer to the API pricing
+of You.com 5 and Perplexity 6 for cost estimation.
+
+A.2. Dataset Details
+MMLU (Hendrycks et al., 2021): A benchmark that measures the knowledge acquired by models during pretraining and
+evaluates models in zero-shot and few-shot settings across 57 tasks, testing both knowledge and reasoning on different fields
+of human knowledge.
+Hellaswag (Zellers et al., 2019): This dataset challenges models to pick the best ending choice for a given sentence. It uses
+Adversarial Filtering(AF) to create a Goldilocks zone of complexity, wherein generations are largely nonsensical to humans
+but always make models struggle.
+GSM8K (Cobbe et al., 2021): A dataset of diverse grade school math word problems, testing a model’s ability to perform
+multi-step mathematical reasoning.
+ARC Challenge(Clark et al., 2018) A rigorous question answering dataset, ARC-Challenge includes complex, different
+grade-school level questions that require reasoning beyond simple retrieval, testing the true comprehension capabilities of
+models. Arc Challenge dataset contains those that both a retrieval and a co-occurrence method fail to answer correctly)
+Winogrande (Sakaguchi et al., 2021): A large-scale and increased harness dataset inspired by the original Winograd Schema
+Challenge(WSC) (Levesque et al., 2012) tests models on their ability to resolve pronoun ambiguity and their ability to
+understand the context with commonsense knowledge.
+MBPP (Austin et al., 2021): The benchmark is designed to be solvable by entry-level programmers, covering programming
+fundamentals, standard library functionality, etc. Each problem comprises a task description, code solution, and 3 automated
+test cases.
+MT-Bench (Zheng et al., 2023b): This dataset contains 3.3K expert-level pairwise human preferences for model responses
+generated by 6 models in response to 80 MT-bench questions, multi-run QA. The 6 models are GPT-4, GPT-3.57 , Claude-v1,
+Vicuna-13B (Zheng et al., 2023a), Alpaca-13B (Taori et al., 2023), and LLaMA-13B (Touvron et al., 2023). The annotators
+are mostly graduate students with expertise in the topic areas of each of the questions. In this work, we only used the 80
+questions to generate model responses for ROUTER B ENCH.
+
+A.3. More Details on Dataset Construction
+Each sample in the benchmark dataset will have the following attributes:
+
+   • sample id: contain the information about the name of the sub-task, the split of dataset, and the index of the data in
+     that dataset. Example: mmlu-astronomy.val.5
+   • model name: the model used to perform inference for this sample. Example: GPT-4
+   • eval name: the source data from which this specific sample comes. Example: hellaswag.dev.v0
+   • prompt: prompt sentence. Example: The following are multiple-choice questions...
+   • model response: Model’s output. Example: The answer is A)
+   • perf ormance: the result compared to the true label. Example: True/False
+   • cost: for proprietary model, we use API cost to calculate; for open source model, we use Together AI8 to call the model
+     and use their cost as reference. Example: 0.00019
+   4
+     https://www.together.ai/pricing
+   5
+     https://api.you.com/
+   6
+     https://docs.perplexity.ai/docs/pricing
+   7
+     https://openai.com/blog/chatgpt
+   8
+     https://www.together.ai/
+
+                                                             13
+                              ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+  • true label: the true label or gold response for this prompt. Example: True/False
+
+
+A.4. Evaluation Metrics
+We will perform 5-shot inference on MMLU, HellaSwag, GSM8K, ARC Challenge, Winogrande, and 0-shot inference on
+MBPP, MT-Bench, and RAG.
+For the datasets MMLU, HellaSwag, GSM8K, ARC Challenge, and Winogrande, we use the exact match method to
+compute the final results. In contrast, for MBPP, MT-Bench, and RAG, we use GPT-4 for answer evaluation. Results
+categorized as False/True are converted to a binary 0/1 format. In cases where the results are based on ratings, we normalize
+all outcomes to a [0, 1] scale.
+
+A.5. Individual Dataset Result
+The ROUTER B ENCH pilot study result has been shown in Figure 3. We provide the breakdown of each dataset in Figure 7.
+Additionally, we list the accuracies and costs for each individual model and the Oracle router in Table 1.
+
+
+
+
+                      Figure 7. Accuracy vs Total cost of each LLM on each sub dataset in ROUTER B ENCH.
+
+
+
+                                                             14
+                                     ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+
+                                   Table 1. Individual models and the Oracle results on the seven datasets.
+                              MMLU            MT-Bench          MBPP          HellaSwag       Winogrande        GSM8k             ARC
+           Method
+                           Perf↑ Cost↓      Perf↑ Cost↓     Perf↑ Cost↓      Perf↑ Cost↓     Perf↑ Cost↓     Perf↑ Cost↓     Perf↑ Cost↓
+
+        WizardLM 13B       0.568    0.122   0.796   0.006   0.364   0.011    0.636   0.727   0.512   0.040   0.510   0.354   0.660   0.068
+          Mistral 7B       0.562    0.081   0.779   0.003   0.349   0.006    0.541   0.485   0.562   0.027   0.409   0.210   0.642   0.046
+         Mixtral 8x7B      0.733    0.245   0.921   0.012   0.573   0.023    0.707   1.455   0.677   0.081   0.515   0.594   0.844   0.137
+       Code Llama 34B      0.569    0.317   0.796   0.015   0.465   0.021    0.525   1.882   0.617   0.104   0.462   0.752   0.644   0.177
+            Yi 34B         0.743    0.326   0.938   0.018   0.333   0.031    0.931   1.938   0.748   0.107   0.552   0.867   0.882   0.182
+           GPT-3.5         0.720    0.408   0.908   0.026   0.651   0.044    0.816   2.426   0.630   0.134   0.601   1.170   0.855   0.228
+       Claude Instant V1   0.384    0.327   0.863   0.030   0.550   0.064    0.801   1.943   0.512   0.108   0.626   1.300   0.821   0.183
+          Llama 70B        0.647    0.367   0.854   0.022   0.302   0.039    0.736   2.183   0.504   0.121   0.529   0.870   0.794   0.205
+          Claude V1        0.475    3.269   0.938   0.361   0.527   0.607    0.841   19.43   0.570   1.077   0.653   11.09   0.889   1.829
+          Claude V2        0.619    3.270   0.854   0.277   0.605   0.770    0.421   19.50   0.446   1.081   0.664   13.49   0.546   1.833
+            GPT-4          0.828    4.086   0.971   0.721   0.682   1.235    0.923   24.29   0.858   1.346   0.654   19.08   0.921   2.286
+            Oracle         0.957    0.297   0.996   0.052   0.899   0.041    0.994   0.860    1.0    0.042   0.748   1.282   0.977   0.091
+
+B. Extended Experimental Settings
+We provide the hyperparameters of MLP and KNN routers in this section.
+The KNN routers have two main hyperparameters that were tested in this paper. The number of neighbors, and the embedding
+model for the prompts. All KNN routers used cosine similarity as the distance metric, and used either 5, 10, or 40 neighbors.
+The embedding models were taken from the default SentenceTransformers library (Reimers & Gurevych, 2019), and are one
+of all-MiniLM-L12-v2, all-mpnet-base-v2, or all-distilroberta-v1. The best-performing hyperparameters for the KNN router
+were with 40 neighbors, and the all-MiniLM-L12-v2 embedding model.
+In MLP routers, the models have either one or two hidden layers, with each layer having 100 neurons, and the ReLU
+activation function was applied. The learning rate was kept constant at 0.001, and the models took in embeddings from
+one of all-MiniLM-L12-v2, all-mpnet-base-v2, or all-distilroberta-v1. The best MLP router had two hidden layers of 100
+neurons each, and used the all-MiniLM-L12-v2 embedding model.
+
+C. Issues with Overly-aligned Models
+Some models exhibit reluctance in responding to certain inputs, often replying with statements like ”I do not understand...”
+or ”I am not sure about...”. We have identified two primary reasons for models’ refusal to respond:
+Insufficient Context Perception Despite being provided with enough context, these models perceive the information as
+inadequate. Our hypothesis is that the models’ capabilities might not be robust enough to generate answers or perform tasks
+effectively under these conditions. A potential remedy is to modify the prompting strategy to encourage output generation.
+Uncertainty Avoidance Some models appear to be fine-tuned to function as ’safe’ assistants, refraining from providing
+responses when they lack certainty. This cautious approach likely aims to prevent potential errors stemming from uncertain
+answers. Claude 2 exhibits this behavior most frequently.
+LLMs have been known to have such kind of issues as documented in various previous studies (Zheng et al., 2024; Alzahrani
+et al., 2024). It is essential to apply methods that can make LLM outputs in a more controllable and structural way and
+automatically optimize their quality (Khattab et al., 2024; Singhvi et al., 2023) when routing, which warrants further
+exploration in future research.
+
+D. Full Cascading Routers Results
+Here are we provide the rest cascading routers results on ARC-Challenge, MT-Bench, and HellaSwag.
+
+E. Training Data Distribution
+We also conduct Out-domain experiments where we train on held-out tasks in ROUTER B ENCH for each dataset and evaluate
+on MT-Bench, MBPP and GSM8K in Figure 9.
+
+
+
+
+                                                                        15
+                                                           ROUTER B ENCH: A Benchmark for Multi-LLM Routing System
+
+
+
+
+                                                                Cost vs. Performance for Cascading Routers
+                             eval: ARC-Challenge                                   eval: MT-Bench                                    eval: HellaSwag                           WizardLM 13B
+                                                                1.00                                                1.0                                                        Claude Instant V1
+                                                                                                                                                                               Claude V1
+              0.9                                               0.95                                                0.9                                                        Claude V2
+                                                                                                                                                                               GPT-3.5
+Performance
+
+
+
+
+                                                                0.90                                                0.8                                                        GPT-4
+              0.8                                                                                                                                                              Code Llama 34B
+                                                                                                                    0.7                                                        Llama 70B
+              0.7              AIQ values                       0.85                                                                                                           Mistral 7B
+                               zero router: 0.876                                        AIQ values
+                                                                                         zero router: 0.949
+                                                                                                                    0.6             AIQ values                                 Mixtral 8x7B
+                               cascading router: 0.923          0.80                     cascading router: 0.976                    zero router: 0.607
+                                                                                                                                    cascading router: 0.469                    Oracle
+              0.6                                                                                                   0.5                                                        Yi 34B
+                                                                0.75                                                0.4                                                        Zero router
+                    0.0      0.5      1.0     1.5         2.0          0.0         0.2       0.4         0.6              0     5         10        15        20     25
+                                   Total Cost ($)                                   Total Cost ($)                                    Total Cost ($)
+                             Cascading router error: 0.0                Cascading router error: 0.05               Cascading router error: 0.2
+                             Cascading router error: 0.01               Cascading router error: 0.1                Cascading router error: 0.4
+Figure 8. Total Cost vs Performance for eleven models and cascading routers on ARC-Challenge, MT-Bench, and HellaSwag. Different
+error rates are tested, and the AIQ value is computed for Zero Router and zero error rate cascading router. The solid lines represent
+non-decreasing convex hull and the dotted line represents points with increasing maximum cost parameter.
+
+
+
+
+                                             Cost vs. Performance for Routers (Out-domain) and LLMs
+                                     eval: MT-Bench                                                 eval: MBPP                                                     eval: GSM8k
+              0.9
+                                                                             0.8                                                         0.7
+              0.8
+Performance
+
+
+
+
+                                                                             0.7
+              0.7                                                                                                                        0.6
+                                                                             0.6
+              0.6                                                            0.5                                                         0.5
+              0.5                                                            0.4
+                                                                                                                                         0.4
+                      0.0             0.2                0.4      0.6               0          1            2        3         4                0              20         40             60
+                                     Total Cost ($)                                             Total Cost ($)                                                 Total Cost ($)
+                          knn NDCH                  mlp router                           Claude V1                 GPT-4                                 Mistral 7B                 Oracle
+                          knn router                WizardLM 13B                         Claude V2                 Code Llama 34B                        Mixtral 8x7B               Yi 34B
+                          mlp NDCH                  Claude Instant V1                    GPT-3.5                   Llama 70B
+Figure 9. Total Cost vs Performance for eleven models and KNN, MLP routers on MT-Bench, MBPP, GSM8K. NDCH stands for
+non-decreasing convex hull
+
+
+
+
+                                                                                                      16
+

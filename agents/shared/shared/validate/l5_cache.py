@@ -121,12 +121,18 @@ def lookup(key: str) -> Optional[dict]:
     if conn is None:
         return None
     try:
-        cur = conn.execute(
-            "SELECT exploitable, reasoning, model, language, judged_at "
-            "FROM l5_cache WHERE cache_key = ?",
-            (key,),
-        )
-        row = cur.fetchone()
+        # Serialize access to the shared connection. The L5 pool judges
+        # batches concurrently (ThreadPoolExecutor); two threads calling
+        # execute() on one sqlite3 connection raise SQLITE_MISUSE ("bad
+        # parameter or other API misuse") or tear a cursor read, silently
+        # dropping the lookup. _connect()'s fast path doesn't hold _LOCK once
+        # initialised, so taking it here cannot deadlock.
+        with _LOCK:
+            row = conn.execute(
+                "SELECT exploitable, reasoning, model, language, judged_at "
+                "FROM l5_cache WHERE cache_key = ?",
+                (key,),
+            ).fetchone()
         if row is None:
             return None
         judged_at = float(row[4])
@@ -152,12 +158,14 @@ def store(key: str, *, exploitable: float, reasoning: str,
     if conn is None:
         return
     try:
-        conn.execute(
-            "INSERT OR REPLACE INTO l5_cache "
-            "(cache_key, exploitable, reasoning, model, language, judged_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (key, float(exploitable), reasoning, model, language, time.time()),
-        )
+        # Serialize writes to the shared connection (see lookup()).
+        with _LOCK:
+            conn.execute(
+                "INSERT OR REPLACE INTO l5_cache "
+                "(cache_key, exploitable, reasoning, model, language, judged_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (key, float(exploitable), reasoning, model, language, time.time()),
+            )
     except Exception as exc:  # noqa: BLE001
         log.warning("[validate.l5] cache store failed: %s", exc)
 
@@ -168,7 +176,8 @@ def stats() -> dict:
     if conn is None:
         return {"enabled": False, "path": _default_path()}
     try:
-        cur = conn.execute("SELECT COUNT(*) FROM l5_cache")
-        return {"enabled": True, "path": _DB_PATH or "", "rows": int(cur.fetchone()[0])}
+        with _LOCK:
+            row = conn.execute("SELECT COUNT(*) FROM l5_cache").fetchone()
+        return {"enabled": True, "path": _DB_PATH or "", "rows": int(row[0])}
     except Exception:  # noqa: BLE001
         return {"enabled": False, "path": _DB_PATH or ""}

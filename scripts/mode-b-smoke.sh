@@ -108,8 +108,12 @@ VULTURE_API_KEYS_ENABLED=true
 VULTURE_USE_LLM=false
 VULTURE_REQUIRE_LLM=false
 
-# Auth (test-only secret; rotate for production)
+# Auth (test-only secrets; rotate for production). VULTURE_AGENT_TOKEN is
+# REQUIRED in non-local mode (VULTURE_LOCAL_MODE=false) — without it the backend
+# fails closed at startup (security.go) since agents would otherwise accept
+# credential-less HTTP. Compose passes it to the backend AND every agent.
 VULTURE_JWT_SECRET=ci-mode-b-smoke-jwt-secret-not-for-production-use-only
+VULTURE_AGENT_TOKEN=ci-mode-b-smoke-agent-token-not-for-production-use-only
 
 # Source mount (read-only) — points at the project root so we can scan
 # repo-internal fixtures.

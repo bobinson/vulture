@@ -1,10 +1,14 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 # Tests for the --embed-url / --embed-model launcher flags (NVIDIA +
 # local-embeddings split). Uses VULTURE_LAUNCH_DRY_RUN=1 so start.sh
 # resolves config and exits before booting the backend.
 #
+# POSIX sh (matches the rest of scripts/tests/) so a `sh "$t"` sweep + CI's
+# `shellcheck scripts/tests/*.sh` both stay green; start.sh is still run with
+# bash explicitly (run_dry) since it is a bash script.
+#
 # Run: scripts/tests/test_embed_flags.sh
-set -uo pipefail
+set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 START="$SCRIPT_DIR/../start.sh"
@@ -12,12 +16,15 @@ PASS=0
 FAIL=0
 
 run_dry() {
-    # $@ = args to start.sh; prints its stdout+stderr
-    VULTURE_LAUNCH_DRY_RUN=1 bash "$START" "$@" 2>&1
+    # $@ = args to start.sh; prints its stdout+stderr.
+    # VULTURE_ENV_FILE=/dev/null isolates from the developer's local .env so the
+    # test is hermetic (start.sh's load_env would otherwise source it and clobber
+    # the exported OPENAI_API_KEY used by case 3).
+    VULTURE_LAUNCH_DRY_RUN=1 VULTURE_ENV_FILE=/dev/null bash "$START" "$@" 2>&1
 }
 
 assert_contains() {
-    local haystack="$1" needle="$2" label="$3"
+    haystack="$1"; needle="$2"; label="$3"
     if printf '%s' "$haystack" | grep -qF "$needle"; then
         echo "  PASS [$label]"
         PASS=$((PASS + 1))
@@ -29,7 +36,7 @@ assert_contains() {
 }
 
 assert_not_contains() {
-    local haystack="$1" needle="$2" label="$3"
+    haystack="$1"; needle="$2"; label="$3"
     if printf '%s' "$haystack" | grep -qF "$needle"; then
         echo "  FAIL [$label] — did NOT expect: $needle"
         FAIL=$((FAIL + 1))
@@ -53,8 +60,13 @@ assert_contains "$out" "eq-model" "equals form: embed model"
 
 # 3. The provider+model positionals still parse with flags interleaved.
 #    openai provider requires a key before reaching the summary line, so
-#    supply a dummy one — we're exercising arg parsing, not auth.
-out=$(OPENAI_API_KEY=dummy-key-for-argparse-test run_dry openai z-ai/glm-5.1 --embed-url http://localhost:1234/v1 --embed-model e)
+#    supply a dummy one — we're exercising arg parsing, not auth. Export it
+#    explicitly: under POSIX sh (dash) a `VAR=val func` prefix is NOT exported
+#    to the function's child process (bash does export it).
+OPENAI_API_KEY=dummy-key-for-argparse-test
+export OPENAI_API_KEY
+out=$(run_dry openai z-ai/glm-5.1 --embed-url http://localhost:1234/v1 --embed-model e)
+unset OPENAI_API_KEY
 assert_contains "$out" "z-ai/glm-5.1" "positional model preserved alongside flags"
 assert_contains "$out" "openai" "provider preserved alongside flags"
 
@@ -68,4 +80,4 @@ assert_contains "$out" "needs a value" "missing --embed-url value errors"
 
 echo
 echo "  $PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+[ "$FAIL" -eq 0 ]

@@ -243,6 +243,32 @@ func TestLoadPriorFindingsWithError(t *testing.T) {
 	}
 }
 
+func TestAuditRequestsFresh(t *testing.T) {
+	// `{"fresh": true}` in the audit config opts the run out of the
+	// prior-findings memory (clean-room scan for critical tests / new models).
+	// Anything else — absent, false, malformed, non-bool — keeps memory ON.
+	cases := []struct {
+		name string
+		cfg  string
+		want bool
+	}{
+		{"fresh true", `{"fresh":true}`, true},
+		{"fresh true among other keys", `{"types":["cwe"],"fresh":true}`, true},
+		{"fresh false", `{"fresh":false}`, false},
+		{"absent", `{"types":["cwe"]}`, false},
+		{"empty object", `{}`, false},
+		{"empty raw", ``, false},
+		{"null", `null`, false},
+		{"malformed", `{not json`, false},
+		{"fresh non-bool string", `{"fresh":"true"}`, false},
+	}
+	for _, c := range cases {
+		if got := auditRequestsFresh(json.RawMessage(c.cfg)); got != c.want {
+			t.Errorf("%s: auditRequestsFresh(%q) = %v, want %v", c.name, c.cfg, got, c.want)
+		}
+	}
+}
+
 func TestSetMemoryService(t *testing.T) {
 	h := NewStreamHandler(&mockAuditService{}, &mockSourceService{}, &mockStreamService{}, nil)
 	if h.memorySvc != nil {

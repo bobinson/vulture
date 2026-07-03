@@ -56,6 +56,18 @@ echo
 
 stopped=0
 
+# Stop the dev/install supervisor first. `vulture local_start` owns the agents,
+# frontend and backend as child processes and shuts them down on SIGTERM. This
+# matters because the per-port discovery below cannot see the agents when
+# config.ini has no [ports] section (their ports come from the Go agent
+# registry, not config.ini) — without this the agents survive `stop`.
+for sup_pid in $(pgrep -f "[v]ulture local_start" 2>/dev/null || true); do
+    if kill -TERM "$sup_pid" 2>/dev/null; then
+        printf "  Stopped %-15s (pid %s)\n" "supervisor" "$sup_pid"
+        stopped=$((stopped + 1))
+    fi
+done
+
 for entry in "${SERVICES[@]}"; do
     name="${entry%%:*}"
     port="${entry##*:}"
@@ -101,6 +113,13 @@ if [[ $remaining -gt 0 ]]; then
         done
     done
 fi
+
+# Safety net: force-stop any agent workers the supervisor cascade left behind
+# (also covers the config.ini-less case where the per-port loop can't target
+# them, since agent ports come from the Go registry rather than config.ini).
+for agent_pid in $(pgrep -f "[u]vicorn .*_agent\.main" 2>/dev/null || true); do
+    kill -KILL "$agent_pid" 2>/dev/null || true
+done
 
 echo
 echo "  $stopped service(s) stopped."
