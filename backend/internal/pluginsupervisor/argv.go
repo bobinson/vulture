@@ -258,6 +258,17 @@ func buildEnvArgs(plug pluginregistry.Plugin) ([]string, error) {
 	// below from the host env) takes precedence via docker's last-wins
 	// rule (Feature 0055).
 	out := []string{"-e", "HOME=/tmp"}
+	// S2 (0058 audit): a host-network plugin shares the host netns, so binding
+	// 0.0.0.0 would expose its HTTP API (e.g. semgrep /run) on every host
+	// interface — reachable by any LAN peer, unauthenticated. Force the image
+	// to bind loopback; the backend reaches host-network plugins via localhost
+	// (see buildProbeURL). Non-host (bridge/compose) plugins keep the default
+	// 0.0.0.0 so cross-container traffic works. The plugin image must honor
+	// VULTURE_BIND_HOST (see plugins/semgrep/Dockerfile); images that ignore it
+	// are unaffected.
+	if r.Network == "host" {
+		out = append(out, "-e", "VULTURE_BIND_HOST=127.0.0.1")
+	}
 	for _, name := range required {
 		if _, ok := os.LookupEnv(name); !ok {
 			return nil, fmt.Errorf("plugin %s: required env %s not set", plug.Name(), name)

@@ -423,3 +423,34 @@ func defaultOpts2Argv(t *testing.T, p pluginregistry.Plugin) []string {
 	}
 	return argv
 }
+
+// S2 (0058 audit): a host-network plugin shares the host netns, so binding
+// 0.0.0.0 exposes /run on every host interface (LAN). The supervisor injects
+// VULTURE_BIND_HOST=127.0.0.1 so the plugin image binds loopback only; the
+// backend still reaches it via localhost. Non-host plugins keep the default
+// (0.0.0.0) so cross-container compose traffic works.
+func TestBuildDockerRunArgv_HostNetworkBindsLoopback_S2(t *testing.T) {
+	p := containerPlugin("semgrep")
+	p.Manifest.Runtime.Network = "host"
+	p.Manifest.Trust.Tier = pluginregistry.TierUserSupplied
+	p.Manifest.Trust.RequiredAck = []string{"network-egress", "host-network"}
+
+	argv, err := pluginsupervisor.BuildDockerRunArgv(p, defaultOpts())
+	if err != nil {
+		t.Fatalf("BuildDockerRunArgv: %v", err)
+	}
+	if !argvContains(argv, "-e", "VULTURE_BIND_HOST=127.0.0.1") {
+		t.Errorf("host-network plugin must inject VULTURE_BIND_HOST=127.0.0.1; argv=%v", argv)
+	}
+}
+
+func TestBuildDockerRunArgv_NonHostNetworkNoBindOverride_S2(t *testing.T) {
+	p := containerPlugin("semgrep") // default Network=internal
+	argv, err := pluginsupervisor.BuildDockerRunArgv(p, defaultOpts())
+	if err != nil {
+		t.Fatalf("BuildDockerRunArgv: %v", err)
+	}
+	if argvContains(argv, "-e", "VULTURE_BIND_HOST=127.0.0.1") {
+		t.Errorf("non-host plugin must NOT force loopback bind; argv=%v", argv)
+	}
+}

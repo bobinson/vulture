@@ -204,3 +204,10 @@ def test_severity_prefers_extra_then_toplevel_C4():
              "start": {"line": 1}, "end": {"line": 1},
              "extra": {"message": "m", "metadata": {}}}
     assert _translate_one(r_top, "semgrep")["severity"] == "medium"
+
+
+def test_finding_carries_semgrep_provenance_R6():
+    from src.translate import _translate_one
+    r = {"check_id": "r", "path": "a.py", "start": {"line": 1}, "end": {"line": 1},
+         "extra": {"severity": "ERROR", "message": "m", "metadata": {"cwe": ["CWE-89: x"]}}}
+    assert _translate_one(r, "semgrep")["provenance"] == "semgrep"

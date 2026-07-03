@@ -17,6 +17,12 @@
 - **H1 (partial):** `--pro` engine enabled when `SEMGREP_APP_TOKEN` is set (interprocedural taint); OSS still runs intraprocedural taint from the security packs. Dedicated vendored taint rulesets (R3/P2d) remain TODO. (`wrapper.py`)
 - **L2:** `--` terminator before `source_path`. **L3:** memory clamp (above). **REL1:** hostile/malformed `config` can no longer crash argv-building mid-stream. **L4:** `tools/` test import fixed (collects standalone). **C2:** manifest `emits` corrected to the actually-emitted event set. **C3:** removed dead `rules/prefix_to_cwe.json`. **S4:** README network section corrected (host network + egress, not "internal").
 
+## Audit fixes — round 2 (2026-07-03, backend + provenance)
+- **R6 (provenance):** Semgrep findings now carry `provenance: "semgrep"` (verified it flows through the backend model → DB). Enables UI/gating to flag them as un-gated. (`translate.py`)
+- **S2 (HIGH security — FIXED in code):** the supervisor now injects `VULTURE_BIND_HOST=127.0.0.1` for **host-network** plugins, and the plugin `Dockerfile` binds `${VULTURE_BIND_HOST:-0.0.0.0}` — so `/run` binds **loopback** (backend reaches it via localhost) instead of every host interface. Non-host/compose plugins keep 0.0.0.0. (`backend/internal/pluginsupervisor/argv.go` + `plugins/semgrep/Dockerfile`; Go tests green.) **NB: takes effect on the next `vulture-plugin-semgrep` image rebuild.**
+- **C1/C4 VERIFIED** against real semgrep 1.168.0: semgrep returns **absolute** paths for an absolute target (C1 fix confirmed necessary); severity is under **`extra.severity`** (C4 was a false alarm — original was correct; the added top-level fallback is harmless).
+- **S3 (downgraded):** the local-mode host-`/` RO mount (`argv.go` buildFSArgs) remains, but with S2's loopback bind it is **no longer LAN-exploitable** — now a localhost-only defence-in-depth gap. Properly scoping it (stage sources, or a configurable `VULTURE_SCAN_ROOT` instead of `/`) is a local-mode design change — see below.
+
 ## Still OPEN (require scoped work / product decisions — NOT bug fixes)
 - **R2** — auto-activate Semgrep inside a CWE scan (today it runs only when the `semgrep` audit type is explicitly selected; `stagerouter/scanagents.go` skips in-tree registry plugins). Behavior change → product decision.
 - **R3** — vendored taint rulesets + pinning (`rules/vulture/`).

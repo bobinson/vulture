@@ -109,6 +109,10 @@ def _translate_one(r: dict, agent_type: str, root: str = "") -> dict:
         # the 0050 prefix/rule maps can resolve downstream.
         "category": cwe or check_id,
         "check_id": check_id,
+        # R6 (0058): tag origin so the orchestrator/UI can distinguish Semgrep
+        # findings and (future R7) gate/attribute them separately. These are
+        # NOT corpus-gated — provenance makes that explicit downstream.
+        "provenance": "semgrep",
         "file_path": path,
         "line_start": line_start,
         "line_end": (r.get("end") or {}).get("line"),

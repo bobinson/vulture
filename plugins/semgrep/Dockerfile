@@ -26,4 +26,8 @@ USER 65534:65534
 # Port 28011 avoids the very common host-side 8080 collision (catalyst,
 # videogen, etc. are typical). For production/container-network
 # deployments adjust the manifest's runtime.port to match.
-CMD ["uvicorn", "src.wrapper:app", "--host", "0.0.0.0", "--port", "28011"]
+# S2 (0058 audit): honor VULTURE_BIND_HOST so the supervisor can force a
+# loopback bind for host-network runs (default 0.0.0.0 for bridge/compose,
+# where cross-container reachability is required). `exec` keeps uvicorn as
+# PID 1 for correct signal handling.
+CMD ["sh", "-c", "exec uvicorn src.wrapper:app --host ${VULTURE_BIND_HOST:-0.0.0.0} --port 28011"]
