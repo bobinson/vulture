@@ -24,10 +24,11 @@
 - **S3 (downgraded):** the local-mode host-`/` RO mount (`argv.go` buildFSArgs) remains, but with S2's loopback bind it is **no longer LAN-exploitable** — now a localhost-only defence-in-depth gap. Properly scoping it (stage sources, or a configurable `VULTURE_SCAN_ROOT` instead of `/`) is a local-mode design change — see below.
 
 ## Still OPEN (require scoped work / product decisions — NOT bug fixes)
-- **R2** — auto-activate Semgrep inside a CWE scan (today it runs only when the `semgrep` audit type is explicitly selected; `stagerouter/scanagents.go` skips in-tree registry plugins). Behavior change → product decision.
+- **R2** — ⚠️ **scope corrected (2026-07-03): auto-activation is REJECTED.** Semgrep runs only when the **user ticks the `semgrep` audit type** (and the plugin is registered/activated/healthy) — never forced, never auto-activated inside a bare `cwe` scan. Today's behavior (runs when `semgrep` is explicitly selected; `stagerouter/scanagents.go` correctly skips auto-adding in-tree plugins) is therefore **already the desired trigger** — no router change needed. The real R2 work is making the ticked Semgrep's findings **augment** the CWE agent's in the shared audit (R5b reconcile + R6/R7 provenance/gating), not activation.
 - **R3** — vendored taint rulesets + pinning (`rules/vulture/`).
 - **R6/R7/R5b** — `provenance: semgrep` tag, corpus gating (candidate→trusted, below-gate band, `VERIFIED_CWES.md` semgrep tier), CWE-taxonomy reconciliation.
-- **S2 (HIGH, backend security)** — `/run` is unauthenticated on the host network; **S3 (backend)** — local mode mounts host `/` at `/audit-inputs`, making `normalise_source_path`'s guard a no-op there. Both are backend-architecture changes, not plugin-local, and need a design decision.
+- **S2 (HIGH, backend security)** — `/run` is unauthenticated on the host network (loopback-bound after the S2 fix, but still unauthenticated); a design decision on auth remains.
+- **S3 (backend)** — local mode mounts host `/` at `/audit-inputs`, making `normalise_source_path`'s guard a no-op there. **Design now decided (2026-07-03):** fix by adopting the existing staging pattern — mount `AuditsDir` not `/`, stage source per audit (git-clone-in-place + excluded local-dir copy), reap + disk/concurrency guards; ephemeral per-audit containers rejected. Specced in the LLD as **R11 / §4a / Phase 0 (P0a–P0d) / T11–T12**. Ready to implement (test-first); not yet coded.
 - **R8** — pin the Semgrep image (mutable `:0.1.0` tag) + ruleset snapshot so gated N is reproducible.
 | **Depends on** | 0051–0053 (plugin arch + bundled Semgrep), 0057 (corpus harness + attestation + provenance) |
 
@@ -96,6 +97,50 @@
   overrides for documented exceptions; a separate "DETECTED (below-gate)" band that does not
   count toward N.
 - **All §11 decisions resolved — 0058 review-complete.**
+
+## Design note — L5 LLM judge does NOT gate Semgrep/plugin findings (by design, 2026-07-03)
+
+Recorded so the absence of an L5 pass on Semgrep findings is not later mistaken for a
+missing feature.
+
+**Two-tier gating — L5 is only for the LLM tier:**
+- **Deterministic detectors** (the agents' regex skills, the 0057 signature tier, and
+  **Semgrep's pattern/taint rules**) are gated on **precision/recall against the labeled
+  corpus** (0057 gate; Semgrep's is **R7**). That corpus gate is their quality control.
+- **LLM-*generated* findings** (non-deterministic, speculative) are gated by the **L5
+  exploitability judge** (`shared/validate/llm_judge.py`, generate-then-verify).
+
+**Why L5 does nothing for Semgrep as-is (verified):**
+1. **It never reaches L5.** L5 lives in the Python `audit_runner` validate phase, which runs
+   *inside each in-tree agent process*. Semgrep is a **standalone plugin container** — its
+   `wrapper.py` only translates + streams; it bypasses `audit_runner` entirely. On the
+   backend, plugin findings get only the **L3 cross-agent corroboration boost**
+   (`applyCrossAgentValidation` in `stream_handler.go`), never an L5 pass.
+2. **Even if routed to L5, it is exempt.** `_is_deterministic` / `_is_l5_exempt` treat a
+   finding with a `check_id` and `provenance != "llm"` as deterministic-authoritative → the
+   judge **cannot demote it**. Semgrep findings carry a `check_id` + `provenance:"semgrep"`
+   (R6), so L5 would pass them through untouched.
+
+**So L5 must NOT be required for every plugin/agent at each phase:**
+- It would be **wasted work** on tiers it is forbidden to act on (deterministic ⇒ exempt).
+- It does not scale in **cost/latency** — per-finding LLM calls × every detector × every
+  phase, re-judging the same overlapping findings.
+- It breaks the **plugin model** — plugins are process/language-isolated (Go/Node/Rust are
+  valid plugin languages); each cannot embed the Python judge + its CancelToken/RC6
+  safeguards.
+
+**If uniform validation is ever wanted:** do it as **one centralized, opt-in,
+provenance-aware validate pass in the orchestrator** over the aggregate deduped finding set
+(natural home: the existing backend `deduplicateCrossAgent` step) — *not* L5 embedded in
+each plugin/agent/phase. Such a pass would skip deterministic provenance and judge only the
+LLM tier.
+
+**Consequence for 0058:** Semgrep's correct quality control is **R7 corpus gating** (+ L3
+corroboration), not L5. The R5b "validation phase arbitrates skill↔Semgrep disagreements"
+(decisions log §11.4) refers to the **V6 voter + L3 + 0050 normalization**, *not* L5 — and
+even that arbitration is currently partial: `crossAgentKey` matches exact
+`(category, file, line)`, so taxonomically-related CWE-ids at one site (e.g. CWE-22 ↔
+CWE-73) are not yet linked (the R5b cross-detector reconciliation step remains TODO, above).
 
 ## Notes / blockers
 - Depends on **0057 Phase 4–6** (corpus runner, gates, `VERIFIED_CWES.md`, provenance) being

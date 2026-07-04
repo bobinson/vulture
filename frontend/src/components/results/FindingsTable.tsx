@@ -9,6 +9,8 @@ import { ValidationBadge } from "./ValidationBadge.tsx";
 import { FindingTimeline } from "./FindingTimeline.tsx";
 import { FindingLifecycleBadge } from "./FindingLifecycleBadge.tsx";
 import { CrossAgentBadge } from "./CrossAgentBadge.tsx";
+import { ProvenanceChip } from "./ProvenanceChip.tsx";
+import { Chip } from "@/components/shared/Chip.tsx";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import { findingToMarkdown } from "@/lib/markdown.ts";
@@ -122,11 +124,13 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
     sortDirection,
     filterSeverity,
     filterAgent,
+    filterProvenance,
     hideFalsePositives,
     falsePositiveCount,
     validationCounts,
     setFilterSeverity,
     setFilterAgent,
+    setFilterProvenance,
     setHideFalsePositives,
     toggleSort,
   } = useFindings(allFindings, falsePositiveFingerprints);
@@ -141,6 +145,21 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
       if (at) set.add(at);
     }
     return Array.from(set).sort();
+  }, [allFindings]);
+
+  // Feature 0058 (R6) — distinct detection tiers among findings.
+  // Untagged findings form their own group, so the filter row only
+  // renders when it can actually narrow (>1 group).
+  const { provenanceTiers, showProvenanceFilter } = useMemo(() => {
+    const tiers = new Set<string>();
+    let hasUntagged = false;
+    for (const f of allFindings) {
+      if (f.provenance) tiers.add(f.provenance);
+      else hasUntagged = true;
+    }
+    const sorted = Array.from(tiers).sort();
+    const groups = sorted.length + (hasUntagged ? 1 : 0);
+    return { provenanceTiers: sorted, showProvenanceFilter: sorted.length > 0 && groups > 1 };
   }, [allFindings]);
 
   // Map finding IDs to prove results for inline badges
@@ -270,6 +289,31 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                 >
                   {agentLabel(at, t)}
                 </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* 0058 (R6) — provenance filter, mirroring the agent filter.
+            Only shows when findings span more than one detection tier
+            (untagged findings count as their own tier). */}
+        {showProvenanceFilter && (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-muted-light">{t("results.provenance")}:</span>
+            <div className="flex gap-1">
+              <Chip
+                label={t("results.all")}
+                testId="provenance-filter-all"
+                active={filterProvenance === "all"}
+                onClick={() => setFilterProvenance("all")}
+              />
+              {provenanceTiers.map((tier) => (
+                <Chip
+                  key={tier}
+                  label={tier}
+                  testId={`provenance-filter-${tier}`}
+                  active={filterProvenance === tier}
+                  onClick={() => setFilterProvenance(tier)}
+                />
               ))}
             </div>
           </div>
@@ -422,6 +466,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                     <td className="px-4 py-2.5 max-w-md">
                       <div className="flex items-center gap-1.5">
                         <p className="text-[13px] text-foreground font-medium truncate">{finding.title}</p>
+                        <ProvenanceChip provenance={finding.provenance} />
                         <ValidationBadge status={finding.validation_status} />
                         <FindingLifecycleBadge
                           lineage={finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined}

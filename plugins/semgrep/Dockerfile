@@ -18,6 +18,13 @@ RUN mkdir -p /srv/semgrep-rules \
 COPY pyproject.toml /app/
 COPY src/    /app/src/
 COPY rules/  /app/rules/
+# R8 (0058/P2c): hard-pin the Semgrep engine version. The digest-pinned
+# base above already ships exactly 1.84.0; this explicit pin is a
+# self-documenting no-op that fails the build loudly if the base ever
+# drifts from the version the ruleset snapshot was verified against.
+# Bump procedure: update the FROM tag+digest, this pin, AND regenerate
+# rules/RULESET_SNAPSHOT.json together (mirrors the catalog 4.19.1 pin).
+RUN pip install --no-cache-dir semgrep==1.84.0
 RUN pip install --no-cache-dir fastapi "uvicorn[standard]"
 
 EXPOSE 28011

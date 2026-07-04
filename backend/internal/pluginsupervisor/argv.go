@@ -171,17 +171,13 @@ func buildFSArgs(plug pluginregistry.Plugin, opts Options) ([]string, error) {
 		if err := validateReadPath(p); err != nil {
 			return nil, err
 		}
-		// Native launcher (LocalMode): the backend references sources by
-		// their real host path (local-dir scans, /tmp git clones), which
-		// are NOT staged into AuditsDir. Mount host / read-only so any
-		// host path resolves under the plugin's audit-inputs mount; the
-		// stream dispatch prefixes source_path to match (Feature 0055).
-		// docker-compose keeps the staged AuditsDir volume.
-		src := opts.AuditsDir
-		if opts.LocalMode {
-			src = "/"
-		}
-		out = append(out, "-v", fmt.Sprintf("%s:%s:ro", src, p))
+		// Staged contract (Feature 0058, R11/S3): AuditsDir is ALWAYS the
+		// mount source — local mode included. The backend stages each
+		// audit's source into AuditsDir/<audit-id>/ (internal/staging) and
+		// dispatches source_path as /audit-inputs/<audit-id>/…, so the
+		// plugin only ever sees the scoped staging dir, never host "/".
+		// This restores normalise_source_path's confinement guard.
+		out = append(out, "-v", fmt.Sprintf("%s:%s:ro", opts.AuditsDir, p))
 	}
 	for _, p := range writePaths {
 		if err := validateWritePath(p, plug.Name()); err != nil {
@@ -320,4 +316,3 @@ func getStringFromAny(m map[string]any, key string) (string, bool) {
 	s, ok := raw.(string)
 	return s, ok
 }
-

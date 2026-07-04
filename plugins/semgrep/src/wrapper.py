@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
@@ -105,6 +106,16 @@ def _resolve_source_path(body: dict) -> str:
 
 _DEFAULT_RULE_PACKS = ["p/security-audit"]
 
+# R3/P2d (0058): Vulture-authored, vendored, PINNED taint rules
+# (Apache-2.0, `mode: taint`) shipped alongside the registry packs — the
+# hybrid ruleset. Resolved relative to this file so it works both in the
+# container (/app/rules/vulture) and when running from the repo checkout.
+# Overridable via env at import time (tests reload the module).
+_DEFAULT_VENDORED_RULES = Path(__file__).resolve().parents[1] / "rules" / "vulture"
+VENDORED_RULES_DIR = os.environ.get(
+    "VULTURE_SEMGREP_VENDORED_RULES", os.fspath(_DEFAULT_VENDORED_RULES)
+)
+
 # H2 (0058 audit): allowlist for config.rule_packs. Only PINNED Semgrep
 # registry packs (`p/<name>`) are permitted to reach `--config`. Semgrep's
 # `--config` also accepts URLs, local file paths, and `auto`; since the audit
@@ -125,6 +136,24 @@ def _allowed_rule_packs(config: dict) -> list[str]:
         return list(_DEFAULT_RULE_PACKS)
     safe = [p for p in raw if isinstance(p, str) and _RULE_PACK_RE.match(p)]
     return safe or list(_DEFAULT_RULE_PACKS)
+
+
+def _vendored_rules_config(config: dict) -> list[str]:
+    """Return the vendored-rules ``--config`` pair, or ``[]``.
+
+    The vendored taint rules join the DEFAULT hybrid set only — an
+    explicit client ``rule_packs`` list is an operator pin of the full
+    ruleset (H2 semantics), so it is honored verbatim. A missing or
+    rule-less vendored dir degrades gracefully (R9-style): no entry.
+    """
+    if isinstance(config.get("rule_packs"), list):
+        return []
+    vendored = Path(os.fspath(VENDORED_RULES_DIR))
+    if not vendored.is_dir():
+        return []
+    if not any(p.suffix in (".yaml", ".yml") for p in vendored.rglob("*")):
+        return []
+    return ["--config", os.fspath(VENDORED_RULES_DIR)]
 
 
 def _clamp_memory_mb(config: dict) -> int:
@@ -156,8 +185,16 @@ def _semgrep_argv(source_path: str, config: dict) -> list[str]:
     for pattern in _SCAN_EXCLUDES:
         args += ["--exclude", pattern]
     args += ["--max-memory", str(_clamp_memory_mb(config))]
+    # 0058: the scan target IS the project root (a staged audit tree).
+    # Without this Semgrep walks up to an enclosing repo root and applies
+    # that project's (or its built-in default) .semgrepignore — e.g. the
+    # default `tests/` pattern — silently skipping audited files.
+    args += ["--project-root", source_path]
     for pack in _allowed_rule_packs(config):
         args += ["--config", pack]
+    # R3/P2a+P2d (0058): vendored Vulture taint rules ride alongside the
+    # registry packs (the hybrid set) unless the client pinned rule_packs.
+    args += _vendored_rules_config(config)
     # L2: terminate options so source_path can never be parsed as a flag
     # (defence-in-depth atop normalise_source_path's leading-dash guard).
     args += ["--", source_path]

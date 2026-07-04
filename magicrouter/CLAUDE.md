@@ -15,8 +15,17 @@ subject to m ∈ Eligible(policy)                    # hard: sovereignty, reside
 
 It lives inside the vulture repo (vulture is consumer #1) but is **standalone by
 construction**: it must never import anything from vulture (`shared/`, `backend/`, …), and
-all its data contracts are JSON-serializable so it can later become a separate package or a
-polyglot HTTP sidecar without a rewrite.
+all its data contracts are JSON-serializable.
+
+**Polyglot is a hard requirement** (2026-07-03): magicrouter must be a generic router for *all*
+platforms (Go, TS, Python, external tools), not vulture-Python only. Therefore **the canonical
+product is the language-neutral contract + conformance suite**, not the Python library — served
+by an embedded runtime (Python reference + on-demand native ports) *and* a co-located HTTP/JSON
+sidecar, both gated by the same conformance vectors so every runtime decides identically.
+Sequencing is **prove → freeze → propagate**: build the Python reference against vulture, extract
++ version the OpenAPI contract from what survives real use, then serve + port. `RoutingRequest`
+is **payload-free by construction** (derived signals only, never the raw prompt/source) so a
+shared/third-party sidecar never sees sensitive content. See feature 0005.
 
 ## Core Principles (non-negotiable)
 
@@ -163,6 +172,28 @@ Under `docs/features/0003_generalized_multimodel_routing/research/` (`0003_resea
   (no source spans creative + enterprise end-to-end) — 0003 makes it a test property via
   multi-domain fixtures, but there is still no production non-vulture consumer.
 
+### Feature 0006 — generative-media capability taxonomy & manifest (2026-07-03: 109 agents, 26 sources, 25 verified, 21 confirmed / 4 refuted — clean run)
+
+Under `docs/features/0006_generative_media_capabilities/` (`0006_capability_schema.md` is the
+deliverable; `research/0006_research_report.md` + `deep_research_run.json`). The concrete
+generative-media instantiation of the domain-general design — closes 0003's "shown by example"
+gap. Key takeaways:
+- **Capability axes split hard vs graded** (✅ F10): HARD eligibility = `native_audio`,
+  **`native_clip_s` vs `max_extended_s`** (two fields — the split a design correction surfaced,
+  ✅ F2), resolution/fps, image-to-video, first/last-frame, camera_control, lip_sync,
+  `commercial_license`. GRADED = arena Elo (✅ F3, **filter-pinned**) + VBench/VBench-2.0 per-dim
+  (✅ F4) + prompt-adherence/realism/text-rendering.
+- **Graded quality is consumed, never computed** — Artificial Analysis Elo arenas + VBench;
+  **cost normalized** (USD/min-video @1080p/5s/24fps; USD/1024²-image, ✅ F6); latency = provider
+  14-day median (✅ F7).
+- **Manifest = HuggingFace model-card pattern** (YAML + per-metric provenance, ✅ F8). **Every field
+  is a dated, sourced snapshot** — 4 spec claims were refuted (Sora "20s/no-audio", Veo3 "4K",
+  Runway Gen-4 spec, a 3-orders image-cost range), so specs are never hardcoded/guessed; missing
+  hard field ⇒ graceful-unknown (fail-closed).
+- **Anti-pattern confirmed** (✅ F9): Azure/Foundry "model router" is a trained LLM running
+  inference to route — magicrouter is the deterministic opposite.
+- Rule of thumb this cements: **new domain = new manifest + fixtures, not new router code.**
+
 ## Development Workflow (MANDATORY — inherited from vulture)
 
 1. **Think** — understand the problem fully before writing any code.
@@ -188,6 +219,8 @@ Feature docs follow vulture's conventions exactly: each feature gets a folder
 | 0002 | `0002_security_privacy_routing` — security/privacy as first-class dimensions; injection & denial-of-wallet at the routing layer | DESIGN |
 | 0003 | `0003_generalized_multimodel_routing` — domain-agnostic core; subjective/post-generation quality (bake-off); learned priors; unseen-model generalization | DESIGN |
 | 0004 | `0004_project_synthesis` — unified project report: capability-vs-value answer, possible routes (R1–R4 + decision shapes), pre-implementation "what to do first" plan | SYNTHESIS (start here) |
+| 0005 | `0005_polyglot_service_architecture` — **polyglot is required**: contract-as-product (OpenAPI + conformance suite), embedded ports + sidecar service, shared data plane, prove→freeze→propagate | DESIGN |
+| 0006 | `0006_generative_media_capabilities` — concrete video/image capability taxonomy + ModelCard **capability manifest schema** (`0006_capability_schema.md`); proves domain-generality by example | DESIGN |
 
 Vulture-side integration work (the `routing_adapter.py`, `VULTURE_ROUTER_*` env knobs,
 `run_combined_audit()` wiring) is documented in **vulture's** `docs/features/` sequence,

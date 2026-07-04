@@ -65,6 +65,8 @@
     "findingsCount": "{{count}} 件の検出事項",
     "noFindings": "検出事項はありません。コードは問題なさそうです！",
     "noFindingsShort": "問題なし",
+    "provenance": "検出元",
+    "semgrepTierNotice": "Semgrep層は無効です。この監査はスキルとシグネチャのみで実行されました。",
     "agent": "エージェント",
     "scores": "コンプライアンススコア",
     "waitingAgents": "エージェントの起動を待機中...",

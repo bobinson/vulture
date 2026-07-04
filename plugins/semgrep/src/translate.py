@@ -108,6 +108,11 @@ def _translate_one(r: dict, agent_type: str, root: str = "") -> dict:
         # Prefer canonical CWE for category; fall back to check_id so
         # the 0050 prefix/rule maps can resolve downstream.
         "category": cwe or check_id,
+        # R4 (0058): every finding is CWE-attributed from the rule's own
+        # extra.metadata.cwe; unmapped rules are tagged CWE-unknown and
+        # NEVER dropped. (The check_id fallback belongs to `category`
+        # only — `cwe` is always canonical-or-unknown.)
+        "cwe": cwe or "CWE-unknown",
         "check_id": check_id,
         # R6 (0058): tag origin so the orchestrator/UI can distinguish Semgrep
         # findings and (future R7) gate/attribute them separately. These are

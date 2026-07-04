@@ -65,6 +65,8 @@
     "findingsCount": "{{count}} constatation(s)",
     "noFindings": "Aucune constatation détectée. Votre code semble propre !",
     "noFindingsShort": "Propre",
+    "provenance": "Provenance",
+    "semgrepTierNotice": "Niveau Semgrep inactif — cet audit n'a exécuté que les skills déterministes et les signatures.",
     "agent": "Agent",
     "scores": "Scores de Conformité",
     "waitingAgents": "En attente du démarrage des agents...",

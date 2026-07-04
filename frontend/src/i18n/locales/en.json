@@ -69,6 +69,8 @@
     "findingsCount": "{{count}} finding(s)",
     "noFindings": "No findings detected. Your code looks clean!",
     "noFindingsShort": "Clean",
+    "provenance": "Provenance",
+    "semgrepTierNotice": "Semgrep tier not active — this audit ran deterministic skills + signatures only.",
     "agent": "Agent",
     "scores": "Compliance Scores",
     "waitingAgents": "Waiting for agents to start...",

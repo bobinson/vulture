@@ -65,6 +65,8 @@
     "findingsCount": "{{count}} constatação(ões)",
     "noFindings": "Nenhuma constatação detectada. Seu código parece limpo!",
     "noFindingsShort": "Limpo",
+    "provenance": "Proveniência",
+    "semgrepTierNotice": "Camada Semgrep inativa — esta auditoria executou apenas skills determinísticas e assinaturas.",
     "agent": "Agente",
     "scores": "Pontuações de Conformidade",
     "waitingAgents": "Aguardando início dos agentes...",

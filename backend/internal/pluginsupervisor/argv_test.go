@@ -361,23 +361,9 @@ func TestBuildDockerRunArgv_NoResources_NoCPUNoMemoryFlags(t *testing.T) {
 	}
 }
 
-func TestBuildDockerRunArgv_LocalModeMountsHostRoot_0055(t *testing.T) {
-	p := containerPlugin("semgrep")
-	opts := defaultOpts()
-	opts.LocalMode = true
-	argv, err := pluginsupervisor.BuildDockerRunArgv(p, opts)
-	if err != nil {
-		t.Fatalf("BuildDockerRunArgv: %v", err)
-	}
-	// LocalMode mounts host / (so any host source path resolves under
-	// /audit-inputs) — NOT the staged AuditsDir.
-	if !argvContains(argv, "-v", "/:/audit-inputs:ro") {
-		t.Errorf("local mode: expected -v /:/audit-inputs:ro; argv=%v", argv)
-	}
-	if argvContains(argv, "-v", "/host/audits:/audit-inputs:ro") {
-		t.Errorf("local mode must NOT mount AuditsDir; argv=%v", argv)
-	}
-}
+// TestBuildDockerRunArgv_LocalModeMountsHostRoot_0055 was removed by feature
+// 0058 (R11/S3): the host-/ mount it pinned was a security defect superseded
+// by the staged-AuditsDir contract in argv_s3_test.go.
 
 func TestBuildDockerRunArgv_SetsWritableHome_0055(t *testing.T) {
 	// Container images run as non-root (e.g. nobody) with no home, so
