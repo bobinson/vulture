@@ -3,8 +3,62 @@
 | | |
 |---|---|
 | **Feature** | 0058_semgrep_cwe_augmentation |
-| **Status** | 🟡 PARTIAL — the bundled Semgrep plugin (feature 0053 + 0055 hardening) exists and runs when the `semgrep` audit type is explicitly selected. **0058-specific work (R2 auto-activation in CWE scans, R3 taint rulesets, R6 provenance, R7 corpus gating, R5b CWE-taxonomy reconcile) is NOT done.** A 2026-07-03 audit fixed several pre-existing defects (below). |
-| **Last updated** | 2026-07-03 |
+| **Status** | 🟢 IMPLEMENTED (TDD, RED→GREEN) + E2E-verified on a live stack (LM Studio `qwen/qwen3.6-27b` + Postgres). R3 taint (vendored Apache-2.0 rules), R4 CWE attribution (`CWE-unknown` fallback), R5b CWE-taxonomy reconcile, R6 provenance, R7 corpus-gate semgrep tier, R11/S3 per-audit staging (no host-`/` mount) + frontend provenance chips/filter + graceful-tier notice all landed. Unit/integration suites green (backend 23 pkgs, 590 CWE, 66 plugin, 341 frontend). Three defects found+fixed during E2E (below). **Outstanding: independent 10-dimension review panel could not complete (session-limit); webkit Playwright blocked on host libs.** |
+| **Last updated** | 2026-07-05 |
+
+## Implementation + E2E verification (2026-07-04/05)
+
+**Landed (test-first):** `backend/internal/staging/` (Stage/Reap/Sweep/HasCapacity — symlink-safe, SKIP_DIRS + gitignore-subset, disk-budget + concurrency cap), `argv.go` (local mode mounts `AuditsDir`, never host `/`), `stream_service.go` (containerStager staging wiring + `agentUnavailableEvent` R9 notice), `internal/cwe/taxonomy.go` + `handler/cwe_taxonomy.go` (`canonicalCWEGroup` family reconcile), plugin `wrapper.py`/`translate.py` (vendored taint rules, `cwe` key, provenance, snapshot pin), corpus `score_semgrep_corpus`/attestation tier, frontend `shared/Chip.tsx` + `ProvenanceChip`/`SemgrepTierNotice`/provenance filter + 6-locale i18n.
+
+**Three defects found & fixed during live E2E** (would not surface in unit tests):
+1. **`--project-root` version skew (CRITICAL)** — the plugin passed `--project-root`, valid in host semgrep 1.168.0 (where tests ran) but NOT in the pinned image 1.84.0 → `semgrep scan` errored → **every audit's semgrep phase silently returned 0 findings**. Removed (redundant under staging: the target is an isolated per-audit tree). Regression test `test_argv_version_compat.py` pins its absence.
+2. **Notice phrase case mismatch** — backend emits `"semgrep tier not active …"` (lowercase agentType) but `SemgrepTierNotice` matched `"Semgrep tier not active"` case-sensitively → notice never showed in production. Fixed to case-insensitive match.
+3. **Playwright notice-mock greedy glob** — the spec's `**/stream*` route shadowed `/stream-token` (last-registered wins), 500-ing the token fetch so EventSource never opened. Tightened the mock glob to the SSE endpoint only (assertion unchanged).
+
+**Verification matrix:**
+| Check | Result |
+|---|---|
+| Vendored taint rule fires (flask→`os.system`, hermetic, no network) | ✅ CWE-78 |
+| Finding persisted with `provenance=semgrep` + `category=CWE-78` | ✅ |
+| S3: container mounts `AuditsDir` (not `/`), loopback bind, staged tree scanned | ✅ |
+| Direct semgrep vs audit-path parity | ✅ audit ⊇ direct (vendored + `p/security-audit`) |
+| Playwright chips/filter/notice — chromium + firefox | ✅ 6/6 |
+| Playwright webkit (Safari) | ⚠️ blocked — host libs need root (config present; runs in CI) |
+| Multi-OS staging/pluginsupervisor/handler binaries — Ubuntu 24.04 / Fedora 41 / Kali rolling | ✅ all pass |
+| 10-dimension review panel | ⏳ not run — session-limit (resets); re-run pending |
+
+**Reliability note (resolved):** `p/security-audit` (registry) is re-fetched per run and cannot be cached offline — the tests pin the registry alias, and Semgrep persists no rule cache — so it needs egress at scan time (a granted `runtime.network` capability). The **vendored `rules/vulture/` taint rules are the hermetic guaranteed tier** (work offline). Crucially, a registry-fetch failure is now **surfaced as an audit error** (not a silent 0 — see the review HIGH fix below), so degraded coverage is visible.
+
+## Review round (2026-07-05) — 10 adversarially-confirmed findings, fixed
+
+The 10-dimension review panel (re-run leaner after two session-limit aborts) surfaced 10 confirmed findings; the code bugs are fixed and guarded:
+
+- **HIGH — errored scan swallowed as clean 0-findings** (`agui/translator.go`): a `result` payload carrying `error` was dropped by `parseSnapshot` (reads only `{findings,score}`) → an errored/timed-out/mis-flagged scan looked identical to a clean one (the root reason `--project-root` was invisible). Fixed: `translateResult` now emits an `ERROR: …` text event so `collectErrorText` marks `AgentError`. Regression test `translator_result_error_test.go`.
+- **HIGH — plugin nonzero-exit → error (untested bug class)**: added `test_exit_error_not_silent.py` pinning `_classify_exit`.
+- **MED — staging walk→copy TOCTOU**: `copyFile` now opens `O_NOFOLLOW` (a post-walk symlink swap fails closed instead of dereferencing host bytes). Test `TestCopyFile_RefusesSymlink`.
+- **MED — `agentUnavailableEvent` bare send could deadlock `wg.Wait`** → staged-tree leak: send now `select`s on `ctx.Done()`.
+- **MED — staging ignored `VULTURE_IGNORE_GITIGNORE`**: `loadIgnores` now honors it (matching `file_scanner`). Test `TestStage_HonorsIgnoreGitignoreFlag`.
+- **MED — untested capacity-refusal / ctx-cancel**: added `TestStage_HonorsContextCancellation` (+ capacity covered via `HasCapacity`).
+- **LOW — sibling-audit symlink reachability & router-fallback coverage**: documented in `copySymlink` (accepted: local-mode single-tenant, discloses only other scanned source).
+
+**Also fixed (found via full-suite + E2E, same round):**
+- **`--project-root` is now VERSION-CONDITIONAL** (`wrapper.py`): the pinned image Semgrep 1.84.0 rejects the flag (→ 0 findings); newer host Semgrep needs it so the default `.semgrepignore` (`tests/`) doesn't skip audited files. A cached, fail-safe capability probe includes it only where supported (container→omit, host→include). Test `test_argv_version_compat.py`.
+- **`HOME` handling**: removed the redundant `ENV HOME=/tmp` from the Dockerfile (the supervisor injects `-e HOME=/tmp`; a root-run build pre-warm under it created a root-owned `/tmp/.semgrep` unwritable by the runtime user).
+
+**Differential accuracy guard added** (answering "compare against standalone CLI"): `test_cli_parity.py` runs a standalone `semgrep` CLI as ground truth and asserts the plugin's `translate_findings` path matches it 1:1 on `(cwe, file, line)` — catches translation drift, dropped findings, and argv regressions.
+
+Suites after this round: **backend 23 pkgs 0-fail · plugin 72 · frontend 341 · Playwright chromium+firefox 6/6**.
+
+## Semgrep version bump — R8 (2026-07-05): 1.84.0 → 1.168.0 (latest stable)
+
+Bumped the pinned engine to the latest stable (>1.76.0) via the R8 procedure (version + ruleset snapshot pinned together):
+- `Dockerfile` `FROM semgrep/semgrep:1.168.0@sha256:59fbed6127ea…` (new digest; LGPL-2.1 re-noted).
+- `Dockerfile` pin `semgrep==1.168.0` — the 1.168.0 base is a **PEP 668 externally-managed** Python env, so the pin now carries `--break-system-packages` (resolves as "already satisfied" — a no-op assertion that fails loudly on base drift; the 1.84.0 base didn't need it).
+- `rules/RULESET_SNAPSHOT.json` gains `"semgrep_version": "1.168.0"`; vendored rule hashes recomputed (unchanged).
+
+Also added standard **build-artifact excludes** across all three layers (plugin `_SCAN_EXCLUDES`, backend `staging.skipDirs`, in-tree `file_scanner.SKIP_DIRS`): `storybook-static`, `.output`, `.svelte-kit`, `.angular`, `.docusaurus`, `.turbo`, `.parcel-cache`, `.cache`, `coverage`, `.nyc_output` — an idattestor comparison showed 5 of 6 findings were in generated/minified bundles, not source. `.vultureignore` remains the per-project escape hatch for non-standard artifact dirs (e.g. idattestor's `.next-e2e`), and it flows to the plugin via staging.
+
+**Effect:** the plugin (1.168.0) now matches the host CLI version exactly — closes the version-skew gap; `--project-root` is supported in-container. T8 pinning + full plugin suite (72) green on the new pin.
 
 > **⚠️ Correction (2026-07-03):** the prior "No code written" was wrong — the
 > 0053 reference plugin + a ~50-entry `rule_to_cwe.json` already shipped. The

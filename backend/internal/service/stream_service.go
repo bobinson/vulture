@@ -207,7 +207,14 @@ func (s *streamService) launch(ctx context.Context, wg *sync.WaitGroup, url, age
 			// agent is an augmentation tier that isn't active, not an
 			// audit failure. Emit a notice and let the other agents flow.
 			log.Printf("[stream-svc] agent=%s error: %v", agentType, err)
-			eventCh <- agentUnavailableEvent(agentType)
+			// Honor cancellation on the send: a stopped/gone consumer must
+			// never wedge this goroutine, which would hang wg.Wait() and
+			// leak the staged tree (reap never runs). Matches the proxy's
+			// send discipline (0058 review, MEDIUM).
+			select {
+			case eventCh <- agentUnavailableEvent(agentType):
+			case <-ctx.Done():
+			}
 		} else {
 			log.Printf("[stream-svc] agent=%s completed successfully", agentType)
 		}

@@ -1,4 +1,5 @@
 {
+  "semgrep_version": "1.168.0",
   "packs": [
     "p/security-audit"
   ],

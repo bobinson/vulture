@@ -16,10 +16,18 @@ type ignoreSet struct {
 }
 
 // loadIgnores reads the ignore files at the source root. Missing files
-// simply contribute no patterns.
+// simply contribute no patterns. Honors VULTURE_IGNORE_GITIGNORE=true by
+// skipping .gitignore (still applying .vultureignore) — matching the
+// in-tree scanner's contract (file_scanner._load_ignore_spec), so the
+// staged tree a container plugin scans and the tree the skills scan don't
+// diverge (0058 review, MEDIUM).
 func loadIgnores(srcDir string) *ignoreSet {
 	s := &ignoreSet{}
-	for _, name := range []string{".gitignore", ".vultureignore"} {
+	names := []string{".gitignore", ".vultureignore"}
+	if os.Getenv("VULTURE_IGNORE_GITIGNORE") == "true" {
+		names = []string{".vultureignore"}
+	}
+	for _, name := range names {
 		s.addFile(filepath.Join(srcDir, name))
 	}
 	return s

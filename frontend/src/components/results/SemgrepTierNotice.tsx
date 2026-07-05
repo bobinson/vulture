@@ -14,8 +14,13 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { StreamLine } from "@/lib/types.ts";
 
-// Phrase pinned by the R9 orchestrator notice (stream_handler.go).
-const NOTICE_PHRASE = "Semgrep tier not active";
+// Phrase pinned by the R9 orchestrator notice: the backend emits
+// "<agentType> tier not active (agent unavailable); ..." (see
+// agentUnavailableEvent in stream_service.go), where agentType is the
+// lowercase plugin name ("semgrep"). Match case-INSENSITIVELY so the
+// real backend event ("semgrep tier not active …") is detected, not
+// just the capitalized wording used in fixtures.
+const NOTICE_PHRASE = "semgrep tier not active";
 
 interface SemgrepTierNoticeProps {
   lines: StreamLine[];
@@ -25,7 +30,7 @@ export function SemgrepTierNotice({ lines }: SemgrepTierNoticeProps) {
   const { t } = useTranslation();
 
   const noticed = useMemo(
-    () => lines.some((l) => l.text.includes(NOTICE_PHRASE)),
+    () => lines.some((l) => l.text.toLowerCase().includes(NOTICE_PHRASE)),
     [lines],
   );
 

@@ -1,17 +1,22 @@
-# magicrouter — Policy-First LLM Routing Library
+# magicrouter — Policy-First Model Routing Library
 
 ## Project Overview
 
-magicrouter is a **standalone Python library** for LLM routing: given a routing request, a
+magicrouter is a **standalone Python library** for **model routing across modalities** (LLMs +
+diffusion: image/video/3D — new modalities are manifest data, not router code): given a routing request, a
 pool of models, and a policy context, it returns a **routing decision** — which model should
 handle the call, ordered fallbacks, and the auditable reasons. Selection is driven by token
 cost but constrained by capability, data protection, and sovereignty:
 
 ```
-maximize   E[quality(m, t)] − λ · cost(m, t)      # soft: cost-quality dial (RouteLLM α / xRouter λ)
-subject to m ∈ Eligible(policy)                    # hard: sovereignty, residency, PII tier,
-                                                   #       compliance, context fit, health
+maximize   E[value(m, t)] − λ · cost(m, t)         # soft: fitness-for-task dial, over Eligible only
+subject to m ∈ Eligible(policy, capability, t)      # hard: sovereignty/residency/PII, capability match,
+                                                   #       security posture, licensing, ctx-fit, health
 ```
+
+(This is the core two-stage form; the full unified formula — with the security/robustness terms
+from 0002, the `value`/stakes weighting and capability-vector eligibility from 0001, unified
+`expected_usd` cost and `decision_shape` from 0006/0007 — is in `docs/features/0007_.../0007_end_to_end_lifecycle.md` §6 and the 0004 project report §3.)
 
 It lives inside the vulture repo (vulture is consumer #1) but is **standalone by
 construction**: it must never import anything from vulture (`shared/`, `backend/`, …), and
@@ -194,6 +199,32 @@ gap. Key takeaways:
   inference to route — magicrouter is the deterministic opposite.
 - Rule of thumb this cements: **new domain = new manifest + fixtures, not new router code.**
 
+### Feature 0007 — cross-modality end-to-end (2026-07-04→05: 105 agents, 23 sources; RouterArena ✅ verified, rest 📄 journal-recovered, token-limited mid-verify, 0 refuted)
+
+Under `docs/features/0007_cross_modality_end_to_end/` (`0007_end_to_end_lifecycle.md` is the
+deliverable; `research/`). Followed a **docs audit** (10 gaps) + the deep-research run. Key
+takeaways:
+- **magicrouter's `argmax value − λ·cost` IS the proven-optimal *pure* router** (📄 ICML 2025
+  cascade paper); cascades add ≤1.2% under noisy estimates and run **caller-side** over our
+  escalation chain. Cost estimation is "less critical/easier" than quality → static normalized
+  cost fields are correct.
+- **Over-routing to expensive models is the field's dominant failure** (✅ RouterArena) → elevate
+  cost discipline; adopt **oracle = cheapest *sufficient* model** in benchmarks.
+- **RouterArena** (✅, arXiv 2510.00202) is **compatible + evaluation-only**: submit via the
+  decision endpoint; magicrouter complies by construction (external-data priors). **LLM-only** →
+  media/3D routing is an unfilled void our 0006/0007 fixtures help define.
+- **Unified cost = `expected_usd` for this request** (0007 §1); **`cost_basis` — self-hosted ≠
+  free** (0007 §2); **canonical task taxonomy** (0007 §3); **fallbacks never cross task_type**,
+  cross-modality recomposition is caller-side (0007 §4); **pipeline = N per-stage RoutingRequests;
+  decomposition is the coordinator, not the router** (0007 §5).
+- **3D is routable**: 3D Arena / 3DGen-Bench (5 dims) score sources; **scores key to
+  `(model, output_format)`** (splat vs mesh ≠); per-asset cost normalizes; Meshy is SOC2/ISO (0002
+  applies). **LoRA/adapters** = routable `(base+adapter)` profiles — **per-endpoint licensing**,
+  multi-adapter composition, WAN-2.2 paired-LoRA, `subject_consistency` mechanism∈{adapter,
+  reference}, GPU-hours creation cost.
+- **Cross-modality routers exist but are impure** (ComfyMind, unified router run model calls in the
+  decision) and skip 3D → **pure deterministic cross-modality routing incl. 3D is the open lane.**
+
 ## Development Workflow (MANDATORY — inherited from vulture)
 
 1. **Think** — understand the problem fully before writing any code.
@@ -221,6 +252,7 @@ Feature docs follow vulture's conventions exactly: each feature gets a folder
 | 0004 | `0004_project_synthesis` — unified project report: capability-vs-value answer, possible routes (R1–R4 + decision shapes), pre-implementation "what to do first" plan | SYNTHESIS (start here) |
 | 0005 | `0005_polyglot_service_architecture` — **polyglot is required**: contract-as-product (OpenAPI + conformance suite), embedded ports + sidecar service, shared data plane, prove→freeze→propagate | DESIGN |
 | 0006 | `0006_generative_media_capabilities` — concrete video/image capability taxonomy + ModelCard **capability manifest schema** (`0006_capability_schema.md`); proves domain-generality by example | DESIGN |
+| 0007 | `0007_cross_modality_end_to_end` — **end-to-end** across LLM+image+video+3D: unified `expected_usd` cost, `cost_basis`, task taxonomy, 3D + LoRA/adapter manifest, pipeline/coordinator boundary, RouterArena evaluation (`0007_end_to_end_lifecycle.md`) | DESIGN |
 
 Vulture-side integration work (the `routing_adapter.py`, `VULTURE_ROUTER_*` env knobs,
 `run_combined_audit()` wiring) is documented in **vulture's** `docs/features/` sequence,

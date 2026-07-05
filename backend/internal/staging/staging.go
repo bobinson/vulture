@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"syscall"
 
 	"github.com/vulture/backend/pkg/pluginregistry"
 )
@@ -53,28 +54,38 @@ func AuditsDirFromEnv() string {
 // source — staging must never silently hide files a detector would scan;
 // per-detector excludes remain each scanner's job.
 var skipDirs = map[string]bool{
-	"node_modules":  true,
-	".git":          true,
-	"vendor":        true,
-	".venv":         true,
-	"venv":          true,
-	"__pycache__":   true,
-	"target":        true,
-	"dist":          true,
-	"build":         true,
-	"out":           true,
-	".next":         true,
-	".nuxt":         true,
-	".gradle":       true,
-	".mvn":          true,
-	".terraform":    true,
-	".idea":         true,
-	".vscode":       true,
-	".mypy_cache":   true,
-	".ruff_cache":   true,
-	".pytest_cache": true,
-	".tox":          true,
-	".nox":          true,
+	"node_modules":     true,
+	".git":             true,
+	"vendor":           true,
+	".venv":            true,
+	"venv":             true,
+	"__pycache__":      true,
+	"target":           true,
+	"dist":             true,
+	"build":            true,
+	"out":              true,
+	".next":            true,
+	".nuxt":            true,
+	".output":          true,
+	".svelte-kit":      true,
+	".angular":         true,
+	".docusaurus":      true,
+	"storybook-static": true,
+	".gradle":          true,
+	".mvn":             true,
+	".terraform":       true,
+	".idea":            true,
+	".vscode":          true,
+	".mypy_cache":      true,
+	".ruff_cache":      true,
+	".pytest_cache":    true,
+	".tox":             true,
+	".nox":             true,
+	".turbo":           true,
+	".parcel-cache":    true,
+	".cache":           true,
+	"coverage":         true,
+	".nyc_output":      true,
 }
 
 // Stage copies the srcDir tree into <auditsDir>/<auditID>/ and returns that
@@ -252,8 +263,13 @@ func copyEntry(srcPath, dstPath string, d fs.DirEntry) error {
 
 // copySymlink recreates the link AS A LINK — never dereferenced — so a
 // repo symlink to a host file (e.g. /etc/shadow) cannot drag host bytes
-// into the staging dir (S3). Inside the container the target simply
-// dangles outside the mount.
+// into the staging dir (S3). A target outside AuditsDir dangles harmlessly
+// inside the container. CAVEAT (0058 review, LOW): buildFSArgs mounts the
+// whole AuditsDir, so a link whose target resolves to a SIBLING audit's
+// /audit-inputs/<other-id>/… is inside the mount and would be followed by
+// the scanner. This is accepted for now: staging is local-mode-only (single
+// operator, no cross-tenant boundary) and only discloses other scanned
+// source, never host files. Revisit if staging goes multi-tenant.
 func copySymlink(srcPath, dstPath string) error {
 	target, err := os.Readlink(srcPath)
 	if err != nil {
@@ -267,7 +283,11 @@ func copyFile(srcPath, dstPath string, d fs.DirEntry) error {
 	if err != nil {
 		return err
 	}
-	in, err := os.Open(srcPath)
+	// O_NOFOLLOW closes a walk→copy TOCTOU: the walk recorded this entry as a
+	// regular file, but if it was swapped for a symlink before we open it,
+	// following the link would copy host bytes (e.g. /etc/shadow) into the
+	// staged tree. Fail closed instead (0058 review, MEDIUM / S3).
+	in, err := os.OpenFile(srcPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}

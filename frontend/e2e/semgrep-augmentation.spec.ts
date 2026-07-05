@@ -112,7 +112,11 @@ async function mockRunningAuditWithNoticeStream(page: Page) {
     'event: TextMessageContent\ndata: {"delta":"Semgrep tier not active — running skills + signatures only"}\n\n',
     'event: RunFinished\ndata: {}\n\n',
   ].join("");
-  await page.route(`**/api/audits/${NOTICE_AUDIT_ID}/stream*`, async (route) => {
+  // Match ONLY the SSE endpoint (which carries a ?stream_token= query).
+  // A `**/stream*` glob would also shadow `/stream-token` above (Playwright
+  // tries last-registered routes first), returning an event-stream body to
+  // the token fetch and breaking EventSource setup.
+  await page.route(new RegExp(`/api/audits/${NOTICE_AUDIT_ID}/stream\\?`), async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "text/event-stream",

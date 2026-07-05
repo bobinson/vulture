@@ -1,8 +1,10 @@
 # magicrouter
 
-**A standalone, policy-first LLM routing library.** Given a task, a pool of models, and a
-policy context, magicrouter decides *which model should handle the call* — driven by token
-cost, but constrained by capability, data protection, and sovereignty.
+**A standalone, policy-first model routing library** — for LLMs *and* diffusion models (image,
+video, 3D). Given a task, a pool of models, and a policy context, magicrouter decides *which model
+should handle the call* — driven by cost, but constrained by capability, data protection, and
+sovereignty. It routes over any modality by swapping manifest data, never router code (see
+features 0006 media capabilities, 0007 cross-modality end-to-end).
 
 Born from vulture, designed to outgrow it. Full research corpus and design rationale:
 `docs/features/0001_router_core/research/` (research report, design feedback, primary

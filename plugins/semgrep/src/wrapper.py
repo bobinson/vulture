@@ -19,10 +19,13 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -46,8 +49,17 @@ AUDIT_INPUTS_ROOT = os.environ.get("VULTURE_SEMGREP_AUDIT_ROOT", "/audit-inputs"
 # noise and OOM-killing the container. A SAST tool should audit first-
 # party source, not third-party dependencies.
 _SCAN_EXCLUDES = [
+    # VCS + dependencies
     "node_modules", ".git", "vendor", ".venv", "venv", "__pycache__",
-    "target", "dist", "build", "out", ".next", ".nuxt", ".gradle", ".mvn",
+    # build outputs — GENERATED artifacts (minified/bundled), not source.
+    # Scanning these yields low-value, duplicated findings in framework code
+    # (the real hit is in the source the artifact was built from). Keep in
+    # sync with agents/shared file_scanner.SKIP_DIRS + backend staging.skipDirs.
+    "target", "dist", "build", "out", ".next", ".nuxt", ".output",
+    ".svelte-kit", ".angular", ".docusaurus", "storybook-static",
+    ".gradle", ".mvn",
+    # tool caches + coverage/test reports
+    ".turbo", ".parcel-cache", ".cache", "coverage", ".nyc_output",
 ]
 
 # Cap Semgrep's analysis memory (MB) so a huge tree can't OOM the
@@ -165,6 +177,34 @@ def _clamp_memory_mb(config: dict) -> int:
     return max(_MIN_MEMORY_MB, min(n, _MAX_MEMORY_MB))
 
 
+@functools.lru_cache(maxsize=1)
+def _project_root_supported() -> bool:
+    """Whether the installed Semgrep's ``scan`` accepts ``--project-root``.
+
+    The pinned image Semgrep (1.84.0) does NOT and errors on the unknown
+    option; newer host/dev Semgrep does. Probed functionally once and
+    cached. Defaults to False (the pinned baseline) on any probe failure,
+    so a scan can never die on an unknown flag.
+    """
+    probe = tempfile.mkdtemp(prefix="sg-probe-")
+    try:
+        proc = subprocess.run(
+            ["semgrep", "scan", "--project-root", probe, probe],
+            capture_output=True, text=True, timeout=60,
+        )
+        if "no such option" in (proc.stderr or "").lower():
+            return False  # explicitly rejected (e.g. 1.84.0)
+        # Only treat as supported when Semgrep actually RAN with the flag
+        # (0 = clean, 1 = findings). Any other failure (permission, settings,
+        # timeout) fails safe to the pinned baseline so a real scan never
+        # dies on an unknown flag.
+        return proc.returncode in (0, 1)
+    except Exception:
+        return False
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
 def _semgrep_argv(source_path: str, config: dict) -> list[str]:
     # p/security-audit is more useful than p/auto on mixed-language repos and
     # ships the `mode: taint` (dataflow) rules Semgrep OSS runs intra-
@@ -185,11 +225,18 @@ def _semgrep_argv(source_path: str, config: dict) -> list[str]:
     for pattern in _SCAN_EXCLUDES:
         args += ["--exclude", pattern]
     args += ["--max-memory", str(_clamp_memory_mb(config))]
-    # 0058: the scan target IS the project root (a staged audit tree).
-    # Without this Semgrep walks up to an enclosing repo root and applies
-    # that project's (or its built-in default) .semgrepignore — e.g. the
-    # default `tests/` pattern — silently skipping audited files.
-    args += ["--project-root", source_path]
+    # 0058: pin the scan target AS the project root so Semgrep resolves
+    # .semgrepignore relative to it — otherwise it walks up to an enclosing
+    # repo root and applies that project's (or the built-in default) ignore,
+    # e.g. the default `tests/` pattern, silently skipping audited files
+    # whose path sits under a `tests/` ancestor.
+    # VERSION-CONDITIONAL: the pinned image Semgrep (1.84.0) has NO
+    # --project-root flag and errors on it (which previously made EVERY
+    # audit return 0 findings); newer Semgrep (host/dev) supports it. Probe
+    # once and include it only where supported — default off = the pinned
+    # baseline, so a scan never dies on an unknown flag.
+    if _project_root_supported():
+        args += ["--project-root", source_path]
     for pack in _allowed_rule_packs(config):
         args += ["--config", pack]
     # R3/P2a+P2d (0058): vendored Vulture taint rules ride alongside the
