@@ -1,11 +1,18 @@
 """Feature 0057 Phase 5 (P5b / R14-R16) — the deterministic corpus runner.
 
 Scores per-CWE recall + false-positive rate over the labeled corpus using the
-DETERMINISTIC tiers ONLY (the 21+ regex skills + the signature tier that rides
+DETERMINISTIC tiers (the 21+ regex skills + the signature tier that rides
 inside ``check_catalog_generic``), then applies the per-CWE promotion gate
 (R15). NO live LLM is ever touched: this module never calls
 ``run_combined_audit`` (the only LLM path); it calls the pure-regex skill
 functions in ``SKILL_MAP`` directly.
+
+Feature 0058 Phase 4 (P4a / R7) adds an INJECTABLE Semgrep tier:
+``score_semgrep_corpus`` scores the same corpus with the same gate math, but
+the detector is a caller-supplied ``runner(fixture_path) -> set[str]`` (the
+Semgrep plugin adapter — or a fake in unit tests) instead of the in-process
+skills. ``write_semgrep_trusted`` serializes the gated bands so the
+attestation (``report_coverage``) can count trusted Semgrep CWEs in N.
 
 The neutral-copy step (R14) is forced by the scanner's filters:
 ``is_test_file`` / ``is_skill_source_file`` / ``is_generated_file`` reject any
@@ -29,9 +36,11 @@ N = the number of VERIFIED CWEs — computed here, never hard-coded.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import tempfile
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -171,6 +180,56 @@ class CweScore:
     fp_rate: float
 
 
+# A detector: absolute fixture path -> set of fired "CWE-N" category strings.
+_Detector = Callable[[str], set[str]]
+
+
+def _hit_rate(files: list[str], target: str, detect: _Detector) -> float:
+    """Fraction of ``files`` (relative to ``fixtures/``) on which ``detect``
+    fires ``target`` — 0.0 when ``files`` is empty (denominator-0 rule)."""
+    if not files:
+        return 0.0
+    hits = sum(
+        1 for rel in files if target in detect(str(_FIXTURES_DIR / rel))
+    )
+    return hits / len(files)
+
+
+def _score_cwe(
+    cwe: str, pos_files: list[str], clean_files: list[str], detect: _Detector
+) -> CweScore:
+    """Score one CWE: run ``detect`` once per fixture file and compute
+    file-level recall (over positives) + fp_rate (over clean twins)."""
+    target = f"CWE-{cwe}"
+    return CweScore(
+        cwe=cwe,
+        n_positive=len(pos_files),
+        n_clean=len(clean_files),
+        recall=_hit_rate(pos_files, target, detect),
+        fp_rate=_hit_rate(clean_files, target, detect),
+    )
+
+
+def _score_with(entries: list[dict], detect: _Detector) -> dict[str, CweScore]:
+    """Shared per-CWE scoring loop, parameterized by the detector callable.
+
+    ``detect`` is called EXACTLY ONCE per manifest entry with the absolute
+    fixture path string. Both the deterministic tier (``score_corpus``) and
+    the injectable Semgrep tier (``score_semgrep_corpus``) delegate here so
+    the scoring semantics stay identical (uniform bar, decision 3).
+    """
+    positives: dict[str, list[str]] = defaultdict(list)
+    cleans: dict[str, list[str]] = defaultdict(list)
+    for entry in entries:
+        bucket = positives if entry["expectation"] == "positive" else cleans
+        bucket[str(entry["cwe"])].append(entry["file"])
+
+    return {
+        cwe: _score_cwe(cwe, positives.get(cwe, []), cleans.get(cwe, []), detect)
+        for cwe in sorted(set(positives) | set(cleans), key=lambda c: int(c))
+    }
+
+
 def score_corpus(entries: list[dict]) -> dict[str, CweScore]:
     """Score every CWE in ``entries`` on the deterministic tiers.
 
@@ -191,39 +250,22 @@ def score_corpus(entries: list[dict]) -> dict[str, CweScore]:
     line against the manifest ``line`` within a tolerance window) is a future
     refinement, not a Phase-5 deliverable.
     """
-    positives: dict[str, list[str]] = defaultdict(list)
-    cleans: dict[str, list[str]] = defaultdict(list)
-    for entry in entries:
-        bucket = positives if entry["expectation"] == "positive" else cleans
-        bucket[str(entry["cwe"])].append(entry["file"])
+    return _score_with(entries, run_deterministic)
 
-    scores: dict[str, CweScore] = {}
-    for cwe in sorted(set(positives) | set(cleans), key=lambda c: int(c)):
-        target = f"CWE-{cwe}"
-        pos_files = positives.get(cwe, [])
-        clean_files = cleans.get(cwe, [])
 
-        detected_pos = sum(
-            1
-            for rel in pos_files
-            if target in run_deterministic(str(_FIXTURES_DIR / rel))
-        )
-        flagged_clean = sum(
-            1
-            for rel in clean_files
-            if target in run_deterministic(str(_FIXTURES_DIR / rel))
-        )
+def score_semgrep_corpus(
+    entries: list[dict], runner: _Detector
+) -> dict[str, CweScore]:
+    """Score the Semgrep tier over ``entries`` (0058 P4a / R7).
 
-        recall = detected_pos / len(pos_files) if pos_files else 0.0
-        fp_rate = flagged_clean / len(clean_files) if clean_files else 0.0
-        scores[cwe] = CweScore(
-            cwe=cwe,
-            n_positive=len(pos_files),
-            n_clean=len(clean_files),
-            recall=recall,
-            fp_rate=fp_rate,
-        )
-    return scores
+    Same scoring semantics as ``score_corpus`` — per-CWE file-level recall +
+    fp_rate, denominators-0 -> 0.0, bare-digit keys — except the detector is
+    the INJECTED ``runner(fixture_path) -> set[str]`` of "CWE-N" strings (the
+    Semgrep plugin adapter, or a fake in unit tests). The scorer itself never
+    touches the semgrep binary or the filesystem; ``runner`` is called exactly
+    once per entry with ``str(CORPUS_DIR / "fixtures" / entry["file"])``.
+    """
+    return _score_with(entries, runner)
 
 
 # ── gate application + banding (R15/R16) ────────────────────────────────
@@ -261,6 +303,35 @@ def verified_cwes(scores: dict[str, CweScore], gates: Gates) -> set[str]:
         for cwe, score in scores.items()
         if _is_verified(score, gates.for_cwe(cwe))
     }
+
+
+# ── semgrep tier serialization (0058 P4a / R7-R8) ───────────────────────
+def _band_ids(bands: dict[str, str], band: str) -> list[str]:
+    """The "CWE-"-prefixed ids in ``band``, sorted numerically (reproducible,
+    R8)."""
+    return [
+        f"CWE-{cwe}"
+        for cwe in sorted(
+            (c for c, b in bands.items() if b == band), key=lambda c: int(c)
+        )
+    ]
+
+
+def write_semgrep_trusted(bands: dict[str, str], path: Path | str) -> None:
+    """Serialize an ``apply_gates`` band mapping for the Semgrep tier to JSON.
+
+    Shape: ``{"trusted": [...], "detected_below_gate": [...]}`` — VERIFIED
+    CWEs are trusted (counted in N by the attestation), DETECTED CWEs are
+    below-gate (surfaced, never counted), NOT_DETECTED CWEs are omitted.
+    ``report_coverage`` reads this file at ``SEMGREP_TRUSTED_PATH``.
+    """
+    payload = {
+        "trusted": _band_ids(bands, "VERIFIED"),
+        "detected_below_gate": _band_ids(bands, "DETECTED"),
+    }
+    Path(path).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 # ── report (CLI) ─────────────────────────────────────────────────────────

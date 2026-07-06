@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -224,7 +226,6 @@ func TestStreamService_AgentError(t *testing.T) {
 	}
 }
 
-
 // fakeRouter returns a fixed set of dispatch targets (0055 path-rewrite test).
 type fakeRouter struct{ targets []stagerouter.DispatchTarget }
 
@@ -232,8 +233,19 @@ func (f *fakeRouter) Route(stagerouter.RouteRequest) ([]stagerouter.DispatchTarg
 	return f.targets, nil
 }
 
-func TestStreamService_LocalModeContainerPathRewrite_0055(t *testing.T) {
+// TestStreamService_LocalModeContainerPathRewrite_0055 was replaced by
+// feature 0058 (R11/S3): the /audit-inputs/<raw-host-path> rewrite it pinned
+// rode on the host-/ mount, a security defect superseded by per-audit
+// staging. The successor below pins the full 0058 P0c contract.
+func TestStreamService_LocalModeContainerStaging_0058(t *testing.T) {
 	t.Setenv("VULTURE_LOCAL_MODE", "true")
+	auditsDir := t.TempDir()
+	t.Setenv("VULTURE_SUPERVISOR_AUDITS_DIR", auditsDir)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write source fixture: %v", err)
+	}
+
 	var mu sync.Mutex
 	gotSource := map[string]string{}
 	proxy := &mockAgentProxyService{
@@ -241,6 +253,12 @@ func TestStreamService_LocalModeContainerPathRewrite_0055(t *testing.T) {
 			mu.Lock()
 			gotSource[agentType] = sourcePath
 			mu.Unlock()
+			// The staged tree must exist while agents run.
+			if agentType == "semgrep" {
+				if _, err := os.Stat(filepath.Join(auditsDir, runID, "main.go")); err != nil {
+					t.Errorf("staged source missing during dispatch: %v", err)
+				}
+			}
 			return nil
 		},
 	}
@@ -252,18 +270,23 @@ func TestStreamService_LocalModeContainerPathRewrite_0055(t *testing.T) {
 
 	audit := &model.Audit{ID: "a1", Types: []string{"semgrep", "chaos"}, Config: json.RawMessage(`{}`)}
 	eventCh := make(chan *model.AgUIEvent, 100)
-	svc.Stream(context.Background(), audit, "/home/user/src/vulture-gh", nil, eventCh)
+	svc.Stream(context.Background(), audit, srcDir, nil, eventCh)
 	for range eventCh {
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Container plugin: path remapped to the audit-inputs mount.
-	if gotSource["semgrep"] != "/audit-inputs/home/user/src/vulture-gh" {
-		t.Errorf("semgrep source_path = %q, want /audit-inputs/home/user/src/vulture-gh", gotSource["semgrep"])
+	// Container plugin: dispatched the STAGED path (audit-id scoped), never
+	// a host-path join (0058 R11).
+	if gotSource["semgrep"] != "/audit-inputs/a1" {
+		t.Errorf("semgrep source_path = %q, want /audit-inputs/a1", gotSource["semgrep"])
 	}
 	// In-tree (native) agent: raw host path, unchanged.
-	if gotSource["chaos"] != "/home/user/src/vulture-gh" {
-		t.Errorf("chaos source_path = %q, want /home/user/src/vulture-gh (unchanged)", gotSource["chaos"])
+	if gotSource["chaos"] != srcDir {
+		t.Errorf("chaos source_path = %q, want %q (unchanged)", gotSource["chaos"], srcDir)
+	}
+	// Staged tree is reaped once the audit's agents finish.
+	if _, err := os.Stat(filepath.Join(auditsDir, "a1")); !os.IsNotExist(err) {
+		t.Errorf("staged dir not reaped after Stream: stat err=%v", err)
 	}
 }

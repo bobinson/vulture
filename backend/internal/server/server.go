@@ -23,6 +23,7 @@ import (
 	"github.com/vulture/backend/internal/pluginsupervisor"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
+	"github.com/vulture/backend/internal/staging"
 	"github.com/vulture/backend/pkg/pluginregistry"
 	"github.com/vulture/backend/pkg/stagerouter"
 )
@@ -78,8 +79,11 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		// can run the in-tree agents without docker.
 		if os.Getenv("VULTURE_DISABLE_SUPERVISOR") != "true" {
 			supervisor = pluginsupervisor.New(reg, pluginsupervisor.Options{
-				Network:   envOrDefault("VULTURE_SUPERVISOR_NETWORK", "vulture"),
-				AuditsDir: envOrDefault("VULTURE_SUPERVISOR_AUDITS_DIR", "/tmp/vulture-audit-inputs"),
+				Network: envOrDefault("VULTURE_SUPERVISOR_NETWORK", "vulture"),
+				// Single source of truth shared with the stream dispatch
+				// staging, so the mount source and the staging destination
+				// can never drift (feature 0058 R11).
+				AuditsDir: staging.AuditsDirFromEnv(),
 				LocalMode: cfg.LocalMode,
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -90,6 +94,23 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 				log.Printf("[supervisor] reconcile complete: %d actions", len(acts))
 			}
 		}
+	}
+
+	// Feature 0058 P0d: startup sweep of crash-orphaned staged source
+	// trees. Local mode only — the only mode that stages into the
+	// staging root (compose agents read the shared source-cache volume).
+	// No audits are active at boot, so every entry is an orphan.
+	// Best-effort: a sweep failure never blocks startup.
+	if cfg.LocalMode {
+		// Backgrounded: RemoveAll over many crash-orphaned trees can take
+		// minutes on slow disks and must never delay serving (simplify
+		// review E6). New audits use fresh audit-id dirs, so the sweep
+		// cannot race them.
+		go func() {
+			if err := staging.Sweep(staging.AuditsDirFromEnv(), func(string) bool { return false }); err != nil {
+				log.Printf("[staging] startup sweep error (continuing): %v", err)
+			}
+		}()
 	}
 
 	sourceSvc := service.NewSourceService(repo)

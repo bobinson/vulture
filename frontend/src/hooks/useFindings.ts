@@ -23,6 +23,7 @@ export function useFindings(
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [filterSeverity, setFilterSeverity] = useState<Severity | "all">("all");
   const [filterAgent, setFilterAgent] = useState<string>("all");
+  const [filterProvenance, setFilterProvenance] = useState<string>("all");
   const [hideFalsePositives, setHideFalsePositives] = useState(false);
   const [page, setPage] = useState(0);
 
@@ -50,6 +51,13 @@ export function useFindings(
 
   const setFilterAgentAndReset = (agent: string) => {
     setFilterAgent(agent);
+    setPage(0);
+  };
+
+  // Feature 0058 (R6) — filter by detection tier (finding.provenance),
+  // mirroring the agent filter mechanics.
+  const setFilterProvenanceAndReset = (provenance: string) => {
+    setFilterProvenance(provenance);
     setPage(0);
   };
 
@@ -92,6 +100,9 @@ export function useFindings(
     if (filterAgent !== "all") {
       filtered = filtered.filter((f) => (f.agent_type ?? f.agent_id) === filterAgent);
     }
+    if (filterProvenance !== "all") {
+      filtered = filtered.filter((f) => f.provenance === filterProvenance);
+    }
     if (hideFalsePositives) {
       filtered = filtered.filter((f) => !isFalsePositive(f));
     }
@@ -119,7 +130,7 @@ export function useFindings(
     });
     // isFalsePositive closes over falsePositiveFingerprints.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allFindings, filterSeverity, filterAgent, hideFalsePositives, falsePositiveFingerprints, sortField, sortDirection]);
+  }, [allFindings, filterSeverity, filterAgent, filterProvenance, hideFalsePositives, falsePositiveFingerprints, sortField, sortDirection]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
@@ -135,11 +146,13 @@ export function useFindings(
     sortDirection,
     filterSeverity,
     filterAgent,
+    filterProvenance,
     hideFalsePositives,
     falsePositiveCount,
     validationCounts,
     setFilterSeverity: setFilterSeverityAndReset,
     setFilterAgent: setFilterAgentAndReset,
+    setFilterProvenance: setFilterProvenanceAndReset,
     setHideFalsePositives: setHideFalsePositivesAndReset,
     toggleSort,
   };

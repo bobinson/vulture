@@ -39,7 +39,10 @@ phase          = "scan"
 # declaring specific languages here filters Semgrep out of every audit.
 # When language sniffing lands, restore the proper list.
 languages      = []
-emits          = ["finding", "progress", "thinking", "run_started", "run_finished", "result"]
+# Must match what src/wrapper.py actually emits (C2, 0058 audit): the wrapper
+# streams run_started, agent_start, finding, result, agent_end, run_finished.
+# It does NOT emit progress/thinking — advertising them here was a false claim.
+emits          = ["run_started", "agent_start", "finding", "result", "agent_end", "run_finished"]
 timeout_s      = 1800
 
 # 0053 inline prefix mappings (non-overlapping with the orchestrator's

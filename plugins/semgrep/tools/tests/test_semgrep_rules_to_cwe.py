@@ -17,7 +17,7 @@ Covers:
 import json
 import textwrap
 
-from plugins.semgrep.tools.semgrep_rules_to_cwe import (  # noqa: E402
+from tools.semgrep_rules_to_cwe import (  # noqa: E402
     convert_rules,
     extract_cwe_id,
     walk_yaml_files,

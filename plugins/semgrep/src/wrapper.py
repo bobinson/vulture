@@ -19,10 +19,15 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
+import re
+import shutil
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
@@ -44,8 +49,17 @@ AUDIT_INPUTS_ROOT = os.environ.get("VULTURE_SEMGREP_AUDIT_ROOT", "/audit-inputs"
 # noise and OOM-killing the container. A SAST tool should audit first-
 # party source, not third-party dependencies.
 _SCAN_EXCLUDES = [
+    # VCS + dependencies
     "node_modules", ".git", "vendor", ".venv", "venv", "__pycache__",
-    "target", "dist", "build", "out", ".next", ".nuxt", ".gradle", ".mvn",
+    # build outputs — GENERATED artifacts (minified/bundled), not source.
+    # Scanning these yields low-value, duplicated findings in framework code
+    # (the real hit is in the source the artifact was built from). Keep in
+    # sync with agents/shared file_scanner.SKIP_DIRS + backend staging.skipDirs.
+    "target", "dist", "build", "out", ".next", ".nuxt", ".output",
+    ".svelte-kit", ".angular", ".docusaurus", "storybook-static",
+    ".gradle", ".mvn",
+    # tool caches + coverage/test reports
+    ".turbo", ".parcel-cache", ".cache", "coverage", ".nyc_output",
 ]
 
 # Cap Semgrep's analysis memory (MB) so a huge tree can't OOM the
@@ -102,29 +116,135 @@ def _resolve_source_path(body: dict) -> str:
     return resolved
 
 
+_DEFAULT_RULE_PACKS = ["p/security-audit"]
+
+# R3/P2d (0058): Vulture-authored, vendored, PINNED taint rules
+# (Apache-2.0, `mode: taint`) shipped alongside the registry packs — the
+# hybrid ruleset. Resolved relative to this file so it works both in the
+# container (/app/rules/vulture) and when running from the repo checkout.
+# Overridable via env at import time (tests reload the module).
+_DEFAULT_VENDORED_RULES = Path(__file__).resolve().parents[1] / "rules" / "vulture"
+VENDORED_RULES_DIR = os.environ.get(
+    "VULTURE_SEMGREP_VENDORED_RULES", os.fspath(_DEFAULT_VENDORED_RULES)
+)
+
+# H2 (0058 audit): allowlist for config.rule_packs. Only PINNED Semgrep
+# registry packs (`p/<name>`) are permitted to reach `--config`. Semgrep's
+# `--config` also accepts URLs, local file paths, and `auto`; since the audit
+# `config` is client-controlled and this container runs on the host network
+# with egress, an unfiltered value is an SSRF / remote-ruleset / arbitrary-file
+# sink. Anything not matching this pattern is dropped.
+_RULE_PACK_RE = re.compile(r"^p/[a-z0-9._-]+$")
+
+_MIN_MEMORY_MB = 256
+_MAX_MEMORY_MB = 4000  # matches plugin.toml runtime.resources.memory = 4g
+
+
+def _allowed_rule_packs(config: dict) -> list[str]:
+    """Return the client-requested packs filtered to the pinned-registry
+    allowlist, or the safe default if none survive (never zero-config)."""
+    raw = config.get("rule_packs")
+    if not isinstance(raw, list):
+        return list(_DEFAULT_RULE_PACKS)
+    safe = [p for p in raw if isinstance(p, str) and _RULE_PACK_RE.match(p)]
+    return safe or list(_DEFAULT_RULE_PACKS)
+
+
+def _vendored_rules_config(config: dict) -> list[str]:
+    """Return the vendored-rules ``--config`` pair, or ``[]``.
+
+    The vendored taint rules join the DEFAULT hybrid set only — an
+    explicit client ``rule_packs`` list is an operator pin of the full
+    ruleset (H2 semantics), so it is honored verbatim. A missing or
+    rule-less vendored dir degrades gracefully (R9-style): no entry.
+    """
+    if isinstance(config.get("rule_packs"), list):
+        return []
+    vendored = Path(os.fspath(VENDORED_RULES_DIR))
+    if not vendored.is_dir():
+        return []
+    if not any(p.suffix in (".yaml", ".yml") for p in vendored.rglob("*")):
+        return []
+    return ["--config", os.fspath(VENDORED_RULES_DIR)]
+
+
+def _clamp_memory_mb(config: dict) -> int:
+    """Coerce config.max_memory_mb to a bounded positive int (L3)."""
+    try:
+        n = int(config.get("max_memory_mb"))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_MEMORY_MB
+    return max(_MIN_MEMORY_MB, min(n, _MAX_MEMORY_MB))
+
+
+@functools.lru_cache(maxsize=1)
+def _project_root_supported() -> bool:
+    """Whether the installed Semgrep's ``scan`` accepts ``--project-root``.
+
+    The pinned image Semgrep (1.84.0) does NOT and errors on the unknown
+    option; newer host/dev Semgrep does. Probed functionally once and
+    cached. Defaults to False (the pinned baseline) on any probe failure,
+    so a scan can never die on an unknown flag.
+    """
+    probe = tempfile.mkdtemp(prefix="sg-probe-")
+    try:
+        proc = subprocess.run(
+            ["semgrep", "scan", "--project-root", probe, probe],
+            capture_output=True, text=True, timeout=60,
+        )
+        if "no such option" in (proc.stderr or "").lower():
+            return False  # explicitly rejected (e.g. 1.84.0)
+        # Only treat as supported when Semgrep actually RAN with the flag
+        # (0 = clean, 1 = findings). Any other failure (permission, settings,
+        # timeout) fails safe to the pinned baseline so a real scan never
+        # dies on an unknown flag.
+        return proc.returncode in (0, 1)
+    except Exception:
+        return False
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
 def _semgrep_argv(source_path: str, config: dict) -> list[str]:
-    # p/security-audit is more useful than p/auto on mixed-language
-    # repos (auto can produce zero findings when language-detection
-    # picks a pack with few rules for the file mix). Operators can
-    # override via config.rule_packs.
-    rule_packs = config.get("rule_packs") or ["p/security-audit"]
-    # --no-git-ignore: by default Semgrep scans only git-tracked
-    # files. Inside the container the bind-mount may not preserve
-    # the host's git ownership semantics, leading to silent "0 files
-    # scanned" results. Disabling git-ignore makes the scan
-    # deterministic regardless of how the host volume was mounted.
+    # p/security-audit is more useful than p/auto on mixed-language repos and
+    # ships the `mode: taint` (dataflow) rules Semgrep OSS runs intra-
+    # procedurally. Operators override via config.rule_packs (allowlisted, H2).
+    # --no-git-ignore: inside the container the bind-mount may not preserve the
+    # host's git ownership, causing silent "0 files scanned"; disabling it makes
+    # the scan deterministic regardless of how the volume was mounted.
     args = ["semgrep", "scan", "--json", "--quiet", "--no-git-ignore"]
-    # 0055: --no-git-ignore makes Semgrep walk EVERYTHING, including
-    # vendored/build dirs (node_modules, target, .git, ...). On a real
-    # project that is both noise (a SAST tool should not audit third-party
-    # deps) and a hard OOM — a 3 GB node_modules killed the 4 GB container.
-    # Exclude those dirs and cap analysis memory so the scan stays bounded.
+    # H1: cross-file/interprocedural taint needs the Semgrep Pro engine, which
+    # is only available with a token (runtime.env.optional SEMGREP_APP_TOKEN).
+    # OSS still runs intraprocedural taint from the packs above; enable Pro when
+    # a token is present so the augmentation reaches dataflow CWEs skills miss.
+    if os.environ.get("SEMGREP_APP_TOKEN"):
+        args.append("--pro")
+    # 0055: --no-git-ignore makes Semgrep walk EVERYTHING (node_modules, target,
+    # .git, ...) — noise + a hard OOM (a 3 GB node_modules killed the 4 GB
+    # container). Exclude vendored/build dirs and cap analysis memory.
     for pattern in _SCAN_EXCLUDES:
         args += ["--exclude", pattern]
-    args += ["--max-memory", str(config.get("max_memory_mb") or _DEFAULT_MAX_MEMORY_MB)]
-    for pack in rule_packs:
+    args += ["--max-memory", str(_clamp_memory_mb(config))]
+    # 0058: pin the scan target AS the project root so Semgrep resolves
+    # .semgrepignore relative to it — otherwise it walks up to an enclosing
+    # repo root and applies that project's (or the built-in default) ignore,
+    # e.g. the default `tests/` pattern, silently skipping audited files
+    # whose path sits under a `tests/` ancestor.
+    # VERSION-CONDITIONAL: the pinned image Semgrep (1.84.0) has NO
+    # --project-root flag and errors on it (which previously made EVERY
+    # audit return 0 findings); newer Semgrep (host/dev) supports it. Probe
+    # once and include it only where supported — default off = the pinned
+    # baseline, so a scan never dies on an unknown flag.
+    if _project_root_supported():
+        args += ["--project-root", source_path]
+    for pack in _allowed_rule_packs(config):
         args += ["--config", pack]
-    args.append(source_path)
+    # R3/P2a+P2d (0058): vendored Vulture taint rules ride alongside the
+    # registry packs (the hybrid set) unless the client pinned rule_packs.
+    args += _vendored_rules_config(config)
+    # L2: terminate options so source_path can never be parsed as a flag
+    # (defence-in-depth atop normalise_source_path's leading-dash guard).
+    args += ["--", source_path]
     return args
 
 
@@ -194,7 +314,9 @@ async def _stream_run(run_id: str, source_path: str, config: dict) -> AsyncItera
             yield ev
         return
 
-    findings = translate_findings(semgrep_json, agent_type="semgrep")
+    # root=source_path so Semgrep's file paths are normalized to repo-relative
+    # and line up with the in-tree agents' paths in cross-agent dedup (C1).
+    findings = translate_findings(semgrep_json, agent_type="semgrep", root=source_path)
     for f in findings:
         yield write_event("finding", f)
         await asyncio.sleep(0)  # cooperative yield to the event loop

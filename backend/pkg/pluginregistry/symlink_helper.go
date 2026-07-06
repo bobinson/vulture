@@ -27,6 +27,14 @@ const AuditInputsMount = "/audit-inputs"
 // For non-container plugins, when not in LocalMode, or for an empty
 // path, the host path is returned unchanged (docker-compose stages
 // sources into the shared volume, so paths already resolve there).
+//
+// NOTE (feature 0058, R11): for the scan dispatch path the
+// LocalMode+container prefix branch is SUPERSEDED — stream_service's
+// containerStager stages the source into AuditsDir/<audit-id> and
+// dispatches staging.StagedContainerPath(auditID) instead, because the
+// container now mounts only AuditsDir (never host "/"). The branch is
+// retained for its pinned unit contract and any non-staged callers;
+// do not add new callers that rely on it in local mode.
 func ContainerSourcePath(localMode, isContainer bool, hostPath string) string {
 	if !localMode || !isContainer || hostPath == "" {
 		return hostPath

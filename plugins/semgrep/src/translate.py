@@ -63,15 +63,39 @@ def map_severity(s: str | None) -> str:
     return _SEMGREP_SEVERITY_MAP.get(s, "info")
 
 
-def _translate_one(r: dict, agent_type: str) -> dict:
+def _to_repo_relative(path: Any, root: str) -> str:
+    """C1 (0058 audit): strip the scan-root prefix so Semgrep's paths match the
+    in-tree skills' repo-relative paths (``audit_runner`` emits
+    ``relative_to(source_path)``). Without this, a skill's ``app/views.py`` and
+    Semgrep's ``/audit-inputs/app/views.py`` never collide in the cross-agent
+    dedup key → guaranteed double-reporting. Idempotent for already-relative
+    paths, so it is correct whether Semgrep returns absolute or relative."""
+    if not isinstance(path, str) or not path:
+        return ""
+    if root:
+        r = root.rstrip(os.sep)
+        if path == r:
+            return ""
+        if path.startswith(r + os.sep):
+            return path[len(r) + 1:]
+    return path
+
+
+def _translate_one(r: dict, agent_type: str, root: str = "") -> dict:
     """Translate one Semgrep result into a Vulture Finding dict."""
     extra = r.get("extra", {}) or {}
     message = extra.get("message", "") or ""
     first_line = message.split("\n", 1)[0]
     cwe = extract_cwe(r)
     check_id = r.get("check_id", "")
-    path = r.get("path", "")
+    path = _to_repo_relative(r.get("path", ""), root)
     line_start = (r.get("start") or {}).get("line")
+    # C4 (0058 audit): Semgrep documents severity under extra.severity; fall
+    # back to a top-level `severity` defensively so a schema shift can't
+    # silently downgrade every finding to info.
+    severity = extra.get("severity")
+    if severity is None:
+        severity = r.get("severity")
     # Compose id from (check_id, path, line) so multiple instances of
     # the same rule at different locations don't collide under the
     # persistence layer's ON CONFLICT DO NOTHING.
@@ -80,22 +104,34 @@ def _translate_one(r: dict, agent_type: str) -> dict:
         "agent_type": agent_type,
         "title": first_line[:200],
         "description": message,
-        "severity": map_severity(extra.get("severity", "INFO")),
+        "severity": map_severity(severity),
         # Prefer canonical CWE for category; fall back to check_id so
         # the 0050 prefix/rule maps can resolve downstream.
         "category": cwe or check_id,
+        # R4 (0058): every finding is CWE-attributed from the rule's own
+        # extra.metadata.cwe; unmapped rules are tagged CWE-unknown and
+        # NEVER dropped. (The check_id fallback belongs to `category`
+        # only — `cwe` is always canonical-or-unknown.)
+        "cwe": cwe or "CWE-unknown",
         "check_id": check_id,
-        "file_path": r.get("path", ""),
-        "line_start": (r.get("start") or {}).get("line"),
+        # R6 (0058): tag origin so the orchestrator/UI can distinguish Semgrep
+        # findings and (future R7) gate/attribute them separately. These are
+        # NOT corpus-gated — provenance makes that explicit downstream.
+        "provenance": "semgrep",
+        "file_path": path,
+        "line_start": line_start,
         "line_end": (r.get("end") or {}).get("line"),
         "code_snippet": extra.get("lines", ""),
     }
 
 
-def translate_findings(semgrep_json: dict, agent_type: str) -> list[dict]:
-    """Translate a full Semgrep JSON document into a list of Findings."""
+def translate_findings(semgrep_json: dict, agent_type: str, root: str = "") -> list[dict]:
+    """Translate a full Semgrep JSON document into a list of Findings.
+
+    ``root`` is the scan target (source_path); Semgrep paths are made relative
+    to it so they match the in-tree agents' repo-relative paths (C1)."""
     results = (semgrep_json or {}).get("results", []) or []
-    return [_translate_one(r, agent_type) for r in results]
+    return [_translate_one(r, agent_type, root) for r in results]
 
 
 def normalise_source_path(raw: Any, root: str) -> str | None:

@@ -92,6 +92,10 @@ export interface Finding {
   compliance_ref?: string;
   fingerprint?: string;
   cross_agent_origins?: string[];
+  // Feature 0058 (R6) — detection tier that produced the finding
+  // (e.g. "skill", "signature", "semgrep"). Optional because pre-0058
+  // findings won't carry it.
+  provenance?: string;
   // Feature 0045/0046 — validation layer outputs persisted on the
   // finding record. Optional because pre-0045 audits won't have them.
   validation_status?: string;

@@ -28,14 +28,28 @@ var translators = map[string]translatorFunc{
 	"token_savings": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateTokenSavings(d) },
 	"dedup_stats":   func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateDedupStats(d) },
 	"agent_end":     func(at string, _ json.RawMessage) ([]*model.AgUIEvent, error) { return translateAgentEnd(at) },
-	"proof_phase":   func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_phase", d) },
-	"proof_plan":    func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_plan", d) },
-	"proof_review":  func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_review", d) },
-	"proof_attempt": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_attempt", d) },
-	"proof_reflection": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_reflection", d) },
-	"proof_result":     func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_result", d) },
-	"proof_summary":    func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateProofEvent("proof_summary", d) },
-	"discover_result":  func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateDiscoverResult(d) },
+	"proof_phase": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
+		return translateProofEvent("proof_phase", d)
+	},
+	"proof_plan": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
+		return translateProofEvent("proof_plan", d)
+	},
+	"proof_review": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
+		return translateProofEvent("proof_review", d)
+	},
+	"proof_attempt": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
+		return translateProofEvent("proof_attempt", d)
+	},
+	"proof_reflection": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
+		return translateProofEvent("proof_reflection", d)
+	},
+	"proof_result": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
+		return translateProofEvent("proof_result", d)
+	},
+	"proof_summary": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
+		return translateProofEvent("proof_summary", d)
+	},
+	"discover_result": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateDiscoverResult(d) },
 	// feature 0046: L5 verdict streaming. One agent-side event becomes
 	// N StateDelta replace ops keyed on finding id, so the frontend
 	// updates the existing rows' validation_status in place.
@@ -128,9 +142,36 @@ func translateProgress(data json.RawMessage) ([]*model.AgUIEvent, error) {
 
 func translateResult(agentType string, data json.RawMessage) ([]*model.AgUIEvent, error) {
 	log.Printf("[translate] result agent=%s dataLen=%d data=%.200s", agentType, len(data), string(data))
-	return []*model.AgUIEvent{
-		{Type: model.EventStateSnapshot, Snapshot: data, AgentType: agentType},
-	}, nil
+	events := make([]*model.AgUIEvent, 0, 2)
+	// A result payload carrying a non-empty `error` (e.g. a plugin whose scan
+	// process failed — bad flag, timeout, unparseable output) must SURFACE as
+	// an audit error, not be silently dropped as a clean 0-findings snapshot.
+	// parseSnapshot only reads {findings, score}, so without this an errored
+	// scan is indistinguishable from a genuinely clean one (0058 review, HIGH;
+	// this is exactly the --project-root failure mode). Emit an "ERROR: …"
+	// text event first so collectErrorText marks DrainResult.AgentError.
+	if msg := resultErrorText(data); msg != "" {
+		delta, _ := json.Marshal("ERROR: " + msg)
+		events = append(events, &model.AgUIEvent{
+			Type: model.EventTextMessageContent, Delta: delta, AgentType: agentType,
+		})
+	}
+	events = append(events, &model.AgUIEvent{
+		Type: model.EventStateSnapshot, Snapshot: data, AgentType: agentType,
+	})
+	return events, nil
+}
+
+// resultErrorText returns the trimmed `error` field of a result payload, or
+// "" when absent/unparseable.
+func resultErrorText(data json.RawMessage) string {
+	var r struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Error)
 }
 
 func translateTokenSavings(data json.RawMessage) ([]*model.AgUIEvent, error) {
