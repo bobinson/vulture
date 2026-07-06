@@ -65,6 +65,8 @@
     "findingsCount": "{{count}} Befund(e)",
     "noFindings": "Keine Befunde erkannt. Ihr Code sieht sauber aus!",
     "noFindingsShort": "Sauber",
+    "provenance": "Herkunft",
+    "semgrepTierNotice": "Semgrep-Ebene nicht aktiv — dieser Audit lief nur mit deterministischen Skills und Signaturen.",
     "agent": "Agent",
     "scores": "Compliance-Bewertungen",
     "waitingAgents": "Warte auf Agentenstart...",

@@ -125,7 +125,10 @@ magicrouter/
     policy.py               # PolicyFilter + built-in predicates (PII tier, jurisdiction,
                             #   allowlist, min context window)
     estimator.py            # QualityEstimator interface + heuristic default
-    cost.py                 # CostModel (token estimate × per-1M pricing)
+    cost.py                 # CostModel.expected_usd() — normalizes ALL modalities to expected
+                            #   USD for THIS request (token / per-image / per-second / per-asset /
+                            #   gpu-second). See feature 0007 §1. cost_basis ∈ {metered_api,
+                            #   self_hosted, gpu_second} (self-hosted ≠ free — 0007 §2)
     health.py               # HealthSignal interface (default: always available)
     router.py               # route(): eligibility filter → optimizer → RoutingDecision
   tests/
@@ -176,10 +179,19 @@ agents/shared/shared/llm/routing_adapter.py
   `RoutingRequest.requirements` — the per-dimension requirement vector for this task, produced
   by the consumer's estimator (possibly an LLM parse of a brief), consumed as structured input.
 - Capability *scores* are per-`(task_type, model)` (a model strong at one task_type may be weak
-  at another) — the profile is indexed by task_type, keeping the router domain-agnostic.
+  at another) — the profile is indexed by task_type, keeping the router domain-agnostic. The
+  canonical cross-modality task-type taxonomy (LLM/image/video/3D) is defined in feature 0007 §3.
+- Every ModelCard carries a universal **`latency`** field (soft term, or hard gate via an SLA
+  requirement) and a **`cost_basis`** enum — not just LLM/token fields (feature 0007 §1–§2).
+- **Fallback chains never cross `task_type`** (feature 0007 §4); cross-modality substitution is a
+  caller-side pipeline redesign, never a router fallback.
 
-All contracts JSON-serializable so a polyglot sidecar (HTTP service) is possible later
-without a rewrite.
+All contracts JSON-serializable. **Polyglot is a hard requirement** (see feature 0005): the
+contract is a public API from day one — strict serialization, semver, and a **payload-free
+`RoutingRequest`** (derived signals only, never the raw prompt/source). The Python library here is
+the *reference* runtime; the language-neutral contract + conformance suite + sidecar service +
+native ports are designed in 0005 and follow the **prove → freeze → propagate** sequence (this
+plan is the "prove" step).
 
 ## Phases (each gated; E2E tests written first per project workflow)
 
@@ -260,8 +272,10 @@ without a rewrite.
 
 ## Open questions (carried from the research session — do not block Phases 1–2)
 
-1. **Who are the "other tools"?** Python-only → library suffices; polyglot (Go/TS) → add the
-   HTTP sidecar in Phase 4. Contracts are serializable either way.
+1. **Who are the "other tools"?** ~~Python-only vs polyglot~~ **RESOLVED (2026-07-03): polyglot is
+   required** — magicrouter is a generic router for all platforms. The contract/conformance/sidecar/
+   port work is feature 0005; this plan is the "prove" step (Python reference). Remaining sub-question
+   there: *which* non-Python consumer/language comes first (likely Go, to match the vulture backend/CLI).
 2. **Primary driver — compliance or cost?** Current ordering assumes compliance-first
    (eligibility filter ships before the optimizer). Reverse Phases 2↔3 if cost is the
    burning driver.

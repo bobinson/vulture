@@ -556,12 +556,16 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 	// Pre-compute cross-agent keys to avoid recomputation
 	keys := make([]string, len(findings))
 	agentsByKey := make(map[string][]string, len(findings))
+	provenanceByKey := make(map[string]string, len(findings))
 
 	for i, f := range findings {
 		key := crossAgentKey(f)
 		keys[i] = key
 		s := findingDetailScore(f)
 		agentsByKey[key] = append(agentsByKey[key], f.AgentType)
+		if f.Provenance != "" {
+			provenanceByKey[key] = f.Provenance
+		}
 		if prev, ok := seen[key]; ok {
 			if s > prev.score {
 				seen[key] = entry{index: i, score: s}
@@ -590,6 +594,12 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 				}
 			}
 			f.CrossAgentOrigins = deduplicateStrings(origins)
+
+			// Provenance survives the merge (feature 0058 R6/T5): if
+			// the richer winner lacks one, adopt a duplicate's.
+			if f.Provenance == "" {
+				f.Provenance = provenanceByKey[key]
+			}
 
 			// L3 cross-agent merge (feature 0045): append a validation
 			// check + re-vote so this finding's confidence reflects the
@@ -793,9 +803,11 @@ func crossAgentKey(f model.Finding) string {
 	title := strings.ToLower(strings.TrimSpace(f.Title))
 	cat := strings.TrimSpace(f.Category)
 	// When category is set, use it as the primary discriminant — title
-	// drift across detectors no longer prevents dedup.
+	// drift across detectors no longer prevents dedup. Related CWE ids
+	// are folded to their taxonomy family (feature 0058 R5b) so e.g.
+	// CWE-22 and CWE-73 at the same site reconcile to one finding.
 	if cat != "" {
-		return fmt.Sprintf("cat:%s|%s|%d", cat, f.FilePath, f.LineStart)
+		return fmt.Sprintf("cat:%s|%s|%d", canonicalCWEGroup(cat), f.FilePath, f.LineStart)
 	}
 	return fmt.Sprintf("%s|%s|%d", title, f.FilePath, f.LineStart)
 }

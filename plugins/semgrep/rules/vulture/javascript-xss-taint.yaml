@@ -1,0 +1,42 @@
+# Vulture-authored Semgrep taint rule (feature 0058, P2d).
+# Copyright (c) 2026 the Vulture authors.
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+#
+# OSS-engine compatible: intraprocedural taint only (mode: taint,
+# pattern-sources/pattern-sinks) — no Pro-only keys.
+rules:
+  - id: vulture-javascript-xss-taint
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Attacker-controlled HTTP request data flows into an HTML response
+      or DOM sink without encoding. Cross-site scripting (XSS) lets an
+      attacker run script in the victim's browser. HTML-encode the value
+      (or use textContent / a templating engine with auto-escaping).
+    metadata:
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+      owasp:
+        - "A03:2021 - Injection"
+      references:
+        - https://cwe.mitre.org/data/definitions/79.html
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: semgrep-taint
+    pattern-sources:
+      - pattern: $REQ.query
+      - pattern: $REQ.query.$PARAM
+      - pattern: $REQ.params
+      - pattern: $REQ.params.$PARAM
+      - pattern: $REQ.body
+      - pattern: $REQ.body.$PARAM
+    pattern-sinks:
+      - pattern: $RES.send(...)
+      - pattern: $RES.write(...)
+      - pattern: $EL.innerHTML = ...
+      - pattern: $EL.outerHTML = ...
+      - pattern: document.write(...)

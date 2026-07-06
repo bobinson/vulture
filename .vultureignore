@@ -52,6 +52,11 @@ cli/bin/
 # code authored to TEST the detectors — it must never be self-audited.
 agents/cwe/tests/corpus/fixtures/
 
+# Feature 0058: Semgrep plugin test fixtures are deliberately vulnerable
+# code (taint source->sink flows) authored to TEST the detectors — they
+# must never be flagged by self-audits.
+plugins/semgrep/tests/fixtures/
+
 # Local scratchpad — throwaway test drivers, evidence, scan slices (incl.
 # woofy example code). Git-ignored; also excluded from self-audit.
 scratchpad/
@@ -63,3 +68,8 @@ magicrouter/docs/features/0001_router_core/research/deep_research_run.json
 magicrouter/docs/features/0002_security_privacy_routing/research/deep_research_run.json
 magicrouter/docs/features/0002_security_privacy_routing/research/claims_by_source.json
 magicrouter/docs/features/0003_generalized_multimodel_routing/research/deep_research_run.json
+magicrouter/docs/features/0006_generative_media_capabilities/research/deep_research_run.json
+magicrouter/docs/features/0007_cross_modality_end_to_end/research/deep_research_run.json
+magicrouter/docs/features/0007_cross_modality_end_to_end/research/claims_by_source.json
+magicrouter/docs/features/0008_enterprise_readiness/research/deep_research_run.json
+magicrouter/docs/features/0008_enterprise_readiness/research/claims_by_source.json

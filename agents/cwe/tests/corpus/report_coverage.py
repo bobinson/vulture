@@ -28,6 +28,13 @@ The skill ``category`` literals are derived deterministically by scanning the
 skill module source files at runtime (reproducible in the venv) — never a
 hand-typed count. The trusted-signature CWE-ids come from ``SIGNATURES``.
 
+Feature 0058 (P4b / R7) adds the SEMGREP tier: corpus-gate-TRUSTED Semgrep
+CWE-ids (from ``SEMGREP_TRUSTED_PATH``, written by
+``corpus_runner.write_semgrep_trusted``) UNION into VERIFIED (counted once in
+N — never double-counted vs skills/signatures); Semgrep ids that fired but
+missed the strict gate join the DETECTED-below-gate band and never enter N.
+A missing snapshot file is graceful (empty tier — R9).
+
 CLI: ``python report_coverage.py`` prints the markdown; ``--write`` rewrites
 the committed golden in place; ``--check`` regenerates in memory and exits
 nonzero if the committed golden is stale (drifted) or missing — the CI gate.
@@ -36,6 +43,7 @@ nonzero if the committed golden is stale (drifted) or missing — the CI gate.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -49,11 +57,11 @@ from corpus_runner import build_report
 CORPUS_DIR = Path(__file__).resolve().parent
 GOLDEN_PATH = CORPUS_DIR / "VERIFIED_CWES.md"
 
-# The catalog-metadata figure (true: CWE v4.19.1 has 846 entries). Stated as
-# context, NOT detection coverage — see the honest reconciliation in agent.py /
-# SKILLS.md / config.py and the lockstep test corrections in
-# tests/unit/test_catalog_detector.py.
-_CATALOG_SIZE = 846
+# 0058 P4b — the gated Semgrep tier snapshot written by
+# ``corpus_runner.write_semgrep_trusted``. Read at CALL time (never captured)
+# so tests can monkeypatch it; a missing file is graceful (R9 — semgrep is
+# augmentation, never a hard dependency).
+SEMGREP_TRUSTED_PATH = CORPUS_DIR / "semgrep_trusted.json"
 
 _CATEGORY_LITERAL_RE = re.compile(r'"category"\s*:\s*"CWE-(\d+)"')
 
@@ -86,30 +94,67 @@ def trusted_signature_cwe_ids() -> set[str]:
     return {s.cwe_id for s in SIGNATURES if s.status == "trusted"}
 
 
+def _bare_ids(cwes: list) -> set[str]:
+    """Normalize "CWE-N" strings to bare digit ids ({"CWE-917"} -> {"917"})."""
+    return {str(c).replace("CWE-", "").strip() for c in cwes}
+
+
+def _semgrep_tier() -> dict[str, set[str]]:
+    """Read the gated Semgrep tier at ``SEMGREP_TRUSTED_PATH`` (call-time
+    lookup so tests can monkeypatch). Missing file -> empty tiers, no raise
+    (R9). Ids are normalized to bare digits."""
+    path = Path(SEMGREP_TRUSTED_PATH)
+    if not path.is_file():
+        return {"trusted": set(), "detected_below_gate": set()}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        key: _bare_ids(data.get(key, []))
+        for key in ("trusted", "detected_below_gate")
+    }
+
+
+def trusted_semgrep_cwe_ids() -> set[str]:
+    """Corpus-gate-TRUSTED Semgrep CWE-ids as bare digit strings (matching
+    ``skill_category_cwe_ids`` / ``trusted_signature_cwe_ids``)."""
+    return _semgrep_tier()["trusted"]
+
+
 def build_buckets() -> dict:
-    """Layer the four attestation buckets on top of the corpus gate result.
+    """Layer the attestation buckets on top of the corpus gate result.
 
-    Returns a dict with the four bucket keys plus the reproduced ``n`` and the
-    raw ``report`` for downstream rendering:
+    Returns a dict with the four bucket keys plus the reproduced ``n``, the
+    ``semgrep`` tier breakdown (0058 P4b) and the raw ``report`` for
+    downstream rendering:
 
-        verified            -> sorted list of gate-VERIFIED CWE-ids (N == len)
+        verified            -> sorted list of gate-VERIFIED CWE-ids UNION
+                               semgrep-TRUSTED ids (N == len; an id in both
+                               tiers is counted ONCE)
         detected_below_gate -> sorted list of below-gate CWE-ids that fired
+                               (gate DETECTED band + semgrep below-gate ids;
+                               never counted in N)
         declared_only       -> sorted list of declared deterministic CWE-ids
                                not corpus-gated (disjoint from the above two)
         llm_assisted        -> static label dict (zero CWE-ids; never in N)
+        semgrep             -> per-tier breakdown {"trusted": [...],
+                               "detected_below_gate": [...]} (bare-digit ids)
 
     The deterministic buckets are pairwise DISJOINT on CWE-id.
     """
     report = build_report()
-    verified = set(report["verified"])
+    semgrep = _semgrep_tier()
+
+    # N counts the UNION of the two trusted tiers — no double-count (R7).
+    verified = set(report["verified"]) | semgrep["trusted"]
 
     # below-gate == fired but missed the bar. The runner's "below_gate" list
-    # also includes NOT_DETECTED CWEs, so filter to the DETECTED band only.
+    # also includes NOT_DETECTED CWEs, so filter to the DETECTED band only;
+    # semgrep below-gate ids join the band but a trusted id never demotes.
     below = {
         cwe
         for cwe, band in report["bands"].items()
         if band == "DETECTED"
     }
+    below = (below | semgrep["detected_below_gate"]) - verified
 
     declared = skill_category_cwe_ids() | trusted_signature_cwe_ids()
     # DECLARED-ONLY excludes anything already accounted for (no double-count).
@@ -125,7 +170,13 @@ def build_buckets() -> dict:
             "label": "non-deterministic (generate-then-verify); 0 added to N",
             "cwes": [],
         },
-        "n": report["n"],
+        "semgrep": {
+            "trusted": sorted(semgrep["trusted"], key=_sort_key),
+            "detected_below_gate": sorted(
+                semgrep["detected_below_gate"], key=_sort_key
+            ),
+        },
+        "n": len(verified),
         "report": report,
     }
 
@@ -188,7 +239,12 @@ def build_markdown() -> str:
     lines.append("| --- | ---- | --: | ----: | -----: | -: |")
     scores = buckets["report"]["scores"]
     for cwe in verified:
-        s = scores[cwe]
+        s = scores.get(cwe)
+        if s is None:
+            # semgrep-tier-only id: gated by score_semgrep_corpus, no
+            # deterministic score row to reproduce here (0058 P4b).
+            lines.append(f"| CWE-{cwe} | VERIFIED (semgrep) | - | - | - | - |")
+            continue
         lines.append(
             f"| CWE-{cwe} | VERIFIED | {s.n_positive} | {s.n_clean} | "
             f"{s.recall:.3f} | {s.fp_rate:.3f} |"

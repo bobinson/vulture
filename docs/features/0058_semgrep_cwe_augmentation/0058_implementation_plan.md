@@ -47,7 +47,7 @@ and supervised — integration, not engine-building.
 | ID | Requirement |
 |---|---|
 | **R1** | Semgrep runs as a **standalone plugin** (its own supervised container, per 0052/0053) — **never** linked or merged into the CWE agent process. Preserves the LGPL-2.1 process boundary. |
-| **R2** | The plugin is **activated and invoked** within a CWE scan (registry activation + router routing), so its findings are part of the same audit as the CWE agent's skills + signatures. |
+| **R2** | Semgrep runs **when the user selects (ticks) the `semgrep` audit type** for the scan **and** the plugin is registered + activated + healthy. When selected alongside `cwe`, its findings join the **same audit** and **augment** the CWE agent's skills + signatures (via cross-agent dedup / corroboration / reconciliation). **Never forced / never auto-activated:** a bare `cwe` scan (semgrep un-ticked) does not pull it in; Vulture never auto-installs or auto-enables it, and it is never a hard dependency — ticked-but-unavailable or un-ticked → the CWE scan runs skills + signatures only, exit 0 (graceful, R9). *Router note:* the existing `DefaultScanAgentTypes` already routes `semgrep` when it is in the selected `base` set, so no auto-routing change is needed — R2 is the **augmentation** (shared-audit join + R5b reconcile), not auto-activation. |
 | **R3** | **Taint mode enabled** — Semgrep runs dataflow/taint rulesets (`mode: taint`, source→sink), not pattern rules alone. This is the capability that reaches the regex-unreachable CWEs. Rulesets are **hybrid**: curated upstream packs for breadth + **Vulture-authored Apache-2.0 taint rules** (vendored, pinned) for the guaranteed/counted CWEs. |
 | **R4** | Findings are **CWE-attributed from Semgrep's own `extra.metadata.cwe`** (registry rules are CWE-tagged), replacing the 2-entry hand map. Unmapped findings are tagged `CWE-unknown`, never dropped silently. |
 | **R5** *(AUGMENT, not duplicate)* | Where a Semgrep CWE overlaps a skill/signature finding (same CWE + file + line-window), the existing **cross-agent corroboration layer (L3, `stream_handler.go`)** corroborates (confidence boost) and reports **once**; Semgrep-only CWEs surface as **net-new** coverage. No double-reporting. |
@@ -57,6 +57,7 @@ and supervised — integration, not engine-building.
 | **R8** | **Reproducibility** — the Semgrep binary version **and** the ruleset snapshot are **pinned** (like the CWE catalog 4.19.1 pin), so the deterministic tier + the gated N are stable run-to-run. |
 | **R9** *(GRACEFUL)* | Semgrep is **augmentation, not a hard dependency** — if the plugin is not activated/available/healthy, the CWE audit still runs skills + signatures and reports it ran without the Semgrep tier (no failure, exit 0). |
 | **R10** | **Bounded cost** — taint mode is heavier than pattern mode; the per-scan timeout, `--max-memory`, and vendored-dir excludes (`wrapper.py:46-55,116-124`) stay enforced; large-repo behavior is documented. |
+| **R11** *(SECURITY — S3)* | The plugin container must see **only the source under audit**, never the host root. In **local mode** the supervisor must **stop mounting host `/`** at `/audit-inputs` (`argv.go:buildFSArgs`) and instead mount a **scoped staging dir** — adopting the same source-provisioning the in-tree agents already use (`source-cache` staging volume + configured source dir), so `normalise_source_path`'s confinement guard is meaningful again. See §4a. |
 
 ## 4. Architecture
 
@@ -84,9 +85,95 @@ are corroborated/deduped against the deterministic skills/signatures, never repl
 If the plugin is inactive/unhealthy → the orchestrator proceeds with the CWE agent alone +
 an explicit "Semgrep tier not active" note (R9).
 
+## 4a. Source provisioning & S3 remediation (host-`/` mount) — R11
+
+### Problem (S3)
+`buildFSArgs` (`backend/internal/pluginsupervisor/argv.go:180-184`) mounts the host **`/`**
+read-only at the plugin's `/audit-inputs` **when `opts.LocalMode` is true**:
+
+```go
+src := opts.AuditsDir
+if opts.LocalMode { src = "/" }            // ← whole host root
+out = append(out, "-v", fmt.Sprintf("%s:%s:ro", src, p))
+```
+
+The plugin's own guard `normalise_source_path(raw, root="/audit-inputs")` (`translate.py`) is
+meant to confine a scan to paths under the audit-inputs root. But when `/audit-inputs` **is**
+the host `/`, every host file (`/etc/shadow`, `~/.ssh`, `~/.aws/credentials`, …) is legitimately
+"under root", so the guard is a **no-op** and a crafted `source_path` yields arbitrary host-file
+**read/exfiltration** via a scan request. It is RO, so no host writes.
+Severity: originally HIGH (LAN-reachable when paired with S2's `0.0.0.0` bind); after the S2
+loopback-bind fix it is **localhost-only defence-in-depth** — still wrong, still fixed here.
+This is **local-mode only** — server/compose mode already mounts `AuditsDir`, not `/`.
+
+### Why local mode is special
+The plugin container is a **long-lived daemon** (`supervisor.go:210-225`: `docker run -d`,
+fixed `--name`, health-probed) — its mount is fixed at launch, but `source_path` varies per
+`/run`. That is *why* `/` was mounted (so any later path resolves without relaunch). Also, the
+plugin is the **only containerized component in local mode** — the in-tree agents run as native
+host processes there and read host paths directly (no container boundary to escape).
+
+### How the in-tree agents already solve source provisioning (the pattern to adopt)
+In **docker-compose** mode every in-tree agent mounts (compose `volumes:`):
+- `source-cache:/tmp/sources` — a **shared staging volume**; the **backend clones git repos
+  straight into it** (`source_service.go:130 → gitutil.Clone(..., destPath)`), agents mount it
+  **RO**. Git scans are staged **once** by the backend; no per-agent copy.
+- `${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro` — a **single configured** host dir for local-dir
+  scans, RO. Agents never see arbitrary host paths, never `/`.
+
+**No component anywhere uses per-audit ephemeral containers.** The house pattern for feeding
+source to a *containerized* detector is **staging dir + configured source mount**.
+
+### Decision — adopt the existing staging pattern (refined "Method 1"); reject ephemeral containers
+Fix S3 by making the Semgrep plugin consume source the same way the in-tree containerized
+agents do, rather than inventing a new lifecycle:
+
+1. **Local mode: mount `AuditsDir` at `/audit-inputs`, never `/`.** Remove the `src = "/"`
+   branch in `buildFSArgs`. `AuditsDir` defaults to `/tmp/vulture-audit-inputs`
+   (`VULTURE_SUPERVISOR_AUDITS_DIR`); **document defaulting it to a real-disk path** so a
+   `tmpfs` `/tmp` cannot turn staged bytes into RAM pressure.
+2. **Git-URL scans: clone directly into `AuditsDir/<audit-id>/`** (mirrors how the backend
+   already clones into `source-cache`) — **zero copy**.
+3. **Local-directory scans: stage into `AuditsDir/<audit-id>/`**, honoring the scanner's
+   `SKIP_DIRS` + `.gitignore`/`.vultureignore` so a multi-GB `node_modules` is not duplicated;
+   **copy symlinks as-is (never dereference)** so a repo symlink to `/etc/shadow` cannot drag
+   host files into the staging dir.
+4. **`source_path` rewrite:** `ContainerSourcePath` (feature 0055, `symlink_helper.go`) points
+   the plugin at `/audit-inputs/<audit-id>/…` — the staged location — instead of joining the
+   raw host path under `/`.
+5. **Lifecycle:** stage before dispatch; **reap `AuditsDir/<audit-id>/` on audit
+   completion / failure / cancel**, plus a **startup sweep** backstop for crash-orphaned dirs.
+6. **Bounded concurrency & disk (from the 10×/100× stress case):** peak disk = Σ concurrent
+   staged trees on the host (not the container's writable layer). Add a **concurrent-staging
+   cap** (reuse the per-agent worker cap) and a **disk-budget guard** (refuse to stage with a
+   clear error when `AuditsDir` free space < tree size × margin). Note: the single daemon is
+   itself a concurrency ceiling on `/run`, independent of staging.
+
+**Container relaunch:** changing the local-mode mount from `/` to `AuditsDir` only takes effect
+when the plugin container is (re)launched; the supervisor already does an idempotent
+remove+run on activation (`supervisor.go:220`), so an activated plugin picks it up on next
+start. Document that already-running daemons must be restarted once after upgrade.
+
+### Rejected alternative — ephemeral per-audit container (bind-mount source RO)
+Launch a throwaway container per audit with only the source dir bind-mounted RO. **Pros:** zero
+copy, flat disk under concurrency, tightest scope, self-cleaning. **Cons:** it introduces a
+source-provisioning + container lifecycle model used **nowhere else** in the platform (the
+supervisor is built around a persistent, health-probed daemon), adds per-scan
+`docker run`+boot+readiness latency, and forces two divergent models (daemon for server mode,
+ephemeral for local). Rejected as too much novelty/risk for a localized security fix; revisit
+only if per-audit isolation becomes a first-class requirement.
+
 ## 5. Work items
 
 Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
+
+### Phase 0 — Source-provisioning security (S3 / R11) — land first
+| Item | What | Where | Effort |
+|---|---|---|---|
+| P0a | **Stop mounting host `/`** in local mode; mount `AuditsDir` at `/audit-inputs` (remove the `src = "/"` branch) | `backend/internal/pluginsupervisor/argv.go:buildFSArgs` | S |
+| P0b | **Stage source per audit** into `AuditsDir/<audit-id>/`: git-URL → clone in place (no copy); local dir → copy honoring `SKIP_DIRS` + `.gitignore`/`.vultureignore`, **symlinks preserved-not-dereferenced** | `backend/internal/service/{source_service,stream_service}.go` | M |
+| P0c | **Rewrite `source_path`** to the staged `/audit-inputs/<audit-id>/…`; findings normalized back to repo-relative (C1) | `backend/pkg/pluginregistry/symlink_helper.go` (`ContainerSourcePath`), `stream_service.go` | S |
+| P0d | **Reap** staged dir on completion/failure/cancel + **startup sweep** for orphans; **disk-budget guard** + **concurrent-staging cap** | `stream_service.go`, `server.go` startup | M |
 
 ### Phase 1 — Activation + routing
 | Item | What | Where | Effort |
@@ -120,11 +207,13 @@ Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
 
 | Knob | Default | Notes |
 |---|---|---|
-| Plugin activation | **on by default when available** | graceful absence per R9; required acks granted at install |
-| `rule_packs` (per-audit) | security-audit **+ taint packs** | operator-overridable (`wrapper.py:110`) |
-| `VULTURE_CWE_DISABLE_SEMGREP` | — | escape hatch: CWE audit runs skills+signatures only |
+| Plugin activation | **user opt-in per scan** | runs only when the user ticks `semgrep` **and** the plugin is registered/activated/healthy; never forced/auto-activated (R2); graceful absence per R9 |
+| `rule_packs` (per-audit) | security-audit **+ taint packs** | operator-overridable, allowlisted to `p/<name>` (`wrapper.py:110`) |
+| `VULTURE_CWE_DISABLE_SEMGREP` | — | escape hatch: force skills+signatures only even if `semgrep` is ticked |
 | `max_memory_mb` / timeout | 2000 / 1500s | taint-mode cost bounds (R10) |
 | Semgrep image + ruleset | **pinned** | reproducible N (R8) |
+| `VULTURE_SUPERVISOR_AUDITS_DIR` | `/tmp/vulture-audit-inputs` | staging root mounted at `/audit-inputs` (R11); **set to a real-disk path** if `/tmp` is `tmpfs` |
+| staging disk-budget / concurrency cap | guard on / worker-cap | refuse staging when free space < tree × margin; bound concurrent stagings (R11/P0d) |
 
 ## 7. Test plan — test-first
 
@@ -138,6 +227,8 @@ Effort: S ≤1d · M 2–4d · L 1–2wk. Test-first per CLAUDE.md.
 - **T8 `test_semgrep_version_pinned`** — the image/ruleset pin is asserted; an unpinned config fails the check. (R8)
 - **T9 `test_attestation_includes_semgrep_tier`** — `VERIFIED_CWES.md` shows the semgrep tier; counts reconcile, no double-count vs skills/signatures. (R7/P4b)
 - **T10 `test_below_gate_detected_band`** — a Semgrep CWE that fires but fails the strict gate appears in the **DETECTED (below-gate)** band and is **not** counted in N. (decision 3)
+- **T11 `test_localmode_mounts_auditsdir_not_root`** *(Go)* — `BuildDockerRunArgv` in local mode emits `-v <AuditsDir>:/audit-inputs:ro`, **never** `-v /:/audit-inputs:ro`. (R11 / S3 — the regression guard)
+- **T12 `test_staged_source_confines_traversal`** — with a staged `AuditsDir/<id>/` mount, a `source_path` resolving outside that subdir (`../`, absolute host path, or an in-repo symlink to `/etc/shadow`) is rejected by `normalise_source_path` / not readable — proving the guard is meaningful again and host files are unreachable. (R11 / S3)
 
 ## 8. Rollout (soak → enforce)
 
@@ -162,6 +253,8 @@ Gate each phase; Semgrep CWEs only count toward N after Phase 4.
 | 5 | **LGPL-2.1** | process/container isolation — no linkage (R1); already the plugin model; license rows exist |
 | 6 | **Plugin not activated in some deploy modes** | graceful degradation (R9): CWE audit still runs skills+signatures + a notice |
 | 7 | **Network/trust** (plugin requires egress/host-network acks) | in-tree trust tier; acks granted at install; documented |
+| 8 | **S3 — host-`/` mount → arbitrary host-file read** (local mode) | stop mounting `/`; stage into `AuditsDir` scoped per audit (R11/§4a/Phase 0); T11 regression guard + T12 confinement |
+| 9 | **Staging disk exhaustion** under concurrent scans (Σ staged trees on host; worse if `/tmp` is `tmpfs`) | git-clone-in-place (no copy); copy local dirs with `SKIP_DIRS`/gitignore excludes; disk-budget guard + concurrent-staging cap; reap + startup sweep (P0d); default `AuditsDir` to real disk |
 
 ## 10. Scope-lock — OUT
 
@@ -175,9 +268,18 @@ Gate each phase; Semgrep CWEs only count toward N after Phase 4.
 
 ## 11. Open decisions — for review
 
-1. **Activation default** — ✅ **decided (2026-06-26):** Semgrep is **on by default when
-   available**; if the plugin is absent/unhealthy the CWE audit proceeds with skills +
-   signatures (graceful, per R9).
+1. **Activation** — ✅ **decided (2026-06-26; corrected 2026-07-03):** Semgrep is **explicit
+   opt-in per scan** — the **user ticks the `semgrep` audit type** (in addition to `cwe`), and
+   the plugin must also be registered + activated + healthy. There are **two gates**: the
+   operator having activated the plugin, and the user selecting it for that scan. **Never
+   forced / never auto-activated:** a bare `cwe` scan does not pull Semgrep in, Vulture never
+   auto-installs or auto-enables it, and it is never a hard dependency. Ticked-but-unavailable
+   or un-ticked → the CWE audit runs skills + signatures only, exit 0 (graceful, per R9). ("On
+   by default when available" was wrong — the user's tick is the gate.) *Consequence:* the
+   current router already routes `semgrep` when it is selected, so R2 needs **no
+   auto-routing** — the remaining work is making the ticked Semgrep's findings **augment**
+   (shared-audit join + R5b cross-detector reconcile + R6/R7 provenance/gating), not
+   activation.
 2. **Taint rulesets** — ✅ **decided (2026-06-27):** **hybrid** — curated upstream taint
    packs for breadth (Phase 2), plus **Vulture-authored Apache-2.0 taint rules (vendored +
    pinned)** for the high-value CWEs guaranteed in N. The corpus gate filters both; only
@@ -193,10 +295,16 @@ Gate each phase; Semgrep CWEs only count toward N after Phase 4.
    static skill-vs-Semgrep precedence**. *Implication:* the validate phase needs a
    cross-detector reconciliation step so a skill's CWE-22 and Semgrep's CWE-73 on the same
    site are related via the CWE taxonomy rather than double-counted (tracked as a P3 item).
+5. **S3 source-provisioning fix** — ✅ **decided (2026-07-03):** fix the host-`/` mount by
+   **adopting the existing staging pattern** (mount `AuditsDir` not `/`; git-clone-in-place +
+   staged/excluded local dirs; per-audit reap; disk/concurrency guards). **Rejected:**
+   ephemeral per-audit containers (a lifecycle used nowhere else). See §4a / R11 / Phase 0.
 
 ## 12. Acceptance criteria
 
-- ☐ T1–T9 green; existing plugin + CWE + shared suites still green.
+- ☐ T1–T12 green; existing plugin + CWE + shared suites still green.
+- ☐ **S3 fixed:** local mode mounts `AuditsDir` (never host `/`); staged source confines the
+  plugin; `normalise_source_path` is meaningful again (T11 regression guard + T12 confinement).
 - ☐ Semgrep runs **standalone** (own container) and its CWE findings join a CWE scan.
 - ☐ **Taint mode** reports ≥1 cross-line dataflow CWE the skills miss (T2).
 - ☐ No double-reporting across skills/signatures/Semgrep (T4); Semgrep-only CWEs are net-new.

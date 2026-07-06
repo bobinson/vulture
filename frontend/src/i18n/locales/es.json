@@ -65,6 +65,8 @@
     "findingsCount": "{{count}} hallazgo(s)",
     "noFindings": "No se detectaron hallazgos. ¡Su código se ve limpio!",
     "noFindingsShort": "Limpio",
+    "provenance": "Procedencia",
+    "semgrepTierNotice": "Nivel Semgrep no activo — esta auditoría se ejecutó solo con skills deterministas y firmas.",
     "agent": "Agente",
     "scores": "Puntuaciones de Cumplimiento",
     "waitingAgents": "Esperando a que los agentes inicien...",
