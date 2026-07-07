@@ -169,3 +169,58 @@ Per project workflow: E2E business-logic tests written **first**; implementation
 - **D2 — embedded vs external:** ★ embedded-by-default (keeps Modes A/E zero-infra); external via URL.
 - **D3 — user-facing cancel:** ★ include the backend `DELETE /api/audits/{id}` → publish-cancel path in 0062; frontend "Cancel" button tracked as a small separate follow-up.
 - **D4 — feature name:** ★ `0062_nats_coordination_overlay`.
+
+## 11. Alternatives considered — NATS vs Postgres (and the scale trajectory)
+
+Recorded so the "why NATS and not just Postgres?" question isn't re-litigated. Analysis dated 2026-07-07.
+
+### 11.1 Can Postgres do 0062's job? (control plane: cancel / lifecycle / heartbeat)
+
+**Yes, functionally** — Postgres **`LISTEN`/`NOTIFY`** is real-time pub/sub and maps directly onto this feature's *core-NATS-pub/sub* scope: backend `NOTIFY control_cancel, '<run_id>'`; agents `LISTEN` and flip the CancelToken. Same fire-and-forget / at-most-once / miss-if-not-connected semantics as the core NATS we use here (both non-durable), and the volume (one cancel per run + a heartbeat every ~10s × ~10 agents) is trivial. And we already run Postgres → **zero new infra in Mode B**.
+
+**But it fits vulture worse than NATS on two axes that are the whole reason NATS was chosen:**
+
+| Concern | NATS (this feature) | Postgres `LISTEN`/`NOTIFY` |
+|---|---|---|
+| **Agent ↔ DB coupling** | agents connect to NATS; **stay DB-agnostic** (today they talk only to the backend over HTTP — no `psycopg`/driver) | agents must open a **direct Postgres connection** (creds + driver in every Python agent) — breaks the clean microservice/DB separation |
+| **SQLite / local-native (Modes A/E)** | embedded NATS works everywhere | **doesn't work** — SQLite has no `LISTEN`/`NOTIFY`; only Postgres deployments (Mode B) |
+| **Connections** | many cheap subscriptions | one held PG backend-process per listener |
+| **High-rate event mirroring (D1 fast-follow)** | fine | `NOTIFY` takes a per-database lock (serializes notifying commits) — poor for mirroring all AgUI events |
+
+**Third option (neither):** because agents already have exactly one channel that works in *every* mode — HTTP to the backend — the truly minimal path for *just cancellation* is to reuse it (a backend→agent control hook, or a batch-boundary poll), with **Phase 0** (disconnect) covering the common case. That needs no new dependency and works under Postgres *and* SQLite. NATS/`NOTIFY` only earn their keep once we want the broader lifecycle/observability/event-mirroring fan-out this overlay is designed to grow into.
+
+**Decision:** keep NATS for the overlay. Rationale: preserves DB-agnostic agents, works in embedded/SQLite/native modes (Modes A/E, zero-infra — see D2), and is the same substrate the scale trajectory (§11.2) needs anyway. "Postgres can cover it" is true **only at small scale in Postgres-only deployments**.
+
+### 11.2 Scale trajectory — thousands of repos, large worker fleet
+
+At that scale the **orchestration model**, not Postgres, breaks first: today's synchronous single-orchestrator (backend `POST /run` → fixed ~10 agents → in-process SSE aggregation) doesn't fan out. The scale shape is: **durable job queue → autoscaled, DB-agnostic worker fleet (pull jobs) → async result collection → batched `COPY` into partitioned Postgres + object storage; control/telemetry on a message bus.**
+
+What breaks, in order, and the fix:
+1. **Synchronous orchestrator** → job **queue + worker pool** (the "millions of agents" = ephemeral pull-workers).
+2. **Connection storm + `LISTEN`/`NOTIFY`** — the hard Postgres wall: connections are heavyweight; millions of workers can't each hold one → **PgBouncer** (transaction pooling), and `NOTIFY` (connection-per-listener + per-DB lock, incompatible with txn-pooling) **cannot be the control plane at fleet scale** → move control/telemetry onto a **message bus (NATS / Kafka)**. *This is exactly where NATS earns its place and `NOTIFY` does not.*
+3. **Hot `findings` table** → **partition** (time/audit) + batched `COPY`.
+4. **pgvector exact KNN** → **HNSW/IVFFlat ANN**, then partition/shard.
+5. **Read/dashboards** → **read replicas**; heavy analytics → columnar/OLAP or Citus/sharding.
+
+**Postgres is not the thing that stops you** — as the durable *system-of-record* it scales far with pooling/partitioning/replicas/ANN and eventually sharding. But **coordination + job distribution move to a queue + bus**; Postgres alone (especially `LISTEN`/`NOTIFY`) is the wrong tool for the fan-out/control plane at that scale.
+
+### 11.3 NATS as the "queue + message bus" (and vs RabbitMQ / Kafka)
+
+NATS is a **message bus natively (core NATS)**; with **JetStream** it is also a **durable work queue** — one system covers both roles, vs Redis-bus + bullmq-queue or Kafka + a separate queue.
+
+- **Core NATS (this feature uses only this):** subjects/pub-sub, request-reply, **queue groups** (load-balanced fan-out); at-most-once, ephemeral. Good for control/telemetry.
+- **JetStream (crossing into scale-backbone territory — currently scope-locked OUT, §9):** persistent streams; durable consumers with **ack/nak, redelivery, backoff, `max_deliver`, at-least-once / exactly-once**; **work-queue retention** = classic job queue; **pull consumers** = autoscaling worker fleet + backpressure; plus KV + object store.
+
+**vs RabbitMQ / Kafka** — same job-queue essentials (ack, redelivery, DLQ, competing consumers), different model:
+
+| | RabbitMQ | NATS JetStream | Kafka |
+|---|---|---|---|
+| Model | **queue** (consumed → gone), smart-broker routing (exchanges/bindings) | **log/stream** that also serves as a queue (work-queue retention) | log/stream |
+| Delivery | push (prefetch/QoS) | **pull** (fits autoscaled workers) | pull |
+| Priorities / delayed / TTL | first-class | **DIY** | DIY |
+| Scope | messaging broker | **queue + pub/sub + KV + object store in one** | log + consumer groups |
+| Ops / maturity | Erlang; very mature | single binary, built-in clustering; cloud-native | JVM; huge throughput/ecosystem |
+
+**Verdict for vulture:** if the appeal is **one system for queue + control bus + KV with the simplest ops** (the direction this overlay points at), NATS+JetStream. RabbitMQ if a feature-rich standalone queue with rich routing/priorities/delays is the priority; Kafka for petabyte-scale event history. What NATS is *not*: a job scheduler (cron/priority/DAG) or a durable **workflow** engine — those are bullmq-plugin / Temporal / DBOS territory and would layer on top.
+
+**Consequence for this feature:** 0062 stays **core NATS only** (control overlay, never a correctness dependency). Adopting **JetStream** — the moment NATS becomes the durable job-distribution backbone or holds correctness-critical state — is a **separate, larger spec** (it would violate this feature's guiding principle), gated on the scale triggers in §11.2 (PG connection saturation, `NOTIFY`/poll latency, findings-table write contention, orchestrator fan-out CPU).

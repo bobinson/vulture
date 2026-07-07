@@ -11,6 +11,7 @@ import { FindingsTable } from "@/components/results/FindingsTable.tsx";
 import { ScoreCard } from "@/components/results/ScoreCard.tsx";
 import { SeveritySummary } from "@/components/results/SeveritySummary.tsx";
 import { TokenSavings } from "@/components/results/TokenSavings.tsx";
+import { OwaspCoverage } from "@/components/results/OwaspCoverage.tsx";
 import { GitContextHeader } from "@/components/results/GitContextHeader.tsx";
 import { AuditHistoryTimeline } from "@/components/results/AuditHistoryTimeline.tsx";
 import { ProveSummaryCard } from "@/components/results/ProveSummaryCard.tsx";
@@ -64,7 +65,11 @@ export function AuditResults() {
   const [hadLiveStream, markLiveStream] = useReducer(() => true, false);
 
   // Disable SSE when audit already terminal and we never had a live stream
-  const { lines: streamLines, steps: streamSteps, connected, done: streamDone, tokenSavings, dedupStats, validationUpdates } = useAgentStream(id, isTerminal && !hadLiveStream);
+  const { lines: streamLines, steps: streamSteps, connected, done: streamDone, tokenSavings, dedupStats, validationUpdates, owaspCoverage } = useAgentStream(id, isTerminal && !hadLiveStream);
+
+  // Feature 0063: prefer the live-stream manifest; fall back to the persisted
+  // one on the audit record (terminal audits reload with the stream disabled).
+  const coverage = owaspCoverage ?? audit?.owasp_coverage ?? null;
 
   useEffect(() => {
     if (streamLines.length > 0 && !hadLiveStream) {
@@ -238,6 +243,9 @@ export function AuditResults() {
         {/* Token savings from memory optimization */}
         {(tokenSavings || dedupStats) && <TokenSavings savings={tokenSavings} dedupStats={dedupStats} />}
 
+        {/* OWASP Top 10 coverage (feature 0063) */}
+        {coverage && <OwaspCoverage manifest={coverage} />}
+
         {/* Agent timeline - compact horizontal for completed */}
         {steps.length > 0 && (
           <div className="card px-4 py-3">
@@ -370,6 +378,9 @@ export function AuditResults() {
 
       {/* Token savings */}
       {(tokenSavings || dedupStats) && <TokenSavings savings={tokenSavings} dedupStats={dedupStats} />}
+
+      {/* OWASP Top 10 coverage (feature 0063) */}
+      {coverage && <OwaspCoverage manifest={coverage} />}
 
       {/* Findings as they arrive */}
       {findings.length > 0 && (

@@ -60,6 +60,15 @@ Also added standard **build-artifact excludes** across all three layers (plugin 
 
 **Effect:** the plugin (1.168.0) now matches the host CLI version exactly — closes the version-skew gap; `--project-root` is supported in-container. T8 pinning + full plugin suite (72) green on the new pin.
 
+## Solidity coverage via the semgrep plugin (2026-07-07)
+
+The semgrep plugin does its own file discovery over the staged tree, so it scans `.sol` files even though the in-tree agents' `file_scanner.CODE_EXTENSIONS` doesn't list `.sol` (that gap only affects the Python skill agents, not the plugin). Two Solidity tiers added — mirroring the Python/JS hybrid model:
+
+- **Vendored, pinned, HERMETIC tier** — `plugins/semgrep/rules/vulture/solidity/vulture-solidity.yaml` (Apache-2.0): `tx.origin`-auth (CWE-284), unprotected `selfdestruct` (CWE-284), untrusted `delegatecall` (CWE-829). Auto-loaded via the existing `--config <vendored-dir>` (recursive), pinned in `RULESET_SNAPSHOT.json` (`solidity/…` relpath), always on, no network. Verified firing on semgrep 1.168.0 (3/3, correct CWEs, `provenance=semgrep`).
+- **Registry breadth tier — `r/solidity`** (the real Semgrep Solidity namespace; **there is no `p/solidity` — it 404s**). Wired as an **operator default** (`_solidity_registry_config`, default-set only, not client-injectable → no widening of the H2 client allowlist), egress-required, **disable** via `VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY`. Best-effort/experimental + unversioned (drift) — the vendored tier is the guaranteed one.
+
+Tests: `tests/e2e/test_solidity.py` (registry wiring: present by default / absent when `rule_packs` pinned / absent when disabled; vendored rules shipped + detect on a `.sol` fixture). Full plugin suite **77 green**; hermetic taint e2e unaffected. **Caveat:** this is pattern-level Solidity — not a substitute for Slither/Mythril dataflow/symbolic analysis; and corpus-gating Solidity CWEs toward N (R7) is a follow-up.
+
 > **⚠️ Correction (2026-07-03):** the prior "No code written" was wrong — the
 > 0053 reference plugin + a ~50-entry `rule_to_cwe.json` already shipped. The
 > plan §2 "current state (2 CWEs, near-empty)" is likewise stale.

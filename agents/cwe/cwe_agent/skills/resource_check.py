@@ -57,6 +57,23 @@ SIZE_LIMIT = re.compile(r"\b(?:max_size|maxlen|capacity|limit|MAX_)\b", re.IGNOR
 
 IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
 
+# CWE-799: Improper control of interaction frequency (missing rate limiting).
+# Auth-related endpoints without any rate limiter in the SAME file. This is
+# the OWASP A04/A06 rate-limiting contributor (feature 0063). Suppression is
+# file-scoped — a limiter reference anywhere in the file clears the file —
+# which is narrower and less false-positive-prone than a project-wide check.
+AUTH_ENDPOINT_DEF = re.compile(
+    r"^\s*(?:async\s+)?(?:def|func)\s+"
+    r"(?:login|signin|sign_in|signup|sign_up|register|authenticate|"
+    r"reset_password|forgot_password|change_password)\b",
+    re.IGNORECASE,
+)
+RATE_LIMIT_HINT = re.compile(
+    r"rate[_-]?limit|throttl|ratelimiter|slowapi|\bLimiter\s*\(|"
+    r"flask[_-]limiter|express[_-]rate",
+    re.IGNORECASE,
+)
+
 
 def check_resource_management(source_path: str) -> dict:
     """Check for resource management vulnerabilities.
@@ -95,6 +112,44 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         _check_improper_shutdown(file_path, line, line_num, lines, findings)
         _check_null_deref(file_path, line, line_num, lines, findings)
         _check_unbounded_alloc(file_path, line, line_num, lines, findings)
+    # File-scoped: rate limiting is a whole-file property, checked once.
+    _check_rate_limiting(file_path, lines, findings)
+
+
+def _check_rate_limiting(
+    file_path: Path, lines: list[str], findings: list[dict],
+) -> None:
+    """Check for missing rate limiting on auth endpoints (CWE-799).
+
+    File-scoped: if any line in this file references a rate limiter, the
+    whole file is considered protected and no finding is raised.
+    """
+    if any(RATE_LIMIT_HINT.search(line) for line in lines):
+        return
+    for line_num, line in enumerate(lines, start=1):
+        if COMMENT_INDICATORS.match(line):
+            continue
+        if not AUTH_ENDPOINT_DEF.match(line):
+            continue
+        finding = {
+            "severity": "medium",
+            "check_id": "cwe.resource.rate_limit",
+            "category": "CWE-799",
+            "title": "Improper control of interaction frequency (missing rate limiting)",
+            "description": (
+                f"Authentication-related endpoint at line {line_num} with no "
+                "rate limiting in this file"
+            ),
+            "file_path": str(file_path),
+            "line_start": line_num,
+            "line_end": line_num,
+            "recommendation": (
+                "Apply rate limiting/throttling to authentication endpoints to "
+                "resist brute-force and abuse"
+            ),
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "799"))
 
 
 def _check_resource_consumption(

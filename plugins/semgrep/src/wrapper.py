@@ -168,6 +168,35 @@ def _vendored_rules_config(config: dict) -> list[str]:
     return ["--config", os.fspath(VENDORED_RULES_DIR)]
 
 
+# r/solidity = the Semgrep REGISTRY Solidity rule namespace (~50 community
+# rules). NOTE: there is no `p/solidity` published pack (404); `r/solidity`
+# is the real ruleset. It is an OPERATOR default (not client-injectable via
+# rule_packs), so it does NOT widen the H2 client allowlist — it rides only
+# on the DEFAULT hybrid set, exactly like the vendored rules. It needs
+# egress and is unversioned (drift), so it is the best-effort breadth tier
+# on top of the hermetic, pinned vendored Solidity rules. Disable with
+# VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY for offline/reproducible runs.
+_SOLIDITY_REGISTRY_REF = "r/solidity"
+
+
+def _solidity_registry_config(config: dict) -> list[str]:
+    """Return the r/solidity registry ``--config`` pair, or ``[]``.
+
+    Default set only (skipped when the client pins ``rule_packs``, matching
+    the vendored-rules semantics), and honors the disable escape hatch.
+    """
+    if isinstance(config.get("rule_packs"), list):
+        return []
+    if os.environ.get("VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return []
+    return ["--config", _SOLIDITY_REGISTRY_REF]
+
+
 def _clamp_memory_mb(config: dict) -> int:
     """Coerce config.max_memory_mb to a bounded positive int (L3)."""
     try:
@@ -242,6 +271,7 @@ def _semgrep_argv(source_path: str, config: dict) -> list[str]:
     # R3/P2a+P2d (0058): vendored Vulture taint rules ride alongside the
     # registry packs (the hybrid set) unless the client pinned rule_packs.
     args += _vendored_rules_config(config)
+    args += _solidity_registry_config(config)
     # L2: terminate options so source_path can never be parsed as a flag
     # (defence-in-depth atop normalise_source_path's leading-dash guard).
     args += ["--", source_path]

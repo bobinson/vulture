@@ -35,7 +35,12 @@ type AgentRegistryEntry struct {
 // Adding a new agent requires only appending one entry here.
 var AllAgents = []AgentRegistryEntry{
 	{Type: "chaos", Name: "Chaos Engineering", DefaultPort: "28001", DirName: "chaos_engineering", Module: "chaos_agent.main:app", INIKey: "agent_chaos"},
-	{Type: "owasp", Name: "OWASP", DefaultPort: "28002", DirName: "owasp", Module: "owasp_agent.main:app", INIKey: "agent_owasp"},
+	// Feature 0063: OWASP is a deferred MAPPER (it categorizes CWE findings
+	// onto the OWASP Top 10), not a detector. It is Optional so it never runs
+	// concurrently with CWE in the default scan set; the backend runs it after
+	// the scan phase, feeding it the CWE findings. It stays launched, listed
+	// (AllScanAgentTypes / /api/agents), and selectable.
+	{Type: "owasp", Name: "OWASP", DefaultPort: "28002", DirName: "owasp", Module: "owasp_agent.main:app", INIKey: "agent_owasp", Optional: true},
 	{Type: "soc2", Name: "SOC2", DefaultPort: "28003", DirName: "soc2", Module: "soc2_agent.main:app", INIKey: "agent_soc2"},
 	{Type: "cwe", Name: "CWE", DefaultPort: "28004", DirName: "cwe", Module: "cwe_agent.main:app", INIKey: "agent_cwe"},
 	{Type: "prove", Name: "Prove", DefaultPort: "28005", DirName: "prove", Module: "prove_agent.main:app", INIKey: "agent_prove"},

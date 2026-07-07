@@ -85,16 +85,21 @@ func TestStreamService_StreamWithContext(t *testing.T) {
 	}
 	svc := NewStreamService(proxy)
 
+	// Uses a plain scan agent (chaos). Feature 0063 reclassified `owasp` as a
+	// deferred mapper that receives priors from the CWE tap (not priorByAgent),
+	// so it is no longer a valid stand-in for the generic priorByAgent->agent
+	// delivery contract asserted here. owasp's own prior delivery is covered by
+	// stream_service_owasp_test.go.
 	audit := &model.Audit{
 		ID:     "audit-2",
-		Types:  []string{"owasp"},
+		Types:  []string{"chaos"},
 		Config: json.RawMessage(`{}`),
 	}
 	agents := map[string]config.AgentConfig{
-		"owasp": {URL: "http://localhost:28002"},
+		"chaos": {URL: "http://localhost:28001"},
 	}
 	priorByAgent := map[string][]model.PriorFinding{
-		"owasp": {{Title: "XSS", Severity: "high"}},
+		"chaos": {{Title: "XSS", Severity: "high"}},
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 

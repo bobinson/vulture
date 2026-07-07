@@ -1,0 +1,86 @@
+{
+  "edition": "2021",
+  "title": "OWASP Top 10:2021",
+  "categories": [
+    {
+      "id": "A01",
+      "slug": "A01-broken-access-control",
+      "name": "Broken Access Control",
+      "source_url": "https://owasp.org/Top10/2021/A01_2021-Broken_Access_Control/",
+      "retrieved": "2026-07-07",
+      "cwes": [22, 23, 35, 59, 200, 201, 219, 264, 275, 276, 284, 285, 352, 359, 377, 402, 425, 441, 497, 538, 540, 548, 552, 566, 601, 639, 651, 668, 706, 862, 863, 913, 922, 1275]
+    },
+    {
+      "id": "A02",
+      "slug": "A02-cryptographic-failures",
+      "name": "Cryptographic Failures",
+      "source_url": "https://owasp.org/Top10/2021/A02_2021-Cryptographic_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [261, 296, 310, 319, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 335, 336, 337, 338, 340, 347, 523, 720, 757, 759, 760, 780, 818, 916]
+    },
+    {
+      "id": "A03",
+      "slug": "A03-injection",
+      "name": "Injection",
+      "source_url": "https://owasp.org/Top10/2021/A03_2021-Injection/",
+      "retrieved": "2026-07-07",
+      "cwes": [20, 74, 75, 77, 78, 79, 80, 83, 87, 88, 89, 90, 91, 93, 94, 95, 96, 97, 98, 99, 100, 113, 116, 138, 184, 470, 471, 564, 610, 643, 644, 652, 917]
+    },
+    {
+      "id": "A04",
+      "slug": "A04-insecure-design",
+      "name": "Insecure Design",
+      "source_url": "https://owasp.org/Top10/2021/A04_2021-Insecure_Design/",
+      "retrieved": "2026-07-07",
+      "cwes": [73, 183, 209, 213, 235, 256, 257, 266, 269, 280, 311, 312, 313, 316, 419, 430, 434, 444, 451, 472, 501, 522, 525, 539, 579, 598, 602, 642, 646, 650, 653, 656, 657, 799, 807, 840, 841, 927, 1021, 1173]
+    },
+    {
+      "id": "A05",
+      "slug": "A05-security-misconfiguration",
+      "name": "Security Misconfiguration",
+      "source_url": "https://owasp.org/Top10/2021/A05_2021-Security_Misconfiguration/",
+      "retrieved": "2026-07-07",
+      "cwes": [2, 11, 13, 15, 16, 260, 315, 520, 526, 537, 541, 547, 611, 614, 756, 776, 942, 1004, 1032, 1174]
+    },
+    {
+      "id": "A06",
+      "slug": "A06-vulnerable-and-outdated-components",
+      "name": "Vulnerable and Outdated Components",
+      "source_url": "https://owasp.org/Top10/2021/A06_2021-Vulnerable_and_Outdated_Components/",
+      "retrieved": "2026-07-07",
+      "cwes": [937, 1035, 1104]
+    },
+    {
+      "id": "A07",
+      "slug": "A07-identification-and-authentication-failures",
+      "name": "Identification and Authentication Failures",
+      "source_url": "https://owasp.org/Top10/2021/A07_2021-Identification_and_Authentication_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [255, 259, 287, 288, 290, 294, 295, 297, 300, 302, 304, 306, 307, 346, 384, 521, 613, 620, 640, 798, 940, 1216]
+    },
+    {
+      "id": "A08",
+      "slug": "A08-software-and-data-integrity-failures",
+      "name": "Software and Data Integrity Failures",
+      "source_url": "https://owasp.org/Top10/2021/A08_2021-Software_and_Data_Integrity_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [345, 353, 426, 494, 502, 565, 784, 829, 830, 915]
+    },
+    {
+      "id": "A09",
+      "slug": "A09-security-logging-and-monitoring-failures",
+      "name": "Security Logging and Monitoring Failures",
+      "source_url": "https://owasp.org/Top10/2021/A09_2021-Security_Logging_and_Monitoring_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [117, 223, 532, 778]
+    },
+    {
+      "id": "A10",
+      "slug": "A10-ssrf",
+      "name": "Server-Side Request Forgery (SSRF)",
+      "source_url": "https://owasp.org/Top10/2021/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/",
+      "retrieved": "2026-07-07",
+      "cwes": [918]
+    }
+  ]
+}

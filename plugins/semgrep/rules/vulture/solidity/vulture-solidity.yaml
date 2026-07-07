@@ -1,0 +1,68 @@
+# Vulture-authored Semgrep Solidity security rules (feature 0058, P2d).
+# Copyright (c) 2026 the Vulture authors.
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+#
+# Hermetic, pinned Solidity tier (parallel to the Python/JS taint rules):
+# always applied to .sol files via the vendored --config dir, no network.
+# Registry breadth (r/solidity) is a separate, opt-in tier — see wrapper.py.
+# Semgrep's Solidity support is experimental; these are high-signal,
+# pattern-level checks (not a substitute for Slither/Mythril dataflow).
+rules:
+  - id: vulture-solidity-tx-origin-auth
+    languages: [solidity]
+    severity: ERROR
+    message: >-
+      tx.origin used in an authorization check. tx.origin is the original
+      externally-owned account of the whole call chain, so an intermediary
+      contract can phish the check; authorize on msg.sender instead.
+    metadata:
+      cwe:
+        - "CWE-284: Improper Access Control"
+      references:
+        - https://swcregistry.io/docs/SWC-115
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern-either:
+          - pattern: tx.origin == $X
+          - pattern: $X == tx.origin
+
+  - id: vulture-solidity-unprotected-selfdestruct
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      selfdestruct present. Ensure it is strictly access-controlled — an
+      unprotected selfdestruct lets anyone destroy the contract and forward
+      its balance.
+    metadata:
+      cwe:
+        - "CWE-284: Improper Access Control"
+      references:
+        - https://swcregistry.io/docs/SWC-106
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    pattern: selfdestruct($X)
+
+  - id: vulture-solidity-delegatecall-untrusted
+    languages: [solidity]
+    severity: ERROR
+    message: >-
+      delegatecall to a non-constant target executes arbitrary code in THIS
+      contract's storage/context. If the target is attacker-influenced this
+      is a full takeover; restrict it to a fixed, trusted implementation.
+    metadata:
+      cwe:
+        - "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"
+      references:
+        - https://swcregistry.io/docs/SWC-112
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    pattern: $T.delegatecall($D)

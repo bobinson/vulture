@@ -136,6 +136,14 @@ export function AuditTypeSelector({ selected, onSelectionChange }: AuditTypeSele
                     <p className="text-[11px] text-muted mt-1 leading-relaxed">
                       {desc}
                     </p>
+                    {agent.id === "owasp" && (
+                      <p
+                        data-testid="agent-requires-owasp"
+                        className="text-[10px] text-muted-light mt-1 italic"
+                      >
+                        {t("audit.owaspRequiresCwe")}
+                      </p>
+                    )}
                   </div>
                 </div>
               </button>

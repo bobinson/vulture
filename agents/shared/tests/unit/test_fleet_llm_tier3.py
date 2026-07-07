@@ -23,14 +23,18 @@ import importlib
 
 import pytest
 
-# (module path under the venv, entry function name). All 7 non-CWE scan agents
+# (module path under the venv, entry function name). These LLM scan agents
 # expose ``run_audit(run_id, source_path, config, prior_findings=None)`` and
 # fall back to their full category set when config omits categories, so an
 # empty config still reaches the run_combined_audit call.
+#
+# owasp is intentionally EXCLUDED (feature 0063): it is a deferred CWE->OWASP
+# categorizer, not an LLM scan agent, so it does not call run_combined_audit
+# and has no model/tier3 to forward. Its behavior is covered by
+# agents/owasp/tests/.
 SCAN_AGENTS = [
     ("chaos_agent.agent", "run_audit"),
     ("asvs_agent.agent", "run_audit"),
-    ("owasp_agent.agent", "run_audit"),
     ("xss_agent.agent", "run_audit"),
     ("soc2_agent.agent", "run_audit"),
     ("ssdf_agent.agent", "run_audit"),

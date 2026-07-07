@@ -6,14 +6,28 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sync"
 
+	"github.com/vulture/backend/internal/agui"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/staging"
 	"github.com/vulture/backend/pkg/pluginregistry"
 	"github.com/vulture/backend/pkg/stagerouter"
 )
+
+// Feature 0063: the OWASP agent maps CWE findings onto OWASP Top 10
+// categories instead of detecting. It runs as a deferred phase AFTER the
+// scan agents complete, consuming the CWE-tagged findings they produced.
+const (
+	owaspType = "owasp"
+	cweType   = "cwe"
+)
+
+var cweCategoryRe = regexp.MustCompile(`^CWE-\d+$`)
+
+func isCWECategory(c string) bool { return cweCategoryRe.MatchString(c) }
 
 type StreamService interface {
 	Stream(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, eventCh chan<- *model.AgUIEvent)
@@ -50,22 +64,239 @@ func (s *streamService) Stream(ctx context.Context, audit *model.Audit, sourcePa
 func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, eventCh chan<- *model.AgUIEvent) {
 	defer close(eventCh)
 
-	eventCh <- &model.AgUIEvent{
+	if !send(ctx, eventCh, &model.AgUIEvent{
 		Type:     model.EventRunStarted,
 		RunID:    audit.ID,
 		ThreadID: "t-" + audit.ID,
+	}) {
+		return
 	}
 
-	if s.router != nil {
-		s.dispatchViaRouter(ctx, audit, sourcePath, agents, priorByAgent, eventCh)
-	} else {
-		s.dispatchLegacy(ctx, audit, sourcePath, agents, priorByAgent, eventCh)
+	// Feature 0063: split OWASP (a deferred mapping phase) out of the
+	// concurrent scan set. When OWASP is requested, ensure CWE runs (it is
+	// OWASP's prerequisite) and tap the CWE-tagged findings the scan phase
+	// produces so they can be mapped afterwards.
+	scanTypes, wantOwasp := splitOwasp(audit.Types)
+
+	if !wantOwasp {
+		// Pre-0063 behavior preserved exactly: dispatch audit.Types as-is
+		// (an empty/nil list means "default scan" — the router expands it to
+		// all enabled scan plugins). No tap needed on this path.
+		if !s.dispatchScanPhase(ctx, audit, audit.Types, sourcePath, agents, priorByAgent, nil, eventCh) {
+			return
+		}
+		send(ctx, eventCh, &model.AgUIEvent{Type: model.EventRunFinished, RunID: audit.ID})
+		return
 	}
 
-	eventCh <- &model.AgUIEvent{
+	scanTypes, cweDispatched := ensureCwe(scanTypes, agents)
+	tap := &cweTap{}
+	// Only run a scan phase if there is something to scan. If the user asked
+	// for OWASP only and CWE is unconfigured, scanTypes is empty and we must
+	// NOT dispatch — an empty type list would make the router run ALL scan
+	// plugins (its "no filter" default), which the user did not request.
+	if len(scanTypes) > 0 {
+		if !s.dispatchScanPhase(ctx, audit, scanTypes, sourcePath, agents, priorByAgent, tap, eventCh) {
+			return // consumer gone
+		}
+	}
+
+	s.runOwaspMapping(ctx, audit, sourcePath, agents, tap, cweDispatched, eventCh)
+
+	send(ctx, eventCh, &model.AgUIEvent{
 		Type:  model.EventRunFinished,
 		RunID: audit.ID,
+	})
+}
+
+// send forwards an event, honoring cancellation so a gone consumer can never
+// wedge the producer (matches the launch() send discipline). Returns false if
+// the context was cancelled before the send completed.
+func send(ctx context.Context, ch chan<- *model.AgUIEvent, ev *model.AgUIEvent) bool {
+	select {
+	case ch <- ev:
+		return true
+	case <-ctx.Done():
+		return false
 	}
+}
+
+// splitOwasp separates the OWASP mapping type from the scan types.
+func splitOwasp(types []string) (scan []string, wantOwasp bool) {
+	for _, t := range types {
+		if t == owaspType {
+			wantOwasp = true
+			continue
+		}
+		scan = append(scan, t)
+	}
+	return scan, wantOwasp
+}
+
+// ensureCwe adds CWE to the scan set if it isn't already present and is
+// configured (OWASP's prerequisite). Returns whether CWE will be dispatched;
+// if CWE isn't configured, OWASP reports cwe_stage_status="absent".
+func ensureCwe(scan []string, agents map[string]config.AgentConfig) ([]string, bool) {
+	for _, t := range scan {
+		if t == cweType {
+			return scan, true
+		}
+	}
+	if a, ok := agents[cweType]; ok && a.URL != "" {
+		return append(scan, cweType), true
+	}
+	return scan, false
+}
+
+// dispatchScanPhase runs the scan agents, forwarding every event to eventCh
+// while tapping CWE-category findings into tap. Returns false if the consumer
+// went away (context cancelled) so the caller stops cleanly.
+func (s *streamService) dispatchScanPhase(ctx context.Context, audit *model.Audit, scanTypes []string, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, tap *cweTap, eventCh chan<- *model.AgUIEvent) bool {
+	scanAudit := *audit
+	scanAudit.Types = scanTypes
+
+	scanCh := make(chan *model.AgUIEvent, 64)
+	go func() {
+		if s.router != nil {
+			s.dispatchViaRouter(ctx, &scanAudit, sourcePath, agents, priorByAgent, scanCh)
+		} else {
+			s.dispatchLegacy(ctx, &scanAudit, sourcePath, agents, priorByAgent, scanCh)
+		}
+		close(scanCh)
+	}()
+
+	for ev := range scanCh {
+		if tap != nil {
+			tap.observe(ev)
+		}
+		if !send(ctx, eventCh, ev) {
+			// Consumer gone: drain the scan producer so it isn't wedged on a
+			// buffered send, then stop. Launch goroutines already select on
+			// ctx.Done(), so this returns promptly.
+			go func() {
+				for range scanCh { //nolint:revive // intentional drain
+				}
+			}()
+			return false
+		}
+	}
+	return true
+}
+
+// runOwaspMapping launches the OWASP agent as a deferred phase, feeding it the
+// CWE findings tapped from the scan phase (via the native prior_findings
+// transport) plus the CWE-stage provenance. OWASP always runs when requested —
+// even with zero CWE findings or a failed CWE stage — and self-reports.
+func (s *streamService) runOwaspMapping(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, tap *cweTap, cweDispatched bool, eventCh chan<- *model.AgUIEvent) {
+	cfg, ok := agents[owaspType]
+	if !ok || cfg.URL == "" {
+		send(ctx, eventCh, agentUnavailableEvent(owaspType))
+		return
+	}
+	findings, sawResult := tap.snapshot()
+	status := cweStageStatus(cweDispatched, sawResult)
+	priors := findingsToPriors(findings)
+
+	baseCfg := extractAgentConfig(parseAuditConfigMap(audit.Config), owaspType)
+	owaspCfg := withCweStatus(baseCfg, status)
+
+	log.Printf("[stream-svc] deferred owasp mapping: cwe_findings=%d status=%s", len(priors), status)
+	var wg sync.WaitGroup
+	s.launch(ctx, &wg, cfg.URL, owaspType, audit.ID, sourcePath, owaspCfg, priors, eventCh)
+	wg.Wait()
+}
+
+// cweStageStatus derives OWASP's cwe_stage_status POSITIVELY: "completed"
+// only if the CWE agent's result snapshot was actually observed. A CWE agent
+// that was unreachable emits a "thinking" unavailable notice (not RunError)
+// and no snapshot, so it is correctly reported as "failed" rather than a
+// misleading "completed".
+func cweStageStatus(dispatched, sawResult bool) string {
+	switch {
+	case !dispatched:
+		return "absent"
+	case sawResult:
+		return "completed"
+	default:
+		return "failed"
+	}
+}
+
+// findingsToPriors converts tapped CWE findings into the prior_findings
+// transport shape. code_snippet is deliberately NOT carried (snippets can
+// contain secrets — feature 0063 security constraint); file+line location is.
+func findingsToPriors(fs []model.Finding) []model.PriorFinding {
+	out := make([]model.PriorFinding, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, model.PriorFinding{
+			Title:       f.Title,
+			Severity:    string(f.Severity),
+			Category:    f.Category,
+			Description: f.Description,
+			FilePath:    f.FilePath,
+			LineStart:   f.LineStart,
+			LineEnd:     f.LineEnd,
+			CheckID:     f.CheckID,
+		})
+	}
+	return out
+}
+
+// withCweStatus merges cwe_stage_status into the OWASP agent's config JSON.
+func withCweStatus(cfg json.RawMessage, status string) json.RawMessage {
+	m := map[string]json.RawMessage{}
+	if len(cfg) > 0 {
+		_ = json.Unmarshal(cfg, &m) // best-effort; start fresh on garbage
+	}
+	statusJSON, _ := json.Marshal(status)
+	m["cwe_stage_status"] = statusJSON
+	out, err := json.Marshal(m)
+	if err != nil {
+		return cfg
+	}
+	return out
+}
+
+// cweTap accumulates CWE-tagged findings from the scan phase and records
+// whether the CWE agent's result snapshot arrived. observe() is called from
+// the single scan-forwarding loop; the mutex guards the accessor snapshot().
+type cweTap struct {
+	mu           sync.Mutex
+	findings     []model.Finding
+	sawCweResult bool
+}
+
+func (t *cweTap) observe(ev *model.AgUIEvent) {
+	if ev == nil {
+		return
+	}
+	switch ev.Type {
+	case model.EventStateDelta:
+		if len(ev.Delta) == 0 {
+			return
+		}
+		for _, f := range agui.ParseDeltaFindings(ev.Delta, ev.AgentType) {
+			if isCWECategory(f.Category) {
+				t.mu.Lock()
+				t.findings = append(t.findings, f)
+				t.mu.Unlock()
+			}
+		}
+	case model.EventStateSnapshot:
+		if ev.AgentType == cweType {
+			t.mu.Lock()
+			t.sawCweResult = true
+			t.mu.Unlock()
+		}
+	}
+}
+
+func (t *cweTap) snapshot() ([]model.Finding, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	fs := make([]model.Finding, len(t.findings))
+	copy(fs, t.findings)
+	return fs, t.sawCweResult
 }
 
 // dispatchLegacy is the pre-0049 path: iterate audit.Types, look up

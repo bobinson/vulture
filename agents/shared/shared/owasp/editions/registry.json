@@ -1,0 +1,7 @@
+{
+  "default": "2021",
+  "editions": {
+    "2021": "owasp_2021.json",
+    "2025": "owasp_2025.json"
+  }
+}

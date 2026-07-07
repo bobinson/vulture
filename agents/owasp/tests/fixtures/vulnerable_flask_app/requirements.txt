@@ -1,0 +1,8 @@
+# Deliberately vulnerable dependency manifest for the 0063 pipeline test.
+# NOT a real project's deps. Two signals for the CWE dependency skill:
+#   requests==2.31.0  -> known-vulnerable pin (< 2.32.0, CVE-2024-35195) -> CWE-937
+#                        -> A06 (2021) Vulnerable and Outdated Components
+#   pyyaml            -> unpinned dependency                            -> CWE-1104
+#                        -> A06 (2021) + A03 (2025) Software Supply Chain Failures
+requests==2.31.0
+pyyaml

@@ -1,21 +1,86 @@
-"""OWASP Security agent definition."""
+"""OWASP Top 10 agent: maps CWE findings onto OWASP categories.
 
-import os
+This agent performs NO detection. The CWE agent detects weaknesses and tags
+each finding with ``category: "CWE-NNN"``; this agent consumes those findings
+(via the standard ``prior_findings`` transport), maps each CWE to its OWASP
+Top 10 category for the selected edition, re-labels it, and emits a
+per-category coverage manifest.
+
+Invariants (feature 0063):
+- Never scans source; never imports detection skills.
+- Never fails: a bad edition, missing/malformed priors, or an absent/failed
+  CWE stage all resolve to a clear notice + a full (possibly zero) manifest
+  and ``agent_end status=completed``.
+- Code snippets are never echoed (they can contain secrets); only file+line
+  location and metadata are carried onto OWASP findings.
+"""
+
 from collections.abc import Generator
 from typing import Any
 
-from shared.audit_runner import run_combined_audit
-from shared.llm.provider import get_max_findings
-from shared.tools.memory_client import build_prior_context
+from shared.audit_runner import compute_score
+from shared.owasp.coverage import STATUS_ABSENT, STATUS_COMPLETED, build_manifest
+from shared.owasp.mapping import Edition, UnknownEditionError, load_edition, parse_cwe_id
+from shared.transport.event_emitter import AgUiEventEmitter
 
-from owasp_agent.config import ALL_CATEGORIES
-from owasp_agent.skills import SKILL_MAP, SKILL_TOOLS
+_PREREQ_NOTICE = (
+    "OWASP agent requires the CWE agent to run first. No CWE findings were "
+    "provided, so nothing can be categorized — reporting zero coverage. "
+    "Enable the CWE agent (it is added automatically when OWASP is selected)."
+)
 
-INSTRUCTIONS = """You are an OWASP Security Auditor. Analyze source code for OWASP Top 10 vulnerabilities:
-A01 Access Control, A02 Crypto Failures, A03 Injection, A04 Insecure Design,
-A05 Security Misconfiguration, A06 Vulnerable Components, A07 Auth Failures,
-A08 Data Integrity, A09 Logging Failures, A10 SSRF.
-Report findings with severity, affected file, and actionable recommendations."""
+# Fields carried from a CWE finding onto an OWASP finding. `code_snippet` is
+# deliberately EXCLUDED — snippets can contain secrets and must not be
+# re-emitted here (feature 0063 security constraint).
+_CARRY = ("file_path", "line_start", "line_end", "recommendation")
+
+
+def _manifest_summary(m: dict) -> str:
+    lines = [f"OWASP Top 10:{m['edition']} coverage (CWE stage: {m['cwe_stage_status']}):"]
+    for c in m["categories"]:
+        lines.append(
+            f"  {c['id']} {c['name']}: {c['found_count']}/{c['mapped_count']} "
+            f"mapped CWEs found ({c['status']})"
+        )
+    return "\n".join(lines)
+
+
+def _relabel(finding: dict, cat, cwe_id: int, run_id: str, idx: int) -> dict:
+    """Build an OWASP-labeled finding from a CWE finding + its category.
+
+    Required emitter fields (severity, description) are defaulted so a
+    malformed prior can never raise (feature 0063 reliability constraint).
+    """
+    out: dict[str, Any] = {k: finding[k] for k in _CARRY if k in finding}
+    out["id"] = f"{run_id}-owasp-{idx}"
+    out["severity"] = finding.get("severity") or "medium"
+    out["description"] = finding.get("description") or ""
+    out["category"] = cat.slug
+    out["owasp_category_id"] = cat.id
+    out["owasp_category_name"] = cat.name
+    out["mapped_from"] = f"CWE-{cwe_id}"
+    out["check_id"] = f"owasp.{cat.id}.cwe-{cwe_id}"
+    out["references"] = list(dict.fromkeys([*finding.get("references", []), cat.source_url]))
+    title = finding.get("title") or f"CWE-{cwe_id}"
+    out["title"] = title if title.startswith(f"[{cat.id}]") else f"[{cat.id}] {title}"
+    return out
+
+
+def _resolve_edition(config: dict) -> tuple[Edition, list[str]]:
+    """Load the requested edition, falling back to default on a bad id.
+
+    Returns (edition, notices) — notices are emitted by the caller. Never
+    raises (feature 0063 reliability constraint).
+    """
+    requested = config.get("edition")
+    try:
+        return load_edition(requested), []
+    except UnknownEditionError:
+        fallback = load_edition()
+        return fallback, [
+            f"Unknown OWASP edition {requested!r}; falling back to "
+            f"{fallback.edition_id}."
+        ]
 
 
 def run_audit(
@@ -24,28 +89,61 @@ def run_audit(
     config: dict,
     prior_findings: list[dict[str, Any]] | None = None,
 ) -> Generator[str, None, None]:
-    """Execute the OWASP security audit and yield SSE events."""
-    categories = config.get("categories", ALL_CATEGORIES)
-    preloaded = prior_findings if prior_findings else None
-    max_f = get_max_findings()
-    context = build_prior_context(source_path, "owasp", preloaded=preloaded, max_findings=max_f)
+    """Execute the OWASP categorization and yield SSE events."""
+    emitter = AgUiEventEmitter(run_id)
+    yield emitter.run_started()
 
-    use_llm_val = config.get("use_llm")
-    # Feature 0046: per-audit override for L5 LLM judge.
-    _v = config.get("validate")
-    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
-    yield from run_combined_audit(
-        run_id=run_id,
-        source_path=source_path,
-        categories=categories,
-        skill_map=SKILL_MAP,
-        domain_label="OWASP categories",
-        prior_context=context,
-        skill_tools=SKILL_TOOLS,
-        instructions=INSTRUCTIONS,
-        model=os.environ.get("VULTURE_LLM_MODEL"),
-        use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
-        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
-        # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
-        llm_tier3=config.get("llm_tier3"),
+    config = config or {}
+    edition, notices = _resolve_edition(config)
+    for n in notices:
+        yield emitter.text_message(n)
+
+    selected = set(config.get("categories") or [])
+    priors = prior_findings or []
+    cwe_status = config.get("cwe_stage_status") or (
+        STATUS_ABSENT if not priors else STATUS_COMPLETED
     )
+
+    yield emitter.text_message(
+        f"Categorizing {len(priors)} CWE finding(s) against OWASP Top 10:{edition.edition_id}."
+    )
+    if not priors:
+        yield emitter.text_message(_PREREQ_NOTICE)
+
+    detected: set[int] = set()
+    emitted: list[dict] = []
+    idx = 0
+    for f in priors:
+        if not isinstance(f, dict):
+            continue
+        cwe_id = parse_cwe_id(str(f.get("category", "")))
+        if cwe_id is None:
+            continue
+        detected.add(cwe_id)
+        for cat in edition.map_cwe(cwe_id):
+            if selected and cat.id not in selected:
+                continue
+            relabeled = _relabel(f, cat, cwe_id, run_id, idx)
+            idx += 1
+            emitted.append(relabeled)
+            yield emitter.finding_event(**relabeled)
+
+    manifest = build_manifest(edition, detected, cwe_stage_status=cwe_status).to_dict()
+    yield emitter.text_message(_manifest_summary(manifest))
+
+    files = {f.get("file_path", "") for f in priors if isinstance(f, dict)}
+    yield emitter.progress_event(len(files), len(files), len(emitted))
+
+    found = sum(1 for c in manifest["categories"] if c["found_count"] > 0)
+    summary = (
+        f"Mapped {len(emitted)} finding(s) into {found}/10 OWASP Top 10:"
+        f"{edition.edition_id} categories."
+    )
+    # Reuse the shared scoring convention so the UI treats this agent's score
+    # like every other agent's. compute_score guards empty/zero internally.
+    score = compute_score(emitted, max(len(priors), len(emitted), 1))
+    yield emitter.result_event(
+        findings=emitted, summary=summary, score=score,
+        extra={"owasp_coverage": manifest},
+    )
+    yield emitter.run_finished(status="completed")
