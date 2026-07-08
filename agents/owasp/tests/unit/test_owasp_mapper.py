@@ -62,7 +62,7 @@ def test_bad_edition_falls_back_without_failure():
     events = _events(run_audit("r3b", "/s", {"edition": "9999"}, [_cwe(89, "x")]))
     types = [t for t, _ in events]
     assert types[-1] == "agent_end"
-    assert [d for t, d in events if t == "result"][0]["owasp_coverage"]["edition"] == "2021"
+    assert [d for t, d in events if t == "result"][0]["owasp_coverage"]["edition"] == "2025"
     assert any("falling back" in d.get("content", "") for t, d in events if t == "thinking")
 
 

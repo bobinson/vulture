@@ -10,9 +10,9 @@ from shared.owasp.mapping import (
 )
 
 
-def test_default_edition_is_2021():
+def test_default_edition_is_2025():
     ed = load_edition()
-    assert ed.edition_id == "2021"
+    assert ed.edition_id == "2025"
     assert len(ed.categories) == 10
 
 

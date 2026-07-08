@@ -89,7 +89,7 @@ reload).
 
 ## Editions: 2021 and 2025
 
-Both editions are supported; **each audit reports one edition** (default `2021`).
+Both editions are supported; **each audit reports one edition** (default `2025`).
 2025 restructures the list — for example SSRF (CWE-918) folds into **A01**,
 injection into **A05**, and **A10** becomes *Mishandling of Exceptional
 Conditions*. Select the edition in the agent config:
@@ -114,7 +114,7 @@ registry line** — no code change to the agent, mapping engine, or backend.
 **CLI** (the backend auto-runs CWE first):
 
 ```bash
-vulture scan ./my-project --types owasp --wait          # 2021 (default)
+vulture scan ./my-project --types owasp --wait          # 2025 (default)
 ```
 
 **API** — create an audit with `owasp` in `types` and pick the edition:

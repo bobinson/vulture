@@ -14,7 +14,7 @@ def _default_edition() -> str:
 
         return load_edition().edition_id
     except Exception:
-        return "2021"
+        return "2025"
 
 
 def _editions() -> list[str]:
@@ -23,7 +23,7 @@ def _editions() -> list[str]:
 
         return available_editions()
     except Exception:
-        return ["2021"]
+        return ["2025", "2021"]
 
 
 CONFIG_SCHEMA: dict = {
