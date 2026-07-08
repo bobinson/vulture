@@ -34,7 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .sse import write_event
-from .translate import normalise_source_path, translate_findings
+from .translate import normalise_source_path, summarize_scam_risk, translate_findings
 
 app = FastAPI()
 
@@ -347,6 +347,10 @@ async def _stream_run(run_id: str, source_path: str, config: dict) -> AsyncItera
     # root=source_path so Semgrep's file paths are normalized to repo-relative
     # and line up with the in-tree agents' paths in cross-agent dedup (C1).
     findings = translate_findings(semgrep_json, agent_type="semgrep", root=source_path)
+    # P2g: correlate co-occurring scam markers into a composite high-severity
+    # finding (semgrep can't reason across findings). Appended so it both streams
+    # and survives in the authoritative `result` snapshot below.
+    findings.extend(summarize_scam_risk(findings, agent_type="semgrep"))
     for f in findings:
         yield write_event("finding", f)
         await asyncio.sleep(0)  # cooperative yield to the event loop
