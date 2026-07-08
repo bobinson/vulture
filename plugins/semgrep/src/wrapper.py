@@ -34,7 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .sse import write_event
-from .translate import normalise_source_path, translate_findings
+from .translate import normalise_source_path, summarize_scam_risk, translate_findings
 
 app = FastAPI()
 
@@ -168,6 +168,35 @@ def _vendored_rules_config(config: dict) -> list[str]:
     return ["--config", os.fspath(VENDORED_RULES_DIR)]
 
 
+# r/solidity = the Semgrep REGISTRY Solidity rule namespace (~50 community
+# rules). NOTE: there is no `p/solidity` published pack (404); `r/solidity`
+# is the real ruleset. It is an OPERATOR default (not client-injectable via
+# rule_packs), so it does NOT widen the H2 client allowlist — it rides only
+# on the DEFAULT hybrid set, exactly like the vendored rules. It needs
+# egress and is unversioned (drift), so it is the best-effort breadth tier
+# on top of the hermetic, pinned vendored Solidity rules. Disable with
+# VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY for offline/reproducible runs.
+_SOLIDITY_REGISTRY_REF = "r/solidity"
+
+
+def _solidity_registry_config(config: dict) -> list[str]:
+    """Return the r/solidity registry ``--config`` pair, or ``[]``.
+
+    Default set only (skipped when the client pins ``rule_packs``, matching
+    the vendored-rules semantics), and honors the disable escape hatch.
+    """
+    if isinstance(config.get("rule_packs"), list):
+        return []
+    if os.environ.get("VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return []
+    return ["--config", _SOLIDITY_REGISTRY_REF]
+
+
 def _clamp_memory_mb(config: dict) -> int:
     """Coerce config.max_memory_mb to a bounded positive int (L3)."""
     try:
@@ -242,6 +271,7 @@ def _semgrep_argv(source_path: str, config: dict) -> list[str]:
     # R3/P2a+P2d (0058): vendored Vulture taint rules ride alongside the
     # registry packs (the hybrid set) unless the client pinned rule_packs.
     args += _vendored_rules_config(config)
+    args += _solidity_registry_config(config)
     # L2: terminate options so source_path can never be parsed as a flag
     # (defence-in-depth atop normalise_source_path's leading-dash guard).
     args += ["--", source_path]
@@ -317,6 +347,10 @@ async def _stream_run(run_id: str, source_path: str, config: dict) -> AsyncItera
     # root=source_path so Semgrep's file paths are normalized to repo-relative
     # and line up with the in-tree agents' paths in cross-agent dedup (C1).
     findings = translate_findings(semgrep_json, agent_type="semgrep", root=source_path)
+    # P2g: correlate co-occurring scam markers into a composite high-severity
+    # finding (semgrep can't reason across findings). Appended so it both streams
+    # and survives in the authoritative `result` snapshot below.
+    findings.extend(summarize_scam_risk(findings, agent_type="semgrep"))
     for f in findings:
         yield write_event("finding", f)
         await asyncio.sleep(0)  # cooperative yield to the event loop

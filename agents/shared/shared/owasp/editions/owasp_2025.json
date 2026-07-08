@@ -1,0 +1,86 @@
+{
+  "edition": "2025",
+  "title": "OWASP Top 10:2025",
+  "categories": [
+    {
+      "id": "A01",
+      "slug": "A01-broken-access-control",
+      "name": "Broken Access Control",
+      "source_url": "https://owasp.org/Top10/2025/A01_2025-Broken_Access_Control/",
+      "retrieved": "2026-07-07",
+      "cwes": [22, 23, 36, 59, 61, 65, 200, 201, 219, 276, 281, 282, 283, 284, 285, 352, 359, 377, 379, 402, 424, 425, 441, 497, 538, 540, 548, 552, 566, 601, 615, 639, 668, 732, 749, 862, 863, 918, 922, 1275]
+    },
+    {
+      "id": "A02",
+      "slug": "A02-security-misconfiguration",
+      "name": "Security Misconfiguration",
+      "source_url": "https://owasp.org/Top10/2025/A02_2025-Security_Misconfiguration/",
+      "retrieved": "2026-07-07",
+      "cwes": [5, 11, 13, 15, 16, 260, 315, 489, 526, 547, 611, 614, 776, 942, 1004, 1174]
+    },
+    {
+      "id": "A03",
+      "slug": "A03-software-supply-chain-failures",
+      "name": "Software Supply Chain Failures",
+      "source_url": "https://owasp.org/Top10/2025/A03_2025-Software_Supply_Chain_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [447, 1035, 1104, 1329, 1357, 1395]
+    },
+    {
+      "id": "A04",
+      "slug": "A04-cryptographic-failures",
+      "name": "Cryptographic Failures",
+      "source_url": "https://owasp.org/Top10/2025/A04_2025-Cryptographic_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [261, 296, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 334, 335, 336, 337, 338, 340, 342, 347, 523, 757, 759, 760, 780, 916, 1240, 1241]
+    },
+    {
+      "id": "A05",
+      "slug": "A05-injection",
+      "name": "Injection",
+      "source_url": "https://owasp.org/Top10/2025/A05_2025-Injection/",
+      "retrieved": "2026-07-07",
+      "cwes": [20, 74, 76, 77, 78, 79, 80, 83, 86, 88, 89, 90, 91, 93, 94, 95, 96, 97, 98, 99, 103, 104, 112, 113, 114, 115, 116, 129, 159, 470, 493, 500, 564, 610, 643, 644, 917]
+    },
+    {
+      "id": "A06",
+      "slug": "A06-insecure-design",
+      "name": "Insecure Design",
+      "source_url": "https://owasp.org/Top10/2025/A06_2025-Insecure_Design/",
+      "retrieved": "2026-07-07",
+      "cwes": [73, 183, 256, 266, 269, 286, 311, 312, 313, 316, 362, 382, 419, 434, 436, 444, 451, 454, 472, 501, 522, 525, 539, 598, 602, 628, 642, 646, 653, 656, 657, 676, 693, 799, 807, 841, 1021, 1022, 1125]
+    },
+    {
+      "id": "A07",
+      "slug": "A07-authentication-failures",
+      "name": "Authentication Failures",
+      "source_url": "https://owasp.org/Top10/2025/A07_2025-Authentication_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [258, 259, 287, 288, 289, 290, 291, 293, 294, 295, 297, 298, 299, 300, 302, 303, 304, 305, 306, 307, 308, 309, 346, 350, 384, 521, 613, 620, 640, 798, 940, 941, 1390, 1391, 1392, 1393]
+    },
+    {
+      "id": "A08",
+      "slug": "A08-software-or-data-integrity-failures",
+      "name": "Software or Data Integrity Failures",
+      "source_url": "https://owasp.org/Top10/2025/A08_2025-Software_or_Data_Integrity_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [345, 353, 426, 427, 494, 502, 506, 509, 565, 784, 829, 830, 915, 926]
+    },
+    {
+      "id": "A09",
+      "slug": "A09-security-logging-and-alerting-failures",
+      "name": "Security Logging and Alerting Failures",
+      "source_url": "https://owasp.org/Top10/2025/A09_2025-Security_Logging_and_Alerting_Failures/",
+      "retrieved": "2026-07-07",
+      "cwes": [117, 221, 223, 532, 778]
+    },
+    {
+      "id": "A10",
+      "slug": "A10-mishandling-of-exceptional-conditions",
+      "name": "Mishandling of Exceptional Conditions",
+      "source_url": "https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/",
+      "retrieved": "2026-07-07",
+      "cwes": [209, 215, 234, 235, 248, 252, 274, 280, 369, 390, 391, 394, 396, 397, 460, 476, 478, 484, 550, 636, 703, 754, 755, 756]
+    }
+  ]
+}

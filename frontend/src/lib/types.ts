@@ -56,6 +56,9 @@ export interface Audit {
   scores?: Record<string, number>;
   prove_results?: ProveResult[];
   prove_count?: number;
+  /** Feature 0063: persisted OWASP Top 10 coverage manifest, so it survives
+   * reload / viewing a completed audit (the live stream is not the only view). */
+  owasp_coverage?: OwaspCoverageManifest;
   /** Feature 0039: canonical LLMHealthStatus.message() when LLM was unreachable
    * at audit-creation time. Empty/undefined means the audit ran in normal mode. */
   degraded_reason?: string;
@@ -207,6 +210,25 @@ export interface DedupStats {
   findings_deduped: number;
   prior_findings_used: number;
   duplicates_removed: number;
+}
+
+// Feature 0063: OWASP Top 10 coverage manifest emitted on the OWASP agent's
+// result event (owasp_coverage). The OWASP agent maps CWE findings onto
+// OWASP categories; this reports per-category coverage for the edition.
+export interface OwaspCategoryCoverage {
+  id: string;
+  name: string;
+  mapped_count: number;
+  found_cwes: string[];
+  found_count: number;
+  status: "found" | "clean-or-undetected";
+  source_url: string;
+}
+
+export interface OwaspCoverageManifest {
+  edition: string;
+  cwe_stage_status: "completed" | "partial" | "failed" | "absent";
+  categories: OwaspCategoryCoverage[];
 }
 
 export type LineageStatus = "open" | "in_progress" | "resolved" | "accepted_risk" | "false_positive" | "fixed" | "regression";

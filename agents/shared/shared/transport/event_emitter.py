@@ -91,14 +91,22 @@ class AgUiEventEmitter:
         findings: list[dict[str, Any]],
         summary: str,
         score: float,
+        extra: dict[str, Any] | None = None,
     ) -> str:
-        """Emit result event with findings and summary."""
-        return self._format("result", {
+        """Emit result event with findings and summary.
+
+        ``extra`` is merged into the payload (e.g. ``owasp_coverage``) so
+        agents can attach structured report data without re-parsing SSE.
+        """
+        data: dict[str, Any] = {
             "findings": findings,
             "findings_count": len(findings),
             "summary": summary,
             "score": score,
-        })
+        }
+        if extra:
+            data.update(extra)
+        return self._format("result", data)
 
     def token_savings_event(
         self,

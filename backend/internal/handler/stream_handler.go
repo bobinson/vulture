@@ -286,6 +286,7 @@ func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter,
 	res := drainResult(eventCh, audit.ID, sseWriter)
 
 	log.Printf("[stream] stream complete audit=%s findings=%d proveResults=%d scores=%v", audit.ID, len(res.Findings), len(res.ProveResults), res.Scores)
+	audit.OwaspCoverage = res.OwaspCoverage
 	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
 }
 
@@ -305,10 +306,11 @@ func drainEventChannel(eventCh <-chan *model.AgUIEvent, auditID string, sseWrite
 // agent-emitted error text (if any). Used by persistResults to decide
 // whether to mark the audit as failed.
 type DrainResult struct {
-	Findings     []model.Finding
-	Scores       map[string]int
-	ProveResults []model.ProveResult
-	AgentError   string // non-empty when an agent emitted "ERROR: …"
+	Findings      []model.Finding
+	Scores        map[string]int
+	ProveResults  []model.ProveResult
+	AgentError    string          // non-empty when an agent emitted "ERROR: …"
+	OwaspCoverage json.RawMessage // OWASP coverage manifest, if the OWASP agent ran (feature 0063)
 }
 
 func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agui.SSEWriter) DrainResult {
@@ -325,9 +327,13 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 	// when one agent's LLM phase stalls.
 	snapshotAgents := map[string]bool{}
 	var agentError string
+	var owaspCoverage json.RawMessage
 	for evt := range eventCh {
 		if evt != nil && evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
 			snapshotAgents[evt.AgentType] = true
+		}
+		if cov := extractOwaspCoverage(evt); cov != nil {
+			owaspCoverage = cov
 		}
 		processEvent(evt, auditID, &findings, &deltaFindings, &proveResults, scores, fpLookup)
 		if agentError == "" {
@@ -362,11 +368,29 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 	// stored on the struct; nil-safe when memory lookup isn't configured.
 	findings = applyMemoryPriorIfEnabled(findings)
 	return DrainResult{
-		Findings:     findings,
-		Scores:       scores,
-		ProveResults: proveResults,
-		AgentError:   agentError,
+		Findings:      findings,
+		Scores:        scores,
+		ProveResults:  proveResults,
+		AgentError:    agentError,
+		OwaspCoverage: owaspCoverage,
 	}
+}
+
+// extractOwaspCoverage returns the owasp_coverage manifest embedded in an
+// OWASP agent result StateSnapshot, or nil for any other event. Feature 0063:
+// the manifest is persisted so it survives reload/replay (the live stream is
+// not the only place a user views results).
+func extractOwaspCoverage(evt *model.AgUIEvent) json.RawMessage {
+	if evt == nil || evt.Type != model.EventStateSnapshot || len(evt.Snapshot) == 0 {
+		return nil
+	}
+	var payload struct {
+		OwaspCoverage json.RawMessage `json:"owasp_coverage"`
+	}
+	if json.Unmarshal(evt.Snapshot, &payload) != nil {
+		return nil
+	}
+	return payload.OwaspCoverage
 }
 
 // collectErrorText returns the trimmed error message when evt is a
@@ -455,6 +479,21 @@ func (h *StreamHandler) replayCompletedAudit(sseWriter *agui.SSEWriter, audit *m
 			Type:     model.EventStepFinished,
 			StepName: displayName,
 			StepID:   "step-" + at,
+		})
+	}
+
+	// Feature 0063: re-emit the persisted OWASP coverage manifest so the
+	// attach/replay path renders it just like a live stream (the synthesized
+	// per-agent snapshots above only carry findings + score).
+	if len(audit.OwaspCoverage) > 0 {
+		snapshot, _ := json.Marshal(map[string]interface{}{
+			"findings":       []model.Finding{},
+			"owasp_coverage": audit.OwaspCoverage,
+		})
+		_ = sseWriter.WriteEvent(&model.AgUIEvent{
+			Type:      model.EventStateSnapshot,
+			Snapshot:  snapshot,
+			AgentType: "owasp",
 		})
 	}
 
@@ -1234,7 +1273,6 @@ func (h *StreamHandler) loadPriorFindings(sourcePath string, auditTypes []string
 	}
 	return result
 }
-
 
 // priorFindingsLimit returns the max prior findings to load per agent.
 // Configurable via VULTURE_PRIOR_FINDINGS_LIMIT env var (default 50).

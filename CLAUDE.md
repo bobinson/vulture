@@ -72,7 +72,7 @@ vulture/
         models/          # audit_request, audit_result, finding
       tests/             # Unit + E2E tests
     chaos_engineering/   # Chaos agent (skills: retry, circuit_breaker, timeout, fallback, blast_radius)
-    owasp/               # OWASP agent (skills: injection, auth, crypto, misconfig, access_control)
+    owasp/               # OWASP Top 10 CATEGORIZER (feature 0063): maps CWE-agent findings onto OWASP categories per edition (2021/2025). No detection; CWE agent is its prerequisite. See owasp_agent/skills/SKILLS.md
     soc2/                # SOC2 agent (skills: access_logging, encryption, change_mgmt, monitoring, data_retention; clauses: CC6, CC7, CC8)
   frontend/              # React SPA (Vite) + TypeScript
     src/
@@ -251,7 +251,7 @@ These rules are mandatory for all code in this project:
 
 Each audit type must be configurable:
 - **Chaos Engineering**: Configurable by resilience pattern categories (retry, circuit breaker, timeout, fallback, blast radius)
-- **OWASP**: Configurable by OWASP Top 10 categories or custom rule sets
+- **OWASP**: A categorizer over CWE findings (feature 0063), not a detector. Configurable by `edition` (`2025` default, `2021`) and by `categories` (OWASP ids to include). Runs as a deferred phase after the scan agents; the CWE agent is its prerequisite and is auto-injected when OWASP is selected. Emits a per-category coverage manifest on the `result` event (`owasp_coverage`). Adding a future edition = a new file under `agents/shared/shared/owasp/editions/` + one registry line. OWASP↔CWE mapping is data-driven and single-sourced there; the 0050 representative map is guarded against divergence by `agents/shared/tests/unit/test_0050_reconciliation.py`. See `docs/guides/owasp_agent.md` for how the agent works and reports the Top 10.
 - **SOC2**: Configurable down to specific compliance clauses (CC6, CC7, CC8)
 - Each agent's `/info` endpoint exposes a `config_schema` (JSON Schema) so the frontend can dynamically render configuration options
 

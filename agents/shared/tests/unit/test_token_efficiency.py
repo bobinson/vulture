@@ -762,12 +762,20 @@ class TestIssue28AgentsPassModel:
         )
         self._check_agent_source(path)
 
-    def test_owasp_agent_passes_model(self):
+    def test_owasp_agent_is_a_mapper_not_an_llm_agent(self):
+        # Feature 0063: OWASP is a deferred CWE->OWASP categorizer, not an LLM
+        # scan agent. It must NOT call run_combined_audit and has no model= to
+        # pass. (The model= contract still holds for every real LLM agent.)
         path = os.path.join(
             os.path.dirname(__file__), "..", "..", "..",
             "owasp", "owasp_agent", "agent.py",
         )
-        self._check_agent_source(path)
+        if not os.path.exists(path):
+            pytest.skip(f"{path} not found")
+        content = open(path).read()
+        assert "run_combined_audit" not in content, (
+            "owasp agent must not use run_combined_audit (it is a mapper)"
+        )
 
     def test_soc2_agent_passes_model(self):
         path = os.path.join(

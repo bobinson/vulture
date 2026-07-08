@@ -7,6 +7,7 @@
     "javascript-xss-taint.yaml": "0097b5c9952f9e8578bb2e6fb5502f95e03602a2fdb654a7a1954fb76949f3cb",
     "python-command-injection-taint.yaml": "27a0d2d0a0dffb33436d0058f6c473f108cbd316fec1f83766799c4b45e70e34",
     "python-path-traversal-taint.yaml": "19a93939fce874de4efd091b0e96b74a3d013c1b9450d77bf2f678ffd7b62d5f",
-    "python-sql-injection-taint.yaml": "b58a796319b4e2a75f47d6268072246486f1ff809703b3d7b5f5102aa23e4854"
+    "python-sql-injection-taint.yaml": "b58a796319b4e2a75f47d6268072246486f1ff809703b3d7b5f5102aa23e4854",
+    "solidity/vulture-solidity.yaml": "3ded9eb1f83abd0bd9c52747cdd70df4f0567bfd7bbc3875561c12e4bb1bd652"
   }
 }

@@ -1,63 +1,63 @@
-# OWASP Security Auditor - Skills
+# OWASP Top 10 Categorizer — Skills
 
-Complete OWASP Top 10 (2021) coverage.
+**This agent performs NO detection.** (Feature 0063.) It maps CWE findings
+produced by the CWE agent onto OWASP Top 10 categories and reports per-category
+coverage. It has no pattern-matching skills; `SKILL_MAP` and `SKILL_TOOLS` are
+intentionally empty.
 
-## injection_check (A03)
-- **Function**: `check_injection(source_path: str) -> dict`
-- **Purpose**: Detects SQL injection and command injection vulnerabilities
-- **Severity**: critical
-- **Detection**: f-string/format/sprintf in SQL queries, os.system(), eval(), exec(), unsafe subprocess calls
+## Why
 
-## auth_check (A07)
-- **Function**: `check_authentication(source_path: str) -> dict`
-- **Purpose**: Identifies weak authentication and missing auth on sensitive endpoints
-- **Severity**: high
-- **Detection**: MD5/SHA1 password hashing, hardcoded credentials, POST routes without auth decorators
+The OWASP Top 10 is, by OWASP's own methodology, a data-driven grouping over
+CWE — each category maps to a published set of CWEs (2021 averages ~20 CWEs per
+category; A10/SSRF maps to exactly one). Detecting weaknesses is the CWE agent's
+job. This agent turns that shared definition into a report.
 
-## crypto_check (A02)
-- **Function**: `check_cryptography(source_path: str) -> dict`
-- **Purpose**: Finds weak cryptographic algorithms and hardcoded secrets
-- **Severity**: high/critical
-- **Detection**: DES, RC4, ECB mode, Math.random(), hardcoded API keys/tokens/passwords
+## Prerequisite
 
-## access_control (A01)
-- **Function**: `check_access_control(source_path: str) -> dict`
-- **Purpose**: Detects broken access control patterns (IDOR, missing authorization)
-- **Severity**: high (medium with auth present)
-- **Detection**: Direct use of request.args["id"], request.form["user_id"], r.URL.Query().Get()
+The **CWE agent is a prerequisite**. The backend runs OWASP as a deferred phase
+AFTER the scan agents complete and feeds it the CWE-tagged findings via the
+standard `prior_findings` transport. If OWASP is requested without CWE, the
+backend adds CWE automatically. If no CWE findings arrive (CWE failed or is
+unconfigured), OWASP still completes and reports zero/partial coverage annotated
+with `cwe_stage_status`.
 
-## security_misconfig (A05)
-- **Function**: `check_security_misconfig(source_path: str) -> dict`
-- **Purpose**: Finds security misconfigurations (debug mode, exposed secrets, wildcard CORS)
-- **Severity**: medium/high
-- **Detection**: DEBUG=True, NODE_ENV=development, exposed DATABASE_URL, hardcoded SECRET_KEY, CORS wildcard origins
+## Input
 
-## insecure_design (A04)
-- **Function**: `check_insecure_design(source_path: str) -> dict`
-- **Purpose**: Detects insecure design patterns (auth endpoints without rate limiting)
-- **Severity**: medium
-- **Detection**: login/signin/signup/register/reset_password functions without project-level rate limiting
+`prior_findings`: a list of CWE findings, each with `category: "CWE-<n>"`, plus
+`title`, `severity`, `file_path`, `line_start`, `line_end`, `description`,
+`check_id`. (Code snippets are intentionally NOT carried — they can contain
+secrets.)
 
-## vulnerable_components (A06)
-- **Function**: `check_vulnerable_components(source_path: str) -> dict`
-- **Purpose**: Identifies known-vulnerable dependency versions
-- **Severity**: high
-- **Detection**: Parses requirements.txt, package.json, go.mod; checks against known-vulnerable version thresholds (pyyaml<6.0, requests<2.31, django<4.2, flask<2.3, lodash<4.17.21, express<4.18)
+## Behavior
 
-## data_integrity (A08)
-- **Function**: `check_data_integrity(source_path: str) -> dict`
-- **Purpose**: Detects unsafe deserialization vulnerabilities
-- **Severity**: critical
-- **Detection**: pickle.load/loads, marshal.loads, shelve.open, yaml.load without SafeLoader, jsonpickle.decode, dill.loads
+1. Load the OWASP edition (`config.edition`, default from the registry; `2021`
+   or `2025`). An unknown edition falls back to the default with a notice — it
+   never fails.
+2. For each prior finding, parse its CWE id and map it to OWASP categories for
+   the edition (a CWE may map to more than one category). Re-label the finding:
+   `category` becomes the OWASP slug (e.g. `A03-injection`), the source CWE is
+   preserved in `mapped_from` and `check_id` (`owasp.A03.cwe-89`), and the
+   category's OWASP page is added to `references`.
+3. Emit a per-category **coverage manifest** on the `result` event
+   (`owasp_coverage`): for every category, the count of mapped CWEs found vs
+   total mapped, plus `cwe_stage_status` (completed / partial / failed / absent).
 
-## logging_check (A09)
-- **Function**: `check_logging(source_path: str) -> dict`
-- **Purpose**: Finds sensitive data exposure in log statements
-- **Severity**: high
-- **Detection**: f-string log/print calls containing password, secret, token, api_key, credential variables
+## Configuration
 
-## ssrf_check (A10)
-- **Function**: `check_ssrf(source_path: str) -> dict`
-- **Purpose**: Detects Server-Side Request Forgery (SSRF) vulnerabilities
-- **Severity**: high (medium in test files)
-- **Detection**: requests.get/post/put/delete, urllib.request.urlopen, http.Get/Post, httpx.get/post with variable (non-literal) URL arguments
+- `edition` (string): OWASP edition to map against. Enum from the shared
+  registry (`2021`, `2025`). Default: registry default (`2021`).
+- `categories` (string[]): restrict output to these OWASP ids (e.g. `["A01",
+  "A03"]`). Empty = all.
+
+## Extensibility
+
+Adding a future OWASP edition requires only a new data file under
+`agents/shared/shared/owasp/editions/` plus one line in `registry.json`. No
+change to this agent, the mapping engine, or the backend.
+
+## Coverage note
+
+This agent can only surface what the CWE agent detects. Per-category coverage
+depth is measured and CI-gated by
+`agents/cwe/tests/unit/test_owasp_coverage_floor.py`, which asserts every OWASP
+category (both editions) has at least one detectable CWE.

@@ -134,6 +134,88 @@ def translate_findings(semgrep_json: dict, agent_type: str, root: str = "") -> l
     return [_translate_one(r, agent_type, root) for r in results]
 
 
+# P2g (0058): composite scam-risk score. Individually each vendored Solidity
+# rule below is a review-level signal; when several co-occur in ONE contract
+# the shape is a scam (rug pull / honeypot / wallet drainer). Semgrep cannot
+# reason across findings, so we correlate here in a plugin post-process. The
+# generic vulns (tx.origin, delegatecall) are deliberately excluded — they are
+# bugs, not owner-omnipotence/drainer markers.
+SCAM_MARKER_RULE_IDS = frozenset({
+    "vulture-solidity-honeypot-transfer-gate",
+    "vulture-solidity-uncapped-fee-setter",
+    "vulture-solidity-owner-direct-balance-write",
+    "vulture-solidity-unprotected-initializer",
+    "vulture-solidity-unprotected-selfdestruct",
+    "vulture-solidity-arbitrary-from-transferfrom",
+    "vulture-solidity-arbitrary-from-nft-transfer",
+    "vulture-solidity-set-approval-for-all-untrusted",
+})
+
+# Minimum distinct markers in one file before the composite fires.
+SCAM_SCORE_MIN_MARKERS = 3
+
+
+def _bare_rule_id(check_id: Any) -> str:
+    """Semgrep namespaces --config-dir rules as `rules.vulture.solidity.<id>`;
+    the stable identity is the last dotted segment."""
+    return (check_id or "").split(".")[-1] if isinstance(check_id, str) else ""
+
+
+def _composite_scam_finding(file_path: str, markers: set, agent_type: str, line: Any) -> dict:
+    short = sorted(m.replace("vulture-solidity-", "") for m in markers)
+    return {
+        "id": f"vulture-solidity-composite-scam-risk:{file_path}",
+        "agent_type": agent_type,
+        "title": (
+            f"Composite scam risk: {len(short)} owner-omnipotence / drainer "
+            "markers in one contract"
+        ),
+        "description": (
+            "Multiple independent malicious-contract indicators co-occur in this "
+            "file (" + ", ".join(short) + "). Individually each is a review "
+            "signal; together they strongly indicate a scam contract — rug pull, "
+            "honeypot, or wallet drainer. Review ownership powers, fee bounds, "
+            "and transfer gating before interacting with or approving it."
+        ),
+        "severity": "high",
+        "category": "CWE-284",
+        "cwe": "CWE-284",
+        "check_id": "vulture-solidity-composite-scam-risk",
+        "provenance": "semgrep",
+        "file_path": file_path,
+        "line_start": line,
+        "line_end": line,
+        "code_snippet": "",
+    }
+
+
+def _accumulate_marker(markers_by_file: dict, line_by_file: dict, f: dict) -> None:
+    """Fold one finding into the per-file marker set + earliest-line maps."""
+    rid = _bare_rule_id(f.get("check_id"))
+    if rid not in SCAM_MARKER_RULE_IDS:
+        return
+    fp = f.get("file_path") or ""
+    markers_by_file.setdefault(fp, set()).add(rid)
+    line = f.get("line_start")
+    if isinstance(line, int):
+        cur = line_by_file.get(fp)
+        line_by_file[fp] = line if cur is None else min(cur, line)
+
+
+def summarize_scam_risk(findings: list[dict], agent_type: str = "semgrep") -> list[dict]:
+    """Return synthetic composite findings for files where >= SCAM_SCORE_MIN_MARKERS
+    DISTINCT scam markers co-occur. Empty when no file crosses the threshold."""
+    markers_by_file: dict[str, set] = {}
+    line_by_file: dict[str, Any] = {}
+    for f in findings:
+        _accumulate_marker(markers_by_file, line_by_file, f)
+    return [
+        _composite_scam_finding(fp, markers_by_file[fp], agent_type, line_by_file.get(fp))
+        for fp in sorted(markers_by_file)
+        if len(markers_by_file[fp]) >= SCAM_SCORE_MIN_MARKERS
+    ]
+
+
 def normalise_source_path(raw: Any, root: str) -> str | None:
     """Validate + canonicalise an audit source_path.
 

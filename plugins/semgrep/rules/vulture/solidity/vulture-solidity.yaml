@@ -1,0 +1,285 @@
+# Vulture-authored Semgrep Solidity security rules (feature 0058, P2d).
+# Copyright (c) 2026 the Vulture authors.
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+#
+# Hermetic, pinned Solidity tier (parallel to the Python/JS taint rules):
+# always applied to .sol files via the vendored --config dir, no network.
+# Registry breadth (r/solidity) is a separate, opt-in tier — see wrapper.py.
+# Semgrep's Solidity support is experimental; these are high-signal,
+# pattern-level checks (not a substitute for Slither/Mythril dataflow).
+rules:
+  - id: vulture-solidity-tx-origin-auth
+    languages: [solidity]
+    severity: ERROR
+    message: >-
+      tx.origin used in an authorization check. tx.origin is the original
+      externally-owned account of the whole call chain, so an intermediary
+      contract can phish the check; authorize on msg.sender instead.
+    metadata:
+      cwe:
+        - "CWE-284: Improper Access Control"
+      references:
+        - https://swcregistry.io/docs/SWC-115
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern-either:
+          - pattern: tx.origin == $X
+          - pattern: $X == tx.origin
+
+  - id: vulture-solidity-unprotected-selfdestruct
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      selfdestruct present. Ensure it is strictly access-controlled — an
+      unprotected selfdestruct lets anyone destroy the contract and forward
+      its balance.
+    metadata:
+      cwe:
+        - "CWE-284: Improper Access Control"
+      references:
+        - https://swcregistry.io/docs/SWC-106
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    pattern: selfdestruct($X)
+
+  - id: vulture-solidity-delegatecall-untrusted
+    languages: [solidity]
+    severity: ERROR
+    message: >-
+      delegatecall to a non-constant target executes arbitrary code in THIS
+      contract's storage/context. If the target is attacker-influenced this
+      is a full takeover; restrict it to a fixed, trusted implementation.
+    metadata:
+      cwe:
+        - "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"
+      references:
+        - https://swcregistry.io/docs/SWC-112
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    pattern: $T.delegatecall($D)
+
+  - id: vulture-solidity-arbitrary-from-transferfrom
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      transferFrom pulls tokens from an arbitrary/caller-supplied `from`
+      (not msg.sender or address(this)). Any wallet that approved this
+      contract can be moved to an arbitrary destination — the core mechanic
+      of an approval "wallet drainer" / sweeper. Legitimate escrows/routers
+      pull from msg.sender or to a FIXED treasury; an owner-gated
+      arbitrary-from → arbitrary-to transferFrom is the red flag. Verify the
+      `from` is trusted and the destination is fixed; on-chain, check who has
+      granted this contract an allowance.
+    metadata:
+      cwe:
+        - "CWE-863: Incorrect Authorization"
+      references:
+        - https://swcregistry.io/docs/SWC-105
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern: $T.transferFrom($FROM, $TO, $AMT)
+      - pattern-not: $T.transferFrom(msg.sender, $TO, $AMT)
+      - pattern-not: $T.transferFrom(address(this), $TO, $AMT)
+
+  - id: vulture-solidity-arbitrary-from-nft-transfer
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      ERC-721/1155 safeTransferFrom moves an NFT from an arbitrary/caller-
+      supplied `from` (not msg.sender or address(this)). Any wallet that
+      granted this contract approval (approve / setApprovalForAll) can have its
+      NFTs swept to an arbitrary destination — the NFT variant of the approval
+      "wallet drainer" / sweeper. Legitimate escrows pull from msg.sender or to
+      a FIXED treasury; an owner-gated arbitrary-from → arbitrary-to transfer is
+      the red flag. Verify `from` is trusted and the destination is fixed.
+    metadata:
+      cwe:
+        - "CWE-863: Incorrect Authorization"
+      references:
+        - https://swcregistry.io/docs/SWC-105
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern-either:
+          - pattern: $T.safeTransferFrom($FROM, $TO, $ID)
+          - pattern: $T.safeTransferFrom($FROM, $TO, $ID, $DATA)
+      - pattern-not: $T.safeTransferFrom(msg.sender, $TO, $ID)
+      - pattern-not: $T.safeTransferFrom(msg.sender, $TO, $ID, $DATA)
+      - pattern-not: $T.safeTransferFrom(address(this), $TO, $ID)
+      - pattern-not: $T.safeTransferFrom(address(this), $TO, $ID, $DATA)
+
+  - id: vulture-solidity-set-approval-for-all-untrusted
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      setApprovalForAll(operator, true) grants an operator control over ALL of
+      the caller's NFTs in a collection. If `operator` is caller-supplied or an
+      externally-controlled address rather than a fixed, audited contract, this
+      is the bait step of an NFT approval drainer — a phishing "stake"/"claim"
+      flow that quietly hands an attacker blanket approval. Confirm the operator
+      is a fixed, trusted address.
+    metadata:
+      cwe:
+        - "CWE-863: Incorrect Authorization"
+      references:
+        - https://eips.ethereum.org/EIPS/eip-721
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern: $T.setApprovalForAll($OP, true)
+      - pattern-not: $T.setApprovalForAll(address(this), true)
+
+  - id: vulture-solidity-unprotected-initializer
+    languages: [solidity]
+    severity: ERROR
+    message: >-
+      initialize() has no `initializer` / `reinitializer` guard. On an
+      upgradeable proxy this lets anyone (re-)call it to seize ownership or
+      reset critical state — a front-runnable takeover and a common rug/scam
+      vector. Apply OpenZeppelin's `initializer` (or `reinitializer`) modifier,
+      or otherwise access-control the initializer.
+    metadata:
+      cwe:
+        - "CWE-665: Improper Initialization"
+      references:
+        - https://docs.openzeppelin.com/contracts/5.x/api/proxy#Initializable
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern: |
+          function initialize(...) {
+            ...
+          }
+      - pattern-not: |
+          function initialize(...) initializer {
+            ...
+          }
+      - pattern-not: |
+          function initialize(...) reinitializer(...) {
+            ...
+          }
+
+  - id: vulture-solidity-honeypot-transfer-gate
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      The token transfer path is gated on the owner: either only the owner can
+      transfer, or the owner bypasses a trading flag they alone control. Victims
+      can buy but cannot sell until (and unless) the owner allows it — the core
+      mechanic of a honeypot token. Legitimate tokens do not condition ordinary
+      transfers on the owner's identity or a discretionary owner-only switch.
+    metadata:
+      cwe:
+        - "CWE-284: Improper Access Control"
+      references:
+        - https://swcregistry.io/docs/SWC-105
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              function _transfer(...) {
+                ...
+              }
+          - pattern-inside: |
+              function transfer(...) {
+                ...
+              }
+          - pattern-inside: |
+              function _beforeTokenTransfer(...) {
+                ...
+              }
+          - pattern-inside: |
+              function _update(...) {
+                ...
+              }
+      - pattern-either:
+          - pattern: require($FLAG || $X == owner, ...)
+          - pattern: require($FLAG || $X == owner(), ...)
+          - pattern: require($FLAG || $X == _owner, ...)
+          - pattern: require($X == owner || $FLAG, ...)
+          - pattern: require($X == owner() || $FLAG, ...)
+          - pattern: require($X == _owner || $FLAG, ...)
+          - pattern: require($X == owner, ...)
+          - pattern: require($X == owner(), ...)
+          - pattern: require(msg.sender == owner, ...)
+          - pattern: require(msg.sender == owner(), ...)
+
+  - id: vulture-solidity-uncapped-fee-setter
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      An owner-settable fee/tax is assigned from a parameter with NO upper-bound
+      `require`. The owner can raise the fee arbitrarily — up to 100%, which
+      freezes every transfer (a "can buy, can't sell" honeypot/rug lever).
+      Legitimate tokens cap the fee with a `require(newFee <= MAX_FEE)`. Add a
+      hard, low ceiling and consider making it immutable after launch.
+    metadata:
+      cwe:
+        - "CWE-284: Improper Access Control"
+      references:
+        - https://swcregistry.io/docs/SWC-105
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern-inside: |
+          function $SETTER(...) {
+            ...
+          }
+      - pattern: $FEE = $P;
+      - metavariable-regex:
+          metavariable: $FEE
+          regex: (?i)(fee|tax)$
+      - pattern-not-inside: |
+          function $SETTER(...) {
+            ...
+            require($P <= $MAX, ...);
+            ...
+          }
+
+  - id: vulture-solidity-owner-direct-balance-write
+    languages: [solidity]
+    severity: WARNING
+    message: >-
+      A balance mapping is overwritten by direct assignment (`balances[x] = v`)
+      rather than through checked accounting (`+=` / `-=` in transfer/mint). An
+      owner-reachable direct balance write lets the operator mint tokens from
+      nothing or zero out any holder — a rug/backdoor lever. Move all balance
+      changes through audited mint/burn/transfer accounting; never assign a
+      balance from an unbounded input.
+    metadata:
+      cwe:
+        - "CWE-284: Improper Access Control"
+      references:
+        - https://swcregistry.io/docs/SWC-105
+      license: Apache-2.0
+      vulture:
+        feature: "0058"
+        tier: solidity-vendored
+    patterns:
+      - pattern: $BAL[$K] = $V
+      - metavariable-regex:
+          metavariable: $BAL
+          regex: (?i)balance

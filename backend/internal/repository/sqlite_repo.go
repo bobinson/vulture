@@ -288,6 +288,10 @@ func migrateAddColumns(db *sql.DB) {
 	// (VULTURE_LLM_MODEL when enabled, else "skills-only").
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN llm_model TEXT NOT NULL DEFAULT ''`)
 
+	// Feature 0063: persist the OWASP Top 10 coverage manifest (opaque JSON)
+	// so it survives reload/replay of a completed audit.
+	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN owasp_coverage TEXT`)
+
 	// Feature 0031: webhook deliveries
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN webhook_url TEXT`)
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS audit_webhook_deliveries (
@@ -458,12 +462,12 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = ?`, id)
 	var audit model.Audit
-	var typesStr, cfgStr, scoresStr, createdAt string
+	var typesStr, cfgStr, scoresStr, owaspCovStr, createdAt string
 	var completedAt sql.NullString
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &createdAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &createdAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -474,6 +478,9 @@ func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	audit.Config = json.RawMessage(cfgStr)
 	audit.Scores = map[string]int{}
 	_ = json.Unmarshal([]byte(scoresStr), &audit.Scores)
+	if owaspCovStr != "" {
+		audit.OwaspCoverage = json.RawMessage(owaspCovStr)
+	}
 	audit.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	if completedAt.Valid {
 		t, _ := time.Parse(time.RFC3339, completedAt.String)
@@ -492,9 +499,13 @@ func (r *SQLiteRepo) UpdateAudit(audit *model.Audit) error {
 		s := audit.CompletedAt.Format(time.RFC3339)
 		completedAt = &s
 	}
+	var owaspCov interface{}
+	if len(audit.OwaspCoverage) > 0 {
+		owaspCov = string(audit.OwaspCoverage)
+	}
 	_, err := r.db.Exec(
-		`UPDATE audits SET status = ?, scores = ?, completed_at = ?, degraded_reason = ? WHERE id = ?`,
-		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, audit.ID,
+		`UPDATE audits SET status = ?, scores = ?, completed_at = ?, degraded_reason = ?, owasp_coverage = ? WHERE id = ?`,
+		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, owaspCov, audit.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update audit: %w", err)

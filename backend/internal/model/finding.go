@@ -27,9 +27,9 @@ type Finding struct {
 	CheckID           string   `json:"check_id,omitempty"`
 	CodeSnippet       string   `json:"code_snippet,omitempty"`
 	Provenance        string   `json:"provenance,omitempty"`
-	VerificationHints  []string `json:"verification_hints,omitempty"`
-	RequiresContext    bool     `json:"requires_context,omitempty"`
-	CrossAgentOrigins  []string `json:"cross_agent_origins,omitempty"`
+	VerificationHints []string `json:"verification_hints,omitempty"`
+	RequiresContext   bool     `json:"requires_context,omitempty"`
+	CrossAgentOrigins []string `json:"cross_agent_origins,omitempty"`
 
 	// Validation phase (feature 0045). All optional; absent for
 	// pre-feature findings or when VULTURE_DISABLE_VALIDATE=true.
@@ -58,4 +58,9 @@ type PriorFinding struct {
 	CreatedAt         string  `json:"created_at,omitempty"`
 	ProveStatus       string  `json:"prove_status,omitempty"`
 	CheckID           string  `json:"check_id,omitempty"`
+	// Line location, carried so mapping agents (e.g. OWASP over CWE,
+	// feature 0063) keep the source location. code_snippet is deliberately
+	// NOT carried here — snippets can contain secrets.
+	LineStart int `json:"line_start,omitempty"`
+	LineEnd   int `json:"line_end,omitempty"`
 }

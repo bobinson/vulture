@@ -148,12 +148,12 @@ func (r *PostgresRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *PostgresRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = $1`, id)
 	var audit model.Audit
-	var cfgStr, scoresStr string
+	var cfgStr, scoresStr, owaspCovStr string
 	var completedAt sql.NullTime
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &audit.CreatedAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CreatedAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -163,6 +163,9 @@ func (r *PostgresRepo) GetAudit(id string) (*model.Audit, error) {
 	audit.Config = json.RawMessage(cfgStr)
 	audit.Scores = map[string]int{}
 	_ = json.Unmarshal([]byte(scoresStr), &audit.Scores)
+	if owaspCovStr != "" {
+		audit.OwaspCoverage = json.RawMessage(owaspCovStr)
+	}
 	if completedAt.Valid {
 		audit.CompletedAt = &completedAt.Time
 	}
@@ -177,9 +180,13 @@ func (r *PostgresRepo) UpdateAudit(audit *model.Audit) error {
 	if audit.CompletedAt != nil {
 		completedAt = audit.CompletedAt
 	}
+	var owaspCov interface{}
+	if len(audit.OwaspCoverage) > 0 {
+		owaspCov = string(audit.OwaspCoverage)
+	}
 	_, err := r.db.Exec(
-		`UPDATE audits SET status = $1, scores = $2, completed_at = $3, degraded_reason = $4 WHERE id = $5`,
-		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, audit.ID,
+		`UPDATE audits SET status = $1, scores = $2, completed_at = $3, degraded_reason = $4, owasp_coverage = $5 WHERE id = $6`,
+		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, owaspCov, audit.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update audit: %w", err)
@@ -191,7 +198,7 @@ func (r *PostgresRepo) SaveFindings(auditID string, findings []model.Finding) er
 	if len(findings) == 0 {
 		return nil
 	}
-	const cols = 20   // +6 columns for validation (feature 0045), +1 provenance (feature 0057)
+	const cols = 20 // +6 columns for validation (feature 0045), +1 provenance (feature 0057)
 	valueStrings := make([]string, 0, len(findings))
 	valueArgs := make([]interface{}, 0, len(findings)*cols)
 	for i, f := range findings {

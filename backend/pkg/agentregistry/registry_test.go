@@ -59,6 +59,23 @@ func TestDO178C_MarkedOptional(t *testing.T) {
 	t.Errorf("no registry entry for do178c")
 }
 
+// TestOwasp_DeferredMapper locks in the feature-0063 contract: OWASP is
+// Optional (excluded from the concurrent default scan set so it never races
+// CWE) yet still discoverable via AllScanAgentTypes() for opt-in/deferred use.
+func TestOwasp_DeferredMapper(t *testing.T) {
+	if slices.Contains(ScanAgentTypes(), "owasp") {
+		t.Errorf("owasp must be excluded from the default scan set (feature 0063)")
+	}
+	if !slices.Contains(AllScanAgentTypes(), "owasp") {
+		t.Errorf("owasp must remain in AllScanAgentTypes() so it stays selectable")
+	}
+	for _, e := range AllAgents {
+		if e.Type == "owasp" && !e.Optional {
+			t.Errorf("registry entry for owasp should have Optional=true")
+		}
+	}
+}
+
 // TestNonOptionalAgents_StayInDefaultSet is a guardrail: agents not
 // flagged Optional must remain in the default ScanAgentTypes() (other
 // than the pipeline stages prove/discover). Catches accidental

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { api } from "@/lib/api.ts";
-import type { AgentStep, StreamLine, TokenSavings, DedupStats } from "@/lib/types.ts";
+import type { AgentStep, StreamLine, TokenSavings, DedupStats, OwaspCoverageManifest } from "@/lib/types.ts";
 
 const SSE_EVENT_TYPES = [
   "RunStarted", "RunFinished", "RunError",
@@ -44,6 +44,9 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
   const [done, setDone] = useState(false);
   const [tokenSavings, setTokenSavings] = useState<TokenSavings | null>(null);
   const [dedupStats, setDedupStats] = useState<DedupStats | null>(null);
+  // Feature 0063: OWASP coverage manifest, carried on the OWASP agent's
+  // result StateSnapshot (owasp_coverage).
+  const [owaspCoverage, setOwaspCoverage] = useState<OwaspCoverageManifest | null>(null);
   // Feature 0046 issues #12 + #18: accumulate L5 verdict patches via
   // a reducer so React batches updates instead of creating a fresh
   // top-level object per verdict. Each dispatch is O(1) on average
@@ -144,9 +147,15 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
           handleStateDelta(data, addLineFn, setDedupStats, setTokenSavings, recordValidationUpdate);
           break;
 
-        case "StateSnapshot":
+        case "StateSnapshot": {
           addLineFn("Results snapshot received", "info");
+          const snap = data.snapshot as Record<string, unknown> | undefined;
+          const cov = snap?.owasp_coverage;
+          if (cov && typeof cov === "object") {
+            setOwaspCoverage(cov as OwaspCoverageManifest);
+          }
           break;
+        }
 
         case "RunFinished":
           addLineFn("Audit completed", "step");
@@ -220,7 +229,7 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
     };
   }, [auditId, disabled]);
 
-  return { lines, steps, connected, done, tokenSavings, dedupStats, validationUpdates };
+  return { lines, steps, connected, done, tokenSavings, dedupStats, validationUpdates, owaspCoverage };
 }
 
 /** Handle StateDelta events -- extracted to keep handleSSEEvent under complexity limit. */

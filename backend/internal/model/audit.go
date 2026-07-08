@@ -15,22 +15,27 @@ const (
 )
 
 type Audit struct {
-	ID             string            `json:"id"`
-	SourceID       string            `json:"source_id"`
-	SourcePath     string            `json:"source_path,omitempty"`
-	Types          []string          `json:"types"`
-	Config         json.RawMessage   `json:"config"`
-	LLMModel       string            `json:"llm_model,omitempty"` // LLM recorded at creation: VULTURE_LLM_MODEL when enabled, else "skills-only" (see auditLLMModel)
-	Status         AuditStatus       `json:"status"`
-	Findings       []Finding         `json:"findings,omitempty"`
-	FindingsCount  int               `json:"findings_count"`
-	Scores         map[string]int    `json:"scores,omitempty"`
-	ProveResults   []ProveResult     `json:"prove_results,omitempty"`
-	ProveCount     int               `json:"prove_count,omitempty"`
-	WebhookURL     string            `json:"webhook_url,omitempty"`
-	DegradedReason string            `json:"degraded_reason,omitempty"` // Feature 0039: canonical LLMHealthStatus.message() when LLM unreachable at submit time
-	CreatedAt      time.Time         `json:"created_at"`
-	CompletedAt    *time.Time        `json:"completed_at,omitempty"`
+	ID            string          `json:"id"`
+	SourceID      string          `json:"source_id"`
+	SourcePath    string          `json:"source_path,omitempty"`
+	Types         []string        `json:"types"`
+	Config        json.RawMessage `json:"config"`
+	LLMModel      string          `json:"llm_model,omitempty"` // LLM recorded at creation: VULTURE_LLM_MODEL when enabled, else "skills-only" (see auditLLMModel)
+	Status        AuditStatus     `json:"status"`
+	Findings      []Finding       `json:"findings,omitempty"`
+	FindingsCount int             `json:"findings_count"`
+	Scores        map[string]int  `json:"scores,omitempty"`
+	// OwaspCoverage is the OWASP Top 10 coverage manifest emitted by the OWASP
+	// mapper agent's result event (feature 0063). Stored as an opaque JSON blob
+	// so it survives reload/replay; the edition→CWE membership that produced it
+	// lives in the Python shared library, so the backend never interprets it.
+	OwaspCoverage  json.RawMessage `json:"owasp_coverage,omitempty"`
+	ProveResults   []ProveResult   `json:"prove_results,omitempty"`
+	ProveCount     int             `json:"prove_count,omitempty"`
+	WebhookURL     string          `json:"webhook_url,omitempty"`
+	DegradedReason string          `json:"degraded_reason,omitempty"` // Feature 0039: canonical LLMHealthStatus.message() when LLM unreachable at submit time
+	CreatedAt      time.Time       `json:"created_at"`
+	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
 }
 
 type AuditRequest struct {
@@ -56,9 +61,9 @@ type AuditComparison struct {
 	PersistentCount       int                        `json:"persistent_count"`
 	ChangedCount          int                        `json:"changed_count"`
 	RegressionCount       int                        `json:"regression_count"`
-	NewFindings           []ComparisonFindingSummary  `json:"new_findings,omitempty"`
-	FixedFindings         []ComparisonFindingSummary  `json:"fixed_findings,omitempty"`
-	ChangedFindings       []ComparisonChangedFinding  `json:"changed_findings,omitempty"`
+	NewFindings           []ComparisonFindingSummary `json:"new_findings,omitempty"`
+	FixedFindings         []ComparisonFindingSummary `json:"fixed_findings,omitempty"`
+	ChangedFindings       []ComparisonChangedFinding `json:"changed_findings,omitempty"`
 }
 
 // ComparisonFindingSummary is a lightweight summary for new/fixed findings.
