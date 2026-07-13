@@ -278,6 +278,11 @@ type singleBulkheadPool struct{ b resilience.Bulkhead }
 
 func (p singleBulkheadPool) For(string) resilience.Bulkhead { return p.b }
 
+// singleRetrierPool hands the same retrier to every key.
+type singleRetrierPool struct{ r resilience.Retrier }
+
+func (p singleRetrierPool) For(string) resilience.Retrier { return p.r }
+
 // keyedBreakerPool returns a per-key breaker from m, or def when absent —
 // lets a test open ONE (provider,model) circuit while others stay closed.
 type keyedBreakerPool struct {
@@ -308,4 +313,5 @@ var (
 	_ resilience.BreakerPool    = singleBreakerPool{}
 	_ resilience.BreakerPool    = (*keyedBreakerPool)(nil)
 	_ resilience.BulkheadPool   = singleBulkheadPool{}
+	_ resilience.RetrierPool    = singleRetrierPool{}
 )

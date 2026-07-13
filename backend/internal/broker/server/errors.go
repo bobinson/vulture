@@ -41,6 +41,14 @@ var (
 	errSSRFBlocked          = &apiError{"invalid_request", "egress target rejected", http.StatusBadRequest, false}
 	errMethodNotAllowed     = &apiError{"invalid_request", "method not allowed", http.StatusMethodNotAllowed, false}
 	errInternal             = &apiError{"provider_unavailable", "internal error", http.StatusBadGateway, true}
+	// §26/H4: body exceeded the size cap.
+	errRequestTooLarge = &apiError{"request_too_large", "request body too large", http.StatusRequestEntityTooLarge, false}
+	// §26/M6 + §5: streaming (F2) is not yet supported; reject rather than
+	// silently downgrade a stream:true request to a non-stream response.
+	errStreamUnsupported = &apiError{"invalid_request", "streaming responses are not supported", http.StatusBadRequest, false}
+	// §5: the X-Vulture-Task-Type / X-Vulture-Request-Id metadata headers are
+	// required (task_type gates scope; request_id is the idempotency/ledger PK).
+	errMissingMetadata = &apiError{"invalid_request", "missing required X-Vulture metadata header", http.StatusBadRequest, false}
 )
 
 // errCase pairs a sentinel with the typed apiError it maps to. Tables keep

@@ -2,8 +2,8 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -36,17 +36,17 @@ func (s *Server) HandleComplete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, apiErr)
 		return
 	}
-	var req completeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, errInvalidRequest)
-		return
-	}
-	resp, apiErr := s.runComplete(r.Context(), claims, &req)
+	req, apiErr := decodeChatRequest(w, r)
 	if apiErr != nil {
 		writeErr(w, apiErr)
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	resp, apiErr := s.runComplete(r.Context(), claims, req)
+	if apiErr != nil {
+		writeErr(w, apiErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, renderChatCompletion(resp))
 }
 
 // runComplete executes the post-auth completion pipeline (§5/§7/§8/§9):
@@ -263,10 +263,11 @@ func (s *Server) callOnce(ctx context.Context, target *egress.PinnedTarget, req 
 }
 
 // reconcile charges the ACTUAL usage returned by the provider and releases
-// the lease (§8/M1). Reconcile failure is not surfaced to the caller — the
-// completion already succeeded; the sweeper reclaims a stale lease (§8).
+// the lease (§8/M1). The completion already succeeded, so a reconcile failure
+// is not surfaced to the caller — but it is LOGGED (§26/H3), never silently
+// swallowed, since a persistent failure means real spend stops counting.
 func (s *Server) reconcile(ctx context.Context, req *completeRequest, resp *provider.CompletionResponse) {
-	_ = s.deps.Budget.Reconcile(ctx, budget.LedgerEntry{
+	if err := s.deps.Budget.Reconcile(ctx, budget.LedgerEntry{
 		RunID:        req.RunID,
 		RequestID:    req.RequestID,
 		TenantID:     req.TenantID,
@@ -276,7 +277,15 @@ func (s *Server) reconcile(ctx context.Context, req *completeRequest, resp *prov
 		OutputTokens: resp.Usage.OutputTokens,
 		CostUSD:      resp.Usage.CostUSD,
 		Estimated:    resp.Usage.Estimated,
-	})
+	}); err != nil {
+		s.logReconcileFailure(req.RunID, req.RequestID, err)
+	}
+}
+
+// logReconcileFailure records a reconcile failure (§26/H3). Secret-free: only
+// identifiers and the error class, never prompt/completion content (N6).
+func (s *Server) logReconcileFailure(runID, requestID string, err error) {
+	log.Printf("broker: reconcile failed run=%s request=%s: %v", runID, requestID, err)
 }
 
 // guard composes the resilience wrappers around fn (§9): the PER-PROVIDER
@@ -285,7 +294,7 @@ func (s *Server) reconcile(ctx context.Context, req *completeRequest, resp *prov
 func (s *Server) guard(ctx context.Context, providerKey, breakerKey string, fn func(context.Context) error) error {
 	return s.deps.Bulkheads.For(providerKey).Execute(ctx, func(c1 context.Context) error {
 		return s.deps.Breakers.For(breakerKey).Execute(c1, func(c2 context.Context) error {
-			return s.deps.Retrier.Execute(c2, fn)
+			return s.deps.Retriers.For(providerKey).Execute(c2, fn)
 		})
 	})
 }
@@ -310,7 +319,6 @@ func buildCompletionRequest(req *completeRequest, model string) provider.Complet
 		MaxTokens:      req.MaxTokens,
 		Temperature:    req.Temperature,
 		Stream:         false,
-		ResponseFormat: req.ResponseFormat,
 		RequestID:      req.RequestID,
 	}
 }

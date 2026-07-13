@@ -77,7 +77,7 @@ func TestE2E_Broker_LMStudio(t *testing.T) {
 		Adapters: map[string]provider.Adapter{
 			"openai": provider.NewOpenAICompatibleAdapter("openai", &http.Client{Timeout: 90 * time.Second}),
 		},
-		Breakers: singleBreakerPool{h.breaker}, Bulkheads: singleBulkheadPool{h.bulkhead}, Retrier: h.retrier,
+		Breakers: singleBreakerPool{h.breaker}, Bulkheads: singleBulkheadPool{h.bulkhead}, Retriers: singleRetrierPool{h.retrier},
 		CallTimeoutSec: 90,
 	})
 
@@ -94,7 +94,17 @@ func TestE2E_Broker_LMStudio(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode response: %v; body=%q", err, rr.Body.String())
 	}
-	content, _ := out["content"].(string)
+	// OpenAI chat.completion shape (§26 C1): content in choices[0].message,
+	// usage.completion_tokens.
+	choices, _ := out["choices"].([]any)
+	var content string
+	if len(choices) > 0 {
+		if ch, ok := choices[0].(map[string]any); ok {
+			if msg, ok := ch["message"].(map[string]any); ok {
+				content, _ = msg["content"].(string)
+			}
+		}
+	}
 	usage, _ := out["usage"].(map[string]any)
 	t.Logf("broker → LMStudio OK: model=%v content=%q usage=%v", out["model"], content, usage)
 	if content == "" {
@@ -103,7 +113,7 @@ func TestE2E_Broker_LMStudio(t *testing.T) {
 	if usage == nil {
 		t.Fatalf("no usage in broker response (usage-sanity floor would reject): %s", rr.Body.String())
 	}
-	if ot, _ := usage["output_tokens"].(float64); ot <= 0 {
-		t.Fatalf("output_tokens=%v, want >0 (real LMStudio usage): %s", usage["output_tokens"], rr.Body.String())
+	if ot, _ := usage["completion_tokens"].(float64); ot <= 0 {
+		t.Fatalf("completion_tokens=%v, want >0 (real LMStudio usage): %s", usage["completion_tokens"], rr.Body.String())
 	}
 }

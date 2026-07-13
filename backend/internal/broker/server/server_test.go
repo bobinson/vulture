@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	completePath = "/internal/v1/llm/complete"
-	embedPath    = "/internal/v1/llm/embed"
+	completePath = "/v1/chat/completions"
+	embedPath    = "/v1/embeddings"
 	testBearer   = "Bearer run-token-abc"
 
 	// Sensitive literals we assert never appear in any error response body.
@@ -126,7 +126,7 @@ func (h *harness) deps() server.Dependencies {
 		Keys:       h.keys,
 		Breakers:   h.breakers(),
 		Bulkheads:  singleBulkheadPool{h.bulkhead},
-		Retrier:    h.retrier,
+		Retriers:   singleRetrierPool{h.retrier},
 	}
 }
 
@@ -146,10 +146,16 @@ func completeBody() map[string]any {
 	}
 }
 
+// doPost drives the OpenAI-wire endpoint (§26 C1). Tests still describe a
+// request with the internal-shaped map (model_hint/task_type/request_id/…);
+// doPost translates it to the OpenAI body + X-Vulture metadata headers the
+// server now expects, so existing call sites that tweak one field are
+// unchanged. A raw (non-map) body is posted verbatim (malformed-JSON tests).
 func doPost(t *testing.T, srv *server.Server, path, bearer string, body any) *httptest.ResponseRecorder {
 	t.Helper()
+	oa, taskType, requestID := toOpenAIBody(body)
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+	if err := json.NewEncoder(&buf).Encode(oa); err != nil {
 		t.Fatalf("encode body: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodPost, path, &buf)
@@ -157,9 +163,92 @@ func doPost(t *testing.T, srv *server.Server, path, bearer string, body any) *ht
 		req.Header.Set("Authorization", bearer)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if taskType != nil {
+		req.Header.Set("X-Vulture-Task-Type", *taskType)
+	}
+	if requestID != nil {
+		req.Header.Set("X-Vulture-Request-Id", *requestID)
+	}
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	return rr
+}
+
+// toOpenAIBody maps the internal-shaped test map to an OpenAI chat body plus
+// the task_type/request_id that ride in headers. A non-map body (raw string)
+// is returned as-is with no headers (malformed-input tests).
+func toOpenAIBody(body any) (any, *string, *string) {
+	m, ok := body.(map[string]any)
+	if !ok {
+		return body, nil, nil
+	}
+	oa := map[string]any{}
+	if v, ok := m["model_hint"]; ok {
+		oa["model"] = v
+	}
+	if v, ok := m["model"]; ok { // embeddings body uses `model` directly
+		oa["model"] = v
+	}
+	if v, ok := m["inputs"]; ok { // embeddings: internal `inputs` → OpenAI `input`
+		oa["input"] = v
+	}
+	for _, k := range []string{"messages", "max_tokens", "temperature", "tools", "tool_choice", "stream"} {
+		if v, ok := m[k]; ok {
+			oa[k] = v
+		}
+	}
+	var taskType, requestID *string
+	if v, ok := m["task_type"].(string); ok {
+		taskType = &v
+	}
+	if v, ok := m["request_id"].(string); ok {
+		requestID = &v
+	}
+	return oa, taskType, requestID
+}
+
+// chatResult is the decoded OpenAI chat.completion projected back to the
+// fields the tests assert on (content/model/provider/usage).
+type chatResult struct {
+	Content      string
+	Model        string
+	Provider     string
+	InputTokens  int
+	OutputTokens int
+	CostUSD      float64
+	Estimated    bool
+}
+
+// decodeChat parses an OpenAI chat.completion response body.
+func decodeChat(t *testing.T, rr *httptest.ResponseRecorder) chatResult {
+	t.Helper()
+	var raw struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+		XProvider  string  `json:"x_provider"`
+		XCostUSD   float64 `json:"x_cost_usd"`
+		XEstimated bool    `json:"x_estimated"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode chat.completion from %q: %v", rr.Body.String(), err)
+	}
+	res := chatResult{
+		Model: raw.Model, Provider: raw.XProvider,
+		InputTokens: raw.Usage.PromptTokens, OutputTokens: raw.Usage.CompletionTokens,
+		CostUSD: raw.XCostUSD, Estimated: raw.XEstimated,
+	}
+	if len(raw.Choices) > 0 {
+		res.Content = raw.Choices[0].Message.Content
+	}
+	return res
 }
 
 // errorEnvelope is the structured typed-error contract (§5): a machine code
@@ -203,10 +292,7 @@ func TestHandleComplete_HappyPath_OpenAIShapedResponse(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%q", rr.Code, rr.Body.String())
 	}
 
-	var resp provider.CompletionResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v; body=%q", err, rr.Body.String())
-	}
+	resp := decodeChat(t, rr)
 	if resp.Content != "hello from the model" {
 		t.Errorf("content = %q, want %q", resp.Content, "hello from the model")
 	}
@@ -214,23 +300,17 @@ func TestHandleComplete_HappyPath_OpenAIShapedResponse(t *testing.T) {
 		t.Errorf("model = %q, want gpt-4o", resp.Model)
 	}
 	if resp.Provider != "openai" {
-		t.Errorf("provider = %q, want openai", resp.Provider)
-	}
-	if resp.FinishReason != "stop" {
-		t.Errorf("finish_reason = %q, want stop", resp.FinishReason)
+		t.Errorf("x_provider = %q, want openai", resp.Provider)
 	}
 	// usage{input,output,cost,estimated} must be populated from the adapter.
-	if resp.Usage.InputTokens != 120 || resp.Usage.OutputTokens != 42 {
-		t.Errorf("usage tokens = %+v, want in=120 out=42", resp.Usage)
+	if resp.InputTokens != 120 || resp.OutputTokens != 42 {
+		t.Errorf("usage tokens = in=%d out=%d, want in=120 out=42", resp.InputTokens, resp.OutputTokens)
 	}
-	if resp.Usage.CostUSD != 0.0031 {
-		t.Errorf("usage cost = %v, want 0.0031", resp.Usage.CostUSD)
+	if resp.CostUSD != 0.0031 {
+		t.Errorf("x_cost_usd = %v, want 0.0031", resp.CostUSD)
 	}
-	if resp.Usage.Estimated {
-		t.Errorf("usage.estimated = true, want false on clean completion")
-	}
-	if resp.RequestID != "req-1" {
-		t.Errorf("request_id = %q, want req-1 (echoed)", resp.RequestID)
+	if resp.Estimated {
+		t.Errorf("x_estimated = true, want false on clean completion")
 	}
 }
 
@@ -284,7 +364,7 @@ func TestHandleComplete_TenantAndRunFromClaims_NotBody(t *testing.T) {
 	body := completeBody()
 	body["tenant_id"] = "victim" // attacker-controlled body values
 	body["run_id"] = "victim-run"
-	rr := doPost(t, h.server(), "/internal/v1/llm/complete", "Bearer t", body)
+	rr := doPost(t, h.server(), completePath, "Bearer t", body)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -648,6 +728,8 @@ func TestHandleComplete_ErrorBodiesNeverLeakSecrets(t *testing.T) {
 
 func TestHandleEmbed_HappyPath(t *testing.T) {
 	h := newHealthyHarness()
+	// §26/H5: embeddings are now scope-gated ("embed:<model>") + budgeted.
+	h.verifier.claims.Scope = []string{"embed:text-embedding-3-small"}
 	h.openaiFake.embedResp = &provider.EmbeddingResponse{
 		Model:      "text-embedding-3-small",
 		Provider:   "openai",
@@ -658,8 +740,6 @@ func TestHandleEmbed_HappyPath(t *testing.T) {
 	srv := h.server()
 
 	body := map[string]any{
-		"run_id":     "run-1",
-		"tenant_id":  "local",
 		"model":      "text-embedding-3-small",
 		"request_id": "emb-1",
 		"inputs":     []string{"chunk a", "chunk b"},
@@ -668,15 +748,29 @@ func TestHandleEmbed_HappyPath(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%q", rr.Code, rr.Body.String())
 	}
-	var resp provider.EmbeddingResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+	var raw struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+		Usage struct {
+			PromptTokens int `json:"prompt_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode: %v; body=%q", err, rr.Body.String())
 	}
-	if len(resp.Embeddings) != 1 || len(resp.Embeddings[0]) != 3 {
-		t.Errorf("embeddings shape = %v, want 1x3", resp.Embeddings)
+	if len(raw.Data) != 1 || len(raw.Data[0].Embedding) != 3 {
+		t.Errorf("embeddings shape = %v, want 1x3", raw.Data)
 	}
-	if resp.Usage.InputTokens != 8 {
-		t.Errorf("usage.input_tokens = %d, want 8", resp.Usage.InputTokens)
+	if raw.Usage.PromptTokens != 8 {
+		t.Errorf("usage.prompt_tokens = %d, want 8", raw.Usage.PromptTokens)
+	}
+	// H5: embeddings must have reserved + reconciled budget (no unmetered path).
+	if len(h.budget.reserveRequests()) != 1 {
+		t.Errorf("embed reserve calls = %d, want 1 (metered path)", len(h.budget.reserveRequests()))
+	}
+	if len(h.budget.reconciledEntries()) != 1 {
+		t.Errorf("embed reconcile calls = %d, want 1 (metered path)", len(h.budget.reconciledEntries()))
 	}
 }
 

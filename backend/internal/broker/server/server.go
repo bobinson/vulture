@@ -54,8 +54,9 @@ type Dependencies struct {
 	// store is down reports NOT ready. Nil skips the check (unit tests /
 	// keyless dev wiring only).
 	DBHealth func(ctx context.Context) error
-	// Retrier applies the retry policy + budget (§9).
-	Retrier resilience.Retrier
+	// Retriers hands out the per-provider retrier (§9/§26 M3) — one provider's
+	// 429 storm drains only its own retry budget, never starving another's.
+	Retriers resilience.RetrierPool
 }
 
 // ReadinessProbe reports whether a replica can serve (§12). NOTE: P0 checks
@@ -92,9 +93,11 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
+// §5/§26 C1: genuine OpenAI wire paths — the agent's OpenAI SDK client, with
+// base_url ending in /v1, derives these; the broker is internal-only.
 const (
-	completePath = "/internal/v1/llm/complete"
-	embedPath    = "/internal/v1/llm/embed"
+	completePath = "/v1/chat/completions"
+	embedPath    = "/v1/embeddings"
 	livezPath    = "/livez"
 	readyzPath   = "/readyz"
 )
