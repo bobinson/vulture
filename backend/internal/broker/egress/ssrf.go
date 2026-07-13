@@ -17,11 +17,6 @@ type Resolver func(host string) ([]net.IP, error)
 // 0064 §11): https-only, operator-allowlist gated, resolve-then-pin against
 // DNS rebinding, denying loopback / RFC1918 / link-local / IMDS /
 // unspecified addresses. The resolver is the only I/O boundary.
-//
-// RED-phase scaffold: returns a validator whose Validate reports
-// ErrNotImplemented. The GREEN module agent replaces the body with the real
-// implementation. Signature is fixed by the tests in
-// egress_ssrf_test.go and must not change.
 func NewSSRFValidator(allowlist Allowlist, resolver Resolver) SSRFValidator {
 	return &ssrfValidator{allowlist: allowlist, resolver: resolver}
 }

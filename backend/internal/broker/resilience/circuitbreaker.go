@@ -22,8 +22,23 @@ type circuitBreaker struct {
 }
 
 func newCircuitBreaker(cfg CircuitConfig) *circuitBreaker {
+	// Fail-safe defaults (§26/M10): a partially-configured breaker must still
+	// be able to trip AND recover. In particular a zero-value HalfOpenMaxCalls
+	// would admit no probes, wedging a tripped breaker open forever.
 	if cfg.Clock == nil {
-		cfg.Clock = systemClock{} // fail-safe default: forgetting the clock must not panic on trip
+		cfg.Clock = systemClock{}
+	}
+	if cfg.FailureThreshold <= 0 {
+		cfg.FailureThreshold = 5
+	}
+	if cfg.HalfOpenMaxCalls <= 0 {
+		cfg.HalfOpenMaxCalls = 1
+	}
+	if cfg.SuccessThreshold <= 0 {
+		cfg.SuccessThreshold = 1
+	}
+	if cfg.OpenTimeout <= 0 {
+		cfg.OpenTimeout = 30 * time.Second
 	}
 	return &circuitBreaker{cfg: cfg, state: StateClosed}
 }

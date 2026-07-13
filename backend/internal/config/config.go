@@ -124,8 +124,7 @@ func Load() *Config {
 // Broker is off unless VULTURE_LLM_BROKER=on. Every field follows the
 // env > config.ini > default precedence used elsewhere in this file.
 func loadBrokerConfig(ini iniValues) BrokerConfig {
-	enabled := strings.EqualFold(
-		resolve(ini, "VULTURE_LLM_BROKER", "broker", "enabled", "off"), "on")
+	enabled := isTruthy(resolve(ini, "VULTURE_LLM_BROKER", "broker", "enabled", "off"))
 	return BrokerConfig{
 		Enabled:           enabled,
 		URL:               resolve(ini, "VULTURE_LLM_BROKER_URL", "broker", "url", ""),
@@ -135,6 +134,18 @@ func loadBrokerConfig(ini iniValues) BrokerConfig {
 		BudgetShards:      atoiOr(resolve(ini, "VULTURE_LLM_BUDGET_SHARDS", "broker", "budget_shards", ""), 1),
 		BudgetUSD:         atofOr(resolve(ini, "VULTURE_LLM_BUDGET_USD", "broker", "budget_usd", ""), 0),
 		CallTimeoutSec:    atoiOr(resolve(ini, "VULTURE_LLM_CALL_TIMEOUT_SEC", "broker", "call_timeout_sec", ""), 120),
+	}
+}
+
+// isTruthy reports whether s enables a flag. §26/M9: the accepted set
+// (on/true/1/yes) MUST match the Python agent's broker.py `_TRUTHY` so the two
+// runtimes never disagree about whether VULTURE_LLM_BROKER is on.
+func isTruthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "on", "true", "1", "yes":
+		return true
+	default:
+		return false
 	}
 }
 

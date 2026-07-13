@@ -3,10 +3,6 @@
 // key) and verified by broker replicas (public JWKS). It also defines the
 // emergency-kill seams — a kid Denylist and a per-run jti Revocation store
 // — checked at every verify / turn boundary.
-//
-// This file is an interface STUB: types and interfaces are fully defined
-// so module agents implement against them; method bodies return
-// ErrNotImplemented.
 package token
 
 import "errors"

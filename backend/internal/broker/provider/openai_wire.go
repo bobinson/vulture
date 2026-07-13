@@ -9,12 +9,13 @@ func buildChatBody(req CompletionRequest) map[string]any {
 	body := map[string]any{
 		"model":    req.Model,
 		"messages": req.Messages,
+		// §26/M4: always send temperature — an explicit 0 (deterministic
+		// sampling, the right default for a scanner) must reach the provider
+		// rather than being dropped so the provider applies its own ~1.0.
+		"temperature": req.Temperature,
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
-	}
-	if req.Temperature != 0 {
-		body["temperature"] = req.Temperature
 	}
 	if req.Stream {
 		body["stream"] = true

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // openAIAdapter speaks the OpenAI chat/completions wire shape. It backs both
@@ -18,6 +19,10 @@ type openAIAdapter struct {
 	name       string
 	http       *http.Client
 	defaultURL string // used only when creds.BaseURL is empty (first-party OpenAI)
+	// pinnedClients caches one IP-pinning client per pinned IP (§26/M1) so the
+	// hot path — egressCheck pins EVERY candidate — reuses connections instead
+	// of allocating a fresh transport + pool per request.
+	pinnedClients sync.Map // pinnedIP string → *http.Client
 }
 
 const openAIDefaultBaseURL = "https://api.openai.com/v1"
@@ -127,7 +132,14 @@ func (a *openAIAdapter) do(ctx context.Context, endpoint string, creds Credentia
 	}
 	resp, err := a.client(creds.PinnedIP).Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrProviderUnavailable, ctx.Err())
+		// §26/M5: preserve the real cause. Only a cancelled/expired ctx is a
+		// cancellation; a connect-refused/DNS/TLS failure has a nil ctx.Err()
+		// and must not render as "provider unavailable: <nil>".
+		cause := err
+		if ctx.Err() != nil {
+			cause = ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: %v", ErrProviderUnavailable, cause)
 	}
 	return resp, nil
 }
@@ -141,6 +153,9 @@ func (a *openAIAdapter) client(pinnedIP string) *http.Client {
 	if pinnedIP == "" {
 		return a.http
 	}
+	if c, ok := a.pinnedClients.Load(pinnedIP); ok {
+		return c.(*http.Client)
+	}
 	dialer := &net.Dialer{}
 	pinned := *a.http // shallow copy: keep timeout/jar, replace transport
 	pinned.Transport = &http.Transport{
@@ -152,7 +167,8 @@ func (a *openAIAdapter) client(pinnedIP string) *http.Client {
 			return dialer.DialContext(ctx, network, net.JoinHostPort(pinnedIP, port))
 		},
 	}
-	return &pinned
+	c, _ := a.pinnedClients.LoadOrStore(pinnedIP, &pinned)
+	return c.(*http.Client)
 }
 
 // toResponse normalizes the wire body and enforces the usage-sanity floor.

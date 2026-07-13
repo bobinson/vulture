@@ -17,8 +17,6 @@ var (
 	// ErrBudgetExceeded indicates the reservation would exceed the
 	// tenant cap (§8) → budget_exceeded + partial-results notice.
 	ErrBudgetExceeded = errors.New("broker/budget: budget exceeded")
-	// ErrLeaseNotFound indicates reconcile referenced an unknown lease.
-	ErrLeaseNotFound = errors.New("broker/budget: lease not found")
 )
 
 // Reservation is a granted budget lease over {primary ∪ fallback} at the
@@ -83,11 +81,11 @@ type DB interface {
 	Ping(ctx context.Context) error
 }
 
-// Manager is the high-level budget seam used by the request path (§8). It
-// wraps a DB plus the degraded-reserve local slice (§12).
+// Manager is the high-level budget seam used by the request path (§8). The
+// §12 degraded-reserve local slice is descoped for P0 (§25.3): PG down ⇒ the
+// replica reports not-ready and drains to skills-only.
 type Manager interface {
-	// Reserve grants a lease for one call, honoring the sharded CAS and
-	// the local degraded slice when PG is briefly unreachable.
+	// Reserve grants a lease for one call via the sharded CAS.
 	Reserve(ctx context.Context, req ReserveRequest) (*Reservation, error)
 	// Reconcile charges actual cost and releases the lease atomically.
 	Reconcile(ctx context.Context, entry LedgerEntry) error

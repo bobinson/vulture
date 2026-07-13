@@ -36,6 +36,32 @@ func (p *breakerPool) For(key string) CircuitBreaker {
 	return b.(CircuitBreaker)
 }
 
+// RetrierPool hands out one retrier per key — keyed by provider so one
+// provider's failure storm drains only its OWN retry budget, never starving
+// another provider's retries (§26/M3).
+type RetrierPool interface {
+	// For returns the retrier for key, creating it on first use.
+	For(key string) Retrier
+}
+
+// NewRetrierPool builds a keyed retrier pool; every retrier shares cfg.
+func NewRetrierPool(cfg RetrierConfig) RetrierPool {
+	return &retrierPool{cfg: cfg}
+}
+
+type retrierPool struct {
+	cfg RetrierConfig
+	m   sync.Map // key → Retrier
+}
+
+func (p *retrierPool) For(key string) Retrier {
+	if r, ok := p.m.Load(key); ok {
+		return r.(Retrier)
+	}
+	r, _ := p.m.LoadOrStore(key, NewRetrier(p.cfg))
+	return r.(Retrier)
+}
+
 // NewBulkheadPool builds a keyed bulkhead pool; every bulkhead shares cfg.
 func NewBulkheadPool(cfg BulkheadConfig) BulkheadPool {
 	return &bulkheadPool{cfg: cfg}

@@ -1,12 +1,7 @@
-// This file declares the REAL resilience constructors + deterministic-test
-// seams (injected clock, jitter, retry classifier) that the RED-phase tests
-// pin the contract to. Bodies are intentionally unimplemented (return
-// ErrNotImplemented / zero values) so the package COMPILES and the tests
-// FAIL until the GREEN-phase module agent supplies real behavior.
-//
-// The scaffold's Stub<Type> implementations in resilience.go remain the
-// compile-time interface witnesses; these constructors return the interface
-// so GREEN can swap in the concrete type without touching call sites.
+// This file declares the resilience constructors + deterministic-test seams
+// (injected clock, jitter, retry classifier). The constructors return the
+// interface types so call sites depend only on the seam, not the concrete
+// implementation.
 package resilience
 
 import (

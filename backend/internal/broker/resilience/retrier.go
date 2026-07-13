@@ -24,7 +24,16 @@ type retrier struct {
 }
 
 func newRetrier(cfg RetrierConfig) *retrier {
-	return &retrier{cfg: cfg}
+	// §26/M2: seed the bucket to a burst PROPORTIONAL to the configured retry
+	// fraction, so a freshly-constructed retrier (stateless replica, cold
+	// start) can retry a transient failure immediately instead of waiting for
+	// ~1/fraction calls to accrue the first whole token — while a zero fraction
+	// still seeds zero (RetryBudgetFraction=0 strictly means "no retries").
+	seed := cfg.Policy.RetryBudgetFraction * budgetMaxTokens
+	if seed > budgetMaxTokens {
+		seed = budgetMaxTokens
+	}
+	return &retrier{cfg: cfg, tokens: seed}
 }
 
 // Execute runs fn with retries per the policy and budget.
