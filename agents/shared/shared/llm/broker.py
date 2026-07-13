@@ -92,6 +92,14 @@ def broker_enabled() -> bool:
     return os.environ.get("VULTURE_LLM_BROKER", "").strip().lower() in _TRUTHY
 
 
+def current_llm_path() -> str:
+    """Report how THIS run's LLM phase reaches a provider (§14 P0 rollout gate):
+    ``broker`` when the run routes through the broker (enabled + a run token +
+    a configured URL), else ``env`` (agent's own provider key). The caller emits
+    ``skills`` when the LLM phase does not run at all."""
+    return "broker" if resolve_broker_config(current_broker_token()) is not None else "env"
+
+
 def resolve_broker_config(token: str | None) -> BrokerConfig | None:
     """Derive the broker repoint config, or ``None`` when no repoint applies.
 

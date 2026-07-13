@@ -65,9 +65,40 @@ func (s *Server) runComplete(ctx context.Context, claims *token.Claims, req *com
 	if apiErr != nil {
 		return nil, apiErr
 	}
+	// The provider call happened and incurred cost — meter it honestly before
+	// any post-hoc rejection.
 	s.reconcile(ctx, req, resp)
+	// §9/H2: reject a tool-call flood (a prompt-injected model must not be able
+	// to overflow the parser/ledger/stream). Enforced AFTER metering so the
+	// real spend is still charged.
+	if !toolOutputWithinBounds(resp) {
+		return nil, errToolOutputTooLarge
+	}
 	resp.RequestID = req.RequestID
 	return resp, nil
+}
+
+// per-turn tool-call bounds (§9/H2). Constants for P0; can become config if a
+// deployment needs to tune them.
+const (
+	maxToolCallsPerTurn    = 64
+	maxToolArgBytesPerTurn = 256 << 10 // 256 KiB aggregate argument bytes
+)
+
+// toolOutputWithinBounds reports whether a completion's relayed tool calls are
+// within the per-turn count + aggregate-argument-byte caps.
+func toolOutputWithinBounds(resp *provider.CompletionResponse) bool {
+	if len(resp.ToolCalls) > maxToolCallsPerTurn {
+		return false
+	}
+	total := 0
+	for _, tc := range resp.ToolCalls {
+		total += len(tc.Arguments)
+		if total > maxToolArgBytesPerTurn {
+			return false
+		}
+	}
+	return true
 }
 
 // tryCandidates walks the resolved candidate chain (§7/§9): the primary

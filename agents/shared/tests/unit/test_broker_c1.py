@@ -79,3 +79,21 @@ async def test_aclose_noop_when_no_client():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_current_llm_path(monkeypatch):
+    """§14: broker when routed through the broker, env otherwise."""
+    import contextvars
+
+    monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
+    monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker.internal:8090/v1")
+
+    def _with(token):
+        ctx = contextvars.copy_context()
+        return ctx.run(lambda: (broker.set_broker_token(token), broker.current_llm_path())[1])
+
+    assert _with("run-tok") == "broker"   # enabled + url + token
+    assert _with(None) == "env"           # no run token -> env-key path
+
+    monkeypatch.delenv("VULTURE_LLM_BROKER", raising=False)
+    assert _with("run-tok") == "env"      # broker off -> env-key path

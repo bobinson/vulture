@@ -43,6 +43,10 @@ var (
 	errInternal             = &apiError{"provider_unavailable", "internal error", http.StatusBadGateway, true}
 	// §26/H4: body exceeded the size cap.
 	errRequestTooLarge = &apiError{"request_too_large", "request body too large", http.StatusRequestEntityTooLarge, false}
+	// §9/H2: the model emitted more tool calls / larger aggregate arguments
+	// than the per-turn bound — a prompt-injected model must not be able to
+	// flood the broker's parser/ledger/stream.
+	errToolOutputTooLarge = &apiError{"tool_output_too_large", "tool-call output exceeds the per-turn bound", http.StatusRequestEntityTooLarge, false}
 	// §26/M6 + §5: streaming (F2) is not yet supported; reject rather than
 	// silently downgrade a stream:true request to a non-stream response.
 	errStreamUnsupported = &apiError{"invalid_request", "streaming responses are not supported", http.StatusBadRequest, false}

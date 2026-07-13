@@ -1260,6 +1260,12 @@ def run_combined_audit(
     if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
+        # §14 P0 rollout gate: record how this run's LLM phase reaches a
+        # provider — broker (routed through the key-isolating broker) or env
+        # (agent's own key). The §20 rollout removes env keys only once the
+        # fleet emits zero llm_path=env.
+        from shared.llm.broker import current_llm_path
+        logger.info("llm_path run_id=%s path=%s", run_id, current_llm_path())
 
         # Feature 0057 P1f: the collector now sweeps the whole tree in
         # context-window-sized batches (no single pre-built context / silent
@@ -1308,6 +1314,10 @@ def run_combined_audit(
                 yield emitter.finding_event(**finding)
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
+    else:
+        # §14 P0 rollout gate: the LLM phase did not run (skills-only mode or a
+        # cancelled/expired run) — no provider key was used at all.
+        logger.info("llm_path run_id=%s path=skills", run_id)
 
     # --- Combine & emit final result ---
     all_findings = skill_findings + llm_new_findings
