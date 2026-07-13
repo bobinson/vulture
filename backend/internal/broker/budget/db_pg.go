@@ -1,12 +1,11 @@
-//go:build integration
-
-// Postgres implementation of the budget DB seam (feature 0064, §8). It is
-// compiled only under the `integration` build tag, alongside the integration
-// tests that exercise it against a live Postgres (POSTGRES_TEST_DSN). The
-// default `go test` run uses the in-memory fakeDB and never links this file,
-// so the package has no hard dependency on a database at unit-test time.
+// Postgres implementation of the budget DB seam (feature 0064, §8). Compiles
+// in the standard build (§26/H1: the earlier `//go:build integration` tag made
+// NewPostgresDB unlinkable in a normal build — void, since database/sql is
+// stdlib and lib/pq is already a backend dependency). The live integration
+// tests that exercise it against Postgres stay `//go:build integration`; the
+// default `go test` run uses the in-memory fakeDB.
 //
-// Schema (seeded by the integration test):
+// Schema (migration 024):
 //
 //	llm_budget_shard(tenant_id, shard, reserved, spent, cap, PK(tenant_id,shard))
 //	llm_lease(run_id, request_id, tenant_id, shard, reserved, model_snapshot,
@@ -52,10 +51,19 @@ func (p *postgresDB) ReserveCAS(ctx context.Context, req ReserveRequest, shardCo
 	return nil, ErrBudgetExceeded
 }
 
-// tryReserveShard runs the guarded UPDATE for one shard; ok is true iff the
-// CAS won (exactly one row updated).
-func (p *postgresDB) tryReserveShard(ctx context.Context, req ReserveRequest, shard int) (bool, error) {
-	res, err := p.db.ExecContext(ctx,
+// tryReserveShard runs the guarded shard UPDATE and the lease INSERT as ONE
+// transaction (§26/H2): the two used to be separate un-transacted statements,
+// so a failed lease insert (retry PK clash / dropped conn) orphaned the
+// `reserved` increment with no lease for the sweeper to reclaim — a monotonic
+// budget leak. ok is true iff the CAS won AND the lease was persisted.
+func (p *postgresDB) tryReserveShard(ctx context.Context, req ReserveRequest, shard int) (ok bool, err error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin reserve txn: %w", err)
+	}
+	defer func() { err = finishReserveTx(tx, ok, err) }()
+
+	res, err := tx.ExecContext(ctx,
 		`UPDATE llm_budget_shard
 		    SET reserved = reserved + $1
 		  WHERE tenant_id = $2 AND shard = $3
@@ -70,25 +78,29 @@ func (p *postgresDB) tryReserveShard(ctx context.Context, req ReserveRequest, sh
 		return false, fmt.Errorf("reserve cas rows: %w", err)
 	}
 	if n == 0 {
-		return false, nil
+		return false, nil // CAS lost on this shard — rolled back, try the next
 	}
-	if err := p.insertLease(ctx, req, shard); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// insertLease persists the lease row for a won CAS.
-func (p *postgresDB) insertLease(ctx context.Context, req ReserveRequest, shard int) error {
-	_, err := p.db.ExecContext(ctx,
+	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO llm_lease
 		    (run_id, request_id, tenant_id, shard, reserved, model_snapshot, expires_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		req.RunID, req.RequestID, req.TenantID, shard, req.EstimatedUSD,
 		req.ModelSnapshot, time.Now().Add(req.LeaseTTL),
-	)
-	if err != nil {
-		return fmt.Errorf("insert lease: %w", err)
+	); err != nil {
+		return false, fmt.Errorf("insert lease: %w", err) // rolls back the reserved increment
+	}
+	return true, nil
+}
+
+// finishReserveTx commits only a won-and-lease-inserted reserve; a lost CAS or
+// any error rolls back (so a failed lease insert never leaves reserved bumped).
+func finishReserveTx(tx *sql.Tx, won bool, bodyErr error) error {
+	if bodyErr != nil || !won {
+		_ = tx.Rollback()
+		return bodyErr
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit reserve txn: %w", err)
 	}
 	return nil
 }
@@ -117,15 +129,20 @@ func (p *postgresDB) Reconcile(ctx context.Context, entry LedgerEntry) (err erro
 	}
 	defer func() { err = finishTx(tx, err) }()
 
-	if err = insertLedger(ctx, tx, entry); err != nil {
+	// Idempotency gate: spend is charged only when THIS call is the first to
+	// insert the ledger row. A retried reconcile finds the row present and is a
+	// pure no-op, so the H3 sweep-fallback charge below can never double-count.
+	inserted, err := insertLedger(ctx, tx, entry)
+	if err != nil || !inserted {
 		return err
 	}
-	return releaseLease(ctx, tx, entry)
+	return chargeSpent(ctx, tx, entry)
 }
 
-// insertLedger appends the actual-cost row, first-writer-wins.
-func insertLedger(ctx context.Context, tx *sql.Tx, e LedgerEntry) error {
-	_, err := tx.ExecContext(ctx,
+// insertLedger appends the actual-cost row, first-writer-wins; inserted is
+// true iff this call actually wrote the row (false on ON CONFLICT).
+func insertLedger(ctx context.Context, tx *sql.Tx, e LedgerEntry) (bool, error) {
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO llm_ledger
 		    (run_id, request_id, tenant_id, model, provider,
 		     input_tokens, output_tokens, cost_usd, estimated, created_at)
@@ -135,16 +152,22 @@ func insertLedger(ctx context.Context, tx *sql.Tx, e LedgerEntry) error {
 		e.InputTokens, e.OutputTokens, e.CostUSD, e.Estimated, e.CreatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("insert ledger: %w", err)
+		return false, fmt.Errorf("insert ledger: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("insert ledger rows: %w", err)
+	}
+	return n > 0, nil
 }
 
-// releaseLease moves the lease's reserved onto spent (at actual cost) on its
-// shard and deletes the lease, using the lease row's own shard/reserved so the
-// arithmetic is exact even when actual cost differs from the estimate.
-func releaseLease(ctx context.Context, tx *sql.Tx, e LedgerEntry) error {
-	_, err := tx.ExecContext(ctx,
+// chargeSpent moves the lease's reserved onto spent (at actual cost) on its
+// shard and deletes the lease. §26/H3: if the lease was already swept (its
+// reserved returned by the sweeper), the CTE affects no shard row, so a
+// fallback charges actual spend to the tenant's lowest shard — real cost is
+// never silently dropped just because the in-flight call outlived its lease.
+func chargeSpent(ctx context.Context, tx *sql.Tx, e LedgerEntry) error {
+	res, err := tx.ExecContext(ctx,
 		`WITH l AS (
 		     DELETE FROM llm_lease
 		      WHERE run_id = $1 AND request_id = $2
@@ -158,6 +181,30 @@ func releaseLease(ctx context.Context, tx *sql.Tx, e LedgerEntry) error {
 	)
 	if err != nil {
 		return fmt.Errorf("release lease: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("release lease rows: %w", err)
+	}
+	if n > 0 {
+		return nil // lease present — normal path
+	}
+	return chargeSpentFallback(ctx, tx, e)
+}
+
+// chargeSpentFallback charges actual spend to the tenant's lowest shard when
+// no lease row remained (swept). reserved is untouched (the sweep already
+// returned it); only spent moves, so aggregate remaining reflects real cost.
+func chargeSpentFallback(ctx context.Context, tx *sql.Tx, e LedgerEntry) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE llm_budget_shard
+		    SET spent = spent + $1
+		  WHERE tenant_id = $2
+		    AND shard = (SELECT MIN(shard) FROM llm_budget_shard WHERE tenant_id = $2)`,
+		e.CostUSD, e.TenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("charge spent fallback: %w", err)
 	}
 	return nil
 }

@@ -26,9 +26,24 @@ func EstimateUSD(model string, maxTokens int) float64 {
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
 	}
-	in, out := fallbackInPer1M, fallbackOutPer1M
-	if p, ok := priceUSDPer1M[model]; ok {
-		in, out = p[0], p[1]
-	}
+	in, out := ratesFor(model)
 	return (float64(defaultInputBudget)*in + float64(maxTokens)*out) / 1_000_000
+}
+
+// ActualUSD returns the real cost of the reported usage at the model's per-1M
+// rates (§26 C2). Reconcile charges THIS into the ledger/budget — reserve
+// (EstimateUSD) and reconcile now use the SAME price source, so `spent`
+// tracks real spend instead of a flat placeholder.
+func ActualUSD(model string, inputTokens, outputTokens int) float64 {
+	in, out := ratesFor(model)
+	return (float64(inputTokens)*in + float64(outputTokens)*out) / 1_000_000
+}
+
+// ratesFor resolves the (input, output) USD-per-1M rates for a model, falling
+// back to the conservative high rate for an unlisted model (never under-price).
+func ratesFor(model string) (inPer1M, outPer1M float64) {
+	if p, ok := priceUSDPer1M[model]; ok {
+		return p[0], p[1]
+	}
+	return fallbackInPer1M, fallbackOutPer1M
 }

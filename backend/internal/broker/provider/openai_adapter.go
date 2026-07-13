@@ -157,7 +157,7 @@ func (a *openAIAdapter) client(pinnedIP string) *http.Client {
 
 // toResponse normalizes the wire body and enforces the usage-sanity floor.
 func (a *openAIAdapter) toResponse(wire *chatWireResponse, requestID string) (*CompletionResponse, error) {
-	usage, err := normalizeUsage(wire.Usage)
+	usage, err := normalizeUsage(wire.Usage, wire.Model)
 	if err != nil {
 		return nil, err
 	}

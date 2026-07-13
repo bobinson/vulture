@@ -142,18 +142,43 @@ func (f *fakeDB) Reconcile(ctx context.Context, entry LedgerEntry) error {
 	defer f.mu.Unlock()
 
 	k := leaseKey(entry.RunID, entry.RequestID)
-	// Append-only, idempotent: first writer wins.
-	if _, exists := f.ledger[k]; !exists {
-		f.ledger[k] = entry
+	// Idempotent: spend is charged only on the FIRST ledger write (a retried
+	// reconcile is a no-op, so the H3 fallback below never double-charges).
+	if _, exists := f.ledger[k]; exists {
+		return nil
 	}
+	f.ledger[k] = entry
 	if lease, ok := f.leases[k]; ok {
 		if row := f.shards[lease.TenantID][lease.Shard]; row != nil {
 			row.reserved -= lease.ReservedUSD
 			row.spent += entry.CostUSD
 		}
 		delete(f.leases, k)
+		return nil
+	}
+	// H3 Case B: the lease was already swept (reserved returned by the sweep),
+	// so charge actual spend to the tenant's lowest shard — the aggregate
+	// remaining still reflects real cost even without the lease row.
+	if row := f.lowestShard(entry.TenantID); row != nil {
+		row.spent += entry.CostUSD
 	}
 	return nil
+}
+
+// lowestShard returns the tenant's lowest-numbered shard row (mirrors the
+// Postgres MIN(shard) fallback), or nil if the tenant has none.
+func (f *fakeDB) lowestShard(tenant string) *shardRow {
+	rows := f.shards[tenant]
+	if len(rows) == 0 {
+		return nil
+	}
+	min := -1
+	for s := range rows {
+		if min == -1 || s < min {
+			min = s
+		}
+	}
+	return rows[min]
 }
 
 // Remaining = Σ (cap - spent) − outstanding reserved-without-ledger.
