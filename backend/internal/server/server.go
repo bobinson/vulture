@@ -135,7 +135,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 
 	sourceSvc := service.NewSourceService(repo)
 	auditSvc := service.NewAuditService(repo)
-	proxyService := service.NewAgentProxyService()
+	proxyService := service.NewAgentProxyService(broker)
 	// Feature 0049: stream service consults the plugin registry via
 	// stagerouter for capability-based dispatch. When the registry
 	// built successfully, the router is wired and used for every
@@ -158,6 +158,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	sourceH := handler.NewSourceHandler(sourceSvc)
 	auditH := handler.NewAuditHandler(auditSvc)
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
+	streamH.SetBrokerRevoker(broker) // 0064 §6/M3: revoke run tokens at terminal state (no-op when off)
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
 	// G1: surface enabled registry plugins (e.g. semgrep) in /api/agents so the

@@ -30,7 +30,7 @@ func TestAgentProxyService_RunAgent_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	go func() {
@@ -60,7 +60,7 @@ func TestAgentProxyService_RunAgentWithContext_PriorFindings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	priorFindings := []model.PriorFinding{
@@ -88,7 +88,7 @@ func TestAgentProxyService_RunAgentWithContext_NoPriorFindings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	err := proxy.RunAgentWithContext(context.Background(), server.URL, "owasp", "run-3", "/src", json.RawMessage("{}"), nil, eventCh)
@@ -107,7 +107,7 @@ func TestAgentProxyService_RunAgent_NonOKStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	err := proxy.RunAgentWithContext(context.Background(), server.URL, "chaos", "run-4", "/src", json.RawMessage("{}"), nil, eventCh)
@@ -120,7 +120,7 @@ func TestAgentProxyService_RunAgent_NonOKStatus(t *testing.T) {
 }
 
 func TestAgentProxyService_RunAgent_ConnectionError(t *testing.T) {
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	err := proxy.RunAgentWithContext(context.Background(), "http://localhost:1", "chaos", "run-5", "/src", json.RawMessage("{}"), nil, eventCh)
@@ -136,7 +136,7 @@ func TestAgentProxyService_RunAgent_ContextCanceled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,7 +161,7 @@ func TestAgentProxyService_SSEStream_SkipsUnknownEvents(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	go func() {
@@ -192,7 +192,7 @@ func TestAgentProxyService_SSEStream_MalformedData(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	go func() {
@@ -211,8 +211,66 @@ func TestAgentProxyService_SSEStream_MalformedData(t *testing.T) {
 }
 
 func TestNewAgentProxyService(t *testing.T) {
-	proxy := NewAgentProxyService()
+	proxy := NewAgentProxyService(nil)
 	if proxy == nil {
 		t.Fatal("expected non-nil proxy")
+	}
+}
+
+// stubMinter records the mint call and returns a fixed token.
+type stubMinter struct {
+	gotRun, gotTask string
+	token           string
+}
+
+func (m *stubMinter) MintForAgent(runID, taskType string) (string, error) {
+	m.gotRun, m.gotTask = runID, taskType
+	return m.token, nil
+}
+
+// Feature 0064 §25.2: when a broker minter is set, the dispatch payload must
+// carry broker_token + task_type (so the agent authenticates to the broker).
+func TestAgentProxyService_InjectsBrokerTokenAndTaskType(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	m := &stubMinter{token: "run-token-xyz"}
+	proxy := NewAgentProxyService(m)
+	ch := make(chan *model.AgUIEvent, 10)
+	if err := proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-42", "/src", json.RawMessage("{}"), nil, ch); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if m.gotRun != "run-42" || m.gotTask != "cwe" {
+		t.Fatalf("mint called with run=%q task=%q, want run-42/cwe", m.gotRun, m.gotTask)
+	}
+	if !strings.Contains(body, `"broker_token":"run-token-xyz"`) {
+		t.Errorf("payload missing broker_token: %s", body)
+	}
+	if !strings.Contains(body, `"task_type":"cwe"`) {
+		t.Errorf("payload missing task_type: %s", body)
+	}
+}
+
+// A nil minter (broker off) injects nothing — Mode A payload is unchanged.
+func TestAgentProxyService_NilMinter_NoBrokerToken(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	proxy := NewAgentProxyService(nil)
+	ch := make(chan *model.AgUIEvent, 10)
+	_ = proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-1", "/src", json.RawMessage("{}"), nil, ch)
+	if strings.Contains(body, "broker_token") {
+		t.Errorf("Mode A payload must not carry broker_token: %s", body)
 	}
 }

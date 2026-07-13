@@ -43,13 +43,14 @@ func newTestBroker(t *testing.T) (*Broker, *fakeStore) {
 	}
 	return &Broker{
 		Enabled: true, minter: minter, revocation: store, verify: verifier,
-		region: "local", ttl: time.Hour, runJTIs: map[string][]string{},
+		region: "local", ttl: time.Hour, models: []string{"gpt-4o", "gpt-4o-mini"},
+		runJTIs: map[string][]string{},
 	}, store
 }
 
 func TestResolveKeypair_EphemeralRoundTrips(t *testing.T) {
 	b, _ := newTestBroker(t)
-	tok, err := b.MintForAgent("run-1", "scan", "gpt-4o")
+	tok, err := b.MintForAgent("run-1", "scan")
 	if err != nil || tok == "" {
 		t.Fatalf("mint = %q,%v", tok, err)
 	}
@@ -70,7 +71,7 @@ func TestResolveKeypair_EphemeralRoundTrips(t *testing.T) {
 
 func TestMintForAgent_TracksJTI_RevokeRunRevokesIt(t *testing.T) {
 	b, store := newTestBroker(t)
-	tok, _ := b.MintForAgent("run-9", "scan", "gpt-4o")
+	tok, _ := b.MintForAgent("run-9", "scan")
 	claims, _ := b.verify.Verify(tok)
 
 	// The jti is tracked under the run.
@@ -96,7 +97,7 @@ func TestMintForAgent_TracksJTI_RevokeRunRevokesIt(t *testing.T) {
 
 func TestDisabledBroker_MintAndRevokeAreNoops(t *testing.T) {
 	b := Disabled()
-	tok, err := b.MintForAgent("r", "scan", "m")
+	tok, err := b.MintForAgent("r", "scan")
 	if err != nil || tok != "" {
 		t.Fatalf("disabled mint = %q,%v want \"\",nil (Mode A)", tok, err)
 	}

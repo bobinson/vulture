@@ -52,6 +52,7 @@ type Broker struct {
 	revocation token.Revocation
 	region     string
 	ttl        time.Duration
+	models     []string       // primary + fallbacks — the scope covers task:model for each
 	verify     token.Verifier // used to read back a freshly-minted jti for revocation tracking
 
 	mu      sync.Mutex
@@ -105,6 +106,7 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB) (*Broker, e
 		revocation: revocation,
 		region:     "local",
 		ttl:        24 * time.Hour,
+		models:     append([]string{primaryModel}, cfg.Fallbacks...),
 		verify:     verifier,
 		runJTIs:    map[string][]string{},
 	}
@@ -117,17 +119,25 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB) (*Broker, e
 // need no nil checks.
 func Disabled() *Broker { return &Broker{Enabled: false} }
 
-// MintForAgent mints a per-run token scoped to exactly taskType:model for the
-// dispatched agent and records its jti so RevokeRun can revoke it at run end.
-// Returns "" (no token) when the broker is disabled — Mode A behavior.
-func (b *Broker) MintForAgent(runID, taskType, model string) (string, error) {
+// MintForAgent mints a per-run token for the dispatched agent, scoped to
+// taskType across every model the selector may resolve (primary + fallbacks),
+// so a mid-run failover to a fallback model stays in scope (§7). It records the
+// jti so RevokeRun can revoke it at run end. Returns "" (no token) when the
+// broker is disabled — Mode A behavior.
+func (b *Broker) MintForAgent(runID, taskType string) (string, error) {
 	if b == nil || !b.Enabled {
 		return "", nil
+	}
+	scope := make([]string, 0, len(b.models))
+	for _, m := range b.models {
+		if m != "" {
+			scope = append(scope, taskType+":"+m)
+		}
 	}
 	tok, err := b.minter.Mint(token.MintRequest{
 		RunID:      runID,
 		TenantID:   "local",
-		Scope:      []string{taskType + ":" + model},
+		Scope:      scope,
 		BudgetRef:  "local",
 		Region:     b.region,
 		TTLSeconds: int64(b.ttl / time.Second),

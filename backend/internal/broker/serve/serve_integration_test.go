@@ -52,7 +52,7 @@ func TestBuild_AssemblesServingBroker(t *testing.T) {
 	}
 
 	// A minted token verifies + carries the right scope end-to-end.
-	tok, err := b.MintForAgent("run-int", "scan", "gpt-4o")
+	tok, err := b.MintForAgent("run-int", "scan")
 	if err != nil || tok == "" {
 		t.Fatalf("MintForAgent = %q,%v", tok, err)
 	}

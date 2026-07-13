@@ -22,20 +22,33 @@ type AgentProxyService interface {
 	RunAgentWithContext(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, priorFindings []model.PriorFinding, eventCh chan<- *model.AgUIEvent) error
 }
 
-type agentProxyService struct {
-	client *http.Client
+// BrokerMinter mints the per-run LLM-broker token injected into an agent
+// dispatch (feature 0064 §6/§25.2). Satisfied by broker/serve.Broker; nil (or
+// a disabled broker returning "") leaves Mode A behavior unchanged.
+type BrokerMinter interface {
+	MintForAgent(runID, taskType string) (string, error)
 }
 
-func NewAgentProxyService() AgentProxyService {
-	return &agentProxyService{client: &http.Client{
-		Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-			ResponseHeaderTimeout: 300 * time.Second,
-			MaxIdleConns:          20,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       120 * time.Second,
+type agentProxyService struct {
+	client *http.Client
+	minter BrokerMinter
+}
+
+// NewAgentProxyService builds the proxy. minter may be nil (broker off) — then
+// no broker_token is injected and agents use their env provider keys (Mode A).
+func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
+	return &agentProxyService{
+		minter: minter,
+		client: &http.Client{
+			Transport: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+				ResponseHeaderTimeout: 300 * time.Second,
+				MaxIdleConns:          20,
+				MaxIdleConnsPerHost:   10,
+				IdleConnTimeout:       120 * time.Second,
+			},
 		},
-	}}
+	}
 }
 
 func (s *agentProxyService) RunAgent(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, eventCh chan<- *model.AgUIEvent) error {
@@ -54,6 +67,18 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 	}
 	if len(priorFindings) > 0 {
 		payload["prior_findings"] = priorFindings
+	}
+	// Feature 0064 §25.2: when the broker is enabled, mint a per-run token
+	// scoped to this agent's task_type and inject it (+ task_type for the
+	// X-Vulture-Task-Type header the agent sends). A disabled broker returns
+	// "", so nothing changes in Mode A.
+	if s.minter != nil {
+		if tok, err := s.minter.MintForAgent(runID, agentType); err != nil {
+			log.Printf("[agent-proxy] broker mint failed for run=%s agent=%s: %v", runID, agentType, err)
+		} else if tok != "" {
+			payload["broker_token"] = tok
+			payload["task_type"] = agentType
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
