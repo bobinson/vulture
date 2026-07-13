@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
 
 from shared.cancellation import CancelToken, set_cancel_token
-from shared.llm.broker import set_broker_token
+from shared.llm.broker import set_broker_task_type, set_broker_token
 from shared.models.audit_request import AuditRequest
 
 
@@ -62,6 +62,11 @@ async def _cancellable_stream(
     # when no broker, so Mode A behavior is unchanged). Visible in the worker
     # thread's copied context where the LLM phase repoints the SDK client.
     ctx.run(set_broker_token, req.broker_token)
+    # feature 0064/§26 C1: bind the per-run task_type so the broker client sends
+    # X-Vulture-Task-Type for scope enforcement. Best-effort: the field is added
+    # with the minting shell (§25.2); absent → header omitted (broker rejects,
+    # fail-closed) which is correct when the broker is on but task_type is unset.
+    ctx.run(set_broker_task_type, getattr(req, "task_type", None))
     loop = asyncio.get_running_loop()
     # UNBOUNDED by design (feature 0061 §3.2 R-3): a bounded queue would block
     # the producer on `put` once a disconnected consumer stops draining,

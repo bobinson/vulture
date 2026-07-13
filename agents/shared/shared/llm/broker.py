@@ -39,6 +39,46 @@ def current_broker_token() -> str | None:
     return _current_broker_token.get()
 
 
+# Ambient per-run task_type (§26 C1). The broker requires an X-Vulture-Task-Type
+# header to scope-check a completion; it is a per-run constant, so the SDK client
+# carries it via ``default_headers``. Bound by the transport alongside the token.
+_current_broker_task_type: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "vulture_broker_task_type", default=None
+)
+
+# Per-run broker client handle, stored so the run can close it (§26 M7 — avoid
+# leaking the AsyncOpenAI httpx pool/FDs in a long-lived agent process).
+_current_broker_client: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "vulture_broker_client", default=None
+)
+
+
+def set_broker_task_type(task_type: str | None) -> contextvars.Token:
+    """Bind *task_type* as the ambient per-run broker task type."""
+    return _current_broker_task_type.set(task_type)
+
+
+def current_broker_task_type() -> str | None:
+    """The ambient per-run broker task type for the current context, or ``None``."""
+    return _current_broker_task_type.get()
+
+
+async def aclose_broker_client() -> None:
+    """Close this run's broker client if one was built (§26 M7). Idempotent and
+    safe for injected test clients that have no ``aclose``."""
+    import inspect
+
+    client = _current_broker_client.get()
+    if client is None:
+        return
+    _current_broker_client.set(None)
+    aclose = getattr(client, "aclose", None)
+    if callable(aclose):
+        result = aclose()
+        if inspect.isawaitable(result):
+            await result
+
+
 @dataclass(frozen=True)
 class BrokerConfig:
     """Resolved broker repoint target. ``api_key`` is secret-class."""
@@ -98,14 +138,26 @@ def broker_model_provider(
         return None  # fail-safe: don't import the SDK when no repoint applies
     make_client = client_factory or _default_client_factory
     make_provider = provider_factory or _default_provider_factory
-    return make_provider(make_client(base_url=cfg.base_url, api_key=cfg.api_key))
+    client = make_client(base_url=cfg.base_url, api_key=cfg.api_key)
+    _current_broker_client.set(client)  # remember it for aclose_broker_client (M7)
+    return make_provider(client)
 
 
 def _default_client_factory(*, base_url: str, api_key: str) -> Any:
-    """Real SDK client (lazy import so this module needs no openai at import)."""
+    """Real SDK client (lazy import so this module needs no openai at import).
+
+    Carries the per-run X-Vulture-Task-Type via default_headers (§26 C1) so the
+    broker can scope-check every completion. request_id is NOT sent — it must be
+    unique per call, which per-client default_headers cannot express, so the
+    broker generates it server-side (§5).
+    """
     from openai import AsyncOpenAI
 
-    return AsyncOpenAI(base_url=base_url, api_key=api_key)
+    headers: dict[str, str] = {}
+    task_type = current_broker_task_type()
+    if task_type:
+        headers["X-Vulture-Task-Type"] = task_type
+    return AsyncOpenAI(base_url=base_url, api_key=api_key, default_headers=headers or None)
 
 
 def _default_provider_factory(client: Any) -> Any:

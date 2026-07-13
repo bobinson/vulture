@@ -1925,16 +1925,21 @@ async def _collect_llm_findings_async(
                 try:
                     kwargs["run_config"] = RunConfig(**rc_kwargs)  # type: ignore[call-arg]
                 except TypeError:
-                    # Older SDKs lack RunConfig(hooks=); keep the loop guard
-                    # optional but NEVER drop the per-run broker provider.
-                    rc_kwargs.pop("hooks", None)
+                    # Older SDKs reject RunConfig(hooks=): drop the OPTIONAL loop
+                    # guard, never the broker provider (fail closed — see below).
                     logger.warning("loop_guard_hooks_disabled: SDK version does not support RunConfig(hooks=)")
-                    if rc_kwargs:
-                        kwargs["run_config"] = RunConfig(**rc_kwargs)
-            except ImportError:
-                logger.warning("run_config_unavailable: SDK version does not support RunConfig")
+                    if run_model_provider is not None:
+                        kwargs["run_config"] = RunConfig(model_provider=run_model_provider)  # type: ignore[call-arg]
+            except ImportError as exc:
+                # §26/M11: broker required but RunConfig missing → FAIL CLOSED
+                # (never fall back to the env-key global client, which would leak
+                # the keys the broker isolates); raise → skills-only (N2).
+                if run_model_provider is not None:
+                    raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
+                logger.warning("run_config_unavailable: SDK lacks RunConfig; loop guard disabled")
         return await Runner.run(agent, input=prompt_text, **kwargs)
 
+    from shared.llm.broker import aclose_broker_client
     from shared.llm.cooldown import cooldown_manager
 
     try:
@@ -1951,6 +1956,10 @@ async def _collect_llm_findings_async(
         cooldown_manager.record_failure(resolved_model, error_kind=kind.value)
         logger.warning("llm_failed kind=%s error=%s", kind.value, str(exc)[:200])
         return [], f"LLM analysis failed ({kind.value}): {str(exc)[:200]}", 0, 0
+    finally:
+        # §26/M7: close this run's broker client so its httpx pool/FDs don't
+        # leak in the long-lived agent process (no-op when the broker was off).
+        await aclose_broker_client()
 
     return findings, None, actual_input, actual_output
 
