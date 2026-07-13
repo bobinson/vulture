@@ -131,6 +131,25 @@ func runServer() {
 		}
 	}()
 
+	// Feature 0064 §25.2: when the LLM broker is enabled, serve it on a
+	// SEPARATE internal-only listener (never behind the public CORS/SPA
+	// middleware, and never ingress-exposed — §11). Off → nothing starts.
+	var brokerSrv *http.Server
+	if b := srv.Broker(); b != nil && b.Enabled {
+		brokerSrv = &http.Server{
+			Addr:              cfg.Broker.Listen,
+			Handler:           b.Handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			MaxHeaderBytes:    1 << 20,
+		}
+		go func() {
+			log.Printf("vulture llm-broker (internal) starting on %s", cfg.Broker.Listen)
+			if err := brokerSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("broker server error: %v", err)
+			}
+		}()
+	}
+
 	<-done
 	log.Println("shutting down gracefully...")
 
@@ -139,6 +158,10 @@ func runServer() {
 
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		log.Fatalf("forced shutdown: %v", err)
+	}
+	if brokerSrv != nil {
+		_ = brokerSrv.Shutdown(ctx)
+		srv.Broker().Close() // stop the lease sweeper
 	}
 	// Feature 0052: stop supervised container plugins before exiting.
 	// StopAll respects each plugin's runtime.restart policy

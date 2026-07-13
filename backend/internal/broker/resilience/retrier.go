@@ -24,6 +24,14 @@ type retrier struct {
 }
 
 func newRetrier(cfg RetrierConfig) *retrier {
+	// Fail-safe defaults so a wiring layer can supply only Policy+Classifier
+	// and leave the deterministic-test seams nil (mirrors the breaker, §26/M10).
+	if cfg.Clock == nil {
+		cfg.Clock = systemClock{}
+	}
+	if cfg.Jitter == nil {
+		cfg.Jitter = func(d time.Duration) time.Duration { return d } // identity
+	}
 	// §26/M2: seed the bucket to a burst PROPORTIONAL to the configured retry
 	// fraction, so a freshly-constructed retrier (stateless replica, cold
 	// start) can retry a transient failure immediately instead of waiting for

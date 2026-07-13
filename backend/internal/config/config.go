@@ -82,6 +82,12 @@ type BrokerConfig struct {
 	// CallTimeoutSec reuses the existing VULTURE_LLM_CALL_TIMEOUT_SEC
 	// per-LLM-call timeout (seconds). Default 120.
 	CallTimeoutSec int `json:"call_timeout_sec"`
+	// Listen is the internal broker bind address (VULTURE_LLM_BROKER_LISTEN,
+	// default 127.0.0.1:8090). Internal-only — never ingress-exposed (§11).
+	Listen string `json:"listen"`
+	// Fallbacks is the ordered fallback model chain (VULTURE_LLM_FALLBACKS,
+	// CSV). Empty = primary only (§7/§25.2).
+	Fallbacks []string `json:"fallbacks"`
 }
 
 // AgentRegistryEntry is an alias for the public agentregistry type.
@@ -134,6 +140,8 @@ func loadBrokerConfig(ini iniValues) BrokerConfig {
 		BudgetShards:      atoiOr(resolve(ini, "VULTURE_LLM_BUDGET_SHARDS", "broker", "budget_shards", ""), 1),
 		BudgetUSD:         atofOr(resolve(ini, "VULTURE_LLM_BUDGET_USD", "broker", "budget_usd", ""), 0),
 		CallTimeoutSec:    atoiOr(resolve(ini, "VULTURE_LLM_CALL_TIMEOUT_SEC", "broker", "call_timeout_sec", ""), 120),
+		Listen:            resolve(ini, "VULTURE_LLM_BROKER_LISTEN", "broker", "listen", "127.0.0.1:8090"),
+		Fallbacks:         parseCSV(resolve(ini, "VULTURE_LLM_FALLBACKS", "broker", "fallbacks", "")),
 	}
 }
 

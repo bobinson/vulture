@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/assets"
+	brokerserve "github.com/vulture/backend/internal/broker/serve"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/cwe"
 	"github.com/vulture/backend/internal/handler"
@@ -32,12 +33,18 @@ type Server struct {
 	mux        http.Handler
 	plugins    pluginregistry.Registry
 	supervisor *pluginsupervisor.Supervisor
+	broker     *brokerserve.Broker
 }
 
 // Supervisor returns the plugin runtime supervisor (may be nil if
 // the registry didn't build or no container plugins are installed).
 // Used by the graceful-shutdown path to call StopAll.
 func (s *Server) Supervisor() *pluginsupervisor.Supervisor { return s.supervisor }
+
+// Broker returns the assembled LLM broker (feature 0064). Always non-nil;
+// its Enabled flag is false when the broker is off / not on Postgres. The
+// serve entrypoint mounts Broker().Handler on the internal listener.
+func (s *Server) Broker() *brokerserve.Broker { return s.broker }
 
 // New constructs the production server. The plugin registry is built
 // fresh per call from DefaultLoadOptions; tests that need a controlled
@@ -65,6 +72,19 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	repo, pgDB, sqliteDB, err := openRepo(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	// Feature 0064 §25.2: assemble the LLM broker when enabled AND on Postgres
+	// (the broker's budget/kill stores are Postgres-only; SQLite/Mode-A has no
+	// broker tables). Off/SQLite → an inert Disabled() broker, so callers need
+	// no nil checks and Mode A is completely unchanged.
+	broker := brokerserve.Disabled()
+	if cfg.Broker.Enabled && pgDB != nil {
+		b, berr := brokerserve.Build(cfg.Broker, cfg.LLMModel, pgDB)
+		if berr != nil {
+			return nil, fmt.Errorf("build llm broker: %w", berr)
+		}
+		broker = b
 	}
 
 	var supervisor *pluginsupervisor.Supervisor
@@ -199,6 +219,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		mux:        addRequestLogging(addRequestID(corsMux)),
 		plugins:    reg,
 		supervisor: supervisor,
+		broker:     broker,
 	}, nil
 }
 
