@@ -267,7 +267,7 @@ func (s *Server) callOnce(ctx context.Context, target *egress.PinnedTarget, req 
 // is not surfaced to the caller — but it is LOGGED (§26/H3), never silently
 // swallowed, since a persistent failure means real spend stops counting.
 func (s *Server) reconcile(ctx context.Context, req *completeRequest, resp *provider.CompletionResponse) {
-	if err := s.deps.Budget.Reconcile(ctx, budget.LedgerEntry{
+	entry := budget.LedgerEntry{
 		RunID:        req.RunID,
 		RequestID:    req.RequestID,
 		TenantID:     req.TenantID,
@@ -277,8 +277,17 @@ func (s *Server) reconcile(ctx context.Context, req *completeRequest, resp *prov
 		OutputTokens: resp.Usage.OutputTokens,
 		CostUSD:      resp.Usage.CostUSD,
 		Estimated:    resp.Usage.Estimated,
-	}); err != nil {
+	}
+	if err := s.deps.Budget.Reconcile(ctx, entry); err != nil {
 		s.logReconcileFailure(req.RunID, req.RequestID, err)
+	}
+	s.auditLog(ctx, entry, resp.Cached)
+}
+
+// auditLog records the §14 P0 metering row for a completion (best-effort).
+func (s *Server) auditLog(ctx context.Context, e budget.LedgerEntry, cached bool) {
+	if s.deps.AuditLog != nil {
+		s.deps.AuditLog.Log(ctx, e, cached)
 	}
 }
 

@@ -83,7 +83,7 @@ func (s *Server) reserveEmbed(ctx context.Context, req *embedRequest) *apiError 
 // reconcileEmbed charges the actual embeddings usage and releases the lease
 // (§8/M1). Reconcile failure is logged, never surfaced (the call succeeded).
 func (s *Server) reconcileEmbed(ctx context.Context, req *embedRequest, resp *provider.EmbeddingResponse) {
-	if err := s.deps.Budget.Reconcile(ctx, budget.LedgerEntry{
+	entry := budget.LedgerEntry{
 		RunID:        req.RunID,
 		RequestID:    req.RequestID,
 		TenantID:     req.TenantID,
@@ -93,9 +93,11 @@ func (s *Server) reconcileEmbed(ctx context.Context, req *embedRequest, resp *pr
 		OutputTokens: resp.Usage.OutputTokens,
 		CostUSD:      resp.Usage.CostUSD,
 		Estimated:    resp.Usage.Estimated,
-	}); err != nil {
+	}
+	if err := s.deps.Budget.Reconcile(ctx, entry); err != nil {
 		s.logReconcileFailure(req.RunID, req.RequestID, err)
 	}
+	s.auditLog(ctx, entry, false)
 }
 
 // callEmbed runs the embeddings adapter under the resilience stack (§9).

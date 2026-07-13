@@ -96,6 +96,7 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB) (*Broker, e
 		Bulkheads:      resilience.NewBulkheadPool(resilience.BulkheadConfig{MaxConcurrent: 16}),
 		Retriers:       resilience.NewRetrierPool(retrierConfig()),
 		CallTimeoutSec: cfg.CallTimeoutSec,
+		AuditLog:       pgstore.NewAuditLog(db),
 		DBHealth:       db.PingContext,
 	}
 

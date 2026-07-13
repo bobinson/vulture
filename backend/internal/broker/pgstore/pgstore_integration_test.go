@@ -3,6 +3,7 @@
 package pgstore
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/vulture/backend/internal/broker/budget"
 	"github.com/vulture/backend/internal/broker/token"
 )
 
@@ -87,5 +89,22 @@ func TestPG_Revocation_StoreDownFailsClosed(t *testing.T) {
 	}
 	if !errors.Is(err, token.ErrRevocationUnavailable) {
 		t.Fatalf("err = %v, want ErrRevocationUnavailable", err)
+	}
+}
+
+func TestPG_AuditLog_InsertsRow(t *testing.T) {
+	db := testDB(t)
+	al := NewAuditLog(db)
+	run := "run-al-" + time.Now().Format("150405.000000")
+	al.Log(context.Background(), budget.LedgerEntry{
+		RunID: run, RequestID: "q1", TenantID: "local", Provider: "openai",
+		Model: "gpt-4o", InputTokens: 120, OutputTokens: 42, CostUSD: 0.0031,
+	}, false)
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM llm_audit_log WHERE run_id=$1`, run).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("audit-log rows for %s = %d, want 1", run, n)
 	}
 }

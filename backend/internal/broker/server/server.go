@@ -49,6 +49,9 @@ type Dependencies struct {
 	// CallTimeoutSec bounds each provider call (§9/§16, VULTURE_LLM_CALL_TIMEOUT_SEC);
 	// 0 disables the guard (test default).
 	CallTimeoutSec int
+	// AuditLog records one metering row per completion (§14 P0 slice). Nil
+	// disables the record (best-effort observability, never on the error path).
+	AuditLog AuditLogger
 	// DBHealth reports the budget store's health (§12 honest readiness) —
 	// production wiring MUST set it (e.g. db.PingContext); a replica whose
 	// store is down reports NOT ready. Nil skips the check (unit tests /
@@ -57,6 +60,14 @@ type Dependencies struct {
 	// Retriers hands out the per-provider retrier (§9/§26 M3) — one provider's
 	// 429 storm drains only its own retry budget, never starving another's.
 	Retriers resilience.RetrierPool
+}
+
+// AuditLogger records one metering row per completion (§14 P0 slice): run,
+// tenant, model, provider, tokens, cost — NEVER prompt/completion content
+// (N6). Implementations must be best-effort (a logging failure must not fail a
+// completion that already succeeded).
+type AuditLogger interface {
+	Log(ctx context.Context, e budget.LedgerEntry, cached bool)
 }
 
 // ReadinessProbe reports whether a replica can serve (§12). NOTE: P0 checks

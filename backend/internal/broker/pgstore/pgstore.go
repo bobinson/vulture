@@ -12,9 +12,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
+	"github.com/vulture/backend/internal/broker/budget"
 	"github.com/vulture/backend/internal/broker/token"
 )
 
@@ -197,3 +199,26 @@ var (
 	_ token.Denylist   = (*Denylist)(nil)
 	_ token.Revocation = (*Revocation)(nil)
 )
+
+// AuditLog is the Postgres-backed §14 metering writer: one llm_audit_log row
+// per completion. It never records prompt/completion content (N6) and is
+// best-effort — a write failure is logged, not surfaced (the completion
+// already succeeded).
+type AuditLog struct{ db *sql.DB }
+
+// NewAuditLog builds the metering-log writer over llm_audit_log.
+func NewAuditLog(db *sql.DB) *AuditLog { return &AuditLog{db: db} }
+
+// Log records one completion's metering row (§14 P0 slice).
+func (a *AuditLog) Log(ctx context.Context, e budget.LedgerEntry, cached bool) {
+	if _, err := a.db.ExecContext(ctx,
+		`INSERT INTO llm_audit_log
+		    (run_id, request_id, tenant_id, provider, model,
+		     input_tokens, output_tokens, cost_usd, cache_hit, estimated)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		e.RunID, e.RequestID, e.TenantID, e.Provider, e.Model,
+		e.InputTokens, e.OutputTokens, e.CostUSD, cached, e.Estimated,
+	); err != nil {
+		log.Printf("broker: audit-log write failed run=%s request=%s: %v", e.RunID, e.RequestID, err)
+	}
+}
