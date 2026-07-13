@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
 
 from shared.cancellation import CancelToken, set_cancel_token
+from shared.llm.broker import set_broker_token
 from shared.models.audit_request import AuditRequest
 
 
@@ -57,6 +58,10 @@ async def _cancellable_stream(
     cancel = CancelToken()
     ctx = contextvars.copy_context()
     ctx.run(set_cancel_token, cancel)                 # token bound into ctx
+    # feature 0064: bind the per-run broker token ambiently (dual-mode — None
+    # when no broker, so Mode A behavior is unchanged). Visible in the worker
+    # thread's copied context where the LLM phase repoints the SDK client.
+    ctx.run(set_broker_token, req.broker_token)
     loop = asyncio.get_running_loop()
     # UNBOUNDED by design (feature 0061 §3.2 R-3): a bounded queue would block
     # the producer on `put` once a disconnected consumer stops draining,

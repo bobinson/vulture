@@ -15,3 +15,11 @@ class AuditRequest(BaseModel):
         default_factory=list,
         description="Findings from other agents to consider for cross-agent correlation",
     )
+    broker_token: str | None = Field(
+        default=None,
+        description=(
+            "Feature 0064: per-run scoped LLM-broker token (ES256/EdDSA JWT). "
+            "Additive and optional; None means no broker (env provider keys used). "
+            "The agent uses it as the SDK model client's api_key. Secret-class."
+        ),
+    )

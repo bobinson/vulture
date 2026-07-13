@@ -1806,6 +1806,15 @@ async def _collect_llm_findings_async(
     from shared.tools.file_lister import make_list_files_tool
     from shared.tools.pattern_matcher import make_search_pattern_tool
 
+    # feature 0064: when VULTURE_LLM_BROKER is on and this run carries a broker
+    # token, repoint the SDK model client at the internal broker (base_url +
+    # api_key=token). Dual-mode/fail-safe: a no-op returning None when the
+    # broker is off/unconfigured/tokenless, so model selection and today's
+    # env-key path are untouched (Mode A unchanged).
+    from shared.llm.broker import apply_broker_from_context
+    if apply_broker_from_context() is not None:
+        logger.info("broker_client_repointed run_id=%s", run_id)
+
     resolved_model = get_model_with_fallback(model)
 
     if not source_context:

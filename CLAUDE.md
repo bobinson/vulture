@@ -200,10 +200,9 @@ Sessions that begin as narrow tasks (audit, merge, deploy) commonly expand into 
 
 ## Planning and documentation
 
-Each new feature must have a unique folder in the format 4digits_feature_name under docs/features/ and each
-folder must have a  4digits_implementation_plan.md, 4digits_implementation_status.md and  4digts_rollback_plan.md.
-
-4digts = 0001, 0002 etc and should be incremented 
+Every feature is tracked by a unique 4-digit number; branches and PRs reference it
+(e.g. feature/0071_name). Planning follows the workflow described in CLAUDE.local.md.
+Do not add feature or planning documents to this repository.
 
 ## Code Quality Rules
 
