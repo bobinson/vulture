@@ -1,10 +1,14 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vulture/backend/internal/broker/provider"
 )
@@ -108,11 +112,11 @@ func decodeEmbedRequest(w http.ResponseWriter, r *http.Request) (*embedRequest, 
 	if apiErr := decodeCapped(w, r, &body); apiErr != nil {
 		return nil, apiErr
 	}
-	// Embeddings need only the request_id header (the ledger PK); task_type is
-	// implicit ("embed") for scope, so it is not required on the wire.
+	// Embeddings: task_type is implicit ("embed") for scope, so it is not
+	// required; request_id is server-generated when absent (per-call PK).
 	requestID := strings.TrimSpace(r.Header.Get(headerRequestID))
 	if requestID == "" {
-		return nil, errMissingMetadata
+		requestID = generateRequestID()
 	}
 	inputs, apiErr := embedInputs(body.Input)
 	if apiErr != nil {
@@ -135,14 +139,33 @@ func decodeCapped(w http.ResponseWriter, r *http.Request, v any) *apiError {
 	return nil
 }
 
-// metadata extracts and validates the required X-Vulture headers.
+// metadata extracts the X-Vulture headers. task_type is REQUIRED (it gates
+// scope). request_id is OPTIONAL on the wire: the OpenAI SDK sets headers
+// per-client (per-run), but the ledger PK must be unique per CALL, so a blank
+// request_id is server-GENERATED here (a client that can set it per request
+// gains cross-retry idempotency; the SDK path relies on generation). §5/§26 C1.
 func metadata(r *http.Request) (taskType, requestID string, apiErr *apiError) {
 	taskType = strings.TrimSpace(r.Header.Get(headerTaskType))
-	requestID = strings.TrimSpace(r.Header.Get(headerRequestID))
-	if taskType == "" || requestID == "" {
+	if taskType == "" {
 		return "", "", errMissingMetadata
 	}
+	requestID = strings.TrimSpace(r.Header.Get(headerRequestID))
+	if requestID == "" {
+		requestID = generateRequestID()
+	}
 	return taskType, requestID, nil
+}
+
+// generateRequestID returns a unique ledger-PK request id (128 bits of
+// randomness) when the client did not supply one.
+func generateRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is catastrophic; a time-based fallback keeps the
+		// PK unique-enough rather than colliding on a fixed value.
+		return "req-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "req-" + hex.EncodeToString(b[:])
 }
 
 // toToolDefs converts OpenAI function tools to the internal passthrough shape.
