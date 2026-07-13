@@ -163,13 +163,15 @@ func (f *fakeSelector) Select(modelHint string, policy egress.PolicyContext) (*e
 }
 
 type fakeSSRF struct {
-	target   *egress.PinnedTarget
-	err      error
-	baseURLs []string
+	target    *egress.PinnedTarget
+	err       error
+	baseURLs  []string
+	providers []string
 }
 
 func (f *fakeSSRF) Validate(prov, baseURL string) (*egress.PinnedTarget, error) {
 	f.baseURLs = append(f.baseURLs, baseURL)
+	f.providers = append(f.providers, prov)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -265,6 +267,31 @@ func (b *passthroughRetrier) Execute(ctx context.Context, fn resilience.Call) er
 	return fn(ctx)
 }
 
+// singleBreakerPool hands the same breaker to every key (legacy single-
+// instance tests keep their forceErr semantics).
+type singleBreakerPool struct{ b resilience.CircuitBreaker }
+
+func (p singleBreakerPool) For(string) resilience.CircuitBreaker { return p.b }
+
+// singleBulkheadPool hands the same bulkhead to every key.
+type singleBulkheadPool struct{ b resilience.Bulkhead }
+
+func (p singleBulkheadPool) For(string) resilience.Bulkhead { return p.b }
+
+// keyedBreakerPool returns a per-key breaker from m, or def when absent —
+// lets a test open ONE (provider,model) circuit while others stay closed.
+type keyedBreakerPool struct {
+	m   map[string]resilience.CircuitBreaker
+	def resilience.CircuitBreaker
+}
+
+func (p *keyedBreakerPool) For(key string) resilience.CircuitBreaker {
+	if b, ok := p.m[key]; ok {
+		return b
+	}
+	return p.def
+}
+
 // compile-time assertions that fakes satisfy the seams.
 var (
 	_ token.Verifier            = (*fakeVerifier)(nil)
@@ -278,4 +305,7 @@ var (
 	_ resilience.CircuitBreaker = (*passthroughBreaker)(nil)
 	_ resilience.Bulkhead       = (*passthroughBulkhead)(nil)
 	_ resilience.Retrier        = (*passthroughRetrier)(nil)
+	_ resilience.BreakerPool    = singleBreakerPool{}
+	_ resilience.BreakerPool    = (*keyedBreakerPool)(nil)
+	_ resilience.BulkheadPool   = singleBulkheadPool{}
 )

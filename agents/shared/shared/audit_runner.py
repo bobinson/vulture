@@ -1807,13 +1807,16 @@ async def _collect_llm_findings_async(
     from shared.tools.pattern_matcher import make_search_pattern_tool
 
     # feature 0064: when VULTURE_LLM_BROKER is on and this run carries a broker
-    # token, repoint the SDK model client at the internal broker (base_url +
-    # api_key=token). Dual-mode/fail-safe: a no-op returning None when the
-    # broker is off/unconfigured/tokenless, so model selection and today's
-    # env-key path are untouched (Mode A unchanged).
-    from shared.llm.broker import apply_broker_from_context
-    if apply_broker_from_context() is not None:
-        logger.info("broker_client_repointed run_id=%s", run_id)
+    # token, route THIS run's SDK calls through the internal broker via a
+    # per-run model provider carried on the run config. Never a global: with
+    # VULTURE_AUDIT_EXECUTOR_WORKERS > 1 a process-global client would bleed
+    # one run's broker token into another concurrent run's calls.
+    # Dual-mode/fail-safe: None when the broker is off/unconfigured/tokenless,
+    # so model selection and today's env-key path are untouched (Mode A).
+    from shared.llm.broker import broker_model_provider
+    run_model_provider = broker_model_provider()
+    if run_model_provider is not None:
+        logger.info("broker_client_per_run run_id=%s", run_id)
 
     resolved_model = get_model_with_fallback(model)
 
@@ -1911,12 +1914,25 @@ async def _collect_llm_findings_async(
 
     async def _run_agent():
         kwargs: dict[str, Any] = {}
+        rc_kwargs: dict[str, Any] = {}
+        if run_model_provider is not None:
+            rc_kwargs["model_provider"] = run_model_provider
         if hooks is not None:
+            rc_kwargs["hooks"] = hooks
+        if rc_kwargs:
             try:
                 from agents import RunConfig  # type: ignore[import-untyped]
-                kwargs["run_config"] = RunConfig(hooks=hooks)  # type: ignore[call-arg]
-            except (ImportError, TypeError):
-                logger.warning("loop_guard_hooks_disabled: SDK version does not support RunConfig(hooks=)")
+                try:
+                    kwargs["run_config"] = RunConfig(**rc_kwargs)  # type: ignore[call-arg]
+                except TypeError:
+                    # Older SDKs lack RunConfig(hooks=); keep the loop guard
+                    # optional but NEVER drop the per-run broker provider.
+                    rc_kwargs.pop("hooks", None)
+                    logger.warning("loop_guard_hooks_disabled: SDK version does not support RunConfig(hooks=)")
+                    if rc_kwargs:
+                        kwargs["run_config"] = RunConfig(**rc_kwargs)
+            except ImportError:
+                logger.warning("run_config_unavailable: SDK version does not support RunConfig")
         return await Runner.run(agent, input=prompt_text, **kwargs)
 
     from shared.llm.cooldown import cooldown_manager

@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/vulture/backend/internal/broker/budget"
 	"github.com/vulture/backend/internal/broker/egress"
 	"github.com/vulture/backend/internal/broker/provider"
+	"github.com/vulture/backend/internal/broker/resilience"
 	"github.com/vulture/backend/internal/broker/token"
 )
 
@@ -55,11 +57,11 @@ func (s *Server) runComplete(ctx context.Context, claims *token.Claims, req *com
 	// forge another run's budget/ledger/audit rows.
 	req.TenantID = claims.TenantID
 	req.RunID = claims.Subject
-	sel, target, apiErr := s.prepare(ctx, claims, req)
+	cands, target, apiErr := s.prepare(ctx, claims, req)
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	resp, apiErr := s.callProvider(ctx, target, buildCompletionRequest(req, sel.Model))
+	resp, apiErr := s.tryCandidates(ctx, claims, req, cands, target)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -68,27 +70,82 @@ func (s *Server) runComplete(ctx context.Context, claims *token.Claims, req *com
 	return resp, nil
 }
 
+// tryCandidates walks the resolved candidate chain (§7/§9): the primary
+// first, then each fallback re-gated through scope + allowlist + SSRF (a
+// gate-blocked candidate is skipped, never called). Failover happens only on
+// provider-unavailable / circuit-open; other errors surface immediately.
+// Exhausting ≥2 tried candidates is all_providers_down; a chain whose viable
+// set was a single candidate surfaces that candidate's own error.
+func (s *Server) tryCandidates(ctx context.Context, claims *token.Claims, req *completeRequest, cands []egress.Candidate, target *egress.PinnedTarget) (*provider.CompletionResponse, *apiError) {
+	called := 0
+	var lastErr error
+	for i, c := range cands {
+		t := target
+		if i > 0 {
+			var apiErr *apiError
+			if t, apiErr = s.gateFallback(claims, req, c); apiErr != nil {
+				continue
+			}
+		}
+		called++
+		resp, err := s.callOnce(ctx, t, buildCompletionRequest(req, c.Model))
+		if err == nil {
+			return resp, nil
+		}
+		if !isFailover(err) {
+			return nil, mapProviderErr(err)
+		}
+		lastErr = err
+	}
+	if called >= 2 {
+		return nil, errAllProvidersDown
+	}
+	return nil, mapProviderErr(lastErr)
+}
+
+// gateFallback re-applies the scope + egress gates to a fallback candidate
+// (§7/§11) — failover never bypasses authorization or SSRF.
+func (s *Server) gateFallback(claims *token.Claims, req *completeRequest, c egress.Candidate) (*egress.PinnedTarget, *apiError) {
+	if apiErr := checkScope(claims, req.TaskType, c.Model); apiErr != nil {
+		return nil, apiErr
+	}
+	return s.egressCheck(c)
+}
+
+// isFailover reports whether err should advance the candidate chain (§9):
+// only provider-unavailable and circuit-open fail over; rate limits, budget
+// and validation errors surface immediately.
+func isFailover(err error) bool {
+	return errors.Is(err, provider.ErrProviderUnavailable) ||
+		errors.Is(err, resilience.ErrCircuitOpen)
+}
+
 // prepare resolves the model, gates + pins egress, then reserves budget — in
 // that order so no spend is reserved for a blocked egress target (§7/§8/§11).
-func (s *Server) prepare(ctx context.Context, claims *token.Claims, req *completeRequest) (*egress.ModelSelection, *egress.PinnedTarget, *apiError) {
+// It returns the full candidate chain (primary first) and the primary's
+// pinned target. The single reservation is keyed to the primary's max-price
+// estimate; fallbacks reuse it (reconcile charges the ACTUAL model/usage).
+func (s *Server) prepare(ctx context.Context, claims *token.Claims, req *completeRequest) ([]egress.Candidate, *egress.PinnedTarget, *apiError) {
 	sel, apiErr := s.selectModel(req)
 	if apiErr != nil {
 		return nil, nil, apiErr
 	}
+	cands := sel.Candidates()
+	primary := cands[0]
 	// H1: enforce the token's scope against the resolved task_type:model BEFORE
 	// any egress gating or budget reservation (fail fast, no spend reserved for
 	// an unauthorized scope).
-	if apiErr := checkScope(claims, req.TaskType, sel.Model); apiErr != nil {
+	if apiErr := checkScope(claims, req.TaskType, primary.Model); apiErr != nil {
 		return nil, nil, apiErr
 	}
-	target, apiErr := s.egressCheck(sel)
+	target, apiErr := s.egressCheck(primary)
 	if apiErr != nil {
 		return nil, nil, apiErr
 	}
-	if apiErr := s.reserve(ctx, req, sel.Model); apiErr != nil {
+	if apiErr := s.reserve(ctx, req, primary.Model); apiErr != nil {
 		return nil, nil, apiErr
 	}
-	return sel, target, nil
+	return cands, target, nil
 }
 
 // checkScope rejects a request whose task_type:model is not in the verified
@@ -109,14 +166,23 @@ func (s *Server) selectModel(req *completeRequest) (*egress.ModelSelection, *api
 	return sel, nil
 }
 
-// egressCheck gates the provider on the allowlist then SSRF-validates and
-// pins the resolved base URL (§7/§11) BEFORE any spend is reserved.
-func (s *Server) egressCheck(_ *egress.ModelSelection) (*egress.PinnedTarget, *apiError) {
-	prov := defaultProvider
+// egressCheck gates ONE candidate's route on the allowlist then
+// SSRF-validates and pins its base URL (§7/§11) BEFORE any spend is
+// reserved. It is re-applied to EVERY fallback candidate — failover must
+// never skip the gate.
+func (s *Server) egressCheck(c egress.Candidate) (*egress.PinnedTarget, *apiError) {
+	prov := c.Provider
+	if prov == "" {
+		prov = defaultProvider
+	}
 	if !s.deps.Allowlist.Allowed(prov) {
 		return nil, errProviderNotAllowlist
 	}
-	target, err := s.deps.SSRF.Validate(prov, defaultOpenAIBaseURL)
+	base := c.BaseURL
+	if base == "" && prov == defaultProvider {
+		base = defaultOpenAIBaseURL
+	}
+	target, err := s.deps.SSRF.Validate(prov, base)
 	if err != nil {
 		return nil, mapEgressErr(err)
 	}
@@ -130,8 +196,25 @@ func (s *Server) adapterFor(target *egress.PinnedTarget) (provider.Adapter, prov
 	if !ok {
 		return nil, provider.Credentials{}, errProviderNotAllowlist
 	}
-	creds := provider.Credentials{Provider: target.Provider, BaseURL: target.URL}
+	creds := provider.Credentials{
+		Provider: target.Provider,
+		BaseURL:  target.URL,
+		// §11 DNS-rebinding defense: the transport dials the exact IP the
+		// SSRF validator resolved and allow-checked, never re-resolving.
+		PinnedIP: target.IP,
+		// N1: the broker resolves the provider key; agents never hold it.
+		APIKey: s.keyFor(target.Provider),
+	}
 	return adapter, creds, nil
+}
+
+// keyFor resolves the broker-held API key for a provider ("" when no
+// resolver is wired or the provider has no key — keyless local endpoints).
+func (s *Server) keyFor(provider string) string {
+	if s.deps.Keys == nil {
+		return ""
+	}
+	return s.deps.Keys.KeyFor(provider)
 }
 
 // reserve CAS-reserves budget for one call keyed by (run_id,request_id) (§8).
@@ -150,9 +233,9 @@ func (s *Server) reserve(ctx context.Context, req *completeRequest, model string
 	return nil
 }
 
-// callProvider runs the adapter under the resilience stack (bulkhead →
-// breaker → retrier) and enforces the usage-sanity floor (§9/§11).
-func (s *Server) callProvider(ctx context.Context, target *egress.PinnedTarget, req provider.CompletionRequest) (*provider.CompletionResponse, *apiError) {
+// callOnce runs ONE candidate's adapter call under the resilience stack,
+// returning the raw error so the fallback loop can classify failover (§9).
+func (s *Server) callOnce(ctx context.Context, target *egress.PinnedTarget, req provider.CompletionRequest) (*provider.CompletionResponse, error) {
 	// §9/§16: bound the provider call so a hung/slow provider cannot hold the
 	// goroutine, bulkhead slot, and budget lease indefinitely.
 	if s.deps.CallTimeoutSec > 0 {
@@ -162,19 +245,19 @@ func (s *Server) callProvider(ctx context.Context, target *egress.PinnedTarget, 
 	}
 	adapter, creds, apiErr := s.adapterFor(target)
 	if apiErr != nil {
-		return nil, apiErr
+		return nil, provider.ErrProviderUnavailable
 	}
 	var resp *provider.CompletionResponse
-	err := s.guard(ctx, func(c context.Context) error {
+	err := s.guard(ctx, target.Provider, target.Provider+":"+req.Model, func(c context.Context) error {
 		r, e := adapter.Complete(c, creds, req)
 		resp = r
 		return e
 	})
 	if err != nil {
-		return nil, mapProviderErr(err)
+		return nil, err
 	}
 	if !usageOK(resp) {
-		return nil, errProviderUnavailable
+		return nil, provider.ErrUsageMissing
 	}
 	return resp, nil
 }
@@ -196,11 +279,12 @@ func (s *Server) reconcile(ctx context.Context, req *completeRequest, resp *prov
 	})
 }
 
-// guard composes the resilience wrappers around fn (§9): bulkhead sheds
-// fast, the breaker fails over on open, the retrier applies the budget.
-func (s *Server) guard(ctx context.Context, fn func(context.Context) error) error {
-	return s.deps.Bulkhead.Execute(ctx, func(c1 context.Context) error {
-		return s.deps.Breakers.Execute(c1, func(c2 context.Context) error {
+// guard composes the resilience wrappers around fn (§9): the PER-PROVIDER
+// bulkhead sheds fast, the PER-(provider,model) breaker fails over on open,
+// the retrier applies the retry budget.
+func (s *Server) guard(ctx context.Context, providerKey, breakerKey string, fn func(context.Context) error) error {
+	return s.deps.Bulkheads.For(providerKey).Execute(ctx, func(c1 context.Context) error {
+		return s.deps.Breakers.For(breakerKey).Execute(c1, func(c2 context.Context) error {
 			return s.deps.Retrier.Execute(c2, fn)
 		})
 	})

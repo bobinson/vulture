@@ -53,6 +53,18 @@ type harness struct {
 	bulkhead   *passthroughBulkhead
 	retrier    *passthroughRetrier
 	openaiFake *fakeAdapter
+	keys       provider.StaticKeys
+	// keyedBreakers, when set, overrides the single shared breaker with a
+	// per-key map (falling back to h.breaker for unmapped keys).
+	keyedBreakers map[string]resilience.CircuitBreaker
+}
+
+// breakers builds the BreakerPool the server is wired with.
+func (h *harness) breakers() resilience.BreakerPool {
+	if h.keyedBreakers != nil {
+		return &keyedBreakerPool{m: h.keyedBreakers, def: h.breaker}
+	}
+	return singleBreakerPool{h.breaker}
 }
 
 // newHealthyHarness returns a fully-healthy wiring: a valid token, budget
@@ -96,7 +108,13 @@ func newHealthyHarness() *harness {
 }
 
 func (h *harness) server() *server.Server {
-	return server.New(server.Dependencies{
+	return server.New(h.deps())
+}
+
+// deps builds the Dependencies wiring so tests can tweak fields (e.g.
+// DBHealth) before constructing the server.
+func (h *harness) deps() server.Dependencies {
+	return server.Dependencies{
 		Verifier:   h.verifier,
 		Denylist:   h.denylist,
 		Revocation: h.revocation,
@@ -105,10 +123,11 @@ func (h *harness) server() *server.Server {
 		SSRF:       h.ssrf,
 		Allowlist:  h.allowlist,
 		Adapters:   h.adapters,
-		Breakers:   h.breaker,
-		Bulkhead:   h.bulkhead,
+		Keys:       h.keys,
+		Breakers:   h.breakers(),
+		Bulkheads:  singleBulkheadPool{h.bulkhead},
 		Retrier:    h.retrier,
-	})
+	}
 }
 
 // completeBody is a minimal OpenAI-shaped completion request body.
@@ -263,7 +282,7 @@ func TestHandleComplete_HappyPath_PipelineOrder(t *testing.T) {
 func TestHandleComplete_TenantAndRunFromClaims_NotBody(t *testing.T) {
 	h := newHealthyHarness() // claims: tenant "local", sub "run-1"
 	body := completeBody()
-	body["tenant_id"] = "victim"     // attacker-controlled body values
+	body["tenant_id"] = "victim" // attacker-controlled body values
 	body["run_id"] = "victim-run"
 	rr := doPost(t, h.server(), "/internal/v1/llm/complete", "Bearer t", body)
 	if rr.Code != http.StatusOK {

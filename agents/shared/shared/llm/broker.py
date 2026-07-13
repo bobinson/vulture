@@ -69,69 +69,47 @@ def resolve_broker_config(token: str | None) -> BrokerConfig | None:
     return BrokerConfig(base_url=url, api_key=token)
 
 
-def apply_broker_client(
-    token: str | None,
+def broker_model_provider(
     *,
-    client_factory: Callable[..., Any],
-    set_client: Callable[[Any], None],
-) -> BrokerConfig | None:
-    """Repoint the SDK model client at the broker when enabled.
+    client_factory: Callable[..., Any] | None = None,
+    provider_factory: Callable[[Any], Any] | None = None,
+) -> Any | None:
+    """Build a PER-RUN SDK model provider routing this run through the broker.
 
-    Dual-mode:
-      * OFF / fail-safe => returns ``None`` and never calls ``set_client``.
-      * ON => builds a client via ``client_factory(base_url=..., api_key=...)``,
-        installs it through ``set_client``, and returns the resolved config.
+    Returns an ``agents`` ModelProvider backed by an ``AsyncOpenAI`` client
+    pointed at the broker with THIS run's ambient token (bound by the
+    transport), for use as ``RunConfig(model_provider=...)``. Fail-safe:
+    returns ``None`` when the broker is off, unconfigured, or the run has no
+    token (Mode A behavior unchanged; env-key path untouched).
 
-    ``client_factory`` and ``set_client`` are injected so the SDK-global
-    mutation is the only external boundary. Model selection is untouched.
-    """
-    return _install_broker_client(
-        resolve_broker_config(token), client_factory=client_factory, set_client=set_client,
-    )
+    This deliberately replaces the former ``set_default_openai_client``
+    approach: that mutated PROCESS-GLOBAL SDK state, so with
+    ``VULTURE_AUDIT_EXECUTOR_WORKERS > 1`` two concurrent audits raced the
+    global and could bleed one run's broker token into another run's calls.
+    A per-run provider carried on the run config shares nothing.
 
-
-def _install_broker_client(
-    cfg: BrokerConfig | None,
-    *,
-    client_factory: Callable[..., Any],
-    set_client: Callable[[Any], None],
-) -> BrokerConfig | None:
-    """Install a broker client for an already-resolved *cfg* (or no-op on None).
-
-    Split out so the context wrapper can resolve the config ONCE and pass it
-    here, instead of re-resolving env inside ``apply_broker_client``.
-    """
-    if cfg is None:
-        return None
-    set_client(client_factory(base_url=cfg.base_url, api_key=cfg.api_key))
-    return cfg
-
-
-def apply_broker_from_context() -> BrokerConfig | None:
-    """Repoint the live OpenAI-Agents-SDK client at the broker for this run.
-
-    Convenience wrapper over :func:`apply_broker_client` that resolves the
-    per-run token from the ambient context (bound by the transport) and wires
-    the real SDK boundary: an ``openai.AsyncOpenAI`` client installed via
-    ``agents.set_default_openai_client``. Fail-safe/dual-mode — returns
-    ``None`` and touches nothing when the broker is off, unconfigured, or the
-    run has no token (Mode A behavior unchanged). SDK/openai imports are lazy
-    so this module stays importable without them.
+    ``client_factory(base_url=..., api_key=...)`` and ``provider_factory(client)``
+    are injectable for tests; the defaults build the real SDK objects lazily
+    (chat/completions mode — the broker implements /chat/completions, not the
+    Responses API). Model selection (``provider.get_model``) is never rewritten.
     """
     cfg = resolve_broker_config(current_broker_token())
     if cfg is None:
         return None  # fail-safe: don't import the SDK when no repoint applies
+    make_client = client_factory or _default_client_factory
+    make_provider = provider_factory or _default_provider_factory
+    return make_provider(make_client(base_url=cfg.base_url, api_key=cfg.api_key))
 
-    def _factory(*, base_url: str, api_key: str) -> Any:
-        from openai import AsyncOpenAI
 
-        return AsyncOpenAI(base_url=base_url, api_key=api_key)
+def _default_client_factory(*, base_url: str, api_key: str) -> Any:
+    """Real SDK client (lazy import so this module needs no openai at import)."""
+    from openai import AsyncOpenAI
 
-    def _set_client(client: Any) -> None:
-        from agents import set_default_openai_client
+    return AsyncOpenAI(base_url=base_url, api_key=api_key)
 
-        # use_for_tracing=False: the broker token is a per-run credential, not
-        # a tracing-export key; never repoint the tracing exporter at it.
-        set_default_openai_client(client, use_for_tracing=False)
 
-    return _install_broker_client(cfg, client_factory=_factory, set_client=_set_client)
+def _default_provider_factory(client: Any) -> Any:
+    """Real SDK ModelProvider in chat/completions mode (the broker's surface)."""
+    from agents.models.openai_provider import OpenAIProvider
+
+    return OpenAIProvider(openai_client=client, use_responses=False)

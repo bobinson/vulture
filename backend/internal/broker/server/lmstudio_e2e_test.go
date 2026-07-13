@@ -77,7 +77,7 @@ func TestE2E_Broker_LMStudio(t *testing.T) {
 		Adapters: map[string]provider.Adapter{
 			"openai": provider.NewOpenAICompatibleAdapter("openai", &http.Client{Timeout: 90 * time.Second}),
 		},
-		Breakers: h.breaker, Bulkhead: h.bulkhead, Retrier: h.retrier,
+		Breakers: singleBreakerPool{h.breaker}, Bulkheads: singleBulkheadPool{h.bulkhead}, Retrier: h.retrier,
 		CallTimeoutSec: 90,
 	})
 

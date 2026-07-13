@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -82,7 +83,7 @@ func (a *openAIAdapter) Complete(ctx context.Context, creds Credentials, req Com
 		return nil, fmt.Errorf("marshal completion request: %w", err)
 	}
 
-	resp, err := a.do(ctx, endpoint, creds.APIKey, body)
+	resp, err := a.do(ctx, endpoint, creds, body)
 	if err != nil {
 		return nil, err
 	}
@@ -113,21 +114,45 @@ func (a *openAIAdapter) endpoint(creds Credentials) (string, error) {
 	return base + "/chat/completions", nil
 }
 
-// do issues the POST with Bearer auth and honors ctx cancellation.
-func (a *openAIAdapter) do(ctx context.Context, endpoint, apiKey string, body []byte) (*http.Response, error) {
+// do issues the POST with Bearer auth and honors ctx cancellation. When the
+// credentials carry an SSRF-pinned IP, the transport dials it directly.
+func (a *openAIAdapter) do(ctx context.Context, endpoint string, creds Credentials, body []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	if creds.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+creds.APIKey)
 	}
-	resp, err := a.http.Do(httpReq)
+	resp, err := a.client(creds.PinnedIP).Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProviderUnavailable, ctx.Err())
 	}
 	return resp, nil
+}
+
+// client returns the adapter's HTTP client, wrapped with an IP-pinning
+// DialContext when the SSRF validator pinned a resolved address (§11,
+// DNS-rebinding TOCTOU defense). The TCP connection goes to pinnedIP while
+// the URL hostname is preserved for Host/SNI/certificate verification, so a
+// rebinding DNS record between validate-time and dial-time has no effect.
+func (a *openAIAdapter) client(pinnedIP string) *http.Client {
+	if pinnedIP == "" {
+		return a.http
+	}
+	dialer := &net.Dialer{}
+	pinned := *a.http // shallow copy: keep timeout/jar, replace transport
+	pinned.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(pinnedIP, port))
+		},
+	}
+	return &pinned
 }
 
 // toResponse normalizes the wire body and enforces the usage-sanity floor.

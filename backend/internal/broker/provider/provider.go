@@ -3,9 +3,7 @@
 // Anthropic, Gemini, Ollama, OpenAI-compatible) plus the request/response
 // shapes shared across adapters. It is OpenAI-compatible by design (§5)
 // so the agent just repoints its SDK client at the broker.
-//
-// This file is an interface STUB: types/interfaces are fully defined;
-// method bodies return ErrNotImplemented.
+
 package provider
 
 import (
@@ -13,8 +11,8 @@ import (
 	"errors"
 )
 
-// ErrNotImplemented is returned by every stub method until the real
-// implementation lands.
+// ErrNotImplemented is returned by surfaces that are deliberately deferred
+// (adapter Stream/Embed — feature follow-ups, not P0).
 var ErrNotImplemented = errors.New("broker/provider: not implemented")
 
 // Sentinel egress errors (map onto §5 API error codes). Callers translate
@@ -128,7 +126,28 @@ type Credentials struct {
 	APIKey   string // secret-class — never logged
 	BaseURL  string
 	Region   string
+	// PinnedIP is the SSRF-resolved address the transport MUST dial (never
+	// re-resolving BaseURL's hostname) to defeat DNS-rebinding TOCTOU (§11).
+	// Empty = no pin (first-party default endpoints).
+	PinnedIP string
 }
+
+// KeyResolver resolves the provider API key the broker holds for egress
+// (N1: keys live ONLY in the broker; plugins/agents never see them). An
+// unknown provider resolves to "" (adapters omit the Authorization header).
+type KeyResolver interface {
+	// KeyFor returns the API key for the named provider, or "".
+	KeyFor(provider string) string
+}
+
+// StaticKeys is a map-backed KeyResolver (config/env-loaded at wiring time).
+type StaticKeys map[string]string
+
+// KeyFor returns the key for provider, or "".
+func (k StaticKeys) KeyFor(provider string) string { return k[provider] }
+
+// Compile-time interface assertion.
+var _ KeyResolver = StaticKeys(nil)
 
 // Adapter is the per-provider egress seam (§9). Implementations translate
 // the normalized request to the provider wire format, enforce the per-call
@@ -144,32 +163,3 @@ type Adapter interface {
 	// Embed performs a (possibly batched) embeddings request.
 	Embed(ctx context.Context, creds Credentials, req EmbeddingRequest) (*EmbeddingResponse, error)
 }
-
-// StubAdapter is a no-op Adapter used until real adapters land.
-type StubAdapter struct{ ProviderName string }
-
-// Name returns the configured provider name (or "stub").
-func (s StubAdapter) Name() string {
-	if s.ProviderName == "" {
-		return "stub"
-	}
-	return s.ProviderName
-}
-
-// Complete always returns ErrNotImplemented.
-func (StubAdapter) Complete(context.Context, Credentials, CompletionRequest) (*CompletionResponse, error) {
-	return nil, ErrNotImplemented
-}
-
-// Stream always returns ErrNotImplemented.
-func (StubAdapter) Stream(context.Context, Credentials, CompletionRequest) (<-chan StreamChunk, error) {
-	return nil, ErrNotImplemented
-}
-
-// Embed always returns ErrNotImplemented.
-func (StubAdapter) Embed(context.Context, Credentials, EmbeddingRequest) (*EmbeddingResponse, error) {
-	return nil, ErrNotImplemented
-}
-
-// Compile-time interface assertion.
-var _ Adapter = StubAdapter{}

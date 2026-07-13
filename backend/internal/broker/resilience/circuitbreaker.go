@@ -22,7 +22,26 @@ type circuitBreaker struct {
 }
 
 func newCircuitBreaker(cfg CircuitConfig) *circuitBreaker {
+	if cfg.Clock == nil {
+		cfg.Clock = systemClock{} // fail-safe default: forgetting the clock must not panic on trip
+	}
 	return &circuitBreaker{cfg: cfg, state: StateClosed}
+}
+
+// systemClock is the real-time Clock used when none is injected.
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
+
+func (systemClock) Sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // State reports the current breaker state, applying any due open→half-open

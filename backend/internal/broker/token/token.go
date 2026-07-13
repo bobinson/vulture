@@ -11,10 +11,6 @@ package token
 
 import "errors"
 
-// ErrNotImplemented is returned by every stub method until the real
-// implementation lands.
-var ErrNotImplemented = errors.New("broker/token: not implemented")
-
 // Sentinel verification errors. These map onto the §5 API error codes
 // (unauthorized / token_expired / token_revoked).
 var (
@@ -113,43 +109,3 @@ type Revocation interface {
 	// Revoke marks a jti revoked (run end/cancel).
 	Revoke(jti string) error
 }
-
-// --- Stub implementations (module agents replace these) ---
-
-// StubMinter is a no-op Minter.
-type StubMinter struct{}
-
-// Mint always returns ErrNotImplemented.
-func (StubMinter) Mint(MintRequest) (string, error) { return "", ErrNotImplemented }
-
-// StubVerifier is a no-op Verifier.
-type StubVerifier struct{}
-
-// Verify always returns ErrNotImplemented.
-func (StubVerifier) Verify(string) (*Claims, error) { return nil, ErrNotImplemented }
-
-// StubDenylist is a no-op Denylist.
-type StubDenylist struct{}
-
-// IsDenied always returns ErrNotImplemented.
-func (StubDenylist) IsDenied(string) (bool, error) { return false, ErrNotImplemented }
-
-// Deny always returns ErrNotImplemented.
-func (StubDenylist) Deny(string) error { return ErrNotImplemented }
-
-// StubRevocation is a no-op Revocation.
-type StubRevocation struct{}
-
-// IsRevoked always returns ErrNotImplemented.
-func (StubRevocation) IsRevoked(string) (bool, error) { return false, ErrNotImplemented }
-
-// Revoke always returns ErrNotImplemented.
-func (StubRevocation) Revoke(string) error { return ErrNotImplemented }
-
-// Compile-time interface assertions.
-var (
-	_ Minter     = StubMinter{}
-	_ Verifier   = StubVerifier{}
-	_ Denylist   = StubDenylist{}
-	_ Revocation = StubRevocation{}
-)

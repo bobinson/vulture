@@ -3,9 +3,7 @@
 // sweeper, an append-only ledger, and atomic reconcile (INSERT ledger +
 // DELETE lease). It defines a DB interface the Postgres implementation
 // satisfies, plus a Manager that module agents implement on top of it.
-//
-// This file is an interface STUB: types/interfaces are fully defined;
-// method bodies return ErrNotImplemented.
+
 package budget
 
 import (
@@ -13,10 +11,6 @@ import (
 	"errors"
 	"time"
 )
-
-// ErrNotImplemented is returned by every stub method until the real
-// implementation lands.
-var ErrNotImplemented = errors.New("broker/budget: not implemented")
 
 // Sentinel budget errors (map onto §5 API error codes).
 var (
@@ -100,47 +94,3 @@ type Manager interface {
 	// Remaining reports remaining budget for a tenant.
 	Remaining(ctx context.Context, tenantID string) (float64, error)
 }
-
-// --- Stub implementations (module agents replace these) ---
-
-// StubDB is a no-op DB.
-type StubDB struct{}
-
-// ReserveCAS always returns ErrNotImplemented.
-func (StubDB) ReserveCAS(context.Context, ReserveRequest, int) (*Reservation, error) {
-	return nil, ErrNotImplemented
-}
-
-// Reconcile always returns ErrNotImplemented.
-func (StubDB) Reconcile(context.Context, LedgerEntry) error { return ErrNotImplemented }
-
-// Remaining always returns ErrNotImplemented.
-func (StubDB) Remaining(context.Context, string) (float64, error) { return 0, ErrNotImplemented }
-
-// SweepExpiredLeases always returns ErrNotImplemented.
-func (StubDB) SweepExpiredLeases(context.Context, time.Time) (int, error) {
-	return 0, ErrNotImplemented
-}
-
-// Ping always returns ErrNotImplemented.
-func (StubDB) Ping(context.Context) error { return ErrNotImplemented }
-
-// StubManager is a no-op Manager.
-type StubManager struct{}
-
-// Reserve always returns ErrNotImplemented.
-func (StubManager) Reserve(context.Context, ReserveRequest) (*Reservation, error) {
-	return nil, ErrNotImplemented
-}
-
-// Reconcile always returns ErrNotImplemented.
-func (StubManager) Reconcile(context.Context, LedgerEntry) error { return ErrNotImplemented }
-
-// Remaining always returns ErrNotImplemented.
-func (StubManager) Remaining(context.Context, string) (float64, error) { return 0, ErrNotImplemented }
-
-// Compile-time interface assertions.
-var (
-	_ DB      = StubDB{}
-	_ Manager = StubManager{}
-)

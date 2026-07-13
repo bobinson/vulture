@@ -117,18 +117,12 @@ def test_resolve_config_enabled_but_no_token_is_none(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# apply_broker_client() — the real SDK seam (dual-mode)
+# broker_model_provider() — the per-run SDK seam (dual-mode). The former
+# global-mutation seam (apply_broker_client/set_default_openai_client) was
+# removed: process-global state raced across concurrent audits. Full per-run
+# coverage lives in test_broker_per_run_provider.py; the dual-mode/fail-safe
+# contract stays pinned here.
 # --------------------------------------------------------------------------
-
-class _Spy:
-    """Records calls to the injected SDK-global mutation boundary."""
-
-    def __init__(self):
-        self.installed = []  # list of client objects passed to set_client
-
-    def set_client(self, client):
-        self.installed.append(client)
-
 
 class _FakeClient:
     """Stand-in for openai.AsyncOpenAI capturing the config it was built with."""
@@ -139,77 +133,60 @@ class _FakeClient:
         self.kwargs = kwargs
 
 
-def test_apply_off_does_not_touch_sdk_client(monkeypatch):
-    # OFF => today's behavior, unchanged: no client is installed, returns None.
-    from shared.llm.broker import apply_broker_client
+def _build_provider_with_token(token):
+    import contextvars
+
+    from shared.llm import broker
+
+    def _run():
+        broker.set_broker_token(token)
+        return broker.broker_model_provider(
+            client_factory=lambda base_url, api_key: _FakeClient(base_url=base_url, api_key=api_key),
+            provider_factory=lambda client: client,  # provider == client for assertions
+        )
+
+    return contextvars.copy_context().run(_run)
+
+
+def test_provider_off_is_noop(monkeypatch):
+    # OFF => today's behavior, unchanged: no provider, env-key path untouched.
     monkeypatch.delenv("VULTURE_LLM_BROKER", raising=False)
     monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker:8080/internal/v1/llm")
-    spy = _Spy()
-    result = apply_broker_client(
-        "tok", client_factory=_FakeClient, set_client=spy.set_client,
-    )
-    assert result is None
-    assert spy.installed == []  # SDK global never mutated when broker is off
+    assert _build_provider_with_token("tok") is None
 
 
-def test_apply_on_repoints_base_url_and_api_key(monkeypatch):
-    # ON => build a client pointed at the broker with the run token as api_key,
-    # install it via the injected setter, and return the resolved config.
-    from shared.llm.broker import apply_broker_client
+def test_provider_on_carries_base_url_and_run_token(monkeypatch):
     monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
     monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker:8080/internal/v1/llm")
-    spy = _Spy()
-    cfg = apply_broker_client(
-        "run-token-xyz", client_factory=_FakeClient, set_client=spy.set_client,
-    )
-    assert cfg is not None
-    assert cfg.base_url == "http://broker:8080/internal/v1/llm"
-    assert cfg.api_key == "run-token-xyz"
-    # Exactly one client installed, carrying the broker base_url + run token.
-    assert len(spy.installed) == 1
-    installed = spy.installed[0]
-    assert installed.base_url == "http://broker:8080/internal/v1/llm"
-    assert installed.api_key == "run-token-xyz"
+    client = _build_provider_with_token("run-token-xyz")
+    assert client is not None
+    assert client.base_url == "http://broker:8080/internal/v1/llm"
+    assert client.api_key == "run-token-xyz"
 
 
-def test_apply_on_without_token_does_not_install_client(monkeypatch):
+def test_provider_on_without_token_is_none(monkeypatch):
     # Security/edge: enabled but no run token => fail-safe, no keyless client.
-    from shared.llm.broker import apply_broker_client
     monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
     monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker:8080/internal/v1/llm")
-    spy = _Spy()
-    result = apply_broker_client(
-        None, client_factory=_FakeClient, set_client=spy.set_client,
-    )
-    assert result is None
-    assert spy.installed == []
+    assert _build_provider_with_token(None) is None
 
 
-def test_apply_on_without_url_does_not_install_client(monkeypatch):
+def test_provider_on_without_url_is_none(monkeypatch):
     # Fail-safe: enabled but no broker URL => no repoint.
-    from shared.llm.broker import apply_broker_client
     monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
     monkeypatch.delenv("VULTURE_LLM_BROKER_URL", raising=False)
-    spy = _Spy()
-    result = apply_broker_client(
-        "tok", client_factory=_FakeClient, set_client=spy.set_client,
-    )
-    assert result is None
-    assert spy.installed == []
+    assert _build_provider_with_token("tok") is None
 
 
-def test_apply_does_not_rewrite_model_selection(monkeypatch):
-    # The broker seam ONLY repoints the client; get_model() must be untouched.
-    from shared.llm.broker import apply_broker_client
+def test_provider_does_not_rewrite_model_selection(monkeypatch):
+    # The broker seam ONLY carries the client; get_model() must be untouched.
     from shared.llm.provider import get_model
     monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
     monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker:8080/internal/v1/llm")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setenv("VULTURE_LLM_MODEL", "gpt-4o")
     before = get_model()
-    apply_broker_client(
-        "tok", client_factory=_FakeClient, set_client=lambda c: None,
-    )
+    _build_provider_with_token("tok")
     assert get_model() == before == "gpt-4o"
 
 
@@ -243,69 +220,7 @@ def test_broker_token_contextvar_isolated_per_context():
 
 
 # --------------------------------------------------------------------------
-# apply_broker_from_context() — resolves ambient token, dual-mode/fail-safe
+# The ambient-token → per-run-provider path (formerly apply_broker_from_
+# context, removed with the global-mutation seam) is covered end-to-end in
+# test_broker_per_run_provider.py.
 # --------------------------------------------------------------------------
-
-def test_apply_from_context_off_is_noop(monkeypatch):
-    import contextvars
-
-    from shared.llm import broker
-    monkeypatch.delenv("VULTURE_LLM_BROKER", raising=False)
-    monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker:8080/internal/v1/llm")
-
-    def _run():
-        broker.set_broker_token("tok")
-        return broker.apply_broker_from_context()
-
-    assert contextvars.copy_context().run(_run) is None
-
-
-def test_apply_from_context_on_installs_client(monkeypatch):
-    # ON + configured URL + ambient token => resolves and returns a config,
-    # exercising the real SDK boundary through injected fakes so no network /
-    # SDK global is touched. We patch the openai + agents boundaries used by
-    # apply_broker_from_context's factory/setter.
-    import contextvars
-    import sys
-    import types
-
-    from shared.llm import broker
-    monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
-    monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker:8080/internal/v1/llm")
-
-    installed = {}
-
-    fake_openai = types.ModuleType("openai")
-    fake_openai.AsyncOpenAI = _FakeClient  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "openai", fake_openai)
-
-    fake_agents = types.ModuleType("agents")
-
-    def _set_default_openai_client(client, use_for_tracing=True):
-        installed["client"] = client
-        installed["use_for_tracing"] = use_for_tracing
-
-    fake_agents.set_default_openai_client = _set_default_openai_client  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "agents", fake_agents)
-
-    def _run():
-        broker.set_broker_token("run-token-xyz")
-        return broker.apply_broker_from_context()
-
-    cfg = contextvars.copy_context().run(_run)
-    assert cfg is not None
-    assert cfg.base_url == "http://broker:8080/internal/v1/llm"
-    assert cfg.api_key == "run-token-xyz"
-    assert installed["client"].base_url == "http://broker:8080/internal/v1/llm"
-    assert installed["client"].api_key == "run-token-xyz"
-    # broker token is a per-run credential, never the tracing-export key.
-    assert installed["use_for_tracing"] is False
-
-
-def test_apply_from_context_on_without_token_is_noop(monkeypatch):
-    # Enabled + URL but no ambient token => fail-safe, no SDK import/mutation.
-    from shared.llm import broker
-    monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
-    monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://broker:8080/internal/v1/llm")
-    # Default ambient token is None in a fresh context.
-    assert broker.apply_broker_from_context() is None

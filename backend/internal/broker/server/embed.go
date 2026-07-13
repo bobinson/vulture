@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/vulture/backend/internal/broker/egress"
 	"github.com/vulture/backend/internal/broker/provider"
 )
 
@@ -35,7 +36,7 @@ func (s *Server) HandleEmbed(w http.ResponseWriter, r *http.Request) {
 
 // runEmbed runs the egress-safe embeddings call under the resilience stack.
 func (s *Server) runEmbed(ctx context.Context, req *embedRequest) (*provider.EmbeddingResponse, *apiError) {
-	target, apiErr := s.egressCheck(nil)
+	target, apiErr := s.egressCheck(egress.Candidate{Model: req.Model})
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -54,7 +55,7 @@ func (s *Server) runEmbed(ctx context.Context, req *embedRequest) (*provider.Emb
 // callEmbed runs the embeddings adapter under the resilience stack (§9).
 func (s *Server) callEmbed(ctx context.Context, adapter provider.Adapter, creds provider.Credentials, req *embedRequest) (*provider.EmbeddingResponse, *apiError) {
 	var resp *provider.EmbeddingResponse
-	err := s.guard(ctx, func(c context.Context) error {
+	err := s.guard(ctx, creds.Provider, creds.Provider+":"+req.Model, func(c context.Context) error {
 		r, e := adapter.Embed(c, creds, provider.EmbeddingRequest{
 			RunID:     req.RunID,
 			TenantID:  req.TenantID,

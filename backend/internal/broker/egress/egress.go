@@ -3,16 +3,10 @@
 // base URLs (resolve-then-pin against DNS rebinding, deny RFC1918 /
 // link-local / loopback / IMDS), and the model-selection seam that
 // re-applies residency/policy to every fallback candidate.
-//
-// This file is an interface STUB: types/interfaces are fully defined;
-// method bodies return ErrNotImplemented.
+
 package egress
 
 import "errors"
-
-// ErrNotImplemented is returned by every stub method until the real
-// implementation lands.
-var ErrNotImplemented = errors.New("broker/egress: not implemented")
 
 // Sentinel egress-safety errors.
 var (
@@ -63,11 +57,40 @@ type PolicyContext struct {
 	TaskType string
 }
 
+// Candidate is one egress candidate: a model plus the provider route it
+// egresses through. Provider "" means the broker default; BaseURL "" means
+// the provider's canonical default endpoint (§7).
+type Candidate struct {
+	Model    string
+	Provider string
+	BaseURL  string
+}
+
 // ModelSelection is the resolved primary model plus its ordered fallback
 // chain (§7). Each entry has already passed residency/policy re-check.
+// Routes, when set, is the authoritative per-candidate provider routing
+// (tenant BYO base_url etc.); otherwise candidates derive from
+// Model+Fallbacks with default routing.
 type ModelSelection struct {
 	Model     string
 	Fallbacks []string
+	Routes    []Candidate
+}
+
+// Candidates returns the ordered egress candidates, primary first. Explicit
+// Routes are authoritative; otherwise Model+Fallbacks map to default-routed
+// candidates. Every candidate is allowlist+SSRF re-checked at egress time —
+// failover must never skip the gate (§7/§11).
+func (s *ModelSelection) Candidates() []Candidate {
+	if len(s.Routes) > 0 {
+		return s.Routes
+	}
+	out := make([]Candidate, 0, 1+len(s.Fallbacks))
+	out = append(out, Candidate{Model: s.Model})
+	for _, m := range s.Fallbacks {
+		out = append(out, Candidate{Model: m})
+	}
+	return out
 }
 
 // ModelSelector resolves a request to a model + fallback chain (§7),
@@ -79,34 +102,3 @@ type ModelSelector interface {
 	// each candidate.
 	Select(modelHint string, policy PolicyContext) (*ModelSelection, error)
 }
-
-// --- Stub implementations (module agents replace these) ---
-
-// StubSSRFValidator is a no-op SSRFValidator.
-type StubSSRFValidator struct{}
-
-// Validate always returns ErrNotImplemented.
-func (StubSSRFValidator) Validate(string, string) (*PinnedTarget, error) {
-	return nil, ErrNotImplemented
-}
-
-// StubAllowlist is a no-op Allowlist that denies everything (fail-closed).
-type StubAllowlist struct{}
-
-// Allowed always returns false until the real allowlist lands.
-func (StubAllowlist) Allowed(string) bool { return false }
-
-// StubModelSelector is a no-op ModelSelector.
-type StubModelSelector struct{}
-
-// Select always returns ErrNotImplemented.
-func (StubModelSelector) Select(string, PolicyContext) (*ModelSelection, error) {
-	return nil, ErrNotImplemented
-}
-
-// Compile-time interface assertions.
-var (
-	_ SSRFValidator = StubSSRFValidator{}
-	_ Allowlist     = StubAllowlist{}
-	_ ModelSelector = StubModelSelector{}
-)

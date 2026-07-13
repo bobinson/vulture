@@ -37,13 +37,23 @@ type Dependencies struct {
 	Allowlist egress.Allowlist
 	// Adapters is the per-provider egress set (§9), keyed by name.
 	Adapters map[string]provider.Adapter
-	// Breakers builds a per-(provider,model) circuit breaker (§9).
-	Breakers resilience.CircuitBreaker
-	// Bulkhead caps per-provider concurrency (§9).
-	Bulkhead resilience.Bulkhead
+	// Keys resolves the broker-held provider API keys (N1). Nil = no keys
+	// (adapters send no Authorization header — local/keyless endpoints).
+	Keys provider.KeyResolver
+	// Breakers hands out the circuit breaker for a (provider,model) key —
+	// one provider/model's failures never open another's circuit (§9).
+	Breakers resilience.BreakerPool
+	// Bulkheads hands out the per-provider bulkhead — one slow provider
+	// cannot shed load for the others (§9).
+	Bulkheads resilience.BulkheadPool
 	// CallTimeoutSec bounds each provider call (§9/§16, VULTURE_LLM_CALL_TIMEOUT_SEC);
 	// 0 disables the guard (test default).
 	CallTimeoutSec int
+	// DBHealth reports the budget store's health (§12 honest readiness) —
+	// production wiring MUST set it (e.g. db.PingContext); a replica whose
+	// store is down reports NOT ready. Nil skips the check (unit tests /
+	// keyless dev wiring only).
+	DBHealth func(ctx context.Context) error
 	// Retrier applies the retry policy + budget (§9).
 	Retrier resilience.Retrier
 }
@@ -89,16 +99,31 @@ const (
 	readyzPath   = "/readyz"
 )
 
-// Ready implements ReadinessProbe: P0 readiness = >=1 CONFIGURED provider
-// adapter (§12). Full provider-health/PG/degraded gating is a TODO (§12/C1).
-func (s *Server) Ready(context.Context) (bool, error) {
+// Ready implements ReadinessProbe (§12 honest readiness): a replica is ready
+// when >=1 provider adapter is configured AND its budget store is healthy —
+// a broker that cannot reserve budget cannot serve, and must say so instead
+// of failing requests at reserve time. The §12 "degraded-reserve" slice
+// (serving from a reserved budget tranche while PG is down) is deliberately
+// DESCOPED for P0: not-ready → agents use their skills-only fallback, which
+// is the honest degraded mode this deployment already has.
+func (s *Server) Ready(ctx context.Context) (bool, error) {
 	if len(s.deps.Adapters) == 0 {
 		return false, errNoHealthyProvider
+	}
+	if s.deps.DBHealth != nil {
+		if err := s.deps.DBHealth(ctx); err != nil {
+			return false, errBudgetStoreDown
+		}
 	}
 	return true, nil
 }
 
-var errNoHealthyProvider = errors.New("broker/server: no healthy provider")
+var (
+	errNoHealthyProvider = errors.New("broker/server: no healthy provider")
+	// errBudgetStoreDown is a fixed, secret-free reason string (N6): the
+	// underlying DB error is never surfaced on /readyz.
+	errBudgetStoreDown = errors.New("broker/server: budget store unavailable")
+)
 
 func (s *Server) handleLivez(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

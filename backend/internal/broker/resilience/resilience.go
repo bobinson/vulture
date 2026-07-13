@@ -3,9 +3,7 @@
 // (per-replica-local for P0), a per-provider bulkhead (pool + concurrency
 // cap), and a retry budget capping the retried fraction. Wrappers compose
 // around a provider egress call.
-//
-// This file is an interface STUB: types/interfaces are fully defined;
-// method bodies return ErrNotImplemented.
+
 package resilience
 
 import (
@@ -13,10 +11,6 @@ import (
 	"errors"
 	"time"
 )
-
-// ErrNotImplemented is returned by every stub method until the real
-// implementation lands.
-var ErrNotImplemented = errors.New("broker/resilience: not implemented")
 
 // Sentinel resilience errors (map onto §5 API error codes).
 var (
@@ -81,36 +75,3 @@ type Retrier interface {
 	// the budget is spent, else fn's terminal result.
 	Execute(ctx context.Context, fn Call) error
 }
-
-// --- Stub implementations (module agents replace these) ---
-
-// StubCircuitBreaker is a no-op CircuitBreaker (always closed).
-type StubCircuitBreaker struct{}
-
-// Execute always returns ErrNotImplemented.
-func (StubCircuitBreaker) Execute(context.Context, Call) error { return ErrNotImplemented }
-
-// State always reports closed.
-func (StubCircuitBreaker) State() CircuitState { return StateClosed }
-
-// StubBulkhead is a no-op Bulkhead.
-type StubBulkhead struct{}
-
-// Execute always returns ErrNotImplemented.
-func (StubBulkhead) Execute(context.Context, Call) error { return ErrNotImplemented }
-
-// InFlight always reports 0.
-func (StubBulkhead) InFlight() int { return 0 }
-
-// StubRetrier is a no-op Retrier.
-type StubRetrier struct{}
-
-// Execute always returns ErrNotImplemented.
-func (StubRetrier) Execute(context.Context, Call) error { return ErrNotImplemented }
-
-// Compile-time interface assertions.
-var (
-	_ CircuitBreaker = StubCircuitBreaker{}
-	_ Bulkhead       = StubBulkhead{}
-	_ Retrier        = StubRetrier{}
-)
