@@ -41,6 +41,13 @@ type CircuitConfig struct {
 	// SuccessThreshold is the consecutive half-open successes to close.
 	SuccessThreshold int
 	Clock            Clock
+	// IsFailure classifies a non-nil Call error as a provider-HEALTH failure
+	// (§32.1 #1). Only errors it returns true for count toward tripping; other
+	// non-nil errors (permanent client faults, ctx cancellation, usage-missing)
+	// are NEUTRAL — they neither trip nor reset the counter, so a request-shape
+	// bug or a self-imposed deadline cannot open a shared (provider,model)
+	// breaker. When nil, the legacy behavior holds: ANY non-nil error counts.
+	IsFailure func(error) bool
 }
 
 // BulkheadConfig configures a per-provider bulkhead.

@@ -50,6 +50,11 @@ type AuditRequest struct {
 	// it at dispatch; the agent uses it as the SDK client's api_key.
 	// Never user-supplied. Secret-class — never logged.
 	BrokerToken string `json:"broker_token,omitempty"`
+	// ContextWindow is the feature 0064 §31 broker-resolved context window
+	// (tokens) for the run's primary model, injected at dispatch alongside
+	// broker_token so the agent sizes its LLM phase from the registry. 0 = unset
+	// (broker off / unknown → agent resolves its own). Never user-supplied.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // AuditComparison holds the diff between the current audit and the previous one.

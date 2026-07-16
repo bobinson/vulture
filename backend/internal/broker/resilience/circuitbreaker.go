@@ -115,13 +115,39 @@ func (b *circuitBreaker) Execute(ctx context.Context, fn Call) error {
 	err := fn(ctx)
 
 	b.mu.Lock()
-	b.record(err == nil)
+	b.record(b.outcome(err))
 	b.mu.Unlock()
 	return err
 }
 
-// record updates counters/state from a call outcome (under lock).
-func (b *circuitBreaker) record(ok bool) {
+// outcome classifies a Call result into success / failure / neutral (§32.1 #1).
+// A neutral result (a non-nil error the IsFailure classifier rejects) leaves the
+// breaker state untouched — it is neither a provider-health failure nor a
+// success. With no classifier, any non-nil error is a failure (legacy behavior).
+type callOutcome int
+
+const (
+	outcomeSuccess callOutcome = iota
+	outcomeFailure
+	outcomeNeutral
+)
+
+func (b *circuitBreaker) outcome(err error) callOutcome {
+	if err == nil {
+		return outcomeSuccess
+	}
+	if b.cfg.IsFailure != nil && !b.cfg.IsFailure(err) {
+		return outcomeNeutral
+	}
+	return outcomeFailure
+}
+
+// record updates counters/state from a classified call outcome (under lock).
+func (b *circuitBreaker) record(o callOutcome) {
+	if o == outcomeNeutral {
+		return // breaker-neutral: neither trip nor reset
+	}
+	ok := o == outcomeSuccess
 	if b.state == StateHalfOpen {
 		b.recordHalfOpen(ok)
 		return

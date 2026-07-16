@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vulture/backend/internal/model"
 )
@@ -217,16 +218,56 @@ func TestNewAgentProxyService(t *testing.T) {
 	}
 }
 
+// The per-agent audit timeout and the HTTP response-header timeout are
+// env-configurable (VULTURE_AGENT_PROXY_TIMEOUT_SEC / _RESPONSE_HEADER_TIMEOUT_SEC),
+// defaulting to today's 600s / 300s so behavior is unchanged when unset. This is
+// what lets a slow local model (LM Studio) finish an audit past 10 minutes.
+func TestAgentProxyTimeouts_Defaults(t *testing.T) {
+	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "")
+	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "")
+	p := NewAgentProxyService(nil).(*agentProxyService)
+	if p.auditTimeout != 10*time.Minute {
+		t.Errorf("default audit timeout = %v, want 10m", p.auditTimeout)
+	}
+	if p.respHeaderTimeout != 300*time.Second {
+		t.Errorf("default response-header timeout = %v, want 300s", p.respHeaderTimeout)
+	}
+}
+
+func TestAgentProxyTimeouts_FromEnv(t *testing.T) {
+	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "1800")
+	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "600")
+	p := NewAgentProxyService(nil).(*agentProxyService)
+	if p.auditTimeout != 30*time.Minute {
+		t.Errorf("audit timeout = %v, want 30m", p.auditTimeout)
+	}
+	if p.respHeaderTimeout != 600*time.Second {
+		t.Errorf("response-header timeout = %v, want 600s", p.respHeaderTimeout)
+	}
+}
+
+func TestAgentProxyTimeouts_InvalidFallsBackToDefault(t *testing.T) {
+	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "not-a-number")
+	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "0")
+	p := NewAgentProxyService(nil).(*agentProxyService)
+	if p.auditTimeout != 10*time.Minute || p.respHeaderTimeout != 300*time.Second {
+		t.Errorf("invalid/zero must fall back to defaults, got %v / %v", p.auditTimeout, p.respHeaderTimeout)
+	}
+}
+
 // stubMinter records the mint call and returns a fixed token.
 type stubMinter struct {
 	gotRun, gotTask string
 	token           string
+	ctxWindow       int
 }
 
 func (m *stubMinter) MintForAgent(runID, taskType string) (string, error) {
 	m.gotRun, m.gotTask = runID, taskType
 	return m.token, nil
 }
+
+func (m *stubMinter) ContextWindow() int { return m.ctxWindow }
 
 // Feature 0064 §25.2: when a broker minter is set, the dispatch payload must
 // carry broker_token + task_type (so the agent authenticates to the broker).
@@ -240,7 +281,7 @@ func TestAgentProxyService_InjectsBrokerTokenAndTaskType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := &stubMinter{token: "run-token-xyz"}
+	m := &stubMinter{token: "run-token-xyz", ctxWindow: 131072}
 	proxy := NewAgentProxyService(m)
 	ch := make(chan *model.AgUIEvent, 10)
 	if err := proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-42", "/src", json.RawMessage("{}"), nil, ch); err != nil {
@@ -254,6 +295,10 @@ func TestAgentProxyService_InjectsBrokerTokenAndTaskType(t *testing.T) {
 	}
 	if !strings.Contains(body, `"task_type":"cwe"`) {
 		t.Errorf("payload missing task_type: %s", body)
+	}
+	// §31: the broker-resolved context window rides alongside broker_token.
+	if !strings.Contains(body, `"context_window":131072`) {
+		t.Errorf("payload missing context_window: %s", body)
 	}
 }
 

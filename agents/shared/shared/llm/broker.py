@@ -63,6 +63,25 @@ def current_broker_task_type() -> str | None:
     return _current_broker_task_type.get()
 
 
+# Ambient per-run context window (§31). The broker resolves the run model's
+# context window from its registry and injects it at dispatch; the transport
+# binds it here so provider.get_context_window can prefer it over the agent's
+# local table (which may not know a custom-gateway model).
+_current_context_window: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "vulture_ctx_window", default=None
+)
+
+
+def set_context_window(window: int | None) -> contextvars.Token:
+    """Bind *window* (tokens) as the ambient per-run model context window."""
+    return _current_context_window.set(window)
+
+
+def current_context_window() -> int | None:
+    """The ambient per-run broker-injected context window, or ``None``."""
+    return _current_context_window.get()
+
+
 async def aclose_broker_client() -> None:
     """Close this run's broker client if one was built (§26 M7). Idempotent and
     safe for injected test clients that have no ``aclose``."""
@@ -165,7 +184,11 @@ def _default_client_factory(*, base_url: str, api_key: str) -> Any:
     task_type = current_broker_task_type()
     if task_type:
         headers["X-Vulture-Task-Type"] = task_type
-    return AsyncOpenAI(base_url=base_url, api_key=api_key, default_headers=headers or None)
+    # §32.1 #6: the BROKER owns retries (per-provider retrier + budget). Disable
+    # the SDK's own client-side retries so a transient failure is not amplified
+    # (broker 3× × SDK 2× × agent retry_llm_call 3×). max_retries=0 leaves the
+    # broker as the single retry authority.
+    return AsyncOpenAI(base_url=base_url, api_key=api_key, default_headers=headers or None, max_retries=0)
 
 
 def _default_provider_factory(client: Any) -> Any:

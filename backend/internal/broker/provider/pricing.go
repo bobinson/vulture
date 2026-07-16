@@ -8,8 +8,16 @@ package provider
 // priceUSDPer1M maps a model to (input, output) USD per 1M tokens.
 var priceUSDPer1M = map[string][2]float64{
 	"gpt-4o":        {2.50, 10.00},
+	"gpt-4o-mini":   {0.15, 0.60},
 	"claude-sonnet": {3.00, 15.00},
 	"gemini-pro":    {1.25, 5.00},
+	// §30 native adapters — representative rates (unlisted models still fall
+	// back to the conservative high rate below; never under-charge).
+	"gemini-2.5-flash":  {0.30, 2.50},
+	"gemini-2.5-pro":    {1.25, 10.00},
+	"claude-3-5-sonnet": {3.00, 15.00},
+	"claude-sonnet-4":   {3.00, 15.00},
+	"claude-3-5-haiku":  {0.80, 4.00},
 }
 
 const (

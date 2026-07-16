@@ -30,16 +30,17 @@ const (
 // populated from the OpenAI body + X-Vulture headers + token claims. RunID
 // and TenantID are set from the verified claims (N8), never the wire.
 type completeRequest struct {
-	RunID       string
-	TenantID    string
-	TaskType    string
-	ModelHint   string
-	RequestID   string
-	MaxTokens   int
-	Temperature float64
-	ToolChoice  string
-	Messages    []provider.Message
-	Tools       []provider.ToolDef
+	RunID          string
+	TenantID       string
+	TaskType       string
+	ModelHint      string
+	RequestID      string
+	MaxTokens      int
+	Temperature    float64
+	HasTemperature bool
+	ToolChoice     string
+	Messages       []provider.Message
+	Tools          []provider.ToolDef
 }
 
 // embedRequest is the internal normalized embeddings input.
@@ -54,13 +55,16 @@ type embedRequest struct {
 // openaiChatRequest is the standard OpenAI chat/completions body the agent SDK
 // POSTs. Only the fields the broker pipeline needs are bound.
 type openaiChatRequest struct {
-	Model       string             `json:"model"`
-	Messages    []provider.Message `json:"messages"`
-	Tools       []openaiTool       `json:"tools"`
-	ToolChoice  json.RawMessage    `json:"tool_choice"`
-	MaxTokens   int                `json:"max_tokens"`
-	Temperature float64            `json:"temperature"`
-	Stream      bool               `json:"stream"`
+	Model      string             `json:"model"`
+	Messages   []provider.Message `json:"messages"`
+	Tools      []openaiTool       `json:"tools"`
+	ToolChoice json.RawMessage    `json:"tool_choice"`
+	MaxTokens  int                `json:"max_tokens"`
+	// Temperature is a pointer so an OMITTED value is distinguishable from an
+	// explicit 0 (§32.1 #4) — the broker must not fabricate a 0 the client never
+	// sent, and must not send temperature at all to models that reject it.
+	Temperature *float64 `json:"temperature"`
+	Stream      bool     `json:"stream"`
 }
 
 type openaiTool struct {
@@ -94,16 +98,20 @@ func decodeChatRequest(w http.ResponseWriter, r *http.Request) (*completeRequest
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	return &completeRequest{
-		TaskType:    taskType,
-		ModelHint:   body.Model,
-		RequestID:   requestID,
-		MaxTokens:   body.MaxTokens,
-		Temperature: body.Temperature,
-		ToolChoice:  toolChoiceString(body.ToolChoice),
-		Messages:    body.Messages,
-		Tools:       toToolDefs(body.Tools),
-	}, nil
+	cr := &completeRequest{
+		TaskType:   taskType,
+		ModelHint:  body.Model,
+		RequestID:  requestID,
+		MaxTokens:  body.MaxTokens,
+		ToolChoice: toolChoiceString(body.ToolChoice),
+		Messages:   body.Messages,
+		Tools:      toToolDefs(body.Tools),
+	}
+	if body.Temperature != nil {
+		cr.Temperature = *body.Temperature
+		cr.HasTemperature = true
+	}
+	return cr, nil
 }
 
 // decodeEmbedRequest reads the size-capped OpenAI embeddings body + metadata.

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,22 +28,47 @@ type AgentProxyService interface {
 // a disabled broker returning "") leaves Mode A behavior unchanged.
 type BrokerMinter interface {
 	MintForAgent(runID, taskType string) (string, error)
+	// ContextWindow resolves the run model's context window (tokens) via the
+	// broker registry (§31); 0 when disabled/unknown (nothing injected).
+	ContextWindow() int
 }
 
 type agentProxyService struct {
 	client *http.Client
 	minter BrokerMinter
+	// auditTimeout bounds a whole per-agent audit (env
+	// VULTURE_AGENT_PROXY_TIMEOUT_SEC, default 600s). A slow local model
+	// (LM Studio/Ollama) scanning a large tree may need longer than the historical
+	// 10-minute cap; raise this to let it finish. Should be >= the agent's own
+	// VULTURE_AGENT_MAX_AUDIT_SECONDS ceiling so the backend doesn't cut the agent
+	// off first.
+	auditTimeout time.Duration
+	// respHeaderTimeout is how long to wait for the agent's response headers
+	// (env VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC, default 300s).
+	respHeaderTimeout time.Duration
 }
+
+// Default per-agent timeouts (seconds), preserved from the historical hardcoded
+// values so behavior is unchanged when the env vars are unset.
+const (
+	defaultAgentProxyTimeoutSec      = 600 // 10 minutes
+	defaultAgentRespHeaderTimeoutSec = 300
+)
 
 // NewAgentProxyService builds the proxy. minter may be nil (broker off) — then
 // no broker_token is injected and agents use their env provider keys (Mode A).
+// The two per-agent timeouts are env-configurable (see the struct fields).
 func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
+	auditTimeout := envDurationSec("VULTURE_AGENT_PROXY_TIMEOUT_SEC", defaultAgentProxyTimeoutSec)
+	respHeaderTimeout := envDurationSec("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", defaultAgentRespHeaderTimeoutSec)
 	return &agentProxyService{
-		minter: minter,
+		minter:            minter,
+		auditTimeout:      auditTimeout,
+		respHeaderTimeout: respHeaderTimeout,
 		client: &http.Client{
 			Transport: &http.Transport{
 				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-				ResponseHeaderTimeout: 300 * time.Second,
+				ResponseHeaderTimeout: respHeaderTimeout,
 				MaxIdleConns:          20,
 				MaxIdleConnsPerHost:   10,
 				IdleConnTimeout:       120 * time.Second,
@@ -51,13 +77,25 @@ func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 	}
 }
 
+// envDurationSec reads an integer-seconds env var, returning fallbackSec seconds
+// when it is unset, non-numeric, or <= 0.
+func envDurationSec(key string, fallbackSec int) time.Duration {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return time.Duration(fallbackSec) * time.Second
+}
+
 func (s *agentProxyService) RunAgent(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, eventCh chan<- *model.AgUIEvent) error {
 	return s.RunAgentWithContext(ctx, agentURL, agentType, runID, sourcePath, config, nil, eventCh)
 }
 
 func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, priorFindings []model.PriorFinding, eventCh chan<- *model.AgUIEvent) error {
-	// Wrap caller context with a max audit duration timeout.
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	// Wrap caller context with the configured max audit duration (env
+	// VULTURE_AGENT_PROXY_TIMEOUT_SEC, default 600s).
+	ctx, cancel := context.WithTimeout(ctx, s.auditTimeout)
 	defer cancel()
 
 	payload := map[string]interface{}{
@@ -78,6 +116,11 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 		} else if tok != "" {
 			payload["broker_token"] = tok
 			payload["task_type"] = agentType
+			// §31: inject the broker-resolved model context window so the agent
+			// sizes its LLM phase from the registry, not a timid local default.
+			if cw := s.minter.ContextWindow(); cw > 0 {
+				payload["context_window"] = cw
+			}
 		}
 	}
 	body, err := json.Marshal(payload)

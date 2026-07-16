@@ -28,14 +28,20 @@ func (e *apiError) Error() string { return e.code + ": " + e.message }
 // Static typed errors keyed by the §5 machine codes. Messages are fixed
 // strings — they never interpolate request content (N6).
 var (
-	errUnauthorized         = &apiError{"unauthorized", "authentication required", http.StatusUnauthorized, false}
-	errTokenExpired         = &apiError{"token_expired", "token expired", http.StatusUnauthorized, false}
-	errTokenRevoked         = &apiError{"token_revoked", "token revoked", http.StatusUnauthorized, false}
-	errRevocationUnavail    = &apiError{"revocation_unavailable", "revocation state unavailable", http.StatusServiceUnavailable, true}
-	errBudgetExceeded       = &apiError{"budget_exceeded", "budget exceeded", http.StatusPaymentRequired, false}
-	errInvalidRequest       = &apiError{"invalid_request", "invalid request", http.StatusBadRequest, false}
-	errProviderUnavailable  = &apiError{"provider_unavailable", "provider unavailable", http.StatusBadGateway, true}
-	errRateLimited          = &apiError{"rate_limited", "rate limited", http.StatusTooManyRequests, true}
+	errUnauthorized        = &apiError{"unauthorized", "authentication required", http.StatusUnauthorized, false}
+	errTokenExpired        = &apiError{"token_expired", "token expired", http.StatusUnauthorized, false}
+	errTokenRevoked        = &apiError{"token_revoked", "token revoked", http.StatusUnauthorized, false}
+	errRevocationUnavail   = &apiError{"revocation_unavailable", "revocation state unavailable", http.StatusServiceUnavailable, true}
+	errBudgetExceeded      = &apiError{"budget_exceeded", "budget exceeded", http.StatusPaymentRequired, false}
+	errInvalidRequest      = &apiError{"invalid_request", "invalid request", http.StatusBadRequest, false}
+	errProviderUnavailable = &apiError{"provider_unavailable", "provider unavailable", http.StatusBadGateway, true}
+	errRateLimited         = &apiError{"rate_limited", "rate limited", http.StatusTooManyRequests, true}
+	// §32.1: PERMANENT provider faults — retriable=false so neither the broker
+	// retrier nor the agent retries them (they would fail identically), and the
+	// distinct codes surface the REAL cause instead of a generic outage.
+	errProviderBadRequest   = &apiError{"provider_bad_request", "provider rejected the request", http.StatusBadGateway, false}
+	errProviderAuth         = &apiError{"provider_auth_error", "provider authentication failed", http.StatusBadGateway, false}
+	errModelNotFound        = &apiError{"model_not_found", "model not found or not routable", http.StatusBadGateway, false}
 	errAllProvidersDown     = &apiError{"all_providers_down", "all providers unavailable", http.StatusServiceUnavailable, true}
 	errProviderNotAllowlist = &apiError{"provider_unavailable", "provider not allowlisted", http.StatusBadGateway, false}
 	errSSRFBlocked          = &apiError{"invalid_request", "egress target rejected", http.StatusBadRequest, false}
@@ -89,6 +95,11 @@ func mapTokenErr(err error) *apiError {
 
 var providerErrTable = []errCase{
 	{provider.ErrRateLimited, errRateLimited},
+	// §32.1: permanent client/config faults FIRST — distinct, non-retriable
+	// codes so a bad request/key/model is not relabeled a transient outage.
+	{provider.ErrProviderBadRequest, errProviderBadRequest},
+	{provider.ErrProviderAuth, errProviderAuth},
+	{provider.ErrModelNotFound, errModelNotFound},
 	{resilience.ErrBulkheadFull, errRateLimited},
 	{resilience.ErrCircuitOpen, errAllProvidersDown},
 	{resilience.ErrRetryBudgetExhausted, errProviderUnavailable},

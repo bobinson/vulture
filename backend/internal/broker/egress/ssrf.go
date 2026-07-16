@@ -21,9 +21,21 @@ func NewSSRFValidator(allowlist Allowlist, resolver Resolver) SSRFValidator {
 	return &ssrfValidator{allowlist: allowlist, resolver: resolver}
 }
 
+// NewSSRFValidatorAllowingLocal is the DEV/SELF-HOST variant (opt-in via
+// VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS): it permits an operator-configured
+// local provider — a loopback/RFC1918 OpenAI-compatible server such as
+// LM Studio or Ollama — over http OR https. It STILL blocks link-local/IMDS
+// (169.254.x, cloud metadata), multicast, and the unspecified address, and it
+// still resolve-then-pins against rebinding. Never enable in a deployment that
+// accepts untrusted tenant base_urls.
+func NewSSRFValidatorAllowingLocal(allowlist Allowlist, resolver Resolver) SSRFValidator {
+	return &ssrfValidator{allowlist: allowlist, resolver: resolver, allowLocal: true}
+}
+
 type ssrfValidator struct {
-	allowlist Allowlist
-	resolver  Resolver
+	allowlist  Allowlist
+	resolver   Resolver
+	allowLocal bool
 }
 
 // Validate enforces https-only, operator-allowlist gating, and
@@ -33,7 +45,7 @@ func (v *ssrfValidator) Validate(provider, baseURL string) (*PinnedTarget, error
 	if !v.allowlist.Allowed(provider) {
 		return nil, ErrProviderNotAllowed
 	}
-	host, err := httpsHost(baseURL)
+	host, err := v.validHost(baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -55,21 +67,35 @@ func (v *ssrfValidator) resolvePinned(host string) (net.IP, error) {
 		return nil, fmt.Errorf("%w: host did not resolve", ErrSSRFBlocked)
 	}
 	for _, ip := range ips {
-		if isForbiddenIP(ip) {
+		if v.forbidden(ip) {
 			return nil, fmt.Errorf("%w: forbidden resolved address", ErrSSRFBlocked)
 		}
 	}
 	return ips[0], nil
 }
 
-// httpsHost parses baseURL, requiring an https scheme and a host, and returns
-// the hostname (no port). Any other scheme or a missing host is an SSRF block.
-func httpsHost(baseURL string) (string, error) {
+// validHost parses baseURL and returns its hostname. Scheme must be https,
+// except in allow-local mode where http is also accepted (local LLM servers
+// don't do TLS).
+func (v *ssrfValidator) validHost(baseURL string) (string, error) {
 	u, err := url.Parse(baseURL)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return "", fmt.Errorf("%w: scheme must be https", ErrSSRFBlocked)
+	ok := err == nil && u.Host != "" && (u.Scheme == "https" || (v.allowLocal && u.Scheme == "http"))
+	if !ok {
+		return "", fmt.Errorf("%w: invalid scheme/host", ErrSSRFBlocked)
 	}
 	return u.Hostname(), nil
+}
+
+// forbidden reports whether ip is out of bounds for egress. In allow-local
+// mode loopback + RFC1918/ULA private are PERMITTED (operator-configured local
+// provider), but link-local/IMDS, multicast, and unspecified stay blocked.
+func (v *ssrfValidator) forbidden(ip net.IP) bool {
+	if v.allowLocal {
+		return ip == nil ||
+			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
+	}
+	return isForbiddenIP(ip)
 }
 
 // isForbiddenIP reports whether ip is in any range egress must never reach:

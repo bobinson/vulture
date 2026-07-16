@@ -1,12 +1,14 @@
-// Package pgstore provides the Postgres-backed implementations of the broker's
-// emergency-kill store seams (feature 0064, §6/§25.2): the kid Denylist and the
-// per-run jti Revocation store, over the kid_denylist / revoked_jti tables
-// (migration 024). Each read goes through a small TTL-bounded in-memory cache so
-// the per-verify / per-turn hot path does not hit Postgres every call, while an
-// emergency revocation still propagates within the cache TTL (≤ a few seconds,
-// §6). A backing-store failure with no fresh cached answer surfaces
+// Package sqlstore provides the SQL implementations of the broker's
+// emergency-kill store seams (feature 0064, §6/§25.2, §29): the kid Denylist,
+// the per-run jti Revocation store, and the metering AuditLog, over the
+// kid_denylist / revoked_jti / llm_audit_log tables. It is dialect-parameterized
+// (Postgres AND SQLite) via dialect.Kind — one query set, authored with `?` and
+// rebound per driver. Each kill read goes through a small TTL-bounded in-memory
+// cache so the per-verify / per-turn hot path does not hit the DB every call,
+// while an emergency revocation still propagates within the cache TTL (≤ a few
+// seconds, §6). A backing-store failure with no fresh cached answer surfaces
 // token.ErrRevocationUnavailable so the caller fails CLOSED.
-package pgstore
+package sqlstore
 
 import (
 	"context"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/broker/budget"
+	"github.com/vulture/backend/internal/broker/dialect"
 	"github.com/vulture/backend/internal/broker/token"
 )
 
@@ -98,14 +101,15 @@ func (c *flagCache) invalidate(key string) {
 
 // Denylist is the Postgres-backed kid denylist (token.Denylist).
 type Denylist struct {
-	db *sql.DB
-	c  *flagCache
+	db  *sql.DB
+	dia dialect.Kind
+	c   *flagCache
 }
 
 // NewDenylist builds the kid denylist over kid_denylist with the given cache TTL
 // (use DefaultCacheTTL). It queries within ctx-less short timeouts per call.
-func NewDenylist(db *sql.DB, ttl time.Duration) *Denylist {
-	d := &Denylist{db: db}
+func NewDenylist(db *sql.DB, dia dialect.Kind, ttl time.Duration) *Denylist {
+	d := &Denylist{db: db, dia: dia}
 	d.c = newFlagCache(ttl, maxCacheEntries, nil, d.query)
 	return d
 }
@@ -114,8 +118,8 @@ func (d *Denylist) query(kid string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var exists bool
-	err := d.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM kid_denylist WHERE kid = $1)`, kid).Scan(&exists)
+	err := d.db.QueryRowContext(ctx, d.dia.Rebind(
+		`SELECT EXISTS(SELECT 1 FROM kid_denylist WHERE kid = ?)`), kid).Scan(&exists)
 	if err != nil {
 		return false, err
 	}
@@ -136,8 +140,8 @@ func (d *Denylist) IsDenied(kid string) (bool, error) {
 func (d *Denylist) Deny(kid string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := d.db.ExecContext(ctx,
-		`INSERT INTO kid_denylist (kid) VALUES ($1) ON CONFLICT (kid) DO NOTHING`, kid); err != nil {
+	if _, err := d.db.ExecContext(ctx, d.dia.Rebind(
+		`INSERT INTO kid_denylist (kid) VALUES (?) ON CONFLICT (kid) DO NOTHING`), kid); err != nil {
 		return fmt.Errorf("deny kid: %w", err)
 	}
 	d.c.invalidate(kid)
@@ -148,13 +152,14 @@ func (d *Denylist) Deny(kid string) error {
 // (token.Revocation).
 type Revocation struct {
 	db  *sql.DB
+	dia dialect.Kind
 	ttl time.Duration
 	c   *flagCache
 }
 
 // NewRevocation builds the jti revocation store over revoked_jti.
-func NewRevocation(db *sql.DB, ttl time.Duration) *Revocation {
-	r := &Revocation{db: db, ttl: ttl}
+func NewRevocation(db *sql.DB, dia dialect.Kind, ttl time.Duration) *Revocation {
+	r := &Revocation{db: db, dia: dia, ttl: ttl}
 	r.c = newFlagCache(ttl, maxCacheEntries, nil, r.query)
 	return r
 }
@@ -163,8 +168,8 @@ func (r *Revocation) query(jti string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var exists bool
-	err := r.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM revoked_jti WHERE jti = $1)`, jti).Scan(&exists)
+	err := r.db.QueryRowContext(ctx, r.dia.Rebind(
+		`SELECT EXISTS(SELECT 1 FROM revoked_jti WHERE jti = ?)`), jti).Scan(&exists)
 	if err != nil {
 		return false, err
 	}
@@ -185,9 +190,9 @@ func (r *Revocation) IsRevoked(jti string) (bool, error) {
 func (r *Revocation) Revoke(jti string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO revoked_jti (jti, expires_at) VALUES ($1, $2)
-		 ON CONFLICT (jti) DO NOTHING`, jti, time.Now().Add(24*time.Hour)); err != nil {
+	if _, err := r.db.ExecContext(ctx, r.dia.Rebind(
+		`INSERT INTO revoked_jti (jti, expires_at) VALUES (?, ?)
+		 ON CONFLICT (jti) DO NOTHING`), jti, time.Now().Add(24*time.Hour)); err != nil {
 		return fmt.Errorf("revoke jti: %w", err)
 	}
 	r.c.invalidate(jti)
@@ -204,18 +209,21 @@ var (
 // per completion. It never records prompt/completion content (N6) and is
 // best-effort — a write failure is logged, not surfaced (the completion
 // already succeeded).
-type AuditLog struct{ db *sql.DB }
+type AuditLog struct {
+	db  *sql.DB
+	dia dialect.Kind
+}
 
 // NewAuditLog builds the metering-log writer over llm_audit_log.
-func NewAuditLog(db *sql.DB) *AuditLog { return &AuditLog{db: db} }
+func NewAuditLog(db *sql.DB, dia dialect.Kind) *AuditLog { return &AuditLog{db: db, dia: dia} }
 
 // Log records one completion's metering row (§14 P0 slice).
 func (a *AuditLog) Log(ctx context.Context, e budget.LedgerEntry, cached bool) {
-	if _, err := a.db.ExecContext(ctx,
+	if _, err := a.db.ExecContext(ctx, a.dia.Rebind(
 		`INSERT INTO llm_audit_log
 		    (run_id, request_id, tenant_id, provider, model,
 		     input_tokens, output_tokens, cost_usd, cache_hit, estimated)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`),
 		e.RunID, e.RequestID, e.TenantID, e.Provider, e.Model,
 		e.InputTokens, e.OutputTokens, e.CostUSD, cached, e.Estimated,
 	); err != nil {

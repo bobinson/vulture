@@ -37,17 +37,18 @@ func TestActualUSD_UnknownModelUsesFallbackRate(t *testing.T) {
 // normalizeUsage must derive cost from the real model rate, and still enforce
 // the usage-sanity floor (zero/nil tokens → hard error).
 func TestNormalizeUsage_UsesModelRate(t *testing.T) {
-	u, err := normalizeUsage(&wireUsage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}, "gpt-4o")
+	u, err := normalizeUsage(&wireUsage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}, "gpt-4o", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if math.Abs(u.CostUSD-12.50) > 1e-9 {
 		t.Fatalf("normalizeUsage cost = %v, want 12.50 (real gpt-4o rate)", u.CostUSD)
 	}
-	if _, err := normalizeUsage(nil, "gpt-4o"); err != ErrUsageMissing {
+	// Keyed (billed) provider: the usage floor still holds.
+	if _, err := normalizeUsage(nil, "gpt-4o", false); err != ErrUsageMissing {
 		t.Fatalf("nil usage: err = %v, want ErrUsageMissing", err)
 	}
-	if _, err := normalizeUsage(&wireUsage{}, "gpt-4o"); err != ErrUsageMissing {
+	if _, err := normalizeUsage(&wireUsage{}, "gpt-4o", false); err != ErrUsageMissing {
 		t.Fatalf("zero usage: err = %v, want ErrUsageMissing", err)
 	}
 }

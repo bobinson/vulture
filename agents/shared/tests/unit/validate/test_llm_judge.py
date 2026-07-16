@@ -32,6 +32,44 @@ from shared.validate.llm_judge import (
 from shared.validate.types import ValidateConfig, ValidationCheck
 
 
+def test_l5_client_routes_through_broker(monkeypatch):
+    """§31.1: with a per-run broker token, the L5 judge client points at the
+    broker (base_url + token + X-Vulture-Task-Type), not the raw OPENAI_* env —
+    so L5 is brokered/key-isolated and works for native gemini/anthropic."""
+    from shared.llm.broker import set_broker_task_type, set_broker_token
+    from shared.validate.llm_judge import _resolve_client_config
+
+    monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
+    monkeypatch.setenv("VULTURE_LLM_BROKER_URL", "http://localhost:8090/v1")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")  # must be ignored
+    monkeypatch.setenv("OPENAI_API_KEY", "nvapi-should-not-be-used")
+    set_broker_token("run-tok-xyz")
+    set_broker_task_type("cwe")
+    try:
+        base_url, api_key, headers = _resolve_client_config()
+        assert base_url == "http://localhost:8090/v1"
+        assert api_key == "run-tok-xyz"
+        assert headers.get("X-Vulture-Task-Type") == "cwe"
+    finally:
+        set_broker_token(None)
+        set_broker_task_type(None)
+
+
+def test_l5_client_falls_back_to_env_without_broker(monkeypatch):
+    """Broker off / no token → L5 uses OPENAI_BASE_URL / OPENAI_API_KEY as before."""
+    from shared.llm.broker import set_broker_token
+    from shared.validate.llm_judge import _resolve_client_config
+
+    monkeypatch.delenv("VULTURE_LLM_BROKER", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gw.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    set_broker_token(None)
+    base_url, api_key, headers = _resolve_client_config()
+    assert base_url == "https://gw.example/v1"
+    assert api_key == "sk-env"
+    assert headers == {}
+
+
 def test_max_output_tokens_env_and_default(monkeypatch):
     """L5 max_tokens is tunable (env > default). Reasoning models (e.g. qwen3)
     burn the budget on hidden reasoning; too low a cap truncates the verdict

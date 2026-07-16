@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
 
 from shared.cancellation import CancelToken, set_cancel_token
-from shared.llm.broker import set_broker_task_type, set_broker_token
+from shared.llm.broker import set_broker_task_type, set_broker_token, set_context_window
 from shared.models.audit_request import AuditRequest
 
 
@@ -67,6 +67,10 @@ async def _cancellable_stream(
     # with the minting shell (§25.2); absent → header omitted (broker rejects,
     # fail-closed) which is correct when the broker is on but task_type is unset.
     ctx.run(set_broker_task_type, getattr(req, "task_type", None))
+    # §31: bind the broker-resolved model context window so provider.
+    # get_context_window prefers it over the local table (custom-gateway models
+    # the agent doesn't know). None (broker off) → the agent resolves its own.
+    ctx.run(set_context_window, getattr(req, "context_window", None))
     loop = asyncio.get_running_loop()
     # UNBOUNDED by design (feature 0061 §3.2 R-3): a bounded queue would block
     # the producer on `put` once a disconnected consumer stops draining,

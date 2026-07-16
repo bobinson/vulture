@@ -1,6 +1,6 @@
 //go:build integration
 
-package pgstore
+package sqlstore
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/vulture/backend/internal/broker/budget"
+	"github.com/vulture/backend/internal/broker/dialect"
 	"github.com/vulture/backend/internal/broker/token"
 )
 
@@ -40,7 +41,7 @@ func testDB(t *testing.T) *sql.DB {
 
 func TestPG_Denylist_DenyThenDenied(t *testing.T) {
 	db := testDB(t)
-	d := NewDenylist(db, time.Millisecond) // tiny TTL so the deny is visible at once
+	d := NewDenylist(db, dialect.Postgres, time.Millisecond) // tiny TTL so the deny is visible at once
 	kid := "kid-itest-" + time.Now().Format("150405.000000")
 
 	ok, err := d.IsDenied(kid)
@@ -58,7 +59,7 @@ func TestPG_Denylist_DenyThenDenied(t *testing.T) {
 
 func TestPG_Revocation_RevokeThenRevoked(t *testing.T) {
 	db := testDB(t)
-	r := NewRevocation(db, time.Millisecond)
+	r := NewRevocation(db, dialect.Postgres, time.Millisecond)
 	jti := "jti-itest-" + time.Now().Format("150405.000000")
 
 	ok, err := r.IsRevoked(jti)
@@ -81,7 +82,7 @@ func TestPG_Revocation_RevokeThenRevoked(t *testing.T) {
 // A closed DB (unreachable store) fails CLOSED with ErrRevocationUnavailable.
 func TestPG_Revocation_StoreDownFailsClosed(t *testing.T) {
 	db := testDB(t)
-	r := NewRevocation(db, time.Millisecond)
+	r := NewRevocation(db, dialect.Postgres, time.Millisecond)
 	_ = db.Close() // simulate PG unreachable
 	_, err := r.IsRevoked("some-jti")
 	if err == nil {
@@ -94,7 +95,7 @@ func TestPG_Revocation_StoreDownFailsClosed(t *testing.T) {
 
 func TestPG_AuditLog_InsertsRow(t *testing.T) {
 	db := testDB(t)
-	al := NewAuditLog(db)
+	al := NewAuditLog(db, dialect.Postgres)
 	run := "run-al-" + time.Now().Format("150405.000000")
 	al.Log(context.Background(), budget.LedgerEntry{
 		RunID: run, RequestID: "q1", TenantID: "local", Provider: "openai",

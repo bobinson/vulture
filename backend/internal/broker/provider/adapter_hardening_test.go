@@ -6,11 +6,13 @@ import (
 	"testing"
 )
 
-// M4 (§26): temperature=0 (deterministic sampling — the right default for a
-// security scanner) must be sent on the wire, not dropped so the provider
-// applies its own ~1.0 default.
+// M4 (§26) + §32.1 #4: an EXPLICIT temperature=0 (deterministic sampling — the
+// right default for a security scanner) must be sent on the wire for a model
+// that accepts sampling params, not dropped so the provider applies its own
+// ~1.0 default. Presence is signaled by HasTemperature (an omitted temperature
+// is a separate case — it must NOT be fabricated as 0).
 func TestBuildChatBody_SendsExplicitZeroTemperature(t *testing.T) {
-	body := buildChatBody(CompletionRequest{Model: "m", Temperature: 0})
+	body := buildChatBody(CompletionRequest{Model: "m", Temperature: 0, HasTemperature: true})
 	temp, ok := body["temperature"]
 	if !ok {
 		t.Fatal("temperature omitted from body; an explicit 0 must be transmitted")

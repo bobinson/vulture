@@ -1270,22 +1270,41 @@ def run_combined_audit(
         # Feature 0057 P1f: the collector now sweeps the whole tree in
         # context-window-sized batches (no single pre-built context / silent
         # tail-drop). It returns a partial-results notice (P1d) when a cap hit.
-        (
-            llm_findings, llm_error,
-            actual_input_tokens, actual_output_tokens,
-            llm_notice,
-        ) = _collect_llm_findings(
-            run_id=run_id,
-            source_path=source_path,
-            categories=categories,
-            skill_tools=skill_tools,
-            instructions=instructions,
-            domain_label=domain_label,
-            prior_context=prior_context,
-            model=model,
-            skill_findings=skill_findings,
-            llm_tier3=llm_tier3,
-        )
+        #
+        # §32.1 #19: the ENTIRE Phase-2 path — including setup (broker provider
+        # construction, ModelSettings, Agent build) that lives before the guarded
+        # LLM call — is wrapped here so that ANY failure degrades to skills-only.
+        # Skill findings were already computed (and, for streaming agents, already
+        # emitted); an optional LLM-phase failure must NEVER suppress the final
+        # `result`/`agent_end` or throw away a completed skill scan.
+        llm_findings: list[dict] = []
+        llm_error = None
+        llm_notice = None
+        try:
+            (
+                llm_findings, llm_error,
+                actual_input_tokens, actual_output_tokens,
+                llm_notice,
+            ) = _collect_llm_findings(
+                run_id=run_id,
+                source_path=source_path,
+                categories=categories,
+                skill_tools=skill_tools,
+                instructions=instructions,
+                domain_label=domain_label,
+                prior_context=prior_context,
+                model=model,
+                skill_findings=skill_findings,
+                llm_tier3=llm_tier3,
+            )
+        except Exception as exc:  # noqa: BLE001 — degradation guard, not a swallow
+            logger.warning(
+                "llm_phase_failed_degrading run_id=%s error=%s",
+                run_id, str(exc)[:200],
+            )
+            yield emitter.text_message(
+                "LLM phase unavailable — returning skill findings only."
+            )
         if llm_notice:
             yield emitter.text_message(llm_notice)
         if llm_error:

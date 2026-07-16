@@ -105,10 +105,13 @@ func TestDisabledBroker_MintAndRevokeAreNoops(t *testing.T) {
 }
 
 func TestAllowlistOrDefault(t *testing.T) {
-	if got := allowlistOrDefault(nil); len(got) != 1 || got[0] != "openai" {
+	if got := allowlistOrDefault(nil, "openai"); len(got) != 1 || got[0] != "openai" {
 		t.Fatalf("empty allowlist default = %v, want [openai]", got)
 	}
-	if got := allowlistOrDefault([]string{"anthropic"}); len(got) != 1 || got[0] != "anthropic" {
+	if got := allowlistOrDefault(nil, "openai-compatible"); len(got) != 1 || got[0] != "openai-compatible" {
+		t.Fatalf("empty allowlist default = %v, want [openai-compatible]", got)
+	}
+	if got := allowlistOrDefault([]string{"anthropic"}, "openai"); len(got) != 1 || got[0] != "anthropic" {
 		t.Fatalf("configured allowlist = %v, want [anthropic]", got)
 	}
 }

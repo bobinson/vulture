@@ -123,6 +123,11 @@ func (s *Server) tryCandidates(ctx context.Context, claims *token.Claims, req *c
 		if err == nil {
 			return resp, nil
 		}
+		// §32: log the egress failure cause server-side (secret-free: the adapter
+		// carries only the upstream STATUS code / transport cause, never the
+		// response body or key — N6) so an operator can see WHY a provider call
+		// failed instead of only the scrubbed client-facing provider_unavailable.
+		log.Printf("broker: egress failed provider=%s model=%s: %v", t.Provider, c.Model, err)
 		if !isFailover(err) {
 			return nil, mapProviderErr(err)
 		}
@@ -202,22 +207,37 @@ func (s *Server) selectModel(req *completeRequest) (*egress.ModelSelection, *api
 // reserved. It is re-applied to EVERY fallback candidate — failover must
 // never skip the gate.
 func (s *Server) egressCheck(c egress.Candidate) (*egress.PinnedTarget, *apiError) {
+	dp, dbu := s.defaultRoute()
 	prov := c.Provider
 	if prov == "" {
-		prov = defaultProvider
+		prov = dp
 	}
 	if !s.deps.Allowlist.Allowed(prov) {
 		return nil, errProviderNotAllowlist
 	}
 	base := c.BaseURL
-	if base == "" && prov == defaultProvider {
-		base = defaultOpenAIBaseURL
+	if base == "" && prov == dp {
+		base = dbu
 	}
 	target, err := s.deps.SSRF.Validate(prov, base)
 	if err != nil {
 		return nil, mapEgressErr(err)
 	}
 	return target, nil
+}
+
+// defaultRoute returns the configured default provider + base URL, falling
+// back to first-party OpenAI when unset (§5/§25.2). Lets a self-host
+// deployment point the broker at a local OpenAI-compatible server.
+func (s *Server) defaultRoute() (provider, baseURL string) {
+	provider, baseURL = s.deps.DefaultProvider, s.deps.DefaultBaseURL
+	if provider == "" {
+		provider = defaultProvider
+	}
+	if baseURL == "" && provider == defaultProvider {
+		baseURL = defaultOpenAIBaseURL
+	}
+	return provider, baseURL
 }
 
 // adapterFor resolves the pinned target to its provider adapter and builds
@@ -339,10 +359,12 @@ func (s *Server) guard(ctx context.Context, providerKey, breakerKey string, fn f
 	})
 }
 
-// usageOK enforces the usage-sanity floor: a clean completion must be
-// present and report a non-zero token count, never $0/zero usage (§11).
+// usageOK enforces the usage-sanity floor: a clean completion must be present
+// and report a non-zero token count, never $0/zero usage (§11) — EXCEPT when the
+// adapter marked the usage Estimated (§32.1 #5: a keyless/local $0 endpoint that
+// omitted its meter is a legitimate completion, not a billing risk).
 func usageOK(resp *provider.CompletionResponse) bool {
-	return resp != nil && (resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0)
+	return resp != nil && (resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 || resp.Usage.Estimated)
 }
 
 // buildCompletionRequest normalizes the HTTP body into the adapter request,
@@ -358,6 +380,7 @@ func buildCompletionRequest(req *completeRequest, model string) provider.Complet
 		ToolChoice:     req.ToolChoice,
 		MaxTokens:      req.MaxTokens,
 		Temperature:    req.Temperature,
+		HasTemperature: req.HasTemperature,
 		Stream:         false,
 		RequestID:      req.RequestID,
 	}

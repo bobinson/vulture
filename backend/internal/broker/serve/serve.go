@@ -1,8 +1,8 @@
 // Package serve is the LLM-broker composition root (feature 0064, §25.2): it
 // assembles the fully-wired broker HTTP handler + a per-run token mint/revoke
-// facility from a BrokerConfig and a Postgres handle, and runs the lease
-// sweeper. The backend mounts Handler() on an internal-only listener and calls
-// MintForAgent at audit dispatch / RevokeRun at run end.
+// facility from a BrokerConfig and a SQL store handle (Postgres OR SQLite, §29),
+// and runs the lease sweeper. The backend mounts Handler() on an internal-only
+// listener and calls MintForAgent at audit dispatch / RevokeRun at run end.
 package serve
 
 import (
@@ -23,11 +23,13 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/broker/budget"
+	"github.com/vulture/backend/internal/broker/dialect"
 	"github.com/vulture/backend/internal/broker/egress"
-	"github.com/vulture/backend/internal/broker/pgstore"
+	"github.com/vulture/backend/internal/broker/modelmeta"
 	"github.com/vulture/backend/internal/broker/provider"
 	"github.com/vulture/backend/internal/broker/resilience"
 	"github.com/vulture/backend/internal/broker/server"
+	"github.com/vulture/backend/internal/broker/sqlstore"
 	"github.com/vulture/backend/internal/broker/token"
 	"github.com/vulture/backend/internal/config"
 )
@@ -61,11 +63,12 @@ type Broker struct {
 	stopSweep context.CancelFunc
 }
 
-// Build assembles the broker from its config, the resolved primary model, and a
-// Postgres handle. The caller MUST gate on cfg.Enabled && db != nil (the broker
-// is Postgres-only). A returned Broker with Enabled=false means the config was
-// present but unusable; callers treat it as "broker off".
-func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB) (*Broker, error) {
+// Build assembles the broker from its config, the resolved primary model, a SQL
+// store handle, and its dialect (Postgres OR SQLite, §29). The caller MUST gate
+// on cfg.Enabled && db != nil (the broker requires a store). A returned Broker
+// with Enabled=false means the config was present but unusable; callers treat it
+// as "broker off".
+func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect.Kind) (*Broker, error) {
 	privPEM, pubPEM, err := resolveKeypair(cfg.MintKey)
 	if err != nil {
 		return nil, fmt.Errorf("broker keypair: %w", err)
@@ -74,29 +77,59 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB) (*Broker, e
 	if err != nil {
 		return nil, fmt.Errorf("broker minter: %w", err)
 	}
-	denylist := pgstore.NewDenylist(db, pgstore.DefaultCacheTTL)
-	revocation := pgstore.NewRevocation(db, pgstore.DefaultCacheTTL)
+	denylist := sqlstore.NewDenylist(db, dia, sqlstore.DefaultCacheTTL)
+	revocation := sqlstore.NewRevocation(db, dia, sqlstore.DefaultCacheTTL)
 	verifier, err := token.NewVerifier(map[string][]byte{brokerKID: pubPEM}, denylist, revocation)
 	if err != nil {
 		return nil, fmt.Errorf("broker verifier: %w", err)
 	}
 
-	budgetDB := budget.NewPostgresDB(db)
+	// Resolve the default egress route: an operator can point the broker at a
+	// local OpenAI-compatible server (LM Studio / Ollama / vLLM) for self-host.
+	defaultProvider := cfg.Provider
+	if defaultProvider == "" {
+		defaultProvider = "openai"
+	}
+	allowlist := egress.NewAllowlist(allowlistOrDefault(cfg.ProviderAllowlist, defaultProvider)...)
+	ssrf := egress.NewSSRFValidator(allowlist, netResolver)
+	if cfg.AllowLocalEgress {
+		// Dev/self-host: permit loopback/RFC1918 + http for the configured local
+		// provider (link-local/IMDS/multicast stay blocked, §11).
+		ssrf = egress.NewSSRFValidatorAllowingLocal(allowlist, netResolver)
+	}
+
+	budgetDB := budget.NewSQLDB(db, dia)
+	// Provision the tenant budget: the sharded CAS reserves against existing
+	// llm_budget_shard rows, so without seeded rows EVERY request fails closed
+	// (budget_exceeded). Seed tenant "local" (§21) with cap = BudgetUSD split
+	// across shards, or an effectively-unlimited cap when no cap is set
+	// (VULTURE_LLM_BUDGET_USD <= 0 ⇒ "no cap", §17). ON CONFLICT preserves an
+	// existing tenant's cap + accumulated spend across restarts.
+	if err := seedTenantBudget(db, dia, "local", cfg.BudgetShards, cfg.BudgetUSD); err != nil {
+		return nil, fmt.Errorf("seed budget: %w", err)
+	}
 	deps := server.Dependencies{
-		Verifier:       verifier,
-		Denylist:       denylist,
-		Revocation:     revocation,
-		Budget:         budget.NewManager(budgetDB, cfg.BudgetShards),
-		Selector:       egress.NewConfigSelector(primaryModel, cfg.Fallbacks),
-		SSRF:           egress.NewSSRFValidator(egress.NewAllowlist(allowlistOrDefault(cfg.ProviderAllowlist)...), netResolver),
-		Allowlist:      egress.NewAllowlist(allowlistOrDefault(cfg.ProviderAllowlist)...),
-		Adapters:       defaultAdapters(cfg.CallTimeoutSec),
-		Keys:           keysFromEnv(),
-		Breakers:       resilience.NewBreakerPool(resilience.CircuitConfig{FailureThreshold: 5, OpenTimeout: 30 * time.Second, HalfOpenMaxCalls: 1, SuccessThreshold: 1}),
+		Verifier:        verifier,
+		Denylist:        denylist,
+		Revocation:      revocation,
+		Budget:          budget.NewManager(budgetDB, cfg.BudgetShards),
+		Selector:        egress.NewConfigSelector(primaryModel, cfg.Fallbacks),
+		SSRF:            ssrf,
+		Allowlist:       allowlist,
+		Adapters:        defaultAdapters(cfg.CallTimeoutSec, defaultProvider),
+		Keys:            keysFromEnv(defaultProvider),
+		DefaultProvider: defaultProvider,
+		// §30: egress SSRF-validates + pins a CONCRETE base URL before the
+		// adapter runs, so a native cloud provider needs its canonical endpoint
+		// when no explicit base URL is configured (gemini/anthropic would
+		// otherwise hit egress with an empty URL and fail). An operator override
+		// (VULTURE_LLM_BROKER_PROVIDER_BASE_URL, e.g. a local LM Studio) wins.
+		DefaultBaseURL: defaultBaseURL(cfg.ProviderBaseURL, defaultProvider),
+		Breakers:       resilience.NewBreakerPool(resilience.CircuitConfig{FailureThreshold: 5, OpenTimeout: 30 * time.Second, HalfOpenMaxCalls: 1, SuccessThreshold: 1, IsFailure: breakerCountsAsFailure}),
 		Bulkheads:      resilience.NewBulkheadPool(resilience.BulkheadConfig{MaxConcurrent: 16}),
 		Retriers:       resilience.NewRetrierPool(retrierConfig()),
 		CallTimeoutSec: cfg.CallTimeoutSec,
-		AuditLog:       pgstore.NewAuditLog(db),
+		AuditLog:       sqlstore.NewAuditLog(db, dia),
 		DBHealth:       db.PingContext,
 	}
 
@@ -116,7 +149,7 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB) (*Broker, e
 }
 
 // Disabled returns an inert broker (Enabled=false) whose Mint/Revoke are
-// no-ops — used when the config is off or Postgres is unavailable so callers
+// no-ops — used when the config is off or no store is available so callers
 // need no nil checks.
 func Disabled() *Broker { return &Broker{Enabled: false} }
 
@@ -150,6 +183,18 @@ func (b *Broker) MintForAgent(runID, taskType string) (string, error) {
 		b.track(runID, claims.JTI)
 	}
 	return tok, nil
+}
+
+// ContextWindow resolves the run's primary model's context window (tokens) via
+// the broker-owned registry (§31), honoring a VULTURE_LLM_CTX_SIZE override. It
+// is injected at dispatch so the agent sizes its LLM phase without its own
+// table. Returns 0 when disabled / no model — the caller then injects nothing
+// and the agent falls back to its own resolution (Mode A unchanged).
+func (b *Broker) ContextWindow() int {
+	if b == nil || !b.Enabled || len(b.models) == 0 {
+		return 0
+	}
+	return modelmeta.ResolveContextWindow(b.models[0], os.Getenv("VULTURE_LLM_CTX_SIZE"))
 }
 
 // RevokeRun revokes every token minted for runID (§6/M3, run end/cancel).
@@ -254,38 +299,107 @@ func parsePriv(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 // netResolver is the production SSRF resolver (real DNS).
 func netResolver(host string) ([]net.IP, error) { return net.LookupIP(host) }
 
-// allowlistOrDefault defaults an empty allowlist to the configured adapter set
-// so an operator who enables the broker without setting the allowlist still
-// gets a working (openai-only) egress rather than a broker that blocks all.
-func allowlistOrDefault(list []string) []string {
+// defaultBaseURL resolves the broker's egress base URL: an explicit operator
+// override wins (a local LM Studio / vLLM / proxy); otherwise the provider's
+// canonical endpoint (gemini/anthropic/openai) so egress has a concrete URL to
+// SSRF-validate + pin (§30). "" for a bare openai-compatible with no override —
+// which is an operator error surfaced at first egress, by design.
+func defaultBaseURL(override, defaultProvider string) string {
+	if override != "" {
+		return override
+	}
+	return provider.CanonicalBaseURL(defaultProvider)
+}
+
+// allowlistOrDefault defaults an empty allowlist to the configured default
+// provider, so an operator who enables the broker without setting the
+// allowlist still gets a working egress rather than a broker that blocks all.
+func allowlistOrDefault(list []string, defaultProvider string) []string {
 	if len(list) == 0 {
-		return []string{"openai"}
+		return []string{defaultProvider}
 	}
 	return list
 }
 
 // defaultAdapters is the P0 adapter set: first-party openai + an
 // openai-compatible adapter (LM Studio / vLLM / LiteLLM proxy), keyed by name.
-func defaultAdapters(callTimeoutSec int) map[string]provider.Adapter {
+// A non-standard configured default provider gets an OpenAI-compatible adapter
+// under its own name so egress can resolve it.
+func defaultAdapters(callTimeoutSec int, defaultProvider string) map[string]provider.Adapter {
 	timeout := time.Duration(callTimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
 	hc := &http.Client{Timeout: timeout}
-	return map[string]provider.Adapter{
+	adapters := map[string]provider.Adapter{
 		"openai":            provider.NewOpenAIAdapter(hc),
 		"openai-compatible": provider.NewOpenAICompatibleAdapter("openai-compatible", hc),
+		// §30: native Gemini (generateContent) + Anthropic (Messages) so the
+		// broker fronts every provider — the prerequisite for broker-as-default.
+		"gemini":    provider.NewGeminiAdapter(hc),
+		"anthropic": provider.NewAnthropicAdapter(hc),
 	}
+	// A non-standard default provider (an unknown local server) gets an
+	// OpenAI-compatible adapter under its own name; the native ones above win.
+	if _, ok := adapters[defaultProvider]; !ok {
+		adapters[defaultProvider] = provider.NewOpenAICompatibleAdapter(defaultProvider, hc)
+	}
+	return adapters
+}
+
+// noCapSentinel is the per-shard cap used when the deployment sets no budget
+// cap (VULTURE_LLM_BUDGET_USD <= 0): large enough that reserve never blocks in
+// practice, while fitting the llm_budget_shard.cap NUMERIC(18,8) column (integer
+// part < 1e10). The ledger still records real spend for metering.
+const noCapSentinel = 1e9
+
+// seedTenantBudget inserts the tenant's sharded budget rows (idempotent). With
+// capUSD > 0 the cap is split evenly across shards; otherwise each shard gets
+// the no-cap sentinel. Existing rows are preserved (ON CONFLICT DO NOTHING) so
+// spend + operator-tuned caps survive restarts.
+func seedTenantBudget(db *sql.DB, dia dialect.Kind, tenant string, shards int, capUSD float64) error {
+	if shards < 1 {
+		shards = 1
+	}
+	perShard := noCapSentinel
+	if capUSD > 0 {
+		perShard = capUSD / float64(shards)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	q := dia.Rebind(`INSERT INTO llm_budget_shard (tenant_id, shard, reserved, spent, cap)
+			 VALUES (?, ?, 0, 0, ?) ON CONFLICT (tenant_id, shard) DO NOTHING`)
+	for s := 0; s < shards; s++ {
+		if _, err := db.ExecContext(ctx, q, tenant, s, perShard); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // keysFromEnv builds the broker-held provider key set (N1: keys live ONLY in
 // the backend). P0 sources them from the backend's own env; BYO-key from
 // tenant_provider_keys is P0.1.
-func keysFromEnv() provider.StaticKeys {
+func keysFromEnv(defaultProvider string) provider.StaticKeys {
 	keys := provider.StaticKeys{}
 	if k := os.Getenv("OPENAI_API_KEY"); k != "" {
 		keys["openai"] = k
 		keys["openai-compatible"] = k // shares the key unless a BYO endpoint overrides (P0.1)
+	}
+	// §30: each cloud provider uses its OWN key.
+	if k := os.Getenv("GEMINI_API_KEY"); k != "" {
+		keys["gemini"] = k
+	}
+	if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+		keys["anthropic"] = k
+	}
+	// A local/custom default provider with no key of its own inherits the
+	// OpenAI key (local servers like LM Studio simply ignore it); a provider
+	// that already has its own key above keeps it.
+	if _, ok := keys[defaultProvider]; !ok {
+		if k := os.Getenv("OPENAI_API_KEY"); k != "" {
+			keys[defaultProvider] = k
+		}
 	}
 	return keys
 }
@@ -299,6 +413,16 @@ func (retrierClassifier) Retryable(err error) (bool, time.Duration) {
 		return true, 0
 	}
 	return false, 0
+}
+
+// breakerCountsAsFailure is the per-(provider,model) breaker's failure
+// classifier (§32.1 #1): only a provider-HEALTH failure counts toward tripping.
+// The breaker wraps the retrier, so a drained retry budget on a transient error
+// (ErrRetryBudgetExhausted) also counts — the provider WAS failing. Permanent
+// client faults, usage-missing, and ctx cancellation are breaker-neutral.
+func breakerCountsAsFailure(err error) bool {
+	return provider.IsProviderHealthFailure(err) ||
+		errors.Is(err, resilience.ErrRetryBudgetExhausted)
 }
 
 func retrierConfig() resilience.RetrierConfig {

@@ -57,6 +57,7 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// so a client cannot inject a forged/foreign per-run credential (mirrors the
 	// DegradedReason overwrite below).
 	req.BrokerToken = ""
+	req.ContextWindow = 0 // §31: broker-injected at dispatch, never client-supplied
 
 	// Feature 0039: per-audit LLM-health preflight. Best-effort — if the
 	// aggregator cannot reach any agent, proceed without populating
@@ -225,7 +226,7 @@ func (h *AuditHandler) Compare(w http.ResponseWriter, r *http.Request) {
 	}
 	if prev == nil {
 		writeJSON(w, http.StatusOK, model.AuditComparison{
-			HasPrevious:      false,
+			HasPrevious:          false,
 			CurrentFindingsCount: len(audit.Findings),
 		})
 		return

@@ -303,6 +303,8 @@ VULTURE_DB_PATH=/data/vulture.db                     # SQLite path (fallback)
 VULTURE_DB_DSN=postgres://...                        # PostgreSQL DSN (if set, uses Postgres)
 VULTURE_JWT_SECRET=change-me-in-production           # JWT signing key
 VULTURE_LOCAL_MODE=true                              # Enable passwordless auth
+VULTURE_AGENT_PROXY_TIMEOUT_SEC=600                  # Backend per-agent whole-audit timeout (default 600s/10m). Raise for slow local models (LM Studio/Ollama) on large trees; should be >= VULTURE_AGENT_MAX_AUDIT_SECONDS so the backend doesn't cut the agent off first
+VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC=300        # Backend wait for an agent's HTTP response headers (default 300s)
 VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001      # Agent endpoints
 VULTURE_AGENT_OWASP_URL=http://agent-owasp:8002
 VULTURE_AGENT_SOC2_URL=http://agent-soc2:8003
@@ -320,7 +322,7 @@ VULTURE_CWE_DISABLE_DANGEROUS_FN=false               # CWE agent only: kill swit
 VULTURE_LLM_CTX_SIZE=                                # Override context window (tokens); auto-detected from model if unset
 VULTURE_LLM_MAX_FILES=10000                          # Cap on files swept by the LLM phase (partial results emitted when hit)
 VULTURE_LLM_BUDGET_USD=                              # Optional USD spend cap for the LLM phase; unset / <= 0 = no cap
-VULTURE_AGENT_MAX_AUDIT_SECONDS=900                  # Feature 0061: whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Must be >= backend per-agent timeout (600s); 0 disables (removes the hard guarantee)
+VULTURE_AGENT_MAX_AUDIT_SECONDS=900                  # Feature 0061: whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Should be <= the backend per-agent timeout VULTURE_AGENT_PROXY_TIMEOUT_SEC (default 600s) so the backend doesn't cut the agent off first; 0 disables (removes the hard guarantee)
 VULTURE_LLM_CALL_TIMEOUT_SEC=120                     # Feature 0061: per-LLM-call timeout so a hung model can't starve the between-batch cancel/deadline checks
 VULTURE_AUDIT_EXECUTOR_WORKERS=8                     # Feature 0061: dedicated audit-producer thread pool size = per-agent concurrent-audit cap
 VULTURE_AGENT_PORT=8001                              # Service port (varies per agent)

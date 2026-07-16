@@ -22,6 +22,51 @@ func newTestBreaker(clk Clock) CircuitBreaker {
 	})
 }
 
+// §32.1 #1: when an IsFailure classifier is set, only provider-health errors
+// count toward tripping the breaker. Client-fault / neutral errors are ignored
+// (neither trip nor reset) so a bad-request or ctx-cancel cannot open a shared
+// (provider,model) breaker and cause a false all_providers_down.
+func TestCircuitBreaker_NeutralErrorsDoNotTrip(t *testing.T) {
+	neutral := errors.New("neutral-client-fault")
+	health := errors.New("provider-health-failure")
+	cb := NewCircuitBreaker(CircuitConfig{
+		FailureThreshold: 3, OpenTimeout: 5 * time.Second, HalfOpenMaxCalls: 1, SuccessThreshold: 1,
+		Clock:     newFakeClock(),
+		IsFailure: func(err error) bool { return errors.Is(err, health) },
+	})
+	// Many neutral errors must never trip.
+	for i := 0; i < 10; i++ {
+		_ = cb.Execute(context.Background(), func(context.Context) error { return neutral })
+	}
+	if cb.State() != StateClosed {
+		t.Fatalf("neutral errors tripped breaker: %v", cb.State())
+	}
+	// Neutral errors must not RESET the consecutive-failure counter either:
+	// 2 health, 1 neutral, 1 health = 3 health total → trips.
+	_ = cb.Execute(context.Background(), func(context.Context) error { return health })
+	_ = cb.Execute(context.Background(), func(context.Context) error { return health })
+	_ = cb.Execute(context.Background(), func(context.Context) error { return neutral })
+	if cb.State() != StateClosed {
+		t.Fatalf("breaker tripped early: %v", cb.State())
+	}
+	_ = cb.Execute(context.Background(), func(context.Context) error { return health })
+	if cb.State() != StateOpen {
+		t.Fatalf("3 health failures (neutral interleaved) did not trip: %v", cb.State())
+	}
+}
+
+// Default (no IsFailure classifier) must preserve the legacy behavior: ANY
+// non-nil error counts as a failure.
+func TestCircuitBreaker_NilClassifierCountsAllErrors(t *testing.T) {
+	cb := newTestBreaker(newFakeClock())
+	for i := 0; i < 3; i++ {
+		_ = cb.Execute(context.Background(), func(context.Context) error { return errors.New("any") })
+	}
+	if cb.State() != StateOpen {
+		t.Fatalf("default breaker must trip on any error, got %v", cb.State())
+	}
+}
+
 func TestCircuitBreaker_StartsClosed(t *testing.T) {
 	cb := newTestBreaker(newFakeClock())
 	if got := cb.State(); got != StateClosed {

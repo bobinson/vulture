@@ -49,6 +49,11 @@ type Dependencies struct {
 	// CallTimeoutSec bounds each provider call (§9/§16, VULTURE_LLM_CALL_TIMEOUT_SEC);
 	// 0 disables the guard (test default).
 	CallTimeoutSec int
+	// DefaultProvider / DefaultBaseURL set the egress route for a candidate
+	// with no explicit provider/base_url (§5/§25.2). Empty ⇒ first-party
+	// OpenAI. Set these to route at a local OpenAI-compatible server.
+	DefaultProvider string
+	DefaultBaseURL  string
 	// AuditLog records one metering row per completion (§14 P0 slice). Nil
 	// disables the record (best-effort observability, never on the error path).
 	AuditLog AuditLogger

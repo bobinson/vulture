@@ -29,8 +29,9 @@ def test_default_client_sends_task_type_header(monkeypatch):
     _enable(monkeypatch)
     captured = {}
 
-    def _fake_async_openai(base_url, api_key, default_headers=None):
+    def _fake_async_openai(base_url, api_key, default_headers=None, **kwargs):
         captured["headers"] = default_headers
+        captured["kwargs"] = kwargs
         return _FakeClient(base_url, api_key, default_headers)
 
     import types, sys

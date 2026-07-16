@@ -88,6 +88,19 @@ type BrokerConfig struct {
 	// Fallbacks is the ordered fallback model chain (VULTURE_LLM_FALLBACKS,
 	// CSV). Empty = primary only (§7/§25.2).
 	Fallbacks []string `json:"fallbacks"`
+	// Provider is the default egress provider name (VULTURE_LLM_BROKER_PROVIDER,
+	// default "openai"). Set to "openai-compatible" to route at a local
+	// OpenAI-compatible server (LM Studio / vLLM / Ollama).
+	Provider string `json:"provider"`
+	// ProviderBaseURL overrides the default provider's endpoint
+	// (VULTURE_LLM_BROKER_PROVIDER_BASE_URL). Empty = the provider's canonical
+	// endpoint. e.g. http://127.0.0.1:1234/v1 for LM Studio.
+	ProviderBaseURL string `json:"provider_base_url"`
+	// AllowLocalEgress opts into loopback/RFC1918 egress + http for an
+	// operator-configured LOCAL provider (VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS,
+	// default false). Dev/self-host only — never with untrusted tenant base_urls
+	// (§11). Link-local/IMDS/multicast stay blocked even when true.
+	AllowLocalEgress bool `json:"allow_local_egress"`
 }
 
 // AgentRegistryEntry is an alias for the public agentregistry type.
@@ -142,6 +155,9 @@ func loadBrokerConfig(ini iniValues) BrokerConfig {
 		CallTimeoutSec:    atoiOr(resolve(ini, "VULTURE_LLM_CALL_TIMEOUT_SEC", "broker", "call_timeout_sec", ""), 120),
 		Listen:            resolve(ini, "VULTURE_LLM_BROKER_LISTEN", "broker", "listen", "127.0.0.1:8090"),
 		Fallbacks:         parseCSV(resolve(ini, "VULTURE_LLM_FALLBACKS", "broker", "fallbacks", "")),
+		Provider:          resolve(ini, "VULTURE_LLM_BROKER_PROVIDER", "broker", "provider", "openai"),
+		ProviderBaseURL:   resolve(ini, "VULTURE_LLM_BROKER_PROVIDER_BASE_URL", "broker", "provider_base_url", ""),
+		AllowLocalEgress:  isTruthy(resolve(ini, "VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS", "broker", "allow_local_egress", "off")),
 	}
 }
 

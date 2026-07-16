@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/assets"
+	"github.com/vulture/backend/internal/broker/dialect"
 	brokerserve "github.com/vulture/backend/internal/broker/serve"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/cwe"
@@ -74,17 +75,27 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Feature 0064 §25.2: assemble the LLM broker when enabled AND on Postgres
-	// (the broker's budget/kill stores are Postgres-only; SQLite/Mode-A has no
-	// broker tables). Off/SQLite → an inert Disabled() broker, so callers need
-	// no nil checks and Mode A is completely unchanged.
+	// Feature 0064 §25.2/§29: assemble the LLM broker when enabled, on whichever
+	// store the deployment uses — Postgres (Mode B, multi-replica) OR SQLite
+	// (Mode A / native Mode E). Off → an inert Disabled() broker, so callers need
+	// no nil checks and Mode A default (broker off) is completely unchanged.
 	broker := brokerserve.Disabled()
-	if cfg.Broker.Enabled && pgDB != nil {
-		b, berr := brokerserve.Build(cfg.Broker, cfg.LLMModel, pgDB)
-		if berr != nil {
-			return nil, fmt.Errorf("build llm broker: %w", berr)
+	if cfg.Broker.Enabled {
+		var brokerDB *sql.DB
+		var brokerDialect dialect.Kind
+		switch {
+		case pgDB != nil:
+			brokerDB, brokerDialect = pgDB, dialect.Postgres
+		case sqliteDB != nil:
+			brokerDB, brokerDialect = sqliteDB, dialect.SQLite
 		}
-		broker = b
+		if brokerDB != nil {
+			b, berr := brokerserve.Build(cfg.Broker, cfg.LLMModel, brokerDB, brokerDialect)
+			if berr != nil {
+				return nil, fmt.Errorf("build llm broker: %w", berr)
+			}
+			broker = b
+		}
 	}
 
 	var supervisor *pluginsupervisor.Supervisor

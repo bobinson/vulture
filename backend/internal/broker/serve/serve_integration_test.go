@@ -3,6 +3,7 @@
 package serve
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,9 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/vulture/backend/internal/broker/dialect"
 	"github.com/vulture/backend/internal/config"
+	"github.com/vulture/backend/internal/repository/migrations"
 )
 
 // Build must assemble a serving broker against a real Postgres (migration 024),
@@ -30,11 +33,14 @@ func TestBuild_AssemblesServingBroker(t *testing.T) {
 		t.Skipf("postgres unreachable: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	if err := migrations.Apply(context.Background(), db, migrations.Postgres); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
 
 	b, err := Build(config.BrokerConfig{
 		Enabled: true, BudgetShards: 4, CallTimeoutSec: 30,
 		ProviderAllowlist: []string{"openai"},
-	}, "gpt-4o", db)
+	}, "gpt-4o", db, dialect.Postgres)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -57,4 +63,15 @@ func TestBuild_AssemblesServingBroker(t *testing.T) {
 		t.Fatalf("MintForAgent = %q,%v", tok, err)
 	}
 	b.RevokeRun("run-int") // must not error against the real revocation store
+
+	// Budget MUST be seeded (regression: an unseeded llm_budget_shard makes the
+	// sharded CAS fail closed → every request budget_exceeded, blocking the
+	// broker entirely). Build seeds tenant "local" from BudgetShards.
+	var shards int
+	if err := db.QueryRow(`SELECT count(*) FROM llm_budget_shard WHERE tenant_id='local'`).Scan(&shards); err != nil {
+		t.Fatalf("count shards: %v", err)
+	}
+	if shards != 4 {
+		t.Fatalf("seeded budget shards = %d, want 4 (BudgetShards)", shards)
+	}
 }

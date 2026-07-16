@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -65,6 +63,7 @@ type chatWireResponse struct {
 type wireUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type wireToolCall struct {
@@ -95,7 +94,7 @@ func (a *openAIAdapter) Complete(ctx context.Context, creds Credentials, req Com
 	defer resp.Body.Close()
 
 	if err := statusError(resp.StatusCode); err != nil {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) // drain, never surface body (N6)
+		drainErrBody(a.name, resp.StatusCode, body, resp.Body) // N6: drain; log only under debug flag
 		return nil, err
 	}
 
@@ -103,7 +102,8 @@ func (a *openAIAdapter) Complete(ctx context.Context, creds Credentials, req Com
 	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
 		return nil, fmt.Errorf("decode completion response: %w", err)
 	}
-	return a.toResponse(&wire, req.RequestID)
+	// §32.1 #5: keyless == a local/$0 endpoint → the usage floor is relaxed.
+	return a.toResponse(&wire, req.RequestID, creds.APIKey == "")
 }
 
 // endpoint resolves the chat/completions URL, honoring creds.BaseURL and
@@ -132,48 +132,24 @@ func (a *openAIAdapter) do(ctx context.Context, endpoint string, creds Credentia
 	}
 	resp, err := a.client(creds.PinnedIP).Do(httpReq)
 	if err != nil {
-		// §26/M5: preserve the real cause. Only a cancelled/expired ctx is a
-		// cancellation; a connect-refused/DNS/TLS failure has a nil ctx.Err()
-		// and must not render as "provider unavailable: <nil>".
-		cause := err
-		if ctx.Err() != nil {
-			cause = ctx.Err()
-		}
-		return nil, fmt.Errorf("%w: %v", ErrProviderUnavailable, cause)
+		// §26/M5 + §32.1 #3: a cancelled/expired ctx surfaces raw (non-retriable,
+		// breaker-neutral); a real connectivity failure is TRANSIENT.
+		return nil, transportError(ctx, err)
 	}
 	return resp, nil
 }
 
-// client returns the adapter's HTTP client, wrapped with an IP-pinning
-// DialContext when the SSRF validator pinned a resolved address (§11,
-// DNS-rebinding TOCTOU defense). The TCP connection goes to pinnedIP while
-// the URL hostname is preserved for Host/SNI/certificate verification, so a
-// rebinding DNS record between validate-time and dial-time has no effect.
+// client returns the adapter's HTTP client, IP-pinned when the SSRF validator
+// resolved an address (§11). Delegates to the shared pinnedClient helper so
+// every adapter uses one implementation.
 func (a *openAIAdapter) client(pinnedIP string) *http.Client {
-	if pinnedIP == "" {
-		return a.http
-	}
-	if c, ok := a.pinnedClients.Load(pinnedIP); ok {
-		return c.(*http.Client)
-	}
-	dialer := &net.Dialer{}
-	pinned := *a.http // shallow copy: keep timeout/jar, replace transport
-	pinned.Transport = &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			_, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(pinnedIP, port))
-		},
-	}
-	c, _ := a.pinnedClients.LoadOrStore(pinnedIP, &pinned)
-	return c.(*http.Client)
+	return pinnedClient(a.http, &a.pinnedClients, pinnedIP)
 }
 
-// toResponse normalizes the wire body and enforces the usage-sanity floor.
-func (a *openAIAdapter) toResponse(wire *chatWireResponse, requestID string) (*CompletionResponse, error) {
-	usage, err := normalizeUsage(wire.Usage, wire.Model)
+// toResponse normalizes the wire body and enforces the usage-sanity floor
+// (relaxed for keyless/local $0 endpoints, §32.1 #5).
+func (a *openAIAdapter) toResponse(wire *chatWireResponse, requestID string, keyless bool) (*CompletionResponse, error) {
+	usage, err := normalizeUsage(wire.Usage, wire.Model, keyless)
 	if err != nil {
 		return nil, err
 	}
