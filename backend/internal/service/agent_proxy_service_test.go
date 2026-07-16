@@ -246,6 +246,20 @@ func TestAgentProxyTimeouts_FromEnv(t *testing.T) {
 	}
 }
 
+func TestAgentProxyTimeouts_ToleratesInlineComment(t *testing.T) {
+	// A .env value with a trailing comment / extra tokens must still parse the
+	// leading integer (not silently fall back to the default and mask the override).
+	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "1800 # 30 min")
+	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "600\t# header")
+	p := NewAgentProxyService(nil).(*agentProxyService)
+	if p.auditTimeout != 30*time.Minute {
+		t.Errorf("audit timeout = %v, want 30m (inline comment must be tolerated)", p.auditTimeout)
+	}
+	if p.respHeaderTimeout != 600*time.Second {
+		t.Errorf("response-header timeout = %v, want 600s", p.respHeaderTimeout)
+	}
+}
+
 func TestAgentProxyTimeouts_InvalidFallsBackToDefault(t *testing.T) {
 	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "not-a-number")
 	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "0")

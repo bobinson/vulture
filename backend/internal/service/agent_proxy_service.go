@@ -61,6 +61,10 @@ const (
 func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 	auditTimeout := envDurationSec("VULTURE_AGENT_PROXY_TIMEOUT_SEC", defaultAgentProxyTimeoutSec)
 	respHeaderTimeout := envDurationSec("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", defaultAgentRespHeaderTimeoutSec)
+	// Surface the RESOLVED timeouts so an operator can confirm an override
+	// actually took effect (env must be visible to THIS process — in vulture.sh
+	// dev it must live in .env, not just the shell).
+	log.Printf("[agent-proxy] audit_timeout=%s response_header_timeout=%s (override via VULTURE_AGENT_PROXY_TIMEOUT_SEC / _RESPONSE_HEADER_TIMEOUT_SEC)", auditTimeout, respHeaderTimeout)
 	return &agentProxyService{
 		minter:            minter,
 		auditTimeout:      auditTimeout,
@@ -78,9 +82,15 @@ func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 }
 
 // envDurationSec reads an integer-seconds env var, returning fallbackSec seconds
-// when it is unset, non-numeric, or <= 0.
+// when it is unset, non-numeric, or <= 0. It tolerates a trailing inline comment
+// or extra whitespace tokens (e.g. a quoted .env value like `"1800 # 30 min"`),
+// which would otherwise silently fall back to the default and mask an override.
 func envDurationSec(key string, fallbackSec int) time.Duration {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+	v := strings.TrimSpace(os.Getenv(key))
+	if i := strings.IndexAny(v, " \t#"); i >= 0 {
+		v = v[:i] // keep only the leading token
+	}
+	if v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
 		}
