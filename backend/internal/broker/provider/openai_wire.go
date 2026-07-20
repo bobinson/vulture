@@ -56,7 +56,7 @@ func transportError(ctx context.Context, err error) error {
 func buildChatBody(req CompletionRequest) map[string]any {
 	body := map[string]any{
 		"model":    req.Model,
-		"messages": req.Messages,
+		"messages": toWireMessages(req.Messages),
 	}
 	// §26/M4 + §32.1 #4: send temperature only when the client EXPLICITLY set it
 	// (an omitted value must not become a 0) AND the model accepts sampling
@@ -95,6 +95,56 @@ func toolChoiceWire(choice string) any {
 		return json.RawMessage(t)
 	}
 	return choice
+}
+
+// toWireMessages renders the normalized messages onto the OpenAI chat wire
+// (§32.1 #9c). The only non-trivial case is an assistant turn carrying
+// tool_calls: the OpenAI wire nests name+arguments under "function" (a flat
+// emission makes the provider mishandle a multi-turn tool loop). Plain
+// user/system/tool messages pass through with their standard fields.
+func toWireMessages(msgs []Message) []map[string]any {
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		wm := map[string]any{"role": m.Role}
+		if m.Content != "" {
+			wm["content"] = m.Content
+		}
+		if m.ToolCallID != "" {
+			wm["tool_call_id"] = m.ToolCallID
+		}
+		if m.Name != "" {
+			wm["name"] = m.Name
+		}
+		if len(m.ToolCalls) > 0 {
+			wm["tool_calls"] = toWireToolCalls(m.ToolCalls)
+			// An assistant tool-call turn has null content on the OpenAI wire;
+			// ensure the key is present (some strict servers require it).
+			if _, ok := wm["content"]; !ok {
+				wm["content"] = nil
+			}
+			// a tool-call turn must not carry a stray top-level function name
+			delete(wm, "name")
+		}
+		out = append(out, wm)
+	}
+	return out
+}
+
+// toWireToolCalls maps relayed tool calls onto the OpenAI nested function shape.
+func toWireToolCalls(calls []ToolCall) []map[string]any {
+	out := make([]map[string]any, 0, len(calls))
+	for _, c := range calls {
+		typ := c.Type
+		if typ == "" {
+			typ = "function"
+		}
+		out = append(out, map[string]any{
+			"id":       c.ID,
+			"type":     typ,
+			"function": map[string]any{"name": c.Name, "arguments": c.Arguments},
+		})
+	}
+	return out
 }
 
 // toWireTools maps normalized tool defs onto the OpenAI function-tool shape.
