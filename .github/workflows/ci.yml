@@ -33,7 +33,7 @@ jobs:
         # require golangci-lint v2 (different config schema). We pin v1.64.8
         # to match backend/.golangci.yml (schema v1), so the action must stay
         # on v6 — a Dependabot bump to v9 broke this (invalid version string).
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@v6
         with:
           working-directory: backend
           version: v1.64.8   # pin for reproducible lint (matches backend/.golangci.yml schema)
