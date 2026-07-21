@@ -42,6 +42,63 @@ def test_get_model_from_env(monkeypatch):
     assert get_model() == "litellm/ollama/qwen3:1.7b"
 
 
+def test_get_context_window_broker_injected(monkeypatch):
+    """§31: the broker-injected window wins over the local table; the explicit
+    VULTURE_LLM_CTX_SIZE env still beats even the injected value."""
+    from shared.llm.provider import get_context_window
+    from shared.llm.broker import set_context_window
+    monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
+    set_context_window(131072)
+    try:
+        assert get_context_window("z-ai/glm-5.2") == 131072
+        monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "70000")
+        assert get_context_window("z-ai/glm-5.2") == 70000  # env override wins
+    finally:
+        set_context_window(None)
+
+
+def test_get_context_window_glm_and_gemma3_family(monkeypatch):
+    """§31: the families that were missing (and caused the 8192 fallback bug)."""
+    from shared.llm.provider import get_context_window
+    from shared.llm.broker import set_context_window
+    monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
+    set_context_window(None)  # no broker injection → family inference
+    assert get_context_window("z-ai/glm-5.2") == 131072
+    assert get_context_window("gemma-3-27b-it") == 131072   # gemma-3 before generic gemma
+    assert get_context_window("gemma-2-9b") == 8192
+    assert get_context_window("gemini-2.5-flash") == 1_048_576
+
+
+def test_get_context_window_unknown_default(monkeypatch):
+    """§31: unknown model → the raised shared default (not the old 8192)."""
+    import shared.llm.provider as provider
+    from shared.llm.provider import get_context_window, DEFAULT_CONTEXT_WINDOW
+    from shared.llm.broker import set_context_window
+    monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
+    set_context_window(None)
+    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "https://gateway.example/v1")
+    assert get_context_window("totally-unknown-model-xyz") == DEFAULT_CONTEXT_WINDOW
+    assert DEFAULT_CONTEXT_WINDOW == 32_000  # raised from the old 8192 custom fallback
+
+
+def test_get_model_broker_on_skips_litellm_wrap(monkeypatch):
+    """§30: with the broker ON, the agent routes via the broker's OpenAI SDK
+    client using a PLAIN model — even when a custom OPENAI_BASE_URL is present.
+    LiteLLM-wrapping (litellm/openai/...) would take the SDK's LiteLLM path,
+    which bypasses the broker's per-run token → 401. So broker-on must NOT wrap.
+    """
+    import shared.llm.provider as provider
+    from shared.llm.provider import get_model
+    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.delenv("VULTURE_LLM_MODEL", raising=False)
+    # broker ON → plain model (routes through the broker).
+    monkeypatch.setenv("VULTURE_LLM_BROKER", "on")
+    assert get_model("z-ai/glm-5.2") == "z-ai/glm-5.2"
+    # broker OFF → unchanged: custom endpoint still routes via litellm/openai/.
+    monkeypatch.setenv("VULTURE_LLM_BROKER", "off")
+    assert get_model("z-ai/glm-5.2") == "litellm/openai/z-ai/glm-5.2"
+
+
 def test_get_embedding_model_cloud():
     from shared.llm.provider import get_embedding_model
     assert get_embedding_model("gpt-4o") == "text-embedding-3-small"
@@ -131,12 +188,15 @@ def test_get_context_window_default(monkeypatch):
     assert get_context_window("totally-unknown-model") == 32_000
 
 
-def test_get_context_window_custom_endpoint_returns_8192(monkeypatch):
-    """Custom endpoint (LM Studio, vLLM) falls back to 8192 for truly unknown models."""
+def test_get_context_window_custom_endpoint_unknown_uses_default(monkeypatch):
+    """§31: a custom endpoint (LM Studio/vLLM/gateway) with a truly unknown model
+    now falls back to the raised shared default, NOT the old timid 8192."""
     import shared.llm.provider as provider
+    from shared.llm.broker import set_context_window
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
+    set_context_window(None)
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
-    assert provider.get_context_window("unknown-local-model") == 8_192
+    assert provider.get_context_window("unknown-local-model") == provider.DEFAULT_CONTEXT_WINDOW
 
 
 def test_get_context_window_family_inference_qwen(monkeypatch):

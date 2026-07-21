@@ -20,6 +20,10 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# Least privilege (CodeQL): checkout + compose stack only; no writes to the repo.
+permissions:
+  contents: read
+
 jobs:
   mode-b-smoke:
     runs-on: ubuntu-latest

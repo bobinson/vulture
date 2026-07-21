@@ -109,19 +109,26 @@ class TestIssue3GeminiSourceContextCapped:
 
 
 class TestIssue4CustomEndpointContextWindow:
-    """Custom endpoint default context window should be 8192."""
+    """§31: the custom-endpoint fallback was raised from the timid 8192 to the
+    shared DEFAULT_CONTEXT_WINDOW (32000) — a custom endpoint is no longer
+    special-cased below the general default."""
 
-    def test_custom_base_url_returns_8192(self, monkeypatch):
+    def test_custom_base_url_unknown_uses_default(self, monkeypatch):
         import shared.llm.provider as provider
+        from shared.llm.broker import set_context_window
         monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
+        set_context_window(None)
         monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
-        assert provider.get_context_window("unknown-model") == 8_192
+        assert provider.get_context_window("unknown-model") == provider.DEFAULT_CONTEXT_WINDOW
+        assert provider.DEFAULT_CONTEXT_WINDOW == 32_000
 
-    def test_without_custom_url_returns_32000(self, monkeypatch):
+    def test_without_custom_url_returns_default(self, monkeypatch):
         import shared.llm.provider as provider
+        from shared.llm.broker import set_context_window
         monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
+        set_context_window(None)
         monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
-        assert provider.get_context_window("unknown-model") == 32_000
+        assert provider.get_context_window("unknown-model") == provider.DEFAULT_CONTEXT_WINDOW
 
 
 # ---------------------------------------------------------------------------

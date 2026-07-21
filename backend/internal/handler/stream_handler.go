@@ -37,6 +37,10 @@ type StreamHandler struct {
 	discoverH        *DiscoverHandler
 	agents           map[string]config.AgentConfig
 
+	// brokerRevoker revokes a finished run's LLM-broker token(s) at
+	// terminal state (feature 0064 §6/M3). nil when the broker is off.
+	brokerRevoker RunRevoker
+
 	// runMu/inFlight guard against concurrent runs of the SAME audit.
 	// Multiple stream connections (e.g. a CLI scan + an open UI tab, or a
 	// React-StrictMode double-mount opening two EventSources) would each
@@ -102,6 +106,16 @@ func (h *StreamHandler) awaitAndReplay(ctx context.Context, sseWriter *agui.SSEW
 		}
 	}
 }
+
+// RunRevoker revokes all LLM-broker tokens minted for a run (feature 0064
+// §6/M3). Satisfied by broker/serve.Broker.
+type RunRevoker interface {
+	RevokeRun(runID string)
+}
+
+// SetBrokerRevoker wires the LLM-broker run-token revoker (feature 0064). When
+// unset, run completion simply does not revoke (tokens are short-TTL).
+func (h *StreamHandler) SetBrokerRevoker(r RunRevoker) { h.brokerRevoker = r }
 
 func (h *StreamHandler) SetMemoryService(svc service.MemoryService) {
 	h.memorySvc = svc
@@ -1047,6 +1061,12 @@ func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *mode
 
 	saveFindings(h.auditSvc, audit.ID, findings)
 	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError)
+	// Feature 0064 §6/M3: the run reached a terminal state — revoke its
+	// broker token(s) so a leaked token can't keep spending. No-op when the
+	// broker is off (revoker nil / run had no minted tokens).
+	if h.brokerRevoker != nil {
+		h.brokerRevoker.RevokeRun(audit.ID)
+	}
 	dispatchWebhook(h.webhookSvc, audit, findings, scores)
 	backfillAndSaveProve(h.proveSvc, findings, proveResults, audit.ID)
 	storeMemoriesAndLineage(h, audit, source, findings)

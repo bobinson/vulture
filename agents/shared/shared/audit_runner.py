@@ -1260,26 +1260,51 @@ def run_combined_audit(
     if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
+        # §14 P0 rollout gate: record how this run's LLM phase reaches a
+        # provider — broker (routed through the key-isolating broker) or env
+        # (agent's own key). The §20 rollout removes env keys only once the
+        # fleet emits zero llm_path=env.
+        from shared.llm.broker import current_llm_path
+        logger.info("llm_path run_id=%s path=%s", run_id, current_llm_path())
 
         # Feature 0057 P1f: the collector now sweeps the whole tree in
         # context-window-sized batches (no single pre-built context / silent
         # tail-drop). It returns a partial-results notice (P1d) when a cap hit.
-        (
-            llm_findings, llm_error,
-            actual_input_tokens, actual_output_tokens,
-            llm_notice,
-        ) = _collect_llm_findings(
-            run_id=run_id,
-            source_path=source_path,
-            categories=categories,
-            skill_tools=skill_tools,
-            instructions=instructions,
-            domain_label=domain_label,
-            prior_context=prior_context,
-            model=model,
-            skill_findings=skill_findings,
-            llm_tier3=llm_tier3,
-        )
+        #
+        # §32.1 #19: the ENTIRE Phase-2 path — including setup (broker provider
+        # construction, ModelSettings, Agent build) that lives before the guarded
+        # LLM call — is wrapped here so that ANY failure degrades to skills-only.
+        # Skill findings were already computed (and, for streaming agents, already
+        # emitted); an optional LLM-phase failure must NEVER suppress the final
+        # `result`/`agent_end` or throw away a completed skill scan.
+        llm_findings: list[dict] = []
+        llm_error = None
+        llm_notice = None
+        try:
+            (
+                llm_findings, llm_error,
+                actual_input_tokens, actual_output_tokens,
+                llm_notice,
+            ) = _collect_llm_findings(
+                run_id=run_id,
+                source_path=source_path,
+                categories=categories,
+                skill_tools=skill_tools,
+                instructions=instructions,
+                domain_label=domain_label,
+                prior_context=prior_context,
+                model=model,
+                skill_findings=skill_findings,
+                llm_tier3=llm_tier3,
+            )
+        except Exception as exc:  # noqa: BLE001 — degradation guard, not a swallow
+            logger.warning(
+                "llm_phase_failed_degrading run_id=%s error=%s",
+                run_id, str(exc)[:200],
+            )
+            yield emitter.text_message(
+                "LLM phase unavailable — returning skill findings only."
+            )
         if llm_notice:
             yield emitter.text_message(llm_notice)
         if llm_error:
@@ -1308,6 +1333,10 @@ def run_combined_audit(
                 yield emitter.finding_event(**finding)
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
+    else:
+        # §14 P0 rollout gate: the LLM phase did not run (skills-only mode or a
+        # cancelled/expired run) — no provider key was used at all.
+        logger.info("llm_path run_id=%s path=skills", run_id)
 
     # --- Combine & emit final result ---
     all_findings = skill_findings + llm_new_findings
@@ -1806,6 +1835,18 @@ async def _collect_llm_findings_async(
     from shared.tools.file_lister import make_list_files_tool
     from shared.tools.pattern_matcher import make_search_pattern_tool
 
+    # feature 0064: when VULTURE_LLM_BROKER is on and this run carries a broker
+    # token, route THIS run's SDK calls through the internal broker via a
+    # per-run model provider carried on the run config. Never a global: with
+    # VULTURE_AUDIT_EXECUTOR_WORKERS > 1 a process-global client would bleed
+    # one run's broker token into another concurrent run's calls.
+    # Dual-mode/fail-safe: None when the broker is off/unconfigured/tokenless,
+    # so model selection and today's env-key path are untouched (Mode A).
+    from shared.llm.broker import broker_model_provider
+    run_model_provider = broker_model_provider()
+    if run_model_provider is not None:
+        logger.info("broker_client_per_run run_id=%s", run_id)
+
     resolved_model = get_model_with_fallback(model)
 
     if not source_context:
@@ -1902,14 +1943,32 @@ async def _collect_llm_findings_async(
 
     async def _run_agent():
         kwargs: dict[str, Any] = {}
+        rc_kwargs: dict[str, Any] = {}
+        if run_model_provider is not None:
+            rc_kwargs["model_provider"] = run_model_provider
         if hooks is not None:
+            rc_kwargs["hooks"] = hooks
+        if rc_kwargs:
             try:
                 from agents import RunConfig  # type: ignore[import-untyped]
-                kwargs["run_config"] = RunConfig(hooks=hooks)  # type: ignore[call-arg]
-            except (ImportError, TypeError):
-                logger.warning("loop_guard_hooks_disabled: SDK version does not support RunConfig(hooks=)")
+                try:
+                    kwargs["run_config"] = RunConfig(**rc_kwargs)  # type: ignore[call-arg]
+                except TypeError:
+                    # Older SDKs reject RunConfig(hooks=): drop the OPTIONAL loop
+                    # guard, never the broker provider (fail closed — see below).
+                    logger.warning("loop_guard_hooks_disabled: SDK version does not support RunConfig(hooks=)")
+                    if run_model_provider is not None:
+                        kwargs["run_config"] = RunConfig(model_provider=run_model_provider)  # type: ignore[call-arg]
+            except ImportError as exc:
+                # §26/M11: broker required but RunConfig missing → FAIL CLOSED
+                # (never fall back to the env-key global client, which would leak
+                # the keys the broker isolates); raise → skills-only (N2).
+                if run_model_provider is not None:
+                    raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
+                logger.warning("run_config_unavailable: SDK lacks RunConfig; loop guard disabled")
         return await Runner.run(agent, input=prompt_text, **kwargs)
 
+    from shared.llm.broker import aclose_broker_client
     from shared.llm.cooldown import cooldown_manager
 
     try:
@@ -1926,6 +1985,10 @@ async def _collect_llm_findings_async(
         cooldown_manager.record_failure(resolved_model, error_kind=kind.value)
         logger.warning("llm_failed kind=%s error=%s", kind.value, str(exc)[:200])
         return [], f"LLM analysis failed ({kind.value}): {str(exc)[:200]}", 0, 0
+    finally:
+        # §26/M7: close this run's broker client so its httpx pool/FDs don't
+        # leak in the long-lived agent process (no-op when the broker was off).
+        await aclose_broker_client()
 
     return findings, None, actual_input, actual_output
 

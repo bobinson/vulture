@@ -1,0 +1,25 @@
+name: hygiene
+
+on:
+  push:
+  pull_request:
+
+# Least privilege (CodeQL): this workflow only checks out and reads the tree.
+permissions:
+  contents: read
+
+jobs:
+  layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docs layout
+        run: |
+          set -e
+          bad=$(find docs -maxdepth 2 -type d -regextype posix-extended \
+                  -regex '.*/[0-9]{3,4}_[^/]+' -printf '%p\n' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Unexpected directories under docs/: $bad"
+            exit 1
+          fi
+          echo "OK"
