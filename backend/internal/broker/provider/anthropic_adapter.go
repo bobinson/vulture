@@ -38,10 +38,6 @@ func (a *anthropicAdapter) Name() string { return a.name }
 
 // --- wire shapes ---
 
-type anthTextBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
 type anthToolUseBlock struct {
 	Type  string          `json:"type"`
 	ID    string          `json:"id"`
