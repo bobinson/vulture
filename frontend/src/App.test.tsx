@@ -35,10 +35,9 @@ vi.mock("@/components/layout/Layout.tsx", async () => {
 });
 
 // Mock auth to return authenticated user by default
-vi.mock("@/lib/auth.tsx", async () => {
-  const React = await import("react");
+vi.mock("@/lib/auth.tsx", () => {
   return {
-    AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    AuthProvider: ({ children }: { children: import("react").ReactNode }) => <>{children}</>,
     useAuth: () => ({
       user: { id: "u1", name: "Test", email: "t@t.com", role: "admin", created_at: "" },
       token: "tok",
