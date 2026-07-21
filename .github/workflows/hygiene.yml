@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Least privilege (CodeQL): this workflow only checks out and reads the tree.
+permissions:
+  contents: read
+
 jobs:
   layout:
     runs-on: ubuntu-latest
