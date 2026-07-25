@@ -143,7 +143,7 @@ async def retry_llm_call(
             if kind not in RETRYABLE_KINDS or attempt >= max_attempts - 1:
                 raise
             delay = min(base_delay * (2 ** attempt), max_delay)
-            offset = (random.random() * 2 - 1) * jitter  # noqa: S311
+            offset = (random.random() * 2 - 1) * jitter
             delay = max(0.1, delay * (1 + offset))
             logger.info("llm_retry delay=%.1fs attempt=%d/%d", delay, attempt + 1, max_attempts)
             await asyncio.sleep(delay)
@@ -206,7 +206,7 @@ def retry_skill(
             if not _is_transient_skill_error(exc) or attempt >= max_attempts - 1:
                 raise
             delay = base_delay * (2 ** attempt)
-            offset = (random.random() * 2 - 1) * jitter  # noqa: S311
+            offset = (random.random() * 2 - 1) * jitter
             delay = max(0.05, delay * (1 + offset))
             logger.info(
                 "skill_retry fn=%s delay=%.2fs attempt=%d/%d error=%s",

@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 
 from agents import function_tool
-
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -96,7 +95,7 @@ SAFE_DEBUG_PATTERNS = re.compile(
 IMPORT_LINE = re.compile(r"^\s*(?:from|import|require|use)\s")
 
 # Two-tier context: debug mode is only high with production/deploy context
-_DEBUG_CONTEXT = [re.compile(r"(production|deploy|release|staging|prod|gunicorn|uwsgi)", re.I)]
+_DEBUG_CONTEXT = [re.compile(r"(production|deploy|release|staging|prod|gunicorn|uwsgi)", re.IGNORECASE)]
 
 # Configuration files to scan
 CONFIG_EXTENSIONS = frozenset({

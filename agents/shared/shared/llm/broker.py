@@ -12,8 +12,9 @@ rewritten. The broker URL and token are secret-class: they are never logged.
 
 import contextvars
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 # Same truthiness contract as VULTURE_LLM_TIER3 (audit_runner) — keep in sync.
 _TRUTHY = ("on", "true", "1", "yes")

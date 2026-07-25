@@ -18,7 +18,6 @@ from pathlib import Path
 
 from cwe_agent.skills.secret_scan import context as ctx
 
-
 # Minimum string length to consider. Below this, even maximum entropy
 # isn't strong evidence (3-char strings are commonly random IDs).
 MIN_LENGTH = 32

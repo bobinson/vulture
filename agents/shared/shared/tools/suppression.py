@@ -61,17 +61,17 @@ def should_suppress(
 # CWE info_exposure_check: test files with "password" in variable names
 INFO_EXPOSURE_SUPPRESSIONS: list[SuppressionRule] = [
     SuppressionRule(
-        title_pattern=re.compile(r"Sensitive data written to log", re.I),
+        title_pattern=re.compile(r"Sensitive data written to log", re.IGNORECASE),
         file_glob="*/test*",
-        line_pattern=re.compile(r"test_|mock_|fake_|dummy_", re.I),
+        line_pattern=re.compile(r"test_|mock_|fake_|dummy_", re.IGNORECASE),
     ),
     SuppressionRule(
-        title_pattern=re.compile(r"Cleartext storage", re.I),
+        title_pattern=re.compile(r"Cleartext storage", re.IGNORECASE),
         file_glob="*/example*",
         line_pattern=None,
     ),
     SuppressionRule(
-        title_pattern=re.compile(r"Cleartext storage", re.I),
+        title_pattern=re.compile(r"Cleartext storage", re.IGNORECASE),
         file_glob="*/docs/*",
         line_pattern=None,
     ),
@@ -80,13 +80,13 @@ INFO_EXPOSURE_SUPPRESSIONS: list[SuppressionRule] = [
 # CWE auth_check: test credential patterns
 AUTH_CHECK_SUPPRESSIONS: list[SuppressionRule] = [
     SuppressionRule(
-        title_pattern=re.compile(r"Hardcoded credentials", re.I),
+        title_pattern=re.compile(r"Hardcoded credentials", re.IGNORECASE),
         file_glob="*/test*",
-        line_pattern=re.compile(r"test_|mock_|fake_|dummy_|fixture", re.I),
+        line_pattern=re.compile(r"test_|mock_|fake_|dummy_|fixture", re.IGNORECASE),
     ),
     SuppressionRule(
-        title_pattern=re.compile(r"Hardcoded credentials", re.I),
+        title_pattern=re.compile(r"Hardcoded credentials", re.IGNORECASE),
         file_glob="",
-        line_pattern=re.compile(r"(?:example|sample|demo|template)\s*[:=]", re.I),
+        line_pattern=re.compile(r"(?:example|sample|demo|template)\s*[:=]", re.IGNORECASE),
     ),
 ]

@@ -5,8 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-
-from shared.discovery.sitemap import SiteMap
 from discover_agent.learning_store import SessionLearnings
 from discover_agent.plugins import DiscoveryContext
 from discover_agent.plugins.blockchain_rpc import BlockchainRPCPlugin
@@ -16,6 +14,7 @@ from discover_agent.plugins.mobile_routes import MobileRoutesPlugin
 from discover_agent.plugins.mqtt_amqp import MQTTAMQPPlugin
 from discover_agent.plugins.soap_wsdl import SOAPWSDLPlugin
 from discover_agent.plugins.sse import SSEPlugin
+from shared.discovery.sitemap import SiteMap
 
 
 def _make_ctx(

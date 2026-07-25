@@ -24,7 +24,7 @@ def test_get_model_ollama_models():
 
 
 def test_get_model_passthrough(monkeypatch):
-    import shared.llm.provider as provider
+    from shared.llm import provider
     from shared.llm.provider import get_model
     # Hermetic: with NO custom OpenAI-compatible endpoint configured, unknown
     # model strings pass through unchanged. When OPENAI_BASE_URL is set, get_model
@@ -45,8 +45,8 @@ def test_get_model_from_env(monkeypatch):
 def test_get_context_window_broker_injected(monkeypatch):
     """§31: the broker-injected window wins over the local table; the explicit
     VULTURE_LLM_CTX_SIZE env still beats even the injected value."""
-    from shared.llm.provider import get_context_window
     from shared.llm.broker import set_context_window
+    from shared.llm.provider import get_context_window
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     set_context_window(131072)
     try:
@@ -59,8 +59,8 @@ def test_get_context_window_broker_injected(monkeypatch):
 
 def test_get_context_window_glm_and_gemma3_family(monkeypatch):
     """§31: the families that were missing (and caused the 8192 fallback bug)."""
-    from shared.llm.provider import get_context_window
     from shared.llm.broker import set_context_window
+    from shared.llm.provider import get_context_window
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     set_context_window(None)  # no broker injection → family inference
     assert get_context_window("z-ai/glm-5.2") == 131072
@@ -71,9 +71,9 @@ def test_get_context_window_glm_and_gemma3_family(monkeypatch):
 
 def test_get_context_window_unknown_default(monkeypatch):
     """§31: unknown model → the raised shared default (not the old 8192)."""
-    import shared.llm.provider as provider
-    from shared.llm.provider import get_context_window, DEFAULT_CONTEXT_WINDOW
+    from shared.llm import provider
     from shared.llm.broker import set_context_window
+    from shared.llm.provider import DEFAULT_CONTEXT_WINDOW, get_context_window
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     set_context_window(None)
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "https://gateway.example/v1")
@@ -87,7 +87,7 @@ def test_get_model_broker_on_skips_litellm_wrap(monkeypatch):
     LiteLLM-wrapping (litellm/openai/...) would take the SDK's LiteLLM path,
     which bypasses the broker's per-run token → 401. So broker-on must NOT wrap.
     """
-    import shared.llm.provider as provider
+    from shared.llm import provider
     from shared.llm.provider import get_model
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "https://gateway.example/v1")
     monkeypatch.delenv("VULTURE_LLM_MODEL", raising=False)
@@ -129,35 +129,35 @@ def test_is_ollama_model():
 
 def test_get_model_custom_base_url_prefixes_unknown(monkeypatch):
     """When OPENAI_BASE_URL is set, unknown models get litellm/openai/ prefix."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.get_model("glm-4-9b-0414-flash") == "litellm/openai/glm-4-9b-0414-flash"
 
 
 def test_get_model_custom_base_url_skips_litellm_prefixed(monkeypatch):
     """Models already litellm/ prefixed are not double-prefixed."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.get_model("qwen3:1.7b") == "litellm/ollama/qwen3:1.7b"
 
 
 def test_get_model_custom_base_url_skips_gpt4o(monkeypatch):
     """gpt-4o is excluded from prefixing (native OpenAI model)."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.get_model("gpt-4o") == "gpt-4o"
 
 
 def test_get_model_custom_base_url_provider_prefixed(monkeypatch):
     """Models with provider prefix (openai/X) get litellm/ not litellm/openai/."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.get_model("openai/gpt-oss-20b") == "litellm/openai/gpt-oss-20b"
 
 
 def test_get_model_no_custom_base_url_passes_through(monkeypatch):
     """Without OPENAI_BASE_URL, unknown models pass through unchanged."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
     assert provider.get_model("glm-4-9b-0414-flash") == "glm-4-9b-0414-flash"
 
@@ -183,7 +183,7 @@ def test_get_context_window_default(monkeypatch):
     from shared.llm.provider import get_context_window
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     monkeypatch.delenv("VULTURE_LLM_MODEL", raising=False)
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
     assert get_context_window("totally-unknown-model") == 32_000
 
@@ -191,7 +191,7 @@ def test_get_context_window_default(monkeypatch):
 def test_get_context_window_custom_endpoint_unknown_uses_default(monkeypatch):
     """§31: a custom endpoint (LM Studio/vLLM/gateway) with a truly unknown model
     now falls back to the raised shared default, NOT the old timid 8192."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     from shared.llm.broker import set_context_window
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     set_context_window(None)
@@ -201,7 +201,7 @@ def test_get_context_window_custom_endpoint_unknown_uses_default(monkeypatch):
 
 def test_get_context_window_family_inference_qwen(monkeypatch):
     """Qwen model family inferred from model string on custom endpoint."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     # "qwen/qwen3.5-35b-a3b" contains "qwen3" → 32768
@@ -210,7 +210,7 @@ def test_get_context_window_family_inference_qwen(monkeypatch):
 
 def test_get_context_window_family_inference_llama(monkeypatch):
     """Llama model family inferred from model string."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.get_context_window("meta-llama/llama-3.1-70b") == 128_000
@@ -218,7 +218,7 @@ def test_get_context_window_family_inference_llama(monkeypatch):
 
 def test_get_context_window_family_inference_deepseek(monkeypatch):
     """DeepSeek model family inferred from model string."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.get_context_window("deepseek/deepseek-r1-0528") == 64_000
@@ -226,7 +226,7 @@ def test_get_context_window_family_inference_deepseek(monkeypatch):
 
 def test_get_context_window_family_inference_no_custom_url(monkeypatch):
     """Family inference works even without OPENAI_BASE_URL."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
     assert provider.get_context_window("qwen/qwen3.5-35b-a3b") == 32_768
@@ -234,7 +234,7 @@ def test_get_context_window_family_inference_no_custom_url(monkeypatch):
 
 def test_get_context_window_env_overrides_family(monkeypatch):
     """VULTURE_LLM_CTX_SIZE takes priority over family inference."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setenv("VULTURE_LLM_CTX_SIZE", "65536")
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.get_context_window("qwen/qwen3.5-35b-a3b") == 65_536
@@ -371,15 +371,15 @@ class TestGetModelSettings:
 
 class TestGetModelWithFallback:
     def test_returns_primary_when_available(self):
-        from shared.llm.provider import get_model_with_fallback
         from shared.llm.cooldown import cooldown_manager
+        from shared.llm.provider import get_model_with_fallback
         cooldown_manager.reset()
         result = get_model_with_fallback("gpt-4o")
         assert result == "gpt-4o"
 
     def test_falls_back_when_primary_in_cooldown(self):
-        from shared.llm.provider import get_model_with_fallback, get_model
         from shared.llm.cooldown import cooldown_manager
+        from shared.llm.provider import get_model, get_model_with_fallback
         cooldown_manager.reset()
         # Put primary in cooldown
         resolved_primary = get_model("gpt-4o")
@@ -391,8 +391,8 @@ class TestGetModelWithFallback:
         cooldown_manager.reset()
 
     def test_returns_primary_when_all_in_cooldown(self):
-        from shared.llm.provider import get_model_with_fallback, get_model, get_fallback_models
         from shared.llm.cooldown import cooldown_manager
+        from shared.llm.provider import get_fallback_models, get_model, get_model_with_fallback
         cooldown_manager.reset()
         # Put all models in cooldown
         primary = get_model("gpt-4o")
@@ -408,8 +408,8 @@ class TestGetModelWithFallback:
         cooldown_manager.reset()
 
     def test_uses_env_default(self, monkeypatch):
-        from shared.llm.provider import get_model_with_fallback
         from shared.llm.cooldown import cooldown_manager
+        from shared.llm.provider import get_model_with_fallback
         cooldown_manager.reset()
         monkeypatch.setenv("VULTURE_LLM_MODEL", "qwen3:1.7b")
         result = get_model_with_fallback()
@@ -441,7 +441,7 @@ class TestCostDict:
 
 def test_supports_structured_output_standard_openai(monkeypatch):
     """Standard OpenAI endpoint + gpt-4o → structured output supported."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
     assert provider.supports_structured_output("gpt-4o") is True
 
@@ -449,7 +449,7 @@ def test_supports_structured_output_standard_openai(monkeypatch):
 def test_supports_structured_output_false_for_gemini(monkeypatch):
     """Gemini rejects function-calling + JSON response mime, so structured
     output (output_type) must be disabled even on the native endpoint."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
     assert provider.supports_structured_output("gemini-2.5-flash") is False
     assert provider.supports_structured_output("gemini-pro") is False
@@ -457,6 +457,6 @@ def test_supports_structured_output_false_for_gemini(monkeypatch):
 
 def test_supports_structured_output_false_for_custom_endpoint(monkeypatch):
     """Custom OpenAI-compatible endpoints may reject response_format schema."""
-    import shared.llm.provider as provider
+    from shared.llm import provider
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     assert provider.supports_structured_output("gpt-4o") is False

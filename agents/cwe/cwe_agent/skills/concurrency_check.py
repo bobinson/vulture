@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 
 from agents import function_tool
-
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,

@@ -17,7 +17,6 @@ import json
 import re
 from pathlib import Path
 
-
 DATA_DIR = Path(__file__).parent
 SOURCE = json.loads((DATA_DIR / "asvs_source.json").read_text())
 

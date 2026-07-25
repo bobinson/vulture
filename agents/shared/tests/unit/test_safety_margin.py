@@ -12,7 +12,6 @@ from shared.tools.memory_client import (
 )
 from shared.tools.snippet import STANDARD_PORTS, is_standard_port
 
-
 # ---------------------------------------------------------------------------
 # safe_estimate_tokens returns value > estimate_tokens for same input
 # ---------------------------------------------------------------------------

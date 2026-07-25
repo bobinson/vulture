@@ -84,7 +84,7 @@ def test_T16_run_deterministic_does_not_invoke_llm(monkeypatch):
     """Hard guarantee: the deterministic runner never reaches the LLM phase.
     We poison run_combined_audit so any call raises; run_deterministic must
     still succeed by going only through the skill functions."""
-    import shared.audit_runner as audit_runner
+    from shared import audit_runner
 
     def _boom(*a, **k):  # pragma: no cover - must never be called
         raise AssertionError("run_deterministic must not invoke the LLM phase")

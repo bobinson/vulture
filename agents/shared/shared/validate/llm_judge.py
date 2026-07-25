@@ -22,9 +22,10 @@ import os
 import re
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from shared.cancellation import current_audit_deadline, current_cancel_token
 
@@ -1243,7 +1244,7 @@ def _as_completed_with_deadline(futures, deadline: float):
     """Yield futures as they complete, but stop yielding once we pass
     `deadline`. Remaining futures are cancelled best-effort and their
     findings will receive `no verdict` stubs from the caller."""
-    from concurrent.futures import wait, FIRST_COMPLETED
+    from concurrent.futures import FIRST_COMPLETED, wait
 
     pending = set(futures.keys())
     while pending:

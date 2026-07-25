@@ -5,10 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-
-from shared.discovery.sitemap import SiteMap
 from discover_agent.learning_store import SessionLearnings
-from discover_agent.plugins import DiscoveryContext, DISCOVERY_PLUGINS
+from discover_agent.plugins import DISCOVERY_PLUGINS, DiscoveryContext
 from discover_agent.plugins._shared import find_files_by_name, read_source_file
 from discover_agent.plugins.env_service_urls import EnvServiceURLsPlugin
 from discover_agent.plugins.nextauth_routes import NextAuthRoutesPlugin
@@ -18,6 +16,7 @@ from discover_agent.plugins.nextjs_middleware import NextJSMiddlewarePlugin
 from discover_agent.plugins.oidc_wellknown import OIDCWellKnownPlugin
 from discover_agent.plugins.raw_http_handlers import RawHTTPHandlersPlugin
 from discover_agent.plugins.webhook_receivers import WebhookReceiversPlugin
+from shared.discovery.sitemap import SiteMap
 
 
 def _make_ctx(

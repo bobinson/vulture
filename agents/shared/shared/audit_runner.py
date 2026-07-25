@@ -11,18 +11,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from shared.cancellation import (
     current_audit_deadline,
     current_cancel_token,
     set_audit_deadline,
 )
-
 from shared.llm.errors import retry_skill
-from shared.tools.file_scanner import scan_code_files, read_file_safe, is_entry_or_config, clear_caches
+from shared.tools.file_scanner import (
+    clear_caches,
+    is_entry_or_config,
+    read_file_safe,
+    scan_code_files,
+)
+from shared.tools.memory_client import _normalize_title, estimate_tokens, safe_estimate_tokens
 from shared.tools.snippet import extract_snippet
-from pydantic import BaseModel
-
-from shared.tools.memory_client import estimate_tokens, safe_estimate_tokens, _normalize_title
 from shared.transport.event_emitter import AgUiEventEmitter
 
 logger = logging.getLogger(__name__)
@@ -1361,8 +1365,9 @@ def run_combined_audit(
         try:
             import queue as _queue
             import threading as _threading
-            from shared.validate import validate as _validate
+
             from shared.validate import ValidateConfig as _ValidateConfig
+            from shared.validate import validate as _validate
 
             # L5 streaming (feature 0046 D6): use a thread-safe queue
             # to bridge from validate's callback-style emit_batch into
@@ -1830,10 +1835,6 @@ async def _collect_llm_findings_async(
 ) -> tuple[list[dict], str | None, int, int]:
     """Async helper: run LLM agent and return (findings, error, input_tokens, output_tokens)."""
     from agents import Agent, ModelSettings, Runner
-    from shared.llm.provider import get_model_with_fallback, get_model_settings, supports_structured_output
-    from shared.tools.file_reader import make_read_file_tool
-    from shared.tools.file_lister import make_list_files_tool
-    from shared.tools.pattern_matcher import make_search_pattern_tool
 
     # feature 0064: when VULTURE_LLM_BROKER is on and this run carries a broker
     # token, route THIS run's SDK calls through the internal broker via a
@@ -1843,6 +1844,14 @@ async def _collect_llm_findings_async(
     # Dual-mode/fail-safe: None when the broker is off/unconfigured/tokenless,
     # so model selection and today's env-key path are untouched (Mode A).
     from shared.llm.broker import broker_model_provider
+    from shared.llm.provider import (
+        get_model_settings,
+        get_model_with_fallback,
+        supports_structured_output,
+    )
+    from shared.tools.file_lister import make_list_files_tool
+    from shared.tools.file_reader import make_read_file_tool
+    from shared.tools.pattern_matcher import make_search_pattern_tool
     run_model_provider = broker_model_provider()
     if run_model_provider is not None:
         logger.info("broker_client_per_run run_id=%s", run_id)
@@ -1869,8 +1878,8 @@ async def _collect_llm_findings_async(
             make_search_pattern_tool(source_path),
         ]
     else:
-        from shared.tools.file_reader import read_file_tool
         from shared.tools.file_lister import list_files_tool
+        from shared.tools.file_reader import read_file_tool
         from shared.tools.pattern_matcher import search_pattern_tool
         extra_tools = [read_file_tool, list_files_tool, search_pattern_tool]
     all_tools = list(skill_tools) + extra_tools

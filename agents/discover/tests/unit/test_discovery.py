@@ -2,14 +2,12 @@
 
 
 import pytest
-
-from shared.discovery.sitemap import SiteMap
 from shared.discovery.helpers import (
     filter_static_endpoints,
     is_page_path,
     is_static_path,
 )
-
+from shared.discovery.sitemap import SiteMap
 
 # --- Static path detection ---
 

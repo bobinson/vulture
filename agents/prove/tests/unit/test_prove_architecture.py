@@ -85,6 +85,7 @@ class TestIssue39ProveCooldownFallback:
 
     def test_llm_helper_uses_fallback_resolver(self):
         import inspect
+
         import prove_agent.llm_helper as h
         source = inspect.getsource(h.llm_json_call)
         # Uses cached model resolution which internally calls fallback resolver
@@ -92,12 +93,14 @@ class TestIssue39ProveCooldownFallback:
 
     def test_llm_helper_records_failure_on_exhaust(self):
         import inspect
+
         import prove_agent.llm_helper as h
         source = inspect.getsource(h.llm_json_call)
         assert "record_failure" in source
 
     def test_llm_helper_records_success(self):
         import inspect
+
         import prove_agent.llm_helper as h
         source = inspect.getsource(h.llm_json_call)
         assert "record_success" in source
@@ -118,6 +121,7 @@ class TestIssue40MaxIterationsCap:
 
     def test_agent_caps_iterations(self):
         import inspect
+
         import prove_agent.agent as agent_mod
         source = inspect.getsource(agent_mod.run_prove)
         assert "_MAX_ITERATIONS_CAP" in source
@@ -133,6 +137,7 @@ class TestIssue42ModelPassthrough:
 
     def test_agent_reads_model_from_config(self):
         import inspect
+
         import prove_agent.agent as agent_mod
         source = inspect.getsource(agent_mod.run_prove)
         assert 'config.get("model")' in source or "model_preference" in source
@@ -148,6 +153,7 @@ class TestIssue43GetFindingsAgentType:
 
     def test_get_findings_uses_agent_type(self):
         import inspect
+
         import prove_agent.agent as agent_mod
         source = inspect.getsource(agent_mod._get_findings)
         assert 'f.get("agent_type")' in source
@@ -194,6 +200,7 @@ class TestIssue46ContextWindowAwareness:
 
     def test_llm_json_call_calls_truncate(self):
         import inspect
+
         import prove_agent.llm_helper as h
         source = inspect.getsource(h.llm_json_call)
         assert "_truncate_prompt" in source

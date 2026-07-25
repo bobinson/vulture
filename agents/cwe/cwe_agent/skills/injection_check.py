@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 
 from agents import function_tool
-
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -13,7 +12,6 @@ from shared.tools.file_scanner import (
     is_test_file,
     read_file_lines,
     read_file_safe,
-
     scan_code_files,
 )
 from shared.tools.obfuscation import check_obfuscation

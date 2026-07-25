@@ -25,7 +25,6 @@ from collections.abc import Generator
 from typing import Any
 
 import httpx
-
 from shared.discovery.cache import (
     is_cache_fresh,
     load_cached_discovery,

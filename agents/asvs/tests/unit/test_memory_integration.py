@@ -12,7 +12,6 @@ Verifies end-to-end DRY behavior:
 from unittest.mock import patch
 
 import pytest
-
 from asvs_agent.agent import run_audit
 
 
@@ -145,8 +144,9 @@ def test_category_format_matches_backend_fingerprint_expectation(tmp_source):
     """Backend generateFingerprint uses (title, filepath, category,
     agent_type) — category must be stable across audits to dedupe.
     The 'ASVS-V{X}.{Y}.{Z}' format is the stable fingerprint component."""
-    from asvs_agent.skills.asvs_requirements_check import check_asvs_requirements
     import re
+
+    from asvs_agent.skills.asvs_requirements_check import check_asvs_requirements
     result = check_asvs_requirements(str(tmp_source))
     for f in result["findings"]:
         # Match ASVS-V<chapter>.<section>.<req> format.

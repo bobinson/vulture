@@ -4,17 +4,16 @@ import asyncio
 import contextvars
 import logging
 import os
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from shared.cancellation import CancelToken, set_cancel_token
 from shared.llm.broker import set_broker_task_type, set_broker_token, set_context_window
 from shared.models.audit_request import AuditRequest
-
 
 RunHandler = Callable[[str, str, dict, list[dict[str, Any]]], Generator[str, None, None]]
 

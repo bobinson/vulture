@@ -1,6 +1,6 @@
 from do178c_agent.config import (
-    ALL_CATEGORIES,
     AGENT_INFO,
+    ALL_CATEGORIES,
     CONFIG_SCHEMA,
     DAL_LEVELS,
     dal_severity,

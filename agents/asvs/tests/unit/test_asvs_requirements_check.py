@@ -14,13 +14,11 @@ invokes :func:`check_asvs_requirements`. Tests cover:
 
 from pathlib import Path
 
-
 from asvs_agent.skills.asvs_requirements_check import (
     _CHECKS,
     _keyword_fallback_index,
     check_asvs_requirements,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

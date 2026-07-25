@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-
-
 # --- Route extraction tests ---
 
 def test_extract_routes_from_scan_findings():
