@@ -25,15 +25,15 @@ import re
 
 import pytest
 
-# --- Modules under test (do not yet exist — RED) ----------------------
-from cwe_agent.skills.signatures.schema import CweSignature
+from cwe_agent.skills.catalog_detector import check_catalog_generic
+from cwe_agent.skills.signatures.detector import match_signatures
 from cwe_agent.skills.signatures.registry import (
     SIGNATURES,
     covered_cwe_ids,
 )
-from cwe_agent.skills.signatures.detector import match_signatures
-from cwe_agent.skills.catalog_detector import check_catalog_generic
 
+# --- Modules under test (do not yet exist — RED) ----------------------
+from cwe_agent.skills.signatures.schema import CweSignature
 
 # The tranche the recon committed to (7 solid; CWE-489 dropped — collides
 # with the existing configuration skill).

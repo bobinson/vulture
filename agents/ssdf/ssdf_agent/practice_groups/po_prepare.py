@@ -1,10 +1,10 @@
 """PO - Prepare the Organization."""
 
-from ssdf_agent.skills.security_policy import check_security_policy
 from ssdf_agent.skills.roles_governance import check_roles_governance
-from ssdf_agent.skills.toolchain_check import check_toolchain
-from ssdf_agent.skills.security_criteria import check_security_criteria
 from ssdf_agent.skills.secure_environment import check_secure_environment
+from ssdf_agent.skills.security_criteria import check_security_criteria
+from ssdf_agent.skills.security_policy import check_security_policy
+from ssdf_agent.skills.toolchain_check import check_toolchain
 
 
 def audit_po(source_path: str) -> dict:

@@ -1,16 +1,43 @@
-# golangci-lint configuration (schema v1; action pinned to v1.64.8 in
-# .github/workflows/ci.yml). Default linters apply: errcheck, gosimple,
-# govet, ineffassign, staticcheck, unused.
+# golangci-lint configuration (schema v2; action + version pinned in
+# .github/workflows/ci.yml). Migrated from v1 when the repo moved to Go 1.25 —
+# golangci-lint v1.64.8 was built with Go 1.24 and cannot target 1.25.
+# Default linters apply: errcheck, govet, ineffassign, staticcheck, unused.
+version: "2"
 run:
   timeout: 5m
-
+linters:
+  settings:
+    staticcheck:
+      # v2's staticcheck bundles stylecheck (ST*) + quickfix (QF*), which were
+      # NOT in v1's default set (v1 ran SA*/gosimple only). Disable both so the
+      # migration preserves the prior lint scope (correctness checks, no new
+      # style/quickfix nags on existing code).
+      checks:
+        - all
+        - -ST1*
+        - -QF1*
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # errcheck on test setup/teardown (os.WriteFile, Encode, cmd.Run, …) is
-    # low-signal noise; production code remains fully error-checked. This is
-    # the exclusion golangci-lint's own docs recommend for *_test.go.
-    - path: _test\.go
-      linters:
-        - errcheck
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

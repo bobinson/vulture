@@ -67,6 +67,7 @@ require_key() {
 }
 
 check_ollama() {
+    [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]] && return 0
     if ! command -v ollama &>/dev/null; then
         echo "Error: ollama not found. Install from https://ollama.com"
         exit 1
@@ -78,6 +79,7 @@ check_ollama() {
 }
 
 check_lmstudio() {
+    [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]] && return 0
     local url="${OPENAI_BASE_URL:-$LMSTUDIO_DEFAULT_URL}"
     if ! curl -sf "$url/models" &>/dev/null; then
         echo "Error: LM Studio not reachable at $url"
@@ -134,6 +136,9 @@ build_backend() {
 # and equals ("--embed-url=X") forms are accepted.
 EMBED_URL=""
 EMBED_MODEL=""
+USE_BROKER=0
+NO_BROKER=0
+BROKER_BUDGET=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -147,6 +152,15 @@ while [[ $# -gt 0 ]]; do
             EMBED_MODEL="$2"; shift 2 ;;
         --embed-model=*)
             EMBED_MODEL="${1#*=}"; shift ;;
+        --broker)
+            USE_BROKER=1; shift ;;
+        --no-broker)
+            NO_BROKER=1; shift ;;
+        --budget)
+            [[ $# -ge 2 ]] || { echo "Error: --budget needs a value"; exit 1; }
+            BROKER_BUDGET="$2"; shift 2 ;;
+        --budget=*)
+            BROKER_BUDGET="${1#*=}"; shift ;;
         *)
             POSITIONAL+=("$1"); shift ;;
     esac
@@ -178,6 +192,7 @@ LMSTUDIO_DEFAULT_URL=$(ini_get lmstudio url "http://localhost:1234/v1")
 echo
 echo "  Vulture — starting with provider: $PROVIDER"
 echo
+
 
 case "$PROVIDER" in
     openai)
@@ -251,6 +266,56 @@ case "$PROVIDER" in
         ;;
 esac
 
+# ── Feature 0064 §30: LLM broker is the DEFAULT when LLM is enabled ────────
+# The broker (key isolation + budget + egress control) fronts EVERY provider
+# via native adapters. It is on by default whenever LLM is on; --no-broker opts
+# out. It runs on whichever store the backend uses (SQLite default, or Postgres
+# when VULTURE_DB_DSN is set — §29). skills = no LLM = no broker.
+if [[ "$NO_BROKER" == "1" || "${VULTURE_USE_LLM:-false}" != "true" ]]; then
+    USE_BROKER=0
+else
+    USE_BROKER=1
+fi
+if [[ "$USE_BROKER" == "1" ]]; then
+    BROKER_CLOUD=0
+    case "$PROVIDER" in
+        openai)
+            BROKER_PROVIDER="openai"; BROKER_LOCAL_EGRESS="off"; BROKER_CLOUD=1
+            BROKER_EGRESS="${OPENAI_BASE_URL:-}" ;;
+        lmstudio)
+            BROKER_PROVIDER="openai-compatible"; BROKER_LOCAL_EGRESS="on"
+            BROKER_EGRESS="$LMSTUDIO_DEFAULT_URL"
+            # The broker uses the OpenAI SDK → bare model id; drop the LiteLLM openai/ prefix.
+            export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#openai/}" ;;
+        ollama)
+            BROKER_PROVIDER="openai-compatible"; BROKER_LOCAL_EGRESS="on"
+            BROKER_EGRESS="${OLLAMA_DEFAULT_URL%/}/v1" ;;
+        gemini)
+            # §30 native generateContent adapter (default Google endpoint).
+            BROKER_PROVIDER="gemini"; BROKER_LOCAL_EGRESS="off"; BROKER_CLOUD=1; BROKER_EGRESS=""
+            export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#litellm/gemini/}"; export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#gemini/}" ;;
+        anthropic)
+            # §30 native Messages adapter (default Anthropic endpoint).
+            BROKER_PROVIDER="anthropic"; BROKER_LOCAL_EGRESS="off"; BROKER_CLOUD=1; BROKER_EGRESS=""
+            export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#litellm/anthropic/}"; export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#anthropic/}" ;;
+        *)
+            echo "Error: provider '$PROVIDER' has no broker adapter. Use --no-broker to bypass."
+            exit 1 ;;
+    esac
+    export VULTURE_LLM_BROKER=on
+    export VULTURE_LLM_BROKER_LISTEN="${VULTURE_LLM_BROKER_LISTEN:-127.0.0.1:8090}"
+    export VULTURE_LLM_BROKER_URL="${VULTURE_LLM_BROKER_URL:-http://localhost:8090/v1}"
+    export VULTURE_LLM_BROKER_PROVIDER="$BROKER_PROVIDER"
+    [[ -n "$BROKER_EGRESS" ]] && export VULTURE_LLM_BROKER_PROVIDER_BASE_URL="$BROKER_EGRESS"
+    export VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS="$BROKER_LOCAL_EGRESS"
+    [[ -n "$BROKER_BUDGET" ]] && export VULTURE_LLM_BUDGET_USD="$BROKER_BUDGET"
+    # A real cloud key is now brokered — flag the pending crypto sign-off (§27).
+    if [[ "$BROKER_CLOUD" == "1" ]]; then
+        echo "  Note: brokering a cloud provider with a real key. The ES256 + budget-CAS"
+        echo "        human sign-off is still pending (§25.3/§27) — pass --no-broker to opt out."
+    fi
+fi
+
 # Embedding endpoint override. Decouples the pgvector embedding client
 # from OPENAI_BASE_URL — without this it falls back to the chat
 # endpoint (NVIDIA), which has no matching /embeddings route → 404s.
@@ -263,8 +328,15 @@ if [[ -n "$EMBED_MODEL" ]]; then
 fi
 
 echo "  Provider:  $PROVIDER"
-echo "  Model:     $MODEL"
+echo "  Model:     ${VULTURE_LLM_MODEL:-$MODEL}"
 echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
+    echo "  Broker:    on"
+    echo "  Broker provider:     ${VULTURE_LLM_BROKER_PROVIDER}"
+    echo "  Broker egress:       ${VULTURE_LLM_BROKER_PROVIDER_BASE_URL:-default (${VULTURE_LLM_BROKER_PROVIDER})}"
+    echo "  Broker local-egress: ${VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS}"
+    [[ -n "${VULTURE_LLM_BUDGET_USD:-}" ]] && echo "  Broker budget:       \$${VULTURE_LLM_BUDGET_USD}"
+fi
 [[ -n "${VULTURE_EMBEDDING_URL:-}" ]]   && echo "  Embed URL: ${VULTURE_EMBEDDING_URL}"
 [[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "  Embed model: ${VULTURE_EMBEDDING_MODEL}"
 echo

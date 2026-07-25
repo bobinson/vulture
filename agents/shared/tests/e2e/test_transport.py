@@ -5,8 +5,8 @@ import json
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from shared.transport.sse_app import create_sse_app
 from shared.transport.event_emitter import AgUiEventEmitter
+from shared.transport.sse_app import create_sse_app
 
 
 def _dummy_run_handler(run_id: str, source_path: str, config: dict, prior_findings=None):

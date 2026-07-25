@@ -87,6 +87,11 @@ services:
       - VULTURE_AGENT_TOKEN=${VULTURE_AGENT_TOKEN:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      # §30: the broker egresses to Anthropic/Gemini natively, so the BACKEND
+      # (sole key holder) always gets their real keys; agents get none in broker
+      # mode (their key lines are VULTURE_AGENT_*-gated below).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - VULTURE_EMBEDDING_URL=${VULTURE_EMBEDDING_URL}
       - VULTURE_EMBEDDING_MODEL=${VULTURE_EMBEDDING_MODEL:-text-embedding-3-small}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-}
@@ -96,6 +101,21 @@ services:
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
+      # ── Feature 0064: LLM broker (OFF by default — Mode A unchanged) ──────
+      # When on, the backend runs an internal-only broker listener and is the
+      # SOLE holder of the provider key; agents get a scoped per-run token
+      # instead. The listener binds 0.0.0.0:8090 for in-network agent reach and
+      # is intentionally NOT published to the host (internal-only, §11).
+      # Postgres-only (the broker's stores live in migration 024).
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_LISTEN=${VULTURE_LLM_BROKER_LISTEN:-0.0.0.0:8090}
+      - VULTURE_LLM_BROKER_PROVIDER=${VULTURE_LLM_BROKER_PROVIDER:-openai}
+      - VULTURE_LLM_BROKER_PROVIDER_BASE_URL=${VULTURE_LLM_BROKER_PROVIDER_BASE_URL:-}
+      - VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS=${VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS:-off}
+      - VULTURE_LLM_BROKER_MINT_KEY=${VULTURE_LLM_BROKER_MINT_KEY:-}
+      - VULTURE_LLM_PROVIDER_ALLOWLIST=${VULTURE_LLM_PROVIDER_ALLOWLIST:-}
+      - VULTURE_LLM_FALLBACKS=${VULTURE_LLM_FALLBACKS:-}
+      - VULTURE_LLM_BUDGET_USD=${VULTURE_LLM_BUDGET_USD:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_BACKEND_PORT:-28080}/health || exit 1"]
       interval: 30s
@@ -144,9 +164,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -156,7 +186,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -185,9 +215,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -197,7 +237,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -226,9 +266,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -238,7 +288,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -267,9 +317,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -279,7 +339,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -308,9 +368,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-true}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -321,7 +391,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -353,9 +423,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -365,7 +445,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -394,9 +474,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -406,7 +496,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -435,9 +525,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -447,7 +547,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -476,9 +576,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -488,7 +598,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1
@@ -517,9 +627,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Feature 0064 key isolation (N1): in broker mode the launcher sets
+      # VULTURE_AGENT_*_API_KEY="" so NO provider key is exposed to the agent
+      # container; unset (non-broker) falls back to the real key. The `-`
+      # (unset-only) default preserves an intentionally-empty value.
+      - OPENAI_API_KEY=${VULTURE_AGENT_OPENAI_API_KEY-${OPENAI_API_KEY}}
+      # §30: withheld in broker mode too — the agent routes via the broker, and a
+      # leaked base URL would make it litellm-wrap the model and skip the token.
+      - OPENAI_BASE_URL=${VULTURE_AGENT_OPENAI_BASE_URL-${OPENAI_BASE_URL}}
+      - ANTHROPIC_API_KEY=${VULTURE_AGENT_ANTHROPIC_API_KEY-${ANTHROPIC_API_KEY}}
+      # Broker OFF by default. When on, the agent reaches the backend's internal
+      # broker instead of the provider directly, using its per-run token.
+      - VULTURE_LLM_BROKER=${VULTURE_LLM_BROKER:-off}
+      - VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}
       - VULTURE_LLM_MODEL=${VULTURE_LLM_MODEL:-${VULTURE_LLM_MODEL_DEFAULT:-gpt-4o}}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
@@ -529,7 +649,7 @@ services:
       - VULTURE_AGENT_MAX_AUDIT_SECONDS=${VULTURE_AGENT_MAX_AUDIT_SECONDS:-900}
       - VULTURE_LLM_CALL_TIMEOUT_SEC=${VULTURE_LLM_CALL_TIMEOUT_SEC:-120}
       - VULTURE_AUDIT_EXECUTOR_WORKERS=${VULTURE_AUDIT_EXECUTOR_WORKERS:-8}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_API_KEY=${VULTURE_AGENT_GEMINI_API_KEY-${GEMINI_API_KEY:-}}
       - VULTURE_LLM_MAX_OUTPUT_TOKENS=${VULTURE_LLM_MAX_OUTPUT_TOKENS:-}
       - VULTURE_LOOP_GLOBAL_LIMIT=${VULTURE_LOOP_GLOBAL_LIMIT:-}
       - OPENAI_AGENTS_DISABLE_TRACING=1

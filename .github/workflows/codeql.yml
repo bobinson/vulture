@@ -32,10 +32,12 @@ jobs:
             build-mode: none
           - language: javascript-typescript
             build-mode: none
-          # Buildless extraction — the repo has 4 Go modules and no root
-          # go.mod, so autobuild can't build the tree; `none` avoids the build.
+          # Go's extractor does NOT support build-mode: none (only autobuild/
+          # manual). The repo has multiple Go modules and no root go.mod, so
+          # autobuild can't drive the tree — use manual and build the modules
+          # ourselves (see the "Build Go" step below).
           - language: go
-            build-mode: none
+            build-mode: manual
 
     steps:
       - name: Checkout
@@ -43,7 +45,7 @@ jobs:
 
       - name: Initialize CodeQL
         # TODO: pin to a commit SHA to match this repo's action-pinning convention.
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -56,9 +58,24 @@ jobs:
             paths-ignore:
               - '**/tests/corpus/fixtures/**'
               - '**/tests/fixtures/**'
+              - '**/simulated-target/**'
+
+      # Go uses manual build-mode (none is unsupported). The primary module is
+      # backend/ (the whole broker + API surface); cli/ and verification/
+      # conformance are built best-effort so extraction covers them when they
+      # compile, without failing the job. simulated-target is intentionally
+      # non-compiling verification code and is excluded above.
+      - name: Build Go (manual CodeQL extraction)
+        if: matrix.language == 'go'
+        shell: bash
+        run: |
+          set -e
+          (cd backend && go build ./...)
+          (cd cli && go build ./...) || echo "::warning::cli not extracted (build failed)"
+          (cd verification/conformance && go build ./...) || echo "::warning::conformance not extracted (build failed)"
 
       - name: Perform CodeQL Analysis
         # TODO: pin to a commit SHA to match this repo's action-pinning convention.
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"

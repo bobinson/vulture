@@ -40,6 +40,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff]
+extend = "../ruff.toml"   # shared agents lint rule set (matches CI)
 target-version = "py312"
 line-length = 100
 

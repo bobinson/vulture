@@ -1,0 +1,16 @@
+# golangci-lint configuration (schema v1; action pinned to v1.64.8 in
+# .github/workflows/ci.yml). Default linters apply: errcheck, gosimple,
+# govet, ineffassign, staticcheck, unused.
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # errcheck on test setup/teardown (os.WriteFile, Encode, cmd.Run, …) is
+    # low-signal noise; production code remains fully error-checked. This is
+    # the exclusion golangci-lint's own docs recommend for *_test.go.
+    - path: _test\.go
+      linters:
+        - errcheck

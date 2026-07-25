@@ -17,7 +17,6 @@ needs the update. Deliberate out-of-sync is acceptable.
 """
 import re
 
-
 HARDCODED_CRED_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']{3,}["\']', re.IGNORECASE),
     re.compile(r'(?:api_key|apikey|api_secret)\s*=\s*["\'][^"\']{3,}["\']', re.IGNORECASE),

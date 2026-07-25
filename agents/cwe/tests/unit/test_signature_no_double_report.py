@@ -22,16 +22,15 @@ Deterministic. NO model.
 
 from __future__ import annotations
 
-
-from cwe_agent.skills.catalog_detector import (
-    check_catalog_generic,
-    _BASE_DEDICATED_CWES,
-    _DEDICATED_SKILL_CWES,
-)
-from cwe_agent.skills.signatures.registry import covered_cwe_ids
-
 # The real audit-level dedup used in production.
 from shared.audit_runner import _dedup_key, _deduplicate_findings
+
+from cwe_agent.skills.catalog_detector import (
+    _BASE_DEDICATED_CWES,
+    _DEDICATED_SKILL_CWES,
+    check_catalog_generic,
+)
+from cwe_agent.skills.signatures.registry import covered_cwe_ids
 
 
 class TestSignatureOwnershipPreventsKeywordDoubleEmit:

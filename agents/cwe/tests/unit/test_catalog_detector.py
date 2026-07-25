@@ -22,7 +22,6 @@ from cwe_agent.skills.catalog_detector import (
     check_catalog_generic,
 )
 
-
 # === Catalog Loading ===
 
 
@@ -472,7 +471,8 @@ class TestRollupHelper:
 
     def test_respects_max_files_per_cwe(self, tmp_path):
         from cwe_agent.skills.catalog_detector import (
-            _emit_parent_rollups, _MAX_FILES_PER_CWE,
+            _MAX_FILES_PER_CWE,
+            _emit_parent_rollups,
         )
         file_key = str(tmp_path / "x.py")
         seen = {file_key: {"101", "102"}}

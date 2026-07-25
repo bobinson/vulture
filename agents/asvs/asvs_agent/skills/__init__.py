@@ -10,8 +10,8 @@ SKILL_TOOLS = [check_asvs_requirements_tool]
 SKILL_MAP = {"asvs_requirements": check_asvs_requirements}
 
 __all__ = [
+    "SKILL_MAP",
+    "SKILL_TOOLS",
     "check_asvs_requirements",
     "check_asvs_requirements_tool",
-    "SKILL_TOOLS",
-    "SKILL_MAP",
 ]

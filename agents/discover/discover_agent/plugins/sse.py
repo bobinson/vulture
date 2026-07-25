@@ -8,7 +8,13 @@ import logging
 import re
 from pathlib import Path
 
-from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
+from shared.discovery.plugin_base import (
+    DiscoveryContext,
+    DiscoveryPlugin,
+    DiscoveryResult,
+    register_plugin,
+)
+
 from discover_agent.plugins._shared import probe_endpoint
 
 logger = logging.getLogger(__name__)

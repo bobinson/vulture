@@ -3,9 +3,9 @@
 import logging
 import os
 import re
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator
 
 # Shared line-classification patterns used across all skill files.
 # Defined here once to satisfy DRY — import from this module.

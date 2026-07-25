@@ -2,14 +2,9 @@
 
 import json
 
-
 from shared.audit_runner import (
     AuditFinding,
     AuditOutput,
-    build_summary,
-    compute_score,
-    normalize_severity,
-    run_combined_audit,
     _build_source_context,
     _check_context_budget,
     _collect_llm_findings_async,
@@ -20,10 +15,14 @@ from shared.audit_runner import (
     _llm_tier3_enabled,
     _normalize_finding,
     _pack_files,
-    _parse_llm_findings,
     _parse_known_titles,
+    _parse_llm_findings,
     _prioritize_files,
     _truncate_prompt_to_budget,
+    build_summary,
+    compute_score,
+    normalize_severity,
+    run_combined_audit,
 )
 from shared.tools.file_scanner import is_entry_or_config
 from shared.transport.event_emitter import AgUiEventEmitter

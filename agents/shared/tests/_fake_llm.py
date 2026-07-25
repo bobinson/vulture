@@ -55,7 +55,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # --------------------------------------------------------------------------- #
 # Fake RunResult — mimics the bits audit_runner reads off the SDK result.
 # --------------------------------------------------------------------------- #
@@ -153,7 +152,7 @@ class FakeLLMProvider:
 
         return AuditOutput(findings=[AuditFinding(**f) for f in findings])
 
-    async def run(self, agent: Any, *, input: str = "", **kwargs: Any) -> Any:  # noqa: A002
+    async def run(self, agent: Any, *, input: str = "", **kwargs: Any) -> Any:
         """Async stand-in matching ``Runner.run``'s call shape."""
         if self._raise_on_call is not None:
             raise self._raise_on_call
@@ -176,7 +175,7 @@ def install_fake_runner(monkeypatch: Any, fake: FakeLLMProvider) -> FakeLLMProvi
     """
     import agents
 
-    async def _fake_run(starting_agent: Any, input: Any = "", **kwargs: Any) -> Any:  # noqa: A002
+    async def _fake_run(starting_agent: Any, input: Any = "", **kwargs: Any) -> Any:
         return await fake.run(starting_agent, input=input, **kwargs)
 
     monkeypatch.setattr(agents.Runner, "run", staticmethod(_fake_run))
@@ -260,7 +259,7 @@ def fake_finding(
 
 __all__ = [
     "FakeLLMProvider",
+    "fake_finding",
     "install_fake_runner",
     "patch_l5_judge",
-    "fake_finding",
 ]

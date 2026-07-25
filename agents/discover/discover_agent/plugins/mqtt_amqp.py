@@ -9,7 +9,13 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
+from shared.discovery.plugin_base import (
+    DiscoveryContext,
+    DiscoveryPlugin,
+    DiscoveryResult,
+    register_plugin,
+)
+
 from discover_agent.plugins._shared import has_dependency, probe_endpoint, probe_port
 
 logger = logging.getLogger(__name__)

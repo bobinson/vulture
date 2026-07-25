@@ -9,7 +9,12 @@ import logging
 import re
 from pathlib import Path
 
-from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
+from shared.discovery.plugin_base import (
+    DiscoveryContext,
+    DiscoveryPlugin,
+    DiscoveryResult,
+    register_plugin,
+)
 
 logger = logging.getLogger(__name__)
 

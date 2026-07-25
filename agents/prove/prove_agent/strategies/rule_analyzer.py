@@ -9,7 +9,6 @@ import re
 
 from prove_agent.strategies.base import ExecutionResult
 
-
 # --- SQL injection error patterns ---
 _SQL_ERROR_PATTERNS = re.compile(
     r"(You have an error in your SQL syntax|"

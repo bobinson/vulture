@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ENV_FILE="$PROJECT_ROOT/.env"
+ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
 
 usage() {
     cat <<'EOF'
@@ -67,6 +67,7 @@ require_key() {
 }
 
 check_ollama() {
+    [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]] && return 0
     local url="${OLLAMA_DEFAULT_URL:-http://localhost:11434}"
     if ! curl -sf "$url/api/tags" &>/dev/null; then
         echo "Error: Ollama not reachable at $url"
@@ -76,6 +77,7 @@ check_ollama() {
 }
 
 check_lmstudio() {
+    [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]] && return 0
     local url="${OPENAI_BASE_URL:-$LMSTUDIO_DEFAULT_URL}"
     if ! curl -sf "$url/models" &>/dev/null; then
         echo "Error: LM Studio not reachable at $url"
@@ -122,6 +124,7 @@ detect_lmstudio_model() {
 }
 
 check_docker() {
+    [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]] && return 0
     if ! command -v docker &>/dev/null; then
         echo "Error: docker not found. Install Docker from https://docs.docker.com/get-docker/"
         exit 1
@@ -161,6 +164,9 @@ wait_for_health() {
 # host.docker.internal, e.g. --embed-url http://host.docker.internal:1234/v1
 EMBED_URL=""
 EMBED_MODEL=""
+USE_BROKER=0
+NO_BROKER=0
+BROKER_BUDGET=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -174,6 +180,15 @@ while [[ $# -gt 0 ]]; do
             EMBED_MODEL="$2"; shift 2 ;;
         --embed-model=*)
             EMBED_MODEL="${1#*=}"; shift ;;
+        --broker)
+            USE_BROKER=1; shift ;;
+        --no-broker)
+            NO_BROKER=1; shift ;;
+        --budget)
+            [[ $# -ge 2 ]] || { echo "Error: --budget needs a value"; exit 1; }
+            BROKER_BUDGET="$2"; shift 2 ;;
+        --budget=*)
+            BROKER_BUDGET="${1#*=}"; shift ;;
         *)
             POSITIONAL+=("$1"); shift ;;
     esac
@@ -199,6 +214,7 @@ echo
 
 # Prereq checks
 check_docker
+
 
 # Provider-specific setup
 case "$PROVIDER" in
@@ -285,6 +301,65 @@ case "$PROVIDER" in
         ;;
 esac
 
+# ── Feature 0064 §30: LLM broker is the DEFAULT when LLM is enabled ────────
+# The broker (sole provider-key holder + budget/egress gateway; agents get a
+# scoped per-run token) fronts EVERY provider via native adapters. On by
+# default whenever LLM is on; --no-broker opts out. It listens inside the
+# backend container (0.0.0.0:8090, NOT host-published); agents reach it at
+# http://backend:8090/v1. skills = no LLM = no broker.
+if [[ "$NO_BROKER" == "1" || "${VULTURE_USE_LLM:-false}" != "true" ]]; then
+    USE_BROKER=0
+else
+    USE_BROKER=1
+fi
+if [[ "$USE_BROKER" == "1" ]]; then
+    BROKER_CLOUD=0
+    case "$PROVIDER" in
+        openai)
+            BROKER_PROVIDER="openai"; BROKER_LOCAL_EGRESS="off"; BROKER_CLOUD=1
+            BROKER_EGRESS="${OPENAI_BASE_URL:-}" ;;
+        lmstudio)
+            BROKER_PROVIDER="openai-compatible"; BROKER_LOCAL_EGRESS="on"
+            # The broker runs in the backend container: a host LM Studio is
+            # reached via host.docker.internal, and it wants the bare model id.
+            BROKER_EGRESS="http://host.docker.internal:1234/v1"
+            export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#openai/}" ;;
+        ollama)
+            BROKER_PROVIDER="openai-compatible"; BROKER_LOCAL_EGRESS="on"
+            BROKER_EGRESS="http://host.docker.internal:11434/v1"
+            export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#ollama/}" ;;
+        gemini)
+            BROKER_PROVIDER="gemini"; BROKER_LOCAL_EGRESS="off"; BROKER_CLOUD=1; BROKER_EGRESS=""
+            export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#litellm/gemini/}"; export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#gemini/}" ;;
+        anthropic)
+            BROKER_PROVIDER="anthropic"; BROKER_LOCAL_EGRESS="off"; BROKER_CLOUD=1; BROKER_EGRESS=""
+            export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#litellm/anthropic/}"; export VULTURE_LLM_MODEL="${VULTURE_LLM_MODEL#anthropic/}" ;;
+        *)
+            echo "Error: provider '$PROVIDER' has no broker adapter. Use --no-broker to bypass."
+            exit 1 ;;
+    esac
+    export VULTURE_LLM_BROKER=on
+    export VULTURE_LLM_BROKER_LISTEN="${VULTURE_LLM_BROKER_LISTEN:-0.0.0.0:8090}"
+    export VULTURE_LLM_BROKER_URL="${VULTURE_LLM_BROKER_URL:-http://backend:8090/v1}"
+    export VULTURE_LLM_BROKER_PROVIDER="$BROKER_PROVIDER"
+    [[ -n "$BROKER_EGRESS" ]] && export VULTURE_LLM_BROKER_PROVIDER_BASE_URL="$BROKER_EGRESS"
+    export VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS="$BROKER_LOCAL_EGRESS"
+    [[ -n "$BROKER_BUDGET" ]] && export VULTURE_LLM_BUDGET_USD="$BROKER_BUDGET"
+    # N1 key isolation: withhold the provider key from the agent containers
+    # (empty-but-set → docker-compose's `-` default keeps it empty; the backend
+    # still receives the real OPENAI_API_KEY / ANTHROPIC_API_KEY).
+    export VULTURE_AGENT_OPENAI_API_KEY=""
+    export VULTURE_AGENT_ANTHROPIC_API_KEY=""
+    export VULTURE_AGENT_GEMINI_API_KEY=""
+    # §30: also withhold the provider base URL — the agent routes via the broker.
+    export VULTURE_AGENT_OPENAI_BASE_URL=""
+    # A real cloud key is now brokered — flag the pending crypto sign-off (§27).
+    if [[ "$BROKER_CLOUD" == "1" ]]; then
+        echo "  Note: brokering a cloud provider with a real key. The ES256 + budget-CAS"
+        echo "        human sign-off is still pending (§25.3/§27) — pass --no-broker to opt out."
+    fi
+fi
+
 # Embedding endpoint override (see start.sh). Exported here so the
 # .env-generation block below propagates it to the containers.
 if [[ -n "$EMBED_URL" ]]; then
@@ -295,11 +370,24 @@ if [[ -n "$EMBED_MODEL" ]]; then
 fi
 
 echo "  Provider:  $PROVIDER"
-echo "  Model:     $MODEL"
+echo "  Model:     ${VULTURE_LLM_MODEL:-$MODEL}"
 echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
+    echo "  Broker:    on (key isolation — agents receive NO provider key)"
+    echo "  Broker provider:     ${VULTURE_LLM_BROKER_PROVIDER}"
+    echo "  Broker egress:       ${VULTURE_LLM_BROKER_PROVIDER_BASE_URL:-default (${VULTURE_LLM_BROKER_PROVIDER})}"
+    echo "  Broker local-egress: ${VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS}"
+    [[ -n "${VULTURE_LLM_BUDGET_USD:-}" ]] && echo "  Broker budget:       \$${VULTURE_LLM_BUDGET_USD}"
+fi
 [[ -n "${VULTURE_EMBEDDING_URL:-}" ]]   && echo "  Embed URL: ${VULTURE_EMBEDDING_URL}"
 [[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "  Embed model: ${VULTURE_EMBEDDING_MODEL}"
 echo
+
+# Test/debug hook: resolve config + print it, but don't touch docker/.env.
+if [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]]; then
+    echo "  (dry run — compose not started)"
+    exit 0
+fi
 
 # Port conflict pre-check (docker containers are fine; external binds are not)
 check_ports_free "$BACKEND_PORT $FRONTEND_PORT $POSTGRES_PORT"
@@ -321,6 +409,22 @@ echo "  Generating .env..."
     [[ -n "${OLLAMA_API_BASE:-}" ]] && echo "OLLAMA_API_BASE=$OLLAMA_API_BASE"
     [[ -n "${VULTURE_EMBEDDING_URL:-}" ]] && echo "VULTURE_EMBEDDING_URL=$VULTURE_EMBEDDING_URL"
     [[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "VULTURE_EMBEDDING_MODEL=$VULTURE_EMBEDDING_MODEL"
+    # Feature 0064: LLM broker (only written when --broker was passed)
+    if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
+        echo "VULTURE_LLM_BROKER=on"
+        echo "VULTURE_LLM_BROKER_LISTEN=${VULTURE_LLM_BROKER_LISTEN}"
+        echo "VULTURE_LLM_BROKER_URL=${VULTURE_LLM_BROKER_URL}"
+        echo "VULTURE_LLM_BROKER_PROVIDER=${VULTURE_LLM_BROKER_PROVIDER}"
+        [[ -n "${VULTURE_LLM_BROKER_PROVIDER_BASE_URL:-}" ]] && echo "VULTURE_LLM_BROKER_PROVIDER_BASE_URL=${VULTURE_LLM_BROKER_PROVIDER_BASE_URL}"
+        echo "VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS=${VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS}"
+        [[ -n "${VULTURE_LLM_BROKER_MINT_KEY:-}" ]] && echo "VULTURE_LLM_BROKER_MINT_KEY=${VULTURE_LLM_BROKER_MINT_KEY}"
+        [[ -n "${VULTURE_LLM_BUDGET_USD:-}" ]] && echo "VULTURE_LLM_BUDGET_USD=${VULTURE_LLM_BUDGET_USD}"
+        # Key isolation: agents get empty provider keys; backend keeps the real ones.
+        echo "VULTURE_AGENT_OPENAI_API_KEY="
+        echo "VULTURE_AGENT_ANTHROPIC_API_KEY="
+        echo "VULTURE_AGENT_GEMINI_API_KEY="
+        echo "VULTURE_AGENT_OPENAI_BASE_URL="
+    fi
 } >> "$ENV_FILE"
 
 # Build shared agent base image (once, reused by all 9 agents: chaos, owasp, soc2,
