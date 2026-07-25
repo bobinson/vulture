@@ -9,8 +9,9 @@ import math
 import os
 import re
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 

@@ -41,11 +41,11 @@ import os
 from collections.abc import Generator
 from typing import Any
 
-from shared.llm import health as _health
 from shared.audit_runner import run_combined_audit
+from shared.env import env_truthy
+from shared.llm import health as _health
 from shared.llm.provider import get_max_findings
 from shared.tools.memory_client import build_prior_context
-from shared.env import env_truthy
 
 from cwe_agent.catalog import build_catalog_context, get_static_detectable
 from cwe_agent.config import ALL_CATEGORIES

@@ -30,8 +30,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
-import report_coverage  # noqa: E402 — sys.path injected by conftest
+import report_coverage
 
 _CORPUS_DIR = Path(__file__).resolve().parents[1] / "corpus"
 _GOLDEN = _CORPUS_DIR / "VERIFIED_CWES.md"

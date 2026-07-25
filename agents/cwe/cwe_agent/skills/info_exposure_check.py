@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 
 from agents import function_tool
-
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -15,11 +14,10 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import check_context, extract_snippet
-from shared.tools.suppression import should_suppress, INFO_EXPOSURE_SUPPRESSIONS
+from shared.tools.suppression import INFO_EXPOSURE_SUPPRESSIONS, should_suppress
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._var_reference import line_value_is_variable_ref
-
 
 # CWE-209: Error message information disclosure
 ERROR_DISCLOSURE_PATTERNS = [
@@ -59,7 +57,7 @@ IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
 STRING_ONLY = re.compile(r"^\s*[\"']")
 
 # Two-tier context: cleartext storage is only high with database/persist context
-_STORAGE_CONTEXT = [re.compile(r"(database|persist|store|save|write|insert|sqlite|postgres|mysql|redis)", re.I)]
+_STORAGE_CONTEXT = [re.compile(r"(database|persist|store|save|write|insert|sqlite|postgres|mysql|redis)", re.IGNORECASE)]
 
 
 def check_information_exposure(source_path: str) -> dict:

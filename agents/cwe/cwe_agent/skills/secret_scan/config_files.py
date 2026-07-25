@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from cwe_agent.skills.secret_scan import cloud_providers
 from cwe_agent.skills.secret_scan import context as ctx
-
 
 _SECRET_KEY_NAMES = re.compile(
     r"^(?:.*[._-])?"

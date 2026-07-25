@@ -11,7 +11,7 @@ from typing import Any
 
 from .types import ValidationCheck
 
-__all__ = ["run_l2", "rollup_id"]
+__all__ = ["rollup_id", "run_l2"]
 
 
 _NORM_WS_RE = re.compile(r"\s+")

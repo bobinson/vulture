@@ -5,13 +5,15 @@ This module re-exports the shared discovery types so existing prove_agent
 code that imports from ``prove_agent.plugins`` continues to work.
 """
 
-from shared.discovery.sitemap import SiteMap  # noqa: F401
 from shared.discovery.plugin_base import (  # noqa: F401
+    DISCOVERY_PLUGINS,
     DiscoveryContext,
     DiscoveryPlugin,
     DiscoveryResult,
-    DISCOVERY_PLUGINS,
     register_plugin,
+)
+from shared.discovery.plugin_base import (
     merge_result as _merge_result,
 )
 from shared.discovery.runner import run_discovery  # noqa: F401
+from shared.discovery.sitemap import SiteMap  # noqa: F401

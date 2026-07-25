@@ -1,8 +1,8 @@
 """CC6 - Logical and Physical Access Controls."""
 
 from soc2_agent.skills.access_logging import check_access_logging
-from soc2_agent.skills.encryption_check import check_encryption
 from soc2_agent.skills.data_retention import check_data_retention
+from soc2_agent.skills.encryption_check import check_encryption
 
 
 def audit_cc6(source_path: str) -> dict:

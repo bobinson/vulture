@@ -10,19 +10,22 @@ from __future__ import annotations
 
 import logging
 
-from shared.discovery.sitemap import SiteMap  # noqa: F401
+import httpx
 from shared.discovery.cache import (  # noqa: F401
+    is_cache_fresh,
     load_cached_discovery,
     save_discovery_cache,
-    is_cache_fresh,
 )
-from shared.discovery.helpers import (  # noqa: F401
+from shared.discovery.helpers import (
     extract_forms as _extract_forms,
+)
+from shared.discovery.helpers import (
     extract_json_urls as _extract_json_urls,
+)
+from shared.discovery.helpers import (
     extract_links as _extract_links,
 )
-
-import httpx
+from shared.discovery.sitemap import SiteMap
 
 logger = logging.getLogger(__name__)
 

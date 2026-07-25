@@ -9,7 +9,6 @@ from prove_agent.strategies.shared import (
     stepped_backoff_delay_adaptive,
 )
 
-
 # ---------------------------------------------------------------------------
 # _synthesize_timeout_evidence
 # ---------------------------------------------------------------------------

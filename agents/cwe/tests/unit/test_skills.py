@@ -2,65 +2,64 @@
 
 import pytest
 
-from cwe_agent.skills.injection_check import (
-    check_injection,
-    SQL_INJECTION_PATTERNS,
-    COMMAND_INJECTION_PATTERNS,
-    XSS_PATTERNS,
-    SSRF_PATTERNS,
-)
-from cwe_agent.skills.buffer_check import (
-    check_buffer_handling,
-    UNBOUNDED_COPY_PATTERNS,
-    USE_AFTER_FREE_PATTERNS,
-    INTEGER_OVERFLOW_PATTERNS,
+from cwe_agent.config import AGENT_INFO, ALL_CATEGORIES, CONFIG_SCHEMA
+from cwe_agent.skills.access_control_check import (
+    IDOR_PATTERNS,
+    check_access_control,
 )
 from cwe_agent.skills.auth_check import (
-    check_authentication,
     HARDCODED_CRED_PATTERNS,
     WEAK_AUTH_PATTERNS,
+    check_authentication,
+)
+from cwe_agent.skills.buffer_check import (
+    INTEGER_OVERFLOW_PATTERNS,
+    UNBOUNDED_COPY_PATTERNS,
+    USE_AFTER_FREE_PATTERNS,
+    check_buffer_handling,
+)
+from cwe_agent.skills.concurrency_check import (
+    LOCK_ACQUIRE,
+    TOCTOU_CHECK_PATTERNS,
+    check_concurrency,
 )
 from cwe_agent.skills.crypto_check import (
-    check_cryptography,
-    WEAK_RANDOM_PATTERNS,
     HARDCODED_KEY_PATTERNS,
-)
-from cwe_agent.skills.input_validation_check import (
-    check_input_validation,
-    PATH_TRAVERSAL_PATTERNS,
-    XXE_PATTERNS,
-    CSRF_PATTERNS,
-    DESERIALIZATION_PATTERNS,
-)
-from cwe_agent.skills.resource_check import (
-    check_resource_management,
-    RESOURCE_OPEN_PATTERNS,
-    NULL_DEREF_PATTERNS,
-    UNBOUNDED_ALLOC_PATTERNS,
-)
-from cwe_agent.skills.info_exposure_check import (
-    check_information_exposure,
-    ERROR_DISCLOSURE_PATTERNS,
-    LOG_SENSITIVE_PATTERNS,
-    SENSITIVE_RESPONSE_PATTERNS,
-)
-from cwe_agent.skills.access_control_check import (
-    check_access_control,
-    IDOR_PATTERNS,
+    WEAK_RANDOM_PATTERNS,
+    check_cryptography,
 )
 from cwe_agent.skills.error_handling_check import (
-    check_error_handling,
     BARE_EXCEPT_PATTERNS,
     EMPTY_CATCH_PATTERNS,
     IO_WITHOUT_CHECK,
+    check_error_handling,
 )
-from cwe_agent.skills.concurrency_check import (
-    check_concurrency,
-    TOCTOU_CHECK_PATTERNS,
-    LOCK_ACQUIRE,
+from cwe_agent.skills.info_exposure_check import (
+    ERROR_DISCLOSURE_PATTERNS,
+    LOG_SENSITIVE_PATTERNS,
+    SENSITIVE_RESPONSE_PATTERNS,
+    check_information_exposure,
 )
-from cwe_agent.config import ALL_CATEGORIES, AGENT_INFO, CONFIG_SCHEMA
-
+from cwe_agent.skills.injection_check import (
+    COMMAND_INJECTION_PATTERNS,
+    SQL_INJECTION_PATTERNS,
+    SSRF_PATTERNS,
+    XSS_PATTERNS,
+    check_injection,
+)
+from cwe_agent.skills.input_validation_check import (
+    CSRF_PATTERNS,
+    DESERIALIZATION_PATTERNS,
+    PATH_TRAVERSAL_PATTERNS,
+    XXE_PATTERNS,
+    check_input_validation,
+)
+from cwe_agent.skills.resource_check import (
+    NULL_DEREF_PATTERNS,
+    RESOURCE_OPEN_PATTERNS,
+    UNBOUNDED_ALLOC_PATTERNS,
+    check_resource_management,
+)
 
 # === Injection Patterns ===
 
@@ -351,8 +350,9 @@ class TestCryptoPatterns:
         # crypto context on the line — the actual contract is what
         # the public `_check_broken_crypto` function reports, so test
         # against that rather than the raw pattern list.
-        from cwe_agent.skills.crypto_check import _check_broken_crypto
         from pathlib import Path
+
+        from cwe_agent.skills.crypto_check import _check_broken_crypto
         line = "from Crypto.Cipher import DES"
         findings: list[dict] = []
         _check_broken_crypto(Path("x.py"), line, 1, (line,), findings)

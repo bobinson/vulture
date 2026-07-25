@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
-
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     is_generated_file,
@@ -39,7 +38,6 @@ from shared.tools.file_scanner import (
 from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
-
 
 # ---------------------------------------------------------------------------
 # Pattern set

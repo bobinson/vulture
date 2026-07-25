@@ -2,19 +2,18 @@
 
 import json
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-
+from discover_agent.agent import _compute_discovery_score
 from discover_agent.findings import (
-    analyze_security_exposures,
     _check_exposed_debug_endpoints,
     _check_graphql_introspection,
     _check_missing_security_headers,
     _check_sensitive_file_exposure,
     _check_server_version_disclosure,
+    analyze_security_exposures,
 )
-from discover_agent.agent import _compute_discovery_score
 from shared.discovery.sitemap import SiteMap
 
 

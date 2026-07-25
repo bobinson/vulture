@@ -104,7 +104,9 @@ export function AuditResults() {
       result.push({ id: `c-${++counter}`, text: t("results.findingsCount", { count: findingCount }), type: "finding", timestamp: ts });
     }
     const label = status === "completed" ? t("results.auditCompleted") : t("common.failed");
-    result.push({ id: `c-${++counter}`, text: label, type: "step", timestamp: ts });
+    // Final id: `counter + 1` (not `++counter`) — nothing reads counter after
+    // this, so the write-back is dead (eslint no-useless-assignment).
+    result.push({ id: `c-${counter + 1}`, text: label, type: "step", timestamp: ts });
     return result;
   }, [isTerminal, audit, status, t, hadLiveStream]);
 

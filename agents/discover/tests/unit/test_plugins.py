@@ -5,14 +5,12 @@ import time
 from unittest.mock import AsyncMock
 
 import pytest
-
-from shared.discovery.sitemap import SiteMap
 from discover_agent.learning_store import GraphQLSchemaCache, SessionLearnings
 from discover_agent.plugins import (
+    DISCOVERY_PLUGINS,
     DiscoveryContext,
     DiscoveryPlugin,
     DiscoveryResult,
-    DISCOVERY_PLUGINS,
     _merge_result,
     run_discovery,
 )
@@ -24,7 +22,7 @@ from discover_agent.plugins.rpc import RPCPlugin
 from discover_agent.plugins.source_code import SourceCodePlugin
 from discover_agent.plugins.websocket import WebSocketPlugin
 from discover_agent.source_analyzer import SourceAnalysisResult, SourceRoute
-
+from shared.discovery.sitemap import SiteMap
 
 # --- Plugin Registration ---
 

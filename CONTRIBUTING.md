@@ -13,6 +13,13 @@ By participating in this project, you agree to abide by our [Code of Conduct](CO
 3. **Make your changes** following the development workflow and code quality rules below.
 4. **Push** your branch and open a **Pull Request** against `main`.
 
+### Proposing a feature (RFC)
+
+For anything larger than a bug fix or small improvement, open an **RFC issue** first describing:
+the problem, the proposed approach, affected components, and the test plan. A maintainer will
+review it, assign it a tracking number, and confirm scope before you invest in implementation.
+Reference the issue from your PR.
+
 ## Development Setup
 
 ### Prerequisites

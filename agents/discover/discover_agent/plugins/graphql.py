@@ -11,8 +11,14 @@ import logging
 import re
 import time
 
+from shared.discovery.plugin_base import (
+    DiscoveryContext,
+    DiscoveryPlugin,
+    DiscoveryResult,
+    register_plugin,
+)
+
 from discover_agent.learning_store import GraphQLSchemaCache
-from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
 
 logger = logging.getLogger(__name__)
 

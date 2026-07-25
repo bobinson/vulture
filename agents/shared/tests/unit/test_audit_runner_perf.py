@@ -9,7 +9,6 @@ Verifies:
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
 from shared.audit_runner import (
     _emit_token_savings,
     _parse_known_titles,
@@ -87,6 +86,7 @@ class TestCollectLlmFindingsAsyncioRun:
     def test_no_new_event_loop_call(self):
         """The _collect_llm_findings function must not call asyncio.new_event_loop()."""
         import inspect
+
         from shared.audit_runner import _collect_llm_findings
         source = inspect.getsource(_collect_llm_findings)
         assert "new_event_loop" not in source, (
@@ -97,6 +97,7 @@ class TestCollectLlmFindingsAsyncioRun:
     def test_uses_asyncio_run(self):
         """The _collect_llm_findings function must use asyncio.run()."""
         import inspect
+
         from shared.audit_runner import _collect_llm_findings
         source = inspect.getsource(_collect_llm_findings)
         assert "asyncio.run(" in source, (

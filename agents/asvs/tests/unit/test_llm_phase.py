@@ -58,9 +58,10 @@ def test_llm_catalog_context_contains_critical_chapter_reqs():
 
 def test_run_audit_generator_wires_phase_2_correctly():
     """Verify run_audit yields SSE events and passes use_llm through."""
-    from asvs_agent.agent import run_audit
-    import tempfile
     import pathlib
+    import tempfile
+
+    from asvs_agent.agent import run_audit
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "empty.py").write_text("x = 1\n")
         # With use_llm=False, Phase 2 is suppressed — must still yield events.
@@ -80,7 +81,6 @@ def test_run_audit_generator_wires_phase_2_correctly():
 
 import pytest  # noqa: E402
 
-
 _ALL_SUPPORTED_MODELS = [
     "gpt-4o", "claude-sonnet", "gemini-pro",
     "qwen3:1.7b", "qwen3:8b", "qwen3:14b", "llama3.2", "mistral",
@@ -90,7 +90,7 @@ _ALL_SUPPORTED_MODELS = [
 @pytest.mark.parametrize("model_key", _ALL_SUPPORTED_MODELS)
 def test_model_resolution_for_every_supported_model(model_key):
     """Every model in MODEL_MAP must resolve to a usable SDK string."""
-    from shared.llm.provider import get_model, CONTEXT_WINDOWS
+    from shared.llm.provider import CONTEXT_WINDOWS, get_model
     resolved = get_model(model_key)
     assert resolved  # non-empty
     assert model_key in CONTEXT_WINDOWS  # context window known
@@ -140,9 +140,10 @@ def test_catalog_context_differs_across_windows():
 def test_phase_2_toggle_via_config_overrides_env(monkeypatch):
     """use_llm=True in config forces Phase 2 regardless of env default."""
     monkeypatch.setenv("VULTURE_USE_LLM", "false")
-    from asvs_agent.agent import run_audit
-    import tempfile
     import pathlib
+    import tempfile
+
+    from asvs_agent.agent import run_audit
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "x.py").write_text("x = 1\n")
         # use_llm=False in config — Phase 2 MUST be skipped regardless of env.

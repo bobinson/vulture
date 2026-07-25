@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
+from cwe_agent.skills.auth_check import _check_hardcoded_creds
+from cwe_agent.skills.crypto_check import _check_broken_crypto, _check_hardcoded_key
+from cwe_agent.skills.info_exposure_check import _check_cleartext_storage
+from cwe_agent.skills.injection_check import CODE_INJECTION_PATTERNS
 from cwe_agent.skills.input_validation_check import (
-    PATH_TRAVERSAL_PATTERNS,
     FILE_UPLOAD_STRONG,
+    PATH_TRAVERSAL_PATTERNS,
     _check_file_upload,
 )
-from cwe_agent.skills.injection_check import CODE_INJECTION_PATTERNS
-from cwe_agent.skills.crypto_check import _check_hardcoded_key, _check_broken_crypto
-from cwe_agent.skills.auth_check import _check_hardcoded_creds
-from cwe_agent.skills.info_exposure_check import _check_cleartext_storage
 
 
 def _matches_any(patterns, line: str) -> bool:
