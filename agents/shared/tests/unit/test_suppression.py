@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+
 from shared.tools.suppression import (
     AUTH_CHECK_SUPPRESSIONS,
     INFO_EXPOSURE_SUPPRESSIONS,
@@ -11,6 +12,7 @@ from shared.tools.suppression import (
     should_suppress,
 )
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -18,9 +20,9 @@ from shared.tools.suppression import (
 def _rule(title_re: str, file_glob: str = "", line_re: str | None = None) -> SuppressionRule:
     """Create a SuppressionRule with compiled patterns."""
     return SuppressionRule(
-        title_pattern=re.compile(title_re, re.IGNORECASE),
+        title_pattern=re.compile(title_re, re.I),
         file_glob=file_glob,
-        line_pattern=re.compile(line_re, re.IGNORECASE) if line_re else None,
+        line_pattern=re.compile(line_re, re.I) if line_re else None,
     )
 
 

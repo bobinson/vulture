@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from prove_agent.protocols.detection import (
     TargetCapabilities,
     detect_capabilities,
@@ -29,6 +30,7 @@ from prove_agent.strategies.base import (
     ProbeProtocol,
     ProofPlan,
 )
+
 
 # ---------- ProbeProtocol enum tests ----------
 

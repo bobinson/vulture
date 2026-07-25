@@ -6,17 +6,14 @@ from unittest.mock import patch
 
 import pytest
 
-from shared.llm.cooldown import CooldownManager
 from shared.llm.errors import (
-    RETRYABLE_KINDS,
-    LLMErrorKind,
-    _is_transient_skill_error,
-    classify_llm_error,
-    retry_llm_call,
-    retry_skill,
+    LLMErrorKind, RETRYABLE_KINDS, classify_llm_error, retry_llm_call,
+    _is_transient_skill_error, retry_skill,
 )
-from shared.llm.loop_detector import LoopAction, LoopDetector, _signature, hash_result
+from shared.llm.cooldown import CooldownManager
+from shared.llm.loop_detector import LoopAction, LoopDetector, hash_result, _signature
 from shared.llm.loop_guard import LoopDetectedError, create_loop_guard_hooks
+
 
 # ---------------------------------------------------------------------------
 # 1. Tests for shared.llm.errors — classify_llm_error

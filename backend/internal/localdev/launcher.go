@@ -367,20 +367,10 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		if discoverPort, ok := l.cfg.AgentPorts["discover"]; ok && discoverPort != "" {
 			env = append(env, "VULTURE_DISCOVER_URL=http://localhost:"+discoverPort)
 		}
-		// Feature 0064: in broker mode the agent gets the broker URL (+ a
-		// per-run token at dispatch) and NO raw provider key — the backend is
-		// the sole key holder (N1). Broker off ⇒ withholdKey=false and keys
-		// pass through exactly as before (Mode A default unchanged).
-		brokerEnv, withholdKey := agentBrokerEnv(os.Getenv)
-		if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" && !withholdKey {
+		if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
 			env = append(env, "OPENAI_API_KEY="+apiKey)
 		}
-		// §30: in broker mode the agent talks ONLY to the broker (via
-		// VULTURE_LLM_BROKER_URL); a custom OPENAI_BASE_URL must NOT leak to the
-		// agent, or provider.get_model() would litellm-wrap the model and bypass
-		// the broker's per-run token (→ 401). The broker holds the real gateway
-		// URL (VULTURE_LLM_BROKER_PROVIDER_BASE_URL). Broker off ⇒ unchanged.
-		if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" && !withholdKey {
+		if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
 			env = append(env, "OPENAI_BASE_URL="+baseURL)
 		}
 		if model := os.Getenv("VULTURE_LLM_MODEL"); model != "" {
@@ -398,13 +388,12 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		if l.detect.OllamaOK {
 			env = append(env, "OLLAMA_API_BASE="+ollamaHost)
 		}
-		// Pass Anthropic API key for Claude models via LiteLLM (withheld in
-		// broker mode — N1 key isolation).
-		if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" && !withholdKey {
+		// Pass Anthropic API key for Claude models via LiteLLM.
+		if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {
 			env = append(env, "ANTHROPIC_API_KEY="+anthropicKey)
 		}
 		// Pass Gemini API key for Google models via LiteLLM.
-		if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" && !withholdKey {
+		if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
 			env = append(env, "GEMINI_API_KEY="+geminiKey)
 		}
 		// Pass token efficiency configuration.
@@ -417,9 +406,6 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		if loopLimit := os.Getenv("VULTURE_LOOP_GLOBAL_LIMIT"); loopLimit != "" {
 			env = append(env, "VULTURE_LOOP_GLOBAL_LIMIT="+loopLimit)
 		}
-		// Feature 0064: broker on ⇒ point the agent at the backend's broker
-		// (empty in Mode A default).
-		env = append(env, brokerEnv...)
 		// Disable OpenAI Agents SDK tracing (avoids 400 errors from unsupported fields).
 		env = append(env, "OPENAI_AGENTS_DISABLE_TRACING=1")
 

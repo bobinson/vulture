@@ -32,7 +32,6 @@ testpaths = ["tests"]
 source = ["cwe_agent"]
 
 [tool.ruff]
-extend = "../ruff.toml"   # shared agents lint rule set (matches CI)
 target-version = "py312"
 line-length = 100
 # Corpus fixtures are intentionally-incomplete VULNERABLE code samples, scanned

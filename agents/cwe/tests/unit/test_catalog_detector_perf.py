@@ -7,8 +7,8 @@ Verifies:
 import re
 
 from cwe_agent.skills.catalog_detector import (
-    _LINE_KEYWORD_RE,
     _extract_line_keywords,
+    _LINE_KEYWORD_RE,
 )
 
 

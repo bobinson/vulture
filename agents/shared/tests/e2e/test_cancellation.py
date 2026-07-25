@@ -302,7 +302,7 @@ async def test_t11b_waitfor_cancel_skips_except_exception():
     async def coro():
         try:
             await asyncio.sleep(10)
-        except Exception:
+        except Exception:  # noqa: BLE001 — mirrors _collect_llm_findings_async
             except_exception_ran.append(1)  # would be the cooldown-record site
             raise
 

@@ -4,6 +4,9 @@ import asyncio
 import json
 
 import pytest
+
+from shared.transport.event_emitter import AgUiEventEmitter
+
 from prove_agent.runner import prove_finding_with_timeout
 from prove_agent.strategies.base import (
     BaseStrategy,
@@ -13,7 +16,7 @@ from prove_agent.strategies.base import (
     ReviewResult,
 )
 from prove_agent.strategies.shared import stepped_backoff_delay
-from shared.transport.event_emitter import AgUiEventEmitter
+
 
 # ---------------------------------------------------------------------------
 # Helpers

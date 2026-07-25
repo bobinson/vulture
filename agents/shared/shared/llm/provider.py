@@ -64,32 +64,12 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "qwen3:14b": 32_000,   # Ollama native default; override via VULTURE_LLM_CTX_SIZE if YaRN enabled
     "llama3.2": 128_000,
     "mistral": 32_000,
-    # §31.1: OpenAI o-series + newer/legacy exact ids (mirror Go modelmeta).
-    # o-series are exact-only (no fragile short "o1"/"o3" substring family).
-    "o1": 200_000,
-    "o1-mini": 128_000,
-    "o3": 200_000,
-    "o3-mini": 200_000,
-    "o4-mini": 200_000,
-    "gpt-4.1": 1_047_576,
-    "gpt-4.1-mini": 1_047_576,
-    "gpt-4.1-nano": 1_047_576,
-    "gpt-3.5-turbo": 16_385,  # OVERSHOOT fix: was defaulting to 32000 > real 16385
 }
 
 # Model family patterns → context window size.  Used when the exact model name
 # isn't in CONTEXT_WINDOWS (e.g. custom endpoint "qwen/qwen3.5-35b-a3b").
 # Checked in order; first match wins.
-#
-# NOTE: order + values MUST stay identical to the Go registry
-# (internal/broker/modelmeta.modelFamilyCtx). Matching is first-substring-wins,
-# so a broker run (Go-resolved, injected) and a non-broker run (Python-resolved)
-# only agree on a multi-family id if BOTH position and value match.
 _MODEL_FAMILY_CTX: list[tuple[str, int]] = [
-    # §31 additions (mirror Go modelmeta) — the modern families the set lacked.
-    ("gemma-3", 131_072),   # gemma-3 is 128K — precedes generic gemma (8K) below
-    ("glm", 131_072),       # GLM-4.5/4.6/5.x are 128K–200K
-    ("gemini", 1_048_576),  # gemini-1.5/2.x are 1M+
     ("qwen3", 32_768),
     ("qwen2.5", 32_768),
     ("qwen", 32_768),
@@ -105,18 +85,10 @@ _MODEL_FAMILY_CTX: list[tuple[str, int]] = [
     ("codestral", 32_000),
     ("command-r", 128_000),
     ("claude", 200_000),
-    ("gpt-4.1", 1_047_576),  # §31.1: gpt-4.1* is 1M — MUST precede generic gpt-4 (substring)
-    ("gpt-3.5", 16_385),     # §31.1: legacy 16K
     ("gpt-4", 128_000),
 ]
 
 DEFAULT_MODEL = "gpt-4o"
-
-# §31: window for an unknown model. Shared with the broker-owned Go registry
-# (internal/broker/modelmeta.DefaultContextWindow) — keep the two in sync.
-# Raised from the old 8192 custom-endpoint fallback; see LLD §31 for the
-# overshoot-vs-undershoot rationale.
-DEFAULT_CONTEXT_WINDOW = 32_000
 
 # Fallback chains: if primary model fails, try these in order.
 FALLBACK_CHAINS: dict[str, list[str]] = {
@@ -148,17 +120,11 @@ def get_model(preference: str | None = None) -> str:
     """
     key = preference or os.environ.get("VULTURE_LLM_MODEL", DEFAULT_MODEL)
     resolved = MODEL_MAP.get(key, key)
-    # §30: when the LLM broker is on, the agent routes through the broker's
-    # OpenAI SDK client with a PLAIN model — the broker owns provider routing and
-    # the real gateway base URL. Do NOT litellm-wrap a custom OPENAI_BASE_URL
-    # here, or the SDK takes its LiteLLM-model path and bypasses the broker's
-    # per-run token (→ broker 401). Broker off ⇒ unchanged behaviour.
-    broker_on = os.environ.get("VULTURE_LLM_BROKER", "").strip().lower() in {"1", "true", "yes", "on"}
     # Route through LiteLLM for custom OpenAI-compatible endpoints.
     # OPENAI_BASE_URL means the user is pointing at an OpenAI-compatible
     # server (LM Studio, vLLM, etc.) — always use "openai/" provider
     # so litellm routes to the Chat Completions API at that base URL.
-    if _CUSTOM_BASE_URL and not broker_on and not resolved.startswith("litellm/") and resolved != "gpt-4o":
+    if _CUSTOM_BASE_URL and not resolved.startswith("litellm/") and resolved != "gpt-4o":
         # If model already starts with "openai/", just add litellm prefix
         if resolved.startswith("openai/"):
             return f"litellm/{resolved}"
@@ -215,41 +181,28 @@ def get_context_window(model: str | None = None) -> int:
     Returns:
         Context window size in tokens.
     """
-    # 1. Explicit operator override always wins.
     env_val = os.environ.get("VULTURE_LLM_CTX_SIZE", "")
     if env_val:
         try:
             return int(env_val)
         except ValueError:
             pass
-    # 2. §31: broker-injected window (from the broker-owned registry, which knows
-    # custom-gateway models the local table below does not). Lazy import avoids
-    # any import cycle with broker.py.
-    try:
-        from shared.llm.broker import current_context_window
-
-        injected = current_context_window()
-        if injected and injected > 0:
-            return injected
-    except Exception:  # pragma: no cover - defensive; never block sizing on this
-        pass
     key = model or os.environ.get("VULTURE_LLM_MODEL", DEFAULT_MODEL)
-    # 3. Exact-match table, then 4. model-family inference.
     known = CONTEXT_WINDOWS.get(key)
     if known is not None:
         return known
+    # Try model family pattern matching (e.g. "qwen/qwen3.5-35b" → qwen3 → 32K)
     family_ctx = _infer_family_ctx(key.lower())
     if family_ctx is not None:
         logger.info("inferred_ctx model=%s ctx=%d family_match", key, family_ctx)
         return family_ctx
-    # 5. Unknown model → the shared default (§31: raised from the old timid 8192
-    # to DEFAULT_CONTEXT_WINDOW, matching the Go modelmeta.DefaultContextWindow).
+    # Custom OpenAI-compatible endpoints: conservative fallback.
     if _CUSTOM_BASE_URL:
         logger.warning(
-            "custom_endpoint_default_ctx model=%s ctx=%d hint=set_VULTURE_LLM_CTX_SIZE",
-            key, DEFAULT_CONTEXT_WINDOW,
+            "custom_endpoint_default_ctx model=%s ctx=8192 hint=set_VULTURE_LLM_CTX_SIZE", key,
         )
-    return DEFAULT_CONTEXT_WINDOW
+        return 8_192
+    return 32_000
 
 
 def get_fallback_models(model: str | None = None) -> list[str]:

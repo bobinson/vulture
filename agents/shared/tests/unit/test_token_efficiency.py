@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+
 # ---------------------------------------------------------------------------
 # Issue 1: Output token budget overflows small models
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ class TestIssue3GeminiSourceContextCapped:
         """Gemini (1M tokens) should be capped at 400K chars, not 1.57M."""
         monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
         monkeypatch.setenv("VULTURE_LLM_MODEL", "gemini-pro")
-        from shared.audit_runner import _MAX_SOURCE_CHARS, _get_max_source_chars
+        from shared.audit_runner import _get_max_source_chars, _MAX_SOURCE_CHARS
 
         result = _get_max_source_chars()
         assert result <= _MAX_SOURCE_CHARS
@@ -88,7 +89,7 @@ class TestIssue3GeminiSourceContextCapped:
         """Small models should compute normally without hitting cap."""
         monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
         monkeypatch.setenv("VULTURE_LLM_MODEL", "qwen3:1.7b")
-        from shared.audit_runner import _MAX_SOURCE_CHARS, _get_max_source_chars
+        from shared.audit_runner import _get_max_source_chars, _MAX_SOURCE_CHARS
 
         result = _get_max_source_chars()
         # 32K (<=32K → 0.35 fraction) * 0.35 * 3 = 33600 chars — well below 400K cap
@@ -108,26 +109,19 @@ class TestIssue3GeminiSourceContextCapped:
 
 
 class TestIssue4CustomEndpointContextWindow:
-    """§31: the custom-endpoint fallback was raised from the timid 8192 to the
-    shared DEFAULT_CONTEXT_WINDOW (32000) — a custom endpoint is no longer
-    special-cased below the general default."""
+    """Custom endpoint default context window should be 8192."""
 
-    def test_custom_base_url_unknown_uses_default(self, monkeypatch):
-        from shared.llm import provider
-        from shared.llm.broker import set_context_window
+    def test_custom_base_url_returns_8192(self, monkeypatch):
+        import shared.llm.provider as provider
         monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
-        set_context_window(None)
         monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "http://localhost:1234/v1")
-        assert provider.get_context_window("unknown-model") == provider.DEFAULT_CONTEXT_WINDOW
-        assert provider.DEFAULT_CONTEXT_WINDOW == 32_000
+        assert provider.get_context_window("unknown-model") == 8_192
 
-    def test_without_custom_url_returns_default(self, monkeypatch):
-        from shared.llm import provider
-        from shared.llm.broker import set_context_window
+    def test_without_custom_url_returns_32000(self, monkeypatch):
+        import shared.llm.provider as provider
         monkeypatch.delenv("VULTURE_LLM_CTX_SIZE", raising=False)
-        set_context_window(None)
         monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
-        assert provider.get_context_window("unknown-model") == provider.DEFAULT_CONTEXT_WINDOW
+        assert provider.get_context_window("unknown-model") == 32_000
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +135,6 @@ class TestIssue5LoopDetectedNoCooldown:
     def test_loop_handler_does_not_record_failure(self):
         """Verify the source code no longer calls record_failure for LoopDetectedError."""
         import inspect
-
         from shared.audit_runner import _collect_llm_findings_async
         source = inspect.getsource(_collect_llm_findings_async)
         # Find the LoopDetectedError except block
@@ -167,7 +160,7 @@ class TestIssue6GlobalCallLimit:
 
     def test_env_configurable(self, monkeypatch):
         """LoopDetector constructor reads GLOBAL_CALL_LIMIT as default."""
-        from shared.llm.loop_detector import GLOBAL_CALL_LIMIT, LoopDetector
+        from shared.llm.loop_detector import LoopDetector, GLOBAL_CALL_LIMIT
         # The default param captures the module constant at import time.
         det = LoopDetector()
         assert det._global_limit == GLOBAL_CALL_LIMIT == 100
@@ -226,12 +219,12 @@ class TestIssue8GeminiContextOverflow:
     """Gemini-specific error patterns classified as CONTEXT_OVERFLOW."""
 
     def test_payload_size_exceeds(self):
-        from shared.llm.errors import LLMErrorKind, classify_llm_error
+        from shared.llm.errors import classify_llm_error, LLMErrorKind
         exc = Exception("request.payload.size.exceeds the maximum")
         assert classify_llm_error(exc) == LLMErrorKind.CONTEXT_OVERFLOW
 
     def test_payload_too_large(self):
-        from shared.llm.errors import LLMErrorKind, classify_llm_error
+        from shared.llm.errors import classify_llm_error, LLMErrorKind
         exc = Exception("payload.too.large for model context")
         assert classify_llm_error(exc) == LLMErrorKind.CONTEXT_OVERFLOW
 
@@ -374,7 +367,6 @@ class TestIssue16TokenSavingsSkillOnly:
     def test_token_savings_emitted_with_prior_context(self):
         """The condition should check `if prior_context:` not actual token counts."""
         import inspect
-
         from shared.audit_runner import run_combined_audit
         source = inspect.getsource(run_combined_audit)
         # Find the token savings emission section
@@ -397,7 +389,6 @@ class TestIssue17CacheClear:
 
     def test_clear_caches_called_in_combined_audit(self):
         import inspect
-
         from shared.audit_runner import run_combined_audit
         source = inspect.getsource(run_combined_audit)
         assert "clear_caches()" in source
@@ -405,8 +396,7 @@ class TestIssue17CacheClear:
     def test_clear_caches_actually_clears(self):
         """Calling clear_caches should not raise and should clear LRU caches."""
         from shared.tools.file_scanner import (
-            _read_file_cached,
-            clear_caches,
+            clear_caches, _read_file_cached,
         )
         # Fill caches with dummy data
         _read_file_cached("/nonexistent/test/file.py", 512000)
@@ -481,9 +471,8 @@ class TestIssue20TokenSavingsFieldNames:
     """token_savings event should include clarifying alias fields."""
 
     def test_estimated_fields_present(self):
-        import json
-
         from shared.transport.event_emitter import AgUiEventEmitter
+        import json
 
         emitter = AgUiEventEmitter("test-run")
         event = emitter.token_savings_event(
@@ -506,9 +495,8 @@ class TestIssue20TokenSavingsFieldNames:
 
     def test_backward_compatibility(self):
         """Original field names still present alongside aliases."""
-        import json
-
         from shared.transport.event_emitter import AgUiEventEmitter
+        import json
 
         emitter = AgUiEventEmitter("test-run")
         event = emitter.token_savings_event(
@@ -627,7 +615,6 @@ class TestIssue23SDKOverheadScaling:
     def test_overhead_formula_in_source(self):
         """Verify the formula: max(512, 150 * len(all_tools))."""
         import inspect
-
         from shared.audit_runner import _collect_llm_findings_async
         source = inspect.getsource(_collect_llm_findings_async)
         assert "150 * len(all_tools)" in source
@@ -644,7 +631,6 @@ class TestIssue24ResultEventFindings:
 
     def test_result_event_has_findings_count(self):
         import json
-
         from shared.transport.event_emitter import AgUiEventEmitter
 
         emitter = AgUiEventEmitter("test")
@@ -727,7 +713,6 @@ class TestIssue26AnthropicSourceCaching:
     def test_anthropic_source_in_instructions_check(self):
         """Verify the code checks for 'anthropic' in resolved_model."""
         import inspect
-
         from shared.audit_runner import _collect_llm_findings_async
         source = inspect.getsource(_collect_llm_findings_async)
         assert "anthropic" in source
@@ -817,7 +802,6 @@ class TestIssue29TokenUsageErrorLogging:
 
     def test_exception_logged_not_swallowed(self):
         import inspect
-
         from shared.audit_runner import _extract_token_usage
         source = inspect.getsource(_extract_token_usage)
         # Should log the error, not silently pass
@@ -873,7 +857,6 @@ class TestIssue31SDKOverheadOutputType:
 
     def test_overhead_includes_output_type_schema(self):
         import inspect
-
         from shared.audit_runner import _collect_llm_findings_async
         source = inspect.getsource(_collect_llm_findings_async)
         # The formula should include + 600 for AuditOutput schema
@@ -925,8 +908,7 @@ class TestIssue34GptBypassDocumented:
 
     def test_model_map_has_bypass_note(self):
         import inspect
-
-        from shared.llm import provider
+        import shared.llm.provider as provider
         source = inspect.getsource(provider)
         # Check for documentation near gpt-4o entry
         gpt_idx = source.index('"gpt-4o": "gpt-4o"')
@@ -944,7 +926,6 @@ class TestIssue35LoopGuardWarning:
 
     def test_warning_logged_on_hook_failure(self):
         import inspect
-
         from shared.audit_runner import _collect_llm_findings_async
         source = inspect.getsource(_collect_llm_findings_async)
         # Find the except block after RunConfig
@@ -957,7 +938,6 @@ class TestIssue35LoopGuardWarning:
     def test_loop_guard_import_failure_logs_debug(self):
         """create_loop_guard_hooks logs when SDK is not available."""
         import inspect
-
         from shared.llm.loop_guard import create_loop_guard_hooks
         source = inspect.getsource(create_loop_guard_hooks)
         assert "logger.debug" in source

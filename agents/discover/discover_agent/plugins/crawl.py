@@ -10,6 +10,7 @@ import logging
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
 
+from shared.discovery.sitemap import SiteMap
 from shared.discovery.helpers import (
     COMMON_PATHS,
     extract_forms,
@@ -18,15 +19,8 @@ from shared.discovery.helpers import (
     extract_links,
     extract_technologies,
 )
-from shared.discovery.plugin_base import (
-    DiscoveryContext,
-    DiscoveryPlugin,
-    DiscoveryResult,
-    register_plugin,
-)
-from shared.discovery.sitemap import SiteMap
-
 from discover_agent.learning_store import record_known_404, record_reachable_endpoint
+from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +138,7 @@ def _parse_sitemap_xml(xml_text: str, base: str, result: DiscoveryResult) -> Non
         logger.warning("Sitemap too large (%d bytes), skipping", len(xml_text))
         return
     try:
-        root = ElementTree.fromstring(xml_text)
+        root = ElementTree.fromstring(xml_text)  # noqa: S314 — size-capped above
     except ElementTree.ParseError:
         return
 

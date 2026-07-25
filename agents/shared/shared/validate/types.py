@@ -12,10 +12,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 __all__ = [
-    "FindingValidation",
-    "ValidateConfig",
     "ValidationCheck",
+    "FindingValidation",
     "ValidationResult",
+    "ValidateConfig",
 ]
 
 

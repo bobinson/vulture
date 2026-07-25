@@ -1,12 +1,12 @@
 """PW - Produce Well-Secured Software."""
 
-from ssdf_agent.skills.build_security import check_build_security
-from ssdf_agent.skills.code_review import check_code_review
+from ssdf_agent.skills.secure_design import check_secure_design
 from ssdf_agent.skills.dependency_reuse import check_dependency_reuse
 from ssdf_agent.skills.secure_coding import check_secure_coding
-from ssdf_agent.skills.secure_defaults import check_secure_defaults
-from ssdf_agent.skills.secure_design import check_secure_design
+from ssdf_agent.skills.build_security import check_build_security
+from ssdf_agent.skills.code_review import check_code_review
 from ssdf_agent.skills.security_testing import check_security_testing
+from ssdf_agent.skills.secure_defaults import check_secure_defaults
 
 
 def audit_pw(source_path: str) -> dict:

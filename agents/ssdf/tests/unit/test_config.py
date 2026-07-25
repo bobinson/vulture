@@ -1,6 +1,6 @@
 """Unit tests for SSDF agent configuration."""
 
-from ssdf_agent.config import AGENT_INFO, ALL_PRACTICE_GROUPS, CONFIG_SCHEMA
+from ssdf_agent.config import ALL_PRACTICE_GROUPS, AGENT_INFO, CONFIG_SCHEMA
 
 
 class TestConfig:

@@ -1,8 +1,8 @@
 """RV - Respond to Vulnerabilities."""
 
-from ssdf_agent.skills.root_cause_analysis import check_root_cause_analysis
 from ssdf_agent.skills.vuln_identification import check_vuln_identification
 from ssdf_agent.skills.vuln_remediation import check_vuln_remediation
+from ssdf_agent.skills.root_cause_analysis import check_root_cause_analysis
 
 
 def audit_rv(source_path: str) -> dict:

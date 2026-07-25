@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+
 REPO = Path(__file__).resolve().parents[4]
 DATA = REPO / "agents" / "asvs" / "asvs_agent" / "data"
 CATALOG = DATA / "asvs_catalog.json"
@@ -68,7 +69,6 @@ def test_generic_tokens_sync_between_extractor_and_skill():
     in the fallback index.
     """
     import importlib.util
-
     from asvs_agent.skills.asvs_requirements_check import (
         _GENERIC_TOKENS as runtime_set,
     )

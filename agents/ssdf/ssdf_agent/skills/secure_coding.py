@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import read_file_safe
 
 _LINTER_FILES = {

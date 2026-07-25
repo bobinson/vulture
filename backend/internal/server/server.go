@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/assets"
-	"github.com/vulture/backend/internal/broker/dialect"
-	brokerserve "github.com/vulture/backend/internal/broker/serve"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/cwe"
 	"github.com/vulture/backend/internal/handler"
@@ -34,18 +32,12 @@ type Server struct {
 	mux        http.Handler
 	plugins    pluginregistry.Registry
 	supervisor *pluginsupervisor.Supervisor
-	broker     *brokerserve.Broker
 }
 
 // Supervisor returns the plugin runtime supervisor (may be nil if
 // the registry didn't build or no container plugins are installed).
 // Used by the graceful-shutdown path to call StopAll.
 func (s *Server) Supervisor() *pluginsupervisor.Supervisor { return s.supervisor }
-
-// Broker returns the assembled LLM broker (feature 0064). Always non-nil;
-// its Enabled flag is false when the broker is off / not on Postgres. The
-// serve entrypoint mounts Broker().Handler on the internal listener.
-func (s *Server) Broker() *brokerserve.Broker { return s.broker }
 
 // New constructs the production server. The plugin registry is built
 // fresh per call from DefaultLoadOptions; tests that need a controlled
@@ -73,29 +65,6 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	repo, pgDB, sqliteDB, err := openRepo(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
-	}
-
-	// Feature 0064 §25.2/§29: assemble the LLM broker when enabled, on whichever
-	// store the deployment uses — Postgres (Mode B, multi-replica) OR SQLite
-	// (Mode A / native Mode E). Off → an inert Disabled() broker, so callers need
-	// no nil checks and Mode A default (broker off) is completely unchanged.
-	broker := brokerserve.Disabled()
-	if cfg.Broker.Enabled {
-		var brokerDB *sql.DB
-		var brokerDialect dialect.Kind
-		switch {
-		case pgDB != nil:
-			brokerDB, brokerDialect = pgDB, dialect.Postgres
-		case sqliteDB != nil:
-			brokerDB, brokerDialect = sqliteDB, dialect.SQLite
-		}
-		if brokerDB != nil {
-			b, berr := brokerserve.Build(cfg.Broker, cfg.LLMModel, brokerDB, brokerDialect)
-			if berr != nil {
-				return nil, fmt.Errorf("build llm broker: %w", berr)
-			}
-			broker = b
-		}
 	}
 
 	var supervisor *pluginsupervisor.Supervisor
@@ -146,7 +115,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 
 	sourceSvc := service.NewSourceService(repo)
 	auditSvc := service.NewAuditService(repo)
-	proxyService := service.NewAgentProxyService(broker)
+	proxyService := service.NewAgentProxyService()
 	// Feature 0049: stream service consults the plugin registry via
 	// stagerouter for capability-based dispatch. When the registry
 	// built successfully, the router is wired and used for every
@@ -169,7 +138,6 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	sourceH := handler.NewSourceHandler(sourceSvc)
 	auditH := handler.NewAuditHandler(auditSvc)
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
-	streamH.SetBrokerRevoker(broker) // 0064 §6/M3: revoke run tokens at terminal state (no-op when off)
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
 	// G1: surface enabled registry plugins (e.g. semgrep) in /api/agents so the
@@ -231,7 +199,6 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		mux:        addRequestLogging(addRequestID(corsMux)),
 		plugins:    reg,
 		supervisor: supervisor,
-		broker:     broker,
 	}, nil
 }
 

@@ -30,14 +30,15 @@ from __future__ import annotations
 
 import pytest
 
-from shared import audit_runner
+import shared.audit_runner as audit_runner
 from shared.validate import (
     _apply_validation_to_finding,
     _revote_finding_in_place,
     validate,
 )
 from shared.validate.llm_judge import _is_deterministic, _is_l5_exempt
-from shared.validate.types import ValidateConfig, ValidationCheck
+from shared.validate.types import ValidationCheck, ValidateConfig
+
 
 _VOCAB = {
     "skill",

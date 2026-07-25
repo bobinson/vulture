@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -90,7 +91,7 @@ SAFE_RANDOM_CONTEXT = re.compile(
 )
 
 # Two-tier context: weak random is only high when file has security/crypto context
-_CRYPTO_CONTEXT = [re.compile(r"(encrypt|decrypt|token|secret|password|auth|sign|verify|key)", re.IGNORECASE)]
+_CRYPTO_CONTEXT = [re.compile(r"(encrypt|decrypt|token|secret|password|auth|sign|verify|key)", re.I)]
 
 # CWE-328: Reversible one-way hash (MD5/SHA1 for integrity)
 WEAK_HASH_PATTERNS = [

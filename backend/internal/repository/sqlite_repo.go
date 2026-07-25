@@ -196,10 +196,6 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	migrateAddColumns(db)
-	// Feature 0064 §29: the LLM broker's stores now run on SQLite too.
-	if err := MigrateBrokerTables(db); err != nil {
-		return err
-	}
 	return nil
 }
 

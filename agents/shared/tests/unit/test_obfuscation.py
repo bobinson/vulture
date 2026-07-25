@@ -5,11 +5,12 @@ from pathlib import Path
 import pytest
 
 from shared.tools.obfuscation import (
-    _ALL_PATTERNS,
     COMMENT_LINE,
     SAFE_OBFUSCATION_CONTEXT,
+    _ALL_PATTERNS,
     check_obfuscation,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers

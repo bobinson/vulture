@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 
+
 # Match any common variable-indirection shape inside a quoted string.
 # The line-oriented detectors call this against a captured RHS like
 #   `password = "$VAR"` → captured value `$VAR`

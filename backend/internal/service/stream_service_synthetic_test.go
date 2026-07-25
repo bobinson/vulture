@@ -91,7 +91,7 @@ func TestStreamService_RouterEndToEndWithSyntheticPlugin(t *testing.T) {
 		"syn-scan": {URL: server.URL, Name: "syn-scan", Type: "syn-scan"},
 	}
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	router := stagerouter.New(registry, agents)
 	svc := NewStreamServiceWithRouter(proxy, router)
 
@@ -165,7 +165,7 @@ func TestStreamService_RouterRoutesOnlyPluginsInTypes(t *testing.T) {
 	registry := &fakeRegistry{plugins: []pluginregistry.Plugin{plug}}
 	agents := map[string]config.AgentConfig{"syn-other": {URL: server.URL, Name: "syn-other", Type: "syn-other"}}
 
-	svc := NewStreamServiceWithRouter(NewAgentProxyService(nil), stagerouter.New(registry, agents))
+	svc := NewStreamServiceWithRouter(NewAgentProxyService(), stagerouter.New(registry, agents))
 
 	audit := &model.Audit{
 		ID:     "audit-mismatch",

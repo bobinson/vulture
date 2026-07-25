@@ -15,9 +15,7 @@
 #
 #   dev <provider>     Mode A: Dev-local — bare metal, everything on one machine
 #                      Options: [--pg] [--plugins all|none|<comma-list>]
-#                               [--no-broker] [--budget <usd>]   (broker on by default)
 #   server <provider>  Mode B: Central server — Docker + remote DB
-#                      Options: [--no-broker] [--budget <usd>]   (broker on by default)
 #   viewer             Mode C: Read-only viewer VM — Docker, no agents
 #
 #   stop               Stop Mode A (bare metal processes)
@@ -31,14 +29,6 @@
 #   anthropic [model]  Anthropic API (default: claude-sonnet)
 #   gemini [model]     Google Gemini API — remote (default: gemini-pro); needs GEMINI_API_KEY
 #
-# LLM broker (feature 0064 §30) — ON BY DEFAULT whenever LLM is enabled:
-#   Routes agents through the backend's internal broker (per-run scoped tokens,
-#   central provider-key isolation, budget + egress control) instead of hitting
-#   the provider directly. Fronts EVERY provider via native adapters (openai,
-#   lmstudio, ollama, and native gemini + anthropic). Runs on SQLite (default)
-#   or Postgres (add --pg in dev). Pass --no-broker to opt out; --budget <usd>
-#   sets an optional spend cap. (skills = no LLM = no broker.)
-#
 # CI client (Mode D) doesn't need this script — use the CLI directly:
 #   vulture scan <git-url> --api-key <key> --server <url> --wait --exit-on high
 #
@@ -50,13 +40,9 @@
 #   scripts/vulture.sh dev skills                # Dev-local, skills only
 #   scripts/vulture.sh dev lmstudio              # Dev-local + LM Studio (SQLite)
 #   scripts/vulture.sh dev lmstudio --pg         # Dev-local + LM Studio + Postgres container
-#   scripts/vulture.sh dev lmstudio --broker     # Dev-local + LM Studio via the LLM broker (SQLite)
-#   scripts/vulture.sh dev lmstudio --broker --pg # ...same, Postgres-backed broker
-#   scripts/vulture.sh dev openai gpt-4o --broker --budget 20   # broker + $20 cap
 #   scripts/vulture.sh dev skills --plugins all  # Dev-local + activate all discovered plugins
 #   scripts/vulture.sh dev openai gpt-4o         # Dev-local + OpenAI
 #   scripts/vulture.sh server lmstudio           # Central server + LM Studio (Docker)
-#   scripts/vulture.sh server lmstudio --broker  # Central server + LM Studio via the LLM broker
 #   scripts/vulture.sh server skills             # Central server, skills only (Docker)
 #   scripts/vulture.sh viewer                    # Read-only viewer VM (Docker)
 #   scripts/vulture.sh stop                      # Stop dev-local

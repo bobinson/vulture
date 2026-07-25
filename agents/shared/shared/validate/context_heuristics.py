@@ -92,54 +92,54 @@ _SUPPRESSION_RE = re.compile(
 
 SANITIZER_MAP: dict[str, list[re.Pattern[str]]] = {
     "CWE-89": [
-        re.compile(r"\bparameterize\b|\bprepared\b|\bsanitize_sql\b|\bescape_sql\b", re.IGNORECASE),
+        re.compile(r"\bparameterize\b|\bprepared\b|\bsanitize_sql\b|\bescape_sql\b", re.I),
         re.compile(r"\.bind_param\(|\.execute\([^,]*,\s*\("),
     ],
     "CWE-79": [
-        re.compile(r"\b(?:escape|escapeHtml|sanitizeHtml|DOMPurify|html\.escape)\b", re.IGNORECASE),
+        re.compile(r"\b(?:escape|escapeHtml|sanitizeHtml|DOMPurify|html\.escape)\b", re.I),
     ],
     "CWE-78": [
         re.compile(r"\bshlex\.quote\(|\bshell_escape\("),
-        re.compile(r"subprocess\.(?:run|call|Popen)\([^)]*shell\s*=\s*False", re.IGNORECASE),
+        re.compile(r"subprocess\.(?:run|call|Popen)\([^)]*shell\s*=\s*False", re.I),
     ],
     "CWE-22": [
         re.compile(r"\b(?:os\.path\.realpath|os\.path\.abspath|"
-                   r"secure_filename|sanitize_path|validate_path)\b", re.IGNORECASE),
+                   r"secure_filename|sanitize_path|validate_path)\b", re.I),
     ],
     "CWE-94": [
-        re.compile(r"\b(?:ast\.literal_eval|sandbox|whitelist|allowlist)\b", re.IGNORECASE),
+        re.compile(r"\b(?:ast\.literal_eval|sandbox|whitelist|allowlist)\b", re.I),
     ],
     "CWE-918": [
         re.compile(r"\b(?:validate_url|allowed_hosts|url_whitelist|"
-                   r"is_private_address|ipaddress\.ip_address)\b", re.IGNORECASE),
+                   r"is_private_address|ipaddress\.ip_address)\b", re.I),
     ],
     # Resource limits (CWE-770)
     "CWE-770": [
         re.compile(r"\b(?:max_size|max_length|maxlength|max_count|"
                    r"limit|timeout|deadline|max_workers|maxlen|capacity|"
                    r"max_concurrent|throttle|rate_limit|semaphore|"
-                   r"bounded_|context\.WithTimeout|asyncio\.wait_for)\b", re.IGNORECASE),
+                   r"bounded_|context\.WithTimeout|asyncio\.wait_for)\b", re.I),
         re.compile(r"\.MaxBytesReader\(|\.MaxRequestBodySize\b"),
     ],
     # Exceptional condition handling (CWE-755)
     "CWE-755": [
         re.compile(r"\b(?:except\s+\w+(?:Error|Exception)\b|"
                    r"errors\.(?:Is|As)\(|"
-                   r"if\s+err\s*!=\s*nil)", re.IGNORECASE),
+                   r"if\s+err\s*!=\s*nil)", re.I),
         # Specific named exception (vs bare except:)
         re.compile(r"except\s+[A-Z]\w+(?:Error|Exception)\s*(?:as\s+\w+)?\s*:"),
     ],
     # Insufficient logging (CWE-778)
     "CWE-778": [
         re.compile(r"\b(?:logger|logging|log)\.(?:error|exception|warn|"
-                   r"warning|critical|fatal|info)\s*\(", re.IGNORECASE),
+                   r"warning|critical|fatal|info)\s*\(", re.I),
         re.compile(r"\bzap\.|\bzerolog\.|\.WithError\("),
         # Go-side
         re.compile(r"\blog\.(?:Printf|Println|Print|Errorf)\s*\("),
     ],
     # Null-pointer / dereference (CWE-476)
     "CWE-476": [
-        re.compile(r"\bif\s+\w+\s+is\s+(?:not\s+)?None\b", re.IGNORECASE),
+        re.compile(r"\bif\s+\w+\s+is\s+(?:not\s+)?None\b", re.I),
         re.compile(r"\bif\s+\w+\s*!=\s*nil\b"),
         re.compile(r"\.get\([^,)]+,\s*\w+\)"),     # dict.get(k, default)
         re.compile(r"\b(?:Optional|None|nullable|optional)\b"),
@@ -147,7 +147,7 @@ SANITIZER_MAP: dict[str, list[re.Pattern[str]]] = {
     # Information exposure through logs (CWE-532)
     "CWE-532": [
         re.compile(r"\b(?:redact|mask|sanitize|scrub|filter_sensitive|"
-                   r"remove_pii|strip_secrets)\b", re.IGNORECASE),
+                   r"remove_pii|strip_secrets)\b", re.I),
     ],
     # Improper exception handling (CWE-248) and CWE-754
     "CWE-754": [
@@ -166,21 +166,21 @@ SANITIZER_MAP: dict[str, list[re.Pattern[str]]] = {
     # Improper input validation (CWE-20)
     "CWE-20": [
         re.compile(r"\b(?:validate|is_valid|is_safe|sanitize|"
-                   r"pydantic|marshmallow|cerberus|jsonschema)\b", re.IGNORECASE),
+                   r"pydantic|marshmallow|cerberus|jsonschema)\b", re.I),
     ],
     # File upload (CWE-434)
     "CWE-434": [
         re.compile(r"\b(?:allowed_extensions|file_type|mimetype|content_type|"
-                   r"max_size|validate_file)\b", re.IGNORECASE),
+                   r"max_size|validate_file)\b", re.I),
     ],
     # Authentication (CWE-287, CWE-306)
     "CWE-287": [
         re.compile(r"\b(?:authenticate|authorize|require_auth|@login_required|"
-                   r"@require_permission|Bearer\s+|JWT)\b", re.IGNORECASE),
+                   r"@require_permission|Bearer\s+|JWT)\b", re.I),
     ],
     "CWE-306": [
         re.compile(r"\b(?:authenticate|require_auth|@login_required|"
-                   r"require_authentication)\b", re.IGNORECASE),
+                   r"require_authentication)\b", re.I),
     ],
 }
 

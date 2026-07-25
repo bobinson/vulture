@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agents import function_tool
 
+
 _GOVERNANCE_FILES = {
     "codeowners", "maintainers.md", "maintainers", "maintainers.txt",
     "owners", "owners.md",

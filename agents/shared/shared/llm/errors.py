@@ -28,10 +28,6 @@ class LLMErrorKind(Enum):
     SERVER_ERROR = "server_error"
     INVALID_RESPONSE = "invalid_response"
     CONNECTION_ERROR = "connection_error"
-    # §32.1 #6: a PERMANENT provider/config fault surfaced by the broker
-    # (provider_bad_request / provider_auth_error / model_not_found, or an
-    # explicit x_retriable:false). Never retried — a retry fails identically.
-    PROVIDER_BAD_REQUEST = "provider_bad_request"
     UNKNOWN = "unknown"
 
 
@@ -66,15 +62,6 @@ _TIMEOUT_RE = re.compile(
 )
 _SERVER_RE = re.compile(r"(500|502|503|504|529|internal.server.error|bad.gateway|overloaded)", re.IGNORECASE)
 _CONN_RE = re.compile(r"(connect|dns|resolve|refused|unreachable|ECONNREFUSED)", re.IGNORECASE)
-# §32.1 #6: the broker's AUTHORITATIVE permanent-fault signal — a permanent
-# error code or an explicit x_retriable:false. Checked BEFORE the status-code
-# regexes because the broker returns these as HTTP 502, which _SERVER_RE would
-# otherwise (wrongly) classify as a retryable server error.
-_BROKER_PERMANENT_RE = re.compile(
-    r'("?x_retriable"?\s*:\s*false|'
-    r'provider_bad_request|provider_auth_error|model_not_found)',
-    re.IGNORECASE,
-)
 
 
 def classify_llm_error(exc: Exception) -> LLMErrorKind:
@@ -87,10 +74,6 @@ def classify_llm_error(exc: Exception) -> LLMErrorKind:
         Categorized error kind for retry/fallback decisions.
     """
     msg = str(exc)
-    # Honor the broker's authoritative retryability BEFORE any status-string
-    # heuristic — a permanent 502 must not be retried (§32.1 #6).
-    if _BROKER_PERMANENT_RE.search(msg):
-        return LLMErrorKind.PROVIDER_BAD_REQUEST
     if _RATE_LIMIT_RE.search(msg):
         return LLMErrorKind.RATE_LIMITED
     if _AUTH_RE.search(msg):
@@ -143,7 +126,7 @@ async def retry_llm_call(
             if kind not in RETRYABLE_KINDS or attempt >= max_attempts - 1:
                 raise
             delay = min(base_delay * (2 ** attempt), max_delay)
-            offset = (random.random() * 2 - 1) * jitter
+            offset = (random.random() * 2 - 1) * jitter  # noqa: S311
             delay = max(0.1, delay * (1 + offset))
             logger.info("llm_retry delay=%.1fs attempt=%d/%d", delay, attempt + 1, max_attempts)
             await asyncio.sleep(delay)
@@ -206,7 +189,7 @@ def retry_skill(
             if not _is_transient_skill_error(exc) or attempt >= max_attempts - 1:
                 raise
             delay = base_delay * (2 ** attempt)
-            offset = (random.random() * 2 - 1) * jitter
+            offset = (random.random() * 2 - 1) * jitter  # noqa: S311
             delay = max(0.05, delay * (1 + offset))
             logger.info(
                 "skill_retry fn=%s delay=%.2fs attempt=%d/%d error=%s",

@@ -110,8 +110,3 @@ docker-compose.override.yml
 frontend/test-results/
 
 magicrouter
-
-# local-only instruction files
-CLAUDE.local.md
-
-docs/features

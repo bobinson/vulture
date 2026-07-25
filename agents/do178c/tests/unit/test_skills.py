@@ -1,13 +1,15 @@
 """Unit tests for DO-178C agent skills."""
 
 import pytest
+
+from shared.tools.file_scanner import clear_caches
+
 from do178c_agent.skills.dead_code_check import check_dead_code
-from do178c_agent.skills.malloc_check import check_malloc
 from do178c_agent.skills.mcdc_coverage import check_mcdc_coverage
 from do178c_agent.skills.recursion_check import check_recursion
-from do178c_agent.skills.timing_check import check_timing
+from do178c_agent.skills.malloc_check import check_malloc
 from do178c_agent.skills.traceability_check import check_traceability
-from shared.tools.file_scanner import clear_caches
+from do178c_agent.skills.timing_check import check_timing
 
 
 @pytest.fixture(autouse=True)

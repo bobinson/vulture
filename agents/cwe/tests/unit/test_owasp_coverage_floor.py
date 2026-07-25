@@ -11,6 +11,7 @@ import pathlib
 import re
 
 import pytest
+
 from shared.owasp.mapping import available_editions, load_edition
 
 _SKILLS_DIR = pathlib.Path(__file__).resolve().parents[2] / "cwe_agent" / "skills"

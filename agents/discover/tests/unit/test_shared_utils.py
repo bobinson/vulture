@@ -7,6 +7,7 @@ from xml.etree.ElementTree import Element
 
 import httpx
 import pytest
+
 from discover_agent.plugins._shared import (
     detect_dependencies,
     extract_ports_from_text,
@@ -18,6 +19,7 @@ from discover_agent.plugins._shared import (
     safe_xml_parse,
     safe_yaml_load,
 )
+
 
 # --- Port probing ---
 

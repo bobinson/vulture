@@ -47,10 +47,11 @@ import json
 import re
 from pathlib import Path
 
-from corpus_runner import build_report
+from cwe_agent.skills.signatures.detector import SIGNATURES
 
 import cwe_agent.skills as _skills_pkg
-from cwe_agent.skills.signatures.detector import SIGNATURES
+
+from corpus_runner import build_report
 
 # tests/corpus/ — this file's own directory.
 CORPUS_DIR = Path(__file__).resolve().parent

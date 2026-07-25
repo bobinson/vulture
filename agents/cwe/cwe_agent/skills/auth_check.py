@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -11,13 +12,15 @@ from shared.tools.file_scanner import (
     is_test_file,
     read_file_lines,
     read_file_safe,
+
     scan_code_files,
 )
 from shared.tools.snippet import check_context, extract_snippet
-from shared.tools.suppression import AUTH_CHECK_SUPPRESSIONS, should_suppress
+from shared.tools.suppression import should_suppress, AUTH_CHECK_SUPPRESSIONS
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._var_reference import line_value_is_variable_ref
+
 
 # CWE-798: Hardcoded credentials.
 #
@@ -99,7 +102,7 @@ SAFE_PASSWORD_VALIDATION = re.compile(
 IMPORT_LINE = re.compile(r"^\s*(?:from|import|require|use)\s")
 
 # Two-tier context: hardcoded creds are critical only with auth/connection context
-_CREDENTIAL_CONTEXT = [re.compile(r"(connect|login|auth|session|database)", re.IGNORECASE)]
+_CREDENTIAL_CONTEXT = [re.compile(r"(connect|login|auth|session|database)", re.I)]
 
 
 def check_authentication(source_path: str) -> dict:
