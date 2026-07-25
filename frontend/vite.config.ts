@@ -22,15 +22,8 @@ export default defineConfig({
     host: "0.0.0.0",
     port: devPort,
     proxy: {
-      // SSE audit streams stay open for the full length of an audit — a slow
-      // local model (LM Studio/Ollama) can run well past 10 minutes. The dev
-      // proxy's default socket timeouts would tear the stream down mid-audit,
-      // cancelling the backend request context ("context canceled"). Disable
-      // both timeouts (0 = no timeout) so the proxy holds the stream open for
-      // as long as the backend does. Dev-only; production serves the built SPA
-      // without this proxy.
-      "/api": { target: backendURL, timeout: 0, proxyTimeout: 0 },
-      "/health": { target: backendURL, timeout: 0, proxyTimeout: 0 },
+      "/api": backendURL,
+      "/health": backendURL,
     },
   },
   build: {

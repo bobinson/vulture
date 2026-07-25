@@ -41,7 +41,6 @@ def test_generic_tokens_sync_between_extractor_and_runtime():
     the agent module cleanly) — this test fails loudly on divergence."""
     import importlib.util
     import pathlib
-
     from cwe_agent.skills.catalog_detector import _GENERIC_TOKENS as runtime_set
     repo_root = pathlib.Path(__file__).resolve().parents[4]
     script_path = repo_root / "scripts" / "extract_cwe_catalog.py"

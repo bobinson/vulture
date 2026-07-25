@@ -10,30 +10,29 @@ from pathlib import Path
 
 import pytest
 
-from cwe_agent.skills.access_control_check import IDOR_PATTERNS
-from cwe_agent.skills.buffer_check import OOB_READ_PATTERNS, SAFE_SIZEOF_CHECK
+from cwe_agent.skills.memory_safety_check import _analyze_file as memory_analyze
 from cwe_agent.skills.concurrency_check import _analyze_file as concurrency_analyze
 from cwe_agent.skills.crypto_check import _check_hardcoded_key
-from cwe_agent.skills.dangerous_function_check import _C_STRING
-from cwe_agent.skills.dependency_check import _check_cve_match, _spec_matches
-from cwe_agent.skills.divide_by_zero_check import _strip_strings_and_comments
-from cwe_agent.skills.error_handling_check import BARE_EXCEPT_PATTERNS
+from cwe_agent.skills.buffer_check import OOB_READ_PATTERNS, SAFE_SIZEOF_CHECK
 from cwe_agent.skills.injection_check import SQL_INJECTION_PATTERNS
 from cwe_agent.skills.input_validation_check import (
-    CSRF_PATTERNS,
-    NO_VALIDATION_PATTERNS,
-    SAFE_XXE_PATTERNS,
+    NO_VALIDATION_PATTERNS, CSRF_PATTERNS, SAFE_XXE_PATTERNS,
 )
-from cwe_agent.skills.memory_safety_check import _analyze_file as memory_analyze
+from cwe_agent.skills.access_control_check import IDOR_PATTERNS
+from cwe_agent.skills.dangerous_function_check import _C_STRING
+from cwe_agent.skills.error_handling_check import BARE_EXCEPT_PATTERNS
+from cwe_agent.skills.weak_entropy_check import _WEAK_RNG
 from cwe_agent.skills.path_equivalence_check import _VARIANTS
+from cwe_agent.skills.divide_by_zero_check import _strip_strings_and_comments
 from cwe_agent.skills.plaintext_transmission_check import (
     check_plaintext_transmission,
 )
-from cwe_agent.skills.secret_scan import pem_blocks
-from cwe_agent.skills.secret_scan.cloud_providers import CLOUD_PATTERNS
+from cwe_agent.skills.dependency_check import _spec_matches, _check_cve_match
 from cwe_agent.skills.secret_scan.crypto_wallets import find_mnemonics
+from cwe_agent.skills.secret_scan.cloud_providers import CLOUD_PATTERNS
 from cwe_agent.skills.secret_scan.entropy import _is_high_entropy_secret
-from cwe_agent.skills.weak_entropy_check import _WEAK_RNG
+from cwe_agent.skills.secret_scan import pem_blocks
+
 
 # ---------------------------------------------------------------------------
 # Batch 1: critical correctness

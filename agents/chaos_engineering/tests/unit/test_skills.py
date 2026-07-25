@@ -1,12 +1,13 @@
 """Unit tests for chaos engineering skills."""
 
 import pytest
-from chaos_agent.config import AGENT_INFO, ALL_CATEGORIES, CONFIG_SCHEMA
+
 from chaos_agent.skills.retry_analysis import (
+    check_retry_patterns,
     HTTP_CALL_PATTERNS,
     RETRY_PATTERNS,
-    check_retry_patterns,
 )
+from chaos_agent.config import ALL_CATEGORIES, AGENT_INFO, CONFIG_SCHEMA
 
 
 class TestRetryPatternDetection:

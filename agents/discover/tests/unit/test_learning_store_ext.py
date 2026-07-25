@@ -7,6 +7,7 @@ record_known_404 and record_reachable_endpoint.
 
 import time
 
+
 from discover_agent.learning_store import (
     GraphQLSchemaCache,
     SessionLearnings,

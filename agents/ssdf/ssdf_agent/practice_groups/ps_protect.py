@@ -1,8 +1,8 @@
 """PS - Protect the Software."""
 
-from ssdf_agent.skills.archive_protection import check_archive_protection
 from ssdf_agent.skills.code_protection import check_code_protection
 from ssdf_agent.skills.release_integrity import check_release_integrity
+from ssdf_agent.skills.archive_protection import check_archive_protection
 
 
 def audit_ps(source_path: str) -> dict:

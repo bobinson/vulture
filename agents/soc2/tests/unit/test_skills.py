@@ -1,12 +1,13 @@
 """Unit tests for SOC2 agent skills."""
 
 import pytest
-from soc2_agent.config import AGENT_INFO, ALL_CLAUSES, CONFIG_SCHEMA
+
 from soc2_agent.skills.access_logging import (
+    check_access_logging,
     AUTH_ACTION_PATTERNS,
     LOGGING_PATTERNS,
-    check_access_logging,
 )
+from soc2_agent.config import ALL_CLAUSES, AGENT_INFO, CONFIG_SCHEMA
 
 
 class TestLoggingPatterns:

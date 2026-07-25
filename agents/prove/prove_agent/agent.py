@@ -17,10 +17,12 @@ from collections.abc import Generator
 from typing import Any
 
 import httpx
-from shared.discovery.cache import load_cached_discovery
-from shared.discovery.sitemap import SiteMap
+
 from shared.llm.mode import is_llm_required, is_skills_only
 from shared.transport.event_emitter import AgUiEventEmitter
+
+from shared.discovery.cache import load_cached_discovery
+from shared.discovery.sitemap import SiteMap
 
 from prove_agent.api_prober import probe_api_endpoints
 from prove_agent.config import ALL_TYPES

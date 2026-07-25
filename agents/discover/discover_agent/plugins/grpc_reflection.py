@@ -9,13 +9,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-from shared.discovery.plugin_base import (
-    DiscoveryContext,
-    DiscoveryPlugin,
-    DiscoveryResult,
-    register_plugin,
-)
-
+from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
 from discover_agent.plugins._shared import probe_port
 
 logger = logging.getLogger(__name__)
@@ -61,10 +55,7 @@ async def _try_grpc_reflection(host: str, result: DiscoveryResult) -> None:
     """
     try:
         import grpc  # type: ignore[import-untyped]
-        from grpc_reflection.v1alpha import (  # type: ignore[import-untyped]
-            reflection_pb2,
-            reflection_pb2_grpc,
-        )
+        from grpc_reflection.v1alpha import reflection_pb2, reflection_pb2_grpc  # type: ignore[import-untyped]
     except ImportError:
         logger.debug("grpcio/grpc-reflection not available, skipping reflection")
         return

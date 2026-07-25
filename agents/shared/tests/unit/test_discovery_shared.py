@@ -2,16 +2,16 @@
 
 import json
 
-from shared.discovery.cache import _cache_path
+from shared.discovery.sitemap import SiteMap
 from shared.discovery.helpers import (
+    is_static_path,
+    is_page_path,
+    filter_static_endpoints,
+    extract_links,
     extract_forms,
     extract_json_urls,
-    extract_links,
-    filter_static_endpoints,
-    is_page_path,
-    is_static_path,
 )
-from shared.discovery.sitemap import SiteMap
+from shared.discovery.cache import _cache_path
 
 
 class TestSiteMap:

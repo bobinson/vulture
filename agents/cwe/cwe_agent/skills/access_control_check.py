@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -76,7 +77,7 @@ PRIVILEGE_PATTERNS = [
 IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
 
 # Two-tier context: missing auth is only high with route/handler context
-_ROUTE_CONTEXT = [re.compile(r"(route|handler|endpoint|controller|app\.|router\.|api)", re.IGNORECASE)]
+_ROUTE_CONTEXT = [re.compile(r"(route|handler|endpoint|controller|app\.|router\.|api)", re.I)]
 
 
 def check_access_control(source_path: str) -> dict:

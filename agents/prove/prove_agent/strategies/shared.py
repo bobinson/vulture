@@ -9,11 +9,7 @@ import httpx
 
 from prove_agent.llm_helper import llm_json_call
 from prove_agent.strategies.base import (
-    AttemptRecord,
-    ExecutionResult,
-    FailureReason,
-    ProofPlan,
-    ReflectionResult,
+    AttemptRecord, ExecutionResult, FailureReason, ProofPlan, ReflectionResult,
 )
 from prove_agent.strategies.rule_analyzer import analyze_response
 from prove_agent.techniques import pick_next_technique
@@ -183,7 +179,7 @@ def extract_urls_from_site_context(site_context: str) -> list[str]:
             seen.add(path)
 
     # Prioritize: API endpoints first, then pages
-    api_urls = [u for u in urls if re.search(r'/api/|/v[0-9]+/|/graphql|/auth/', u, re.IGNORECASE)]
+    api_urls = [u for u in urls if re.search(r'/api/|/v[0-9]+/|/graphql|/auth/', u, re.I)]
     page_urls = [u for u in urls if u not in set(api_urls)]
     return api_urls + page_urls
 
@@ -354,7 +350,7 @@ def _build_upload_fallback(
     """Build a multipart file upload probe for CWE-434 findings."""
     # Find upload endpoints from site context
     upload_url = ""
-    upload_re = re.compile(r"(/[^\s]*(?:upload|file|media|attach|image|document)[^\s]*)", re.IGNORECASE)
+    upload_re = re.compile(r"(/[^\s]*(?:upload|file|media|attach|image|document)[^\s]*)", re.I)
     for match in upload_re.finditer(site_context):
         path = match.group(1).split()[0]
         if path not in tried and not is_static_asset(path):
@@ -551,7 +547,7 @@ async def retry_with_backoff(
                 raise
             base_delay = min_delay * (2 ** attempt)
             delay = min(base_delay, max_delay)
-            offset = (random.random() * 2 - 1) * jitter
+            offset = (random.random() * 2 - 1) * jitter  # noqa: S311
             delay = max(0, delay * (1 + offset))
             logger.info(
                 "Retrying after %.1fs (attempt %d/%d): %s",

@@ -44,17 +44,7 @@ type AuditRequest struct {
 	Config         json.RawMessage `json:"config"`
 	WebhookURL     string          `json:"webhook_url,omitempty"`     // Feature 0031: optional callback on completion
 	DegradedReason string          `json:"degraded_reason,omitempty"` // Feature 0039: populated by handler from /api/llm/health preflight; not user-supplied
-	// BrokerToken is the feature 0064 per-run scoped LLM-broker token
-	// (ES256/EdDSA JWT). Additive and optional: empty means "no broker"
-	// (agents use env provider keys as today). The agent-proxy injects
-	// it at dispatch; the agent uses it as the SDK client's api_key.
-	// Never user-supplied. Secret-class — never logged.
-	BrokerToken string `json:"broker_token,omitempty"`
-	// ContextWindow is the feature 0064 §31 broker-resolved context window
-	// (tokens) for the run's primary model, injected at dispatch alongside
-	// broker_token so the agent sizes its LLM phase from the registry. 0 = unset
-	// (broker off / unknown → agent resolves its own). Never user-supplied.
-	ContextWindow int `json:"context_window,omitempty"`
+
 }
 
 // AuditComparison holds the diff between the current audit and the previous one.

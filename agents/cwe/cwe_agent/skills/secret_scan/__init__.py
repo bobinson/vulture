@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
     is_generated_file,
@@ -25,15 +26,14 @@ from shared.tools.file_scanner import (
 )
 
 from cwe_agent.catalog import enrich_finding
-from cwe_agent.skills.secret_scan import (
-    cloud_providers,
-    config_files,
-    crypto_wallets,
-    pem_blocks,
-    substrate,
-)
 from cwe_agent.skills.secret_scan import context as ctx
+from cwe_agent.skills.secret_scan import pem_blocks
+from cwe_agent.skills.secret_scan import cloud_providers
+from cwe_agent.skills.secret_scan import crypto_wallets
+from cwe_agent.skills.secret_scan import substrate
+from cwe_agent.skills.secret_scan import config_files
 from cwe_agent.skills.secret_scan import entropy as entropy_mod
+
 
 # Per-skill extension override. Includes secret-bearing file types
 # that aren't in the default CODE_EXTENSIONS — .pem / .key / .crt
@@ -167,7 +167,7 @@ check_secrets_tool = function_tool(check_secrets)
 
 
 __all__ = [
-    "SECRET_SCAN_EXTENSIONS",
     "check_secrets",
     "check_secrets_tool",
+    "SECRET_SCAN_EXTENSIONS",
 ]

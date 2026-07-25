@@ -52,12 +52,6 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// 0064/§26 M8: broker_token is minted+injected server-side (§6/§25.2) and is
-	// NEVER client-supplied — scrub any value that arrived on the request body
-	// so a client cannot inject a forged/foreign per-run credential (mirrors the
-	// DegradedReason overwrite below).
-	req.BrokerToken = ""
-	req.ContextWindow = 0 // §31: broker-injected at dispatch, never client-supplied
 
 	// Feature 0039: per-audit LLM-health preflight. Best-effort — if the
 	// aggregator cannot reach any agent, proceed without populating
@@ -226,7 +220,7 @@ func (h *AuditHandler) Compare(w http.ResponseWriter, r *http.Request) {
 	}
 	if prev == nil {
 		writeJSON(w, http.StatusOK, model.AuditComparison{
-			HasPrevious:          false,
+			HasPrevious:      false,
 			CurrentFindingsCount: len(audit.Findings),
 		})
 		return

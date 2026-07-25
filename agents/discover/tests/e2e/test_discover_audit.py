@@ -5,6 +5,7 @@ import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 import pytest
+
 from discover_agent.agent import run_discover
 
 

@@ -2,13 +2,14 @@
 
 from unittest.mock import patch
 
+
 from shared.tools.memory_client import (
-    _MAX_CONTEXT_FINDINGS,
     _adapt_prior_findings,
     _dedup_key,
     _fetch_edge_clusters,
     _filter_and_dedup,
     _get_encoder,
+    _MAX_CONTEXT_FINDINGS,
     _normalize_title,
     _staleness_weight,
     build_prior_context,
@@ -115,7 +116,7 @@ class TestStalenessWeight:
         assert 0.9 < w <= 1.0
 
     def test_old_finding_low_weight(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timezone, timedelta
         old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
         w = _staleness_weight({"created_at": old})
         assert w < 0.25  # Exponential decay: 200 days ≈ 0.21
@@ -127,19 +128,19 @@ class TestStalenessWeight:
         assert _staleness_weight({"created_at": "not-a-date"}) == 0.5
 
     def test_half_life(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timezone, timedelta
         mid = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         w = _staleness_weight({"created_at": mid})
         assert 0.4 < w < 0.6
 
     def test_exponential_never_zero(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timezone, timedelta
         old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
         w = _staleness_weight({"created_at": old})
         assert w > 0  # Exponential decay never reaches exactly 0
 
     def test_future_date_returns_one(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timezone, timedelta
         future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
         assert _staleness_weight({"created_at": future}) == 1.0
 

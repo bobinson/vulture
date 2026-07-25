@@ -11,8 +11,9 @@ from cwe_agent.skills._var_reference import (
     line_value_is_variable_ref,
 )
 from cwe_agent.skills.auth_check import _check_hardcoded_creds
-from cwe_agent.skills.crypto_check import _check_hardcoded_key
 from cwe_agent.skills.info_exposure_check import _check_cleartext_storage
+from cwe_agent.skills.crypto_check import _check_hardcoded_key
+
 
 # ---------------------------------------------------------------------------
 # Pure regex tests

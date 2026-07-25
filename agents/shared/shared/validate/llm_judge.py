@@ -14,7 +14,6 @@ aborting validate.
 
 from __future__ import annotations
 
-import contextvars
 import hashlib
 import json
 import logging
@@ -22,10 +21,9 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from shared.cancellation import current_audit_deadline, current_cancel_token
 
@@ -235,14 +233,8 @@ def _run_l5_pool(
     # would still block on in-flight workers via `shutdown(wait=True)`.
     pool = ThreadPoolExecutor(max_workers=rt.concurrency)
     try:
-        # §31.1: run each batch in a COPY of the current context so the per-run
-        # broker token + task_type contextvars (bound by the transport, carried
-        # into this L5 thread via audit_runner's copy_context) reach the pool
-        # worker threads — otherwise _get_client sees no token and bypasses the
-        # broker (→ 401 against the default OpenAI endpoint). A fresh copy per
-        # submit (copy_context is cheap) avoids "context already entered".
         futures = {
-            pool.submit(contextvars.copy_context().run, _process_batch, i, batch): (i, batch)
+            pool.submit(_process_batch, i, batch): (i, batch)
             for i, batch in enumerate(batches)
         }
         for fut in _as_completed_with_deadline(futures, deadline):
@@ -717,44 +709,16 @@ def _judge_batch(
 _client_local = threading.local()
 
 
-def _resolve_client_config() -> tuple[str, str, dict[str, str]]:
-    """Resolve (base_url, api_key, default_headers) for the L5 judge client.
-
-    §31.1 broker-aware: when the run carries a broker token, route L5 through the
-    broker (base_url→broker /v1, api_key→per-run token, X-Vulture-Task-Type
-    header) exactly like the main generate path — so L5 is key-isolated, metered,
-    and works for native gemini/anthropic (which the raw OpenAI client can't
-    reach). Otherwise fall back to OPENAI_BASE_URL / OPENAI_API_KEY.
-    """
-    try:
-        from shared.llm.broker import (
-            current_broker_task_type,
-            current_broker_token,
-            resolve_broker_config,
-        )
-
-        cfg = resolve_broker_config(current_broker_token())
-        if cfg is not None:
-            headers: dict[str, str] = {}
-            task_type = current_broker_task_type()
-            if task_type:
-                headers["X-Vulture-Task-Type"] = task_type
-            return cfg.base_url, cfg.api_key, headers
-    except Exception:  # pragma: no cover - defensive; never block L5 on this
-        pass
-    return os.getenv("OPENAI_BASE_URL", ""), os.getenv("OPENAI_API_KEY", "lm-studio"), {}
-
-
 def _client_env_key() -> tuple[str, str]:
-    base_url, api_key, _ = _resolve_client_config()
-    return (base_url, api_key)
+    return (os.getenv("OPENAI_BASE_URL", ""), os.getenv("OPENAI_API_KEY", "lm-studio"))
 
 
 def _get_client() -> "Any":
-    """Return a per-thread cached openai.OpenAI client (issue #3), broker-aware
-    (§31.1). Re-creates the client when the resolved (base_url, api_key) differs
-    from the cached value — the per-run broker token is part of the key, so a new
-    run gets a fresh client and stale env changes never leak (audit issue #C-1).
+    """Return a per-thread cached openai.OpenAI client (issue #3).
+
+    Re-creates the client when OPENAI_BASE_URL or OPENAI_API_KEY
+    differs from the cached value — fixes the test-isolation gap
+    flagged as audit issue #C-1.
     """
     env_key = _client_env_key()
     cached_env = getattr(_client_local, "env_key", None)
@@ -766,12 +730,10 @@ def _get_client() -> "Any":
     except ImportError:
         log.warning("[validate.l5] openai package not available")
         return None
-    base_url, api_key, headers = _resolve_client_config()
+    base_url, api_key = env_key
     kw: dict[str, Any] = {"api_key": api_key}
     if base_url:
         kw["base_url"] = base_url
-    if headers:
-        kw["default_headers"] = headers
     client = openai.OpenAI(**kw)
     _client_local.client = client
     _client_local.env_key = env_key
@@ -1244,7 +1206,7 @@ def _as_completed_with_deadline(futures, deadline: float):
     """Yield futures as they complete, but stop yielding once we pass
     `deadline`. Remaining futures are cancelled best-effort and their
     findings will receive `no verdict` stubs from the caller."""
-    from concurrent.futures import FIRST_COMPLETED, wait
+    from concurrent.futures import wait, FIRST_COMPLETED
 
     pending = set(futures.keys())
     while pending:

@@ -7,13 +7,7 @@ from Content-Type headers and XML response bodies.
 import logging
 from pathlib import Path
 
-from shared.discovery.plugin_base import (
-    DiscoveryContext,
-    DiscoveryPlugin,
-    DiscoveryResult,
-    register_plugin,
-)
-
+from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
 from discover_agent.plugins._shared import has_dependency, probe_endpoint, safe_xml_parse
 
 logger = logging.getLogger(__name__)

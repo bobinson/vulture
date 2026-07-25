@@ -4,6 +4,7 @@
 from shared.audit_runner import _dedup_key, _deduplicate_findings
 from shared.tools.memory_client import _normalize_title
 
+
 # ---------------------------------------------------------------------------
 # _dedup_key prefers check_id when present
 # ---------------------------------------------------------------------------

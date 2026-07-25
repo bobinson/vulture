@@ -1,6 +1,6 @@
 """Tests for ASVS agent configuration."""
 
-from asvs_agent.config import AGENT_INFO, ALL_CATEGORIES, CONFIG_SCHEMA
+from asvs_agent.config import ALL_CATEGORIES, AGENT_INFO, CONFIG_SCHEMA
 
 
 def test_all_categories_has_single_entry():

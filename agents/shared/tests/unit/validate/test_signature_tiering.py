@@ -20,11 +20,12 @@ These tests are RED until ``_is_deterministic`` / ``_is_l5_exempt`` read
 from __future__ import annotations
 
 from shared.validate.llm_judge import (
-    _apply_l5_safeguards,
     _is_deterministic,
     _is_l5_exempt,
+    _apply_l5_safeguards,
 )
 from shared.validate.types import ValidationCheck
+
 
 # ── Unit: _is_deterministic / _is_l5_exempt read signature_status ─────
 

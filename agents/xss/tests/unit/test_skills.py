@@ -1,39 +1,41 @@
 """Unit tests for all 5 XSS scanner skills."""
 
 import pytest
+
 from xss_agent.config import AGENT_INFO, ALL_CATEGORIES, CONFIG_SCHEMA
 from xss_agent.skills import SKILL_MAP, SKILL_TOOLS
-from xss_agent.skills.dom_xss_check import (
-    SINK_PATTERNS,
-    SOURCE_PATTERNS,
-    SOURCE_TO_SINK_PATTERNS,
-    check_dom_xss,
-)
-from xss_agent.skills.header_injection_check import (
-    HEADER_INJECTION_PATTERNS,
-    META_REFRESH_PATTERNS,
-    WEAK_CSP_PATTERNS,
-    check_header_injection,
-)
 from xss_agent.skills.reflected_xss_check import (
+    TEMPLATE_UNSAFE_PATTERNS,
     DOM_WRITE_PATTERNS,
     SERVER_RESPONSE_PATTERNS,
-    TEMPLATE_UNSAFE_PATTERNS,
     check_reflected_xss,
 )
 from xss_agent.skills.stored_xss_check import (
     DB_READ_INDICATORS,
-    MARKDOWN_RAW_PATTERNS,
     UNSAFE_RENDER_PATTERNS,
+    MARKDOWN_RAW_PATTERNS,
     check_stored_xss,
 )
+from xss_agent.skills.dom_xss_check import (
+    SOURCE_PATTERNS,
+    SINK_PATTERNS,
+    SOURCE_TO_SINK_PATTERNS,
+    check_dom_xss,
+)
 from xss_agent.skills.template_injection_check import (
+    JINJA2_PATTERNS,
+    HANDLEBARS_PATTERNS,
     EJS_PATTERNS,
     GO_TEMPLATE_PATTERNS,
-    HANDLEBARS_PATTERNS,
-    JINJA2_PATTERNS,
     check_template_injection,
 )
+from xss_agent.skills.header_injection_check import (
+    HEADER_INJECTION_PATTERNS,
+    WEAK_CSP_PATTERNS,
+    META_REFRESH_PATTERNS,
+    check_header_injection,
+)
+
 
 # =============================================================================
 # Config tests

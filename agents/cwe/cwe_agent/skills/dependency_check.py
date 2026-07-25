@@ -17,6 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -29,6 +30,7 @@ from shared.tools.file_scanner import (
 from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
+
 
 # ---------------------------------------------------------------------------
 # CWE-937: Known-Vulnerable Component

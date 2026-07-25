@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 
+
 from shared.audit_runner import run_combined_audit
 from tests._fake_llm import (
     FakeLLMProvider,
@@ -33,6 +34,7 @@ from tests._fake_llm import (
     install_fake_runner,
     patch_l5_judge,
 )
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -174,7 +176,7 @@ class TestT2L5SkipsBlind:
     snippet cannot be resolved (e.g. line_start=0) must not be sent to L5."""
 
     def test_blind_finding_not_sent_to_judge(self, tmp_path, monkeypatch):
-        from shared.validate import ValidateConfig, validate
+        from shared.validate import validate, ValidateConfig
 
         seen_messages: list[str] = []
         patch_l5_judge(monkeypatch, default_exploitable=0.9,
@@ -232,7 +234,7 @@ class TestT3SkillsAuthoritative:
     it from the non-deterministic layer."""
 
     def test_l5_zero_verdict_does_not_suppress_skill_finding(self, tmp_path, monkeypatch):
-        from shared.validate import ValidateConfig, validate
+        from shared.validate import validate, ValidateConfig
 
         # Place the finding in a test-path file so L1 adds a -0.20 demoting
         # path check; combined with an L5 exploitable=0.0 (weight -0.75) this
@@ -334,7 +336,7 @@ class TestT5Rc6BlastRadiusCap:
     mass-FP run cannot gut the result. Below the cap, L5 verdicts apply."""
 
     def test_l5_frozen_when_majority_demoted(self, tmp_path, monkeypatch):
-        from shared.validate import ValidateConfig, validate
+        from shared.validate import validate, ValidateConfig
 
         # 4 grounded findings; L5 would mark 3 of 4 (75% > 50%) non-exploitable.
         findings = []
@@ -368,7 +370,7 @@ class TestT5Rc6BlastRadiusCap:
         )
 
     def test_l5_applies_when_below_cap(self, tmp_path, monkeypatch):
-        from shared.validate import ValidateConfig, validate
+        from shared.validate import validate, ValidateConfig
 
         findings = []
         for i in range(4):

@@ -8,12 +8,7 @@ import logging
 import re
 
 from shared.discovery.helpers import is_static_path as _is_static_path
-from shared.discovery.plugin_base import (
-    DiscoveryContext,
-    DiscoveryPlugin,
-    DiscoveryResult,
-    register_plugin,
-)
+from shared.discovery.plugin_base import DiscoveryContext, DiscoveryPlugin, DiscoveryResult, register_plugin
 
 logger = logging.getLogger(__name__)
 

@@ -22,7 +22,7 @@ def test_no_detection_skill_modules_remain():
 
 
 def test_agent_does_not_bind_detection_symbols():
-    from owasp_agent import agent
+    import owasp_agent.agent as agent
 
     assert not hasattr(agent, "run_combined_audit")
     assert not hasattr(agent, "SKILL_MAP")

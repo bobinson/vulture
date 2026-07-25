@@ -15,4 +15,4 @@ PRACTICE_GROUP_MAP = {
 # Normalized alias for cross-agent consistency
 SKILL_MAP = PRACTICE_GROUP_MAP
 
-__all__ = ["PRACTICE_GROUP_MAP", "SKILL_MAP", "audit_po", "audit_ps", "audit_pw", "audit_rv"]
+__all__ = ["audit_po", "audit_ps", "audit_pw", "audit_rv", "PRACTICE_GROUP_MAP", "SKILL_MAP"]

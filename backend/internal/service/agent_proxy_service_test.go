@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/vulture/backend/internal/model"
 )
@@ -31,7 +30,7 @@ func TestAgentProxyService_RunAgent_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	go func() {
@@ -61,7 +60,7 @@ func TestAgentProxyService_RunAgentWithContext_PriorFindings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	priorFindings := []model.PriorFinding{
@@ -89,7 +88,7 @@ func TestAgentProxyService_RunAgentWithContext_NoPriorFindings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	err := proxy.RunAgentWithContext(context.Background(), server.URL, "owasp", "run-3", "/src", json.RawMessage("{}"), nil, eventCh)
@@ -108,7 +107,7 @@ func TestAgentProxyService_RunAgent_NonOKStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	err := proxy.RunAgentWithContext(context.Background(), server.URL, "chaos", "run-4", "/src", json.RawMessage("{}"), nil, eventCh)
@@ -121,7 +120,7 @@ func TestAgentProxyService_RunAgent_NonOKStatus(t *testing.T) {
 }
 
 func TestAgentProxyService_RunAgent_ConnectionError(t *testing.T) {
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	err := proxy.RunAgentWithContext(context.Background(), "http://localhost:1", "chaos", "run-5", "/src", json.RawMessage("{}"), nil, eventCh)
@@ -137,7 +136,7 @@ func TestAgentProxyService_RunAgent_ContextCanceled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -162,7 +161,7 @@ func TestAgentProxyService_SSEStream_SkipsUnknownEvents(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	go func() {
@@ -193,7 +192,7 @@ func TestAgentProxyService_SSEStream_MalformedData(t *testing.T) {
 	}))
 	defer server.Close()
 
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	go func() {
@@ -212,124 +211,8 @@ func TestAgentProxyService_SSEStream_MalformedData(t *testing.T) {
 }
 
 func TestNewAgentProxyService(t *testing.T) {
-	proxy := NewAgentProxyService(nil)
+	proxy := NewAgentProxyService()
 	if proxy == nil {
 		t.Fatal("expected non-nil proxy")
-	}
-}
-
-// The per-agent audit timeout and the HTTP response-header timeout are
-// env-configurable (VULTURE_AGENT_PROXY_TIMEOUT_SEC / _RESPONSE_HEADER_TIMEOUT_SEC),
-// defaulting to today's 600s / 300s so behavior is unchanged when unset. This is
-// what lets a slow local model (LM Studio) finish an audit past 10 minutes.
-func TestAgentProxyTimeouts_Defaults(t *testing.T) {
-	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "")
-	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "")
-	p := NewAgentProxyService(nil).(*agentProxyService)
-	if p.auditTimeout != 10*time.Minute {
-		t.Errorf("default audit timeout = %v, want 10m", p.auditTimeout)
-	}
-	if p.respHeaderTimeout != 300*time.Second {
-		t.Errorf("default response-header timeout = %v, want 300s", p.respHeaderTimeout)
-	}
-}
-
-func TestAgentProxyTimeouts_FromEnv(t *testing.T) {
-	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "1800")
-	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "600")
-	p := NewAgentProxyService(nil).(*agentProxyService)
-	if p.auditTimeout != 30*time.Minute {
-		t.Errorf("audit timeout = %v, want 30m", p.auditTimeout)
-	}
-	if p.respHeaderTimeout != 600*time.Second {
-		t.Errorf("response-header timeout = %v, want 600s", p.respHeaderTimeout)
-	}
-}
-
-func TestAgentProxyTimeouts_ToleratesInlineComment(t *testing.T) {
-	// A .env value with a trailing comment / extra tokens must still parse the
-	// leading integer (not silently fall back to the default and mask the override).
-	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "1800 # 30 min")
-	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "600\t# header")
-	p := NewAgentProxyService(nil).(*agentProxyService)
-	if p.auditTimeout != 30*time.Minute {
-		t.Errorf("audit timeout = %v, want 30m (inline comment must be tolerated)", p.auditTimeout)
-	}
-	if p.respHeaderTimeout != 600*time.Second {
-		t.Errorf("response-header timeout = %v, want 600s", p.respHeaderTimeout)
-	}
-}
-
-func TestAgentProxyTimeouts_InvalidFallsBackToDefault(t *testing.T) {
-	t.Setenv("VULTURE_AGENT_PROXY_TIMEOUT_SEC", "not-a-number")
-	t.Setenv("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", "0")
-	p := NewAgentProxyService(nil).(*agentProxyService)
-	if p.auditTimeout != 10*time.Minute || p.respHeaderTimeout != 300*time.Second {
-		t.Errorf("invalid/zero must fall back to defaults, got %v / %v", p.auditTimeout, p.respHeaderTimeout)
-	}
-}
-
-// stubMinter records the mint call and returns a fixed token.
-type stubMinter struct {
-	gotRun, gotTask string
-	token           string
-	ctxWindow       int
-}
-
-func (m *stubMinter) MintForAgent(runID, taskType string) (string, error) {
-	m.gotRun, m.gotTask = runID, taskType
-	return m.token, nil
-}
-
-func (m *stubMinter) ContextWindow() int { return m.ctxWindow }
-
-// Feature 0064 §25.2: when a broker minter is set, the dispatch payload must
-// carry broker_token + task_type (so the agent authenticates to the broker).
-func TestAgentProxyService_InjectsBrokerTokenAndTaskType(t *testing.T) {
-	var body string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		body = string(b)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
-
-	m := &stubMinter{token: "run-token-xyz", ctxWindow: 131072}
-	proxy := NewAgentProxyService(m)
-	ch := make(chan *model.AgUIEvent, 10)
-	if err := proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-42", "/src", json.RawMessage("{}"), nil, ch); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if m.gotRun != "run-42" || m.gotTask != "cwe" {
-		t.Fatalf("mint called with run=%q task=%q, want run-42/cwe", m.gotRun, m.gotTask)
-	}
-	if !strings.Contains(body, `"broker_token":"run-token-xyz"`) {
-		t.Errorf("payload missing broker_token: %s", body)
-	}
-	if !strings.Contains(body, `"task_type":"cwe"`) {
-		t.Errorf("payload missing task_type: %s", body)
-	}
-	// §31: the broker-resolved context window rides alongside broker_token.
-	if !strings.Contains(body, `"context_window":131072`) {
-		t.Errorf("payload missing context_window: %s", body)
-	}
-}
-
-// A nil minter (broker off) injects nothing — Mode A payload is unchanged.
-func TestAgentProxyService_NilMinter_NoBrokerToken(t *testing.T) {
-	var body string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		body = string(b)
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
-
-	proxy := NewAgentProxyService(nil)
-	ch := make(chan *model.AgUIEvent, 10)
-	_ = proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-1", "/src", json.RawMessage("{}"), nil, ch)
-	if strings.Contains(body, "broker_token") {
-		t.Errorf("Mode A payload must not carry broker_token: %s", body)
 	}
 }

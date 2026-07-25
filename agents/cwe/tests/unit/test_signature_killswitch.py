@@ -22,6 +22,7 @@ from __future__ import annotations
 import cwe_agent.skills.catalog_detector as cd
 from cwe_agent.skills.catalog_detector import check_catalog_generic
 
+
 # A .js file whose only weakness is a ReDoS regex literal (CWE-1333, trusted
 # signature). The 21 regex skills have no ReDoS skill, so this CWE can ONLY
 # come from the signature tier — it is a clean probe for "signatures on/off".

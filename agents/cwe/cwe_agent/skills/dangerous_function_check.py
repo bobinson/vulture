@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
-from shared.env import env_truthy
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     is_generated_file,
@@ -29,6 +29,7 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
+from shared.env import env_truthy
 from shared.tools.snippet import extract_snippet
 from shared.validate.language import detect_language
 
