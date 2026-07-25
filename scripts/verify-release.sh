@@ -35,8 +35,8 @@ echo "==> verify-release for $VERSION ($PLATFORM)"
 WARN=0
 GO_VERSION=$(go version 2>/dev/null | awk '{print $3}' || echo none)
 case "$GO_VERSION" in
-    go1.24*) ;;
-    *) echo "warn: Go version $GO_VERSION is not the canonical go1.24 (reproducibility WARN)"; WARN=1 ;;
+    go1.25*) ;;
+    *) echo "warn: Go version $GO_VERSION is not the canonical go1.25 (reproducibility WARN)"; WARN=1 ;;
 esac
 if command -v node >/dev/null 2>&1; then
     NODE_VERSION=$(node -v)
