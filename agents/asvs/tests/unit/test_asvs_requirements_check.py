@@ -358,7 +358,7 @@ def test_keyword_fallback_fires_medium_finding(tmp_path):
     findings = _findings_for(tmp_path)
     expected_cat = f"ASVS-{chosen['req_id']}"
     assert expected_cat in _categories(findings)
-    match = [f for f in findings if f["category"] == expected_cat][0]
+    match = next(f for f in findings if f["category"] == expected_cat)
     assert match["severity"] == "medium"
 
 

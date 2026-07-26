@@ -371,9 +371,7 @@ def _is_skill_source_file_cached(path_str: str, name: str) -> bool:
     parts_lower = {p.lower() for p in Path(path_str).parts}
     if parts_lower & _SKILL_SOURCE_DIRS:
         return True
-    if name in _PATTERN_HELPER_BASENAMES:
-        return True
-    return False
+    return name in _PATTERN_HELPER_BASENAMES
 _GENERATED_JSON_KEYWORDS = ("catalog", "_data", "fixture", "snapshot")
 
 
@@ -404,12 +402,9 @@ def _is_generated_file_cached(path_str: str, name: str, suffix: str) -> bool:
     if name in SKIP_FILES:
         return True
     parts_set = {p.lower() for p in Path(path_str).parts}
-    if suffix == ".json":
-        if bool(parts_set & _LOCALE_DIRS) or _is_generated_json(name, parts_set):
-            return True
-    if "skills" in parts_set and name.endswith("_check.py"):
+    if suffix == ".json" and (bool(parts_set & _LOCALE_DIRS) or _is_generated_json(name, parts_set)):
         return True
-    return False
+    return bool("skills" in parts_set and name.endswith("_check.py"))
 
 
 def _is_backup_dir(name: str) -> bool:

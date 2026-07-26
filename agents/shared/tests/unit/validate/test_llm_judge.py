@@ -694,7 +694,7 @@ def test_format_code_window_strips_skill_line_prefix():
     # No "99:" leaking through.
     assert "99:" not in out.replace("L99:", "")  # only L-prefixed allowed
     # Output uses L-prefix with our recomputed start.
-    assert out.startswith("L9:") or out.startswith("L10:") or out.startswith("L8:")
+    assert out.startswith(("L9:", "L10:", "L8:"))
     assert "line one" in out
 
 

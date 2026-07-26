@@ -1,21 +1,28 @@
-# Ruff config for the agents workspace — reproduces the CI ("remote") lint rule
-# set so `cd agents && ruff check .` matches CI locally.
+# Authoritative ruff config for the agents workspace. CI runs
+# `cd agents && ruff check .` with no --config, so ruff auto-discovers THIS
+# file (there is no agents/pyproject.toml); cwe/ and shared/ inherit it via
+# `extend = "../ruff.toml"`. Editing this file changes what CI enforces.
 #
-# Keeps ruff's defaults (E4/E7/E9 + F) and adds the exact curated rules CI
-# enforces (the codes surfaced by the lint-agents job). Specific codes (not whole
-# families) so noisy checks CI does NOT run — S101/asserts, E501, PLR2004,
-# PLR09xx, RUF002/003 — stay off.
+# Keeps ruff's defaults (E4/E7/E9 + F) and adds a curated set. Specific codes
+# (not whole families) so noisy checks stay off — S101/asserts, E501, PLR2004,
+# PLR09xx, RUF002/003.
 target-version = "py312"
 line-length = 100
 
 [lint]
-extend-select = [
+# EXPLICIT select (not extend-select): the enforced set must NOT inherit
+# ruff's built-in defaults, because those defaults change between ruff
+# versions (ruff 0.16 broadened them, which silently added ~20 rule families
+# to an unpinned CI). Listing every rule — including the E/F "defaults" —
+# makes this config self-contained and version-independent. Pair with the
+# pinned ruff version in .github/workflows/ci.yml so rule *behavior* is
+# deterministic too.
+select = [
+  "E4", "E7", "E9",  # pycodestyle errors (ruff's historical defaults, pinned here)
+  "F",               # pyflakes (unused imports/names, etc.)
   "I001",     # unsorted-imports (isort)
   "UP035",    # deprecated-import (typing.Iterator -> collections.abc)
   "B017",     # assert-raises-exception
-  "BLE001",   # blind-except (except Exception)
-  "S110",     # try-except-pass
-  "S112",     # try-except-continue
   "EXE001",   # shebang present but file not executable
   "SIM102",   # collapsible-if
   "SIM103",   # needless-bool / return-condition-directly
@@ -27,7 +34,15 @@ extend-select = [
   "RUF100",   # unused noqa
   "FURB167",  # re.I -> re.IGNORECASE
 ]
-# NB: CI also surfaced FURB192 (sorted(...)[0] -> min), which is a preview rule
-# in this ruff. It is intentionally NOT enabled here — turning on `preview`
-# pulls in many other unrelated preview rules that CI does not run. Add it back
-# only if you also pin ruff and confirm CI enables preview.
+# Deliberately NOT enforced (feature 0065 review decision):
+#   BLE001 (blind-except), S110 (try-except-pass), S112 (try-except-continue)
+# The agent code is resilient-scanning software that intentionally catches
+# broadly and skips/continues so one malformed input can't abort a whole audit
+# (see the "degradation guard, not a swallow" / "surface to consumer" call
+# sites). Enforcing these produced 205 by-design findings; narrowing them
+# wholesale would convert "skip bad input" into "crash the audit" and cut
+# against the resilience posture. Re-enable per-file if a non-scanning module
+# is added where a blind except would hide a real bug.
+#
+# NB: FURB192 (sorted(...)[0] -> min) is a preview rule, intentionally not
+# enabled (turning on `preview` pulls in unrelated preview rules).

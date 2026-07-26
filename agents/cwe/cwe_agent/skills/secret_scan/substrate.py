@@ -27,9 +27,7 @@ def _is_polkadot_js_keystore(content: str) -> bool:
         return False
     if not any(s in content for s in ('"pkcs8"', '"sr25519"', '"ed25519"', '"ecdsa"')):
         return False
-    if not any(s in content for s in ('"scrypt"', '"xsalsa20-poly1305"')):
-        return False
-    return True
+    return any(s in content for s in ('"scrypt"', '"xsalsa20-poly1305"'))
 
 
 def _polkadot_keystore_severity(content: str) -> str:

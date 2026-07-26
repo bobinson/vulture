@@ -175,7 +175,7 @@ def _parse_known_titles(
         return titles
     for line in (prior_lines if prior_lines is not None else prior_context.split("\n")):
         line = line.strip()
-        if not line or line.startswith("Known") or line.startswith("Skip") or line.startswith("("):
+        if not line or line.startswith(("Known", "Skip", "(")):
             continue
         # Format: "C:[category] Title @file" or "C:Title @file"
         if ":" in line:
@@ -1301,7 +1301,7 @@ def run_combined_audit(
                 skill_findings=skill_findings,
                 llm_tier3=llm_tier3,
             )
-        except Exception as exc:  # noqa: BLE001 — degradation guard, not a swallow
+        except Exception as exc:  # degradation guard, not a swallow
             logger.warning(
                 "llm_phase_failed_degrading run_id=%s error=%s",
                 run_id, str(exc)[:200],
@@ -1351,7 +1351,7 @@ def run_combined_audit(
     # finding already carries a snippet. Skipped if the source is gone.
     try:
         _attach_code_snippet(all_findings, source_path)
-    except Exception as exc:  # noqa: BLE001 — grounding is best-effort
+    except Exception as exc:  # grounding is best-effort
         logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
 
     # --- Validate stage (feature 0045) ---------------------------
@@ -1419,7 +1419,7 @@ def run_combined_audit(
                         config=_vcfg,
                         emit_validation_update=_on_validation_update if _l5_enabled else None,
                     )
-                except Exception as e:        # noqa: BLE001 — handled by outer try
+                except Exception as e:        # handled by outer try
                     _v_exc_box[0] = e
                 finally:
                     _stream_q.put(None)        # sentinel

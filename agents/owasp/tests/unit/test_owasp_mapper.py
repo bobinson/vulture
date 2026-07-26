@@ -35,8 +35,8 @@ def test_maps_cwe_findings_to_owasp_categories():
 
 
 def test_result_carries_coverage_manifest():
-    result = [d for t, d in _events(run_audit("r2", "/s", {"edition": "2021"}, [_cwe(89, "x")]))
-              if t == "result"][0]
+    result = next(d for t, d in _events(run_audit("r2", "/s", {"edition": "2021"}, [_cwe(89, "x")]))
+              if t == "result")
     assert len(result["owasp_coverage"]["categories"]) == 10
     assert result["owasp_coverage"]["cwe_stage_status"] == "completed"
 
@@ -52,9 +52,9 @@ def test_no_prior_findings_completes_without_failure():
     events = _events(run_audit("r3", "/s", {"edition": "2021", "cwe_stage_status": "absent"}, None))
     types = [t for t, _ in events]
     assert "result" in types and types[-1] == "agent_end"
-    assert [d for t, d in events if t == "agent_end"][0]["status"] == "completed"
+    assert next(d for t, d in events if t == "agent_end")["status"] == "completed"
     assert "CWE" in " ".join(d.get("content", "") for t, d in events if t == "thinking")
-    assert [d for t, d in events if t == "result"][0]["owasp_coverage"]["cwe_stage_status"] == "absent"
+    assert next(d for t, d in events if t == "result")["owasp_coverage"]["cwe_stage_status"] == "absent"
 
 
 def test_bad_edition_falls_back_without_failure():
@@ -62,7 +62,7 @@ def test_bad_edition_falls_back_without_failure():
     events = _events(run_audit("r3b", "/s", {"edition": "9999"}, [_cwe(89, "x")]))
     types = [t for t, _ in events]
     assert types[-1] == "agent_end"
-    assert [d for t, d in events if t == "result"][0]["owasp_coverage"]["edition"] == "2025"
+    assert next(d for t, d in events if t == "result")["owasp_coverage"]["edition"] == "2025"
     assert any("falling back" in d.get("content", "") for t, d in events if t == "thinking")
 
 

@@ -76,9 +76,7 @@ def _is_high_entropy_secret(s: str) -> bool:
     if shannon_entropy(s) < MIN_ENTROPY:
         return False
     safe_chars = sum(1 for c in s if c.isalnum() or c in "+/=_-")
-    if safe_chars / len(s) < MIN_SAFE_CHAR_FRACTION:
-        return False
-    return True
+    return not safe_chars / len(s) < MIN_SAFE_CHAR_FRACTION
 
 
 def find_high_entropy(file_path: Path, content: str) -> list[dict]:

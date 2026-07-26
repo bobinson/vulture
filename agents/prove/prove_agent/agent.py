@@ -637,9 +637,8 @@ def _collect_discovered_urls(event_str: str, urls: list[str]) -> None:
                 data = json.loads(line[6:])
                 evidence = data.get("evidence", "")
                 for word in evidence.split():
-                    if word.startswith("/") and len(word) > 1:
-                        if word not in urls:
-                            urls.append(word)
+                    if word.startswith("/") and len(word) > 1 and word not in urls:
+                        urls.append(word)
                 return
     except (json.JSONDecodeError, Exception):
         pass

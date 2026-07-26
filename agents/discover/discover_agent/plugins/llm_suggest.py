@@ -161,8 +161,9 @@ def _build_framework_hints(site) -> list[str]:
         elif "rails" in tl:
             hints.append("Ruby on Rails (RESTful routes, Devise auth)")
 
-    if any("firebase" in ep.lower() for ep in site.api_endpoints):
-        if not any("Firebase" in h for h in hints):
-            hints.append("Firebase detected in API endpoints")
+    if any("firebase" in ep.lower() for ep in site.api_endpoints) and not any(
+        "Firebase" in h for h in hints
+    ):
+        hints.append("Firebase detected in API endpoints")
 
     return hints

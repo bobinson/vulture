@@ -84,7 +84,7 @@ async def _cancellable_stream(
                 req.run_id, req.source_path, req.config, req.prior_findings,
             ):
                 loop.call_soon_threadsafe(q.put_nowait, chunk)
-        except BaseException as exc:  # noqa: BLE001 — surface to consumer (F8), never swallow
+        except BaseException as exc:  # surface to consumer (F8), never swallow
             loop.call_soon_threadsafe(q.put_nowait, exc)
         finally:
             loop.call_soon_threadsafe(q.put_nowait, _DONE)

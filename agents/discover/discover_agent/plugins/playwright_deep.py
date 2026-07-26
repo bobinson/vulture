@@ -31,9 +31,7 @@ class PlaywrightDeepPlugin(DiscoveryPlugin):
         """Skip when cache is fresh with good API endpoint coverage."""
         cached = load_cached_discovery(ctx.staging_url)
         cache_fresh = is_cache_fresh(ctx.staging_url, max_age_seconds=3600)
-        if cache_fresh and cached and len(cached.api_endpoints) >= 10:
-            return False
-        return True
+        return not (cache_fresh and cached and len(cached.api_endpoints) >= 10)
 
     async def discover(self, ctx: DiscoveryContext) -> DiscoveryResult:
         """Run Playwright deep discovery and return discovered endpoints."""

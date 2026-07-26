@@ -170,7 +170,7 @@ def _extract_paths(content: str) -> list[str]:
     if not paths:
         for m in _ROUTE_IN_FILE_RE.finditer(content):
             path = m.group(1)
-            if path.startswith("/api/") or path.startswith("/hook"):
+            if path.startswith(("/api/", "/hook")):
                 paths.append(path)
                 break
     return paths

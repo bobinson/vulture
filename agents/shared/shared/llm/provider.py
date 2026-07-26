@@ -301,9 +301,7 @@ def supports_structured_output(model: str | None = None) -> bool:
     """
     if uses_custom_endpoint():
         return False
-    if "gemini" in get_model(model):
-        return False
-    return True
+    return "gemini" not in get_model(model)
 
 
 # Cost per 1M tokens: (input_cost_usd, output_cost_usd).

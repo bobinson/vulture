@@ -107,9 +107,7 @@ def _is_env_file(name: str) -> bool:
     """Check if filename matches env file patterns."""
     if name.startswith(".env"):
         return True
-    if name in ("env.yaml", "env.yml"):
-        return True
-    return False
+    return name in ("env.yaml", "env.yml")
 
 
 def _parse_into(fpath: Path, env_vars: dict[str, str]) -> None:

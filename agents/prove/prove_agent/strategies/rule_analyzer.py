@@ -415,18 +415,22 @@ def _check_file_upload(
 
     # Check 2: Server returned 200 with no error for dangerous file
     # (weaker signal — only conclusive if response looks like success)
-    if status_code == 200 and ext in _DANGEROUS_EXTENSIONS and not is_error:
-        if len(body.strip()) > 0:
-            return ExecutionResult(
-                conclusive=True,
-                reproduced=True,
-                evidence=(
-                    f"Server returned HTTP 200 for dangerous file '{upload_filename}' "
-                    f"with no rejection — missing file type validation"
-                ),
-                status_code=status_code,
-                response_snippet=body[:500],
-            )
+    if (
+        status_code == 200
+        and ext in _DANGEROUS_EXTENSIONS
+        and not is_error
+        and len(body.strip()) > 0
+    ):
+        return ExecutionResult(
+            conclusive=True,
+            reproduced=True,
+            evidence=(
+                f"Server returned HTTP 200 for dangerous file '{upload_filename}' "
+                f"with no rejection — missing file type validation"
+            ),
+            status_code=status_code,
+            response_snippet=body[:500],
+        )
 
     # Check 3: Server explicitly rejected = not reproduced
     if status_code in (400, 403, 415, 422) and ext in _DANGEROUS_EXTENSIONS:

@@ -252,7 +252,7 @@ def _run_l5_pool(
             i, batch = futures[fut]
             try:
                 batch_verdicts = fut.result()
-            except Exception as exc:  # noqa: BLE001 — RC3 isolation
+            except Exception as exc:  # RC3 isolation
                 log.warning("[validate.l5] batch %d failed: %s", i, exc)
                 batch_verdicts = {}
             _apply_batch_result(batch, batch_verdicts, rt.model, i, out, verdicts_by_id)
@@ -871,12 +871,12 @@ def _call_llm(
         if text:
             return text
         log.info("[validate.l5] structured-output mode returned empty; retrying plain")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.info("[validate.l5] structured-output call failed (%s); retrying plain",
                  type(exc).__name__)
     try:
         return _do_call(use_json_format=False)
-    except Exception as exc2:  # noqa: BLE001
+    except Exception as exc2:
         log.warning("[validate.l5] LLM call failed (both modes): %s", exc2)
         return ""
 
@@ -1156,7 +1156,7 @@ _PREFERRED_FAMILIES = (
 
 def _is_embedding_model(model_id: str) -> bool:
     m = model_id.lower()
-    return "embed" in m or "embedding" in m or m.startswith("bge-") or m.startswith("text-embedding")
+    return "embed" in m or "embedding" in m or m.startswith(("bge-", "text-embedding"))
 
 
 def _fetch_v1_models(base_url: str) -> Optional[list[str]]:
@@ -1170,7 +1170,7 @@ def _fetch_v1_models(base_url: str) -> Optional[list[str]]:
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.info("[validate.l5] auto-detect /v1/models failed: %s", type(exc).__name__)
         return None
     return [m.get("id", "") for m in (data.get("data") or []) if isinstance(m, dict)]

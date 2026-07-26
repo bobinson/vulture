@@ -121,7 +121,7 @@ def _detect_version(root: Path) -> str:
         return "v5"
     if "next-auth" in deps:
         ver = deps["next-auth"]
-        return "v5" if ver.startswith("5") or ver.startswith("^5") else "v4"
+        return "v5" if ver.startswith(("5", "^5")) else "v4"
     return "unknown"
 
 

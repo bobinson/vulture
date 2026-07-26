@@ -65,7 +65,7 @@ class TestOwaspMapping:
         body = resp.text
         assert "event: finding" in body and "event: result" in body and "event: agent_end" in body
 
-        result_block = [b for b in body.split("\n\n") if "event: result" in b][0]
+        result_block = next(b for b in body.split("\n\n") if "event: result" in b)
         data = json.loads(result_block.split("data: ", 1)[1])
         assert len(data["owasp_coverage"]["categories"]) == 10
         assert data["owasp_coverage"]["cwe_stage_status"] == "completed"

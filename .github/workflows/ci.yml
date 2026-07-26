@@ -106,7 +106,13 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
       - name: Install ruff
-        run: pip install ruff
+        # Pin ruff: an unpinned `pip install ruff` makes the enforced rule set
+        # drift on every ruff release (0.16 broadened defaults, which silently
+        # added ~20 rule families). Pinning + the explicit `select` in
+        # agents/ruff.toml makes lint fully deterministic. Bump deliberately.
+        # KEEP IN SYNC with the ruff pin in agents/shared/pyproject.toml [dev]
+        # so `make lint` locally == this job.
+        run: pip install ruff==0.16.0
       - name: Lint Python
         run: cd agents && ruff check .
 

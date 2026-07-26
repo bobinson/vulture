@@ -493,7 +493,7 @@ class TestIssue20TokenSavingsFieldNames:
             duplicates_removed=2,
         )
         # Parse the SSE data
-        data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in event.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[len("data: "):])
 
         # Original fields
@@ -517,7 +517,7 @@ class TestIssue20TokenSavingsFieldNames:
             actual_input_tokens=400, actual_output_tokens=200,
             cost_usd=0.001,
         )
-        data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in event.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[len("data: "):])
 
         assert "context_tokens" in data
@@ -651,7 +651,7 @@ class TestIssue24ResultEventFindings:
         findings = [{"title": f"Finding {i}", "severity": "high"} for i in range(50)]
         event = emitter.result_event(findings=findings, summary="test", score=75.0)
 
-        data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in event.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[len("data: "):])
 
         assert data["findings_count"] == 50

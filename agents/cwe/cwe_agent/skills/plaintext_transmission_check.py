@@ -172,9 +172,7 @@ def _should_scan(file_path: Path) -> bool:
         return False
     if is_generated_file(file_path):
         return False
-    if is_test_file(file_path):
-        return False
-    return True
+    return not is_test_file(file_path)
 
 
 def _scan_file(file_path: Path, findings: list[dict]) -> None:

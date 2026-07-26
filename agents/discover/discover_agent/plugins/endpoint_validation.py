@@ -98,7 +98,7 @@ async def _probe_api_methods(
     """Probe discovered API endpoints with OPTIONS and POST to find hidden methods."""
     endpoints_to_probe = [
         ep for ep in site.api_endpoints
-        if ep.startswith("/api/") or ep.startswith("/v1/") or ep.startswith("/v2/")
+        if ep.startswith(("/api/", "/v1/", "/v2/"))
     ][:20]
 
     for ep in endpoints_to_probe:

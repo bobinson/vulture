@@ -344,7 +344,7 @@ class TestEmitTokenSavings:
         assert result is not None
         assert "token_savings" in result
         # Parse and verify the 65 tokens/finding estimate
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         # raw_tokens = ctx_tokens + (2 * 65) = ctx_tokens + 130
         assert data["raw_tokens"] == data["context_tokens"] + 130
@@ -356,7 +356,7 @@ class TestEmitTokenSavings:
         result = _emit_token_savings(emitter, ctx, findings_total=3, findings_skipped=1)
         assert result is not None
         # Parse the SSE event to check the actual numbers
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         # raw_tokens should be ctx_tokens + 65 (1 finding * 65 tokens)
         assert data["raw_tokens"] == data["context_tokens"] + 65
@@ -369,7 +369,7 @@ class TestEmitTokenSavings:
         ctx = "Known issues (1):\n C:SQL Inj @db.py\nSkip."
         result = _emit_token_savings(emitter, ctx, findings_total=3, findings_skipped=0)
         assert result is not None
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         # When no findings skipped, raw_tokens == ctx_tokens, so savings == 0
         assert data["raw_tokens"] == data["context_tokens"]
@@ -388,7 +388,7 @@ class TestEmitTokenSavings:
             actual_output_tokens=800,
         )
         assert result is not None
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         assert data["actual_input_tokens"] == 1500
         assert data["actual_output_tokens"] == 800
@@ -406,7 +406,7 @@ class TestEmitTokenSavings:
             model="gpt-4o",
         )
         assert result is not None
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         assert "cost_usd" in data
         assert data["cost_usd"] > 0.0
@@ -424,7 +424,7 @@ class TestEmitTokenSavings:
             model="qwen3:1.7b",
         )
         assert result is not None
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         assert "cost_usd" not in data  # cost is 0.0, not emitted
 
@@ -438,7 +438,7 @@ class TestEmitTokenSavings:
             findings_skipped=1,
         )
         assert result is not None
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         assert "cost_usd" not in data
 
@@ -502,7 +502,7 @@ class TestDedupStatsEvent:
             prior_findings_used=5,
             duplicates_removed=2,
         )
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         assert data["findings_deduped"] == 3
         assert data["prior_findings_used"] == 5
@@ -515,7 +515,7 @@ class TestDedupStatsEvent:
             prior_findings_used=0,
             duplicates_removed=0,
         )
-        data_line = [line for line in result.split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in result.split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         assert data["findings_deduped"] == 0
         assert data["prior_findings_used"] == 0
@@ -613,7 +613,7 @@ def _parse_result_from_events(events: list[str]) -> dict:
     import json
     for event in events:
         if "event: result" in event:
-            data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
+            data_line = next(line for line in event.split("\n") if line.startswith("data:"))
             return json.loads(data_line[5:])
     raise AssertionError("No result event found")
 
@@ -674,7 +674,7 @@ class TestRunSkillAuditDedup:
         ))
         dedup_events = [e for e in events if "event: dedup_stats" in e]
         assert len(dedup_events) == 1
-        data_line = [line for line in dedup_events[0].split("\n") if line.startswith("data:")][0]
+        data_line = next(line for line in dedup_events[0].split("\n") if line.startswith("data:"))
         data = json.loads(data_line[5:])
         assert data["findings_deduped"] == 1
 

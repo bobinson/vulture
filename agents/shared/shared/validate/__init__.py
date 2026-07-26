@@ -41,9 +41,7 @@ def is_enabled(config: dict[str, Any] | None) -> bool:
     """
     if os.environ.get("VULTURE_DISABLE_VALIDATE", "").lower() == "true":
         return False
-    if config and config.get("disable_validate"):
-        return False
-    return True
+    return not (config and config.get("disable_validate"))
 
 
 def _resolve_l5_enabled(cfg: ValidateConfig) -> bool:
