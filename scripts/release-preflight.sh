@@ -15,10 +15,11 @@
 # fails fast before the slower lockfile/shellcheck/test gates spend any work):
 #   1. clean git tree         git status / git diff (no uncommitted changes)
 #   2. lockfile freshness     scripts/check-lockfile.sh
-#   3. fallback-tag validity  scripts/check-fallback-tag.sh <tag>
-#   4. shellcheck             install.sh + scripts/*.sh + scripts/lib/*.sh
-#   5. installer branch tests scripts/tests/test_install_sh.sh
-#   6. security               scripts/security-preflight.sh (pip-audit + alerts)
+#   3. lockfile installable   scripts/check-lockfile-installable.sh (wheels on every target, real PyPI)
+#   4. fallback-tag validity  scripts/check-fallback-tag.sh <tag>
+#   5. shellcheck             install.sh + scripts/*.sh + scripts/lib/*.sh
+#   6. installer branch tests scripts/tests/test_install_sh.sh
+#   7. security               scripts/security-preflight.sh (pip-audit + alerts)
 #
 # POSIX sh, no bashisms. Tiny functions (cyclomatic < 5), DRY.
 set -eu
@@ -33,10 +34,11 @@ print_gates() {
 release preflight — pre-tag gates (all must pass before tagging; clean-tree first, fail-fast):
   1. clean git tree          no uncommitted changes (git status)
   2. lockfile freshness      scripts/check-lockfile.sh
-  3. fallback-tag validity   scripts/check-fallback-tag.sh <tag>
-  4. shellcheck              install.sh + scripts/*.sh + scripts/lib/*.sh
-  5. installer branch tests  scripts/tests/test_install_sh.sh
-  6. security                scripts/security-preflight.sh (pip-audit + Dependabot alerts)
+  3. lockfile installable    scripts/check-lockfile-installable.sh (wheels on every release target, real PyPI)
+  4. fallback-tag validity   scripts/check-fallback-tag.sh <tag>
+  5. shellcheck              install.sh + scripts/*.sh + scripts/lib/*.sh
+  6. installer branch tests  scripts/tests/test_install_sh.sh
+  7. security                scripts/security-preflight.sh (pip-audit + Dependabot alerts)
 EOF
 }
 
@@ -97,6 +99,11 @@ echo
 # its declared interpreter rather than being forced under this script's sh.
 run_gate "clean git tree"         gate_clean_tree
 run_gate "lockfile freshness"     "$SCRIPT_DIR/check-lockfile.sh"
+# Installability is separate from freshness: freshness proves the lockfile
+# REPRODUCES from the pyprojects; this proves every pin actually has a wheel for
+# every release target under --only-binary (catches e.g. a Linux-only-wheel pin
+# that breaks the darwin build). Real PyPI, cross-checked from one host.
+run_gate "lockfile installable"   "$SCRIPT_DIR/check-lockfile-installable.sh"
 run_gate "fallback-tag validity"  "$SCRIPT_DIR/check-fallback-tag.sh" "$TAG"
 run_gate "shellcheck"             gate_shellcheck
 run_gate "installer branch tests" "$SCRIPT_DIR/tests/test_install_sh.sh"

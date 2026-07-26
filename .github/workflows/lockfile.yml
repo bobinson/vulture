@@ -4,6 +4,12 @@
 # that changes an agent dependency — or the generator itself — without re-running
 # `make freeze-deps` makes this check go red.
 #
+# It ALSO runs the release-INSTALLABILITY gate (scripts/check-lockfile-installable.sh):
+# a pin can pass freshness (reproducible) yet ship NO wheel for a release target
+# under `--only-binary :all:` — e.g. litellm >= 1.92.0 is manylinux-only, so it
+# breaks the darwin build. Checking it here surfaces it on the PR instead of at
+# release-cut / in the macOS build. Same pinned uv, same fork-PR safety posture.
+#
 # This is a SEPARATE workflow (not a ci.yml job) ON PURPOSE (audit M4): ci.yml has
 # no `on.paths`, so only a standalone workflow can path-scope the gate to just the
 # lockfile inputs without running the rest of CI.
@@ -33,6 +39,7 @@ on:
       # still be gated, so they are listed explicitly (audit M4 / LLD §5 C1).
       - 'scripts/gen-lockfile.sh'
       - 'scripts/check-lockfile.sh'
+      - 'scripts/check-lockfile-installable.sh'
       - 'scripts/uv-version.sh'
       - 'scripts/lock-date.txt'
       - 'agents/lockfile-constraints.txt'
@@ -58,3 +65,10 @@ jobs:
       - uses: ./.github/actions/setup-pinned-uv
       - name: Check lockfile freshness
         run: scripts/check-lockfile.sh
+      # Installability is separate from freshness: freshness proves the lockfile
+      # REPRODUCES; this proves every pin has a wheel for every release target
+      # under --only-binary (cross-checked from ubuntu via uv --python-platform,
+      # against real PyPI). Runs after freshness — a drifted lockfile is fixed by
+      # re-locking first anyway.
+      - name: Check lockfile installable on all release targets
+        run: scripts/check-lockfile-installable.sh
