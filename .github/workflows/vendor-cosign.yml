@@ -31,7 +31,7 @@ jobs:
           - { os: darwin, arch: amd64, asset: cosign-darwin-amd64 }
           - { os: darwin, arch: arm64, asset: cosign-darwin-arm64 }
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: download upstream cosign
         run: |
           URL="https://github.com/sigstore/cosign/releases/download/${{ inputs.cosign_version }}/${{ matrix.asset }}"
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: cosign-*
