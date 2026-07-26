@@ -15,3 +15,18 @@
 #   (b) the darwin/amd64 leg is dropped from .github/workflows/release.yml
 #       (Intel-mac runner EOL ~Fall 2027 — see the build-binary matrix comment).
 cryptography==48.0.1; sys_platform == "darwin"
+
+# litellm: 1.92.0 dropped the universal `litellm-*-py3-none-any.whl` and switched
+# to manylinux-only (Linux) wheels + an sdist — NO macOS wheel — so the darwin
+# release legs cannot `pip install --only-binary :all:` any litellm >= 1.92.0
+# (the universal resolve accepts the sdist, but the build forbids source installs;
+# caught by scripts/check-lockfile-installable.sh). Cap to the 1.91.x line — 1.91.4
+# is the last release shipping the universal py3-none-any wheel, installable on
+# EVERY target. Applied to ALL platforms (no marker split) so macOS and Linux
+# share ONE litellm version — predictable cross-platform behavior for the LLM
+# client, not a per-platform divergence.
+#
+# REMOVE this constraint (and re-lock) when litellm ships a macOS/universal wheel
+# again (watch https://pypi.org/project/litellm/#files for a macosx_/universal2/
+# py3-none-any wheel on a newer release).
+litellm<1.92.0
