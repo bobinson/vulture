@@ -10,7 +10,16 @@ target-version = "py312"
 line-length = 100
 
 [lint]
-extend-select = [
+# EXPLICIT select (not extend-select): the enforced set must NOT inherit
+# ruff's built-in defaults, because those defaults change between ruff
+# versions (ruff 0.16 broadened them, which silently added ~20 rule families
+# to an unpinned CI). Listing every rule — including the E/F "defaults" —
+# makes this config self-contained and version-independent. Pair with the
+# pinned ruff version in .github/workflows/ci.yml so rule *behavior* is
+# deterministic too.
+select = [
+  "E4", "E7", "E9",  # pycodestyle errors (ruff's historical defaults, pinned here)
+  "F",               # pyflakes (unused imports/names, etc.)
   "I001",     # unsorted-imports (isort)
   "UP035",    # deprecated-import (typing.Iterator -> collections.abc)
   "B017",     # assert-raises-exception
