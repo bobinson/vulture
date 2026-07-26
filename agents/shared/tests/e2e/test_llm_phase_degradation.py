@@ -30,7 +30,7 @@ def _has_event(events, name):
 def _result(events):
     for e in events:
         if "event: result" in e:
-            data = [ln for ln in e.split("\n") if ln.startswith("data:")][0]
+            data = next(ln for ln in e.split("\n") if ln.startswith("data:"))
             return json.loads(data[5:])
     raise AssertionError("no result event")
 

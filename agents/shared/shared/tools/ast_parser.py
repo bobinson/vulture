@@ -47,9 +47,8 @@ def _parse_python(file_path: Path) -> dict[str, Any]:
             classes.append({"name": node.name, "line": node.lineno})
         elif isinstance(node, ast.Import):
             imports.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                imports.append(node.module)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.append(node.module)
 
     return {
         "language": "python",

@@ -39,7 +39,7 @@ def _safe_build_prior_context(
             source_path, "asvs",
             preloaded=preloaded, max_findings=max_findings,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.warning(
             "memory_api_unavailable source=%s err=%s — audit continues without prior context",
             source_path, exc,
@@ -78,8 +78,8 @@ def _prioritized_req_ids(limit: int = 60) -> list[str]:
             by_chapter.setdefault(ch, []).append(rid)
         else:
             non_critical.append(rid)
-    for ch in by_chapter:
-        by_chapter[ch].sort(key=_req_sort_key)
+    for reqs in by_chapter.values():
+        reqs.sort(key=_req_sort_key)
     non_critical.sort(key=_req_sort_key)
 
     selected: list[str] = []

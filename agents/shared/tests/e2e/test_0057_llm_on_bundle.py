@@ -47,7 +47,7 @@ _DUMMY_TOOLS = ["__dummy_tool__"]
 def _parse_event(events: list[str], event_name: str) -> dict:
     for event in events:
         if f"event: {event_name}" in event:
-            data_line = [ln for ln in event.split("\n") if ln.startswith("data:")][0]
+            data_line = next(ln for ln in event.split("\n") if ln.startswith("data:"))
             return json.loads(data_line[5:])
     raise AssertionError(f"no '{event_name}' event found in SSE output")
 

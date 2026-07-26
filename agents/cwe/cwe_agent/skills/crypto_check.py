@@ -188,9 +188,8 @@ def _check_broken_crypto(
         if pattern.search(line):
             matched = True
             break
-    if not matched and BROKEN_CRYPTO_BARE_NAME.search(line):
-        if BROKEN_CRYPTO_CONTEXT.search(line):
-            matched = True
+    if not matched and BROKEN_CRYPTO_BARE_NAME.search(line) and BROKEN_CRYPTO_CONTEXT.search(line):
+        matched = True
     if not matched:
         return
     finding = {

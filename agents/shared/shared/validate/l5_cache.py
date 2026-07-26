@@ -96,7 +96,7 @@ def _connect() -> Optional[sqlite3.Connection]:
             _DB_PATH = path
             log.info("[validate.l5] cache initialised at %s", path)
             return conn
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("[validate.l5] cache init failed (continuing without): %s", exc)
             _DISABLED = True
             return None
@@ -145,7 +145,7 @@ def lookup(key: str) -> Optional[dict]:
             "language": row[3] or "",
             "judged_at": judged_at,
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("[validate.l5] cache lookup failed: %s", exc)
         return None
 
@@ -166,7 +166,7 @@ def store(key: str, *, exploitable: float, reasoning: str,
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (key, float(exploitable), reasoning, model, language, time.time()),
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("[validate.l5] cache store failed: %s", exc)
 
 
@@ -179,5 +179,5 @@ def stats() -> dict:
         with _LOCK:
             row = conn.execute("SELECT COUNT(*) FROM l5_cache").fetchone()
         return {"enabled": True, "path": _DB_PATH or "", "rows": int(row[0])}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {"enabled": False, "path": _DB_PATH or ""}

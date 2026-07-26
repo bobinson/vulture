@@ -61,9 +61,8 @@ class SOAPWSDLPlugin(DiscoveryPlugin):
         # 3. Detect SOAP library dependencies
         if ctx.source_path:
             root = Path(ctx.source_path)
-            if has_dependency(root, _SOAP_DEPS):
-                if "SOAP" not in result.technologies:
-                    result.technologies.append("SOAP")
+            if has_dependency(root, _SOAP_DEPS) and "SOAP" not in result.technologies:
+                result.technologies.append("SOAP")
 
         return result
 

@@ -153,7 +153,7 @@ def _probe_llm_health() -> Any:
     os.environ["VULTURE_USE_LLM"] = "true"
     try:
         return asyncio.run(_health.check_llm_health())
-    except Exception:  # noqa: BLE001 — any probe failure ⇒ treat as no model
+    except Exception:  # any probe failure ⇒ treat as no model
         return None
     finally:
         if _prev is _sentinel:

@@ -68,10 +68,13 @@ class GraphQLPlugin(DiscoveryPlugin):
             techs = {t.lower() for t in ctx.learnings.technologies}
             # Skip if purely REST-only frameworks with no GraphQL signals
             rest_only = {"django", "flask", "express"}
-            if techs & rest_only and "graphql" not in " ".join(techs):
-                # Check if there are any GraphQL hints from source analysis
-                if not (ctx.source_analysis and ctx.source_analysis.graphql_queries):
-                    return False
+            # Skip only when there are also no GraphQL hints from source analysis
+            if (
+                techs & rest_only
+                and "graphql" not in " ".join(techs)
+                and not (ctx.source_analysis and ctx.source_analysis.graphql_queries)
+            ):
+                return False
         return True
 
     async def discover(self, ctx: DiscoveryContext) -> DiscoveryResult:

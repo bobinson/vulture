@@ -89,9 +89,7 @@ async def _probe_sse_paths(
         body = resp.text[:500]
 
         is_sse = (
-            "text/event-stream" in ct
-            or body.startswith("data:")
-            or body.startswith("event:")
+            "text/event-stream" in ct or body.startswith(("data:", "event:"))
         )
         if is_sse:
             result.endpoints.append(path)

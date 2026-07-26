@@ -57,9 +57,8 @@ def _resolve_protocol(
 ) -> ProbeProtocol:
     """Determine which protocol to use for a plan."""
     # Explicit protocol on plan takes precedence if target supports it
-    if plan.protocol != ProbeProtocol.HTTP:
-        if _supports(capabilities, plan.protocol):
-            return plan.protocol
+    if plan.protocol != ProbeProtocol.HTTP and _supports(capabilities, plan.protocol):
+        return plan.protocol
 
     # RPC method hint → use JSON-RPC
     if plan.rpc_method and (capabilities.jsonrpc_ws or capabilities.jsonrpc_http):

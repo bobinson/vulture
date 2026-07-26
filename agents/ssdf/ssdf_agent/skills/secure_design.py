@@ -68,9 +68,7 @@ def _find_threat_model(root: Path) -> bool:
         if any(True for _ in root.rglob(name)):
             return True
     docs_security = root / "docs" / "security"
-    if docs_security.is_dir():
-        return True
-    return False
+    return bool(docs_security.is_dir())
 
 
 def _find_design_review(root: Path) -> bool:

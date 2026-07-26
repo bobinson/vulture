@@ -733,9 +733,7 @@ def _is_graphql_file(path: Path, content: str) -> bool:
         return True
     if "type Query" in content or "type Mutation" in content:
         return True
-    if "typeDefs" in content and ("gql`" in content or "gql(" in content):
-        return True
-    return False
+    return bool("typeDefs" in content and ("gql`" in content or "gql(" in content))
 
 
 def _extract_graphql_schema(

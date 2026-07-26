@@ -230,7 +230,7 @@ def _analyze_requirements_txt(file_path: Path, content: str, findings: list[dict
     lines = content.splitlines()
     for line_num, line in enumerate(lines, start=1):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+        if not stripped or stripped.startswith(("#", "-")):
             continue
         if UNPINNED_PYTHON.match(stripped) or UNPINNED_PYTHON_LOOSE.match(stripped):
             finding = {

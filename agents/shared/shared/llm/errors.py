@@ -170,9 +170,7 @@ def _is_transient_skill_error(exc: Exception) -> bool:
     """
     if isinstance(exc, _TRANSIENT_SKILL_ERRORS):
         return True
-    if isinstance(exc, OSError) and getattr(exc, "errno", None) in _TRANSIENT_ERRNOS:
-        return True
-    return False
+    return bool(isinstance(exc, OSError) and getattr(exc, "errno", None) in _TRANSIENT_ERRNOS)
 
 
 def retry_skill(

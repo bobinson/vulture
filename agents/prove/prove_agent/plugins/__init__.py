@@ -13,7 +13,7 @@ from shared.discovery.plugin_base import (  # noqa: F401
     register_plugin,
 )
 from shared.discovery.plugin_base import (
-    merge_result as _merge_result,
+    merge_result as _merge_result,  # noqa: F401
 )
 from shared.discovery.runner import run_discovery  # noqa: F401
 from shared.discovery.sitemap import SiteMap  # noqa: F401

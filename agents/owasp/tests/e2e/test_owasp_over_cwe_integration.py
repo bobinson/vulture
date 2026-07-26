@@ -108,8 +108,8 @@ def test_owasp_maps_real_cwe_findings_to_full_top10(scan_root, edition):
     events = _events(run_audit("e2e-pipeline", "/unused", {"edition": edition}, prior_findings=priors))
 
     findings = [d for t, d in events if t == "finding"]
-    result = [d for t, d in events if t == "result"][0]
-    end = [d for t, d in events if t == "agent_end"][0]
+    result = next(d for t, d in events if t == "result")
+    end = next(d for t, d in events if t == "agent_end")
 
     # Every OWASP finding is category-labeled, sourced from a CWE, and snippet-free.
     assert findings, "OWASP mapper emitted no findings from real CWE input"

@@ -46,7 +46,7 @@ class TestSignatureSchema:
     def test_signature_is_frozen_dataclass(self):
         sig = SIGNATURES[0]
         assert isinstance(sig, CweSignature)
-        with pytest.raises(Exception):
+        with pytest.raises(AttributeError):
             sig.cwe_id = "9999"  # frozen — must not be settable
 
     def test_signature_required_fields(self):

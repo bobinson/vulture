@@ -51,7 +51,7 @@ def _parse_result_event(events: list[str]) -> dict:
     """Extract the result event data from a list of SSE event strings."""
     for event in events:
         if "event: result" in event:
-            data_line = [line for line in event.split("\n") if line.startswith("data:")][0]
+            data_line = next(line for line in event.split("\n") if line.startswith("data:"))
             return json.loads(data_line[5:])
     raise AssertionError("No result event found in SSE output")
 

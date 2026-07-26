@@ -66,9 +66,7 @@ def _is_doc_or_example(file_path: Path) -> bool:
     parts_lower = {p.lower() for p in file_path.parts}
     if name_lower.endswith((".md", ".rst", ".adoc", ".txt")):
         return True
-    if any(p in {"docs", "doc", "documentation", "examples", "example", "samples"} for p in parts_lower):
-        return True
-    return False
+    return bool(any(p in {"docs", "doc", "documentation", "examples", "example", "samples"} for p in parts_lower))
 
 
 def _looks_like_dummy(body: str) -> bool:

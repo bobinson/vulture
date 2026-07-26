@@ -60,10 +60,7 @@ def _is_static_asset(url: str) -> bool:
             return True
 
     # Check known static path patterns
-    if _STATIC_PATH_PATTERNS.search(path):
-        return True
-
-    return False
+    return bool(_STATIC_PATH_PATTERNS.search(path))
 
 
 def _is_api_like(url: str, method: str, content_type: str) -> bool:
@@ -80,10 +77,7 @@ def _is_api_like(url: str, method: str, content_type: str) -> bool:
         return True
 
     # JSON responses are typically API endpoints
-    if "json" in content_type.lower():
-        return True
-
-    return False
+    return "json" in content_type.lower()
 
 
 def _classify_endpoint(url: str, method: str, content_type: str, post_data: str | None) -> str:
