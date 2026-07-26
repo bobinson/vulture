@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useReducer, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useAudit } from "@/hooks/useAudit.ts";
 import { useAgentStream } from "@/hooks/useAgentStream.ts";

@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { Sidebar } from "./Sidebar";
 
 const mockLogout = vi.fn();
-vi.mock("react-router-dom", () => ({
+vi.mock("react-router", () => ({
   NavLink: ({ to, children, className, onClick }: {
     to: string; children: React.ReactNode; className: string | ((p: { isActive: boolean }) => string); onClick?: () => void;
   }) => {
