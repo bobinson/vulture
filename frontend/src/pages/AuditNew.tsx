@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { SourceInput } from "@/components/audit/SourceInput.tsx";
 import { AuditTypeSelector } from "@/components/audit/AuditTypeSelector.tsx";

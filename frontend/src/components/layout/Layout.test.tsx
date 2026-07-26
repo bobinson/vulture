@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { Layout } from "./Layout";
 
-vi.mock("react-router-dom", () => ({
+vi.mock("react-router", () => ({
   Outlet: () => <div data-testid="outlet">outlet content</div>,
   NavLink: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
   useLocation: vi.fn(() => ({ pathname: "/" })),

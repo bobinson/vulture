@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import { AuthProvider, useAuth } from "@/lib/auth.tsx";
 import { Layout } from "@/components/layout/Layout.tsx";
 import { Dashboard } from "@/pages/Dashboard.tsx";

@@ -2,15 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { Header } from "./Header";
 
-// Mock react-router-dom
-vi.mock("react-router-dom", () => ({
+// Mock react-router
+vi.mock("react-router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => (
     <a href={to}>{children}</a>
   ),
   useLocation: vi.fn(() => ({ pathname: "/" })),
 }));
 
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 const mockUseLocation = vi.mocked(useLocation);
 
 describe("Header", () => {

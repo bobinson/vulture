@@ -24,7 +24,7 @@ vi.mock("@/pages/Register.tsx", () => ({
   Register: () => <div data-testid="register-page">Register</div>,
 }));
 vi.mock("@/components/layout/Layout.tsx", async () => {
-  const { Outlet } = await import("react-router-dom");
+  const { Outlet } = await import("react-router");
   return {
     Layout: () => (
       <div data-testid="layout">

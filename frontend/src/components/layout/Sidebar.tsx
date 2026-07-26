@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
 import { ROUTES } from "@/lib/constants.ts";
 import { useAuth } from "@/lib/auth.tsx";
