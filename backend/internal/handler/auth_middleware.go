@@ -142,10 +142,17 @@ func extractAuditIDFromPath(path string) string {
 	return path
 }
 
+// writeRoles are the principal roles permitted to perform state-changing
+// requests. "apikey" is included deliberately: API-key principals are minted
+// with that synthetic role (see Require), keys can only be created by an admin,
+// and they are the documented Mode-D / CI write credential
+// (`vulture scan --api-key ...`). Excluding it 403s every CI client.
+var writeRoles = map[string]bool{"member": true, "admin": true, "apikey": true}
+
 // RequireWrite gates only state-changing methods so combined GET+POST handlers
 // (e.g. /api/audits) keep serving reads to viewers (0065 §H1). Read methods
-// pass straight through; writes require member/admin. Must be applied inside
-// authMW.Require so getUserFromContext sees the DB-fresh principal.
+// pass straight through; writes require a role in writeRoles. Must be applied
+// inside authMW.Require so getUserFromContext sees the DB-fresh principal.
 func RequireWrite(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
@@ -153,8 +160,8 @@ func RequireWrite(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		u := getUserFromContext(r)
-		if u == nil || (u.Role != "member" && u.Role != "admin") {
-			writeError(w, http.StatusForbidden, "write access requires member or admin role")
+		if u == nil || !writeRoles[u.Role] {
+			writeError(w, http.StatusForbidden, "write access requires member, admin, or api-key credentials")
 			return
 		}
 		next(w, r)

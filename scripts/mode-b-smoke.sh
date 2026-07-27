@@ -115,6 +115,22 @@ VULTURE_REQUIRE_LLM=false
 VULTURE_JWT_SECRET=ci-mode-b-smoke-jwt-secret-not-for-production-use-only
 VULTURE_AGENT_TOKEN=ci-mode-b-smoke-agent-token-not-for-production-use-only
 
+# Feature 0065 §5a.1 closed open self-registration by default in Mode B
+# (VULTURE_LOCAL_MODE=false), so POST /api/auth/register now 403s. This smoke
+# test bootstraps its first admin exactly like the documented Mode-B procedure
+# (central_server_deployment.md Step 8): enable registration just long enough to
+# create the admin. Real deployments turn it back off and use POST
+# /api/admin/users thereafter. The 403-by-default behavior itself is asserted by
+# the Go E2E suite (internal/server/authz_5a_test.go), not here.
+VULTURE_ALLOW_OPEN_REGISTRATION=true
+
+# Feature 0065 §1.4 (F12) confines local-path ingest to VULTURE_SOURCE_ROOT and
+# REJECTS it outright in centralized mode when unset. Step 6 scans a local
+# fixture path, so point the root at the container-side mount of
+# VULTURE_SOURCE_DIR (compose maps it to /mnt/source; the CLI rewrites host
+# paths to /mnt/source/<rel> for the dockerized backend).
+VULTURE_SOURCE_ROOT=/mnt/source
+
 # Source mount (read-only) — points at the project root so we can scan
 # repo-internal fixtures.
 VULTURE_SOURCE_DIR=./
