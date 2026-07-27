@@ -1,8 +1,11 @@
 package server
 
 import (
+	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,13 +34,84 @@ func addRequestLogging(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
 		next.ServeHTTP(sw, r)
+		// 0065 F5: quote the request-controlled path so an embedded CR/LF
+		// cannot forge an additional log record. r.Method is RFC-token
+		// validated by net/http and cannot carry CR/LF.
 		log.Printf("method=%s path=%s status=%d duration=%s remote=%s",
-			r.Method, r.URL.Path, sw.code, time.Since(start), r.RemoteAddr)
+			r.Method, strconv.Quote(r.URL.Path), sw.code, time.Since(start), r.RemoteAddr)
 	})
 }
 
 func isStreamPath(path string) bool {
 	return strings.HasSuffix(path, "/stream")
+}
+
+// 0065 F2 — trusted-proxy client IP.
+//
+// trustedProxyNets holds the CIDRs/hosts configured via
+// VULTURE_TRUSTED_PROXIES. X-Forwarded-For is honored only when the direct
+// peer is one of these; otherwise an untrusted peer cannot spoof its own IP.
+var trustedProxyNets []*net.IPNet
+
+// ConfigureTrustedProxies parses trusted-proxy entries (IPs or CIDRs) and
+// installs them for realClientIP. Called once at startup.
+func ConfigureTrustedProxies(entries []string) error {
+	nets := make([]*net.IPNet, 0, len(entries))
+	for _, e := range entries {
+		if e = strings.TrimSpace(e); e == "" {
+			continue
+		}
+		if _, n, err := net.ParseCIDR(e); err == nil {
+			nets = append(nets, n)
+			continue
+		}
+		ip := net.ParseIP(e)
+		if ip == nil {
+			return fmt.Errorf("invalid trusted proxy %q", e)
+		}
+		bits := 128
+		if ip.To4() != nil {
+			bits = 32
+		}
+		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	}
+	trustedProxyNets = nets
+	return nil
+}
+
+func isTrustedProxy(ip net.IP) bool {
+	for _, n := range trustedProxyNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// realClientIP: XFF honored only when the direct peer is a trusted proxy, and
+// then the rightmost non-trusted hop wins; otherwise the peer wins and XFF is
+// ignored (an untrusted peer cannot spoof its own IP).
+func realClientIP(r *http.Request) string {
+	peer := hostOnly(r.RemoteAddr)
+	if pip := net.ParseIP(peer); pip == nil || !isTrustedProxy(pip) {
+		return peer
+	}
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if h := strings.TrimSpace(parts[i]); h != "" {
+			if ip := net.ParseIP(h); ip != nil && !isTrustedProxy(ip) {
+				return h
+			}
+		}
+	}
+	return peer
+}
+
+func hostOnly(remoteAddr string) string {
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return h
+	}
+	return remoteAddr
 }
 
 // rateLimiter implements a simple per-IP token bucket rate limiter.
@@ -109,11 +183,7 @@ func (rl *rateLimiter) maybeEvict(now time.Time) {
 func RateLimit(limit int, window time.Duration, next http.HandlerFunc) http.HandlerFunc {
 	rl := newRateLimiter(limit, window)
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			ip = strings.Split(fwd, ",")[0]
-		}
-		if !rl.allow(strings.TrimSpace(ip)) {
+		if !rl.allow(realClientIP(r)) {
 			http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 			return
 		}
@@ -139,12 +209,91 @@ func RateLimitByKey(rpm int, keyFunc func(*http.Request) string, next http.Handl
 	}
 }
 
-// clientIP extracts the client IP, preferring X-Forwarded-For when present.
+// clientIP extracts the client IP, honoring X-Forwarded-For only from a
+// trusted proxy (delegates to realClientIP — 0065 F2).
 func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+	return realClientIP(r)
+}
+
+// 0065 F6/H2/H3/R5 — bounded, oracle-free login throttle.
+//
+// Keyed on (email, client-IP): an attacker cannot lock out a victim globally,
+// only from their own IP. Uses an escalating delay rather than a hard lock (no
+// distinct "locked" status ⇒ no enumeration oracle, §H2) and a swept, bounded
+// map (§H3).
+type LoginThrottle struct {
+	mu        sync.Mutex
+	fails     map[string]*failRec
+	max       int
+	window    time.Duration
+	lastEvict time.Time
+}
+
+type failRec struct {
+	count int
+	first time.Time
+}
+
+func NewLoginThrottle(max int, window time.Duration) *LoginThrottle {
+	return &LoginThrottle{fails: map[string]*failRec{}, max: max, window: window}
+}
+
+func lkey(email, ip string) string {
+	return strings.ToLower(strings.TrimSpace(email)) + "|" + ip
+}
+
+// Delay returns how long to stall before this (email,ip) may attempt. 0 under
+// the threshold; grows 1s per over-limit failure, capped at 5s. Same generic
+// response either way (caller stalls then returns invalid-credentials) so no
+// lock state leaks (§H2). Returns -1 past the hard ceiling (§R5) so the caller
+// answers 429 without parking a goroutine.
+func (t *LoginThrottle) Delay(email, ip string) time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.maybeEvict(time.Now())
+	r := t.fails[lkey(email, ip)]
+	if r == nil || time.Since(r.first) > t.window || r.count < t.max {
+		return 0
 	}
-	return r.RemoteAddr
+	if r.count >= 2*t.max {
+		return -1 // §R5 hard ceiling: caller returns 429 without sleeping
+	}
+	d := time.Duration(r.count-t.max+1) * time.Second
+	if d > 5*time.Second {
+		d = 5 * time.Second // maxSleep
+	}
+	return d
+}
+
+func (t *LoginThrottle) Fail(email, ip string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	k, now := lkey(email, ip), time.Now()
+	if r := t.fails[k]; r != nil && time.Since(r.first) <= t.window {
+		r.count++
+		return
+	}
+	t.fails[k] = &failRec{count: 1, first: now}
+}
+
+func (t *LoginThrottle) Reset(email, ip string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.fails, lkey(email, ip))
+}
+
+// maybeEvict sweeps expired records at most once per window when large (§H3,
+// same amortization as the request rate limiter). Caller holds the lock.
+func (t *LoginThrottle) maybeEvict(now time.Time) {
+	if len(t.fails) <= 1000 || now.Sub(t.lastEvict) < t.window {
+		return
+	}
+	for k, r := range t.fails {
+		if now.Sub(r.first) > t.window {
+			delete(t.fails, k)
+		}
+	}
+	t.lastEvict = now
 }
 
 // principalKeyFunc returns a key-extraction function that derives the

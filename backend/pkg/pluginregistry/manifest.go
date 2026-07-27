@@ -304,6 +304,51 @@ func validateRuntimeBlock(r *RuntimeBlock) error {
 	if r.Network != "" && !validNetworks[r.Network] {
 		return fmt.Errorf("[runtime].network %q: must be one of none, internal, host", r.Network)
 	}
+	if err := validateRuntimeEnvBlock(r); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateRuntimeEnvBlock rejects, at install time, any manifest that
+// declares a protected backend secret in runtime.env.required|optional
+// (0065 §M7/§M8). Uses the same single-source IsBackendSecret predicate
+// the launch-time argv builder enforces, so a secret-declaring manifest
+// fails at install rather than only at launch.
+func validateRuntimeEnvBlock(r *RuntimeBlock) error {
+	for _, key := range []string{"required", "optional"} {
+		for _, name := range envNames(r.Env, key) {
+			if IsBackendSecret(name) {
+				return fmt.Errorf("[runtime].env.%s: %q is a protected backend secret and cannot be forwarded to a plugin", key, name)
+			}
+		}
+	}
+	return nil
+}
+
+// envNames coerces the interface{}-typed runtime.env.<key> TOML list to
+// []string. The TOML decoder lands these as []any (or []string in
+// programmatically-built manifests).
+func envNames(m map[string]any, key string) []string {
+	if m == nil {
+		return nil
+	}
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
 	return nil
 }
 

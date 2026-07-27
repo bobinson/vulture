@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vulture/backend/internal/config"
+	"github.com/vulture/backend/internal/llm"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -26,6 +29,15 @@ type Client struct {
 	http      *http.Client
 	dimOnce   sync.Once
 	dimension int // learned dimension from first successful Embed call
+
+	// 0065 §2.2 (F10): sink guard against leaking a long-lived provider
+	// API key in cleartext. True only when it is safe to attach the
+	// Authorization header — i.e. the endpoint is https:// / loopback
+	// (llm.ValidateEndpoint passes) or the operator opted in via
+	// VULTURE_ALLOW_INSECURE_LLM. Computed in New(); when the key would
+	// go over an insecure remote endpoint it stays false and the client
+	// degrades to unauthenticated rather than exfiltrating the key.
+	allowKeyTransport bool
 
 	// VLT-3890 hardening: bounded exponential-backoff retry on outbound
 	// embedding-API calls. Transient failures (network errors, 5xx, 429
@@ -62,14 +74,25 @@ func New() *Client {
 	// Detect local endpoints (Ollama, LM Studio, etc.) that don't need API keys.
 	local := isLocalEndpoint(baseURL)
 
+	// 0065 §2.2 (F10): only attach the API key when the endpoint is
+	// secure (https:// or loopback) or the operator explicitly allows
+	// cleartext. Degrade-not-fail (§H5): if a key is set but the endpoint
+	// is an insecure remote URL, warn and boot unauthenticated instead of
+	// leaking the key in cleartext.
+	allowKey := llm.ValidateEndpoint(baseURL) == nil || config.EnvTruthy("VULTURE_ALLOW_INSECURE_LLM")
+	if key != "" && !local && !allowKey {
+		log.Printf("WARN embedding: NOT attaching API key over insecure endpoint %q (use https:// or VULTURE_ALLOW_INSECURE_LLM=true); embedding will be unauthenticated", baseURL)
+	}
+
 	return &Client{
-		apiKey:           key,
-		baseURL:          baseURL,
-		model:            model,
-		local:            local,
-		http:             &http.Client{Timeout: 30 * time.Second},
-		retryMaxAttempts: defaultRetryMaxAttempts,
-		retryBaseDelay:   defaultRetryBaseDelay,
+		apiKey:            key,
+		baseURL:           baseURL,
+		model:             model,
+		local:             local,
+		http:              &http.Client{Timeout: 30 * time.Second},
+		retryMaxAttempts:  defaultRetryMaxAttempts,
+		retryBaseDelay:    defaultRetryBaseDelay,
+		allowKeyTransport: allowKey,
 	}
 }
 
@@ -107,7 +130,10 @@ func (c *Client) doWithRetry(url string, body []byte) (*http.Response, error) {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if c.apiKey != "" && !c.local {
+		// 0065 §2.2 (F10): sink guard — never send the key over an
+		// insecure remote endpoint unless allowKeyTransport was granted
+		// in New().
+		if c.apiKey != "" && !c.local && c.allowKeyTransport {
 			req.Header.Set("Authorization", "Bearer "+c.apiKey)
 		}
 

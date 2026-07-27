@@ -70,6 +70,11 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		return nil, err
 	}
 
+	// 0065 F2: honor X-Forwarded-For only from configured trusted proxies.
+	if err := ConfigureTrustedProxies(cfg.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("configure trusted proxies: %w", err)
+	}
+
 	repo, pgDB, sqliteDB, err := openRepo(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -144,7 +149,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		}()
 	}
 
-	sourceSvc := service.NewSourceService(repo)
+	sourceSvc := service.NewSourceService(repo, cfg.SourceRoot, cfg.LocalMode)
 	auditSvc := service.NewAuditService(repo)
 	proxyService := service.NewAgentProxyService(broker)
 	// Feature 0049: stream service consults the plugin registry via
@@ -461,6 +466,10 @@ func registerAuthRoutes(
 	authH := handler.NewAuthHandler(authSvc)
 	authMW := handler.NewAuthMiddleware(authSvc)
 
+	// 0065 F6: bounded, oracle-free login throttle keyed on (email, client-IP).
+	// Sits behind the per-IP RateLimit on /api/auth/login (double-bounded).
+	authH.SetLoginThrottle(NewLoginThrottle(5, 15*time.Minute), realClientIP)
+
 	// Stream token store: short-lived tokens for SSE authentication
 	streamTokenStore := service.NewStreamTokenStore(userRepo)
 	authMW.SetStreamTokenStore(streamTokenStore)
@@ -480,12 +489,28 @@ func registerAuthRoutes(
 		registerAPIKeyRoutes(mux, pgDB, sqliteDB, authMW, readOnly)
 	}
 
-	mux.HandleFunc("/api/auth/register", RateLimit(5, time.Minute, authH.Register))
+	// 0065 §H7/§M1/§R7: open self-registration is on by default only in
+	// local mode; in Mode B it is closed unless explicitly enabled. When
+	// closed, the endpoint returns a JSON 403 (the server package has no
+	// access to handler.writeError, so it writes the body directly).
+	if cfg.AllowOpenRegistration {
+		mux.HandleFunc("/api/auth/register", RateLimit(5, time.Minute, authH.Register))
+	} else {
+		mux.HandleFunc("/api/auth/register", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"open registration disabled; contact an administrator"}`))
+		})
+	}
+	// 0065 §H7: admin-gated user provisioning so default-off Mode B can
+	// still add users. Reuses Register hashing but never self-authenticates
+	// the created user.
+	mux.HandleFunc("/api/admin/users", authMW.Require(handler.RequireRole("admin", ReadOnlyGuard(readOnly, authH.AdminCreateUser))))
 	mux.HandleFunc("/api/auth/login", RateLimit(10, time.Minute, authH.Login))
 	mux.HandleFunc("/api/auth/local-session", authH.LocalSession)
 	mux.HandleFunc("/api/auth/me", authMW.Require(authH.Me))
 
-	mux.HandleFunc("/api/sources", authMW.Require(ReadOnlyGuard(readOnly, sourceH.Create)))
+	mux.HandleFunc("/api/sources", authMW.Require(handler.RequireWrite(ReadOnlyGuard(readOnly, sourceH.Create))))
 	mux.HandleFunc("/api/sources/", authMW.Require(ReadOnlyGuard(readOnly, sourceH.Get)))
 	mux.HandleFunc("/api/stats", authMW.Require(auditH.Stats))
 
@@ -496,7 +521,9 @@ func registerAuthRoutes(
 			apiKeyRPM = n
 		}
 	}
-	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, principalKeyFunc, ReadOnlyGuard(readOnly, auditsH))))
+	// 0065 §H1: method-gated RequireWrite lets viewers GET/list while POST
+	// (create) requires member/admin. Sits inside Require, outside ReadOnlyGuard.
+	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, auditsH)))))
 	mux.HandleFunc("/api/audits/", authMW.Require(ReadOnlyGuard(readOnly, auditDetailH)))
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
@@ -516,7 +543,7 @@ func registerAuthRoutes(
 	if rawDB != nil {
 		labelH := handler.NewFindingLabelHandler(rawDB, dialect)
 		mux.HandleFunc("/api/findings/", authMW.Require(
-			RateLimitByKey(60, principalKeyFunc, ReadOnlyGuard(readOnly, labelH.Handle))))
+			RateLimitByKey(60, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, labelH.Handle)))))
 
 		// L4 memory_prior lookup — runs in the stream handler's drain
 		// path; nil-safe when DB not configured.
@@ -587,7 +614,9 @@ func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, s
 	auditH.SetLineageRepo(lineageRepo) // enrich /comparison summaries with VLT-XXXX refs
 
 	mux.HandleFunc("/api/lineage", protect(lineageH.List))
-	mux.HandleFunc("/api/lineage/", protect(ReadOnlyGuard(readOnly, lineageRouter(lineageH))))
+	// 0065 §H1: method-gated write guard — viewer GET stays open, PATCH
+	// (status update) requires member/admin.
+	mux.HandleFunc("/api/lineage/", protect(handler.RequireWrite(ReadOnlyGuard(readOnly, lineageRouter(lineageH)))))
 }
 
 func lineageRouter(lineageH *handler.LineageHandler) http.HandlerFunc {

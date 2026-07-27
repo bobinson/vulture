@@ -142,6 +142,39 @@ func extractAuditIDFromPath(path string) string {
 	return path
 }
 
+// RequireWrite gates only state-changing methods so combined GET+POST handlers
+// (e.g. /api/audits) keep serving reads to viewers (0065 §H1). Read methods
+// pass straight through; writes require member/admin. Must be applied inside
+// authMW.Require so getUserFromContext sees the DB-fresh principal.
+func RequireWrite(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			next(w, r)
+			return
+		}
+		u := getUserFromContext(r)
+		if u == nil || (u.Role != "member" && u.Role != "admin") {
+			writeError(w, http.StatusForbidden, "write access requires member or admin role")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// RequireRole gates an entire handler to a specific role (for /api/admin/*).
+// Must be applied inside authMW.Require so getUserFromContext sees the
+// DB-fresh principal. 0065 §H7.
+func RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u := getUserFromContext(r)
+		if u == nil || u.Role != role {
+			writeError(w, http.StatusForbidden, "requires "+role+" role")
+			return
+		}
+		next(w, r)
+	}
+}
+
 func getUserFromContext(r *http.Request) *model.User {
 	val := r.Context().Value(userContextKey)
 	if val == nil {

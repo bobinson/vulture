@@ -129,6 +129,7 @@ func commitInstall(opts InstallOptions, p *preparedInstall) (*InstallResult, err
 		return nil, err
 	}
 	acks := p.Manifest.Trust.RequiredAck
+	printForwardedEnv(opts.Out, pluginregistry.ForwardedEnvNames(&p.Manifest))
 	if err := runAckFlow(opts, acks); err != nil {
 		return nil, err
 	}
@@ -190,6 +191,20 @@ func verifyIfRequired(opts InstallOptions, p *preparedInstall) (*Marker, error) 
 		Signature:     p.Manifest.Trust.Signature,
 		CosignVersion: res.CosignVersion,
 	}, nil
+}
+
+// printForwardedEnv shows the operator the exact env var names that will
+// be forwarded into the plugin container, so credential exposure is
+// visible before approval (0065). No-op when nothing is forwarded or no
+// writer is configured.
+func printForwardedEnv(out io.Writer, names []string) {
+	if out == nil || len(names) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "This plugin will receive the following environment variables:")
+	for _, n := range names {
+		fmt.Fprintf(out, "  - %s\n", n)
+	}
 }
 
 // runAckFlow prints / prompts for required acks. AssumeYes prints only.

@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -146,10 +147,11 @@ func TestEmbed_Success(t *testing.T) {
 	defer server.Close()
 
 	c := &Client{
-		apiKey:  "sk-test",
-		baseURL: server.URL,
-		model:   "test-model",
-		http:    server.Client(),
+		apiKey:            "sk-test",
+		baseURL:           server.URL,
+		model:             "test-model",
+		http:              server.Client(),
+		allowKeyTransport: true,
 	}
 
 	vec, err := c.Embed("test text")
@@ -489,6 +491,120 @@ func TestEmbed_GivesUpAfterMaxAttempts(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&attempts); got != 3 {
 		t.Fatalf("expected 3 total attempts (max), got %d", got)
+	}
+}
+
+// --- 0065 §2.2 (F10): cleartext API-key leak to insecure LLM endpoints -------
+//
+// When OPENAI_API_KEY is set but the configured base URL is an insecure
+// (http://, non-loopback) remote endpoint — e.g. an internal LLM proxy —
+// the long-lived provider key would be transmitted in cleartext to that
+// host. The sink guard must refuse to attach the Authorization header on
+// such endpoints unless the operator explicitly opts in with
+// VULTURE_ALLOW_INSECURE_LLM=true. https:// endpoints and loopback stay
+// authenticated. The server must degrade (boot without the header), not
+// crash, by default.
+
+// capturingRoundTripper records the Authorization header of the outbound
+// request and returns a minimal valid embedding response so Embed succeeds.
+type capturingRoundTripper struct {
+	auth   string
+	called int32
+}
+
+func (rt *capturingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	atomic.AddInt32(&rt.called, 1)
+	rt.auth = req.Header.Get("Authorization")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"embedding":[0.1,0.2]}]}`)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// RED baseline: current doWithRetry attaches the key to any non-local
+// endpoint, so this leaks the key over an insecure remote proxy → FAILS.
+func TestEmbed_NoAuthHeaderOverInsecureRemoteEndpoint(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-x")
+	t.Setenv("VULTURE_EMBEDDING_URL", "http://llm-proxy.internal:8000/v1")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("VULTURE_ALLOW_INSECURE_LLM", "")
+	t.Setenv("VULTURE_STRICT_LLM_ENDPOINT", "")
+
+	c := New()
+	rt := &capturingRoundTripper{}
+	c.http = &http.Client{Transport: rt}
+	c.retryBaseDelay = time.Millisecond
+
+	if _, err := c.Embed("hello"); err != nil {
+		t.Fatalf("Embed returned error: %v", err)
+	}
+	if atomic.LoadInt32(&rt.called) == 0 {
+		t.Fatal("stub transport was never invoked")
+	}
+	if rt.auth != "" {
+		t.Errorf("API key leaked: Authorization header sent to insecure endpoint %q: got %q; want none",
+			c.baseURL, rt.auth)
+	}
+}
+
+// Bypass: VULTURE_ALLOW_INSECURE_LLM=true re-enables attachment even on an
+// insecure remote endpoint (operator opt-in). Passes before and after the
+// fix; documents the escape hatch.
+func TestEmbed_AttachesAuthWithAllowInsecure(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-x")
+	t.Setenv("VULTURE_EMBEDDING_URL", "http://llm-proxy.internal:8000/v1")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("VULTURE_ALLOW_INSECURE_LLM", "true")
+
+	c := New()
+	rt := &capturingRoundTripper{}
+	c.http = &http.Client{Transport: rt}
+	c.retryBaseDelay = time.Millisecond
+
+	if _, err := c.Embed("hello"); err != nil {
+		t.Fatalf("Embed returned error: %v", err)
+	}
+	if rt.auth != "Bearer sk-x" {
+		t.Errorf("with VULTURE_ALLOW_INSECURE_LLM=true expected Authorization attached, got %q", rt.auth)
+	}
+}
+
+// Regression: an https:// endpoint is secure, so the key is still attached.
+func TestEmbed_AttachesAuthOverHTTPS(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-x")
+	t.Setenv("VULTURE_EMBEDDING_URL", "https://api.openai.com/v1")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("VULTURE_ALLOW_INSECURE_LLM", "")
+
+	c := New()
+	rt := &capturingRoundTripper{}
+	c.http = &http.Client{Transport: rt}
+	c.retryBaseDelay = time.Millisecond
+
+	if _, err := c.Embed("hi"); err != nil {
+		t.Fatalf("Embed returned error: %v", err)
+	}
+	if rt.auth != "Bearer sk-x" {
+		t.Errorf("over https:// expected Authorization attached, got %q", rt.auth)
+	}
+}
+
+// Degrade-not-fail (§H5): New() with an insecure remote endpoint and a key
+// set must still return a usable client (warn + boot), never crash.
+func TestNew_InsecureRemoteEndpointDegradesNotFails(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-x")
+	t.Setenv("VULTURE_EMBEDDING_URL", "http://llm-proxy.internal:8000/v1")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("VULTURE_ALLOW_INSECURE_LLM", "")
+	t.Setenv("VULTURE_STRICT_LLM_ENDPOINT", "")
+
+	c := New()
+	if c == nil {
+		t.Fatal("New returned nil; must degrade (warn+boot), not crash")
+	}
+	if !c.Available() {
+		t.Error("expected Available()=true (API key set); the degraded client still boots")
 	}
 }
 
