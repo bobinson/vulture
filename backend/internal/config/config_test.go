@@ -6,6 +6,50 @@ import (
 	"testing"
 )
 
+// TestLoad_LoginThrottleDefaults / _FromEnv / _InvalidFallsBackToDefault are
+// the RED baseline for 0065 A1: the login-throttle max + window must be
+// env-configurable (VULTURE_LOGIN_LOCKOUT_MAX / _WINDOW_SEC), defaulting to
+// 5 / 900s, and a non-positive or garbage value must fall back to the default
+// (a max<=0 would throttle the first attempt; a window<=0 would silently
+// disable the throttle — both must fail safe).
+func TestLoad_LoginThrottleDefaults(t *testing.T) {
+	t.Setenv("VULTURE_LOGIN_LOCKOUT_MAX", "")
+	t.Setenv("VULTURE_LOGIN_LOCKOUT_WINDOW_SEC", "")
+	cfg := Load()
+	if cfg.LoginLockoutMax != 5 {
+		t.Errorf("LoginLockoutMax default = %d, want 5", cfg.LoginLockoutMax)
+	}
+	if cfg.LoginLockoutWindowSec != 900 {
+		t.Errorf("LoginLockoutWindowSec default = %d, want 900", cfg.LoginLockoutWindowSec)
+	}
+}
+
+func TestLoad_LoginThrottleFromEnv(t *testing.T) {
+	t.Setenv("VULTURE_LOGIN_LOCKOUT_MAX", "3")
+	t.Setenv("VULTURE_LOGIN_LOCKOUT_WINDOW_SEC", "60")
+	cfg := Load()
+	if cfg.LoginLockoutMax != 3 {
+		t.Errorf("LoginLockoutMax = %d, want 3", cfg.LoginLockoutMax)
+	}
+	if cfg.LoginLockoutWindowSec != 60 {
+		t.Errorf("LoginLockoutWindowSec = %d, want 60", cfg.LoginLockoutWindowSec)
+	}
+}
+
+func TestLoad_LoginThrottleInvalidFallsBackToDefault(t *testing.T) {
+	for _, bad := range []string{"0", "-1", "abc", "  "} {
+		t.Setenv("VULTURE_LOGIN_LOCKOUT_MAX", bad)
+		t.Setenv("VULTURE_LOGIN_LOCKOUT_WINDOW_SEC", bad)
+		cfg := Load()
+		if cfg.LoginLockoutMax != 5 {
+			t.Errorf("LoginLockoutMax(%q) = %d, want fallback 5", bad, cfg.LoginLockoutMax)
+		}
+		if cfg.LoginLockoutWindowSec != 900 {
+			t.Errorf("LoginLockoutWindowSec(%q) = %d, want fallback 900", bad, cfg.LoginLockoutWindowSec)
+		}
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	cfg := Load()
 	if cfg.Port != "28080" {

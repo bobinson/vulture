@@ -466,9 +466,12 @@ func registerAuthRoutes(
 	authH := handler.NewAuthHandler(authSvc)
 	authMW := handler.NewAuthMiddleware(authSvc)
 
-	// 0065 F6: bounded, oracle-free login throttle keyed on (email, client-IP).
+	// 0065 F6/A1: bounded, oracle-free login throttle keyed on (email, client-IP),
+	// configurable via VULTURE_LOGIN_LOCKOUT_MAX / _WINDOW_SEC (defaults 5 / 900s).
 	// Sits behind the per-IP RateLimit on /api/auth/login (double-bounded).
-	authH.SetLoginThrottle(NewLoginThrottle(5, 15*time.Minute), realClientIP)
+	authH.SetLoginThrottle(
+		NewLoginThrottle(cfg.LoginLockoutMax, time.Duration(cfg.LoginLockoutWindowSec)*time.Second),
+		realClientIP)
 
 	// Stream token store: short-lived tokens for SSE authentication
 	streamTokenStore := service.NewStreamTokenStore(userRepo)

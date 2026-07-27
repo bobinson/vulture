@@ -54,10 +54,17 @@ type Config struct {
 	// Empty = XFF ignored (the direct peer always wins — the secure
 	// default). Populated from VULTURE_TRUSTED_PROXIES (CSV). 0065 F2.
 	TrustedProxies []string `json:"trusted_proxies"`
-	LLMModel       string   `json:"llm_model"`
-	LLMCtxSize     string `json:"llm_ctx_size"`
-	EmbeddingURL   string `json:"embedding_url"`
-	EmbeddingModel string `json:"embedding_model"`
+	// LoginLockoutMax / LoginLockoutWindowSec configure the failed-login
+	// throttle keyed on (email, client-IP): after Max failures within Window
+	// seconds, attempts incur an escalating capped delay. Populated from
+	// VULTURE_LOGIN_LOCKOUT_MAX / _WINDOW_SEC (defaults 5 / 900); a non-positive
+	// value falls back to the default (0065 F2/A1).
+	LoginLockoutMax       int    `json:"login_lockout_max"`
+	LoginLockoutWindowSec int    `json:"login_lockout_window_sec"`
+	LLMModel              string `json:"llm_model"`
+	LLMCtxSize            string `json:"llm_ctx_size"`
+	EmbeddingURL          string `json:"embedding_url"`
+	EmbeddingModel        string `json:"embedding_model"`
 	// Broker holds feature 0064 LLM-broker configuration. Broker is
 	// off by default (Mode A stays zero-config); every field is opt-in.
 	Broker BrokerConfig           `json:"broker"`
@@ -131,27 +138,29 @@ func Load() *Config {
 	localMode := os.Getenv("VULTURE_LOCAL_MODE") == "true"
 	port := resolve(ini, "VULTURE_PORT", "ports", "backend", "28080")
 	return &Config{
-		Port:               port,
-		ListenAddr:         resolveListenAddr(ini, port, localMode),
-		DBPath:             resolve(ini, "VULTURE_DB_PATH", "database", "sqlite_path", "/data/vulture.db"),
-		DBDSN:              envOrDefault("VULTURE_DB_DSN", ""),
-		JWTSecret:          resolve(ini, "VULTURE_JWT_SECRET", "auth", "jwt_secret", ""),
-		LocalMode:          localMode,
-		ReadOnly:           os.Getenv("VULTURE_READONLY") == "true",
-		APIKeysEnabled:     os.Getenv("VULTURE_API_KEYS_ENABLED") == "true",
+		Port:           port,
+		ListenAddr:     resolveListenAddr(ini, port, localMode),
+		DBPath:         resolve(ini, "VULTURE_DB_PATH", "database", "sqlite_path", "/data/vulture.db"),
+		DBDSN:          envOrDefault("VULTURE_DB_DSN", ""),
+		JWTSecret:      resolve(ini, "VULTURE_JWT_SECRET", "auth", "jwt_secret", ""),
+		LocalMode:      localMode,
+		ReadOnly:       os.Getenv("VULTURE_READONLY") == "true",
+		APIKeysEnabled: os.Getenv("VULTURE_API_KEYS_ENABLED") == "true",
 		// 0065 §H7: open registration defaults on in local mode, off
 		// otherwise; the env var overrides in either direction.
 		AllowOpenRegistration: localMode || EnvTruthy("VULTURE_ALLOW_OPEN_REGISTRATION"),
 		CORSAllowedOrigins:    parseCSV(envOrDefault("VULTURE_CORS_ALLOWED_ORIGINS", "")),
-		AgentToken:         envOrDefault("VULTURE_AGENT_TOKEN", ""),
-		SourceRoot:         envOrDefault("VULTURE_SOURCE_ROOT", ""),
-		TrustedProxies:     parseCSV(envOrDefault("VULTURE_TRUSTED_PROXIES", "")),
-		LLMModel:           resolve(ini, "VULTURE_LLM_MODEL", "llm", "model", ""),
-		LLMCtxSize:         resolve(ini, "VULTURE_LLM_CTX_SIZE", "llm", "ctx_size", ""),
-		EmbeddingURL:       resolve(ini, "VULTURE_EMBEDDING_URL", "embedding", "url", ""),
-		EmbeddingModel:     resolve(ini, "VULTURE_EMBEDDING_MODEL", "embedding", "model", ""),
-		Broker:             loadBrokerConfig(ini),
-		Agents:             defaultAgents(ini),
+		AgentToken:            envOrDefault("VULTURE_AGENT_TOKEN", ""),
+		SourceRoot:            envOrDefault("VULTURE_SOURCE_ROOT", ""),
+		TrustedProxies:        parseCSV(envOrDefault("VULTURE_TRUSTED_PROXIES", "")),
+		LoginLockoutMax:       posIntOrDefault(envOrDefault("VULTURE_LOGIN_LOCKOUT_MAX", ""), 5),
+		LoginLockoutWindowSec: posIntOrDefault(envOrDefault("VULTURE_LOGIN_LOCKOUT_WINDOW_SEC", ""), 900),
+		LLMModel:              resolve(ini, "VULTURE_LLM_MODEL", "llm", "model", ""),
+		LLMCtxSize:            resolve(ini, "VULTURE_LLM_CTX_SIZE", "llm", "ctx_size", ""),
+		EmbeddingURL:          resolve(ini, "VULTURE_EMBEDDING_URL", "embedding", "url", ""),
+		EmbeddingModel:        resolve(ini, "VULTURE_EMBEDDING_MODEL", "embedding", "model", ""),
+		Broker:                loadBrokerConfig(ini),
+		Agents:                defaultAgents(ini),
 	}
 }
 
@@ -199,6 +208,17 @@ func atoiOr(s string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+// posIntOrDefault parses s as a POSITIVE int, returning def on empty, invalid,
+// or non-positive input. Used for the login-throttle knobs where a value <= 0
+// would either lock out the first attempt (max) or silently disable the
+// throttle (window) — both must fail safe to the default (0065 A1).
+func posIntOrDefault(s string, def int) int {
+	if v, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && v > 0 {
+		return v
+	}
+	return def
 }
 
 // atofOr parses s as a float64, returning fallback when empty or invalid.
