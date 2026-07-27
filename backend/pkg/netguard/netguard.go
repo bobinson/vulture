@@ -70,10 +70,6 @@ func DefaultResolver(ctx context.Context, host string) ([]net.IP, error) {
 	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
 
-// ValidateHostPublic rejects a bare host (or literal IP) that is, or resolves
-// to, any internal IP. Rejects if ANY resolved IP is internal so a rebinder
-// returning [public, internal] cannot pass. Resolution is bounded by
-// resolveTimeout regardless of the caller's ctx (H4).
 // BlockedError is returned when a host or URL is refused because it is, or
 // resolves to, a non-public address. It carries the offending host and IP so a
 // caller can build an actionable, decision-enabling message and surface it to
@@ -95,6 +91,10 @@ func (e *BlockedError) Error() string {
 	return fmt.Sprintf("egress blocked: host %q (%s)", e.Host, e.Reason)
 }
 
+// ValidateHostPublic rejects a bare host (or literal IP) that is, or resolves
+// to, any internal IP. Rejects if ANY resolved IP is internal so a rebinder
+// returning [public, internal] cannot pass. Resolution is bounded by
+// resolveTimeout regardless of the caller's ctx (H4).
 func ValidateHostPublic(ctx context.Context, host string, resolver Resolver) error {
 	if host == "" {
 		return fmt.Errorf("empty host")

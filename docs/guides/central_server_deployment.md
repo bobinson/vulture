@@ -169,7 +169,7 @@ Egress controls (all default to blocking internal/private targets, which is corr
 - `VULTURE_GIT_SSH_STRICT` / `VULTURE_GIT_SSH_KNOWN_HOSTS` / `VULTURE_GIT_SSH_INSECURE` — SSH host-key policy for key-based clones (default `accept-new` TOFU; `_INSECURE=true` is a rollback escape hatch that disables MITM protection).
 - `VULTURE_ALLOW_INSECURE_LLM` / `VULTURE_STRICT_LLM_ENDPOINT` — govern whether the provider API key may be sent to a non-TLS LLM endpoint. Default: the key is withheld from an `http://` endpoint and the server boots with a warning; set `VULTURE_STRICT_LLM_ENDPOINT=true` to hard-fail startup instead.
 
-The failed-login throttle (5 attempts / 15 min per email+IP, escalating capped delay) is always on and is not env-configurable.
+The failed-login throttle (per email+IP, escalating capped delay, with a hard-ceiling 429) is always on. Its threshold and window are tunable via `VULTURE_LOGIN_LOCKOUT_MAX` (default 5) and `VULTURE_LOGIN_LOCKOUT_WINDOW_SEC` (default 900 = 15 min); a non-positive value falls back to the default.
 
 ---
 

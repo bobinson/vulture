@@ -313,7 +313,9 @@ VULTURE_EMBEDDING_URL=                               # Custom embedding endpoint
 VULTURE_EMBEDDING_MODEL=                             # Embedding model override
 
 # Security hardening (feature 0065) — opt-in; defaults preserve current behavior
-VULTURE_TRUSTED_PROXIES=                             # Comma CIDR/IP list of proxies allowed to set X-Forwarded-For. Unset = trust the direct peer only. MUST be set to the proxy address when behind a reverse proxy, else every client collapses to the proxy IP and shares one rate-limit / login-throttle bucket. (The login throttle is fixed at 5 failed attempts / 15 min per (email,IP) — not env-configurable)
+VULTURE_TRUSTED_PROXIES=                             # Comma CIDR/IP list of proxies allowed to set X-Forwarded-For. Unset = trust the direct peer only. MUST be set to the proxy address when behind a reverse proxy, else every client collapses to the proxy IP and shares one rate-limit / login-throttle bucket
+VULTURE_LOGIN_LOCKOUT_MAX=5                          # Failed logins per (email,IP) before the escalating (capped) delay engages; a hard ceiling at 2x returns 429. Non-positive value falls back to 5
+VULTURE_LOGIN_LOCKOUT_WINDOW_SEC=900                 # Sliding window (seconds) for the login throttle (default 900 = 15 min). Non-positive value falls back to 900
 VULTURE_ALLOW_OPEN_REGISTRATION=                     # Allow public POST /api/auth/register. Default: true when VULTURE_LOCAL_MODE is set, false otherwise. When false, provision users via admin-only POST /api/admin/users
 VULTURE_SOURCE_ROOT=                                 # Confines local-path (Type=local) source ingest to this directory (symlinked parents resolved so they cannot escape). In centralized mode (VULTURE_LOCAL_MODE unset) local ingest is REJECTED unless this is set
 VULTURE_GIT_HOST_ALLOWLIST=                          # Comma list of git hosts permitted even if they resolve to an internal IP (SSRF guard). Empty = public hosts only; internal targets blocked
