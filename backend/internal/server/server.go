@@ -80,6 +80,14 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// 0065 §L6: an unauthenticated API (no user store) may run only in
+	// loopback-bound local mode; refuse a non-local posture, where the whole
+	// API could be reached without credentials (directly or via a same-host
+	// proxy). Fail-closed even if openRepo ever gains a degraded no-DB path.
+	if err := validateAuthStoreForNonLocalMode(pgDB != nil || sqliteDB != nil, cfg.LocalMode); err != nil {
+		return nil, err
+	}
+
 	// Feature 0064 §25.2/§29: assemble the LLM broker when enabled, on whichever
 	// store the deployment uses — Postgres (Mode B, multi-replica) OR SQLite
 	// (Mode A / native Mode E). Off → an inert Disabled() broker, so callers need
@@ -376,7 +384,10 @@ func registerAPIRoutes(
 		return registerAuthRoutes(mux, userRepo, cfg, sourceH, auditH, auditsH, auditDetailH, agentH, llmHealthH, fsH, streamH, readOnly, pgDB, sqliteDB)
 	}
 
-	// Fallback: no auth (no database available)
+	// Fallback: no user store (no database). NewWithRegistry's
+	// validateAuthStoreForNonLocalMode guarantees this branch is reachable ONLY
+	// in local mode (loopback-bound), so these unauthenticated routes are
+	// confined to the host and never exposed on a non-local interface (0065 §L6).
 	mux.HandleFunc("/api/sources", ReadOnlyGuard(readOnly, sourceH.Create))
 	mux.HandleFunc("/api/sources/", ReadOnlyGuard(readOnly, sourceH.Get))
 	mux.HandleFunc("/api/stats", auditH.Stats)

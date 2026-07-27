@@ -92,6 +92,26 @@ func validateAgentTokenForNonLocalMode(token string, localMode bool) error {
 	return nil
 }
 
+// validateAuthStoreForNonLocalMode refuses startup when there is no user store
+// (no database) AND LocalMode is off (0065 §L6). Without a user store the API is
+// registered with no authentication (the registerAPIRoutes no-DB fallback wires
+// noopAuth), so the ENTIRE API — including via a same-host reverse proxy, which
+// defeats a per-request loopback check — would be reachable without credentials
+// on a non-local (production) posture. LocalMode is loopback-bound
+// (validateLoopbackForLocalMode), so an unauthenticated API there is confined to
+// the host and remains the accepted single-user degraded case. This guard makes
+// the invariant fail-closed even if openRepo ever gains a degraded no-DB path.
+func validateAuthStoreForNonLocalMode(hasUserStore, localMode bool) error {
+	if localMode || hasUserStore {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to start: no database is configured (no user store, so the API " +
+			"would be served WITHOUT authentication) and VULTURE_LOCAL_MODE is not " +
+			"set. Configure VULTURE_DB_DSN or VULTURE_DB_PATH, or set " +
+			"VULTURE_LOCAL_MODE=true for a loopback-only single-user deployment")
+}
+
 // validateLoopbackForLocalMode returns an error if LocalMode is on AND
 // the listen address would bind anything other than a loopback
 // interface. The pattern is: when an operator enables LocalMode, the
