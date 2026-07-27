@@ -133,6 +133,34 @@ func TestValidateAgentTokenForNonLocalMode(t *testing.T) {
 	}
 }
 
+// TestValidateAuthStoreForNonLocalMode pins the 0065 §L6 invariant: an
+// unauthenticated API (no user store / no DB) may run ONLY in local mode
+// (loopback-bound). In a non-local posture with no store, startup must refuse.
+func TestValidateAuthStoreForNonLocalMode(t *testing.T) {
+	cases := []struct {
+		name      string
+		hasStore  bool
+		localMode bool
+		wantErr   bool
+	}{
+		{"store + non-local → ok", true, false, false},
+		{"store + local → ok", true, true, false},
+		{"no store + local → ok (loopback-only degraded)", false, true, false},
+		{"no store + non-local → REFUSE", false, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateAuthStoreForNonLocalMode(c.hasStore, c.localMode)
+			if c.wantErr && err == nil {
+				t.Errorf("expected error; got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("expected nil; got %v", err)
+			}
+		})
+	}
+}
+
 // Cross-check on the underlying parse: an addr string must split into
 // a host and a port. The empty-host case (":port") means
 // "bind all interfaces", which is non-loopback per H9.

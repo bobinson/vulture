@@ -90,7 +90,12 @@ func PolicyFromEnv() CloneURLPolicy {
 		}
 	}
 	return CloneURLPolicy{
-		AllowPlainHTTP: config.EnvTruthy("VULTURE_LOCAL_MODE"), // http only in Mode A
+		// Match config.Load's LocalMode read exactly (`== "true"`, 0065 A9): the
+		// other four VULTURE_LOCAL_MODE readers use strict equality, so decide
+		// "Mode A" identically here rather than via EnvTruthy — otherwise
+		// VULTURE_LOCAL_MODE=1 would be centralized to the rest of the backend
+		// yet allow plain-http clones here.
+		AllowPlainHTTP: os.Getenv("VULTURE_LOCAL_MODE") == "true", // http only in Mode A
 		HostAllowlist:  allow,
 		Resolver:       netguard.DefaultResolver,
 	}

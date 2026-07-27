@@ -1,0 +1,15 @@
+# Vulture dependency-review-action config (feature 0065).
+#
+# Drives the diff-scoped PR gate (ci.yml `dependency-review` job): a PR that
+# ADDS a dependency with a vulnerability >= the workflow's fail-on-severity
+# (high) is blocked. fail-on-severity is set in the workflow so the threshold
+# is visible alongside the other gates.
+#
+# allow-ghsas: advisories to IGNORE for newly-introduced dependencies. Policy
+# mirrors .pip-audit-ignore — each entry needs a one-line justification and a
+# 90-day expiry; codeowner review to add or renew. Format:
+#   allow-ghsas:
+#     - GHSA-xxxx-xxxx-xxxx  # <justification> (expires YYYY-MM-DD)
+#
+# No active allowlist entries.
+allow-ghsas: []
