@@ -28,6 +28,17 @@ type AuthService interface {
 	IssueLocalAdminToken() (*model.AuthResponse, error)
 }
 
+// bcryptCompare is a seam so tests can assert the constant-work path runs (§M9).
+var bcryptCompare = bcrypt.CompareHashAndPassword
+
+// dummyBcryptHash is compared against when no user exists so response time does
+// not reveal account existence (0065 F16). Computed once at init at DefaultCost
+// to match Register's cost.
+var dummyBcryptHash = func() []byte {
+	h, _ := bcrypt.GenerateFromPassword([]byte("vulture-dummy-password"), bcrypt.DefaultCost)
+	return h
+}()
+
 type authService struct {
 	repo   repository.UserRepository
 	secret []byte
@@ -84,10 +95,11 @@ func (s *authService) Register(req *model.RegisterRequest) (*model.AuthResponse,
 func (s *authService) Login(req *model.LoginRequest) (*model.AuthResponse, error) {
 	user, err := s.repo.GetUserByEmail(req.Email)
 	if err != nil || user == nil {
+		_ = bcryptCompare(dummyBcryptHash, []byte(req.Password)) // constant work (F16)
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+	if err := bcryptCompare([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		return nil, fmt.Errorf("invalid credentials")
 	}
 

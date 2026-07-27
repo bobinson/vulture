@@ -29,23 +29,15 @@ on:
   pull_request:
     # Scope to main-targeted PRs only: the setup-pinned-uv composite reads the uv
     # pin from the literal `main` ref (M3 anti-exfil), so the gate is only correct
-    # where `main` IS the PR's true base. A PR targeting another base would be
-    # re-resolved with main's toolchain against that base's inputs and could flap.
+    # where `main` IS the PR's true base.
+    #
+    # NO workflow-level `paths:` filter (0065): this gate is a REQUIRED status
+    # check, and a workflow skipped by a path filter reports NO status, leaving
+    # path-filtered-out PRs stuck "waiting for status" forever. So the job ALWAYS
+    # runs and reports; the former path scope now lives in the "Detect
+    # dependency/lockfile changes" step below, which skips the uv resolve (cheap
+    # success) when no dependency/lockfile path changed.
     branches: [main]
-    paths:
-      # Agent dependency declarations (the resolver inputs).
-      - 'agents/**'
-      # Generator inputs — a PR editing ONLY these (with no agents/** file) must
-      # still be gated, so they are listed explicitly (audit M4 / LLD §5 C1).
-      - 'scripts/gen-lockfile.sh'
-      - 'scripts/check-lockfile.sh'
-      - 'scripts/check-lockfile-installable.sh'
-      - 'scripts/uv-version.sh'
-      - 'scripts/lock-date.txt'
-      - 'agents/lockfile-constraints.txt'
-      # And the gate's own wiring.
-      - '.github/workflows/lockfile.yml'
-      - '.github/actions/setup-pinned-uv/**'
 
 permissions:
   contents: read          # least privilege: no write, no secrets -> fork-PR-safe
@@ -53,17 +45,48 @@ permissions:
 jobs:
   lockfile-freshness:
     runs-on: ubuntu-latest
-    # ADVISORY-FIRST (LLD §7 step 1): ship non-blocking for a ~1-week soak to
-    # surface the current divergence backlog without blocking PRs.
-    # TODO(0056-soak): flip to enforcing — remove this `continue-on-error: true`
-    # after the one-week advisory soak confirms the gate is quiet on clean PRs.
-    continue-on-error: true
+    # ENFORCING (0065): a stale lockfile fails the PR — no soak. Regenerate with
+    # `make freeze-deps` (scripts/gen-lockfile.sh); the PR cannot merge until
+    # agents/requirements-frozen.txt matches the declared agent deps. This keeps
+    # the audit-python gate honest: a new/changed Python dependency cannot enter
+    # without being relocked, and therefore cannot skip pip-audit.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0   # need the PR base commit to diff which paths changed
+      - name: Detect dependency/lockfile changes
+        id: scope
+        # Git pathspecs mirror the former on.paths scope (M4: a PR editing ONLY
+        # the generator inputs is still gated). `agents` recursively covers the
+        # agent dep declarations + lockfile-constraints.txt. base.sha is a trusted
+        # 40-hex commit id, passed via env (never inlined into the shell).
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Fail CLOSED: if the diff can't be computed, run the check anyway.
+          changed=$(git diff --name-only "$BASE_SHA" HEAD -- \
+               agents \
+               scripts/gen-lockfile.sh scripts/check-lockfile.sh \
+               scripts/check-lockfile-installable.sh scripts/uv-version.sh \
+               scripts/lock-date.txt \
+               .github/workflows/lockfile.yml .github/actions/setup-pinned-uv) || {
+            echo "could not compute base diff (base=$BASE_SHA) — running freshness check to fail safe"
+            echo 'relevant=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if [ -n "$changed" ]; then
+            echo 'relevant=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'No dependency/lockfile paths changed — skipping freshness re-check (cheap pass).'
+            echo 'relevant=false' >> "$GITHUB_OUTPUT"
+          fi
       # Single-source pinned uv, read from the trusted base ref (M3). The local
       # composite is in-repo, so it is not SHA-pinned (it is not a 3rd-party ref).
-      - uses: ./.github/actions/setup-pinned-uv
+      - name: Set up pinned uv
+        if: steps.scope.outputs.relevant == 'true'
+        uses: ./.github/actions/setup-pinned-uv
       - name: Check lockfile freshness
+        if: steps.scope.outputs.relevant == 'true'
         run: scripts/check-lockfile.sh
       # Installability is separate from freshness: freshness proves the lockfile
       # REPRODUCES; this proves every pin has a wheel for every release target
@@ -71,4 +94,5 @@ jobs:
       # against real PyPI). Runs after freshness — a drifted lockfile is fixed by
       # re-locking first anyway.
       - name: Check lockfile installable on all release targets
+        if: steps.scope.outputs.relevant == 'true'
         run: scripts/check-lockfile-installable.sh

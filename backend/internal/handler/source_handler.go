@@ -19,6 +19,16 @@ func NewSourceHandler(svc service.SourceService) *SourceHandler {
 }
 
 func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
+	// Write-only endpoint: reject read verbs. The route is wrapped in
+	// method-gated RequireWrite, which passes GET/HEAD/OPTIONS through WITHOUT a
+	// role check; since this handler is mounted for all methods on /api/sources,
+	// a non-POST verb must be refused here or a viewer/apikey principal could
+	// enter the ingest (git-clone) path via a read verb (0065 security-review).
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 	var req model.SourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

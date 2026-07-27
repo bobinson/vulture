@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -12,6 +13,16 @@ import (
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
 )
+
+// principalID returns the acting principal's id for audit-trail logging,
+// or "anonymous" when no principal is on the request context. 0065 §5a.3 —
+// prep for 5b ownership; logged only, no filtering under 5a.
+func principalID(r *http.Request) string {
+	if u := getUserFromContext(r); u != nil {
+		return u.ID
+	}
+	return "anonymous"
+}
 
 type AuditHandler struct {
 	svc         service.AuditService
@@ -46,6 +57,7 @@ func NewAuditHandler(svc service.AuditService) *AuditHandler {
 }
 
 func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
+	log.Printf("0065 audit-trail: audit create by principal=%s", principalID(r))
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20) // 2 MB limit
 	var req model.AuditRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -89,6 +101,7 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
+	log.Printf("0065 audit-trail: audit list by principal=%s", principalID(r))
 	limit := queryInt(r, "limit", 20)
 	offset := queryInt(r, "offset", 0)
 
@@ -147,6 +160,7 @@ func (h *AuditHandler) CachedAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
+	log.Printf("0065 audit-trail: audit get by principal=%s", principalID(r))
 	id := extractAuditID(r.URL.Path, "/api/audits/")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "audit id required")

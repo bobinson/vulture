@@ -1,8 +1,9 @@
 package localdev
 
 import (
-	"os"
 	"path/filepath"
+
+	"github.com/vulture/backend/pkg/vhome"
 )
 
 // Mode discriminates between an installed Vulture (Mode E: native
@@ -25,29 +26,23 @@ func (m Mode) String() string {
 // ResolveHome returns the VULTURE_HOME path. Honors the env var first,
 // then falls back to $HOME/.vulture. Returns the empty string only if
 // neither is available, which the caller treats as "use dev mode".
+//
+// Delegates to pkg/vhome — the single source of truth shared with the CLI
+// (a separate module that cannot import this internal package).
 func ResolveHome() string {
-	if h := os.Getenv("VULTURE_HOME"); h != "" {
-		return h
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".vulture")
+	return vhome.Home()
 }
 
 // DetectMode returns ModeInstall if VULTURE_HOME/VERSION exists,
 // ModeDev otherwise. Errors during stat are treated as "not installed".
+//
+// Delegates the install-vs-dev decision to pkg/vhome; this wrapper only maps
+// the boolean onto the localdev.Mode type used throughout the backend.
 func DetectMode() Mode {
-	home := ResolveHome()
-	if home == "" {
-		return ModeDev
+	if vhome.IsInstall() {
+		return ModeInstall
 	}
-	info, err := os.Stat(filepath.Join(home, "VERSION"))
-	if err != nil || info.IsDir() {
-		return ModeDev
-	}
-	return ModeInstall
+	return ModeDev
 }
 
 // RuntimeRoot returns the runtime asset root for the given mode.

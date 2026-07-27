@@ -20,6 +20,7 @@ import (
 
 	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/iniutil"
+	"github.com/vulture/backend/pkg/vhome"
 	"golang.org/x/term"
 )
 
@@ -646,7 +647,7 @@ func cmdDiscover(apiURL string, df discoverFlags) {
 
 	// Fetch final results
 	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
-	printAuditSummary(final)
+	printAuditSummary(final, apiURL)
 }
 
 func streamDiscover(apiURL, auditID, token string) {
@@ -984,17 +985,77 @@ func isLocalMode(frontendURL string) bool {
 	return strings.Contains(frontendURL, "localhost") || strings.Contains(frontendURL, "127.0.0.1")
 }
 
-// uiURL returns the base URL where the web UI is served: an explicit
-// VULTURE_FRONTEND_URL override, else the configured frontend host. In dev and
-// Docker deployments the SPA is served by a SEPARATE server on the frontend host
-// (Vite dev server / frontend container) — the backend port serves the API only,
-// so pointing there yields a 404. (Native install embeds the SPA in the backend,
-// but that mode is served by the backend binary, not this CLI.)
-func uiURL() string {
+// uiURL returns the base URL where the web UI is served, given the API base
+// URL the CLI actually talked to (apiURL — the --server / VULTURE_API_URL value
+// or the local default).
+//
+// The web-UI topology is a property of the *target backend*, which the CLI can
+// only partially infer. The rule, in order:
+//
+//   - an explicit VULTURE_FRONTEND_URL override always wins;
+//   - a REMOTE backend serves the SPA at the SAME origin as the API — either an
+//     embedded-SPA install or (the common central-server case, Mode B/D) a
+//     reverse proxy terminating TLS and routing "/" to the backend. The API
+//     base already IS the UI base; never swap the port (doing so injected a
+//     dead :frontend_host — the bug this branch fixes). The path is preserved
+//     so subpath-mounted proxies (https://host/vulture) still resolve;
+//   - a LOOPBACK backend is co-located with the CLI, so local state tells us the
+//     split: a native install (Mode E) embeds the SPA on the API port (same
+//     origin); a source/Docker dev stack runs the SPA on a separate local
+//     [ports] frontend_host port.
+//
+// Known limitation: if a source-built CLI runs on a host that has BOTH a native
+// install (~/.vulture/VERSION) and a separate local dev stack, and targets the
+// dev backend on localhost, IsInstall() reports install and the link points at
+// the API port. Set VULTURE_FRONTEND_URL to disambiguate. A backend-reported
+// mode (e.g. via /health) would remove this local-state dependence entirely.
+func uiURL(apiURL string) string {
 	if env := os.Getenv("VULTURE_FRONTEND_URL"); env != "" {
 		return env
 	}
-	return defaultFrontendURL
+	base := apiURL
+	if base == "" {
+		base = defaultAPIURL
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Hostname() == "" {
+		// Can't reason about topology — fall back to the configured frontend host.
+		return defaultFrontendURL
+	}
+	// Remote backend, or a local native install: SPA shares the API origin.
+	if !isLoopbackHost(u.Hostname()) || vhome.IsInstall() {
+		return sameOriginBase(u)
+	}
+	// Local dev/Docker split: SPA on the separate [ports] frontend_host port.
+	return frontendBaseFromAPI(u)
+}
+
+// isLoopbackHost reports whether host is a loopback name/address (localhost or
+// any 127.0.0.0/8 / ::1 address), i.e. a backend co-located with the CLI.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// sameOriginBase returns the API origin (scheme://host[:port][/path]) with any
+// query/fragment and trailing slash stripped, and — importantly — any embedded
+// userinfo removed so credentials in --server never leak into the printed link.
+func sameOriginBase(u *url.URL) string {
+	u.User = nil
+	u.RawQuery, u.Fragment = "", ""
+	return strings.TrimRight(u.String(), "/")
+}
+
+// frontendBaseFromAPI returns the local dev/Docker web-UI origin: the API's
+// scheme and host with the port swapped to the configured [ports] frontend_host,
+// and path/query/fragment/userinfo dropped (a separate origin from the API).
+func frontendBaseFromAPI(u *url.URL) string {
+	fport := cliINIValue("ports", "frontend_host", "23001")
+	out := &url.URL{Scheme: u.Scheme, Host: net.JoinHostPort(u.Hostname(), fport)}
+	return strings.TrimRight(out.String(), "/")
 }
 
 func isProjectRoot(dir string) bool {
@@ -1144,7 +1205,7 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, fresh b
 			fmt.Fprintf(os.Stderr, "  Completed: %s\n", cached.Audit.CompletedAt)
 			fmt.Fprintf(os.Stderr, "  Use --no-cache to force a fresh audit\n")
 			fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
-			outputResult(cached.Audit, ci)
+			outputResult(cached.Audit, ci, apiURL)
 			os.Exit(computeExitCode(cached.Audit, ci.exitOn))
 		}
 	}
@@ -1179,7 +1240,7 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, fresh b
 	if ci.wait {
 		fmt.Fprintf(os.Stderr, "  Waiting for audit to complete...\n")
 		final := pollUntilDone(apiURL, a.ID, token)
-		outputResult(final, ci)
+		outputResult(final, ci, apiURL)
 		os.Exit(computeExitCode(final, ci.exitOn))
 	}
 
@@ -1191,7 +1252,7 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, fresh b
 	// Fetch final results
 	fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
 	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
-	outputResult(final, ci)
+	outputResult(final, ci, apiURL)
 	os.Exit(computeExitCode(final, ci.exitOn))
 }
 
@@ -1276,7 +1337,7 @@ func cmdProve(apiURL string, target string, pf proveFlags) {
 	if pf.ci.wait {
 		fmt.Fprintf(os.Stderr, "  Waiting for prove session to complete...\n")
 		final := pollUntilDone(apiURL, a.ID, token)
-		outputResult(final, pf.ci)
+		outputResult(final, pf.ci, apiURL)
 		os.Exit(computeExitCode(final, pf.ci.exitOn))
 	}
 
@@ -1287,7 +1348,7 @@ func cmdProve(apiURL string, target string, pf proveFlags) {
 
 	// Fetch final results for exit code evaluation
 	final := apiGet[audit](apiURL+"/api/audits/"+a.ID, token)
-	outputResult(final, pf.ci)
+	outputResult(final, pf.ci, apiURL)
 	os.Exit(computeExitCode(final, pf.ci.exitOn))
 }
 
@@ -1576,7 +1637,7 @@ func cmdResults(apiURL string, id string) {
 		token = autoLoginLocal(apiURL)
 	}
 	a := apiGet[audit](apiURL+"/api/audits/"+id, token)
-	printAuditSummary(a)
+	printAuditSummary(a, apiURL)
 
 	if len(a.Findings) == 0 {
 		return
@@ -1704,14 +1765,14 @@ func pollUntilDone(apiURL, auditID, token string) audit {
 
 // outputResult writes the audit result to stdout. If --output json, it emits
 // the full audit as JSON. Otherwise it calls printAuditSummary (text to stderr+stdout).
-func outputResult(a audit, ci ciFlags) {
+func outputResult(a audit, ci ciFlags, apiURL string) {
 	if ci.output == "json" {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(a)
 		return
 	}
-	printAuditSummary(a)
+	printAuditSummary(a, apiURL)
 }
 
 // computeExitCode returns 1 if any finding meets or exceeds the given severity
@@ -1939,7 +2000,7 @@ func (a audit) findingCount() int {
 	return a.FindingsCount
 }
 
-func printAuditSummary(a audit) {
+func printAuditSummary(a audit, apiURL string) {
 	fmt.Printf("\n  Audit: %s\n", a.ID)
 	fmt.Printf("  Status: %s\n", colorStatus(a.Status))
 	fmt.Printf("  Types: %s\n", joinAgentNames(a.Types))
@@ -1971,7 +2032,7 @@ func printAuditSummary(a audit) {
 	}
 
 	// Show UI link
-	frontendURL := uiURL()
+	frontendURL := uiURL(apiURL)
 	fmt.Printf("\n  View in UI: %s/audit/%s\n", frontendURL, a.ID)
 
 	// Show local dev credentials if frontend is running locally. The

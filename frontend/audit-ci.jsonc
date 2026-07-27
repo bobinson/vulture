@@ -1,0 +1,14 @@
+{
+  // Vulture npm CVE allowlist (feature 0065). Passed to audit-ci via
+  // `--config` from the audit-npm CI gate. Entries here are advisories the
+  // gate should IGNORE.
+  //
+  // Policy (mirrors .pip-audit-ignore): each allowlist entry needs a one-line
+  // justification and a 90-day expiry; codeowner review to add or renew.
+  // Format (GHSA id or npm advisory number):
+  //   "GHSA-xxxx-xxxx-xxxx"  // <justification> (expires YYYY-MM-DD)
+  //
+  // No active allowlist entries.
+  "high": true,
+  "allowlist": []
+}

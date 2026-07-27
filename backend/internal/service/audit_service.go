@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -80,7 +81,7 @@ func (s *auditService) Create(req *model.AuditRequest) (*model.Audit, error) {
 	// silent failure at delivery time. Delivery layer re-validates
 	// to defend against DNS rebinding between create + deliver.
 	if req.WebhookURL != "" {
-		if err := ValidateWebhookURL(req.WebhookURL); err != nil {
+		if err := ValidateWebhookURL(context.Background(), req.WebhookURL); err != nil {
 			return nil, fmt.Errorf("invalid webhook_url: %w", err)
 		}
 	}

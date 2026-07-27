@@ -2,6 +2,7 @@ package pluginsupervisor
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -266,13 +267,26 @@ func buildEnvArgs(plug pluginregistry.Plugin) ([]string, error) {
 		out = append(out, "-e", "VULTURE_BIND_HOST=127.0.0.1")
 	}
 	for _, name := range required {
+		if pluginregistry.IsBackendSecret(name) {
+			return nil, fmt.Errorf("plugin %s: env %s is a protected backend secret and cannot be forwarded", plug.Name(), name)
+		}
 		if _, ok := os.LookupEnv(name); !ok {
 			return nil, fmt.Errorf("plugin %s: required env %s not set", plug.Name(), name)
+		}
+		if pluginregistry.LooksLikeSecret(name) {
+			log.Printf("WARN plugin %s: forwarding credential-shaped env %s", plug.Name(), name)
 		}
 		out = append(out, "-e", name)
 	}
 	for _, name := range optional {
+		if pluginregistry.IsBackendSecret(name) {
+			log.Printf("WARN plugin %s: refusing to forward protected backend secret %s", plug.Name(), name)
+			continue
+		}
 		if _, ok := os.LookupEnv(name); ok {
+			if pluginregistry.LooksLikeSecret(name) {
+				log.Printf("WARN plugin %s: forwarding credential-shaped env %s", plug.Name(), name)
+			}
 			out = append(out, "-e", name)
 		}
 	}

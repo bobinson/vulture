@@ -61,6 +61,8 @@ jobs:
         run: sh scripts/tests/test_release_preflight.sh
       - name: smoke-scan contract tests
         run: sh scripts/tests/test_smoke_scan.sh
+      - name: ssh-version gate tests (0065 §L2)
+        run: sh scripts/tests/test_check_ssh_version.sh
 
   build-backend:
     runs-on: ubuntu-latest
@@ -245,3 +247,108 @@ jobs:
         run: |
           docker images | grep vulture || true
           echo "Docker build verification passed"
+      - name: Verify backend image ships OpenSSH >= 7.6 (0065 §L2)
+        # git-over-SSH clones use StrictHostKeyChecking=accept-new, which needs
+        # OpenSSH >= 7.6. Assert the shipped backend image satisfies it so a
+        # base-image downgrade (or a missing openssh-client) is caught in CI.
+        env:
+          # compose interpolates the backend service env for ANY command,
+          # including `run`; VULTURE_DB_PASSWORD/JWT_SECRET are `:?required`, so
+          # without them compose aborts before ssh ever executes. Same dummy
+          # values as the build step above.
+          VULTURE_DB_PASSWORD: ci-test-password
+          VULTURE_JWT_SECRET: ci-test-jwt-secret-placeholder
+        run: |
+          # `ssh -V` prints to STDERR — the same stream compose uses for its
+          # warnings/errors. Piping the merged stream straight into the parser
+          # makes a compose failure look like an unparseable version string, so
+          # isolate the banner line and surface the raw output on failure.
+          out=$(docker compose run --rm --no-deps --entrypoint ssh backend -V 2>&1) || true
+          banner=$(printf '%s\n' "$out" | grep -a -m1 'OpenSSH_' || true)
+          if [ -z "$banner" ]; then
+            echo "::error::could not obtain an ssh banner from the backend image" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$banner" | sh scripts/check-ssh-version.sh
+
+  # ── Dependency vulnerability gates (per-PR, BLOCKING) ───────
+  # dependency-review (below) is the DIFF-SCOPED primary gate: it fails only
+  # when a PR *adds* a vulnerable dependency (deterministic, author-actionable).
+  # The three full-tree scanners (audit-npm / audit-python / audit-go) catch
+  # advisories that appear in ALREADY-present deps (crons rot in a solo repo, so
+  # PR time is the reliable trigger) and double as a toolchain-freshness gate
+  # (Go stdlib). Escape hatches: frontend/audit-ci.jsonc, .pip-audit-ignore,
+  # .github/dependency-review-config.yml (Go has none — bump the dep/toolchain).
+  # Mark all FOUR as REQUIRED status checks in branch protection to block merge.
+
+  audit-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+      - name: Install dependencies
+        run: cd frontend && npm ci
+      - name: npm dependency audit (audit-ci --high, gating)
+        # Same threshold as the release gate; fails the PR on high/critical
+        # advisories. --config is REQUIRED: audit-ci does NOT auto-load the
+        # allowlist, so the file must be passed explicitly or it is ignored.
+        run: cd frontend && npx --yes audit-ci --config audit-ci.jsonc --high
+
+  audit-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install pip-audit
+        run: python3 -m pip install pip-audit || python3 -m pip install --break-system-packages pip-audit
+      - name: Python dependency audit (pip-audit, gating)
+        # Audits the pinned, hashed lockfile. Honors the shared .pip-audit-ignore
+        # allowlist (same parser as release.yml / security-digest.yml), but —
+        # unlike release — has NO `|| true`, so a finding fails the PR.
+        run: |
+          IGN=""
+          if [ -f .pip-audit-ignore ]; then
+            IGN=$(awk '/^[[:space:]]*(CVE|GHSA|PYSEC|OSV)-/ {sub(/^[[:space:]]+/,""); split($0,p,/[: \t]/); if (p[1]!="") printf " --ignore-vuln %s", p[1]}' .pip-audit-ignore)
+          fi
+          # shellcheck disable=SC2086  # IGN is an intentionally word-split flag list
+          pip-audit -r agents/requirements-frozen.txt --strict $IGN
+
+  audit-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Go vulnerability scan (backend)
+        # govulncheck reports only vulns reachable from actual call paths (low
+        # false-positive). It also flags Go STDLIB CVEs, so a PR built on an
+        # unpatched toolchain fails until GO_VERSION picks up the fixed patch.
+        run: cd backend && "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Go vulnerability scan (cli)
+        run: cd cli && "$(go env GOPATH)/bin/govulncheck" ./...
+
+  dependency-review:
+    # Diff-scoped gate: fails a PR that INTRODUCES a vulnerable dependency.
+    # PR-only (the action errors on push). Covers npm (package-lock) and Go
+    # (go.mod) via GitHub's dependency graph; Python coverage is partial here
+    # because the graph does not index the non-standard requirements-frozen.txt
+    # — pip-audit (audit-python) remains the authoritative Python gate.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Dependency review (diff-scoped, gating)
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+          config-file: ./.github/dependency-review-config.yml

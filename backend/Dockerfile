@@ -11,7 +11,10 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /vulture ./cmd/vulture/
 
 FROM alpine:3.19
 
-RUN apk add --no-cache git ca-certificates curl
+# openssh-client is required for git-over-SSH clones (feature 0065 F8); Alpine
+# 3.19 ships OpenSSH >= 9, satisfying the accept-new host-key policy (>= 7.6,
+# §L2 — asserted in CI against this image).
+RUN apk add --no-cache git ca-certificates curl openssh-client
 
 COPY --from=builder /vulture /usr/local/bin/vulture
 

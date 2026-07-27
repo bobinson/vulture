@@ -1,9 +1,17 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/vulture/backend/internal/repository"
 )
 
 // 0036 Phase 3 — webhook SSRF guard.
@@ -36,7 +44,7 @@ func TestValidateWebhookURL_RejectsBadSchemes(t *testing.T) {
 	}
 	for _, u := range bad {
 		t.Run(u, func(t *testing.T) {
-			if err := validateWebhookURL(u, dummyResolver); err == nil {
+			if err := validateWebhookURL(context.Background(), u, dummyResolver, nil); err == nil {
 				t.Errorf("validateWebhookURL(%q) = nil; want error", u)
 			}
 		})
@@ -57,8 +65,8 @@ func TestValidateWebhookURL_RejectsInternalIPs(t *testing.T) {
 	}
 	for u, ips := range bad {
 		t.Run(u, func(t *testing.T) {
-			resolver := func(host string) ([]net.IP, error) { return ips, nil }
-			if err := validateWebhookURL(u, resolver); err == nil {
+			resolver := func(ctx context.Context, host string) ([]net.IP, error) { return ips, nil }
+			if err := validateWebhookURL(context.Background(), u, resolver, nil); err == nil {
 				t.Errorf("validateWebhookURL(%q resolving to %v) = nil; want error", u, ips)
 			}
 		})
@@ -72,8 +80,8 @@ func TestValidateWebhookURL_AcceptsPublicHTTPSAndHTTP(t *testing.T) {
 	}
 	for u, ips := range good {
 		t.Run(u, func(t *testing.T) {
-			resolver := func(host string) ([]net.IP, error) { return ips, nil }
-			if err := validateWebhookURL(u, resolver); err != nil {
+			resolver := func(ctx context.Context, host string) ([]net.IP, error) { return ips, nil }
+			if err := validateWebhookURL(context.Background(), u, resolver, nil); err != nil {
 				t.Errorf("validateWebhookURL(%q resolving to %v) = %v; want nil", u, ips, err)
 			}
 		})
@@ -81,16 +89,17 @@ func TestValidateWebhookURL_AcceptsPublicHTTPSAndHTTP(t *testing.T) {
 }
 
 func TestValidateWebhookURL_RejectsDNSFailure(t *testing.T) {
-	resolver := func(host string) ([]net.IP, error) {
+	resolver := func(ctx context.Context, host string) ([]net.IP, error) {
 		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 	}
-	err := validateWebhookURL("http://does-not-resolve.example/", resolver)
+	err := validateWebhookURL(context.Background(), "http://does-not-resolve.example/", resolver, nil)
 	if err == nil {
 		t.Errorf("expected error on DNS failure; got nil")
 	}
-	// Error must mention DNS so the operator can debug quickly.
-	if !strings.Contains(err.Error(), "dns") && !strings.Contains(err.Error(), "DNS") {
-		t.Errorf("error %q should mention DNS", err.Error())
+	// Error must reference the failed resolution so the operator can
+	// debug quickly (netguard wraps the lookup error as "resolve ...").
+	if !strings.Contains(err.Error(), "resolve") && !strings.Contains(err.Error(), "no such host") {
+		t.Errorf("error %q should reference the DNS resolution failure", err.Error())
 	}
 }
 
@@ -99,18 +108,77 @@ func TestValidateWebhookURL_RejectsAnyResolvedInternal(t *testing.T) {
 	// an internal IP. The check must reject if ANY of the resolved
 	// addresses is internal — picking just the first allows DNS
 	// returning a public IP first then an internal one to bypass.
-	resolver := func(host string) ([]net.IP, error) {
+	resolver := func(ctx context.Context, host string) ([]net.IP, error) {
 		return []net.IP{
 			net.ParseIP("203.0.113.1"), // public
 			net.ParseIP("10.0.0.5"),    // internal — should fail validation
 		}, nil
 	}
-	if err := validateWebhookURL("http://rebinder.example/", resolver); err == nil {
+	if err := validateWebhookURL(context.Background(), "http://rebinder.example/", resolver, nil); err == nil {
 		t.Errorf("validateWebhookURL should reject if ANY resolved IP is internal")
 	}
 }
 
 // Helper for tests that don't care about actual DNS.
-func dummyResolver(host string) ([]net.IP, error) {
+func dummyResolver(ctx context.Context, host string) ([]net.IP, error) {
 	return []net.IP{net.ParseIP("203.0.113.1")}, nil
+}
+
+// 0065 §2.1 — webhook redirect SSRF.
+//
+// An attacker registers a benign-looking, public webhook URL that, at
+// delivery time, responds `302 Location: http://<internal-host>/...`.
+// The deliver-time validateWebhookURL only vets the ORIGINAL URL; the
+// redirect target is never validated. The delivery client must re-run the
+// SSRF guard on every redirect hop (via CheckRedirect, using the service
+// resolver so tests stay hermetic) and refuse a hop whose host resolves to
+// an internal IP (here 169.254.169.254, cloud-metadata) — so no request
+// ever reaches the internal address.
+//
+// Current code installs NO CheckRedirect on the delivery client, so it
+// follows the 302 straight to the internal endpoint. This test therefore
+// FAILS against current code and passes only once the guarded client lands.
+func TestWebhookDelivery_RefusesRedirectToInternalHost(t *testing.T) {
+	var internalReached int32
+	var redirectTarget string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hook", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget, http.StatusFound)
+	})
+	mux.HandleFunc("/steal", func(w http.ResponseWriter, r *http.Request) {
+		atomic.StoreInt32(&internalReached, 1)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	port := u.Port()
+
+	// The original delivery URL uses a public-looking host (resolver maps it
+	// to a public IP); the redirect points at an "internal" host the resolver
+	// maps to link-local metadata. The test transport rewrites both dials to
+	// the loopback httptest server (ports carried explicitly).
+	redirectTarget = fmt.Sprintf("http://metadata.internal:%s/steal", port)
+	deliverURL := fmt.Sprintf("http://webhook.test:%s/hook", port)
+
+	repo := &repository.MockWebhookRepository{}
+	svc := newWebhookServiceForTest(repo, "", testBackoff)
+	svc.resolver = func(ctx context.Context, host string) ([]net.IP, error) {
+		if host == "metadata.internal" {
+			return []net.IP{net.ParseIP("169.254.169.254")}, nil
+		}
+		return []net.IP{net.ParseIP("203.0.113.1")}, nil
+	}
+
+	svc.deliver("audit-ssrf-redirect", deliverURL, testPayload())
+
+	if atomic.LoadInt32(&internalReached) != 0 {
+		t.Fatalf("SSRF: delivery followed a 302 redirect to an internal host (%s); "+
+			"the client's CheckRedirect must refuse redirects that resolve to internal IPs", redirectTarget)
+	}
 }

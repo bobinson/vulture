@@ -147,7 +147,8 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 		req.Header.Set("X-Vulture-Agent-Token", token)
 	}
 
-	log.Printf("[agent-proxy] calling agent=%s url=%s/run", agentType, agentURL)
+	// 0065 §L5: quote the manifest/config-derived agent URL against log injection.
+	log.Printf("[agent-proxy] calling agent=%s url=%s/run", agentType, strconv.Quote(agentURL))
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("agent request: %w", err)

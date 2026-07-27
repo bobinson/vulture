@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/config"
+	"github.com/vulture/backend/internal/llm"
 	"github.com/vulture/backend/internal/localdev"
 	"github.com/vulture/backend/internal/server"
+	"github.com/vulture/backend/pkg/gitutil"
 )
 
 // Version is the build version reported by `vulture version`. It defaults to a
@@ -98,8 +100,47 @@ In install mode these may also be set in $VULTURE_HOME/config/.env (loaded at
 'vulture start'). Run 'vulture doctor' to see the resolved LLM provider/model.`)
 }
 
+// llmEndpointStartupError validates the long-lived-provider-key-bearing LLM
+// endpoints at startup (0065 §2.2/§H5, F10). It checks OPENAI_BASE_URL and
+// VULTURE_EMBEDDING_URL ONLY — internal agent-proxy and LLM-broker URLs are
+// intentionally excluded (§R2). It returns a non-nil boot error only under
+// VULTURE_STRICT_LLM_ENDPOINT; the default degrades with a WARN and returns nil
+// (the embedding sink guard withholds the key either way). Extracted as a
+// testable seam so the strict/degrade branch and the §R2 exclusion are covered.
+func llmEndpointStartupError() error {
+	if config.EnvTruthy("VULTURE_ALLOW_INSECURE_LLM") {
+		return nil
+	}
+	endpoints := map[string]string{
+		"OPENAI_BASE_URL":       os.Getenv("OPENAI_BASE_URL"),
+		"VULTURE_EMBEDDING_URL": os.Getenv("VULTURE_EMBEDDING_URL"),
+	}
+	if err := llm.ValidateAll(endpoints); err != nil {
+		if config.EnvTruthy("VULTURE_STRICT_LLM_ENDPOINT") {
+			return fmt.Errorf("insecure LLM endpoint (strict mode): %w", err)
+		}
+		log.Printf("WARN insecure LLM endpoint: %v — continuing; API keys will NOT be sent over it (set VULTURE_STRICT_LLM_ENDPOINT=true to hard-fail, or VULTURE_ALLOW_INSECURE_LLM=true to allow)", err)
+	}
+	return nil
+}
+
 func runServer() {
 	cfg := config.Load()
+	// 0065 §2.2 (F10, §H5): validate the long-lived-provider-key-bearing
+	// LLM endpoints only. Internal service-mesh URLs (agent-proxy and the
+	// LLM-broker) are intentionally excluded (§R2): they are legitimately
+	// http:// to internal hosts and carry short-lived internal tokens, not
+	// the provider key this check protects. Degrade-with-warning by default
+	// (the embedding sink guard already prevents the key leak); hard-fail
+	// only when VULTURE_STRICT_LLM_ENDPOINT=true.
+	if err := llmEndpointStartupError(); err != nil {
+		log.Fatalf("%v", err)
+	}
+	// 0065 §L2: probe OpenSSH; if too old for accept-new, fall back to
+	// strict=yes behind the persistent known_hosts and warn prominently.
+	if warn := gitutil.EnsureSSHStrictCompat(context.Background(), os.Setenv); warn != "" {
+		log.Println(warn)
+	}
 	srv, err := server.New(cfg)
 	if err != nil {
 		log.Fatalf("server init: %v", err)

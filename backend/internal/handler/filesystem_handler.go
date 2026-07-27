@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/vulture/backend/internal/pathutil"
 )
 
 // FilesystemHandler serves directory listings for the folder browser.
@@ -121,14 +123,12 @@ func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string
 	if isBlockedPath(absPath) {
 		return "", http.StatusForbidden, "access denied"
 	}
-	if sourceRoot != "" {
-		canonRoot, err := filepath.EvalSymlinks(filepath.Clean(sourceRoot))
-		if err != nil {
-			canonRoot = filepath.Clean(sourceRoot)
-		}
-		if !pathInsideRoot(absPath, canonRoot) {
-			return "", http.StatusForbidden, "access denied: path outside source root"
-		}
+	// 0065 §M3 — one confinement implementation shared with local ingest.
+	// EnsureWithinRoot resolves the deepest existing ancestor's symlinks so a
+	// symlinked parent cannot escape; empty sourceRoot is a no-op (legacy
+	// denylist-only behaviour).
+	if _, err := pathutil.EnsureWithinRoot(sourceRoot, absPath); err != nil {
+		return "", http.StatusForbidden, "access denied: path outside source root"
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -151,17 +151,6 @@ func containsParentDirSegment(p string) bool {
 		}
 	}
 	return false
-}
-
-// pathInsideRoot returns true if `path` equals `root` or is contained
-// inside `root` using a separator boundary (so /a/b is NOT inside /a/bc).
-func pathInsideRoot(path, root string) bool {
-	path = filepath.Clean(path)
-	root = filepath.Clean(root)
-	if path == root {
-		return true
-	}
-	return strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
 func buildDirEntries(absPath string, entries []os.DirEntry) []dirEntry {

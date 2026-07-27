@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,86 +16,103 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
+	"github.com/vulture/backend/pkg/netguard"
 )
 
-// IPResolver looks up IPs for a host. Swapped in tests via the
-// `resolver` parameter of validateWebhookURL.
-type IPResolver func(host string) ([]net.IP, error)
+// IPResolver is a service-local alias for netguard's context-bounded
+// resolver so callers/tests keep a stable name (0065, §M2).
+type IPResolver = netguard.Resolver
 
-// defaultIPResolver uses the package-level net resolver.
-func defaultIPResolver(host string) ([]net.IP, error) {
-	return net.LookupIP(host)
+// defaultIPResolver delegates to netguard's deadline-bounded resolver.
+func defaultIPResolver(ctx context.Context, host string) ([]net.IP, error) {
+	return netguard.DefaultResolver(ctx, host)
+}
+
+// webhookAllowlistFromEnv parses VULTURE_WEBHOOK_HOST_ALLOWLIST (0065 §2.3) into
+// a set of lowercased hostnames the operator has explicitly trusted as internal
+// webhook targets. Returns nil when unset/empty (fully guarded, public-only).
+func webhookAllowlistFromEnv() map[string]bool {
+	allow := map[string]bool{}
+	for _, h := range strings.Split(os.Getenv("VULTURE_WEBHOOK_HOST_ALLOWLIST"), ",") {
+		if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
+			allow[h] = true
+		}
+	}
+	if len(allow) == 0 {
+		return nil
+	}
+	return allow
+}
+
+// hostAllowed reports whether host is on the operator's webhook allowlist.
+func hostAllowed(allow map[string]bool, host string) bool {
+	return len(allow) > 0 && allow[strings.ToLower(host)]
 }
 
 // ValidateWebhookURL is the exported entry point for upstream callers
-// (audit_service.Create validates incoming requests before persistence).
-// Wraps validateWebhookURL with the standard DNS resolver.
+// (audit_service.Create validates incoming requests before persistence). It
+// applies the webhook host allowlist (0065 §2.3) around netguard's classifier.
 //
 // 0036 Phase 3 — webhook SSRF guard.
-func ValidateWebhookURL(raw string) error {
-	return validateWebhookURL(raw, defaultIPResolver)
+func ValidateWebhookURL(ctx context.Context, raw string) error {
+	err := validateWebhookURL(ctx, raw, netguard.DefaultResolver, webhookAllowlistFromEnv())
+	var be *netguard.BlockedError
+	if errors.As(err, &be) {
+		log.Printf("WARN webhook: %v — blocked; add the host to VULTURE_WEBHOOK_HOST_ALLOWLIST if it is a trusted internal target", err)
+	}
+	return err
 }
 
-// validateWebhookURL rejects URLs that would let a malicious caller
-// pivot through the backend into the deployment network. The check
-// covers scheme, hostname-to-IP resolution, and per-IP classification
-// (loopback / private / link-local / unspecified).
+// validateWebhookURL rejects URLs that would let a malicious caller pivot
+// through the backend into the deployment network. It mirrors gitutil's
+// caller-owned-allowlist shape (0065 §2.3): parse → http/https scheme → an
+// operator-allowlisted host short-circuits to allow → otherwise netguard's
+// single audited internal-IP classifier. A BlockedError is wrapped with an
+// actionable hint naming the override flag so the operator can decide.
 //
-// Residual TOCTOU: between this call and net/http.Do, DNS could
-// re-resolve to a different IP. A stronger fix uses an http.Transport
-// with a custom DialContext that re-checks at dial time; v1 ships
-// the LookupIP gate and documents the residual.
-func validateWebhookURL(raw string, resolver IPResolver) error {
+// Residual TOCTOU: between this call and net/http.Do, DNS could re-resolve to a
+// different IP. netguard.GuardedDialContext (via allowlistGuardedDial) closes
+// that window at dial time; this gate rejects early with a clear message.
+func validateWebhookURL(ctx context.Context, raw string, resolver netguard.Resolver, allow map[string]bool) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse: %w", err)
+		return fmt.Errorf("parse webhook url: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("scheme %q not allowed (only http/https)", u.Scheme)
+		return fmt.Errorf("webhook scheme %q not allowed (only http/https)", u.Scheme)
 	}
 	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("missing hostname")
+	if hostAllowed(allow, host) {
+		return nil // operator-trusted internal target (VULTURE_WEBHOOK_HOST_ALLOWLIST)
 	}
-	ips, err := resolver(host)
-	if err != nil {
-		return fmt.Errorf("dns resolution failed for %q: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return fmt.Errorf("dns returned no IPs for %q", host)
-	}
-	// Reject if ANY resolved IP is internal — picking just one allows
-	// a DNS-rebinder returning [public, internal] to bypass the gate.
-	for _, ip := range ips {
-		if isInternalIP(ip) {
-			return fmt.Errorf(
-				"host %q resolves to non-public IP %s — refusing", host, ip)
+	if err := netguard.ValidateHostPublic(ctx, host, resolver); err != nil {
+		var be *netguard.BlockedError
+		if errors.As(err, &be) {
+			return fmt.Errorf("%w; if %q is a trusted internal webhook target, add it to VULTURE_WEBHOOK_HOST_ALLOWLIST", err, host)
 		}
+		return err
 	}
 	return nil
 }
 
-// isInternalIP returns true for IPs the webhook delivery layer must
-// never reach. The set covers:
-//   - Loopback (127.0.0.0/8, ::1)
-//   - RFC1918 + ULA (10/8, 172.16/12, 192.168/16, fc00::/7) via IsPrivate
-//   - Link-local unicast (169.254/16, fe80::/10) — covers AWS metadata
-//   - Multicast / unspecified / broadcast
-func isInternalIP(ip net.IP) bool {
-	if ip == nil {
-		return true
+// allowlistGuardedDial returns a DialContext that dials an operator-allowlisted
+// host directly (the internal target is explicitly trusted, 0065 §2.3) and
+// otherwise falls through to netguard.GuardedDialContext, which refuses internal
+// IPs at dial time (closing the DNS-rebind window for everything else).
+func allowlistGuardedDial(allow map[string]bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	base := &net.Dialer{Timeout: 10 * time.Second}
+	guarded := netguard.GuardedDialContext(base)
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if host, _, err := net.SplitHostPort(addr); err == nil && hostAllowed(allow, host) {
+			return base.DialContext(ctx, network, addr)
+		}
+		return guarded(ctx, network, addr)
 	}
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
 }
 
 // WebhookService delivers audit-completion webhooks asynchronously.
@@ -103,42 +121,86 @@ type WebhookService interface {
 }
 
 type webhookService struct {
-	repo     repository.WebhookRepository
-	client   *http.Client
-	secret   string
-	backoff  []time.Duration
-	resolver IPResolver
+	repo      repository.WebhookRepository
+	client    *http.Client
+	secret    string
+	backoff   []time.Duration
+	resolver  IPResolver
+	allowlist map[string]bool // operator-trusted internal hosts (0065 §2.3)
 }
 
 // NewWebhookService creates a production webhook service with standard backoff.
 func NewWebhookService(r repository.WebhookRepository) WebhookService {
-	return &webhookService{
-		repo:     r,
-		client:   &http.Client{Timeout: 15 * time.Second},
-		secret:   os.Getenv("VULTURE_WEBHOOK_SECRET"),
-		backoff:  []time.Duration{0, 2 * time.Second, 10 * time.Second},
-		resolver: defaultIPResolver,
+	s := &webhookService{
+		repo:      r,
+		secret:    os.Getenv("VULTURE_WEBHOOK_SECRET"),
+		backoff:   []time.Duration{0, 2 * time.Second, 10 * time.Second},
+		resolver:  defaultIPResolver,
+		allowlist: webhookAllowlistFromEnv(),
 	}
+	s.client = s.buildClient(true) // guarded dialer in production
+	return s
+}
+
+// buildClient constructs the delivery HTTP client. 0065 §2.1: CheckRedirect
+// re-runs the SSRF guard on every redirect hop (using the service resolver so
+// tests stay hermetic), refusing any hop whose host resolves to an internal
+// IP. When guarded, the transport's dialer (netguard.GuardedDialContext) also
+// refuses internal IPs at dial time, closing the residual DNS-rebind TOCTOU.
+func (s *webhookService) buildClient(guarded bool) *http.Client {
+	c := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("stopped after 5 redirects")
+			}
+			return validateWebhookURL(req.Context(), req.URL.String(), s.resolver, s.allowlist)
+		},
+	}
+	if guarded {
+		c.Transport = &http.Transport{DialContext: allowlistGuardedDial(s.allowlist)}
+	}
+	return c
 }
 
 // newWebhookServiceForTest creates a webhook service with fast backoff for tests.
-// The resolver is permissive (allows loopback) so existing httptest.NewServer-based
-// delivery tests continue exercising the wire-level retry/HMAC logic without
-// fighting the 0036 Phase 3 SSRF guard. SSRF behaviour is covered separately
-// in webhook_ssrf_test.go which exercises validateWebhookURL directly.
+// The permissive resolver maps any hostname to a fake public IP so the delivery
+// layer's SSRF guard (netguard, 0065) doesn't block test traffic; delivery tests
+// therefore address the httptest server via a public-looking hostname (netguard
+// classifies literal loopback IPs directly, bypassing the resolver). The
+// transport rewrites the dial to loopback so the wire-level retry/HMAC logic is
+// still exercised against the real httptest server. SSRF behaviour itself is
+// covered separately in webhook_ssrf_test.go (validateWebhookURL) and the
+// netguard package tests.
 func newWebhookServiceForTest(r repository.WebhookRepository, secret string, backoff []time.Duration) *webhookService {
-	return &webhookService{
+	s := &webhookService{
 		repo:    r,
-		client:  &http.Client{Timeout: time.Second},
 		secret:  secret,
 		backoff: backoff,
-		// Permissive resolver: maps any host to a fake public IP so the
-		// delivery layer's SSRF guard doesn't block test traffic to
-		// httptest servers (which bind to 127.0.0.1).
-		resolver: func(string) ([]net.IP, error) {
+		// Permissive resolver: maps any hostname to a fake public IP so the
+		// delivery layer's SSRF guard doesn't block test traffic to the
+		// httptest server (which the transport below dials on loopback).
+		resolver: func(ctx context.Context, host string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("203.0.113.1")}, nil
 		},
 	}
+	// 0065 §2.1: use the production client so CheckRedirect (the per-hop
+	// SSRF guard) is exercised in tests, but unguarded (no netguard dialer)
+	// and with a loopback-rewriting transport so httptest servers addressed
+	// via public-looking hostnames are still reached on 127.0.0.1.
+	s.client = s.buildClient(false)
+	s.client.Timeout = time.Second
+	s.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			d := net.Dialer{Timeout: time.Second}
+			return d.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+		},
+	}
+	return s
 }
 
 // DeliverAsync fires a webhook in a background goroutine. No-op if url is empty.
@@ -159,7 +221,9 @@ func (s *webhookService) deliver(auditID, url string, payload *model.WebhookPayl
 	// and net/http's own dial — addressed by a custom DialContext in
 	// a future hardening pass). Tests inject a permissive resolver so
 	// httptest.NewServer URLs (which bind 127.0.0.1) still flow through.
-	if err := validateWebhookURL(url, s.resolver); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := validateWebhookURL(ctx, url, s.resolver, s.allowlist); err != nil {
 		log.Printf("[webhook] refusing to deliver audit=%s: %v", auditID, err)
 		return
 	}
