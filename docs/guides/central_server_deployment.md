@@ -126,6 +126,22 @@ VULTURE_USE_LLM=true
 # Embeddings
 VULTURE_EMBEDDING_MODEL=text-embedding-3-small
 VULTURE_EMBEDDING_URL=https://api.openai.com/v1
+
+# Security hardening (feature 0065) -- see "Security hardening variables" below
+# REQUIRED behind the Step 7 reverse proxy: set to the address the proxy
+# connects from, or all clients collapse to the proxy IP and share one
+# rate-limit / login-throttle bucket. Verify against `docker compose logs
+# backend` (the logged remote= address) and tighten to the narrowest CIDR.
+VULTURE_TRUSTED_PROXIES=172.16.0.0/12
+# Local-path (Type=local) ingest is rejected in centralized mode unless a
+# confinement root is set. Most Mode B servers scan git URLs and don't need it:
+# VULTURE_SOURCE_ROOT=/srv/vulture/allowed-sources
+# Public self-registration is OFF by default in Mode B; provision users via the
+# admin-only POST /api/admin/users (see Step 8 for first-admin bootstrap).
+# VULTURE_ALLOW_OPEN_REGISTRATION=false
+# Optional egress allowlists (empty = internal targets blocked):
+# VULTURE_GIT_HOST_ALLOWLIST=git.internal.example
+# VULTURE_WEBHOOK_HOST_ALLOWLIST=hooks.internal.example
 EOF
 ```
 
@@ -135,6 +151,25 @@ Generate the secrets inline:
 sed -i "s/VULTURE_JWT_SECRET=CHANGE_ME/VULTURE_JWT_SECRET=$(openssl rand -hex 32)/" .env
 sed -i "s/VULTURE_WEBHOOK_SECRET=CHANGE_ME/VULTURE_WEBHOOK_SECRET=$(openssl rand -hex 32)/" .env
 ```
+
+### Security hardening variables (feature 0065)
+
+These controls are opt-in and default to the pre-0065 behavior, but three of them materially affect a Mode B deployment:
+
+| Variable | Mode B guidance |
+|---|---|
+| `VULTURE_TRUSTED_PROXIES` | **Set this.** With TLS terminated by the Step 7 reverse proxy, the backend sees the proxy as the client. Unless you list the proxy's source address (CIDR/IP), `X-Forwarded-For` is ignored and per-IP rate limiting **and** the login throttle key on the proxy address — so every client shares one bucket. Tighten to the narrowest range that covers your proxy. |
+| `VULTURE_ALLOW_OPEN_REGISTRATION` | Defaults to **false** in Mode B (`VULTURE_LOCAL_MODE` unset), so `POST /api/auth/register` returns 403. Create users with the admin-only `POST /api/admin/users`; see Step 8 for first-admin bootstrap. Set to `true` only if you intend a shared, self-service workspace. |
+| `VULTURE_SOURCE_ROOT` | Only needed if you ingest **local paths** (`type=local`) on the server; centralized mode rejects local ingest unless this confinement root is set. Git-URL scans (the usual CI flow) don't need it. |
+
+Egress controls (all default to blocking internal/private targets, which is correct for a public-facing server):
+
+- `VULTURE_GIT_HOST_ALLOWLIST` / `VULTURE_WEBHOOK_HOST_ALLOWLIST` — comma lists of internal hosts to exempt from the SSRF guard, for a trusted internal git host or webhook receiver. A blocked request surfaces an actionable error naming the flag.
+- `VULTURE_GIT_ALLOW_REDIRECTS` — off by default (git redirects are blocked to prevent redirect-SSRF); enable only for a trusted host that redirects.
+- `VULTURE_GIT_SSH_STRICT` / `VULTURE_GIT_SSH_KNOWN_HOSTS` / `VULTURE_GIT_SSH_INSECURE` — SSH host-key policy for key-based clones (default `accept-new` TOFU; `_INSECURE=true` is a rollback escape hatch that disables MITM protection).
+- `VULTURE_ALLOW_INSECURE_LLM` / `VULTURE_STRICT_LLM_ENDPOINT` — govern whether the provider API key may be sent to a non-TLS LLM endpoint. Default: the key is withheld from an `http://` endpoint and the server boots with a warning; set `VULTURE_STRICT_LLM_ENDPOINT=true` to hard-fail startup instead.
+
+The failed-login throttle (5 attempts / 15 min per email+IP, escalating capped delay) is always on and is not env-configurable.
 
 ---
 
@@ -255,9 +290,15 @@ Obtain certificates via certbot or your preferred ACME client.
 
 ## Step 8: Bootstrap admin user and first API key
 
-With the server running and TLS configured, create the first admin user and generate an API key for CI:
+With the server running and TLS configured, create the first admin user and generate an API key for CI.
+
+> **Registration is disabled by default in Mode B (feature 0065).** `POST /api/auth/register` returns 403 unless `VULTURE_ALLOW_OPEN_REGISTRATION=true`. To bootstrap the **first** admin, enable registration just long enough to create it, then turn it back off. Every subsequent user is created by an admin via `POST /api/admin/users` — no need to re-enable open registration.
 
 ```bash
+# 0. Temporarily allow self-registration to create the first user
+echo 'VULTURE_ALLOW_OPEN_REGISTRATION=true' >> .env
+docker compose up -d backend
+
 # Register the admin user (interactive -- prompts for password)
 vulture login --register --email admin@example.com
 
@@ -268,6 +309,11 @@ vulture login --register --email admin@example.com
 # this against the running Postgres container:
 docker compose exec postgres psql -U vulture -d vulture -p 25432 \
   -c "UPDATE users SET role='admin' WHERE email='admin@example.com';"
+
+# Disable self-registration again now that the admin exists; add any further
+# users via the admin-only POST /api/admin/users endpoint.
+sed -i '/VULTURE_ALLOW_OPEN_REGISTRATION=true/d' .env
+docker compose up -d backend
 
 # Create an API key for CI (now succeeds because the user is admin)
 vulture api-key create ci-github-actions

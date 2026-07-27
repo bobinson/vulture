@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 	"sync"
 
 	"github.com/vulture/backend/internal/agui"
@@ -308,12 +309,13 @@ func (s *streamService) dispatchLegacy(ctx context.Context, audit *model.Audit, 
 	for _, auditType := range audit.Types {
 		agentCfg, ok := agents[auditType]
 		if !ok || agentCfg.URL == "" {
-			log.Printf("[stream-svc] skipping agent=%s (not configured)", auditType)
+			log.Printf("[stream-svc] skipping agent=%s (not configured)", strconv.Quote(auditType))
 			continue
 		}
 		agentConfig := extractAgentConfig(cfgMap, auditType)
 		prior := priorByAgent[auditType]
-		log.Printf("[stream-svc] launching agent=%s url=%s", auditType, agentCfg.URL)
+		// 0065 §L5: quote request/manifest-derived fields so a CR/LF cannot forge a log record.
+		log.Printf("[stream-svc] launching agent=%s url=%s", strconv.Quote(auditType), strconv.Quote(agentCfg.URL))
 		s.launch(ctx, &wg, agentCfg.URL, auditType, audit.ID, sourcePath, agentConfig, prior, eventCh)
 	}
 	wg.Wait()
@@ -372,10 +374,11 @@ func (s *streamService) dispatchViaRouter(ctx context.Context, audit *model.Audi
 		prior := priorByAgent[t.PluginName]
 		src, ok := stager.sourceFor(ctx, t.RuntimeType == pluginregistry.RuntimeContainer)
 		if !ok {
-			log.Printf("[stream-svc] skipping agent=%s for audit=%s: source staging failed: %v (other agents proceed)", t.PluginName, audit.ID, stager.stageErr)
+			log.Printf("[stream-svc] skipping agent=%s for audit=%s: source staging failed: %v (other agents proceed)", strconv.Quote(t.PluginName), audit.ID, stager.stageErr)
 			continue
 		}
-		log.Printf("[stream-svc] router dispatch agent=%s url=%s source=%s", t.PluginName, t.URL, src)
+		// 0065 §L5: quote manifest-derived name/url and staged source path.
+		log.Printf("[stream-svc] router dispatch agent=%s url=%s source=%s", strconv.Quote(t.PluginName), strconv.Quote(t.URL), strconv.Quote(src))
 		s.launch(ctx, &wg, t.URL, t.PluginName, audit.ID, src, agentConfig, prior, eventCh)
 	}
 	wg.Wait()

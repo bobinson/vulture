@@ -35,3 +35,53 @@ func RejectTraversal(p string) error {
 	}
 	return nil
 }
+
+// EnsureWithinRoot returns the resolved absolute form of path and an error if
+// it is not inside root. root=="" means no confinement. Resolves the deepest
+// existing ancestor's symlinks (0065 §M10) so a symlinked parent cannot escape.
+func EnsureWithinRoot(root, path string) (string, error) {
+	if root == "" {
+		return path, nil
+	}
+	realRoot, err := filepath.EvalSymlinks(mustAbs(root))
+	if err != nil {
+		return "", fmt.Errorf("resolve source root: %w", err)
+	}
+	resolved, err := resolveExistingAncestor(mustAbs(path))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(realRoot, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes source root", path)
+	}
+	return resolved, nil
+}
+
+func mustAbs(p string) string {
+	a, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return a
+}
+
+// resolveExistingAncestor EvalSymlinks the deepest existing prefix of abs and
+// re-appends the non-existent tail lexically.
+func resolveExistingAncestor(abs string) (string, error) {
+	cur, tail := abs, []string(nil)
+	for {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				real = filepath.Join(real, tail[i])
+			}
+			return real, nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", fmt.Errorf("no existing ancestor for %q", abs)
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
+}

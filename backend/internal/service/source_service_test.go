@@ -23,7 +23,7 @@ func TestSourceService_Get_Success(t *testing.T) {
 			return expected, nil
 		},
 	}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	src, err := svc.Get("s-1")
 	if err != nil {
@@ -40,7 +40,7 @@ func TestSourceService_Get_NotFound(t *testing.T) {
 			return nil, nil
 		},
 	}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Get("missing")
 	if !errors.Is(err, ErrNotFound) {
@@ -55,7 +55,7 @@ func TestSourceService_Get_RepoError(t *testing.T) {
 			return nil, repoErr
 		},
 	}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Get("s-1")
 	if !errors.Is(err, repoErr) {
@@ -80,7 +80,7 @@ func TestSourceService_IngestLocal_Success(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	src, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "local",
@@ -115,7 +115,7 @@ func TestSourceService_IngestLocal_ExistingSource(t *testing.T) {
 			return existing, nil
 		},
 	}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	src, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "local",
@@ -134,7 +134,7 @@ func TestSourceService_IngestLocal_ExistingSource(t *testing.T) {
 
 func TestSourceService_IngestLocal_EmptyPath(t *testing.T) {
 	repo := &repository.MockAuditRepository{}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "local",
@@ -147,7 +147,7 @@ func TestSourceService_IngestLocal_EmptyPath(t *testing.T) {
 
 func TestSourceService_IngestLocal_PathNotExists(t *testing.T) {
 	repo := &repository.MockAuditRepository{}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "local",
@@ -165,7 +165,7 @@ func TestSourceService_IngestLocal_PathIsFile(t *testing.T) {
 	}
 
 	repo := &repository.MockAuditRepository{}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "local",
@@ -187,7 +187,7 @@ func TestSourceService_IngestLocal_CreateSourceError(t *testing.T) {
 			return repoErr
 		},
 	}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "local",
@@ -200,7 +200,7 @@ func TestSourceService_IngestLocal_CreateSourceError(t *testing.T) {
 
 func TestSourceService_Ingest_UnsupportedType(t *testing.T) {
 	repo := &repository.MockAuditRepository{}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "ftp",
@@ -233,7 +233,7 @@ func TestGenerateID_Unique(t *testing.T) {
 
 func TestSourceService_IngestGit_EmptyURL(t *testing.T) {
 	repo := &repository.MockAuditRepository{}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
 		Type: "git",
@@ -276,7 +276,7 @@ func TestSourceService_IngestGit_Success(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewSourceService(mockRepo)
+	svc := NewSourceService(mockRepo, "", true)
 
 	// Local file paths are rejected by URL validation (security: only https/http allowed).
 	// Test verifies the security gate works.
@@ -294,7 +294,7 @@ func TestSourceService_IngestGit_Success(t *testing.T) {
 
 func TestSourceService_IngestGit_CloneError(t *testing.T) {
 	repo := &repository.MockAuditRepository{}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	// Use an invalid URL that will fail to clone
 	_, err := svc.Ingest(context.Background(), &model.SourceRequest{
@@ -336,7 +336,7 @@ func TestSourceService_IngestGit_CreateSourceError(t *testing.T) {
 			return repoErr
 		},
 	}
-	svc := NewSourceService(mockRepo)
+	svc := NewSourceService(mockRepo, "", true)
 
 	// Local paths are rejected by URL validation before reaching CreateSource.
 	// This test now verifies the security gate, not the repo error path.
@@ -354,7 +354,7 @@ func TestSourceService_IngestGit_CreateSourceError(t *testing.T) {
 
 func TestSourceService_IngestGit_ContextCanceled(t *testing.T) {
 	repo := &repository.MockAuditRepository{}
-	svc := NewSourceService(repo)
+	svc := NewSourceService(repo, "", true)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

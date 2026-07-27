@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,15 @@ import (
 )
 
 var testBackoff = []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}
+
+// publicTestURL swaps the loopback literal of an httptest URL for a
+// public-looking hostname so the netguard SSRF gate (which classifies literal
+// internal IPs directly) consults the test service's permissive resolver. The
+// test transport rewrites the dial back to loopback, so the same httptest
+// server is reached — the wire-level assertions are unchanged.
+func publicTestURL(raw string) string {
+	return strings.Replace(raw, "127.0.0.1", "webhook.test", 1)
+}
 
 func testPayload() *model.WebhookPayload {
 	return &model.WebhookPayload{
@@ -40,7 +50,7 @@ func TestWebhookService_DeliverSuccess(t *testing.T) {
 	svc := newWebhookServiceForTest(repo, "test-secret", testBackoff)
 
 	payload := testPayload()
-	svc.deliver("audit-1", srv.URL, payload)
+	svc.deliver("audit-1", publicTestURL(srv.URL), payload)
 
 	assertDelivered(t, repo, received, payload)
 }
@@ -86,7 +96,7 @@ func TestWebhookService_RetriesThenFails(t *testing.T) {
 	repo := &repository.MockWebhookRepository{}
 	svc := newWebhookServiceForTest(repo, "test-secret", testBackoff)
 
-	svc.deliver("audit-2", srv.URL, testPayload())
+	svc.deliver("audit-2", publicTestURL(srv.URL), testPayload())
 
 	mu.Lock()
 	got := attempts
@@ -122,7 +132,7 @@ func TestWebhookService_HMACSignature(t *testing.T) {
 	svc := newWebhookServiceForTest(repo, secret, testBackoff)
 
 	payload := testPayload()
-	svc.deliver("audit-3", srv.URL, payload)
+	svc.deliver("audit-3", publicTestURL(srv.URL), payload)
 
 	body, _ := json.Marshal(payload)
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -145,7 +155,7 @@ func TestWebhookService_NoSignatureWhenNoSecret(t *testing.T) {
 	repo := &repository.MockWebhookRepository{}
 	svc := newWebhookServiceForTest(repo, "", testBackoff)
 
-	svc.deliver("audit-4", srv.URL, testPayload())
+	svc.deliver("audit-4", publicTestURL(srv.URL), testPayload())
 
 	if gotSig != "" {
 		t.Errorf("expected no signature header, got %q", gotSig)
@@ -170,7 +180,7 @@ func TestWebhookService_NetworkError_Retries(t *testing.T) {
 	svc := newWebhookServiceForTest(repo, "secret", testBackoff)
 
 	// Use a URL that will fail to connect
-	svc.deliver("audit-6", "http://127.0.0.1:1", testPayload())
+	svc.deliver("audit-6", "http://webhook.test:1", testPayload())
 
 	if len(repo.Recorded) != 1 {
 		t.Fatalf("expected 1 recorded delivery, got %d", len(repo.Recorded))
@@ -198,7 +208,7 @@ func TestWebhookService_DeliveryHeader(t *testing.T) {
 	repo := &repository.MockWebhookRepository{}
 	svc := newWebhookServiceForTest(repo, "", testBackoff)
 
-	svc.deliver("audit-7", srv.URL, testPayload())
+	svc.deliver("audit-7", publicTestURL(srv.URL), testPayload())
 
 	if gotAuditID != "audit-7" {
 		t.Errorf("expected X-Vulture-Delivery=audit-7, got %q", gotAuditID)
@@ -224,7 +234,7 @@ func TestWebhookService_RetryThenSucceed(t *testing.T) {
 	repo := &repository.MockWebhookRepository{}
 	svc := newWebhookServiceForTest(repo, "", testBackoff)
 
-	svc.deliver("audit-8", srv.URL, testPayload())
+	svc.deliver("audit-8", publicTestURL(srv.URL), testPayload())
 
 	mu.Lock()
 	got := callCount
