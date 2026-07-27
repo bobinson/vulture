@@ -251,9 +251,26 @@ jobs:
         # git-over-SSH clones use StrictHostKeyChecking=accept-new, which needs
         # OpenSSH >= 7.6. Assert the shipped backend image satisfies it so a
         # base-image downgrade (or a missing openssh-client) is caught in CI.
+        env:
+          # compose interpolates the backend service env for ANY command,
+          # including `run`; VULTURE_DB_PASSWORD/JWT_SECRET are `:?required`, so
+          # without them compose aborts before ssh ever executes. Same dummy
+          # values as the build step above.
+          VULTURE_DB_PASSWORD: ci-test-password
+          VULTURE_JWT_SECRET: ci-test-jwt-secret-placeholder
         run: |
-          docker compose run --rm --no-deps --entrypoint ssh backend -V 2>&1 \
-            | sh scripts/check-ssh-version.sh
+          # `ssh -V` prints to STDERR — the same stream compose uses for its
+          # warnings/errors. Piping the merged stream straight into the parser
+          # makes a compose failure look like an unparseable version string, so
+          # isolate the banner line and surface the raw output on failure.
+          out=$(docker compose run --rm --no-deps --entrypoint ssh backend -V 2>&1) || true
+          banner=$(printf '%s\n' "$out" | grep -a -m1 'OpenSSH_' || true)
+          if [ -z "$banner" ]; then
+            echo "::error::could not obtain an ssh banner from the backend image" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$banner" | sh scripts/check-ssh-version.sh
 
   # ── Dependency vulnerability gates (per-PR, BLOCKING) ───────
   # dependency-review (below) is the DIFF-SCOPED primary gate: it fails only
