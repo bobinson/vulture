@@ -46,3 +46,32 @@ The LLM tier is generate-then-verify and non-deterministic; it adds **0** to N. 
 - recall / fp are FILE-level (the manifest `line` field is diagnostic only).
 - the per-CWE pos/clean counts are two independently-authored 3+3 tranches of the SAME vuln family (e.g. `sig_a` + `signatures_a`), not 6 distinct attack shapes; the paired fixtures are genuinely distinct code (different sinks/languages), verified non-duplicate.
 
+
+## OWASP Top 10:2025 reachability
+
+The OWASP 2025 edition maps **249** distinct CWEs across 10 categories. This is the denominator for "all applicable CWEs": a bucket can only report a weakness it can reach, so coverage claims are bounded by the rows below.
+
+| bucket | CWE types | in OWASP 2025 | share of the 2025 map |
+| ------ | --------: | ------------: | --------------------: |
+| VERIFIED (corpus-gated) | 12 | 9 | 3.6% |
+| DETECTED-below-gate | 0 | 0 | 0.0% |
+| DECLARED-ONLY | 73 | 48 | 19.3% |
+| **deterministic union** | 85 | 57 | 22.9% |
+
+Per-category reach of the deterministic union:
+
+| category | mapped | reachable |
+| -------- | -----: | --------: |
+| A01 | 40 | 12 |
+| A02 | 16 | 3 |
+| A03 | 6 | 2 |
+| A04 | 32 | 6 |
+| A05 | 37 | 9 |
+| A06 | 39 | 5 |
+| A07 | 36 | 5 |
+| A08 | 14 | 4 |
+| A09 | 5 | 3 |
+| A10 | 24 | 8 |
+
+**The gate attests per CWE, not per language.** A VERIFIED band is evidence about the fixtures that exist, not about every ecosystem. CWE-89 sat in the VERIFIED bucket at recall 1.0 while every SQL-injection pattern was Python- or Go-shaped, so JS/TS template-literal injection went undetected on a known-vulnerable target until per-language patterns were added. Read a VERIFIED row as "correct on the languages the corpus covers".
+
