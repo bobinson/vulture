@@ -52,6 +52,19 @@ SQL_INJECTION_PATTERNS = [
     re.compile(r'(?:query|sql|stmt)\s*=\s*["\'][^"\']*(?:SELECT|INSERT|UPDATE|DELETE)[^"\']*["\']\s*\+',
                re.IGNORECASE),
     re.compile(r'(?:query|sql)\s*=\s*[f"\'"].*\+'),
+    # JS/TS template literal with an interpolated value inside a DML
+    # statement:  db.query(`SELECT ... WHERE id = ${req.params.id}`)
+    #
+    # Every pattern above is Python- or Go-shaped, so Node was entirely
+    # uncovered: juice-shop's login and search routes — textbook
+    # template-literal SQL injection — produced zero CWE-89 findings.
+    # Requiring BOTH a DML keyword and a `${` keeps static template
+    # literals and parameterised calls (which use quotes, not backticks)
+    # out of the results.
+    re.compile(r"`[^`]*(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b[^`]*\$\{", re.IGNORECASE),
+    # Interpolation before the verb: `... ${table} ... SELECT`, and the
+    # WHERE-clause-only shape `${cond}` appended to a quoted DML string.
+    re.compile(r"`[^`]*\$\{[^`]*\b(?:FROM|WHERE|VALUES|SET)\b[^`]*`", re.IGNORECASE),
 ]
 
 # CWE-78: OS Command Injection

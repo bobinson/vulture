@@ -7,10 +7,13 @@ from agents import function_tool
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
+    effective_name,
+    is_backup_name,
     is_generated_file,
     is_test_file,
     read_file_lines,
     read_file_safe,
+    scan_backup_files,
     scan_code_files,
 )
 from shared.tools.snippet import check_context, extract_snippet
@@ -72,6 +75,15 @@ def check_information_exposure(source_path: str) -> dict:
     findings: list[dict] = []
     suppression_counts: dict[int, int] = {}
 
+    # A shadow copy is a finding in its own right, whatever its contents
+    # (feature 0068). Walked separately from the code scan: running this
+    # inside the scan_code_files loop meant a backup was only reported if it
+    # was also *parseable*, so package-lock.json.bak (effective name in
+    # SKIP_FILES) and coupons_2013.md.bak (non-code extension) were silently
+    # exempt — 1 of juice-shop's 3 backups was reported.
+    for backup_path in scan_backup_files(source_path):
+        _check_backup_exposure(backup_path, source_path, findings)
+
     for file_path in scan_code_files(source_path):
         if is_generated_file(file_path):
             continue
@@ -80,6 +92,55 @@ def check_information_exposure(source_path: str) -> dict:
         _analyze_file(file_path, findings, suppression_counts)
 
     return {"findings": findings}
+
+
+# Directories typically reachable by an unauthenticated client. A shadow copy
+# here is materially worse than one buried in src/.
+_SERVED_DIRS = frozenset({
+    "ftp", "public", "static", "www", "wwwroot", "htdocs", "dist", "build",
+    "assets", "uploads", "files", "download", "downloads", "web",
+})
+
+
+def _check_backup_exposure(file_path: Path, source_path: str, findings: list[dict]) -> None:
+    """Report a backup/shadow copy of source or config as an exposure.
+
+    Precise weakness is CWE-530 (Exposure of Backup File), which the OWASP 2025
+    edition does not map; we therefore categorise as the mapped parent CWE-552
+    (Files or Directories Accessible to External Parties -> A01) and name
+    CWE-530 in the text rather than inventing a mapping.
+    """
+    if not is_backup_name(file_path.name):
+        return
+    shadowed = effective_name(file_path.name)
+    try:
+        rel = file_path.relative_to(source_path)
+        parts = {p.lower() for p in rel.parts[:-1]}
+    except ValueError:
+        rel, parts = file_path, set()
+    served = bool(parts & _SERVED_DIRS)
+
+    finding = {
+        "severity": "high" if served else "medium",
+        "check_id": "cwe.info_exposure.backup_file",
+        "category": "CWE-552",
+        "title": f"Exposed backup file '{file_path.name}' (CWE-530)",
+        "description": (
+            f"'{rel}' is a backup/shadow copy of '{shadowed}'. Backup files "
+            "commonly retain credentials, dependency pins and logic that were "
+            "deliberately removed from the live file, and are served verbatim "
+            "if they sit inside the deployed tree (CWE-530)."
+            + (" It is located under a publicly-served directory." if served else "")
+        ),
+        "file_path": str(file_path),
+        "line_start": 1,
+        "line_end": 1,
+        "recommendation": (
+            "Delete the backup from the repository/deploy artefact and keep "
+            "history in version control; block backup extensions at the web server."
+        ),
+    }
+    findings.append(enrich_finding(finding, "552"))
 
 
 def _analyze_file(file_path: Path, findings: list[dict], suppression_counts: dict[int, int]) -> None:

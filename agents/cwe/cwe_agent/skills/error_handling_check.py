@@ -43,8 +43,28 @@ BARE_EXCEPT_PATTERNS = [
 ]
 
 # CWE-754: Improper check for unusual conditions (I/O without error check)
+#
+# The verb alone is not enough. A bare `(?:open|read|write|connect|send|recv)\(`
+# matched any method with a similar name, and on a front-end codebase almost
+# every hit was a false positive: `snackBarHelperService.open()`,
+# `dialog.open()`, `res.send()`, and `socket.disconnect()` (which merely *ends*
+# with "connect()"). On juice-shop that was 81 identical-titled rows, and they
+# were the only support for OWASP A10 — a category propped up entirely by noise.
+#
+# So match on the RECEIVER as well, and anchor the verb to the start of the
+# method name so `disconnect` no longer reads as `connect`.
+_IO_NAMESPACES = r"(?:os|fs|fsPromises|net|socket|sock|io|ioutil|shutil|subprocess)"
+
 IO_WITHOUT_CHECK = [
-    re.compile(r"(?:open|read|write|connect|send|recv)\s*\([^)]*\)\s*$"),
+    # Python builtin open(), optionally chained: open(p) / open(p).read()
+    re.compile(r"(?<![\w.])open\s*\([^)]*\)\s*(?:\.\w+\(\s*\))?\s*$"),
+    # Namespaced I/O in Python/JS: os.write(...), fs.writeFileSync(...),
+    # sock.send(...). The verb must begin the method name.
+    re.compile(
+        rf"\b{_IO_NAMESPACES}\.(?:open|read|write|connect|send|recv)\w*\s*\([^)]*\)\s*$"
+    ),
+    # Go file/conn handles: f.Write(...), file.Read(...), conn.Write(...)
+    re.compile(r"\b(?:f|fh|fp|file|conn)\.(?:Open|Read|Write|Close)\w*\s*\([^)]*\)\s*$"),
 ]
 
 # CWE-390: Error detection without action
