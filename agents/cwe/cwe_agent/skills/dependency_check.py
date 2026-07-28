@@ -19,7 +19,9 @@ from pathlib import Path
 from agents import function_tool
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
+    MAX_MANIFEST_SIZE,
     SCANNER_DEF_LINE,
+    effective_name,
     is_generated_file,
     is_test_file,
     read_file_lines,
@@ -196,15 +198,25 @@ def check_dependency_security(source_path: str) -> dict:
     """
     findings: list[dict] = []
 
-    for file_path in scan_code_files(source_path, extensions=ALL_EXTENSIONS):
+    # Manifests are dispatched FIRST and are exempt from the generated/test
+    # filters (feature 0068). `is_generated_file()` classifies package.json as
+    # generated, which previously killed the npm branch for every JS/TS repo
+    # before it ran. Manifests are also requested as `extra_filenames` so
+    # SKIP_FILES (which hard-skips lock files) cannot veto them. Backup copies
+    # resolve through `effective_name`, so `ftp/package.json.bak` is audited as
+    # the manifest it is.
+    for file_path in scan_code_files(
+        source_path, extensions=ALL_EXTENSIONS,
+        extra_filenames=frozenset(DEPENDENCY_FILE_NAMES),
+    ):
+        if effective_name(file_path.name) in DEPENDENCY_FILE_NAMES:
+            _analyze_dependency_file(file_path, findings)
+            continue
         if is_generated_file(file_path):
             continue
         if is_test_file(file_path):
             continue
-        if file_path.name in DEPENDENCY_FILE_NAMES:
-            _analyze_dependency_file(file_path, findings)
-        else:
-            _analyze_code_file(file_path, findings)
+        _analyze_code_file(file_path, findings)
 
     return {"findings": findings}
 
@@ -212,13 +224,19 @@ def check_dependency_security(source_path: str) -> dict:
 def _analyze_dependency_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze dependency manifest files for CWE-1104 (unpinned) and
     CWE-937 (known-vulnerable component)."""
-    content = read_file_safe(file_path)
+    # Manifests are read under the larger MAX_MANIFEST_SIZE ceiling: a lock
+    # file's size tracks its dependency count, so the general source-file cap
+    # dropped exactly the manifests with the most to report.
+    content = read_file_safe(file_path, max_size=MAX_MANIFEST_SIZE)
     if content is None:
         return
 
-    if file_path.name == "requirements.txt":
+    # Resolve backup/shadow copies to the manifest they shadow so
+    # `package.json.bak` takes the npm path (feature 0068).
+    name = effective_name(file_path.name)
+    if name == "requirements.txt":
         _analyze_requirements_txt(file_path, content, findings)
-    elif file_path.name in ("package.json", "package-lock.json"):
+    elif name in ("package.json", "package-lock.json"):
         _analyze_npm_manifest(file_path, content, findings)
 
 
@@ -274,6 +292,9 @@ def _analyze_npm_manifest(file_path: Path, content: str, findings: list[dict]) -
         if isinstance(deps, dict):
             for name, ver in deps.items():
                 if isinstance(name, str) and isinstance(ver, str):
+                    # Inspect the RAW spec before _strip_npm_range() destroys the
+                    # range operator — that operator is the whole signal (0068).
+                    _check_npm_spec_pinning(file_path, lines, name, ver, findings)
                     pairs.append((name.lower(), _strip_npm_range(ver)))
     pkgs_map = data.get("packages")
     if isinstance(pkgs_map, dict):
@@ -291,6 +312,85 @@ def _analyze_npm_manifest(file_path: Path, content: str, findings: list[dict]) -
         if not ver:
             continue
         _emit_cve_findings(file_path, lines, 1, name, ver, ecosystem="npm", findings=findings)
+
+
+# Specs that resolve to whatever the registry serves at install time.
+_UNPINNED_PREFIXES = ("^", "~", ">", "<", "=>", "=<")
+_UNPINNED_EXACT = frozenset({"", "*", "x", "X", "latest", "next", "*.*.*"})
+# Specs that bypass the registry entirely — provenance is not verifiable.
+_UNTRUSTED_SPEC = re.compile(r"^(?:git(?:\+\w+)?:|https?:|file:|link:|github:|[\w.-]+/[\w.-]+#)", re.IGNORECASE)
+
+
+def _npm_spec_line(lines: list[str], name: str) -> int:
+    """1-based line of `"<name>":` in the manifest, else 1."""
+    needle = f'"{name}"'
+    for i, line in enumerate(lines, start=1):
+        if needle in line:
+            return i
+    return 1
+
+
+def _check_npm_spec_pinning(
+    file_path: Path, lines: list[str], name: str, spec: str, findings: list[dict],
+) -> None:
+    """Flag npm specs that are not pinned to an exact version.
+
+    Emits the two A03-mapped CWEs a static check can justify:
+      * CWE-1357 — spec bypasses the registry (git/url/file), so the delivered
+        artefact is not verifiable (Reliance on Insufficiently Trustworthy
+        Component).
+      * CWE-1104 — floating range, so the resolved version drifts and may
+        become unmaintained/vulnerable without a manifest change.
+    """
+    raw = spec.strip()
+    line = _npm_spec_line(lines, name)
+
+    if _UNTRUSTED_SPEC.match(raw):
+        finding = {
+            "severity": "medium",
+            "check_id": "cwe.dependency.untrusted_spec",
+            "category": "CWE-1357",
+            "title": f"Dependency '{name}' installed from an unverifiable source",
+            "description": (
+                f"Dependency '{name}' is declared as '{raw}', which bypasses the "
+                "package registry (git/URL/file spec). The delivered code is not "
+                "integrity-checked or version-locked, so its provenance cannot be "
+                f"verified. Declared at line {line}."
+            ),
+            "file_path": str(file_path),
+            "line_start": line,
+            "line_end": line,
+            "recommendation": (
+                "Publish the dependency to a registry and pin an exact version, or "
+                "vendor it with a recorded integrity hash."
+            ),
+        }
+        finding["code_snippet"] = extract_snippet(lines, line)
+        findings.append(enrich_finding(finding, "1357"))
+        return
+
+    if raw in _UNPINNED_EXACT or raw.startswith(_UNPINNED_PREFIXES):
+        finding = {
+            "severity": "low",
+            "check_id": "cwe.dependency.unpinned_version",
+            "category": "CWE-1104",
+            "title": "Unpinned dependency version",
+            "description": (
+                f"Dependency '{name}' is declared as '{raw or '*'}', a floating "
+                "range. The installed version can change with no change to the "
+                "manifest, so the component may silently become outdated, "
+                f"unmaintained, or vulnerable. Declared at line {line}."
+            ),
+            "file_path": str(file_path),
+            "line_start": line,
+            "line_end": line,
+            "recommendation": (
+                "Pin an exact version and commit a lockfile so installs are "
+                "reproducible and auditable."
+            ),
+        }
+        finding["code_snippet"] = extract_snippet(lines, line)
+        findings.append(enrich_finding(finding, "1104"))
 
 
 def _strip_npm_range(spec: str) -> str:

@@ -304,7 +304,78 @@ def build_markdown() -> str:
     )
     lines.append("")
 
+    lines.extend(_owasp_reachability_lines(verified, below, declared_only))
     return "\n".join(lines) + "\n"
+
+
+def _owasp_reachability_lines(
+    verified: list, below: list, declared_only: list
+) -> list[str]:
+    """Render the OWASP Top 10:2025 reachability table.
+
+    "All applicable CWEs must be identified" is unfalsifiable without a
+    denominator. The OWASP 2025 edition maps a fixed set of CWEs, so stating
+    how many of them each bucket can reach converts the requirement into a
+    tracked number. Every figure here is computed from the buckets and the
+    edition file — none is hand-typed.
+    """
+    from shared.owasp.mapping import load_edition
+
+    edition = load_edition("2025")
+    universe: set[int] = set()
+    for c in edition.categories:
+        universe |= c.cwes
+
+    def as_ids(items) -> set[int]:
+        out: set[int] = set()
+        for i in items:
+            m = re.search(r"(\d+)", str(i))
+            if m:
+                out.add(int(m.group(1)))
+        return out
+
+    v, b, d = as_ids(verified), as_ids(below), as_ids(declared_only)
+    deterministic = v | b | d
+    total = len(universe)
+
+    def row(label: str, ids: set[int]) -> str:
+        hit = len(ids & universe)
+        pct = (100.0 * hit / total) if total else 0.0
+        return f"| {label} | {len(ids)} | {hit} | {pct:.1f}% |"
+
+    out: list[str] = ["", "## OWASP Top 10:2025 reachability", ""]
+    out.append(
+        f"The OWASP 2025 edition maps **{total}** distinct CWEs across "
+        f"{len(edition.categories)} categories. This is the denominator for "
+        "\"all applicable CWEs\": a bucket can only report a weakness it can "
+        "reach, so coverage claims are bounded by the rows below."
+    )
+    out.append("")
+    out.append("| bucket | CWE types | in OWASP 2025 | share of the 2025 map |")
+    out.append("| ------ | --------: | ------------: | --------------------: |")
+    out.append(row("VERIFIED (corpus-gated)", v))
+    out.append(row("DETECTED-below-gate", b))
+    out.append(row("DECLARED-ONLY", d))
+    out.append(row("**deterministic union**", deterministic))
+    out.append("")
+    out.append("Per-category reach of the deterministic union:")
+    out.append("")
+    out.append("| category | mapped | reachable |")
+    out.append("| -------- | -----: | --------: |")
+    for c in edition.categories:
+        out.append(f"| {c.id} | {len(c.cwes)} | {len(c.cwes & deterministic)} |")
+    out.append("")
+    out.append(
+        "**The gate attests per CWE, not per language.** A VERIFIED band is "
+        "evidence about the fixtures that exist, not about every ecosystem. "
+        "CWE-89 sat in the VERIFIED bucket at recall 1.0 while every "
+        "SQL-injection pattern was Python- or Go-shaped, so JS/TS "
+        "template-literal injection went undetected on a known-vulnerable "
+        "target until per-language patterns were added. Read a VERIFIED row as "
+        "\"correct on the languages the corpus covers\"."
+    )
+    out.append("")
+    return out
 
 
 def _normalize(text: str) -> str:

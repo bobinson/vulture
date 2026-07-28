@@ -9,7 +9,7 @@ as clean.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from shared.owasp.mapping import Edition
 
@@ -53,12 +53,21 @@ class CoverageManifest:
     edition_id: str
     categories: list[CategoryCoverage]
     cwe_stage_status: str
+    # Detected CWEs that no category in this edition maps. Previously these
+    # were silently dropped — the manifest reported only the intersection with
+    # each category — so an audit could detect a weakness the taxonomy does not
+    # place and the OWASP view would look complete without it. Reporting the
+    # residue keeps "we found nothing there" distinguishable from "we found
+    # something unmappable", without inventing a mapping for it.
+    unmapped_cwes: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "edition": self.edition_id,
             "cwe_stage_status": self.cwe_stage_status,
             "categories": [c.to_dict() for c in self.categories],
+            "unmapped_cwes": [f"CWE-{c}" for c in self.unmapped_cwes],
+            "unmapped_count": len(self.unmapped_cwes),
         }
 
 
@@ -84,4 +93,8 @@ def build_manifest(
         )
         for c in edition.categories
     ]
-    return CoverageManifest(edition.edition_id, cats, cwe_stage_status)
+    mapped_universe: set[int] = set()
+    for c in edition.categories:
+        mapped_universe |= c.cwes
+    unmapped = sorted(detected_cwes - mapped_universe)
+    return CoverageManifest(edition.edition_id, cats, cwe_stage_status, unmapped)

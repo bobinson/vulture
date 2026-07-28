@@ -28,6 +28,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
+          # This repo has NO root go.mod (modules live in backend/ and cli/), so
+          # setup-go's default cache lookup fails with "Dependencies file is not
+          # found ... Supported file pattern: go.mod" and silently disables
+          # module caching. Point it at the real lockfiles; listing both gives
+          # every Go job one shared cache key.
+          cache-dependency-path: |
+            backend/go.sum
+            cli/go.sum
       - name: Lint Go
         # golangci-lint v2 (schema v2 config in backend/.golangci.yml). Required
         # because the repo targets Go 1.25 and golangci-lint v1.64.8 was built
@@ -72,6 +80,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
+          # This repo has NO root go.mod (modules live in backend/ and cli/), so
+          # setup-go's default cache lookup fails with "Dependencies file is not
+          # found ... Supported file pattern: go.mod" and silently disables
+          # module caching. Point it at the real lockfiles; listing both gives
+          # every Go job one shared cache key.
+          cache-dependency-path: |
+            backend/go.sum
+            cli/go.sum
       - name: Build
         run: cd backend && go build -o bin/vulture ./cmd/vulture/
 
@@ -83,6 +99,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
+          # This repo has NO root go.mod (modules live in backend/ and cli/), so
+          # setup-go's default cache lookup fails with "Dependencies file is not
+          # found ... Supported file pattern: go.mod" and silently disables
+          # module caching. Point it at the real lockfiles; listing both gives
+          # every Go job one shared cache key.
+          cache-dependency-path: |
+            backend/go.sum
+            cli/go.sum
       - name: Test with coverage
         run: cd backend && go test ./... -coverprofile=coverage.out -covermode=atomic
       - name: Coverage report (target high; informational, not gated)
@@ -327,6 +351,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
+          # This repo has NO root go.mod (modules live in backend/ and cli/), so
+          # setup-go's default cache lookup fails with "Dependencies file is not
+          # found ... Supported file pattern: go.mod" and silently disables
+          # module caching. Point it at the real lockfiles; listing both gives
+          # every Go job one shared cache key.
+          cache-dependency-path: |
+            backend/go.sum
+            cli/go.sum
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Go vulnerability scan (backend)

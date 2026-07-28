@@ -63,11 +63,172 @@ CODE_EXTENSIONS = frozenset({
     ".sh", ".bash", ".dockerfile",
 })
 
+# Generic extensions worth scanning that are not "source code" in the narrow
+# sense. CODE_EXTENSIONS was chosen around compiled/interpreted languages, so
+# everything else was skipped silently — a POST form with no CSRF token went
+# unreported purely because it lived in a `.hbs` file, and documentation was
+# never searched for credentials even though runbooks are a favourite place for
+# them.
+#
+# NOTE: backup markers (`.bak`, `.old`, `.orig`, …) are deliberately absent.
+# They are not file types — `effective_suffix()` resolves `notes.md.bak` to
+# `.md`, so whitelisting `.md` covers the shadow copy too. Adding `.bak` here
+# would be meaningless.
+#
+# Binary/asset extensions are also absent on purpose: scanning a PNG costs a
+# read and can only produce noise.
+WHITELIST_EXTENSIONS = frozenset({
+    # Templates — form/markup rules (CSRF, XSS sinks) apply to these directly.
+    ".html", ".htm", ".hbs", ".handlebars", ".pug", ".jade", ".ejs",
+    ".mustache", ".twig", ".liquid", ".njk", ".vue", ".svelte", ".astro",
+    # Docs / plain text — where hardcoded credentials and internal hostnames
+    # habitually get pasted.
+    ".md", ".markdown", ".rst", ".adoc", ".txt", ".csv", ".tsv",
+    # Schema and infrastructure-as-code.
+    ".sql", ".tf", ".tfvars", ".hcl", ".proto", ".graphql", ".gql",
+    # Config dialects not already covered.
+    ".properties", ".ini", ".cfg", ".conf", ".env", ".envrc",
+    # Shells and build files beyond sh/bash.
+    ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".mk", ".gradle",
+    # Languages with no coverage before.
+    ".lua", ".pl", ".pm", ".dart", ".groovy", ".clj", ".ex", ".exs", ".r",
+})
+
+# Canonical filenames that carry no extension. `.dockerfile` was already
+# scanned while the far commoner `Dockerfile` was not — the rare spelling was
+# covered and the standard one was not.
+WELL_KNOWN_FILENAMES = frozenset({
+    "Dockerfile", "Containerfile", "Makefile", "GNUmakefile", "Vagrantfile",
+    "Jenkinsfile", "Procfile", "Rakefile", "Gemfile", "Brewfile", "Justfile",
+    "CMakeLists.txt", ".npmrc", ".yarnrc", ".dockerignore", ".htaccess",
+    ".netrc", ".pypirc", ".curlrc", ".gitconfig",
+})
+
+
+def _env_extensions(name: str) -> frozenset[str]:
+    """Parse a comma-separated extension list from the environment.
+
+    Accepts entries with or without a leading dot, in any case, with
+    surrounding whitespace: ``".sol, jsonnet ,.CUE"``.
+    """
+    raw = os.getenv(name, "")
+    out = set()
+    for piece in raw.split(","):
+        piece = piece.strip().lower()
+        if not piece:
+            continue
+        out.add(piece if piece.startswith(".") else "." + piece)
+    return frozenset(out)
+
+
+def default_extensions() -> frozenset[str]:
+    """Extensions scanned when a caller does not specify its own set.
+
+    CODE_EXTENSIONS plus WHITELIST_EXTENSIONS plus anything in
+    ``VULTURE_EXTRA_EXTENSIONS``. Set
+    ``VULTURE_DISABLE_EXTENSION_WHITELIST=true`` to fall back to the narrow
+    code-only set (rollback escape hatch).
+    """
+    if os.getenv("VULTURE_DISABLE_EXTENSION_WHITELIST", "").lower() == "true":
+        return CODE_EXTENSIONS
+    return CODE_EXTENSIONS | WHITELIST_EXTENSIONS | _env_extensions("VULTURE_EXTRA_EXTENSIONS")
+
+
 # Suffixes / patterns for backup directories
 _BACKUP_SUFFIXES = ("-backup", "_backup", "-old", "_old", "-bak", "_bak")
 
-MAX_FILES = _env_int("VULTURE_MAX_FILES", 500)
+# ---------------------------------------------------------------------------
+# Backup / shadow FILE awareness (feature 0068)
+#
+# A shadow copy such as `package.json.bak`, `server.ts~` or `config.yml.old`
+# still contains source, and is frequently MORE dangerous than the live file
+# (it preserves credentials and dependency pins that were later removed).
+# Matching on Path.suffix alone resolved every one of these to `.bak`/`.old`,
+# which is in no CODE_EXTENSION, so the scanner silently dropped them and no
+# skill ever saw them. We therefore resolve the *effective* extension: the
+# extension of whatever the file shadows.
+# ---------------------------------------------------------------------------
+_BACKUP_MARKERS = frozenset({
+    "bak", "bak1", "backup", "bk", "old", "orig", "save", "saved", "copy",
+    "tmp", "temp", "swp", "swo", "rej", "disabled", "unused", "deprecated",
+    "prev", "previous",
+})
+# A trailing `~` (emacs/vi) is a marker on its own rather than a dot-suffix.
+_BACKUP_TILDE = "~"
+
+
+def _is_backup_marker(part: str) -> bool:
+    """True if a dot-separated trailing token marks a shadow copy.
+
+    Numeric rotations (`.1`, `.20240131`) count only as *additional* markers —
+    handled by the caller — because a bare numeric suffix is ambiguous
+    (`file.2` may be data), so it is stripped only alongside a real marker.
+    """
+    return part.lower() in _BACKUP_MARKERS
+
+
+def strip_backup_markers(name: str) -> tuple[str, bool]:
+    """Strip trailing shadow-copy markers, returning (base_name, was_backup).
+
+    Handles stacking and numeric rotation: ``routes.ts.bak.1`` -> ``routes.ts``.
+    """
+    base = name
+    found = False
+    while True:
+        if base.endswith(_BACKUP_TILDE) and len(base) > 1:
+            base, found = base[:-1], True
+            continue
+        stem, dot, last = base.rpartition(".")
+        if not dot:
+            break
+        if _is_backup_marker(last):
+            base, found = stem, True
+            continue
+        # Numeric rotation is only meaningful directly after a real marker
+        # (`.bak.1`); strip it and let the loop find the marker beneath.
+        if last.isdigit():
+            probe_stem, probe_dot, probe_last = stem.rpartition(".")
+            if probe_dot and _is_backup_marker(probe_last):
+                base, found = probe_stem, True
+                continue
+        break
+    return base, found
+
+
+def is_backup_name(name: str) -> bool:
+    """True if ``name`` is a shadow/backup copy of another file."""
+    return strip_backup_markers(name)[1]
+
+
+def effective_suffix(name: str) -> str:
+    """Extension of what this file *is*, seeing through backup markers.
+
+    ``package.json.bak`` -> ``.json``; ``app.ts`` -> ``.ts``; ``notes.bak`` ->
+    ``""`` (nothing underneath to recover).
+    """
+    base, _ = strip_backup_markers(name)
+    return Path(base).suffix.lower()
+
+
+def effective_name(name: str) -> str:
+    """Filename with backup markers removed (``package.json.bak`` ->
+    ``package.json``), so manifest//filename-keyed logic still matches."""
+    return strip_backup_markers(name)[0]
+
+
+# 500 silently truncated a 1274-file repo to 40% coverage and reported it as a
+# complete scan (feature 0068). Real trees must fit; override per-scan with
+# VULTURE_MAX_FILES.
+MAX_FILES = _env_int("VULTURE_MAX_FILES", 50000)
 MAX_FILE_SIZE = _env_int("VULTURE_MAX_FILE_SIZE", 512 * 1024)  # 512KB default
+
+# Dependency manifests get a larger ceiling than source files. A lock file's
+# size scales with the number of dependencies — i.e. with how much there is to
+# find — so the general cap inverted the intent: juice-shop's
+# ftp/package-lock.json.bak (750KB) was silently dropped, taking its
+# known-vulnerable-component findings with it. Source files have no such
+# property, so their cap is unchanged.
+MAX_MANIFEST_SIZE = _env_int("VULTURE_MAX_MANIFEST_SIZE", 16 * 1024 * 1024)  # 16MB
 
 
 def scan_code_files(
@@ -98,9 +259,15 @@ def scan_code_files(
     Returns:
         List of Path objects for code files found.
     """
-    exts = extensions or CODE_EXTENSIONS
-    extras = extra_filenames or _EMPTY_EXTRAS
-    return list(_scan_code_files_cached(source_path, exts, max_files, extras))
+    exts = extensions or default_extensions()
+    # Canonical extensionless files (Dockerfile, Makefile, .npmrc) are folded
+    # into the caller's extras so a skill gets them without opting in.
+    extras = (extra_filenames or _EMPTY_EXTRAS) | WELL_KNOWN_FILENAMES
+    # Part of the cache key: flipping VULTURE_SCAN_MINIFIED or the extension
+    # whitelist must not return a stale walk from the opposite setting.
+    return list(
+        _scan_code_files_cached(source_path, exts, max_files, extras, _scan_minified())
+    )
 
 
 _EMPTY_EXTRAS: frozenset[str] = frozenset()
@@ -123,8 +290,10 @@ def _matches_extra(name: str, extras: frozenset[str]) -> bool:
 @lru_cache(maxsize=16)
 def _scan_code_files_cached(
     source_path: str, exts: frozenset[str], max_files: int, extras: frozenset[str],
+    scan_minified: bool = False,
 ) -> tuple[Path, ...]:
-    """Cached inner scan — keyed by (path, extensions, max_files, extras).
+    """Cached inner scan — keyed by (path, extensions, max_files, extras,
+    scan_minified).
 
     Returns an immutable tuple so callers cannot corrupt the cache.
     """
@@ -135,14 +304,94 @@ def _scan_code_files_cached(
     spec = _load_ignore_spec(str(root))
     files: list[Path] = []
     for p in _walk_filtered(root, root, spec):
-        suffix_match = p.suffix.lower() in exts and p.name not in SKIP_FILES
-        extras_match = bool(extras) and _matches_extra(p.name, extras)
+        # Resolve backup/shadow copies to what they shadow, so `app.ts.bak`
+        # matches `.ts` instead of the unmatchable `.bak` (feature 0068).
+        eff_suffix = effective_suffix(p.name)
+        eff_name = effective_name(p.name)
+        # Minified/bundled vendor artefacts are not source. Checked on the
+        # effective name so `app.min.js.bak` is excluded from content scanning
+        # too — it is still enumerated by scan_backup_files() as an exposure.
+        if not scan_minified and is_minified_name(eff_name):
+            continue
+        suffix_match = eff_suffix in exts and eff_name not in SKIP_FILES
+        extras_match = bool(extras) and (
+            _matches_extra(p.name, extras) or _matches_extra(eff_name, extras)
+        )
         if not (suffix_match or extras_match):
             continue
         files.append(p)
         if len(files) >= max_files:
+            # Truncation used to be silent, so a partial scan was indistinguishable
+            # from a clean one. Make it loud (feature 0068).
+            logger.warning(
+                "scan_truncated path=%s files=%d max=%d — coverage is PARTIAL; "
+                "raise VULTURE_MAX_FILES to scan the whole tree",
+                source_path, len(files), max_files,
+            )
             break
     logger.info("scan_complete path=%s files=%d max=%d", source_path, len(files), max_files)
+    return tuple(files)
+
+
+# Minified / bundled artefacts. One giant line of third-party code makes every
+# line-oriented pattern fire at line 1 with no actionable fix — on juice-shop
+# two vendored bundles produced 14 of 19 CWE-79 rows, burying the 5 real ones.
+# Anchored on the dot/dash boundary so `minimist.js` and `bundle_helper.ts`
+# are unaffected.
+_MINIFIED_RE = re.compile(
+    r"(?:[.-]min|\.bundle)\.(?:js|mjs|cjs|css)$", re.IGNORECASE
+)
+
+
+def is_minified_name(name: str) -> bool:
+    """Return True when ``name`` looks like a minified or bundled artefact."""
+    return bool(_MINIFIED_RE.search(name))
+
+
+def _scan_minified() -> bool:
+    """Whether minified bundles should be scanned anyway (opt-in)."""
+    return os.getenv("VULTURE_SCAN_MINIFIED", "").lower() == "true"
+
+
+def scan_backup_files(source_path: str, max_files: int = MAX_FILES) -> list[Path]:
+    """Return every backup/shadow copy under ``source_path``.
+
+    Deliberately independent of :func:`scan_code_files`' extension and
+    SKIP_FILES gates. Marker stripping makes a shadow copy resolve to the type
+    it shadows, which means it also inherits that type's *exclusions* —
+    ``package-lock.json.bak`` resolves into SKIP_FILES and ``notes.md.bak``
+    resolves to a non-code extension, so neither was ever yielded and neither
+    could be reported as an exposure.
+
+    Exposure is a property of the filename: a readable ``.bak`` in a served
+    tree leaks its contents whether or not we would parse those contents.
+    SKIP_DIRS and the ignore spec still apply, so vendored and ignored trees
+    are excluded as usual.
+    """
+    return list(_scan_backup_files_cached(source_path, max_files))
+
+
+@lru_cache(maxsize=16)
+def _scan_backup_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
+    """Cached inner backup walk — keyed by (path, max_files)."""
+    root = Path(source_path)
+    if not root.is_dir():
+        return ()
+
+    spec = _load_ignore_spec(str(root))
+    files: list[Path] = []
+    for p in _walk_filtered(root, root, spec):
+        if not is_backup_name(p.name):
+            continue
+        files.append(p)
+        if len(files) >= max_files:
+            logger.warning(
+                "backup_scan_truncated path=%s files=%d max=%d — coverage is PARTIAL; "
+                "raise VULTURE_MAX_FILES to enumerate every shadow copy",
+                source_path, len(files), max_files,
+            )
+            break
+    logger.info("backup_scan_complete path=%s files=%d", source_path, len(files))
     return tuple(files)
 
 

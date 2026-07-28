@@ -103,7 +103,12 @@ The file scanner (`agents/shared/shared/tools/file_scanner.py`) skips paths in t
 2. `.gitignore` at the source root — read by default, gitignore-syntax via `pathspec`. Disable with `VULTURE_IGNORE_GITIGNORE=true`.
 3. `.vultureignore` at the source root — same syntax, always honored when present. Use this to exclude paths that aren't gitignored but shouldn't be audited (test artifacts, vendored data files, recorded fixtures).
 
-The repo ships its own `.vultureignore` covering `.playwright-mcp/`, `docs/cwe_version_*/`, `agents/cwe/cwe_agent/data/cwe_catalog.json`, etc. Add project-specific patterns at the bottom of that file.
+The repo ships its own `.vultureignore` covering `.playwright-mcp/`, `docs/cwe_version_*/`, `agents/cwe/cwe_agent/data/cwe_catalog.json`, etc. Add project-specific patterns at the bottom of that file. Note `.vultureignore` is read from the **scanned** root, so this repo's copy has no effect when auditing some other project.
+
+Above those three layers sits an **extension allowlist**: a file is only scanned if its extension is in the scan set. That set is `CODE_EXTENSIONS` (narrow, source-only) ∪ `WHITELIST_EXTENSIONS` (templates, docs, `.sql`/`.tf`/`.hcl`, config dialects) ∪ `VULTURE_EXTRA_EXTENSIONS`, plus canonical extensionless files (`Dockerfile`, `Makefile`, `.npmrc`, …) via `WELL_KNOWN_FILENAMES`. Two things to know:
+
+- **Backup markers are not entries.** `effective_suffix()` resolves `notes.md.bak` to `.md`, so whitelisting a type covers its shadow copies. Adding `.bak` would be meaningless. Exposure of a backup is reported separately by `scan_backup_files()`, which walks filenames and ignores the extension set entirely.
+- **Some skills pass their own narrower set** (`configuration_check`, `buffer_check`, `memory_safety_check`, `secret_scan`, `dependency_check`) and do not widen with the whitelist. When a file looks unscanned, check the owning skill's set, not just the global one — `.html` is reached by `dependency_check` but not by `injection_check` unless the whitelist is on.
 
 ## Audit Pipeline (Combined Skill + LLM)
 
@@ -336,6 +341,15 @@ VULTURE_CWE_DISABLE_LLM=false                        # CWE agent only: escape ha
 VULTURE_CWE_DISABLE_DANGEROUS_FN=false               # CWE agent only: kill switch for the language-aware dangerous_function skill (CWE-676/242); one-release rollback safety (feature 0060)
 VULTURE_LLM_CTX_SIZE=                                # Override context window (tokens); auto-detected from model if unset
 VULTURE_LLM_MAX_FILES=10000                          # Cap on files swept by the LLM phase (partial results emitted when hit)
+
+# Scan coverage (scanner-wide; apply to every agent)
+VULTURE_MAX_FILES=50000                              # Cap on files enumerated per scan. Truncation is logged as `scan_truncated` — coverage is PARTIAL when it fires
+VULTURE_MAX_FILE_SIZE=524288                         # Per-source-file read cap (512KB). Files above it are skipped
+VULTURE_MAX_MANIFEST_SIZE=16777216                   # Read cap for dependency manifests only (16MB). Separate because a lock file's size tracks its dependency count, so the source cap dropped exactly the manifests with the most to report
+VULTURE_EXTRA_EXTENSIONS=                            # Comma list of extra extensions to scan, e.g. ".sol,jsonnet,.CUE" (leading dot optional, case-insensitive). Added on top of the built-in whitelist
+VULTURE_DISABLE_EXTENSION_WHITELIST=false            # Restore the narrow code-only extension set (drops templates, docs, .sql/.tf, and canonical Dockerfile/.npmrc coverage). Rollback escape hatch
+VULTURE_SCAN_MINIFIED=false                          # Scan minified/bundled artefacts (*.min.js, *.bundle.css) as source. Off by default: one bundle produces dozens of line-1 findings for code you don't control
+VULTURE_SECRET_SCAN_ENTROPY=                         # Opt-in entropy scanning for the secret skill; without it a bare key blob with no assignment context yields nothing
 VULTURE_LLM_BUDGET_USD=                              # Optional USD spend cap for the LLM phase; unset / <= 0 = no cap
 VULTURE_AGENT_MAX_AUDIT_SECONDS=900                  # Feature 0061: whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Should be <= the backend per-agent timeout VULTURE_AGENT_PROXY_TIMEOUT_SEC (default 600s) so the backend doesn't cut the agent off first; 0 disables (removes the hard guarantee)
 VULTURE_LLM_CALL_TIMEOUT_SEC=120                     # Feature 0061: per-LLM-call timeout so a hung model can't starve the between-batch cancel/deadline checks

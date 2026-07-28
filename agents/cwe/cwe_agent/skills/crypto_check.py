@@ -103,10 +103,23 @@ WEAK_HASH_PATTERNS = [
     re.compile(r"md5\.New\(\)"),
     re.compile(r"sha1\.New\(\)"),
     re.compile(r'MessageDigest\.getInstance\(\s*["\'](?:MD5|SHA-?1)["\']'),
+    # Node: crypto.createHash('md5') / createHmac("sha1", key).
+    #
+    # Every pattern above is Python/Go/Java-shaped, so Node was uncovered —
+    # juice-shop hashes passwords with crypto.createHash('md5') and the whole
+    # report contained no CWE-327/328/916 at all.
+    re.compile(r'create(?:Hash|Hmac)\(\s*["\'](?:md5|sha-?1)["\']', re.IGNORECASE),
 ]
 
+# Contexts where a weak digest is defensible (non-security integrity checks).
+#
+# `hmac` was previously listed here, which would have suppressed a
+# createHmac('md5', ...) finding as soon as one became detectable — an HMAC
+# construction does not rescue a broken digest when the digest itself is the
+# weakness. Anchor the remaining terms so a bare substring like the "test" in
+# "latest" or the "compat" in "compatibility" cannot silence a real finding.
 SAFE_HASH_CONTEXT = re.compile(
-    r"(?:checksum|fingerprint|cache.?key|etag|HMAC|hmac|test|legacy|compat)",
+    r"(?:checksum|fingerprint|cache.?key|etag|\btest\b|\blegacy\b|\bcompat\b)",
     re.IGNORECASE,
 )
 
