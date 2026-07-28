@@ -20,6 +20,7 @@ from shared.cancellation import (
 )
 from shared.llm.errors import retry_skill
 from shared.tools.file_scanner import (
+    CODE_EXTENSIONS,
     clear_caches,
     is_entry_or_config,
     read_file_safe,
@@ -655,7 +656,12 @@ def _build_source_context(
     """
     if max_chars <= 0:
         max_chars = _get_max_source_chars(model)
-    files = scan_code_files(source_path)
+    # Deliberately CODE_EXTENSIONS, not the wider default scan set. Skill
+    # scanning wants breadth — docs and templates can hold real findings — but
+    # this builds an LLM *prompt* against a fixed token budget, and spending it
+    # on README/CSV/changelog text displaces the source the model is meant to
+    # analyse. The two consumers have opposite needs from the same walk.
+    files = scan_code_files(source_path, extensions=CODE_EXTENSIONS)
     if not files:
         return ""
 

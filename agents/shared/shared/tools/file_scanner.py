@@ -63,6 +63,77 @@ CODE_EXTENSIONS = frozenset({
     ".sh", ".bash", ".dockerfile",
 })
 
+# Generic extensions worth scanning that are not "source code" in the narrow
+# sense. CODE_EXTENSIONS was chosen around compiled/interpreted languages, so
+# everything else was skipped silently — a POST form with no CSRF token went
+# unreported purely because it lived in a `.hbs` file, and documentation was
+# never searched for credentials even though runbooks are a favourite place for
+# them.
+#
+# NOTE: backup markers (`.bak`, `.old`, `.orig`, …) are deliberately absent.
+# They are not file types — `effective_suffix()` resolves `notes.md.bak` to
+# `.md`, so whitelisting `.md` covers the shadow copy too. Adding `.bak` here
+# would be meaningless.
+#
+# Binary/asset extensions are also absent on purpose: scanning a PNG costs a
+# read and can only produce noise.
+WHITELIST_EXTENSIONS = frozenset({
+    # Templates — form/markup rules (CSRF, XSS sinks) apply to these directly.
+    ".html", ".htm", ".hbs", ".handlebars", ".pug", ".jade", ".ejs",
+    ".mustache", ".twig", ".liquid", ".njk", ".vue", ".svelte", ".astro",
+    # Docs / plain text — where hardcoded credentials and internal hostnames
+    # habitually get pasted.
+    ".md", ".markdown", ".rst", ".adoc", ".txt", ".csv", ".tsv",
+    # Schema and infrastructure-as-code.
+    ".sql", ".tf", ".tfvars", ".hcl", ".proto", ".graphql", ".gql",
+    # Config dialects not already covered.
+    ".properties", ".ini", ".cfg", ".conf", ".env", ".envrc",
+    # Shells and build files beyond sh/bash.
+    ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".mk", ".gradle",
+    # Languages with no coverage before.
+    ".lua", ".pl", ".pm", ".dart", ".groovy", ".clj", ".ex", ".exs", ".r",
+})
+
+# Canonical filenames that carry no extension. `.dockerfile` was already
+# scanned while the far commoner `Dockerfile` was not — the rare spelling was
+# covered and the standard one was not.
+WELL_KNOWN_FILENAMES = frozenset({
+    "Dockerfile", "Containerfile", "Makefile", "GNUmakefile", "Vagrantfile",
+    "Jenkinsfile", "Procfile", "Rakefile", "Gemfile", "Brewfile", "Justfile",
+    "CMakeLists.txt", ".npmrc", ".yarnrc", ".dockerignore", ".htaccess",
+    ".netrc", ".pypirc", ".curlrc", ".gitconfig",
+})
+
+
+def _env_extensions(name: str) -> frozenset[str]:
+    """Parse a comma-separated extension list from the environment.
+
+    Accepts entries with or without a leading dot, in any case, with
+    surrounding whitespace: ``".sol, jsonnet ,.CUE"``.
+    """
+    raw = os.getenv(name, "")
+    out = set()
+    for piece in raw.split(","):
+        piece = piece.strip().lower()
+        if not piece:
+            continue
+        out.add(piece if piece.startswith(".") else "." + piece)
+    return frozenset(out)
+
+
+def default_extensions() -> frozenset[str]:
+    """Extensions scanned when a caller does not specify its own set.
+
+    CODE_EXTENSIONS plus WHITELIST_EXTENSIONS plus anything in
+    ``VULTURE_EXTRA_EXTENSIONS``. Set
+    ``VULTURE_DISABLE_EXTENSION_WHITELIST=true`` to fall back to the narrow
+    code-only set (rollback escape hatch).
+    """
+    if os.getenv("VULTURE_DISABLE_EXTENSION_WHITELIST", "").lower() == "true":
+        return CODE_EXTENSIONS
+    return CODE_EXTENSIONS | WHITELIST_EXTENSIONS | _env_extensions("VULTURE_EXTRA_EXTENSIONS")
+
+
 # Suffixes / patterns for backup directories
 _BACKUP_SUFFIXES = ("-backup", "_backup", "-old", "_old", "-bak", "_bak")
 
@@ -188,10 +259,12 @@ def scan_code_files(
     Returns:
         List of Path objects for code files found.
     """
-    exts = extensions or CODE_EXTENSIONS
-    extras = extra_filenames or _EMPTY_EXTRAS
-    # Part of the cache key: flipping VULTURE_SCAN_MINIFIED must not return a
-    # stale walk from the opposite setting.
+    exts = extensions or default_extensions()
+    # Canonical extensionless files (Dockerfile, Makefile, .npmrc) are folded
+    # into the caller's extras so a skill gets them without opting in.
+    extras = (extra_filenames or _EMPTY_EXTRAS) | WELL_KNOWN_FILENAMES
+    # Part of the cache key: flipping VULTURE_SCAN_MINIFIED or the extension
+    # whitelist must not return a stale walk from the opposite setting.
     return list(
         _scan_code_files_cached(source_path, exts, max_files, extras, _scan_minified())
     )
