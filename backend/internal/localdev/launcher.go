@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/vulture/backend/internal/config"
 )
@@ -66,10 +69,29 @@ type Launcher struct {
 
 // NewLauncher creates a launcher with the given config.
 func NewLauncher(cfg *Config) *Launcher {
+	mgr := NewManager()
+	// Feature 0069: persist child output so a start failure is diagnosable
+	// after the fact. On the detached path the parent's stdout goes nowhere,
+	// which is why a backend that died with `bind: address already in use`
+	// left no trace and `vulture logs` had nothing to read.
+	if cfg != nil && cfg.DataDir != "" {
+		mgr.SetLogDir(filepath.Join(cfg.DataDir, "logs"))
+	}
 	return &Launcher{
 		cfg: cfg,
-		mgr: NewManager(),
+		mgr: mgr,
 	}
+}
+
+// startTimeout bounds how long a child gets to answer /health before the
+// start is declared failed.
+func startTimeout() time.Duration {
+	if v := os.Getenv("VULTURE_AGENT_START_TIMEOUT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 30 * time.Second
 }
 
 // Start launches all components and returns the process manager.
@@ -333,6 +355,7 @@ func (l *Launcher) agentURLs() []string {
 
 func (l *Launcher) startAgents(ctx context.Context) error {
 	pythonBin, agentsDir := l.agentRuntime()
+	started := make([]startedAgent, 0, len(config.AllAgents))
 
 	for _, entry := range config.AllAgents {
 		agentDir := filepath.Join(agentsDir, entry.DirName)
@@ -423,14 +446,69 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		// Disable OpenAI Agents SDK tracing (avoids 400 errors from unsupported fields).
 		env = append(env, "OPENAI_AGENTS_DISABLE_TRACING=1")
 
-		err := l.mgr.Start(ctx, "agent-"+entry.Type, agentDir, env,
+		// Feature 0069: a port already in use means someone else's agent will
+		// answer our requests. Refuse rather than silently scan with foreign
+		// code — the observed failure was a 5-day-old dev-tree agent serving
+		// an install-mode audit.
+		if err := ensurePortFree(port); err != nil {
+			return fmt.Errorf("agent %s: %w", entry.Type, err)
+		}
+
+		name := "agent-" + entry.Type
+		err := l.mgr.Start(ctx, name, agentDir, env,
 			pythonBin, "-m", "uvicorn", entry.Module,
 			"--host", "0.0.0.0", "--port", port,
 		)
 		if err != nil {
 			return fmt.Errorf("start agent %s: %w", entry.Type, err)
 		}
-		log.Printf("started agent-%s on port %s", entry.Type, port)
+		started = append(started, startedAgent{name: name, agentType: entry.Type, port: port})
+	}
+
+	return l.awaitAgents(started)
+}
+
+// startedAgent tracks an agent awaiting its readiness check.
+type startedAgent struct {
+	name      string
+	agentType string
+	port      string
+}
+
+// awaitAgents waits for every started agent to answer /health, concurrently so
+// the wait is bounded by the slowest agent rather than their sum. A single
+// agent that fails to come up fails the whole start: a partial stack produces
+// an audit that silently omits whichever agent is missing.
+func (l *Launcher) awaitAgents(started []startedAgent) error {
+	if len(started) == 0 {
+		return nil
+	}
+	timeout := startTimeout()
+	errs := make([]error, len(started))
+	var wg sync.WaitGroup
+	for i, a := range started {
+		wg.Add(1)
+		go func(i int, a startedAgent) {
+			defer wg.Done()
+			probe := httpHealthProbe("http://localhost:" + a.port + "/health")
+			if err := l.mgr.WaitReady(a.name, probe, timeout); err != nil {
+				errs[i] = fmt.Errorf("agent %s (port %s): %w", a.agentType, a.port, err)
+				return
+			}
+			log.Printf("started agent-%s on port %s", a.agentType, a.port)
+		}(i, a)
+	}
+	wg.Wait()
+
+	failed := make([]string, 0, len(errs))
+	for _, err := range errs {
+		if err != nil {
+			failed = append(failed, err.Error())
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("%d of %d agents did not come up:\n  %s",
+			len(failed), len(started), strings.Join(failed, "\n  "))
 	}
 	return nil
 }
@@ -499,11 +577,26 @@ func (l *Launcher) startBackend(ctx context.Context) error {
 		}
 	}
 
+	// Feature 0069: refuse to start onto an occupied port. Previously the
+	// child inherited the collision, died with `bind: address already in
+	// use`, and the success line below printed anyway — leaving the operator
+	// believing this install was serving while a stale binary answered.
+	if err := ensurePortFree(l.cfg.BackendPort); err != nil {
+		return fmt.Errorf("backend: %w", err)
+	}
+
 	cmdline := append([]string{bin}, args...)
 	err := l.mgr.Start(ctx, "backend", wd, env, cmdline...)
 	if err != nil {
 		return fmt.Errorf("start backend: %w", err)
 	}
+
+	// A successful fork is not a running server. Confirm it before claiming so.
+	probe := httpHealthProbe("http://localhost:" + l.cfg.BackendPort + "/health")
+	if err := l.mgr.WaitReady("backend", probe, startTimeout()); err != nil {
+		return fmt.Errorf("backend did not come up: %w", err)
+	}
+
 	if dbDSN != "" {
 		// Mask the password in the log line for safety.
 		masked := maskDSNPassword(dbDSN)
