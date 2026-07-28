@@ -23,13 +23,56 @@ from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._var_reference import line_value_is_variable_ref
 
 # CWE-209: Error message information disclosure
+#
+# The first five patterns are Python/Java/Go. That left Node entirely uncovered,
+# so a TypeScript target which mounts `errorhandler()` — a package whose whole
+# purpose is to return the stack trace and surrounding source to the client —
+# reported nothing. The Node additions follow.
 ERROR_DISCLOSURE_PATTERNS = [
     re.compile(r"traceback\.print_exc\s*\("),
     re.compile(r"traceback\.format_exc\s*\("),
     re.compile(r"\.printStackTrace\s*\("),  # Java
     re.compile(r"debug\.PrintStack\s*\("),  # Go
     re.compile(r"return\s+.*(?:traceback|stacktrace|stack_trace)", re.IGNORECASE),
+    # Node/Express: an error VALUE echoed into the response body.
+    #
+    # Two exclusions carry the precision. The character class stops at a quote,
+    # so `res.send('failed')` cannot match. The `(?!\s*:)` lookahead rejects the
+    # token when it is an object KEY — `res.json({ error: 'Try again' })` names
+    # a field "error" and returns a literal, which is the correct behaviour.
+    # `res.json({ error: err.message })` still matches, on the value.
+    re.compile(
+        r"\.(?:send|json|end|write)\s*\(\s*[^'\"`)]*"
+        r"\b((?:err|error|ex|exception)\w*)\b(?!\s*:)",
+        re.IGNORECASE,
+    ),
+    # A `.stack` property reaching the response, in any wrapping:
+    #   res.status(500).json({ stack: err.stack })
+    re.compile(r"\.(?:send|json|end|write)\s*\([^)]*\.stack\b"),
 ]
+
+# Middleware that returns diagnostic detail to the client by design. Reporting
+# the mount site is the point: the leak is the mount, not a line inside the
+# package.
+LEAKY_ERROR_MIDDLEWARE = re.compile(
+    r"\buse\s*\(\s*(?:\w+\.)?(?:errorhandler|errorHandler|expressErrorHandler)\s*\(",
+)
+
+# Gating the above on the environment is its documented safe usage, so a guard
+# anywhere near the mount suppresses the finding.
+_ENV_GUARD = re.compile(
+    r"(?:NODE_ENV|app\.get\(\s*['\"]env['\"]\s*\)|process\.env\.\w*ENV\w*)"
+    r"|\b(?:isDev|isDevelopment|__DEV__|devMode)\b",
+    re.IGNORECASE,
+)
+
+# Server-side logging of an error is CWE-532's concern, not disclosure. Without
+# this, `logger.error(err.stack)` would match the `.stack` pattern above.
+_LOG_SINK = re.compile(
+    r"\b(?:console|logger|log|winston|pino|bunyan)\s*\.\s*\w+\s*\(|"
+    r"\b(?:log|logger)\s*\(",
+    re.IGNORECASE,
+)
 
 # CWE-532: Information through log files
 LOG_SENSITIVE_PATTERNS = [
@@ -167,23 +210,110 @@ def _check_error_disclosure(
     findings: list[dict],
 ) -> None:
     """Check for error message information disclosure (CWE-209)."""
-    for pattern in ERROR_DISCLOSURE_PATTERNS:
-        if not pattern.search(line):
-            continue
-        finding = {
-            "severity": "high",
-            "check_id": "cwe.info_exposure.error_disclosure",
-            "category": "CWE-209",
-            "title": "Error message information disclosure",
-            "description": f"Stack trace or error details exposed at line {line_num}",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Return generic error messages; log detailed errors server-side only",
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(enrich_finding(finding, "209"))
+    # Diagnostic middleware: the mount site IS the vulnerability, so it is
+    # checked separately from the "error value in a response" patterns.
+    if LEAKY_ERROR_MIDDLEWARE.search(line):
+        if _has_env_guard(lines, line_num):
+            return
+        _add_disclosure(
+            file_path, line_num, lines, findings,
+            title="Diagnostic error middleware returns stack traces to clients",
+            description=(
+                f"Error-handling middleware mounted at line {line_num} without an "
+                "environment guard. Packages of this kind return the stack trace and "
+                "surrounding source of any unhandled error in the HTTP response, "
+                "disclosing file paths, dependency versions and internal logic to "
+                "unauthenticated callers."
+            ),
+            recommendation=(
+                "Mount diagnostic error middleware only for development (guard on "
+                "NODE_ENV / app.get('env')), and register a production handler that "
+                "returns a generic message while logging detail server-side."
+            ),
+        )
         return
+
+    # Server-side logging of an error is CWE-532's concern; without this a
+    # `logger.error(err.stack)` line would match the `.stack` pattern.
+    if _LOG_SINK.search(line):
+        return
+
+    for pattern in ERROR_DISCLOSURE_PATTERNS:
+        m = pattern.search(line)
+        if not m:
+            continue
+        # An error-SHAPED name is not an error. `const errMsg = { err: 'not
+        # supported' }` returned to the client discloses nothing, so when the
+        # match is a bare identifier, check what it was assigned nearby.
+        if m.groups() and m.group(1) and _holds_literal(lines, line_num, m.group(1)):
+            return
+        _add_disclosure(
+            file_path, line_num, lines, findings,
+            title="Error message information disclosure",
+            description=f"Stack trace or error details exposed at line {line_num}",
+            recommendation="Return generic error messages; log detailed errors server-side only",
+        )
+        return
+
+
+def _holds_literal(lines: list[str], line_num: int, ident: str, radius: int = 6) -> bool:
+    """True when ``ident`` is assigned a literal within ``radius`` lines above.
+
+    Conservative on purpose: only a right-hand side that STARTS with a quote or
+    an object brace counts, and an object brace only when it contains no
+    identifier-valued field. Anything derived from a caught error
+    (``e.message``, ``getErrorMessage(err)``) therefore still reports.
+    """
+    pat = re.compile(
+        rf"(?:const|let|var)?\s*\b{re.escape(ident)}\b\s*=\s*(['\"`{{].*)$"
+    )
+    start = max(0, line_num - 1 - radius)
+    for ln in lines[start:line_num - 1]:
+        m = pat.search(ln)
+        if not m:
+            continue
+        rhs = m.group(1).strip()
+        if rhs[0] in "'\"`":
+            return True
+        # Object literal: every value must itself be a literal.
+        if rhs.startswith("{"):
+            values = re.findall(r":\s*([^,}]+)", rhs)
+            if values and all(v.strip()[:1] in "'\"`" or v.strip().isdigit()
+                              for v in values):
+                return True
+    return False
+
+
+def _add_disclosure(
+    file_path: Path, line_num: int, lines: list[str], findings: list[dict],
+    title: str, description: str, recommendation: str,
+) -> None:
+    """Append a CWE-209 finding."""
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.info_exposure.error_disclosure",
+        "category": "CWE-209",
+        "title": title,
+        "description": description,
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": recommendation,
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "209"))
+
+
+def _has_env_guard(lines: list[str], line_num: int, radius: int = 8) -> bool:
+    """True when an environment check sits within `radius` lines of the mount.
+
+    Deliberately generous: gating diagnostic middleware on the environment is
+    its documented safe usage, and a false negative there costs far less than
+    telling every Express project its dev-only error handler is a vulnerability.
+    """
+    start = max(0, line_num - 1 - radius)
+    end = min(len(lines), line_num + radius)
+    return any(_ENV_GUARD.search(ln) for ln in lines[start:end])
 
 
 def _check_log_sensitive(
