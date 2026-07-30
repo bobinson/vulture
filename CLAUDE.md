@@ -351,6 +351,13 @@ VULTURE_DISABLE_EXTENSION_WHITELIST=false            # Restore the narrow code-o
 VULTURE_SCAN_MINIFIED=false                          # Scan minified/bundled artefacts (*.min.js, *.bundle.css) as source. Off by default: one bundle produces dozens of line-1 findings for code you don't control
 VULTURE_SECRET_SCAN_ENTROPY=                         # Opt-in entropy scanning for the secret skill; without it a bare key blob with no assignment context yields nothing
 VULTURE_LLM_BUDGET_USD=                              # Optional USD spend cap for the LLM phase; unset / <= 0 = no cap
+
+# LLM request sizing and safety (feature 0070 P5). The token budget and the
+# gateway's limit are different units — a token window cannot bound a request BODY.
+VULTURE_LLM_MAX_BODY_BYTES=131072                    # Ceiling on the ENCODED request body (128KB). Deliberately below the ~192KB body that produced a gateway 413 — a cap above the failure can never prevent it. Oversized batches roll into the next request rather than being dropped, so a lower value costs latency, not coverage. <= 0 disables
+VULTURE_MAX_SOURCE_CHARS=400000                      # Pre-existing per-batch character budget for inlined source. A CHARACTER cap cannot enforce a byte limit (1 char = 1-4 bytes), which is why the byte ceiling above is separate
+VULTURE_LLM_GATEWAY_GUESS_CTX=32000                  # Window ceiling trusted when the resolved context window is a GUESS (family inference or the bare default) AND a custom OPENAI_BASE_URL is set. Behind a gateway only three sources are authoritative: VULTURE_LLM_CTX_SIZE, the broker registry, or an exact model-table match — a gateway may proxy a smaller window than the upstream model advertises. Set VULTURE_LLM_CTX_SIZE to lift it
+VULTURE_REQUIRE_LOOP_GUARD=false                     # Refuse the LLM phase outright when the tool-loop guard cannot be attached, instead of degrading. The guard raises at VULTURE_LOOP_GLOBAL_LIMIT tool calls; without it the only bound on a runaway loop is VULTURE_AGENT_MAX_AUDIT_SECONDS
 VULTURE_AGENT_MAX_AUDIT_SECONDS=900                  # Feature 0061: whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Should be <= the backend per-agent timeout VULTURE_AGENT_PROXY_TIMEOUT_SEC (default 600s) so the backend doesn't cut the agent off first; 0 disables (removes the hard guarantee)
 VULTURE_LLM_CALL_TIMEOUT_SEC=120                     # Feature 0061: per-LLM-call timeout so a hung model can't starve the between-batch cancel/deadline checks
 VULTURE_AUDIT_EXECUTOR_WORKERS=8                     # Feature 0061: dedicated audit-producer thread pool size = per-agent concurrent-audit cap

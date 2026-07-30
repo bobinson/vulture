@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -25,6 +26,27 @@ const defaultOpenAIBaseURL = "https://api.openai.com/v1"
 
 // reserveTTL bounds a budget lease; it must be >= the call timeout (§8).
 const reserveTTL = 2 * time.Minute
+
+// statusClientClosedRequest is the "client closed request" status returned when
+// the CALLER abandoned the request. net/http has no constant for it; 499 is the
+// widely-deployed (nginx) convention and, unlike 502/503, it does not blame the
+// upstream provider for a decision the caller made.
+const statusClientClosedRequest = 499
+
+// errCallerAborted is the egress sentinel for "the CALLER walked away" — an
+// inherited context cancellation, NOT a provider fault. It follows the
+// package's existing sentinel vocabulary (provider.ErrProviderUnavailable,
+// resilience.ErrCircuitOpen): the loop classifies it with errors.Is, and the
+// underlying context cause is wrapped so the server-side log still shows WHICH
+// context error fired.
+var errCallerAborted = errors.New("broker/server: caller aborted the request")
+
+// errRequestAborted is the client-facing typed error for a caller-abandoned
+// request. retriable=false: the broker stopped because the CALLER stopped, so
+// an agent must not read it as "the provider was down" and retry — the two
+// warrant different behavior. Declared alongside the abort sentinel it maps
+// from; the rest of the §5 vocabulary lives in errors.go.
+var errRequestAborted = &apiError{"request_aborted", "request aborted by caller", statusClientClosedRequest, false}
 
 // HandleComplete serves POST /internal/v1/llm/complete (§5). It runs the
 // verify → reserve → select → egress-check → call → reconcile pipeline and
@@ -57,6 +79,13 @@ func (s *Server) runComplete(ctx context.Context, claims *token.Claims, req *com
 	// forge another run's budget/ledger/audit rows.
 	req.TenantID = claims.TenantID
 	req.RunID = claims.Subject
+	// The caller is already gone: stop here. Reserving budget for an abandoned
+	// request leaves a lease nothing will reconcile, and dialing a provider on
+	// its behalf spends real money on an answer nobody will read.
+	if err := callerAborted(ctx); err != nil {
+		log.Printf("broker: request aborted before egress (caller cancelled) run=%s request=%s: %v", req.RunID, req.RequestID, err)
+		return nil, errRequestAborted
+	}
 	cands, target, apiErr := s.prepare(ctx, claims, req)
 	if apiErr != nil {
 		return nil, apiErr
@@ -123,13 +152,8 @@ func (s *Server) tryCandidates(ctx context.Context, claims *token.Claims, req *c
 		if err == nil {
 			return resp, nil
 		}
-		// §32: log the egress failure cause server-side (secret-free: the adapter
-		// carries only the upstream STATUS code / transport cause, never the
-		// response body or key — N6) so an operator can see WHY a provider call
-		// failed instead of only the scrubbed client-facing provider_unavailable.
-		log.Printf("broker: egress failed provider=%s model=%s: %v", t.Provider, c.Model, err)
-		if !isFailover(err) {
-			return nil, mapProviderErr(err)
+		if apiErr := classifyEgressErr(t.Provider, c.Model, err); apiErr != nil {
+			return nil, apiErr
 		}
 		lastErr = err
 	}
@@ -137,6 +161,33 @@ func (s *Server) tryCandidates(ctx context.Context, claims *token.Claims, req *c
 		return nil, errAllProvidersDown
 	}
 	return nil, mapProviderErr(lastErr)
+}
+
+// classifyEgressErr logs ONE candidate's failure and returns the typed error to
+// surface, or nil when the chain should advance to the next candidate.
+//
+// A caller cancellation is classified BEFORE the isFailover test: it is neither
+// a failover cause nor a provider fault, so it stops the chain (walking the
+// fallbacks for a caller who has gone away only burns spend) and surfaces the
+// distinct request_aborted code.
+//
+// §32: the failure cause is logged server-side and is secret-free — the adapter
+// carries only the upstream STATUS code / transport cause, never the response
+// body or key (N6) — so an operator can see WHY a provider call failed instead
+// of only the scrubbed client-facing provider_unavailable.
+func classifyEgressErr(prov, model string, err error) *apiError {
+	if errors.Is(err, errCallerAborted) {
+		// Never "egress failed provider=" here: the provider did nothing wrong,
+		// and blaming it sends an operator hunting a phantom outage (and can look
+		// like a provider regression in the logs of a healthy deployment).
+		log.Printf("broker: egress aborted (caller cancelled) provider=%s model=%s: %v", prov, model, err)
+		return errRequestAborted
+	}
+	log.Printf("broker: egress failed provider=%s model=%s: %v", prov, model, err)
+	if !isFailover(err) {
+		return mapProviderErr(err)
+	}
+	return nil
 }
 
 // gateFallback re-applies the scope + egress gates to a fallback candidate
@@ -287,12 +338,22 @@ func (s *Server) reserve(ctx context.Context, req *completeRequest, model string
 // callOnce runs ONE candidate's adapter call under the resilience stack,
 // returning the raw error so the fallback loop can classify failover (§9).
 func (s *Server) callOnce(ctx context.Context, target *egress.PinnedTarget, req provider.CompletionRequest) (*provider.CompletionResponse, error) {
+	// Keep a handle on the CALLER's context BEFORE deriving our own deadline —
+	// that reference is what makes the two cancellation sources tellable apart
+	// (see attributeCtxErr).
+	caller := ctx
 	// §9/§16: bound the provider call so a hung/slow provider cannot hold the
 	// goroutine, bulkhead slot, and budget lease indefinitely.
 	if s.deps.CallTimeoutSec > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(s.deps.CallTimeoutSec)*time.Second)
 		defer cancel()
+	}
+	// The caller went away (possibly while an earlier candidate was in flight):
+	// do not enter the resilience stack at all — no bulkhead slot held, no
+	// breaker sample recorded, no provider dialed.
+	if err := callerAborted(caller); err != nil {
+		return nil, err
 	}
 	adapter, creds, apiErr := s.adapterFor(target)
 	if apiErr != nil {
@@ -305,12 +366,58 @@ func (s *Server) callOnce(ctx context.Context, target *egress.PinnedTarget, req 
 		return e
 	})
 	if err != nil {
-		return nil, err
+		return nil, attributeCtxErr(caller, err)
 	}
 	if !usageOK(resp) {
 		return nil, provider.ErrUsageMissing
 	}
 	return resp, nil
+}
+
+// callerAborted returns the abort sentinel (wrapping the context cause) when
+// ctx is already done, else nil. Used both as a pre-flight gate and as the
+// attribution verdict for a context error observed during a call.
+func callerAborted(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %v", errCallerAborted, err)
+	}
+	return nil
+}
+
+// attributeCtxErr decides WHOSE deadline fired for a context error raised by an
+// egress call, because the two cases have opposite verdicts:
+//
+//   - the CALLER's context is done → an inherited cancellation. The provider is
+//     NOT at fault: it must not be blamed in the log, must not be reported as
+//     provider_unavailable, and must not count toward the circuit breaker or a
+//     model cooldown. Becomes errCallerAborted.
+//   - the caller's context is fine → the only other clock in play is the
+//     broker's OWN CallTimeoutSec deadline (set above), i.e. the provider outran
+//     the time we allow it. That is a genuine provider timeout, so the error is
+//     passed through unchanged and keeps its provider_unavailable (retriable)
+//     classification.
+//
+// Comparing the PARENT context's Err() is what makes them distinguishable:
+// ctx.Err() on the DERIVED context reports Canceled/DeadlineExceeded in both
+// cases (a parent cancellation propagates into the child), so the derived
+// context alone cannot attribute blame. The parent reports an error only when
+// the caller actually went away — which is exactly the signal we need, and it
+// needs no extra bookkeeping or pre-call snapshot.
+func attributeCtxErr(caller context.Context, err error) error {
+	if !isCtxErr(err) {
+		return err
+	}
+	if abort := callerAborted(caller); abort != nil {
+		return abort
+	}
+	return err
+}
+
+// isCtxErr reports whether err is, or wraps, a context cancellation/deadline.
+// The adapters surface these RAW (provider.transportError) precisely so this
+// classification is possible.
+func isCtxErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // reconcile charges the ACTUAL usage returned by the provider and releases

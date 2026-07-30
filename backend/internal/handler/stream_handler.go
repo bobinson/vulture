@@ -301,7 +301,7 @@ func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter,
 
 	log.Printf("[stream] stream complete audit=%s findings=%d proveResults=%d scores=%v", audit.ID, len(res.Findings), len(res.ProveResults), res.Scores)
 	audit.OwaspCoverage = res.OwaspCoverage
-	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
+	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason)
 }
 
 // drainEventChannel processes all events from eventCh and optionally writes to SSE.
@@ -325,6 +325,10 @@ type DrainResult struct {
 	ProveResults  []model.ProveResult
 	AgentError    string          // non-empty when an agent emitted "ERROR: …"
 	OwaspCoverage json.RawMessage // OWASP coverage manifest, if the OWASP agent ran (feature 0063)
+	// DegradedReason records a phase the agent LOST but survived — an LLM phase
+	// that failed while skill findings still came through (feature 0070 P5 A.3).
+	// Distinct from AgentError, which means the run itself failed.
+	DegradedReason string
 }
 
 func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agui.SSEWriter) DrainResult {
@@ -342,9 +346,13 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 	snapshotAgents := map[string]bool{}
 	var agentError string
 	var owaspCoverage json.RawMessage
+	var degradedReason string
 	for evt := range eventCh {
 		if evt != nil && evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
 			snapshotAgents[evt.AgentType] = true
+		}
+		if dr := extractDegradedReason(evt); dr != "" {
+			degradedReason = dr
 		}
 		if cov := extractOwaspCoverage(evt); cov != nil {
 			owaspCoverage = cov
@@ -382,11 +390,12 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 	// stored on the struct; nil-safe when memory lookup isn't configured.
 	findings = applyMemoryPriorIfEnabled(findings)
 	return DrainResult{
-		Findings:      findings,
-		Scores:        scores,
-		ProveResults:  proveResults,
-		AgentError:    agentError,
-		OwaspCoverage: owaspCoverage,
+		Findings:       findings,
+		Scores:         scores,
+		ProveResults:   proveResults,
+		AgentError:     agentError,
+		OwaspCoverage:  owaspCoverage,
+		DegradedReason: degradedReason,
 	}
 }
 
@@ -405,6 +414,24 @@ func extractOwaspCoverage(evt *model.AgUIEvent) json.RawMessage {
 		return nil
 	}
 	return payload.OwaspCoverage
+}
+
+// extractDegradedReason pulls a partial-degradation note off the result
+// snapshot. Feature 0070 P5 (A.3): an audit whose LLM phase failed still
+// returns its skill findings, so completeAuditWithError's `len(findings)==0`
+// gate never fired and the loss was invisible once the stream closed. This is
+// NOT an error — the audit completed, just with less than it intended.
+func extractDegradedReason(evt *model.AgUIEvent) string {
+	if evt == nil || evt.Type != model.EventStateSnapshot || len(evt.Snapshot) == 0 {
+		return ""
+	}
+	var payload struct {
+		DegradedReason string `json:"degraded_reason"`
+	}
+	if json.Unmarshal(evt.Snapshot, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.DegradedReason)
 }
 
 // collectErrorText returns the trimmed error message when evt is a
@@ -1048,7 +1075,7 @@ func extractProveResult(delta json.RawMessage, auditID string, fpLookup map[stri
 }
 
 func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult) {
-	h.persistResultsWithError(audit, source, findings, scores, proveResults, "")
+	h.persistResultsWithError(audit, source, findings, scores, proveResults, "", "")
 }
 
 // persistResultsWithError records audit state, propagating an
@@ -1056,11 +1083,11 @@ func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source,
 // short-circuited (zero findings + ERROR text). Discover-agent
 // short-circuits on bad config used to land as status=completed; this
 // path now surfaces the failure.
-func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string) {
+func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string, degradedReason string) {
 	log.Printf("[persist] audit=%s findings=%d scores=%v", audit.ID, len(findings), scores)
 
 	saveFindings(h.auditSvc, audit.ID, findings)
-	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError)
+	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError, degradedReason)
 	// Feature 0064 §6/M3: the run reached a terminal state — revoke its
 	// broker token(s) so a leaked token can't keep spending. No-op when the
 	// broker is off (revoker nil / run had no minted tokens).
@@ -1126,7 +1153,7 @@ func (h *StreamHandler) runPipelineAudit(auditID string) {
 
 	res := drainResult(eventCh, audit.ID, nil)
 	log.Printf("[pipeline] stage complete audit=%s findings=%d", audit.ID, len(res.Findings))
-	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
+	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason)
 }
 
 func consumeEventsNoSSE(eventCh <-chan *model.AgUIEvent, auditID string) ([]model.Finding, map[string]int, []model.ProveResult) {
@@ -1154,6 +1181,7 @@ func completeAuditWithError(
 	findings []model.Finding,
 	scores map[string]int,
 	agentError string,
+	degradedReason string,
 ) {
 	now := time.Now().UTC()
 	audit.CompletedAt = &now
@@ -1165,7 +1193,17 @@ func completeAuditWithError(
 		log.Printf("[persist] audit=%s marked FAILED: %s", audit.ID, agentError)
 	} else {
 		audit.Status = model.AuditStatusCompleted
-		log.Printf("[persist] audit=%s marked completed", audit.ID)
+		// Feature 0070 P5 (A.3): a COMPLETED audit can still have lost a phase.
+		// Deliberately outside the branch above — that one requires zero
+		// findings, and skill findings always survive an LLM failure, which is
+		// exactly why the loss used to vanish once the stream closed. Never
+		// overwrite a reason already set.
+		if audit.DegradedReason == "" && degradedReason != "" {
+			audit.DegradedReason = degradedReason
+			log.Printf("[persist] audit=%s completed DEGRADED: %s", audit.ID, degradedReason)
+		} else {
+			log.Printf("[persist] audit=%s marked completed", audit.ID)
+		}
 	}
 	if err := svc.Update(audit); err != nil {
 		log.Printf("[persist] update audit error: %v", err)

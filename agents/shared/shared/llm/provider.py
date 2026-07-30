@@ -203,23 +203,32 @@ def _infer_family_ctx(model_lower: str) -> int | None:
     return None
 
 
-def get_context_window(model: str | None = None) -> int:
-    """Get context window size (in tokens) for the active model.
+# Provenance of a resolved context window. Callers that size a REQUEST BODY
+# (not just a token budget) need to know whether the number is authoritative
+# ("env"/"broker"/"table") or an optimistic guess from a substring of the model
+# id ("family") — see feature 0070 P5 defect A.
+WINDOW_FROM_ENV = "env"
+WINDOW_FROM_BROKER = "broker"
+WINDOW_FROM_TABLE = "table"
+WINDOW_FROM_FAMILY = "family"
+WINDOW_FROM_DEFAULT = "default"
 
-    Priority: VULTURE_LLM_CTX_SIZE env > CONTEXT_WINDOWS dict
-              > model family inference > custom endpoint fallback.
 
-    Args:
-        model: Optional model key. Defaults to VULTURE_LLM_MODEL env.
+def resolve_context_window(model: str | None = None) -> tuple[int, str]:
+    """Resolve the context window AND where the number came from.
+
+    Priority: VULTURE_LLM_CTX_SIZE env > broker-injected (§31) > CONTEXT_WINDOWS
+              dict > model family inference > shared default.
 
     Returns:
-        Context window size in tokens.
+        ``(tokens, provenance)`` where provenance is one of the ``WINDOW_FROM_*``
+        constants.
     """
     # 1. Explicit operator override always wins.
     env_val = os.environ.get("VULTURE_LLM_CTX_SIZE", "")
     if env_val:
         try:
-            return int(env_val)
+            return int(env_val), WINDOW_FROM_ENV
         except ValueError:
             pass
     # 2. §31: broker-injected window (from the broker-owned registry, which knows
@@ -230,18 +239,18 @@ def get_context_window(model: str | None = None) -> int:
 
         injected = current_context_window()
         if injected and injected > 0:
-            return injected
+            return injected, WINDOW_FROM_BROKER
     except Exception:  # pragma: no cover - defensive; never block sizing on this
         pass
     key = model or os.environ.get("VULTURE_LLM_MODEL", DEFAULT_MODEL)
     # 3. Exact-match table, then 4. model-family inference.
     known = CONTEXT_WINDOWS.get(key)
     if known is not None:
-        return known
+        return known, WINDOW_FROM_TABLE
     family_ctx = _infer_family_ctx(key.lower())
     if family_ctx is not None:
         logger.info("inferred_ctx model=%s ctx=%d family_match", key, family_ctx)
-        return family_ctx
+        return family_ctx, WINDOW_FROM_FAMILY
     # 5. Unknown model → the shared default (§31: raised from the old timid 8192
     # to DEFAULT_CONTEXT_WINDOW, matching the Go modelmeta.DefaultContextWindow).
     if _CUSTOM_BASE_URL:
@@ -249,7 +258,22 @@ def get_context_window(model: str | None = None) -> int:
             "custom_endpoint_default_ctx model=%s ctx=%d hint=set_VULTURE_LLM_CTX_SIZE",
             key, DEFAULT_CONTEXT_WINDOW,
         )
-    return DEFAULT_CONTEXT_WINDOW
+    return DEFAULT_CONTEXT_WINDOW, WINDOW_FROM_DEFAULT
+
+
+def get_context_window(model: str | None = None) -> int:
+    """Get context window size (in tokens) for the active model.
+
+    Priority: VULTURE_LLM_CTX_SIZE env > broker-injected > CONTEXT_WINDOWS dict
+              > model family inference > shared default.
+
+    Args:
+        model: Optional model key. Defaults to VULTURE_LLM_MODEL env.
+
+    Returns:
+        Context window size in tokens.
+    """
+    return resolve_context_window(model)[0]
 
 
 def get_fallback_models(model: str | None = None) -> list[str]:
