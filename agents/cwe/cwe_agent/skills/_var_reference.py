@@ -38,7 +38,8 @@ _VAR_REF_RE = re.compile(
     ["']?                                   # optional opening quote
     \s*
     (?:
-        \$\{[A-Za-z_][\w]*(?::-[^}]*)?\}    # ${VAR} or ${VAR:-default}
+        \$\{\{\s*[\w.\-]+\s*\}\}            # GitHub Actions ${{ secrets.X }}
+      | \$\{[A-Za-z_][\w]*(?::-[^}]*)?\}    # ${VAR} or ${VAR:-default}
       | \$[A-Za-z_][\w]*                    # $VAR
       | \$\([^)]+\)                         # $(command substitution)
       | %\([A-Za-z_][\w]*\)[sdifrx]?        # %(VAR)s configparser
@@ -80,6 +81,7 @@ _RHS_CAPTURE = re.compile(
     (?P<rhs>
         "(?:\\.|[^"\\])*"                 # double-quoted
       | '(?:\\.|[^'\\])*'                 # single-quoted
+      | \$\{\{[^}]+\}\}                   # GitHub Actions ${{ secrets.X }}
       | \$\{[^}]+\}                       # ${VAR}
       | \$[A-Za-z_][\w]*                  # $VAR (unquoted)
       | %\([\w]+\)[sdifrx]?               # %(VAR)s
