@@ -31,9 +31,28 @@ _TAINTED_SOURCE = re.compile(
 #       ``_LDAP_FILTER`` branch already catches concat-built filters, so recall
 #       is unaffected.
 #   (b) a filter literal "(attr=" concatenated/interpolated with a variable.
+#
+# PRECISION (feature 0070): branch (b) used to accept a BARE parenthesis —
+# ``\(\s*ident\s*=`` followed anywhere by ``{`` — so every JS arrow function
+# (``(user = {}) =>``, ``card => {``, ``prev => [...]``) and every ``===``
+# chain read as an LDAP filter. Measured on juice-shop: 4 rows, 4 false, on a
+# codebase with no LDAP anywhere. An LDAP filter is a *string*, so both the
+# concat and the interpolation branch now anchor on the opening quote of the
+# literal (optionally preceded by an f/b/r/u string prefix) and the scan for
+# the placeholder stays INSIDE that literal (``[^"'`\n]``), never crossing a
+# quote. Recall is unaffected: the shapes that matter — ``"(uid=" + x``,
+# ``'(uid=' + x``, f-strings, template literals, ``%s`` / ``%(k)s`` /
+# ``{}``.format placeholders — are all quoted by construction.
+_LDAP_QUOTE = r"(?:[fFbBrRuU]{0,2}[\"'`])"
+_LDAP_ATTR = r"[A-Za-z][A-Za-z0-9_-]{0,40}"
 _LDAP_FILTER = (
-    r'"\(\s*[A-Za-z][A-Za-z0-9_-]{0,40}\s*=[^"\n]{0,200}"\s*[+%]'
-    r'|\(\s*[A-Za-z][A-Za-z0-9_-]{0,40}\s*=[^)\n]{0,200}(?:\{|\$\{|%s|f["\'])'
+    # (b1) quoted filter literal concatenated with a variable: "(uid=" + x
+    rf'"\(\s*{_LDAP_ATTR}\s*=[^"\n]{{0,200}}"\s*[+%]'
+    rf"|'\(\s*{_LDAP_ATTR}\s*=[^'\n]{{0,200}}'\s*[+%]"
+    # (b2) quoted filter literal carrying an interpolation placeholder:
+    #      f"(cn={name})" / `(uid=${x})` / "(uid=%s)" / '(uid=%(k)s)'
+    rf"|{_LDAP_QUOTE}\(\s*{_LDAP_ATTR}\s*=[^\"'`\n]{{0,200}}"
+    r"(?:\$\{|\{|%s|%\()"
 )
 LDAP_SINK = re.compile(
     r"(?:InitialDirContext|DirContext|NamingEnumeration|"

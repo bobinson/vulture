@@ -92,6 +92,45 @@ SAFE_DEBUG_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# CWE-942: Permissive Cross-domain Policy with Untrusted Domains.
+#
+# The header form (`Access-Control-Allow-Origin: *`) is already covered
+# per-line by MISCONFIGURATION_PATTERNS above. What that misses is the
+# *middleware* form, which is how a real Express app opens itself up:
+# `cors()` with no options reflects any Origin and is juice-shop's
+# server.ts:182-183 ("Bludgeon solution for possible CORS problems: Allow
+# everything!"). Also caught: an explicit `origin: true` / `origin: '*'`
+# in the options object, and the two-argument setHeader form that the
+# `[:=]`-shaped header pattern cannot see.
+#
+# Reported ONCE PER FILE: `app.options('*', cors())` immediately followed
+# by `app.use(cors())` is one misconfiguration, not two.
+PERMISSIVE_CORS_PATTERNS = [
+    re.compile(r"(?<![\w.])cors\s*\(\s*\)"),
+    re.compile(r"(?<![\w.])cors\s*\(\s*\{[^}]*origin\s*:\s*(?:true|['\"]\*['\"])", re.IGNORECASE),
+    re.compile(
+        r"(?:setHeader|addHeader|append|header|set)\s*\(\s*"
+        r"['\"]Access-Control-Allow-Origin['\"]\s*,\s*['\"]\*['\"]",
+        re.IGNORECASE,
+    ),
+]
+
+# CWE-348: Use of Less Trusted Source.
+#
+# Unconditional `trust proxy` makes X-Forwarded-For client-controlled, so
+# every downstream consumer of req.ip — rate limiters, login throttles,
+# audit logs, IP allowlists — can be spoofed by any client
+# (juice-shop server.ts:342). A bounded hop count (`trust proxy: 1`) is
+# the recommended config and is NOT flagged.
+TRUST_PROXY_PATTERNS = [
+    re.compile(r"\.\s*enable\s*\(\s*['\"]trust[ _-]?proxy['\"]\s*\)", re.IGNORECASE),
+    re.compile(
+        r"\.\s*set\s*\(\s*['\"]trust[ _-]?proxy['\"]\s*,\s*(?:true|['\"]\*['\"])",
+        re.IGNORECASE,
+    ),
+    re.compile(r"trust[_-]proxy\s*[:=]\s*(?:true|['\"]\*['\"])", re.IGNORECASE),
+]
+
 IMPORT_LINE = re.compile(r"^\s*(?:from|import|require|use)\s")
 
 # Two-tier context: debug mode is only high with production/deploy context
@@ -143,6 +182,87 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         _check_permissions(file_path, line, line_num, lines, findings)
         _check_exposure(file_path, line, line_num, lines, findings)
         _check_debug_prod(file_path, line, line_num, lines, content, findings)
+    _check_cors_and_trust_proxy(file_path, lines, findings)
+
+
+def _matching_lines(lines: list[str], patterns: list[re.Pattern[str]]) -> list[int]:
+    """Return 1-based line numbers where any pattern matches real code."""
+    hits: list[int] = []
+    for line_num, line in enumerate(lines, start=1):
+        if COMMENT_INDICATORS.match(line) or IMPORT_LINE.match(line):
+            continue
+        if SCANNER_DEF_LINE.search(line):
+            continue
+        if any(pattern.search(line) for pattern in patterns):
+            hits.append(line_num)
+    return hits
+
+
+def _check_cors_and_trust_proxy(
+    file_path: Path, lines: list[str], findings: list[dict],
+) -> None:
+    """Check for CWE-942 permissive CORS and CWE-348 unconditional proxy trust.
+
+    File-level, not line-level: a file that opens CORS twice in adjacent
+    lines has one misconfiguration.
+    """
+    cors_hits = _matching_lines(lines, PERMISSIVE_CORS_PATTERNS)
+    if cors_hits:
+        findings.append(_cors_finding(file_path, lines, cors_hits))
+    proxy_hits = _matching_lines(lines, TRUST_PROXY_PATTERNS)
+    if proxy_hits:
+        findings.append(_trust_proxy_finding(file_path, lines, proxy_hits))
+
+
+def _cors_finding(file_path: Path, lines: list[str], hits: list[int]) -> dict:
+    """Build the CWE-942 permissive-CORS finding for a file."""
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.configuration.permissive_cors",
+        "category": "CWE-942",
+        "title": "CORS enabled with no origin restriction",
+        "description": (
+            f"Cross-origin access is granted to any origin at "
+            f"line(s) {', '.join(str(n) for n in hits)}; combined with "
+            f"credentialed requests this lets any site read authenticated "
+            f"responses on behalf of a logged-in user"
+        ),
+        "file_path": str(file_path),
+        "line_start": hits[0],
+        "line_end": hits[-1],
+        "recommendation": (
+            "Pass an explicit origin allowlist to the CORS middleware and never "
+            "reflect an arbitrary Origin alongside credentials"
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, hits[0])
+    return enrich_finding(finding, "942")
+
+
+def _trust_proxy_finding(file_path: Path, lines: list[str], hits: list[int]) -> dict:
+    """Build the CWE-348 unconditional-trust-proxy finding for a file."""
+    finding = {
+        "severity": "medium",
+        "check_id": "cwe.configuration.trust_proxy",
+        "category": "CWE-348",
+        "title": "Proxy headers trusted unconditionally",
+        "description": (
+            f"`trust proxy` is enabled without bounding the hop count at "
+            f"line(s) {', '.join(str(n) for n in hits)}, so a client can set "
+            f"X-Forwarded-For and control req.ip — spoofing rate limits, login "
+            f"throttles, IP allowlists and audit logs. Note CWE-348 has no "
+            f"OWASP Top 10 2025 category, so it is reported on its own"
+        ),
+        "file_path": str(file_path),
+        "line_start": hits[0],
+        "line_end": hits[-1],
+        "recommendation": (
+            "Trust a bounded number of hops (e.g. app.set('trust proxy', 1)) or "
+            "name the proxy addresses explicitly"
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, hits[0])
+    return enrich_finding(finding, "348")
 
 
 def _check_insecure_defaults(

@@ -74,13 +74,97 @@ _LOG_SINK = re.compile(
     re.IGNORECASE,
 )
 
-# CWE-532: Information through log files
+# CWE-532: Information through log files.
+#
+# Two independent sources of noise had to go.
+#
+# 1. The call shape. `(?:log(?:ger)?|print|fmt\.Print)\w*\(` treated any method
+#    whose name merely CONTAINS "log" as a log sink, so `oauthLogin(...)`,
+#    `this.userService.login({ ... password ... })` and `await login(app, {
+#    email, password })` all reported a logged credential. Fixed the same way
+#    CWE-754 was: a negative lookbehind so the verb cannot start mid-identifier
+#    (`oauthLogin` -> the `Log` is preceded by a word char), plus the verb
+#    anchored to the START of the method name so `login` is no longer a prefix
+#    match for `log`. A dotted receiver is still allowed, because
+#    `this.logger.info(...)` and `self.log.debug(...)` are genuine sinks.
+#
+# 2. The message text. A log line whose LITERAL merely mentions a credential
+#    ("ORG_ADMIN_TOKEN secret not configured", "BEE tokens extracted
+#    successfully", "Role from token could not be accessed.") discloses nothing.
+#    `_strip_literals` removes literal text before matching — see the note there
+#    on why it must run before EVERY pattern in this list, and why interpolated
+#    expressions are kept so `logger.warn(`token: ${authToken}`)` still reports.
+_LOG_RECEIVER = r"(?:console|logger|log|logging|winston|pino|bunyan|klog|slog)"
+_LOG_VERB = (
+    r"(?:log|debug|info|warn|warning|error|fatal|trace|verbose|silly"
+    r"|print|println|printf|write)"
+)
+# Go's `fmt` is NOT interchangeable with a logger: `fmt.Errorf("...: %w", token.
+# ErrRevoked)` builds an error value and `fmt.Sprintf` builds a string — neither
+# writes anywhere. Only the Print family is a sink, so `fmt` gets its own verbs.
+_PRINT_CALL = r"fmt\s*\.\s*F?Print(?:f|ln)?"
+# Bare function call: log(), logger(), logError(), log_info(), print(), printf().
+# `login(` cannot match: after `log` the optional verb group cannot consume "in",
+# so the required "(" lands on "i" and the match fails.
+_LOG_BARE = rf"log(?:ger)?(?:[_.]?{_LOG_VERB})?|print(?:ln|f)?"
+_LOG_CALL = (
+    rf"(?<![\w$])(?:{_LOG_RECEIVER}\s*\.\s*{_LOG_VERB}\w*|{_PRINT_CALL}|{_LOG_BARE})\s*\("
+)
+
+# "token" is the most overloaded word in the keyword set: an LLM/tokenizer token
+# count is not a credential. `logger.info("prompt_truncated original=%d ...",
+# estimated_tokens, target_tokens, removed_count)` matched purely on the
+# substring "token" inside a counter name. These spans are blanked before
+# matching; a bare `token` / `access_token` / `authToken` is untouched.
+_TOKEN_COUNT_NOISE = re.compile(
+    r"\b(?:max|min|num|n|total|estimated|target|prompt|completion|input|output"
+    r"|remaining|used|budget|context|ctx|chunk|avg|sum)[_.]?tokens?\b"
+    r"|\btokens?[_.]?(?:count|used|budget|limit|estimates?|estimated|remaining"
+    r"|usage|savings|saved|per[_.]?sec(?:ond)?|window|size|len(?:gth)?)\b"
+    r"|\btoken(?:ize[rd]?|ization|izing)\b"
+    # A path/handle NAMING a token store is not the token itself:
+    # `fmt.Printf("Token saved to ~/%s/%s", configDir, tokenFile)`.
+    r"|\btokens?[_.]?(?:file|filename|path|dir|store|cache)\b",
+    re.IGNORECASE,
+)
+
 LOG_SENSITIVE_PATTERNS = [
-    re.compile(r"(?:log(?:ger)?|print|fmt\.Print)\w*\(.*(?:password|passwd|secret|token|api_key|apikey)", re.IGNORECASE),
-    re.compile(r"logging\.(?:debug|info|warning|error)\(.*(?:password|secret|token|api_key)", re.IGNORECASE),
-    re.compile(r"console\.log\(.*(?:password|secret|token|apiKey)", re.IGNORECASE),
-    re.compile(r"log\.(?:Info|Debug|Warn|Error)\w*\(.*(?:password|secret|token|apiKey)", re.IGNORECASE),
+    re.compile(_LOG_CALL + r".*(?:password|passwd|secret|token|api_key|apikey)", re.IGNORECASE),
+    re.compile(r"(?<![\w$])logging\.(?:debug|info|warning|error)\(.*(?:password|secret|token|api_key)", re.IGNORECASE),
+    re.compile(r"(?<![\w$])console\.log\(.*(?:password|secret|token|apiKey)", re.IGNORECASE),
+    re.compile(r"(?<![\w$])log\.(?:Info|Debug|Warn|Error)\w*\(.*(?:password|secret|token|apiKey)", re.IGNORECASE),
 ]
+
+# String literals, per language dialect. Used to drop literal MESSAGE text
+# before the CWE-532 patterns run.
+_STRING_LITERAL = re.compile(
+    r"`(?:\\.|[^`\\])*`"                 # JS/TS template literal
+    r"|'''(?:\\.|[^\\])*?'''"           # Python triple-quoted
+    r'|"""(?:\\.|[^\\])*?"""'
+    r"|'(?:\\.|[^'\\\n])*'"
+    r'|"(?:\\.|[^"\\\n])*"'
+)
+
+# Interpolated expressions inside a literal: `${expr}` (JS) and `{expr}` (Python
+# f-string / str.format). These are VALUES, not message text, so they survive the
+# strip — `logging.info(f"password={password}")` must still report.
+_INTERPOLATION = re.compile(r"\$\{([^{}]+)\}|\{([^{}]+)\}")
+
+
+def _strip_literals(line: str) -> str:
+    """Remove literal message text, keeping interpolated expressions.
+
+    Applied before EVERY entry of LOG_SENSITIVE_PATTERNS, not just the first:
+    pattern 3 (``console\\.log\\(.*(?:password|secret|token|apiKey)``) re-fires
+    independently on a literal-only message, so narrowing the call shape alone
+    left most of the noise in place.
+    """
+    def _repl(match: re.Match[str]) -> str:
+        body = match.group(0).strip("`'\"")
+        kept = " ".join(g for m in _INTERPOLATION.finditer(body) for g in m.groups() if g)
+        return f'""{" " + kept if kept else ""}'
+
+    return _TOKEN_COUNT_NOISE.sub("count", _STRING_LITERAL.sub(_repl, line))
 
 # CWE-200: Exposure of sensitive info
 SENSITIVE_RESPONSE_PATTERNS = [
@@ -98,6 +182,66 @@ SAFE_STORAGE = re.compile(
     r"\b(?:hash|bcrypt|encrypt|sha256|os\.(?:environ|getenv)|ENV\[|config\.|PLACEHOLDER|example|changeme|xxx)\b",
     re.IGNORECASE,
 )
+
+# CWE-497: Exposure of sensitive system information to an unauthorized control
+# sphere. The instance this was written for serialises the WHOLE application
+# config into an HTTP response:
+#
+#   const safeConfig = structuredClone(config.util.toObject(config))
+#   res.json({ config: safeConfig })
+#
+# The dump and the send are on DIFFERENT lines, which is the normal shape, so a
+# single-line regex finds nothing. The rule therefore matches a response sink
+# and then resolves the identifiers it sends against nearby assignments.
+_RESPONSE_SINK = re.compile(
+    r"\b(?:res|resp|response|reply|w)\s*\.\s*(?:json|send|write|end)\s*\("
+    r"|\bjsonify\s*\("
+    r"|\bJsonResponse\s*\("
+    r"|\bHttpResponse\s*\(",
+    re.IGNORECASE,
+)
+
+# Expressions that materialise an ENTIRE configuration/environment object. Each
+# alternative is anchored so a single lookup — `config.get('x')`,
+# `process.env.NODE_ENV`, `os.environ["K"]` — does not match: reading one value
+# is not a system-information dump.
+_CONFIG_DUMP = re.compile(
+    r"\bconfig\.util\.toObject\s*\("
+    r"|\bJSON\.stringify\s*\(\s*(?:config|settings|appConfig|process\.env)\b"
+    r"|\bprocess\.env\s*(?![\w.\[])"
+    r"|\bdict\s*\(\s*os\.environ\s*\)"
+    r"|\bos\.environ\s*(?![\w.\[(])"
+    r"|\bapp\.config\s*(?![\w.\[])"
+    r"|\bsettings\.__dict__\b"
+    r"|\bnconf\.get\s*\(\s*\)"
+    r"|\bviper\.AllSettings\s*\("
+)
+
+_ASSIGNMENT_RADIUS = 25
+_IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
+_NOT_A_VALUE = frozenset({
+    "res", "resp", "response", "reply", "json", "send", "write", "end",
+    "status", "jsonify", "return", "const", "let", "var", "await", "new",
+    "this", "self", "type", "true", "false", "null", "undefined", "None",
+})
+
+# CWE-598: Use of GET request method with sensitive query strings. A credential
+# in a query string is written to proxy logs, browser history, the Referer
+# header and server access logs regardless of TLS.
+_SENSITIVE_QUERY_PARAM = re.compile(
+    r"[?&](?:access[_-]?token|id[_-]?token|auth[_-]?token|refresh[_-]?token"
+    r"|api[_-]?key|apikey|client[_-]?secret|password|passwd|pwd|secret"
+    r"|session[_-]?id|sessionid|jwt|bearer|token)\s*=",
+    re.IGNORECASE,
+)
+# The parameter must belong to a URL, not to a `--password=` CLI flag or a
+# `.env`-style line that happens to sit after an ampersand.
+_URLISH = re.compile(r"https?://|[\"'`]/|\.get\s*\(|\.post\s*\(|fetch\s*\(|url|uri|endpoint|href", re.IGNORECASE)
+# Non-HTTP URI schemes whose query string is not a request at all. The
+# `otpauth://totp/...?secret=...` provisioning URI is the standard, unavoidable
+# way to hand a TOTP seed to an authenticator app — reporting it would be
+# unactionable, and CWE-598 is specifically about the GET request method.
+_NON_HTTP_SCHEME = re.compile(r"\b(?:otpauth|mailto|data|magnet|tel|sms|geo|intent):", re.IGNORECASE)
 
 IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
 STRING_ONLY = re.compile(r"^\s*[\"']")
@@ -203,6 +347,8 @@ def _analyze_file(file_path: Path, findings: list[dict], suppression_counts: dic
         _check_log_sensitive(file_path, line, line_num, lines, findings, suppression_counts)
         _check_cleartext_storage(file_path, line, line_num, lines, content, findings, suppression_counts)
         _check_sensitive_response(file_path, line, line_num, lines, findings)
+        _check_config_exposure(file_path, line, line_num, lines, findings)
+        _check_token_in_query(file_path, line, line_num, lines, findings)
 
 
 def _check_error_disclosure(
@@ -321,8 +467,9 @@ def _check_log_sensitive(
     findings: list[dict], suppression_counts: dict[int, int],
 ) -> None:
     """Check for sensitive data in log output (CWE-532)."""
+    probe = _strip_literals(line)
     for pattern in LOG_SENSITIVE_PATTERNS:
-        if not pattern.search(line):
+        if not pattern.search(probe):
             continue
         finding = {
             "severity": "critical",
@@ -404,6 +551,102 @@ def _check_sensitive_response(
         finding["code_snippet"] = extract_snippet(lines, line_num)
         findings.append(enrich_finding(finding, "200"))
         return
+
+
+def _dump_source(lines: list[str], line_num: int, line: str) -> str | None:
+    """Return the expression that dumps a whole config into ``line``, if any.
+
+    Same-line first (`res.json(process.env)`), then the identifiers the sink
+    sends, resolved against assignments above. Only an assignment whose
+    right-hand side is itself a whole-config dump counts, which is what keeps
+    `res.json({ version: config.get('app.version') })` quiet.
+    """
+    if _CONFIG_DUMP.search(line):
+        return line.strip()
+    args = line[line.find("(", _RESPONSE_SINK.search(line).start()) :]
+    names = {n for n in _IDENTIFIER.findall(args) if n not in _NOT_A_VALUE}
+    if not names:
+        return None
+    start = max(0, line_num - 1 - _ASSIGNMENT_RADIUS)
+    for prior in lines[start : line_num - 1]:
+        if "=" not in prior or not _CONFIG_DUMP.search(prior):
+            continue
+        target = prior.split("=", 1)[0]
+        if any(re.search(rf"\b{re.escape(n)}\b", target) for n in names):
+            return prior.strip()
+    return None
+
+
+def _check_config_exposure(
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
+) -> None:
+    """Check for a whole application config/environment in a response (CWE-497)."""
+    if not _RESPONSE_SINK.search(line):
+        return
+    dump = _dump_source(lines, line_num, line)
+    if dump is None:
+        return
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.info_exposure.config_exposure",
+        "category": "CWE-497",
+        "title": "Application configuration exposed in HTTP response",
+        "description": (
+            f"The response built at line {line_num} carries a whole-configuration "
+            f"or whole-environment object (`{dump[:160]}`). Serialising the full "
+            "config exposes internal hostnames, feature flags, file paths, "
+            "third-party endpoints and any credential that lives in the same "
+            "object to every caller of the endpoint."
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": (
+            "Return an explicit allow-list of the settings the client actually "
+            "needs instead of the whole config object, and keep secrets in a "
+            "separate namespace that is never serialised."
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "497"))
+
+
+def _check_token_in_query(
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
+) -> None:
+    """Check for a credential carried in a URL query string (CWE-598)."""
+    match = _SENSITIVE_QUERY_PARAM.search(line)
+    if match is None:
+        return
+    if not _URLISH.search(line):
+        return
+    if _NON_HTTP_SCHEME.search(line):
+        return
+    param = match.group(0).strip("?&=")
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.info_exposure.token_in_query_string",
+        "category": "CWE-598",
+        "title": f"Credential '{param}' passed in a URL query string",
+        "description": (
+            f"Line {line_num} builds a URL that carries '{param}' as a query "
+            "parameter. Query strings are recorded in browser history, proxy and "
+            "web-server access logs, and are forwarded in the Referer header of "
+            "any subsequent request, so the value leaks even over TLS."
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": (
+            "Send credentials in a request header (Authorization) or a POST body "
+            "instead of the query string, and rotate any token that has already "
+            "been transmitted this way."
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "598"))
 
 
 check_information_exposure_tool = function_tool(check_information_exposure)
