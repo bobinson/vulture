@@ -19,6 +19,7 @@ on *bytes*, and an unknown model behind a custom gateway was credited with a
 import asyncio
 import inspect
 import json
+import re
 
 import pytest
 
@@ -91,6 +92,43 @@ def _collect(monkeypatch, tmp_path, **kwargs):
     )
     defaults.update(kwargs)
     return asyncio.run(audit_runner._collect_llm_findings_async(**defaults))
+
+
+def _collect_batched(monkeypatch, tmp_path, **kwargs):
+    """Drive the BATCH loop (_collect_llm_findings_batched_async), not the
+    single-call path — D.2's abort lives in the sweep."""
+    defaults = dict(
+        run_id="p5d",
+        source_path=str(tmp_path),
+        categories=["injection"],
+        skill_tools=[],
+        instructions="audit it",
+        domain_label="categories",
+    )
+    defaults.update(kwargs)
+    # Tier-3 files (no deterministic findings, not entry/config) are dropped
+    # from the LLM sweep by the 0059 cost guard. These fixtures are synthetic
+    # filler with no skill findings, so without this the loop receives ONE
+    # batch and there is no sweep to abort.
+    monkeypatch.setenv("VULTURE_LLM_TIER3", "on")
+    return asyncio.run(
+        audit_runner._collect_llm_findings_batched_async(**defaults)
+    )
+
+
+def _abort_denominator(caplog) -> int:
+    """Return M from the abort log's `batch=N/M`, guarding the sweep premise.
+
+    D.2's abort deliberately fires only while batches REMAIN, so a fixture
+    yielding one or two batches would pass vacuously. Reading the denominator
+    back out of the real run is the only faithful check: computing batches
+    independently misses the tier filter that the sweep applies.
+    """
+    for record in caplog.records:
+        match = re.search(r"batch=(\d+)/(\d+)", record.getMessage())
+        if match and "consecutive_failure_abort" in record.getMessage():
+            return int(match.group(2))
+    raise AssertionError("no abort record carrying batch=N/M was logged")
 
 
 def _source_context(n_files: int = 6, body: str = "x" * 400) -> str:
@@ -466,3 +504,160 @@ def test_clean_audit_has_no_degraded_reason(monkeypatch, tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---------------------------------------------------------------------------
+# A.2 (follow-up): the classifier must recognise a 413 in the shape LiteLLM
+# actually produces, or the size-aware retry silently never fires.
+# Found by an end-to-end run against a gateway that 413s every completion:
+# the audit made 606 attempts and every one classified as `unknown`.
+# ---------------------------------------------------------------------------
+
+
+def test_litellm_wrapped_413_is_context_overflow():
+    from shared.llm.errors import LLMErrorKind, classify_llm_error
+
+    shapes = [
+        # raw provider JSON — the error CODE
+        "Error code: 413 - {'error': {'code': 'request_too_large'}}",
+        # LiteLLM's wrapping — the human MESSAGE, which is what actually arrives
+        "litellm.APIError: APIError: OpenAIException - request body too large",
+        "OpenAIException - Request Body Too Large",
+    ]
+    for s in shapes:
+        assert classify_llm_error(Exception(s)) is LLMErrorKind.CONTEXT_OVERFLOW, (
+            f"a 413 must classify as context_overflow so the halve-and-retry "
+            f"path engages; got {classify_llm_error(Exception(s))} for {s!r}"
+        )
+
+
+def test_unrelated_body_errors_are_not_size_errors():
+    from shared.llm.errors import LLMErrorKind, classify_llm_error
+
+    for s in ("malformed request body", "request body is not valid JSON"):
+        assert classify_llm_error(Exception(s)) is not LLMErrorKind.CONTEXT_OVERFLOW
+
+
+# ===========================================================================
+# P5.D — bounding the work. Found by an end-to-end run against a gateway that
+# 413s every completion: P5.A-C all behaved correctly and the audit still made
+# 625 completion attempts before degrading.
+#   19 batches x 2 of our attempts = 38 ... but 625 HTTP calls,
+#   i.e. ~16 model calls inside a single Runner.run, invisible to our accounting.
+# ===========================================================================
+
+
+def test_consecutive_failure_threshold_default_and_override(monkeypatch):
+    monkeypatch.delenv("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", raising=False)
+    assert audit_runner._max_consecutive_failures() == 3
+    monkeypatch.setenv("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", "1")
+    assert audit_runner._max_consecutive_failures() == 1
+    # 0 disables the abort entirely
+    monkeypatch.setenv("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", "0")
+    assert audit_runner._max_consecutive_failures() == 0
+
+
+def test_max_turns_default_and_override(monkeypatch):
+    monkeypatch.delenv("VULTURE_LLM_MAX_TURNS", raising=False)
+    assert audit_runner._max_turns() > 0, "an unset cap leaves the SDK loop unbounded"
+    monkeypatch.setenv("VULTURE_LLM_MAX_TURNS", "7")
+    assert audit_runner._max_turns() == 7
+
+
+def test_max_turns_is_passed_to_runner_run(monkeypatch, tmp_path):
+    """D.3: the SDK agent loop must be bounded per attempt.
+
+    625 HTTP completions came from 38 of our attempts — ~16 model calls inside a
+    single Runner.run, which no retry budget of ours can see.
+    """
+    monkeypatch.setenv("VULTURE_LLM_MAX_TURNS", "5")
+    runner = _SpyRunner()
+    _install_runner(monkeypatch, runner)
+
+    _collect(monkeypatch, tmp_path)
+
+    assert len(runner.calls) == 1
+    assert runner.calls[0].get("max_turns") == 5, (
+        f"max_turns must bound the SDK loop; got {runner.calls[0].get('max_turns')!r}"
+    )
+
+
+def test_litellm_client_retries_are_pinned():
+    """D.1: retry authority must be single-source OFF the broker path too.
+
+    broker.py already sets max_retries=0 on its AsyncOpenAI client, naming the
+    hazard: "broker 3x x SDK 2x x agent retry_llm_call 3x". With OPENAI_BASE_URL
+    set and the broker off, get_model() returns litellm/openai/<model> so that
+    constructor is never reached — and openai's DEFAULT_MAX_RETRIES is 2, a
+    hidden 3x on any retryable status (408/409/429/500).
+    """
+    audit_runner._pin_llm_client_retries()
+    import litellm
+
+    assert litellm.num_retries == 0, (
+        "litellm.num_retries must be pinned to 0 so retry_llm_call is the only "
+        "retry authority; None means 'unset', which leaves the client default"
+    )
+
+
+def test_consecutive_failures_abort_the_sweep(monkeypatch, tmp_path, caplog):
+    """D.2 behaviour: a permanently-failing gateway must stop the sweep early.
+
+    The measured case: 19 batches, every one failing, every one burning its full
+    attempt budget. With a cap of 3 the loop must stop at the 3rd failure rather
+    than walking all 19.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-no-network")
+    monkeypatch.setenv("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", "3")
+    # Force many small batches so there is a sweep to abort.
+    monkeypatch.setenv("VULTURE_MAX_SOURCE_CHARS", "300")
+    for i in range(20):
+        (tmp_path / f"f{i}.py").write_text(f"# file {i}\n" + ("x = 1\n" * 30))
+
+    async def _always_413(n, agent, kw):
+        raise RuntimeError("Error code: 413 - {'code': 'request_too_large'}")
+
+    runner = _SpyRunner(behaviour=_always_413)
+    _install_runner(monkeypatch, runner)
+
+    with caplog.at_level("WARNING"):
+        result = _collect_batched(monkeypatch, tmp_path)
+        error = result[1]
+
+    assert any("llm_consecutive_failure_abort" in r.getMessage() for r in caplog.records), \
+        "the abort must be logged so a truncated sweep is never silent"
+    assert _abort_denominator(caplog) >= 8, (
+        "premise: the abort must be observed with many batches still pending, "
+        "otherwise the sweep ended on its own and proves nothing"
+    )
+    # Each failing batch costs at most 2 attempts (original + one halved retry),
+    # so 3 consecutive failures is at most 6 Runner calls — nowhere near 12+.
+    assert len(runner.calls) <= 6, (
+        f"expected the sweep to abort after ~3 failures; got {len(runner.calls)} "
+        "Runner calls, i.e. it kept walking batches"
+    )
+    assert error, "an aborted phase must report a reason"
+
+
+def test_a_single_bad_batch_does_not_abort_the_sweep(monkeypatch, tmp_path):
+    """D.2: the counter is CONSECUTIVE — one blip must not end the phase."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-no-network")
+    monkeypatch.setenv("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", "3")
+    monkeypatch.setenv("VULTURE_MAX_SOURCE_CHARS", "300")
+    for i in range(20):
+        (tmp_path / f"g{i}.py").write_text(f"# file {i}\n" + ("y = 2\n" * 30))
+
+    async def _fail_first_only(n, agent, kw):
+        if n == 1:
+            raise RuntimeError("Error code: 500 - transient")
+        return _FakeResult()
+
+    runner = _SpyRunner(behaviour=_fail_first_only)
+    _install_runner(monkeypatch, runner)
+
+    _collect_batched(monkeypatch, tmp_path)
+
+    assert len(runner.calls) > 3, (
+        "a single failure reset by later successes must not abort the sweep; "
+        f"only {len(runner.calls)} calls were made"
+    )

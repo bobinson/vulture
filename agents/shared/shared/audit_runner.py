@@ -358,6 +358,68 @@ def _get_max_body_bytes() -> int:
     return _safe_int_env("VULTURE_LLM_MAX_BODY_BYTES", _DEFAULT_MAX_BODY_BYTES)
 
 
+def _max_consecutive_failures() -> int:
+    """Feature 0070 P5 (D.2): abort the LLM phase after N consecutive batch
+    failures. 0 disables.
+
+    CONSECUTIVE, not cumulative: a cumulative counter would abort a long sweep
+    that merely had a few unlucky batches spread across it, while consecutive
+    failure is the signal for something SYSTEMIC — a dead gateway, a body limit,
+    bad credentials. Measured on a gateway that 413s everything: 19 batches each
+    burned their full attempt budget for 625 HTTP calls; aborting at 3 cuts that
+    by ~84%.
+    """
+    return max(0, _safe_int_env("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", 3))
+
+
+def _max_turns() -> int:
+    """Feature 0070 P5 (D.3): cap the SDK agent loop's turns per attempt.
+
+    `Runner.run` was called with no `max_turns`, so one attempt could issue an
+    unbounded number of model calls — measured at ~16 per attempt, none of it
+    visible to `retry_llm_call`'s budget. The tool-loop guard does not cover this:
+    it counts TOOL calls, and a turn that produces no tool call is invisible to it.
+    """
+    return max(1, _safe_int_env("VULTURE_LLM_MAX_TURNS", 12))
+
+
+_RETRIES_PINNED = False
+
+
+def _pin_llm_client_retries() -> None:
+    """Feature 0070 P5 (D.1): make `retry_llm_call` the ONLY retry authority.
+
+    `broker.py` already does this for its AsyncOpenAI client, naming the hazard
+    exactly: "broker 3x x SDK 2x x agent retry_llm_call 3x". That guard is
+    unreachable off the broker path — with OPENAI_BASE_URL set and the broker off,
+    `get_model()` returns `litellm/openai/<model>` and the SDK takes its LiteLLM
+    path instead.
+
+    Measured (litellm 1.87.1): `litellm.num_retries` is None — its own wrapper is
+    off — but `openai._base_client.DEFAULT_MAX_RETRIES` is 2 underneath, a hidden
+    3x on any retryable status (408/409/429/500). A 413 is not in that set, which
+    is why the observed 413 was not inflated; a 429 would have been, giving 9
+    attempts where 3 were intended.
+
+    Idempotent, and never fatal: a litellm that does not expose these attributes
+    must not break the audit.
+    """
+    global _RETRIES_PINNED
+    if _RETRIES_PINNED:
+        return
+    try:
+        import litellm
+
+        litellm.num_retries = 0
+        # Also pin the underlying client default where the version exposes it.
+        if hasattr(litellm, "DEFAULT_MAX_RETRIES"):
+            litellm.DEFAULT_MAX_RETRIES = 0
+        _RETRIES_PINNED = True
+        logger.debug("llm_client_retries_pinned num_retries=0")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llm_client_retries_pin_skipped: %s", exc)
+
+
 def _require_loop_guard() -> bool:
     """Feature 0070 P5 (C.3): refuse the LLM phase without a tool loop guard."""
     return os.environ.get("VULTURE_REQUIRE_LOOP_GUARD", "").strip().lower() in (
@@ -1842,6 +1904,10 @@ async def _collect_llm_findings_batched_async(
     # call, and bound each call so a hung/slow model cannot starve these checks.
     _cancel = current_cancel_token()
     _deadline = current_audit_deadline()
+    # D.1: single retry authority — must run before the first model call.
+    _pin_llm_client_retries()
+    _consec_cap = _max_consecutive_failures()
+    _consec_failures = 0
     _call_timeout = _safe_int_env("VULTURE_LLM_CALL_TIMEOUT_SEC", 120)
     if _call_timeout <= 0:  # 0/negative would make asyncio.wait_for insta-timeout every call
         _call_timeout = 120
@@ -1883,8 +1949,28 @@ async def _collect_llm_findings_batched_async(
         total_in += in_tok
         total_out += out_tok
         files_seen += len(batch_paths)
-        if error and first_error is None:
-            first_error = error
+        if error:
+            _consec_failures += 1
+            if first_error is None:
+                first_error = error
+        else:
+            # Reset on success so one bad batch does not poison the remainder.
+            _consec_failures = 0
+        if _consec_cap and _consec_failures >= _consec_cap and batch_idx + 1 < len(batches):
+            notice = (
+                f"[partial results] LLM phase aborted after {_consec_failures} "
+                f"consecutive batch failures; stopped after {batch_idx + 1} of "
+                f"{len(batches)} batch(es). Last error: {error}"
+            )
+            logger.warning(
+                "llm_consecutive_failure_abort run_id=%s failures=%d cap=%d "
+                "batch=%d/%d last_error=%s",
+                run_id, _consec_failures, _consec_cap,
+                batch_idx + 1, len(batches), str(error)[:160],
+            )
+            if first_error is None:
+                first_error = notice
+            break
         if findings:
             # Dedup across batches AND against skill findings so one vuln seen
             # in two overlapping windows isn't double-reported (P1f).
@@ -2188,6 +2274,10 @@ async def _collect_llm_findings_async(
                 # the keys the broker isolates); raise → skills-only (N2).
                 raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
             kwargs["run_config"] = RunConfig(model_provider=run_model_provider)  # type: ignore[call-arg]
+        # D.3: bound the SDK's agent loop. Without it one attempt can issue an
+        # unbounded number of model calls (~16 measured), invisible to
+        # retry_llm_call's budget and uncounted by the tool-loop guard.
+        kwargs["max_turns"] = _max_turns()
         return await Runner.run(agent, input=prompt_text, **kwargs)
 
     from shared.llm.broker import aclose_broker_client
