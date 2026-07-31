@@ -2,8 +2,23 @@
 
 Covers CWE-1104 (unmaintained / unpinned), CWE-829 (untrusted source),
 CWE-494 (download without integrity check), CWE-506 (suspicious
-embedded code), and CWE-937 (using known-vulnerable component) — the
-last via an embedded JSON catalog of well-known CVEs.
+embedded code), and CWE-1395 (dependency on a vulnerable third-party
+component) — the last via an embedded JSON catalog of well-known CVEs.
+
+Two precision decisions (feature 0070):
+
+* The known-vulnerable finding is reported as **CWE-1395**, not CWE-937.
+  CWE-937 is a CWE *Category*, not a Weakness: the CWE catalog cannot
+  enrich it and the OWASP 2025 edition maps it to nothing, so the single
+  highest-value supply-chain signal here never reached A03. CWE-1395
+  ("Dependency on Vulnerable Third-Party Component") is the Weakness for
+  exactly this observation and is in A03's 2025 mapped set. Trade-off:
+  the OWASP **2021** edition maps 937 (A06) but not 1395, so under 2021
+  these findings now reach A06 only through CWE-1104's rollup.
+* CWE-1104 is emitted once **per manifest**, not once per floating spec.
+  One row per caret/tilde dependency carries a single bit of information
+  repeated N times (244 rows on juice-shop, 70 of them cross-manifest
+  duplicates); the rollup keeps the count and the package list.
 
 Operators can override the bundled catalog by setting
 ``VULTURE_DEPENDENCY_DB`` to a JSON file matching the same shape
@@ -33,7 +48,7 @@ from shared.tools.snippet import extract_snippet
 from cwe_agent.catalog import enrich_finding
 
 # ---------------------------------------------------------------------------
-# CWE-937: Known-Vulnerable Component
+# CWE-1395: Dependency on Vulnerable Third-Party Component
 # ---------------------------------------------------------------------------
 
 _KNOWN_VULN_DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "known_vulnerable_versions.json"
@@ -222,8 +237,8 @@ def check_dependency_security(source_path: str) -> dict:
 
 
 def _analyze_dependency_file(file_path: Path, findings: list[dict]) -> None:
-    """Analyze dependency manifest files for CWE-1104 (unpinned) and
-    CWE-937 (known-vulnerable component)."""
+    """Analyze dependency manifest files for CWE-1104 (unpinned, rolled up
+    per manifest) and CWE-1395 (known-vulnerable component)."""
     # Manifests are read under the larger MAX_MANIFEST_SIZE ceiling: a lock
     # file's size tracks its dependency count, so the general source-file cap
     # dropped exactly the manifests with the most to report.
@@ -242,34 +257,89 @@ def _analyze_dependency_file(file_path: Path, findings: list[dict]) -> None:
 
 # Requirement spec for `pkg==1.2.3` / `pkg>=1.2`. Captures (name, version).
 _PIP_SPEC = re.compile(r"^([A-Za-z][\w.\-]*)\s*(?:==|~=|===)\s*([0-9][\w.\-]*)")
+# Split a requirements line into (name, remainder) for rollup display.
+_PIP_NAME = re.compile(r"^([A-Za-z][\w.\-]*)\s*(.*)$")
+
+# How many packages the rollup description spells out WITH their version spec.
+# Beyond this the tail is still listed, but by bare name only: juice-shop's root
+# package.json declares 113 floating specs, and "name (^1.2.3)" x113 would
+# dominate the finding. No package name is dropped — the rollup must not lose
+# what the 244 individual rows carried.
+_ROLLUP_SPEC_LIMIT = 25
+
+
+def _emit_unpinned_rollup(
+    file_path: Path,
+    lines: list[str],
+    unpinned: list[tuple[str, str, int]],
+    findings: list[dict],
+) -> None:
+    """Emit ONE CWE-1104 finding covering every floating spec in a manifest.
+
+    ``unpinned`` holds ``(package, raw_spec, line)`` triples in declaration
+    order. One row per dependency repeats a single bit of information N times
+    (244 rows over juice-shop's three manifests), so the rollup replaces them —
+    but it must not lose information, hence ``instance_count`` plus a spelled-out
+    package list in the description.
+
+    The title deliberately omits the count. The backend fingerprints a finding
+    on (title, file_path, category), so a count in the title would make every
+    dependency bump present as a brand-new finding instead of the same one.
+    """
+    if not unpinned:
+        return
+    count = len(unpinned)
+    head, tail = unpinned[:_ROLLUP_SPEC_LIMIT], unpinned[_ROLLUP_SPEC_LIMIT:]
+    listed = ", ".join(f"{name} ({spec or '*'})" for name, spec, _ in head)
+    if tail:
+        listed += (
+            f", and {len(tail)} more: "
+            + ", ".join(name for name, _, _ in tail)
+        )
+    line_start = min(u[2] for u in unpinned)
+    finding = {
+        "severity": "low",
+        "check_id": "cwe.dependency.unpinned_version",
+        "category": "CWE-1104",
+        "title": f"Unpinned dependency versions in {file_path.name}",
+        "description": (
+            f"{count} dependencies in {file_path.name} are declared as floating "
+            "ranges rather than exact versions. The installed version can change "
+            "with no change to the manifest, so a component may silently become "
+            f"outdated, unmaintained, or vulnerable. Unpinned ({count}): {listed}."
+        ),
+        "file_path": str(file_path),
+        "line_start": line_start,
+        "line_end": max(u[2] for u in unpinned),
+        "instance_count": count,
+        "recommendation": (
+            "Pin exact versions and commit a lockfile so installs are "
+            "reproducible and auditable."
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_start)
+    findings.append(enrich_finding(finding, "1104"))
 
 
 def _analyze_requirements_txt(file_path: Path, content: str, findings: list[dict]) -> None:
     lines = content.splitlines()
+    unpinned: list[tuple[str, str, int]] = []
     for line_num, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith(("#", "-")):
             continue
         if UNPINNED_PYTHON.match(stripped) or UNPINNED_PYTHON_LOOSE.match(stripped):
-            finding = {
-                "severity": "medium",
-                "check_id": "cwe.dependency.unpinned_version",
-                "category": "CWE-1104",
-                "title": "Unpinned dependency version",
-                "description": f"Dependency '{stripped.split()[0]}' lacks pinned version at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Pin dependencies to specific versions (use == or ~=)",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "1104"))
+            m_name = _PIP_NAME.match(stripped)
+            name = m_name.group(1) if m_name else stripped.split()[0]
+            spec = m_name.group(2).strip() if m_name else ""
+            unpinned.append((name, spec, line_num))
             continue
-        # CWE-937: pinned version → check the known-vuln catalog.
+        # CWE-1395: pinned version → check the known-vuln catalog.
         m = _PIP_SPEC.match(stripped)
         if m:
             _emit_cve_findings(file_path, lines, line_num, m.group(1).lower(), m.group(2),
                                ecosystem="pypi", findings=findings)
+    _emit_unpinned_rollup(file_path, lines, unpinned, findings)
 
 
 def _analyze_npm_manifest(file_path: Path, content: str, findings: list[dict]) -> None:
@@ -287,6 +357,7 @@ def _analyze_npm_manifest(file_path: Path, content: str, findings: list[dict]) -
         return
     lines = content.splitlines()
     pairs: list[tuple[str, str]] = []
+    unpinned: list[tuple[str, str, int]] = []
     for key in ("dependencies", "devDependencies", "peerDependencies"):
         deps = data.get(key)
         if isinstance(deps, dict):
@@ -294,8 +365,10 @@ def _analyze_npm_manifest(file_path: Path, content: str, findings: list[dict]) -
                 if isinstance(name, str) and isinstance(ver, str):
                     # Inspect the RAW spec before _strip_npm_range() destroys the
                     # range operator — that operator is the whole signal (0068).
-                    _check_npm_spec_pinning(file_path, lines, name, ver, findings)
+                    _check_npm_spec_pinning(file_path, lines, name, ver, findings, unpinned)
                     pairs.append((name.lower(), _strip_npm_range(ver)))
+    # One CWE-1104 row per manifest, not per floating spec (feature 0070).
+    _emit_unpinned_rollup(file_path, lines, unpinned, findings)
     pkgs_map = data.get("packages")
     if isinstance(pkgs_map, dict):
         for path, info in pkgs_map.items():
@@ -332,15 +405,20 @@ def _npm_spec_line(lines: list[str], name: str) -> int:
 
 def _check_npm_spec_pinning(
     file_path: Path, lines: list[str], name: str, spec: str, findings: list[dict],
+    unpinned: list[tuple[str, str, int]],
 ) -> None:
-    """Flag npm specs that are not pinned to an exact version.
+    """Classify one npm spec that is not pinned to an exact version.
 
-    Emits the two A03-mapped CWEs a static check can justify:
+    Covers the two A03-mapped CWEs a static check can justify:
       * CWE-1357 — spec bypasses the registry (git/url/file), so the delivered
         artefact is not verifiable (Reliance on Insufficiently Trustworthy
-        Component).
+        Component). Emitted per dependency: each such spec is a distinct,
+        individually actionable supply-chain decision.
       * CWE-1104 — floating range, so the resolved version drifts and may
-        become unmaintained/vulnerable without a manifest change.
+        become unmaintained/vulnerable without a manifest change. NOT emitted
+        here; appended to ``unpinned`` for the caller's per-manifest rollup,
+        because a caret range is a manifest-wide policy problem, not N
+        independent ones.
     """
     raw = spec.strip()
     line = _npm_spec_line(lines, name)
@@ -370,27 +448,7 @@ def _check_npm_spec_pinning(
         return
 
     if raw in _UNPINNED_EXACT or raw.startswith(_UNPINNED_PREFIXES):
-        finding = {
-            "severity": "low",
-            "check_id": "cwe.dependency.unpinned_version",
-            "category": "CWE-1104",
-            "title": "Unpinned dependency version",
-            "description": (
-                f"Dependency '{name}' is declared as '{raw or '*'}', a floating "
-                "range. The installed version can change with no change to the "
-                "manifest, so the component may silently become outdated, "
-                f"unmaintained, or vulnerable. Declared at line {line}."
-            ),
-            "file_path": str(file_path),
-            "line_start": line,
-            "line_end": line,
-            "recommendation": (
-                "Pin an exact version and commit a lockfile so installs are "
-                "reproducible and auditable."
-            ),
-        }
-        finding["code_snippet"] = extract_snippet(lines, line)
-        findings.append(enrich_finding(finding, "1104"))
+        unpinned.append((name, raw, line))
 
 
 def _strip_npm_range(spec: str) -> str:
@@ -424,7 +482,9 @@ def _emit_cve_findings(
         finding = {
             "severity": severity,
             "check_id": f"cwe.dependency.known_vulnerable.{cve}",
-            "category": "CWE-937",
+            # CWE-1395, not CWE-937: 937 is a Category (unenrichable, unmapped
+            # by OWASP 2025); 1395 is the Weakness and is in A03's 2025 set.
+            "category": "CWE-1395",
             "title": f"Known-vulnerable dependency: {package} {version} ({cve})",
             "description": (
                 f"{ecosystem.upper()} package {package!r} version {version} matches "
@@ -440,7 +500,7 @@ def _emit_cve_findings(
         }
         if lines:
             finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(enrich_finding(finding, "937"))
+        findings.append(enrich_finding(finding, "1395"))
 
 
 def _analyze_code_file(file_path: Path, findings: list[dict]) -> None:

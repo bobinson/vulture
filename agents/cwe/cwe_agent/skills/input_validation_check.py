@@ -173,6 +173,13 @@ SAFE_UPLOAD_PATTERNS = re.compile(
 )
 
 # CWE-611: XXE (XML External Entity)
+#
+# The first eight entries are Python/Java parser APIs. That left Node with ZERO
+# coverage, so a TypeScript target whose own source comment reads "intentionally
+# vulnerable to XXE for the related challenges" scored nothing: the parse is
+# configured through libxml2 ParseOption bit flags
+# (`XML_PARSE_NOENT | XML_PARSE_DTDLOAD`), a shape no Python/Java regex can see.
+# The Node additions follow.
 XXE_PATTERNS = [
     re.compile(r'xml\.etree\.ElementTree\.parse\('),
     re.compile(r'etree\.parse\('),
@@ -182,6 +189,33 @@ XXE_PATTERNS = [
     re.compile(r'XMLReader\(\)'),
     re.compile(r'DocumentBuilder(?:Factory)?\.new'),
     re.compile(r'SAXParser(?:Factory)?\.new'),
+    # libxml2 / libxml2-wasm / libxmljs parse options that switch entity
+    # substitution and DTD loading ON. These flags ARE the vulnerability.
+    re.compile(r'\bXML_PARSE_(?:NOENT|DTDLOAD|DTDVALID|DTDATTR)\b'),
+    # Option-object form: { noent: true, dtdload: true }, { replaceEntities: true }
+    re.compile(
+        r'\b(?:noent|dtdload|dtdvalid|replaceEntities|resolveEntities'
+        r'|expandEntities|externalEntities|loadExternalDtd)\s*:\s*true\b',
+        re.IGNORECASE,
+    ),
+    # libxmljs / libxmljs2 parse entry points.
+    re.compile(r'\b(?:libxmljs2?|libxml2?)\s*\.\s*parseXml(?:String)?\s*\('),
+    re.compile(
+        r'\bparseXml(?:String)?\s*\([^)]*'
+        r'\b(?:noent|dtdload|replaceEntities|option)\b',
+        re.IGNORECASE,
+    ),
+    # xml2js: parses with sax defaults and no hardening switch of its own.
+    re.compile(r'\bxml2js\s*\.\s*(?:parseString(?:Promise)?|Parser)\s*\('),
+    re.compile(r'\bnew\s+(?:xml2js\.)?Parser\s*\(\s*\{[^}]*explicitRoot'),
+    # DOMParser: XXE-capable outside the browser sandbox (xmldom, jsdom, Deno).
+    re.compile(r'\bDOMParser\s*\(\s*\)\s*\.\s*parseFromString\s*\('),
+    # sax with entity expansion left permissive.
+    re.compile(
+        r'\bsax\s*\.\s*(?:parser|createStream)\s*\([^)]*'
+        r'\bstrictEntities\s*:\s*false',
+        re.IGNORECASE,
+    ),
 ]
 
 # Safe-XXE: explicit module imports (defusedxml) or attribute settings
@@ -205,6 +239,13 @@ SAFE_XXE_PATTERNS = re.compile(
     r"|setFeature\s*\([^)]*disallow-doctype-decl[^)]*,\s*true\)"
     r"|setFeature\s*\([^)]*external-general-entities[^)]*,\s*false\)"
     r"|setFeature\s*\([^)]*external-parameter-entities[^)]*,\s*false\)"
+    # Node option objects that explicitly harden the parser. A parse call whose
+    # own options say `noent: false` / `strictEntities: true` is the fixed
+    # configuration, so the sink patterns above must not fire on it.
+    r"|(?:noent|dtdload|dtdvalid|replaceEntities|resolveEntities|expandEntities"
+    r"|externalEntities|loadExternalDtd)\s*:\s*false"
+    r"|strictEntities\s*:\s*true"
+    r"|\bnonet\s*:\s*true"
     r")",
     re.IGNORECASE,
 )

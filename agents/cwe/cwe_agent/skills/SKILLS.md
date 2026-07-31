@@ -1,6 +1,6 @@
 # CWE Weakness Auditor - Skills
 
-Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities. The deterministic skill phase detects ~73 declared CWE-ID `category` literals across 21 dedicated skills plus 7 corpus-trusted signature CWEs; of those, N=10 CWE types are corpus-VERIFIED (recall 1.0 / fp 0.0 — see `tests/corpus/VERIFIED_CWES.md`, computed by the gate, not asserted). The 846-entry CWE v4.19.1 catalog is metadata/context (names, consequences, rollup parents) — NOT a detection-coverage claim; it drives self-learning confidence scoring and MMR-based memory retrieval with embedding similarity.
+Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities. The deterministic skill phase detects ~73 declared CWE-ID `category` literals across 23 dedicated skills plus 7 corpus-trusted signature CWEs; of those, N=10 CWE types are corpus-VERIFIED (recall 1.0 / fp 0.0 — see `tests/corpus/VERIFIED_CWES.md`, computed by the gate, not asserted). The 846-entry CWE v4.19.1 catalog is metadata/context (names, consequences, rollup parents) — NOT a detection-coverage claim; it drives self-learning confidence scoring and MMR-based memory retrieval with embedding similarity.
 
 ## injection_check
 
@@ -274,7 +274,7 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 ## catalog_detector
 
 - **Function**: `check_catalog_generic(source_path: str) -> dict`
-- **Purpose**: Catalog-driven generic CWE detection engine that keyword-matches against the enriched CWE v4.19.1 metadata. HONESTY NOTE: this path fires ~0 findings on real code — it is metadata/context (catalog names, consequences, rollup parents), NOT a detection-coverage claim. The deterministic detection surface is the 21 dedicated skills (~73 declared CWE-ID categories) plus 7 trusted signatures; N=10 of those are corpus-VERIFIED (see `tests/corpus/VERIFIED_CWES.md`).
+- **Purpose**: Catalog-driven generic CWE detection engine that keyword-matches against the enriched CWE v4.19.1 metadata. HONESTY NOTE: this path fires ~0 findings on real code — it is metadata/context (catalog names, consequences, rollup parents), NOT a detection-coverage claim. The deterministic detection surface is the 23 dedicated skills (~73 declared CWE-ID categories) plus 7 trusted signatures; N=10 of those are corpus-VERIFIED (see `tests/corpus/VERIFIED_CWES.md`).
 - **Mechanism**:
   - Loads all CWEs with static-detectability score >= 0.3 from enriched catalog
   - Builds keyword-to-CWE inverted index for fast file-level matching
@@ -311,6 +311,18 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **Boundary with `auth_check`**: `auth_check.py` covers the LHS-identifier-name shape (`api_key = "..."`); `secret_scan` covers content patterns. Both can fire on the same line; the orchestrator deduplicates within a single run but cross-skill duplicates are intentional (signals two confidences).
 - **Boundary with `info_exposure_check`**: `info_exposure_check.py` covers CWE-312 cleartext-storage with the same name-LHS shape. `secret_scan` covers the broader content-pattern surface. No overlap-suppression; both report.
 - **Git-history limitation**: Vulture scans the working tree only. Pair with `gitleaks` or `truffleHog` for git-history scanning of removed-but-present-in-history secrets.
+
+## plaintext_transmission_check
+
+- **Function**: `check_plaintext_transmission(source_path: str) -> dict`
+- **Purpose**: Detection of cleartext transmission of sensitive information — credentials on the wire, plaintext schemes for services that have a TLS variant, and code that explicitly disables transport verification.
+- **Shapes detected**:
+  - **Credentials in a URL userinfo part** — `http://user:pass@host/…`.
+  - **Plaintext scheme where a TLS variant exists** — `amqp://`, `ftp://`, `ldap://`, `mongodb://`, `mysql://`, `postgres://`, `redis://`, `smtp://`, `telnet://`. Flagged only when the URL appears in code (string literal or assignment), not in prose or comments.
+  - **Transport verification disabled at the call site** — `verify=False` on `requests.*` / `httpx.*`, `rejectUnauthorized: false` on Node HTTPS/TLS, `InsecureSkipVerify: true` on Go `tls.Config`.
+- **CWE Coverage**: **CWE-319** Cleartext Transmission of Sensitive Information.
+- **Suppression**: test-fixture paths, local-loopback hosts (`127.0.0.1`, `localhost`) and documentation comments do not report — a plaintext scheme against loopback is not a transmission exposure.
+- **Dispatch note**: this skill and `secret_scan` were implemented and present in `SKILL_MAP` but absent from `config.ALL_CATEGORIES` (the dispatch list), so neither ran. `tests/unit/test_skill_dispatch_conformance.py` now pins `set(ALL_CATEGORIES) == set(SKILL_MAP)` so the two cannot diverge again.
 
 ## Self-Learning (LLM Phase)
 

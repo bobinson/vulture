@@ -42,14 +42,25 @@ def _is_secret_key_name(key: str) -> bool:
 # actual secret to env / secrets-manager indirection. These are SAFE
 # patterns — the literal value is just a pointer.
 _VAR_REF_RE = re.compile(
-    r"^\s*(?:"
-    r"\$\{[A-Za-z_][\w]*(?::-[^}]*)?\}"        # ${VAR} or ${VAR:-default}
+    r"^\s*[\"']?\s*(?:"
+    r"\$\{\{\s*[\w.\-]+\s*\}\}"                   # GitHub Actions ${{ secrets.X }}
+    r"|\$\{[A-Za-z_][\w]*(?::-[^}]*)?\}"        # ${VAR} or ${VAR:-default}
     r"|\$[A-Za-z_][\w]*"                          # $VAR
     r"|%\([A-Za-z_][\w]*\)s"                     # Python configparser %(VAR)s
     r"|<%=\s*[A-Za-z_][\w]*\s*%>"               # ERB <%= VAR %>
     r"|\{\{\s*[A-Za-z_][\w.]*\s*\}\}"            # Jinja / Helm {{ VAR }}
-    r")\s*$"
+    r")\s*[\"']?\s*$"
 )
+# The Actions alternative must precede `${VAR}`: an unanchored `${` branch would
+# otherwise consume the first brace and fail, and ordering costs nothing.
+#
+# Optional surrounding quotes match the shared guard in
+# `cwe_agent/skills/_var_reference.py`. A YAML/JSON parser strips them, but the
+# line-oriented paths do not, and `'${{ secrets.X }}'` is no more a literal than
+# the bare form.
+#
+# Anchoring at both ends is what keeps this honest: `${{ secrets.T }}-suffix`
+# is a composed value, not a clean indirection, so it still reports.
 
 
 def _is_variable_reference(value: str) -> bool:

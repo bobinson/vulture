@@ -57,7 +57,12 @@ _CTX_OVERFLOW_RE = re.compile(
     r"max.tokens|context.window|prompt.{0,10}too.long|maximum.length|"
     r"request\.payload\.size\.exceeds|payload\.too\.large|"
     r"input.token.count.*exceeds|exceeds.the.maximum.number.of.tokens|"
-    r"request_too_large)",
+    # `request_too_large` is the provider's error CODE. LiteLLM surfaces the
+    # human MESSAGE instead — "OpenAIException - request body too large" — which
+    # the code form does not match, so a real 413 classified as `unknown` and the
+    # size-aware retry (P5 A.2) never fired. Measured end-to-end against a 413
+    # gateway. `.` spans the separator so both spellings hit.
+    r"request_too_large|request.body.too.large)",
     re.IGNORECASE,
 )
 _TIMEOUT_RE = re.compile(

@@ -942,7 +942,16 @@ class TestCWEConfig:
     """Tests for CWE agent configuration."""
 
     def test_all_categories_complete(self):
-        assert len(ALL_CATEGORIES) == 22
+        # Was `len(ALL_CATEGORIES) == 22`. That magic number encoded a bug: two
+        # implemented skills (secrets, plaintext_transmission) were absent from
+        # the dispatch list, so the count 22 asserted the broken state and had
+        # to be edited before the fix could land. Assert the invariant instead —
+        # every implemented skill is dispatched — which is what a count was
+        # standing in for, and which grows correctly as skills are added.
+        # See tests/unit/test_skill_dispatch_conformance.py.
+        from cwe_agent.skills import SKILL_MAP
+        assert set(ALL_CATEGORIES) == set(SKILL_MAP)
+        assert len(ALL_CATEGORIES) == len(set(ALL_CATEGORIES)), "duplicate category"
         assert "injection" in ALL_CATEGORIES
         assert "buffer_handling" in ALL_CATEGORIES
         assert "authentication" in ALL_CATEGORIES
@@ -959,6 +968,8 @@ class TestCWEConfig:
         assert "data_handling" in ALL_CATEGORIES
         assert "memory_safety" in ALL_CATEGORIES
         assert "catalog_generic" in ALL_CATEGORIES
+        assert "secrets" in ALL_CATEGORIES
+        assert "plaintext_transmission" in ALL_CATEGORIES
 
     def test_agent_type_is_cwe(self):
         assert AGENT_INFO["type"] == "cwe"

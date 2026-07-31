@@ -317,6 +317,202 @@ def _truncate_prompt_to_budget(
 
 _MAX_SOURCE_CHARS = _safe_int_env("VULTURE_MAX_SOURCE_CHARS", 400000)
 
+# Feature 0070 P5 (A.4): ceiling applied when a window is a GUESS *and* a custom
+# gateway is in play. Numerically equal to DEFAULT_CONTEXT_WINDOW (32K) today;
+# named separately and env-tunable because the two mean different things — one is
+# "what we assume when we know nothing", the other is "the most we will trust a
+# guess with when sizing a real request body". Behind a gateway only three
+# sources are authoritative: an explicit VULTURE_LLM_CTX_SIZE, the broker
+# registry (§31), or an exact CONTEXT_WINDOWS match. A family guess is not, so a
+# known family behind a gateway is deliberately clamped too — the gateway may
+# proxy a smaller window than the upstream model offers, and we cannot tell.
+_GATEWAY_GUESS_CEILING = _safe_int_env("VULTURE_LLM_GATEWAY_GUESS_CTX", 32_000)
+
+# Feature 0070 P5 (defect A): our source budget is denominated in TOKENS, but a
+# gateway rejects on BYTES ("request_too_large" / HTTP 413). The two disagree by
+# a factor that depends on the content, so a token budget alone cannot keep the
+# request inside a byte limit — a 131,072-token window resolved to 196,608 chars
+# (~192KB) of inlined source and the gateway refused the whole phase.
+# VULTURE_LLM_MAX_BODY_BYTES is an ADDITIONAL ceiling enforced on the encoded
+# payload (len(text.encode())), never on the character count.
+# 128 KB, not 256 KB. The observed 413 carried ~192KB of inlined source, so a
+# 256KB ceiling would never have fired on the very request that motivated this
+# cap — it has to sit BELOW the failure, not above it. 128KB still admits ~30-40
+# source files per batch, and the batch loop rolls the remainder into the next
+# request rather than dropping it, so a lower ceiling costs latency, not coverage.
+_DEFAULT_MAX_BODY_BYTES = 131072  # 128 KB
+# Bytes reserved for the truncation notice appended to a capped body.
+_BODY_TRUNCATION_NOTICE_BYTES = 128
+
+_FILE_BLOCK_HEADER_RE = re.compile(r"(?m)^--- .+ ---$")
+
+# Warn once per process (not per run) when the loop guard cannot be attached.
+_LOOP_GUARD_WARNED = False
+
+
+def _get_max_body_bytes() -> int:
+    """Encoded-payload ceiling for the LLM request body, in bytes.
+
+    ``VULTURE_LLM_MAX_BODY_BYTES`` (default 128KB); <= 0 disables the cap.
+    """
+    return _safe_int_env("VULTURE_LLM_MAX_BODY_BYTES", _DEFAULT_MAX_BODY_BYTES)
+
+
+def _max_consecutive_failures() -> int:
+    """Feature 0070 P5 (D.2): abort the LLM phase after N consecutive batch
+    failures. 0 disables.
+
+    CONSECUTIVE, not cumulative: a cumulative counter would abort a long sweep
+    that merely had a few unlucky batches spread across it, while consecutive
+    failure is the signal for something SYSTEMIC — a dead gateway, a body limit,
+    bad credentials. Measured on a gateway that 413s everything: 19 batches each
+    burned their full attempt budget for 625 HTTP calls; aborting at 3 cuts that
+    by ~84%.
+    """
+    return max(0, _safe_int_env("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", 3))
+
+
+def _max_turns() -> int:
+    """Feature 0070 P5 (D.3): cap the SDK agent loop's turns per attempt.
+
+    `Runner.run` was called with no `max_turns`, so one attempt could issue an
+    unbounded number of model calls — measured at ~16 per attempt, none of it
+    visible to `retry_llm_call`'s budget. The tool-loop guard does not cover this:
+    it counts TOOL calls, and a turn that produces no tool call is invisible to it.
+    """
+    return max(1, _safe_int_env("VULTURE_LLM_MAX_TURNS", 12))
+
+
+_RETRIES_PINNED = False
+
+
+def _pin_llm_client_retries() -> None:
+    """Feature 0070 P5 (D.1): make `retry_llm_call` the ONLY retry authority.
+
+    `broker.py` already does this for its AsyncOpenAI client, naming the hazard
+    exactly: "broker 3x x SDK 2x x agent retry_llm_call 3x". That guard is
+    unreachable off the broker path — with OPENAI_BASE_URL set and the broker off,
+    `get_model()` returns `litellm/openai/<model>` and the SDK takes its LiteLLM
+    path instead.
+
+    Measured (litellm 1.87.1): `litellm.num_retries` is None — its own wrapper is
+    off — but `openai._base_client.DEFAULT_MAX_RETRIES` is 2 underneath, a hidden
+    3x on any retryable status (408/409/429/500). A 413 is not in that set, which
+    is why the observed 413 was not inflated; a 429 would have been, giving 9
+    attempts where 3 were intended.
+
+    Idempotent, and never fatal: a litellm that does not expose these attributes
+    must not break the audit.
+    """
+    global _RETRIES_PINNED
+    if _RETRIES_PINNED:
+        return
+    try:
+        import litellm
+
+        litellm.num_retries = 0
+        # Also pin the underlying client default where the version exposes it.
+        if hasattr(litellm, "DEFAULT_MAX_RETRIES"):
+            litellm.DEFAULT_MAX_RETRIES = 0
+        _RETRIES_PINNED = True
+        logger.debug("llm_client_retries_pinned num_retries=0")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llm_client_retries_pin_skipped: %s", exc)
+
+
+def _require_loop_guard() -> bool:
+    """Feature 0070 P5 (C.3): refuse the LLM phase without a tool loop guard."""
+    return os.environ.get("VULTURE_REQUIRE_LOOP_GUARD", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """Cut *text* to at most *max_bytes* encoded bytes without splitting a char."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _split_source_blocks(text: str) -> list[str]:
+    """Split packed source context back into its ``--- rel ---`` file blocks."""
+    starts = [m.start() for m in _FILE_BLOCK_HEADER_RE.finditer(text)]
+    if not starts:
+        return [text]
+    blocks: list[str] = []
+    if starts[0] > 0:
+        head = text[: starts[0]].strip("\n")
+        if head:
+            blocks.append(head)
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+        blocks.append(text[start:end].strip("\n"))
+    return blocks
+
+
+def _enforce_body_byte_cap(
+    text: str, max_bytes: int = 0, label: str = "source_context",
+) -> str:
+    """Cap *text* at the encoded-byte ceiling, dropping whole trailing files.
+
+    Truncation is reported in the same shape as the scanner's ``scan_truncated``
+    warning: a partial LLM body must never be indistinguishable from a full one.
+    """
+    if not text:
+        return text
+    if max_bytes <= 0:
+        max_bytes = _get_max_body_bytes()
+    if max_bytes <= 0:
+        return text
+    total = len(text.encode("utf-8"))
+    if total <= max_bytes:
+        return text
+
+    budget = max(0, max_bytes - _BODY_TRUNCATION_NOTICE_BYTES)
+    blocks = _split_source_blocks(text)
+    kept: list[str] = []
+    used = 0
+    for block in blocks:
+        cost = len(block.encode("utf-8")) + (2 if kept else 0)
+        if used + cost > budget:
+            break
+        kept.append(block)
+        used += cost
+    if not kept:
+        # A single file bigger than the whole budget: keep a byte-bounded head
+        # rather than sending nothing.
+        kept = [_truncate_utf8(blocks[0], budget)]
+    dropped = len(blocks) - len(kept)
+    out = "\n\n".join(kept)
+    if dropped > 0:
+        out += f"\n\n[... {dropped} file(s) dropped: request body cap {max_bytes} bytes ...]"
+    logger.warning(
+        "llm_body_truncated label=%s bytes=%d max=%d files_dropped=%d kept=%d — "
+        "coverage is PARTIAL; raise VULTURE_LLM_MAX_BODY_BYTES if the gateway "
+        "accepts larger requests",
+        label, total, max_bytes, dropped, len(kept),
+    )
+    return out
+
+
+def _halve_source_context(source_context: str) -> str:
+    """Half-size the inlined source body for the one-shot size retry (A.2).
+
+    Returns "" when there is nothing meaningful left to halve (no inline source,
+    or already at the floor) — the caller then degrades instead of retrying.
+    """
+    if not source_context:
+        return ""
+    current = len(source_context.encode("utf-8"))
+    target = current // 2
+    if target < 512:
+        return ""
+    smaller = _enforce_body_byte_cap(source_context, max_bytes=target, label="size_retry")
+    if not smaller or smaller == source_context:
+        return ""
+    return smaller
+
 
 def _get_max_source_chars(model: str | None = None) -> int:
     """Compute max source chars from the active model's context window.
@@ -333,9 +529,35 @@ def _get_max_source_chars(model: str | None = None) -> int:
     Args:
         model: Optional model key. Defaults to VULTURE_LLM_MODEL env.
     """
-    from shared.llm.provider import get_context_window
+    from shared.llm.provider import (
+        WINDOW_FROM_DEFAULT,
+        WINDOW_FROM_FAMILY,
+        resolve_context_window,
+        uses_custom_endpoint,
+    )
 
-    ctx_tokens = get_context_window(model)
+    ctx_tokens, provenance = resolve_context_window(model)
+    # Feature 0070 P5 (defect A.4, reworked): behind a custom gateway an
+    # unknown model's window is a GUESS made from a substring of its id
+    # (`glm-5-2-260617` → the "glm" family → 131072 tokens → 196,608 chars ≈
+    # 192KB inlined, which the gateway rejected outright). §31 keeps that guess
+    # for token *budgeting* — three tests pin it, and undershooting the window
+    # would shrink max_output too — but it must not be trusted to size a
+    # REQUEST BODY. Authoritative windows (explicit env, broker registry, exact
+    # table) are used as-is; only the inferred-behind-a-gateway case undershoots.
+    # Both non-authoritative provenances qualify. A bare DEFAULT is a *stronger*
+    # guess than a family match, not a weaker one: the model id matched nothing at
+    # all. `glm-5-2-260617` resolves that way, so guarding only FAMILY left the
+    # exact model from the observed 413 unclamped.
+    _guessed = provenance in (WINDOW_FROM_FAMILY, WINDOW_FROM_DEFAULT)
+    if _guessed and uses_custom_endpoint() and ctx_tokens > _GATEWAY_GUESS_CEILING:
+        logger.warning(
+            "llm_body_window_clamped model=%s inferred=%d using=%d "
+            "hint=set VULTURE_LLM_CTX_SIZE to the gateway's real window",
+            model or os.environ.get("VULTURE_LLM_MODEL", ""),
+            ctx_tokens, _GATEWAY_GUESS_CEILING,
+        )
+        ctx_tokens = _GATEWAY_GUESS_CEILING
     # Scale source allocation: small models need more headroom for output + SDK overhead.
     source_fraction = 0.35 if ctx_tokens <= 32_000 else 0.5
     # Cap: read VULTURE_MAX_SOURCE_CHARS dynamically (feature 0057 P1f — tests
@@ -343,6 +565,11 @@ def _get_max_source_chars(model: str | None = None) -> int:
     # window size honours the env without an import-time freeze. Falls back to
     # the module default when unset.
     cap = _safe_int_env("VULTURE_MAX_SOURCE_CHARS", _MAX_SOURCE_CHARS)
+    # NOTE (feature 0070 P5, A.1): the byte ceiling is deliberately NOT folded in
+    # here. This function returns a CHARACTER budget, and one char is 1-4 bytes:
+    # a char cap can never enforce a byte limit. VULTURE_LLM_MAX_BODY_BYTES is
+    # enforced where it can be measured — on the encoded payload, in
+    # _enforce_body_byte_cap() — so the two budgets stay honest about their units.
     # ~3 chars per token for code. Safety margin applied later by safe_estimate_tokens().
     return min(max(2000, int(ctx_tokens * source_fraction * 3)), cap)
 
@@ -667,7 +894,9 @@ def _build_source_context(
 
     ordered = _prioritize_files(files, source_path, skill_findings)
     text, _paths = _pack_files(ordered, source_path, max_chars, skill_findings)
-    return text
+    # Feature 0070 P5 (A.1): the pack budget is in chars; the gateway rejects on
+    # bytes. Enforce the encoded ceiling before this ever becomes a request.
+    return _enforce_body_byte_cap(text, label="build_source_context")
 
 
 def _normalize_dedup_path(fp: str, source_path: str = "") -> str:
@@ -1267,6 +1496,11 @@ def run_combined_audit(
     llm_new_findings: list[dict] = []
     actual_input_tokens = 0
     actual_output_tokens = 0
+    # Feature 0070 P5 (A.3): a run that WANTED an LLM phase and lost it must not
+    # look identical to one that never wanted it. The reason egresses on the
+    # `result` event (→ audits.degraded_reason) as well as the thinking stream,
+    # which is transient and unqueryable after the fact.
+    degraded_reason = ""
     if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
@@ -1315,10 +1549,15 @@ def run_combined_audit(
             yield emitter.text_message(
                 "LLM phase unavailable — returning skill findings only."
             )
+            degraded_reason = (
+                f"LLM phase unavailable ({type(exc).__name__}: {str(exc)[:180]}) "
+                f"— skill findings only"
+            )
         if llm_notice:
             yield emitter.text_message(llm_notice)
         if llm_error:
             yield emitter.text_message(llm_error)
+            degraded_reason = llm_error
         llm_new_findings = _deduplicate_findings(
             skill_findings, llm_findings, source_path=source_path,
         )
@@ -1514,7 +1753,12 @@ def run_combined_audit(
     score = compute_score(all_findings, total)
     summary = build_summary(all_findings, categories, domain_label)
     logger.info("audit_done run_id=%s total_findings=%d score=%.1f", run_id, len(all_findings), score)
-    yield emitter.result_event(findings=all_findings, summary=summary, score=score)
+    result_extra = {"degraded_reason": degraded_reason} if degraded_reason else None
+    if degraded_reason:
+        logger.warning("audit_degraded run_id=%s reason=%s", run_id, degraded_reason)
+    yield emitter.result_event(
+        findings=all_findings, summary=summary, score=score, extra=result_extra,
+    )
     yield emitter.run_finished()
 
 
@@ -1620,6 +1864,15 @@ async def _collect_llm_findings_batched_async(
     )
     tier3_skipped = (len(scanned) - len(ordered)) if not include_tier3 else 0
     max_chars = _get_max_source_chars(model)
+    # Feature 0070 P5 (A.1): keep each batch inside the encoded-body ceiling by
+    # BATCHING SMALLER, not by dropping a batch's tail. A char is >= 1 byte, so a
+    # char budget below the byte cap keeps the batch under it; files that no
+    # longer fit roll into the NEXT batch instead of going unanalyzed, so the
+    # ceiling costs latency, never coverage. Multibyte content that still
+    # overshoots is caught by the hard backstop in _collect_llm_findings_async.
+    _body_cap = _get_max_body_bytes()
+    if _body_cap > 0:
+        max_chars = min(max_chars, _body_cap)
     # Budget-aware batching: with a USD budget configured the sweep batches
     # cautiously (smaller batches) so cost accrues incrementally and the cap
     # can halt it mid-tree before over-spending; with no budget it packs large
@@ -1651,6 +1904,10 @@ async def _collect_llm_findings_batched_async(
     # call, and bound each call so a hung/slow model cannot starve these checks.
     _cancel = current_cancel_token()
     _deadline = current_audit_deadline()
+    # D.1: single retry authority — must run before the first model call.
+    _pin_llm_client_retries()
+    _consec_cap = _max_consecutive_failures()
+    _consec_failures = 0
     _call_timeout = _safe_int_env("VULTURE_LLM_CALL_TIMEOUT_SEC", 120)
     if _call_timeout <= 0:  # 0/negative would make asyncio.wait_for insta-timeout every call
         _call_timeout = 120
@@ -1692,8 +1949,28 @@ async def _collect_llm_findings_batched_async(
         total_in += in_tok
         total_out += out_tok
         files_seen += len(batch_paths)
-        if error and first_error is None:
-            first_error = error
+        if error:
+            _consec_failures += 1
+            if first_error is None:
+                first_error = error
+        else:
+            # Reset on success so one bad batch does not poison the remainder.
+            _consec_failures = 0
+        if _consec_cap and _consec_failures >= _consec_cap and batch_idx + 1 < len(batches):
+            notice = (
+                f"[partial results] LLM phase aborted after {_consec_failures} "
+                f"consecutive batch failures; stopped after {batch_idx + 1} of "
+                f"{len(batches)} batch(es). Last error: {error}"
+            )
+            logger.warning(
+                "llm_consecutive_failure_abort run_id=%s failures=%d cap=%d "
+                "batch=%d/%d last_error=%s",
+                run_id, _consec_failures, _consec_cap,
+                batch_idx + 1, len(batches), str(error)[:160],
+            )
+            if first_error is None:
+                first_error = notice
+            break
         if findings:
             # Dedup across batches AND against skill findings so one vuln seen
             # in two overlapping windows isn't double-reported (P1f).
@@ -1838,8 +2115,14 @@ async def _collect_llm_findings_async(
     model: str | None = None,
     skill_findings: list[dict] | None = None,
     source_context: str = "",
+    _size_retry: bool = False,
 ) -> tuple[list[dict], str | None, int, int]:
-    """Async helper: run LLM agent and return (findings, error, input_tokens, output_tokens)."""
+    """Async helper: run LLM agent and return (findings, error, input_tokens, output_tokens).
+
+    ``_size_retry`` is set on the internal one-shot retry with a halved source
+    budget after a size rejection (feature 0070 P5, A.2) — it stops the retry
+    from recursing.
+    """
     from agents import Agent, ModelSettings, Runner
 
     # feature 0064: when VULTURE_LLM_BROKER is on and this run carries a broker
@@ -1866,6 +2149,11 @@ async def _collect_llm_findings_async(
 
     if not source_context:
         source_context = _build_source_context(source_path, skill_findings=skill_findings, model=model)
+    else:
+        # Batched path (P1f): the batch text was packed against a CHAR budget —
+        # apply the encoded-byte ceiling here, the single choke point every
+        # request passes through (feature 0070 P5, A.1).
+        source_context = _enforce_body_byte_cap(source_context, label="batch")
     # Feature 0057 P1c: always attach the read-only file + grep tools, even on
     # the inline-source path. The inline context is a budget-bounded subset of
     # the tree; giving the LLM read/list/grep lets it follow cross-file
@@ -1951,36 +2239,45 @@ async def _collect_llm_findings_async(
 
     agent = Agent(**agent_kwargs)
 
-    from shared.llm.errors import classify_llm_error, retry_llm_call
+    from shared.llm.errors import LLMErrorKind, classify_llm_error, retry_llm_call
     from shared.llm.loop_guard import LoopDetectedError, create_loop_guard_hooks
 
+    # Feature 0070 P5 (defect C): ``hooks`` is a ``Runner.run()`` parameter, not
+    # a RunConfig field — on any SDK version. The old code passed it to
+    # RunConfig, so the TypeError fired on EVERY run and the guard was dropped.
+    global _LOOP_GUARD_WARNED
     hooks, _detector = create_loop_guard_hooks()
+    if hooks is None:
+        if not _LOOP_GUARD_WARNED:
+            _LOOP_GUARD_WARNED = True  # once per process, not once per run
+            logger.warning(
+                "loop_guard_unavailable: SDK RunHooks missing; tool loops are "
+                "NOT bounded. Set VULTURE_REQUIRE_LOOP_GUARD=true to fail",
+            )
+        if _require_loop_guard():
+            logger.error("loop_guard_required_unavailable run_id=%s", run_id)
+            return [], (
+                "LLM analysis refused: tool loop guard unavailable and "
+                "VULTURE_REQUIRE_LOOP_GUARD=true"
+            ), 0, 0
 
     async def _run_agent():
         kwargs: dict[str, Any] = {}
-        rc_kwargs: dict[str, Any] = {}
-        if run_model_provider is not None:
-            rc_kwargs["model_provider"] = run_model_provider
         if hooks is not None:
-            rc_kwargs["hooks"] = hooks
-        if rc_kwargs:
+            kwargs["hooks"] = hooks
+        if run_model_provider is not None:
             try:
                 from agents import RunConfig  # type: ignore[import-untyped]
-                try:
-                    kwargs["run_config"] = RunConfig(**rc_kwargs)  # type: ignore[call-arg]
-                except TypeError:
-                    # Older SDKs reject RunConfig(hooks=): drop the OPTIONAL loop
-                    # guard, never the broker provider (fail closed — see below).
-                    logger.warning("loop_guard_hooks_disabled: SDK version does not support RunConfig(hooks=)")
-                    if run_model_provider is not None:
-                        kwargs["run_config"] = RunConfig(model_provider=run_model_provider)  # type: ignore[call-arg]
             except ImportError as exc:
                 # §26/M11: broker required but RunConfig missing → FAIL CLOSED
                 # (never fall back to the env-key global client, which would leak
                 # the keys the broker isolates); raise → skills-only (N2).
-                if run_model_provider is not None:
-                    raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
-                logger.warning("run_config_unavailable: SDK lacks RunConfig; loop guard disabled")
+                raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
+            kwargs["run_config"] = RunConfig(model_provider=run_model_provider)  # type: ignore[call-arg]
+        # D.3: bound the SDK's agent loop. Without it one attempt can issue an
+        # unbounded number of model calls (~16 measured), invisible to
+        # retry_llm_call's budget and uncounted by the tool-loop guard.
+        kwargs["max_turns"] = _max_turns()
         return await Runner.run(agent, input=prompt_text, **kwargs)
 
     from shared.llm.broker import aclose_broker_client
@@ -1997,6 +2294,30 @@ async def _collect_llm_findings_async(
         return [], f"LLM agent aborted: {exc}", 0, 0
     except Exception as exc:
         kind = classify_llm_error(exc)
+        # Feature 0070 P5 (A.2): a size rejection is NOT transient — retrying the
+        # identical request fails identically, which is why CONTEXT_OVERFLOW is
+        # (correctly) absent from RETRYABLE_KINDS. But a *smaller* request is a
+        # different request: halve the source body and try exactly once more,
+        # then degrade. No model cooldown for the first attempt — the model is
+        # healthy, our request was too big.
+        halved = (
+            _halve_source_context(source_context)
+            if kind == LLMErrorKind.CONTEXT_OVERFLOW and not _size_retry
+            else ""
+        )
+        if halved:
+            logger.warning(
+                "llm_size_retry run_id=%s kind=%s bytes=%d->%d error=%s",
+                run_id, kind.value, len(source_context.encode("utf-8")),
+                len(halved.encode("utf-8")), str(exc)[:200],
+            )
+            return await _collect_llm_findings_async(
+                run_id, source_path, categories, skill_tools,
+                instructions, domain_label, prior_context, model,
+                skill_findings=skill_findings,
+                source_context=halved,
+                _size_retry=True,
+            )
         cooldown_manager.record_failure(resolved_model, error_kind=kind.value)
         logger.warning("llm_failed kind=%s error=%s", kind.value, str(exc)[:200])
         return [], f"LLM analysis failed ({kind.value}): {str(exc)[:200]}", 0, 0

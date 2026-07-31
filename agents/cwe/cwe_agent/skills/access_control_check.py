@@ -31,10 +31,82 @@ AUTHZ_PRESENT = re.compile(
     re.IGNORECASE,
 )
 
-# CWE-863: Incorrect authorization via string comparison
+# Receiver-aware authz middleware, e.g. juice-shop's whole authz vocabulary:
+# security.isAuthorized(), security.denyAll(), security.isAccounting(),
+# security.isDeluxe(). None of those are in AUTHZ_PRESENT, which is why the
+# old whole-file boolean condemned all 109 route lines of server.ts at once.
+#
+# Match on the RECEIVER *and* anchor the verb to the START of the method name
+# (same shape as the CWE-754 fix in error_handling_check.py) so request
+# decorators keep reading as decorators: `security.appendUserId()` authorises
+# nothing ("append" is not a verb here), nor does
+# `security.updateAuthenticatedUsers()`.
+_AUTHZ_RECEIVER = (
+    r"(?:security|securityHandler|authz|auth|acl|rbac|policy|guard|guards|"
+    r"perm|perms|permission|permissions)"
+)
+_AUTHZ_VERB = (
+    r"(?:is|are|has|can|must|may|only|require|requires|required|ensure|assert|"
+    r"check|verify|validate|deny|forbid|reject|allow|permit|restrict|protect|"
+    r"authorize|authorise|authenticate)"
+)
+
+# The guard is just as real when the receiver hangs off an object:
+# `this.security.isAuthorized()`, `self.authz.require_role('admin')`. Allow a
+# short, explicit owner prefix rather than any dotted path, so the lookbehind
+# still rejects a receiver that is merely the TAIL of another identifier
+# (`dataSecurity.isEmpty()` must not exonerate a route).
+_AUTHZ_OWNER = r"(?:this|self|req|ctx|svc|services|deps)\s*\.\s*"
+AUTHZ_MIDDLEWARE = re.compile(
+    rf"(?<![\w.])(?:{_AUTHZ_OWNER})?{_AUTHZ_RECEIVER}"
+    rf"\s*\.\s*{_AUTHZ_VERB}[A-Za-z0-9_]*\s*\(",
+    re.IGNORECASE,
+)
+
+# Express-style mount that confers authz on everything under a prefix:
+#   app.use('/api/BasketItems', security.isAuthorized())
+MOUNT_CALL = re.compile(
+    r"(?<![\w.])(?:app|router|server|api)\s*\.\s*use\s*\(\s*"
+    r"(\[[^\]]*\]|['\"][^'\"]+['\"])\s*,"
+)
+_QUOTED = re.compile(r"['\"]([^'\"]+)['\"]")
+
+# First quoted argument of a route registration = the route path.
+ROUTE_PATH_ARG = re.compile(r"\(\s*\[?\s*['\"]([^'\"]*)['\"]")
+
+_DECORATOR_LINE = re.compile(r"^\s*@")
+
+# A file with this many unprotected routes gets ONE rollup finding instead of
+# one row per route: juice-shop's server.ts alone would otherwise dominate the
+# whole report with identically-titled rows.
+_ROLLUP_MIN_ROUTES = 3
+_ROLLUP_PATH_LIST_MAX = 80
+
+# CWE-863: Incorrect authorization via string comparison.
+# Longest-first alternation — `admin` before `administrator` would match the
+# prefix and then fail the closing quote.
+_PRIV_ROLE = (
+    r"(?:administrator|superadmin|superuser|sysadmin|admin|root|owner|moderator)"
+)
+_ROLE_ATTR = r"(?:role|roles|user_role|userRole|userRoles)"
 ROLE_STRING_CMP = [
-    re.compile(r'(?:role|user_role|userRole)\s*==\s*["\'](?:admin|root|superuser)["\']'),
-    re.compile(r'["\'](?:admin|root|superuser)["\']\s*==\s*(?:role|user_role|userRole)'),
+    # Python / generic bare identifier: role == 'admin', role === 'admin'
+    re.compile(
+        rf'(?:role|user_role|userRole)\s*(?:===|!==|==|!=)\s*["\']{_PRIV_ROLE}["\']'
+    ),
+    re.compile(
+        rf'["\']{_PRIV_ROLE}["\']\s*(?:===|!==|==|!=)\s*(?:role|user_role|userRole)\b'
+    ),
+    # JS/TS attribute compare: user.role === 'admin', req.user.role != "root"
+    re.compile(rf'\.\s*{_ROLE_ATTR}\s*(?:===|!==|==|!=)\s*["\']{_PRIV_ROLE}["\']'),
+    re.compile(
+        rf'["\']{_PRIV_ROLE}["\']\s*(?:===|!==|==|!=)\s*[\w.]*\.\s*{_ROLE_ATTR}\b'
+    ),
+    # JS/TS membership test: role.includes('admin'), roles.indexOf('admin')
+    re.compile(
+        rf'\b{_ROLE_ATTR}\s*\.\s*(?:includes|indexOf|contains|has)\s*\(\s*'
+        rf'["\']{_PRIV_ROLE}["\']'
+    ),
 ]
 
 # CWE-639: Authorization Bypass Through User-Controlled Key (IDOR).
@@ -107,8 +179,9 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         return
     content = read_file_safe(file_path) or ""
 
-    has_authz = AUTHZ_PRESENT.search(content) is not None
     has_ownership = OWNERSHIP_CHECK.search(content) is not None
+    mounts = _authz_mount_prefixes(lines)
+    unprotected: list[tuple[int, str | None]] = []
     for line_num, line in enumerate(lines, start=1):
         if COMMENT_INDICATORS.match(line):
             continue
@@ -116,45 +189,202 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
             continue
         if SCANNER_DEF_LINE.search(line):
             continue
-        _check_missing_authz(file_path, line, line_num, has_authz, lines, content, findings)
+        if _is_unprotected_route(lines, line, line_num, mounts):
+            unprotected.append((line_num, _route_path(line)))
         _check_role_string_cmp(file_path, line, line_num, lines, findings)
         _check_idor(file_path, line, line_num, has_ownership, lines, findings)
         _check_privilege(file_path, line, line_num, lines, findings)
+    _emit_missing_authz(file_path, lines, content, unprotected, findings)
 
 
-def _check_missing_authz(
+# --- CWE-862 helpers -------------------------------------------------------
+
+
+def _statement_text(lines: list[str], idx: int, max_lines: int = 12) -> str:
+    """Text of the logical statement starting at 0-based ``idx``.
+
+    Follows parenthesis balance so a route registration spread over several
+    lines is judged as one unit — and, critically, so a route does NOT get
+    exonerated by its *neighbour's* authz middleware.
+    """
+    depth = 0
+    parts: list[str] = []
+    for i in range(idx, min(len(lines), idx + max_lines)):
+        parts.append(lines[i])
+        depth += lines[i].count("(") - lines[i].count(")")
+        if depth <= 0:
+            break
+    return "\n".join(parts)
+
+
+def _decorator_block_text(lines: list[str], idx: int) -> str:
+    """Text of a decorator-style route: the contiguous decorator run around
+    ``idx`` plus the signature and first few body lines (Flask/Spring put the
+    authz on an adjacent decorator, not on the route line)."""
+    start = idx
+    while start > 0 and _DECORATOR_LINE.match(lines[start - 1]):
+        start -= 1
+    end = idx
+    n = len(lines)
+    while end + 1 < n and _DECORATOR_LINE.match(lines[end + 1]):
+        end += 1
+    # Signature + a little body, but never spill into the next route's
+    # decorator stack.
+    body = 0
+    while end + 1 < n and body < 4 and not _DECORATOR_LINE.match(lines[end + 1]):
+        end += 1
+        body += 1
+    return "\n".join(lines[start:end + 1])
+
+
+def _route_scope_text(lines: list[str], line: str, line_num: int) -> str:
+    """The text in which THIS route's own authz may legitimately appear."""
+    idx = line_num - 1
+    if _DECORATOR_LINE.match(line):
+        return _decorator_block_text(lines, idx)
+    return _statement_text(lines, idx)
+
+
+def _has_authz(text: str) -> bool:
+    return (
+        AUTHZ_PRESENT.search(text) is not None
+        or AUTHZ_MIDDLEWARE.search(text) is not None
+    )
+
+
+def _authz_mount_prefixes(lines: list[str]) -> list[str]:
+    """Path prefixes mounted with authz middleware, e.g.
+    ``app.use('/api/BasketItems', security.isAuthorized())``."""
+    prefixes: list[str] = []
+    for idx, line in enumerate(lines):
+        if COMMENT_INDICATORS.match(line):
+            continue
+        match = MOUNT_CALL.search(line)
+        if not match:
+            continue
+        if not _has_authz(_statement_text(lines, idx)):
+            continue
+        prefixes.extend(p for p in _QUOTED.findall(match.group(1)) if p.startswith("/"))
+    return prefixes
+
+
+def _path_segments(path: str) -> list[str]:
+    return [s for s in path.split("?")[0].split("/") if s]
+
+
+def _mount_covers(route_path: str, mount_path: str) -> bool:
+    """True when an Express mount at ``mount_path`` runs for ``route_path``.
+
+    Segment-aware on purpose: ``app.use('/api/Feedbacks/:id', ...)`` does NOT
+    run for ``POST /api/Feedbacks``, so a naive string prefix would exonerate a
+    genuinely unprotected route.
+    """
+    mount = _path_segments(mount_path)
+    route = _path_segments(route_path)
+    if len(mount) > len(route):
+        return False
+    for want, got in zip(mount, route):
+        if want == got or want in ("*", "") or got == "*":
+            continue
+        if want.startswith(":") or got.startswith(":"):
+            continue
+        return False
+    return True
+
+
+def _route_path(line: str) -> str | None:
+    """The quoted path of a route registration, if it carries one."""
+    match = ROUTE_PATH_ARG.search(line)
+    if not match:
+        return None
+    path = match.group(1)
+    return path if path.startswith("/") else None
+
+
+def _is_unprotected_route(
+    lines: list[str], line: str, line_num: int, mounts: list[str],
+) -> bool:
+    """Per-ROUTE authorization decision (was a per-FILE boolean before 0070)."""
+    if not any(pattern.search(line) for pattern in ROUTE_PATTERNS):
+        return False
+    if _has_authz(_route_scope_text(lines, line, line_num)):
+        return False
+    path = _route_path(line)
+    return not (path and any(_mount_covers(path, mount) for mount in mounts))
+
+
+def _missing_authz_finding(
+    file_path: Path, lines: list[str], severity: str,
+    line_start: int, line_end: int, title: str, description: str,
+) -> dict:
+    finding = {
+        "severity": severity,
+        "check_id": "cwe.access_control.missing_authz",
+        "category": "CWE-862",
+        "title": title,
+        "description": description,
+        "file_path": str(file_path),
+        "line_start": line_start,
+        "line_end": line_end,
+        "recommendation": "Add authentication/authorization middleware or decorators",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_start)
+    return enrich_finding(finding, "862")
+
+
+def _rollup_description(unprotected: list[tuple[int, str | None]]) -> str:
+    """Name the unprotected routes: distinct paths where available."""
+    paths: list[str] = []
+    for _line_num, path in unprotected:
+        if path and path not in paths:
+            paths.append(path)
+    if not paths:
+        lines_txt = ", ".join(str(n) for n, _ in unprotected[:_ROLLUP_PATH_LIST_MAX])
+        return (
+            f"{len(unprotected)} route registrations in this file have no "
+            f"visible authorization check. Lines: {lines_txt}"
+        )
+    shown = paths[:_ROLLUP_PATH_LIST_MAX]
+    listed = ", ".join(shown)
+    if len(paths) > len(shown):
+        listed += f", (+{len(paths) - len(shown)} more)"
+    return (
+        f"{len(unprotected)} route registrations in this file have no visible "
+        f"authorization check ({len(paths)} distinct paths). "
+        f"Unprotected paths: {listed}"
+    )
+
+
+def _emit_missing_authz(
     file_path: Path,
-    line: str,
-    line_num: int,
-    has_authz: bool,
     lines: list[str],
     content: str,
+    unprotected: list[tuple[int, str | None]],
     findings: list[dict],
 ) -> None:
-    """Check for missing authorization on routes (CWE-862)."""
-    if has_authz:
+    """Emit CWE-862 rows: one per route, or one rollup for a route table."""
+    if not unprotected:
         return
-    for pattern in ROUTE_PATTERNS:
-        if not pattern.search(line):
-            continue
-        # Two-tier: demote to medium if file lacks route/handler context
-        severity = "high"
-        if not check_context(content, _ROUTE_CONTEXT):
-            severity = "medium"
-        finding = {
-            "severity": severity,
-            "check_id": "cwe.access_control.missing_authz",
-            "category": "CWE-862",
-            "title": "Route handler without authorization",
-            "description": f"Endpoint at line {line_num} has no visible auth check",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Add authentication/authorization middleware or decorators",
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(enrich_finding(finding, "862"))
+    # Two-tier: demote to medium if file lacks route/handler context
+    severity = "high" if check_context(content, _ROUTE_CONTEXT) else "medium"
+    if len(unprotected) < _ROLLUP_MIN_ROUTES:
+        for line_num, path in unprotected:
+            where = f"Endpoint {path} (line {line_num})" if path else f"Endpoint at line {line_num}"
+            findings.append(_missing_authz_finding(
+                file_path, lines, severity, line_num, line_num,
+                "Route handler without authorization",
+                f"{where} has no visible auth check",
+            ))
         return
+    finding = _missing_authz_finding(
+        file_path, lines, severity,
+        unprotected[0][0], unprotected[-1][0],
+        "Route handlers without authorization",
+        _rollup_description(unprotected),
+    )
+    finding["is_rollup"] = True
+    finding["instance_count"] = len(unprotected)
+    findings.append(finding)
 
 
 def _check_role_string_cmp(

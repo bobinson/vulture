@@ -1,5 +1,7 @@
 """CWE cryptography vulnerability detection skill."""
 
+import base64
+import binascii
 import re
 from pathlib import Path
 
@@ -72,6 +74,27 @@ WEAK_KEY_PATTERNS = [
     re.compile(r"rsa\.GenerateKey\([^,]+,\s*(?:512|768|1024)\)"),
 ]
 
+# CWE-326, second path: the key strength is not written down anywhere — it
+# lives in the PEM body. juice-shop inlines a 1024-bit RSA private key in
+# `lib/insecurity.ts` and signs every JWT with it; every pattern above needs a
+# literal 512/768/1024 next to "RSA", so the whole repo reported zero CWE-326.
+#
+# So decode the base64 body of an inline PEM literal and read the modulus.
+# EC/DSA/OpenSSH/PGP blocks are skipped: their integers are not RSA moduli and
+# a 256-bit EC key is perfectly strong. For an unlabelled PKCS#8
+# `BEGIN PRIVATE KEY` we require the RSA algorithm OID to be present before
+# interpreting an integer as a modulus.
+PEM_KEY_BEGIN = re.compile(r"-----BEGIN (RSA |)(?:PRIVATE|PUBLIC) KEY-----")
+PEM_KEY_END = re.compile(r"-----END (?:[A-Z]+ )?(?:PRIVATE|PUBLIC) KEY-----")
+
+# rsaEncryption OID 1.2.840.113549.1.1.1, DER-encoded content bytes.
+_RSA_OID = bytes.fromhex("2a864886f70d010101")
+_MIN_RSA_BITS = 2048
+_MAX_PEM_LINES = 80
+# String-escaped newlines inside a source literal ("...KEY-----\r\n...").
+_PEM_ESCAPE = re.compile(r"\\[rnt]")
+_NON_BASE64 = re.compile(r"[^A-Za-z0-9+/=]")
+
 # CWE-330: Insufficient randomness
 WEAK_RANDOM_PATTERNS = [
     re.compile(r"\brandom\.random\s*\("),
@@ -123,10 +146,44 @@ SAFE_HASH_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 
-# Hardcoded encryption keys
+# Hardcoded cryptographic keys (CWE-321).
+#
+# The name group used to be `encrypt|cipher|aes|secret` only, so the two keys
+# juice-shop ships in source — `const privateKey = '-----BEGIN RSA ...'` and
+# the HMAC key literal below — were both invisible. Signing/session/cookie/JWT
+# keys are exactly as sensitive as an encryption key, and a key handed
+# POSITIONALLY to a Node crypto constructor has no name at all, hence the third
+# pattern.
+#
+# `session` and `cookie` are deliberately NOT in this list even though they name
+# key material occasionally: `sessionKey` / `cookieKey` overwhelmingly name a
+# *slot*, not a secret. Measured — both juice-shop hits of that shape were
+# `welcomeBannerStatusCookieKey = 'welcomebanner_status'`, and adding the two
+# names produced 57 rows on a second corpus (openclaw), every one of them a
+# routing identifier like `sessionKey: "hook:gmail:{{id}}"`. A hardcoded
+# session-signing key named exactly `sessionKey` is the accepted miss; the far
+# more common `session_secret` / `cookieSecret` spellings are not matched by
+# this rule either way.
+_KEY_NAME = r"(?:encrypt(?:ion)?|cipher|aes|secret|private|signing|sign|hmac|jwt|master)"
+
+# Elided documentation values (`PRIVATE_KEY="nsec1..."`, `key = "xxxxxxxx"`)
+# are not key material. SAFE_KEY_CONTEXT can't express this: it tests the whole
+# line, while this has to test the captured literal.
+HARDCODED_KEY_NAMED = re.compile(
+    rf'{_KEY_NAME}.?key\s*(?:=|:)\s*["\']([^"\']{{8,}})["\']', re.IGNORECASE,
+)
+PLACEHOLDER_KEY_VALUE = re.compile(r"(?:\.\.\.$|^\*+$|^x{4,}$|^<.*>$)", re.IGNORECASE)
+
 HARDCODED_KEY_PATTERNS = [
-    re.compile(r'(?:encrypt|cipher|aes|secret).?key\s*(?:=|:)\s*["\'][^"\']{8,}["\']', re.IGNORECASE),
+    HARDCODED_KEY_NAMED,
     re.compile(r'(?:iv|nonce)\s*(?:=|:)\s*b?["\'][^"\']{8,}["\']', re.IGNORECASE),
+    # Literal key as the second argument of a Node crypto constructor:
+    # crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj')
+    re.compile(
+        r'create(?:Hmac|Cipheriv|Decipheriv|Cipher|Decipher|Sign|Verify)\s*\(\s*'
+        r'["\'][^"\']+["\']\s*,\s*["\'][^"\']{8,}["\']',
+        re.IGNORECASE,
+    ),
 ]
 
 SAFE_KEY_CONTEXT = re.compile(
@@ -220,27 +277,145 @@ def _check_broken_crypto(
     findings.append(enrich_finding(finding, "327"))
 
 
+def _der_read_length(data: bytes, i: int) -> tuple[int, int] | None:
+    """Parse the DER length octets at `i`; return (length, next index)."""
+    length = data[i]
+    i += 1
+    if not length & 0x80:
+        return length, i
+    count = length & 0x7F
+    if count == 0 or count > 4 or i + count > len(data):
+        return None
+    return int.from_bytes(data[i:i + count], "big"), i + count
+
+
+def _der_max_integer_bits(data: bytes, depth: int = 0) -> int:
+    """Largest INTEGER bit length anywhere in a DER blob.
+
+    For a PKCS#1 RSAPrivateKey / RSAPublicKey the modulus is the largest
+    integer, so the maximum is the key size. Recursing through SEQUENCE /
+    OCTET STRING / BIT STRING wrappers also handles PKCS#8 and SPKI without
+    needing a full ASN.1 implementation.
+    """
+    best = 0
+    i, n = 0, len(data)
+    while i + 1 < n:
+        tag = data[i]
+        parsed = _der_read_length(data, i + 1)
+        if parsed is None:
+            break
+        length, i = parsed
+        if length > n - i:
+            break
+        chunk = data[i:i + length]
+        i += length
+        if tag == 0x02:  # INTEGER
+            best = max(best, int.from_bytes(chunk, "big").bit_length())
+        elif depth < 4 and tag in (0x30, 0x31, 0x04, 0x03):
+            body = chunk[1:] if tag == 0x03 else chunk  # BIT STRING: unused-bits octet
+            best = max(best, _der_max_integer_bits(body, depth + 1))
+    return best
+
+
+def _pem_body(line: str, lines: list[str], line_num: int) -> str | None:
+    """Collect the base64 body of a PEM block starting on ``line``.
+
+    Handles both juice-shop's one-line literal (whole PEM in a single string
+    with escaped ``\\r\\n``) and a conventional multi-line block. Returns None
+    when no terminator is found within a sane distance.
+    """
+    header = PEM_KEY_BEGIN.search(line)
+    if header is None:
+        return None
+    rest = line[header.end():]
+    parts: list[str] = []
+    for offset in range(_MAX_PEM_LINES):
+        end = PEM_KEY_END.search(rest)
+        if end is not None:
+            parts.append(rest[:end.start()])
+            return "".join(parts)
+        parts.append(rest)
+        nxt = line_num + offset  # 0-indexed: the line after line_num
+        if nxt >= len(lines):
+            return None
+        rest = lines[nxt]
+    return None
+
+
+def _pem_key_bits(line: str, lines: list[str], line_num: int) -> int | None:
+    """RSA modulus bit length of an inline PEM literal, or None."""
+    body = _pem_body(line, lines, line_num)
+    if body is None:
+        return None
+    b64 = _NON_BASE64.sub("", _PEM_ESCAPE.sub("", body))
+    if len(b64) < 64:
+        return None
+    b64 = b64.rstrip("=")
+    der = _b64_decode(b64 + "=" * (-len(b64) % 4))
+    if der is None:
+        return None
+    labelled_rsa = bool(PEM_KEY_BEGIN.search(line).group(1))  # type: ignore[union-attr]
+    if not labelled_rsa and _RSA_OID not in der:
+        return None
+    bits = _der_max_integer_bits(der)
+    return bits if 256 <= bits <= 16384 else None
+
+
+def _b64_decode(text: str) -> bytes | None:
+    """Strict base64 decode that never raises."""
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
 def _check_weak_keys(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for CWE-326 inadequate encryption strength."""
+    """Check for CWE-326 inadequate encryption strength.
+
+    Two paths: an explicit weak key size written in the source, and an inline
+    PEM literal whose decoded modulus is below 2048 bits.
+    """
+    detail = _weak_key_detail(line, lines, line_num)
+    if detail is None:
+        return
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.crypto.weak_key",
+        "category": "CWE-326",
+        "title": "Inadequate encryption key strength",
+        "description": detail.format(line_num=line_num),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Use RSA >= 2048 bits, or switch to ECC (P-256+)",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "326"))
+
+
+def _weak_key_detail(line: str, lines: list[str], line_num: int) -> str | None:
+    """Description template for a weak key on this line, or None.
+
+    A decoded PEM modulus is authoritative: when the line carries a PEM literal
+    we answer from its real bit length and never fall through to the textual
+    patterns, whose `RSA.*(?:512|768|1024)` shape would otherwise match a digit
+    run inside the base64 body of a perfectly strong key.
+    """
+    bits = _pem_key_bits(line, lines, line_num)
+    if bits is not None:
+        if bits >= _MIN_RSA_BITS:
+            return None
+        return (
+            f"Inline PEM key literal has a {bits}-bit RSA modulus "
+            f"(minimum {_MIN_RSA_BITS}) at line {{line_num}}"
+        )
     for pattern in WEAK_KEY_PATTERNS:
         if pattern.search(line):
-            finding = {
-                "severity": "high",
-                "check_id": "cwe.crypto.weak_key",
-                "category": "CWE-326",
-                "title": "Inadequate encryption key strength",
-                "description": f"Key size below recommended minimum at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Use RSA >= 2048 bits, or switch to ECC (P-256+)",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "326"))
-            return
+            return "Key size below recommended minimum at line {line_num}"
+    return None
 
 
 def _check_weak_random(
@@ -318,7 +493,10 @@ def _check_hardcoded_key(
     if line_value_is_variable_ref(line):
         return
     for pattern in HARDCODED_KEY_PATTERNS:
-        if pattern.search(line):
+        match = pattern.search(line)
+        if match:
+            if pattern is HARDCODED_KEY_NAMED and PLACEHOLDER_KEY_VALUE.search(match.group(1)):
+                continue
             finding = {
                 "severity": "critical",
                 "check_id": "cwe.crypto.hardcoded_key",

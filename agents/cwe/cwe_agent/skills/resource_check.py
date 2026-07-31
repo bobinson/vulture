@@ -36,11 +36,43 @@ RESOURCE_CONSUMPTION_PATTERNS = [
 BREAK_OR_RETURN = re.compile(r"\b(?:break|return|sys\.exit|os\.Exit)\b")
 
 # CWE-404: Improper resource shutdown
+#
+# The verb alone is not enough — this is the same defect the CWE-754 fix in
+# error_handling_check.py cured. A bare `(?:open|fopen)\s*\(` matched every
+# method whose name merely *ends* with "open": on juice-shop 82 of 84 rows
+# were `snackBarHelperService.open(...)`, `dialog.open(...)`,
+# `window.open(...)` and friends — UI calls, not resources.
+#
+# Three parts are needed together:
+#   1. a receiver guard on the builtin form, so only a *bare* open/fopen
+#      call (no `foo.` / `$foo` prefix) qualifies;
+#   2. a real-resource-namespace branch, because the bare form alone loses
+#      the `fs.createWriteStream` / `fs.createReadStream` stream family
+#      (5 genuine juice-shop sites) — dropping those would be an
+#      over-correction, not a narrowing;
+#   3. a declaration skip, because `open (` at the START of a line is a
+#      method DECLARATION, not a call that leaks a handle.
+_RES_NS = r"(?:fs|fsPromises|net|os|io|ioutil|sql|pgx|mongo|gorm)"
+
 RESOURCE_OPEN_PATTERNS = [
-    re.compile(r"(?:open|fopen|os\.Open|os\.Create)\s*\("),
-    re.compile(r"(?:sql\.Open|pgx\.Connect|mongo\.Connect)\s*\("),
-    re.compile(r"net\.(?:Dial|Listen)\s*\("),
+    # Bare builtin open()/fopen() — no receiver before it.
+    re.compile(r"(?<![\w.$])(?:open|fopen)\s*\("),
+    # Real resource namespaces: fs.createWriteStream, os.Open, os.Create,
+    # fs.createReadStream, sql.Open, mongo.Connect...
+    re.compile(rf"\b{_RES_NS}\.(?:[Oo]pen|[Cc]reate)\w*\s*\("),
+    re.compile(r"\b(?:sql\.Open|pgx\.Connect|mongo\.Connect)\s*\("),
+    re.compile(r"\bnet\.(?:Dial|Listen)\s*\("),
 ]
+
+# `open (...)` / `public open (): void {` at line start is a declaration.
+RESOURCE_OPEN_DECL = re.compile(
+    r"^\s*(?:(?:public|private|protected|static|async|export|function|def)\s+)*"
+    r"open\s*\("
+)
+
+# Markup is never a resource-shutdown site: `(click)="open()"` is a template
+# binding to a component method.
+_MARKUP_SUFFIXES = frozenset({".html", ".htm"})
 RESOURCE_CLOSE_SAFE = re.compile(
     r"\b(?:defer\s|\.close\(\)|\.Close\(\)|with\s+open|context\s*manager)\b",
     re.IGNORECASE,
@@ -69,6 +101,38 @@ AUTH_ENDPOINT_DEF = re.compile(
 RATE_LIMIT_HINT = re.compile(
     r"rate[_-]?limit|throttl|ratelimiter|slowapi|\bLimiter\s*\(|"
     r"flask[_-]limiter|express[_-]rate",
+    re.IGNORECASE,
+)
+
+# AUTH_ENDPOINT_DEF above is anchored to `def` / `func`, so no Express route
+# can ever match it — Broken Anti Automation was a structurally blind
+# category on Node codebases. This is the route-REGISTRATION form.
+EXPRESS_AUTH_ROUTE = re.compile(
+    r"\b(?:app|router|server)\s*\.\s*(?:post|put|patch|get)\s*\(\s*['\"`]"
+    # The auth keyword must be a delimited path segment, not any substring:
+    # `/rest/saveLoginIp` is not a credential endpoint even though "Login"
+    # occurs inside it.
+    r"(?P<path>[^'\"`]*(?<![A-Za-z0-9])"
+    r"(?:login|register|reset-?password|forgot-?password|"
+    r"change-?password|signin|sign-?in|signup|sign-?up)"
+    r"(?![A-Za-z0-9])[^'\"`]*)['\"`]",
+    re.IGNORECASE,
+)
+# Broader than RATE_LIMIT_HINT: Express limiters are usually named middleware
+# (`loginLimiter`), which carries no "rate" token.
+LIMITER_TOKEN = re.compile(
+    r"limiter|rate[_-]?limit|throttl|slow[_-]?down|brute[_-]?force",
+    re.IGNORECASE,
+)
+QUOTED_ROUTE_PATH = re.compile(r"['\"`](/[^'\"`]*)['\"`]")
+
+# CWE-807: reliance on an untrusted input for a security decision — a rate
+# limiter keyed on a client-controlled header can be bypassed by spoofing it.
+KEY_GENERATOR = re.compile(r"\bkeyGenerator\b")
+SPOOFABLE_CLIENT_HEADER = re.compile(
+    r"headers\s*(?:\[\s*['\"`]\s*|\.\s*get\s*\(\s*['\"`]\s*|\.\s*)"
+    r"(?:x-)?(?:forwarded-for|forwarded|real-ip|client-ip|true-client-ip|"
+    r"cf-connecting-ip)",
     re.IGNORECASE,
 )
 
@@ -115,6 +179,115 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
 
 
 def _check_rate_limiting(
+    file_path: Path, lines: list[str], findings: list[dict],
+) -> None:
+    """File-scoped rate-limiting checks (CWE-799 / CWE-807)."""
+    _check_def_rate_limiting(file_path, lines, findings)
+    _check_express_rate_limiting(file_path, lines, findings)
+    _check_spoofable_limiter_key(file_path, lines, findings)
+
+
+def _limiter_protected_paths(lines: list[str]) -> set[str]:
+    """Route paths that a limiter registration in this file mentions.
+
+    `app.use('/rest/user/reset-password', rateLimit({...}))` protects that
+    path (and everything under it), but says nothing about `/rest/user/login`
+    — so suppression for the Express form is PATH-scoped, not file-scoped.
+    """
+    protected: set[str] = set()
+    for line in lines:
+        if COMMENT_INDICATORS.match(line):
+            continue
+        if not LIMITER_TOKEN.search(line):
+            continue
+        protected.update(QUOTED_ROUTE_PATH.findall(line))
+    return protected
+
+
+def _is_path_protected(route_path: str, protected: set[str]) -> bool:
+    """True when a limiter covers this route path (exact or prefix mount)."""
+    normalized = route_path.rstrip("/") or "/"
+    for mount in protected:
+        base = mount.rstrip("/") or "/"
+        if normalized == base or normalized.startswith(base + "/"):
+            return True
+    return False
+
+
+def _check_express_rate_limiting(
+    file_path: Path, lines: list[str], findings: list[dict],
+) -> None:
+    """Auth route registered on an Express app with no limiter (CWE-799)."""
+    protected = _limiter_protected_paths(lines)
+    for line_num, line in enumerate(lines, start=1):
+        if COMMENT_INDICATORS.match(line):
+            continue
+        match = EXPRESS_AUTH_ROUTE.search(line)
+        if match is None:
+            continue
+        if LIMITER_TOKEN.search(line):
+            continue
+        route_path = match.group("path")
+        if _is_path_protected(route_path, protected):
+            continue
+        finding = {
+            "severity": "medium",
+            "check_id": "cwe.resource.express_rate_limit",
+            "category": "CWE-799",
+            "title": "Authentication route registered without rate limiting",
+            "description": (
+                f"Express route '{route_path}' at line {line_num} is an "
+                "authentication endpoint with no rate limiter applied to it"
+            ),
+            "file_path": str(file_path),
+            "line_start": line_num,
+            "line_end": line_num,
+            "recommendation": (
+                "Mount a rate limiter (e.g. express-rate-limit) on this route "
+                "to resist credential stuffing and brute-force automation"
+            ),
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "799"))
+
+
+def _check_spoofable_limiter_key(
+    file_path: Path, lines: list[str], findings: list[dict],
+) -> None:
+    """Rate-limit identity derived from a client-controlled header (CWE-807)."""
+    for line_num, line in enumerate(lines, start=1):
+        if COMMENT_INDICATORS.match(line):
+            continue
+        if not KEY_GENERATOR.search(line):
+            continue
+        window_end = min(line_num + 4, len(lines))
+        window = "\n".join(lines[line_num - 1 : window_end])
+        if not SPOOFABLE_CLIENT_HEADER.search(window):
+            continue
+        finding = {
+            "severity": "high",
+            "check_id": "cwe.resource.spoofable_rate_limit_key",
+            "category": "CWE-807",
+            "title": "Rate limiter keyed on a client-controlled header",
+            "description": (
+                f"keyGenerator at line {line_num} derives the rate-limit "
+                "identity from a request header the client can set, so the "
+                "limit is trivially bypassed by varying that header"
+            ),
+            "file_path": str(file_path),
+            "line_start": line_num,
+            "line_end": line_num,
+            "recommendation": (
+                "Key the limiter on the trusted peer address (req.ip with a "
+                "correctly configured trust-proxy hop count) or an "
+                "authenticated identity, never on a raw client header"
+            ),
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "807"))
+
+
+def _check_def_rate_limiting(
     file_path: Path, lines: list[str], findings: list[dict],
 ) -> None:
     """Check for missing rate limiting on auth endpoints (CWE-799).
@@ -182,6 +355,10 @@ def _check_improper_shutdown(
     findings: list[dict],
 ) -> None:
     """Check for improper resource shutdown (CWE-404)."""
+    if file_path.suffix.lower() in _MARKUP_SUFFIXES:
+        return
+    if RESOURCE_OPEN_DECL.match(line):
+        return
     for pattern in RESOURCE_OPEN_PATTERNS:
         if not pattern.search(line):
             continue
