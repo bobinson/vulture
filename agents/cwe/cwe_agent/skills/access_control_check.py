@@ -31,7 +31,8 @@ AUTHZ_PRESENT = re.compile(
     re.IGNORECASE,
 )
 
-# Receiver-aware authz middleware, e.g. juice-shop's whole authz vocabulary:
+# Receiver-aware authz middleware. A very common Express idiom hangs the guards
+# off a helper object, e.g.:
 # security.isAuthorized(), security.denyAll(), security.isAccounting(),
 # security.isDeluxe(). None of those are in AUTHZ_PRESENT, which is why the
 # old whole-file boolean condemned all 109 route lines of server.ts at once.
@@ -77,7 +78,7 @@ ROUTE_PATH_ARG = re.compile(r"\(\s*\[?\s*['\"]([^'\"]*)['\"]")
 _DECORATOR_LINE = re.compile(r"^\s*@")
 
 # A file with this many unprotected routes gets ONE rollup finding instead of
-# one row per route: juice-shop's server.ts alone would otherwise dominate the
+# one row per route: a single route-registration file would otherwise dominate the
 # whole report with identically-titled rows.
 _ROLLUP_MIN_ROUTES = 3
 _ROLLUP_PATH_LIST_MAX = 80

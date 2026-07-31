@@ -87,7 +87,7 @@ SAFE_PROTOTYPE_PATTERNS = re.compile(
 # *prototype*, 915 is about reaching *any* attribute the caller was never
 # meant to set (`role: 'admin'`, `isAdmin: true`, `deluxeToken`).
 #
-# Two shapes, both real on juice-shop:
+# Two shapes, both observed in real applications:
 #
 #   1. The request body spread wholesale into render locals or a model
 #      write (routes/dataErasure.ts:108 and :124). The spread alone is
@@ -95,8 +95,8 @@ SAFE_PROTOTYPE_PATTERNS = re.compile(
 #      key-by-key is harmless — so a sink must be present within the
 #      enclosing few lines.
 #   2. An auto-generated CRUD resource that binds every model attribute
-#      to request input (server.ts:501, the finale.resource loop; this is
-#      juice-shop's registerAdminChallenge vector — POST /api/Users with
+#      to request input (an auto-generated REST resource loop; this is the
+#      classic privilege-escalation vector — POST /api/Users with
 #      `role: 'admin'`).
 BODY_SPREAD = re.compile(r"\.\.\.\s*(?:req|request)\s*\.\s*(?:body|query|params)\b")
 
@@ -130,7 +130,7 @@ SAFE_MASS_ASSIGNMENT_PATTERNS = re.compile(
 #
 # Browser web storage is readable by any script on the origin and
 # survives the tab, so an auth token there is one XSS away from account
-# takeover (juice-shop keeps its JWT in localStorage).
+# takeover (a JWT parked in localStorage is the common instance).
 #
 # Precision note: an Angular app writes to web storage constantly
 # (`itemTotal`, `walletTotal`, `deliveryMethodId`, `guestBasket`), so the

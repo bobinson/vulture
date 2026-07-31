@@ -1,0 +1,25 @@
+# Group: A01 reachability (feature 0070 P6).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# CWE-1275 (Sensitive Cookie with Improper SameSite Attribute) — 3 positive +
+# 3 clean twins, meeting min_fixtures = 3 on both sides.
+#
+# Positive 2 is the load-bearing one: `sameSite: 'none'` is PRESENT and
+# vulnerable. CWE-1004/614 are "attribute absent => report" checks, so a
+# predicate copied from them scores this file clean. Its clean twin differs only
+# in the attribute VALUE (`lax`), which is what forces the distinction.
+#
+# CWE-219 is deliberately ABSENT from this manifest. It correlates a mount
+# declaration with a directory's contents, and run_deterministic() copies each
+# fixture to a temp dir as one flattened file renamed `_neutral.<ext>` —
+# destroying both the layout and the filename. It cannot be corpus-gated by the
+# current runner and lands in DECLARED-ONLY with unit-test coverage instead.
+
+# ── CWE-1275 SameSite (skill `web_security`) ──
+- {file: a01/cwe_1275_1.js, language: JavaScript, cwe: "1275", expectation: positive, line: 4}
+- {file: a01/cwe_1275_2.ts, language: TypeScript, cwe: "1275", expectation: positive, line: 6}
+- {file: a01/cwe_1275_3.py, language: Python, cwe: "1275", expectation: positive, line: 3}
+- {file: a01/cwe_1275_1_clean.js, language: JavaScript, cwe: "1275", expectation: negative}
+- {file: a01/cwe_1275_2_clean.ts, language: TypeScript, cwe: "1275", expectation: negative}
+- {file: a01/cwe_1275_3_clean.py, language: Python, cwe: "1275", expectation: negative}

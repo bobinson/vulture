@@ -15,7 +15,7 @@ So a workflow doing exactly the right thing —
     ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
 
 — was reported as `medium` "Suspicious config key with literal value". On
-juice-shop that is 22 rows across .github/workflows/, all of them wrong, and
+one tree that is 22 rows across .github/workflows/, all of them wrong, and
 they arrive the moment the `secrets` skill is wired into dispatch.
 
 The fix must not weaken literal detection: a real embedded credential in a

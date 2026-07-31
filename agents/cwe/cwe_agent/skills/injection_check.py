@@ -56,8 +56,8 @@ SQL_INJECTION_PATTERNS = [
     # statement:  db.query(`SELECT ... WHERE id = ${req.params.id}`)
     #
     # Every pattern above is Python- or Go-shaped, so Node was entirely
-    # uncovered: juice-shop's login and search routes — textbook
-    # template-literal SQL injection — produced zero CWE-89 findings.
+    # uncovered: Node login and search routes that build SQL by template-literal
+    # interpolation — textbook injection — produced zero CWE-89 findings.
     # Requiring BOTH a DML keyword and a `${` keeps static template
     # literals and parameterised calls (which use quotes, not backticks)
     # out of the results.
@@ -67,7 +67,7 @@ SQL_INJECTION_PATTERNS = [
     # under re.IGNORECASE. English prose is full of those words, so it fired
     # on "instructions on how to *set* up and configure the Alchemy API" and
     # "the bonus points *from* this order will be added" — 3 CRITICAL false
-    # positives on juice-shop and zero true positives (both genuine SQLi
+    # positives in one sweep and zero true positives (both genuine SQLi
     # sites come from the verb branch above).
     #
     # A single clause keyword is not evidence of SQL. A *bigram* — verb plus
@@ -139,8 +139,8 @@ SAFE_VALIDATION_PATTERNS = re.compile(
 #     escape hatch. Every call is a deliberate trust decision worth a row.
 #   * `[innerHTML]="expr"` template binding — Angular sanitizes HTML bindings,
 #     but the binding is still the sink an attacker aims at and is routinely
-#     paired with a `bypassSecurityTrustHtml` value (juice-shop does exactly
-#     that). The negative lookahead drops pure-i18n bindings whose expression
+#     paired with a `bypassSecurityTrustHtml` value, which is the common real
+#     pairing. The negative lookahead drops pure-i18n bindings whose expression
 #     is a `| translate` pipe over a literal message key: those render
 #     developer-authored catalogue text, not request data.
 _XSS_BYPASS_SANITIZER = re.compile(
@@ -166,7 +166,7 @@ XSS_PATTERNS = [
 # XSS rather than a trust decision over server-owned markup — so the row is
 # escalated to critical.
 #
-# Proximity alone is not enough. On juice-shop a bare +/-15-line window
+# Proximity alone is not enough. In one sweep a bare +/-15-line window
 # escalated 3 of the 9 calls: `route.snapshot.queryParams` happens to sit
 # within 15 lines of two bypasses whose arguments are unrelated
 # (`tableData[i].description`, `results.data[0].orderId`). So the tainted
@@ -224,7 +224,7 @@ CODE_INJECTION_PATTERNS = [
 
 # CWE-918: Server-Side Request Forgery (SSRF)
 #
-# Feature 0070. The old single list produced 29 rows on juice-shop, all 29
+# Feature 0070. The old single list produced 29 rows in one sweep, all 29
 # false, from one pattern:
 #
 #   re.compile(r"http\.Get\([^)]*(?:...|\+)", re.IGNORECASE)
@@ -280,9 +280,9 @@ _SERVER_CONTEXT = re.compile(
     re.VERBOSE,
 )
 
-# Feature 0070, item 3: one-hop taint. juice-shop's single real SSRF is
-#   routes/profileImageUrlUpload.ts:19  const url = req.body.imageUrl
-#   routes/profileImageUrlUpload.ts:24  const response = await fetch(url)
+# Feature 0070, item 3: one-hop taint. The shape that matters is
+#   const url = req.body.imageUrl
+#   const response = await fetch(url)      // a few lines later
 # The sink argument is a bare identifier, so no pattern that inspects only the
 # sink line can ever see the taint. Resolve exactly one assignment hop back.
 _SSRF_BARE_ARG_SINK = re.compile(
@@ -577,7 +577,7 @@ def _ssrf_taint_hop(line: str, line_num: int, lines: list[str]) -> str | None:
     ``req.query`` / ``req.params`` within the preceding
     ``_SSRF_TAINT_LOOKBACK`` lines of the same file, else ``None``.
 
-    This is what recovers juice-shop's only genuine SSRF: the request value is
+    This is what recovers the common real SSRF shape: the request value is
     parked in a local (`const url = req.body.imageUrl`) five lines above
     `await fetch(url)`, so nothing that inspects the sink line alone can see it.
     """

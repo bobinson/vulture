@@ -78,7 +78,7 @@ SAFE_AUTH_DECORATORS = re.compile(
 #
 # PRECISION: every one of these used to fire without any password context, and
 # the generic `\.length\s*>\s*[1-9]` arm turned every array-size comparison in
-# the tree into a "weak password requirement" — 15 of juice-shop's 18 rows were
+# the tree into a "weak password requirement" — in one sweep 15 of 18 rows were
 # `solves.length > 1`, `match.length >= 1`, `result.data.length > 1` and
 # friends. `password.*min.*[1-7]` was just as loose: it matched
 # `waitForInputToHaveValue('#password', 'admin1')` because "ad-MIN-1" contains
@@ -118,8 +118,8 @@ SAFE_PASSWORD_VALIDATION = re.compile(
 # CWE-916 / CWE-759: password hash with insufficient computational effort, and
 # no salt.
 #
-# juice-shop stores md5 password hashes (`lib/insecurity.ts:41`, consumed as
-# `security.hash(req.body.password)`), and the only row it produced was CWE-328
+# An app that stores md5 password hashes (a `security.hash(req.body.password)`
+# helper over `createHash('md5')`) produced only CWE-328
 # "weak hash algorithm for integrity" at MEDIUM — which describes a checksum,
 # not a password store. The discriminator is the VALUE being digested: a bare
 # one-shot digest of a password is CWE-916 regardless of which digest it is,
@@ -179,7 +179,7 @@ RECOVERY_SECOND_FACTOR = re.compile(
 
 # CWE-287 / CWE-347: JWT verification with the public key and no algorithm
 # allowlist — `expressJwt({ secret: publicKey })` and
-# `jws.verify(token, publicKey)` (juice-shop `lib/insecurity.ts:52`/`:55`).
+# `jws.verify(token, publicKey)`.
 # With no `algorithms` allowlist an attacker re-signs the token with HS256
 # using the *public* key as the HMAC secret and is authenticated.
 JWT_VERIFY_CALL = re.compile(
@@ -416,7 +416,7 @@ def _check_password_hash(
     """Check for CWE-916 / CWE-759 password hashing without a KDF or salt.
 
     Line patterns are tested BEFORE the whole-file KDF lookup: a per-line
-    `content` scan is O(lines x file size) and made a juice-shop sweep
+    `content` scan is O(lines x file size) and made a full-tree sweep
     pathologically slow.
     """
     if not (DIGEST_ON_PASSWORD.search(line) and PASSWORD_FIELD_WRITE.search(line)):

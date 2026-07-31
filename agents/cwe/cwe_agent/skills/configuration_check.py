@@ -97,9 +97,8 @@ SAFE_DEBUG_PATTERNS = re.compile(
 # The header form (`Access-Control-Allow-Origin: *`) is already covered
 # per-line by MISCONFIGURATION_PATTERNS above. What that misses is the
 # *middleware* form, which is how a real Express app opens itself up:
-# `cors()` with no options reflects any Origin and is juice-shop's
-# server.ts:182-183 ("Bludgeon solution for possible CORS problems: Allow
-# everything!"). Also caught: an explicit `origin: true` / `origin: '*'`
+# `cors()` with no options reflects any Origin — the "allow everything so the
+# CORS problems go away" shortcut. Also caught: an explicit `origin: true` / `origin: '*'`
 # in the options object, and the two-argument setHeader form that the
 # `[:=]`-shaped header pattern cannot see.
 #
@@ -120,7 +119,7 @@ PERMISSIVE_CORS_PATTERNS = [
 # Unconditional `trust proxy` makes X-Forwarded-For client-controlled, so
 # every downstream consumer of req.ip — rate limiters, login throttles,
 # audit logs, IP allowlists — can be spoofed by any client
-# (juice-shop server.ts:342). A bounded hop count (`trust proxy: 1`) is
+# (`app.set('trust proxy', true)`). A bounded hop count (`trust proxy: 1`) is
 # the recommended config and is NOT flagged.
 TRUST_PROXY_PATTERNS = [
     re.compile(r"\.\s*enable\s*\(\s*['\"]trust[ _-]?proxy['\"]\s*\)", re.IGNORECASE),

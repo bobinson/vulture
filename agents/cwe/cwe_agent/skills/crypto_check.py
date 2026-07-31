@@ -75,9 +75,9 @@ WEAK_KEY_PATTERNS = [
 ]
 
 # CWE-326, second path: the key strength is not written down anywhere — it
-# lives in the PEM body. juice-shop inlines a 1024-bit RSA private key in
-# `lib/insecurity.ts` and signs every JWT with it; every pattern above needs a
-# literal 512/768/1024 next to "RSA", so the whole repo reported zero CWE-326.
+# lives in the PEM body. An app that inlines a 1024-bit RSA private key and signs
+# every JWT with it went unreported: every pattern above needs a literal
+# 512/768/1024 next to "RSA", so such a repo reported zero CWE-326.
 #
 # So decode the base64 body of an inline PEM literal and read the modulus.
 # EC/DSA/OpenSSH/PGP blocks are skipped: their integers are not RSA moduli and
@@ -129,8 +129,8 @@ WEAK_HASH_PATTERNS = [
     # Node: crypto.createHash('md5') / createHmac("sha1", key).
     #
     # Every pattern above is Python/Go/Java-shaped, so Node was uncovered —
-    # juice-shop hashes passwords with crypto.createHash('md5') and the whole
-    # report contained no CWE-327/328/916 at all.
+    # an app hashing passwords with crypto.createHash('md5') produced no
+    # CWE-327/328/916 at all.
     re.compile(r'create(?:Hash|Hmac)\(\s*["\'](?:md5|sha-?1)["\']', re.IGNORECASE),
 ]
 
@@ -148,8 +148,8 @@ SAFE_HASH_CONTEXT = re.compile(
 
 # Hardcoded cryptographic keys (CWE-321).
 #
-# The name group used to be `encrypt|cipher|aes|secret` only, so the two keys
-# juice-shop ships in source — `const privateKey = '-----BEGIN RSA ...'` and
+# The name group used to be `encrypt|cipher|aes|secret` only, so the two key
+# shapes most often shipped in source — `const privateKey = '-----BEGIN RSA ...'` and
 # the HMAC key literal below — were both invisible. Signing/session/cookie/JWT
 # keys are exactly as sensitive as an encryption key, and a key handed
 # POSITIONALLY to a Node crypto constructor has no name at all, hence the third
@@ -157,7 +157,7 @@ SAFE_HASH_CONTEXT = re.compile(
 #
 # `session` and `cookie` are deliberately NOT in this list even though they name
 # key material occasionally: `sessionKey` / `cookieKey` overwhelmingly name a
-# *slot*, not a secret. Measured — both juice-shop hits of that shape were
+# *slot*, not a secret. Measured — both hits of that shape in one sweep were
 # `welcomeBannerStatusCookieKey = 'welcomebanner_status'`, and adding the two
 # names produced 57 rows on a second corpus (openclaw), every one of them a
 # routing identifier like `sessionKey: "hook:gmail:{{id}}"`. A hardcoded
@@ -320,7 +320,7 @@ def _der_max_integer_bits(data: bytes, depth: int = 0) -> int:
 def _pem_body(line: str, lines: list[str], line_num: int) -> str | None:
     """Collect the base64 body of a PEM block starting on ``line``.
 
-    Handles both juice-shop's one-line literal (whole PEM in a single string
+    Handles both a one-line literal (whole PEM in a single string
     with escaped ``\\r\\n``) and a conventional multi-line block. Returns None
     when no terminator is found within a sane distance.
     """

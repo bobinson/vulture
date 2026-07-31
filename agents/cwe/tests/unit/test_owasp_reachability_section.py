@@ -6,7 +6,7 @@ the agent's deterministic tier reaches a minority. Publishing that minority --
 computed, never hand-typed -- turns an unanswerable requirement into a tracked
 number.
 
-The section must also record the limitation the juice-shop scan exposed: the
+The section must also record the limitation the reachability scan exposed: the
 corpus gate attests per CWE, not per language. CWE-89 sat in the VERIFIED
 bucket at recall 1.0 while every SQL-injection pattern was Python- or
 Go-shaped, so JS/TS template-literal injection went undetected on a

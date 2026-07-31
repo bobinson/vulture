@@ -1,11 +1,11 @@
 """Feature 0070 — signature-family precision + coverage (CWE-90, CWE-943).
 
-Two items, both measured over /home/user/src/juice-shop:
+Two items, both measured on a real application tree:
 
   1. **CWE-90 (LDAP injection) — narrow.** The interpolation branch of
      ``_LDAP_FILTER`` matched a bare ``(ident=...`` paren, so every JS arrow
      function (``prev => [...]``) and every ``===`` chain read as an LDAP
-     filter: 4 rows on juice-shop, 4 of them false (juice-shop has no LDAP at
+     filter: 4 rows in one measured sweep, 4 of them false (that tree has no LDAP at
      all). The filter literal must live *inside a string* to be an LDAP filter.
      Target 4 -> 0, with positive fixtures proving the branch is not simply
      dead.
@@ -16,7 +16,7 @@ Two items, both measured over /home/user/src/juice-shop:
      ``$function`` / ``mapReduce``) shared a sanitizer list with the
      selector-object branch — so a ``String(...)`` cast, which does NOT
      neutralise a ``$where`` JavaScript predicate, silently suppressed a real
-     finding (juice-shop ``routes/trackOrder.ts``).
+     finding (``routes/trackOrder.ts``).
 
 CWE-943 is **not mapped by any OWASP 2025 category** (asserted below against
 ``owasp_2025.json``), so the finding must say so rather than imply a category.
@@ -54,7 +54,7 @@ def _hits(lines, ext: str, category: str) -> list[dict]:
 # ── item 1: CWE-90 precision ──────────────────────────────────────────
 
 class TestLdapFilterIsNotEveryParenthesis:
-    """The four juice-shop rows, verbatim. All four are false positives."""
+    """The four measured rows, verbatim. All four are false positives."""
 
     def test_arrow_function_with_default_object_arg_is_not_an_ldap_filter(self):
         # lib/insecurity.ts:54 — `(user = {}) =>` matched `(ident=` + `{`.
@@ -180,7 +180,7 @@ class TestNoSqlMutatingCollectionOperations:
     """Gap 1: mutating collection operations were not sinks at all."""
 
     def test_collection_update_with_untrusted_selector_fires(self):
-        # juice-shop routes/updateProductReviews.ts — noSqlReviewsChallenge.
+        # routes/updateProductReviews.ts — noSqlReviewsChallenge.
         lines = (
             "export function updateProductReviews () {",
             "  return (req: Request, res: Response) => {",
@@ -195,7 +195,7 @@ class TestNoSqlMutatingCollectionOperations:
         )
 
     def test_single_line_collection_update_fires(self):
-        # juice-shop routes/orderHistory.ts:36.
+        # routes/orderHistory.ts:36.
         lines = (
             "export function toggleDeliveryStatus () {",
             "  return async (req: Request, res: Response) => {",
@@ -273,7 +273,7 @@ class TestNoSqlWherePredicateSanitizerIsSpecific:
     ``"[object Object]"``) but NOT a ``$where`` JavaScript predicate."""
 
     def test_where_template_literal_with_string_cast_fires(self):
-        # juice-shop routes/trackOrder.ts:18 — noSqlOrdersChallenge. Real bug
+        # routes/trackOrder.ts:18 — noSqlOrdersChallenge. Real bug
         # that the shared `String(` sanitizer was hiding.
         lines = (
             "export function trackOrder () {",
@@ -288,7 +288,7 @@ class TestNoSqlWherePredicateSanitizerIsSpecific:
         )
 
     def test_where_concat_regression_guard(self):
-        # juice-shop routes/showProductReviews.ts:36 — already detected today.
+        # routes/showProductReviews.ts:36 — already detected today.
         lines = (
             "  const id = req.params.id",
             "  db.reviewsCollection.find({ $where: 'this.product == ' + id })",
@@ -296,7 +296,7 @@ class TestNoSqlWherePredicateSanitizerIsSpecific:
         assert _hits(lines, ".ts", "CWE-943")
 
     def test_numeric_cast_still_suppresses_where(self):
-        # juice-shop routes/chat.ts:149 — Number() genuinely neutralises the
+        # routes/chat.ts:149 — Number() genuinely neutralises the
         # predicate, so this must stay suppressed (no over-correction).
         lines = (
             "execute: async ({ id }) => {",

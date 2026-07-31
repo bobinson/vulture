@@ -6,7 +6,7 @@ tied them together, and they silently drifted: SKILL_MAP grew to 24 while
 ALL_CATEGORIES stayed at 22, so `secrets` and `plaintext_transmission` were
 fully implemented, imported, and never run.
 
-On OWASP juice-shop that cost 41 findings, 6 of them critical — an inline RSA
+In one sweep that cost 41 findings, 6 of them critical — an inline RSA
 private key (lib/insecurity.ts:21), BIP-39 mnemonic seed phrases, three Solana
 keypairs, and every CWE-319 plaintext-transmission row. The agent shipped
 working detectors for weaknesses it then reported as absent.

@@ -1,6 +1,7 @@
 """Web security vulnerability detection skill."""
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from agents import function_tool
@@ -66,10 +67,93 @@ COOKIE_NO_SECURE_PATTERNS = [
     re.compile(r"Set-Cookie:"),
 ]
 
+SAFE_SAMESITE_PATTERNS = re.compile(
+    # CWE-1275 is NOT an "attribute absent" check like its siblings: SameSite=None
+    # is present AND vulnerable. Only strict/lax are safe, so presence alone must
+    # never suppress. A predicate copied from CWE-1004/614 passes on the worst case.
+    r"same[_-]?site\s*[:=]\s*['\"]?(?:strict|lax)\b",
+    re.IGNORECASE,
+)
+
 SAFE_SECURE_PATTERNS = re.compile(
     r"(?:secure\s*[:=]\s*[Tt]rue|[;,]\s*[Ss]ecure\b|__Secure-|__Host-)",
     re.IGNORECASE,
 )
+
+@dataclass(frozen=True)
+class CookieAttributeSpec:
+    """One missing-cookie-attribute check, as data.
+
+    CWE-1004 and CWE-614 were near-identical functions differing only in these
+    fields; a third hand-written copy for CWE-1275 would have made the
+    duplication threefold. ``adaptive_window`` is per-spec deliberately: CWE-1004
+    needs the call-block window, and pinning CWE-614 to the fixed ±3 window keeps
+    its behaviour byte-identical through this refactor.
+
+    ``fields`` holds the static finding body and MUST spell its category as a
+    literal ``"category": "CWE-N"``. The coverage attestation
+    (``report_coverage._CATEGORY_LITERAL_RE``) discovers emitted CWEs by scanning
+    skill source for exactly that form, so an f-string here would silently drop
+    the CWE from ``VERIFIED_CWES.md`` while detection kept working — a coverage
+    under-claim, which is the one direction that document exists to prevent.
+    """
+
+    fields: dict
+    triggers: tuple[re.Pattern, ...]
+    safe: re.Pattern
+    adaptive_window: bool
+
+    @property
+    def cwe(self) -> str:
+        """Bare id for ``enrich_finding``, derived so it cannot drift."""
+        return self.fields["category"].removeprefix("CWE-")
+
+
+COOKIE_ATTRIBUTE_SPECS: tuple[CookieAttributeSpec, ...] = (
+    CookieAttributeSpec(
+        fields={
+            "category": "CWE-1004",
+            "check_id": "cwe.web_security.cookie_no_httponly",
+            "title": "Cookie without HttpOnly flag",
+            "description": "Cookie set without HttpOnly protection at line {line}",
+            "recommendation": "Set HttpOnly flag on cookies to prevent XSS cookie theft",
+        },
+        triggers=tuple(COOKIE_NO_HTTPONLY_PATTERNS),
+        safe=SAFE_COOKIE_PATTERNS,
+        adaptive_window=True,
+    ),
+    CookieAttributeSpec(
+        fields={
+            "category": "CWE-614",
+            "check_id": "cwe.web_security.cookie_no_secure",
+            "title": "Cookie without Secure flag",
+            "description": "Cookie set without Secure flag at line {line}",
+            "recommendation": "Set Secure flag on cookies to prevent transmission over HTTP",
+        },
+        triggers=tuple(COOKIE_NO_SECURE_PATTERNS),
+        safe=SAFE_SECURE_PATTERNS,
+        adaptive_window=False,
+    ),
+    CookieAttributeSpec(
+        fields={
+            "category": "CWE-1275",
+            "check_id": "cwe.web_security.cookie_improper_samesite",
+            "title": "Sensitive cookie with improper SameSite attribute",
+            "description": (
+                "Cookie set without SameSite=Strict/Lax at line {line}; it is sent "
+                "on cross-site requests, enabling CSRF-style forced actions"
+            ),
+            "recommendation": (
+                "Set SameSite=Strict (or Lax) on session cookies. SameSite=None is "
+                "only safe when the cross-site use is deliberate and Secure is set"
+            ),
+        },
+        triggers=tuple(COOKIE_NO_HTTPONLY_PATTERNS),
+        safe=SAFE_SAMESITE_PATTERNS,
+        adaptive_window=True,
+    ),
+)
+
 
 # CWE-113: HTTP Response Splitting (CRLF Injection)
 CRLF_PATTERNS = [
@@ -120,10 +204,10 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         if SCANNER_DEF_LINE.search(line):
             continue
         _check_open_redirect(file_path, line, line_num, lines, findings)
-        _check_cookie_httponly(file_path, line, line_num, lines, findings)
         _check_session_fixation(file_path, line, line_num, lines, findings)
-        _check_cookie_secure(file_path, line, line_num, lines, findings)
         _check_crlf_injection(file_path, line, line_num, lines, findings)
+        for spec in COOKIE_ATTRIBUTE_SPECS:
+            _check_cookie_attribute(spec, file_path, line, line_num, lines, findings)
 
 
 def _check_open_redirect(
@@ -154,45 +238,44 @@ def _check_open_redirect(
             return
 
 
-def _check_cookie_httponly(
-    file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict],
-) -> None:
-    """Check for CWE-1004 cookie without HttpOnly flag.
+def _cookie_context(line: str, lines: list[str], line_num: int, adaptive: bool) -> str:
+    """Window the cookie call for attribute lookup.
 
-    Cookie-setter calls span multiple lines in modern formatting (one
-    kwarg per line, trailing-comma style). The previous ±3-line window
-    missed `httponly=True` on a 6th line and produced false positives
-    for safe code. We now window by call-block: extend forward until
-    the parens balance OR a 12-line cap, whichever is shorter.
+    ``adaptive`` extends forward through the closing paren (12-line cap) when the
+    line opens a multi-line call. A fixed ±3 window missed `httponly=True` on a
+    6th line and produced false positives, which is why CWE-1004 needs this;
+    CWE-614 keeps the fixed window so P6 changes none of its behaviour.
     """
-    if not _has_unmatched_open_paren(line):
-        # Single-line cookie call — old ±3 window is fine.
-        context_start = max(0, line_num - 3)
-        context_end = min(len(lines), line_num + 3)
-    else:
-        # Multi-line call: extend forward through the closing paren.
-        context_start = max(0, line_num - 1)
-        context_end = _find_call_close(lines, line_num - 1, max_lines=12)
-    context = "\n".join(lines[context_start:context_end])
-    if SAFE_COOKIE_PATTERNS.search(context):
+    if adaptive and _has_unmatched_open_paren(line):
+        end = _find_call_close(lines, line_num - 1, max_lines=12)
+        return "\n".join(lines[max(0, line_num - 1):end])
+    return "\n".join(lines[max(0, line_num - 3):min(len(lines), line_num + 3)])
+
+
+def _check_cookie_attribute(
+    spec: "CookieAttributeSpec", file_path: Path, line: str, line_num: int,
+    lines: list[str], findings: list[dict],
+) -> None:
+    """Report ``spec``'s CWE when a cookie call lacks a safe attribute value.
+
+    One routine for CWE-1004 / CWE-614 / CWE-1275. The three differed only in
+    their trigger list, safe-pattern and copy, so they are data (see
+    ``COOKIE_ATTRIBUTE_SPECS``) rather than three near-identical functions.
+    """
+    if not any(p.search(line) for p in spec.triggers):
         return
-    for pattern in COOKIE_NO_HTTPONLY_PATTERNS:
-        if pattern.search(line):
-            finding = {
-                "severity": "medium",
-                "check_id": "cwe.web_security.cookie_no_httponly",
-                "category": "CWE-1004",
-                "title": "Cookie without HttpOnly flag",
-                "description": f"Cookie set without HttpOnly protection at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Set HttpOnly flag on cookies to prevent XSS cookie theft",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "1004"))
-            return
+    if spec.safe.search(_cookie_context(line, lines, line_num, spec.adaptive_window)):
+        return
+    finding = {
+        **spec.fields,
+        "severity": "medium",
+        "description": spec.fields["description"].format(line=line_num),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "code_snippet": extract_snippet(lines, line_num),
+    }
+    findings.append(enrich_finding(finding, spec.cwe))
 
 
 def _has_unmatched_open_paren(line: str) -> bool:
@@ -241,34 +324,6 @@ def _check_session_fixation(
             }
             finding["code_snippet"] = extract_snippet(lines, line_num)
             findings.append(enrich_finding(finding, "384"))
-            return
-
-
-def _check_cookie_secure(
-    file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict],
-) -> None:
-    """Check for CWE-614 cookie without Secure flag."""
-    context_start = max(0, line_num - 3)
-    context_end = min(len(lines), line_num + 3)
-    context = "\n".join(lines[context_start:context_end])
-    if SAFE_SECURE_PATTERNS.search(context):
-        return
-    for pattern in COOKIE_NO_SECURE_PATTERNS:
-        if pattern.search(line):
-            finding = {
-                "severity": "medium",
-                "check_id": "cwe.web_security.cookie_no_secure",
-                "category": "CWE-614",
-                "title": "Cookie without Secure flag",
-                "description": f"Cookie set without Secure flag at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Set Secure flag on cookies to prevent transmission over HTTP",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "614"))
             return
 
 

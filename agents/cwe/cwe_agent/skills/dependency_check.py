@@ -17,7 +17,7 @@ Two precision decisions (feature 0070):
   these findings now reach A06 only through CWE-1104's rollup.
 * CWE-1104 is emitted once **per manifest**, not once per floating spec.
   One row per caret/tilde dependency carries a single bit of information
-  repeated N times (244 rows on juice-shop, 70 of them cross-manifest
+  repeated N times (244 rows in one measured sweep, 70 of them cross-manifest
   duplicates); the rollup keeps the count and the package list.
 
 Operators can override the bundled catalog by setting
@@ -261,8 +261,8 @@ _PIP_SPEC = re.compile(r"^([A-Za-z][\w.\-]*)\s*(?:==|~=|===)\s*([0-9][\w.\-]*)")
 _PIP_NAME = re.compile(r"^([A-Za-z][\w.\-]*)\s*(.*)$")
 
 # How many packages the rollup description spells out WITH their version spec.
-# Beyond this the tail is still listed, but by bare name only: juice-shop's root
-# package.json declares 113 floating specs, and "name (^1.2.3)" x113 would
+# Beyond this the tail is still listed, but by bare name only: a root
+# package.json can declare 113 floating specs, and "name (^1.2.3)" x113 would
 # dominate the finding. No package name is dropped — the rollup must not lose
 # what the 244 individual rows carried.
 _ROLLUP_SPEC_LIMIT = 25
@@ -278,7 +278,7 @@ def _emit_unpinned_rollup(
 
     ``unpinned`` holds ``(package, raw_spec, line)`` triples in declaration
     order. One row per dependency repeats a single bit of information N times
-    (244 rows over juice-shop's three manifests), so the rollup replaces them —
+    (244 rows over three manifests in one sweep), so the rollup replaces them —
     but it must not lose information, hence ``instance_count`` plus a spelled-out
     package list in the description.
 

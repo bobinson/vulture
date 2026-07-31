@@ -35,7 +35,7 @@ _TAINTED_SOURCE = re.compile(
 # PRECISION (feature 0070): branch (b) used to accept a BARE parenthesis —
 # ``\(\s*ident\s*=`` followed anywhere by ``{`` — so every JS arrow function
 # (``(user = {}) =>``, ``card => {``, ``prev => [...]``) and every ``===``
-# chain read as an LDAP filter. Measured on juice-shop: 4 rows, 4 false, on a
+# chain read as an LDAP filter. Measured: 4 rows, 4 false, on a
 # codebase with no LDAP anywhere. An LDAP filter is a *string*, so both the
 # concat and the interpolation branch now anchor on the opening quote of the
 # literal (optionally preceded by an f/b/r/u string prefix) and the scan for

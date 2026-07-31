@@ -2,8 +2,8 @@
 
 CWE-862 was a whole-FILE boolean: one `AUTHZ_PRESENT` hit anywhere in a file
 exonerated every route in it, and a miss condemned every route in it. On
-juice-shop that produced 109 identical rows out of a single `server.ts`,
-because juice-shop's entire authz vocabulary (`security.isAuthorized()`,
+one tree that produced 109 identical rows out of a single `server.ts`,
+because the target's entire authz vocabulary (`security.isAuthorized()`,
 `security.denyAll()`, `security.isAccounting()`) was unknown to the pattern.
 
 Three layers are asserted here:

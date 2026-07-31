@@ -48,7 +48,7 @@ BARE_EXCEPT_PATTERNS = [
 # matched any method with a similar name, and on a front-end codebase almost
 # every hit was a false positive: `snackBarHelperService.open()`,
 # `dialog.open()`, `res.send()`, and `socket.disconnect()` (which merely *ends*
-# with "connect()"). On juice-shop that was 81 identical-titled rows, and they
+# with "connect()"). In one sweep that was 81 identical-titled rows, and they
 # were the only support for OWASP A10 — a category propped up entirely by noise.
 #
 # So match on the RECEIVER as well, and anchor the verb to the start of the

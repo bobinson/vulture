@@ -2,7 +2,7 @@
 
 The manifest reported only the intersection of detected CWEs with each
 category's mapped set. Anything outside every category vanished: on a
-juice-shop audit, 112 of 866 CWE findings mapped to no 2025 category and so
+one audit, 112 of 866 CWE findings mapped to no 2025 category and so
 were invisible in the OWASP view, while the report still read as complete.
 
 That is the same class of dishonesty as an inflated category — the operator

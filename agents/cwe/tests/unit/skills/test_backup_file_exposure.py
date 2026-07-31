@@ -2,7 +2,7 @@
 
 A readable `package.json.bak`, `config.php~` or `.env.old` sitting in a served
 tree leaks whatever the live file no longer contains: removed credentials, old
-dependency pins, prior logic. In OWASP juice-shop this is a deliberate
+dependency pins, prior logic. In one measured tree this is a deliberate
 challenge (`ftp/package.json.bak`).
 
 CWE-530 (Exposure of Backup File) is the precise weakness but is NOT mapped in

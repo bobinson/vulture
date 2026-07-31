@@ -25,7 +25,7 @@ ALL_CATEGORIES: list[str] = [
     "catalog_generic",
     # Both were implemented, imported into SKILL_MAP, and never dispatched —
     # ALL_CATEGORIES is the dispatch list and it had silently fallen two behind.
-    # On juice-shop that hid 41 findings, 6 critical (an inline RSA private key,
+    # In one measured sweep that hid 41 findings, 6 critical (an inline RSA private key,
     # BIP-39 mnemonics, Solana keypairs, every CWE-319 row).
     # test_skill_dispatch_conformance.py now pins ALL_CATEGORIES == SKILL_MAP.
     "secrets",

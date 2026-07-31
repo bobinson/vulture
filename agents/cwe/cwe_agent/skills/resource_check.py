@@ -39,7 +39,7 @@ BREAK_OR_RETURN = re.compile(r"\b(?:break|return|sys\.exit|os\.Exit)\b")
 #
 # The verb alone is not enough — this is the same defect the CWE-754 fix in
 # error_handling_check.py cured. A bare `(?:open|fopen)\s*\(` matched every
-# method whose name merely *ends* with "open": on juice-shop 82 of 84 rows
+# method whose name merely *ends* with "open": in one sweep 82 of 84 rows
 # were `snackBarHelperService.open(...)`, `dialog.open(...)`,
 # `window.open(...)` and friends — UI calls, not resources.
 #
@@ -48,7 +48,7 @@ BREAK_OR_RETURN = re.compile(r"\b(?:break|return|sys\.exit|os\.Exit)\b")
 #      call (no `foo.` / `$foo` prefix) qualifies;
 #   2. a real-resource-namespace branch, because the bare form alone loses
 #      the `fs.createWriteStream` / `fs.createReadStream` stream family
-#      (5 genuine juice-shop sites) — dropping those would be an
+#      (5 genuine sites in the same sweep) — dropping those would be an
 #      over-correction, not a narrowing;
 #   3. a declaration skip, because `open (` at the START of a line is a
 #      method DECLARATION, not a call that leaks a handle.

@@ -3,7 +3,7 @@
 import logging
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from functools import lru_cache
 from pathlib import Path
 
@@ -224,9 +224,9 @@ MAX_FILE_SIZE = _env_int("VULTURE_MAX_FILE_SIZE", 512 * 1024)  # 512KB default
 
 # Dependency manifests get a larger ceiling than source files. A lock file's
 # size scales with the number of dependencies — i.e. with how much there is to
-# find — so the general cap inverted the intent: juice-shop's
-# ftp/package-lock.json.bak (750KB) was silently dropped, taking its
-# known-vulnerable-component findings with it. Source files have no such
+# find — so a single cap inverted the intent: the manifests most worth scanning
+# were exactly the ones large enough to be dropped, taking their
+# known-vulnerable-component findings with them. Source files have no such
 # property, so their cap is unchanged.
 MAX_MANIFEST_SIZE = _env_int("VULTURE_MAX_MANIFEST_SIZE", 16 * 1024 * 1024)  # 16MB
 
@@ -334,10 +334,10 @@ def _scan_code_files_cached(
 
 
 # Minified / bundled artefacts. One giant line of third-party code makes every
-# line-oriented pattern fire at line 1 with no actionable fix — on juice-shop
-# two vendored bundles produced 14 of 19 CWE-79 rows, burying the 5 real ones.
-# Anchored on the dot/dash boundary so `minimist.js` and `bundle_helper.ts`
-# are unaffected.
+# line-oriented pattern fire at line 1 with no actionable fix, and a handful of
+# vendored bundles can easily out-number the real findings in a category —
+# burying signal in code the project does not control. Anchored on the dot/dash
+# boundary so `minimist.js` and `bundle_helper.ts` are unaffected.
 _MINIFIED_RE = re.compile(
     r"(?:[.-]min|\.bundle)\.(?:js|mjs|cjs|css)$", re.IGNORECASE
 )
@@ -371,28 +371,68 @@ def scan_backup_files(source_path: str, max_files: int = MAX_FILES) -> list[Path
     return list(_scan_backup_files_cached(source_path, max_files))
 
 
-@lru_cache(maxsize=16)
-def _scan_backup_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
-    """Cached inner backup walk — keyed by (path, max_files)."""
-    root = Path(source_path)
-    if not root.is_dir():
-        return ()
+def _collect_capped(
+    paths: Iterable[Path], max_files: int, source_path: str, label: str, advice: str,
+) -> tuple[Path, ...]:
+    """Accumulate ``paths`` up to ``max_files``, logging a truncation warning.
 
-    spec = _load_ignore_spec(str(root))
+    Shared by the backup and all-files walks so the cap-and-warn contract lives
+    in exactly one place: a silent truncation reads as full coverage when it is
+    not, so the warning must never depend on which caller ran.
+    """
     files: list[Path] = []
-    for p in _walk_filtered(root, root, spec):
-        if not is_backup_name(p.name):
-            continue
+    for p in paths:
         files.append(p)
         if len(files) >= max_files:
             logger.warning(
-                "backup_scan_truncated path=%s files=%d max=%d — coverage is PARTIAL; "
-                "raise VULTURE_MAX_FILES to enumerate every shadow copy",
-                source_path, len(files), max_files,
+                "%s_truncated path=%s files=%d max=%d — coverage is PARTIAL; %s",
+                label, source_path, len(files), max_files, advice,
             )
             break
-    logger.info("backup_scan_complete path=%s files=%d", source_path, len(files))
+    logger.info("%s_complete path=%s files=%d", label, source_path, len(files))
     return tuple(files)
+
+
+def _walk_unfiltered_by_extension(source_path: str) -> Iterable[Path]:
+    """The shared walk primitive: SKIP_DIRS + ignore spec, no extension gate."""
+    root = Path(source_path)
+    if not root.is_dir():
+        return ()
+    return _walk_filtered(root, root, _load_ignore_spec(str(root)))
+
+
+@lru_cache(maxsize=16)
+def _scan_backup_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
+    """Cached inner backup walk — keyed by (path, max_files)."""
+    return _collect_capped(
+        (p for p in _walk_unfiltered_by_extension(source_path) if is_backup_name(p.name)),
+        max_files, source_path, "backup_scan",
+        "raise VULTURE_MAX_FILES to enumerate every shadow copy",
+    )
+
+
+def scan_all_files(source_path: str, max_files: int = MAX_FILES) -> list[Path]:
+    """Return every file under ``source_path``, ignoring the extension allowlist.
+
+    Same rationale as :func:`scan_backup_files`, generalised: a file's *exposure*
+    is a property of its name and location, not of whether we can parse it. A
+    readable ``.kdbx`` or ``.key`` in a served tree leaks its contents even though
+    no skill would ever tokenise it, and the extension allowlist means the normal
+    per-file loop never sees it.
+
+    SKIP_DIRS and the ignore spec still apply, so vendored and ignored trees are
+    excluded as usual.
+    """
+    return list(_scan_all_files_cached(source_path, max_files))
+
+
+@lru_cache(maxsize=16)
+def _scan_all_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
+    """Cached inner all-files walk — keyed by (path, max_files)."""
+    return _collect_capped(
+        _walk_unfiltered_by_extension(source_path), max_files, source_path,
+        "all_files_scan", "raise VULTURE_MAX_FILES for full enumeration",
+    )
 
 
 @lru_cache(maxsize=16)
@@ -713,6 +753,10 @@ def clear_caches() -> None:
     _splitlines_cached.cache_clear()
     _read_file_cached.cache_clear()
     _scan_code_files_cached.cache_clear()
+    # These two were omitted before, so a second audit in the same process could
+    # score a stale tree. Clearing more is always safe.
+    _scan_backup_files_cached.cache_clear()
+    _scan_all_files_cached.cache_clear()
 
 
 def is_entry_or_config(path: Path) -> bool:

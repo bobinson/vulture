@@ -1,11 +1,11 @@
 """Feature 0070 — data_handling / configuration detectors.
 
-Three rules land here, all measured against OWASP juice-shop:
+Three rules land here, all measured on a real application tree:
 
   CWE-915 mass assignment      request body spread wholesale into render
                                locals or a model create, plus auto-generated
                                CRUD resources that bind every model attribute
-                               to request input (juice-shop's finale.resource
+                               to request input (an auto-generated REST resource
                                loop — the registerAdminChallenge vector).
   CWE-922 insecure storage     auth/session/payment material persisted in
                                browser localStorage/sessionStorage. A
@@ -47,7 +47,7 @@ def _cats(findings: list[dict], category: str) -> list[dict]:
 
 
 def test_body_spread_into_render_locals_is_mass_assignment() -> None:
-    """juice-shop routes/dataErasure.ts:108 and :124."""
+    """routes/dataErasure.ts:108 and :124."""
     findings = _run(check_data_handling, {"routes/dataErasure.ts": """
 export function erasureRequest (req, res, next) {
   const themeVars = { theme: 'bluegrey' }
@@ -76,7 +76,7 @@ export function save (req, res) {
 
 
 def test_auto_generated_crud_resource_is_mass_assignment() -> None:
-    """juice-shop server.ts:501 — finale.resource binds every attribute."""
+    """server.ts:501 — finale.resource binds every attribute."""
     findings = _run(check_data_handling, {"server.ts": """
 const autoModels = [
   { name: 'User', exclude: ['password'], model: UserModel },
@@ -150,7 +150,7 @@ export function save (req, res) {
 
 
 def test_auth_token_in_localstorage_is_flagged() -> None:
-    """juice-shop login/oauth/payment/two-factor components."""
+    """Login / oauth / payment / two-factor components."""
     findings = _run(check_data_handling, {"app/login.component.ts": """
 export class LoginComponent {
   login () {
@@ -209,7 +209,7 @@ function whoami () {
 
 
 def test_unrestricted_cors_middleware_is_one_finding_per_file() -> None:
-    """juice-shop server.ts:182-183 — two lines, one row."""
+    """server.ts:182-183 — two lines, one row."""
     findings = _run(check_configuration, {"server.ts": """
 export function start () {
   app.options('*', cors())
@@ -234,7 +234,7 @@ function headers (req, res, next) {
 
 
 def test_origin_restricted_cors_is_not_flagged() -> None:
-    """juice-shop lib/startup/registerWebsocketEvents.ts is restricted."""
+    """lib/startup/registerWebsocketEvents.ts is restricted."""
     findings = _run(check_configuration, {"ws.ts": """
 export function register (server) {
   const io = new Server(server, { cors: { origin: 'http://localhost:4200' } })
@@ -248,7 +248,7 @@ export function register (server) {
 
 
 def test_unconditional_trust_proxy_is_flagged() -> None:
-    """juice-shop server.ts:342 — app.enable('trust proxy')."""
+    """server.ts:342 — app.enable('trust proxy')."""
     findings = _run(check_configuration, {"server.ts": """
 export function start () {
   app.enable('trust proxy')

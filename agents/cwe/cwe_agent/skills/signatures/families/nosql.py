@@ -10,8 +10,7 @@ DIFFERENT sanitizers (feature 0070):
      ``String(...)`` cast does NOT — the value is still concatenated into a
      JavaScript predicate the server evaluates. Sharing one sanitizer list
      with the selector branch below silently hid a real finding
-     (juice-shop ``routes/trackOrder.ts`` — ``$where: `…'${id}'` `` where
-     ``id = String(req.params.id)``).
+     (``$where: `…'${id}'` `` where ``id = String(req.params.id)``).
   2. ``cwe.sig.nosql``          — an untrusted value reaching a ``$``-operator
      inside a *query selector object*. Here a cast (``Number``/``String``/
      ``ObjectId``) or ``$eq`` genuinely neutralises operator injection, so the
@@ -22,8 +21,7 @@ DIFFERENT sanitizers (feature 0070):
      PyMongo snake_case spellings) whose selector is built from untrusted
      input. These were not sinks at all, yet they are the highest-impact
      shape: an attacker who smuggles ``{"$ne": -1}`` into the selector
-     rewrites or deletes *every* document (juice-shop's
-     ``noSqlReviewsChallenge`` / ``forgedReviewChallenge``). The receiver is
+     rewrites or deletes *every* document. The receiver is
      required to be collection-ish (``…Collection``, ``db.<name>``,
      ``db.collection("…")``) so Sequelize/ORM ``model.update({...})`` and
      stream ``hmac.update(data)`` / ``fs.remove(f)`` are NOT sinks.

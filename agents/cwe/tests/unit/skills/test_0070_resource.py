@@ -192,7 +192,7 @@ class TestCwe799Express:
         assert "CWE-799" not in _cwes(tmp_path)
 
     def test_limiter_on_other_path_does_not_cover_login(self, tmp_path):
-        """juice-shop server.ts shape: reset-password limited, login is not."""
+        """server.ts shape: reset-password limited, login is not."""
         (tmp_path / "server.ts").write_text(
             "  app.use('/rest/user/reset-password', rateLimit({\n"
             "    max: 100\n"

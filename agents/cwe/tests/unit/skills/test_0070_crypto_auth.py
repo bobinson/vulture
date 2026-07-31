@@ -1,11 +1,11 @@
 """Feature 0070 — crypto/auth precision (P2) and credential-lifecycle detectors (P3/P4).
 
-Six changes, all measured against OWASP juice-shop:
+Six changes, all measured on a real application tree:
 
 1. CWE-326 — the weak-key patterns required a literal ``512|768|1024`` next to
    "RSA", so a key whose weakness lives in the PEM body was invisible.
-   juice-shop's ``lib/insecurity.ts:21`` embeds a **1024-bit** RSA private key
-   that signs every JWT and it produced zero CWE-326 rows.
+   One measured app embedded a **1024-bit** RSA private key that signs every
+   JWT, and it produced zero CWE-326 rows.
 
 2. CWE-321 — ``HARDCODED_KEY_PATTERNS`` only knew ``encrypt|cipher|aes|secret``
    key names and never looked at a *positional* key argument, so
@@ -14,13 +14,13 @@ Six changes, all measured against OWASP juice-shop:
    were both missed.
 
 3. CWE-521 — the weak-password-requirement patterns fired on *any*
-   ``.length > 1-9`` comparison. 18 juice-shop rows, 15 of them array-length
+   ``.length > 1-9`` comparison. 18 rows in one sweep, 15 of them array-length
    checks with nothing to do with passwords (``solves.length > 1``,
    ``match.length >= 1``, ``result.data.length > 1``). Password context is now
    required. ``'admin1'`` also used to satisfy ``password.*min.*[1-7]`` because
    "ad**min1**" contains "min" followed by a digit.
 
-4. CWE-916/759 — juice-shop stores md5 password hashes. That was reported only
+4. CWE-916/759 — a measured app stored md5 password hashes. That was reported only
    as CWE-328 "weak hash for integrity" at MEDIUM, which understates a password
    store. A password-context discriminator now adds CWE-916 (insufficient
    computational effort) and CWE-759 (no salt). CWE-328 is deliberately left
@@ -28,14 +28,14 @@ Six changes, all measured against OWASP juice-shop:
 
 5. CWE-620/640 — an authenticated password change whose current-password check
    is short-circuited by the value's own presence
-   (``if (currentPassword && hash(currentPassword) !== stored)``, juice-shop
+   (``if (currentPassword && hash(currentPassword) !== stored)``, as seen in
    ``routes/changePassword.ts:39``) is an unverified password change; a reset
    flow gated only on a security answer (``routes/resetPassword.ts:41``) is a
    weak recovery mechanism.
 
 6. CWE-287/347 — ``expressJwt({ secret: publicKey })`` and
    ``jws.verify(token, publicKey)`` verify tokens with the PUBLIC key and no
-   algorithm allowlist (juice-shop ``lib/insecurity.ts:52``/``:55``): the
+   algorithm allowlist (``expressJwt({ secret: publicKey })``): the
    canonical algorithm-confusion bypass, previously undetected.
 """
 
@@ -92,7 +92,7 @@ def _pem_b64(bits: int) -> str:
 
 
 def _pem_one_line(bits: int) -> str:
-    """juice-shop shape: whole PEM in one JS string with \\r\\n escapes."""
+    """The one-line shape: whole PEM in one JS string with \\r\\n escapes."""
     return (
         "const privateKey = '-----BEGIN RSA PRIVATE KEY-----\\r\\n"
         + _pem_b64(bits)
@@ -165,7 +165,7 @@ class TestHardcodedKeyWidened:
 
     def test_session_and_cookie_keys_are_slot_names(self) -> None:
         """Measured: 57/57 `sessionKey`/`cookieKey` hits on a second corpus were
-        routing identifiers, and both juice-shop hits were a cookie name. The
+        routing identifiers, and both hits in one sweep were a cookie name. The
         two names are excluded rather than value-filtered, because the values
         (`"hook:gmail:{{id}}"`, `"agent:main:main"`) are indistinguishable from
         key material by shape."""
@@ -201,7 +201,7 @@ class TestHardcodedKeyWidened:
         assert _of(_run(check_cryptography, {"h.js": body}), 321) == []
 
 
-# juice-shop's 15 array-length false positives, verbatim.
+# the 15 array-length false positives, verbatim.
 _ARRAY_LENGTH_LINES = [
     "  return solves.length > 1 ? median(solves.map(({ cheatScore }) => cheatScore)) : 0",
     "  return match !== null && match.length >= 1",

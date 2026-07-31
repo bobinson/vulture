@@ -1,6 +1,7 @@
 """Information exposure vulnerability detection skill."""
 
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from agents import function_tool
@@ -13,6 +14,7 @@ from shared.tools.file_scanner import (
     is_test_file,
     read_file_lines,
     read_file_safe,
+    scan_all_files,
     scan_backup_files,
     scan_code_files,
 )
@@ -265,11 +267,18 @@ def check_information_exposure(source_path: str) -> dict:
     # A shadow copy is a finding in its own right, whatever its contents
     # (feature 0068). Walked separately from the code scan: running this
     # inside the scan_code_files loop meant a backup was only reported if it
-    # was also *parseable*, so package-lock.json.bak (effective name in
-    # SKIP_FILES) and coupons_2013.md.bak (non-code extension) were silently
-    # exempt — 1 of juice-shop's 3 backups was reported.
+    # was also *parseable*. Marker stripping makes a shadow copy inherit its
+    # target's exclusions, so `package-lock.json.bak` (effective name in
+    # SKIP_FILES) and `notes.md.bak` (non-code extension) were silently exempt —
+    # i.e. the most common backup shapes were the ones never reported.
     for backup_path in scan_backup_files(source_path):
         _check_backup_exposure(backup_path, source_path, findings)
+
+    # CWE-219: sensitive NON-backup files under a served root. Walked separately
+    # for the same reason as backups — a .kdbx/.key is never in the extension
+    # allowlist, so the scan_code_files loop below can never see it, yet it leaks
+    # verbatim if it sits in a mounted directory.
+    _check_served_sensitive_files(source_path, findings)
 
     for file_path in scan_code_files(source_path):
         if is_generated_file(file_path):
@@ -288,6 +297,119 @@ _SERVED_DIRS = frozenset({
     "assets", "uploads", "files", "download", "downloads", "web",
 })
 
+# Mount declarations. Reachability is DECLARED in the source, so deriving it beats
+# guessing by directory name. A fixed name list cuts both ways: it misses any
+# served directory whose name nobody thought to enumerate (`encryptionkeys`,
+# `attachments`, `exports`), and it mis-fires on a directory merely *named*
+# `assets` that is never mounted.
+_MOUNT_PATTERNS = (
+    re.compile(r"express\.static\(\s*['\"]([^'\"]+)['\"]"),
+    re.compile(r"serveIndex\(\s*['\"]([^'\"]+)['\"]"),
+    re.compile(r"app\.use\(\s*['\"][^'\"]*['\"]\s*,\s*serveStatic\(\s*['\"]([^'\"]+)['\"]"),
+)
+
+# Extensions whose exposure is a finding regardless of whether we can parse them.
+# Deliberately narrow: `.md`/`.txt`/`.json` are excluded because a served root
+# full of documentation is normal and would drown the signal.
+#
+# `.asc` and `.gpg` were in this set and were REMOVED after measurement. ASCII-
+# armored PGP files under a served root are usually *detached signatures* or
+# public keys — CSAF/OpenVEX advisory feeds publish them at well-known paths by
+# design — so the extension carries no exposure signal and the rule fired about
+# as often on published artefacts as on real secrets. Private key material is
+# already covered by `.key`/`.pem`/`.p12`/`.pfx`/`.ppk`.
+_SENSITIVE_SERVED_SUFFIXES = frozenset({
+    ".kdbx", ".key", ".pem", ".p12", ".pfx", ".jks", ".keystore", ".ppk",
+    ".sql", ".env", ".pyc", ".ovpn", ".dump", ".sqlite", ".db",
+})
+
+
+def _declared_mounts(content: str) -> set[str]:
+    """Mount targets declared in one file, normalised to lowercase paths."""
+    return {
+        match.group(1).strip("/").lower()
+        for pattern in _MOUNT_PATTERNS
+        for match in pattern.finditer(content)
+    }
+
+
+@lru_cache(maxsize=8)
+def served_roots(source_path: str) -> frozenset[str]:
+    """Directories reachable by an unauthenticated client.
+
+    Code-declared mounts UNION the ``_SERVED_DIRS`` fallback names. Single source
+    of truth, consumed by both CWE-552 (backup exposure) and CWE-219 — so
+    resolving a mount from source improves the pre-existing detector too.
+
+    Cached per source path, and ``read_file_safe`` is itself cached, so the mount
+    sweep costs at most one pass over files the main scan reads anyway.
+    """
+    roots = set(_SERVED_DIRS)
+    for file_path in scan_code_files(source_path):
+        roots |= _declared_mounts(read_file_safe(file_path) or "")
+    return frozenset(roots)
+
+
+def _relative_to_root(file_path: Path, source_path: str) -> Path:
+    """``file_path`` relative to the scan root, or unchanged if outside it."""
+    try:
+        return file_path.relative_to(source_path)
+    except ValueError:
+        return file_path
+
+
+def _relative_parts(file_path: Path, source_path: str) -> list[str]:
+    """Lowercased directory components of ``file_path`` relative to the root."""
+    return [p.lower() for p in _relative_to_root(file_path, source_path).parts[:-1]]
+
+
+def _is_served(parts: list[str], roots: frozenset[str]) -> bool:
+    """True when any ancestor directory is a served root.
+
+    Checks bare names and multi-segment mount paths (``frontend/dist/frontend``).
+    Both are set lookups, so the test is O(depth) with constant-time membership.
+    """
+    if any(p in roots for p in parts):
+        return True
+    return any("/".join(parts[: i + 1]) in roots for i in range(len(parts)))
+
+
+def _is_served_sensitive(file_path: Path, source_path: str, roots: frozenset[str]) -> bool:
+    """CWE-219's predicate. Backups are excluded: CWE-552 already owns them."""
+    if is_backup_name(file_path.name):
+        return False
+    if file_path.suffix.lower() not in _SENSITIVE_SERVED_SUFFIXES:
+        return False
+    return _is_served(_relative_parts(file_path, source_path), roots)
+
+
+def _check_served_sensitive_files(source_path: str, findings: list[dict]) -> None:
+    """CWE-219: a sensitive file stored under a web-reachable directory."""
+    roots = served_roots(source_path)
+    for file_path in scan_all_files(source_path):
+        if not _is_served_sensitive(file_path, source_path, roots):
+            continue
+        rel = file_path.relative_to(source_path)
+        findings.append(enrich_finding({
+            "severity": "high",
+            "check_id": "cwe.info_exposure.served_sensitive_file",
+            "category": "CWE-219",
+            "title": f"Sensitive file '{file_path.name}' under a web-served directory",
+            "description": (
+                f"'{rel}' has a sensitive extension and sits under a directory that "
+                "is served to unauthenticated clients, so its bytes are retrievable "
+                "over HTTP regardless of application-level authorization."
+            ),
+            "file_path": str(file_path),
+            "line_start": 1,
+            "line_end": 1,
+            "recommendation": (
+                "Move the file outside the served tree, or restrict the mount. Rotate "
+                "any credential or key it contains — assume it has been fetched."
+            ),
+            "code_snippet": "",
+        }, "219"))
+
 
 def _check_backup_exposure(file_path: Path, source_path: str, findings: list[dict]) -> None:
     """Report a backup/shadow copy of source or config as an exposure.
@@ -300,12 +422,11 @@ def _check_backup_exposure(file_path: Path, source_path: str, findings: list[dic
     if not is_backup_name(file_path.name):
         return
     shadowed = effective_name(file_path.name)
-    try:
-        rel = file_path.relative_to(source_path)
-        parts = {p.lower() for p in rel.parts[:-1]}
-    except ValueError:
-        rel, parts = file_path, set()
-    served = bool(parts & _SERVED_DIRS)
+    rel = _relative_to_root(file_path, source_path)
+    # Shared resolver: a mount declared in code counts even when its directory
+    # name is absent from _SERVED_DIRS, which previously scored such a backup
+    # `medium` despite being fully reachable.
+    served = _is_served(_relative_parts(file_path, source_path), served_roots(source_path))
 
     finding = {
         "severity": "high" if served else "medium",

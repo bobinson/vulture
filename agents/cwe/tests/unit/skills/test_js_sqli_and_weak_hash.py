@@ -4,12 +4,12 @@ Both detectors were written against Python and Go and are blind to Node:
 
 * Every SQL_INJECTION_PATTERN matched a Python f-string / .format() / %-format
   or a Go Sprintf. None matched a JS/TS template literal, so a scan of
-  OWASP juice-shop — whose flagship vulnerability is a template-literal SQL
+  a real Node target whose flagship vulnerability is a template-literal SQL
   injection in the login route — produced zero CWE-89 findings, and
   `routes/search.ts` came back clean entirely.
 
 * Every WEAK_HASH_PATTERN matched hashlib / MessageDigest / md5.New. None
-  matched Node's `crypto.createHash('md5')`, which is how juice-shop hashes
+  matched Node's `crypto.createHash('md5')`, which is how the measured app hashes
   passwords. CWE-327/328/916 were absent from the whole report, leaving
   OWASP A04 carried by a single unrelated CWE.
 
@@ -40,8 +40,8 @@ def _of(findings, *cwes):
 
 
 class TestTemplateLiteralSQLi:
-    def test_juiceshop_login_shape_is_detected(self):
-        # routes/login.ts:34 shape — the canonical juice-shop auth bypass.
+    def test_login_shape_is_detected(self):
+        # routes/login.ts:34 shape — the canonical template-literal auth bypass.
         body = (
             "import models from '../models/index'\n"
             "function login (req, res) {\n"
@@ -54,7 +54,7 @@ class TestTemplateLiteralSQLi:
         hits = _of(_run(check_injection, {"login.ts": body}), 89)
         assert hits, "template-literal SQL with an interpolated request value must be CWE-89"
 
-    def test_juiceshop_search_shape_is_detected(self):
+    def test_search_shape_is_detected(self):
         # routes/search.ts:23 shape — returned zero findings of any category.
         body = (
             "function searchProducts (req, res) {\n"
@@ -91,7 +91,7 @@ class TestTemplateLiteralSQLi:
 
 class TestNodeWeakHash:
     def test_createhash_md5_is_detected(self):
-        # lib/insecurity.ts:41 — juice-shop's password hash.
+        # lib/insecurity.ts:41 — the app's password hash.
         body = (
             "import crypto from 'crypto'\n"
             "export const hash = (data: string) => "

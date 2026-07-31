@@ -10,7 +10,7 @@ stripping makes a shadow copy inherit the underlying type's EXCLUSION rules:
                                   extension -> never yielded
     ftp/package.json.bak       -> yielded via manifest extras -> the only finding
 
-So juice-shop's three backup files produced exactly one CWE-552 row. Exposure
+So three backup files in one tree produced exactly one CWE-552 row. Exposure
 is a property of the FILENAME — a readable `package-lock.json.bak` in a served
 directory leaks its contents whether or not we would parse those contents.
 
@@ -57,8 +57,8 @@ class TestBackupExposureIgnoresContentGates:
         d.cleanup()
         assert hits, "coupons_2013.md.bak must be reported even though .md is not scanned"
 
-    def test_juiceshop_ftp_directory_reports_all_three(self):
-        """The exact juice-shop case: three backup files, three findings."""
+    def test_ftp_directory_reports_all_three(self):
+        """The measured case: three backup files, three findings."""
         d = _tree({
             "ftp/coupons_2013.md.bak": "discount codes\n",
             "ftp/package-lock.json.bak": '{"lockfileVersion": 2}\n',

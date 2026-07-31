@@ -1,6 +1,6 @@
 """Feature 0070 — dependency skill precision.
 
-Two defects, both measured against OWASP juice-shop:
+Two defects, both measured on a real application tree:
 
 1. **CWE-937 is a CWE _Category_, not a Weakness.** The known-vulnerable
    component finding was labelled ``CWE-937``, which the OWASP **2025** edition
@@ -12,8 +12,8 @@ Two defects, both measured against OWASP juice-shop:
    Component*) is the Weakness for exactly this finding, is in A03's 2025 set,
    and IS enrichable.
 
-2. **CWE-1104 fired once per floating dependency spec.** juice-shop's three npm
-   manifests produced 244 ``low`` rows carrying one bit of information each
+2. **CWE-1104 fired once per floating dependency spec.** Three npm manifests in
+   one measured tree produced 244 ``low`` rows carrying one bit of information each
    ("this manifest uses caret ranges"), 70 of them literal duplicates across
    manifests. Rolled up per manifest the same information is 3 rows — provided
    the rollup keeps the count and the package list.
@@ -26,11 +26,7 @@ import re
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from cwe_agent.skills.dependency_check import check_dependency_security
-
-_JUICE_SHOP = Path("/home/user/src/juice-shop")
 
 
 def _cats(findings: list[dict], cwe: str) -> list[dict]:
@@ -195,29 +191,9 @@ class TestUnpinnedRollup:
         assert len(_cats(f, "CWE-1357")) == 2, "CWE-1357 stays per-dependency"
         assert len(_cats(f, "CWE-1104")) == 1
 
-
-# ---------------------------------------------------------------------------
-# Measured on the real target
-# ---------------------------------------------------------------------------
-@pytest.mark.skipif(not _JUICE_SHOP.is_dir(), reason="juice-shop scan target absent")
-class TestMeasuredOnJuiceShop:
-    @pytest.fixture(scope="class")
-    def findings(self) -> list[dict]:
-        return check_dependency_security(str(_JUICE_SHOP))["findings"]
-
-    def test_1104_collapses_to_one_row_per_manifest(self, findings):
-        hits = _cats(findings, "CWE-1104")
-        assert len(hits) == 3, f"244 rows must become 3 (one per manifest), got {len(hits)}"
-        assert sum(h["instance_count"] for h in hits) == 244, (
-            "the rollup must account for every unpinned spec it replaced"
-        )
-
-    def test_known_vulnerable_rows_survive_the_remap(self, findings):
-        assert len(_cats(findings, "CWE-1395")) == 11
-        assert not _cats(findings, "CWE-937")
-
-    def test_no_other_category_membership_changed(self, findings):
-        from collections import Counter
-
-        c = Counter(f["category"] for f in findings)
-        assert c == {"CWE-1104": 3, "CWE-1395": 11, "CWE-829": 1}, dict(c)
+# The former single-tree aggregate class was removed: it pinned one repository's
+# exact paths and counts (244 -> 3 rows, 11 CWE-1395 rows). Every property it
+# proved is covered hermetically above — `test_rollup_carries_the_instance_count`,
+# `test_each_manifest_gets_its_own_rollup`, `test_rollup_names_the_packages` and
+# `test_untrusted_specs_are_not_swallowed_by_the_rollup` — without binding the
+# suite to a particular scan target.
