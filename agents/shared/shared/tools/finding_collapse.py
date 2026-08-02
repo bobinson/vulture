@@ -26,6 +26,16 @@ Consequences of that rule, all of them deliberate:
 * Severity is preserved: a survivor is raised to the maximum severity of the
   ancestors that collapsed into it, so a high-severity generalisation is
   never silently downgraded by a medium-severity specialisation.
+* **Information is preserved.** A collapse RE-LABELS; it must never destroy.
+  Being the less precise *id* says nothing about the quality of a row's
+  *text* — a specialised detector (a PEM key matcher, say) routinely writes a
+  better title and remediation than the generic pattern that happens to own
+  the narrower id. Measured regression that forced this: a precise
+  "Hardcoded private key (RSA PRIVATE KEY) … rotate immediately" was dropped
+  in favour of a bare "Hardcoded cryptographic key", leaving the survivor
+  strictly less actionable than the row it replaced. Survivors therefore gain
+  ``collapsed_from`` (structured) plus an appended description note (for
+  consumers that render prose only).
 * The outcome is order-independent (the line's *set* of categories decides,
   not list position), emission order of the survivors is unchanged, and a
   line can never lose its last categorised row.
@@ -227,24 +237,72 @@ def _split(pairs: list[_Pair], redundant: set[str]) -> tuple[list[_Pair], list[_
     return kept, dropped
 
 
-def _absorbed_severities(
+def _absorbed_rows(
     row: dict, dropped: list[_Pair], ancestors: _Ancestors
-) -> list[str]:
-    """Severities of the collapsed rows that generalise ``row``."""
+) -> list[dict]:
+    """The collapsed rows that generalise ``row``."""
     anc = ancestors(_cwe_id(row) or "")
-    return [d.get("severity", "") for _idx, d in dropped if _cwe_id(d) in anc]
+    return [d for _idx, d in dropped if _cwe_id(d) in anc]
+
+
+def _absorbed_line(row: dict) -> str:
+    """One human-readable sentence for a single folded-in row."""
+    bits = (str(row.get(k) or "").strip() for k in ("title", "recommendation"))
+    body = " — ".join(b for b in bits if b)
+    return f"Also reported as {row.get('category', '?')}: {body}"
+
+
+def _absorbed_note(absorbed: list[dict]) -> str:
+    """One line per row folded in, for the description append."""
+    return " ".join(_absorbed_line(row) for row in absorbed)
+
+
+def _appended_description(row: dict, note: str) -> str:
+    """The survivor's description with the absorbed note appended."""
+    existing = str(row.get("description") or "").rstrip()
+    return f"{existing} {note}".strip() if existing else note
+
+
+def _merge_absorbed(row: dict, absorbed: list[dict]) -> dict:
+    """Fold the dropped ancestors' knowledge into the survivor.
+
+    A collapse must RE-LABEL, never destroy. The ancestor is dropped because
+    its CWE id is the less precise of the two — that says nothing about the
+    quality of its *text*, and in practice a specialised detector (a PEM key
+    matcher, say) writes a far better title and remediation than the generic
+    pattern that happens to own the narrower id. Discarding it left the
+    survivor strictly less actionable than the row it replaced.
+
+    So the survivor keeps its own (more specific) category and gains:
+    ``collapsed_from`` for structured consumers, and an appended note so a UI
+    that renders only the description still shows what was folded in.
+    """
+    merged = dict(row)
+    merged["collapsed_from"] = [
+        {
+            "category": a.get("category"),
+            "title": a.get("title"),
+            "recommendation": a.get("recommendation"),
+            "check_id": a.get("check_id"),
+        }
+        for a in absorbed
+    ]
+    merged["description"] = _appended_description(merged, _absorbed_note(absorbed))
+    return merged
 
 
 def _promote(
     kept: list[_Pair], dropped: list[_Pair], ancestors: _Ancestors
 ) -> list[_Pair]:
-    """Copy survivors, raising each to the severity of what collapsed into it."""
+    """Copy survivors, folding in the severity AND the text of what collapsed."""
     out: list[_Pair] = []
     for idx, row in kept:
-        absorbed = _absorbed_severities(row, dropped, ancestors)
+        absorbed = _absorbed_rows(row, dropped, ancestors)
         if absorbed:
-            row = dict(row)
-            row["severity"] = max_severity([row.get("severity", "")] + absorbed)
+            row = _merge_absorbed(row, absorbed)
+            row["severity"] = max_severity(
+                [row.get("severity", "")] + [a.get("severity", "") for a in absorbed]
+            )
         out.append((idx, row))
     return out
 

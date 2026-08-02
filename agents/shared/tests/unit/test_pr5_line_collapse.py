@@ -276,3 +276,76 @@ def test_runner_helper_degrades_on_malformed_findings():
     """A broken row must not cost the run its findings."""
     kept, collapsed = _collapse_skill_findings(["not-a-dict"], run_id="t")
     assert (collapsed, kept) == (0, ["not-a-dict"])
+
+
+# ---------------------------------------------------------------------------
+# Information preservation (regression: the collapse deleted the better row)
+# ---------------------------------------------------------------------------
+
+
+def _hierarchy(child_to_ancestors):
+    return lambda cwe: set(child_to_ancestors.get(cwe, ()))
+
+
+class TestCollapsePreservesInformation:
+    """A collapse must RE-LABEL, never destroy what the dropped row knew.
+
+    Measured regression this pins: on a line carrying both a generic
+    "Hardcoded cryptographic key" (the specialisation) and a precise
+    "Hardcoded private key (RSA PRIVATE KEY) ... rotate immediately" (its
+    catalog ancestor), the ancestor was dropped and its identification and
+    remediation went with it. The surviving row was strictly less useful than
+    the one removed, which is the opposite of the collapse's purpose.
+    """
+
+    def _stack(self):
+        return [
+            {
+                "category": "CWE-798",
+                "severity": "critical",
+                "file_path": "/x/keys.ts",
+                "line_start": 21,
+                "title": "Hardcoded private key (RSA PRIVATE KEY)",
+                "description": "PEM-encoded RSA PRIVATE KEY block found in source.",
+                "recommendation": "Remove the key and rotate it immediately.",
+            },
+            {
+                "category": "CWE-321",
+                "severity": "critical",
+                "file_path": "/x/keys.ts",
+                "line_start": 21,
+                "title": "Hardcoded cryptographic key",
+                "description": "Cryptographic key embedded in source code at line 21",
+                "recommendation": "Load encryption keys from environment variables.",
+            },
+        ]
+
+    def test_survivor_keeps_the_more_specific_category(self):
+        kept, n = collapse_line_stacks(self._stack(), _hierarchy({"798": set(), "321": {"798"}}))
+        assert n == 1
+        assert [k["category"] for k in kept] == ["CWE-321"]
+
+    def test_dropped_rows_identification_survives(self):
+        kept, _ = collapse_line_stacks(self._stack(), _hierarchy({"798": set(), "321": {"798"}}))
+        blob = " ".join(str(v) for v in kept[0].values())
+        assert "RSA PRIVATE KEY" in blob, (
+            "the dropped ancestor identified the key material; losing that text "
+            "makes the survivor less actionable than the row it replaced"
+        )
+
+    def test_dropped_rows_remediation_survives(self):
+        kept, _ = collapse_line_stacks(self._stack(), _hierarchy({"798": set(), "321": {"798"}}))
+        blob = " ".join(str(v) for v in kept[0].values())
+        assert "rotate" in blob.lower(), "the ancestor's remediation must not be discarded"
+
+    def test_absorbed_rows_are_recorded_structurally(self):
+        kept, _ = collapse_line_stacks(self._stack(), _hierarchy({"798": set(), "321": {"798"}}))
+        absorbed = kept[0].get("collapsed_from")
+        assert absorbed and absorbed[0]["category"] == "CWE-798", (
+            "a consumer must be able to see what was folded in without parsing prose"
+        )
+
+    def test_no_annotation_when_nothing_collapsed(self):
+        solo = [self._stack()[1]]
+        kept, n = collapse_line_stacks(solo, _hierarchy({"321": {"798"}}))
+        assert n == 0 and "collapsed_from" not in kept[0]
