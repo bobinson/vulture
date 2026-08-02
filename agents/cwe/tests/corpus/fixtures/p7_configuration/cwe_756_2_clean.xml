@@ -1,0 +1,8 @@
+<configuration>
+  <system.web>
+    <!--
+    <customErrors defaultRedirect="~/Error" mode="Off" />
+    -->
+    <customErrors mode="On" defaultRedirect="~/Error" />
+  </system.web>
+</configuration>

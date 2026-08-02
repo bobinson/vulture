@@ -1,0 +1,23 @@
+# Group: errors (feature 0070 P8).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# One rule, three positives, three clean twins.
+#
+# CWE-460 keys on a STRUCTURE, not on a vocabulary: a handle assigned inside a
+# `try` body and released later in that same body, with no release in any
+# handler clause. Each twin removes exactly that property and nothing else —
+# the release moves into `finally` (1), is duplicated into the handler (2), or
+# becomes unnecessary because the handle is bound by a context manager (3).
+# A rule keying on the acquire API, the variable name, or "`try` without
+# `finally`" fails all three twins instead of passing them.
+#
+# The three positives use three unrelated resource vocabularies (`close`,
+# `release`, `shutdown`) on three unrelated acquire calls, so a rule that
+# quietly grew an API allowlist would drop two of them.
+- {file: p8_errors/cwe_460_1.py, language: Python, cwe: "460", expectation: positive, line: 6}
+- {file: p8_errors/cwe_460_2.py, language: Python, cwe: "460", expectation: positive, line: 6}
+- {file: p8_errors/cwe_460_3.py, language: Python, cwe: "460", expectation: positive, line: 6}
+- {file: p8_errors/cwe_460_1_clean.py, language: Python, cwe: "460", expectation: negative}
+- {file: p8_errors/cwe_460_2_clean.py, language: Python, cwe: "460", expectation: negative}
+- {file: p8_errors/cwe_460_3_clean.py, language: Python, cwe: "460", expectation: negative}

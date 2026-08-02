@@ -92,6 +92,12 @@ WHITELIST_EXTENSIONS = frozenset({
     ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".mk", ".gradle",
     # Languages with no coverage before.
     ".lua", ".pl", ".pm", ".dart", ".groovy", ".clj", ".ex", ".exs", ".r",
+    # PR9/PR10: template and config dialects that skills ALREADY carry patterns
+    # for. Without these the corresponding rule arms are dead code — measured:
+    # JSP arms in input validation, Jinja arms in three skills, and ASP.NET
+    # arms in two could never fire because the extension was never scanned.
+    # A declared language must be reachable or the declaration is a lie.
+    ".j2", ".jinja", ".jinja2", ".jsp", ".jspx", ".config", ".csproj",
 })
 
 # Canonical filenames that carry no extension. `.dockerfile` was already
@@ -102,6 +108,8 @@ WELL_KNOWN_FILENAMES = frozenset({
     "Jenkinsfile", "Procfile", "Rakefile", "Gemfile", "Brewfile", "Justfile",
     "CMakeLists.txt", ".npmrc", ".yarnrc", ".dockerignore", ".htaccess",
     ".netrc", ".pypirc", ".curlrc", ".gitconfig",
+    # Extensionless, and carries privilege-escalation configuration.
+    "sudoers",
 })
 
 
@@ -287,6 +295,45 @@ def _matches_extra(name: str, extras: frozenset[str]) -> bool:
     return False
 
 
+def _matches_extras_any(name: str, eff_name: str, extras: frozenset[str]) -> bool:
+    """True if either the literal or the backup-stripped name is in ``extras``."""
+    if not extras:
+        return False
+    return _matches_extra(name, extras) or _matches_extra(eff_name, extras)
+
+
+def _wanted_by_name(
+    name: str, eff_suffix: str, eff_name: str,
+    exts: frozenset[str], extras: frozenset[str],
+) -> bool:
+    """Name/extension gate for one walked path (no I/O)."""
+    if eff_suffix in exts and eff_name not in SKIP_FILES:
+        return True
+    return _matches_extras_any(name, eff_name, extras)
+
+
+def _include_file(
+    path: Path, exts: frozenset[str], extras: frozenset[str], scan_minified: bool,
+) -> bool:
+    """Decide whether one walked path belongs in the scan set.
+
+    Backup/shadow copies are resolved to what they shadow first, so `app.ts.bak`
+    matches `.ts` instead of the unmatchable `.bak` (feature 0068), and
+    `app.min.js.bak` is recognised as minified — it is still enumerated by
+    scan_backup_files() as an exposure.
+
+    The name gate runs before the minified gates because it is free: the content
+    heuristic costs a (cached) read, so it is only paid for files that would
+    otherwise be scanned.
+    """
+    eff_name = effective_name(path.name)
+    if not _wanted_by_name(path.name, effective_suffix(path.name), eff_name, exts, extras):
+        return False
+    if scan_minified:
+        return True
+    return not (is_minified_name(eff_name) or is_minified_content(path))
+
+
 @lru_cache(maxsize=16)
 def _scan_code_files_cached(
     source_path: str, exts: frozenset[str], max_files: int, extras: frozenset[str],
@@ -304,20 +351,7 @@ def _scan_code_files_cached(
     spec = _load_ignore_spec(str(root))
     files: list[Path] = []
     for p in _walk_filtered(root, root, spec):
-        # Resolve backup/shadow copies to what they shadow, so `app.ts.bak`
-        # matches `.ts` instead of the unmatchable `.bak` (feature 0068).
-        eff_suffix = effective_suffix(p.name)
-        eff_name = effective_name(p.name)
-        # Minified/bundled vendor artefacts are not source. Checked on the
-        # effective name so `app.min.js.bak` is excluded from content scanning
-        # too — it is still enumerated by scan_backup_files() as an exposure.
-        if not scan_minified and is_minified_name(eff_name):
-            continue
-        suffix_match = eff_suffix in exts and eff_name not in SKIP_FILES
-        extras_match = bool(extras) and (
-            _matches_extra(p.name, extras) or _matches_extra(eff_name, extras)
-        )
-        if not (suffix_match or extras_match):
+        if not _include_file(p, exts, extras, scan_minified):
             continue
         files.append(p)
         if len(files) >= max_files:
@@ -346,6 +380,60 @@ _MINIFIED_RE = re.compile(
 def is_minified_name(name: str) -> bool:
     """Return True when ``name`` looks like a minified or bundled artefact."""
     return bool(_MINIFIED_RE.search(name))
+
+
+# The name regex only recognises the old `.min` / `.bundle` convention. Modern
+# bundlers emit chunks whose name is nothing but a content hash
+# (`index-eq0Dxw.js`, `613-32d22f8f.js`, `page.js`), so a whole build directory
+# slips past a name-only rule. Those files are still recognisable by SHAPE:
+# generated code is packed onto a few enormous lines.
+#
+# Threshold: 2000 chars. The signature detector already treats 600 chars on one
+# line as pathological for a hand-written line; 2000 is >3x that, and across
+# ~6.2k JS/CSS-family files in five real trees NO hand-written file had a single
+# line above it, while every generated bundle had lines of 3k-130k chars.
+_MINIFIED_LINE_CHARS = 2000
+
+# One long line is not enough — a legitimate source file can carry a single
+# embedded blob (data: URI, generated regex, inlined SVG) and must stay in the
+# scan. Require the long lines to hold most of the file's characters. Measured
+# on the same corpus: every generated bundle scored >= 0.72 (the one hand-written
+# file carrying a large blob would have scored far below), so 0.5 sits in the
+# empty band between the two populations.
+_MINIFIED_CHAR_FRACTION = 0.5
+
+# Only bundler-produced text types are content-classified. Prose, data and
+# config formats (.md, .json, .sql, .yaml) legitimately carry very long lines,
+# and excluding those would silently drop real coverage.
+_MINIFIABLE_SUFFIXES = frozenset({
+    ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".css", ".scss", ".less",
+})
+
+
+def _long_line_chars(lines: tuple[str, ...]) -> tuple[int, int]:
+    """Return (chars on over-long lines, total chars) for ``lines``."""
+    long_chars = sum(len(ln) for ln in lines if len(ln) > _MINIFIED_LINE_CHARS)
+    return long_chars, sum(len(ln) for ln in lines)
+
+
+def is_minified_content(path: Path) -> bool:
+    """Return True when the file's *shape* is that of a generated bundle.
+
+    Complements :func:`is_minified_name` for hash-named chunk files. Uses the
+    shared cached read, so the file is never read twice: any skill that goes on
+    to analyse it hits the same cache entry. A file too large for the read cap
+    is unreadable here and reported as not-minified — no skill can analyse it
+    either, so it produces no findings regardless.
+    """
+    if effective_suffix(path.name) not in _MINIFIABLE_SUFFIXES:
+        return False
+    lines = read_file_lines(path)
+    if not lines:
+        return False
+    long_chars, total = _long_line_chars(lines)
+    if not long_chars:
+        return False
+    return long_chars >= total * _MINIFIED_CHAR_FRACTION
 
 
 def _scan_minified() -> bool:
@@ -671,6 +759,29 @@ def _is_generated_json(name: str, parts_set: set[str]) -> bool:
     if name.startswith("tsconfig") or name == "package.json":
         return True
     return bool(parts_set & _DATA_DIRS)
+
+
+_PROSE_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".adoc", ".txt"})
+
+
+def is_prose_file(path: Path) -> bool:
+    """True for documentation prose, where a code pattern is a *mention*.
+
+    Code-pattern skills must skip these. A hardening guide saying "never set
+    ``StrictHostKeyChecking=no``" is not an instance of setting it, and
+    ``COMMENT_INDICATORS`` cannot help: markdown body text carries no comment
+    marker, so prose reads as executable source. Measured on a pure
+    ``SECURITY.md`` + ``README.rst`` pair that only *condemns* insecure options:
+    three findings (CWE-269, CWE-328, CWE-94), all false.
+
+    **Deliberately NOT applied to secret scanning.** A credential pasted into a
+    README is a genuine leak — the value is exposed whether or not anything
+    executes. Prose suppresses pattern-shaped findings, never exposed values.
+
+    Uses :func:`effective_suffix`, so a shadow copy (``notes.md.bak``) is prose
+    too.
+    """
+    return effective_suffix(path.name) in _PROSE_SUFFIXES
 
 
 def is_generated_file(path: Path) -> bool:

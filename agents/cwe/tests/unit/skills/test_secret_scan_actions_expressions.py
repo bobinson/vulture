@@ -1,9 +1,9 @@
 """GitHub Actions secret expressions are indirections, not hardcoded secrets.
 
 `config_files.py` already routes a secret-named key whose value is a variable
-reference to a benign `variable_reference` finding. Its `_VAR_REF_RE` knows
-`${VAR}`, `$VAR`, `$(cmd)`, `%(VAR)s`, ERB and Jinja/Helm `{{ VAR }}` — but not
-GitHub Actions' `${{ secrets.NAME }}`:
+reference to a benign `variable_reference` finding. The guard knows
+`${VAR}`, `$VAR`, `$(cmd)`, `%(VAR)s`, ERB and Jinja/Helm `{{ VAR }}` — but at
+one point not GitHub Actions' `${{ secrets.NAME }}`:
 
 * the `${VAR}` alternative requires a word character after `${`, and Actions
   syntax has a second `{`
@@ -29,7 +29,13 @@ from cwe_agent.skills._var_reference import (
     is_variable_reference,
     line_value_is_variable_ref,
 )
-from cwe_agent.skills.secret_scan.config_files import _is_variable_reference
+
+# `config_files` no longer carries its own copy of the guard; it re-exports the
+# shared one by importing it. Alias it under the old local name so every
+# assertion below still reads "the guard config_files actually uses".
+from cwe_agent.skills.secret_scan.config_files import (
+    is_variable_reference as _is_variable_reference,
+)
 
 
 class TestActionsExpressionRecognised:
@@ -60,31 +66,28 @@ class TestActionsExpressionRecognised:
             assert _is_variable_reference(v), f"{v!r} should still be recognised"
 
     def test_pre_existing_forms_still_recognised(self):
-        """The additions must not disturb the shapes already covered.
-
-        NB: `$(cmd)` substitution is covered by the shared guard but has never
-        been covered here — it is asserted separately below rather than
-        smuggled in as a regression pin.
-        """
+        """The additions must not disturb the shapes already covered."""
         for v in ("${API_KEY}", "$API_KEY",
                   "%(api_key)s", "{{ api_key }}", "<%= api_key %>"):
             assert _is_variable_reference(v), f"{v} regressed"
 
-    def test_command_substitution_divergence_is_documented(self):
-        """`$(vault read …)` exposes a three-way inconsistency, pinned not endorsed.
+    def test_command_substitution_divergence_is_resolved(self):
+        """`$(vault read …)` used to expose a three-way inconsistency.
 
-        * `is_variable_reference` (value level, shared)  — recognises it
-        * `_is_variable_reference` (value level, local)  — does NOT
-        * `line_value_is_variable_ref` (line level)      — does NOT, because
-          `_RHS_CAPTURE` has no `$(...)` alternative, so nothing is extracted
+        The two VALUE-level guards were merged: `config_files` now calls the
+        shared `is_variable_reference` instead of a narrower private copy, so
+        both must agree on command substitution.
 
-        Pinned as the current state so a future consolidation is a deliberate
-        change rather than a silent one. See the DRY note at the end of the file.
+        The LINE-level guard is a separate concern and still does not cover it:
+        `_RHS_CAPTURE` has no `$(...)` alternative, so nothing is extracted from
+        the line and there is no value to test. That remains pinned, not endorsed.
         """
         assert is_variable_reference("$(vault read secret/foo)"), \
             "the shared VALUE-level guard covers command substitution"
-        assert not _is_variable_reference("$(vault read secret/foo)"), \
-            "the local guard does not — if this passes, the regexes were merged"
+        assert _is_variable_reference("$(vault read secret/foo)"), \
+            "config_files must route through the shared guard, not a narrower copy"
+        assert _is_variable_reference is is_variable_reference, \
+            "config_files must not reintroduce a second value-level guard"
         assert not line_value_is_variable_ref("KEY: $(vault read secret/foo)"), \
             "_RHS_CAPTURE cannot extract a $(...) RHS — if this passes, it gained one"
 
@@ -143,7 +146,7 @@ class TestEndToEndOnAWorkflowFile:
 
 
 def test_shared_guard_also_understands_actions_syntax():
-    """`_var_reference.py` carries a second, near-duplicate regex (DRY debt).
+    """The line-level guard must agree with the value-level one on Actions syntax.
 
     Both are used for suppression decisions, so a shape recognised by one and
     not the other is a latent inconsistency. Keep them in agreement.

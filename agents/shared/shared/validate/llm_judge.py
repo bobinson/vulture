@@ -344,6 +344,11 @@ def run_l5(
 # the wrong axis for it.
 _CRYPTO_POLICY_CWES: frozenset[str] = frozenset({
     "CWE-326", "CWE-327", "CWE-328", "CWE-330", "CWE-798", "CWE-319",
+    # CWE-338 is the security-context specialisation of CWE-330. When a row is
+    # re-tagged 330 -> 338 it must keep the same immunity, or the relabel
+    # silently strips a deterministic crypto finding's protection from an
+    # aggressive L5 judge — a regression the relabel itself would hide.
+    "CWE-338",
 })
 
 # RC6 blast-radius cap. The cap freezes the L5 layer when the judge demotes

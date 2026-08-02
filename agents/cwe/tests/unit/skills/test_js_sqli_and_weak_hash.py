@@ -91,13 +91,13 @@ class TestTemplateLiteralSQLi:
 
 class TestNodeWeakHash:
     def test_createhash_md5_is_detected(self):
-        # lib/insecurity.ts:41 — the app's password hash.
+        # a security helper's password hash.
         body = (
             "import crypto from 'crypto'\n"
             "export const hash = (data: string) => "
             "crypto.createHash('md5').update(data).digest('hex')\n"
         )
-        hits = _of(_run(check_cryptography, {"insecurity.ts": body}), 327, 328, 916)
+        hits = _of(_run(check_cryptography, {"security.ts": body}), 327, 328, 916)
         assert hits, "crypto.createHash('md5') must be reported as a weak hash"
 
     def test_createhash_sha1_is_detected(self):

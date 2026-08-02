@@ -8,6 +8,7 @@ from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     read_file_safe,
@@ -198,6 +199,18 @@ IMPORT_LINE = re.compile(r"^\s*(?:from|import|require|use)\s")
 _CREDENTIAL_CONTEXT = [re.compile(r"(connect|login|auth|session|database)", re.IGNORECASE)]
 
 
+def _should_skip(file_path: Path) -> bool:
+    """True for files that carry no auth behaviour at all.
+
+    Prose is deliberately *not* an arm here. This skill owns one
+    exposed-value detector (CWE-798), and a credential pasted into a README
+    is leaked whether or not anything executes. Prose is instead narrowed
+    per-detector in :func:`_analyze_file`, which keeps CWE-798 running and
+    drops only the pattern-shaped checks.
+    """
+    return is_generated_file(file_path) or is_test_file(file_path)
+
+
 def check_authentication(source_path: str) -> dict:
     """Check for CWE authentication vulnerabilities.
 
@@ -211,37 +224,68 @@ def check_authentication(source_path: str) -> dict:
     suppression_counts: dict[int, int] = {}
 
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path):
-            continue
-        if is_test_file(file_path):
+        if _should_skip(file_path):
             continue
         _analyze_file(file_path, findings, suppression_counts)
 
     return {"findings": findings}
 
 
+def _is_non_code_line(line: str) -> bool:
+    """True for comment / import / scanner-definition lines."""
+    return bool(
+        COMMENT_INDICATORS.match(line) or IMPORT_LINE.match(line) or SCANNER_DEF_LINE.search(line)
+    )
+
+
+def _check_code_shapes(
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    content: str, findings: list[dict], emitted: set[str],
+) -> None:
+    """Pattern-shaped auth detectors — an instance only, never a mention.
+
+    These are the checks suppressed in prose: a document quoting
+    ``algorithms: ['none']`` in order to forbid it verifies no token.
+    """
+    _check_weak_auth(file_path, line, line_num, lines, findings)
+    _check_missing_auth(file_path, line, line_num, lines, findings)
+    _check_weak_password(file_path, line, line_num, lines, findings)
+    _check_password_hash(file_path, line, line_num, lines, content, findings, emitted)
+    _check_jwt_verification(file_path, line, line_num, lines, findings, emitted)
+
+
+def _scan_lines(
+    file_path: Path, lines: list[str], content: str,
+    findings: list[dict], suppression_counts: dict[int, int], prose: bool,
+) -> None:
+    """Run the per-line detectors, keeping only CWE-798 when the file is prose."""
+    emitted: set[str] = set()
+    for line_num, line in enumerate(lines, start=1):
+        if _is_non_code_line(line):
+            continue
+        _check_hardcoded_creds(file_path, line, line_num, lines, content, findings, suppression_counts)
+        if prose:
+            continue
+        _check_code_shapes(file_path, line, line_num, lines, content, findings, emitted)
+
+
 def _analyze_file(file_path: Path, findings: list[dict], suppression_counts: dict[int, int]) -> None:
-    """Analyze a file for authentication patterns."""
+    """Analyze a file for authentication patterns.
+
+    In prose only the exposed-value detector (CWE-798) runs; every
+    pattern-shaped check is dropped, because markdown body text carries no
+    comment marker for ``COMMENT_INDICATORS`` and so a quoted anti-pattern
+    reads as executable source.
+    """
     lines = read_file_lines(file_path)
     if lines is None:
         return
     content = read_file_safe(file_path) or ""
-    _check_password_change(file_path, lines, content, findings)
-    _check_password_recovery(file_path, lines, content, findings)
-    emitted: set[str] = set()
-    for line_num, line in enumerate(lines, start=1):
-        if COMMENT_INDICATORS.match(line):
-            continue
-        if IMPORT_LINE.match(line):
-            continue
-        if SCANNER_DEF_LINE.search(line):
-            continue
-        _check_hardcoded_creds(file_path, line, line_num, lines, content, findings, suppression_counts)
-        _check_weak_auth(file_path, line, line_num, lines, findings)
-        _check_missing_auth(file_path, line, line_num, lines, findings)
-        _check_weak_password(file_path, line, line_num, lines, findings)
-        _check_password_hash(file_path, line, line_num, lines, content, findings, emitted)
-        _check_jwt_verification(file_path, line, line_num, lines, findings, emitted)
+    prose = is_prose_file(file_path)
+    if not prose:
+        _check_password_change(file_path, lines, content, findings)
+        _check_password_recovery(file_path, lines, content, findings)
+    _scan_lines(file_path, lines, content, findings, suppression_counts, prose)
 
 
 def _check_hardcoded_creds(
@@ -379,14 +423,22 @@ def _check_weak_password(
 
 def _emit(
     file_path: Path, lines: list[str], line_num: int, findings: list[dict],
-    *, cwe: str, check_id: str, severity: str, title: str,
+    *, category: str, check_id: str, severity: str, title: str,
     description: str, recommendation: str, **extra: object,
 ) -> None:
-    """Append one enriched finding (shared by the 0070 detectors)."""
+    """Append one enriched finding (shared by the 0070 detectors).
+
+    ``category`` is the FULL literal (``"CWE-620"``), not the bare id. The
+    coverage attestation discovers emitted CWEs by scanning this source for a
+    literal ``CWE-N`` at an emit site, so passing the bare id made every CWE
+    emitted through here invisible to the report while detection worked fine —
+    an under-claim, which is the one direction the attestation must never take.
+    """
+    cwe = category.removeprefix("CWE-")
     finding: dict = {
         "severity": severity,
         "check_id": check_id,
-        "category": f"CWE-{cwe}",
+        "category": category,
         "title": title,
         "description": description,
         "file_path": str(file_path),
@@ -427,7 +479,7 @@ def _check_password_hash(
         emitted.add("916")
         _emit(
             file_path, lines, line_num, findings,
-            cwe="916", check_id="cwe.auth.password_hash_effort", severity="critical",
+            category="CWE-916", check_id="cwe.auth.password_hash_effort", severity="critical",
             title="Password stored with insufficient hashing effort",
             description=(
                 f"Password value hashed with a bare one-shot digest at line {line_num}; "
@@ -442,7 +494,7 @@ def _check_password_hash(
     emitted.add("759")
     _emit(
         file_path, lines, line_num, findings,
-        cwe="759", check_id="cwe.auth.password_hash_no_salt", severity="high",
+        category="CWE-759", check_id="cwe.auth.password_hash_no_salt", severity="high",
         title="Password hash computed without a salt",
         description=(
             f"Password digest at line {line_num} uses no salt, so identical passwords "
@@ -478,7 +530,7 @@ def _check_password_change(
         return
     _emit(
         file_path, lines, anchor, findings,
-        cwe="620", check_id="cwe.auth.unverified_password_change", severity="high",
+        category="CWE-620", check_id="cwe.auth.unverified_password_change", severity="high",
         title="Unverified password change",
         description=f"Password change at line {anchor}: {detail}",
         recommendation="Require and verify the current password (or a freshly re-authenticated session) before changing it",
@@ -506,7 +558,7 @@ def _check_password_recovery(
         return
     _emit(
         file_path, lines, anchor, findings,
-        cwe="640", check_id="cwe.auth.weak_password_recovery", severity="high",
+        category="CWE-640", check_id="cwe.auth.weak_password_recovery", severity="high",
         title="Weak password recovery mechanism",
         description=(
             f"Password reset at line {anchor} is gated only on a security answer, "
@@ -536,7 +588,7 @@ def _check_jwt_verification(
         emitted.add("jwt287")
         _emit(
             file_path, lines, line_num, findings,
-            cwe="287", check_id="cwe.auth.jwt_public_key_verify", severity="critical",
+            category="CWE-287", check_id="cwe.auth.jwt_public_key_verify", severity="critical",
             title="JWT verified with a public key and no algorithm allowlist",
             description=(
                 f"Token verification at line {line_num} passes a public key as the "
@@ -550,7 +602,7 @@ def _check_jwt_verification(
     emitted.add("jwt347")
     _emit(
         file_path, lines, line_num, findings,
-        cwe="347", check_id="cwe.auth.jwt_no_algorithm_allowlist", severity="high",
+        category="CWE-347", check_id="cwe.auth.jwt_no_algorithm_allowlist", severity="high",
         title="JWT signature verified without an algorithm allowlist",
         description=(
             f"Verification call at line {line_num} declares no `algorithms` allowlist, "

@@ -1,0 +1,83 @@
+# Group: transport security (feature 0070 P7 §1.3) — plaintext_transmission_check.
+#
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema. The runner flattens each
+# fixture to ONE file renamed `f.<ext>`, so every rule gated here is
+# content-keyed — no filename or directory layout is load-bearing.
+#
+# Each pair is a minimal twin: the clean file differs from its positive ONLY in
+# the value that decides the weakness (verify=True, rejectUnauthorized=true,
+# CERT_REQUIRED, a delegating trust body, VERIFYHOST=2, NoFlag, Online,
+# https://). That is what forces the predicate to key on the decision rather
+# than on the API's presence.
+#
+# NOT gated here, deliberately:
+#   * CWE-319 — the shipped parent keeps its own (DECLARED-ONLY) status; the
+#     0070 change only PARTITIONS rows off it onto 523/295, so adding fixtures
+#     now would attribute pre-existing coverage to this change.
+#   * CWE-347 — this module ships one narrow jwt/jose arm as a regression guard
+#     for the CWE-295 relabel; the id's primary owner is elsewhere, and 3
+#     positives from one arm would overstate it.
+#   * The dropped CLI/system-property revocation arms (`--ssl-no-revoke`,
+#     `-Dcom.sun.net.ssl.checkRevocation=false`): they live in shell / gradle /
+#     Dockerfile lines this skill does not scan, so they were never built.
+
+# ── CWE-295 Improper Certificate Validation (verification off wholesale) ──
+- {file: p7_plaintext/cwe_295_1.py, language: Python, cwe: "295", expectation: positive, line: 6}
+- {file: p7_plaintext/cwe_295_2.ts, language: TypeScript, cwe: "295", expectation: positive, line: 5}
+- {file: p7_plaintext/cwe_295_3.py, language: Python, cwe: "295", expectation: positive, line: 7}
+- {file: p7_plaintext/cwe_295_1_clean.py, language: Python, cwe: "295", expectation: negative}
+- {file: p7_plaintext/cwe_295_2_clean.ts, language: TypeScript, cwe: "295", expectation: negative}
+- {file: p7_plaintext/cwe_295_3_clean.py, language: Python, cwe: "295", expectation: negative}
+
+# ── CWE-296 Chain of trust not followed ──
+# Positive 1 is the load-bearing one: `checkClientTrusted` is EMPTY in the clean
+# twin as well (a client that presents no certificate legitimately has nothing
+# to check), so a predicate that keys on either method scores the twin dirty.
+- {file: p7_plaintext/cwe_296_1.java, language: Java, cwe: "296", expectation: positive, line: 14}
+- {file: p7_plaintext/cwe_296_2.java, language: Java, cwe: "296", expectation: positive, line: 7}
+- {file: p7_plaintext/cwe_296_3.c, language: C, cwe: "296", expectation: positive, line: 5}
+- {file: p7_plaintext/cwe_296_1_clean.java, language: Java, cwe: "296", expectation: negative}
+- {file: p7_plaintext/cwe_296_2_clean.java, language: Java, cwe: "296", expectation: negative}
+- {file: p7_plaintext/cwe_296_3_clean.c, language: C, cwe: "296", expectation: negative}
+
+# ── CWE-297 Certificate host mismatch accepted ──
+# Positive 3 / its twin pin the libcurl semantics: VERIFYHOST=0 is the
+# weakness, VERIFYHOST=2 is full verification — and 1 (absent from both sides)
+# has meant 2 since libcurl 7.28.1, so it must never be flagged.
+- {file: p7_plaintext/cwe_297_1.py, language: Python, cwe: "297", expectation: positive, line: 6}
+- {file: p7_plaintext/cwe_297_2.java, language: Java, cwe: "297", expectation: positive, line: 10}
+- {file: p7_plaintext/cwe_297_3.php, language: PHP, cwe: "297", expectation: positive, line: 7}
+- {file: p7_plaintext/cwe_297_1_clean.py, language: Python, cwe: "297", expectation: negative}
+- {file: p7_plaintext/cwe_297_2_clean.java, language: Java, cwe: "297", expectation: negative}
+- {file: p7_plaintext/cwe_297_3_clean.php, language: PHP, cwe: "297", expectation: negative}
+
+# ── CWE-298 Certificate expiration not checked ──
+- {file: p7_plaintext/cwe_298_1.c, language: C, cwe: "298", expectation: positive, line: 5}
+- {file: p7_plaintext/cwe_298_2.cs, language: "C#", cwe: "298", expectation: positive, line: 8}
+- {file: p7_plaintext/cwe_298_3.java, language: Java, cwe: "298", expectation: positive, line: 11}
+- {file: p7_plaintext/cwe_298_1_clean.c, language: C, cwe: "298", expectation: negative}
+- {file: p7_plaintext/cwe_298_2_clean.cs, language: "C#", cwe: "298", expectation: negative}
+- {file: p7_plaintext/cwe_298_3_clean.java, language: Java, cwe: "298", expectation: negative}
+
+# ── CWE-299 Certificate revocation not checked ──
+- {file: p7_plaintext/cwe_299_1.java, language: Java, cwe: "299", expectation: positive, line: 8}
+- {file: p7_plaintext/cwe_299_2.cs, language: "C#", cwe: "299", expectation: positive, line: 8}
+- {file: p7_plaintext/cwe_299_3.cs, language: "C#", cwe: "299", expectation: positive, line: 8}
+- {file: p7_plaintext/cwe_299_1_clean.java, language: Java, cwe: "299", expectation: negative}
+- {file: p7_plaintext/cwe_299_2_clean.cs, language: "C#", cwe: "299", expectation: negative}
+- {file: p7_plaintext/cwe_299_3_clean.cs, language: "C#", cwe: "299", expectation: negative}
+
+# ── CWE-523 Unprotected transport of credentials ──
+# One positive per arm: userinfo URL (1), the http:// + credential +
+# request-idiom conjunction (2), the plain-HTTP login form (3).
+# Positive 3 exercises the per-RULE extension scope: the form arm reaches
+# `.html` while the plaintext-scheme rule stays on source dialects, which is why
+# its clean twin (an https:// action on the same password page) is clean rather
+# than merely re-labelled.
+- {file: p7_plaintext/cwe_523_1.py, language: Python, cwe: "523", expectation: positive, line: 1}
+- {file: p7_plaintext/cwe_523_2.js, language: JavaScript, cwe: "523", expectation: positive, line: 3}
+- {file: p7_plaintext/cwe_523_3.html, language: HTML, cwe: "523", expectation: positive, line: 3}
+- {file: p7_plaintext/cwe_523_1_clean.py, language: Python, cwe: "523", expectation: negative}
+- {file: p7_plaintext/cwe_523_2_clean.js, language: JavaScript, cwe: "523", expectation: negative}
+- {file: p7_plaintext/cwe_523_3_clean.html, language: HTML, cwe: "523", expectation: negative}

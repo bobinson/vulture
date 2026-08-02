@@ -1,0 +1,5 @@
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-http-header-size=16384

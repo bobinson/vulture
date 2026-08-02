@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.example.app">
+  <application android:label="App">
+    <service
+        android:name=".sync.SyncService"
+        android:permission="com.example.app.permission.SYNC"
+        android:exported="true" />
+  </application>
+</manifest>

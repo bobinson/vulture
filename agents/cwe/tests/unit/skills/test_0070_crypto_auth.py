@@ -10,7 +10,7 @@ Six changes, all measured on a real application tree:
 2. CWE-321 — ``HARDCODED_KEY_PATTERNS`` only knew ``encrypt|cipher|aes|secret``
    key names and never looked at a *positional* key argument, so
    ``crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj')``
-   (``lib/insecurity.ts:42``) and ``const privateKey = '-----BEGIN RSA ...'``
+    and ``const privateKey = '-----BEGIN RSA ...'``
    were both missed.
 
 3. CWE-521 — the weak-password-requirement patterns fired on *any*
@@ -111,12 +111,12 @@ class TestWeakKeyFromPemBody:
     """(1) CWE-326 — modulus size read out of an inline PEM literal."""
 
     def test_inline_1024_bit_pem_is_flagged(self) -> None:
-        hits = _of(_run(check_cryptography, {"insecurity.ts": _pem_one_line(1024) + "\n"}), 326)
+        hits = _of(_run(check_cryptography, {"security.ts": _pem_one_line(1024) + "\n"}), 326)
         assert hits, "a 1024-bit RSA key inlined as a PEM literal must be CWE-326"
         assert "1024" in hits[0]["description"], hits[0]["description"]
 
     def test_inline_2048_bit_pem_is_not_flagged(self) -> None:
-        hits = _of(_run(check_cryptography, {"insecurity.ts": _pem_one_line(2048) + "\n"}), 326)
+        hits = _of(_run(check_cryptography, {"security.ts": _pem_one_line(2048) + "\n"}), 326)
         assert hits == [], "2048-bit keys are adequate and must not be flagged"
 
     def test_multi_line_pem_is_flagged_once(self) -> None:
@@ -146,7 +146,7 @@ class TestHardcodedKeyWidened:
             "crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj')"
             ".update(data).digest('hex')\n"
         )
-        hits = _of(_run(check_cryptography, {"insecurity.ts": body}), 321)
+        hits = _of(_run(check_cryptography, {"security.ts": body}), 321)
         assert hits, "a literal second argument to createHmac is a hardcoded key"
 
     def test_create_cipheriv_literal_key(self) -> None:
@@ -185,7 +185,7 @@ class TestHardcodedKeyWidened:
             assert _of(_run(check_cryptography, {"README.md": line + "\n"}), 321) == [], line
 
     def test_inline_pem_literal_is_a_hardcoded_key(self) -> None:
-        hits = _of(_run(check_cryptography, {"insecurity.ts": _pem_one_line(1024) + "\n"}), 321)
+        hits = _of(_run(check_cryptography, {"security.ts": _pem_one_line(1024) + "\n"}), 321)
         assert hits, "an inline PEM private key literal is a hardcoded key"
 
     def test_env_indirection_still_suppressed(self) -> None:
@@ -388,7 +388,7 @@ class TestJwtVerificationConfusion:
 
     def test_express_jwt_public_key_secret(self) -> None:
         body = "export const isAuthorized = () => expressJwt(({ secret: publicKey }) as any)\n"
-        findings = _run(check_authentication, {"insecurity.ts": body})
+        findings = _run(check_authentication, {"security.ts": body})
         assert _of(findings, 347), "JWT verification without an algorithms allowlist is CWE-347"
         assert _of(findings, 287), "verifying with a public key is CWE-287"
 
@@ -398,7 +398,7 @@ class TestJwtVerificationConfusion:
             "(jws.verify as ((token: string, secret: string) => boolean))(token, publicKey) "
             ": false\n"
         )
-        findings = _run(check_authentication, {"insecurity.ts": body})
+        findings = _run(check_authentication, {"security.ts": body})
         assert _of(findings, 287), "jws.verify with publicKey must be CWE-287"
 
     def test_jwt_verify_namespaced_public_key(self) -> None:
@@ -420,7 +420,7 @@ class TestJwtVerificationConfusion:
 
     def test_random_secret_deny_all_is_not_347(self) -> None:
         body = "export const denyAll = () => expressJwt({ secret: '' + Math.random() } as any)\n"
-        assert _of(_run(check_authentication, {"insecurity.ts": body}), 347) == []
+        assert _of(_run(check_authentication, {"security.ts": body}), 347) == []
 
     def test_one_row_per_file_per_cwe(self) -> None:
         body = (
@@ -428,6 +428,6 @@ class TestJwtVerificationConfusion:
             "export const verify = (token) => jws.verify(token, publicKey)\n"
             "const other = () => jwt.verify(token, publicKey, cb)\n"
         )
-        findings = _run(check_authentication, {"insecurity.ts": body})
+        findings = _run(check_authentication, {"security.ts": body})
         assert len(_of(findings, 347)) == 1
         assert len(_of(findings, 287)) == 1

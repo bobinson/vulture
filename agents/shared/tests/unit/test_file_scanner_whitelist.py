@@ -3,7 +3,7 @@
 CODE_EXTENSIONS carried 34 entries chosen around compiled/interpreted source.
 Anything else was skipped silently, which on a real target meant:
 
-* `views/dataErasureForm.hbs` — a POST form with no anti-CSRF token — was never
+* a `.hbs` view holding a POST form with no anti-CSRF token — was never
   scanned, because `.hbs` was not a "code" extension. Force-scanning it
   produced a genuine CWE-352.
 * `Dockerfile` was skipped while `.dockerfile` WAS scanned: the rare spelling

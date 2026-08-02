@@ -1,0 +1,5 @@
+<configuration>
+  <packageSources>
+    <add key="local" value="./packages" debug="true" />
+  </packageSources>
+</configuration>

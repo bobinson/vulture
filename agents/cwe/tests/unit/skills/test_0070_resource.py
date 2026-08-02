@@ -74,7 +74,7 @@ class TestCwe404Narrowing:
         assert "CWE-404" not in _cwes(tmp_path)
 
     def test_snack_bar_helper_declaration_not_flagged(self, tmp_path):
-        (tmp_path / "snack-bar-helper.service.ts").write_text(
+        (tmp_path / "notification.service.ts").write_text(
             "export class H {\n"
             "  open (message: string, cssClass?: string) {\n"
             "    this.doThing(message)\n"

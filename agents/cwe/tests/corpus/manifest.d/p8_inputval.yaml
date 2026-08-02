@@ -1,0 +1,41 @@
+# Group: input validation (feature 0070 P8).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# Both rules are content-keyed and single-file, so they survive the runner's
+# flattening (each fixture is copied to a temp dir as one file renamed
+# `_neutral.<suffix>` — suffix preserved, filename and layout destroyed).
+#
+# Every clean twin differs from its positive by the SMALLEST possible edit:
+#   * CWE-23 — the archive library, the entry accessor, the destination sink
+#     and the relative base literal are all still present in the twin; only the
+#     containment appears (`path.basename`, `os.path.basename`, a canonical
+#     prefix check). A predicate keyed on "archive entry reaches a path sink"
+#     without the containment window would score all three twins dirty.
+#   * CWE-73 — the twin keeps the request accessor and the path builder and
+#     only reduces the untrusted component to a bare name. A predicate keyed on
+#     "request data inside a path builder" alone would score all three dirty.
+#
+# Not fixtured here, deliberately: the rule that CWE-23 needs an archive
+# library at all. Its evidence is a NEGATIVE with no archive anywhere — a
+# `readdir` loop concatenating a server-owned name onto a relative directory —
+# which is the same shape as the positive and would read as an unexplained
+# clean twin in a per-CWE manifest. It is asserted in the unit suite instead
+# (`test_cwe23_needs_an_archive_library`), where the measured false positive it
+# removes can be stated next to it.
+
+# ── CWE-23 archive-entry relative traversal (skill `input_validation`) ──
+- {file: p8_inputval/cwe_23_1.js, language: JavaScript, cwe: "23", expectation: positive, line: 7}
+- {file: p8_inputval/cwe_23_2.py, language: Python, cwe: "23", expectation: positive, line: 8}
+- {file: p8_inputval/cwe_23_3.java, language: Java, cwe: "23", expectation: positive, line: 6}
+- {file: p8_inputval/cwe_23_1_clean.js, language: JavaScript, cwe: "23", expectation: negative}
+- {file: p8_inputval/cwe_23_2_clean.py, language: Python, cwe: "23", expectation: negative}
+- {file: p8_inputval/cwe_23_3_clean.java, language: Java, cwe: "23", expectation: negative}
+
+# ── CWE-73 external control of file name or path (skill `input_validation`) ──
+- {file: p8_inputval/cwe_73_1.js, language: JavaScript, cwe: "73", expectation: positive, line: 2}
+- {file: p8_inputval/cwe_73_2.py, language: Python, cwe: "73", expectation: positive, line: 7}
+- {file: p8_inputval/cwe_73_3.go, language: Go, cwe: "73", expectation: positive, line: 4}
+- {file: p8_inputval/cwe_73_1_clean.js, language: JavaScript, cwe: "73", expectation: negative}
+- {file: p8_inputval/cwe_73_2_clean.py, language: Python, cwe: "73", expectation: negative}
+- {file: p8_inputval/cwe_73_3_clean.go, language: Go, cwe: "73", expectation: negative}

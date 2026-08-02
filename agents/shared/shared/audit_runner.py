@@ -26,6 +26,7 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.finding_collapse import collapse_line_stacks
 from shared.tools.memory_client import _normalize_title, estimate_tokens, safe_estimate_tokens
 from shared.tools.snippet import extract_snippet
 from shared.transport.event_emitter import AgUiEventEmitter
@@ -988,6 +989,36 @@ def _deduplicate_findings(
     return unique
 
 
+def _collapse_skill_findings(
+    findings: list[dict], run_id: str = "",
+) -> tuple[list[dict], int]:
+    """Collapse ancestor-vs-descendant CWE rows sharing one source line.
+
+    Skills run independently, so a single construct can raise several rows on
+    the same ``(file_path, line_start)``. Where one row's CWE is a transitive
+    ``ChildOf`` ancestor of another's, the general row carries no remediation
+    the specific row doesn't, and is dropped (severity is carried over).
+    Sibling CWEs — different weaknesses under a common parent — are left
+    alone; each has its own fix.
+
+    The count is always logged so the effect is observable. Failures degrade
+    to the uncollapsed list rather than losing findings, and the whole step
+    is switched off by ``VULTURE_DISABLE_LINE_COLLAPSE=true``.
+    """
+    if os.environ.get("VULTURE_DISABLE_LINE_COLLAPSE", "").lower() == "true":
+        return findings, 0
+    try:
+        kept, collapsed = collapse_line_stacks(findings)
+    except Exception as exc:  # collapse is an optimisation, never a gate
+        logger.warning("line_collapse_failed run_id=%s: %s", run_id, exc)
+        return findings, 0
+    logger.info(
+        "line_collapse run_id=%s before=%d after=%d collapsed=%d",
+        run_id, len(findings), len(kept), collapsed,
+    )
+    return kept, collapsed
+
+
 def _is_within_root(candidate: Path, root: Path) -> bool:
     """True iff ``candidate`` (already resolved) is inside ``root`` (resolved).
 
@@ -1491,6 +1522,20 @@ def run_combined_audit(
             pool.shutdown(wait=False)
 
     logger.info("skill_phase_done run_id=%s findings=%d", run_id, len(skill_findings))
+
+    # --- Line-stack collapse (skill-vs-skill) -------------------
+    # `_deduplicate_findings` below is LLM-vs-skill only; skill rows have never
+    # been reconciled against each other. Cross-skill duplication can only be
+    # judged once every category has reported, so this runs after the pool
+    # drains — the per-finding SSE events already streamed, the collapsed set
+    # is what the LLM phase, validation and the final `result` see.
+    skill_findings, _collapsed = _collapse_skill_findings(skill_findings, run_id)
+    if _collapsed:
+        yield emitter.text_message(
+            f"Collapsed {_collapsed} generalisation "
+            f"{'finding' if _collapsed == 1 else 'findings'} into the more "
+            "specific weakness reported on the same line."
+        )
 
     # --- Phase 2: LLM enhancement (optional) ---
     llm_new_findings: list[dict] = []

@@ -8,6 +8,7 @@ from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     read_file_safe,
@@ -138,6 +139,85 @@ OWNERSHIP_CHECK = re.compile(
     re.IGNORECASE,
 )
 
+# CWE-566: Authorization Bypass Through User-Controlled SQL Primary Key.
+#
+# A strict SUBSET of the CWE-639 rows above: it is only ever evaluated on a
+# line an IDOR pattern already matched, and it REPLACES that row. CWE-639 is
+# 566's catalog parent, so emitting both would be a generalisation stack on one
+# line.
+#
+# Three things separate the specialisation from its parent, all of them
+# measured rather than guessed:
+#
+#   1. the request value is bound to the PRIMARY KEY (`id` / `pk` / `_id`).
+#      `UserId: req.body.UserId` is a scoping column; the lookbehind rejects it
+#      because `Id` there sits inside an identifier.
+#   2. an ORM lookup context is present. `get_user(request.args["id"])` is an
+#      IDOR but reaches no primary key, and a client-side router read
+#      (`route.snapshot.params['id']`) reaches no database at all.
+#   3. no owner/tenant column scopes the same lookup. A composite key such as
+#      `where: { id: req.params.id, UserId: req.body.UserId }` IS the
+#      authorization check, and it was the most common shape in the corpus.
+#
+# Raw string-concatenated SQL is deliberately out of scope: those lines already
+# carry a SQL-injection row from another skill, and a sibling row on the same
+# line is a duplicate. Requiring a structured lookup context excludes them.
+_REQ_VALUE = (
+    r"(?:(?:req|request)\s*\.\s*(?:params|query|body|args|form|GET|POST)"
+    r"(?:\s*\.\s*\w+"
+    r"|\s*\[\s*['\"][^'\"]+['\"]\s*\]"
+    r"|\s*\.\s*get\s*\(\s*['\"][^'\"]+['\"]\s*\))"
+    r"|params\s*\[\s*:?['\"]?\w*[iI][dD]['\"]?\s*\])"
+)
+_PK_NAME = r"(?:_id|pk|id)"
+# Object-literal key: `{ where: { id: req.params.id } }`.
+PK_KEY_BINDING = re.compile(rf"(?<![\w.]){_PK_NAME}\s*:\s*{_REQ_VALUE}")
+# Keyword argument: `objects.get(pk=request.GET['id'])`. Anchored to `(` or `,`
+# so a plain local assignment (`const id = req.params.id`) is NOT treated as a
+# primary-key binding on its own — that shape needs the alias rule below, which
+# insists the local actually reaches a WHERE clause.
+PK_KWARG_BINDING = re.compile(rf"[(,]\s*{_PK_NAME}\s*=\s*{_REQ_VALUE}")
+PK_BY_ID_CALL = re.compile(
+    rf"\.\s*(?:findByPk|findById|findOneById|findOneBy|getById)\s*\(\s*{_REQ_VALUE}"
+)
+PK_RAILS_FIND = re.compile(r"\.\s*find\s*\(\s*params\s*\[\s*:?['\"]?id['\"]?\s*\]\s*\)")
+# `const id = req.params.id` reaching `where: { id }` one hop later.
+PK_ALIAS_ASSIGN = re.compile(
+    rf"(?<![\w.])(?P<name>{_PK_NAME})\s*(?::\s*\w+)?\s*:?=\s*{_REQ_VALUE}"
+)
+ORM_LOOKUP_CTX = re.compile(
+    r"\bwhere\s*:"                                     # Sequelize / TypeORM
+    r"|\.\s*objects\s*\.\s*(?:get|filter)\s*\("        # Django ORM
+    r"|\bfilter_by\s*\("                               # SQLAlchemy
+    r"|\bget_object_or_404\s*\("                       # Django shortcut
+    r"|\.\s*(?:findByPk|findById|findOneById|findOneBy|getById)\s*\("
+    r"|\.\s*find\s*\(\s*params\s*\[",                  # ActiveRecord
+    re.IGNORECASE,
+)
+OWNER_SCOPED = re.compile(
+    r"\b(?:user_?id|owner(?:_?id)?|account_?id|tenant_?id|customer_?id|"
+    r"created_?by|author_?id|org(?:anization)?_?id|current_user)\b",
+    re.IGNORECASE,
+)
+_PK_WINDOW = 2
+
+# CWE-425: Direct Request ('Forced Browsing').
+#
+# An unprotected route (same per-route decision as CWE-862, mount inheritance
+# included) whose path names an administrative or diagnostic area. CWE-425 is a
+# catalog CHILD of CWE-862, so both rows are emitted on the route line and the
+# platform's line-stack collapse keeps the specific one.
+#
+# The vocabulary is deliberately short. `console` was measured on a real tree
+# and matched a browser-devtools proxy route; a word that names a UI as often
+# as an admin panel cannot carry a high-severity finding. `debug`, `internal`
+# and `private` were dropped for the same reason.
+_ADMIN_SEGMENT = re.compile(
+    r"^(?:admin|administrator|administration|sysadmin|superadmin|"
+    r"actuator|management|metrics)s?(?:[-_.]\w+)*$",
+    re.IGNORECASE,
+)
+
 # CWE-269: Improper privilege management
 PRIVILEGE_PATTERNS = [
     re.compile(r"chmod\s+777\b"),
@@ -152,6 +232,18 @@ IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
 _ROUTE_CONTEXT = [re.compile(r"(route|handler|endpoint|controller|app\.|router\.|api)", re.IGNORECASE)]
 
 
+def _should_skip(file_path: Path) -> bool:
+    """True for files whose route/privilege patterns cannot be real instances.
+
+    ``is_prose_file`` is the third arm: a hardening guide that spells out an
+    unguarded route in order to forbid it is not an unguarded route, and
+    markdown body text carries no comment marker for COMMENT_INDICATORS to
+    catch. Measured on a prose pair that only condemns insecure options:
+    CWE-269 and CWE-862 rows, all false.
+    """
+    return is_generated_file(file_path) or is_test_file(file_path) or is_prose_file(file_path)
+
+
 def check_access_control(source_path: str) -> dict:
     """Check for access control vulnerabilities.
 
@@ -164,9 +256,7 @@ def check_access_control(source_path: str) -> dict:
     findings: list[dict] = []
 
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path):
-            continue
-        if is_test_file(file_path):
+        if _should_skip(file_path):
             continue
         _analyze_file(file_path, findings)
 
@@ -191,7 +281,9 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         if SCANNER_DEF_LINE.search(line):
             continue
         if _is_unprotected_route(lines, line, line_num, mounts):
-            unprotected.append((line_num, _route_path(line)))
+            path = _route_path(line)
+            unprotected.append((line_num, path))
+            _check_forced_browsing(file_path, path, line_num, lines, findings)
         _check_role_string_cmp(file_path, line, line_num, lines, findings)
         _check_idor(file_path, line, line_num, has_ownership, lines, findings)
         _check_privilege(file_path, line, line_num, lines, findings)
@@ -388,6 +480,46 @@ def _emit_missing_authz(
     findings.append(finding)
 
 
+def _is_admin_path(route_path: str | None) -> bool:
+    """True when a route path names an administrative or diagnostic area.
+
+    Segment-exact, so ``/badminton/courts`` is not an admin area and
+    ``/rest/admin/application-configuration`` is.
+    """
+    if not route_path:
+        return False
+    return any(_ADMIN_SEGMENT.match(seg) for seg in _path_segments(route_path))
+
+
+def _check_forced_browsing(
+    file_path: Path, route_path: str | None, line_num: int, lines: list[str],
+    findings: list[dict],
+) -> None:
+    """Check for direct request to an unrestricted admin area (CWE-425)."""
+    if not _is_admin_path(route_path):
+        return
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.access_control.forced_browsing",
+        "category": "CWE-425",
+        "title": "Administrative endpoint reachable by direct request",
+        "description": (
+            f"{route_path} exposes an administrative or diagnostic area and "
+            f"carries no authorization check at line {line_num}, so it is "
+            "reachable by anyone who guesses the URL"
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": (
+            "Require an authenticated, privileged role on this path — or on a "
+            "prefix that covers it — rather than relying on the URL being unknown"
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "425"))
+
+
 def _check_role_string_cmp(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
@@ -412,6 +544,77 @@ def _check_role_string_cmp(
         return
 
 
+# The two mutually-exclusive shapes an IDOR row can take. Exactly one spec is
+# used per line, which is what keeps CWE-566 a strict subset of CWE-639 rather
+# than a second row stacked on the same line.
+_IDOR_USER_KEY_SPEC = {
+    "severity": "high",
+    "check_id": "cwe.access_control.idor",
+    "category": "CWE-639",
+    "title": "Potential IDOR vulnerability",
+    "detail": "User-supplied ID used without ownership check",
+    "recommendation": "Verify resource ownership before granting access",
+}
+_IDOR_SQL_PK_SPEC = {
+    "severity": "high",
+    "check_id": "cwe.access_control.sql_pk_bypass",
+    "category": "CWE-566",
+    "title": "Authorization bypass through user-controlled SQL primary key",
+    "detail": (
+        "A request parameter is used directly as the primary key of a database "
+        "lookup, with no owner or tenant column scoping the row"
+    ),
+    "recommendation": (
+        "Scope the query to the caller (add the owning user/tenant column to "
+        "the WHERE clause) instead of trusting the primary key from the request"
+    ),
+}
+
+
+def _pk_window_text(lines: list[str], line_num: int) -> str:
+    """The few lines around a request-id read in which its lookup may appear."""
+    idx = line_num - 1
+    return "\n".join(lines[max(0, idx - _PK_WINDOW):idx + _PK_WINDOW + 1])
+
+
+def _binds_primary_key(line: str) -> bool:
+    """True when THIS line binds a request value to a primary key."""
+    return any(
+        pattern.search(line) is not None
+        for pattern in (PK_KEY_BINDING, PK_KWARG_BINDING, PK_BY_ID_CALL, PK_RAILS_FIND)
+    )
+
+
+def _aliases_primary_key(line: str, window: str) -> bool:
+    """True for `const id = req.params.id` followed by `where: { id }`."""
+    match = PK_ALIAS_ASSIGN.search(line)
+    if not match:
+        return False
+    name = re.escape(match.group("name"))
+    return re.search(
+        rf"where\s*:\s*\{{[^{{}}]*(?<![\w.]){name}\b", window, re.IGNORECASE
+    ) is not None
+
+
+def _is_sql_pk_bypass(lines: list[str], line: str, line_num: int) -> bool:
+    """True when a request-controlled id is the primary key of an unscoped
+    ORM lookup (CWE-566) rather than a generic user-controlled key."""
+    window = _pk_window_text(lines, line_num)
+    if not ORM_LOOKUP_CTX.search(window) or OWNER_SCOPED.search(window):
+        return False
+    return _binds_primary_key(line) or _aliases_primary_key(line, window)
+
+
+def _idor_spec(lines: list[str], line: str, line_num: int) -> dict | None:
+    """Which IDOR row this line earns: the SQL-primary-key specialisation, the
+    general user-controlled key, or None when no IDOR pattern matches."""
+    if not any(pattern.search(line) for pattern in IDOR_PATTERNS):
+        return None
+    if _is_sql_pk_bypass(lines, line, line_num):
+        return _IDOR_SQL_PK_SPEC
+    return _IDOR_USER_KEY_SPEC
+
+
 def _check_idor(
     file_path: Path,
     line: str,
@@ -420,26 +623,25 @@ def _check_idor(
     lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for IDOR vulnerabilities (CWE-639)."""
+    """Check for IDOR vulnerabilities (CWE-639, specialised to CWE-566)."""
     if has_ownership:
         return
-    for pattern in IDOR_PATTERNS:
-        if not pattern.search(line):
-            continue
-        finding = {
-            "severity": "high",
-            "check_id": "cwe.access_control.idor",
-            "category": "CWE-639",
-            "title": "Potential IDOR vulnerability",
-            "description": f"User-supplied ID used without ownership check at line {line_num}",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Verify resource ownership before granting access",
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(enrich_finding(finding, "639"))
+    spec = _idor_spec(lines, line, line_num)
+    if spec is None:
         return
+    finding = {
+        "severity": spec["severity"],
+        "check_id": spec["check_id"],
+        "category": spec["category"],
+        "title": spec["title"],
+        "description": f"{spec['detail']} at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": spec["recommendation"],
+        "code_snippet": extract_snippet(lines, line_num),
+    }
+    findings.append(enrich_finding(finding, spec["category"].removeprefix("CWE-")))
 
 
 def _check_privilege(

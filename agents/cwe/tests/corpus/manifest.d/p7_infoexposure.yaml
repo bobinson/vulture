@@ -1,0 +1,61 @@
+# Group: info exposure (feature 0070 P7) — CWE-359 / 550 / 313 / 215 / 201.
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# The runner flattens each fixture to ONE file renamed `f.<ext>`, so filename
+# and directory layout are destroyed. Every rule gated here is content-keyed;
+# the only extension-sensitive one is CWE-215's PHP `dd|dump` arm, which is
+# unit-tested rather than gated (`var_dump` needs no PHP gate and is used here).
+#
+# Each clean twin differs from its positive in ONE respect, which is the
+# distinction the predicate has to make:
+#   359 — the identifier moves from the query string to a POST body / is
+#         replaced by a non-personal parameter.
+#   550 — the response carries a generic literal instead of the error value.
+#   313 — the written CONTENT stops being a credential (path unchanged, so a
+#         predicate that keys on the whole line rather than the content
+#         position fails the twin).
+#   215 — the dumped argument becomes a single lookup / a domain object instead
+#         of the whole session or environment.
+#   201 — the outbound call carries an explicit header allow-list instead of
+#         the inbound collection.
+
+# ── CWE-359 PII in a query string (skill `info_exposure`) ──
+- {file: p7_infoexposure/cwe_359_1.ts, language: TypeScript, cwe: "359", expectation: positive, line: 2}
+- {file: p7_infoexposure/cwe_359_2.py, language: Python, cwe: "359", expectation: positive, line: 2}
+- {file: p7_infoexposure/cwe_359_3.go, language: Go, cwe: "359", expectation: positive, line: 4}
+- {file: p7_infoexposure/cwe_359_1_clean.ts, language: TypeScript, cwe: "359", expectation: negative}
+- {file: p7_infoexposure/cwe_359_2_clean.py, language: Python, cwe: "359", expectation: negative}
+- {file: p7_infoexposure/cwe_359_3_clean.go, language: Go, cwe: "359", expectation: negative}
+
+# ── CWE-550 server-generated error message in a response ──
+- {file: p7_infoexposure/cwe_550_1.go, language: Go, cwe: "550", expectation: positive, line: 8}
+- {file: p7_infoexposure/cwe_550_2.java, language: Java, cwe: "550", expectation: positive, line: 6}
+- {file: p7_infoexposure/cwe_550_3.py, language: Python, cwe: "550", expectation: positive, line: 5}
+- {file: p7_infoexposure/cwe_550_1_clean.go, language: Go, cwe: "550", expectation: negative}
+- {file: p7_infoexposure/cwe_550_2_clean.java, language: Java, cwe: "550", expectation: negative}
+- {file: p7_infoexposure/cwe_550_3_clean.py, language: Python, cwe: "550", expectation: negative}
+
+# ── CWE-313 cleartext storage in a file ──
+- {file: p7_infoexposure/cwe_313_1.js, language: JavaScript, cwe: "313", expectation: positive, line: 4}
+- {file: p7_infoexposure/cwe_313_2.py, language: Python, cwe: "313", expectation: positive, line: 2}
+- {file: p7_infoexposure/cwe_313_3.go, language: Go, cwe: "313", expectation: positive, line: 4}
+- {file: p7_infoexposure/cwe_313_1_clean.js, language: JavaScript, cwe: "313", expectation: negative}
+- {file: p7_infoexposure/cwe_313_2_clean.py, language: Python, cwe: "313", expectation: negative}
+- {file: p7_infoexposure/cwe_313_3_clean.go, language: Go, cwe: "313", expectation: negative}
+
+# ── CWE-215 sensitive information in debugging code ──
+- {file: p7_infoexposure/cwe_215_1.php, language: PHP, cwe: "215", expectation: positive, line: 4}
+- {file: p7_infoexposure/cwe_215_2.js, language: JavaScript, cwe: "215", expectation: positive, line: 2}
+- {file: p7_infoexposure/cwe_215_3.py, language: Python, cwe: "215", expectation: positive, line: 2}
+- {file: p7_infoexposure/cwe_215_1_clean.php, language: PHP, cwe: "215", expectation: negative}
+- {file: p7_infoexposure/cwe_215_2_clean.js, language: JavaScript, cwe: "215", expectation: negative}
+- {file: p7_infoexposure/cwe_215_3_clean.py, language: Python, cwe: "215", expectation: negative}
+
+# ── CWE-201 inbound headers forwarded to an outbound request ──
+- {file: p7_infoexposure/cwe_201_1.js, language: JavaScript, cwe: "201", expectation: positive, line: 2}
+- {file: p7_infoexposure/cwe_201_2.py, language: Python, cwe: "201", expectation: positive, line: 4}
+- {file: p7_infoexposure/cwe_201_3.go, language: Go, cwe: "201", expectation: positive, line: 5}
+- {file: p7_infoexposure/cwe_201_1_clean.js, language: JavaScript, cwe: "201", expectation: negative}
+- {file: p7_infoexposure/cwe_201_2_clean.py, language: Python, cwe: "201", expectation: negative}
+- {file: p7_infoexposure/cwe_201_3_clean.go, language: Go, cwe: "201", expectation: negative}

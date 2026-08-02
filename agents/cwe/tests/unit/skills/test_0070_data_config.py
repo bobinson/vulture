@@ -47,11 +47,11 @@ def _cats(findings: list[dict], category: str) -> list[dict]:
 
 
 def test_body_spread_into_render_locals_is_mass_assignment() -> None:
-    """routes/dataErasure.ts:108 and :124."""
-    findings = _run(check_data_handling, {"routes/dataErasure.ts": """
+    """A render call whose locals are spread from the request body."""
+    findings = _run(check_data_handling, {"routes/erasure_route.ts": """
 export function erasureRequest (req, res, next) {
   const themeVars = { theme: 'bluegrey' }
-  res.render('dataErasureResult', {
+  res.render('erasureResult', {
     ...req.body,
     ...themeVars
   })

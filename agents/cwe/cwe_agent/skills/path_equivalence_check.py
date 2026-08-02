@@ -17,6 +17,7 @@ from typing import Any
 from agents import function_tool
 from shared.tools.file_scanner import (
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
@@ -146,9 +147,19 @@ def _scan_line(
         _match_variants_for_literal(m.group(2), file_path, lineno, lines, findings)
 
 
+def _should_skip(file_path: Path) -> bool:
+    """True for files whose path literals cannot be real filesystem access.
+
+    ``is_prose_file`` is the third arm: a document quoting
+    ``os.path.join(base, '..', 'etc', 'passwd')`` as the traversal to avoid
+    opens nothing. Measured on such a file: 2 false CWE-43 rows.
+    """
+    return is_generated_file(file_path) or is_test_file(file_path) or is_prose_file(file_path)
+
+
 def _scan_file(file_path: Path, findings: list[dict]) -> None:
     """Read file lines and scan each one for path-equivalence variants."""
-    if is_generated_file(file_path) or is_test_file(file_path):
+    if _should_skip(file_path):
         return
     lines = read_file_lines(file_path)
     if lines is None:

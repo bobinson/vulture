@@ -16,7 +16,7 @@ Two items, both measured on a real application tree:
      ``$function`` / ``mapReduce``) shared a sanitizer list with the
      selector-object branch — so a ``String(...)`` cast, which does NOT
      neutralise a ``$where`` JavaScript predicate, silently suppressed a real
-     finding (``routes/trackOrder.ts``).
+     finding.
 
 CWE-943 is **not mapped by any OWASP 2025 category** (asserted below against
 ``owasp_2025.json``), so the finding must say so rather than imply a category.
@@ -57,7 +57,7 @@ class TestLdapFilterIsNotEveryParenthesis:
     """The four measured rows, verbatim. All four are false positives."""
 
     def test_arrow_function_with_default_object_arg_is_not_an_ldap_filter(self):
-        # lib/insecurity.ts:54 — `(user = {}) =>` matched `(ident=` + `{`.
+        # `(user = {}) =>` matched `(ident=` + `{`.
         lines = (
             "import jwt from 'jsonwebtoken'",
             "export const authorize = (user = {}) => jwt.sign(user, privateKey, "
@@ -76,7 +76,7 @@ class TestLdapFilterIsNotEveryParenthesis:
         assert "CWE-90" not in _cats(lines, ".ts")
 
     def test_strict_equality_chain_is_not_an_ldap_filter(self):
-        # routes/fileUpload.ts:65 — a `===` chain read as `(attr=` + interpolation.
+        # a `===` chain read as `(attr=` + interpolation.
         lines = (
             "function isInvalid (fileType: string, user: string) {",
             "  return !(fileType === 'pdf' || fileType === 'xml' || "
@@ -180,9 +180,9 @@ class TestNoSqlMutatingCollectionOperations:
     """Gap 1: mutating collection operations were not sinks at all."""
 
     def test_collection_update_with_untrusted_selector_fires(self):
-        # routes/updateProductReviews.ts — noSqlReviewsChallenge.
+        # noSqlReviewsChallenge.
         lines = (
-            "export function updateProductReviews () {",
+            "export function updateReviews () {",
             "  return (req: Request, res: Response) => {",
             "    db.reviewsCollection.update(",
             "      { _id: req.body.id },",
@@ -195,7 +195,7 @@ class TestNoSqlMutatingCollectionOperations:
         )
 
     def test_single_line_collection_update_fires(self):
-        # routes/orderHistory.ts:36.
+        #
         lines = (
             "export function toggleDeliveryStatus () {",
             "  return async (req: Request, res: Response) => {",
@@ -241,7 +241,7 @@ class TestNoSqlMutatingCollectionOperations:
 
     def test_cast_or_type_guard_suppresses_mutation(self):
         guarded = (
-            "export function updateProductReviews () {",
+            "export function updateReviews () {",
             "  return (req: Request, res: Response) => {",
             "    if (typeof req.body.id !== 'string') { return res.status(400).send() }",
             "    db.reviewsCollection.update(",
@@ -273,10 +273,10 @@ class TestNoSqlWherePredicateSanitizerIsSpecific:
     ``"[object Object]"``) but NOT a ``$where`` JavaScript predicate."""
 
     def test_where_template_literal_with_string_cast_fires(self):
-        # routes/trackOrder.ts:18 — noSqlOrdersChallenge. Real bug
+        # noSqlOrdersChallenge. Real bug
         # that the shared `String(` sanitizer was hiding.
         lines = (
-            "export function trackOrder () {",
+            "export function trackRecord () {",
             "  return (req: Request, res: Response) => {",
             "    const id = String(req.params.id).replace(/[^\\w-]+/g, '')",
             "    db.ordersCollection.find({ $where: `this.orderId === '${id}'` })",
@@ -288,7 +288,7 @@ class TestNoSqlWherePredicateSanitizerIsSpecific:
         )
 
     def test_where_concat_regression_guard(self):
-        # routes/showProductReviews.ts:36 — already detected today.
+        # already detected today.
         lines = (
             "  const id = req.params.id",
             "  db.reviewsCollection.find({ $where: 'this.product == ' + id })",
@@ -296,7 +296,7 @@ class TestNoSqlWherePredicateSanitizerIsSpecific:
         assert _hits(lines, ".ts", "CWE-943")
 
     def test_numeric_cast_still_suppresses_where(self):
-        # routes/chat.ts:149 — Number() genuinely neutralises the
+        # Number() genuinely neutralises the
         # predicate, so this must stay suppressed (no over-correction).
         lines = (
             "execute: async ({ id }) => {",

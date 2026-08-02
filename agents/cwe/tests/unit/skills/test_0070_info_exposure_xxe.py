@@ -23,7 +23,7 @@ Three separate defects, each measured on a real application tree:
    interpolation, which is why the strip keeps `${...}` / `{...}` expressions.
 
 3. Two common exposures the skill had no rule for:
-   - CWE-497 `routes/appConfiguration.ts:15` serialises the WHOLE node-config
+   - CWE-497 a config route serialises the WHOLE node-config
      object (`config.util.toObject(config)`) into an HTTP response.
    - CWE-598 `frontend/src/app/Services/user.service.ts:68` puts an OAuth
      access token in the query string of a GET URL.
@@ -207,9 +207,9 @@ class TestLogSensitivePrecision:
 
 class TestConfigExposure:
     def test_app_configuration_route(self):
-        """routes/appConfiguration.ts — full node-config dump in res.json()."""
+        """A config route: full node-config dump in res.json()."""
         body = (
-            "export function retrieveAppConfiguration () {\n"
+            "export function getAppConfig () {\n"
             "  return (_req: Request, res: Response) => {\n"
             "    const safeConfig = structuredClone(config.util.toObject(config))\n"
             "    delete safeConfig.application.chatBot.llmApiUrl\n"

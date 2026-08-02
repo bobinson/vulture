@@ -8,6 +8,7 @@ from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
@@ -90,7 +91,7 @@ SAFE_PROTOTYPE_PATTERNS = re.compile(
 # Two shapes, both observed in real applications:
 #
 #   1. The request body spread wholesale into render locals or a model
-#      write (routes/dataErasure.ts:108 and :124). The spread alone is
+#      write. The spread alone is
 #      not enough — `{...req.body}` copied into a local and then read
 #      key-by-key is harmless — so a sink must be present within the
 #      enclosing few lines.
@@ -159,6 +160,16 @@ SENSITIVE_STORAGE_KEY = re.compile(
 IMPORT_LINE = re.compile(r"^\s*(?:from|import|require|use)\s")
 
 
+def _should_skip(file_path: Path) -> bool:
+    """True for files whose data-handling patterns cannot be real instances.
+
+    ``is_prose_file`` is the third arm: a style guide's "never write
+    ``printf(user_input)``" example is the advice, not the defect. Measured
+    on a prose file that only quotes anti-patterns: 2 false CWE-134 rows.
+    """
+    return is_generated_file(file_path) or is_test_file(file_path) or is_prose_file(file_path)
+
+
 def check_data_handling(source_path: str) -> dict:
     """Check for data handling and type safety vulnerabilities.
 
@@ -171,9 +182,7 @@ def check_data_handling(source_path: str) -> dict:
     findings: list[dict] = []
 
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path):
-            continue
-        if is_test_file(file_path):
+        if _should_skip(file_path):
             continue
         _analyze_file(file_path, findings)
 

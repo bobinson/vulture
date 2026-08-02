@@ -43,8 +43,22 @@ HARDWARE_CWE_IDS = frozenset({
     1270, 1271, 1272, 1273, 1274, 1276, 1277, 1278, 1279, 1280, 1281,
     1282, 1283, 1291, 1292, 1293, 1294, 1296, 1297, 1298, 1299, 1300,
     1301, 1302, 1303, 1304, 1310, 1311, 1312, 1313, 1314, 1315, 1316,
-    1317, 1318, 1319, 1320, 1323, 1326, 1328, 1329, 1330, 1331, 1332,
+    1317, 1318, 1319, 1320, 1323, 1326, 1328, 1330, 1331, 1332,
     1334, 1338, 1351, 1384, 1429, 1431,
+})
+# NOTE: 1329 ("Reliance on Component That is Not Updateable") was previously in
+# the set above. MITRE tags it Applicable_Platforms/Language Class
+# "Not Language-Specific", i.e. it is a software-relevant weakness that merely
+# also carries the ICS/OT domain tag. Nothing in the XML marks it hardware-only,
+# so only this manual list was excluding it. Do not re-add it without upstream
+# evidence.
+
+# Technology names that denote silicon-level hardware. The ICS/OT *Class* is
+# deliberately handled separately below: MITRE applies that domain tag to plenty
+# of ordinary software weaknesses, so on its own it never proves hardware-only.
+HARDWARE_TECH_NAMES = frozenset({
+    "processor hardware", "memory hardware", "bus/interface hardware",
+    "power management hardware", "clock/counter hardware", "sensor hardware",
 })
 
 # Detection methods amenable to static analysis (skill-detectable)
@@ -138,27 +152,40 @@ def _deep_text(el: ET.Element | None) -> str:
     return " ".join(p for p in parts if p)
 
 
-def _is_hardware_only(w: ET.Element) -> bool:
-    """Check if weakness is hardware-only based on ID and platform data."""
-    cwe_id = int(w.get("ID", "0"))
-    if cwe_id in HARDWARE_CWE_IDS:
-        return True
+def _has_hardware_platform(w: ET.Element) -> bool:
+    """True when Applicable_Platforms carries a hardware or ICS/OT technology."""
     techs = w.findall(f"{NS}Applicable_Platforms/{NS}Technology")
-    has_hw_tech = any(
+    return any(
         t.get("Class") == "ICS/OT"
-        or (t.get("Name") or "").lower() in {
-            "processor hardware", "memory hardware", "bus/interface hardware",
-            "power management hardware", "clock/counter hardware", "sensor hardware",
-        }
+        or (t.get("Name") or "").lower() in HARDWARE_TECH_NAMES
         for t in techs
     )
+
+
+def _is_software_applicable(w: ET.Element) -> bool:
+    """True when the weakness is not restricted away from software platforms.
+
+    An entry that declares *no* Applicable_Platforms/Language element at all is
+    language-agnostic — that is the most portable kind of weakness, and Class
+    entries routinely omit the element. Reading that empty list as "has no
+    software language" is what previously let a lone ICS/OT domain tag drop
+    software weaknesses out of the catalog.
+    """
     langs = w.findall(f"{NS}Applicable_Platforms/{NS}Language")
-    has_sw_lang = any(
+    if not langs:
+        return True
+    return any(
         lang.get("Class") in ("Not Language-Specific", "Language-Independent", None)
         or lang.get("Name")
         for lang in langs
     )
-    return has_hw_tech and not has_sw_lang
+
+
+def _is_hardware_only(w: ET.Element) -> bool:
+    """Check if weakness is hardware-only based on ID and platform data."""
+    if int(w.get("ID", "0")) in HARDWARE_CWE_IDS:
+        return True
+    return _has_hardware_platform(w) and not _is_software_applicable(w)
 
 
 def _extract_detection_methods(w: ET.Element) -> list[dict]:

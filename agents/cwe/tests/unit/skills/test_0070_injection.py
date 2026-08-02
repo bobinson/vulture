@@ -158,7 +158,7 @@ class TestSsrfNarrowing:
 
 PROFILE_IMAGE_UPLOAD = """import { type Request, type Response, type NextFunction } from 'express'
 
-export function profileImageUrlUpload () {
+export function imageUrlUpload () {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (req.body.imageUrl !== undefined) {
       const url = req.body.imageUrl
@@ -202,7 +202,7 @@ REACHABLE_PARAM = """export const checkIfDomainReachable = async (domain: string
 
 class TestSsrfOneHopTaint:
     def test_req_body_assigned_identifier_reaches_fetch(self, tmp_path):
-        (tmp_path / "profileImageUrlUpload.ts").write_text(PROFILE_IMAGE_UPLOAD)
+        (tmp_path / "imageUrlUpload.ts").write_text(PROFILE_IMAGE_UPLOAD)
         hits = _cats(check_injection(str(tmp_path)), "CWE-918")
         assert len(hits) == 1, hits
         assert hits[0]["line_start"] == 10
