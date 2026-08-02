@@ -23,6 +23,8 @@ from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
     clear_caches,
     is_entry_or_config,
+    is_generated_file,
+    is_test_file,
     read_file_safe,
     scan_code_files,
 )
@@ -890,6 +892,15 @@ def _build_source_context(
     # on README/CSV/changelog text displaces the source the model is meant to
     # analyse. The two consumers have opposite needs from the same walk.
     files = scan_code_files(source_path, extensions=CODE_EXTENSIONS)
+    # Every skill filters test and generated files; this phase did not, so the
+    # model was handed exploit tests that *demonstrate* a weakness and reported
+    # it there — right vulnerability, wrong file, and unfixable by the reader.
+    # Measured on one target: 9 of 22 LLM findings were test-file artefacts, two
+    # of which even passed the L5 judge. The two tiers must agree on what counts
+    # as code under review.
+    files = [
+        f for f in files if not is_test_file(f) and not is_generated_file(f)
+    ]
     if not files:
         return ""
 

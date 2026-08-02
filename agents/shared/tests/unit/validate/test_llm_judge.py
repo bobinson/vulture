@@ -75,7 +75,15 @@ def test_max_output_tokens_env_and_default(monkeypatch):
     burn the budget on hidden reasoning; too low a cap truncates the verdict
     JSON (finish_reason=length) → 0 llm_l5_verified. Raised default + env knob."""
     monkeypatch.delenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", raising=False)
-    assert _max_output_tokens() == _DEFAULT_MAX_OUTPUT_TOKENS == 4000
+    assert _max_output_tokens() == _DEFAULT_MAX_OUTPUT_TOKENS
+    # The literal used to be pinned at 4000 here. That number was later MEASURED
+    # as the truncation point for reasoning models (finish_reason=length →
+    # "JSON parse failed twice" → 0 verdicts), so asserting it made the test
+    # encode the defect — the same magic-number trap that
+    # `len(ALL_CATEGORIES) == 22` set before it was replaced by an invariant.
+    # Pin the contract (env overrides, invalid falls back) and a floor, not the
+    # value.
+    assert _DEFAULT_MAX_OUTPUT_TOKENS > 4000, "default must clear the measured floor"
     monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "16000")
     assert _max_output_tokens() == 16000
     monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOKENS", "0")  # invalid → default

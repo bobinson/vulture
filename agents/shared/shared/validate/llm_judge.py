@@ -75,7 +75,10 @@ _DEFAULT_BATCH_TIMEOUT_S = 30.0  # local 30B models routinely take 10-20 s/batch
 # Raise + make tunable; non-reasoning models stop early so a higher ceiling is
 # harmless. For reasoning models also lower VULTURE_VALIDATE_LLM_BATCH_SIZE so each
 # batch's JSON fits within reasoning + output.
-_DEFAULT_MAX_OUTPUT_TOKENS = 4000
+_DEFAULT_MAX_OUTPUT_TOKENS = 16000
+
+# Widen-and-retry multiplier when a verdict truncates at finish_reason=length.
+_LENGTH_RETRY_FACTOR = 2
 
 # Per-process cache of file_path → 12-hex-char sha256 prefix. Used so
 # cache keys for L5 invalidate automatically when source files change
@@ -821,6 +824,52 @@ def _strip_model_prefix(model: str) -> str:
     return model
 
 
+_DEFAULT_JUDGE_BODY_BYTES = 131072
+
+_SIZE_ERROR_RE = re.compile(
+    r"request[_ ]too[_ ]large|request body too large|\b413\b|context[_ ]length",
+    re.IGNORECASE,
+)
+
+
+def _max_request_bytes() -> int:
+    """Byte ceiling for a judge request body (env > default).
+
+    The P5 transport work bounded the audit phase and left this path alone —
+    yet every observed gateway 413 came from ``[validate.l5]``. A token budget
+    cannot bound a request BODY (1 char = 1-4 bytes); the gateway rejects on
+    bytes, so the ceiling has to be expressed in bytes too.
+    """
+    env = os.getenv("VULTURE_VALIDATE_LLM_MAX_BODY_BYTES", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return _DEFAULT_JUDGE_BODY_BYTES
+
+
+def _clamp_request_body(text: str, max_bytes: int = 0) -> str:
+    """Cap *text* at an encoded-byte ceiling, never mid-codepoint."""
+    limit = max_bytes if max_bytes > 0 else _max_request_bytes()
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    log.warning(
+        "[validate.l5] request body %d bytes exceeds %d; truncating — this "
+        "batch's verdict covers PARTIAL evidence",
+        len(raw), limit,
+    )
+    return raw[:limit].decode("utf-8", errors="ignore")
+
+
+def _is_size_error(exc: Exception) -> bool:
+    """True when a provider error is a body/context size rejection.
+
+    Matches both spellings: ``request_too_large`` is the provider's error
+    *code*, while LiteLLM surfaces the human *message* with spaces. Keying on
+    only one of them is why an earlier size-retry never fired.
+    """
+    return bool(_SIZE_ERROR_RE.search(str(exc)))
+
+
 def _call_llm(
     system_prompt: str,
     user_msg: str,
@@ -833,9 +882,10 @@ def _call_llm(
     if client is None:
         return ""
 
+    user_msg = _clamp_request_body(user_msg)
     actual_model = _strip_model_prefix(model)
 
-    def _do_call(use_json_format: bool) -> str:
+    def _do_call(use_json_format: bool, budget: int) -> str:
         kw: dict[str, Any] = {
             "model": actual_model,
             "messages": [
@@ -843,7 +893,7 @@ def _call_llm(
                 {"role": "user", "content": user_msg},
             ],
             "temperature": 0.1,
-            "max_tokens": _max_output_tokens(),
+            "max_tokens": budget,
             "timeout": timeout_s,  # per-request timeout (issue #6)
         }
         if use_json_format:
@@ -856,10 +906,12 @@ def _call_llm(
         if getattr(resp.choices[0], "finish_reason", None) == "length":
             log.warning(
                 "[validate.l5] hit max_tokens=%d (finish_reason=length) — verdict JSON "
-                "likely truncated; raise VULTURE_VALIDATE_LLM_MAX_TOKENS and/or lower "
-                "VULTURE_VALIDATE_LLM_BATCH_SIZE (reasoning models burn the budget on thinking)",
-                _max_output_tokens(),
+                "truncated; retrying once at %dx. Persisting? raise "
+                "VULTURE_VALIDATE_LLM_MAX_TOKENS / lower VULTURE_VALIDATE_LLM_BATCH_SIZE "
+                "(reasoning models burn the budget on thinking)",
+                budget, _LENGTH_RETRY_FACTOR,
             )
+            return ""
         text = (resp.choices[0].message.content or "") if resp.choices[0].message else ""
         if len(text.encode("utf-8")) > _MAX_RESPONSE_BYTES:
             log.warning("[validate.l5] response exceeded %d bytes; truncating",
@@ -871,19 +923,44 @@ def _call_llm(
     # reject `response_format` with 400 — fall through on ANY exception.
     # Issue #7: also fall through on EMPTY content (some models silently
     # return "" under json_object mode but produce text under plain mode).
+    base = _max_output_tokens()
+    # A truncated verdict is the NORMAL case for a reasoning model, not an edge
+    # case: hidden thinking consumes the budget before the JSON is emitted.
+    # Diagnosing it in a log the operator may never read still yields "no
+    # verdict", so widen once and try again.
+    for budget in (base, base * _LENGTH_RETRY_FACTOR):
+        text = _try_both_modes(_do_call, budget)
+        if text:
+            return text
+    return ""
+
+
+def _try_both_modes(do_call: Any, budget: int) -> str:
+    """Structured-output first, then plain; "" when both fail at this budget."""
     try:
-        text = _do_call(use_json_format=True)
+        text = do_call(use_json_format=True, budget=budget)
         if text:
             return text
         log.info("[validate.l5] structured-output mode returned empty; retrying plain")
     except Exception as exc:
-        log.info("[validate.l5] structured-output call failed (%s); retrying plain",
-                 type(exc).__name__)
+        _log_call_failure(exc, "structured-output")
     try:
-        return _do_call(use_json_format=False)
+        return do_call(use_json_format=False, budget=budget)
     except Exception as exc2:
-        log.warning("[validate.l5] LLM call failed (both modes): %s", exc2)
+        _log_call_failure(exc2, "plain")
         return ""
+
+
+def _log_call_failure(exc: Exception, mode: str) -> None:
+    """Name a size rejection as such — it is actionable, a generic error is not."""
+    if _is_size_error(exc):
+        log.warning(
+            "[validate.l5] %s call rejected for SIZE (%s); the request body "
+            "exceeded the gateway limit even after the byte clamp — lower "
+            "VULTURE_VALIDATE_LLM_BATCH_SIZE", mode, exc,
+        )
+    else:
+        log.info("[validate.l5] %s call failed (%s)", mode, type(exc).__name__)
 
 
 # ── User-message rendering ───────────────────────────────────────────
