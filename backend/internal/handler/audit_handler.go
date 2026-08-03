@@ -9,10 +9,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
 )
+
+// AuditDispatcher starts a created audit's run in the background. Satisfied by
+// *StreamHandler; declared as an interface here so audit_handler does not depend
+// on stream_handler (mirrors service.PipelineRunner).
+type AuditDispatcher interface {
+	DispatchAudit(auditID string) bool
+}
 
 // principalID returns the acting principal's id for audit-trail logging,
 // or "anonymous" when no principal is on the request context. 0065 §5a.3 —
@@ -29,6 +37,14 @@ type AuditHandler struct {
 	proveSvc    service.ProveService
 	lineageRepo repository.LineageRepository
 	llmHealth   *LLMHealthHandler
+	dispatcher  AuditDispatcher
+}
+
+// SetDispatcher wires background dispatch-on-create (feature 0071). When unset,
+// Create only creates — which is the pre-0071 behavior and what unit tests
+// constructing an AuditHandler directly still get.
+func (h *AuditHandler) SetDispatcher(d AuditDispatcher) {
+	h.dispatcher = d
 }
 
 // SetProveService enables prove-result enrichment on audit responses.
@@ -97,7 +113,33 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Feature 0071: an audit runs because it was created, not because someone is
+	// watching. Before this, the row sat at pending until an SSE client connected
+	// — so `vulture scan --wait`, which never opens a stream, polled forever.
+	//
+	// Dispatch BEFORE writing the response. DispatchAudit registers the run
+	// synchronously and only then spawns the goroutine, so ordering it first is
+	// what guarantees a client connecting the instant it receives this 201 finds a
+	// run to attach to. Dispatching after writeJSON left a window in which the
+	// stream GET could beat the registration and land in the orphan branch.
+	//
+	// The response body is unaffected: it is serialised from the local `audit`
+	// value, which the run goroutine never touches (it re-reads its own copy).
+	if h.dispatcher != nil && autoDispatchEnabled() {
+		h.dispatcher.DispatchAudit(audit.ID)
+	}
+
 	writeJSON(w, http.StatusCreated, audit)
+}
+
+// autoDispatchEnabled gates feature 0071's dispatch-on-create. Default on;
+// VULTURE_AUDIT_AUTODISPATCH=false restores the pre-0071 behavior where only an
+// SSE connection starts a run (one-release rollback switch).
+func autoDispatchEnabled() bool {
+	if v := strings.TrimSpace(os.Getenv("VULTURE_AUDIT_AUTODISPATCH")); v != "" {
+		return config.EnvTruthy("VULTURE_AUDIT_AUTODISPATCH")
+	}
+	return true
 }
 
 func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {

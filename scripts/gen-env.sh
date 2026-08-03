@@ -29,6 +29,44 @@ ini_get() {
     ' "$INI"
 }
 
+# Pre-compute the effective host-side Postgres port before the heredoc, so the
+# generated VULTURE_DB_PORT and VULTURE_DB_DSN can never disagree.
+#
+# The DSN is consumed by HOST-side processes (the native backend under
+# `vulture.sh dev --pg`, psql, the CLI), so its port must be the PUBLISHED port
+# from [ports] postgres_host — NOT the container-internal port that compose maps
+# it to. Leaving [database] port empty derives it, so the common compose setup
+# keeps a single source of truth for the port.
+_DB_MODE=$(ini_get database mode)
+_DB_HOST=$(ini_get database host)
+_DB_PORT=$(ini_get database port)
+_HOST_PORT=$(ini_get ports postgres_host)
+_INTERNAL_PORT=$(ini_get ports postgres_internal)
+[[ -z "$_DB_PORT" ]] && _DB_PORT="${_HOST_PORT:-25433}"
+
+# A loopback DSN aimed at the container-internal port can never connect — only
+# the published port is reachable from the host. Refuse here rather than emit a
+# .env that fails at runtime with "connect: connection refused".
+if [[ "$_DB_MODE" == "postgres" ]] \
+    && [[ "$_DB_PORT" == "$_INTERNAL_PORT" ]] \
+    && [[ -n "$_HOST_PORT" && "$_DB_PORT" != "$_HOST_PORT" ]] \
+    && [[ "${VULTURE_ALLOW_DB_PORT_MISMATCH:-}" != "1" ]]; then
+    case "$_DB_HOST" in
+        localhost | 127.0.0.1 | ::1 | "")
+            {
+                echo "Error: [database] port = $_DB_PORT is the container-INTERNAL Postgres"
+                echo "  port (ports.postgres_internal). A host-side client can only reach the"
+                echo "  published port, ports.postgres_host = $_HOST_PORT."
+                echo
+                echo "  Fix: set [database] port = $_HOST_PORT in $INI,"
+                echo "       or leave it empty to derive it from ports.postgres_host."
+                echo "  Set VULTURE_ALLOW_DB_PORT_MISMATCH=1 if this really is intentional."
+            } >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # Pre-compute JWT secret before heredoc to avoid race window
 _JWT_VAL=$(ini_get auth jwt_secret)
 if [[ -z "$_JWT_VAL" ]]; then
@@ -56,8 +94,8 @@ VULTURE_DB_NAME=$(ini_get database name)
 VULTURE_DB_USER=$(ini_get database user)
 VULTURE_DB_PASSWORD=$(ini_get database password)
 VULTURE_DB_SQLITE_PATH=$(ini_get database sqlite_path)
-VULTURE_DB_HOST=$(ini_get database host)
-VULTURE_DB_PORT=$(ini_get database port)
+VULTURE_DB_HOST=$_DB_HOST
+VULTURE_DB_PORT=$_DB_PORT
 VULTURE_DB_SSLMODE=$(ini_get database sslmode)
 VULTURE_NEON_DSN=$(ini_get database neon_dsn)
 EOF
@@ -78,18 +116,16 @@ awk '
     echo "VULTURE_AGENT_${_upper}_PORT=${_port}"
 done >> "$OUT"
 
-# Compute VULTURE_DB_DSN from mode
-_DB_MODE=$(ini_get database mode)
+# Compute VULTURE_DB_DSN from mode ($_DB_MODE / $_DB_HOST / $_DB_PORT were
+# resolved and validated above).
 _DB_DSN=""
 case "$_DB_MODE" in
     postgres)
         _u=$(ini_get database user)
         _p=$(ini_get database password)
-        _h=$(ini_get database host)
-        _port=$(ini_get database port)
         _n=$(ini_get database name)
         _ssl=$(ini_get database sslmode)
-        _DB_DSN="postgres://${_u}:${_p}@${_h}:${_port}/${_n}?sslmode=${_ssl:-disable}"
+        _DB_DSN="postgres://${_u}:${_p}@${_DB_HOST}:${_DB_PORT}/${_n}?sslmode=${_ssl:-disable}"
         ;;
     neon)
         _DB_DSN=$(ini_get database neon_dsn)

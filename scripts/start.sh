@@ -49,10 +49,22 @@ EOF
 
 load_env() {
     if [[ -f "$ENV_FILE" ]]; then
+        # An explicitly exported VULTURE_DB_DSN outranks the .env value:
+        # `vulture.sh dev --pg` exports the container's published-port DSN and
+        # then execs this script, and sourcing under `set -a` would otherwise
+        # overwrite it with whatever stale DSN the .env carries — which is how a
+        # .env pointing at the container-internal port silently defeated --pg.
+        local _dsn_pre="${VULTURE_DB_DSN:-}"
         set -a
         # shellcheck source=/dev/null
         source "$ENV_FILE"
         set +a
+        # Must be an `if`, not `[[ … ]] && export`: as the function's last
+        # statement the latter returns 1 when nothing was exported, and `set -e`
+        # would abort the launcher.
+        if [[ -n "$_dsn_pre" ]]; then
+            export VULTURE_DB_DSN="$_dsn_pre"
+        fi
     fi
 }
 
@@ -339,6 +351,14 @@ if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
 fi
 [[ -n "${VULTURE_EMBEDDING_URL:-}" ]]   && echo "  Embed URL: ${VULTURE_EMBEDDING_URL}"
 [[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "  Embed model: ${VULTURE_EMBEDDING_MODEL}"
+# Report the DSN the backend will actually dial (password masked). Printing it
+# makes a wrong host/port obvious here instead of as a backend "connection
+# refused" several seconds later.
+if [[ -n "${VULTURE_DB_DSN:-}" ]]; then
+    echo "  DB:        $(printf '%s' "$VULTURE_DB_DSN" | sed -E 's#(://[^:]*:)[^@]*(@)#\1***\2#')"
+else
+    echo "  DB:        sqlite (no VULTURE_DB_DSN set)"
+fi
 echo
 
 # Test/debug hook: resolve config + print it, but don't boot the

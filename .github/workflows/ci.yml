@@ -71,6 +71,8 @@ jobs:
         run: sh scripts/tests/test_smoke_scan.sh
       - name: ssh-version gate tests (0065 §L2)
         run: sh scripts/tests/test_check_ssh_version.sh
+      - name: db DSN host/internal port wiring tests
+        run: sh scripts/tests/test_db_dsn_wiring.sh
 
   build-backend:
     runs-on: ubuntu-latest
@@ -109,6 +111,28 @@ jobs:
             cli/go.sum
       - name: Test with coverage
         run: cd backend && go test ./... -coverprofile=coverage.out -covermode=atomic
+      # 0071: the per-audit event broadcaster fans out to a goroutine per
+      # subscriber. Its failure modes (history/tail seam, subscriber map races)
+      # are invisible without -race, and -covermode=atomic is not a substitute.
+      - name: Race detector (concurrency-bearing packages)
+        run: cd backend && go test -race ./internal/handler/... ./internal/service/... ./internal/agui/...
+      # 0071: backend/test/e2e is behind `//go:build e2e`, which no workflow ran,
+      # so the suite had rotted to the point of failing at server startup (every
+      # test). 0071 repaired the fixtures (ListenAddr, JWT length, agent token)
+      # and 26 of 30 tests now pass.
+      #
+      # NON-GATING for now: three assertions predate later features and encode
+      # behavior that has since changed deliberately. They are contract questions,
+      # not fixture rot, so they are left for an explicit decision rather than
+      # edited to green:
+      #   - TestAgentListEndpoint          expects 3 agents, the registry has 10
+      #   - TestCIWorkflow_APIKeyRoutesGatedByEnvFlag  expects 404, route now 405
+      #   - TestCIWorkflow_BootstrapAndUseAPIKey       register now 403
+      #     (VULTURE_ALLOW_OPEN_REGISTRATION defaults off outside local mode, 0065)
+      # Flip continue-on-error off once those three are settled.
+      - name: Go E2E suite (non-gating; see comment)
+        continue-on-error: true
+        run: cd backend && go test -tags=e2e ./test/e2e/...
       - name: Coverage report (target high; informational, not gated)
         run: |
           cd backend

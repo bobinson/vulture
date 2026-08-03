@@ -38,11 +38,18 @@ mode = sqlite
 sqlite_path = /data/vulture.db
 
 # PostgreSQL connection (mode = postgres)
+#
+# port — the port a HOST-side client connects on. For the compose-managed
+# container that is the PUBLISHED port, [ports] postgres_host above, not the
+# container-internal postgres_internal. Leave it empty to derive it from
+# ports.postgres_host; set it explicitly only for a Postgres that compose does
+# not manage (e.g. a host install on 5432). `make gen-env` refuses a loopback
+# DSN aimed at the internal port, since nothing on the host can reach it.
 name     = vulture
 user     = vulture
 password = CHANGE_ME
 host     = localhost
-port     = 25432
+port     = 25433
 sslmode  = disable
 
 # Neon DSN (mode = neon)

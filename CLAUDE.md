@@ -317,6 +317,12 @@ VULTURE_AGENT_CWE_URL=http://agent-cwe:8004
 VULTURE_EMBEDDING_URL=                               # Custom embedding endpoint
 VULTURE_EMBEDDING_MODEL=                             # Embedding model override
 
+# Audit dispatch and event broadcast (feature 0071)
+VULTURE_AUDIT_AUTODISPATCH=true                       # POST /api/audits starts the run in the background. Default on. Set false to restore the pre-0071 behavior where a run only starts when an SSE client connects — which is why `vulture scan --wait` (it never opens a stream) used to poll `pending` forever. One-release rollback switch
+VULTURE_AUDIT_BROADCAST_HISTORY=8192                  # Per-run replay buffer, in EVENTS not findings. Bounds what a client attaching mid-run can be shown of what it missed; it can never affect persisted findings, because the aggregator reads the live channel, not this buffer. On overflow the oldest events are dropped and the client is sent an explicit truncation notice
+VULTURE_AUDIT_BROADCAST_HISTORY_BYTES=67108864        # Byte budget for the same buffer (64MB). Separate because an event COUNT is not a memory bound: one result snapshot can approach the 16MB agent frame ceiling, so 8192 frames alone would permit ~176MB per audit, times every concurrent run. Whichever cap binds first evicts
+VULTURE_AUDIT_BROADCAST_TTL_SEC=60                    # How long a FINISHED run stays attachable. Within the window a client gets the run's real event stream; after it, the synthesized replay, which cannot reconstruct agent thinking text or per-finding deltas (they are not persisted). Raise it if viewers routinely open results well after completion
+
 # Security hardening (feature 0065) — opt-in; defaults preserve current behavior
 VULTURE_TRUSTED_PROXIES=                             # Comma CIDR/IP list of proxies allowed to set X-Forwarded-For. Unset = trust the direct peer only. MUST be set to the proxy address when behind a reverse proxy, else every client collapses to the proxy IP and shares one rate-limit / login-throttle bucket
 VULTURE_LOGIN_LOCKOUT_MAX=5                          # Failed logins per (email,IP) before the escalating (capped) delay engages; a hard ceiling at 2x returns 429. Non-positive value falls back to 5

@@ -192,6 +192,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	}
 	llmHealthH := handler.NewLLMHealthHandler(cfg.Agents)
 	auditH.SetLLMHealth(llmHealthH)
+	// 0071: POST /api/audits dispatches the run in the background. Without this
+	// wiring an audit is created and never runs unless someone opens its stream.
+	auditH.SetDispatcher(streamH)
 	fsH := handler.NewFilesystemHandler()
 	// 0036 Phase 3 — confine filesystem browse to cfg.SourceRoot when
 	// set. Empty SourceRoot = legacy denylist-only behaviour.

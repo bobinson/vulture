@@ -90,7 +90,14 @@ func TestRunPipelineStage_ExecutesAndPersists(t *testing.T) {
 		"owasp": {URL: "http://agent-owasp:28002"},
 	})
 
-	h.runPipelineAudit("a-1")
+	// 0071: the pipeline path is now the single background dispatch path. Drive
+	// it synchronously so the assertions below stay deterministic (DispatchAudit
+	// itself only registers the run and spawns the goroutine).
+	b, ok := h.runs.Open("a-1", 8192)
+	if !ok {
+		t.Fatal("expected to acquire the run")
+	}
+	h.runAudit("a-1", b)
 
 	if updatedAudit == nil {
 		t.Fatal("expected audit updated")
