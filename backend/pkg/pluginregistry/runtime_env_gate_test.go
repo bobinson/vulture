@@ -43,8 +43,8 @@ func TestValidateRuntimeEnvBlock(t *testing.T) {
 // excluded from the forwarded set; plugin-namespaced names retained.
 func TestForwardedEnvNames(t *testing.T) {
 	m := &Manifest{Runtime: RuntimeBlock{Env: runtimeEnv(
-		[]string{"SEMGREP_APP_TOKEN"},                 // plugin's own → forwarded
-		[]string{"VULTURE_JWT_SECRET", "PLUGIN_FOO"},  // backend secret dropped; PLUGIN_FOO kept
+		[]string{"SEMGREP_APP_TOKEN"},                // plugin's own → forwarded
+		[]string{"VULTURE_JWT_SECRET", "PLUGIN_FOO"}, // backend secret dropped; PLUGIN_FOO kept
 	)}}
 	got := ForwardedEnvNames(m)
 	has := func(n string) bool {

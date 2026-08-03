@@ -10,11 +10,11 @@ import (
 
 // APIKey is a bearer token for machine-to-machine auth.
 type APIKey struct {
-	ID         string     // uuid
-	Prefix     string     // first 10 chars of key (e.g. "vk_abc123" — safe to display)
-	Hash       string     // bcrypt hash of full key
-	Name       string     // human label (e.g. "ci-github-actions")
-	Scopes     []string   // ["read","write"]; future-proofing
+	ID         string   // uuid
+	Prefix     string   // first 10 chars of key (e.g. "vk_abc123" — safe to display)
+	Hash       string   // bcrypt hash of full key
+	Name       string   // human label (e.g. "ci-github-actions")
+	Scopes     []string // ["read","write"]; future-proofing
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time

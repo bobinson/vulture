@@ -221,9 +221,9 @@ func TestCORSAllowlistBehavior(t *testing.T) {
 			wantNoOrigin: true,
 		},
 		{
-			name:       "empty allowlist + no Origin header → no error",
-			allowlist:  nil,
-			reqOrigin:  "",
+			name:         "empty allowlist + no Origin header → no error",
+			allowlist:    nil,
+			reqOrigin:    "",
 			wantNoOrigin: true,
 		},
 	}

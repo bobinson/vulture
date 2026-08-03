@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -329,8 +331,57 @@ func runScan() {
 
 	mode := localdev.DetectMode()
 	lcfg := localdev.DefaultConfig(findProjectRoot())
-	fmt.Printf("View results: http://localhost:%s/audit/%s\n",
-		localdev.UIPort(mode, lcfg), auditID)
+	fmt.Printf("View results: %s\n", auditResultsURL(apiURL, mode, lcfg, auditID))
+}
+
+// auditResultsURL builds the "View results" link from the origin the scan
+// ACTUALLY used, not from a freshly-defaulted config.
+//
+// The previous version re-derived host and port from localdev.DefaultConfig,
+// which discarded both VULTURE_API_URL and the real backend port — so a scan
+// against a non-default port or a remote server printed a link to
+// http://localhost:<default>. In dev mode it was also silently wrong whenever
+// the command ran outside the project tree, because findProjectRoot() cannot
+// locate config.ini from there and every port falls back to its default.
+//
+// Install mode serves the UI from the backend, so the API origin is the UI
+// origin. Dev mode runs a separate frontend dev server on the same host, so the
+// host is taken from the API and only the port is swapped.
+func auditResultsURL(
+	apiURL string, mode localdev.Mode, cfg *localdev.Config, auditID string,
+) string {
+	path := "/audit/" + auditID
+	if env := os.Getenv("VULTURE_FRONTEND_URL"); env != "" {
+		return strings.TrimRight(env, "/") + path
+	}
+	fallback := "http://localhost:" + cfg.FrontendPort + path
+	if mode == localdev.ModeInstall {
+		fallback = "http://localhost:" + cfg.BackendPort + path
+	}
+	u, err := url.Parse(apiURL)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return fallback
+	}
+	// A remote backend serves its own SPA, and so does a native install — in
+	// both cases the API origin IS the UI origin. Only a loopback dev split has
+	// the SPA on a separate vite port. Same rule as the `cli` binary's uiURL();
+	// the two disagreed before this, which is how the divergence was noticed.
+	if mode == localdev.ModeInstall || !isLoopbackHost(u.Hostname()) {
+		u.User = nil // never leak credentials from --server into a printed link
+		u.RawQuery, u.Fragment = "", ""
+		return strings.TrimRight(u.String(), "/") + path
+	}
+	return u.Scheme + "://" + net.JoinHostPort(u.Hostname(), cfg.FrontendPort) + path
+}
+
+// isLoopbackHost reports whether host is localhost or any loopback IP, i.e. a
+// backend co-located with this CLI.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // warnIfNoAgentsReachable probes every configured agent's /health endpoint with

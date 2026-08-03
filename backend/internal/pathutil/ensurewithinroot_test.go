@@ -43,8 +43,8 @@ func TestEnsureWithinRoot(t *testing.T) {
 	})
 
 	t.Run("symlinked parent escaping the root is rejected (M10)", func(t *testing.T) {
-		outside := t.TempDir()                         // a directory OUTSIDE root
-		link := filepath.Join(root, "escape")          // root/escape -> outside
+		outside := t.TempDir()                // a directory OUTSIDE root
+		link := filepath.Join(root, "escape") // root/escape -> outside
 		if err := os.Symlink(outside, link); err != nil {
 			t.Skipf("symlink unsupported: %v", err)
 		}

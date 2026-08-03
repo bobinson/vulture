@@ -4,20 +4,20 @@ import "github.com/vulture/backend/internal/model"
 
 // MockMemoryRepository implements MemoryRepository for testing.
 type MockMemoryRepository struct {
-	StoreMemoryFn              func(*model.AuditMemory) error
-	StoreEmbeddingFn           func(string, []float32) error
-	SearchMemoriesFn           func(string, []float32, int) ([]model.AuditMemory, error)
-	HybridSearchMemoriesFn     func(string, []float32, int) ([]model.AuditMemory, error)
-	FindSimilarByVectorFn      func(string, []float32, int) ([]model.AuditMemory, error)
-	GetMemoryFn                func(string) (*model.AuditMemory, error)
-	UpdateRemediationFn        func(string, string, string) error
-	ListMemoriesByAuditFn      func(string) ([]model.AuditMemory, error)
-	ListByCodebasePathFn       func(string, string, int) ([]model.AuditMemory, error)
-	ListByCodebasePathMultiFn  func(string, []string, int) (map[string][]model.AuditMemory, error)
-	StoreBatchFn               func([]*model.AuditMemory) error
-	ListRecentFn               func(int) ([]model.AuditMemory, error)
-	StoreEdgeFn                func(*model.MemoryEdge) error
-	GetEdgesFn                 func(string) ([]model.MemoryEdge, error)
+	StoreMemoryFn             func(*model.AuditMemory) error
+	StoreEmbeddingFn          func(string, []float32) error
+	SearchMemoriesFn          func(string, []float32, int) ([]model.AuditMemory, error)
+	HybridSearchMemoriesFn    func(string, []float32, int) ([]model.AuditMemory, error)
+	FindSimilarByVectorFn     func(string, []float32, int) ([]model.AuditMemory, error)
+	GetMemoryFn               func(string) (*model.AuditMemory, error)
+	UpdateRemediationFn       func(string, string, string) error
+	ListMemoriesByAuditFn     func(string) ([]model.AuditMemory, error)
+	ListByCodebasePathFn      func(string, string, int) ([]model.AuditMemory, error)
+	ListByCodebasePathMultiFn func(string, []string, int) (map[string][]model.AuditMemory, error)
+	StoreBatchFn              func([]*model.AuditMemory) error
+	ListRecentFn              func(int) ([]model.AuditMemory, error)
+	StoreEdgeFn               func(*model.MemoryEdge) error
+	GetEdgesFn                func(string) ([]model.MemoryEdge, error)
 }
 
 func (m *MockMemoryRepository) StoreMemory(mem *model.AuditMemory) error {

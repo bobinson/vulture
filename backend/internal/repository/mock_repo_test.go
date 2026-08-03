@@ -173,7 +173,7 @@ func TestMockMemoryRepository_DefaultBehavior(t *testing.T) {
 func TestMockMemoryRepository_WithFunctions(t *testing.T) {
 	repoErr := errors.New("test error")
 	mock := &MockMemoryRepository{
-		StoreMemoryFn: func(m *model.AuditMemory) error { return repoErr },
+		StoreMemoryFn:    func(m *model.AuditMemory) error { return repoErr },
 		StoreEmbeddingFn: func(id string, emb []float32) error { return repoErr },
 		SearchMemoriesFn: func(q string, emb []float32, l int) ([]model.AuditMemory, error) {
 			return nil, repoErr
@@ -181,7 +181,7 @@ func TestMockMemoryRepository_WithFunctions(t *testing.T) {
 		FindSimilarByVectorFn: func(id string, emb []float32, l int) ([]model.AuditMemory, error) {
 			return nil, repoErr
 		},
-		GetMemoryFn: func(id string) (*model.AuditMemory, error) { return nil, repoErr },
+		GetMemoryFn:         func(id string) (*model.AuditMemory, error) { return nil, repoErr },
 		UpdateRemediationFn: func(id, status, notes string) error { return repoErr },
 		ListMemoriesByAuditFn: func(id string) ([]model.AuditMemory, error) {
 			return nil, repoErr

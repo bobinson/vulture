@@ -802,6 +802,22 @@ def _format_file_block(
     return rel, f"--- {rel} ---\n{content}"
 
 
+def _llm_eligible_files(files: list) -> list:
+    """Files the LLM tier may analyse.
+
+    The single place this rule lives. Every skill filters test and generated
+    files; the LLM tier did not, so the model was handed exploit tests that
+    *demonstrate* a weakness and reported it there — right vulnerability, wrong
+    file, and unactionable. Measured: 9 of 22 LLM findings on one target were
+    test-file artefacts, two of which passed the L5 judge.
+
+    There are TWO paths that feed files to the model — the single-shot context
+    and the batched sweep — and fixing only the first left 5 of the artefacts in
+    place. Hence one helper rather than two call-site filters.
+    """
+    return [f for f in files if not is_test_file(f) and not is_generated_file(f)]
+
+
 def _build_source_batches(
     ordered_files: list,
     source_path: str,
@@ -898,9 +914,7 @@ def _build_source_context(
     # Measured on one target: 9 of 22 LLM findings were test-file artefacts, two
     # of which even passed the L5 judge. The two tiers must agree on what counts
     # as code under review.
-    files = [
-        f for f in files if not is_test_file(f) and not is_generated_file(f)
-    ]
+    files = _llm_eligible_files(files)
     if not files:
         return ""
 
@@ -1914,7 +1928,7 @@ async def _collect_llm_findings_batched_async(
     # is scoped to flagged + entry/config files; the long tail is skipped (and
     # reported via the notice below). Deterministic skills already scanned all.
     include_tier3 = _llm_tier3_enabled(llm_tier3)
-    scanned = scan_code_files(source_path, max_files=scan_cap)
+    scanned = _llm_eligible_files(scan_code_files(source_path, max_files=scan_cap))
     ordered = _prioritize_files(
         scanned, source_path, skill_findings, include_tier3=include_tier3,
     )

@@ -50,6 +50,7 @@ func ParseManifestBytes(data []byte, path string) (Manifest, error) {
 
 var nameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,63}$`)
 var semverRE = regexp.MustCompile(`^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$`)
+
 // CWERe is the canonical CWE-NNN regexp. Exported so external loaders
 // (e.g. internal/cwe's mapping_file loader) can validate against the
 // same single source of truth.

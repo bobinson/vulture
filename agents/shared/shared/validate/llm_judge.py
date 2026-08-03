@@ -402,6 +402,50 @@ def _is_deterministic(finding: dict[str, Any]) -> bool:
     return bool(finding.get("check_id"))
 
 
+def _closure_gate_enabled() -> bool:
+    """Kill switch. False restores the blanket deterministic exemption."""
+    return os.getenv("VULTURE_L5_CLOSURE_GATE", "true").strip().lower() != "false"
+
+
+def _window_sufficient(check: ValidationCheck) -> bool:
+    """True only when the judge EXPLICITLY asserted the window decides it.
+
+    Fails closed on purpose. A missing field (every verdict cached before this
+    landed), a false, or any non-bool means "not asserted", so the pre-existing
+    protection stands. Only a literal ``True`` opens the gate.
+    """
+    return (check.extras or {}).get("window_sufficient") is True
+
+
+def _deterministic_exemption_applies(
+    finding: dict[str, Any], check: ValidationCheck,
+) -> bool:
+    """Whether a demotion on a deterministic finding must be neutralised.
+
+    Provenance alone cannot separate a correct refutation from a wrong one —
+    measured: three demotions with identical provenance, two right and one
+    wrong. What separates them is whether the refutation rests on code the
+    judge could SEE. So the exemption now yields to a judge-asserted
+    window-local verdict, and still applies to everything else.
+    """
+    if not _is_deterministic(finding):
+        return False
+    if not _closure_gate_enabled():
+        return True
+    return not _window_sufficient(check)
+
+
+def _exemption_reason(
+    finding: dict[str, Any], check: ValidationCheck,
+) -> str | None:
+    """Why this demotion must be suppressed, or None to honour it."""
+    if _finding_category(finding) in _CRYPTO_POLICY_CWES:
+        return "crypto_policy_exempt"
+    if _deterministic_exemption_applies(finding, check):
+        return "deterministic_authoritative"
+    return None
+
+
 def _is_l5_exempt(finding: dict[str, Any]) -> bool:
     """True if a demoting L5 verdict must be neutralised for this finding.
 
@@ -470,9 +514,17 @@ def _apply_l5_safeguards(
     demoting_idx = [i for i in judged_idx if any(
         _l5_check_is_demoting(c) for c in out[i]
     )]
+    # RC6 must count only demotions that would actually LAND. Counting
+    # suppressed ones couples the two guards: relaxing the exemption raises the
+    # apparent fraction toward the freeze threshold, and the layer starts
+    # switching itself off run to run.
+    honoured_idx = [i for i in demoting_idx if any(
+        _l5_check_is_demoting(c) and _exemption_reason(findings[i], c) is None
+        for c in out[i]
+    )]
 
     n_judged = len(judged_idx)
-    n_demoted = len(demoting_idx)
+    n_demoted = len(honoured_idx)
     demote_frac = n_demoted / n_judged if n_judged else 0.0
     # A unanimous (100%) demotion is exempt from the global freeze ONLY when
     # every judged finding is a non-deterministic LLM-tier finding — then it is
@@ -499,13 +551,11 @@ def _apply_l5_safeguards(
         for slot, check in enumerate(out[i]):
             if not _l5_check_is_demoting(check):
                 continue
-            if rc6_tripped:
-                reason = "rc6_blast_radius_cap"
-            elif _finding_category(findings[i]) in _CRYPTO_POLICY_CWES:
-                reason = "crypto_policy_exempt"
-            elif _is_deterministic(findings[i]):
-                reason = "deterministic_authoritative"
-            else:
+            reason = (
+                "rc6_blast_radius_cap" if rc6_tripped
+                else _exemption_reason(findings[i], check)
+            )
+            if reason is None:
                 continue
             safe = _neutralize_l5_check(check, reason)
             out[i][slot] = safe
@@ -630,6 +680,10 @@ def _partition_batch_by_cache(
                 "id": fid,
                 "exploitable": cached["exploitable"],
                 "reasoning": cached["reasoning"],
+                # Replayed verdicts must carry closure too, or a cache hit
+                # silently re-protects a finding the judge already refuted
+                # from the window.
+                "window_sufficient": cached.get("window_sufficient"),
                 "_cached": True,
             }
         else:
@@ -683,6 +737,7 @@ def _store_verdicts(
                 exploitable=v["exploitable"],
                 reasoning=v.get("reasoning", ""),
                 model=model, language=lang,
+                window_sufficient=v.get("window_sufficient"),
             )
             break
         verdicts[v["id"]] = v
@@ -1071,7 +1126,18 @@ def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
         return None
     prob = max(0.0, min(1.0, float(prob)))
     reasoning = (v.get("reasoning") or "")[:_REASONING_MAX_CHARS]
-    return {"id": fid, "exploitable": prob, "reasoning": reasoning}
+    # Pass the closure assertion through. This normaliser rebuilds a WHITELISTED
+    # dict, so any field not named here is silently dropped — which is how the
+    # closure gate first shipped inert despite schema, prompt, check-building
+    # and cache all being wired. Only a literal True counts; anything else is
+    # normalised to None so the gate fails closed downstream.
+    ws = v.get("window_sufficient")
+    return {
+        "id": fid,
+        "exploitable": prob,
+        "reasoning": reasoning,
+        "window_sufficient": True if ws is True else None,
+    }
 
 
 def _iter_balanced_objects(text: str):
@@ -1173,6 +1239,10 @@ def _verdict_to_check(
             "exploitable": prob,
             "batch_id": batch_id,
             "language": language,
+            # Judge-declared closure. Absent on every pre-change cached verdict,
+            # which is why the gate reads it as "not asserted" (see
+            # _window_sufficient) rather than defaulting permissive.
+            "window_sufficient": v.get("window_sufficient"),
         },
     )
 

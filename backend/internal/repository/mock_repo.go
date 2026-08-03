@@ -4,19 +4,19 @@ import "github.com/vulture/backend/internal/model"
 
 // MockAuditRepository implements AuditRepository for testing.
 type MockAuditRepository struct {
-	CreateSourceFn            func(*model.Source) error
-	GetSourceFn               func(string) (*model.Source, error)
-	FindSourceByPathFn        func(string) (*model.Source, error)
-	UpdateSourceGitInfoFn     func(string, string, string, string, string) error
-	CreateAuditFn             func(*model.Audit) error
-	GetAuditFn                func(string) (*model.Audit, error)
-	UpdateAuditFn             func(*model.Audit) error
-	SaveFindingsFn            func(string, []model.Finding) error
-	ListAuditsFn              func(int, int) ([]model.Audit, error)
-	GetStatsFn                func() (*model.DashboardStats, error)
-	GetLatestCompletedAuditFn     func(string, []string) (*model.Audit, error)
-	GetPreviousCompletedAuditFn   func(string, []string, string) (*model.Audit, error)
-	ListAuditsBySourcePathFn      func(string, int, int) ([]model.Audit, error)
+	CreateSourceFn              func(*model.Source) error
+	GetSourceFn                 func(string) (*model.Source, error)
+	FindSourceByPathFn          func(string) (*model.Source, error)
+	UpdateSourceGitInfoFn       func(string, string, string, string, string) error
+	CreateAuditFn               func(*model.Audit) error
+	GetAuditFn                  func(string) (*model.Audit, error)
+	UpdateAuditFn               func(*model.Audit) error
+	SaveFindingsFn              func(string, []model.Finding) error
+	ListAuditsFn                func(int, int) ([]model.Audit, error)
+	GetStatsFn                  func() (*model.DashboardStats, error)
+	GetLatestCompletedAuditFn   func(string, []string) (*model.Audit, error)
+	GetPreviousCompletedAuditFn func(string, []string, string) (*model.Audit, error)
+	ListAuditsBySourcePathFn    func(string, int, int) ([]model.Audit, error)
 }
 
 func (m *MockAuditRepository) CreateSource(src *model.Source) error {

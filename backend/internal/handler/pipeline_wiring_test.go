@@ -17,11 +17,15 @@ type mockPipelineSvc struct {
 	advanceStageFn func(string, model.AuditStatus) error
 }
 
-func (m *mockPipelineSvc) CreatePipeline(*model.PipelineRequest) (*model.Pipeline, error)         { return nil, nil }
-func (m *mockPipelineSvc) GetPipeline(string) (*model.Pipeline, error)                             { return nil, nil }
-func (m *mockPipelineSvc) ListPipelines(int, int) ([]model.Pipeline, error)                        { return nil, nil }
-func (m *mockPipelineSvc) GetStageAuditConfig(*model.Pipeline, string) (json.RawMessage, error)    { return nil, nil }
-func (m *mockPipelineSvc) SetRunner(service.PipelineRunner)                                        {}
+func (m *mockPipelineSvc) CreatePipeline(*model.PipelineRequest) (*model.Pipeline, error) {
+	return nil, nil
+}
+func (m *mockPipelineSvc) GetPipeline(string) (*model.Pipeline, error)      { return nil, nil }
+func (m *mockPipelineSvc) ListPipelines(int, int) ([]model.Pipeline, error) { return nil, nil }
+func (m *mockPipelineSvc) GetStageAuditConfig(*model.Pipeline, string) (json.RawMessage, error) {
+	return nil, nil
+}
+func (m *mockPipelineSvc) SetRunner(service.PipelineRunner) {}
 func (m *mockPipelineSvc) AdvanceStage(auditID string, status model.AuditStatus) error {
 	if m.advanceStageFn != nil {
 		return m.advanceStageFn(auditID, status)

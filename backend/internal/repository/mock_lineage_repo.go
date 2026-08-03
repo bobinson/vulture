@@ -4,18 +4,18 @@ import "github.com/vulture/backend/internal/model"
 
 // MockLineageRepository implements LineageRepository for testing.
 type MockLineageRepository struct {
-	UpsertLineageFn          func(*model.FindingLineage) error
-	GetLineageFn             func(string) (*model.FindingLineage, error)
+	UpsertLineageFn            func(*model.FindingLineage) error
+	GetLineageFn               func(string) (*model.FindingLineage, error)
 	GetLineageByFingerprintFn  func(string, string, string) (*model.FindingLineage, error)
 	GetLineageByFingerprintsFn func([]string, string) (map[string]*model.FindingLineage, error)
 	ListBySourcePathFn         func(string, string, int, int) ([]model.FindingLineage, error)
-	ListByAuditFn            func(string) ([]model.FindingLineage, error)
-	UpdateStatusFn           func(string, string, string, string) error
-	MarkFixedFn              func(string, string, string) error
-	MarkRegressionFn         func(string, string, string) error
-	GetOpenBySourcePathFn    func(string, string) ([]model.FindingLineage, error)
-	AddEventFn               func(*model.LineageEvent) error
-	GetEventsFn              func(string) ([]model.LineageEvent, error)
+	ListByAuditFn              func(string) ([]model.FindingLineage, error)
+	UpdateStatusFn             func(string, string, string, string) error
+	MarkFixedFn                func(string, string, string) error
+	MarkRegressionFn           func(string, string, string) error
+	GetOpenBySourcePathFn      func(string, string) ([]model.FindingLineage, error)
+	AddEventFn                 func(*model.LineageEvent) error
+	GetEventsFn                func(string) ([]model.LineageEvent, error)
 }
 
 func (m *MockLineageRepository) UpsertLineage(l *model.FindingLineage) error {

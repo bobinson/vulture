@@ -24,8 +24,8 @@ import (
 
 // FindingLabelHandler persists per-finding user labels (FP/TP).
 type FindingLabelHandler struct {
-	db       *sql.DB
-	dialect  string // "postgres" | "sqlite"
+	db      *sql.DB
+	dialect string // "postgres" | "sqlite"
 }
 
 func NewFindingLabelHandler(db *sql.DB, dialect string) *FindingLabelHandler {

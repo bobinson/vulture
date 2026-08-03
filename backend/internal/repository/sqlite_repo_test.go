@@ -756,7 +756,7 @@ func TestGetLatestCompletedAudit_MultipleCompleted(t *testing.T) {
 	older := &model.Audit{
 		ID: "old", SourceID: "src-1", Types: []string{"chaos"},
 		Config: json.RawMessage("{}"), Status: model.AuditStatusCompleted,
-		Scores: map[string]int{"chaos": 70},
+		Scores:    map[string]int{"chaos": 70},
 		CreatedAt: now.Add(-time.Hour), CompletedAt: func() *time.Time { t := now.Add(-time.Hour); return &t }(),
 	}
 	_ = repo.CreateAudit(older)
@@ -766,7 +766,7 @@ func TestGetLatestCompletedAudit_MultipleCompleted(t *testing.T) {
 	newer := &model.Audit{
 		ID: "new", SourceID: "src-1", Types: []string{"chaos"},
 		Config: json.RawMessage("{}"), Status: model.AuditStatusCompleted,
-		Scores: map[string]int{"chaos": 90},
+		Scores:    map[string]int{"chaos": 90},
 		CreatedAt: now, CompletedAt: &now,
 	}
 	_ = repo.CreateAudit(newer)
@@ -1206,7 +1206,7 @@ func TestListAudits_ScanRow(t *testing.T) {
 		a := &model.Audit{
 			ID: fmt.Sprintf("a-%d", i), SourceID: "src-1", Types: []string{"chaos"},
 			Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
-			Scores: map[string]int{},
+			Scores:    map[string]int{},
 			CreatedAt: now.Add(time.Duration(i) * time.Second),
 		}
 		_ = repo.CreateAudit(a)

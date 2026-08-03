@@ -92,6 +92,14 @@ def _connect() -> Optional[sqlite3.Connection]:
                     judged_at   REAL NOT NULL
                 )
             """)
+            # Added with the closure gate. Guarded because the table predates
+            # it; sqlite has no ADD COLUMN IF NOT EXISTS.
+            try:
+                conn.execute(
+                    "ALTER TABLE l5_cache ADD COLUMN window_sufficient INTEGER"
+                )
+            except Exception:
+                pass
             _CONN = conn
             _DB_PATH = path
             log.info("[validate.l5] cache initialised at %s", path)
@@ -102,6 +110,9 @@ def _connect() -> Optional[sqlite3.Connection]:
             return None
 
 
+_VERDICT_SCHEMA_VERSION = "v2-closure"
+
+
 def cache_key(*, file_path: str, line_start: int, line_end: int,
               check_id: str, model: str, file_sig: str = "") -> str:
     """Stable key shared by reader + writer. SHA-256 → 32 hex chars.
@@ -110,7 +121,14 @@ def cache_key(*, file_path: str, line_start: int, line_end: int,
     the file changes, cache entries for it become unreachable rather
     than serving stale verdicts for shifted line ranges.
     """
-    raw = f"{file_path}:{line_start}:{line_end}:{check_id}:{model}:{file_sig}"
+    # Bump when the verdict SCHEMA or the judge prompt changes: a cached
+    # verdict produced under the old schema lacks the new fields, and silently
+    # reusing it makes a shipped feature look inert on every run after the
+    # first. Version is part of the key so old rows become unreachable.
+    raw = (
+        f"{_VERDICT_SCHEMA_VERSION}:{file_path}:{line_start}:{line_end}"
+        f":{check_id}:{model}:{file_sig}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -129,8 +147,8 @@ def lookup(key: str) -> Optional[dict]:
         # initialised, so taking it here cannot deadlock.
         with _LOCK:
             row = conn.execute(
-                "SELECT exploitable, reasoning, model, language, judged_at "
-                "FROM l5_cache WHERE cache_key = ?",
+                "SELECT exploitable, reasoning, model, language, judged_at, "
+                "window_sufficient FROM l5_cache WHERE cache_key = ?",
                 (key,),
             ).fetchone()
         if row is None:
@@ -144,6 +162,9 @@ def lookup(key: str) -> Optional[dict]:
             "model": row[2] or "",
             "language": row[3] or "",
             "judged_at": judged_at,
+            # None when the row predates the closure column; the gate reads
+            # that as "not asserted" and keeps the finding protected.
+            "window_sufficient": None if row[5] is None else bool(row[5]),
         }
     except Exception as exc:
         log.warning("[validate.l5] cache lookup failed: %s", exc)
@@ -151,7 +172,8 @@ def lookup(key: str) -> Optional[dict]:
 
 
 def store(key: str, *, exploitable: float, reasoning: str,
-          model: str, language: str) -> None:
+          model: str, language: str,
+          window_sufficient: Optional[bool] = None) -> None:
     """Best-effort write. Silent on failure (caching is a perf nicety,
     not a correctness requirement)."""
     conn = _connect()
@@ -162,9 +184,10 @@ def store(key: str, *, exploitable: float, reasoning: str,
         with _LOCK:
             conn.execute(
                 "INSERT OR REPLACE INTO l5_cache "
-                "(cache_key, exploitable, reasoning, model, language, judged_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (key, float(exploitable), reasoning, model, language, time.time()),
+                "(cache_key, exploitable, reasoning, model, language, judged_at, "
+                "window_sufficient) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (key, float(exploitable), reasoning, model, language, time.time(),
+                 None if window_sufficient is None else int(window_sufficient)),
             )
     except Exception as exc:
         log.warning("[validate.l5] cache store failed: %s", exc)

@@ -146,3 +146,24 @@ def test_reasoning_default_budget_is_not_the_measured_failure_point():
     assert _DEFAULT_MAX_OUTPUT_TOKENS > 4000, (
         "the shipped default still truncates the model class this was found on"
     )
+
+
+def test_both_llm_paths_share_one_eligibility_filter():
+    """Two entry points feed the model; fixing one left 5 artefacts behind.
+
+    `_build_source_context` (single-shot) and the batched sweep both call
+    `scan_code_files`. A per-call-site filter is how the second path was missed,
+    so the rule lives in one helper that both must route through.
+    """
+    import inspect
+
+    from shared import audit_runner as ar
+
+    src = inspect.getsource(ar)
+    direct = src.count("scan_code_files(source_path")
+    routed = src.count("_llm_eligible_files(")
+    assert routed >= 3, "both LLM paths plus the definition must reference the helper"
+    assert "is_test_file(f) and not is_generated_file(f)" not in src.replace(
+        inspect.getsource(ar._llm_eligible_files), ""
+    ), "the filter must not be re-inlined at a call site; route through the helper"
+    assert direct >= 2, "sanity: the two scan sites still exist"

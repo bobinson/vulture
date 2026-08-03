@@ -19,16 +19,16 @@ var errTest = errors.New("test error")
 // --- Mock implementations ---
 
 type mockAuditService struct {
-	createFn                   func(req *model.AuditRequest) (*model.Audit, error)
-	getFn                      func(id string) (*model.Audit, error)
-	updateFn                   func(audit *model.Audit) error
-	saveFindingsFn             func(auditID string, findings []model.Finding) error
-	listFn                     func(limit, offset int) ([]model.Audit, error)
-	statsFn                    func() (*model.DashboardStats, error)
-	getCachedAuditFn           func(sourceID string, types []string) (*model.Audit, error)
-	findSourceFn               func(path string) (*model.Source, error)
-	getPreviousCompletedFn     func(sourceID string, types []string, excludeAuditID string) (*model.Audit, error)
-	listAuditsBySourcePathFn   func(sourcePath string, limit, offset int) ([]model.Audit, error)
+	createFn                 func(req *model.AuditRequest) (*model.Audit, error)
+	getFn                    func(id string) (*model.Audit, error)
+	updateFn                 func(audit *model.Audit) error
+	saveFindingsFn           func(auditID string, findings []model.Finding) error
+	listFn                   func(limit, offset int) ([]model.Audit, error)
+	statsFn                  func() (*model.DashboardStats, error)
+	getCachedAuditFn         func(sourceID string, types []string) (*model.Audit, error)
+	findSourceFn             func(path string) (*model.Source, error)
+	getPreviousCompletedFn   func(sourceID string, types []string, excludeAuditID string) (*model.Audit, error)
+	listAuditsBySourcePathFn func(sourcePath string, limit, offset int) ([]model.Audit, error)
 }
 
 func (m *mockAuditService) Create(req *model.AuditRequest) (*model.Audit, error) {
@@ -111,17 +111,17 @@ func (m *mockSourceService) Get(id string) (*model.Source, error) {
 }
 
 type mockMemoryService struct {
-	storeFn              func(mem *model.AuditMemory) error
-	searchFn             func(req *model.MemorySearchRequest) ([]model.AuditMemory, error)
-	getFn                func(id string) (*model.AuditMemory, error)
-	getWithEdgesFn       func(id string) (*model.MemoryWithEdges, error)
-	updateRemFn          func(id, status, notes string) error
-	listByAuditFn        func(auditID string) ([]model.AuditMemory, error)
+	storeFn                   func(mem *model.AuditMemory) error
+	searchFn                  func(req *model.MemorySearchRequest) ([]model.AuditMemory, error)
+	getFn                     func(id string) (*model.AuditMemory, error)
+	getWithEdgesFn            func(id string) (*model.MemoryWithEdges, error)
+	updateRemFn               func(id, status, notes string) error
+	listByAuditFn             func(auditID string) ([]model.AuditMemory, error)
 	listByCodebasePathFn      func(path, agentType string, limit int) ([]model.AuditMemory, error)
 	listByCodebasePathMultiFn func(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error)
 	listRecentFn              func(limit int) ([]model.AuditMemory, error)
-	storeFindingsFn      func(auditID, sourcePath string, findings []model.Finding) error
-	getEdgesFn           func(memoryID string) ([]model.MemoryEdge, error)
+	storeFindingsFn           func(auditID, sourcePath string, findings []model.Finding) error
+	getEdgesFn                func(memoryID string) ([]model.MemoryEdge, error)
 }
 
 func (m *mockMemoryService) Store(mem *model.AuditMemory) error {

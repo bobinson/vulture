@@ -31,7 +31,6 @@ func auditLLMModel() string {
 	}
 }
 
-
 type AuditService interface {
 	Create(req *model.AuditRequest) (*model.Audit, error)
 	Get(id string) (*model.Audit, error)

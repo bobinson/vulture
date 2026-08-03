@@ -4,10 +4,10 @@ import "github.com/vulture/backend/internal/model"
 
 // MockDiscoverRepo implements DiscoverRepository for testing.
 type MockDiscoverRepo struct {
-	SaveDiscoverResultFn        func(*model.DiscoverResult) error
-	GetDiscoverResultFn         func(string) (*model.DiscoverResult, error)
+	SaveDiscoverResultFn         func(*model.DiscoverResult) error
+	GetDiscoverResultFn          func(string) (*model.DiscoverResult, error)
 	GetDiscoverResultByAuditIDFn func(string) (*model.DiscoverResult, error)
-	GetDiscoverResultByTargetFn func(string) (*model.DiscoverResult, error)
+	GetDiscoverResultByTargetFn  func(string) (*model.DiscoverResult, error)
 }
 
 func (m *MockDiscoverRepo) SaveDiscoverResult(dr *model.DiscoverResult) error {

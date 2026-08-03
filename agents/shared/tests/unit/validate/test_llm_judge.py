@@ -96,7 +96,14 @@ def test_max_output_tokens_env_and_default(monkeypatch):
 def test_parse_valid_response():
     raw = '{"verdicts":[{"id":"f1","exploitable":0.85,"reasoning":"raw SQL concat"}]}'
     out = _parse_response(raw, batch_size=10)
-    assert out == [{"id": "f1", "exploitable": 0.85, "reasoning": "raw SQL concat"}]
+    # Exact shape, including the closure field added with the L5 closure gate.
+    # `_coerce_verdict` whitelists keys, so this equality is what guarantees a
+    # new field is actually carried rather than silently dropped in the middle
+    # of the parse path.
+    assert out == [{
+        "id": "f1", "exploitable": 0.85, "reasoning": "raw SQL concat",
+        "window_sufficient": None,
+    }]
 
 
 def test_parse_strips_code_fences():
