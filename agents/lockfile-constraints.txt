@@ -14,7 +14,7 @@
 #   (a) cryptography ships a macOS x86_64 wheel again, OR
 #   (b) the darwin/amd64 leg is dropped from .github/workflows/release.yml
 #       (Intel-mac runner EOL ~Fall 2027 — see the build-binary matrix comment).
-cryptography==48.0.1; sys_platform == "darwin"
+cryptography==50.0.0; sys_platform == "darwin"
 
 # litellm: 1.92.0 dropped the universal `litellm-*-py3-none-any.whl` and switched
 # to manylinux-only (Linux) wheels + an sdist — NO macOS wheel — so the darwin
