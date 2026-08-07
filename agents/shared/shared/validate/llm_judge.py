@@ -31,7 +31,9 @@ from shared.cancellation import current_audit_deadline, current_cancel_token
 
 from . import l5_cache
 from .language import detect_language
+from .refutation import POLICY_CLASSES
 from .types import ValidateConfig, ValidationCheck
+from .voter import JUDGE_CITED, JUDGE_UNDECIDED
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -345,14 +347,20 @@ def run_l5(
 # alone (R2 extension). A weak-crypto / hardcoded-secret / cleartext finding
 # is a deterministic policy violation; the judge's exploitability score is
 # the wrong axis for it.
-_CRYPTO_POLICY_CWES: frozenset[str] = frozenset({
-    "CWE-326", "CWE-327", "CWE-328", "CWE-330", "CWE-798", "CWE-319",
-    # CWE-338 is the security-context specialisation of CWE-330. When a row is
-    # re-tagged 330 -> 338 it must keep the same immunity, or the relabel
-    # silently strips a deterministic crypto finding's protection from an
-    # aggressive L5 judge — a regression the relabel itself would hide.
-    "CWE-338",
-})
+#
+# Feature 0072 T4.10: SINGLE-SOURCED from refutation.py. The justification for
+# the exemption is the class's DECLARED REFUTATION SCOPE — Scope.NONE means no
+# admissible refutation exists, so an L5 suppression could not be resting on
+# one — not the finding's provenance. Two hand-maintained copies of that
+# judgement had already diverged: this set was missing CWE-321 (hardcoded
+# crypto key) and CWE-1395 (known-vulnerable dependency), both declared
+# Scope.NONE / "the construct's presence is the finding", yet both
+# L5-suppressible here.
+#
+# CWE-338 is the security-context specialisation of CWE-330; POLICY_CLASSES
+# carries both, so a 330 -> 338 relabel keeps its immunity rather than silently
+# stripping it — a regression the relabel itself would hide.
+_CRYPTO_POLICY_CWES = POLICY_CLASSES
 
 # RC6 blast-radius cap. The cap freezes the L5 layer when the judge demotes
 # a large share of the judged findings — a signal that a miscalibrated /
@@ -1231,7 +1239,11 @@ def _verdict_to_check(
     weight = max(-0.75, min(0.75, (prob - 0.5) * 1.5))
     return ValidationCheck(
         id="llm_judge",
-        result="real_bug" if prob >= 0.5 else "demoted",
+        # STRICT boundary. prob == 0.5 is the prompt's own "cannot judge" value
+        # (prompts/validate_judge.txt), so it must not carry the affirmative
+        # label. Weight is already exactly 0.0 there, so no confidence moves.
+        result=(JUDGE_CITED if prob > 0.5
+                else JUDGE_UNDECIDED if prob == 0.5 else "demoted"),
         weight=weight,
         reason=v.get("reasoning", ""),
         extras={

@@ -866,7 +866,12 @@ func applyCrossAgentValidation(f model.Finding) model.Finding {
 		}
 		id, _ := m["id"].(string)
 		w, _ := m["weight"].(float64)
-		voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w})
+		// Feature 0072 G1: `result` MUST be carried. It is where an obligation's
+		// state and a judge verdict's admissibility live, so dropping it here
+		// erases the gate on the first L3/L4 re-vote while the agent still
+		// believes it applied.
+		res, _ := m["result"].(string)
+		voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w, Result: res})
 	}
 	res := service.Vote(voterChecks)
 	f.ValidationStatus = res.Status
@@ -966,7 +971,9 @@ func applyMemoryPriorIfEnabled(findings []model.Finding) []model.Finding {
 			}
 			id, _ := m["id"].(string)
 			w, _ := m["weight"].(float64)
-			voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w})
+			// Feature 0072 G1: carry `result` — see the L3 site above.
+			res, _ := m["result"].(string)
+			voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w, Result: res})
 		}
 		res := service.Vote(voterChecks)
 		findings[i].ValidationStatus = res.Status

@@ -15,6 +15,7 @@ from typing import Any
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
 from .llm_judge import _l5_check_is_demoting, run_l5
+from .refutation import clear_route_model_cache, obligation_check
 from .rollup import run_l2
 from .types import (
     FindingValidation,
@@ -22,7 +23,11 @@ from .types import (
     ValidationCheck,
     ValidationResult,
 )
-from .voter import vote
+from .voter import JUDGE_UNDECIDED, OBLIGATION_ID, vote
+
+# Verdict states that assert NOTHING about the finding. Neither is a survival
+# signal, so neither may re-tag provenance as judge-verified (0072 T4.8).
+_L5_NO_ASSERTION: frozenset[str] = frozenset({JUDGE_UNDECIDED, "error"})
 
 __all__ = [
     "FindingValidation",
@@ -80,14 +85,27 @@ def _l2_error_checks(
 def _run_l1_phase(
     findings: list[dict[str, Any]], cfg: ValidateConfig,
     event_texts: list[str], layers_run: list[str], duration_ms: dict[str, int],
+    source_path: str = "",
 ) -> list[list[ValidationCheck]]:
-    """RC3-isolated L1 dispatcher. Returns one check-list per finding."""
+    """RC3-isolated L1 dispatcher. Returns one check-list per finding.
+
+    `source_path` is the scanned tree's root. It is what lets a WIRING-scoped
+    obligation be resolved against the route model; without it every
+    authorization finding can only ever be `unknown`.
+    """
     if not cfg.enable_l1:
         return [[] for _ in findings]
     t0 = time.monotonic()
     clear_l1_cache()
+    # The route model is cached per source root so it is built ONCE per audit
+    # rather than once per finding. Clearing it here (like the L1 line cache)
+    # bounds that reuse to a single audit: agent processes are long-lived, so a
+    # process-lifetime cache would serve a stale route table for a second scan
+    # of the same path after the tree moved — and refutations read from a stale
+    # table are exactly the false negatives this feature must not create.
+    clear_route_model_cache()
     try:
-        l1_results = run_l1(findings)
+        l1_results = run_l1(findings, source_root=source_path)
         layers_run.append("L1")
     except Exception as exc:
         event_texts.append(
@@ -130,12 +148,28 @@ def _retag_l5_verified(
 ) -> None:
     """Feature 0057 P6b: re-tag an LLM finding that SURVIVES L5.
 
-    An ``llm``-provenance finding that carries a NON-demoting ``llm_judge``
-    (L5) check is promoted to ``llm_l5_verified`` — it was model-generated and
-    independently confirmed by the judge. A demoting or absent L5 verdict
-    leaves the ``llm`` tag in place. Deterministic findings (any non-``llm``
-    provenance) are NEVER re-tagged to an ``llm_*`` provenance. Mutates in
-    place; the validation* fields stamped by the caller are untouched.
+    An ``llm``-provenance finding is promoted to ``llm_l5_verified`` when the
+    judge left it standing. A demoting or absent L5 verdict leaves the ``llm``
+    tag in place. Deterministic findings (any non-``llm`` provenance) are NEVER
+    re-tagged to an ``llm_*`` provenance. Mutates in place; the validation*
+    fields stamped by the caller are untouched.
+
+    Feature 0072 T4.8: "survives" excludes verdicts that ASSERTED NOTHING. The
+    predicate was the bare negation of a demotion, so two no-assertion states
+    re-tagged a finding as "independently confirmed by the judge":
+
+      * the no-verdict stub (``result="error"``, weight 0.0) emitted when the
+        judge is unreachable — the same stub the L5 summary reports as
+        "CONTRIBUTED NOTHING; treat this run as unjudged". Provenance said
+        verified while the summary said unjudged.
+      * a ``JUDGE_UNDECIDED`` verdict, the judge's own "cannot tell" — 10 of 10
+        live verdicts on a real run sat exactly there.
+
+    Deliberately NOT ``any(c.result == JUDGE_CITED)``. A verdict neutralised by
+    the RC6 cap or the policy exemption is rebuilt as ``result="advisory"``,
+    weight 0.0, and must still re-tag — ``test_provenance.py``'s streaming class
+    exists precisely because that path was once unreachable. Subtracting the two
+    no-assertion states kills both live traps and leaves that contract intact.
     """
     if new_f.get("provenance") != "llm":
         return
@@ -143,6 +177,8 @@ def _retag_l5_verified(
     if not l5_checks:
         return
     if any(_l5_check_is_demoting(c) for c in l5_checks):
+        return
+    if all(c.result in _L5_NO_ASSERTION for c in l5_checks):
         return
     new_f["provenance"] = "llm_l5_verified"
 
@@ -163,6 +199,26 @@ def _apply_validation_to_finding(
     return new_f
 
 
+def _ensure_obligation(
+    finding: dict[str, Any], checks: list[ValidationCheck],
+) -> list[ValidationCheck]:
+    """Feature 0072: no finding may reach the voter without an obligation.
+
+    A finding carrying NO obligation check is indistinguishable, to the gate,
+    from one whose obligation was discharged — the same unknown-as-neutral
+    defect the feature exists to remove, one level up.
+
+    This is not hypothetical. L2 rollup PARENTS are synthesised after L1, so
+    they never pass through run_l1 and arrive with an empty check list; without
+    this guard they would confirm freely under enforcement. Found by scanning
+    Vulture with Vulture, not by a unit test — every unit test reached the voter
+    through run_l1.
+    """
+    if any(c.id == OBLIGATION_ID for c in checks):
+        return checks
+    return checks + [obligation_check(finding.get("category", "") or "", None)]
+
+
 def _provisional_vote(
     findings: list[dict[str, Any]],
     l1_results: list[list[ValidationCheck]],
@@ -174,7 +230,11 @@ def _provisional_vote(
     t0 = time.monotonic()
     out_findings = [
         _apply_validation_to_finding(
-            finding, list(l1_results[idx]) + list(l2_results[idx]), cfg,
+            finding,
+            _ensure_obligation(
+                finding, list(l1_results[idx]) + list(l2_results[idx])
+            ),
+            cfg,
         )
         for idx, finding in enumerate(findings)
     ]
@@ -302,12 +362,30 @@ def _run_l5_phase(
             f"[validate] L5 failed: {type(exc).__name__}; layer disabled")
     finally:
         duration_ms["L5"] = int((time.monotonic() - t0) * 1000)
-    judged = sum(
-        1 for f in out_findings
-        if any(c.get("id") == "llm_judge"
-               for c in f.get("validation", {}).get("checks", []))
-    )
-    event_texts.append(f"[validate] L5 done · {judged} finding(s) judged")
+    # A finding carrying only an `error`/`no verdict` stub was NOT judged. The
+    # count used to lump the two together, so a completely dead judge reported
+    # "N finding(s) judged" and read as success. Live-observed: an LM Studio
+    # model that failed to load 400'd every call, producing 680 error stubs
+    # under a summary claiming 680 judged.
+    #
+    # This is the feature's own thesis one layer up: "we never checked" must not
+    # be presentable as "we checked and it was clean".
+    judged = errored = 0
+    for f in out_findings:
+        verdicts = [c for c in f.get("validation", {}).get("checks", [])
+                    if c.get("id") == "llm_judge"]
+        if not verdicts:
+            continue
+        if all(c.get("result") == "error" for c in verdicts):
+            errored += 1
+        else:
+            judged += 1
+    msg = f"[validate] L5 done · {judged} finding(s) judged"
+    if errored:
+        msg += f" · {errored} returned no verdict (judge unavailable)"
+        if not judged:
+            msg += " — L5 CONTRIBUTED NOTHING; treat this run as unjudged"
+    event_texts.append(msg)
 
 
 def _emit_summary(
@@ -358,7 +436,8 @@ def validate(
     layers_run: list[str] = []
     duration_ms: dict[str, int] = {}
 
-    l1_results = _run_l1_phase(findings, cfg, event_texts, layers_run, duration_ms)
+    l1_results = _run_l1_phase(
+        findings, cfg, event_texts, layers_run, duration_ms, source_path)
     l2_results, rollups = _run_l2_phase(
         findings, cfg, audit_id, event_texts, layers_run, duration_ms,
     )

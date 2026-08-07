@@ -1,0 +1,430 @@
+{
+  "_comment": [
+    "Cross-language voter parity fixture. Consumed by BOTH",
+    "backend/internal/service/validation_voter_parity_test.go and",
+    "agents/shared/tests/unit/validate/test_voter_parity.py.",
+    "",
+    "Both must produce identical (status, confidence) for every case. This file",
+    "is the contract; adding a rule to either voter without adding a case here is",
+    "the failure mode it exists to catch.",
+    "",
+    "Built by feature 0072. Before it, both voter headers described this test and",
+    "the Python one claimed CI enforced it \u2014 neither the fixture nor either test",
+    "existed, so the two implementations were free to drift silently."
+  ],
+  "cases": [
+    {
+      "name": "empty check list is the 0.5 prior",
+      "checks": [],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "single promoting check crosses 0.55",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.6
+      }
+    },
+    {
+      "name": "confidence clamps at 1.0",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.75,
+          "result": "real_bug"
+        },
+        {
+          "id": "memory",
+          "weight": 0.4,
+          "result": "user_label"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 1.0
+      }
+    },
+    {
+      "name": "confidence clamps at 0.0",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": -0.75,
+          "result": "advisory"
+        },
+        {
+          "id": "path",
+          "weight": -0.2,
+          "result": "demoted"
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.0
+      }
+    },
+    {
+      "name": "likely_fp needs TWO demoting checks",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": -0.6,
+          "result": "advisory"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.0
+      }
+    },
+    {
+      "name": "authoritative demotion is singular, and caps confidence at 0.05",
+      "_note": "weight -0.2 leaves confidence at 0.3 so the min(conf, 0.05) cap actually bites; -0.5 would reach 0.0 on its own and test nothing",
+      "checks": [
+        {
+          "id": "suppression",
+          "weight": -0.2,
+          "result": "nosec"
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.05
+      }
+    },
+    {
+      "name": "authoritative demotion below the cap keeps its lower confidence",
+      "checks": [
+        {
+          "id": "suppression",
+          "weight": -0.5,
+          "result": "nosec"
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.0
+      }
+    },
+    {
+      "name": "0072: unknown obligation withholds the label, keeps the number",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        },
+        {
+          "id": "llm_judge",
+          "weight": 0.6,
+          "result": "real_bug"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "unknown"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 1.0
+      }
+    },
+    {
+      "name": "0072: discharged obligation permits confirmation",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.6
+      }
+    },
+    {
+      "name": "0072: a refuted obligation dismisses the finding",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "refuted"
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.6
+      }
+    },
+    {
+      "name": "0072: operator POSITIVE label overrides a blocking obligation",
+      "checks": [
+        {
+          "id": "memory",
+          "weight": 0.4,
+          "result": "user_label"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "unknown"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.9
+      }
+    },
+    {
+      "name": "0072: operator NEGATIVE label never grants an override",
+      "checks": [
+        {
+          "id": "memory",
+          "weight": -0.4,
+          "result": "user_label"
+        },
+        {
+          "id": "llm_judge",
+          "weight": 0.6,
+          "result": "real_bug"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "unknown"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.7
+      }
+    },
+    {
+      "name": "0072: lone UNCITED judge promotion cannot confirm",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.6,
+          "result": "real_bug_uncited"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 1.0
+      }
+    },
+    {
+      "name": "0072: lone CITED judge promotion may confirm",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.6,
+          "result": "real_bug"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 1.0
+      }
+    },
+    {
+      "name": "0072: legacy judge result fails closed",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.6,
+          "result": "real_bug_legacy"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 1.0
+      }
+    },
+    {
+      "name": "0072: lone deterministic promotion is untouched by the judge rule",
+      "checks": [
+        {
+          "id": "sanitizer",
+          "weight": 0.15,
+          "result": "matched"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.65
+      }
+    },
+    {
+      "name": "0072: uncited judge alongside a deterministic promoter confirms",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        },
+        {
+          "id": "llm_judge",
+          "weight": 0.6,
+          "result": "real_bug_uncited"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 1.0
+      }
+    },
+    {
+      "name": "0072: a demoting check is never counted as a promoter",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.6,
+          "result": "real_bug_uncited"
+        },
+        {
+          "id": "path",
+          "weight": -0.2,
+          "result": "demoted"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.9
+      }
+    },
+    {
+      "name": "0072: blocking obligation does not prevent dismissal",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": -0.6,
+          "result": "advisory"
+        },
+        {
+          "id": "path",
+          "weight": -0.2,
+          "result": "demoted"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "unknown"
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.0
+      }
+    },
+    {
+      "name": "0072: no obligation check behaves exactly as pre-0072",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.6
+      }
+    },
+    {
+      "name": "0072: an UNDECIDED judge verdict asserts nothing",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.0,
+          "result": "undecided"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "0072: an UNDECIDED judge neither promotes nor blocks a real promoter",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        },
+        {
+          "id": "llm_judge",
+          "weight": 0.0,
+          "result": "undecided"
+        },
+        {
+          "id": "obligation",
+          "weight": 0.0,
+          "result": "discharged"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.6
+      }
+    }
+  ]
+}

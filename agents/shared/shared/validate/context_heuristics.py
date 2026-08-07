@@ -13,6 +13,7 @@ import functools
 import re
 from typing import Any
 
+from .refutation import REFUTATION_MAP, Scope, obligation_check, route_model_for
 from .types import ValidationCheck
 
 __all__ = ["run_l1"]
@@ -272,17 +273,52 @@ def _sanitizer_check(
     for i in range(start, end):
         for pat in patterns:
             if pat.search(lines[i]):
+                # Feature 0072 P0: a mitigation match must NEVER promote.
+                #
+                # SANITIZER_MAP holds patterns for SAFE practice (parameterize,
+                # prepared, bind_param, DOMPurify, shlex.quote), so a match is
+                # evidence that the weakness is mitigated. Returning +0.15 here
+                # meant a parameterised query near a CWE-89 sink RAISED the
+                # SQL-injection finding's confidence — the sign was backwards.
+                #
+                # The weight is now neutral and `result` no longer claims a
+                # direction. The state stays distinguishable from "absent"
+                # because the obligation model needs to tell "searched, found a
+                # mitigation" apart from "searched, found nothing".
                 return ValidationCheck(
-                    id="sanitizer", result="promoted", weight=0.15,
-                    reason=f"sanitizer matched on line {i + 1}",
+                    id="sanitizer", result="matched", weight=0.0,
+                    reason=f"mitigation pattern matched on line {i + 1}",
                     extras={"sanitizer_at": i + 1, "category": category},
                 )
     return ValidationCheck(id="sanitizer", result="absent", weight=0.0,
                            reason="no sanitizer in surrounding lines")
 
 
-def run_l1(findings: list[dict[str, Any]]) -> list[list[ValidationCheck]]:
+def _scope_available(category: str, source_root: str = "") -> bool:
+    """Whether the resolver for this class's declared scope can decide HERE.
+
+    WIRING scope is available only when a route model actually resolved routes
+    for this tree. A model that found none means the stack is one no resolver
+    understands, which must report unavailable rather than "searched and clean":
+    a non-degradable class then stays `unknown` instead of discharging at a
+    narrower scope — precisely how an earlier design re-opened the very
+    false-positive class this feature exists to close.
+    """
+    ref = REFUTATION_MAP.get(category)
+    if ref is None or ref.scope is not Scope.WIRING:
+        return True
+    model = route_model_for(source_root)
+    return model is not None and bool(model.routes())
+
+
+def run_l1(
+    findings: list[dict[str, Any]], source_root: str = "",
+) -> list[list[ValidationCheck]]:
     """Run L1 against every finding; return per-finding check lists.
+
+    `source_root` enables WIRING-scope refutation: without it an authorization
+    obligation can only ever be `unknown`, because the middleware chain that
+    would refute it lives outside any window this layer can see.
 
     Layer-isolated (RC3): one finding raising does NOT prevent others.
     """
@@ -300,12 +336,36 @@ def run_l1(findings: list[dict[str, Any]]) -> list[list[ValidationCheck]]:
             if sup is not None:
                 checks.append(sup)
 
-            checks.append(_sanitizer_check(file_path, line_start, category))
+            san = _sanitizer_check(file_path, line_start, category)
+            checks.append(san)
+
+            # Feature 0072: derive the obligation from the search that just ran.
+            # `no_map` / `no_file` / `skipped` mean the mitigation was never
+            # searched for, which must be distinguishable from "searched and
+            # found nothing" — in an additive vote both are weight 0.0.
+            #
+            # A WIRING-scoped class is resolved against the route model when a
+            # source root is known; where no model resolves, its scope reports
+            # unavailable and the non-degradable classes stay `unknown` rather
+            # than discharging at a narrower scope.
+            checks.append(obligation_check(
+                category, san.result,
+                scope_available=_scope_available(category, source_root),
+                file_path=file_path,
+                line_start=line_start,
+                source_root=source_root or None,
+            ))
 
             results.append(checks)
         except Exception as exc:    # RC3 layer isolation
-            results.append([ValidationCheck(
-                id="path", result="error", weight=0.0,
-                reason=f"L1 error: {type(exc).__name__}: {str(exc)[:100]}",
-            )])
+            # A crashed layer must not read as "checked and clean": emit a
+            # blocking obligation alongside the error so the batch cannot be
+            # confirmed on the strength of a layer that never ran.
+            results.append([
+                ValidationCheck(
+                    id="path", result="error", weight=0.0,
+                    reason=f"L1 error: {type(exc).__name__}: {str(exc)[:100]}",
+                ),
+                obligation_check(f.get("category", "") or "", None),
+            ])
     return results

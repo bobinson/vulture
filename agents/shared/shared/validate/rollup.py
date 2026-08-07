@@ -9,6 +9,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from .refutation import obligation_check
 from .types import ValidationCheck
 
 __all__ = ["rollup_id", "run_l2"]
@@ -151,10 +152,16 @@ def _build_rollup_parent(
         "instance_count": instance_count,
         "rolled_up_member_ids": [m.get("id", "") for m in members],
         "recommendation": _best_recommendation(members),
+        # Feature 0072: a rollup parent must carry an obligation like any other
+        # finding. It is appended to the result AFTER validate() returns
+        # (audit_runner: `all_findings + v_result.rollups`), so it never reaches
+        # the voter — and a finding with no obligation check is indistinguishable,
+        # to the gate, from one whose obligation was discharged. Stamping it here
+        # is the only place that sees the parent before it ships.
         "validation": {
             "status": _rollup_status_for(category, instance_count),
             "confidence": 0.40,
-            "checks": [],
+            "checks": [obligation_check(category, None).to_json()],
             "validated_at": "",
         },
     }
