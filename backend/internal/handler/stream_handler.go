@@ -205,10 +205,15 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// synthesizes no StateDelta, no progress and no TextMessageContent (agent
 	// thinking text is never persisted), and it drops findings whose AgentType is
 	// absent from audit.Types.
-	// An EMPTY broadcaster must not win: a run that failed before emitting its
-	// first event leaves one behind, and serving it would give every client a
-	// zero-event stream for the whole TTL instead of the persisted replay.
-	if b, ok := h.runs.Get(auditID); ok && !b.IsEmpty() {
+	// An empty broadcaster wins ONLY while it is still live. A run that failed
+	// before its first event leaves a CLOSED+empty broadcaster behind; serving
+	// that would give every client a zero-event stream for the whole TTL instead
+	// of the persisted replay, so it must fall through. But a broadcaster that is
+	// empty merely because the autodispatched run has not emitted yet (registered
+	// synchronously by POST, then the run goroutine blocks in drainResult for the
+	// whole scan) is live — attaching is correct, and treating it as an orphan
+	// would mark a running audit FAILED and hand the client a fake RunFinished.
+	if b, ok := h.runs.Get(auditID); ok && (!b.IsEmpty() || !b.Closed()) {
 		h.attachToRun(r, sseWriter, auditID, b)
 		return
 	}

@@ -155,6 +155,18 @@ func (b *broadcaster) IsEmpty() bool {
 	return len(b.history) == 0 && b.truncated == false
 }
 
+// Closed reports whether the run has ended (Close was called). It is the
+// discriminator that lets a caller tell a DEAD empty broadcaster (a run that
+// failed before its first event) from a LIVE one that simply has not emitted
+// yet — the autodispatch fast-path registers the broadcaster before the run
+// goroutine produces anything, so IsEmpty alone would misclassify a running
+// audit as orphaned.
+func (b *broadcaster) Closed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
+}
+
 // Send implements EventSink. It encodes once, appends to history, and delivers
 // non-blockingly to every subscriber. It never blocks and never fails: a
 // subscriber that cannot keep up is dropped, because the alternative is
