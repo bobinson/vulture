@@ -65,10 +65,18 @@ def test_authoritative_set_v1_contents():
 
 
 def test_confidence_clamped_to_0_1():
-    """Confidence stays in [0, 1] regardless of weight sums."""
+    """Confidence stays in [0, ceiling] regardless of weight sums.
+
+    Feature 0072 T4.2: the upper bound is 0.99 unless an authoritative
+    positive (human ground truth) is present — certainty is reserved.
+    """
     huge_pos = [ValidationCheck(id="x", result="ok", weight=10.0) for _ in range(5)]
     huge_neg = [ValidationCheck(id="x", result="ok", weight=-10.0) for _ in range(5)]
     _, p = vote(huge_pos)
     _, n = vote(huge_neg)
-    assert p == 1.0
+    assert p == 0.99
     assert n == 0.0
+    with_truth = huge_pos + [
+        ValidationCheck(id="memory", result="user_label", weight=0.4)]
+    _, pt = vote(with_truth)
+    assert pt == 1.0

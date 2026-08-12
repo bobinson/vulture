@@ -168,7 +168,8 @@ class TestCacheCarriesClosure:
             file_path="/x/a.ts", line_start=1, line_end=1,
             check_id="c", model="m",
         )
-        assert l5_cache._VERDICT_SCHEMA_VERSION in "v2-closure"
+        # v3-evidence: 0072 T5.3 added evidence_line to the verdict schema.
+        assert l5_cache._VERDICT_SCHEMA_VERSION == "v3-evidence"
         # A version bump must change the key, so pre-change rows go unreachable.
         old = l5_cache._VERDICT_SCHEMA_VERSION
         try:

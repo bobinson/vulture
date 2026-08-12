@@ -27,6 +27,7 @@ from .types import ValidationCheck
 __all__ = [
     "AUTHORITATIVE_CHECKS",
     "AUTHORITATIVE_POSITIVE",
+    "CONFIDENCE_CEILING_UNVERIFIED",
     "JUDGE_CITED",
     "JUDGE_UNCITED",
     "JUDGE_UNDECIDED",
@@ -78,6 +79,22 @@ JUDGE_UNDECIDED: str = "undecided"
 # positive): `memory` is bidirectional, so keying on the id alone would let a
 # user marking something a FALSE POSITIVE grant it a confirmation override.
 AUTHORITATIVE_POSITIVE: frozenset[str] = frozenset({"memory"})
+
+# ── Feature 0072 T4.2 (C2/AC5): confidence 1.0 is reserved ──────────────────
+# A single judge verdict at exploitable >= 0.834 used to clamp to exactly
+# 1.000 — a model vote presenting as total certainty. The ceiling is applied
+# as the CLAMP BOUND, never as an `if confidence >= 1.0` equality test: the
+# two voters fold weights in different orders (0.5 + sum(w) here, accumulate-
+# from-0.5 in Go), so an equality trigger can fire in one language and not
+# the other for the same checks (measured: weights {0.1, 0.3, 0.1} give 1.0
+# in Python and 0.9999999999999999 in Go).
+#
+# Only ground truth lifts the ceiling — today an operator's own positive
+# label (AUTHORITATIVE_POSITIVE); a future mechanical-verification check id
+# joins that set rather than adding a second mechanism.
+#
+# PARITY: mirrored in validation_voter.go; pinned by the shared fixture.
+CONFIDENCE_CEILING_UNVERIFIED: float = 0.99
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -174,7 +191,9 @@ def vote(checks: Iterable[ValidationCheck]) -> tuple[str, float]:
     `"high_confidence"`, `"suspicious"`, `"likely_fp"`.
     """
     checks_list = list(checks)
-    confidence = _clamp(0.5 + sum(c.weight for c in checks_list), 0.0, 1.0)
+    ceiling = (1.0 if _has_authoritative_positive(checks_list)
+               else CONFIDENCE_CEILING_UNVERIFIED)
+    confidence = _clamp(0.5 + sum(c.weight for c in checks_list), 0.0, ceiling)
     if _has_authoritative_demotion(checks_list):
         return "likely_fp", min(confidence, 0.05)
     # Feature 0072: a REFUTED obligation is positive evidence of absence, not an

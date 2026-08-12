@@ -1317,6 +1317,35 @@ def _set_provenance(finding: dict[str, Any]) -> None:
     finding["provenance"] = _classify_deterministic_provenance(finding)
 
 
+# Feature 0072 T5.2: per-scope snippet context. Classes whose declared
+# refutation scope is wider than a statement (FUNCTION / FILE / WIRING) get a
+# LINE-budgeted window — the L5 judge cannot reason about a guard clause or a
+# middleware effect from 200 characters. Applied ONLY to those classes to
+# bound the token cost (plan §10); policy classes (Scope.NONE — including
+# every secret-bearing CWE) and undeclared classes keep the tight legacy
+# window the secret-redaction pass was tuned for.
+_WIDE_SNIPPET_CONTEXT = 10   # 21 lines; must stay under the judge's
+                             # _WINDOW_LINES_MAX render ceiling (T5.4)
+
+
+def _snippet_params_for(category: str) -> tuple[int, int | None]:
+    """(context_lines, max_chars) for extract_snippet, per weakness class.
+
+    Wide only for classes whose declared scope is wider than a statement AND
+    reviewed (T2.1a): an unreviewed legacy entry still searches the narrow
+    window, so widening its snippet would spend §10's token budget on
+    obligations that cannot use it — today that keeps the widening to the
+    authorization family.
+    """
+    from shared.validate.refutation import REFUTATION_MAP, Scope
+
+    ref = REFUTATION_MAP.get(category or "")
+    if (ref is not None and ref.scope_reviewed
+            and ref.scope in (Scope.FUNCTION, Scope.FILE, Scope.WIRING)):
+        return _WIDE_SNIPPET_CONTEXT, None
+    return 2, 200
+
+
 def _attach_code_snippet(
     findings: list[dict[str, Any]],
     source_path: str,
@@ -1349,7 +1378,13 @@ def _attach_code_snippet(
         _set_provenance(f)
 
     for f in findings:
-        if not f.get("code_snippet"):
+        context, max_chars = _snippet_params_for(f.get("category", "") or "")
+        wide = max_chars is None
+        # T5.2: a wide-scope class gets the line-budget window even when a
+        # skill pre-set a narrow one — the window is the judge's evidence,
+        # and 200 chars cannot contain a mitigation that lives lines away.
+        # Narrow classes keep the legacy behaviour: back-fill only.
+        if wide or not f.get("code_snippet"):
             line_start = f.get("line_start", 0) or 0
             try:
                 line_start = int(line_start)
@@ -1360,7 +1395,10 @@ def _attach_code_snippet(
                 if resolved is not None:
                     lines = read_file_lines(resolved)
                     if lines:
-                        snippet = extract_snippet(lines, line_start, context=2)
+                        snippet = extract_snippet(
+                            lines, line_start,
+                            context=context, max_chars=max_chars,
+                        )
                         if snippet:
                             f["code_snippet"] = snippet
 

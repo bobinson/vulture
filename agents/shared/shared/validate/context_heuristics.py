@@ -225,6 +225,50 @@ def _read_lines_cached(file_path: str) -> tuple[str, ...]:
 
 def clear_l1_cache() -> None:
     _read_lines_cached.cache_clear()
+    _scan_for_sanitizer.cache_clear()
+
+
+# ── T2.6: textual matching must not fire on comments or string literals ──
+# A word-level regex like \bsanitize\b matching a comment ("TODO: sanitize
+# this") or a log string would discharge an obligation nothing satisfied.
+# Strings are blanked FIRST (so a '#' or '//' inside a string cannot truncate
+# the code part), then line comments and inline block comments are dropped.
+# Best-effort and line-based by design: multi-line strings/docstrings are not
+# tracked; the failure mode is a missed strip (extra discharge), never a
+# dropped finding — discharge only supports, it cannot refute (§5.1).
+_STRING_LITERAL_RE = re.compile(
+    r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`[^`]*`")
+_COMMENT_RE = re.compile(r"#.*$|//.*$|/\*.*?\*/")
+
+
+def _strip_comments_and_strings(line: str) -> str:
+    line = _STRING_LITERAL_RE.sub('""', line)
+    return _COMMENT_RE.sub("", line)
+
+
+@functools.lru_cache(maxsize=4096)
+def _scan_for_sanitizer(
+    file_path: str, category: str, start: int, end: int,
+) -> int:
+    """First sanitizer-pattern hit in lines [start, end) (0-based bounds),
+    after comment/string stripping. Returns the 1-based line, or 0.
+
+    Memoised on (file, class, extent) — T2.4: the extent MUST be in the key,
+    or one function's answer would be served for a different function under a
+    sub-file scope. For FILE scope the extent is stable, so the cache
+    collapses to one entry per (file, class) where it matters most. Cleared
+    per validate() call via clear_l1_cache.
+    """
+    patterns = SANITIZER_MAP.get(category, [])
+    lines = _read_lines_cached(file_path)
+    for i in range(max(0, start), min(end, len(lines))):
+        stripped = _strip_comments_and_strings(lines[i])
+        if not stripped:
+            continue
+        for pat in patterns:
+            if pat.search(stripped):
+                return i + 1
+    return 0
 
 
 def _suppression_check(file_path: str, line_start: int) -> ValidationCheck | None:
@@ -250,12 +294,30 @@ def _suppression_check(file_path: str, line_start: int) -> ValidationCheck | Non
     return None
 
 
+def _sanitizer_search_extent(
+    file_path: str, line_start: int, category: str,
+) -> tuple[int, int, str]:
+    """(start, end, scope_searched) for the sanitizer scan — 0-based bounds.
+
+    T2.4: a class whose declared refutation scope is FILE **and reviewed**
+    is searched across the whole file, forward as well as backward. Every
+    other class keeps the legacy 20-line backward window — behaviour-
+    preserving until each migrated entry is reviewed (T2.1a). The window
+    actually used is recorded as `scope_searched` so the obligation's
+    `scope_actual` extras (and T7.4's divergence alert) reflect the truth.
+    """
+    lines = _read_lines_cached(file_path)
+    ref = REFUTATION_MAP.get(category)
+    if ref is not None and ref.scope is Scope.FILE and ref.scope_reviewed:
+        return 0, len(lines), "file"
+    return max(0, line_start - 21), min(len(lines), line_start), "window20_backward"
+
+
 def _sanitizer_check(
     file_path: str, line_start: int, category: str,
 ) -> ValidationCheck:
-    """Scan the window [line_start - 20, line_start] for a sanitizer
-    pattern matching the finding's CWE category. Returns a promoting
-    check if found, otherwise a neutral check.
+    """Scan the class's search extent for a sanitizer pattern matching the
+    finding's CWE category (comment- and string-stripped — T2.6/AC17).
     """
     if not file_path or line_start <= 0:
         return ValidationCheck(id="sanitizer", result="skipped", weight=0.0,
@@ -268,30 +330,31 @@ def _sanitizer_check(
     if not lines:
         return ValidationCheck(id="sanitizer", result="no_file", weight=0.0,
                                reason="could not read file")
-    start = max(0, line_start - 21)
-    end = min(len(lines), line_start)
-    for i in range(start, end):
-        for pat in patterns:
-            if pat.search(lines[i]):
-                # Feature 0072 P0: a mitigation match must NEVER promote.
-                #
-                # SANITIZER_MAP holds patterns for SAFE practice (parameterize,
-                # prepared, bind_param, DOMPurify, shlex.quote), so a match is
-                # evidence that the weakness is mitigated. Returning +0.15 here
-                # meant a parameterised query near a CWE-89 sink RAISED the
-                # SQL-injection finding's confidence — the sign was backwards.
-                #
-                # The weight is now neutral and `result` no longer claims a
-                # direction. The state stays distinguishable from "absent"
-                # because the obligation model needs to tell "searched, found a
-                # mitigation" apart from "searched, found nothing".
-                return ValidationCheck(
-                    id="sanitizer", result="matched", weight=0.0,
-                    reason=f"mitigation pattern matched on line {i + 1}",
-                    extras={"sanitizer_at": i + 1, "category": category},
-                )
+    start, end, scope_searched = _sanitizer_search_extent(
+        file_path, line_start, category)
+    hit = _scan_for_sanitizer(file_path, category, start, end)
+    if hit:
+        # Feature 0072 P0: a mitigation match must NEVER promote.
+        #
+        # SANITIZER_MAP holds patterns for SAFE practice (parameterize,
+        # prepared, bind_param, DOMPurify, shlex.quote), so a match is
+        # evidence that the weakness is mitigated. Returning +0.15 here
+        # meant a parameterised query near a CWE-89 sink RAISED the
+        # SQL-injection finding's confidence — the sign was backwards.
+        #
+        # The weight is now neutral and `result` no longer claims a
+        # direction. The state stays distinguishable from "absent"
+        # because the obligation model needs to tell "searched, found a
+        # mitigation" apart from "searched, found nothing".
+        return ValidationCheck(
+            id="sanitizer", result="matched", weight=0.0,
+            reason=f"mitigation pattern matched on line {hit}",
+            extras={"sanitizer_at": hit, "category": category,
+                    "scope_searched": scope_searched},
+        )
     return ValidationCheck(id="sanitizer", result="absent", weight=0.0,
-                           reason="no sanitizer in surrounding lines")
+                           reason="no sanitizer in surrounding lines",
+                           extras={"scope_searched": scope_searched})
 
 
 def _scope_available(category: str, source_root: str = "") -> bool:
@@ -354,6 +417,8 @@ def run_l1(
                 file_path=file_path,
                 line_start=line_start,
                 source_root=source_root or None,
+                check_id=f.get("check_id") or "",
+                scope_searched=(san.extras or {}).get("scope_searched", ""),
             ))
 
             results.append(checks)

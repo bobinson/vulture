@@ -40,6 +40,7 @@ __all__ = [
     "Scope",
     "obligation_check",
     "obligation_mode",
+    "obligations_enabled",
 ]
 
 
@@ -121,7 +122,34 @@ def _policy(note: str) -> Refutation:
                       scope_reviewed=True, degradable=False, note=note)
 
 
+# ── T2.1: the legacy SANITIZER_MAP classes, migrated ─────────────────────
+# Declared at FILE scope with TEXTUAL evidence, but scope_reviewed=False:
+# the sanitizer's 20-line backward window was never CHOSEN for these classes,
+# it is simply what the code did (§3 B1). Until each is reviewed (T2.1a) the
+# class is unenforced — statuses stay exactly pre-0072 (AC21) — while the
+# obligation's true state is recorded, so observe-mode data can inform each
+# review. scope_actual records the window actually searched; T7.4 alerts on
+# the divergence from the declared scope.
+_LEGACY_SANITIZER_CLASSES: tuple[str, ...] = (
+    "CWE-89", "CWE-79", "CWE-78", "CWE-22", "CWE-94", "CWE-918",
+    "CWE-770", "CWE-755", "CWE-778", "CWE-476", "CWE-532", "CWE-754",
+    "CWE-248", "CWE-20", "CWE-434", "CWE-287", "CWE-306",
+    # NOTE: CWE-330 also appears in the legacy sanitizer map, but it is a
+    # POLICY class (Scope.NONE) — the policy declaration wins below.
+)
+
+
+def _legacy(cwe: str) -> Refutation:
+    return Refutation(
+        scope=Scope.FILE, evidence=Evidence.TEXTUAL,
+        scope_reviewed=False, degradable=True,
+        note=f"migrated from SANITIZER_MAP; the legacy 20-line backward "
+             f"window was never reviewed for {cwe} (T2.1a)")
+
+
 REFUTATION_MAP: dict[str, Refutation] = {
+    **{cwe: _legacy(cwe) for cwe in _LEGACY_SANITIZER_CLASSES},
+
     # ── Authorization: the class that motivated this feature ──────────────
     # The mitigation is established by the route's middleware chain, so a
     # narrower search proves nothing and MUST NOT discharge (degradable=False).
@@ -165,8 +193,29 @@ def _strict_scope() -> bool:
         "1", "true", "yes", "on")
 
 
-def _enforced(category: str) -> bool:
-    """Whether the gate may withhold a label for this class.
+def obligations_enabled() -> bool:
+    """The `VULTURE_L5_OBLIGATIONS=false` kill switch (plan T1.10, promised in
+    the rollback plan as a runtime safety valve).
+
+    When false, the obligation mechanism is disabled at emission: every
+    obligation is recorded (its true state stays in `extras`) but emitted as
+    `discharged`, so the voter never withholds a label OR dismisses a finding
+    on an obligation — *even under `VULTURE_OBLIGATION_MODE=enforce`*. This is
+    the one-lever rollback for a deployment that has enabled per-class
+    enforcement and needs to back out fast, without reverting to `observe`
+    globally or shipping a new build.
+
+    Deliberately scoped to obligations (the name says so): the judge's closure
+    admissibility is a separate mechanism with its own knob
+    (`VULTURE_L5_CLOSURE_GATE`). Implemented here rather than in `vote()` so the
+    voter stays pure and the two-language parity contract is untouched — the
+    Go re-vote simply sees `discharged` and does nothing.
+    """
+    return os.getenv("VULTURE_L5_OBLIGATIONS", "true").strip().lower() != "false"
+
+
+def _enforced(category: str, check_id: str = "") -> bool:
+    """Whether the gate may withhold a label for this class/rule.
 
     An UNDECLARED class enforces as soon as the mode allows it. Gating that on
     `scope_reviewed` would be incoherent — there is no declaration to review —
@@ -176,9 +225,20 @@ def _enforced(category: str) -> bool:
 
     A DECLARED class waits for its scope to be reviewed, which is what keeps the
     migrated legacy entries behaving exactly as they did before.
+
+    A CALIBRATION-DEMOTED rule (P7) enforces regardless of `scope_reviewed`:
+    the operator has measured its confirmed-tier precision as too low, which is
+    orthogonal to whether its refutation scope has been reviewed, so the
+    demotion must not be neutralised by the per-class review gate. It still
+    respects the mode and the kill switch (so `observe` changes nothing, AC22).
     """
+    if not obligations_enabled():
+        return False          # kill switch: gate off at runtime, enforce too
     if obligation_mode() != "enforce":
         return False
+    from .calibration import finding_rule_demoted
+    if finding_rule_demoted(check_id, category):
+        return True
     ref = REFUTATION_MAP.get(category)
     if ref is None:
         return True
@@ -313,46 +373,73 @@ def _decide_state(
     file_path: str,
     line_start: int,
     source_root: str | None,
-) -> tuple[str, str]:
+    check_id: str = "",
+    scope_searched: str = "",
+) -> tuple[str, str, str | None]:
     """The obligation's TRUE state, before observe-mode neutralisation.
+
+    Returns ``(state, why, scope_actual)`` — the third element names the
+    scope that was ACTUALLY searched (feature 0072 T7.4: divergence from the
+    declared scope is a calibration alert, not an invisible substitution).
 
     Split out of obligation_check so each function stays readable: this is the
     policy chain, its caller is the mode gate and the construction.
     """
+    # Feature 0072 P7 (T7.2): a rule whose measured confirmed-tier precision
+    # fell below threshold is demoted to candidate-only. Forcing the
+    # obligation UNKNOWN reuses the existing gate in BOTH voters — no new
+    # rule crosses the process boundary. Keyed by check_id OR category so it
+    # matches how the rule was identified when measured (a finding may carry
+    # only a category); enforcement of this UNKNOWN bypasses the per-class
+    # scope-review gate via _enforced (see obligation_check).
+    from .calibration import finding_rule_demoted
+
+    if finding_rule_demoted(check_id, category):
+        rule = check_id or category
+        return (
+            OBLIGATION_UNKNOWN,
+            f"rule {rule} demoted to candidate-only by the calibration "
+            f"gate (confirmed-tier precision below threshold)",
+            None,
+        )
+
     # A class with no declared refutation set was never checked at all. This is
     # the highest-value single rule in the feature: it converts "we never
     # looked" from an invisible zero into a visible withheld label.
     if ref is None:
-        state, why = OBLIGATION_UNKNOWN, f"no refutation set declared for {category}"
+        return (OBLIGATION_UNKNOWN,
+                f"no refutation set declared for {category}", None)
 
-    elif ref.scope is Scope.NONE:
-        state, why = OBLIGATION_DISCHARGED, ref.note or "policy class: nothing to refute"
+    if ref.scope is Scope.NONE:
+        return (OBLIGATION_DISCHARGED,
+                ref.note or "policy class: nothing to refute", "none")
 
-    elif (
+    if (
         ref.scope is Scope.WIRING
         and (_wiring := _try_wiring_refutation(
             file_path, line_start, source_root)) is not None
     ):
         state, why = _wiring
+        return state, why, "wiring"
 
-    elif not scope_available and not (ref.degradable and not _strict_scope()):
+    if not scope_available and not (ref.degradable and not _strict_scope()):
         # Non-degradable class whose scope has no resolver: a narrower search
         # cannot discharge it. This branch is what stops the gate re-opening
         # the very class it exists to close on stacks with no route model.
-        state = OBLIGATION_UNKNOWN
-        why = f"{ref.scope.name.lower()} scope unavailable and this class may not degrade"
+        return (
+            OBLIGATION_UNKNOWN,
+            f"{ref.scope.name.lower()} scope unavailable and this class may not degrade",
+            None,
+        )
 
-    elif sanitizer_result in ("matched", "absent"):
-        state = OBLIGATION_DISCHARGED
+    if sanitizer_result in ("matched", "absent"):
         why = ("a mitigation pattern matched (textual evidence: supports, never refutes)"
                if sanitizer_result == "matched"
                else f"searched at {ref.scope.name.lower()} scope, no mitigation found")
+        return OBLIGATION_DISCHARGED, why, (scope_searched or "window20_backward")
 
-    else:
-        state = OBLIGATION_UNKNOWN
-        why = f"not searched ({sanitizer_result or 'no sanitizer check'})"
-
-    return state, why
+    return (OBLIGATION_UNKNOWN,
+            f"not searched ({sanitizer_result or 'no sanitizer check'})", None)
 
 
 def obligation_check(
@@ -363,6 +450,8 @@ def obligation_check(
     file_path: str = "",
     line_start: int = 0,
     source_root: str | None = None,
+    check_id: str = "",
+    scope_searched: str = "",
 ) -> ValidationCheck:
     """Derive the obligation check for one finding.
 
@@ -380,8 +469,14 @@ def obligation_check(
     emitted as `discharged`.
     """
     ref = REFUTATION_MAP.get(category)
-    state, why = _decide_state(category, ref, sanitizer_result,
-                               scope_available, file_path, line_start, source_root)
+    state, why, scope_actual = _decide_state(
+        category, ref, sanitizer_result, scope_available,
+        file_path, line_start, source_root, check_id, scope_searched)
+
+    # Computed once — it decides both the neutraliser and the extras flag, and
+    # it now depends on check_id (a calibration-demoted rule enforces even when
+    # its class scope is unreviewed).
+    enforced = _enforced(category, check_id)
 
     # Observe mode: record the real state in extras, but change no outcome.
     #
@@ -392,9 +487,12 @@ def obligation_check(
     # until a class earns enforcement, and "off" has to mean off in the
     # direction that removes findings above all.
     effective = state
-    if state in (OBLIGATION_UNKNOWN, OBLIGATION_REFUTED) and not _enforced(category):
+    if state in (OBLIGATION_UNKNOWN, OBLIGATION_REFUTED) and not enforced:
         effective = OBLIGATION_DISCHARGED
-        why = f"{why} [observe mode: recorded, not enforced]"
+        if not obligations_enabled():
+            why = f"{why} [VULTURE_L5_OBLIGATIONS=false: obligation gate disabled]"
+        else:
+            why = f"{why} [observe mode: recorded, not enforced]"
 
     return ValidationCheck(
         id=OBLIGATION_ID,
@@ -403,9 +501,14 @@ def obligation_check(
         reason=why,
         extras={
             "obligation_state": state,
-            "enforced": _enforced(category),
+            "enforced": enforced,
             "mode": obligation_mode(),
             "scope_declared": ref.scope.name.lower() if ref else None,
+            # T7.4: the scope actually searched. Divergence from
+            # scope_declared is a per-rule calibration alert — an invisible
+            # scope substitution is how a narrower search gets mistaken for
+            # an adequate one.
+            "scope_actual": scope_actual,
             "evidence": ref.evidence.name.lower() if ref else None,
             "category": category,
         },

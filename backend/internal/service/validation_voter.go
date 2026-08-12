@@ -59,19 +59,33 @@ var AuthoritativePositiveIDs = map[string]struct{}{
 	"memory": {},
 }
 
+// ConfidenceCeilingUnverified — feature 0072 T4.2 (C2/AC5): confidence 1.0 is
+// reserved. A single judge verdict at exploitable >= 0.834 used to clamp to
+// exactly 1.000 — a model vote presenting as total certainty. The ceiling is
+// the CLAMP BOUND, never an `if confidence >= 1.0` equality test: the two
+// voters fold weights in different orders (accumulate-from-0.5 here,
+// 0.5 + sum(w) in Python), so an equality trigger can fire in one language
+// and not the other for the same checks (measured: weights {0.1, 0.3, 0.1}
+// give 1.0 in Python and 0.9999999999999999 here).
+//
+// Only ground truth lifts the ceiling — today an operator's own positive
+// label (AuthoritativePositiveIDs); a future mechanical-verification check
+// id joins that set. PARITY: mirrored in voter.py; pinned by the fixture.
+const ConfidenceCeilingUnverified = 0.99
+
 // VoteResult is the output of Vote.
 type VoteResult struct {
 	Status     string
 	Confidence float64
 }
 
-// clampConfidence clamps a raw weight-sum into the [0,1] band.
-func clampConfidence(v float64) float64 {
+// clampConfidence clamps a raw weight-sum into the [0,hi] band.
+func clampConfidence(v, hi float64) float64 {
 	if v < 0 {
 		return 0
 	}
-	if v > 1 {
-		return 1
+	if v > hi {
+		return hi
 	}
 	return v
 }
@@ -181,7 +195,11 @@ func Vote(checks []VoterCheck) VoteResult {
 	for _, c := range checks {
 		confidence += c.Weight
 	}
-	confidence = clampConfidence(confidence)
+	ceiling := ConfidenceCeilingUnverified
+	if hasAuthoritativePositive(checks) {
+		ceiling = 1.0
+	}
+	confidence = clampConfidence(confidence, ceiling)
 	if hasAuthoritativeDemotion(checks) {
 		if confidence > 0.05 {
 			confidence = 0.05

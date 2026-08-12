@@ -92,14 +92,23 @@ def _connect() -> Optional[sqlite3.Connection]:
                     judged_at   REAL NOT NULL
                 )
             """)
-            # Added with the closure gate. Guarded because the table predates
-            # it; sqlite has no ADD COLUMN IF NOT EXISTS.
-            try:
-                conn.execute(
-                    "ALTER TABLE l5_cache ADD COLUMN window_sufficient INTEGER"
-                )
-            except Exception:
-                pass
+            # Columns added after the table first shipped; sqlite has no
+            # ADD COLUMN IF NOT EXISTS, so probe PRAGMA table_info instead of
+            # a bare try/except around the ALTER. The old guard coalesced the
+            # expected "duplicate column name" with REAL failures (locked DB,
+            # readonly FS) — after which the connection was cached as good and
+            # every later lookup/store raised, each swallowed into a warning:
+            # the cache was permanently, silently dead for the process
+            # (feature 0072 P5).
+            existing_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(l5_cache)")
+            }
+            for col, decl in (
+                ("window_sufficient", "INTEGER"),   # closure gate
+                ("evidence_line", "INTEGER"),       # feature 0072 T5.3
+            ):
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE l5_cache ADD COLUMN {col} {decl}")
             _CONN = conn
             _DB_PATH = path
             log.info("[validate.l5] cache initialised at %s", path)
@@ -110,7 +119,10 @@ def _connect() -> Optional[sqlite3.Connection]:
             return None
 
 
-_VERDICT_SCHEMA_VERSION = "v2-closure"
+# v3-evidence: the verdict gained `evidence_line` (feature 0072 T5.3,
+# observation-only). Cached v2 rows lack it and must become unreachable —
+# the first post-deploy run judges from a cold cache, once, by design (§10).
+_VERDICT_SCHEMA_VERSION = "v3-evidence"
 
 
 def cache_key(*, file_path: str, line_start: int, line_end: int,
@@ -148,7 +160,8 @@ def lookup(key: str) -> Optional[dict]:
         with _LOCK:
             row = conn.execute(
                 "SELECT exploitable, reasoning, model, language, judged_at, "
-                "window_sufficient FROM l5_cache WHERE cache_key = ?",
+                "window_sufficient, evidence_line "
+                "FROM l5_cache WHERE cache_key = ?",
                 (key,),
             ).fetchone()
         if row is None:
@@ -165,6 +178,7 @@ def lookup(key: str) -> Optional[dict]:
             # None when the row predates the closure column; the gate reads
             # that as "not asserted" and keeps the finding protected.
             "window_sufficient": None if row[5] is None else bool(row[5]),
+            "evidence_line": None if row[6] is None else int(row[6]),
         }
     except Exception as exc:
         log.warning("[validate.l5] cache lookup failed: %s", exc)
@@ -173,7 +187,8 @@ def lookup(key: str) -> Optional[dict]:
 
 def store(key: str, *, exploitable: float, reasoning: str,
           model: str, language: str,
-          window_sufficient: Optional[bool] = None) -> None:
+          window_sufficient: Optional[bool] = None,
+          evidence_line: Optional[int] = None) -> None:
     """Best-effort write. Silent on failure (caching is a perf nicety,
     not a correctness requirement)."""
     conn = _connect()
@@ -185,12 +200,31 @@ def store(key: str, *, exploitable: float, reasoning: str,
             conn.execute(
                 "INSERT OR REPLACE INTO l5_cache "
                 "(cache_key, exploitable, reasoning, model, language, judged_at, "
-                "window_sufficient) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "window_sufficient, evidence_line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (key, float(exploitable), reasoning, model, language, time.time(),
-                 None if window_sufficient is None else int(window_sufficient)),
+                 None if window_sufficient is None else int(window_sufficient),
+                 None if evidence_line is None else int(evidence_line)),
             )
     except Exception as exc:
         log.warning("[validate.l5] cache store failed: %s", exc)
+
+
+def reset_for_tests() -> None:
+    """Drop the module-level connection so the next call re-reads the env.
+
+    Test isolation helper — the per-test conftest also monkeypatches these,
+    but tests that swap VULTURE_L5_CACHE_PATH mid-test need an explicit
+    reset."""
+    global _CONN, _DB_PATH, _DISABLED
+    with _LOCK:
+        if _CONN is not None:
+            try:
+                _CONN.close()
+            except Exception:
+                pass
+        _CONN = None
+        _DB_PATH = None
+        _DISABLED = False
 
 
 def stats() -> dict:

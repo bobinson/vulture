@@ -33,7 +33,7 @@ from . import l5_cache
 from .language import detect_language
 from .refutation import POLICY_CLASSES
 from .types import ValidateConfig, ValidationCheck
-from .voter import JUDGE_CITED, JUDGE_UNDECIDED
+from .voter import JUDGE_CITED, JUDGE_UNCITED, JUDGE_UNDECIDED
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -150,10 +150,19 @@ class _L5Runtime:
     per_batch_timeout_s: float
     model: str
     system_prompt: str
+    # Feature 0072 P3b: the scanned tree's root. What lets the judge hold
+    # read-only tools — empty means no tools regardless of the flag.
+    source_root: str = ""
+    tools_on: bool = False
+    max_tool_calls: int = 0
 
 
-def _resolve_l5_runtime(config: ValidateConfig) -> Optional[_L5Runtime]:
+def _resolve_l5_runtime(
+    config: ValidateConfig, source_path: str = "",
+) -> Optional[_L5Runtime]:
     """Resolve all run_l5 runtime knobs; None on hard precondition fail."""
+    from .judge_tools import max_tool_calls, tools_enabled
+
     model = _resolve_model(config)
     if not model:
         log.warning("[validate.l5] no model resolved; skipping (set VULTURE_LLM_MODEL)")
@@ -170,6 +179,9 @@ def _resolve_l5_runtime(config: ValidateConfig) -> Optional[_L5Runtime]:
         per_batch_timeout_s=_resolve_per_batch_timeout(config),
         model=model,
         system_prompt=system_prompt,
+        source_root=source_path,
+        tools_on=tools_enabled() and bool(source_path),
+        max_tool_calls=max_tool_calls(),
     )
 
 
@@ -205,7 +217,8 @@ def _apply_batch_result(
                 extras={"model": model, "batch_id": batch_idx, "language": lang},
             )
         else:
-            check = _verdict_to_check(v, model=model, batch_id=batch_idx, language=lang)
+            check = _verdict_to_check(v, model=model, batch_id=batch_idx,
+                                      language=lang, finding=finding)
         out[finding_idx] = [check]
         verdicts_by_id[fid] = {"batch": batch_idx, "check": check}
         _append_check_to_finding(finding, check)
@@ -226,6 +239,40 @@ def _run_l5_pool(
     # keep their per-request timeout as the upper bound.
     _cancel = current_cancel_token()
 
+    # Feature 0072 P3b: one confined executor per run, shared by the pool —
+    # it is stateless (the budget is per batch REQUEST, tracked in the loop).
+    _executor = None
+    if rt.tools_on:
+        from .judge_tools import JudgeToolExecutor
+        _executor = JudgeToolExecutor(rt.source_root)
+
+    # Scope a worker's right to issue an LLM call to THIS pool's lifetime.
+    # `shutdown(wait=False)` (below) lets a queued worker outlive run_l5; when
+    # it finally runs it would call `_call_llm` — a module global that a later
+    # test's monkeypatch may have swapped, and in production an LLM call after
+    # the audit already returned. Cleared in the finally before shutdown, so an
+    # orphan of a returned pool bails at _judge_batch entry (the t13d flake).
+    pool_active = threading.Event()
+    pool_active.set()
+
+    # Cancellation must stop the PRODUCER, not only the consumer. The consumer
+    # loop below checks the token and breaks, but a fast worker (instant call,
+    # concurrency 1) can race through every submitted batch before the consumer
+    # gets a turn — so cancellation stopped consumption while production ran to
+    # completion (the t13c flake). Gate the worker too: once cancelled, only the
+    # FIRST batch to begin executing runs (an in-flight batch completes its
+    # call — the t13d contract); every later batch bails before its call. The
+    # claim is atomic so exactly one batch is "first" under any concurrency.
+    _first_lock = threading.Lock()
+    _first_claimed = [False]
+
+    def _claim_first() -> bool:
+        with _first_lock:
+            if _first_claimed[0]:
+                return False
+            _first_claimed[0] = True
+            return True
+
     def _process_batch(
         batch_idx: int, batch: list[tuple[int, dict[str, Any], str]],
     ) -> dict[str, dict[str, Any]]:
@@ -233,6 +280,8 @@ def _run_l5_pool(
             batch_idx=batch_idx, batch=batch, audit_id=audit_id,
             system_prompt=rt.system_prompt, model=rt.model,
             per_batch_timeout_s=rt.per_batch_timeout_s, cancel=_cancel,
+            tool_executor=_executor, max_tool_calls=rt.max_tool_calls,
+            pool_active=pool_active, claim_first=_claim_first,
         )
 
     # Manual pool lifecycle (issue #2): the deadline-bounded loop
@@ -265,6 +314,11 @@ def _run_l5_pool(
             if emit_batch is not None:
                 emit_batch([t[1] for t in batch])
     finally:
+        # Retire the pool: clear the active flag FIRST so any worker that has
+        # not yet issued its call bails (see pool_active), THEN cancel pending
+        # futures. Ordering matters — clear-before-shutdown is what makes an
+        # orphan harmless without waiting on it.
+        pool_active.clear()
         # cancel_futures available in Python 3.9+. Pending workers are
         # cancelled; in-flight workers keep their per-request openai
         # timeout as the upper bound.
@@ -281,6 +335,7 @@ def run_l5(
     config: ValidateConfig,
     audit_id: str = "",
     emit_batch: Optional[EmitFn] = None,
+    source_path: str = "",
 ) -> list[list[ValidationCheck]]:
     """Return per-finding L5 ValidationCheck lists, parallel to `findings`.
 
@@ -299,13 +354,20 @@ def run_l5(
     """
     out: list[list[ValidationCheck]] = [[] for _ in findings]
     top_n = _resolve_top_n(config)
-    selected_idx = _select_findings(findings, l1_results, top_n)
+    selected_idx, skips = _classify_selection(findings, l1_results, top_n)
     if not selected_idx:
         log.info("[validate.l5] nothing to judge after selection; skipping")
+        _stamp_coverage_all(findings, selected_idx, skips, out)
         return out
 
-    rt = _resolve_l5_runtime(config)
+    rt = _resolve_l5_runtime(config, source_path)
     if rt is None:
+        # The layer was ENABLED and could not run — that is a judge failure,
+        # not a selection decision, and must not read as one.
+        for i in selected_idx:
+            skips[i] = (COVERAGE_JUDGE_ERROR,
+                        "no judge runtime resolved (model or prompt unavailable)")
+        _stamp_coverage_all(findings, selected_idx, skips, out)
         return out
 
     batches = _batch(findings, selected_idx, rt.batch_size)
@@ -338,7 +400,51 @@ def run_l5(
     # in-place finding validation so the offline backfill + final result see
     # the safe-guarded state.
     _apply_l5_safeguards(findings, selected_idx, out)
+    _stamp_coverage_all(findings, selected_idx, skips, out)
     return out
+
+
+def _stamp_coverage_all(
+    findings: list[dict[str, Any]],
+    selected_idx: list[int],
+    skips: dict[int, tuple[str, str]],
+    out: list[list[ValidationCheck]],
+) -> None:
+    """Feature 0072 P6 (T6.1): one coverage check per finding, always.
+
+    For a SELECTED finding, what actually happened is read off `out`:
+      * empty        — its batch never completed (deadline expiry or audit
+                       cancellation drops pending batches without stubs), so
+                       the budget ran out before the judge saw it;
+      * all `error`  — the judge attempted it and returned no verdict. This
+                       must never read as `judged`: the dead-model dogfood run
+                       produced 680 such stubs under a summary claiming 680
+                       judged, and this is the per-finding form of that fix;
+      * otherwise    — judged (a real verdict exists, including a neutralised
+                       or undecided one — those are verdicts, not absences).
+    """
+    selected = set(selected_idx)
+    for i, f in enumerate(findings):
+        if i in skips:
+            result, reason = skips[i]
+        elif i in selected:
+            checks = out[i]
+            if not checks:
+                result = COVERAGE_SKIPPED_BUDGET_EXHAUSTED
+                reason = ("selected for L5 but the total deadline or a "
+                          "cancellation expired before its batch completed")
+            elif all(c.result == "error" for c in checks):
+                result = COVERAGE_JUDGE_ERROR
+                reason = "the judge attempted this finding and returned no verdict"
+            else:
+                result = COVERAGE_JUDGED
+                reason = "an L5 verdict exists for this finding"
+        else:
+            # Unreachable by construction (_classify_selection covers every
+            # index), kept as a fail-visible default rather than a KeyError.
+            result = COVERAGE_SKIPPED_NOT_SELECTED
+            reason = "not selected for L5"
+        stamp_coverage(f, result, reason)
 
 
 # ── L5 safeguards (feature 0057 P1b: RC6 cap + trusted/crypto exemption) ──
@@ -578,6 +684,63 @@ _SEV_RANK: dict[str, int] = {
 }
 
 
+# ── L5 coverage (feature 0072 P6, T6.1/AC7/AC32) ─────────────────────
+#
+# Which findings the judge actually saw used to be an emergent property of
+# snippet attachment, recorded nowhere — a finding absent from the layer was
+# indistinguishable from one judged neutral (§3 A6/I1). Every finding now
+# carries ONE `coverage` check naming what happened to it at L5. It is
+# informational by construction: weight 0.0, an id no voter branch reads, so
+# it can never block, promote, or demote (AC7).
+#
+# The vocabulary is closed (AC32). Five values come from the plan; two were
+# forced by the dogfood run that motivated P6:
+#   * skipped_l5_disabled — the most common "why not judged" of all: the
+#     layer was off. Without it AC7 ("every finding carries a coverage
+#     check") is unsatisfiable on a skills-only run.
+#   * judge_error — the judge attempted the finding and returned no verdict.
+#     Counting that "judged" is exactly the dishonesty the L5 summary fix
+#     removed ("680 judged" from a dead model); the per-finding record must
+#     tell the same truth the summary now tells.
+COVERAGE_ID = "coverage"
+COVERAGE_JUDGED = "judged"
+COVERAGE_SKIPPED_NO_WINDOW = "skipped_no_window"
+COVERAGE_SKIPPED_ALREADY_LIKELY_FP = "skipped_already_likely_fp"
+COVERAGE_SKIPPED_BUDGET_EXHAUSTED = "skipped_budget_exhausted"
+COVERAGE_SKIPPED_NOT_SELECTED = "skipped_not_selected"
+COVERAGE_SKIPPED_L5_DISABLED = "skipped_l5_disabled"
+COVERAGE_JUDGE_ERROR = "judge_error"
+
+COVERAGE_RESULTS: frozenset[str] = frozenset({
+    COVERAGE_JUDGED,
+    COVERAGE_SKIPPED_NO_WINDOW,
+    COVERAGE_SKIPPED_ALREADY_LIKELY_FP,
+    COVERAGE_SKIPPED_BUDGET_EXHAUSTED,
+    COVERAGE_SKIPPED_NOT_SELECTED,
+    COVERAGE_SKIPPED_L5_DISABLED,
+    COVERAGE_JUDGE_ERROR,
+})
+
+
+def stamp_coverage(finding: dict[str, Any], result: str, reason: str) -> None:
+    """Attach the (single) coverage check to a finding.
+
+    Idempotent: the first stamp wins, so a finding can never carry two
+    coverage checks however many paths visit it.
+    """
+    v_blob = finding.get("validation")
+    if isinstance(v_blob, dict):
+        existing = v_blob.get("checks")
+        if isinstance(existing, list) and any(
+            isinstance(c, dict) and c.get("id") == COVERAGE_ID for c in existing
+        ):
+            return
+    _append_check_to_finding(finding, ValidationCheck(
+        id=COVERAGE_ID, result=result, weight=0.0, reason=reason,
+        extras={"provenance": finding.get("provenance") or "skill"},
+    ))
+
+
 def _has_code_window(finding: dict[str, Any]) -> bool:
     """Feature 0057 P0.3: True iff the finding carries a non-empty code
     window the judge can ground its verdict on.
@@ -614,32 +777,71 @@ def _l5_priority(finding: dict[str, Any], confidence: float) -> float:
     return rank * max(1.0 - confidence, 0.0) + 1e-6 * rank
 
 
-def _select_findings(
+def _classify_selection(
     findings: list[dict[str, Any]],
     l1_results: list[list[ValidationCheck]],
     top_n: int,
-) -> list[int]:
-    """Return finding indices selected for L5, sorted by priority.
+) -> tuple[list[int], dict[int, tuple[str, str]]]:
+    """Selection plus the reason every non-selected finding was skipped.
+
+    Returns `(selected_indices, skips)` where `skips` maps each skipped
+    finding's index to `(coverage_result, reason)`. Feature 0072 P6: the
+    skip reasons used to be discarded here, which made L5 coverage silently
+    partial — a finding absent from the layer was indistinguishable from one
+    judged neutral (§3 A6/I1).
 
     Filters findings already destined for `likely_fp` per the V7
     voter rule (issue #5): `confidence < 0.30 AND demoting_count >= 2`.
     Single-demoting-check findings with low confidence still reach L5,
     matching the voter's classification behaviour.
     """
+    skips: dict[int, tuple[str, str]] = {}
     candidates: list[tuple[float, int]] = []
     for i, f in enumerate(findings):
         # Feature 0057 P0.3: never judge blind. A finding whose code window
         # is empty (path unresolved / line missing) is skipped — the judge
         # would otherwise reason about a `<<<CODE\n\nCODE>>>` empty block.
         if not _has_code_window(f):
+            skips[i] = (
+                COVERAGE_SKIPPED_NO_WINDOW,
+                "no code window attached (path unresolved or line missing); "
+                "the judge is never asked to reason about an empty block",
+            )
             continue
-        provisional = _l5_candidate_provisional(l1_results[i])
+        checks = l1_results[i]
+        if any(c.id == "suppression" and c.weight < 0 for c in checks):
+            skips[i] = (
+                COVERAGE_SKIPPED_ALREADY_LIKELY_FP,
+                "operator suppression marker; the voter will dismiss it",
+            )
+            continue
+        provisional = _l5_candidate_provisional(checks)
         if provisional is None:
+            skips[i] = (
+                COVERAGE_SKIPPED_ALREADY_LIKELY_FP,
+                "already destined for likely_fp under the V7 rule "
+                "(confidence < 0.30 with >= 2 demoting checks)",
+            )
             continue
         conf, _demoting = provisional
         candidates.append((_l5_priority(f, conf), i))
     candidates.sort(key=lambda x: x[0], reverse=True)
-    return [idx for _, idx in candidates[:top_n]]
+    for _, idx in candidates[top_n:]:
+        skips[idx] = (
+            COVERAGE_SKIPPED_NOT_SELECTED,
+            f"ranked below the L5 budget (top_n={top_n}, "
+            f"{len(candidates)} candidates)",
+        )
+    return [idx for _, idx in candidates[:top_n]], skips
+
+
+def _select_findings(
+    findings: list[dict[str, Any]],
+    l1_results: list[list[ValidationCheck]],
+    top_n: int,
+) -> list[int]:
+    """Return finding indices selected for L5, sorted by priority."""
+    return _classify_selection(findings, l1_results, top_n)[0]
 
 
 # ── Batching ─────────────────────────────────────────────────────────
@@ -692,6 +894,7 @@ def _partition_batch_by_cache(
                 # silently re-protects a finding the judge already refuted
                 # from the window.
                 "window_sufficient": cached.get("window_sufficient"),
+                "evidence_line": cached.get("evidence_line"),
                 "_cached": True,
             }
         else:
@@ -702,9 +905,17 @@ def _partition_batch_by_cache(
 def _call_with_strict_retry(
     system_prompt: str, user_msg: str, model: str, timeout_s: float,
     batch_size: int, batch_idx: int, cancel: Any = None,
+    pool_active: Any = None,
 ) -> list[dict[str, Any]]:
     """Call LLM; on JSON-parse failure, retry once with a strict-JSON
     nudge (D14). Returns parsed verdicts or [] on double-failure."""
+    # An orphaned worker whose pool has retired must not issue a call — the
+    # load-bearing half of the fix. A worker that entered _judge_batch while
+    # its pool was active (past the entry gate) can be slow to reach here; by
+    # then its run_l5 may have returned and `_call_llm` (a module global) been
+    # swapped (test) or the audit torn down (prod). Checked before EACH call.
+    if pool_active is not None and not pool_active.is_set():
+        return []
     raw = _call_llm(system_prompt, user_msg, model, timeout_s)
     parsed = _parse_response(raw, batch_size) if raw else None
     if parsed is not None:
@@ -713,6 +924,8 @@ def _call_with_strict_retry(
     # once the audit is cancelled — the token is passed in (not ambient) because
     # this runs on an L5 pool worker that does not inherit contextvars.
     if cancel is not None and cancel.cancelled():
+        return []
+    if pool_active is not None and not pool_active.is_set():
         return []
     retry_user = user_msg + (
         "\n\nIMPORTANT: your previous response was not valid JSON. "
@@ -746,6 +959,7 @@ def _store_verdicts(
                 reasoning=v.get("reasoning", ""),
                 model=model, language=lang,
                 window_sufficient=v.get("window_sufficient"),
+                evidence_line=v.get("evidence_line"),
             )
             break
         verdicts[v["id"]] = v
@@ -760,6 +974,10 @@ def _judge_batch(
     model: str,
     per_batch_timeout_s: float,
     cancel: Any = None,
+    tool_executor: Any = None,
+    max_tool_calls: int = 0,
+    pool_active: Any = None,
+    claim_first: Any = None,
 ) -> dict[str, dict[str, Any]]:
     """Run one LLM call for `batch`; return {finding_id: verdict_dict}.
 
@@ -767,18 +985,176 @@ def _judge_batch(
     fresh verdict skips the LLM round-trip. If every finding in the
     batch hits the cache, the LLM call is skipped entirely.
     """
+    # Cheap early-out for a queued orphan that starts after its pool retired:
+    # bail before the cache lookup. This is NOT sufficient on its own — a
+    # worker that passed here while its pool was still active can reach the
+    # actual call slowly, so the load-bearing guard is at the call site in
+    # _call_with_strict_retry / _call_llm_with_tools.
+    if pool_active is not None and not pool_active.is_set():
+        return {}
+    # Cancellation gates the producer: once cancelled, only the first batch to
+    # begin executing runs (in-flight batches complete their call); every later
+    # batch bails here before issuing one. This stops a fast worker from
+    # judging the whole sweep after a mid-sweep cancel (t13c), while preserving
+    # the "an in-flight batch still makes its initial call" contract (t13d).
+    is_first = claim_first() if claim_first is not None else True
+    if cancel is not None and cancel.cancelled() and not is_first:
+        return {}
     verdicts, uncached_batch = _partition_batch_by_cache(batch, model)
     if not uncached_batch:
         log.info("[validate.l5] batch %d fully cached (%d findings)",
                  batch_idx, len(batch))
         return verdicts
     user_msg = _render_user_message(audit_id, uncached_batch)
+
+    # Feature 0072 P3b: tool-equipped path, with a hard fallback — a provider
+    # that rejects the `tools=` parameter must degrade to plain judging, not
+    # kill the layer.
+    if tool_executor is not None:
+        parsed, exhausted, ok = _call_llm_with_tools(
+            system_prompt, user_msg, model, per_batch_timeout_s,
+            tool_executor, max_tool_calls, len(uncached_batch), cancel=cancel,
+            pool_active=pool_active,
+        )
+        if ok:
+            if exhausted:
+                # T3.9a/AC31: running out of tool calls is a genuine "could
+                # not decide". No verdict built on the partial view is
+                # admitted — every uncached finding lands at the prompt's own
+                # cannot-judge value with no closure assertion. NOT cached:
+                # budget exhaustion is environmental, not a property of the
+                # code, and a 30-day cache would freeze it in.
+                for finding_idx, finding, _lang in uncached_batch:
+                    fid = finding.get("id") or _synthetic_id(finding_idx, finding)
+                    verdicts[fid] = {
+                        "id": fid, "exploitable": 0.5,
+                        "reasoning": "tool budget exhausted before a decision",
+                        "window_sufficient": None, "evidence_line": None,
+                    }
+                return verdicts
+            if parsed is not None:
+                # T3.8/AC30: a tool-run DEMOTION that cites no found
+                # construct is an absence claim over a bounded search — it
+                # may not assert closure (the flag that lets a demotion
+                # override the deterministic tier).
+                for v in parsed:
+                    if (float(v.get("exploitable", 0.5)) < 0.5
+                            and v.get("evidence_line") is None):
+                        v["window_sufficient"] = None
+                _store_verdicts(parsed, uncached_batch, model, verdicts)
+                return verdicts
+            # ok but nothing parsed: fall through to the strict-retry path.
+        else:
+            log.info("[validate.l5] batch %d: tool call path failed; "
+                     "falling back to plain judging", batch_idx)
+
     parsed = _call_with_strict_retry(
         system_prompt, user_msg, model, per_batch_timeout_s,
-        len(uncached_batch), batch_idx, cancel=cancel,
+        len(uncached_batch), batch_idx, cancel=cancel, pool_active=pool_active,
     )
     _store_verdicts(parsed, uncached_batch, model, verdicts)
     return verdicts
+
+
+def _call_llm_with_tools(
+    system_prompt: str,
+    user_msg: str,
+    model: str,
+    timeout_s: float,
+    executor: Any,
+    max_calls: int,
+    batch_size: int,
+    cancel: Any = None,
+    pool_active: Any = None,
+) -> tuple[Optional[list[dict[str, Any]]], bool, bool]:
+    """Feature 0072 P3b: the judge's bounded tool loop.
+
+    Returns ``(parsed_verdicts, exhausted, ok)``:
+      * ``exhausted`` — the model asked for tools beyond the budget. Per
+        T3.9a the caller must treat the whole batch as could-not-decide.
+      * ``ok=False`` — the tool path itself failed (e.g. the provider
+        rejects ``tools=``); the caller falls back to plain judging.
+
+    Tool time counts against the existing per-request timeout and the pool's
+    total deadline (T3.9) — the loop adds no second budget, only a bounded
+    number of requests (``max_calls`` tool executions, +2 framing turns).
+    """
+    from .judge_tools import JUDGE_TOOL_SPECS, TOOL_DISCIPLINE_PROMPT
+
+    client = _get_client()
+    if client is None:
+        return None, False, False
+
+    user_msg = _clamp_request_body(user_msg)
+    actual_model = _strip_model_prefix(model)
+    messages: list[dict[str, Any]] = [
+        {"role": "system",
+         "content": system_prompt + "\n\n" + TOOL_DISCIPLINE_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+    calls_used = 0
+    exhausted = False
+    try:
+        for _turn in range(max_calls + 2):
+            if cancel is not None and cancel.cancelled():
+                return None, exhausted, True
+            # Orphan of a retired pool: do not issue a call (see the same
+            # guard in _call_with_strict_retry).
+            if pool_active is not None and not pool_active.is_set():
+                return None, exhausted, True
+            resp = client.chat.completions.create(
+                model=actual_model,
+                messages=messages,
+                tools=JUDGE_TOOL_SPECS,
+                tool_choice="auto",
+                temperature=0.1,
+                max_tokens=_max_output_tokens(),
+                timeout=timeout_s,
+            )
+            if not getattr(resp, "choices", None):
+                return None, exhausted, True
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": getattr(msg, "content", None),
+                    "tool_calls": [
+                        {"id": tc.id, "type": "function",
+                         "function": {"name": tc.function.name,
+                                      "arguments": tc.function.arguments}}
+                        for tc in tool_calls
+                    ],
+                })
+                for tc in tool_calls:
+                    if calls_used >= max_calls:
+                        exhausted = True
+                        content = (
+                            "TOOL BUDGET EXHAUSTED: no further tool calls are "
+                            "available. Do not guess from the partial view."
+                        )
+                    else:
+                        calls_used += 1
+                        content = executor.execute(
+                            tc.function.name, tc.function.arguments)
+                    messages.append({
+                        "role": "tool", "tool_call_id": tc.id,
+                        "content": content,
+                    })
+                if exhausted:
+                    # T3.9a: the answer is already decided — could not
+                    # decide. Do not spend another request soliciting a
+                    # verdict the caller must discard.
+                    return None, True, True
+                continue
+            text = (getattr(msg, "content", None) or "")
+            parsed = _parse_response(text, batch_size)
+            return parsed, exhausted, True
+        # Turn limit hit while the model still wanted tools.
+        return None, True, True
+    except Exception as exc:
+        _log_call_failure(exc, "tool-loop")
+        return None, False, False
 
 
 # Thread-local openai client cache (issues #3 + #C-1). Each worker
@@ -1140,11 +1516,17 @@ def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
     # and cache all being wired. Only a literal True counts; anything else is
     # normalised to None so the gate fails closed downstream.
     ws = v.get("window_sufficient")
+    # Feature 0072 T5.3 (observation-only): the line the judge claims to be
+    # reasoning about. Anything but a positive int is normalised to None —
+    # absent, wrong-typed, zero, or negative all mean "cited nothing".
+    ev = v.get("evidence_line")
+    evidence_line = ev if isinstance(ev, int) and not isinstance(ev, bool) and ev >= 1 else None
     return {
         "id": fid,
         "exploitable": prob,
         "reasoning": reasoning,
         "window_sufficient": True if ws is True else None,
+        "evidence_line": evidence_line,
     }
 
 
@@ -1232,18 +1614,81 @@ def _parse_response(raw: str, batch_size: int) -> Optional[list[dict[str, Any]]]
     return cleaned
 
 
+def _promotion_closure_required() -> bool:
+    """Whether a promoting verdict must assert closure to be JUDGE_CITED
+    (§5.3 condition 1 / T4.3).
+
+    Default tracks the obligation MODE: ON under `enforce` (the opt-in tier
+    where the gate acts and false positives are resolved), OFF under `observe`
+    (the shipping default — no confirmed-tier change, preserving AC22 and the
+    pre-0072 promotion behaviour). `VULTURE_L5_PROMOTION_CLOSURE` overrides
+    either way: `true` forces it on (e.g. observe-mode measurement), `false`
+    is the rollback escape hatch.
+    """
+    v = os.getenv("VULTURE_L5_PROMOTION_CLOSURE", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    from .refutation import obligation_mode
+    return obligation_mode() == "enforce"
+
+
+def _citation_class(
+    evidence_line: Optional[int], finding: Optional[dict[str, Any]],
+) -> str:
+    """Feature 0072 T5.3 — OBSERVATION-ONLY citation classification.
+
+    The T4.3/T4.4 admissibility predicate is deferred because, as specified,
+    it could not fail: the window is centred on the finding's own line and
+    `lines=…` is printed to the model, so echoing that line back measures
+    schema compliance, not evidence. This is the redesigned observation the
+    deferral's exit criterion asks for — a citation counts as `other_line`
+    only when it is DISTINGUISHABLE from the line the model was handed.
+    Recorded in extras; read by no voter branch, no weight, no result.
+    """
+    if evidence_line is None:
+        return "missing"
+    own = _safe_int((finding or {}).get("line_start"))
+    if own and evidence_line == own:
+        return "self_line"
+    return "other_line"
+
+
 def _verdict_to_check(
     v: dict[str, Any], *, model: str, batch_id: int, language: str,
+    finding: Optional[dict[str, Any]] = None,
 ) -> ValidationCheck:
     prob = float(v["exploitable"])
     weight = max(-0.75, min(0.75, (prob - 0.5) * 1.5))
+    evidence_line = v.get("evidence_line")
+    window_sufficient = v.get("window_sufficient")
+    # §5.3 condition 1 / T4.3: a PROMOTING verdict may confirm ALONE only if it
+    # asserted closure (window_sufficient is literally True). A promotion that
+    # did NOT assert the window decides it is JUDGE_UNCITED — the voter's
+    # sole-inadmissible-judge rule then withholds confirmation when the judge
+    # is the only promoter. This is the one falsifiable condition of §5.3 (the
+    # citation-grounding conditions 2-4 stay deferred); its exit criterion —
+    # window_sufficient plumbed observation-only, distribution published on
+    # real L5-ON runs — is met, and the togetherapp dogfood confirmed a lone
+    # no-closure judge was confirming a QA-only FP (VLT-2888). Fails closed on
+    # None/False. Weight is unchanged — only the admissibility LABEL differs, so
+    # nothing is re-scored and no obligation is manufactured (the two hazards
+    # that grounded the original deferral). `VULTURE_L5_PROMOTION_CLOSURE=false`
+    # restores the prior prob-only labelling.
+    if prob > 0.5:
+        result = (JUDGE_CITED
+                  if (window_sufficient is True or not _promotion_closure_required())
+                  else JUDGE_UNCITED)
+    elif prob == 0.5:
+        # prob == 0.5 is the prompt's own "cannot judge" value; weight is
+        # already exactly 0.0 there, so no confidence moves.
+        result = JUDGE_UNDECIDED
+    else:
+        result = "demoted"
     return ValidationCheck(
         id="llm_judge",
-        # STRICT boundary. prob == 0.5 is the prompt's own "cannot judge" value
-        # (prompts/validate_judge.txt), so it must not carry the affirmative
-        # label. Weight is already exactly 0.0 there, so no confidence moves.
-        result=(JUDGE_CITED if prob > 0.5
-                else JUDGE_UNDECIDED if prob == 0.5 else "demoted"),
+        result=result,
         weight=weight,
         reason=v.get("reasoning", ""),
         extras={
@@ -1255,6 +1700,12 @@ def _verdict_to_check(
             # which is why the gate reads it as "not asserted" (see
             # _window_sufficient) rather than defaulting permissive.
             "window_sufficient": v.get("window_sufficient"),
+            # 0072 T5.3, observation-only (see _citation_class). Persisted with
+            # the verdict inside the finding's validation blob (T5.3/AC18's
+            # companion), so a real L5-ON run can publish the distribution the
+            # T4.3/T4.4 deferral requires before any admissibility change.
+            "evidence_line": evidence_line,
+            "citation_class": _citation_class(evidence_line, finding),
         },
     )
 
@@ -1406,8 +1857,9 @@ def _synthetic_id(idx: int, finding: dict[str, Any]) -> str:
 
 def _as_completed_with_deadline(futures, deadline: float):
     """Yield futures as they complete, but stop yielding once we pass
-    `deadline`. Remaining futures are cancelled best-effort and their
-    findings will receive `no verdict` stubs from the caller."""
+    `deadline`. Remaining futures are cancelled best-effort; their findings
+    get NO stub (`_apply_batch_result` never runs for a cancelled batch) and
+    are reported as `skipped_budget_exhausted` by the coverage stamp."""
     from concurrent.futures import FIRST_COMPLETED, wait
 
     pending = set(futures.keys())

@@ -12,23 +12,51 @@ def is_standard_port(port: int) -> bool:
     return port in STANDARD_PORTS
 
 
-def extract_snippet(lines: Sequence[str], line_num: int, context: int = 2) -> str:
-    """Extract ±context lines around line_num, truncated to 200 chars.
+# Per-line cap in line-budget mode (max_chars=None). Matches the L5 judge's
+# own render cap (_MAX_LINE_CHARS in validate/llm_judge.py): a minified
+# bundle's single 50KB line must not defeat the line budget.
+_LINE_BUDGET_LINE_CHARS = 400
+
+
+def extract_snippet(
+    lines: Sequence[str], line_num: int, context: int = 2,
+    max_chars: int | None = 200,
+) -> str:
+    """Extract ±context lines around line_num.
 
     Args:
         lines: Source file split into lines.
         line_num: 1-based line number of the finding.
         context: Number of surrounding lines to include.
+        max_chars: Character truncation for the whole snippet — 200 by
+            default (the legacy contract every skill call site relies on).
+            Pass ``None`` for LINE-budget mode (feature 0072 T5.2): the
+            snippet is bounded by ``context`` and a per-line cap instead of
+            a whole-snippet character cut, so a wide evidence window is not
+            truncated mid-token.
 
     Returns:
-        Numbered source snippet, max 200 characters.
+        Numbered source snippet.
     """
     if not lines or line_num < 1:
         return ""
     start = max(0, line_num - 1 - context)
     end = min(len(lines), line_num + context)
-    snippet = "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, end))
-    return snippet[:200]
+    if max_chars is None:
+        snippet = "\n".join(
+            f"{i + 1}: {lines[i][:_LINE_BUDGET_LINE_CHARS]}"
+            for i in range(start, end)
+        )
+    else:
+        snippet = "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, end))[:max_chars]
+    # Strip NUL at the origin: a snippet sampled from a binary the scanner
+    # reached (a checked-in *.pyc, a stray blob) carries 0x00, which Postgres
+    # TEXT rejects — and one such row aborts the whole findings INSERT batch
+    # (feature 0072 P5; the backend strips it too as a persistence guarantee,
+    # this keeps the SSE payload and the SQLite value clean as well).
+    if "\x00" in snippet:
+        snippet = snippet.replace("\x00", "")
+    return snippet
 
 
 def collect_handler_body(

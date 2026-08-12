@@ -14,7 +14,15 @@ from typing import Any
 
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
-from .llm_judge import _l5_check_is_demoting, run_l5
+from .llm_judge import (
+    COVERAGE_ID,
+    COVERAGE_JUDGE_ERROR,
+    COVERAGE_SKIPPED_L5_DISABLED,
+    COVERAGE_SKIPPED_NO_WINDOW,
+    _l5_check_is_demoting,
+    run_l5,
+    stamp_coverage,
+)
 from .refutation import clear_route_model_cache, obligation_check
 from .rollup import run_l2
 from .types import (
@@ -334,9 +342,24 @@ def _run_l5_phase(
     audit_id: str,
     emit_validation_update: Callable[[list[dict[str, Any]]], None] | None,
     event_texts: list[str], layers_run: list[str], duration_ms: dict[str, int],
+    source_path: str = "",
+    rollups: list[dict[str, Any]] | None = None,
 ) -> None:
-    """RC3-isolated L5 dispatcher. Mutates out_findings in place."""
+    """RC3-isolated L5 dispatcher. Mutates out_findings (and rollup parents)
+    in place."""
+    # AC7 covers rollup PARENTS too. They are synthesised after L1 and never
+    # pass through run_l5 — the same gap class _ensure_obligation closed for
+    # obligations, and found the same way: scanning Vulture with Vulture left
+    # 306 of 2095 result rows (every L2 parent) without a coverage check.
+    rollups = rollups or []
     if not _resolve_l5_enabled(cfg):
+        # Feature 0072 P6 (AC7): the layer being off is the most common
+        # "why was this never judged" of all, and it must be a stated fact
+        # on the finding rather than an absence the reader infers.
+        for f in out_findings + rollups:
+            stamp_coverage(f, COVERAGE_SKIPPED_L5_DISABLED,
+                           "L5 judge disabled for this run")
+        _emit_l5_coverage_summary(out_findings + rollups, event_texts)
         return
     t0 = time.monotonic()
     try:
@@ -344,6 +367,7 @@ def _run_l5_phase(
         l5_results = run_l5(
             out_findings, l1_results, cfg,
             audit_id=audit_id, emit_batch=_stream_batch,
+            source_path=source_path,
         )
         if emit_validation_update is None:
             _backfill_l5_offline(out_findings, l5_results, cfg)
@@ -360,6 +384,11 @@ def _run_l5_phase(
     except Exception as exc:
         event_texts.append(
             f"[validate] L5 failed: {type(exc).__name__}; layer disabled")
+        # The whole layer crashed: any finding run_l5 never stamped was
+        # attempted-and-lost, not skipped by a selection decision.
+        for f in out_findings:
+            stamp_coverage(f, COVERAGE_JUDGE_ERROR,
+                           f"L5 layer failed outright: {type(exc).__name__}")
     finally:
         duration_ms["L5"] = int((time.monotonic() - t0) * 1000)
     # A finding carrying only an `error`/`no verdict` stub was NOT judged. The
@@ -386,6 +415,51 @@ def _run_l5_phase(
         if not judged:
             msg += " — L5 CONTRIBUTED NOTHING; treat this run as unjudged"
     event_texts.append(msg)
+    # Rollup parents never enter run_l5 (they are not in out_findings'
+    # selection universe): stamp them here so AC7 holds for every row.
+    for parent in rollups:
+        stamp_coverage(parent, COVERAGE_SKIPPED_NO_WINDOW,
+                       "rollup parent: synthesised row, never judged")
+    _emit_l5_coverage_summary(out_findings + rollups, event_texts)
+
+
+def _emit_l5_coverage_summary(
+    out_findings: list[dict[str, Any]], event_texts: list[str],
+) -> None:
+    """Feature 0072 P6 (T6.2): per-run L5 coverage, by result and provenance.
+
+    The run-level counterpart of the per-finding coverage check: which share
+    of the findings the judge actually saw, and — for the rest — why not,
+    named per skip reason rather than left as a smaller "judged" count.
+    """
+    counts: dict[str, int] = {}
+    by_provenance: dict[str, dict[str, int]] = {}
+    for f in out_findings:
+        cov = next(
+            (c for c in f.get("validation", {}).get("checks", [])
+             if isinstance(c, dict) and c.get("id") == COVERAGE_ID),
+            None,
+        )
+        if cov is None:
+            continue
+        result = cov.get("result", "")
+        counts[result] = counts.get(result, 0) + 1
+        prov = f.get("provenance") or "skill"
+        by_provenance.setdefault(prov, {})
+        by_provenance[prov][result] = by_provenance[prov].get(result, 0) + 1
+    if not counts:
+        return
+    parts = [f"{r}={n}" for r, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+    prov_parts = [
+        f"{prov}: " + ", ".join(
+            f"{r}={n}" for r, n in sorted(results.items(), key=lambda kv: -kv[1])
+        )
+        for prov, results in sorted(by_provenance.items())
+    ]
+    event_texts.append(
+        "[validate] L5 coverage · " + " · ".join(parts)
+        + " · by provenance — " + "; ".join(prov_parts)
+    )
 
 
 def _emit_summary(
@@ -446,7 +520,7 @@ def validate(
     )
     _run_l5_phase(
         out_findings, l1_results, cfg, audit_id, emit_validation_update,
-        event_texts, layers_run, duration_ms,
+        event_texts, layers_run, duration_ms, source_path, rollups,
     )
     _emit_summary(out_findings, rollups, duration_ms, event_texts)
 

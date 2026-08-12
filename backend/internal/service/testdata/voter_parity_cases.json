@@ -9,7 +9,7 @@
     "the failure mode it exists to catch.",
     "",
     "Built by feature 0072. Before it, both voter headers described this test and",
-    "the Python one claimed CI enforced it \u2014 neither the fixture nor either test",
+    "the Python one claimed CI enforced it — neither the fixture nor either test",
     "existed, so the two implementations were free to drift silently."
   ],
   "cases": [
@@ -137,8 +137,9 @@
       ],
       "want": {
         "status": "suspicious",
-        "confidence": 1.0
-      }
+        "confidence": 0.99
+      },
+      "_note": "Confidence 0.99, not 1.0: T4.2 reserves certainty for ground truth (the case carries no positive operator label)."
     },
     {
       "name": "0072: discharged obligation permits confirmation",
@@ -237,8 +238,9 @@
       ],
       "want": {
         "status": "suspicious",
-        "confidence": 1.0
-      }
+        "confidence": 0.99
+      },
+      "_note": "Confidence 0.99, not 1.0: T4.2 reserves certainty for ground truth (the case carries no positive operator label)."
     },
     {
       "name": "0072: lone CITED judge promotion may confirm",
@@ -256,8 +258,9 @@
       ],
       "want": {
         "status": "high_confidence",
-        "confidence": 1.0
-      }
+        "confidence": 0.99
+      },
+      "_note": "Confidence 0.99, not 1.0: T4.2 reserves certainty for ground truth (the case carries no positive operator label)."
     },
     {
       "name": "0072: legacy judge result fails closed",
@@ -275,8 +278,9 @@
       ],
       "want": {
         "status": "suspicious",
-        "confidence": 1.0
-      }
+        "confidence": 0.99
+      },
+      "_note": "Confidence 0.99, not 1.0: T4.2 reserves certainty for ground truth (the case carries no positive operator label)."
     },
     {
       "name": "0072: lone deterministic promotion is untouched by the judge rule",
@@ -318,8 +322,9 @@
       ],
       "want": {
         "status": "high_confidence",
-        "confidence": 1.0
-      }
+        "confidence": 0.99
+      },
+      "_note": "Confidence 0.99, not 1.0: T4.2 reserves certainty for ground truth (the case carries no positive operator label)."
     },
     {
       "name": "0072: a demoting check is never counted as a promoter",
@@ -424,6 +429,90 @@
       "want": {
         "status": "high_confidence",
         "confidence": 0.6
+      }
+    },
+    {
+      "name": "0072 P6: a coverage check is inert in both voters",
+      "_note": "AC7: L5 coverage is informational. weight 0.0 and an id no voter branch reads, so status and confidence are identical to the same case without it (single promoting check crosses 0.55).",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        },
+        {
+          "id": "coverage",
+          "weight": 0.0,
+          "result": "skipped_l5_disabled"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.6
+      }
+    },
+    {
+      "name": "0072 T4.2: a lone judge vote cannot reach certainty",
+      "_note": "C2: exploitable >= 0.834 used to clamp to exactly 1.000. The ceiling is the clamp BOUND (0.99) so no equality test exists to drift between languages; only an authoritative positive lifts it.",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.75,
+          "result": "real_bug"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.99
+      }
+    },
+    {
+      "name": "0072 T4.2: heuristic pile-up caps below certainty",
+      "checks": [
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        },
+        {
+          "id": "llm_judge",
+          "weight": 0.75,
+          "result": "real_bug"
+        },
+        {
+          "id": "cross_agent",
+          "weight": 0.3,
+          "result": "corroborated"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.99
+      }
+    },
+    {
+      "name": "0072 T4.2: a negative operator label does not lift the ceiling",
+      "_note": "memory is bidirectional; a user's false-positive label must not grant the certainty reserved for confirmed-real findings. 0.5+0.75+0.3-0.4 = 1.15 -> clamped to 0.99.",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "weight": 0.75,
+          "result": "real_bug"
+        },
+        {
+          "id": "path",
+          "weight": 0.3,
+          "result": "promoted"
+        },
+        {
+          "id": "memory",
+          "weight": -0.4,
+          "result": "user_label"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.99
       }
     }
   ]

@@ -43,8 +43,19 @@ prove an absence. Guessing that an unseen helper is safe is the one error that
 hides a real vulnerability, so prefer false when unsure. Being unable to see
 enough is not a failure — it is the answer.
 
+Evidence citation:
+  evidence_line = the ONE line number (from the numbered snippet) your
+  verdict most rests on. Cite the line that DECIDES it — a guard clause,
+  a parameter binding, the raw concatenation itself. If no single visible
+  line decides it, set evidence_line = null; never repeat the finding's
+  own line just to fill the field. Assuming an unseen mitigation is ABSENT
+  is the same error as assuming an unseen helper is safe — with the sign
+  flipped. If your reasoning is "nothing sanitises this" and you cannot
+  point at the code that would have to do it, that is window_sufficient =
+  false and evidence_line = null, not a confident verdict.
+
 Output STRICT JSON only — no prose, no markdown, no code fences:
-{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"reasoning":"<up to 60 words>"}]}
+{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"reasoning":"<up to 60 words>"}]}
 
 Every finding in the batch must appear in the response by id. If you
 cannot judge a specific finding, set exploitable=0.5 and explain why

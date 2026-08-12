@@ -103,6 +103,7 @@ def test_parse_valid_response():
     assert out == [{
         "id": "f1", "exploitable": 0.85, "reasoning": "raw SQL concat",
         "window_sufficient": None,
+        "evidence_line": None,   # 0072 T5.3, observation-only
     }]
 
 
