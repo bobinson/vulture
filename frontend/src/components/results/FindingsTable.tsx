@@ -127,11 +127,14 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
     filterProvenance,
     hideFalsePositives,
     falsePositiveCount,
+    hideSuspicious,
+    suspiciousCount,
     validationCounts,
     setFilterSeverity,
     setFilterAgent,
     setFilterProvenance,
     setHideFalsePositives,
+    setHideSuspicious,
     toggleSort,
   } = useFindings(allFindings, falsePositiveFingerprints);
 
@@ -258,6 +261,11 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                 {t("results.validation.hidden", { count: falsePositiveCount })}
               </span>
             )}
+            {hideSuspicious && suspiciousCount > 0 && (
+              <span className="text-muted-light italic">
+                {t("results.validation.hidden", { count: suspiciousCount })}
+              </span>
+            )}
           </div>
         )}
         {/* Agent type filter — only show when multiple agents */}
@@ -337,6 +345,28 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
               {hideFalsePositives
                 ? t("results.showFalsePositives", { count: falsePositiveCount })
                 : t("results.hideFalsePositives", { count: falsePositiveCount })}
+            </button>
+          </div>
+        )}
+        {/* Opt-in hide suspicious — mirrors hide false positives.
+            Renders only when there's at least one suspicious finding to
+            hide. Defaults OFF and composes with the FP toggle. */}
+        {suspiciousCount > 0 && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={hideSuspicious}
+              className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
+                hideSuspicious
+                  ? "bg-foreground text-surface"
+                  : "text-muted hover:text-foreground hover:bg-cream-dark border border-border"
+              }`}
+              onClick={() => setHideSuspicious(!hideSuspicious)}
+            >
+              {hideSuspicious
+                ? t("results.showSuspicious", { count: suspiciousCount })
+                : t("results.hideSuspicious", { count: suspiciousCount })}
             </button>
           </div>
         )}
