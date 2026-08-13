@@ -335,6 +335,8 @@ VULTURE_GIT_SSH_STRICT=accept-new                    # SSH StrictHostKeyChecking
 VULTURE_GIT_SSH_KNOWN_HOSTS=                         # UserKnownHostsFile path for SSH clones. Default: a per-install path under the data dir
 VULTURE_GIT_SSH_INSECURE=false                       # Restore legacy no-host-key-verification for SSH clones (rollback escape hatch; disables MITM protection)
 VULTURE_WEBHOOK_HOST_ALLOWLIST=                      # Comma list of internal hosts permitted as webhook targets. Empty = public-only (internal webhook targets blocked)
+VULTURE_AGENT_ENV_SCRUB=true                         # Native modes (feature 0073): spawned agents receive a FILTERED copy of the backend env — backend credentials (JWT secret, DB DSN/password, webhook HMAC, broker mint key) and injection vectors (LD_PRELOAD, LD_AUDIT, DYLD_*, PYTHONSTARTUP, PYTHONUSERBASE, PYTHONHOME) are removed. All VULTURE_* CONFIG still reaches agents, as does VULTURE_AGENT_TOKEN; provider keys are kept unless the broker is on. Docker is unaffected (compose enumerates agent env). false = pre-0073 full inheritance
+VULTURE_AGENT_ENV_PASSTHROUGH=                       # Comma list of var names exempt from the 0073 filter. Injection vectors are refused even when listed. Neither hatch can be set from config/.env — only the real process environment
 VULTURE_ALLOW_INSECURE_LLM=false                     # Allow sending the provider API key over an http:// (non-TLS) LLM endpoint and skip endpoint validation
 VULTURE_STRICT_LLM_ENDPOINT=false                    # Hard-fail backend startup on an insecure LLM endpoint instead of the default degrade-with-warning (the key is withheld either way)
 

@@ -171,7 +171,9 @@ func Clone(ctx context.Context, gitURL, destPath string, depth int, creds *model
 		args = append(args, "--depth", fmt.Sprintf("%d", depth))
 	}
 
-	env := os.Environ()
+	// 0073: clone deliberately inherits (SSH agent socket, proxy and CA vars
+	// are all needed by git); it is not an agent spawn.
+	env := os.Environ() //nolint:forbidigo // git needs the caller's environment
 	effectiveURL := gitURL
 
 	if creds != nil {

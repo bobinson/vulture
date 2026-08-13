@@ -79,6 +79,7 @@ func snapshotEnvURLs() map[string]string {
 	const prefix = "VULTURE_AGENT_"
 	const suffix = "_URL"
 	out := map[string]string{}
+	//nolint:forbidigo // read-only scan for VULTURE_* config; spawns nothing
 	for _, kv := range os.Environ() {
 		eq := strings.IndexByte(kv, '=')
 		if eq < 0 {

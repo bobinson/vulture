@@ -304,8 +304,19 @@ def uses_custom_endpoint() -> bool:
     Returns True when OPENAI_BASE_URL is set, indicating a non-standard
     backend (vLLM, LM Studio, LocalAI, etc.) that may not support
     structured output (response_format with JSON schema).
+
+    Feature 0073 P2: in broker mode the agent no longer receives
+    OPENAI_BASE_URL at all — the broker holds it (0064 N1), and as of 0073 the
+    withholding is real rather than a no-op. The endpoint SHAPE still matters
+    to callers (structured-output support and the 0070-P5 gateway context
+    clamp both key off it), so the launcher passes it as a non-secret marker:
+    VULTURE_LLM_ENDPOINT_KIND=openai-compatible, carrying neither URL nor key.
+    Read at call time, not import time, so the value is not frozen before the
+    transport has configured the run.
     """
-    return bool(_CUSTOM_BASE_URL)
+    if _CUSTOM_BASE_URL:
+        return True
+    return os.environ.get("VULTURE_LLM_ENDPOINT_KIND", "").strip().lower() == "openai-compatible"
 
 
 def supports_structured_output(model: str | None = None) -> bool:

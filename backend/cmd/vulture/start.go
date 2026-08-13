@@ -66,7 +66,8 @@ func runStart() {
 	// Detach: spawn ourselves with --foreground and exit.
 	bin, _ := os.Executable()
 	cmd := exec.Command(bin, "start", "--foreground")
-	cmd.Env = append(os.Environ(), "VULTURE_BIND_ADDR="+bindAddr)
+	// 0073: the daemon re-execs ITSELF; inheriting is the intent.
+	cmd.Env = append(os.Environ(), "VULTURE_BIND_ADDR="+bindAddr) //nolint:forbidigo // daemon self-spawn
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil

@@ -412,16 +412,39 @@ func newBroadcastRegistry() *broadcastRegistry {
 	return &broadcastRegistry{m: map[string]*broadcaster{}}
 }
 
+// canonicalRunKey normalises an audit id so every caller resolves the same run
+// regardless of which spelling it holds.
+//
+// One audit legitimately has two string forms. generateID() builds ids as
+// fmt.Sprintf("%x", h[:16]) — 32 hex chars, no dashes — and that is the value
+// POST /api/audits returns and DispatchAudit registers under. Postgres stores it
+// in a `uuid` column and renders it back DASHED, so every client that reads the
+// audit from the API (the whole SPA) holds the dashed form.
+//
+// Keying this map on the raw caller-supplied string meant a dashed-id stream
+// request could not find a run registered under the undashed id. The stream
+// handler then reported the LIVE audit as orphaned, marked it FAILED, and the
+// persist path revoked its broker token — every subsequent LLM call in that
+// audit returned 401 token_revoked. Normalising here fixes it for every caller
+// at once, instead of relying on each call site to canonicalise first.
+//
+// Stripping dashes cannot merge distinct audits: for hex/uuid ids the dashes sit
+// at fixed positions and carry no information.
+func canonicalRunKey(auditID string) string {
+	return strings.ToLower(strings.ReplaceAll(auditID, "-", ""))
+}
+
 // Open registers a broadcaster for auditID. It returns (nil, false) if one
 // already exists, meaning another dispatch owns this audit.
 func (r *broadcastRegistry) Open(auditID string, maxHistory int) (*broadcaster, bool) {
+	key := canonicalRunKey(auditID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.m[auditID]; exists {
+	if _, exists := r.m[key]; exists {
 		return nil, false
 	}
 	b := newBroadcaster(auditID, maxHistory)
-	r.m[auditID] = b
+	r.m[key] = b
 	return b, true
 }
 
@@ -430,7 +453,7 @@ func (r *broadcastRegistry) Open(auditID string, maxHistory int) (*broadcaster, 
 func (r *broadcastRegistry) Get(auditID string) (*broadcaster, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	b, ok := r.m[auditID]
+	b, ok := r.m[canonicalRunKey(auditID)]
 	return b, ok
 }
 
@@ -439,7 +462,7 @@ func (r *broadcastRegistry) Get(auditID string) (*broadcaster, bool) {
 // lossy synthesized replay.
 func (r *broadcastRegistry) Release(auditID string, ttl time.Duration) {
 	r.mu.Lock()
-	b, ok := r.m[auditID]
+	b, ok := r.m[canonicalRunKey(auditID)]
 	r.mu.Unlock()
 	if !ok {
 		return
@@ -457,9 +480,10 @@ func (r *broadcastRegistry) Release(auditID string, ttl time.Duration) {
 // re-run of the same audit id must not have its live entry deleted by the
 // previous run's timer.
 func (r *broadcastRegistry) evict(auditID string, want *broadcaster) {
+	key := canonicalRunKey(auditID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if got, ok := r.m[auditID]; ok && got == want {
-		delete(r.m, auditID)
+	if got, ok := r.m[key]; ok && got == want {
+		delete(r.m, key)
 	}
 }

@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from .broker import broker_enabled
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = float(os.environ.get("VULTURE_LLM_HEALTH_TIMEOUT", "3.0"))
@@ -94,6 +96,9 @@ async def check_llm_health(timeout: float = DEFAULT_TIMEOUT) -> LLMHealthStatus:
 
     Detection precedence (mirrors provider.py routing exactly):
       1. VULTURE_USE_LLM != "true"             → disabled
+      1b. broker on + VULTURE_LLM_BROKER_URL   → broker (0073 P2: the agent
+          holds no provider credential in broker mode, so the broker is the
+          provider from its point of view)
       2. OPENAI_BASE_URL set                   → openai-compatible
       3. "claude" in model OR ANTHROPIC_API_KEY → anthropic
       4. "gemini" in model OR GEMINI_API_KEY    → gemini
@@ -109,6 +114,19 @@ async def check_llm_health(timeout: float = DEFAULT_TIMEOUT) -> LLMHealthStatus:
 
     model = os.environ.get("VULTURE_LLM_MODEL", "")
     base_url = os.environ.get("OPENAI_BASE_URL", "")
+
+    # Feature 0073 P2. In broker mode the agent holds no provider credential
+    # and no OPENAI_BASE_URL (0064 N1, actually enforced as of 0073), so every
+    # branch below would miss and this function would report
+    # provider="unknown", reachable=False — stamping every audit degraded and
+    # hard-failing startup under VULTURE_REQUIRE_LLM=true. The broker IS this
+    # run's provider, so probe it: /readyz is unauthenticated and reports
+    # honest readiness (>=1 configured provider adapter + a healthy budget
+    # store), which is exactly the question being asked here.
+    if broker_enabled():
+        broker_url = os.environ.get("VULTURE_LLM_BROKER_URL", "").strip()
+        if broker_url:
+            return await _probe_broker(broker_url, model, timeout)
 
     if base_url:
         return await _probe_openai_compatible(base_url, model, timeout)
@@ -146,6 +164,49 @@ def _detect_compatible_flavour(base_url: str) -> str:
     if ":8080" in base_url:
         return "localai"
     return "openai-compatible"
+
+
+async def _probe_broker_readyz(url: str, timeout: float) -> tuple[bool, str]:
+    """GET the broker's /readyz. Returns (ready, reason).
+
+    Split out from _probe_broker so the decision logic stays unit-testable
+    without a live broker.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if resp.status_code == 200:
+        return True, ""
+    reason = ""
+    try:
+        reason = str(resp.json().get("reason", ""))
+    except Exception:
+        reason = resp.text[:120]
+    return False, reason or f"HTTP {resp.status_code}"
+
+
+async def _probe_broker(broker_url: str, model: str, timeout: float) -> LLMHealthStatus:
+    """Probe the LLM broker's readiness endpoint (feature 0073 P2).
+
+    VULTURE_LLM_BROKER_URL is the agent's OpenAI-compatible base and ends in
+    /v1; /readyz is served at the root, so the suffix is stripped.
+    """
+    root = broker_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    readyz = f"{root}/readyz"
+
+    ready, reason = await _probe_broker_readyz(readyz, timeout)
+    return LLMHealthStatus(
+        provider="broker",
+        endpoint=broker_url,
+        model=model,
+        reachable=ready,
+        error="" if ready else (f"broker not ready: {reason}" if reason else "broker not ready"),
+        detail={"readyz": readyz},
+    )
 
 
 async def _probe_openai_compatible(
