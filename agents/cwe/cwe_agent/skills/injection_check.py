@@ -1,5 +1,6 @@
 """CWE injection vulnerability detection skill."""
 
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +33,108 @@ from cwe_agent.catalog import enrich_finding
 #   - %-formatting                          "SELECT ... %s" % var       (NEW)
 #   - + concatenation                       query = "SELECT " + var
 #   - Sprintf                               fmt.Sprintf("SELECT %s", x)
+# A DML verb, bounded on BOTH sides. The right-only `\b` in the original let
+# `DROP` match inside "backdrop-filter" under re.IGNORECASE.
+_SQL_VERB = r"(?<![A-Za-z0-9_$])(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b"
+
+# The LOOSE clause: a DML-looking word plus an interpolation inside one template
+# literal. This is weak evidence on its own — insert/update/select/delete are
+# ordinary English verbs, so every interpolated log line qualifies — so findings
+# from this clause alone must pass `_sql_evidence()`.
+_JS_TEMPLATE_LOOSE = re.compile(
+    r"`[^`]{0,400}" + _SQL_VERB + r"[^`]{0,400}\$\{", re.IGNORECASE
+)
+
+# The BIGRAM clause: a verb with its mandatory clause, adjacent. Real SQL shape,
+# strong evidence. Quantifiers stay bounded so the alternation is ReDoS-safe.
+_JS_TEMPLATE_BIGRAM = re.compile(
+    r"`[^`]{0,400}?"
+    # Identifier class accepts quoted/bracketed columns: the audited true
+    # positive `SELECT "passwordHash" FROM users ...` failed the bigram without
+    # the quote and bracket characters here.
+    r"(?:SELECT\s+[\w*.,\s()\"'\[\]]{1,120}?\s+FROM\s"
+    r"|INSERT\s+INTO\s"
+    r"|UPDATE\s+[\w.\"'\[\]]{1,60}\s+SET\s"
+    r"|DELETE\s+FROM\s"
+    r"|DROP\s+(?:TABLE|DATABASE)\s)"
+    r"[^`]{0,400}\$\{",
+    re.IGNORECASE,
+)
+
+# A SQL EXECUTION sink — the thing that turns a string into a query. Kept
+# generous on purpose: a missing sink here costs a true positive.
+#
+# NEVER add `sql` to the tagged-template veto below: postgres.js exposes a real
+# sink as sql`...`, and vetoing it would blind the detector to that whole
+# library.
+_SQL_SINK = re.compile(
+    r"\.\s*(?:query|execute|executemany|raw|unsafe|queryRaw|executeRaw"
+    r"|QueryRow(?:Context)?|QueryContext|ExecContext|Query|Exec)\s*\("
+    r"|\b(?:hasuraRunSql|runSql|rawQuery|runBatchInsert|knex\.raw"
+    r"|sequelize\.query|cursor\.execute)\s*\("
+    r"|\$(?:queryRaw|executeRaw)\b",
+    re.IGNORECASE,
+)
+
+# Contexts that consume a string for DISPLAY, not execution. Each of these
+# produced a measured CRITICAL false positive.
+_NON_SQL_CONSUMER = re.compile(
+    r"console\s*\.\s*\w+\s*\("
+    r"|\b(?:logger|log|winston|pino)\s*\.\s*"
+    r"(?:trace|debug|info|warn|warning|error|fatal|log)\s*\("
+    r"|\bnew\s+\w*Error\s*\("
+    r"|\b\w+\s*=\s*\{\s*`"                      # JSX attribute: ariaLabel={`...`}
+    r"|(?:styled(?:\.\w+|\([^)]*\))?|css|keyframes|createGlobalStyle"
+    r"|gql|graphql|html|tw|cx|classNames)\s*`"  # tagged templates (NOT sql)
+    r"|\bi18n\s*\.\s*t\s*\(|(?<![\w.])t\s*\(\s*`",
+    re.IGNORECASE,
+)
+
+# How far back to look for the sink. The audited true positives put the sink on
+# the line ABOVE the SQL (`await hasuraRunSql(` then the template literal), so a
+# match-line-only check would drop them.
+_SQL_EVIDENCE_LOOKBACK = 3
+
+
+def _sql_require_sink() -> bool:
+    """One-release rollback for the evidence gate."""
+    return os.getenv("VULTURE_CWE_SQL_REQUIRE_SINK", "true").strip().lower() != "false"
+
+
+def _sql_evidence(line: str, line_num: int, lines: list[str]) -> bool:
+    """Whether a LOOSE-clause match has evidence it is really SQL.
+
+    Tier 1 — a SQL execution sink WITHIN the window, looking both BACKWARD and
+    FORWARD. The two directions are deliberately asymmetric:
+
+      * the sink may be either side of the SQL. The commonest real shape hoists
+        the query into a variable and executes it on the NEXT line:
+            logger.info('looking up user');
+            const q = `SELECT * FROM users WHERE id = ${id}`;
+            return db.query(q);
+        A backward-only sink probe misses `db.query` entirely while the log line
+        above vetoes the finding — genuine injection, silently dropped. That
+        regression was caught by an adversarial review, not by the FP corpus,
+        because the measured target happened not to contain the shape.
+      * the veto stays BACKWARD-only. A display consumer *above* the match is
+        the wrapped-call continuation shape (`console.error(` on one line, the
+        template literal on the next), which is 5 of the 15 measured false
+        positives. A consumer *below* says nothing about this line.
+
+    Tier 2 — no sink either way: veto on a display-only consumer, else require
+    the verb+clause bigram (real SQL shape) on the line itself.
+    """
+    start = max(0, line_num - 1 - _SQL_EVIDENCE_LOOKBACK)
+    veto_window = "\n".join(lines[start:line_num])
+    sink_window = "\n".join(lines[start:line_num + _SQL_EVIDENCE_LOOKBACK])
+
+    if _SQL_SINK.search(sink_window):
+        return True
+    if _NON_SQL_CONSUMER.search(veto_window):
+        return False
+    return bool(_JS_TEMPLATE_BIGRAM.search(line))
+
+
 SQL_INJECTION_PATTERNS = [
     # f-strings
     re.compile(r'f"[^"]*(?:SELECT|INSERT|UPDATE|DELETE|DROP)[^"]*\{'),
@@ -64,7 +167,12 @@ SQL_INJECTION_PATTERNS = [
     # Requiring BOTH a DML keyword and a `${` keeps static template
     # literals and parameterised calls (which use quotes, not backticks)
     # out of the results.
-    re.compile(r"`[^`]*(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b[^`]*\$\{", re.IGNORECASE),
+    # The DML verb needs a boundary on BOTH sides. With `\b` only on the right
+    # and re.IGNORECASE, `DROP` matched inside "back*drop*-filter", so a
+    # styled-components CSS interpolation was reported as CRITICAL SQL
+    # injection. `$` is in the lookbehind class because `$` is a legal JS
+    # identifier character.
+    _JS_TEMPLATE_LOOSE,
     # Feature 0070: the previous clause-only branch was
     #   `[^`]*\$\{[^`]*\b(?:FROM|WHERE|VALUES|SET)\b[^`]*`
     # under re.IGNORECASE. English prose is full of those words, so it fired
@@ -76,16 +184,7 @@ SQL_INJECTION_PATTERNS = [
     # A single clause keyword is not evidence of SQL. A *bigram* — verb plus
     # its mandatory clause, adjacent — is. Every quantifier below is bounded
     # so the alternation stays ReDoS-safe on adversarial input.
-    re.compile(
-        r"`[^`]{0,400}?"
-        r"(?:SELECT\s+[\w*.,\s()]{1,120}?\s+FROM\s"
-        r"|INSERT\s+INTO\s"
-        r"|UPDATE\s+[\w.\"'\[\]]{1,60}\s+SET\s"
-        r"|DELETE\s+FROM\s"
-        r"|DROP\s+(?:TABLE|DATABASE)\s)"
-        r"[^`]{0,400}\$\{",
-        re.IGNORECASE,
-    ),
+    _JS_TEMPLATE_BIGRAM,
 ]
 
 # CWE-78: OS Command Injection
@@ -392,23 +491,39 @@ def _check_sql(
 ) -> None:
     """Check for CWE-89 SQL injection."""
     for pattern in SQL_INJECTION_PATTERNS:
-        if pattern.search(line):
-            finding = {
-                "severity": "critical",
-                "check_id": "cwe.injection.sql",
-                "category": "CWE-89",
-                "title": "SQL injection via string interpolation",
-                "description": f"SQL query built with string formatting at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Use parameterized queries or prepared statements",
-                "verification_hints": ["Test with payload: ' OR 1=1--", "Check if input is reflected in SQL error"],
-                "requires_context": True,
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "89"))
-            return
+        if not pattern.search(line):
+            continue
+        # The LOOSE template-literal clause matches a DML-looking WORD plus an
+        # interpolation, which every interpolated English log line satisfies
+        # ("Failed to insert offices for ${name}"). Require evidence that the
+        # string is actually executed as SQL. Scoped to this one clause: the
+        # Python/Go patterns and the bigram carry their own evidence.
+        # The bigram is included because real SQL SHAPE is still not proof of
+        # execution: `console.log(\`INSERT INTO t VALUES ${v}\`)` is a log line.
+        # A Tier-1 sink always wins, so gating the bigram cannot lose a genuine
+        # query — only a query nobody executes.
+        if (
+            pattern in (_JS_TEMPLATE_LOOSE, _JS_TEMPLATE_BIGRAM)
+            and _sql_require_sink()
+            and not _sql_evidence(line, line_num, lines)
+        ):
+            continue
+        finding = {
+            "severity": "critical",
+            "check_id": "cwe.injection.sql",
+            "category": "CWE-89",
+            "title": "SQL injection via string interpolation",
+            "description": f"SQL query built with string formatting at line {line_num}",
+            "file_path": str(file_path),
+            "line_start": line_num,
+            "line_end": line_num,
+            "recommendation": "Use parameterized queries or prepared statements",
+            "verification_hints": ["Test with payload: ' OR 1=1--", "Check if input is reflected in SQL error"],
+            "requires_context": True,
+        }
+        finding["code_snippet"] = extract_snippet(lines, line_num)
+        findings.append(enrich_finding(finding, "89"))
+        return
 
 
 def _has_validation_context(lines: list[str], line_num: int, radius: int = 10) -> bool:

@@ -15,6 +15,7 @@ Why a local copy (not an import from cwe_agent):
 Sync protocol: when CWE agent patterns change, review whether ASVS
 needs the update. Deliberate out-of-sync is acceptable.
 """
+import os
 import re
 
 HARDCODED_CRED_PATTERNS: list[re.Pattern[str]] = [
@@ -56,12 +57,72 @@ DEBUG_PROD_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'(?:stacktrace|stack_trace|verbose_errors)\s*[:=]\s*(?:True|true|1)', re.IGNORECASE),
 ]
 
+# A filesystem accessor — the sink that makes a `../` dangerous rather than
+# merely relative. Kept generous: a missing accessor here costs a true positive.
+# Each alternative carries its OWN call syntax, so neither arm below appends a
+# paren. An earlier draft appended `\s*\(` to the whole alternation, which turned
+# the entries that already ended in `(` or `.` into unsatisfiable `Path((`,
+# `stat((`, `shutil.(` — silently killing the Python file-API branch of the
+# sink-AFTER direction that the comment promised to cover.
+#
+# The `(?<![A-Za-z0-9_])` lookbehind plus the required call paren is what keeps
+# a bare `open` from matching inside an identifier: `openDialog('../a.png')` is
+# not a filesystem read, and under IGNORECASE the unanchored form re-admitted
+# exactly the false-positive class this change exists to remove.
+_FS_SINK = (
+    r"(?<![A-Za-z0-9_])(?:open|readFile|readFileSync|writeFile|writeFileSync"
+    r"|createReadStream|createWriteStream|sendFile|download|copyfile|copyFile"
+    r"|unlink|rmdir|readdir|stat|lstat|rename|remove|send_file|FileResponse"
+    r"|Path)\s*\("
+    r"|(?:os\.path\.join|path\.join|shutil\.\w+|fs\.promises\.\w+|fsp\.\w+"
+    r"|io\.open|codecs\.open|tar\.extract)\s*\("
+    # `require('path').join(...)` spells the accessor indirectly, so the literal
+    # `path.join` never appears. Matched explicitly rather than by a bare
+    # `\.join\s*\(`, which would hit every Array.prototype.join in the tree.
+    r"|require\s*\(\s*['\"](?:node:)?path['\"]\s*\)\s*\.\s*join\s*\("
+)
+
+# `../` co-occurring with a filesystem accessor ON THE SAME LINE, in either
+# order. This replaces a BARE `\.\./` literal that required nothing at all.
+#
+# Measured: that bare literal produced 504 of 517 ASVS findings (97.5%, all
+# HIGH) on one real target, and every sample was an ordinary relative import —
+# `import { loadEnv } from '../env';`. In JS/TS `../` is simply how a relative
+# module path is spelled, so on its own it is not evidence of traversal. The
+# five sibling patterns in this list all already required an accessor; this one
+# was the outlier.
+#
+# KNOWN LIMITATION, deliberate: a genuine traversal whose `../` is assembled on
+# a different line from its sink is now missed (`const p = '../' + req.query.f;`
+# on one line, `fs.readFile(p)` nine lines later). That is a real false negative
+# traded for a 504:0 precision problem. If measurement later shows misses, widen
+# to a statement window rather than restoring the bare literal.
+_TRAVERSAL_WITH_SINK = [
+    # accessor then traversal:  fs.readFileSync('../uploads/' + f)
+    re.compile(r"(?:" + _FS_SINK + r")[^\n]{0,160}\.\.[/\\]", re.IGNORECASE),
+    # traversal then accessor:  p = '../' + name; Path(p).read_text()
+    re.compile(r"\.\.[/\\][^\n]{0,160}(?:" + _FS_SINK + r")", re.IGNORECASE),
+]
+
+# Rollback: restore the pre-fix bare literals for one release.
+_BARE_TRAVERSAL = [re.compile(r'\.\./'), re.compile(r'\.\.\\\\')]
+
+
+def _traversal_gate_disabled() -> bool:
+    return os.getenv(
+        "VULTURE_ASVS_DISABLE_TRAVERSAL_SINK_GATE", "false"
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+
 PATH_TRAVERSAL_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'os\.path\.join\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
-    re.compile(r'\.\./'),
-    re.compile(r'\.\.\\\\'),
+    *(_BARE_TRAVERSAL if _traversal_gate_disabled() else _TRAVERSAL_WITH_SINK),
     re.compile(r'open\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
-    re.compile(r'Path\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
+    # Left boundary required, same defect as DROP-inside-backdrop: without it
+    # `Path\(` matches the TAIL of any identifier ending in Path, so
+    # `resolveCompletionPath(user, url)` was reported as path traversal.
+    # pathlib's `Path(` and `pathlib.Path(` still match ('.' is outside the class).
+    re.compile(r'(?<![A-Za-z0-9_])Path\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
     re.compile(r'(?:readFile|readFileSync)\([^)]*(?:req|params|query)', re.IGNORECASE),
 ]
 

@@ -236,14 +236,15 @@ def clear_l1_cache() -> None:
 # Best-effort and line-based by design: multi-line strings/docstrings are not
 # tracked; the failure mode is a missed strip (extra discharge), never a
 # dropped finding — discharge only supports, it cannot refute (§5.1).
-_STRING_LITERAL_RE = re.compile(
-    r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`[^`]*`")
-_COMMENT_RE = re.compile(r"#.*$|//.*$|/\*.*?\*/")
+# Single-sourced in shared.tools.line_context so detectors and the validate
+# layer cannot drift apart. NOTE the bias differs by layer: here a missed strip
+# means an extra discharge (safe); in a detector it would mean a dropped
+# finding, which is why that module forbids using it as a hard skip.
+from shared.tools.line_context import strip_strings_and_comments
 
 
 def _strip_comments_and_strings(line: str) -> str:
-    line = _STRING_LITERAL_RE.sub('""', line)
-    return _COMMENT_RE.sub("", line)
+    return strip_strings_and_comments(line)
 
 
 @functools.lru_cache(maxsize=4096)

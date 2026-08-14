@@ -9,6 +9,7 @@ from shared.tools.file_scanner import (
     is_test_file,
     read_file_safe,
     scan_code_files,
+    is_prose_file,
 )
 
 TIMEOUT_PATTERNS = [
@@ -49,6 +50,9 @@ def check_timeout_handling(source_path: str) -> dict:
         if is_generated_file(file_path):
             continue
         if is_test_file(file_path):
+            continue
+        # Prose DESCRIBES a control; it is not an instance of one (F6).
+        if is_prose_file(file_path):
             continue
         _analyze_file(file_path, findings)
 

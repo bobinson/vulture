@@ -784,6 +784,36 @@ def is_prose_file(path: Path) -> bool:
     return effective_suffix(path.name) in _PROSE_SUFFIXES
 
 
+def is_type_declaration_file(path: Path) -> bool:
+    """True for a TypeScript declaration file (``*.d.ts`` and friends).
+
+    Matched on the NAME, not the suffix: ``Path("api.d.ts").suffix`` is only
+    ``.ts``. A declaration file contains signatures, never executable code, so a
+    detector that matches an identifier followed by a paren will report every
+    declared method as a call — which is how ``eval(script: string, ...)`` on a
+    Redis client interface became a CRITICAL code-injection finding.
+    """
+    name = path.name.lower()
+    return any(name.endswith(ext) for ext in (".d.ts", ".d.mts", ".d.cts"))
+
+
+def is_story_file(path: Path) -> bool:
+    """True for Storybook stories, whose constants are display fixtures.
+
+    Deliberately NOT used to suppress secret scanning — a real credential
+    committed in a story is still exposed. Same reasoning as
+    :func:`is_prose_file`.
+    """
+    name = path.name.lower()
+    if any(part.lower() == "stories" for part in path.parts):
+        return True
+    return any(
+        f".{kind}.{ext}" in name
+        for kind in ("stories", "story")
+        for ext in ("ts", "tsx", "js", "jsx", "mdx")
+    )
+
+
 def is_generated_file(path: Path) -> bool:
     """Check if a file is generated / non-source (lock, locale, data, config).
 
