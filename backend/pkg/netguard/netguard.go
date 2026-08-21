@@ -48,10 +48,10 @@ func IsInternalIP(ip net.IP) bool {
 // classify. Parsed once at init; the literals are RFC-fixed so parse never fails.
 var extraInternalNets = func() []*net.IPNet {
 	cidrs := []string{
-		"100.64.0.0/10",  // RFC6598 CGNAT / shared address space
-		"0.0.0.0/8",      // RFC1122 "this network"
-		"198.18.0.0/15",  // RFC2544 benchmarking
-		"192.0.0.0/24",   // RFC6890 IETF protocol assignments
+		"100.64.0.0/10", // RFC6598 CGNAT / shared address space
+		"0.0.0.0/8",     // RFC1122 "this network"
+		"198.18.0.0/15", // RFC2544 benchmarking
+		"192.0.0.0/24",  // RFC6890 IETF protocol assignments
 	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {

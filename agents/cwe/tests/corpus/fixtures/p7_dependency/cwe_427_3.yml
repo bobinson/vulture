@@ -1,0 +1,7 @@
+jobs:
+  build:
+    steps:
+      - run: make bundle
+    env:
+      PYTHONPATH: .
+      REPORT_FORMAT: json

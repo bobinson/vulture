@@ -1,0 +1,8 @@
+apiVersion: apps/v1
+spec:
+  container:
+    name: worker
+    environment:
+      ENCRYPTION_SECRET: Qx82nRt5Vd93Lm
+    ports:
+      - 8080

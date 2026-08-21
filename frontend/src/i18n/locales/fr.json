@@ -88,6 +88,8 @@
     "all": "Tout",
     "hideFalsePositives": "Masquer les faux positifs ({{count}})",
     "showFalsePositives": "Afficher les faux positifs ({{count}})",
+    "hideSuspicious": "Masquer les suspects ({{count}})",
+    "showSuspicious": "Afficher les suspects ({{count}})",
     "validation": {
       "likely_fp": "Faux positif probable",
       "suspicious": "Suspect",

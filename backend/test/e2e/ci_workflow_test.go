@@ -46,7 +46,14 @@ func ciTestConfig(t *testing.T) (*config.Config, string) {
 		DBPath:         dbPath,
 		LocalMode:      false,
 		APIKeysEnabled: true,
-		JWTSecret:      "test-secret-for-e2e-ci",
+		// >= 32 bytes: 0065 §M9 rejects a shorter HS256 key at startup, and this
+		// fixture predates that rule (the suite is not run by CI, so it rotted).
+		JWTSecret: "test-secret-for-e2e-ci-0123456789abcdef",
+		// 0065 refuses to start outside local mode without an agent token, since
+		// the agent services would otherwise accept credential-less HTTP. This
+		// config is deliberately non-local (it exercises the API-key path), so it
+		// must supply one.
+		AgentToken: "test-agent-token-for-e2e-ci",
 		Agents: map[string]config.AgentConfig{
 			"chaos": {Name: "Chaos Engineering", Type: "chaos", URL: ""},
 			"owasp": {Name: "OWASP", Type: "owasp", URL: ""},

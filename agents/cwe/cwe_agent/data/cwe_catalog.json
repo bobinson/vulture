@@ -2103,6 +2103,41 @@
   ],
   "static_detectability": 0.0
  },
+ "1068": {
+  "abstraction": "Base",
+  "code_examples": [],
+  "consequences": [
+   {
+    "impact": "Reduce Maintainability",
+    "scope": "Other"
+   }
+  ],
+  "description": "The implementation of the product is not consistent with the\n\t\t\t\t\tdesign as described within the relevant documentation.",
+  "detection_methods": [],
+  "extended_description": "",
+  "id": "1068",
+  "keywords": [
+   "between",
+   "design",
+   "documented",
+   "implementation",
+   "inconsistency"
+  ],
+  "languages": [],
+  "likelihood": "",
+  "mitigation": "",
+  "mitigations": [],
+  "name": "Inconsistency Between Implementation and Documented Design",
+  "observed_examples": [],
+  "related_weaknesses": [
+   {
+    "cwe_id": "710",
+    "nature": "ChildOf",
+    "ordinal": "Primary"
+   }
+  ],
+  "static_detectability": 0.0
+ },
  "1069": {
   "abstraction": "Variant",
   "code_examples": [
@@ -4097,6 +4132,45 @@
    }
   ],
   "static_detectability": 1.0
+ },
+ "1110": {
+  "abstraction": "Base",
+  "code_examples": [],
+  "consequences": [
+   {
+    "impact": "Reduce Maintainability",
+    "scope": "Other"
+   },
+   {
+    "impact": "Increase Analytical Complexity",
+    "scope": "Other"
+   }
+  ],
+  "description": "The product's design documentation does not adequately describe\n\t\t\t\t\tcontrol flow, data flow, system initialization, relationships between tasks,\n\t\t\t\t\tcomponents, rationales, or other important aspects of the\n\t\t\t\t\tdesign.",
+  "detection_methods": [],
+  "extended_description": "",
+  "id": "1110",
+  "keywords": [
+   "design",
+   "documentation",
+   "incomplete",
+   "initialization",
+   "system"
+  ],
+  "languages": [],
+  "likelihood": "",
+  "mitigation": "",
+  "mitigations": [],
+  "name": "Incomplete Design Documentation",
+  "observed_examples": [],
+  "related_weaknesses": [
+   {
+    "cwe_id": "1059",
+    "nature": "ChildOf",
+    "ordinal": "Primary"
+   }
+  ],
+  "static_detectability": 0.0
  },
  "1111": {
   "abstraction": "Base",
@@ -8731,6 +8805,101 @@
   ],
   "static_detectability": 0.0
  },
+ "1329": {
+  "abstraction": "Base",
+  "code_examples": [
+   {
+    "code": "The refrigerator has no means of patching and is hacked, becoming a spewer of email spam.",
+    "language": "Other",
+    "nature": "bad"
+   },
+   {
+    "code": "The device automatically patches itself and provides considerable more protection against being hacked.",
+    "language": "Other",
+    "nature": "good"
+   },
+   {
+    "code": "module dmi_jtag(...)(...); ... PassChkValid: begin if(hashValid) begin if(exp_hash == pass_hash) begin pass_check = 1'b1; end else begin pass_check = 1'b0; end state_d = Idle; end else begin state_d = PassChkValid; end end ... hmac hmac( ... .key_i(256'h24e6fa2254c2ff632a41b...), ... ); ... endmodule",
+    "language": "Verilog",
+    "nature": "bad"
+   },
+   {
+    "code": "module dmi_jtag(... ) ( input logic [255:0] hmac_key_i, input logic         hmac_patch_en, ... reg [255:0] hmac_key_reg; ... ); ... always_ff @(posedge tck_i or negedge trst_ni) begin ... if (hmac_patch_en) hmac_key_reg <= hmac_key_i; ... end ... hmac hmac( ... .key_i(hmac_key_reg), ... ); ... endmodule",
+    "language": "Verilog",
+    "nature": "good"
+   }
+  ],
+  "consequences": [
+   {
+    "impact": "Gain Privileges or Assume Identity",
+    "scope": "Confidentiality"
+   }
+  ],
+  "description": "The product contains a component that cannot be updated or patched in order to remove vulnerabilities or significant bugs.",
+  "detection_methods": [
+   {
+    "effectiveness": "Moderate",
+    "method": "Architecture or Design Review",
+    "score": 0.7,
+    "static": false
+   }
+  ],
+  "extended_description": "If the component is discovered to contain a vulnerability or critical bug, but the issue cannot be fixed using an update or patch, then the product's owner will not be able to protect against the issue.  The only option might be replacement of the product, which could be too financially or operationally expensive for the product owner.  As a result, the inability to patch or update can leave the product open to attacker exploitation or critical operation failures. This weakness can be especially difficult to manage when using ROM, firmware, or similar components that traditionally have had lim",
+  "id": "1329",
+  "keywords": [
+   "command",
+   "component",
+   "injection",
+   "not",
+   "reliance",
+   "updateable"
+  ],
+  "languages": [],
+  "likelihood": "",
+  "mitigation": "Specify requirements that each component should be updateable, including ROM, firmware, etc.",
+  "mitigations": [
+   {
+    "description": "Specify requirements that each component should be updateable, including ROM, firmware, etc.",
+    "effectiveness": "",
+    "phase": "Requirements"
+   },
+   {
+    "description": "Design the product to allow for updating of its components. Include the external infrastructure that might be necessary to support updates, such as distribution servers.",
+    "effectiveness": "",
+    "phase": "Architecture and Design"
+   },
+   {
+    "description": "With hardware, support patches that can be programmed in-field or during manufacturing through hardware fuses. This feature can be used for limited patching of devices after shipping, or for the next batch of silicon devices manufactured, without changing the full device ROM.",
+    "effectiveness": "Moderate",
+    "phase": "Architecture and Design"
+   }
+  ],
+  "name": "Reliance on Component That is Not Updateable",
+  "observed_examples": [
+   {
+    "description": "Chain: network-attached storage (NAS) device has a critical OS command injection (CWE-78) vulnerability that is actively exploited to place IoT devices into a botnet, but some products are \"end-of-support\" and cannot be patched (CWE-1277). [REF-1097]",
+    "reference": "CVE-2020-9054"
+   }
+  ],
+  "related_weaknesses": [
+   {
+    "cwe_id": "1357",
+    "nature": "ChildOf",
+    "ordinal": "Primary"
+   },
+   {
+    "cwe_id": "1357",
+    "nature": "ChildOf",
+    "ordinal": "Primary"
+   },
+   {
+    "cwe_id": "664",
+    "nature": "ChildOf",
+    "ordinal": ""
+   }
+  ],
+  "static_detectability": 0.0
+ },
  "1333": {
   "abstraction": "Base",
   "code_examples": [
@@ -9510,6 +9679,81 @@
   "related_weaknesses": [
    {
     "cwe_id": "682",
+    "nature": "ChildOf",
+    "ordinal": "Primary"
+   }
+  ],
+  "static_detectability": 1.0
+ },
+ "1357": {
+  "abstraction": "Class",
+  "code_examples": [
+   {
+    "code": "The refrigerator has no means of patching and is hacked, becoming a spewer of email spam.",
+    "language": "Other",
+    "nature": "bad"
+   },
+   {
+    "code": "The device automatically patches itself and provides considerable more protection against being hacked.",
+    "language": "Other",
+    "nature": "good"
+   }
+  ],
+  "consequences": [
+   {
+    "impact": "Reduce Maintainability",
+    "scope": "Other"
+   }
+  ],
+  "description": "The product is built from multiple separate components, but it uses a component that is not sufficiently trusted to meet expectations for security, reliability, updateability, and maintainability.",
+  "detection_methods": [
+   {
+    "effectiveness": "High",
+    "method": "Automated Static Analysis",
+    "score": 1.0,
+    "static": true
+   }
+  ],
+  "extended_description": "Many modern hardware and software products are built by combining multiple smaller components together into one larger entity, often during the design or architecture phase. For example, a hardware component might be built by a separate supplier, or the product might use an open-source software library from a third party. Regardless of the source, each component should be sufficiently trusted to ensure correct, secure operation of the product. If a component is not trustworthy, it can produce significant risks for the overall product, such as vulnerabilities that cannot be patched fast enough ",
+  "id": "1357",
+  "keywords": [
+   "command",
+   "component",
+   "injection",
+   "insufficiently",
+   "reliance",
+   "trustworthy"
+  ],
+  "languages": [],
+  "likelihood": "",
+  "mitigation": "For each component, ensure that its supply chain is well-controlled with sub-tier suppliers using best practices. For third-party software components such as libraries, ensure that they are developed and actively maintained by reputable vendors.",
+  "mitigations": [
+   {
+    "description": "For each component, ensure that its supply chain is well-controlled with sub-tier suppliers using best practices. For third-party software components such as libraries, ensure that they are developed and actively maintained by reputable vendors.",
+    "effectiveness": "",
+    "phase": "Requirements"
+   },
+   {
+    "description": "Maintain a Bill of Materials for all components and sub-components of the product. For software, maintain a Software Bill of Materials (SBOM). According to [REF-1247], \"An SBOM is a formal, machine-readable inventory of software components and dependencies, information about those components, and their hierarchical relationships.\"",
+    "effectiveness": "",
+    "phase": "Architecture and Design"
+   },
+   {
+    "description": "Continue to monitor changes in each of the product's components, especially when the changes indicate new vulnerabilities, end-of-life (EOL) plans, supplier practices that affect trustworthiness, etc.",
+    "effectiveness": "",
+    "phase": "Operation"
+   }
+  ],
+  "name": "Reliance on Insufficiently Trustworthy Component",
+  "observed_examples": [
+   {
+    "description": "Chain: network-attached storage (NAS) device has a critical OS command injection (CWE-78) vulnerability that is actively exploited to place IoT devices into a botnet, but some products are \"end-of-support\" and cannot be patched (CWE-1277). [REF-1097]",
+    "reference": "CVE-2020-9054"
+   }
+  ],
+  "related_weaknesses": [
+   {
+    "cwe_id": "710",
     "nature": "ChildOf",
     "ordinal": "Primary"
    }
@@ -11775,6 +12019,85 @@
    }
   ],
   "static_detectability": 0.0
+ },
+ "15": {
+  "abstraction": "Base",
+  "code_examples": [
+   {
+    "code": "... sethostid(argv[1]); ...",
+    "language": "C",
+    "nature": "bad"
+   },
+   {
+    "code": "... conn.setCatalog(request.getParameter(\"catalog\")); ...",
+    "language": "Java",
+    "nature": "bad"
+   }
+  ],
+  "consequences": [
+   {
+    "impact": "Varies by Context",
+    "scope": "Other"
+   }
+  ],
+  "description": "One or more system settings or configuration elements can be externally controlled by a user.",
+  "detection_methods": [
+   {
+    "effectiveness": "High",
+    "method": "Automated Static Analysis",
+    "score": 1.0,
+    "static": true
+   }
+  ],
+  "extended_description": "Allowing external control of system settings can disrupt service or cause an application to behave in unexpected, and potentially malicious ways.",
+  "id": "15",
+  "keywords": [
+   "configuration",
+   "controlled",
+   "external",
+   "setting",
+   "system"
+  ],
+  "languages": [],
+  "likelihood": "",
+  "mitigation": " Compartmentalize the system to have \"safe\" areas where trust boundaries can be unambiguously drawn. Do not allow sensitive data to go outside of the trust boundary and always be careful when interfacing with a compartment outside of the safe area.  Ensure that appropriate compartmentalization is built into the system design, and the compartmentalization allows for and reinforces privilege separat",
+  "mitigations": [
+   {
+    "description": " Compartmentalize the system to have \"safe\" areas where trust boundaries can be unambiguously drawn. Do not allow sensitive data to go outside of the trust boundary and always be careful when interfacing with a compartment outside of the safe area.  Ensure that appropriate compartmentalization is built into the system design, and the compartmentalization allows for and reinforces privilege separat",
+    "effectiveness": "",
+    "phase": "Architecture and Design"
+   },
+   {
+    "description": "Because setting manipulation covers a diverse set of functions, any attempt at illustrating it will inevitably be incomplete. Rather than searching for a tight-knit relationship between the functions addressed in the setting manipulation category, take a step back and consider the sorts of system values that an attacker should not be allowed to control.",
+    "effectiveness": "",
+    "phase": "Implementation"
+   },
+   {
+    "description": "In general, do not allow user-provided or otherwise untrusted data to control sensitive values. The leverage that an attacker gains by controlling these values is not always immediately obvious, but do not underestimate the creativity of the attacker.",
+    "effectiveness": "",
+    "phase": "Implementation"
+   }
+  ],
+  "name": "External Control of System or Configuration Setting",
+  "observed_examples": [],
+  "related_weaknesses": [
+   {
+    "cwe_id": "642",
+    "nature": "ChildOf",
+    "ordinal": "Primary"
+   },
+   {
+    "cwe_id": "610",
+    "nature": "ChildOf",
+    "ordinal": ""
+   },
+   {
+    "cwe_id": "20",
+    "nature": "ChildOf",
+    "ordinal": "Primary"
+   }
+  ],
+  "static_detectability": 1.0
  },
  "150": {
   "abstraction": "Variant",

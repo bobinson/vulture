@@ -28,6 +28,12 @@ var dotenvProviderKeys = map[string]struct{}{
 var dotenvDenied = map[string]struct{}{
 	"VULTURE_LISTEN_ADDR": {},
 	"VULTURE_BIND_ADDR":   {},
+	// Feature 0073: the agent env-isolation hatches. A control that a config
+	// file can switch off is not a control — and config/.env is exactly the
+	// kind of file that travels with a checked-out project. Both remain
+	// settable from the real process environment, which requires the operator.
+	"VULTURE_AGENT_ENV_SCRUB":       {},
+	"VULTURE_AGENT_ENV_PASSTHROUGH": {},
 }
 
 // dotenvForwardable reports whether a key parsed from config/.env may be

@@ -97,10 +97,10 @@ func TestPipelineService_CreatePipeline(t *testing.T) {
 
 func TestPipelineService_AdvanceStage_Completes(t *testing.T) {
 	pipeline := &model.Pipeline{
-		ID:              "p-1",
-		Stages:          []string{"scan"},
-		ScanAuditID:     "audit-1",
-		Status:          model.PipelineStatusScanRunning,
+		ID:          "p-1",
+		Stages:      []string{"scan"},
+		ScanAuditID: "audit-1",
+		Status:      model.PipelineStatusScanRunning,
 	}
 	var updated *model.Pipeline
 	repo := &repository.MockPipelineRepo{

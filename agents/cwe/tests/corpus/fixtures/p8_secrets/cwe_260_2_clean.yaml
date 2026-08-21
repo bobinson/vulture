@@ -1,0 +1,5 @@
+mail:
+  host: smtp.internal
+  port: 587
+  user: notifier
+  passwd: ${SMTP_PASSWD}

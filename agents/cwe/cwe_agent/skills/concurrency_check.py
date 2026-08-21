@@ -8,6 +8,7 @@ from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
@@ -72,6 +73,15 @@ THREAD_NO_SYNC = [
 IMPORT_LINE = re.compile(r"^\s*(?:import|from|package)\s+")
 
 
+def _should_skip(file_path: Path) -> bool:
+    """True for files whose shared-state patterns cannot be real races.
+
+    ``is_prose_file`` is the third arm: prose has no threads, so an
+    unsynchronised snippet quoted in a design note is a mention, not a race.
+    """
+    return is_generated_file(file_path) or is_test_file(file_path) or is_prose_file(file_path)
+
+
 def check_concurrency(source_path: str) -> dict:
     """Check for concurrency vulnerabilities.
 
@@ -84,9 +94,7 @@ def check_concurrency(source_path: str) -> dict:
     findings: list[dict] = []
 
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path):
-            continue
-        if is_test_file(file_path):
+        if _should_skip(file_path):
             continue
         _analyze_file(file_path, findings)
 

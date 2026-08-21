@@ -31,7 +31,7 @@ func TestAgentDisplayName(t *testing.T) {
 		{"ssdf", "NIST SSDF v1.1"},
 		{"cwe", "CWE"},
 		{"xss", "XSS Scanner"},
-		{"gdpr", "GDPR"},           // short acronym fallback (<=6 chars)
+		{"gdpr", "GDPR"},                  // short acronym fallback (<=6 chars)
 		{"discover", "Endpoint Discover"}, // registry entry
 	}
 	for _, tt := range tests {

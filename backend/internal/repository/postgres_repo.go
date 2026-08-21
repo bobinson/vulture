@@ -198,17 +198,40 @@ func (r *PostgresRepo) SaveFindings(auditID string, findings []model.Finding) er
 	if len(findings) == 0 {
 		return nil
 	}
-	const cols = 20 // +6 columns for validation (feature 0045), +1 provenance (feature 0057)
+	// Chunk so a single INSERT never exceeds Postgres's 65535 bind-parameter
+	// limit (21 params/finding → 3120-row ceiling). Before chunking, an audit
+	// with more findings than that failed to persist at all (feature 0072).
+	for start := 0; start < len(findings); start += findingsInsertChunk {
+		end := start + findingsInsertChunk
+		if end > len(findings) {
+			end = len(findings)
+		}
+		if err := r.saveFindingsChunk(auditID, findings[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *PostgresRepo) saveFindingsChunk(auditID string, findings []model.Finding) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	// +6 columns for validation (feature 0045), +1 provenance (feature 0057),
+	// +1 code_snippet (feature 0072 P5 — the column existed since 001_init.sql
+	// but was written by no code path).
+	const cols = 21
 	valueStrings := make([]string, 0, len(findings))
 	valueArgs := make([]interface{}, 0, len(findings)*cols)
 	for i, f := range findings {
 		base := i * cols
 		valueStrings = append(valueStrings, fmt.Sprintf(
 			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, "+
-				"$%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				"$%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
 			base+1, base+2, base+3, base+4, base+5, base+6,
 			base+7, base+8, base+9, base+10, base+11, base+12, base+13,
 			base+14, base+15, base+16, base+17, base+18, base+19, base+20,
+			base+21,
 		))
 		refsJSON, _ := json.Marshal(f.References)
 		var validationJSON interface{}
@@ -232,12 +255,22 @@ func (r *PostgresRepo) SaveFindings(auditID string, findings []model.Finding) er
 		if f.Provenance != "" {
 			provenance = f.Provenance
 		}
+		var codeSnippet interface{}
+		if f.CodeSnippet != "" {
+			codeSnippet = clampSnippet(f.CodeSnippet)
+		}
+		// Route every source-derived text column through dbSafeText: a NUL or
+		// invalid-UTF-8 byte in ANY of them (not just code_snippet) makes
+		// Postgres reject the row and abort the whole chunk.
 		valueArgs = append(valueArgs,
 			f.ID, auditID, f.AgentType, string(f.Severity),
-			f.Category, f.Title, f.Description, f.FilePath,
-			f.LineStart, f.LineEnd, f.Recommendation, string(refsJSON), f.Fingerprint,
+			dbSafeText(f.Category), dbSafeText(f.Title), dbSafeText(f.Description),
+			dbSafeText(f.FilePath),
+			f.LineStart, f.LineEnd, dbSafeText(f.Recommendation),
+			string(refsJSON), f.Fingerprint,
 			validationStatus, validationConfidence, validationJSON,
 			f.IsRollup, rolledUpInto, f.InstanceCount, provenance,
+			codeSnippet,
 		)
 	}
 	stmt := fmt.Sprintf(
@@ -245,7 +278,7 @@ func (r *PostgresRepo) SaveFindings(auditID string, findings []model.Finding) er
 			id, audit_id, agent_type, severity, category, title, description,
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
-			is_rollup, rolled_up_into, instance_count, provenance
+			is_rollup, rolled_up_into, instance_count, provenance, code_snippet
 		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
@@ -451,7 +484,8 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 		        COALESCE(is_rollup, false),
 		        COALESCE(rolled_up_into, ''),
 		        COALESCE(instance_count, 1),
-		        COALESCE(provenance, '')
+		        COALESCE(provenance, ''),
+		        COALESCE(code_snippet, '')
 		 FROM findings WHERE audit_id = $1`,
 		auditID,
 	)
@@ -469,7 +503,8 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 			&f.Title, &f.Description, &f.FilePath, &f.LineStart, &f.LineEnd,
 			&f.Recommendation, &refsStr, &f.Fingerprint,
 			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
-			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance)
+			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance,
+			&f.CodeSnippet)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}

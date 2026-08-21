@@ -1,26 +1,26 @@
 """Feature 0070 — crypto/auth precision (P2) and credential-lifecycle detectors (P3/P4).
 
-Six changes, all measured against OWASP juice-shop:
+Six changes, all measured on a real application tree:
 
 1. CWE-326 — the weak-key patterns required a literal ``512|768|1024`` next to
    "RSA", so a key whose weakness lives in the PEM body was invisible.
-   juice-shop's ``lib/insecurity.ts:21`` embeds a **1024-bit** RSA private key
-   that signs every JWT and it produced zero CWE-326 rows.
+   One measured app embedded a **1024-bit** RSA private key that signs every
+   JWT, and it produced zero CWE-326 rows.
 
 2. CWE-321 — ``HARDCODED_KEY_PATTERNS`` only knew ``encrypt|cipher|aes|secret``
    key names and never looked at a *positional* key argument, so
    ``crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj')``
-   (``lib/insecurity.ts:42``) and ``const privateKey = '-----BEGIN RSA ...'``
+    and ``const privateKey = '-----BEGIN RSA ...'``
    were both missed.
 
 3. CWE-521 — the weak-password-requirement patterns fired on *any*
-   ``.length > 1-9`` comparison. 18 juice-shop rows, 15 of them array-length
+   ``.length > 1-9`` comparison. 18 rows in one sweep, 15 of them array-length
    checks with nothing to do with passwords (``solves.length > 1``,
    ``match.length >= 1``, ``result.data.length > 1``). Password context is now
    required. ``'admin1'`` also used to satisfy ``password.*min.*[1-7]`` because
    "ad**min1**" contains "min" followed by a digit.
 
-4. CWE-916/759 — juice-shop stores md5 password hashes. That was reported only
+4. CWE-916/759 — a measured app stored md5 password hashes. That was reported only
    as CWE-328 "weak hash for integrity" at MEDIUM, which understates a password
    store. A password-context discriminator now adds CWE-916 (insufficient
    computational effort) and CWE-759 (no salt). CWE-328 is deliberately left
@@ -28,14 +28,14 @@ Six changes, all measured against OWASP juice-shop:
 
 5. CWE-620/640 — an authenticated password change whose current-password check
    is short-circuited by the value's own presence
-   (``if (currentPassword && hash(currentPassword) !== stored)``, juice-shop
+   (``if (currentPassword && hash(currentPassword) !== stored)``, as seen in
    ``routes/changePassword.ts:39``) is an unverified password change; a reset
    flow gated only on a security answer (``routes/resetPassword.ts:41``) is a
    weak recovery mechanism.
 
 6. CWE-287/347 — ``expressJwt({ secret: publicKey })`` and
    ``jws.verify(token, publicKey)`` verify tokens with the PUBLIC key and no
-   algorithm allowlist (juice-shop ``lib/insecurity.ts:52``/``:55``): the
+   algorithm allowlist (``expressJwt({ secret: publicKey })``): the
    canonical algorithm-confusion bypass, previously undetected.
 """
 
@@ -92,7 +92,7 @@ def _pem_b64(bits: int) -> str:
 
 
 def _pem_one_line(bits: int) -> str:
-    """juice-shop shape: whole PEM in one JS string with \\r\\n escapes."""
+    """The one-line shape: whole PEM in one JS string with \\r\\n escapes."""
     return (
         "const privateKey = '-----BEGIN RSA PRIVATE KEY-----\\r\\n"
         + _pem_b64(bits)
@@ -111,12 +111,12 @@ class TestWeakKeyFromPemBody:
     """(1) CWE-326 — modulus size read out of an inline PEM literal."""
 
     def test_inline_1024_bit_pem_is_flagged(self) -> None:
-        hits = _of(_run(check_cryptography, {"insecurity.ts": _pem_one_line(1024) + "\n"}), 326)
+        hits = _of(_run(check_cryptography, {"security.ts": _pem_one_line(1024) + "\n"}), 326)
         assert hits, "a 1024-bit RSA key inlined as a PEM literal must be CWE-326"
         assert "1024" in hits[0]["description"], hits[0]["description"]
 
     def test_inline_2048_bit_pem_is_not_flagged(self) -> None:
-        hits = _of(_run(check_cryptography, {"insecurity.ts": _pem_one_line(2048) + "\n"}), 326)
+        hits = _of(_run(check_cryptography, {"security.ts": _pem_one_line(2048) + "\n"}), 326)
         assert hits == [], "2048-bit keys are adequate and must not be flagged"
 
     def test_multi_line_pem_is_flagged_once(self) -> None:
@@ -146,7 +146,7 @@ class TestHardcodedKeyWidened:
             "crypto.createHmac('sha256', 'pa4qacea4VK9t9nGv7yZtwmj')"
             ".update(data).digest('hex')\n"
         )
-        hits = _of(_run(check_cryptography, {"insecurity.ts": body}), 321)
+        hits = _of(_run(check_cryptography, {"security.ts": body}), 321)
         assert hits, "a literal second argument to createHmac is a hardcoded key"
 
     def test_create_cipheriv_literal_key(self) -> None:
@@ -165,7 +165,7 @@ class TestHardcodedKeyWidened:
 
     def test_session_and_cookie_keys_are_slot_names(self) -> None:
         """Measured: 57/57 `sessionKey`/`cookieKey` hits on a second corpus were
-        routing identifiers, and both juice-shop hits were a cookie name. The
+        routing identifiers, and both hits in one sweep were a cookie name. The
         two names are excluded rather than value-filtered, because the values
         (`"hook:gmail:{{id}}"`, `"agent:main:main"`) are indistinguishable from
         key material by shape."""
@@ -185,7 +185,7 @@ class TestHardcodedKeyWidened:
             assert _of(_run(check_cryptography, {"README.md": line + "\n"}), 321) == [], line
 
     def test_inline_pem_literal_is_a_hardcoded_key(self) -> None:
-        hits = _of(_run(check_cryptography, {"insecurity.ts": _pem_one_line(1024) + "\n"}), 321)
+        hits = _of(_run(check_cryptography, {"security.ts": _pem_one_line(1024) + "\n"}), 321)
         assert hits, "an inline PEM private key literal is a hardcoded key"
 
     def test_env_indirection_still_suppressed(self) -> None:
@@ -201,7 +201,7 @@ class TestHardcodedKeyWidened:
         assert _of(_run(check_cryptography, {"h.js": body}), 321) == []
 
 
-# juice-shop's 15 array-length false positives, verbatim.
+# the 15 array-length false positives, verbatim.
 _ARRAY_LENGTH_LINES = [
     "  return solves.length > 1 ? median(solves.map(({ cheatScore }) => cheatScore)) : 0",
     "  return match !== null && match.length >= 1",
@@ -388,7 +388,7 @@ class TestJwtVerificationConfusion:
 
     def test_express_jwt_public_key_secret(self) -> None:
         body = "export const isAuthorized = () => expressJwt(({ secret: publicKey }) as any)\n"
-        findings = _run(check_authentication, {"insecurity.ts": body})
+        findings = _run(check_authentication, {"security.ts": body})
         assert _of(findings, 347), "JWT verification without an algorithms allowlist is CWE-347"
         assert _of(findings, 287), "verifying with a public key is CWE-287"
 
@@ -398,7 +398,7 @@ class TestJwtVerificationConfusion:
             "(jws.verify as ((token: string, secret: string) => boolean))(token, publicKey) "
             ": false\n"
         )
-        findings = _run(check_authentication, {"insecurity.ts": body})
+        findings = _run(check_authentication, {"security.ts": body})
         assert _of(findings, 287), "jws.verify with publicKey must be CWE-287"
 
     def test_jwt_verify_namespaced_public_key(self) -> None:
@@ -420,7 +420,7 @@ class TestJwtVerificationConfusion:
 
     def test_random_secret_deny_all_is_not_347(self) -> None:
         body = "export const denyAll = () => expressJwt({ secret: '' + Math.random() } as any)\n"
-        assert _of(_run(check_authentication, {"insecurity.ts": body}), 347) == []
+        assert _of(_run(check_authentication, {"security.ts": body}), 347) == []
 
     def test_one_row_per_file_per_cwe(self) -> None:
         body = (
@@ -428,6 +428,6 @@ class TestJwtVerificationConfusion:
             "export const verify = (token) => jws.verify(token, publicKey)\n"
             "const other = () => jwt.verify(token, publicKey, cb)\n"
         )
-        findings = _run(check_authentication, {"insecurity.ts": body})
+        findings = _run(check_authentication, {"security.ts": body})
         assert len(_of(findings, 347)) == 1
         assert len(_of(findings, 287)) == 1

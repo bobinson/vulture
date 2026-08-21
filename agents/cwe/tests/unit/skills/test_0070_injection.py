@@ -1,6 +1,6 @@
 """Feature 0070 — injection_check precision + new detectors.
 
-Four items, all measured against /home/user/src/juice-shop:
+Four items, all measured on a real application tree:
 
 1. CWE-89: the "clause bigram" template-literal branch matched prose under
    ``re.IGNORECASE`` ("how to *set* up", "the bonus points *from* this
@@ -9,7 +9,7 @@ Four items, all measured against /home/user/src/juice-shop:
 2. CWE-918: the Go ``http.Get`` branch ran with ``re.IGNORECASE``, so it
    matched Angular's ``this.http.get(``; plus a bare ``\\+`` alternative
    treated any string concatenation as taint. 29 rows, 29 false.
-3. CWE-918: one-hop taint recovers the single real SSRF in juice-shop
+3. CWE-918: one-hop taint recovers the real SSRF shape
    (``const url = req.body.imageUrl`` -> ``await fetch(url)``).
 4. CWE-79: Angular sinks (``bypassSecurityTrust*``, ``[innerHTML]=``) were
    entirely unmodelled.
@@ -26,7 +26,7 @@ from cwe_agent.skills.injection_check import (
     check_injection,
 )
 
-# --- juice-shop fixture lines (verbatim) -----------------------------------
+# --- measured fixture lines (verbatim) -------------------------------------
 
 JS_LOGIN_SQLI = (
     "    models.sequelize.query(`SELECT * FROM Users WHERE email = "
@@ -40,7 +40,7 @@ JS_SEARCH_SQLI = (
     "NULL) ORDER BY name`)\n"
 )
 PROSE_SET_UP = (
-    "    logger.info(`Check ${colors.bold('https://howto-web3.owasp-juice.shop')}"
+    "    logger.info(`Check ${colors.bold('https://howto.example.com')}"
     " for instructions on how to set up and configure the Alchemy API`)\n"
 )
 PROSE_FROM_THIS_ORDER = (
@@ -158,7 +158,7 @@ class TestSsrfNarrowing:
 
 PROFILE_IMAGE_UPLOAD = """import { type Request, type Response, type NextFunction } from 'express'
 
-export function profileImageUrlUpload () {
+export function imageUrlUpload () {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (req.body.imageUrl !== undefined) {
       const url = req.body.imageUrl
@@ -202,7 +202,7 @@ REACHABLE_PARAM = """export const checkIfDomainReachable = async (domain: string
 
 class TestSsrfOneHopTaint:
     def test_req_body_assigned_identifier_reaches_fetch(self, tmp_path):
-        (tmp_path / "profileImageUrlUpload.ts").write_text(PROFILE_IMAGE_UPLOAD)
+        (tmp_path / "imageUrlUpload.ts").write_text(PROFILE_IMAGE_UPLOAD)
         hits = _cats(check_injection(str(tmp_path)), "CWE-918")
         assert len(hits) == 1, hits
         assert hits[0]["line_start"] == 10
@@ -309,47 +309,9 @@ class TestAngularXssSinks:
         assert "VULTURE_DISABLE_EXTENSION_WHITELIST" in hits[0]["description"]
 
 
-# === juice-shop corpus measurements =======================================
-
-JUICE_SHOP = "/home/user/src/juice-shop"
-
-
-@pytest.mark.skipif(
-    not __import__("pathlib").Path(JUICE_SHOP).is_dir(),
-    reason="juice-shop corpus not present",
-)
-class TestJuiceShopCounts:
-    @pytest.fixture(scope="class")
-    def result(self):
-        return check_injection(JUICE_SHOP)
-
-    def test_sqli_rows(self, result):
-        hits = _cats(result, "CWE-89")
-        rel = sorted(
-            f"{f['file_path'].replace(JUICE_SHOP + '/', '')}:{f['line_start']}"
-            for f in hits
-        )
-        assert rel == ["routes/login.ts:34", "routes/search.ts:23"], rel
-
-    def test_ssrf_rows(self, result):
-        hits = _cats(result, "CWE-918")
-        rel = [
-            f"{f['file_path'].replace(JUICE_SHOP + '/', '')}:{f['line_start']}"
-            for f in hits
-        ]
-        assert rel == ["routes/profileImageUrlUpload.ts:24"], rel
-
-    def test_xss_rows(self, result):
-        hits = _cats(result, "CWE-79")
-        assert len(hits) == 23, len(hits)
-        crit = [f for f in hits if f["severity"] == "critical"]
-        rel = [
-            f"{f['file_path'].replace(JUICE_SHOP + '/', '')}:{f['line_start']}"
-            for f in crit
-        ]
-        assert rel == [
-            "frontend/src/app/search-result/search-result.component.ts:143"
-        ], rel
+# The former single-tree measurement class was removed: it asserted one
+# repository's exact file paths and row counts for CWE-89/918/79. The predicates
+# and their false-positive shapes are covered hermetically above and below.
 
 
 def test_no_ignorecase_on_go_http_get():

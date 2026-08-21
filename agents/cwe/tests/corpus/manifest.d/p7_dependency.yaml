@@ -1,0 +1,35 @@
+# Group: dependency (feature 0070 P7). Paths are relative to ../fixtures/.
+# `line` is the expected vuln line (diagnostic only, positives).
+#
+# The runner flattens every fixture to ONE file named `f.<ext>`, so only
+# content-keyed rules can gate here. Both CWEs below are single-line rules over
+# an extension the owning skill already scans (.html/.js/.py/.sh/.yml), so the
+# flattened copy is yielded.
+#
+# ── CWE-830 (skill `dependency`) ──
+# The clean twins are minimal: positive 1 differs from its twin only by the
+# `integrity=` attribute, and that twin also carries the webfont
+# `<link rel=stylesheet>` shape whose arm was DROPPED after measurement (28 of
+# 29 hits, none of them actionable — such a stylesheet cannot carry SRI). If a
+# future edit re-adds that arm, this twin fails the fp_rate gate.
+# Positive 3 / twin 3 differ only in the created element (`script` vs `img`):
+# an <img> src has no integrity mechanism and is not this weakness, which is
+# why a bare `.src =` was rejected as an anchor.
+- {file: p7_dependency/cwe_830_1.html, language: HTML, cwe: "830", expectation: positive, line: 5}
+- {file: p7_dependency/cwe_830_2.js, language: JavaScript, cwe: "830", expectation: positive, line: 4}
+- {file: p7_dependency/cwe_830_3.js, language: JavaScript, cwe: "830", expectation: positive, line: 4}
+- {file: p7_dependency/cwe_830_1_clean.html, language: HTML, cwe: "830", expectation: negative}
+- {file: p7_dependency/cwe_830_2_clean.js, language: JavaScript, cwe: "830", expectation: negative}
+- {file: p7_dependency/cwe_830_3_clean.js, language: JavaScript, cwe: "830", expectation: negative}
+
+# ── CWE-427 (skill `dependency`) ──
+# Twin 1 is the dominant real idiom (element derived from the module's own
+# location), which is why the predicate accepts only a literal `.`/`..`/`""`,
+# a temp dir, or an explicit cwd call. Twins 2/3 differ from their positives
+# only in the path element being absolute.
+- {file: p7_dependency/cwe_427_1.py, language: Python, cwe: "427", expectation: positive, line: 5}
+- {file: p7_dependency/cwe_427_2.sh, language: Shell, cwe: "427", expectation: positive, line: 4}
+- {file: p7_dependency/cwe_427_3.yml, language: YAML, cwe: "427", expectation: positive, line: 7}
+- {file: p7_dependency/cwe_427_1_clean.py, language: Python, cwe: "427", expectation: negative}
+- {file: p7_dependency/cwe_427_2_clean.sh, language: Shell, cwe: "427", expectation: negative}
+- {file: p7_dependency/cwe_427_3_clean.yml, language: YAML, cwe: "427", expectation: negative}

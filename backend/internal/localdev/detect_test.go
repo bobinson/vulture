@@ -92,18 +92,18 @@ func TestCheckPythonModule_RejectsCodeInjection(t *testing.T) {
 	const sentinelPython = "/nonexistent/python-binary-do-not-execute"
 
 	bad := []string{
-		"os; os.system('rm -rf /')",     // chained statement
+		"os; os.system('rm -rf /')", // chained statement
 		"os', __import__('os').system('rm -rf /')",
 		"os\nimport subprocess; subprocess.run(['rm','-rf','/'])",
 		"os; print(open('/etc/passwd').read())",
-		"-c attack",                     // looks like a flag
-		"os ",                            // trailing whitespace
-		" os",                            // leading whitespace
-		"",                               // empty
-		"123os",                          // starts with digit
-		"os.sub-module",                  // hyphen
-		"os/path",                        // slash
-		"os\x00attack",                 // null byte
+		"-c attack",     // looks like a flag
+		"os ",           // trailing whitespace
+		" os",           // leading whitespace
+		"",              // empty
+		"123os",         // starts with digit
+		"os.sub-module", // hyphen
+		"os/path",       // slash
+		"os\x00attack",  // null byte
 	}
 	for _, m := range bad {
 		t.Run(m, func(t *testing.T) {

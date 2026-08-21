@@ -44,13 +44,13 @@ func NewAuditLogger(path string) (*AuditLogger, error) {
 // Event represents a single security-relevant action. Marshalled
 // one-per-line to the audit log.
 type Event struct {
-	Time     string            `json:"ts"`
-	Seq      uint64            `json:"seq"`
-	Kind     string            `json:"kind"`
-	Subject  string            `json:"subject,omitempty"`
-	Source   string            `json:"source,omitempty"`
-	Outcome  string            `json:"outcome,omitempty"`
-	Detail   map[string]string `json:"detail,omitempty"`
+	Time    string            `json:"ts"`
+	Seq     uint64            `json:"seq"`
+	Kind    string            `json:"kind"`
+	Subject string            `json:"subject,omitempty"`
+	Source  string            `json:"source,omitempty"`
+	Outcome string            `json:"outcome,omitempty"`
+	Detail  map[string]string `json:"detail,omitempty"`
 }
 
 // Log writes one event to the audit log. Returns the sequence number

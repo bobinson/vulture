@@ -1,15 +1,15 @@
 """Feature 0070 — info-exposure precision + Node XXE / config / token detectors.
 
-Three separate defects, measured against /home/user/src/juice-shop:
+Three separate defects, each measured on a real application tree:
 
-1. CWE-611 (input_validation_check) scored ZERO on a target whose own source
-   comment says "intentionally vulnerable to XXE for the related challenges".
+1. CWE-611 (input_validation_check) scored ZERO on a target that is XXE-vulnerable
+   by its own admission.
    `XXE_PATTERNS` held eight Python/Java parser APIs and no Node entry at all,
    so `lib/xml.ts:35` — which ORs `XML_PARSE_NOENT | XML_PARSE_DTDLOAD` into the
    libxml2 parse options and is reached from `routes/fileUpload.ts:76` — was
    invisible.
 
-2. CWE-532 (info_exposure_check) emitted 6 rows on juice-shop, all 6 false. The
+2. CWE-532 (info_exposure_check) emitted 6 rows in one sweep, all 6 false. The
    `log`-prefixed alternation `(?:log(?:ger)?|print|fmt\\.Print)\\w*\\(` matched
    `oauthLogin(`, `.login(` and `await login(`, and the remaining rows were log
    messages whose *literal text* merely mentions a token
@@ -22,8 +22,8 @@ Three separate defects, measured against /home/user/src/juice-shop:
    Detection of a genuinely logged secret must survive — including through an
    interpolation, which is why the strip keeps `${...}` / `{...}` expressions.
 
-3. Two exposures juice-shop contains and the skill had no rule for:
-   - CWE-497 `routes/appConfiguration.ts:15` serialises the WHOLE node-config
+3. Two common exposures the skill had no rule for:
+   - CWE-497 a config route serialises the WHOLE node-config
      object (`config.util.toObject(config)`) into an HTTP response.
    - CWE-598 `frontend/src/app/Services/user.service.ts:68` puts an OAuth
      access token in the query string of a GET URL.
@@ -32,15 +32,8 @@ Three separate defects, measured against /home/user/src/juice-shop:
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from cwe_agent.skills.info_exposure_check import check_information_exposure
 from cwe_agent.skills.input_validation_check import check_input_validation
-
-JUICE_SHOP = Path("/home/user/src/juice-shop")
-needs_juice_shop = pytest.mark.skipif(
-    not JUICE_SHOP.is_dir(), reason="juice-shop corpus not present"
-)
 
 
 def _run(files: dict[str, str], skill=check_information_exposure) -> list[dict]:
@@ -63,7 +56,7 @@ def _of(findings: list[dict], cwe: str) -> list[dict]:
 
 
 class TestNodeXXE:
-    def test_juiceshop_libxml2_parse_options(self):
+    def test_libxml2_parse_options_flags(self):
         """lib/xml.ts:35 — the exact instance the scan missed."""
         body = (
             "import * as vm from 'node:vm'\n"
@@ -116,13 +109,17 @@ class TestNodeXXE:
         body = "const doc = JSON.parse(raw)\nconst other = parseInt(raw, 10)\n"
         assert not _of(_run({"json.ts": body}, check_input_validation), "CWE-611")
 
-    @needs_juice_shop
-    def test_juice_shop_lib_xml_is_reached(self):
-        hits = _of(check_input_validation(str(JUICE_SHOP / "lib"))["findings"], "CWE-611")
-        assert hits, "juice-shop lib/xml.ts must now produce a CWE-611 row"
-        assert any(h["file_path"].endswith("lib/xml.ts") for h in hits), [
-            h["file_path"] for h in hits
-        ]
+    def test_parse_options_ored_into_a_variable_is_reached(self):
+        """The real-world shape: the unsafe flags are OR-ed into a local that is
+        passed to the parser, so no single line contains both the API and the
+        flag."""
+        body = (
+            "const options = xmljs.ParserOptions.XML_PARSE_NOENT |\n"
+            "  xmljs.ParserOptions.XML_PARSE_DTDLOAD\n"
+            "export const parse = (xml: string) =>\n"
+            "  libxmljs.parseXml(xml, { option: options })\n"
+        )
+        assert _of(_run({"xml.ts": body}, check_input_validation), "CWE-611")
 
 
 # --------------------------------------------------------------------------
@@ -188,9 +185,18 @@ class TestLogSensitivePrecision:
         body = 'func go() {\n\tlog.Printf("%s", apiKey)\n}\n'
         assert _of(_run({"main.go": body}), "CWE-532")
 
-    @needs_juice_shop
-    def test_juice_shop_cwe_532_is_zero(self):
-        hits = _of(check_information_exposure(str(JUICE_SHOP))["findings"], "CWE-532")
+    def test_all_known_false_positive_shapes_together_score_zero(self):
+        """Aggregate precision: every FP shape this rule ever produced, in one
+        tree, must yield nothing. Kept as one test because the property that
+        matters is the total, not any single shape."""
+        files = {
+            "oauth.ts": "const t = await oauthLogin(credentials)\n",
+            "dotted.ts": "await this.userService.login(payload)\n",
+            "bare.ts": "const session = await login(email, password)\n",
+            "msg1.ts": 'logger.warn("ORG_ADMIN_TOKEN secret not configured")\n',
+            "msg2.ts": 'console.log("BEE tokens extracted successfully")\n',
+        }
+        hits = _of(_run(files), "CWE-532")
         assert hits == [], [(h["file_path"], h["line_start"]) for h in hits]
 
 
@@ -200,10 +206,10 @@ class TestLogSensitivePrecision:
 
 
 class TestConfigExposure:
-    def test_juiceshop_app_configuration_route(self):
-        """routes/appConfiguration.ts — full node-config dump in res.json()."""
+    def test_app_configuration_route(self):
+        """A config route: full node-config dump in res.json()."""
         body = (
-            "export function retrieveAppConfiguration () {\n"
+            "export function getAppConfig () {\n"
             "  return (_req: Request, res: Response) => {\n"
             "    const safeConfig = structuredClone(config.util.toObject(config))\n"
             "    delete safeConfig.application.chatBot.llmApiUrl\n"
@@ -235,14 +241,9 @@ class TestConfigExposure:
         body = "const all = config.util.toObject(config)\nsetupThings(all)\n"
         assert _of(_run({"boot.ts": body}), "CWE-497") == []
 
-    @needs_juice_shop
-    def test_juice_shop_config_route_reached(self):
-        hits = _of(
-            check_information_exposure(str(JUICE_SHOP / "routes"))["findings"], "CWE-497"
-        )
-        assert any(
-            h["file_path"].endswith("routes/appConfiguration.ts") for h in hits
-        ), [h["file_path"] for h in hits]
+    # The real-world route shape is already covered hermetically by
+    # `test_app_configuration_route` above (a node-config dump reaching
+    # `res.json`), so the former corpus-path test added no distinct coverage.
 
 
 # --------------------------------------------------------------------------
@@ -251,7 +252,7 @@ class TestConfigExposure:
 
 
 class TestTokenInQueryString:
-    def test_juiceshop_access_token_in_get_url(self):
+    def test_access_token_in_get_url(self):
         """user.service.ts:68 — access_token appended to a GET URL."""
         body = (
             "googleAuth (accessToken: string) {\n"
@@ -284,10 +285,9 @@ class TestTokenInQueryString:
         body = "this.totpUrl = `otpauth://totp/${app}:${email}?secret=${secret}&issuer=${app}`\n"
         assert _of(_run({"twofactor.ts": body}), "CWE-598") == []
 
-    @needs_juice_shop
-    def test_juice_shop_token_in_url_reached(self):
-        hits = _of(
-            check_information_exposure(str(JUICE_SHOP / "frontend" / "src"))["findings"],
-            "CWE-598",
+    def test_token_in_a_get_query_string_is_reached(self):
+        body = (
+            "this.http.get(`${environment.hostServer}/rest/user/reset-password"
+            "?token=${this.token}`)\n"
         )
-        assert hits, "juice-shop must produce at least one CWE-598 row"
+        assert _of(_run({"reset.ts": body}), "CWE-598")

@@ -17,8 +17,8 @@ import (
 func VirtualManifestForInTreeAgent(e agentregistry.AgentRegistryEntry) Manifest {
 	phase := phaseForAgentType(e.Type)
 	cap := Capability{
-		Phase:   phase,
-		Emits:   emitsForPhase(phase),
+		Phase:    phase,
+		Emits:    emitsForPhase(phase),
 		TimeoutS: 1800,
 	}
 	return Manifest{

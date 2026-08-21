@@ -51,10 +51,17 @@ func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "vulture_test.db")
 	return &config.Config{
-		Port:      "0",
-		DBPath:    dbPath,
-		LocalMode: true,
-		JWTSecret: "test-secret-for-e2e",
+		Port: "0",
+		// Loopback, because 0065 refuses to start in LocalMode on a
+		// non-loopback listen address. Production gets this from
+		// config.resolveListenAddr; a struct built here bypasses that, so the
+		// whole suite failed at server.New with `listen address ""`. The
+		// harness binds its own 127.0.0.1:0 listener above and never reads this
+		// field — it only has to satisfy the guard.
+		ListenAddr: "127.0.0.1:0",
+		DBPath:     dbPath,
+		LocalMode:  true,
+		JWTSecret:  "test-secret-for-e2e",
 		Agents: map[string]config.AgentConfig{
 			"chaos": {Name: "Chaos Engineering", Type: "chaos", URL: ""},
 			"owasp": {Name: "OWASP", Type: "owasp", URL: ""},

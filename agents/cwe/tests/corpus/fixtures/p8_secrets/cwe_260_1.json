@@ -1,0 +1,4 @@
+{
+  "server": { "host": "db.internal", "port": 5432 },
+  "credentials": { "user": "svcaccount", "password": "Zt4qL9pR2sX7" }
+}

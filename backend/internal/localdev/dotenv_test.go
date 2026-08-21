@@ -8,9 +8,9 @@ import (
 
 func TestParseDotenvLine(t *testing.T) {
 	cases := []struct {
-		in              string
+		in               string
 		wantKey, wantVal string
-		wantOK          bool
+		wantOK           bool
 	}{
 		{"VULTURE_USE_LLM=true", "VULTURE_USE_LLM", "true", true},
 		{"export VULTURE_PLUGINS=semgrep,trivy", "VULTURE_PLUGINS", "semgrep,trivy", true},
@@ -23,8 +23,8 @@ func TestParseDotenvLine(t *testing.T) {
 		{"", "", "", false},
 		{"   ", "", "", false},
 		{"=novalue", "", "", false},
-		{"9BAD=x", "", "", false},  // key may not start with a digit
-		{"BA D=x", "", "", false},  // space in key
+		{"9BAD=x", "", "", false}, // key may not start with a digit
+		{"BA D=x", "", "", false}, // space in key
 		{"noequals", "", "", false},
 		// command-substitution / expansion text is taken LITERALLY:
 		{"VULTURE_X=$(echo pwned)", "VULTURE_X", "$(echo pwned)", true},

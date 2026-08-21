@@ -142,7 +142,7 @@ make build          # Build all components
 make test           # Run all tests (Go + Python + Frontend)
 make e2e            # Run E2E test suites
 make coverage       # Measure + report test coverage
-make complexity     # Report cyclomatic-complexity outliers (target < 10)
+make complexity     # Report cyclomatic-complexity outliers (target < 5)
 make lint           # Lint all components
 make docker-up      # Start full stack via docker compose
 make docker-down    # Stop all services
@@ -216,7 +216,7 @@ These rules are mandatory for all code in this project:
 1. **E2E tests first**: E2E business logic tests must be written first, then the code. Code must be verified against the business logic after every change.
 2. **NEVER modify E2E business logic tests**: These tests are the source of truth for business requirements. Changing them to make code pass is forbidden.
 3. **DRY**: No duplicated logic. Extract shared code into appropriate shared modules.
-4. **Low cyclomatic complexity (target < 10)**: Keep functions under ~10 independent code paths where practical — use early returns, strategy pattern, and delegation. `make complexity` reports `gocyclo`/`radon` outliers; it's a monitored target, not a hard gate (a known tail of older functions still exceeds it).
+4. **Low cyclomatic complexity (target < 5)**: Keep functions under ~5 independent code paths where practical — use early returns, strategy pattern, and delegation. `make complexity` reports `gocyclo`/`radon` outliers; it's a monitored target, not a hard gate (a known tail of older functions still exceeds it).
 5. **High test coverage (target: comprehensive)**: New code should ship with tests; aim to cover every meaningful path. Coverage is measured and reported in CI, not gated at a fixed percentage.
 6. **Performance-conscious**: Minimize allocations and unnecessary copies, use efficient data structures, and profile hot paths. (Vulture is application software, not a safety-certified system — it does not claim ISO 26262 / DO-178C compliance for its own code; those frameworks are *audit targets* the agents check other code against.)
 
@@ -317,6 +317,12 @@ VULTURE_AGENT_CWE_URL=http://agent-cwe:8004
 VULTURE_EMBEDDING_URL=                               # Custom embedding endpoint
 VULTURE_EMBEDDING_MODEL=                             # Embedding model override
 
+# Audit dispatch and event broadcast (feature 0071)
+VULTURE_AUDIT_AUTODISPATCH=true                       # POST /api/audits starts the run in the background. Default on. Set false to restore the pre-0071 behavior where a run only starts when an SSE client connects — which is why `vulture scan --wait` (it never opens a stream) used to poll `pending` forever. One-release rollback switch
+VULTURE_AUDIT_BROADCAST_HISTORY=8192                  # Per-run replay buffer, in EVENTS not findings. Bounds what a client attaching mid-run can be shown of what it missed; it can never affect persisted findings, because the aggregator reads the live channel, not this buffer. On overflow the oldest events are dropped and the client is sent an explicit truncation notice
+VULTURE_AUDIT_BROADCAST_HISTORY_BYTES=67108864        # Byte budget for the same buffer (64MB). Separate because an event COUNT is not a memory bound: one result snapshot can approach the 16MB agent frame ceiling, so 8192 frames alone would permit ~176MB per audit, times every concurrent run. Whichever cap binds first evicts
+VULTURE_AUDIT_BROADCAST_TTL_SEC=60                    # How long a FINISHED run stays attachable. Within the window a client gets the run's real event stream; after it, the synthesized replay, which cannot reconstruct agent thinking text or per-finding deltas (they are not persisted). Raise it if viewers routinely open results well after completion
+
 # Security hardening (feature 0065) — opt-in; defaults preserve current behavior
 VULTURE_TRUSTED_PROXIES=                             # Comma CIDR/IP list of proxies allowed to set X-Forwarded-For. Unset = trust the direct peer only. MUST be set to the proxy address when behind a reverse proxy, else every client collapses to the proxy IP and shares one rate-limit / login-throttle bucket
 VULTURE_LOGIN_LOCKOUT_MAX=5                          # Failed logins per (email,IP) before the escalating (capped) delay engages; a hard ceiling at 2x returns 429. Non-positive value falls back to 5
@@ -329,6 +335,8 @@ VULTURE_GIT_SSH_STRICT=accept-new                    # SSH StrictHostKeyChecking
 VULTURE_GIT_SSH_KNOWN_HOSTS=                         # UserKnownHostsFile path for SSH clones. Default: a per-install path under the data dir
 VULTURE_GIT_SSH_INSECURE=false                       # Restore legacy no-host-key-verification for SSH clones (rollback escape hatch; disables MITM protection)
 VULTURE_WEBHOOK_HOST_ALLOWLIST=                      # Comma list of internal hosts permitted as webhook targets. Empty = public-only (internal webhook targets blocked)
+VULTURE_AGENT_ENV_SCRUB=true                         # Native modes (feature 0073): spawned agents receive a FILTERED copy of the backend env — backend credentials (JWT secret, DB DSN/password, webhook HMAC, broker mint key) and injection vectors (LD_PRELOAD, LD_AUDIT, DYLD_*, PYTHONSTARTUP, PYTHONUSERBASE, PYTHONHOME) are removed. All VULTURE_* CONFIG still reaches agents, as does VULTURE_AGENT_TOKEN; provider keys are kept unless the broker is on. Docker is unaffected (compose enumerates agent env). false = pre-0073 full inheritance
+VULTURE_AGENT_ENV_PASSTHROUGH=                       # Comma list of var names exempt from the 0073 filter. Injection vectors are refused even when listed. Neither hatch can be set from config/.env — only the real process environment
 VULTURE_ALLOW_INSECURE_LLM=false                     # Allow sending the provider API key over an http:// (non-TLS) LLM endpoint and skip endpoint validation
 VULTURE_STRICT_LLM_ENDPOINT=false                    # Hard-fail backend startup on an insecure LLM endpoint instead of the default degrade-with-warning (the key is withheld either way)
 
@@ -360,6 +368,18 @@ VULTURE_LLM_GATEWAY_GUESS_CTX=32000                  # Window ceiling trusted wh
 VULTURE_REQUIRE_LOOP_GUARD=false                     # Refuse the LLM phase outright when the tool-loop guard cannot be attached, instead of degrading. The guard raises at VULTURE_LOOP_GLOBAL_LIMIT tool calls; without it the only bound on a runaway loop is VULTURE_AGENT_MAX_AUDIT_SECONDS
 VULTURE_LLM_MAX_CONSECUTIVE_FAILURES=3               # Abort the batch sweep after N CONSECUTIVE failing batches (a success resets the counter, so one blip never ends the phase). Guards the case where every batch fails for the same structural reason (bad key, dead gateway, 413) and walking the remaining batches only burns wall-clock. The abort is always logged (llm_consecutive_failure_abort) and reported as a partial-results notice — never silent. 0 disables
 VULTURE_LLM_MAX_TURNS=12                             # Cap on agent turns per LLM call (passed to Runner.run). Bounds a model that keeps calling tools without ever producing a final answer; complements the tool-call loop guard, which counts calls rather than turns
+
+# What the LLM tier actually SEES (feature 0075). The prompt is the input to every
+# LLM-citing agent — cwe, asvs, do178c, chaos, soc2, ssdf, xss, owasp all reach the
+# model through the same two prompt paths, so these apply to all eight at once.
+VULTURE_LLM_TIER3=false                              # Feature 0059 cost guard, and the LARGEST coverage lever here. Off (default) scopes the sweep to flagged + entry/config files and skips the long tail: measured on one 7,598-file target, 828 of 2,828 eligible files are rendered. Raise coverage here BEFORE tuning anything below
+VULTURE_LLM_LINE_NUMBERS=true                        # Files reach the prompt with absolute line numbers ("30: code") so the model reads a line instead of counting newlines. Measured: raw files mislocated 78% of findings vs 13% for numbered; adjudicated precision 15.7% -> 30.0%. Costs ~5-7 chars/line of budget. false = pre-0075 presentation (snippets stay numbered — that predates the switch)
+VULTURE_LLM_SNIPPET_CONTEXT=10                       # Lines of context each side of a finding. The default is byte-identical to pre-0075 output. Widening buys the model the guard that would REFUTE a finding (measured as `guard_present` false positives) and costs budget — fewer files per batch
+VULTURE_LLM_WHOLE_FILE_MAX_LINES=0                   # Render files at or below N lines whole instead of windowed; 0 disables. For a small file the elision markers cost nearly what the omitted lines would
+VULTURE_LLM_FEED_PROSE=false                         # Send prose/data (.md .txt .csv .rst .adoc) to the prompt. Off on BUDGET grounds — doc text displaces real source inside a fixed ceiling — NOT because prose is clean. Skills still scan it; VULTURE_SECRET_SCAN_PROSE covers the gap
+VULTURE_LLM_INELIGIBLE_EXTENSIONS=                   # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding .graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. Populate it (e.g. ".graphql,.gql") if you cannot send config dialects to a third-party provider
+VULTURE_LLM_FEED_UNIFY=true                          # Both feed paths resolve ONE extension set. false restores the pre-0075 asymmetry (narrow for single-shot, wide for the sweep) — that pair IS the defect, so this is an unblock hatch, not a supported configuration
+VULTURE_SECRET_SCAN_PROSE=true                       # CWE agent: scan prose/data files for secrets. The compensating control for VULTURE_LLM_FEED_PROSE=false — without it a credential in a README loses the only tier reading it. Measured live: recovered a real `INBOUND_AUTH_TOKEN` in a README. false re-opens that hole
 # NOTE: Vulture pins litellm.num_retries=0 for the audit path. Retries are owned by
 # retry_llm_call() (which classifies the error and halves oversized bodies first); leaving the
 # client's own retry layer on multiplies attempts and re-sends a too-large body unchanged.

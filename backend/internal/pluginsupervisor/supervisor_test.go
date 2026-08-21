@@ -37,20 +37,20 @@ func (f *fakeRegistry) ByName(n string) (pluginregistry.Plugin, bool) {
 // fakeDocker captures all docker calls. It honours per-method error
 // injection so tests can simulate pull failures, run failures, etc.
 type fakeDocker struct {
-	mu          sync.Mutex
-	pulls       []string
-	runs        [][]string
-	stops       []stopCall
+	mu             sync.Mutex
+	pulls          []string
+	runs           [][]string
+	stops          []stopCall
 	psResult       []pluginsupervisor.RunningContainer
 	removes        []string
 	inspectPresent bool
-	pullErr     map[string]error
-	runErr      map[string]error // keyed by image
-	stopErr     error
-	infoErr     error
-	infoCalls   atomic.Int32
-	pullStarted chan string // signaled when each pull begins
-	pullHold    chan struct{}
+	pullErr        map[string]error
+	runErr         map[string]error // keyed by image
+	stopErr        error
+	infoErr        error
+	infoCalls      atomic.Int32
+	pullStarted    chan string // signaled when each pull begins
+	pullHold       chan struct{}
 }
 
 type stopCall struct {

@@ -62,7 +62,20 @@ GOLDEN_PATH = CORPUS_DIR / "VERIFIED_CWES.md"
 # augmentation, never a hard dependency).
 SEMGREP_TRUSTED_PATH = CORPUS_DIR / "semgrep_trusted.json"
 
-_CATEGORY_LITERAL_RE = re.compile(r'"category"\s*:\s*"CWE-(\d+)"')
+# Two emitter shapes, both requiring the CWE literal to physically appear at an
+# emit site in skill source:
+#
+#   1. a finding-dict entry      "category": "CWE-620"
+#   2. a shared-emitter kwarg    category="CWE-620"
+#
+# Shape 2 was previously unrecognised, so every CWE routed through a DRY `_emit`
+# helper was emitted at runtime and reported as unreachable. Measured: 8 CWEs
+# (6 of them OWASP-2025-mapped) were detected and denied. This stays a
+# derivation, never an assertion — a CWE only counts if its literal is in the
+# source, so the extractor still cannot over-claim.
+_CATEGORY_LITERAL_RE = re.compile(
+    r'(?:"category"\s*:|\bcategory\s*=)\s*"CWE-(\d+)"'
+)
 
 
 def _sort_key(cwe: str) -> int:

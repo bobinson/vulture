@@ -89,8 +89,8 @@ func TestVerify_HappyPath_AC4(t *testing.T) {
 	}
 
 	res, err := cosign.Verify(cosign.VerifyOptions{
-		BlobPath:           blob,
-		BundlePath:         bundle,
+		BlobPath:            blob,
+		BundlePath:          bundle,
 		CertificateIdentity: "sigstore/returntocorp/vulture-plugin-semgrep",
 	})
 	if err != nil {
@@ -117,8 +117,8 @@ func TestVerify_ArgvContract_AC4(t *testing.T) {
 	}
 
 	_, err := cosign.Verify(cosign.VerifyOptions{
-		BlobPath:           blob,
-		BundlePath:         bundle,
+		BlobPath:            blob,
+		BundlePath:          bundle,
 		CertificateIdentity: "sigstore/foo/bar",
 	})
 	if err != nil {
@@ -160,8 +160,8 @@ func TestVerify_CosignBinaryMissing_AC6(t *testing.T) {
 	_ = os.WriteFile(bundle, []byte("b"), 0o644)
 
 	_, err := cosign.Verify(cosign.VerifyOptions{
-		BlobPath:           blob,
-		BundlePath:         bundle,
+		BlobPath:            blob,
+		BundlePath:          bundle,
 		CertificateIdentity: "x",
 	})
 	if err == nil {
@@ -188,8 +188,8 @@ func TestVerify_NonZeroExit_AC5(t *testing.T) {
 	_ = os.WriteFile(bundle, []byte("b"), 0o644)
 
 	_, err := cosign.Verify(cosign.VerifyOptions{
-		BlobPath:           blob,
-		BundlePath:         bundle,
+		BlobPath:            blob,
+		BundlePath:          bundle,
 		CertificateIdentity: "x",
 	})
 	if err == nil {
@@ -215,8 +215,8 @@ func TestVerify_EnvVarOverridesDefaultBinary(t *testing.T) {
 	_ = os.WriteFile(bundle, []byte("b"), 0o644)
 
 	res, err := cosign.Verify(cosign.VerifyOptions{
-		BlobPath:           blob,
-		BundlePath:         bundle,
+		BlobPath:            blob,
+		BundlePath:          bundle,
 		CertificateIdentity: "id",
 	})
 	if err != nil {
@@ -251,8 +251,8 @@ exit 0
 	_ = os.WriteFile(bundle, []byte("b"), 0o644)
 
 	res, err := cosign.Verify(cosign.VerifyOptions{
-		BlobPath:           blob,
-		BundlePath:         bundle,
+		BlobPath:            blob,
+		BundlePath:          bundle,
 		CertificateIdentity: "id",
 	})
 	if err != nil {

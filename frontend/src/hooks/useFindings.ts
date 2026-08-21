@@ -25,6 +25,7 @@ export function useFindings(
   const [filterAgent, setFilterAgent] = useState<string>("all");
   const [filterProvenance, setFilterProvenance] = useState<string>("all");
   const [hideFalsePositives, setHideFalsePositives] = useState(false);
+  const [hideSuspicious, setHideSuspicious] = useState(false);
   const [page, setPage] = useState(0);
 
   // A finding is a false positive if EITHER signal fires:
@@ -33,6 +34,13 @@ export function useFindings(
   const isFalsePositive = (f: Finding): boolean =>
     f.validation_status === "likely_fp" ||
     (!!f.fingerprint && !!falsePositiveFingerprints?.has(f.fingerprint));
+
+  // Suspicious is the single automatic signal (no manual-triage set) —
+  // findings the validate layer could neither confirm nor dismiss. The
+  // "hide suspicious" toggle mirrors "hide false positives": opt-in,
+  // defaults OFF, composes with every other filter.
+  const isSuspicious = (f: Finding): boolean =>
+    f.validation_status === "suspicious";
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
@@ -66,6 +74,11 @@ export function useFindings(
     setPage(0);
   };
 
+  const setHideSuspiciousAndReset = (hide: boolean) => {
+    setHideSuspicious(hide);
+    setPage(0);
+  };
+
   // Total FP count across the whole audit (union of both signals),
   // independent of the active severity/agent filters or the toggle —
   // this is what the "Hide false positives (N)" label shows.
@@ -74,6 +87,13 @@ export function useFindings(
     // isFalsePositive closes over falsePositiveFingerprints.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [allFindings, falsePositiveFingerprints],
+  );
+
+  // Total suspicious count across the whole audit, filter- and
+  // toggle-independent — drives the "Hide suspicious (N)" label.
+  const suspiciousCount = useMemo(
+    () => allFindings.filter(isSuspicious).length,
+    [allFindings],
   );
 
   // Validate-phase (0045) breakdown over the WHOLE audit — drives the
@@ -106,6 +126,9 @@ export function useFindings(
     if (hideFalsePositives) {
       filtered = filtered.filter((f) => !isFalsePositive(f));
     }
+    if (hideSuspicious) {
+      filtered = filtered.filter((f) => !isSuspicious(f));
+    }
 
     return [...filtered].sort((a, b) => {
       let cmp = 0;
@@ -130,7 +153,7 @@ export function useFindings(
     });
     // isFalsePositive closes over falsePositiveFingerprints.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allFindings, filterSeverity, filterAgent, filterProvenance, hideFalsePositives, falsePositiveFingerprints, sortField, sortDirection]);
+  }, [allFindings, filterSeverity, filterAgent, filterProvenance, hideFalsePositives, hideSuspicious, falsePositiveFingerprints, sortField, sortDirection]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
@@ -149,11 +172,14 @@ export function useFindings(
     filterProvenance,
     hideFalsePositives,
     falsePositiveCount,
+    hideSuspicious,
+    suspiciousCount,
     validationCounts,
     setFilterSeverity: setFilterSeverityAndReset,
     setFilterAgent: setFilterAgentAndReset,
     setFilterProvenance: setFilterProvenanceAndReset,
     setHideFalsePositives: setHideFalsePositivesAndReset,
+    setHideSuspicious: setHideSuspiciousAndReset,
     toggleSort,
   };
 }

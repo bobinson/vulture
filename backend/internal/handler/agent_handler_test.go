@@ -52,8 +52,8 @@ func TestAgentHandlerList_IncludesEnabledPlugins(t *testing.T) {
 	}
 	h := NewAgentHandler(agents)
 	reg := fakePluginReg{plugins: []pluginregistry.Plugin{
-		mkPlugin("chaos", "Chaos Engineering", true),  // in-tree virtual — must dedupe
-		mkPlugin("semgrep", "Semgrep (bundled)", true), // external, enabled — must appear
+		mkPlugin("chaos", "Chaos Engineering", true),     // in-tree virtual — must dedupe
+		mkPlugin("semgrep", "Semgrep (bundled)", true),   // external, enabled — must appear
 		mkPlugin("disabledtool", "Disabled Tool", false), // disabled — must NOT appear
 	}}
 	h.SetPluginRegistry(reg, func(pluginregistry.Plugin) string { return "" })

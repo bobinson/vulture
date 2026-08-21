@@ -10,6 +10,7 @@ from shared.tools.file_scanner import (
     is_test_file,
     read_file_lines,
     scan_code_files,
+    is_prose_file,
 )
 from shared.tools.snippet import extract_snippet
 
@@ -45,7 +46,9 @@ def check_recursion(source_path: str) -> dict:
     """
     findings: list[dict] = []
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path) or is_test_file(file_path):
+        # Prose DESCRIBES a control; it is not an instance of one (F6).
+        if (is_generated_file(file_path) or is_test_file(file_path)
+                or is_prose_file(file_path)):
             continue
         _analyze_file(file_path, findings)
     return {"findings": findings}

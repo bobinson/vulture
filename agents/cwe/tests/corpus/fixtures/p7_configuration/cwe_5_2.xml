@@ -1,0 +1,9 @@
+<web-app xmlns="http://java.sun.com/xml/ns/javaee" version="3.1">
+  <security-constraint>
+    <web-resource-collection>
+      <url-pattern>/api/account/*</url-pattern>
+      <http-method>POST</http-method>
+    </web-resource-collection>
+    <auth-constraint><role-name>customer</role-name></auth-constraint>
+  </security-constraint>
+</web-app>

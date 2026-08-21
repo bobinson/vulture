@@ -8,6 +8,7 @@ from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
@@ -39,7 +40,7 @@ BREAK_OR_RETURN = re.compile(r"\b(?:break|return|sys\.exit|os\.Exit)\b")
 #
 # The verb alone is not enough — this is the same defect the CWE-754 fix in
 # error_handling_check.py cured. A bare `(?:open|fopen)\s*\(` matched every
-# method whose name merely *ends* with "open": on juice-shop 82 of 84 rows
+# method whose name merely *ends* with "open": in one sweep 82 of 84 rows
 # were `snackBarHelperService.open(...)`, `dialog.open(...)`,
 # `window.open(...)` and friends — UI calls, not resources.
 #
@@ -48,7 +49,7 @@ BREAK_OR_RETURN = re.compile(r"\b(?:break|return|sys\.exit|os\.Exit)\b")
 #      call (no `foo.` / `$foo` prefix) qualifies;
 #   2. a real-resource-namespace branch, because the bare form alone loses
 #      the `fs.createWriteStream` / `fs.createReadStream` stream family
-#      (5 genuine juice-shop sites) — dropping those would be an
+#      (5 genuine sites in the same sweep) — dropping those would be an
 #      over-correction, not a narrowing;
 #   3. a declaration skip, because `open (` at the START of a line is a
 #      method DECLARATION, not a call that leaks a handle.
@@ -86,6 +87,81 @@ UNBOUNDED_ALLOC_PATTERNS = [
 SIZE_LIMIT = re.compile(r"\b(?:max_size|maxlen|capacity|limit|MAX_)\b", re.IGNORECASE)
 
 IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
+
+# CWE-379: creation of a temporary file/directory at a PREDICTABLE path inside
+# a shared, world-writable temp directory.
+#
+# The weakness is not "a temp file exists" — it is that the path is guessable
+# AND its parent is writable by every local account, so another user can
+# pre-create, symlink or read the entry before the owner touches it. Two
+# idioms express exactly that, and both are content-keyed:
+#
+#   arm 1  a FIXED name joined onto the platform temp-dir accessor
+#          (`filepath.Join(os.TempDir(), "app-ssh")`)
+#   arm 2  a hardcoded `/tmp`-family literal handed to a create/write sink
+#          (`open('/tmp/app-export.csv', 'w')`)
+#
+# Both arms are cleared by any secure-temp API, because those generate an
+# unpredictable name inside a 0700 directory, and by any randomiser in the
+# name — an unguessable entry in a shared directory is a different (and much
+# weaker) exposure than a fixed one.
+_TEMP_ROOT = re.compile(
+    r"\bos\.TempDir\s*\(\s*\)|"                             # Go
+    r"\bos\.tmpdir\s*\(\s*\)|"                              # Node
+    r"\btempfile\.gettempdir\s*\(\s*\)|"                    # Python
+    r"\bPath\.GetTempPath\s*\(\s*\)|"                       # C#
+    r"getProperty\s*\(\s*['\"]java\.io\.tmpdir['\"]\s*\)"   # Java
+)
+
+# The root has to be COMBINED with a name for a path to be built from it; a
+# bare read of the temp directory (`fs.readdirSync(os.tmpdir(), 'utf8')`) is
+# not a creation site, and without this arm that line's `'utf8'` argument
+# would read as the fixed name.
+_JOIN_OR_CONCAT = re.compile(
+    r"\.[Jj]oin\s*\(|"      # filepath.Join / path.join / os.path.join
+    r"\bPaths\.get\s*\(|"   # Java NIO
+    r"\.resolve\s*\(|"      # Java Path.resolve
+    r"\bnew\s+File\s*\(|"   # Java legacy
+    r"\+\s*['\"`]"          # string concatenation
+)
+
+# A FIXED path component: name characters only. A format placeholder (`%d`),
+# a brace template (`{}` / `${...}`) or an interpolation therefore never reads
+# as fixed, which is the point — those names are not guessable.
+_FIXED_SEGMENT = re.compile(r"['\"`](/?[A-Za-z0-9][\w.\-]*(?:/[\w.\-]+)*)['\"`]")
+
+# Arm 2 anchor. The literal must BE the path (it starts at the quote) and must
+# carry a child component, so `'/tmp'` alone — the directory itself — and a
+# log message that merely mentions a path both stay clear.
+_TEMP_PATH_LITERAL = re.compile(
+    r"['\"`](/(?:tmp|var/tmp|usr/tmp|dev/shm)/[\w.\-][^'\"`]*)['\"`]"
+)
+
+_TEMP_FILE_SINK = re.compile(
+    r"(?<![\w.$])(?:open|fopen|creat|mkdir|makedirs|touch)\s*\(|"
+    r"\b(?:os|fs|fsPromises|ioutil|shutil)\."
+    r"(?:[Oo]pen\w*|[Cc]reate\w*|[Ww]rite\w*|[Mm]kdir\w*|makedirs|append\w*|copy\w*)\s*\(|"
+    r"\bcreateWriteStream\s*\(|"
+    r"\bnew\s+File(?:Writer|OutputStream)\s*\(|"
+    r"\bFiles\.(?:write|newOutputStream|createFile|createDirector\w+)\s*\(|"
+    r"\.write_(?:text|bytes)\s*\("
+)
+
+# Secure-temp APIs: every one of these mints an unpredictable name (and, on
+# POSIX, an owner-only directory), which is the recommended fix — so their
+# presence on the line is the clean twin of both arms.
+_SECURE_TEMP_API = re.compile(
+    r"\b(?:MkdirTemp|CreateTemp|TempFile|mkdtemp\w*|mkstemp\w*|"
+    r"NamedTemporaryFile|SpooledTemporaryFile|TemporaryFile|TemporaryDirectory|"
+    r"createTempFile|createTempDirectory|GetTempFileName|tmpfile)\s*\("
+)
+
+_UNPREDICTABLE_NAME = re.compile(
+    r"uuid|nanoid|Math\.random|randomUUID|random_|randomBytes|"
+    r"\brand\b|\brandom\b|secrets\.|token_hex|"
+    r"[Gg]etpid|process\.pid|Date\.now|time\.Now",
+    re.IGNORECASE,
+)
 
 # CWE-799: Improper control of interaction frequency (missing rate limiting).
 # Auth-related endpoints without any rate limiter in the SAME file. This is
@@ -137,6 +213,16 @@ SPOOFABLE_CLIENT_HEADER = re.compile(
 )
 
 
+def _should_skip(file_path: Path) -> bool:
+    """True for files whose resource patterns cannot be real leaks.
+
+    ``is_prose_file`` is the third arm: nothing in a document is ever opened,
+    so nothing in it can leak. Measured on a prose file that merely quotes an
+    unclosed ``open()`` as the thing not to do: 2 false CWE-404 rows.
+    """
+    return is_generated_file(file_path) or is_test_file(file_path) or is_prose_file(file_path)
+
+
 def check_resource_management(source_path: str) -> dict:
     """Check for resource management vulnerabilities.
 
@@ -149,9 +235,7 @@ def check_resource_management(source_path: str) -> dict:
     findings: list[dict] = []
 
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path):
-            continue
-        if is_test_file(file_path):
+        if _should_skip(file_path):
             continue
         _analyze_file(file_path, findings)
 
@@ -170,12 +254,29 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
             continue
         if SCANNER_DEF_LINE.search(line):
             continue
-        _check_resource_consumption(file_path, line, line_num, lines, findings)
-        _check_improper_shutdown(file_path, line, line_num, lines, findings)
-        _check_null_deref(file_path, line, line_num, lines, findings)
-        _check_unbounded_alloc(file_path, line, line_num, lines, findings)
+        _analyze_line(file_path, line, line_num, lines, findings)
     # File-scoped: rate limiting is a whole-file property, checked once.
     _check_rate_limiting(file_path, lines, findings)
+
+
+def _analyze_line(
+    file_path: Path,
+    line: str,
+    line_num: int,
+    lines: list[str],
+    findings: list[dict],
+) -> None:
+    """Run every per-line resource check against one already-filtered line."""
+    _check_resource_consumption(file_path, line, line_num, lines, findings)
+    # Rule 6 (no row stacking): CWE-379 keys on the same `open(` /
+    # `fs.create*` verbs as CWE-404, and CWE-379 is not a catalog descendant
+    # of CWE-404, so the two would be a duplicate row rather than a
+    # collapsible ancestor pair. The temp-directory row is the more specific
+    # defect, so it claims the line and CWE-404 stands down.
+    if not _check_insecure_temp_dir(file_path, line, line_num, lines, findings):
+        _check_improper_shutdown(file_path, line, line_num, lines, findings)
+    _check_null_deref(file_path, line, line_num, lines, findings)
+    _check_unbounded_alloc(file_path, line, line_num, lines, findings)
 
 
 def _check_rate_limiting(
@@ -321,6 +422,65 @@ def _check_def_rate_limiting(
         }
         finding["code_snippet"] = extract_snippet(lines, line_num)
         findings.append(enrich_finding(finding, "799"))
+
+
+def _joined_temp_path(line: str) -> str | None:
+    """Arm 1 — a fixed name combined with the platform temp-dir accessor."""
+    root = _TEMP_ROOT.search(line)
+    if root is None or not _JOIN_OR_CONCAT.search(line):
+        return None
+    segment = _FIXED_SEGMENT.search(line, root.end())
+    return segment.group(1) if segment else None
+
+
+def _predictable_temp_path(line: str) -> str | None:
+    """The predictable shared-temp path this line builds, if any (CWE-379)."""
+    if _SECURE_TEMP_API.search(line) or _UNPREDICTABLE_NAME.search(line):
+        return None
+    literal = _TEMP_PATH_LITERAL.search(line)
+    if literal is not None and _TEMP_FILE_SINK.search(line):
+        return literal.group(1)
+    return _joined_temp_path(line)
+
+
+def _check_insecure_temp_dir(
+    file_path: Path,
+    line: str,
+    line_num: int,
+    lines: list[str],
+    findings: list[dict],
+) -> bool:
+    """Temp file/dir at a predictable path in a shared directory (CWE-379).
+
+    Returns True when the line was claimed, so the caller can keep the
+    one-row-per-line invariant against the CWE-404 arm.
+    """
+    target = _predictable_temp_path(line)
+    if target is None:
+        return False
+    finding = {
+        "severity": "medium",
+        "check_id": "cwe.resource.insecure_temp_dir",
+        "category": "CWE-379",
+        "title": "Temporary file created at a predictable path in a shared directory",
+        "description": (
+            f"Line {line_num} builds '{target}' inside a world-writable "
+            "temp directory using a fixed name, so any local account can "
+            "pre-create, symlink or read that entry"
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": (
+            "Create temporary files through the platform's secure API "
+            "(os.MkdirTemp/os.CreateTemp, tempfile.mkstemp/mkdtemp, "
+            "fs.mkdtemp, Files.createTempFile), which mints an unpredictable "
+            "name in an owner-only directory"
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "379"))
+    return True
 
 
 def _check_resource_consumption(

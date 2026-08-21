@@ -1,0 +1,7 @@
+<div id="out"></div>
+<script>
+  window.addEventListener("message", function (event) {
+    if (event.origin !== "https://app.example.com") { return; }
+    document.getElementById("out").textContent = event.data.text;
+  });
+</script>

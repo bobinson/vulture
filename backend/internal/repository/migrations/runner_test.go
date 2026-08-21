@@ -157,7 +157,7 @@ func TestApply_PartialFailure(t *testing.T) {
 func TestApply_BadFilename(t *testing.T) {
 	db := openTestDB(t)
 	f := fixtureFS(map[string]string{
-		"001_a.sql":   `CREATE TABLE a (id INTEGER)`,
+		"001_a.sql":     `CREATE TABLE a (id INTEGER)`,
 		"012b_oops.sql": `CREATE TABLE oops (id INTEGER)`,
 	})
 

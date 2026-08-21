@@ -1,0 +1,6 @@
+<div id="out"></div>
+<script>
+  window.addEventListener("message", function (event) {
+    document.getElementById("out").textContent = event.data.text;
+  });
+</script>

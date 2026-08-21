@@ -88,6 +88,8 @@
     "all": "すべて",
     "hideFalsePositives": "誤検知を非表示 ({{count}})",
     "showFalsePositives": "誤検知を表示 ({{count}})",
+    "hideSuspicious": "疑わしい項目を非表示 ({{count}})",
+    "showSuspicious": "疑わしい項目を表示 ({{count}})",
     "validation": {
       "likely_fp": "誤検知の可能性",
       "suspicious": "要確認",

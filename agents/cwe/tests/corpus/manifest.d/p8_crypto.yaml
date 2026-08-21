@@ -1,0 +1,57 @@
+# Group: crypto (feature 0070 P8). Paths are relative to ../fixtures/.
+# `line` is the expected vuln line (diagnostic only, positives).
+#
+# The runner flattens each fixture to ONE file renamed `f.<suffix>`, so every
+# rule gated here is content-keyed: none depends on a filename or a directory
+# layout.
+
+# ── CWE-760 Use of a One-Way Hash with a Predictable Salt (skill `crypto`) ──
+# Every clean twin calls the SAME key-derivation function as its positive; only
+# the salt ARGUMENT differs (a CSPRNG draw or a per-user value passed in). That
+# is the whole rule — the weakness is the constant salt, not the KDF.
+- {file: p8_crypto/cwe_760_1.js, language: JavaScript, cwe: "760", expectation: positive, line: 4}
+- {file: p8_crypto/cwe_760_2.py, language: Python, cwe: "760", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_760_3.java, language: Java, cwe: "760", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_760_1_clean.js, language: JavaScript, cwe: "760", expectation: negative}
+- {file: p8_crypto/cwe_760_2_clean.py, language: Python, cwe: "760", expectation: negative}
+- {file: p8_crypto/cwe_760_3_clean.java, language: Java, cwe: "760", expectation: negative}
+
+# ── CWE-336 Same Seed in a PRNG (skill `weak_entropy`) ──
+# The discriminator is the seed VALUE, not the seeding call: twin 1 seeds the
+# very same generator from a CSPRNG draw. Twins 2 and 3 replace the seeded
+# generator with a cryptographic one, which is the fix a reviewer would make.
+- {file: p8_crypto/cwe_336_1.py, language: Python, cwe: "336", expectation: positive, line: 7}
+- {file: p8_crypto/cwe_336_2.java, language: Java, cwe: "336", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_336_3.go, language: Go, cwe: "336", expectation: positive, line: 6}
+- {file: p8_crypto/cwe_336_1_clean.py, language: Python, cwe: "336", expectation: negative}
+- {file: p8_crypto/cwe_336_2_clean.java, language: Java, cwe: "336", expectation: negative}
+- {file: p8_crypto/cwe_336_3_clean.go, language: Go, cwe: "336", expectation: negative}
+
+# ── CWE-337 Predictable Seed in a PRNG (skill `weak_entropy`) ──
+# Mode-partitioned against CWE-336: a seed slot is a constant or a clock read,
+# never both, so one line can never carry both ids.
+- {file: p8_crypto/cwe_337_1.c, language: C, cwe: "337", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_337_2.py, language: Python, cwe: "337", expectation: positive, line: 8}
+- {file: p8_crypto/cwe_337_3.php, language: PHP, cwe: "337", expectation: positive, line: 3}
+- {file: p8_crypto/cwe_337_1_clean.c, language: C, cwe: "337", expectation: negative}
+- {file: p8_crypto/cwe_337_2_clean.py, language: Python, cwe: "337", expectation: negative}
+- {file: p8_crypto/cwe_337_3_clean.php, language: PHP, cwe: "337", expectation: negative}
+
+# ── CWE-331 Insufficient Entropy + CWE-332 Insufficient Entropy in a PRNG ──
+# (skill `weak_entropy`) These two ids ride the same flow rule and have always
+# been emitted together; they are gated here because until now the rule built
+# its `category` with an f-string, so no attestation could see either id and
+# neither had ever been measured. The fixtures are shared deliberately: one
+# rule, one pair of labels, one pair of measurements.
+- {file: p8_crypto/cwe_331_1.py, language: Python, cwe: "331", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_331_2.js, language: JavaScript, cwe: "331", expectation: positive, line: 2}
+- {file: p8_crypto/cwe_331_3.java, language: Java, cwe: "331", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_331_1_clean.py, language: Python, cwe: "331", expectation: negative}
+- {file: p8_crypto/cwe_331_2_clean.js, language: JavaScript, cwe: "331", expectation: negative}
+- {file: p8_crypto/cwe_331_3_clean.java, language: Java, cwe: "331", expectation: negative}
+- {file: p8_crypto/cwe_331_1.py, language: Python, cwe: "332", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_331_2.js, language: JavaScript, cwe: "332", expectation: positive, line: 2}
+- {file: p8_crypto/cwe_331_3.java, language: Java, cwe: "332", expectation: positive, line: 5}
+- {file: p8_crypto/cwe_331_1_clean.py, language: Python, cwe: "332", expectation: negative}
+- {file: p8_crypto/cwe_331_2_clean.js, language: JavaScript, cwe: "332", expectation: negative}
+- {file: p8_crypto/cwe_331_3_clean.java, language: Java, cwe: "332", expectation: negative}

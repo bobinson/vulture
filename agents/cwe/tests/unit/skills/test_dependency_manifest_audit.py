@@ -1,12 +1,12 @@
 """Supply-chain (OWASP A03) detection in the dependency skill — feature 0068.
 
-Three defects this pins, all found by scanning OWASP juice-shop:
+Three defects this pins, all found by scanning a real application tree:
 
 1. ``package.json`` never reached the skill at all: the run loop applied
    ``is_generated_file()`` (which classifies package.json as generated) BEFORE
    the manifest dispatch, so the npm branch was dead for every JS/TS repo.
 2. Backup manifests (``ftp/package.json.bak``) were invisible, yet those carry
-   the dependency pins that were later removed — in juice-shop the
+   the dependency pins that were later removed — in one measured tree the
    ``epilogue-js`` typosquat lives only in the .bak.
 3. CWE-1104 (unpinned/unmaintained component) was implemented only for
    requirements.txt, so the npm path could emit nothing that maps to A03.

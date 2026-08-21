@@ -10,6 +10,7 @@ one per-line loop, one dispatch layer. Avoids the N x file-I/O multiplier
 that concurrent skills incur in Vulture's ThreadPoolExecutor model.
 """
 
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -23,7 +24,10 @@ from shared.tools.file_scanner import (
     is_test_file,
     read_file_lines,
     scan_code_files,
+    SAFE_IMPORT_LINE,
+    is_prose_file,
 )
+from shared.tools.line_context import strip_strings_and_comments
 from shared.tools.snippet import extract_snippet
 
 from asvs_agent.catalog import (
@@ -401,7 +405,22 @@ _CHECKS: dict[str, CheckSpec] = {
         re.compile(
             r"expanduser|getusername|getpass\.getuser|"
             r"'api/users/|\"api/users/|"
-            r"\"\"\"|'''",  # triple-quoted docstrings
+            r"\"\"\"|'''|"  # triple-quoted docstrings
+            # A relative MODULE SPECIFIER is not a traversal.
+            #
+            # This MUST stay anchored to the `..` sitting INSIDE the specifier
+            # string. An earlier draft matched on line SHAPE instead
+            # (`^\s*(?:import|export)\b`, a bare `\brequire\s*\(`), and because
+            # this safe-context guards the WHOLE _PATH_TRAVERSAL_UNION — not
+            # just the two traversal-literal clauses — it silently vetoed
+            # genuine traversal in the commonest TS shape there is:
+            #     export const load = (f) => fs.readFileSync('../uploads/' + f)
+            #     const p = require('path').join(base, '../' + req.query.f)
+            # Both were detected before the arm and missed after it. Requiring
+            # the traversal to be inside the quoted specifier keeps the
+            # relative-import suppression while leaving those visible.
+            r"(?:\bfrom|^\s*import|\brequire|\bimport)\s*\(?\s*"
+            r"['\"][^'\"]{0,200}\.\.[/\\]|@import\b",
             re.IGNORECASE,
         ),
         _CODE_EXTS,
@@ -645,8 +664,21 @@ def _keyword_fallback_index() -> dict[str, list[dict[str, Any]]]:
 
 
 def _extract_line_keywords(line: str) -> set[str]:
-    """Extract lowercase keywords (len >= 3) from a source line."""
-    return {w.lower() for w in _LINE_KEYWORD_RE.findall(line)}
+    """Extract lowercase keywords (len >= 3) from a source line.
+
+    String literals and comments are blanked FIRST. The fallback scores a line
+    by word overlap against ASVS requirement PROSE, so any English sentence
+    inside a string reads as the requirement it describes:
+    ``logger.info("session token expired, user must re-authenticate")`` scored
+    as a session-management violation.
+
+    Deliberately applied HERE and not in ``_registry_entry_matches``: registry
+    patterns legitimately match inside string literals (a hardcoded
+    ``"ssl": {"rejectUnauthorized": false}`` in a config, ``verify=False`` in a
+    call), and stripping there would blind them. This is also why the shared
+    helper is used for EVIDENCE only — see shared.tools.line_context.
+    """
+    return {w.lower() for w in _LINE_KEYWORD_RE.findall(strip_strings_and_comments(line))}
 
 
 def _is_in_active_config(
@@ -703,6 +735,30 @@ def _build_finding(
     return enrich_finding(finding, req_id)
 
 
+# The relative-module-specifier arm of the V5.1.1 safe-context, named so the
+# rollback path can recognise exactly which suppression to undo.
+_SPECIFIER_SAFE_ARM = re.compile(
+    r"(?:\bfrom|^\s*import|\brequire|\bimport)\s*\(?\s*['\"][^'\"]{0,200}\.\.[/\\]"
+    r"|@import\b",
+    re.IGNORECASE,
+)
+
+
+def _traversal_rollback_active() -> bool:
+    """Read the F1 rollback flag PER CALL.
+
+    `_cwe_patterns` materialises its pattern list at import, so a flag consulted
+    only there cannot be toggled in a running agent — an operator setting it
+    would see no change until restart, which is not what a rollback hatch is
+    for. It also covered only half of F1: the V5.1.1 safe-context arm lives in
+    this module and was unconditional, so the flag silently failed to restore
+    the pre-fix behaviour it advertises.
+    """
+    return os.getenv(
+        "VULTURE_ASVS_DISABLE_TRAVERSAL_SINK_GATE", "false"
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _registry_entry_matches(
     spec: CheckSpec,
     line: str,
@@ -714,7 +770,15 @@ def _registry_entry_matches(
         return False
     if not pat.search(line):
         return False
-    return safe is None or not safe.search(line)
+    if safe is not None and safe.search(line):
+        # The relative-specifier arm is half of F1, so it answers to F1's
+        # rollback flag too. Without this the hatch reverts the patterns but
+        # not the safe-context, and behaviour never actually returns to
+        # pre-fix.
+        if _traversal_rollback_active() and _SPECIFIER_SAFE_ARM.search(line):
+            return True
+        return False
+    return True
 
 
 def _scan_line_registry(
@@ -725,11 +789,23 @@ def _scan_line_registry(
     ext: str,
     active: list[tuple[str, "CheckSpec"]],
     findings: list[dict[str, Any]],
+    seen_per_file: set[str],
 ) -> None:
-    """Apply every active registry entry whose lang-gate matches this file ext."""
+    """Apply every active registry entry whose lang-gate matches this file ext.
+
+    Each requirement fires at most once per file — the same policy
+    `_scan_line_keyword_fallback` already documents. Without it a registry
+    requirement emitted one finding per matching LINE: a file with 40 relative
+    imports produced 40 identical HIGH V5.1.1 rows, which is what turned a
+    per-file precision problem into a 504-row flood. The first matching line is
+    kept, so the surviving row still points somewhere actionable.
+    """
     for req_id, spec in active:
+        if req_id in seen_per_file:
+            continue
         if not _registry_entry_matches(spec, line, ext):
             continue
+        seen_per_file.add(req_id)
         findings.append(_build_finding(req_id, spec[1], path_str, lineno, lines))
 
 
@@ -794,8 +870,16 @@ def _scan_line_keyword_fallback(
 
 
 def _line_is_scannable(line: str) -> bool:
-    """Return False for comments and scanner-definition lines."""
+    """Return False for comments, scanner-definition lines, and imports.
+
+    The import arm closes the gap that let a module specifier be read as
+    evidence: `import { loadEnv } from "../env"` is a dependency edge, not a
+    filesystem operation. COMMENT_INDICATORS cannot help — an import carries no
+    comment marker.
+    """
     if COMMENT_INDICATORS.match(line):
+        return False
+    if SAFE_IMPORT_LINE.match(line):
         return False
     return not SCANNER_DEF_LINE.search(line)
 
@@ -811,11 +895,15 @@ def _scan_lines(
 ) -> None:
     """Inner per-line dispatch loop (registry + keyword fallback)."""
     seen_fallback: set[str] = set()
+    # Per-FILE, allocated here rather than inside the loop: the set must span
+    # every line of one file and must NOT leak to the next file, or a second
+    # file's genuine violation would be silently swallowed.
+    seen_registry: set[str] = set()
     for lineno, line in enumerate(lines, start=1):
         if not _line_is_scannable(line):
             continue
         _scan_line_registry(
-            line, lineno, path_str, lines, ext, active, findings,
+            line, lineno, path_str, lines, ext, active, findings, seen_registry,
         )
         _scan_line_keyword_fallback(
             line, lineno, path_str, lines,
@@ -831,7 +919,12 @@ def _scan_file(
     findings: list[dict[str, Any]],
 ) -> None:
     """Scan one file line-by-line with both registry and fallback dispatch."""
-    if is_generated_file(file_path) or is_test_file(file_path):
+    # Prose is where a control gets DESCRIBED. A hardening guide saying "never
+    # disable certificate verification" is not an instance of disabling it, and
+    # the ASVS keyword fallback is especially exposed here: it scores a line by
+    # word overlap against requirement PROSE, so documentation about a
+    # requirement matches that requirement almost by construction.
+    if is_generated_file(file_path) or is_test_file(file_path) or is_prose_file(file_path):
         return
     lines = read_file_lines(file_path)
     if not lines:

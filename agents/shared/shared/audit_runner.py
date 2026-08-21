@@ -20,12 +20,14 @@ from shared.cancellation import (
 )
 from shared.llm.errors import retry_skill
 from shared.tools.file_scanner import (
-    CODE_EXTENSIONS,
     clear_caches,
     is_entry_or_config,
+    is_generated_file,
+    is_test_file,
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.finding_collapse import collapse_line_stacks
 from shared.tools.memory_client import _normalize_title, estimate_tokens, safe_estimate_tokens
 from shared.tools.snippet import extract_snippet
 from shared.transport.event_emitter import AgUiEventEmitter
@@ -665,11 +667,119 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
+# Head-block size for findings that sit at the top of a file. Deliberately its
+# own constant, NOT derived from the snippet width: coupling them would change
+# today's output at the default width (T3.6).
+_LINE1_HEAD_LINES = 30
+
+# Default lines of context each side of a finding. P3's width knob; the default
+# reproduces pre-0075 output byte-for-byte, so the feature ships inert.
+_DEFAULT_SNIPPET_CONTEXT = 10
+
+
+def _snippet_context_lines() -> int:
+    """Resolved snippet half-window. ``VULTURE_LLM_SNIPPET_CONTEXT`` widens it.
+
+    A wider window costs budget (fewer files per batch) and buys the model the
+    guard that refutes a finding — measured as `guard_present` false positives
+    where the mitigation sat outside the window. Not raised by default in this
+    feature; the knob exists so the tradeoff can be measured.
+    """
+    return _safe_int_env("VULTURE_LLM_SNIPPET_CONTEXT", _DEFAULT_SNIPPET_CONTEXT)
+
+
+def _whole_file_max_lines() -> int:
+    """Files at or below this many lines are rendered whole instead of windowed.
+
+    ``0`` (the ship default) disables the mode entirely, so P3 is inert. For a
+    small file the elision markers cost nearly as much as the omitted lines and
+    remove the surrounding context that decides whether a finding is real.
+    """
+    return _safe_int_env("VULTURE_LLM_WHOLE_FILE_MAX_LINES", 0)
+
+
+def _split_content_lines(content: str) -> list[str]:
+    """Split file text into its REAL lines.
+
+    ``"a\\nb\\n".split("\\n")`` yields a trailing ``""``, which rendered as a
+    phantom ``"3: "`` in every numbered file — inviting the model to cite a line
+    that does not exist, and invisible to a ``^\\d+: `` check because the phantom
+    matches it. Only the final empty element is dropped, and only when the text
+    actually ends in a newline: a file with no trailing newline keeps its last
+    line, because deleting it would delete any defect sitting there.
+    """
+    lines = content.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _group_findings_by_path(skill_findings: list[dict] | None) -> dict[str, list[dict]]:
+    """Index findings by ``file_path``. One grouper, used by both feed paths."""
+    grouped: dict[str, list[dict]] = {}
+    for f in skill_findings or []:
+        fp = f.get("file_path", "")
+        if fp:
+            grouped.setdefault(fp, []).append(f)
+    return grouped
+
+
+def _number_lines(lines: list[str], start: int = 0, end: int | None = None) -> str:
+    """Render ``lines[start:end]`` with ABSOLUTE 1-based line numbers.
+
+    The SINGLE authority for the one format the model is ever shown, ``"30: code"``.
+    It existed inline in two places inside ``_extract_file_snippet`` and nowhere
+    else, which is how the two prompt paths came to disagree about whether a file
+    gets numbered at all (feature 0075). Numbers are absolute file positions, never
+    snippet-relative: a snippet beginning at file line 200 renders ``200:``, because
+    a number that restarts at 1 is worse than no number — the model's output would
+    look precise and be systematically wrong by the snippet offset.
+    """
+    if end is None:
+        end = len(lines)
+    return "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, min(end, len(lines))))
+
+
+def _line_numbers_enabled() -> bool:
+    """Whether to number files that carry no usable skill-finding line info.
+
+    Feature 0075 rollback switch. It governs ONLY the numbering this feature adds
+    (a whole file, or a findings-bearing file whose findings have no line numbers).
+    Snippet numbering predates 0075 and is unconditional — turning this off restores
+    the pre-0075 presentation exactly, no more.
+    """
+    return os.getenv("VULTURE_LLM_LINE_NUMBERS", "true").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+# The LLM feed's extension set lives in file_scanner.py beside the scanner's own sets
+# (feature 0075 T2.10 / DRY). Re-exported under the old private name so existing
+# call sites and tests keep working.
+from shared.tools.file_scanner import (  # noqa: E402
+    llm_feed_extensions as _llm_feed_extensions,
+)
+
+
+def _present_source(content: str) -> str:
+    """Format a whole file for prompt inclusion.
+
+    The model is asked to report ``line_start`` for every finding. Presented raw it
+    can only count newlines, and it is bad at that: measured across 108 adjudicated
+    findings, files presented raw mislocated 25 of 32 (78%) against 5 of 38 (13%)
+    for numbered ones, and precision was 12.5% against 44.7%. The tier's unique
+    value is in files no skill flagged — precisely the files this used to hand over
+    blind.
+    """
+    if not _line_numbers_enabled():
+        return content
+    return _number_lines(_split_content_lines(content))
+
+
 def _extract_file_snippet(
     content: str,
     findings: list[dict],
     rel_path: str,
-    context_lines: int = 10,
+    context_lines: int | None = None,
 ) -> str:
     """Extract relevant code snippets from a file based on finding line ranges.
 
@@ -682,7 +792,17 @@ def _extract_file_snippet(
     Returns:
         Snippet text covering all finding ranges, or full content if no lines.
     """
-    lines = content.split("\n")
+    return _present_findings_snippet(content, findings, rel_path, context_lines)
+
+
+def _snippet_ranges(
+    findings: list[dict], rel_path: str, line_count: int, context_lines: int,
+) -> list[tuple[int, int]]:
+    """Half-open ``[start, end)`` windows, one per finding that names this file.
+
+    Findings with no usable ``line_start`` contribute nothing, so an empty result
+    means "this file has findings but none can be located".
+    """
     ranges: list[tuple[int, int]] = []
     for f in findings:
         fp = f.get("file_path", "")
@@ -691,21 +811,89 @@ def _extract_file_snippet(
         ls = f.get("line_start", 0)
         le = f.get("line_end", 0) or ls
         if ls > 0:
-            ranges.append((max(0, ls - 1 - context_lines), min(len(lines), le + context_lines)))
+            ranges.append((max(0, ls - 1 - context_lines), min(line_count, le + context_lines)))
+    return ranges
+
+
+def _present_findings_snippet(
+    content: str, findings: list[dict], rel_path: str, context_lines: int | None,
+) -> str:
+    """Render the windows around a file's findings, numbered absolutely."""
+    # An explicit argument wins; otherwise resolve the env-configured width. The
+    # resolved default equals the historical literal 10, so output is unchanged.
+    if context_lines is None:
+        context_lines = _snippet_context_lines()
+    lines = _split_content_lines(content)
+    # Whole-file mode (P3, inert at the 0 default): for a small file the elision
+    # markers cost nearly what the omitted lines would, and windowing removes the
+    # surrounding context that decides whether a finding is real.
+    whole = _whole_file_max_lines()
+    if whole > 0 and len(lines) <= whole:
+        return _number_lines(lines)
+    ranges = _snippet_ranges(findings, rel_path, len(lines), context_lines)
     if not ranges:
-        return content  # no line info — include full file
-    # When all findings point at line 1 (or 0), include first 30 lines
-    # for better LLM context instead of just ±10 around line 1.
-    all_near_top = all(s == 0 for s, _e in ranges)
-    if all_near_top:
-        top_lines = min(30, len(lines))
-        numbered = "\n".join(f"{i + 1}: {lines[i]}" for i in range(top_lines))
-        return numbered
-    parts: list[str] = []
+        # No usable line info — include the full file, NUMBERED (0075). This path
+        # returned raw text, so a file could carry skill findings and still be
+        # presented blind; the model then had nothing to cite from.
+        return _present_source(content)
+    # When every range starts at the top of the file, render a head block rather
+    # than a window — more useful context for a line-1 finding.
+    #
+    # The head must reach at least as far as the widest range end, or widening
+    # `context_lines` REMOVES lines: a finding at line 26 with context 25 drives
+    # the start to 0, trips this branch, and truncated to the first 30 lines —
+    # dropping 31-36 that context 10 had rendered. Widening a window must always
+    # be a superset (T3.2b). `_LINE1_HEAD_LINES` stays its own constant rather
+    # than tracking the width, so `ls=1, context=10` is byte-identical to
+    # pre-0075 output (T3.6).
+    if all(s == 0 for s, _e in ranges):
+        head = max(_LINE1_HEAD_LINES, max(e for _s, e in ranges))
+        return _number_lines(lines, 0, min(head, len(lines)))
+    merged = _merge_ranges(ranges)
+    return "\n...\n".join(_number_lines(lines, start, end) for start, end in merged)
+
+
+def _omitted_ranges(findings: list[dict], rel_path: str, line_count: int,
+                    context_lines: int | None = None) -> list[tuple[int, int]]:
+    """1-based inclusive line ranges a windowed render leaves OUT.
+
+    Feature 0075 T3.5. A bare ``...`` tells the model something was cut but not what,
+    so it cannot judge whether the construct it wants is inside the gap. Naming the
+    gaps costs one line per file. The label goes in the HEADER, never on the marker:
+    ``numbered_line_fraction`` skips a line whose stripped form is exactly ``...``, so
+    labelling the marker itself would make every elided file look partly unnumbered
+    and quietly corrupt the coverage metric (T3.5b).
+    """
+    if context_lines is None:
+        context_lines = _snippet_context_lines()
+    ranges = _snippet_ranges(findings, rel_path, line_count, context_lines)
+    if not ranges:
+        return []
+    if all(s == 0 for s, _e in ranges):
+        head = min(max(_LINE1_HEAD_LINES, max(e for _s, e in ranges)), line_count)
+        return [(head + 1, line_count)] if head < line_count else []
+    gaps: list[tuple[int, int]] = []
+    cursor = 0
     for start, end in _merge_ranges(ranges):
-        numbered = "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, min(end, len(lines))))
-        parts.append(numbered)
-    return "\n...\n".join(parts)
+        if start > cursor:
+            gaps.append((cursor + 1, start))
+        cursor = max(cursor, end)
+    if cursor < line_count:
+        gaps.append((cursor + 1, line_count))
+    return gaps
+
+
+def _block_header(rel: str, omitted: list[tuple[int, int]]) -> str:
+    """``--- rel ---``, or ``--- rel (lines 1-9, 31-89 omitted) ---`` when windowed.
+
+    Must keep the ``^--- .+ ---$`` shape: ``_FILE_BLOCK_HEADER_RE`` (:349) segments
+    batches on it and the probe splits on ``"\n\n--- "``. A suffix inside the
+    delimiters satisfies both (T3.5b).
+    """
+    if not omitted:
+        return f"--- {rel} ---"
+    spans = ", ".join(f"{a}-{b}" if a != b else str(a) for a, b in omitted)
+    return f"--- {rel} (lines {spans} omitted) ---"
 
 
 def _pack_files(
@@ -731,37 +919,33 @@ def _pack_files(
     parts: list[str] = []
     included_paths: list[str] = []
     total = 0
-    # Pre-group findings by normalized path suffix to avoid O(files×findings)
-    findings_by_path: dict[str, list[dict]] = {}
-    if skill_findings:
-        for f in skill_findings:
-            fp = f.get("file_path", "")
-            if fp:
-                findings_by_path.setdefault(fp, []).append(f)
+    dropped = 0
+    # One reader, one presenter, one grouper: this used to duplicate
+    # _format_file_block's four branches verbatim, so a presentation fix applied to
+    # one path silently missed the other — which is exactly how the unnumbered
+    # branch survived in both (0075 T1.12).
+    findings_by_path = _group_findings_by_path(skill_findings)
     for fpath in ordered_files:
-        content = read_file_safe(fpath)
-        if content is None or not content.strip():
+        block = _format_file_block(fpath, source_path, findings_by_path)
+        if block is None:
             continue
-        rel = _safe_rel(fpath, source_path)
-        # Use snippets for files with findings to save tokens
-        if findings_by_path:
-            file_findings = findings_by_path.get(rel, [])
-            if not file_findings:
-                # Fallback: check if any key ends with this rel path
-                file_findings = [
-                    f for fp_key, flist in findings_by_path.items()
-                    for f in flist
-                    if fp_key.endswith(rel)
-                ]
-            if file_findings:
-                content = _extract_file_snippet(content, file_findings, rel)
-        header = f"--- {rel} ---"
-        entry_len = len(header) + 1 + len(content) + 2
+        rel, text = block
+        entry_len = len(text) + 2
         if total + entry_len > max_chars:
+            dropped += 1
             continue
-        parts.append(f"{header}\n{content}")
+        parts.append(text)
         included_paths.append(rel)
         total += entry_len
+
+    if dropped:
+        # Numbering costs ~5-7 chars per line, so fewer files fit a fixed budget.
+        # That is a real coverage reduction and must never be silent (0075 T1.13).
+        logger.warning(
+            "llm_pack_dropped files=%d included=%d budget=%d — coverage is PARTIAL; "
+            "raise VULTURE_MAX_SOURCE_CHARS or VULTURE_LLM_MAX_BODY_BYTES",
+            dropped, len(included_paths), max_chars,
+        )
 
     if not parts:
         return "", []
@@ -795,8 +979,33 @@ def _format_file_block(
                 if fp_key.endswith(rel)
             ]
         if file_findings:
+            omitted = _omitted_ranges(
+                file_findings, rel, len(_split_content_lines(content)),
+            )
             content = _extract_file_snippet(content, file_findings, rel)
-    return rel, f"--- {rel} ---\n{content}"
+        else:
+            omitted = []
+            content = _present_source(content)
+    else:
+        omitted = []
+        content = _present_source(content)
+    return rel, f"{_block_header(rel, omitted)}\n{content}"
+
+
+def _llm_eligible_files(files: list) -> list:
+    """Files the LLM tier may analyse.
+
+    The single place this rule lives. Every skill filters test and generated
+    files; the LLM tier did not, so the model was handed exploit tests that
+    *demonstrate* a weakness and reported it there — right vulnerability, wrong
+    file, and unactionable. Measured: 9 of 22 LLM findings on one target were
+    test-file artefacts, two of which passed the L5 judge.
+
+    There are TWO paths that feed files to the model — the single-shot context
+    and the batched sweep — and fixing only the first left 5 of the artefacts in
+    place. Hence one helper rather than two call-site filters.
+    """
+    return [f for f in files if not is_test_file(f) and not is_generated_file(f)]
 
 
 def _build_source_batches(
@@ -817,12 +1026,7 @@ def _build_source_batches(
 
     Returns a list of ``(batch_text, included_relpaths)``; empty if no files.
     """
-    findings_by_path: dict[str, list[dict]] = {}
-    if skill_findings:
-        for f in skill_findings:
-            fp = f.get("file_path", "")
-            if fp:
-                findings_by_path.setdefault(fp, []).append(f)
+    findings_by_path = _group_findings_by_path(skill_findings)
 
     batches: list[tuple[str, list[str]]] = []
     cur_parts: list[str] = []
@@ -883,12 +1087,20 @@ def _build_source_context(
     """
     if max_chars <= 0:
         max_chars = _get_max_source_chars(model)
-    # Deliberately CODE_EXTENSIONS, not the wider default scan set. Skill
-    # scanning wants breadth — docs and templates can hold real findings — but
-    # this builds an LLM *prompt* against a fixed token budget, and spending it
-    # on README/CSV/changelog text displaces the source the model is meant to
-    # analyse. The two consumers have opposite needs from the same walk.
-    files = scan_code_files(source_path, extensions=CODE_EXTENSIONS)
+    # ONE resolved set for both feed paths. This site named bare CODE_EXTENSIONS
+    # while the batched sweep named the wide default, so the two paths that feed
+    # the same model disagreed about which files are code — the original RC3
+    # defect. Naming the same helper is the fix; a structural test that merely
+    # checks both sites *name* `extensions=` cannot see the disagreement, so the
+    # guard asserts the resolved sets are EQUAL.
+    files = scan_code_files(source_path, extensions=_llm_feed_extensions())
+    # Every skill filters test and generated files; this phase did not, so the
+    # model was handed exploit tests that *demonstrate* a weakness and reported
+    # it there — right vulnerability, wrong file, and unfixable by the reader.
+    # Measured on one target: 9 of 22 LLM findings were test-file artefacts, two
+    # of which even passed the L5 judge. The two tiers must agree on what counts
+    # as code under review.
+    files = _llm_eligible_files(files)
     if not files:
         return ""
 
@@ -986,6 +1198,36 @@ def _deduplicate_findings(
             unique.append(f)
             seen.add(key)
     return unique
+
+
+def _collapse_skill_findings(
+    findings: list[dict], run_id: str = "",
+) -> tuple[list[dict], int]:
+    """Collapse ancestor-vs-descendant CWE rows sharing one source line.
+
+    Skills run independently, so a single construct can raise several rows on
+    the same ``(file_path, line_start)``. Where one row's CWE is a transitive
+    ``ChildOf`` ancestor of another's, the general row carries no remediation
+    the specific row doesn't, and is dropped (severity is carried over).
+    Sibling CWEs — different weaknesses under a common parent — are left
+    alone; each has its own fix.
+
+    The count is always logged so the effect is observable. Failures degrade
+    to the uncollapsed list rather than losing findings, and the whole step
+    is switched off by ``VULTURE_DISABLE_LINE_COLLAPSE=true``.
+    """
+    if os.environ.get("VULTURE_DISABLE_LINE_COLLAPSE", "").lower() == "true":
+        return findings, 0
+    try:
+        kept, collapsed = collapse_line_stacks(findings)
+    except Exception as exc:  # collapse is an optimisation, never a gate
+        logger.warning("line_collapse_failed run_id=%s: %s", run_id, exc)
+        return findings, 0
+    logger.info(
+        "line_collapse run_id=%s before=%d after=%d collapsed=%d",
+        run_id, len(findings), len(kept), collapsed,
+    )
+    return kept, collapsed
 
 
 def _is_within_root(candidate: Path, root: Path) -> bool:
@@ -1261,6 +1503,35 @@ def _set_provenance(finding: dict[str, Any]) -> None:
     finding["provenance"] = _classify_deterministic_provenance(finding)
 
 
+# Feature 0072 T5.2: per-scope snippet context. Classes whose declared
+# refutation scope is wider than a statement (FUNCTION / FILE / WIRING) get a
+# LINE-budgeted window — the L5 judge cannot reason about a guard clause or a
+# middleware effect from 200 characters. Applied ONLY to those classes to
+# bound the token cost (plan §10); policy classes (Scope.NONE — including
+# every secret-bearing CWE) and undeclared classes keep the tight legacy
+# window the secret-redaction pass was tuned for.
+_WIDE_SNIPPET_CONTEXT = 10   # 21 lines; must stay under the judge's
+                             # _WINDOW_LINES_MAX render ceiling (T5.4)
+
+
+def _snippet_params_for(category: str) -> tuple[int, int | None]:
+    """(context_lines, max_chars) for extract_snippet, per weakness class.
+
+    Wide only for classes whose declared scope is wider than a statement AND
+    reviewed (T2.1a): an unreviewed legacy entry still searches the narrow
+    window, so widening its snippet would spend §10's token budget on
+    obligations that cannot use it — today that keeps the widening to the
+    authorization family.
+    """
+    from shared.validate.refutation import REFUTATION_MAP, Scope
+
+    ref = REFUTATION_MAP.get(category or "")
+    if (ref is not None and ref.scope_reviewed
+            and ref.scope in (Scope.FUNCTION, Scope.FILE, Scope.WIRING)):
+        return _WIDE_SNIPPET_CONTEXT, None
+    return 2, 200
+
+
 def _attach_code_snippet(
     findings: list[dict[str, Any]],
     source_path: str,
@@ -1293,7 +1564,13 @@ def _attach_code_snippet(
         _set_provenance(f)
 
     for f in findings:
-        if not f.get("code_snippet"):
+        context, max_chars = _snippet_params_for(f.get("category", "") or "")
+        wide = max_chars is None
+        # T5.2: a wide-scope class gets the line-budget window even when a
+        # skill pre-set a narrow one — the window is the judge's evidence,
+        # and 200 chars cannot contain a mitigation that lives lines away.
+        # Narrow classes keep the legacy behaviour: back-fill only.
+        if wide or not f.get("code_snippet"):
             line_start = f.get("line_start", 0) or 0
             try:
                 line_start = int(line_start)
@@ -1304,7 +1581,10 @@ def _attach_code_snippet(
                 if resolved is not None:
                     lines = read_file_lines(resolved)
                     if lines:
-                        snippet = extract_snippet(lines, line_start, context=2)
+                        snippet = extract_snippet(
+                            lines, line_start,
+                            context=context, max_chars=max_chars,
+                        )
                         if snippet:
                             f["code_snippet"] = snippet
 
@@ -1491,6 +1771,20 @@ def run_combined_audit(
             pool.shutdown(wait=False)
 
     logger.info("skill_phase_done run_id=%s findings=%d", run_id, len(skill_findings))
+
+    # --- Line-stack collapse (skill-vs-skill) -------------------
+    # `_deduplicate_findings` below is LLM-vs-skill only; skill rows have never
+    # been reconciled against each other. Cross-skill duplication can only be
+    # judged once every category has reported, so this runs after the pool
+    # drains — the per-finding SSE events already streamed, the collapsed set
+    # is what the LLM phase, validation and the final `result` see.
+    skill_findings, _collapsed = _collapse_skill_findings(skill_findings, run_id)
+    if _collapsed:
+        yield emitter.text_message(
+            f"Collapsed {_collapsed} generalisation "
+            f"{'finding' if _collapsed == 1 else 'findings'} into the more "
+            "specific weakness reported on the same line."
+        )
 
     # --- Phase 2: LLM enhancement (optional) ---
     llm_new_findings: list[dict] = []
@@ -1858,7 +2152,26 @@ async def _collect_llm_findings_batched_async(
     # is scoped to flagged + entry/config files; the long tail is skipped (and
     # reported via the notice below). Deterministic skills already scanned all.
     include_tier3 = _llm_tier3_enabled(llm_tier3)
-    scanned = scan_code_files(source_path, max_files=scan_cap)
+    # Feature 0075: name the extension set explicitly so this sweep and the
+    # single-shot path in _build_source_context cannot silently diverge — omitting
+    # it walked the DEFAULT WIDE set and fed the model declarative files the other
+    # path excludes.
+    #
+    # Deliberately NOT plain CODE_EXTENSIONS. That set also lacks .sql/.tf/.hcl/
+    # .proto, and narrowing to it would drop LLM coverage of a Terraform public
+    # bucket or a migration's dynamic SQL — real, findable defects with no evidence
+    # against them. Only .graphql/.gql are excluded, and only because they are
+    # MEASURED noise: 32 of 108 adjudicated findings were .graphql documents cited
+    # at line 1 and 0 of 32 were true positives, including under an adjudicator
+    # explicitly told to look for PII-selecting queries and under-privileged
+    # mutations. Subtracting the proven-noisy pair beats narrowing to a set whose
+    # omissions are untested.
+    scanned = _llm_eligible_files(
+        scan_code_files(
+            source_path, max_files=scan_cap,
+            extensions=_llm_feed_extensions(single_shot=False),
+        )
+    )
     ordered = _prioritize_files(
         scanned, source_path, skill_findings, include_tier3=include_tier3,
     )

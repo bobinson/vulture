@@ -9,6 +9,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from .refutation import obligation_check
 from .types import ValidationCheck
 
 __all__ = ["rollup_id", "run_l2"]
@@ -61,6 +62,66 @@ def _group_findings(
     return groups
 
 
+_MAX_LISTED_LINES = 12
+_MAX_EXTRA_CHARS = 200
+
+
+def _sorted_member_lines(members: list[dict[str, Any]]) -> list[int]:
+    """Distinct, ordered member line numbers (0/absent treated as unknown)."""
+    return sorted({int(m.get("line_start") or 0) for m in members} - {0})
+
+
+def _member_lines(members: list[dict[str, Any]]) -> str:
+    """Comma-separated member lines, truncated so a large group stays readable."""
+    lines = _sorted_member_lines(members)
+    shown = ", ".join(str(n) for n in lines[:_MAX_LISTED_LINES])
+    return f"{shown}, …" if len(lines) > _MAX_LISTED_LINES else shown
+
+
+def _member_descriptions(members: list[dict[str, Any]]) -> list[str]:
+    """Non-empty, stripped member descriptions."""
+    raw = [str(m.get("description") or "").strip() for m in members]
+    return [d for d in raw if d]
+
+
+def _distinct_extra(members: list[dict[str, Any]], title: str) -> str:
+    """Detail a member's description carries beyond the shared title.
+
+    Members share a title by construction, so the only per-member information
+    is what a specialised detector — or an ancestor collapse folding one in —
+    added to the description. Surface the longest such fragment rather than
+    dropping all of them; that is the most specific thing the group knows.
+    """
+    norm = _normalize_title(title)
+    extras = [d for d in _member_descriptions(members) if _normalize_title(d) != norm]
+    return max(extras, key=len, default="")[:_MAX_EXTRA_CHARS]
+
+
+def _best_recommendation(members: list[dict[str, Any]]) -> str:
+    """The most specific member recommendation, not merely the first.
+
+    Members usually share a recommendation; when they differ it is because one
+    absorbed a specialised detector's remediation, which is strictly the more
+    actionable text. Length is the proxy for specificity — crude, but it cannot
+    pick the *poorer* string when one is a superset of the other, which is the
+    shape this actually takes.
+    """
+    return max(
+        (str(m.get("recommendation") or "") for m in members), key=len, default=""
+    )
+
+
+def _rollup_description(
+    members: list[dict[str, Any]], instance_count: int, title: str,
+) -> str:
+    """Summarise the group: how many, where, and any member-specific detail."""
+    lines = _member_lines(members)
+    where = f" at line{'s' if instance_count != 1 else ''} {lines}" if lines else ""
+    head = f"{instance_count} instances rolled up{where}."
+    extra = _distinct_extra(members, title)
+    return f"{head} {extra}".rstrip() if extra else head
+
+
 def _build_rollup_parent(
     audit_id: str, category: str, file_path: str,
     members: list[dict[str, Any]], instance_count: int,
@@ -83,21 +144,24 @@ def _build_rollup_parent(
         "provenance": "catalog_rollup",
         "category": category,
         "title": title,
-        "description": (
-            f"{instance_count} instances rolled up; see member "
-            f"findings for individual line locations."
-        ),
+        "description": _rollup_description(members, instance_count, title),
         "file_path": file_path,
         "line_start": int(line_start),
         "line_end": int(line_end),
         "severity": severity,
         "instance_count": instance_count,
         "rolled_up_member_ids": [m.get("id", "") for m in members],
-        "recommendation": members[0].get("recommendation", ""),
+        "recommendation": _best_recommendation(members),
+        # Feature 0072: a rollup parent must carry an obligation like any other
+        # finding. It is appended to the result AFTER validate() returns
+        # (audit_runner: `all_findings + v_result.rollups`), so it never reaches
+        # the voter — and a finding with no obligation check is indistinguishable,
+        # to the gate, from one whose obligation was discharged. Stamping it here
+        # is the only place that sees the parent before it ships.
         "validation": {
             "status": _rollup_status_for(category, instance_count),
             "confidence": 0.40,
-            "checks": [],
+            "checks": [obligation_check(category, None).to_json()],
             "validated_at": "",
         },
     }

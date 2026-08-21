@@ -1,0 +1,5 @@
+volumes:
+  - name: credentials
+    secret:
+      secretName: api-credentials
+      defaultMode: 0777

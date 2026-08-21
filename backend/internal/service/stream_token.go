@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	streamTokenTTL     = 60 * time.Second
-	streamTokenBytes   = 32
-	cleanupInterval    = 60 * time.Second
+	streamTokenTTL   = 60 * time.Second
+	streamTokenBytes = 32
+	cleanupInterval  = 60 * time.Second
 )
 
 type streamToken struct {
@@ -29,10 +29,10 @@ type streamToken struct {
 // Tokens are stored in memory keyed by their SHA-256 hash. The raw token is returned
 // to the client once and never stored.
 type StreamTokenStore struct {
-	mu      sync.Mutex
-	tokens  map[string]*streamToken
+	mu       sync.Mutex
+	tokens   map[string]*streamToken
 	userRepo repository.UserRepository
-	done    chan struct{}
+	done     chan struct{}
 }
 
 // NewStreamTokenStore creates a store and starts a background cleanup goroutine.

@@ -3,7 +3,7 @@
 import logging
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from functools import lru_cache
 from pathlib import Path
 
@@ -92,6 +92,12 @@ WHITELIST_EXTENSIONS = frozenset({
     ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".mk", ".gradle",
     # Languages with no coverage before.
     ".lua", ".pl", ".pm", ".dart", ".groovy", ".clj", ".ex", ".exs", ".r",
+    # PR9/PR10: template and config dialects that skills ALREADY carry patterns
+    # for. Without these the corresponding rule arms are dead code — measured:
+    # JSP arms in input validation, Jinja arms in three skills, and ASP.NET
+    # arms in two could never fire because the extension was never scanned.
+    # A declared language must be reachable or the declaration is a lie.
+    ".j2", ".jinja", ".jinja2", ".jsp", ".jspx", ".config", ".csproj",
 })
 
 # Canonical filenames that carry no extension. `.dockerfile` was already
@@ -102,6 +108,8 @@ WELL_KNOWN_FILENAMES = frozenset({
     "Jenkinsfile", "Procfile", "Rakefile", "Gemfile", "Brewfile", "Justfile",
     "CMakeLists.txt", ".npmrc", ".yarnrc", ".dockerignore", ".htaccess",
     ".netrc", ".pypirc", ".curlrc", ".gitconfig",
+    # Extensionless, and carries privilege-escalation configuration.
+    "sudoers",
 })
 
 
@@ -132,6 +140,86 @@ def default_extensions() -> frozenset[str]:
     if os.getenv("VULTURE_DISABLE_EXTENSION_WHITELIST", "").lower() == "true":
         return CODE_EXTENSIONS
     return CODE_EXTENSIONS | WHITELIST_EXTENSIONS | _env_extensions("VULTURE_EXTRA_EXTENSIONS")
+
+
+# ── LLM prompt feed (feature 0075) ───────────────────────────────────────────
+# The extension set the LLM PROMPT sees, as distinct from what the scanner walks.
+# It lives here, beside CODE_EXTENSIONS / WHITELIST_EXTENSIONS / default_extensions(),
+# so a reader asking "what does the model see?" finds the answer where the scanner's
+# own sets are — and so a future third feed path inherits it instead of rediscovering
+# it. Two feed paths already diverged once by each naming their own set.
+
+# Prose/data types subtracted from the PROMPT by default. Not a claim that prose holds
+# no defects — a README can leak a credential, which is why the skill tier keeps
+# scanning it. A BUDGET argument: the prompt has a fixed character ceiling and doc text
+# displaces the source the model was asked to analyse.
+LLM_PROSE_EXTENSIONS: frozenset[str] = frozenset({
+    ".md", ".markdown", ".rst", ".txt", ".adoc", ".csv", ".tsv",
+})
+
+# SHIPS EMPTY, deliberately. An earlier revision excluded `.graphql`/`.gql` citing
+# "0 true positives of 32 adjudicated". That evidence was CONFOUNDED with the defect
+# 0075 fixes: no skill carries GraphQL patterns, so all 32 rows had zero skill findings
+# and were therefore all in the RAW/unnumbered bucket, whose precision was 12.5% with
+# 78% mislocation. "0 of 32" cannot be separated from "all 32 presented blind".
+# Re-adjudicated under the numbered regime, 2 of 11 are real — a cleartext wallet
+# privateKey selection and an unbounded full-table fetch — so excluding them would have
+# deleted both. The mechanism stays for operators who cannot send config dialects to a
+# third-party provider.
+LLM_INELIGIBLE_EXTENSIONS: frozenset[str] = frozenset()
+
+
+def _llm_feed_prose() -> bool:
+    """Whether prose/data files reach the LLM prompt. Default False (budget)."""
+    return os.getenv("VULTURE_LLM_FEED_PROSE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _llm_ineligible_extensions() -> frozenset[str]:
+    raw = os.getenv("VULTURE_LLM_INELIGIBLE_EXTENSIONS")
+    if raw is None:
+        return LLM_INELIGIBLE_EXTENSIONS
+    return frozenset(
+        e.strip().lower() if e.strip().startswith(".") else "." + e.strip().lower()
+        for e in raw.split(",") if e.strip()
+    )
+
+
+def _llm_feed_unified() -> bool:
+    """Whether both LLM feed paths resolve ONE extension set. Default True.
+
+    Feature 0075 T2.8, a one-release escape hatch for the RC3 fix. `false` restores
+    the original asymmetry deliberately: the single-shot path back to the narrow
+    code-only set, the batched sweep back to the wide default with no `extensions=`
+    at all. That pair IS the defect — two paths feeding one model disagreeing about
+    what counts as code — which is why unified is the default and this exists only to
+    unblock an operator, not as a supported configuration.
+    """
+    return os.getenv("VULTURE_LLM_FEED_UNIFY", "true").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def llm_feed_extensions(single_shot: bool = True) -> frozenset[str] | None:
+    """Extensions fed to the LLM phase: the scan set, minus prompt-only subtractions.
+
+    Subtractive by design. Narrowing to a hand-picked allowlist silently drops file
+    types nobody has measured — an earlier revision narrowed to CODE_EXTENSIONS and
+    lost `.sql`, `.tf` and `.yml`, taking three adjudicated-real findings with them.
+    Delegating to ``default_extensions()`` also keeps ``VULTURE_EXTRA_EXTENSIONS`` and
+    the ``VULTURE_DISABLE_EXTENSION_WHITELIST`` hatch working for the feed.
+
+    Returns a ``frozenset``: ``scan_code_files`` folds this into an ``lru_cache`` key,
+    and a mutable ``set`` raises ``TypeError: unhashable type``.
+    """
+    if not _llm_feed_unified():
+        # Pre-0075 behaviour, reproduced exactly: narrow set for the single-shot
+        # path, None (the wide default) for the sweep. Returning None is the point —
+        # the sweep's original call passed no `extensions=` at all.
+        return CODE_EXTENSIONS if single_shot else None
+    excluded = _llm_ineligible_extensions()
+    if not _llm_feed_prose():
+        excluded = excluded | LLM_PROSE_EXTENSIONS
+    return frozenset(default_extensions()) - excluded
 
 
 # Suffixes / patterns for backup directories
@@ -224,9 +312,9 @@ MAX_FILE_SIZE = _env_int("VULTURE_MAX_FILE_SIZE", 512 * 1024)  # 512KB default
 
 # Dependency manifests get a larger ceiling than source files. A lock file's
 # size scales with the number of dependencies — i.e. with how much there is to
-# find — so the general cap inverted the intent: juice-shop's
-# ftp/package-lock.json.bak (750KB) was silently dropped, taking its
-# known-vulnerable-component findings with it. Source files have no such
+# find — so a single cap inverted the intent: the manifests most worth scanning
+# were exactly the ones large enough to be dropped, taking their
+# known-vulnerable-component findings with them. Source files have no such
 # property, so their cap is unchanged.
 MAX_MANIFEST_SIZE = _env_int("VULTURE_MAX_MANIFEST_SIZE", 16 * 1024 * 1024)  # 16MB
 
@@ -287,6 +375,45 @@ def _matches_extra(name: str, extras: frozenset[str]) -> bool:
     return False
 
 
+def _matches_extras_any(name: str, eff_name: str, extras: frozenset[str]) -> bool:
+    """True if either the literal or the backup-stripped name is in ``extras``."""
+    if not extras:
+        return False
+    return _matches_extra(name, extras) or _matches_extra(eff_name, extras)
+
+
+def _wanted_by_name(
+    name: str, eff_suffix: str, eff_name: str,
+    exts: frozenset[str], extras: frozenset[str],
+) -> bool:
+    """Name/extension gate for one walked path (no I/O)."""
+    if eff_suffix in exts and eff_name not in SKIP_FILES:
+        return True
+    return _matches_extras_any(name, eff_name, extras)
+
+
+def _include_file(
+    path: Path, exts: frozenset[str], extras: frozenset[str], scan_minified: bool,
+) -> bool:
+    """Decide whether one walked path belongs in the scan set.
+
+    Backup/shadow copies are resolved to what they shadow first, so `app.ts.bak`
+    matches `.ts` instead of the unmatchable `.bak` (feature 0068), and
+    `app.min.js.bak` is recognised as minified — it is still enumerated by
+    scan_backup_files() as an exposure.
+
+    The name gate runs before the minified gates because it is free: the content
+    heuristic costs a (cached) read, so it is only paid for files that would
+    otherwise be scanned.
+    """
+    eff_name = effective_name(path.name)
+    if not _wanted_by_name(path.name, effective_suffix(path.name), eff_name, exts, extras):
+        return False
+    if scan_minified:
+        return True
+    return not (is_minified_name(eff_name) or is_minified_content(path))
+
+
 @lru_cache(maxsize=16)
 def _scan_code_files_cached(
     source_path: str, exts: frozenset[str], max_files: int, extras: frozenset[str],
@@ -304,20 +431,7 @@ def _scan_code_files_cached(
     spec = _load_ignore_spec(str(root))
     files: list[Path] = []
     for p in _walk_filtered(root, root, spec):
-        # Resolve backup/shadow copies to what they shadow, so `app.ts.bak`
-        # matches `.ts` instead of the unmatchable `.bak` (feature 0068).
-        eff_suffix = effective_suffix(p.name)
-        eff_name = effective_name(p.name)
-        # Minified/bundled vendor artefacts are not source. Checked on the
-        # effective name so `app.min.js.bak` is excluded from content scanning
-        # too — it is still enumerated by scan_backup_files() as an exposure.
-        if not scan_minified and is_minified_name(eff_name):
-            continue
-        suffix_match = eff_suffix in exts and eff_name not in SKIP_FILES
-        extras_match = bool(extras) and (
-            _matches_extra(p.name, extras) or _matches_extra(eff_name, extras)
-        )
-        if not (suffix_match or extras_match):
+        if not _include_file(p, exts, extras, scan_minified):
             continue
         files.append(p)
         if len(files) >= max_files:
@@ -334,10 +448,10 @@ def _scan_code_files_cached(
 
 
 # Minified / bundled artefacts. One giant line of third-party code makes every
-# line-oriented pattern fire at line 1 with no actionable fix — on juice-shop
-# two vendored bundles produced 14 of 19 CWE-79 rows, burying the 5 real ones.
-# Anchored on the dot/dash boundary so `minimist.js` and `bundle_helper.ts`
-# are unaffected.
+# line-oriented pattern fire at line 1 with no actionable fix, and a handful of
+# vendored bundles can easily out-number the real findings in a category —
+# burying signal in code the project does not control. Anchored on the dot/dash
+# boundary so `minimist.js` and `bundle_helper.ts` are unaffected.
 _MINIFIED_RE = re.compile(
     r"(?:[.-]min|\.bundle)\.(?:js|mjs|cjs|css)$", re.IGNORECASE
 )
@@ -346,6 +460,60 @@ _MINIFIED_RE = re.compile(
 def is_minified_name(name: str) -> bool:
     """Return True when ``name`` looks like a minified or bundled artefact."""
     return bool(_MINIFIED_RE.search(name))
+
+
+# The name regex only recognises the old `.min` / `.bundle` convention. Modern
+# bundlers emit chunks whose name is nothing but a content hash
+# (`index-eq0Dxw.js`, `613-32d22f8f.js`, `page.js`), so a whole build directory
+# slips past a name-only rule. Those files are still recognisable by SHAPE:
+# generated code is packed onto a few enormous lines.
+#
+# Threshold: 2000 chars. The signature detector already treats 600 chars on one
+# line as pathological for a hand-written line; 2000 is >3x that, and across
+# ~6.2k JS/CSS-family files in five real trees NO hand-written file had a single
+# line above it, while every generated bundle had lines of 3k-130k chars.
+_MINIFIED_LINE_CHARS = 2000
+
+# One long line is not enough — a legitimate source file can carry a single
+# embedded blob (data: URI, generated regex, inlined SVG) and must stay in the
+# scan. Require the long lines to hold most of the file's characters. Measured
+# on the same corpus: every generated bundle scored >= 0.72 (the one hand-written
+# file carrying a large blob would have scored far below), so 0.5 sits in the
+# empty band between the two populations.
+_MINIFIED_CHAR_FRACTION = 0.5
+
+# Only bundler-produced text types are content-classified. Prose, data and
+# config formats (.md, .json, .sql, .yaml) legitimately carry very long lines,
+# and excluding those would silently drop real coverage.
+_MINIFIABLE_SUFFIXES = frozenset({
+    ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".css", ".scss", ".less",
+})
+
+
+def _long_line_chars(lines: tuple[str, ...]) -> tuple[int, int]:
+    """Return (chars on over-long lines, total chars) for ``lines``."""
+    long_chars = sum(len(ln) for ln in lines if len(ln) > _MINIFIED_LINE_CHARS)
+    return long_chars, sum(len(ln) for ln in lines)
+
+
+def is_minified_content(path: Path) -> bool:
+    """Return True when the file's *shape* is that of a generated bundle.
+
+    Complements :func:`is_minified_name` for hash-named chunk files. Uses the
+    shared cached read, so the file is never read twice: any skill that goes on
+    to analyse it hits the same cache entry. A file too large for the read cap
+    is unreadable here and reported as not-minified — no skill can analyse it
+    either, so it produces no findings regardless.
+    """
+    if effective_suffix(path.name) not in _MINIFIABLE_SUFFIXES:
+        return False
+    lines = read_file_lines(path)
+    if not lines:
+        return False
+    long_chars, total = _long_line_chars(lines)
+    if not long_chars:
+        return False
+    return long_chars >= total * _MINIFIED_CHAR_FRACTION
 
 
 def _scan_minified() -> bool:
@@ -371,28 +539,68 @@ def scan_backup_files(source_path: str, max_files: int = MAX_FILES) -> list[Path
     return list(_scan_backup_files_cached(source_path, max_files))
 
 
-@lru_cache(maxsize=16)
-def _scan_backup_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
-    """Cached inner backup walk — keyed by (path, max_files)."""
-    root = Path(source_path)
-    if not root.is_dir():
-        return ()
+def _collect_capped(
+    paths: Iterable[Path], max_files: int, source_path: str, label: str, advice: str,
+) -> tuple[Path, ...]:
+    """Accumulate ``paths`` up to ``max_files``, logging a truncation warning.
 
-    spec = _load_ignore_spec(str(root))
+    Shared by the backup and all-files walks so the cap-and-warn contract lives
+    in exactly one place: a silent truncation reads as full coverage when it is
+    not, so the warning must never depend on which caller ran.
+    """
     files: list[Path] = []
-    for p in _walk_filtered(root, root, spec):
-        if not is_backup_name(p.name):
-            continue
+    for p in paths:
         files.append(p)
         if len(files) >= max_files:
             logger.warning(
-                "backup_scan_truncated path=%s files=%d max=%d — coverage is PARTIAL; "
-                "raise VULTURE_MAX_FILES to enumerate every shadow copy",
-                source_path, len(files), max_files,
+                "%s_truncated path=%s files=%d max=%d — coverage is PARTIAL; %s",
+                label, source_path, len(files), max_files, advice,
             )
             break
-    logger.info("backup_scan_complete path=%s files=%d", source_path, len(files))
+    logger.info("%s_complete path=%s files=%d", label, source_path, len(files))
     return tuple(files)
+
+
+def _walk_unfiltered_by_extension(source_path: str) -> Iterable[Path]:
+    """The shared walk primitive: SKIP_DIRS + ignore spec, no extension gate."""
+    root = Path(source_path)
+    if not root.is_dir():
+        return ()
+    return _walk_filtered(root, root, _load_ignore_spec(str(root)))
+
+
+@lru_cache(maxsize=16)
+def _scan_backup_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
+    """Cached inner backup walk — keyed by (path, max_files)."""
+    return _collect_capped(
+        (p for p in _walk_unfiltered_by_extension(source_path) if is_backup_name(p.name)),
+        max_files, source_path, "backup_scan",
+        "raise VULTURE_MAX_FILES to enumerate every shadow copy",
+    )
+
+
+def scan_all_files(source_path: str, max_files: int = MAX_FILES) -> list[Path]:
+    """Return every file under ``source_path``, ignoring the extension allowlist.
+
+    Same rationale as :func:`scan_backup_files`, generalised: a file's *exposure*
+    is a property of its name and location, not of whether we can parse it. A
+    readable ``.kdbx`` or ``.key`` in a served tree leaks its contents even though
+    no skill would ever tokenise it, and the extension allowlist means the normal
+    per-file loop never sees it.
+
+    SKIP_DIRS and the ignore spec still apply, so vendored and ignored trees are
+    excluded as usual.
+    """
+    return list(_scan_all_files_cached(source_path, max_files))
+
+
+@lru_cache(maxsize=16)
+def _scan_all_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
+    """Cached inner all-files walk — keyed by (path, max_files)."""
+    return _collect_capped(
+        _walk_unfiltered_by_extension(source_path), max_files, source_path,
+        "all_files_scan", "raise VULTURE_MAX_FILES for full enumeration",
+    )
 
 
 @lru_cache(maxsize=16)
@@ -633,6 +841,59 @@ def _is_generated_json(name: str, parts_set: set[str]) -> bool:
     return bool(parts_set & _DATA_DIRS)
 
 
+_PROSE_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".adoc", ".txt"})
+
+
+def is_prose_file(path: Path) -> bool:
+    """True for documentation prose, where a code pattern is a *mention*.
+
+    Code-pattern skills must skip these. A hardening guide saying "never set
+    ``StrictHostKeyChecking=no``" is not an instance of setting it, and
+    ``COMMENT_INDICATORS`` cannot help: markdown body text carries no comment
+    marker, so prose reads as executable source. Measured on a pure
+    ``SECURITY.md`` + ``README.rst`` pair that only *condemns* insecure options:
+    three findings (CWE-269, CWE-328, CWE-94), all false.
+
+    **Deliberately NOT applied to secret scanning.** A credential pasted into a
+    README is a genuine leak — the value is exposed whether or not anything
+    executes. Prose suppresses pattern-shaped findings, never exposed values.
+
+    Uses :func:`effective_suffix`, so a shadow copy (``notes.md.bak``) is prose
+    too.
+    """
+    return effective_suffix(path.name) in _PROSE_SUFFIXES
+
+
+def is_type_declaration_file(path: Path) -> bool:
+    """True for a TypeScript declaration file (``*.d.ts`` and friends).
+
+    Matched on the NAME, not the suffix: ``Path("api.d.ts").suffix`` is only
+    ``.ts``. A declaration file contains signatures, never executable code, so a
+    detector that matches an identifier followed by a paren will report every
+    declared method as a call — which is how ``eval(script: string, ...)`` on a
+    Redis client interface became a CRITICAL code-injection finding.
+    """
+    name = path.name.lower()
+    return any(name.endswith(ext) for ext in (".d.ts", ".d.mts", ".d.cts"))
+
+
+def is_story_file(path: Path) -> bool:
+    """True for Storybook stories, whose constants are display fixtures.
+
+    Deliberately NOT used to suppress secret scanning — a real credential
+    committed in a story is still exposed. Same reasoning as
+    :func:`is_prose_file`.
+    """
+    name = path.name.lower()
+    if any(part.lower() == "stories" for part in path.parts):
+        return True
+    return any(
+        f".{kind}.{ext}" in name
+        for kind in ("stories", "story")
+        for ext in ("ts", "tsx", "js", "jsx", "mdx")
+    )
+
+
 def is_generated_file(path: Path) -> bool:
     """Check if a file is generated / non-source (lock, locale, data, config).
 
@@ -713,6 +974,10 @@ def clear_caches() -> None:
     _splitlines_cached.cache_clear()
     _read_file_cached.cache_clear()
     _scan_code_files_cached.cache_clear()
+    # These two were omitted before, so a second audit in the same process could
+    # score a stale tree. Clearing more is always safe.
+    _scan_backup_files_cached.cache_clear()
+    _scan_all_files_cached.cache_clear()
 
 
 def is_entry_or_config(path: Path) -> bool:

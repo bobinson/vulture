@@ -1,0 +1,68 @@
+# Group: input validation (feature 0070 P7).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# All five rules are content-keyed and single-file, so they survive the runner's
+# flattening (each fixture is copied to a temp dir as one file renamed
+# `_neutral.<suffix>` — suffix preserved, filename and layout destroyed).
+#
+# Every clean twin differs from its positive by the SMALLEST possible edit:
+#   * CWE-776 — the literal only (`True`->`False`, `false`->`true`). Each
+#     alternative pins the UNSAFE literal, so the hardening twin cannot match;
+#     a predicate keyed on the property NAME would score all three twins dirty.
+#   * CWE-103 — twin 1 adds the `super.validate(` delegation, twin 2 returns it
+#     directly, twin 3 makes the class `abstract` (the carve-out).
+#   * CWE-183 — twin swaps the one active-content member (`.svg` -> `.gif`,
+#     `image/svg+xml` -> `image/webp`, `.phtml` -> `.webp`). The allow-list name,
+#     the collection literal and the upload API are all still present, so a
+#     predicate that fires on the NAME alone scores every twin dirty.
+#   * CWE-646 — twin replaces the supplied-name decision with a content sniff
+#     (`file-type`, `python-magic`, `mime_content_type`). Note the suppressor
+#     must be anchored to the IMPORT: the bare substring `file-?type` also
+#     matches the ordinary identifier `fileType`, which is present in virtually
+#     every upload handler and would disable the rule where it should fire.
+#   * CWE-36 — twin replaces the `..`-stripping substitution with the correct
+#     canonicalise-then-contain defence (`path.relative` / `os.path.relpath` /
+#     `filepath.Rel`). This is the load-bearing pair: 72% of the measured
+#     prefix/membership hits ARE this idiom, which is why every membership /
+#     startsWith / Contains / HasPrefix arm was deleted rather than guarded.
+
+# ── CWE-776 XML entity expansion (skill `input_validation`) ──
+- {file: p7_inputvalid/cwe_776_1.py, language: Python, cwe: "776", expectation: positive, line: 5}
+- {file: p7_inputvalid/cwe_776_2.java, language: Java, cwe: "776", expectation: positive, line: 4}
+- {file: p7_inputvalid/cwe_776_3.java, language: Java, cwe: "776", expectation: positive, line: 4}
+- {file: p7_inputvalid/cwe_776_1_clean.py, language: Python, cwe: "776", expectation: negative}
+- {file: p7_inputvalid/cwe_776_2_clean.java, language: Java, cwe: "776", expectation: negative}
+- {file: p7_inputvalid/cwe_776_3_clean.java, language: Java, cwe: "776", expectation: negative}
+
+# ── CWE-103 Struts incomplete validate() (skill `input_validation`) ──
+- {file: p7_inputvalid/cwe_103_1.java, language: Java, cwe: "103", expectation: positive, line: 4}
+- {file: p7_inputvalid/cwe_103_2.java, language: Java, cwe: "103", expectation: positive, line: 4}
+- {file: p7_inputvalid/cwe_103_3.java, language: Java, cwe: "103", expectation: positive, line: 4}
+- {file: p7_inputvalid/cwe_103_1_clean.java, language: Java, cwe: "103", expectation: negative}
+- {file: p7_inputvalid/cwe_103_2_clean.java, language: Java, cwe: "103", expectation: negative}
+- {file: p7_inputvalid/cwe_103_3_clean.java, language: Java, cwe: "103", expectation: negative}
+
+# ── CWE-183 permissive allow-list (skill `input_validation`) ──
+- {file: p7_inputvalid/cwe_183_1.js, language: JavaScript, cwe: "183", expectation: positive, line: 3}
+- {file: p7_inputvalid/cwe_183_2.js, language: JavaScript, cwe: "183", expectation: positive, line: 3}
+- {file: p7_inputvalid/cwe_183_3.py, language: Python, cwe: "183", expectation: positive, line: 3}
+- {file: p7_inputvalid/cwe_183_1_clean.js, language: JavaScript, cwe: "183", expectation: negative}
+- {file: p7_inputvalid/cwe_183_2_clean.js, language: JavaScript, cwe: "183", expectation: negative}
+- {file: p7_inputvalid/cwe_183_3_clean.py, language: Python, cwe: "183", expectation: negative}
+
+# ── CWE-646 reliance on file name / extension (skill `input_validation`) ──
+- {file: p7_inputvalid/cwe_646_1.js, language: JavaScript, cwe: "646", expectation: positive, line: 4}
+- {file: p7_inputvalid/cwe_646_2.py, language: Python, cwe: "646", expectation: positive, line: 3}
+- {file: p7_inputvalid/cwe_646_3.php, language: PHP, cwe: "646", expectation: positive, line: 3}
+- {file: p7_inputvalid/cwe_646_1_clean.js, language: JavaScript, cwe: "646", expectation: negative}
+- {file: p7_inputvalid/cwe_646_2_clean.py, language: Python, cwe: "646", expectation: negative}
+- {file: p7_inputvalid/cwe_646_3_clean.php, language: PHP, cwe: "646", expectation: negative}
+
+# ── CWE-36 absolute path traversal (skill `input_validation`) ──
+- {file: p7_inputvalid/cwe_36_1.js, language: JavaScript, cwe: "36", expectation: positive, line: 2}
+- {file: p7_inputvalid/cwe_36_2.py, language: Python, cwe: "36", expectation: positive, line: 2}
+- {file: p7_inputvalid/cwe_36_3.go, language: Go, cwe: "36", expectation: positive, line: 4}
+- {file: p7_inputvalid/cwe_36_1_clean.js, language: JavaScript, cwe: "36", expectation: negative}
+- {file: p7_inputvalid/cwe_36_2_clean.py, language: Python, cwe: "36", expectation: negative}
+- {file: p7_inputvalid/cwe_36_3_clean.go, language: Go, cwe: "36", expectation: negative}

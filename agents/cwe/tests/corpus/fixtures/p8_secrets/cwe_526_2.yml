@@ -1,0 +1,6 @@
+services:
+  api:
+    image: registry.internal/api:1.4
+    environment:
+      - DATABASE_PASSWORD=9f2c7b41ad83e5
+      - LOG_FORMAT=json

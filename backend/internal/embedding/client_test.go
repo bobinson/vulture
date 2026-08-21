@@ -1,14 +1,14 @@
 package embedding
 
 import (
-	"sync/atomic"
-	"time"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestNew_DefaultValues(t *testing.T) {

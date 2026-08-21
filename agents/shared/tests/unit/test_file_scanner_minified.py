@@ -5,7 +5,7 @@ pattern in every skill fires against it, the reported line number is always 1,
 and the "fix" is meaningless because the file is generated from a dependency we
 do not control.
 
-On OWASP juice-shop this dominated the XSS results: 14 of 19 CWE-79 rows came
+In one sweep this dominated the XSS results: 14 of 19 CWE-79 rows came
 from two vendored bundles —
 
     frontend/src/assets/private/dat.gui.min.js   12 rows
@@ -76,7 +76,7 @@ class TestScannerSkipsMinified:
         assert got == {"app.ts"}, f"expected only app.ts, got {got}"
 
     def test_source_alongside_bundle_is_still_scanned(self):
-        # NB: not `vendor/` — that name is in SKIP_DIRS already. juice-shop
+        # NB: not `vendor/` — that name is in SKIP_DIRS already. The measured tree
         # keeps its three.js copies under assets/private/, which is scanned.
         got = _names({
             "assets/private/OrbitControls.js": "function OrbitControls () {}\n",
