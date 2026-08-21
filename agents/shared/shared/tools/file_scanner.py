@@ -142,6 +142,86 @@ def default_extensions() -> frozenset[str]:
     return CODE_EXTENSIONS | WHITELIST_EXTENSIONS | _env_extensions("VULTURE_EXTRA_EXTENSIONS")
 
 
+# ── LLM prompt feed (feature 0075) ───────────────────────────────────────────
+# The extension set the LLM PROMPT sees, as distinct from what the scanner walks.
+# It lives here, beside CODE_EXTENSIONS / WHITELIST_EXTENSIONS / default_extensions(),
+# so a reader asking "what does the model see?" finds the answer where the scanner's
+# own sets are — and so a future third feed path inherits it instead of rediscovering
+# it. Two feed paths already diverged once by each naming their own set.
+
+# Prose/data types subtracted from the PROMPT by default. Not a claim that prose holds
+# no defects — a README can leak a credential, which is why the skill tier keeps
+# scanning it. A BUDGET argument: the prompt has a fixed character ceiling and doc text
+# displaces the source the model was asked to analyse.
+LLM_PROSE_EXTENSIONS: frozenset[str] = frozenset({
+    ".md", ".markdown", ".rst", ".txt", ".adoc", ".csv", ".tsv",
+})
+
+# SHIPS EMPTY, deliberately. An earlier revision excluded `.graphql`/`.gql` citing
+# "0 true positives of 32 adjudicated". That evidence was CONFOUNDED with the defect
+# 0075 fixes: no skill carries GraphQL patterns, so all 32 rows had zero skill findings
+# and were therefore all in the RAW/unnumbered bucket, whose precision was 12.5% with
+# 78% mislocation. "0 of 32" cannot be separated from "all 32 presented blind".
+# Re-adjudicated under the numbered regime, 2 of 11 are real — a cleartext wallet
+# privateKey selection and an unbounded full-table fetch — so excluding them would have
+# deleted both. The mechanism stays for operators who cannot send config dialects to a
+# third-party provider.
+LLM_INELIGIBLE_EXTENSIONS: frozenset[str] = frozenset()
+
+
+def _llm_feed_prose() -> bool:
+    """Whether prose/data files reach the LLM prompt. Default False (budget)."""
+    return os.getenv("VULTURE_LLM_FEED_PROSE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _llm_ineligible_extensions() -> frozenset[str]:
+    raw = os.getenv("VULTURE_LLM_INELIGIBLE_EXTENSIONS")
+    if raw is None:
+        return LLM_INELIGIBLE_EXTENSIONS
+    return frozenset(
+        e.strip().lower() if e.strip().startswith(".") else "." + e.strip().lower()
+        for e in raw.split(",") if e.strip()
+    )
+
+
+def _llm_feed_unified() -> bool:
+    """Whether both LLM feed paths resolve ONE extension set. Default True.
+
+    Feature 0075 T2.8, a one-release escape hatch for the RC3 fix. `false` restores
+    the original asymmetry deliberately: the single-shot path back to the narrow
+    code-only set, the batched sweep back to the wide default with no `extensions=`
+    at all. That pair IS the defect — two paths feeding one model disagreeing about
+    what counts as code — which is why unified is the default and this exists only to
+    unblock an operator, not as a supported configuration.
+    """
+    return os.getenv("VULTURE_LLM_FEED_UNIFY", "true").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def llm_feed_extensions(single_shot: bool = True) -> frozenset[str] | None:
+    """Extensions fed to the LLM phase: the scan set, minus prompt-only subtractions.
+
+    Subtractive by design. Narrowing to a hand-picked allowlist silently drops file
+    types nobody has measured — an earlier revision narrowed to CODE_EXTENSIONS and
+    lost `.sql`, `.tf` and `.yml`, taking three adjudicated-real findings with them.
+    Delegating to ``default_extensions()`` also keeps ``VULTURE_EXTRA_EXTENSIONS`` and
+    the ``VULTURE_DISABLE_EXTENSION_WHITELIST`` hatch working for the feed.
+
+    Returns a ``frozenset``: ``scan_code_files`` folds this into an ``lru_cache`` key,
+    and a mutable ``set`` raises ``TypeError: unhashable type``.
+    """
+    if not _llm_feed_unified():
+        # Pre-0075 behaviour, reproduced exactly: narrow set for the single-shot
+        # path, None (the wide default) for the sweep. Returning None is the point —
+        # the sweep's original call passed no `extensions=` at all.
+        return CODE_EXTENSIONS if single_shot else None
+    excluded = _llm_ineligible_extensions()
+    if not _llm_feed_prose():
+        excluded = excluded | LLM_PROSE_EXTENSIONS
+    return frozenset(default_extensions()) - excluded
+
+
 # Suffixes / patterns for backup directories
 _BACKUP_SUFFIXES = ("-backup", "_backup", "-old", "_old", "-bak", "_bak")
 

@@ -142,7 +142,7 @@ make build          # Build all components
 make test           # Run all tests (Go + Python + Frontend)
 make e2e            # Run E2E test suites
 make coverage       # Measure + report test coverage
-make complexity     # Report cyclomatic-complexity outliers (target < 10)
+make complexity     # Report cyclomatic-complexity outliers (target < 5)
 make lint           # Lint all components
 make docker-up      # Start full stack via docker compose
 make docker-down    # Stop all services
@@ -216,7 +216,7 @@ These rules are mandatory for all code in this project:
 1. **E2E tests first**: E2E business logic tests must be written first, then the code. Code must be verified against the business logic after every change.
 2. **NEVER modify E2E business logic tests**: These tests are the source of truth for business requirements. Changing them to make code pass is forbidden.
 3. **DRY**: No duplicated logic. Extract shared code into appropriate shared modules.
-4. **Low cyclomatic complexity (target < 10)**: Keep functions under ~10 independent code paths where practical — use early returns, strategy pattern, and delegation. `make complexity` reports `gocyclo`/`radon` outliers; it's a monitored target, not a hard gate (a known tail of older functions still exceeds it).
+4. **Low cyclomatic complexity (target < 5)**: Keep functions under ~5 independent code paths where practical — use early returns, strategy pattern, and delegation. `make complexity` reports `gocyclo`/`radon` outliers; it's a monitored target, not a hard gate (a known tail of older functions still exceeds it).
 5. **High test coverage (target: comprehensive)**: New code should ship with tests; aim to cover every meaningful path. Coverage is measured and reported in CI, not gated at a fixed percentage.
 6. **Performance-conscious**: Minimize allocations and unnecessary copies, use efficient data structures, and profile hot paths. (Vulture is application software, not a safety-certified system — it does not claim ISO 26262 / DO-178C compliance for its own code; those frameworks are *audit targets* the agents check other code against.)
 
@@ -368,6 +368,18 @@ VULTURE_LLM_GATEWAY_GUESS_CTX=32000                  # Window ceiling trusted wh
 VULTURE_REQUIRE_LOOP_GUARD=false                     # Refuse the LLM phase outright when the tool-loop guard cannot be attached, instead of degrading. The guard raises at VULTURE_LOOP_GLOBAL_LIMIT tool calls; without it the only bound on a runaway loop is VULTURE_AGENT_MAX_AUDIT_SECONDS
 VULTURE_LLM_MAX_CONSECUTIVE_FAILURES=3               # Abort the batch sweep after N CONSECUTIVE failing batches (a success resets the counter, so one blip never ends the phase). Guards the case where every batch fails for the same structural reason (bad key, dead gateway, 413) and walking the remaining batches only burns wall-clock. The abort is always logged (llm_consecutive_failure_abort) and reported as a partial-results notice — never silent. 0 disables
 VULTURE_LLM_MAX_TURNS=12                             # Cap on agent turns per LLM call (passed to Runner.run). Bounds a model that keeps calling tools without ever producing a final answer; complements the tool-call loop guard, which counts calls rather than turns
+
+# What the LLM tier actually SEES (feature 0075). The prompt is the input to every
+# LLM-citing agent — cwe, asvs, do178c, chaos, soc2, ssdf, xss, owasp all reach the
+# model through the same two prompt paths, so these apply to all eight at once.
+VULTURE_LLM_TIER3=false                              # Feature 0059 cost guard, and the LARGEST coverage lever here. Off (default) scopes the sweep to flagged + entry/config files and skips the long tail: measured on one 7,598-file target, 828 of 2,828 eligible files are rendered. Raise coverage here BEFORE tuning anything below
+VULTURE_LLM_LINE_NUMBERS=true                        # Files reach the prompt with absolute line numbers ("30: code") so the model reads a line instead of counting newlines. Measured: raw files mislocated 78% of findings vs 13% for numbered; adjudicated precision 15.7% -> 30.0%. Costs ~5-7 chars/line of budget. false = pre-0075 presentation (snippets stay numbered — that predates the switch)
+VULTURE_LLM_SNIPPET_CONTEXT=10                       # Lines of context each side of a finding. The default is byte-identical to pre-0075 output. Widening buys the model the guard that would REFUTE a finding (measured as `guard_present` false positives) and costs budget — fewer files per batch
+VULTURE_LLM_WHOLE_FILE_MAX_LINES=0                   # Render files at or below N lines whole instead of windowed; 0 disables. For a small file the elision markers cost nearly what the omitted lines would
+VULTURE_LLM_FEED_PROSE=false                         # Send prose/data (.md .txt .csv .rst .adoc) to the prompt. Off on BUDGET grounds — doc text displaces real source inside a fixed ceiling — NOT because prose is clean. Skills still scan it; VULTURE_SECRET_SCAN_PROSE covers the gap
+VULTURE_LLM_INELIGIBLE_EXTENSIONS=                   # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding .graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. Populate it (e.g. ".graphql,.gql") if you cannot send config dialects to a third-party provider
+VULTURE_LLM_FEED_UNIFY=true                          # Both feed paths resolve ONE extension set. false restores the pre-0075 asymmetry (narrow for single-shot, wide for the sweep) — that pair IS the defect, so this is an unblock hatch, not a supported configuration
+VULTURE_SECRET_SCAN_PROSE=true                       # CWE agent: scan prose/data files for secrets. The compensating control for VULTURE_LLM_FEED_PROSE=false — without it a credential in a README loses the only tier reading it. Measured live: recovered a real `INBOUND_AUTH_TOKEN` in a README. false re-opens that hole
 # NOTE: Vulture pins litellm.num_retries=0 for the audit path. Retries are owned by
 # retry_llm_call() (which classifies the error and halves oversized bodies first); leaving the
 # client's own retry layer on multiplies attempts and re-sends a too-large body unchanged.

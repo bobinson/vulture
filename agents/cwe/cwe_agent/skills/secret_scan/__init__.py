@@ -19,6 +19,7 @@ from pathlib import Path
 from agents import function_tool
 from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
+    LLM_PROSE_EXTENSIONS,
     is_generated_file,
     read_file_safe,
     scan_code_files,
@@ -38,7 +39,7 @@ from cwe_agent.skills.secret_scan import entropy as entropy_mod
 # Per-skill extension override. Includes secret-bearing file types
 # that aren't in the default CODE_EXTENSIONS — .pem / .key / .crt
 # certificate files, .env files, OpenVPN configs, KeePass DBs.
-SECRET_SCAN_EXTENSIONS: frozenset[str] = CODE_EXTENSIONS | frozenset({
+_SECRET_BEARING_EXTENSIONS: frozenset[str] = frozenset({
     ".pem",
     ".key",
     ".crt",
@@ -49,6 +50,38 @@ SECRET_SCAN_EXTENSIONS: frozenset[str] = CODE_EXTENSIONS | frozenset({
     ".env",
     ".envrc",
 })
+
+
+def secret_scan_prose_enabled() -> bool:
+    """Whether prose/data files are scanned for secrets. Defaults ON.
+
+    Feature 0075 T2.12, the compensating control for a precision change. 0075
+    subtracted ``.md``/``.csv``/``.txt`` from the LLM PROMPT on budget grounds — doc
+    text displaces real source inside a fixed character ceiling. Defensible for the
+    prompt, but in an LLM-enabled run that was the only tier reading those files for
+    weaknesses, so a credential committed to a README would have lost all coverage and
+    gained nothing back.
+
+    Widening the deterministic scanner is the cheaper half of that trade: a regex over
+    a README costs no prompt budget at all. Defaults ON because a narrowing that
+    silently drops a finding class is precisely the defect this feature family exists
+    to remove; ``false`` is the rollback and re-opens the hole.
+    """
+    return os.getenv("VULTURE_SECRET_SCAN_PROSE", "true").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def secret_scan_extensions() -> frozenset[str]:
+    """Extensions this skill scans, resolved at call time so the switch is live."""
+    exts = CODE_EXTENSIONS | _SECRET_BEARING_EXTENSIONS
+    if secret_scan_prose_enabled():
+        exts = exts | LLM_PROSE_EXTENSIONS
+    return exts
+
+
+# Back-compat module constant: the resolved set at import time. Call
+# secret_scan_extensions() where the switch must be honoured per-run.
+SECRET_SCAN_EXTENSIONS: frozenset[str] = secret_scan_extensions()
 
 # Max bytes to scan per file. PEM keys + JSON blobs can be large; cap
 # at 2 MB to keep memory bounded. Files larger than this are skipped
@@ -92,7 +125,7 @@ def _collect_scannable_files(source_path: str) -> list[Path]:
     """
     return scan_code_files(
         source_path,
-        extensions=SECRET_SCAN_EXTENSIONS,
+        extensions=secret_scan_extensions(),  # resolved per-run so the switch is live
         extra_filenames=_DOTENV_NAMES,
     )
 
