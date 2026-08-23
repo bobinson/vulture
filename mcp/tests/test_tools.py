@@ -1,6 +1,6 @@
 """RED team: MCP tool tests. Must FAIL until server.py implements the tools."""
-import pytest
 import httpx
+import pytest
 import respx
 
 LINEAGE_RESPONSE = [

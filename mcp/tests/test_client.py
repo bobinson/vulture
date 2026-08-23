@@ -1,6 +1,6 @@
 """RED team: VultureClient tests. Must FAIL until server.py implements VultureClient."""
-import pytest
 import httpx
+import pytest
 import respx
 
 

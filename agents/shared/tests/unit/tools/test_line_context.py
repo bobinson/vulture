@@ -36,7 +36,6 @@ from shared.tools.line_context import (
     strip_strings_and_comments,
 )
 
-
 # ── strip_strings_and_comments ────────────────────────────────────────────
 
 

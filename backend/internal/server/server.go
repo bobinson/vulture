@@ -425,6 +425,24 @@ const knownWeakDevPasswordHash = "acf06e1920ea3a42ab6607d99a359784f0de53e6c9cddf
 
 func resolveLocalDevPassword() (pw string, generated bool, err error) {
 	if v := os.Getenv("VULTURE_LOCAL_DEV_PASSWORD"); v != "" {
+		// SHA-256 is CORRECT here and a password KDF would be wrong.
+		//
+		// CodeQL's go/weak-sensitive-data-hashing fires on sha256(password),
+		// and its advice — Argon2/scrypt/bcrypt/PBKDF2 — is aimed at password
+		// STORAGE, where slowness is what defeats offline brute force. This is
+		// not storage and not authentication. It is a one-element DENYLIST
+		// FINGERPRINT: the operator's value is compared against the hash of a
+		// single historical hardcoded default so that literal need not reappear
+		// in source (it was scrubbed from git history, 0036 Phase 4).
+		//
+		// The hash is never persisted, never transmitted, and never used to
+		// verify anyone. Preimage resistance is the only property required, and
+		// SHA-256 has it. A salted KDF cannot even express this comparison: it
+		// would need the salt stored alongside, and with exactly ONE candidate
+		// input the added work factor buys nothing an attacker cares about —
+		// the value it protects is a published historical default.
+		//
+		// codeql[go/weak-sensitive-data-hashing]
 		sum := sha256.Sum256([]byte(v))
 		if hex.EncodeToString(sum[:]) == knownWeakDevPasswordHash {
 			return "", false, fmt.Errorf(

@@ -65,14 +65,14 @@ def _without_registry_packs(argv: list[str]) -> list[str]:
 
 def test_vendored_rules_dir_defaults_to_rules_vulture(monkeypatch):
     monkeypatch.delenv("VULTURE_SEMGREP_VENDORED_RULES", raising=False)
-    import src.wrapper as wrapper
+    from src import wrapper
 
     wrapper = importlib.reload(wrapper)
     assert Path(os.fspath(wrapper.VENDORED_RULES_DIR)) == PLUGIN_ROOT / "rules" / "vulture"
 
 
 def test_vendored_rules_dir_env_override(monkeypatch, tmp_path):
-    import src.wrapper as wrapper
+    from src import wrapper
 
     override = tmp_path / "custom-rules"
     override.mkdir()
@@ -91,7 +91,7 @@ def test_vendored_rules_dir_env_override(monkeypatch, tmp_path):
 
 
 def test_argv_includes_vendored_config_when_dir_nonempty(monkeypatch, tmp_path):
-    import src.wrapper as wrapper
+    from src import wrapper
 
     rules = tmp_path / "vrules"
     rules.mkdir()
@@ -107,7 +107,7 @@ def test_argv_includes_vendored_config_when_dir_nonempty(monkeypatch, tmp_path):
 
 
 def test_argv_omits_vendored_config_when_dir_missing(monkeypatch, tmp_path):
-    import src.wrapper as wrapper
+    from src import wrapper
 
     missing = tmp_path / "does-not-exist"
     monkeypatch.setattr(wrapper, "VENDORED_RULES_DIR", str(missing))
@@ -117,7 +117,7 @@ def test_argv_omits_vendored_config_when_dir_missing(monkeypatch, tmp_path):
 
 
 def test_argv_omits_vendored_config_when_dir_empty(monkeypatch, tmp_path):
-    import src.wrapper as wrapper
+    from src import wrapper
 
     empty = tmp_path / "empty-rules"
     empty.mkdir()
@@ -134,7 +134,7 @@ def test_argv_omits_vendored_config_when_dir_empty(monkeypatch, tmp_path):
 
 @pytest.mark.skipif(shutil.which("semgrep") is None, reason="semgrep binary not installed")
 def test_taint_finds_dataflow_cwe():
-    import src.wrapper as wrapper
+    from src import wrapper
     from src.translate import translate_findings
 
     vendored = Path(os.fspath(wrapper.VENDORED_RULES_DIR))

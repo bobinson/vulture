@@ -15,8 +15,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-import src.wrapper as wrapper
+from src import wrapper
 from src.translate import summarize_scam_risk, translate_findings
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]

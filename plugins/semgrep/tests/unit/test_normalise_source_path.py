@@ -6,9 +6,8 @@ escape). RED phase (feature 0053).
 
 import os
 
-
 # RED-phase import — will fail until GREEN ships src/translate.py.
-from src.translate import normalise_source_path  # noqa: E402
+from src.translate import normalise_source_path
 
 
 def test_accepts_valid_subpath_of_root(tmp_path):

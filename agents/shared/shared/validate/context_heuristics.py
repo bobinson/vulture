@@ -243,7 +243,14 @@ def clear_l1_cache() -> None:
 # layer cannot drift apart. NOTE the bias differs by layer: here a missed strip
 # means an extra discharge (safe); in a detector it would mean a dropped
 # finding, which is why that module forbids using it as a hard skip.
-from shared.tools.line_context import strip_strings_and_comments
+from shared.tools.line_context import (  # noqa: E402 — sited with the
+    # commentary above, which is the whole point: this import is the
+    # single-sourcing decision it documents. Hoisting it to the top
+    # separates the import from the layer-bias warning and invites the
+    # next reader to reuse it as a hard skip in a detector, which would
+    # drop findings rather than merely over-discharge.
+    strip_strings_and_comments,
+)
 
 
 def _strip_comments_and_strings(line: str) -> str:

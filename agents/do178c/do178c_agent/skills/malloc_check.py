@@ -7,10 +7,10 @@ from agents import function_tool
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
-    is_prose_file,
 )
 from shared.tools.snippet import extract_snippet
 

@@ -6,10 +6,10 @@ from pathlib import Path
 from agents import function_tool
 from shared.tools.file_scanner import (
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_safe,
     scan_code_files,
-    is_prose_file,
 )
 
 TIMEOUT_PATTERNS = [

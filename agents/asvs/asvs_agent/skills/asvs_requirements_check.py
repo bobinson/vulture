@@ -19,13 +19,13 @@ from typing import Any
 from agents import function_tool
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
+    SAFE_IMPORT_LINE,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
-    SAFE_IMPORT_LINE,
-    is_prose_file,
 )
 from shared.tools.line_context import strip_strings_and_comments
 from shared.tools.snippet import extract_snippet
@@ -775,9 +775,9 @@ def _registry_entry_matches(
         # rollback flag too. Without this the hatch reverts the patterns but
         # not the safe-context, and behaviour never actually returns to
         # pre-fix.
-        if _traversal_rollback_active() and _SPECIFIER_SAFE_ARM.search(line):
-            return True
-        return False
+        return bool(
+            _traversal_rollback_active() and _SPECIFIER_SAFE_ARM.search(line)
+        )
     return True
 
 

@@ -32,7 +32,6 @@ from shared.validate.llm_judge import (
     _verdict_to_check,
 )
 
-
 # ── T5.2: extract_snippet gains a line-budget mode ─────────────────────────
 
 

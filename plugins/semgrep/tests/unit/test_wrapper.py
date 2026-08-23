@@ -11,12 +11,10 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-
-# RED-phase import — fails until src/wrapper.py exists.
-from src.wrapper import app  # noqa: E402
-
 from fastapi.testclient import TestClient
 
+# RED-phase import — fails until src/wrapper.py exists.
+from src.wrapper import app
 
 # ---------------------------------------------------------------------------
 # Fixture: canned Semgrep JSON output (subset of the real fixture, enough

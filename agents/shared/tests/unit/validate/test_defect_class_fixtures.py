@@ -61,7 +61,6 @@ def test_A3_layer_crash_never_raises_confidence():
 def test_B_evidence_scope_can_reach_past_the_window(tmp_path):
     """§3 B1: for a reviewed FILE-scope class the search is no longer the
     20-line backward window. (Deep: test_calibration.py forward-search)"""
-    from shared.validate.context_heuristics import _sanitizer_search_extent
     from shared.validate.refutation import REFUTATION_MAP
 
     ref = REFUTATION_MAP["CWE-639"]

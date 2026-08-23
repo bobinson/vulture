@@ -8,14 +8,12 @@ phase ships the implementation.
 import json
 from pathlib import Path
 
-
 # Imports will fail at RED time — that is the correct RED state for TDD.
-from src.translate import (  # noqa: E402  (import at top is fine; failure is intentional in RED)
+from src.translate import (
     extract_cwe,
     map_severity,
     translate_findings,
 )
-
 
 FIXTURE_PATH = Path(__file__).parent.parent / "fixtures" / "semgrep_output_real.json"
 

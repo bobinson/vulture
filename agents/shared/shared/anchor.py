@@ -45,13 +45,13 @@ from shared.tools.line_format import strip_line_number
 
 __all__ = [
     "STATUSES",
-    "clear_cache",
-    "max_delta",
     "AnchorResult",
     "anchor_weight",
+    "clear_cache",
     "collapse_ws",
     "distance",
     "key",
+    "max_delta",
     "normalise",
     "tokens",
     "verify_anchor",

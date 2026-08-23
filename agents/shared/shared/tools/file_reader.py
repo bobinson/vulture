@@ -1,6 +1,5 @@
 """File reader tool for agents."""
 
-import os
 from pathlib import Path
 
 from agents import function_tool

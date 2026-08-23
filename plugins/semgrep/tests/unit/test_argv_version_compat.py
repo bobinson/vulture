@@ -8,7 +8,7 @@ flag where the installed Semgrep accepts it; the pinned baseline (probe
 False) must never carry the flag.
 """
 
-import src.wrapper as wrapper
+from src import wrapper
 from src.wrapper import _semgrep_argv
 
 

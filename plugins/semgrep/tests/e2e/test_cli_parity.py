@@ -18,7 +18,6 @@ import shutil
 import subprocess
 
 import pytest
-
 from src.translate import extract_cwe, translate_findings
 from src.wrapper import VENDORED_RULES_DIR
 

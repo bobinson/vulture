@@ -25,7 +25,6 @@ from shared.validate.llm_judge import run_l5
 from shared.validate.types import ValidateConfig
 from shared.validate.voter import JUDGE_UNDECIDED
 
-
 # ── executor confinement and bounds ────────────────────────────────────────
 
 
@@ -218,8 +217,9 @@ def test_ac31_budget_exhaustion_yields_undecided(monkeypatch, tmp_path):
     monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS", "2")
     f = _finding(tmp_path)
     calls = []
-    ask = lambda i: _FakeMessage(tool_calls=[_FakeToolCall(
-        f"t{i}", "read_file", json.dumps({"path": "handler.js"}))])
+    def ask(i):
+        return _FakeMessage(tool_calls=[_FakeToolCall(
+            f"t{i}", "read_file", json.dumps({"path": "handler.js"}))])
     # Asks for tools forever; after the budget the loop must stop on its own.
     script = [ask(i) for i in range(10)]
     _wire_fake_client(monkeypatch, script, calls)

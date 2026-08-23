@@ -13,10 +13,10 @@ from shared.tools.file_scanner import (
     SAFE_IMPORT_LINE,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_safe,
     scan_code_files,
-    is_prose_file,
 )
 
 # DB read indicators (preceding lines)

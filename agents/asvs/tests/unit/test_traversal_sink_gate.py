@@ -35,7 +35,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from asvs_agent.skills._cwe_patterns import PATH_TRAVERSAL_PATTERNS
 from asvs_agent.skills.asvs_requirements_check import check_asvs_requirements
 

@@ -124,7 +124,7 @@ def test_cancelled_first_batch_still_runs(monkeypatch):
     calls = []
     monkeypatch.setattr(llm_judge, "_call_llm",
                         lambda *a, **k: calls.append(1) or "not valid json")
-    verdicts = _judge_batch(
+    _judge_batch(
         batch_idx=0, batch=_batch(), audit_id="a",
         system_prompt="s", model="m", per_batch_timeout_s=1.0,
         cancel=_Cancelled(),
