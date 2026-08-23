@@ -23,7 +23,7 @@ Frontend (React SPA + Vite) → SSE/REST → Go Backend → HTTP/SSE → Python 
 - **Go Backend** (`backend/`): Orchestrator. Receives audit requests, manages sources (git clone / local path), dispatches to Python agents concurrently, aggregates SSE streams, serves structured SSE events to frontend. PostgreSQL (pgvector) for production, SQLite fallback for local dev.
 - **Python Agents** (`agents/`): Each audit type (chaos, owasp, soc2) is a separate FastAPI microservice using OpenAI Agents SDK + LiteLLM. Shared library in `agents/shared/`.
 - **Frontend** (`frontend/`): React SPA (Vite) + Tailwind + react-i18next. Plain React with native EventSource for SSE streaming. Look and feel must be elegant like https://agentation.dev — intuitive, simple, elegant. Warm cream theme, compact sidebar, terminal-style agent output.
-- **CLI** (`cli/`): Go CLI binary for headless audit execution (`vulture scan`, `vulture watch`, `vulture list`).
+- **CLI** (`cli/`): Go CLI binary for headless audit execution (`vulture scan`, `vulture status`, `vulture results`).
 - **Deployment**: `docker compose` with all services (PostgreSQL, backend, 9 agents, frontend).
 
 ### Deployment Modes

@@ -101,7 +101,6 @@ verification/oracle/.idea/
 docker-compose.override.yml
 
 # Explicit allowlists (negate broader rules above)
-!.env.example
 !config.ini.example
 # The .md pointer files for external CWE artifacts must stay tracked even
 # though the binaries they describe are gitignored. The *.pdf / *.xml /

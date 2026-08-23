@@ -17,7 +17,7 @@ Vulture is an AI-powered compliance audit platform that inspects source code aga
 - **Real-time SSE streaming** -- Live audit progress, findings, and agent output streamed to the browser as Server-Sent Events
 - **Memory system with pgvector** -- Cross-audit intelligence via vector embeddings; prior findings are reused as context to avoid redundant analysis and reduce token usage
 - **Extensible architecture** -- Add a new audit type in three steps: create the agent, register it in the Go backend, add a Docker service block. The frontend auto-discovers new agents
-- **CLI tool** -- Headless audit execution with `vulture scan`, `vulture watch`, and `vulture list`
+- **CLI tool** -- Headless audit execution with `vulture scan`, `vulture status`, and `vulture results`
 - **Multi-language UI** -- React SPA with internationalization support for English, Spanish, German, French, Japanese, and Portuguese
 
 ## Architecture
@@ -367,9 +367,10 @@ During an audit stream, the following event types are emitted:
 The Vulture CLI provides headless audit execution:
 
 ```bash
-vulture scan --source /path/to/code --type owasp,cwe
-vulture list
-vulture watch <audit-id>
+vulture scan /path/to/code --types owasp,cwe   # path is positional; flag is --types
+vulture scan /path/to/code --wait --exit-on high  # CI: block, then gate on severity
+vulture status                                 # recent audit statuses
+vulture results <audit-id>                     # detailed results for one audit
 ```
 
 ## Contributing
