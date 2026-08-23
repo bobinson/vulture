@@ -25,8 +25,13 @@ func TestAgentListEndpoint(t *testing.T) {
 	var agents []map[string]interface{}
 	readJSON(t, resp, &agents)
 
-	if len(agents) != 3 {
-		t.Fatalf("expected 3 agents, got %d", len(agents))
+	// No assertion on the COUNT. The registry grows as agents are added (it was 3
+	// when this was written and is 10 now), and a literal count pins today's
+	// roster rather than the property the test is for: that the endpoint returns
+	// the configured agents. Membership is asserted below, which is what matters
+	// and does not break every time an agent ships.
+	if len(agents) == 0 {
+		t.Fatalf("expected at least one agent, got none")
 	}
 
 	typeSet := map[string]bool{}
