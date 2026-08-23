@@ -227,3 +227,71 @@ class TestGenerateKeyBitSlot:
         """The `[^,]+` reader stand-in read this line's `1024` as the bit size."""
         body = "\tpriv, err := rsa.GenerateKey(newReader(seed, 1024), 4096)\n"
         assert _of(_crypto("keys.go", body), 326) == []
+
+
+# ── ReDoS guard on the call-head pattern (CodeQL: inefficient regular expression) ──
+
+def test_call_head_is_linear_not_exponential():
+    """`_CALL_HEAD` must not backtrack exponentially on identifier-ish runs.
+
+    The original `(?:[A-Za-z_$@][\\w.$]*\\s*)*\\(` had the classic `(a+)+` shape:
+    the two character classes overlap (both match `$`, letters and `_`) and the
+    trailing separator was nullable, so a run of N identifier characters could be
+    partitioned across iterations in exponentially many ways. On input that never
+    reaches `(`, the engine explored all of them — 26 `$` took 1.6 seconds, and
+    every further 4 characters multiplied that by ~3.5.
+
+    This matters beyond CPU: `_args` parses ATTACKER-SUPPLIED SOURCE. A scanned
+    repository containing a long `$$$$…` run inside a call-shaped line would hang
+    the skill phase, and the scanner reads whatever the audited tree contains.
+
+    2000 characters must complete in well under a second; the old pattern could
+    not finish 40.
+
+    The match runs in a SUBPROCESS with a hard timeout. Timing the call in-process
+    would hang the suite instead of failing it: with the vulnerable pattern the
+    2000-character payload does not finish in any practical time, so an assertion
+    placed after it is never reached. A guard against a hang must not itself hang —
+    verified by reintroducing the old pattern, which times out here in 5s rather
+    than blocking the run.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    probe = textwrap.dedent("""
+        import re, sys
+        sys.path.insert(0, ".")
+        from cwe_agent.skills._args import _CALL_HEAD
+        assert _CALL_HEAD.match("$" * 2000 + "!") is None
+        print("ok")
+    """)
+    try:
+        done = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                              text=True, timeout=5)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(
+            "_CALL_HEAD did not match 2000 characters within 5s — the pattern "
+            "backtracks exponentially again (CodeQL: inefficient regular expression)"
+        ) from None
+    assert done.returncode == 0 and "ok" in done.stdout, done.stderr[-400:]
+
+
+def test_call_head_still_recognises_every_documented_shape():
+    """The ReDoS fix must not change what counts as a call head."""
+    from cwe_agent.skills._args import _CALL_HEAD
+
+    for text, end in (
+        ("f(", 2), ("  f (", 5), ("a.b.c(", 6), ("new Foo(", 8),
+        ("new  Foo  (", 11), ("(", 1), ("   (", 4),
+        ("$el(", 4), ("@decorator(", 11), ("a.b (x)", 5),
+    ):
+        match = _CALL_HEAD.match(text)
+        assert match is not None and match.end() == end, (
+            f"{text!r} must match with end={end}; got {match.end() if match else None}"
+        )
+
+    # A bare argument list is NOT a call head — its inner `(` must not be taken
+    # for the wrapper (the case the module comment calls out).
+    for text in ("a, f(b)", "1 + 2)", "'str', f(", ""):
+        assert _CALL_HEAD.match(text) is None, f"{text!r} must not match"

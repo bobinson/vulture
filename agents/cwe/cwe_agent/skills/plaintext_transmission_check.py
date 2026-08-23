@@ -243,9 +243,16 @@ _EXPIRY_CHECK_OFF = re.compile(
 # Anchor on the SERVER-side method only: an empty `checkClientTrusted` is the
 # ordinary case for a client that presents no certificate.
 _SERVER_TRUST_ANCHOR = re.compile(r"\bcheckServerTrusted\s*\(")
+# The comment-skipping loop uses POSSESSIVE quantifiers (`*+`) to close a ReDoS.
+# `[^\n]` matches `/`, so a run of `//` could be split across iterations of the
+# outer group in exponentially many ways: measured 22x `//` took 25.7 SECONDS,
+# growing ~46x per 4 characters. A line comment always runs to the newline, so
+# giving those characters back can never produce a match that maximal munching
+# misses — the language is unchanged and matching becomes linear (5000
+# characters: 0.17 ms).
 _EMPTY_TRUST_BODY = re.compile(
     r"\bcheckServerTrusted\s*\([^)]*\)\s*(?::\s*[\w<>\[\], ]+)?"
-    r"(?:throws\s+[\w., ]+)?\s*\{\s*(?://[^\n]*\s*|/\*.*?\*/\s*)*\}"
+    r"(?:throws\s+[\w., ]+)?\s*\{\s*(?://[^\n]*+\s*+|/\*.*?\*/\s*+)*\}"
 )
 _TRUST_BODY_RADIUS = 4
 _NO_TRUST_ANCHORS = re.compile(

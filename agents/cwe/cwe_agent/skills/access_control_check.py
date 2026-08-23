@@ -212,9 +212,18 @@ _PK_WINDOW = 2
 # and matched a browser-devtools proxy route; a word that names a UI as often
 # as an admin panel cannot carry a high-severity finding. `debug`, `internal`
 # and `private` were dropped for the same reason.
+# `\w++` is POSSESSIVE, and that is a ReDoS fix rather than a flourish: `_` is a
+# member of BOTH the separator class `[-_.]` and `\w`, so a tail like `_0_0_0_0`
+# could be partitioned across iterations in exponentially many ways. On a
+# non-matching input the engine tried every one — measured `admin-` + 22x `0_`
+# took 171 ms, growing ~13x per 4 characters. Possessive matching makes each
+# segment's munch final, so the partition is unique and matching is linear
+# (5000 characters: 0.05 ms). The accepted language is unchanged: `\w` runs are
+# always maximal here, since the only thing that may follow one is a separator
+# that `\w` cannot match, or end-of-string.
 _ADMIN_SEGMENT = re.compile(
     r"^(?:admin|administrator|administration|sysadmin|superadmin|"
-    r"actuator|management|metrics)s?(?:[-_.]\w+)*$",
+    r"actuator|management|metrics)s?(?:[-_.]\w++)*$",
     re.IGNORECASE,
 )
 

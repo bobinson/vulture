@@ -32,7 +32,19 @@ _DEPTH_DELTA = {"(": 1, "[": 1, "{": 1, ")": -1, "]": -1, "}": -1}
 # Optional callee in front of the argument list: `f(`, `a.b.c(`, `new Foo(`,
 # or a bare `(`. Anything else (`a, f(b)`) is already a bare argument list, so
 # its inner `(` must NOT be mistaken for the wrapper.
-_CALL_HEAD = re.compile(r"^\s*(?:[A-Za-z_$@][\w.$]*\s*)*\(")
+#
+# The whitespace BETWEEN identifiers is mandatory (`\s+`, not `\s*`), and that is
+# a ReDoS fix rather than a style choice. The previous form
+# `(?:[A-Za-z_$@][\w.$]*\s*)*\(` let a run of identifier characters be split
+# across iterations in exponentially many ways, because the two character classes
+# overlap (both match `$`, letters and `_`) and the separator could match empty —
+# the classic `(a+)+` shape. On input that never reaches `(` the engine explored
+# every partition: measured 26 `$` took 1.6 s, and each further 4 characters
+# multiplied that by ~3.5. Requiring real whitespace between identifiers makes the
+# partition unique, so matching is linear: 2000 characters now take 0.07 ms.
+_CALL_HEAD = re.compile(
+    r"^\s*(?:[A-Za-z_$@][\w.$]*(?:\s+[A-Za-z_$@][\w.$]*)*\s*)?\("
+)
 
 # Python/Ruby keyword-argument prefix: `iv="..."` occupies a positional slot but
 # the value is what a slot test must see. `==` is excluded so a comparison
