@@ -110,9 +110,22 @@ JUDGE_TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "parse_ast",
+            # E11: this used to advertise "functions, classes, imports, with
+            # line ranges" against a parser that emits none of that outside
+            # Python and no end lines anywhere. A lying tool description makes
+            # a judge's NEGATIVE result unreadable — an empty outline on a .ts
+            # file looks like "no such function exists" when it means "not
+            # parsed". Corrected here; end_lineno, AsyncFunctionDef and
+            # non-Python support belong to the block-aware-window feature.
             "description": (
-                "Structural outline of one source file: functions, classes, "
-                "imports, with line ranges."
+                "Structural outline of one source file. PYTHON ONLY: any "
+                "other extension returns an empty outline with "
+                "language='unknown' — that means NOT PARSED, never 'the "
+                "construct is absent'. Reports the START line of each def and "
+                "class plus imported module names. There are no end lines, so "
+                "it cannot tell you whether a line falls inside a function, "
+                "and async defs are not reported. Use it to locate a "
+                "candidate, then read_file the span to cite it."
             ),
             "parameters": {
                 "type": "object",

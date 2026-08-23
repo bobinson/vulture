@@ -1,0 +1,193 @@
+# 0076 T5.3 — the production anchor manifest fragment.
+#
+# One entry == one hand-authored model claim posed against the Tier V fixture tree
+# at agents/shared/tests/fixtures/anchor/. `report_anchor_status.py` runs every
+# claim through `shared.anchor.verify_anchor` at the DEFAULT knob posture and
+# renders the outcomes as the committed golden.
+#
+# Fragment layout mirrors agents/cwe/tests/corpus/manifest.d/: every *.yaml here is
+# globbed into the production report, EXCEPT a basename starting with `_`, which is
+# loadable only by explicit name. That is what keeps the unit-test slice out of the
+# published N.
+#
+# Entry schema:
+#   id           unique, stable; it is the table's row key and the sort key
+#   file         path under the fixture root, or null when the caller could not
+#                resolve one (which is what `unreadable` means — D17: this verifier
+#                takes an already-resolved Path and never resolves one)
+#   cited        the model's own file_path string; defaults to `file`
+#   line         the model's claimed line_start
+#   line_end     optional; defaults to `line`
+#   quote_lines  [first, last], 1-based inclusive — the quote is COPIED from the
+#                fixture, so editing a fixture can never silently desync the claim
+#   quote_file   optional; the file the quote is copied FROM (defaults to `file`).
+#                Only `found_elsewhere` needs it
+#   quote        a literal quote, for the claims whose whole point is that the model
+#                did NOT copy (paraphrase, fabrication, an echoed listing)
+#   batch        optional sibling paths rendered in the same request; bounds the
+#                cross-file search
+#   expect       the status this claim is authored to produce
+#   why          one line of intent, so a disagreement is readable without the plan
+
+# ── exact ────────────────────────────────────────────────────────────────────
+- id: exact_copy
+  file: exact.ts
+  line: 3
+  quote_lines: [3, 3]
+  expect: exact
+  why: the model copied the cited line verbatim; the baseline good case
+
+- id: exact_echoed_listing
+  file: elided.ts
+  line: 6
+  quote: |-
+    6:   const client = new Client(opts.dsn, opts.timeoutMs);
+    ...
+    9:   return client.connect();
+  expect: exact
+  why: >-
+    T3.3 — the model echoed the rendered listing back, "NN: " prefixes and the
+    elision marker included. That is a faithful copy of what it was shown, so the
+    normaliser must accept it
+
+# ── reanchored ───────────────────────────────────────────────────────────────
+- id: reanchored_signature
+  file: signature.ts
+  line: 54
+  line_end: 54
+  quote_lines: [55, 56]
+  expect: reanchored
+  why: >-
+    the measured signupCompletionChecker.ts case — the model cites the function
+    SIGNATURE and quotes the BODY. A single candidate, one line away
+
+- id: reanchored_nearest_wins
+  file: near.ts
+  line: 22
+  quote_lines: [20, 21]
+  expect: reanchored
+  why: two occurrences, 2 and 24 lines away; strictly nearest inside RADIUS
+
+- id: reanchored_dupe_first
+  file: dupe3.ts
+  line: 18
+  quote_lines: [15, 15]
+  expect: reanchored
+  why: >-
+    the measured scaleToSetName.ts residue — one defect, three claims citing
+    18/18/15. The first two are mislocated by 3 lines
+
+- id: reanchored_dupe_second
+  file: dupe3.ts
+  line: 18
+  quote_lines: [15, 15]
+  expect: reanchored
+  why: the second of the three; kept distinct so the histogram counts the residue
+
+- id: exact_dupe_third
+  file: dupe3.ts
+  line: 15
+  quote_lines: [15, 15]
+  expect: exact
+  why: the third claim of the same triple got the line right
+
+# ── ambiguous ────────────────────────────────────────────────────────────────
+- id: ambiguous_tie
+  file: ambig.ts
+  line: 70
+  line_end: 72
+  quote_lines: [20, 22]
+  expect: ambiguous
+  why: >-
+    the same window at 20-22 and 120-122, cited at 70 — an exact tie in distance
+    and both outside RADIUS. Nothing here justifies moving the line
+
+# ── near_miss ────────────────────────────────────────────────────────────────
+- id: near_miss_retyped
+  file: nearmiss.ts
+  line: 7
+  quote: "const t = readFileSync(p);"
+  expect: near_miss
+  why: >-
+    the model retyped line 7 from memory and dropped the encoding argument. A
+    mislocated MEMORY, not a fabrication — non-demoting in every configuration
+
+# ── found_elsewhere ──────────────────────────────────────────────────────────
+- id: found_elsewhere_sibling
+  file: elsewhere/cited.ts
+  line: 5
+  quote_file: elsewhere/sibling.ts
+  quote_lines: [3, 3]
+  batch: [elsewhere/cited.ts, elsewhere/sibling.ts]
+  expect: found_elsewhere
+  why: >-
+    AC31 — real code, wrong file. The candidate is RECORDED in other_path and never
+    rewrites file_path, and the status never demotes
+
+# ── absent (the one demoting status) ─────────────────────────────────────────
+- id: absent_invented
+  file: fabricated.ts
+  line: 5
+  quote: "const adminBypass = grantRootAccess(sessionCookie);"
+  batch: [fabricated.ts, exact.ts, nearmiss.ts]
+  expect: absent
+  why: >-
+    the quote exists in no file of the batch. The only status that may demote, and
+    only with VULTURE_LLM_QUOTE_DEMOTE_ABSENT armed
+
+# ── unquoted (four distinct causes, none of them fabrication) ────────────────
+- id: unquoted_missing
+  file: exact.ts
+  line: 3
+  expect: unquoted
+  why: the model produced no evidence_quote at all — the P2 compliance case
+
+- id: unquoted_paraphrase
+  file: paraphrase.ts
+  line: 5
+  quote: "!property === userId"
+  expect: unquoted
+  why: >-
+    AC7, the recall keystone. The defect on line 5 is REAL and the quote is a
+    paraphrase of it. A verifier that equates "not found" with "fabricated" deletes
+    this finding
+
+- id: unquoted_below_floor
+  file: floor.ts
+  line: 6
+  quote: "});"
+  expect: unquoted
+  why: >-
+    three characters, zero tokens. 91% of such lines are non-unique inside one file,
+    so this needle cannot discriminate a location and must not refute one
+
+- id: unquoted_line_too_long
+  file: longline.ts
+  line: 4
+  quote_lines: [4, 4]
+  expect: unquoted
+  why: >-
+    AC28 — a 900-character line. Truncating it MID-line would manufacture a needle
+    that exists nowhere, so the per-line cap yields unquoted, never absent
+
+# ── unreadable ───────────────────────────────────────────────────────────────
+- id: unreadable_unresolved
+  file: null
+  cited: ../../../etc/passwd
+  line: 12
+  quote: "const dest = path.join(root, entry.fileName);"
+  expect: unreadable
+  why: >-
+    the caller could not resolve the model's path. D17 — this verifier never
+    resolves one itself, so None IS the unreadable signal
+
+# ── oversize ─────────────────────────────────────────────────────────────────
+- id: oversize_four_lines
+  file: exact.ts
+  line: 2
+  line_end: 5
+  quote_lines: [2, 5]
+  expect: oversize
+  why: >-
+    four lines against MAX_LINES 3. Whole-line truncation keeps the needle real, the
+    truncated form still locates, and the status reports the breach

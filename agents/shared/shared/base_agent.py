@@ -25,7 +25,25 @@ def create_agent(
         Configured Agent instance.
     """
     resolved = get_model(model)
-    # temperature=0.1 ensures deterministic, reproducible audit results.
+    # temperature=0.1 narrows sampling. It does NOT make an audit
+    # reproducible, and the previous comment here claimed it did.
+    #
+    # Measured (feature 0076, E1): re-running the SAME commit reproduced only
+    # 30.4% of findings by Dice overlap, at counts of 21/35/20/39 across four
+    # runs of unchanged code. A low temperature only skews the token
+    # distribution toward the argmax; the residual nondeterminism lives BELOW
+    # this codebase — continuous-batching reduction order, non-batch-invariant
+    # kernels, MoE expert routing, KV-cache reuse — and no client-side setting
+    # reaches any of it. No seed is pinned either: ``ModelSettings``
+    # (agents 0.17.7) has no ``seed`` field, delivery would have to go through
+    # ``extra_args``, and litellm raises ``UnsupportedParamsError`` for gemini
+    # and anthropic with ``drop_params=False``. At temperature 0 a seed is a
+    # no-op anyway — greedy decoding never consults the sampler RNG.
+    #
+    # What 0.1 actually buys: fewer low-probability excursions, so structured
+    # output stays well-formed and findings stay on-format. Verifiability is
+    # the job of the anchor/quote verifier (0076), never of the sampler.
+    #
     # prompt_cache_retention is available in newer SDK versions for cost savings.
     settings = ModelSettings(temperature=0.1)
     return Agent(

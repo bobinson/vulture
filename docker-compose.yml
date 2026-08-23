@@ -140,6 +140,12 @@ services:
       - VULTURE_LLM_PROVIDER_ALLOWLIST=${VULTURE_LLM_PROVIDER_ALLOWLIST:-}
       - VULTURE_LLM_FALLBACKS=${VULTURE_LLM_FALLBACKS:-}
       - VULTURE_LLM_BUDGET_USD=${VULTURE_LLM_BUDGET_USD:-}
+      # Feature 0076 (Go side, backend only). On a cross-agent dedup collision a
+      # deterministic (skill) row outranks an `llm` row at equal-or-lower severity,
+      # replacing 0075's score-only "richer row wins". Hard prerequisite of
+      # VULTURE_LLM_QUOTE_REANCHOR: re-anchoring CREATES collisions that did not
+      # exist before. false restores 0075 winner selection.
+      - VULTURE_DEDUP_PREFER_DETERMINISTIC=${VULTURE_DEDUP_PREFER_DETERMINISTIC:-true}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_BACKEND_PORT:-28080}/health || exit 1"]
       interval: 30s
@@ -231,6 +237,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_CHAOS_PORT:-28001}/health || exit 1"]
       interval: 30s
@@ -299,6 +332,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_OWASP_PORT:-28002}/health || exit 1"]
       interval: 30s
@@ -367,6 +427,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_SOC2_PORT:-28003}/health || exit 1"]
       interval: 30s
@@ -435,6 +522,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_CWE_PORT:-28004}/health || exit 1"]
       interval: 30s
@@ -504,6 +618,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_PROVE_PORT:-28005}/health || exit 1"]
       interval: 30s
@@ -575,6 +716,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_XSS_PORT:-28006}/health || exit 1"]
       interval: 30s
@@ -643,6 +811,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_SSDF_PORT:-28007}/health || exit 1"]
       interval: 30s
@@ -711,6 +906,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_DISCOVER_PORT:-28008}/health || exit 1"]
       interval: 30s
@@ -779,6 +1001,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_DO178C_PORT:-28009}/health || exit 1"]
       interval: 30s
@@ -847,6 +1096,33 @@ services:
       - VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS=${VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS:-}
       - VULTURE_L5_CLOSURE_GATE=${VULTURE_L5_CLOSURE_GATE:-}
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
+      # Feature 0076 evidence quotation + anchor verification — forwarded so a
+      # plain `docker compose up` can tune or roll the feature back without an
+      # override file. Every actuator is INERT on these defaults: 0076 only
+      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
+      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
+      # agent's own default is the single source of truth (compose must not pin
+      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
+      # COERCE_LINES=false -> JSON_SCAN=false.
+      - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
+      - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
+      - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
+      - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
+      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
+      - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
+      - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
+      - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
+      - VULTURE_LLM_QUOTE_MAX_LINES=${VULTURE_LLM_QUOTE_MAX_LINES:-}
+      - VULTURE_LLM_QUOTE_MAX_LINE_CHARS=${VULTURE_LLM_QUOTE_MAX_LINE_CHARS:-}
+      - VULTURE_LLM_QUOTE_MAX_CHARS=${VULTURE_LLM_QUOTE_MAX_CHARS:-}
+      - VULTURE_LLM_QUOTE_RADIUS=${VULTURE_LLM_QUOTE_RADIUS:-}
+      - VULTURE_LLM_QUOTE_MAX_DELTA=${VULTURE_LLM_QUOTE_MAX_DELTA:-}
+      - VULTURE_LLM_QUOTE_NEAR_MISS_MIN=${VULTURE_LLM_QUOTE_NEAR_MISS_MIN:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_AGENT_ASVS_PORT:-28010}/health || exit 1"]
       interval: 30s

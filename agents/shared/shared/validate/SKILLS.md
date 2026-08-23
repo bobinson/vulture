@@ -137,3 +137,25 @@ Combine with `compliance_mode=true` to prevent any finding from
 landing in `likely_fp` regardless of L5's verdict — the original
 exploitability score is still recorded in `validation.checks[].extras`
 for auditor review.
+
+## Feature 0076 (LLM evidence quotation) — no new skill (T5.9)
+
+**Stated explicitly so the omission reads as a decision, not an oversight:
+feature 0076 adds no agent skill, and therefore requires no change to any
+agent's `SKILLS.md`.**
+
+A *skill* is a detector — it proposes findings. 0076 proposes nothing. It
+constrains and checks what the LLM tier has already proposed:
+
+| 0076 surface | Kind | Where documented |
+|---|---|---|
+| `shared/anchor.py`, `shared/tools/line_format.py` | prompt presentation + anchor resolution | code docstrings; `CLAUDE.md` env table |
+| the required `evidence_quote` field | contract on the LLM tier's output | plan §5.2/§5.3 |
+| the quote/anchor verifier | a **validation check**, not a skill — it joins L1–L5 in the voter's ensemble, weighted by `VULTURE_LLM_QUOTE_VERIFY` | this file's layer table |
+
+Consequently every agent's skill inventory is unchanged by 0076: the same
+detectors run, over the same files, emitting the same categories. What
+changes is how much of a finding is *verifiable* after the fact.
+
+The corollary for reviewers: an audit of 0076 that looks for a new entry in
+`agents/*/…/skills/SKILLS.md` and finds none has found the intended state.

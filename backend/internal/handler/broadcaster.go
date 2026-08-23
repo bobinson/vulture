@@ -152,7 +152,7 @@ func newBroadcaster(auditID string, maxHistory int) *broadcaster {
 func (b *broadcaster) IsEmpty() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.history) == 0 && b.truncated == false
+	return len(b.history) == 0 && !b.truncated
 }
 
 // Closed reports whether the run has ended (Close was called). It is the

@@ -65,9 +65,11 @@ func TestVoterParityFixture(t *testing.T) {
 		t.Run(c.Name, func(t *testing.T) {
 			checks := make([]VoterCheck, 0, len(c.Checks))
 			for _, pc := range c.Checks {
-				checks = append(checks, VoterCheck{
-					ID: pc.ID, Weight: pc.Weight, Result: pc.Result,
-				})
+				// parityCheck and VoterCheck have identical fields (only the
+				// json tags differ, which conversion ignores), so a direct
+				// convert keeps the two in lockstep: adding a field to the
+				// voter breaks this line instead of silently dropping it.
+				checks = append(checks, VoterCheck(pc))
 			}
 			got := Vote(checks)
 			if got.Status != c.Want.Status {
