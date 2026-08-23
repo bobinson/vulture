@@ -1,0 +1,1 @@
+[{"title": "Weak hash used for a signature", "severity": "high", "category": "CWE-328", "file_path": "dupe3.ts", "line_start": "55", "line_end": 3, "description": "MD5 is not signature-safe.", "recommendation": "Use SHA-256.", "evidence_quote": "return createHash(\"md5\").update(payload).digest(\"hex\");"}]

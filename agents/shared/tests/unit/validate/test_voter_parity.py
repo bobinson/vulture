@@ -90,7 +90,11 @@ def test_parity_literals_pinned() -> None:
     assert JUDGE_UNCITED == "real_bug_uncited"
     assert JUDGE_UNDECIDED == "undecided"
     assert AUTHORITATIVE_POSITIVE == frozenset({"memory"})
-    assert AUTHORITATIVE_CHECKS == frozenset({"suppression"})
+    # 0076: "anchor" joins the demoting set. The Go mirror
+    # (validation_voter.go:38-39) and testdata/voter_parity_cases.json were
+    # updated in the same change -- which is precisely what this pin exists to
+    # force, since a one-sided edit disables the gate silently.
+    assert AUTHORITATIVE_CHECKS == frozenset({"suppression", "anchor"})
 
 
 def test_fixture_covers_every_gate_branch() -> None:

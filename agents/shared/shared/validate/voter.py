@@ -41,8 +41,25 @@ __all__ = [
 
 # Single-check ids that can demote a finding to `likely_fp` solo,
 # bypassing the ≥2-demoting-checks floor of V7. These represent
-# explicit operator overrides (a `# nosec` etc.).
-AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression"})
+# explicit operator overrides (a `# nosec` etc.) and, since feature 0076,
+# one MECHANICAL verification: an `anchor` check whose evidence quote was
+# located nowhere in the accused file nor in any sibling of its batch.
+#
+# Membership alone demotes nothing — `_has_authoritative_demotion` also
+# requires a NEGATIVE weight, and `shared.anchor.anchor_weight` returns 0.0
+# for every status but `absent`, and for `absent` too unless
+# VULTURE_LLM_QUOTE_DEMOTE_ABSENT is on. That is deliberate: the weight and
+# the seat must be gated by the SAME switch. Gating only the membership
+# leaves −1.0 running through the ADDITIVE path — clamp(0.5 − 1.0) = 0.0 and
+# `_classify(0.0, 1)` = "suspicious" — which silently costs a finding its
+# `high_confidence` label with the demotion switch off (0076 AC34).
+#
+# This is the seat the ceiling note below reserved for "a future
+# mechanical-verification check id"; the PROMOTING seat
+# (AUTHORITATIVE_POSITIVE) is deliberately NOT taken — on the adjudicated
+# population a located quote is not a true claim, so no anchor status
+# promotes (0076 AC27).
+AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression", "anchor"})
 
 # ── Feature 0072: obligations ────────────────────────────────────────
 # An obligation is emitted as its OWN check, carrying its state in the

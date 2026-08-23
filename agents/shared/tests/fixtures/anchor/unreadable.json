@@ -1,0 +1,1 @@
+[{"title": "Path traversal in the archive extractor", "severity": "high", "category": "CWE-22", "file_path": "../../../etc/passwd", "line_start": 12, "line_end": 12, "description": "The entry name is joined unchecked.", "recommendation": "Reject entries escaping the root.", "evidence_quote": "const dest = path.join(root, entry.fileName);"}]

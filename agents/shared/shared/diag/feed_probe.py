@@ -20,7 +20,6 @@ like evidence.
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from typing import Any
 
@@ -37,11 +36,21 @@ from shared.audit_runner import (
     _whole_file_max_lines,
 )
 from shared.tools.file_scanner import LLM_INELIGIBLE_EXTENSIONS, scan_code_files
+from shared.tools.line_format import NUMBER_RE
 
 # A content line: non-blank, not the block header, not the elision marker. Frozen
 # here to match tests/unit/test_0075_prompt_line_numbers.py exactly, so the
 # fraction stays comparable across changes to either.
-_NUMBERED = re.compile(r"^\d+: ")
+#
+# The prefix itself is recognised by ``line_format.NUMBER_RE`` — the ONE read-direction
+# pattern (feature 0076 AC19/C1). The probe used to hand-roll ``^\d+: ``, which disagreed
+# with ``_redact_snippet``'s ``^(\s*\d+:\s?)(.*)$`` about leading whitespace and about the
+# trailing space; a rendered line must not parse differently depending on which module
+# reads it. On NUMBERED output the two agree exactly — ``number_lines`` emits the number
+# at column 0 followed by one space — so the measured fraction is unchanged, which is the
+# only regime the fraction is read in. With numbering rolled back the shared pattern is
+# the more permissive of the two and a raw source line reading ``"  30: x"`` now counts;
+# that is the point of one authority, and the rollback assertion (fraction < 1.0) holds.
 
 
 def _is_content_line(line: str) -> bool:
@@ -55,7 +64,7 @@ def _numbered_line_fraction(batches: list[tuple[str, list[str]]]) -> float:
         for line in text.split("\n"):
             if _is_content_line(line):
                 total += 1
-                numbered += bool(_NUMBERED.match(line))
+                numbered += bool(NUMBER_RE.match(line))
     return (numbered / total) if total else 0.0
 
 

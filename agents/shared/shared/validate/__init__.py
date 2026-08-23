@@ -191,6 +191,27 @@ def _retag_l5_verified(
     new_f["provenance"] = "llm_l5_verified"
 
 
+def _strip_private(new_f: dict[str, Any]) -> None:
+    """Feature 0076 §5.4(2): drop the model-copied quote and the verifier's
+    private stamps from the row this stage hands on.
+
+    `run_l1` is their last consumer — it has already turned `_anchor_status`
+    into the `anchor` check inside the persisted `validation` blob, which is
+    the ONE egress route the feature commits to. Everything else about them is
+    a liability: `evidence_quote` is model-copied source that can contain a
+    live credential, and `emitter.finding_event(**finding)` would forward any
+    surviving key verbatim to SSE while Go's fixed `model.Finding` dropped it,
+    making the live stream and its replay disagree.
+
+    The roster is imported rather than restated: one list of private names,
+    one deletion pass (`audit_runner._strip_private_fields`). Imported at call
+    time because `audit_runner` imports this package.
+    """
+    from shared.audit_runner import _strip_private_fields
+
+    _strip_private_fields(new_f)
+
+
 def _apply_validation_to_finding(
     finding: dict[str, Any], checks: list[ValidationCheck], cfg: ValidateConfig,
 ) -> dict[str, Any]:
@@ -200,6 +221,7 @@ def _apply_validation_to_finding(
     if cfg.compliance_mode:
         v = apply_compliance_mode(v)
     new_f = dict(finding)
+    _strip_private(new_f)
     new_f["validation"] = v.to_json()
     new_f["validation_status"] = v.status
     new_f["validation_confidence"] = v.confidence

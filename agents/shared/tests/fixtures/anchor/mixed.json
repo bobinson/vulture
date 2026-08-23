@@ -1,0 +1,1 @@
+[{"title": "Hardcoded credential", "severity": "high", "category": "CWE-798", "file_path": "src/db.ts", "line_start": 12, "line_end": 12, "description": "A literal password.", "recommendation": "Move it to the environment.", "evidence_quote": "const pw = \"hunter2\";"}, "not a dict", 42]

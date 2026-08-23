@@ -13,6 +13,9 @@ import functools
 import re
 from typing import Any
 
+from shared.anchor import anchor_weight
+from shared.env import env_truthy
+
 from .refutation import REFUTATION_MAP, Scope, obligation_check, route_model_for
 from .types import ValidationCheck
 
@@ -295,6 +298,97 @@ def _suppression_check(file_path: str, line_start: int) -> ValidationCheck | Non
     return None
 
 
+# ─── Feature 0076: the evidence-quote anchor status ─────────────────
+# The LLM phase stamps the verifier's outcome onto the finding as PRIVATE,
+# underscore-prefixed fields and strips them before egress. `run_l1` is their
+# last consumer: the check it emits here is the status's ONLY persisted route
+# (§5.4(4)), because `_apply_validation_to_finding` (validate/__init__.py:194)
+# overwrites `finding["validation"]` wholesale, so a check pre-stamped during
+# the LLM phase would be destroyed before the voter ever saw it (C2/AC16).
+#
+# The WEIGHT is not decided here. `shared.anchor.anchor_weight` is the one
+# authority for it and reads `VULTURE_LLM_QUOTE_DEMOTE_ABSENT` at CALL time:
+# every status is 0.0 except `absent`, and `absent` only while that switch is
+# on. Re-deriving the table here would be the non-DRY alternative, and gating
+# only the AUTHORITATIVE_CHECKS membership while leaving −1.0 applied is the
+# exact silent downgrade AC34 forbids.
+_ANCHOR_ID = "anchor"
+
+# (private stamp, extras key). Numeric provenance only — the status itself is
+# the check's `result`, like every other L1 check's outcome label.
+_ANCHOR_PROVENANCE: tuple[tuple[str, str], ...] = (
+    ("_claimed_line", "claimed_line"),
+    ("_anchor_delta", "delta"),
+    ("_anchor_candidates", "candidates"),
+    ("_anchor_other_path", "other_path"),
+    ("_anchor_quote_chars", "quote_chars"),
+    ("_anchor_quote_tokens", "quote_tokens"),
+)
+
+_KEEP_TEXT = "VULTURE_LLM_QUOTE_KEEP_TEXT"
+
+
+def _kept_quote(finding: dict[str, Any]) -> str:
+    """The redacted quote to retain, or "" — the default retains nothing.
+
+    `VULTURE_LLM_QUOTE_KEEP_TEXT=true` buys offline debugging, never a secret
+    channel: what is retained is `_redact_snippet(quote)`, the same primitive
+    `code_snippet` already goes through. Imported lazily because `audit_runner`
+    imports this package.
+    """
+    quote = str(finding.get("evidence_quote") or "")
+    if not quote or not env_truthy(_KEEP_TEXT):
+        return ""
+    from shared.audit_runner import _redact_snippet
+
+    return _redact_snippet(quote)
+
+
+def _anchor_extras(finding: dict[str, Any]) -> dict[str, Any]:
+    """The verifier's numeric provenance, plus a redacted quote under KEEP_TEXT."""
+    extras: dict[str, Any] = {
+        name: finding[stamp]
+        for stamp, name in _ANCHOR_PROVENANCE
+        if finding.get(stamp) is not None
+    }
+    kept = _kept_quote(finding)
+    if kept:
+        extras["quote_redacted"] = kept
+    return extras
+
+
+def _anchor_reason(finding: dict[str, Any], status: str) -> str:
+    """The verifier's own reason, not just a restatement of the status.
+
+    `anchor.py` distinguishes outcomes the status alone cannot: a truncated
+    quote that still matched exactly is `oversize` with reason `truncated:exact`,
+    and one that matched nowhere is `unquoted` with `oversize_truncated`. Building
+    the reason as f"evidence quote: {status}" discarded that, so the oversize
+    bucket stayed undecomposable in the persisted blob even after the verifier
+    learned to decompose it.
+    """
+    detail = str(finding.get("_anchor_reason") or "")
+    return f"evidence quote: {status}" + (f" ({detail})" if detail else "")
+
+
+def _anchor_check(finding: dict[str, Any]) -> ValidationCheck | None:
+    """The `anchor` check for a finding the verifier stamped, else None.
+
+    A finding with no `_anchor_status` (every skill finding, and every LLM
+    finding when `VULTURE_LLM_QUOTE_VERIFY=off`) carries no anchor check at
+    all — an absent check and a zero-weight one must stay distinguishable.
+    """
+    status = str(finding.get("_anchor_status") or "")
+    if not status:
+        return None
+
+    return ValidationCheck(
+        id=_ANCHOR_ID, result=status, weight=anchor_weight(status),
+        reason=_anchor_reason(finding, status),
+        extras=_anchor_extras(finding),
+    )
+
+
 def _sanitizer_search_extent(
     file_path: str, line_start: int, category: str,
 ) -> tuple[int, int, str]:
@@ -375,6 +469,77 @@ def _scope_available(category: str, source_root: str = "") -> bool:
     return model is not None and bool(model.routes())
 
 
+def _obligation_for(
+    f: dict[str, Any], san: ValidationCheck, category: str,
+    file_path: str, line_start: int, source_root: str,
+) -> ValidationCheck:
+    """Feature 0072: derive the obligation from the search that just ran.
+
+    `no_map` / `no_file` / `skipped` mean the mitigation was never searched
+    for, which must be distinguishable from "searched and found nothing" — in
+    an additive vote both are weight 0.0.
+
+    A WIRING-scoped class is resolved against the route model when a source
+    root is known; where no model resolves, its scope reports unavailable and
+    the non-degradable classes stay `unknown` rather than discharging at a
+    narrower scope.
+    """
+    return obligation_check(
+        category, san.result,
+        scope_available=_scope_available(category, source_root),
+        file_path=file_path,
+        line_start=line_start,
+        source_root=source_root or None,
+        check_id=f.get("check_id") or "",
+        scope_searched=(san.extras or {}).get("scope_searched", ""),
+    )
+
+
+def _optional_checks(
+    f: dict[str, Any], file_path: str, line_start: int,
+) -> list[ValidationCheck]:
+    """The checks that may not apply at all — a suppression marker, and feature
+    0076's `anchor`.
+
+    Absent rather than neutral: a check that is MISSING and a check that weighs
+    0.0 are different facts, and only the second one says "we looked".
+    """
+    found = (_suppression_check(file_path, line_start), _anchor_check(f))
+    return [c for c in found if c is not None]
+
+
+def _finding_checks(
+    f: dict[str, Any], source_root: str,
+) -> list[ValidationCheck]:
+    """Every L1 check for ONE finding, in blob order."""
+    file_path = f.get("file_path", "") or ""
+    line_start = int(f.get("line_start") or 0)
+    category = f.get("category", "") or ""
+    san = _sanitizer_check(file_path, line_start, category)
+    return [
+        _path_check(file_path),
+        *_optional_checks(f, file_path, line_start),
+        san,
+        _obligation_for(f, san, category, file_path, line_start, source_root),
+    ]
+
+
+def _l1_error_checks(
+    f: dict[str, Any], exc: BaseException,
+) -> list[ValidationCheck]:
+    """RC3: a crashed layer must not read as "checked and clean" — emit a
+    blocking obligation alongside the error so the batch cannot be confirmed
+    on the strength of a layer that never ran.
+    """
+    return [
+        ValidationCheck(
+            id="path", result="error", weight=0.0,
+            reason=f"L1 error: {type(exc).__name__}: {str(exc)[:100]}",
+        ),
+        obligation_check(f.get("category", "") or "", None),
+    ]
+
+
 def run_l1(
     findings: list[dict[str, Any]], source_root: str = "",
 ) -> list[list[ValidationCheck]]:
@@ -389,49 +554,7 @@ def run_l1(
     results: list[list[ValidationCheck]] = []
     for f in findings:
         try:
-            file_path = f.get("file_path", "") or ""
-            line_start = int(f.get("line_start") or 0)
-            category = f.get("category", "") or ""
-
-            checks: list[ValidationCheck] = []
-            checks.append(_path_check(file_path))
-
-            sup = _suppression_check(file_path, line_start)
-            if sup is not None:
-                checks.append(sup)
-
-            san = _sanitizer_check(file_path, line_start, category)
-            checks.append(san)
-
-            # Feature 0072: derive the obligation from the search that just ran.
-            # `no_map` / `no_file` / `skipped` mean the mitigation was never
-            # searched for, which must be distinguishable from "searched and
-            # found nothing" — in an additive vote both are weight 0.0.
-            #
-            # A WIRING-scoped class is resolved against the route model when a
-            # source root is known; where no model resolves, its scope reports
-            # unavailable and the non-degradable classes stay `unknown` rather
-            # than discharging at a narrower scope.
-            checks.append(obligation_check(
-                category, san.result,
-                scope_available=_scope_available(category, source_root),
-                file_path=file_path,
-                line_start=line_start,
-                source_root=source_root or None,
-                check_id=f.get("check_id") or "",
-                scope_searched=(san.extras or {}).get("scope_searched", ""),
-            ))
-
-            results.append(checks)
+            results.append(_finding_checks(f, source_root))
         except Exception as exc:    # RC3 layer isolation
-            # A crashed layer must not read as "checked and clean": emit a
-            # blocking obligation alongside the error so the batch cannot be
-            # confirmed on the strength of a layer that never ran.
-            results.append([
-                ValidationCheck(
-                    id="path", result="error", weight=0.0,
-                    reason=f"L1 error: {type(exc).__name__}: {str(exc)[:100]}",
-                ),
-                obligation_check(f.get("category", "") or "", None),
-            ])
+            results.append(_l1_error_checks(f, exc))
     return results

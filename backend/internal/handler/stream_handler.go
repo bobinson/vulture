@@ -761,6 +761,7 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 	keys := make([]string, len(findings))
 	agentsByKey := make(map[string][]string, len(findings))
 	provenanceByKey := make(map[string]string, len(findings))
+	prefer := preferDeterministicDedup()
 
 	for i, f := range findings {
 		key := crossAgentKey(f)
@@ -771,7 +772,7 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 			provenanceByKey[key] = f.Provenance
 		}
 		if prev, ok := seen[key]; ok {
-			if s > prev.score {
+			if crossAgentPrefers(f, findings[prev.index], s, prev.score, prefer) {
 				seen[key] = entry{index: i, score: s}
 			}
 			continue
@@ -1021,6 +1022,77 @@ func crossAgentKey(f model.Finding) string {
 		return fmt.Sprintf("cat:%s|%s|%d", canonicalCWEGroup(cat), f.FilePath, f.LineStart)
 	}
 	return fmt.Sprintf("%s|%s|%d", title, f.FilePath, f.LineStart)
+}
+
+// preferDeterministicDedup gates feature 0076 §5.5's winner-selection guard.
+// Default on; VULTURE_DEDUP_PREFER_DETERMINISTIC=false restores the 0075
+// score-only selection (one-release rollback switch). Read at merge time so
+// the switch stays flippable — never cached in a package-level var.
+func preferDeterministicDedup() bool {
+	if v := strings.TrimSpace(os.Getenv("VULTURE_DEDUP_PREFER_DETERMINISTIC")); v != "" {
+		return config.EnvTruthy("VULTURE_DEDUP_PREFER_DETERMINISTIC")
+	}
+	return true
+}
+
+// crossAgentPrefers reports whether the challenger should displace the current
+// keeper of a cross-agent key. With the guard off this is the pre-0076 rule:
+// the richer row wins, ties going to the first seen.
+func crossAgentPrefers(challenger, incumbent model.Finding, challengerScore, incumbentScore int, prefer bool) bool {
+	if prefer {
+		if d := deterministicPreference(challenger, incumbent); d != 0 {
+			return d > 0
+		}
+	}
+	return challengerScore > incumbentScore
+}
+
+// deterministicPreference decides a collision on Provenance alone: +1 when the
+// challenger wins, -1 when the incumbent does, 0 when provenance does not
+// decide and findingDetailScore should.
+//
+// 0076 D5: a deterministic row outranks an `llm` row at equal-or-lower
+// severity. Re-anchoring newly creates these collisions, so the guard ships
+// with it. VULTURE_DEDUP_PREFER_DETERMINISTIC=false restores 0075 behaviour.
+// Scope is exactly llm-vs-deterministic: det-vs-det (feature 0058 R6) and
+// llm-vs-llm merges are left to the detail score, as is any collision
+// involving a rollup parent (feature 0045 keeps parents ahead of members).
+func deterministicPreference(challenger, incumbent model.Finding) int {
+	if challenger.IsRollup != incumbent.IsRollup {
+		return 0
+	}
+	challengerLLM, incumbentLLM := isLLMProvenance(challenger), isLLMProvenance(incumbent)
+	if challengerLLM == incumbentLLM {
+		return 0
+	}
+	if challengerLLM {
+		return llmSeverityVerdict(challenger, incumbent)
+	}
+	return -llmSeverityVerdict(incumbent, challenger)
+}
+
+// llmSeverityVerdict returns +1 when the `llm` row is strictly more severe
+// than the deterministic row it collides with — the one case where 0075's
+// behaviour is unchanged — and -1 at equal or lower severity.
+func llmSeverityVerdict(llm, deterministic model.Finding) int {
+	if severityRank(llm.Severity) > severityRank(deterministic.Severity) {
+		return 1
+	}
+	return -1
+}
+
+// isLLMProvenance reports whether a finding was authored by the LLM tier.
+// Every other value (including the empty one) counts as deterministic.
+//
+// The whole `llm*` FAMILY counts, not just the bare tag: the agents promote a
+// surviving LLM row to `llm_l5_verified` after the L5 judge
+// (agents/shared/shared/validate/__init__.py:191), and on the measured target
+// 181 of 710 stored LLM rows carry that tag. Matching only "llm" classified
+// those as deterministic, so this guard did not apply to the LLM findings that
+// had travelled furthest through validation — the ones most likely to be
+// claiming a high severity against a real skill finding.
+func isLLMProvenance(f model.Finding) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.Provenance)), "llm")
 }
 
 // findingDetailScore ranks how rich a finding is. Higher = more detail.

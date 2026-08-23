@@ -2,6 +2,8 @@
 
 import asyncio
 import contextvars
+import functools
+import json
 import logging
 import os
 import re
@@ -11,14 +13,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
+from shared import anchor
 from shared.cancellation import (
     current_audit_deadline,
     current_cancel_token,
     set_audit_deadline,
 )
+from shared.env import env_flag, env_truthy
 from shared.llm.errors import retry_skill
+from shared.tools import line_format
 from shared.tools.file_scanner import (
     clear_caches,
     is_entry_or_config,
@@ -53,10 +58,33 @@ def _safe_int_env(name: str, default: int) -> int:
 # workloads or high-core machines, tune via VULTURE_SKILL_WORKERS.
 _SKILL_WORKERS = _safe_int_env("VULTURE_SKILL_WORKERS", min(os.cpu_count() or 4, 8))
 
-# Pre-compiled patterns for _parse_llm_findings (avoid per-call re.compile)
+# Pre-compiled patterns for _parse_llm_findings (avoid per-call re.compile).
+# The BARE pattern is no longer part of the default attempt order (feature 0076
+# B1): a non-greedy ``}\s*]`` cannot survive a string value that itself contains
+# ``}]``, and ``[{ id: 1 }]`` is an everyday TS/JSX literal — so a model quoting
+# such a line loses the WHOLE batch. ``_scan_json_arrays`` replaces it;
+# ``VULTURE_LLM_JSON_SCAN=false`` puts the regex back.
 _LLM_JSON_FENCED_RE = re.compile(r"```json\s*(\[.*?\])\s*```", re.DOTALL)
 _LLM_JSON_BARE_RE = re.compile(r"(\[\s*\{.*?\}\s*\])", re.DOTALL)
-_LLM_JSON_PATTERNS = [_LLM_JSON_FENCED_RE, _LLM_JSON_BARE_RE]
+
+# The keys that make a decoded array look like a findings payload. `id` is
+# deliberately absent: it is the only key of the everyday decoy
+# ``[{"id":1},{"id":2},{"id":3}]``, and admitting it would let a three-row TS
+# example in model prose outrank the real one-row answer.
+_FINDING_KEYS = frozenset({
+    "title", "severity", "category", "file_path", "line_start",
+    "line_end", "description", "recommendation", "evidence_quote",
+})
+
+# TWO fields, TWO switches — they are not the same risk (0076 §5.1, recall-3).
+# ``code_snippet`` is a fabricated-evidence risk; ``check_id`` is a DEDUP
+# IDENTITY whose naive removal deletes rows (AC26). Collapsing them into one
+# constant would make it impossible to reverse a dedup regression without also
+# re-trusting model-authored evidence.
+_MODEL_FORBIDDEN_SNIPPET = ("code_snippet",)    # VULTURE_LLM_TRUST_MODEL_SNIPPET
+_MODEL_FORBIDDEN_CHECK_ID = ("check_id",)       # VULTURE_LLM_TRUST_MODEL_CHECK_ID
+_TRUST_MODEL_SNIPPET = "VULTURE_LLM_TRUST_MODEL_SNIPPET"
+_TRUST_MODEL_CHECK_ID = "VULTURE_LLM_TRUST_MODEL_CHECK_ID"
 
 
 class AuditFinding(BaseModel):
@@ -76,10 +104,46 @@ class AuditFinding(BaseModel):
     # secret-bearing CWEs (CWE-798/CWE-319 etc.) the secret VALUE is redacted at
     # that same choke point so neither the SSE payload nor the DB row carries it.
     code_snippet: str = ""
+    # Feature 0076 §5.2: the model's own evidence — 1-3 source lines copied
+    # VERBATIM out of the file it is accusing, which is what makes the claim
+    # checkable without a model. PRIVATE: it is stripped at the parse choke point
+    # (``_strip_private_fields``) and never reaches SSE, the DB or the L5 prompt.
+    evidence_quote: str = ""
 
 
 class AuditOutput(BaseModel):
     findings: list[AuditFinding]
+
+
+# The finding fields the MODEL is shown. ``code_snippet`` and ``check_id`` are
+# deliberately absent (0076 B3): the first is a source-read artefact produced by
+# ``_attach_code_snippet`` — a model-authored string is indistinguishable from a
+# real read, displaces the L5 window and scores +3 in the Go winner selection —
+# and the second is never persisted by either repository, so a model-invented
+# value is pure noise that nonetheless keys the Python dedup identity.
+_MODEL_VISIBLE_FIELDS: tuple[str, ...] = (
+    "severity", "category", "title", "description",
+    "file_path", "line_start", "line_end", "recommendation",
+)
+
+
+@functools.lru_cache(maxsize=2)
+def _model_visible_output(with_quote: bool) -> type[BaseModel]:
+    """The structured response schema, built from ``AuditFinding``'s own fields.
+
+    ``AuditFinding`` stays WIDE: it is the internal carrier every parse path
+    fills. What the model is SHOWN is this narrower projection of it, so there is
+    still one authority for each field's type and default. Cached on the single
+    switch it depends on — the switch itself is read at call time by the caller.
+    """
+    names = _MODEL_VISIBLE_FIELDS + (("evidence_quote",) if with_quote else ())
+    fields: dict[str, Any] = {
+        name: (AuditFinding.model_fields[name].annotation,
+               AuditFinding.model_fields[name].default)
+        for name in names
+    }
+    finding = create_model("AuditFinding", **fields)
+    return create_model("AuditOutput", findings=(list[finding], ...))
 
 
 SkillFn = Callable[[str], dict]
@@ -724,20 +788,14 @@ def _group_findings_by_path(skill_findings: list[dict] | None) -> dict[str, list
     return grouped
 
 
-def _number_lines(lines: list[str], start: int = 0, end: int | None = None) -> str:
-    """Render ``lines[start:end]`` with ABSOLUTE 1-based line numbers.
-
-    The SINGLE authority for the one format the model is ever shown, ``"30: code"``.
-    It existed inline in two places inside ``_extract_file_snippet`` and nowhere
-    else, which is how the two prompt paths came to disagree about whether a file
-    gets numbered at all (feature 0075). Numbers are absolute file positions, never
-    snippet-relative: a snippet beginning at file line 200 renders ``200:``, because
-    a number that restarts at 1 is worse than no number — the model's output would
-    look precise and be systematically wrong by the snippet offset.
-    """
-    if end is None:
-        end = len(lines)
-    return "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, min(end, len(lines))))
+# Feature 0076 T0.1: the write direction moved VERBATIM to the leaf
+# ``shared/tools/line_format.py`` so ``tools/file_reader.py`` can number what it
+# hands the model without importing ``audit_runner`` (which closes the
+# ``audit_runner -> shared.tools.* -> __init__ -> file_reader -> audit_runner``
+# cycle, §5.0 D16). The name is kept as an ALIAS — the same function object, not
+# a wrapper — so every 0075 caller and structural guard is untouched and the two
+# cannot drift.
+_number_lines = line_format.number_lines
 
 
 def _line_numbers_enabled() -> bool:
@@ -748,8 +806,7 @@ def _line_numbers_enabled() -> bool:
     Snippet numbering predates 0075 and is unconditional — turning this off restores
     the pre-0075 presentation exactly, no more.
     """
-    return os.getenv("VULTURE_LLM_LINE_NUMBERS", "true").strip().lower() not in (
-        "0", "false", "no", "off")
+    return env_flag("VULTURE_LLM_LINE_NUMBERS", True)
 
 
 # The LLM feed's extension set lives in file_scanner.py beside the scanner's own sets
@@ -1162,11 +1219,285 @@ def _dedup_key(f: dict, source_path: str = "") -> tuple[str, str]:
     The path component is normalized (P1f) so absolute vs relative forms of
     the same file do not defeat cross-phase dedup.
     """
-    cid = f.get("check_id", "")
+    # 0076 AC26: ``_model_check_id`` is the identity a stripped model-authored
+    # ``check_id`` left behind. Falling back to it BEFORE the normalised title is
+    # what makes the strip count-neutral — without it the row re-keys onto
+    # (title, path) and a colliding skill row deletes it.
+    cid = f.get("check_id", "") or f.get("_model_check_id", "")
     fp = _normalize_dedup_path(f.get("file_path", ""), source_path)
     if cid:
         return (cid, fp)
     return (_normalize_title(f.get("title", "")), fp)
+
+
+# ── Feature 0076 §5.4: the anchor stamp, the egress strip, and the survivor merge ──
+
+# Every field the verifier stamps, plus the two model-authored strings the parser
+# preserves for internal use. ONE roster, deleted by ONE pass. Adding a tenth
+# private field without adding it here is how the next leak happens.
+_PRIVATE_FIELDS = ("evidence_quote", "_model_check_id", "_anchor_status",
+                   "_anchor_reason",
+                   "_claimed_line", "_anchor_delta", "_anchor_candidates",
+                   "_anchor_other_path", "_anchor_quote_chars",
+                   "_anchor_quote_tokens")
+
+# The fields a dedup survivor adopts from a better-anchored row (AC30). The
+# status without its provenance cannot be audited or re-measured, so the delta,
+# the candidate count and the cross-file path travel with it.
+_ADOPTED_ANCHOR_FIELDS = ("_anchor_status", "_anchor_delta",
+                          "_anchor_candidates", "_anchor_other_path")
+
+# The total quality order the survivor merge resolves against; higher wins.
+# ``unquoted``/``oversize`` and ``unreadable``/``absent`` share a rank because
+# neither of each pair carries information the other lacks.
+_ANCHOR_QUALITY = {
+    "exact": 6, "reanchored": 5, "near_miss": 4, "found_elsewhere": 3,
+    "ambiguous": 2, "unquoted": 1, "oversize": 1, "unreadable": 0, "absent": 0,
+}
+
+
+# The subset that must die at the PARSE choke point, before any mode check:
+# `evidence_quote` is model-copied source that can carry a live credential, and
+# `_model_check_id` is only needed to keep the dedup identity stable across the
+# strip. The `_anchor_*` stamps are NOT here — `run_l1` is their last consumer
+# (validate/__init__._strip_private removes them afterwards), and deleting them
+# at parse time makes the whole feature inert: no `anchor` check is ever emitted.
+_PARSE_PRIVATE_FIELDS = ("evidence_quote", "_model_check_id")
+
+
+def _public_view(finding: dict) -> dict:
+    """The finding as a consumer outside this process may see it.
+
+    `emitter.finding_event(**_public_view(finding))` forwards `**extra` VERBATIM and the SSE
+    emit happens BEFORE the validate stage runs, so a private stamp still in
+    flight would reach the live stream while Go's fixed `model.Finding` dropped
+    it — one finding with two different contents depending on when you looked.
+    Filtering at the CALL SITE rather than inside the emitter keeps the
+    emitter's documented forward-everything contract intact and makes every
+    future underscore-prefixed stamp safe without a roster entry.
+    """
+    return {k: v for k, v in finding.items() if not k.startswith("_")}
+
+
+def _strip_private_fields(
+    finding: dict, fields: tuple[str, ...] = _PRIVATE_FIELDS,
+) -> None:
+    """Delete every private field. Mutates in place, returns None, idempotent.
+
+    Called UNCONDITIONALLY on every parsed LLM finding at the parse choke point —
+    before any mode check, and regardless of ``VULTURE_LLM_QUOTE_VERIFY``.
+
+    An earlier draft called this from inside the verifier. At
+    ``VULTURE_LLM_QUOTE_VERIFY=off`` the verifier does not run, so
+    ``evidence_quote`` — model-copied source that can contain a live credential —
+    flowed straight to SSE, to the DB and into the L5 prompt. The rollback path
+    walked directly through that hole: an operator disabling the feature after an
+    incident would have ENABLED the leak.
+
+    The seven ``_anchor_*`` stamps are private for a second, quieter reason:
+    ``emitter.finding_event(**_public_view(finding))`` forwards ``**extra`` verbatim, so plain
+    names would reach the live stream and then be dropped at Go's fixed
+    ``model.Finding`` boundary — one finding with two different contents
+    depending on whether you watched it live or replayed it.
+    """
+    for name in fields:
+        finding.pop(name, None)
+
+
+def _quote_mode() -> str:
+    """``VULTURE_LLM_QUOTE_VERIFY`` — ``off`` / ``observe`` (default) / ``enforce``.
+
+    A mode string rather than a flag, matching ``VULTURE_OBLIGATION_MODE``. Read
+    at call time (D14): a mode captured at import cannot be flipped mid-fleet.
+    """
+    return os.getenv("VULTURE_LLM_QUOTE_VERIFY", "observe").strip().lower() or "observe"
+
+
+def _reanchor_enabled() -> bool:
+    """The LINE actuator: ``enforce`` AND ``VULTURE_LLM_QUOTE_REANCHOR``.
+
+    Requiring ``enforce`` is not the same as being implied by it — reading the
+    mode string where the actuator switch was meant is an easy and invisible
+    mistake, so both are demanded and both are read at call time.
+    """
+    return _quote_mode() == "enforce" and env_truthy("VULTURE_LLM_QUOTE_REANCHOR")
+
+
+def _batch_paths(findings: list[dict], source_path: str) -> list[Path | None]:
+    """Resolve each finding's path ONCE — the verifier takes a resolved Path (D17)."""
+    return [_resolve_finding_path(f.get("file_path", ""), source_path) for f in findings]
+
+
+def _resolved_only(paths: list[Path | None]) -> list[Path]:
+    """The batch's readable files, DEDUPED: the ``found_elsewhere`` search space.
+
+    ``_batch_paths`` yields one entry per FINDING, so 40 findings spread over 10
+    files handed the verifier ~36 siblings of which 9 were distinct — and the
+    cross-file scan then paid for every duplicate. `dict.fromkeys` keeps first-seen
+    order so the search stays deterministic.
+    """
+    return list(dict.fromkeys(path for path in paths if path is not None))
+
+
+def _may_reanchor(outcome: "anchor.AnchorResult") -> bool:
+    """Whether this outcome licenses moving a line: the actuator is on, the text
+    was located elsewhere, and the move is inside the absolute ceiling."""
+    if not _reanchor_enabled():
+        return False
+    if outcome.status != "reanchored":
+        return False
+    return _within_delta_ceiling(outcome)
+
+
+def _within_delta_ceiling(outcome: "anchor.AnchorResult") -> bool:
+    """A candidate beyond ``MAX_DELTA`` is a different construct, not a
+    mislocation, so it records but never moves the line (§5.3)."""
+    if outcome.new_line is None or outcome.delta is None:
+        return False
+    return abs(outcome.delta) <= anchor.max_delta()
+
+
+def _apply_reanchor(finding: dict, outcome: "anchor.AnchorResult") -> None:
+    """The LINE actuator for a row's OWN citation (§5.3, T4.3). Inert on ship.
+
+    `reanchored` means the quoted text was found, but not where the model said.
+    Rewriting `line_start` here — upstream of dedup, of the SSE event and of
+    `_attach_code_snippet` — is what makes every later consumer see the VERIFIED
+    line, which is the whole point of measuring `anchor_delta`.
+
+    Distinct from `_adopt_line`, which copies a line from a BETTER-ANCHORED
+    SIBLING during the dedup merge (AC30). That path only fires when a row has a
+    dedup partner; this one corrects a row that stands alone — the common case,
+    and the one the mislocated class is made of.
+
+    `claimed_line` is retained by the caller's stamp, so a rewrite is always
+    auditable back to what the model actually said.
+    """
+    if not _may_reanchor(outcome):
+        return
+    span = max(0, int(finding.get("line_end", 0)) - int(finding.get("line_start", 0)))
+    finding["line_start"] = outcome.new_line
+    finding["line_end"] = outcome.new_line + span
+
+
+def _stamp_anchor(finding: dict, path: Path | None, mode: str,
+                  siblings: list[Path]) -> None:
+    """Record what the verifier observed, as PRIVATE fields. No actuator here.
+
+    ``off`` skips the verifier entirely; the caller still strips, which is the
+    property the rollback path depends on.
+    """
+    if mode == "off":
+        return
+    outcome = anchor.verify_anchor(finding, path, mode=mode, batch_paths=siblings)
+    # Captured BEFORE the actuator runs. `_apply_reanchor` overwrites
+    # `line_start`, so reading it afterwards recorded the VERIFIED line as the
+    # model's claim: every reanchored row then looked as though the model had
+    # been right all along, `claimed_line + delta` pointed at nothing, and the
+    # rewrite stopped being auditable — the precise property this stamp exists
+    # to preserve, on precisely the mislocated class the feature measures.
+    claimed = finding.get("line_start", 0)
+    _apply_reanchor(finding, outcome)
+    finding.update({
+        "_anchor_status": outcome.status,
+        "_anchor_reason": outcome.reason,
+        "_claimed_line": claimed,
+        "_anchor_delta": outcome.delta,
+        "_anchor_candidates": outcome.candidates,
+        "_anchor_other_path": outcome.other_path,
+        "_anchor_quote_chars": outcome.quote_chars,
+        "_anchor_quote_tokens": outcome.quote_tokens,
+    })
+
+
+def _restore_dedup_identity(finding: dict) -> None:
+    """Put the model's ``check_id`` back as the row's PUBLIC dedup identity.
+
+    AC26's invariant is that stripping the model-authored ``check_id`` changes
+    the post-dedup finding count by ZERO, and §5.1 discharges it by preserving
+    the value as ``_model_check_id`` with a ``_dedup_key`` fallback. That
+    discharge is incomplete in the pipeline: this choke point is UPSTREAM of the
+    cross-batch dedup, and ``_strip_private_fields`` deletes ``_model_check_id``
+    here — so the private carrier only ever reaches ``_dedup_key`` in a direct
+    unit call, never in a real run. Measured: with the private carrier alone,
+    ``tests/e2e/test_0057_llm_on_bundle.py``'s LLM duplicate stopped collapsing
+    onto its skill twin and the run reported the same defect twice.
+
+    So the identity is restored, not merely remembered. What the strip removes is
+    the model's authority over ``code_snippet`` and over the structured schema
+    (B3); ``check_id`` remains what it always was — a dedup key that neither
+    repository persists (C7), never a catalog id.
+    """
+    cid = finding.get("_model_check_id")
+    if cid and not finding.get("check_id"):
+        finding["check_id"] = cid
+
+
+def _verify_and_strip(findings: list[dict], source_path: str) -> list[dict]:
+    """THE choke point (0076 §5.4(1)), immediately after ``_parse_llm_result``.
+
+    Both parse branches converge here, the halved-body size retry re-enters
+    through it, and it is upstream of the cross-batch dedup, of the per-finding
+    SSE event and of ``_attach_code_snippet`` — so a re-anchored row's line is the
+    one every later consumer sees. The strip runs for every finding in every
+    configuration; only the stamping is gated.
+    """
+    mode = _quote_mode()
+    if mode == "off":
+        # The rollback setting must be free, not merely inert. `_batch_paths`
+        # calls `_resolve_finding_path` once per finding (filesystem syscalls),
+        # and `_stamp_anchor` would return immediately anyway.
+        for finding in findings:
+            _restore_dedup_identity(finding)
+            _strip_private_fields(finding, _PARSE_PRIVATE_FIELDS)
+        return findings
+    paths = _batch_paths(findings, source_path)
+    siblings = _resolved_only(paths)
+    for finding, path in zip(findings, paths, strict=True):
+        _stamp_anchor(finding, path, mode, siblings)
+        _restore_dedup_identity(finding)
+        _strip_private_fields(finding, _PARSE_PRIVATE_FIELDS)
+    return findings
+
+
+def _anchor_rank(finding: dict) -> int:
+    """Quality of a row's anchor status; ``-1`` for a row that carries none, so
+    an unstamped row neither adopts nor is adopted from."""
+    return _ANCHOR_QUALITY.get(str(finding.get("_anchor_status") or ""), -1)
+
+
+def _adopt_line(survivor: dict, other: dict) -> None:
+    """The LINE half of the merge — inert until the actuator is switched on.
+
+    Adopting ``exact`` is pointless if the survivor keeps the line the losing row
+    claimed: the whole reason to prefer that row's status is that ITS line was
+    the one actually verified.
+    """
+    if not _reanchor_enabled():
+        return
+    survivor["line_start"] = other.get("line_start", survivor.get("line_start"))
+    survivor["line_end"] = other.get("line_end", survivor.get("line_end"))
+
+
+def _adopt_anchor(survivor: dict | None, other: dict) -> None:
+    """A MAX over the rows collapsing onto one dedup key, never a last-write-wins.
+
+    ``_deduplicate_findings`` keeps the FIRST-SEEN row, and first-seen is
+    arbitrary with respect to anchor quality: a batch can raise an ``absent`` row
+    at index 0 and an ``exact`` row for the same key at index 3, and the survivor
+    would carry ``absent`` — manufacturing a demotion for a finding that WAS
+    correctly quoted. This is a field merge among rows that already collapse
+    today, so the surviving COUNT is unchanged in every case.
+
+    ``survivor is None`` marks a key that came from ``base`` (the accumulated
+    skill findings): those rows are not returned by the dedup and must not be
+    stamped with an LLM row's anchor provenance.
+    """
+    if survivor is None or _anchor_rank(other) <= _anchor_rank(survivor):
+        return
+    for name in _ADOPTED_ANCHOR_FIELDS:
+        survivor[name] = other.get(name)
+    _adopt_line(survivor, other)
 
 
 def _deduplicate_findings(
@@ -1187,16 +1518,20 @@ def _deduplicate_findings(
     Returns:
         Subset of ``new`` that don't duplicate any entry in ``base``.
     """
-    seen: set[tuple[str, str]] = set()
-    for f in base:
-        seen.add(_dedup_key(f, source_path))
-
+    # ``None`` marks a key contributed by ``base``; a real dict is the surviving
+    # row for that key, and is the object a later duplicate merges its anchor
+    # status into (0076 AC30).
+    seen: dict[tuple[str, str], dict | None] = {
+        _dedup_key(f, source_path): None for f in base
+    }
     unique: list[dict] = []
     for f in new:
         key = _dedup_key(f, source_path)
-        if key not in seen:
-            unique.append(f)
-            seen.add(key)
+        if key in seen:
+            _adopt_anchor(seen[key], f)
+            continue
+        seen[key] = f
+        unique.append(f)
     return unique
 
 
@@ -1412,16 +1747,21 @@ def _redact_snippet(snippet: str) -> str:
     """
     if not snippet:
         return snippet
-    out_lines: list[str] = []
-    for raw in snippet.split("\n"):
-        # Split off the "<n>: " numbered prefix produced by extract_snippet so
-        # the line number is preserved exactly.
-        m = re.match(r"^(\s*\d+:\s?)(.*)$", raw)
-        if m:
-            out_lines.append(f"{m.group(1)}{_redact_secret_line(m.group(2))}")
-        else:
-            out_lines.append(_redact_secret_line(raw))
-    return "\n".join(out_lines)
+    return "\n".join(_redact_numbered_line(raw) for raw in snippet.split("\n"))
+
+
+def _redact_numbered_line(raw: str) -> str:
+    """Redact one presented line, preserving its ``"<n>: "`` prefix exactly.
+
+    The prefix is recovered from :func:`line_format.strip_line_number` (0076
+    AC19: ONE reader for the format) rather than from a second hand-rolled
+    pattern — the two that existed already disagreed about leading whitespace.
+    ``strip_line_number`` is identity on an unprefixed line, so the slice is
+    empty there and the line is redacted whole.
+    """
+    body = line_format.strip_line_number(raw)
+    prefix = raw[: len(raw) - len(body)]
+    return f"{prefix}{_redact_secret_line(body)}"
 
 
 def _redact_finding_inplace(finding: dict[str, Any]) -> None:
@@ -1745,7 +2085,7 @@ def run_combined_audit(
                     # skill_findings, so the finalisation choke point re-sees the
                     # already-masked form (idempotent).
                     _redact_finding_inplace(finding)
-                    yield emitter.finding_event(**finding)
+                    yield emitter.finding_event(**_public_view(finding))
 
                 completed += 1
                 yield emitter.progress_event(
@@ -1873,7 +2213,7 @@ def run_combined_audit(
                 # before the per-finding SSE event (LLM is the realistic source
                 # of unquoted / env-style / comment-embedded secrets).
                 _redact_finding_inplace(finding)
-                yield emitter.finding_event(**finding)
+                yield emitter.finding_event(**_public_view(finding))
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
     else:
@@ -1997,7 +2337,7 @@ def run_combined_audit(
                 yield emitter.text_message(ev_text)
             all_findings = v_result.findings
             for parent in v_result.rollups:
-                yield emitter.finding_event(**parent)
+                yield emitter.finding_event(**_public_view(parent))
             all_findings = all_findings + v_result.rollups
         except Exception as ve:
             logger.warning("validate stage raised %s; continuing without validation", ve)
@@ -2326,6 +2666,78 @@ async def _collect_llm_findings_batched_async(
     return acc, err, total_in, total_out, notice
 
 
+def _quote_required() -> bool:
+    """``VULTURE_LLM_QUOTE_REQUIRED`` — default TRUE, read at call time (D14).
+
+    Its own switch because the added field is 0076's one un-mitigable recall
+    risk: a ninth field consumes output tokens and attention, and the model may
+    return fewer rows. Flipping it removes the ask from BOTH prompt contracts and
+    from the structured schema — a rollback that left it in one of the three
+    would keep paying the risk while reporting the feature off.
+    """
+    return env_flag("VULTURE_LLM_QUOTE_REQUIRED", True)
+
+
+def _quote_max_lines() -> int:
+    """The quote bound the prompt states, read from the verifier's OWN knob.
+
+    ``anchor`` owns ``VULTURE_LLM_QUOTE_MAX_LINES`` and its default; asking it
+    keeps the stated bound and the enforced bound the same number. A model told
+    "1-3 lines" while the verifier clamps at 2 would be refused for doing exactly
+    what it was asked.
+    """
+    return anchor._knob_int("MAX_LINES")
+
+
+def _quote_obligation() -> str:
+    """THE obligation sentence — one authority, used by both prompt contracts.
+
+    Two properties are load-bearing and are pinned by tests. It names the
+    ``"NN: "`` format the model is already looking at, because 0075 made every
+    content line carry it and the model WILL echo it (the verifier's normaliser
+    strips it; the prompt does not fight it). And the consequence clause is
+    "will be reported as unverified", never "do not report findings you cannot
+    quote" — the second wording would make the prompt itself a suppression
+    mechanism, outside every switch this feature ships and un-rollbackable once
+    a run has completed, because the suppressed rows were never emitted (AC20).
+    """
+    return (
+        f"evidence_quote: copy the 1-{_quote_max_lines()} source lines your "
+        "finding is about, VERBATIM from the numbered listing above (you may "
+        'include the "NN: " prefix). A finding without a quote will be reported '
+        "as unverified."
+    )
+
+
+def _field_contract() -> list[str]:
+    """The field list every LLM call is shown, plus the evidence obligation.
+
+    One list, so the builder cannot grow a second copy of the contract the way
+    the unstructured branch did.
+    """
+    parts = [
+        "For each issue found, provide severity, category, title, description,",
+        "file_path, line_start, line_end, and recommendation.",
+    ]
+    if _quote_required():
+        parts.append(_quote_obligation())
+    return parts
+
+
+def _quote_contract_suffix() -> str:
+    """The obligation as a suffix for the unstructured instruction block, or ``""``.
+
+    A3: the builder's contract (:func:`_field_contract`) and the unstructured
+    branch's instruction block are one policy written twice, in two places that
+    are edited independently — which is how a fix applied to one of them silently
+    works on one path only. Both therefore append the SAME sentence, from the
+    same authority, rather than a paraphrase of it.
+    """
+    if not _quote_required():
+        return ""
+    return f"\n{_quote_obligation()}"
+
+
 def _build_llm_prompt(
     source_path: str,
     categories: list[str],
@@ -2344,8 +2756,7 @@ def _build_llm_prompt(
     parts = [
         f"Audit the source code at: {source_path}",
         f"Focus on these {domain_label}: {', '.join(categories)}",
-        "For each issue found, provide severity, category, title, description,",
-        "file_path, line_start, line_end, and recommendation.",
+        *_field_contract(),
     ]
     # Place prior context before source code so the LLM sees known issues
     # early and primes LLM attention.
@@ -2409,11 +2820,12 @@ _CUSTOM_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 def _parse_llm_result(result: Any) -> list[dict]:
     """Parse findings from an Agent SDK result, handling structured and raw output."""
     final_output = getattr(result, "final_output", None)
-    if isinstance(final_output, AuditOutput):
-        findings = [f.model_dump() for f in final_output.findings]
-        for f in findings:
-            f["severity"] = normalize_severity(f.get("severity", "info"))
-        return findings
+    rows = getattr(final_output, "findings", None)
+    if isinstance(rows, list):
+        # 0076 B3: the SAME normaliser as the text path. Duck-typed on
+        # ``.findings`` rather than on ``AuditOutput`` because the model-visible
+        # schema is narrowed per call (§5.2) and is therefore its own class.
+        return [_normalize_finding(row.model_dump()) for row in rows]
     return _parse_llm_findings(str(final_output) if final_output is not None else "")
 
 
@@ -2538,7 +2950,7 @@ async def _collect_llm_findings_async(
             "\n\nIMPORTANT: Return findings as a JSON array. Each object must have: "
             "severity, category, title, description, file_path, line_start, line_end, recommendation. "
             "Wrap the array in ```json ... ``` fences."
-        )
+        ) + _quote_contract_suffix()
 
     agent_kwargs: dict[str, Any] = {
         "name": "auditor",
@@ -2548,7 +2960,7 @@ async def _collect_llm_findings_async(
         "model_settings": ModelSettings(**model_settings_dict),
     }
     if use_structured:
-        agent_kwargs["output_type"] = AuditOutput
+        agent_kwargs["output_type"] = _model_visible_output(_quote_required())
 
     agent = Agent(**agent_kwargs)
 
@@ -2599,7 +3011,7 @@ async def _collect_llm_findings_async(
     try:
         result = await retry_llm_call(_run_agent, max_attempts=3)
         actual_input, actual_output = _extract_token_usage(result, model=model)
-        findings = _parse_llm_result(result)
+        findings = _verify_and_strip(_parse_llm_result(result), source_path)
         cooldown_manager.record_success(resolved_model)
     except LoopDetectedError as exc:
         # Loop is an agent reasoning failure, not a model failure — don't cool down the model.
@@ -2670,32 +3082,321 @@ def build_summary(findings: list[dict], categories: list[str], domain_label: str
 def _parse_llm_findings(output: str) -> list[dict]:
     """Extract structured findings from LLM text output.
 
-    Attempts to parse JSON arrays from the response. Falls back to
-    empty list if parsing fails.
+    Attempt order (feature 0076 §5.1), each falling through only on failure so a
+    compliant model's output is unaffected byte for byte: fenced block ->
+    ``_scan_json_arrays`` (or the pre-0076 bare regex when
+    ``VULTURE_LLM_JSON_SCAN=false``) -> ``_salvage_truncated_array`` -> ``[]``.
     """
-    import json
+    return [_normalize_finding(row) for row in _extract_finding_rows(output)]
 
-    for pattern in _LLM_JSON_PATTERNS:
-        match = pattern.search(output)
-        if match:
-            try:
-                findings = json.loads(match.group(1))
-                if isinstance(findings, list):
-                    return [_normalize_finding(f) for f in findings if isinstance(f, dict)]
-            except json.JSONDecodeError:
-                continue
+
+def _extract_finding_rows(output: str) -> list[dict]:
+    """The first attempt that produces a row list wins; ``[]`` when none does."""
+    for attempt in (_fenced_json_rows, _scanned_json_rows, _salvage_truncated_array):
+        rows = attempt(output)
+        if rows is not None:
+            return rows
     return []
 
 
+def _loads_list(text: str | None) -> list | None:
+    """``json.loads`` restricted to arrays; ``None`` on absent or invalid input."""
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, list) else None
+
+
+def _only_dicts(value: list) -> list[dict]:
+    """Every dict entry of a decoded array — RECALL, not ranking: a sloppy row
+    such as ``{"title": "b"}`` is too key-poor to make an array look like a
+    payload and is still a finding."""
+    return [row for row in value if isinstance(row, dict)]
+
+
+def _dict_rows(value: list | None) -> list[dict] | None:
+    """:func:`_only_dicts`, tolerant of the "nothing decoded" signal."""
+    if value is None:
+        return None
+    return _only_dicts(value)
+
+
+def _fenced_json_rows(output: str) -> list[dict] | None:
+    """The ```` ```json ... ``` ```` block — tried FIRST and unchanged (0076 T1.2)."""
+    match = _LLM_JSON_FENCED_RE.search(output)
+    if match is None:
+        return None
+    return _dict_rows(_loads_list(match.group(1)))
+
+
+def _scanned_json_rows(output: str) -> list[dict] | None:
+    """The brace-safe scan, or the pre-0076 regex under the rollback switch."""
+    if _json_scan_enabled():
+        return _scan_json_arrays(output)
+    match = _LLM_JSON_BARE_RE.search(output)
+    return _dict_rows(_loads_list(match.group(1) if match else None))
+
+
+def _json_scan_enabled() -> bool:
+    """``VULTURE_LLM_JSON_SCAN`` — default TRUE, read at call time (D14)."""
+    return env_flag("VULTURE_LLM_JSON_SCAN", True)
+
+
+def _json_salvage_enabled() -> bool:
+    """``VULTURE_LLM_JSON_SALVAGE`` — default TRUE, read at call time (D14)."""
+    return env_flag("VULTURE_LLM_JSON_SALVAGE", True)
+
+
+def _try_decode(output: str, index: int) -> Any:
+    """``raw_decode`` at *index*, or ``None`` when nothing valid starts there."""
+    try:
+        value, _end = json.JSONDecoder().raw_decode(output, index)
+    except ValueError:
+        return None
+    return value
+
+
+def _score_array(value: list) -> tuple[int, int, int] | None:
+    """Rank a decoded array as a findings payload, or ``None`` if it is not one.
+
+    KEY EVIDENCE DOMINATES ROW COUNT, and the ordering is load-bearing. Scored
+    ``(len(rows), hits)`` instead, tuple comparison puts row count first and the
+    three-row decoy ``[{"id":1},{"id":2},{"id":3}]`` — an everyday TS example in
+    model prose, scoring ``(3, 3)`` — outranks the real one-row payload
+    ``(1, 9)``, losing the whole batch in a new shape. Returning ``None`` for a
+    zero-hit array is the other half: a decoy that carries no finding key is not
+    a candidate at all, whatever the ordering downstream turns out to be.
+    """
+    hits = [_key_hits(row) for row in value]
+    if not any(hits):
+        return None
+    return (_strong_rows(hits), sum(hits), len(_only_dicts(value)))
+
+
+def _key_hits(row: Any) -> int:
+    """Finding-shaped keys carried by one decoded entry; ``0`` for a non-dict."""
+    if not isinstance(row, dict):
+        return 0
+    return len(_FINDING_KEYS & set(row))
+
+
+def _strong_rows(hits: list[int]) -> int:
+    """Rows carrying at least two finding keys — the DOMINANT evidence term."""
+    return sum(1 for count in hits if count >= 2)
+
+
+def _decoded_arrays(output: str) -> Generator[list, None, None]:
+    """Every JSON array that decodes from a ``[`` in *output*, in order.
+
+    Exact where the regex was heuristic. Scanning EVERY ``[`` rather than
+    returning the first that decodes is a recall requirement: a model that opens
+    with prose containing ``["a","b"]``, or whose quote holds ``[{ id: 1 }]``,
+    would otherwise have its real payload shadowed by the decoy.
+    """
+    for index, char in enumerate(output):
+        if char != "[":
+            continue
+        value = _try_decode(output, index)
+        if isinstance(value, list):
+            yield value
+
+
+def _better_candidate(
+    best: tuple[tuple[int, int, int], list[dict]] | None, value: list,
+) -> tuple[tuple[int, int, int], list[dict]] | None:
+    """Keep the higher-scoring array; ties take the LATER one, because a model
+    that restates its answer puts the corrected payload at the end."""
+    score = _score_array(value)
+    if score is None:
+        return best
+    if best is not None and score < best[0]:
+        return best
+    return (score, _only_dicts(value))
+
+
+def _scan_json_arrays(output: str) -> list[dict] | None:
+    """Find the BEST JSON array of findings in *output*, brace-safely.
+
+    ``None`` — not ``[]`` — is the "nothing here" signal, so the caller can fall
+    through to salvage instead of treating a decoy-only response as an answer.
+    """
+    best: tuple[tuple[int, int, int], list[dict]] | None = None
+    for value in _decoded_arrays(output):
+        best = _better_candidate(best, value)
+    return None if best is None else best[1]
+
+
+def _unclosed_array_start(output: str) -> int | None:
+    """Index of the FIRST ``[`` that does not decode — the truncated array.
+
+    It must be the first, not the last. A truncated payload's opening bracket
+    fails to decode because nothing closes it, but so does every ``[`` inside a
+    string value after it — and 0076 makes those the common case, because
+    ``evidence_quote`` is VERBATIM SOURCE and `m[key]`, `x[i]`, `map[string]int`
+    are everyday code. Taking the last match started the salvage in the middle
+    of a string literal, recovered nothing, and lost the whole truncated batch:
+    the exact recall failure salvage exists to prevent.
+    """
+    for index, char in enumerate(output):
+        if char == "[" and _try_decode(output, index) is None:
+            return index
+    return None
+
+
+def _whole_objects_from(output: str, start: int) -> list[dict]:
+    """Decode successive whole objects after ``output[start] == '['``.
+
+    Stops at the first fragment, which is the partial tail the output-token cap
+    cut off. Linear: ``raw_decode`` returns the index it stopped at, so each
+    character is consumed once.
+    """
+    rows: list[dict] = []
+    index = start + 1
+    decoder = json.JSONDecoder()
+    while index < len(output):
+        index = _skip_separators(output, index)
+        try:
+            value, index = decoder.raw_decode(output, index)
+        except ValueError:
+            return rows
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
+def _skip_separators(output: str, index: int) -> int:
+    """Advance past commas and whitespace between two array elements."""
+    while index < len(output) and output[index] in ", \t\r\n":
+        index += 1
+    return index
+
+
+def _salvage_truncated_array(output: str) -> list[dict] | None:
+    """Recover rows from an array the model never closed.
+
+    A response cut at ``VULTURE_LLM_MAX_OUTPUT_TOKENS`` ends mid-array; without
+    this the whole batch is lost because neither pattern can match text with no
+    ``]``. Gated by ``VULTURE_LLM_JSON_SALVAGE`` (default true) and never silent:
+    the recovered row count is logged as ``llm_json_salvaged``.
+    """
+    if not _json_salvage_enabled():
+        return None
+    start = _unclosed_array_start(output)
+    if start is None:
+        return None
+    rows = _whole_objects_from(output, start)
+    if not rows:
+        return None
+    logger.warning("llm_json_salvaged rows=%d", len(rows))
+    return rows
+
+
+def _coerce_path(value: Any) -> str:
+    """A model-authored ``file_path`` reaches the resolver, the dedup key and Go
+    as a string. The line fields are coerced (B2); this one was copied verbatim,
+    so a model returning a list or a number propagated a non-str all the way to
+    ``_resolve_finding_path``. Junk costs the PATH, never the FINDING."""
+    return value if isinstance(value, str) else ("" if value is None else str(value))
+
+
+def _coerce_line(value: Any, default: int = 0) -> int:
+    """B2: a model that returns ``"55"`` must not be silently dropped by Go's
+    ``LineStart int`` unmarshal (``agui/finding_parse.go:33``). Junk costs the
+    LINE, never the FINDING — the caller's default is returned instead."""
+    if isinstance(value, bool):
+        return default
+    try:
+        if isinstance(value, int | float):
+            return int(value)
+        return int(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
+        # NaN and +/-Infinity reach here: `json.loads` accepts all three by
+        # default, so a model emitting `"line_start": NaN` produced a float that
+        # `int()` refuses — ValueError for NaN, OverflowError for Infinity —
+        # and the exception escaped the parser and lost the entire batch. The
+        # docstring's promise (junk costs the LINE, never the FINDING) was not
+        # kept for exactly the inputs a malformed model response supplies.
+        return default
+
+
+def _coerce_lines_enabled() -> bool:
+    """``VULTURE_LLM_COERCE_LINES`` — default TRUE, read at call time (D14)."""
+    return env_flag("VULTURE_LLM_COERCE_LINES", True)
+
+
+def _normalize_lines(raw: dict) -> dict[str, Any]:
+    """B4: both fields leave the parser as ints, ``>= 0`` and ordered.
+
+    A negative index silently addresses the END of a Python list, so a negative
+    line would read the wrong code rather than fail; an inverted range is a
+    nonsense window for every downstream reader.
+    """
+    if not _coerce_lines_enabled():
+        return {"line_start": raw.get("line_start", 0), "line_end": raw.get("line_end", 0)}
+    start = max(_coerce_line(raw.get("line_start")), 0)
+    return {"line_start": start, "line_end": max(_coerce_line(raw.get("line_end")), start)}
+
+
+def _non_empty(name: str, value: Any) -> dict[str, Any]:
+    """``{name: value}`` when *value* is truthy, otherwise no key at all."""
+    return {name: value} if value else {}
+
+
+def _carry_check_id(raw: dict) -> dict[str, Any]:
+    """The model's ``check_id``: trusted verbatim, or PRESERVED privately.
+
+    Stripping it outright re-keys the row onto ``(normalised_title, path)``
+    (``_dedup_key`` prefers ``check_id``), so a skill row already carrying that
+    title in that file deletes the LLM row. AC26 pins the count invariant: the
+    value survives as ``_model_check_id`` and ``_dedup_key`` falls back to it.
+    """
+    name = _MODEL_FORBIDDEN_CHECK_ID[0]
+    cid = raw.get(name) or ""
+    if not cid:
+        return {}
+    if env_truthy(_TRUST_MODEL_CHECK_ID):
+        return {name: cid}
+    return {"_model_check_id": cid}
+
+
+def _carry_evidence(raw: dict) -> dict[str, Any]:
+    """The evidence fields: the quote always, the two forbidden ones by switch.
+
+    ``code_snippet`` is a SOURCE-READ artefact produced by
+    ``_attach_code_snippet``; a model-authored string is indistinguishable from
+    one, displaces the real window fed to L5, and scores +3 in the Go winner
+    selection. It is admitted only under ``VULTURE_LLM_TRUST_MODEL_SNIPPET``.
+    """
+    name = _MODEL_FORBIDDEN_SNIPPET[0]
+    # Only when the model actually quoted: an always-present empty string would
+    # add a key to every finding a non-complying model returns, which changes the
+    # normaliser's output shape for callers that never asked for the feature.
+    carried: dict[str, Any] = _non_empty("evidence_quote", raw.get("evidence_quote"))
+    snippet = raw.get(name) or ""
+    if snippet and env_truthy(_TRUST_MODEL_SNIPPET):
+        carried[name] = snippet
+    carried.update(_carry_check_id(raw))
+    return carried
+
+
 def _normalize_finding(raw: dict) -> dict:
-    """Normalize a finding dict to expected schema."""
-    return {
+    """Normalize a finding dict to expected schema.
+
+    BOTH parse branches route through here (0076 §5.1): the structured branch
+    used to call ``model_dump()`` directly, which is how ``code_snippet`` and
+    ``check_id`` leaked from the model on that path only.
+    """
+    normalized: dict[str, Any] = {
         "severity": normalize_severity(raw.get("severity", "info")),
         "category": raw.get("category", "unknown"),
         "title": raw.get("title", "Untitled finding"),
         "description": raw.get("description", ""),
-        "file_path": raw.get("file_path", ""),
-        "line_start": raw.get("line_start", 0),
-        "line_end": raw.get("line_end", 0),
+        "file_path": _coerce_path(raw.get("file_path", "")),
         "recommendation": raw.get("recommendation", ""),
     }
+    normalized.update(_normalize_lines(raw))
+    normalized.update(_carry_evidence(raw))
+    return normalized

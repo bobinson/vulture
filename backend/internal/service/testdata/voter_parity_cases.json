@@ -514,6 +514,61 @@
         "status": "high_confidence",
         "confidence": 0.99
       }
+    },
+    {
+      "name": "0076: an absent anchor demotes authoritatively, solo",
+      "_note": "feature 0076 seats `anchor` in the authoritative demoting set. ONE demoting check must reach likely_fp — the additive path could not (clamp(0.5+0.4-1.0)=0.0 with demoting_count=1 classifies as `suspicious`) — and the cap pins confidence at <=0.05. The operator's own positive label does not save it: an evidence quote that matches nowhere is mechanical, not advisory.",
+      "checks": [
+        {
+          "id": "anchor",
+          "weight": -1.0,
+          "result": "absent"
+        },
+        {
+          "id": "memory",
+          "weight": 0.4,
+          "result": "user_confirmed_real"
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.0
+      }
+    },
+    {
+      "name": "0076: an anchor check at weight 0.0 is inert in both voters",
+      "_note": "VULTURE_LLM_QUOTE_DEMOTE_ABSENT=false makes the WEIGHT 0.0, not -1.0, so membership in the authoritative set cannot fire (both voters also require weight < 0). This is the switch-off half of AC34 expressed in the units the voters actually see.",
+      "checks": [
+        {
+          "id": "anchor",
+          "weight": 0.0,
+          "result": "absent"
+        },
+        {
+          "id": "path",
+          "weight": 0.1,
+          "result": "promoted"
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.6
+      }
+    },
+    {
+      "name": "0076: a located anchor status never promotes",
+      "_note": "AC27: every status but `absent` carries weight exactly 0.0. A quote that WAS found is not evidence the accusation is true — on the adjudicated population the best-quoting rows include the worst false positives — so `exact` leaves the 0.5 prior alone.",
+      "checks": [
+        {
+          "id": "anchor",
+          "weight": 0.0,
+          "result": "exact"
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.5
+      }
     }
   ]
 }

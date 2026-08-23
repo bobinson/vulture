@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from shared.cancellation import current_audit_deadline, current_cancel_token
+from shared.tools.line_format import strip_line_number
 
 from . import l5_cache
 from .language import detect_language
@@ -1426,8 +1427,13 @@ def _format_code_window(snippet: str, line_start: int) -> str:
     out: list[str] = []
     for i, line in enumerate(raw_lines):
         # Strip any existing `<num>: ` prefix (A-3 — don't trust skill
-        # output to give us accurate line numbers).
-        stripped = re.sub(r"^\s*\d+:\s", "", line)
+        # output to give us accurate line numbers). The pattern is NOT
+        # re-declared here: `line_format` is the one read-direction
+        # authority (feature 0076), and a second copy on the feed path is
+        # exactly how the probe and `_redact_snippet` came to disagree
+        # about leading whitespace. `strip_line_number` is identity on an
+        # unprefixed line, so this stays safe to apply unconditionally.
+        stripped = strip_line_number(line)
         if len(stripped) > _MAX_LINE_CHARS:
             stripped = stripped[:_MAX_LINE_CHARS] + " … [truncated]"
         out.append(f"L{start + i}: {stripped}")

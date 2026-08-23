@@ -978,6 +978,13 @@ def clear_caches() -> None:
     # score a stale tree. Clearing more is always safe.
     _scan_backup_files_cached.cache_clear()
     _scan_all_files_cached.cache_clear()
+    # Feature 0076: the anchor verifier caches the NORMALISED form of the same
+    # files, keyed the same way. Imported at call time — `shared.anchor` imports
+    # `shared.tools.line_format`, so a module-level import here would close a
+    # cycle through this package's __init__.
+    from shared.anchor import clear_cache as _clear_anchor_cache
+
+    _clear_anchor_cache()
 
 
 def is_entry_or_config(path: Path) -> bool:

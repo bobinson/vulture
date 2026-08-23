@@ -21,10 +21,22 @@ package service
 
 // AuthoritativeCheckIDs are check IDs that can demote a finding to
 // `likely_fp` solo, bypassing the ≥2-demoting-checks floor of V7.
-// In v1 the only authoritative check is `suppression` (an explicit
-// `# nosec` / `gosec:ignore` etc. is the operator's own decision).
+// `suppression` is the operator's own decision (an explicit `# nosec` /
+// `gosec:ignore`). `anchor` — feature 0076 — is the one MECHANICAL member:
+// an evidence quote located nowhere in the accused file nor in any sibling
+// of its batch.
+//
+// Membership alone demotes nothing: hasAuthoritativeDemotion also requires a
+// NEGATIVE weight, and the agent writes a negative `anchor` weight only for
+// status `absent` and only while VULTURE_LLM_QUOTE_DEMOTE_ABSENT is on. The
+// switch therefore lives in exactly one place (the producer), and this side
+// stays a pure function of the weights it is handed — which is what keeps
+// the two voters in parity when the switch is off.
+//
+// PARITY: mirrors AUTHORITATIVE_CHECKS in validate/voter.py.
 var AuthoritativeCheckIDs = map[string]struct{}{
 	"suppression": {},
+	"anchor":      {},
 }
 
 // ── Feature 0072: obligations ────────────────────────────────────────────

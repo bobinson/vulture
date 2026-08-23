@@ -59,9 +59,22 @@ def test_promoting_signal_lifts_to_high_confidence():
     assert conf > 0.55
 
 
-def test_authoritative_set_v1_contents():
-    """Document the v1 authoritative set (suppression markers only)."""
-    assert AUTHORITATIVE_CHECKS == frozenset({"suppression"})
+def test_authoritative_set_contents():
+    """Document the authoritative DEMOTING set.
+
+    v1 (0072) was `{"suppression"}` -- an operator's own `# nosec`-style marker.
+    0076 adds `"anchor"`, the seat `voter.py:92` reserved for exactly this: a
+    mechanical verification that the code a finding accuses is not where it said
+    it is. This is a documentation pin, not a business rule -- its job is to make
+    a change to the set deliberate and to force the Go mirror to move with it
+    (see test_voter_parity.py). Both sides moved together in 0076.
+
+    Membership is safe to be static because the GATE IS THE WEIGHT, not the id:
+    `_has_authoritative_demotion` requires `weight < 0`, and the anchor check
+    carries 0.0 unless VULTURE_LLM_QUOTE_DEMOTE_ABSENT is set. So with the
+    feature's shipped default the seat is occupied and inert.
+    """
+    assert AUTHORITATIVE_CHECKS == frozenset({"suppression", "anchor"})
 
 
 def test_confidence_clamped_to_0_1():
