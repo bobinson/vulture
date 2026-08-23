@@ -437,10 +437,22 @@ func resolveLocalDevPassword() (pw string, generated bool, err error) {
 		//
 		// The hash is never persisted, never transmitted, and never used to
 		// verify anyone. Preimage resistance is the only property required, and
-		// SHA-256 has it. A salted KDF cannot even express this comparison: it
-		// would need the salt stored alongside, and with exactly ONE candidate
-		// input the added work factor buys nothing an attacker cares about —
-		// the value it protects is a published historical default.
+		// SHA-256 has it.
+		//
+		// Why not bcrypt: not because a salted KDF cannot express a fixed
+		// comparison — it can, and model/api_key.go already does it via
+		// bcrypt.CompareHashAndPassword, which carries its salt inside the
+		// hash string. The blocker is that the historical default's PLAINTEXT
+		// is gone: it was scrubbed in 0036 Phase 4 and only its SHA-256
+		// survives, so no one can generate a bcrypt digest of it now. Any
+		// replacement would still have to hash the operator's input with
+		// something to compare against what we do have. Separately, with
+		// exactly ONE candidate input a work factor buys nothing an attacker
+		// cares about — the value it protects is a published historical
+		// default.
+		//
+		// If the plaintext is ever recovered, switching to a bcrypt digest
+		// would remove this alert at the root and is the preferred fix.
 		//
 		// codeql[go/weak-sensitive-data-hashing]
 		sum := sha256.Sum256([]byte(v))
