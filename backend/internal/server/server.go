@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -439,6 +440,30 @@ func resolveLocalDevPassword() (pw string, generated bool, err error) {
 	return hex.EncodeToString(buf), true, nil
 }
 
+// localDevPasswordPath is where the generated local-dev password is written
+// instead of being logged. Honors $VULTURE_LOCAL_DEV_PASSWORD_FILE, else sits
+// beside the database so it shares that directory's lifecycle and permissions.
+func localDevPasswordPath() string {
+	if v := strings.TrimSpace(os.Getenv("VULTURE_LOCAL_DEV_PASSWORD_FILE")); v != "" {
+		return v
+	}
+	if db := strings.TrimSpace(os.Getenv("VULTURE_DB_PATH")); db != "" {
+		return filepath.Join(filepath.Dir(db), "local-dev-password")
+	}
+	return filepath.Join(os.TempDir(), "vulture-local-dev-password")
+}
+
+// writeLocalDevPassword persists the seeded credential 0600 so an operator can
+// still log in. Failure is reported WITHOUT the password: a write error must not
+// become the leak the file exists to prevent.
+func writeLocalDevPassword(pw string) error {
+	path := localDevPasswordPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(pw+"\n"), 0o600)
+}
+
 func seedLocalUser(userRepo repository.UserRepository, jwtSecret string) {
 	existing, _ := userRepo.GetUserByEmail(localDevEmail)
 	if existing != nil {
@@ -459,7 +484,17 @@ func seedLocalUser(userRepo repository.UserRepository, jwtSecret string) {
 		return
 	}
 	if generated {
-		log.Printf("Seeded local dev user: %s / %s", localDevEmail, pw)
+		if err := writeLocalDevPassword(pw); err != nil {
+			log.Printf("warning: could not write the local dev password file: %v", err)
+			log.Printf("  set VULTURE_LOCAL_DEV_PASSWORD to choose the password yourself")
+			return
+		}
+		// The password is deliberately NOT logged. It is a real credential for a
+		// real account, logs are routinely shipped to aggregators and pasted into
+		// issues, and a local-dev account is still an account. The operator gets a
+		// deterministic way to retrieve it instead.
+		log.Printf("Seeded local dev user: %s (password written to %s, mode 0600)",
+			localDevEmail, localDevPasswordPath())
 		log.Printf("  ^ password regenerates every restart unless you export VULTURE_LOCAL_DEV_PASSWORD")
 	} else {
 		log.Printf("Seeded local dev user: %s (password from $VULTURE_LOCAL_DEV_PASSWORD)", localDevEmail)
