@@ -23,6 +23,13 @@ ALL_CATEGORIES: list[str] = [
     "uncaught_exception",
     "weak_entropy",
     "catalog_generic",
+    # Both were implemented, imported into SKILL_MAP, and never dispatched —
+    # ALL_CATEGORIES is the dispatch list and it had silently fallen two behind.
+    # In one measured sweep that hid 41 findings, 6 critical (an inline RSA private key,
+    # BIP-39 mnemonics, Solana keypairs, every CWE-319 row).
+    # test_skill_dispatch_conformance.py now pins ALL_CATEGORIES == SKILL_MAP.
+    "secrets",
+    "plaintext_transmission",
 ]
 
 CONFIG_SCHEMA: dict = {
@@ -76,5 +83,7 @@ AGENT_INFO: dict = {
         "uncaught_exception_check",
         "weak_entropy_check",
         "catalog_detector",
+        "secret_scan",
+        "plaintext_transmission_check",
     ],
 }

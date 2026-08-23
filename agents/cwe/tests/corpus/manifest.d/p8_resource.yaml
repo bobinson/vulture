@@ -1,0 +1,27 @@
+# Group: p8 resource reachability (feature 0070 P8).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# The runner flattens each fixture to ONE file named `f.<suffix>`, so every
+# rule gated here must be content-keyed — CWE-379's two arms both key on the
+# line's text (a temp-root accessor plus a fixed name, or a `/tmp`-family
+# literal plus a create/write sink), never on the path or basename, so
+# flattening is a no-op for them.
+#
+# Each clean twin differs from its positive by exactly the recommended fix —
+# the secure-temp API that mints an unpredictable name in an owner-only
+# directory. That is the suppressor the detector keys on, so the twins gate
+# the suppressor rather than merely gating a different file.
+#
+# Extension precondition: `.go` / `.ts` / `.py` are all in the scanner's
+# CODE_EXTENSIONS set that `resource_check` walks, so no fixture gates as a
+# silent zero.
+
+
+# ── CWE-379 temp file at a predictable path in a shared directory (skill `resource`) ──
+- {file: p8_resource/cwe_379_1.go, language: Go, cwe: "379", expectation: positive, line: 9}
+- {file: p8_resource/cwe_379_1_clean.go, language: Go, cwe: "379", expectation: negative}
+- {file: p8_resource/cwe_379_2.ts, language: TypeScript, cwe: "379", expectation: positive, line: 6}
+- {file: p8_resource/cwe_379_2_clean.ts, language: TypeScript, cwe: "379", expectation: negative}
+- {file: p8_resource/cwe_379_3.py, language: Python, cwe: "379", expectation: positive, line: 5}
+- {file: p8_resource/cwe_379_3_clean.py, language: Python, cwe: "379", expectation: negative}

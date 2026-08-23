@@ -11,10 +11,10 @@ import (
 // ranges pass as "public" and are reachable by the webhook/clone guards.
 func TestIsInternalIP_ReservedRanges(t *testing.T) {
 	internal := []string{
-		"100.64.0.1",     // RFC6598 CGNAT / shared address space
+		"100.64.0.1",      // RFC6598 CGNAT / shared address space
 		"100.127.255.254", // RFC6598 upper end
-		"0.1.2.3",        // 0.0.0.0/8 "this network"
-		"198.18.0.5",     // RFC2544 benchmarking
+		"0.1.2.3",         // 0.0.0.0/8 "this network"
+		"198.18.0.5",      // RFC2544 benchmarking
 	}
 	for _, s := range internal {
 		if !IsInternalIP(net.ParseIP(s)) {

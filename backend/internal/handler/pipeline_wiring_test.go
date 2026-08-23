@@ -17,11 +17,15 @@ type mockPipelineSvc struct {
 	advanceStageFn func(string, model.AuditStatus) error
 }
 
-func (m *mockPipelineSvc) CreatePipeline(*model.PipelineRequest) (*model.Pipeline, error)         { return nil, nil }
-func (m *mockPipelineSvc) GetPipeline(string) (*model.Pipeline, error)                             { return nil, nil }
-func (m *mockPipelineSvc) ListPipelines(int, int) ([]model.Pipeline, error)                        { return nil, nil }
-func (m *mockPipelineSvc) GetStageAuditConfig(*model.Pipeline, string) (json.RawMessage, error)    { return nil, nil }
-func (m *mockPipelineSvc) SetRunner(service.PipelineRunner)                                        {}
+func (m *mockPipelineSvc) CreatePipeline(*model.PipelineRequest) (*model.Pipeline, error) {
+	return nil, nil
+}
+func (m *mockPipelineSvc) GetPipeline(string) (*model.Pipeline, error)      { return nil, nil }
+func (m *mockPipelineSvc) ListPipelines(int, int) ([]model.Pipeline, error) { return nil, nil }
+func (m *mockPipelineSvc) GetStageAuditConfig(*model.Pipeline, string) (json.RawMessage, error) {
+	return nil, nil
+}
+func (m *mockPipelineSvc) SetRunner(service.PipelineRunner) {}
 func (m *mockPipelineSvc) AdvanceStage(auditID string, status model.AuditStatus) error {
 	if m.advanceStageFn != nil {
 		return m.advanceStageFn(auditID, status)
@@ -86,7 +90,14 @@ func TestRunPipelineStage_ExecutesAndPersists(t *testing.T) {
 		"owasp": {URL: "http://agent-owasp:28002"},
 	})
 
-	h.runPipelineAudit("a-1")
+	// 0071: the pipeline path is now the single background dispatch path. Drive
+	// it synchronously so the assertions below stay deterministic (DispatchAudit
+	// itself only registers the run and spawns the goroutine).
+	b, ok := h.runs.Open("a-1", 8192)
+	if !ok {
+		t.Fatal("expected to acquire the run")
+	}
+	h.runAudit("a-1", b)
 
 	if updatedAudit == nil {
 		t.Fatal("expected audit updated")

@@ -66,13 +66,39 @@ func (m *Manager) SetLogDir(dir string) {
 // Start returning nil means the fork succeeded — nothing more. Callers that
 // need the child to be *serving* must follow with WaitReady.
 func (m *Manager) Start(ctx context.Context, name string, dir string, env []string, args ...string) error {
+	return m.start(ctx, name, dir, env, true, args...)
+}
+
+// StartWithEnv launches a child with EXACTLY fullEnv — nothing is inherited
+// from the parent. This is the spawn path for agents (feature 0073): the
+// backend's credentials must not reach them, and a filtered env can only be
+// enforced by assigning it, never by appending to os.Environ().
+//
+// A nil or empty environment is refused. os/exec documents nil as "inherit the
+// parent's environment", so accepting it would silently restore the very
+// inheritance this exists to prevent — a failure that would look like success.
+func (m *Manager) StartWithEnv(ctx context.Context, name string, dir string, fullEnv []string, args ...string) error {
+	if len(fullEnv) == 0 {
+		return fmt.Errorf("start %s: refusing nil/empty environment (nil means inherit-all)", name)
+	}
+	return m.start(ctx, name, dir, fullEnv, false, args...)
+}
+
+// start is the single spawn implementation. inherit distinguishes the two
+// public entry points explicitly, rather than encoding it in the nil-ness of
+// env, so neither behaviour can be reached by accident.
+func (m *Manager) start(ctx context.Context, name string, dir string, env []string, inherit bool, args ...string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("no command specified for %s", name)
 	}
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, args[0], args[1:]...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	if inherit {
+		cmd.Env = append(os.Environ(), env...) //nolint:forbidigo // non-agent children inherit deliberately (0073 §4.2)
+	} else {
+		cmd.Env = env
+	}
 	configureProcessGroup(cmd)
 	// Cancel the whole tree, not just the direct child, and bound Wait so an
 	// orphan holding an output pipe can't wedge it (feature 0069).

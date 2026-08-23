@@ -27,6 +27,7 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.file_scanner import (
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
@@ -263,6 +264,22 @@ _SAFE_CONTEXT = re.compile(
 )
 
 
+def _should_skip(file_path: Path) -> bool:
+    """True for files whose keyword matches cannot be real weaknesses.
+
+    ``is_prose_file`` is the fourth arm and matters most here: this detector
+    scores keyword overlap against CWE catalog text, and security
+    documentation is written in exactly that vocabulary, so prose scores like
+    a vulnerable source file while executing nothing.
+    """
+    return (
+        file_path.suffix.lower() in _DATA_EXTENSIONS
+        or is_generated_file(file_path)
+        or is_test_file(file_path)
+        or is_prose_file(file_path)
+    )
+
+
 def check_catalog_generic(source_path: str) -> dict:
     """Scan source code using catalog-driven keyword matching.
 
@@ -287,11 +304,7 @@ def check_catalog_generic(source_path: str) -> dict:
     catalog = load_catalog()
 
     for file_path in scan_code_files(source_path):
-        if file_path.suffix.lower() in _DATA_EXTENSIONS:
-            continue
-        if is_generated_file(file_path):
-            continue
-        if is_test_file(file_path):
+        if _should_skip(file_path):
             continue
         _analyze_file(file_path, kw_index, findings, seen_per_file, cwe_file_counts, catalog)
 

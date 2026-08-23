@@ -9,13 +9,13 @@ import (
 type LineageStatus string
 
 const (
-	LineageStatusOpen         LineageStatus = "open"
-	LineageStatusInProgress   LineageStatus = "in_progress"
-	LineageStatusResolved     LineageStatus = "resolved"
-	LineageStatusAcceptedRisk LineageStatus = "accepted_risk"
+	LineageStatusOpen          LineageStatus = "open"
+	LineageStatusInProgress    LineageStatus = "in_progress"
+	LineageStatusResolved      LineageStatus = "resolved"
+	LineageStatusAcceptedRisk  LineageStatus = "accepted_risk"
 	LineageStatusFalsePositive LineageStatus = "false_positive"
-	LineageStatusFixed        LineageStatus = "fixed"
-	LineageStatusRegression   LineageStatus = "regression"
+	LineageStatusFixed         LineageStatus = "fixed"
+	LineageStatusRegression    LineageStatus = "regression"
 )
 
 // LineageEventType describes what happened to a lineage record.

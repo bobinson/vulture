@@ -7,8 +7,8 @@ import "testing"
 // an over-tightened regex (rejecting valid ids) would have gone unnoticed.
 func TestValidateRunID(t *testing.T) {
 	valid := []string{
-		"",              // empty = no per-run subdir (allowed)
-		"run-42_abc",    // the plan's benign example
+		"",           // empty = no per-run subdir (allowed)
+		"run-42_abc", // the plan's benign example
 		"abc123",
 		"A-B_c-9",
 		"0",

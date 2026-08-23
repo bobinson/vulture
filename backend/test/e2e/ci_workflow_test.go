@@ -46,7 +46,29 @@ func ciTestConfig(t *testing.T) (*config.Config, string) {
 		DBPath:         dbPath,
 		LocalMode:      false,
 		APIKeysEnabled: true,
-		JWTSecret:      "test-secret-for-e2e-ci",
+		// Step 1 bootstraps the first admin via POST /api/auth/register. Outside
+		// local mode that is CLOSED by default (0065 §H7:
+		// AllowOpenRegistration = localMode || VULTURE_ALLOW_OPEN_REGISTRATION),
+		// so the fixture must opt in explicitly or Step 1 gets a 403 and the whole
+		// API-key workflow is untested. Enabling it here keeps the default itself
+		// under test elsewhere — internal/server/authz_5a_test.go pins the closed
+		// case.
+		AllowOpenRegistration: true,
+		// Step 3 ingests a LOCAL source, which 0065 refuses outside local mode
+		// unless a root confines it. Scoped to this test's own temp tree —
+		// t.TempDir() hands each call a numbered child of one per-test parent,
+		// so dbPath's grandparent contains the source dir too. Pointing it at
+		// os.TempDir() would pass just as well and would stop the guard meaning
+		// anything.
+		SourceRoot: filepath.Dir(filepath.Dir(dbPath)),
+		// >= 32 bytes: 0065 §M9 rejects a shorter HS256 key at startup, and this
+		// fixture predates that rule (the suite is not run by CI, so it rotted).
+		JWTSecret: "test-secret-for-e2e-ci-0123456789abcdef",
+		// 0065 refuses to start outside local mode without an agent token, since
+		// the agent services would otherwise accept credential-less HTTP. This
+		// config is deliberately non-local (it exercises the API-key path), so it
+		// must supply one.
+		AgentToken: "test-agent-token-for-e2e-ci",
 		Agents: map[string]config.AgentConfig{
 			"chaos": {Name: "Chaos Engineering", Type: "chaos", URL: ""},
 			"owasp": {Name: "OWASP", Type: "owasp", URL: ""},
@@ -157,6 +179,12 @@ func httpDeleteWithAuth(addr, path, token string) (*http.Response, error) {
 
 // TestCIWorkflow_BootstrapAndUseAPIKey is the happy-path simulated CI run.
 func TestCIWorkflow_BootstrapAndUseAPIKey(t *testing.T) {
+	// Step 4 posts a webhook_url pointing at this test's own loopback server,
+	// which the 0065 §2.3 SSRF guard blocks as a non-public IP — correctly, and
+	// the guard's own default stays under test in the webhook service's suite.
+	// The allowlist is read from the environment rather than Config, so it has
+	// to be set here.
+	t.Setenv("VULTURE_WEBHOOK_HOST_ALLOWLIST", "127.0.0.1,localhost")
 	cfg, dbPath := ciTestConfig(t)
 	addr, cleanup := startTestServer(t, cfg)
 	defer cleanup()

@@ -88,6 +88,8 @@
     "all": "Alle",
     "hideFalsePositives": "Fehlalarme ausblenden ({{count}})",
     "showFalsePositives": "Fehlalarme anzeigen ({{count}})",
+    "hideSuspicious": "Verdächtige ausblenden ({{count}})",
+    "showSuspicious": "Verdächtige anzeigen ({{count}})",
     "validation": {
       "likely_fp": "Wahrscheinlich Fehlalarm",
       "suspicious": "Verdächtig",

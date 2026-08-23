@@ -7,6 +7,7 @@ from agents import function_tool
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
@@ -41,7 +42,9 @@ def check_traceability(source_path: str) -> dict:
     """
     findings: list[dict] = []
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path) or is_test_file(file_path):
+        # Prose DESCRIBES a control; it is not an instance of one (F6).
+        if (is_generated_file(file_path) or is_test_file(file_path)
+                or is_prose_file(file_path)):
             continue
         _analyze_file(file_path, findings)
     return {"findings": findings}

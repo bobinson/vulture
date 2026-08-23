@@ -7,5 +7,68 @@
 # is used by scripts/security-preflight.sh, security-digest.yml, and the
 # release.yml pip-audit step. Same 90-day expiry + codeowner-review policy as
 # .trivyignore.
+
+# ---------------------------------------------------------------------------
+# cryptography THREE advisories on the DARWIN pin only (48.0.1).
 #
-# No active allowlist entries.
+# WHY THIS IS WAIVED RATHER THAN FIXED: it cannot be fixed on darwin/amd64.
+# The advisory affects 44.0.0 <= v < 50.0.0, so the fix is 50.0.0 — and every
+# macOS wheel cryptography publishes for 49.0.0 and 50.0.0 is
+# `macosx_11_0_arm64` (Apple Silicon ONLY). 48.0.1 is the last release shipping
+# `macosx_10_9_universal2`, which is the only wheel an Intel Mac can install.
+# install.sh installs with `--only-binary :all:` (no sdist fallback, and
+# building cryptography needs a Rust toolchain end users do not have), and
+# release.yml:72 still builds darwin/amd64 on macos-15-intel. So the choice is
+# "Intel macOS ships 48.0.1" or "Intel macOS ships nothing" — there is no
+# secure-and-installable version for that target.
+#
+# THE FULL SET (found by auditing the darwin pin directly — CI never sees these,
+# because on its Linux runner the darwin line is skipped and 50.0.0 is audited):
+#   PYSEC-2026-3552 / CVE-2026-69247  PKCS#7 EnvelopedData Bleichenbacher oracle
+#                                     (affects <50.0.0)
+#   PYSEC-2026-3553 / CVE-2026-69249  duplicate self-signed intermediates cause
+#                                     exponential X.509 path building (<49.0.0)
+#   PYSEC-2026-3554 / CVE-2026-69248  verifier accepts wildcard DNS names,
+#                                     escaping permittedSubtrees (<49.0.0)
+#
+# WHY THE RESIDUAL IS ACCEPTABLE: all three vulnerable paths are UNREACHABLE.
+# Traced 2026-08-23:
+#   * first-party code (py/go/ts/sh) contains no pkcs7, EnvelopedData, smime
+#     or S/MIME reference, and never imports `cryptography` at all;
+#   * `cryptography` is not a direct dependency of any agent pyproject.toml —
+#     the lockfile's own `# via` block names exactly one consumer: pyjwt;
+#   * pyjwt imports only exceptions, default_backend, asymmetric.ec,
+#     asymmetric.padding and hashes — JWT signature verification primitives.
+#     Its sole `x509` occurrence is a literal inside an error MESSAGE
+#     (algorithms.py:333), not an API call;
+#   * no X.509 path-building API is used anywhere in the chain: no
+#     PolicyBuilder, ClientVerifier, ServerVerifier, verify_directly_issued_by
+#     or Store.
+#
+# All three advisories live in X.509 / PKCS#7 territory —
+# serialization.pkcs7 (3552) and certificate path building and name-constraint
+# verification (3553, 3554). Nothing in the chain reaches any of them.
+#
+# WHAT WOULD INVALIDATE THIS: adding any S/MIME or PKCS#7 handling, ANY X.509
+# certificate-chain verification or name-constraint checking, or a new
+# transitive dependency that pulls one in (a TLS client that validates chains
+# through `cryptography` would do it). Re-run the trace above before
+# renewing; do not renew on the strength of this note alone.
+#
+# NOTE ON SCOPE: pip-audit resolves per-platform, so on the Linux CI runner the
+# `sys_platform == 'darwin'` line is skipped and the gate passes WITHOUT this
+# waiver. The entry is here so the residual is an explicit, reviewable decision
+# rather than an artefact of where CI happens to run — and so a future macOS
+# audit run does not fail mysteriously.
+#
+# Intel macOS support is already time-boxed to ~Fall 2027 (release.yml:69-71);
+# this waiver should die with that runner, whichever comes first.
+PYSEC-2026-3552: PKCS#7 EnvelopedData oracle; darwin-only pin (no Intel macOS wheel above 48.0.1); unreachable — cryptography is transitive via pyjwt alone, which uses only signature primitives (expires 2026-11-21)
+GHSA-g6cj-pr64-35w5: alias of PYSEC-2026-3552 / CVE-2026-69247 (expires 2026-11-21)
+CVE-2026-69247: alias of PYSEC-2026-3552 / GHSA-g6cj-pr64-35w5 (expires 2026-11-21)
+PYSEC-2026-3553: exponential X.509 path building; darwin-only pin; unreachable — no path-building API is used anywhere in the chain (expires 2026-11-21)
+GHSA-jwv3-5hgf-82ww: alias of PYSEC-2026-3553 / CVE-2026-69249 (expires 2026-11-21)
+CVE-2026-69249: alias of PYSEC-2026-3553 / GHSA-jwv3-5hgf-82ww (expires 2026-11-21)
+PYSEC-2026-3554: wildcard DNS escapes permittedSubtrees; darwin-only pin; unreachable — no certificate verification or name-constraint checking in the chain (expires 2026-11-21)
+GHSA-m2h6-j472-rp4c: alias of PYSEC-2026-3554 / CVE-2026-69248 (expires 2026-11-21)
+CVE-2026-69248: alias of PYSEC-2026-3554 / GHSA-m2h6-j472-rp4c (expires 2026-11-21)

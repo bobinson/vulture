@@ -1,0 +1,61 @@
+# Group: p7_injection — feature 0070 P7 A05 specialisations in the
+# `injection` skill (CWE-564 Hibernate, CWE-80 template escape hatch,
+# CWE-88 argument injection, CWE-470 unsafe reflection, CWE-98 PHP file
+# inclusion, CWE-83 script in an attribute).
+#
+# Every clean twin differs MINIMALLY from its positive: a bound parameter
+# instead of concatenation, an escaping call instead of the escape hatch, a
+# separate argv element instead of a built flag, an allowlist lookup instead of
+# a reflective selector, a map key instead of a path, a static handler instead
+# of an interpolated one.
+#
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives).
+
+# ── CWE-564 Hibernate/JPA query concatenation (Java) ──
+- {file: p7_injection/cwe_564_1.java, language: Java, cwe: "564", expectation: positive, line: 9}
+- {file: p7_injection/cwe_564_2.java, language: Java, cwe: "564", expectation: positive, line: 9}
+- {file: p7_injection/cwe_564_3.java, language: Java, cwe: "564", expectation: positive, line: 6}
+- {file: p7_injection/cwe_564_1_clean.java, language: Java, cwe: "564", expectation: negative}
+- {file: p7_injection/cwe_564_2_clean.java, language: Java, cwe: "564", expectation: negative}
+- {file: p7_injection/cwe_564_3_clean.java, language: Java, cwe: "564", expectation: negative}
+
+# ── CWE-80 template auto-escaping bypassed (Python / HTML / Go) ──
+- {file: p7_injection/cwe_080_1.py, language: Python, cwe: "80", expectation: positive, line: 6}
+- {file: p7_injection/cwe_080_2.html, language: HTML, cwe: "80", expectation: positive, line: 3}
+- {file: p7_injection/cwe_080_3.go, language: Go, cwe: "80", expectation: positive, line: 6}
+- {file: p7_injection/cwe_080_1_clean.py, language: Python, cwe: "80", expectation: negative}
+- {file: p7_injection/cwe_080_2_clean.html, language: HTML, cwe: "80", expectation: negative}
+- {file: p7_injection/cwe_080_3_clean.go, language: Go, cwe: "80", expectation: negative}
+
+# ── CWE-88 argument injection into an argv element (Python / Node / Go) ──
+- {file: p7_injection/cwe_088_1.py, language: Python, cwe: "88", expectation: positive, line: 6}
+- {file: p7_injection/cwe_088_2.js, language: JavaScript, cwe: "88", expectation: positive, line: 4}
+- {file: p7_injection/cwe_088_3.go, language: Go, cwe: "88", expectation: positive, line: 6}
+- {file: p7_injection/cwe_088_1_clean.py, language: Python, cwe: "88", expectation: negative}
+- {file: p7_injection/cwe_088_2_clean.js, language: JavaScript, cwe: "88", expectation: negative}
+- {file: p7_injection/cwe_088_3_clean.go, language: Go, cwe: "88", expectation: negative}
+
+# ── CWE-470 unsafe reflection (Java / Python / JavaScript) ──
+- {file: p7_injection/cwe_470_1.java, language: Java, cwe: "470", expectation: positive, line: 7}
+- {file: p7_injection/cwe_470_2.py, language: Python, cwe: "470", expectation: positive, line: 6}
+- {file: p7_injection/cwe_470_3.js, language: JavaScript, cwe: "470", expectation: positive, line: 2}
+- {file: p7_injection/cwe_470_1_clean.java, language: Java, cwe: "470", expectation: negative}
+- {file: p7_injection/cwe_470_2_clean.py, language: Python, cwe: "470", expectation: negative}
+- {file: p7_injection/cwe_470_3_clean.js, language: JavaScript, cwe: "470", expectation: negative}
+
+# ── CWE-98 PHP file inclusion (PHP) ──
+- {file: p7_injection/cwe_098_1.php, language: PHP, cwe: "98", expectation: positive, line: 3}
+- {file: p7_injection/cwe_098_2.php, language: PHP, cwe: "98", expectation: positive, line: 3}
+- {file: p7_injection/cwe_098_3.php, language: PHP, cwe: "98", expectation: positive, line: 3}
+- {file: p7_injection/cwe_098_1_clean.php, language: PHP, cwe: "98", expectation: negative}
+- {file: p7_injection/cwe_098_2_clean.php, language: PHP, cwe: "98", expectation: negative}
+- {file: p7_injection/cwe_098_3_clean.php, language: PHP, cwe: "98", expectation: negative}
+
+# ── CWE-83 script in an attribute (HTML / JavaScript) ──
+- {file: p7_injection/cwe_083_1.html, language: HTML, cwe: "83", expectation: positive, line: 3}
+- {file: p7_injection/cwe_083_2.html, language: HTML, cwe: "83", expectation: positive, line: 2}
+- {file: p7_injection/cwe_083_3.js, language: JavaScript, cwe: "83", expectation: positive, line: 2}
+- {file: p7_injection/cwe_083_1_clean.html, language: HTML, cwe: "83", expectation: negative}
+- {file: p7_injection/cwe_083_2_clean.html, language: HTML, cwe: "83", expectation: negative}
+- {file: p7_injection/cwe_083_3_clean.js, language: JavaScript, cwe: "83", expectation: negative}

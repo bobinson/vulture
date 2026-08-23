@@ -8,6 +8,7 @@ from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
     is_generated_file,
+    is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
@@ -80,7 +81,93 @@ SAFE_PROTOTYPE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# CWE-915: Improperly Controlled Modification of Dynamically-Determined
+# Object Attributes (mass assignment).
+#
+# Sibling of the CWE-1321 rule above: 1321 is about reaching the
+# *prototype*, 915 is about reaching *any* attribute the caller was never
+# meant to set (`role: 'admin'`, `isAdmin: true`, `deluxeToken`).
+#
+# Two shapes, both observed in real applications:
+#
+#   1. The request body spread wholesale into render locals or a model
+#      write. The spread alone is
+#      not enough — `{...req.body}` copied into a local and then read
+#      key-by-key is harmless — so a sink must be present within the
+#      enclosing few lines.
+#   2. An auto-generated CRUD resource that binds every model attribute
+#      to request input (an auto-generated REST resource loop; this is the
+#      classic privilege-escalation vector — POST /api/Users with
+#      `role: 'admin'`).
+BODY_SPREAD = re.compile(r"\.\.\.\s*(?:req|request)\s*\.\s*(?:body|query|params)\b")
+
+# Sinks that turn a wholesale copy into an assignment: a template render,
+# an ORM write, or a constructor.
+MASS_ASSIGNMENT_SINK = re.compile(
+    r"(?:\.render\s*\(|"
+    r"\.(?:create|update|updateAll|upsert|build|save|insert|bulkCreate|set)\s*\(|"
+    r"new\s+\w+\s*\()",
+    re.IGNORECASE,
+)
+
+AUTO_CRUD_PATTERNS = [
+    # finale-rest / epilogue-js auto REST over a Sequelize model.
+    re.compile(r"\b(?:finale|epilogue)\s*\.\s*resource\s*\("),
+    # Rails: permit! waives the strong-parameters allowlist entirely.
+    re.compile(r"\bparams\s*(?:\[[^\]]*\]\s*)?\.\s*permit!"),
+    # Django ModelForm / DRF serializer binding every model field.
+    re.compile(r"^\s*fields\s*=\s*['\"]__all__['\"]"),
+]
+
+# An allowlist or schema in the immediate neighbourhood means the payload
+# is no longer attacker-shaped.
+SAFE_MASS_ASSIGNMENT_PATTERNS = re.compile(
+    r"(?:joi|yup|zod|ajv|superstruct|class-transformer|schema|validate|"
+    r"\bpick\s*\(|permitted|allow(?:ed)?_?(?:list|attributes)|whitelist)",
+    re.IGNORECASE,
+)
+
+# CWE-922: Insecure Storage of Sensitive Information.
+#
+# Browser web storage is readable by any script on the origin and
+# survives the tab, so an auth token there is one XSS away from account
+# takeover (a JWT parked in localStorage is the common instance).
+#
+# Precision note: an Angular app writes to web storage constantly
+# (`itemTotal`, `walletTotal`, `deliveryMethodId`, `guestBasket`), so the
+# rule requires a SENSITIVE KEY NAME and deliberately ignores the value
+# expression — `sessionStorage.setItem('bid', authentication.bid)` has
+# "auth" in the value and stores nothing sensitive.
+WEB_STORAGE_WRITE_PATTERNS = [
+    # localStorage.setItem('token', x) — capture the key argument only.
+    re.compile(
+        r"(?:local|session)Storage\s*\.\s*setItem\s*\(\s*([^,]+?)\s*,",
+        re.IGNORECASE,
+    ),
+    # localStorage['token'] = x  /  localStorage.token = x
+    re.compile(
+        r"(?:local|session)Storage\s*(?:\[\s*([^\]]+?)\s*\]|\.\s*(\w+))\s*=(?!=)",
+        re.IGNORECASE,
+    ),
+]
+
+SENSITIVE_STORAGE_KEY = re.compile(
+    r"(?:token|jwt|auth|session|credential|secret|passw|pwd|"
+    r"api[_-]?key|cvv|iban|credit[_-]?card|creditcard|card[_-]?(?:no|number|pan))",
+    re.IGNORECASE,
+)
+
 IMPORT_LINE = re.compile(r"^\s*(?:from|import|require|use)\s")
+
+
+def _should_skip(file_path: Path) -> bool:
+    """True for files whose data-handling patterns cannot be real instances.
+
+    ``is_prose_file`` is the third arm: a style guide's "never write
+    ``printf(user_input)``" example is the advice, not the defect. Measured
+    on a prose file that only quotes anti-patterns: 2 false CWE-134 rows.
+    """
+    return is_generated_file(file_path) or is_test_file(file_path) or is_prose_file(file_path)
 
 
 def check_data_handling(source_path: str) -> dict:
@@ -95,9 +182,7 @@ def check_data_handling(source_path: str) -> dict:
     findings: list[dict] = []
 
     for file_path in scan_code_files(source_path):
-        if is_generated_file(file_path):
-            continue
-        if is_test_file(file_path):
+        if _should_skip(file_path):
             continue
         _analyze_file(file_path, findings)
 
@@ -120,6 +205,11 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         _check_numeric_conversion(file_path, line, line_num, lines, findings)
         _check_unsafe_cast(file_path, line, line_num, lines, findings)
         _check_encoding_mismatch(file_path, line, line_num, lines, findings)
+        _check_web_storage(file_path, line, line_num, lines, findings)
+        # A wholesale body copy is reported once: as mass assignment when
+        # that fires, otherwise the prototype-pollution rule gets a look.
+        if _check_mass_assignment(file_path, line, line_num, lines, findings):
+            continue
         _check_prototype_pollution(file_path, line, line_num, lines, findings)
 
 
@@ -222,6 +312,95 @@ def _check_encoding_mismatch(
             finding["code_snippet"] = extract_snippet(lines, line_num)
             findings.append(enrich_finding(finding, "838"))
             return
+
+
+def _mass_assignment_hit(line: str, line_num: int, lines: list[str]) -> str | None:
+    """Return a title if the line is a mass-assignment site, else None."""
+    for pattern in AUTO_CRUD_PATTERNS:
+        if pattern.search(line):
+            return "Auto-generated CRUD endpoint binds every model attribute"
+    if not BODY_SPREAD.search(line):
+        return None
+    # The spread must land in a sink (render locals, ORM write, ctor).
+    # Look at the current line and the few lines opening the call.
+    window = "\n".join(lines[max(0, line_num - 4):line_num])
+    if not MASS_ASSIGNMENT_SINK.search(window):
+        return None
+    return "Request body assigned wholesale (mass assignment)"
+
+
+def _check_mass_assignment(
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
+) -> bool:
+    """Check for CWE-915 mass assignment. Returns True if a finding was added."""
+    title = _mass_assignment_hit(line, line_num, lines)
+    if title is None:
+        return False
+    context = "\n".join(lines[max(0, line_num - 4):min(len(lines), line_num + 2)])
+    if SAFE_MASS_ASSIGNMENT_PATTERNS.search(context):
+        return False
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.data_handling.mass_assignment",
+        "category": "CWE-915",
+        "title": title,
+        "description": (
+            f"Attacker-controlled keys are written straight onto an object or "
+            f"model at line {line_num}, so any attribute the model exposes "
+            f"(role, isAdmin, price, verified) can be set by the request"
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": (
+            "Bind an explicit allowlist of fields instead of the whole payload "
+            "(pick/permit the keys, or validate against a schema)"
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "915"))
+    return True
+
+
+def _storage_key(line: str) -> str | None:
+    """Return the web-storage key expression written on this line."""
+    for pattern in WEB_STORAGE_WRITE_PATTERNS:
+        match = pattern.search(line)
+        if match:
+            return next((g for g in match.groups() if g), None)
+    return None
+
+
+def _check_web_storage(
+    file_path: Path, line: str, line_num: int, lines: list[str],
+    findings: list[dict],
+) -> None:
+    """Check for CWE-922 sensitive data persisted in browser web storage."""
+    key = _storage_key(line)
+    if key is None or not SENSITIVE_STORAGE_KEY.search(key):
+        return
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.data_handling.web_storage",
+        "category": "CWE-922",
+        "title": "Sensitive data stored in browser web storage",
+        "description": (
+            f"Credential or payment material is written to localStorage/"
+            f"sessionStorage under key {key.strip()} at line {line_num}; web "
+            f"storage is readable by any script on the origin, so one XSS is "
+            f"enough to exfiltrate it"
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": (
+            "Keep session tokens in an HttpOnly, Secure, SameSite cookie; keep "
+            "payment data server-side and reference it by an opaque handle"
+        ),
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "922"))
 
 
 def _check_prototype_pollution(

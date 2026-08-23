@@ -21,20 +21,24 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .sse import write_event
 from .translate import normalise_source_path, summarize_scam_risk, translate_findings
+
+log = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -296,6 +300,33 @@ async def _invoke_semgrep(argv: list[str]):
     )
 
 
+# Semgrep's stderr reaches the user-facing `result` event, so it is redacted
+# before it egresses (CodeQL py/stack-trace-exposure). Redaction rather than
+# suppression: a failure must stay distinguishable from a clean scan — a bad
+# `--project-root` flag once made every scan fail — so the CLI diagnostic
+# survives and only the host detail around it is removed. The untouched text
+# still goes to the server log for the operator.
+_ABS_PATH_RE = re.compile(r"(?<![\w:/])/(?:[\w.+@-]+/)+[\w.+@-]*")
+_SECRET_RE = re.compile(
+    r"((?:token|secret|key|password|passwd|pwd)[\"'\s]*[:=][\"'\s]*)\S+",
+    re.IGNORECASE,
+)
+# Backstop for bare secret material with no `key=` prefix. Excludes `_` so
+# snake_case identifiers in a traceback survive — over-redacting the message
+# text would defeat the diagnosability this whole approach exists to keep.
+_BLOB_RE = re.compile(r"\b(?=[A-Za-z0-9-]*[0-9])(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{20,}\b")
+
+
+def _redact_stderr(text: str | None, limit: int = 2000) -> str:
+    """Strip host paths and token material, keeping the diagnostic text."""
+    if not text:
+        return ""
+    out = _SECRET_RE.sub(r"\1<redacted>", text)
+    out = _ABS_PATH_RE.sub(lambda m: Path(m.group(0)).name or "<path>", out)
+    out = _BLOB_RE.sub("<redacted>", out)
+    return out[:limit]
+
+
 def _classify_exit(proc) -> dict | None:
     """Return a result-event payload if ``proc`` represents a failure,
     or None when Semgrep ran successfully (exit 0 or 1)."""
@@ -305,7 +336,8 @@ def _classify_exit(proc) -> dict | None:
             "error": "Semgrep requires authentication; set SEMGREP_APP_TOKEN via runtime.env.optional",
         }
     if rc not in (0, 1):  # 0 = clean, 1 = findings present
-        return {"error": (proc.stderr or "")[:2000]}
+        log.error("semgrep exited rc=%s; stderr: %s", rc, proc.stderr or "")
+        return {"error": _redact_stderr(proc.stderr)}
     return None
 
 
@@ -314,7 +346,7 @@ def _parse_semgrep_stdout(stdout: str) -> tuple[dict | None, str | None]:
     try:
         return json.loads(stdout or "{}"), None
     except json.JSONDecodeError as exc:
-        return None, f"invalid semgrep JSON: {exc}"
+        return None, f"invalid semgrep JSON: {_redact_stderr(str(exc))}"
 
 
 async def _run_semgrep_or_failure(argv: list[str]) -> tuple[Any, dict | None]:

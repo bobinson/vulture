@@ -92,6 +92,8 @@
     "all": "All",
     "hideFalsePositives": "Hide false positives ({{count}})",
     "showFalsePositives": "Show false positives ({{count}})",
+    "hideSuspicious": "Hide suspicious ({{count}})",
+    "showSuspicious": "Show suspicious ({{count}})",
     "validation": {
       "likely_fp": "Likely false positive",
       "suspicious": "Suspicious",

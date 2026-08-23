@@ -101,7 +101,7 @@ func TestBuildDirEntriesCapsResultSize(t *testing.T) {
 	// Create maxBrowseEntries + 50 visible files.
 	want := maxBrowseEntries
 	for i := 0; i < want+50; i++ {
-		name := filepath.Join(tmp, "f"+ pad4(i) + ".txt")
+		name := filepath.Join(tmp, "f"+pad4(i)+".txt")
 		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}

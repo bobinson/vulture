@@ -14,7 +14,17 @@
 #   (a) cryptography ships a macOS x86_64 wheel again, OR
 #   (b) the darwin/amd64 leg is dropped from .github/workflows/release.yml
 #       (Intel-mac runner EOL ~Fall 2027 — see the build-binary matrix comment).
+# Darwin is CAPPED, not pinned to latest: 49.0.0 and 50.0.0 ship NO Intel
+# macOS wheel (verified on PyPI — 48.0.1 has 3 universal2 wheels, 49.0.0 and
+# 50.0.0 have none), and release.yml:72 still builds darwin/amd64 on
+# macos-15-intel. Dependabot #122 moved this pin 48.0.1 -> 50.0.0 and left
+# the rationale comment untouched, which silently re-broke that leg.
 cryptography==48.0.1; sys_platform == "darwin"
+# The complement is stated EXPLICITLY so the marker fork is deterministic.
+# Left implicit, uv unifies both platforms onto one version whenever a single
+# version satisfies everything, and the split the darwin/amd64 leg depends on
+# silently disappears — which is what the freshness gate caught.
+cryptography>=50.0.0; sys_platform != "darwin"
 
 # litellm: 1.92.0 dropped the universal `litellm-*-py3-none-any.whl` and switched
 # to manylinux-only (Linux) wheels + an sdist — NO macOS wheel — so the darwin

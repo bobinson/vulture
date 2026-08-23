@@ -4,7 +4,7 @@ IO_WITHOUT_CHECK was a single bare pattern:
 
     (?:open|read|write|connect|send|recv)\\s*\\([^)]*\\)\\s*$
 
-matching the *verb alone*, with no regard for the receiver. On OWASP juice-shop
+matching the *verb alone*, with no regard for the receiver. In one measured sweep
 it produced 81 findings — every one carrying the same title, and 76 of them
 were not I/O at all:
 
@@ -72,7 +72,7 @@ class TestNoFalsePositivesOnNonIO:
         body = "openDialog () {\n  this.dialog.open(SomeComponent)\n}\n"
         assert not _io(_run({"d.ts": body})), "dialog.open() is a UI call"
 
-    def test_juiceshop_shapes_produce_nothing(self):
+    def test_shapes_produce_nothing(self):
         """All four observed shapes together must yield zero CWE-754 rows."""
         body = (
             "this.snackBarHelperService.open('saved')\n"
@@ -80,7 +80,7 @@ class TestNoFalsePositivesOnNonIO:
             "socket.disconnect()\n"
             "this.dialog.open(Cmp)\n"
         )
-        assert not _io(_run({"all.ts": body})), "none of the observed juice-shop shapes is I/O"
+        assert not _io(_run({"all.ts": body})), "none of the observed UI shapes is I/O"
 
 
 class TestStillDetectsRealIO:

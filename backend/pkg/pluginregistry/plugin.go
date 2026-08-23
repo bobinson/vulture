@@ -72,40 +72,40 @@ type TrustBlock struct {
 
 // RuntimeBlock is the [runtime] section.
 type RuntimeBlock struct {
-	Type            string         `toml:"type"`
-	Image           string         `toml:"image"`
-	Executable      string         `toml:"executable"`
-	ModulePath      string         `toml:"module_path"`
-	Port            int            `toml:"port"`
-	HealthEndpoint  string         `toml:"health_endpoint"`
-	InfoEndpoint    string         `toml:"info_endpoint"`
-	RunEndpoint     string         `toml:"run_endpoint"`
-	Restart         string         `toml:"restart"`
-	Network         string         `toml:"network"`
-	Resources       map[string]any `toml:"resources"`
-	FS              map[string]any `toml:"fs"`
-	Env             map[string]any `toml:"env"`
+	Type           string         `toml:"type"`
+	Image          string         `toml:"image"`
+	Executable     string         `toml:"executable"`
+	ModulePath     string         `toml:"module_path"`
+	Port           int            `toml:"port"`
+	HealthEndpoint string         `toml:"health_endpoint"`
+	InfoEndpoint   string         `toml:"info_endpoint"`
+	RunEndpoint    string         `toml:"run_endpoint"`
+	Restart        string         `toml:"restart"`
+	Network        string         `toml:"network"`
+	Resources      map[string]any `toml:"resources"`
+	FS             map[string]any `toml:"fs"`
+	Env            map[string]any `toml:"env"`
 }
 
 // Capability is one entry in `[[capabilities]]`.
 type Capability struct {
-	Phase                string   `toml:"phase"`
-	Languages            []string `toml:"languages"`
-	Emits                []string `toml:"emits"`
-	TimeoutS             int      `toml:"timeout_s"`
-	MaxIterations        int      `toml:"max_iterations"`
-	MatchesCWE           []string `toml:"matches_cwe"`
-	MatchesCheckIDPrefix []string `toml:"matches_check_id_prefix"`
-	TechStacks           []string `toml:"tech_stacks"`
+	Phase                string         `toml:"phase"`
+	Languages            []string       `toml:"languages"`
+	Emits                []string       `toml:"emits"`
+	TimeoutS             int            `toml:"timeout_s"`
+	MaxIterations        int            `toml:"max_iterations"`
+	MatchesCWE           []string       `toml:"matches_cwe"`
+	MatchesCheckIDPrefix []string       `toml:"matches_check_id_prefix"`
+	TechStacks           []string       `toml:"tech_stacks"`
 	Selectors            map[string]any `toml:"selectors"`
 }
 
 // NormalizationBlock is the [normalization] section. Consumed by 0050.
 type NormalizationBlock struct {
-	RuleToCWE         map[string]string `toml:"rule_to_cwe"`
-	PrefixToCWE       map[string]string `toml:"prefix_to_cwe"`
-	MappingFile       string            `toml:"mapping_file"`
-	FallbackCrossMap  string            `toml:"fallback_cross_map"`
+	RuleToCWE        map[string]string `toml:"rule_to_cwe"`
+	PrefixToCWE      map[string]string `toml:"prefix_to_cwe"`
+	MappingFile      string            `toml:"mapping_file"`
+	FallbackCrossMap string            `toml:"fallback_cross_map"`
 }
 
 // Name returns the plugin's slug.

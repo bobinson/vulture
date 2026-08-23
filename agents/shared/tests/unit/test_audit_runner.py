@@ -177,11 +177,27 @@ class TestParseLlmFindings:
         assert "file_path" in result[0]
         assert "recommendation" in result[0]
 
-    def test_mixed_array_not_matched_by_regex(self):
-        """Regex expects {.*} pattern - mixed arrays with non-objects won't match."""
+    def test_mixed_array_keeps_the_dict_entries(self):  # 0076 B1
+        """INVERTED BY 0076 (D15/T1.7), deliberately and with rationale.
+
+        This test previously asserted `result == []`, and its own docstring
+        explained why in terms of the REGEX MECHANISM: "Regex expects {.*}
+        pattern". That is a description of an implementation accident, not a
+        business requirement -- and the behaviour it pinned DROPS A VALID
+        FINDING: the dict `{"severity": "high", "title": "Real"}` is a real
+        finding the tier produced and the parser threw away.
+
+        Under `_scan_json_arrays` the mixed array yields its one real finding.
+        Inverting this assertion is therefore not "changing a test to make code
+        pass" -- it is removing a pin that protected a recall bug. The plan
+        records the rejected alternative (keep the regex as a pre-filter and
+        fall through only on JSONDecodeError, which preserves the old behaviour
+        and loses the recall win).
+        """
         output = '[{"severity": "high", "title": "Real"}, "not a dict", 42]'
         result = _parse_llm_findings(output)
-        assert result == []
+        assert len(result) == 1, f"the real finding must survive; got {result}"
+        assert result[0]["title"] == "Real"
 
     def test_multiple_findings(self):
         output = '''```json

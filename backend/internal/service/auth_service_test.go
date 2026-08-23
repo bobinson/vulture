@@ -13,12 +13,12 @@ import (
 
 // mockUserRepo is a test double for repository.UserRepository.
 type mockUserRepo struct {
-	createUserFn     func(user *model.User) error
-	getUserFn        func(id string) (*model.User, error)
-	getUserByEmailFn func(email string) (*model.User, error)
+	createUserFn      func(user *model.User) error
+	getUserFn         func(id string) (*model.User, error)
+	getUserByEmailFn  func(email string) (*model.User, error)
 	updateLastLoginFn func(id string) error
-	createTeamFn     func(name string) (*model.Team, error)
-	getTeamFn        func(id string) (*model.Team, error)
+	createTeamFn      func(name string) (*model.Team, error)
+	getTeamFn         func(id string) (*model.Team, error)
 }
 
 func (m *mockUserRepo) CreateUser(user *model.User) error {

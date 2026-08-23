@@ -1,0 +1,65 @@
+# Group: error handling (feature 0070 P7).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# Each CWE carries 3 positives + 3 clean twins, so `min_fixtures: 3` is met on
+# both sides. Every twin differs from its positive by the ONE property the
+# predicate keys on — a terminator, a named type, a status check, a thrown
+# application exception — so a rule that keys on anything coarser fails the
+# gate rather than passing it by accident.
+#
+# CWE-755 is deliberately ABSENT. After the 396/755 split it keeps only the
+# untyped forms, and two of the three (`catch (...)`, C# `catch {`) are
+# language-gated: a flattened `f.<ext>` fixture can carry them, but 755's
+# existing DECLARED-ONLY status is unchanged by this group, so adding fixtures
+# for it would be scope creep rather than attestation.
+
+# ── CWE-280 permission failure swallowed (skill `error_handling`) ──
+- {file: p7_errorhandling/cwe_280_1.py, language: Python, cwe: "280", expectation: positive, line: 7}
+- {file: p7_errorhandling/cwe_280_2.py, language: Python, cwe: "280", expectation: positive, line: 8}
+- {file: p7_errorhandling/cwe_280_3.java, language: Java, cwe: "280", expectation: positive, line: 5}
+- {file: p7_errorhandling/cwe_280_1_clean.py, language: Python, cwe: "280", expectation: negative}
+- {file: p7_errorhandling/cwe_280_2_clean.py, language: Python, cwe: "280", expectation: negative}
+- {file: p7_errorhandling/cwe_280_3_clean.java, language: Java, cwe: "280", expectation: negative}
+
+# ── CWE-484 omitted break in switch (skill `error_handling`) ──
+# The C# twin uses an explicit `/* fallthrough */` marker: the block-comment
+# spelling is the one a line-comment-only marker list misses.
+- {file: p7_errorhandling/cwe_484_1.c, language: C, cwe: "484", expectation: positive, line: 7}
+- {file: p7_errorhandling/cwe_484_2.java, language: Java, cwe: "484", expectation: positive, line: 5}
+- {file: p7_errorhandling/cwe_484_3.cs, language: CSharp, cwe: "484", expectation: positive, line: 5}
+- {file: p7_errorhandling/cwe_484_1_clean.c, language: C, cwe: "484", expectation: negative}
+- {file: p7_errorhandling/cwe_484_2_clean.java, language: Java, cwe: "484", expectation: negative}
+- {file: p7_errorhandling/cwe_484_3_clean.cs, language: CSharp, cwe: "484", expectation: negative}
+
+# ── CWE-396 catch declared for a generic exception TYPE (skill `error_handling`) ──
+- {file: p7_errorhandling/cwe_396_1.py, language: Python, cwe: "396", expectation: positive, line: 7}
+- {file: p7_errorhandling/cwe_396_2.java, language: Java, cwe: "396", expectation: positive, line: 5}
+- {file: p7_errorhandling/cwe_396_3.cs, language: CSharp, cwe: "396", expectation: positive, line: 5}
+- {file: p7_errorhandling/cwe_396_1_clean.py, language: Python, cwe: "396", expectation: negative}
+- {file: p7_errorhandling/cwe_396_2_clean.java, language: Java, cwe: "396", expectation: negative}
+- {file: p7_errorhandling/cwe_396_3_clean.cs, language: CSharp, cwe: "396", expectation: negative}
+
+# ── CWE-397 generic exception thrown (skill `uncaught_exception`) ──
+- {file: p7_errorhandling/cwe_397_1.cpp, language: CPP, cwe: "397", expectation: positive, line: 5}
+- {file: p7_errorhandling/cwe_397_2.cs, language: CSharp, cwe: "397", expectation: positive, line: 4}
+- {file: p7_errorhandling/cwe_397_3.py, language: Python, cwe: "397", expectation: positive, line: 6}
+- {file: p7_errorhandling/cwe_397_1_clean.cpp, language: CPP, cwe: "397", expectation: negative}
+- {file: p7_errorhandling/cwe_397_2_clean.cs, language: CSharp, cwe: "397", expectation: negative}
+- {file: p7_errorhandling/cwe_397_3_clean.py, language: Python, cwe: "397", expectation: negative}
+
+# ── CWE-394 response body used without a status check (skill `error_handling`) ──
+- {file: p7_errorhandling/cwe_394_1.js, language: JavaScript, cwe: "394", expectation: positive, line: 2}
+- {file: p7_errorhandling/cwe_394_2.ts, language: TypeScript, cwe: "394", expectation: positive, line: 2}
+- {file: p7_errorhandling/cwe_394_3.py, language: Python, cwe: "394", expectation: positive, line: 7}
+- {file: p7_errorhandling/cwe_394_1_clean.js, language: JavaScript, cwe: "394", expectation: negative}
+- {file: p7_errorhandling/cwe_394_2_clean.ts, language: TypeScript, cwe: "394", expectation: negative}
+- {file: p7_errorhandling/cwe_394_3_clean.py, language: Python, cwe: "394", expectation: negative}
+
+# ── CWE-382 System.exit() in a container component (skill `error_handling`) ──
+- {file: p7_errorhandling/cwe_382_1.java, language: Java, cwe: "382", expectation: positive, line: 7}
+- {file: p7_errorhandling/cwe_382_2.java, language: Java, cwe: "382", expectation: positive, line: 7}
+- {file: p7_errorhandling/cwe_382_3.java, language: Java, cwe: "382", expectation: positive, line: 7}
+- {file: p7_errorhandling/cwe_382_1_clean.java, language: Java, cwe: "382", expectation: negative}
+- {file: p7_errorhandling/cwe_382_2_clean.java, language: Java, cwe: "382", expectation: negative}
+- {file: p7_errorhandling/cwe_382_3_clean.java, language: Java, cwe: "382", expectation: negative}

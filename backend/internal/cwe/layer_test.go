@@ -70,9 +70,9 @@ func TestLayer_PluginPrefixBeatsSystemCategory_AC2(t *testing.T) {
 // to stress Go's randomised map iteration and confirm determinism.
 func TestLayer_LongestPrefixWins_AC3(t *testing.T) {
 	layer := mkLayerWithPlugin(t, "semgrep", nil, map[string]string{
-		"python.":                                  "CWE-693",
-		"python.django.security.sql-injection":     "CWE-89",
-		"python.django.":                           "CWE-20",
+		"python.":                              "CWE-693",
+		"python.django.security.sql-injection": "CWE-89",
+		"python.django.":                       "CWE-20",
 	})
 
 	const checkID = "python.django.security.sql-injection.unsafe-raw"
@@ -328,8 +328,8 @@ func TestLayer_ResolutionOrder_FullTable(t *testing.T) {
 			want: "CWE-89", why: "system category map (step 6) — last positive step",
 		},
 		{
-			name: "7_empty_when_nothing_matches",
-			layer: NewFromMaps(nil, nil, nil, nil),
+			name:      "7_empty_when_nothing_matches",
+			layer:     NewFromMaps(nil, nil, nil, nil),
 			agentType: "zz", category: "unknown", checkID: "unknown.id",
 			want: "", why: "step 7 fallthrough",
 		},

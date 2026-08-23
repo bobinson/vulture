@@ -1,0 +1,28 @@
+# Group: info exposure (feature 0070 P8) — CWE-538.
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# CWE-538 needs three independent facts: a log/audit DESTINATION declaration, a
+# directory that resolves to a served root, and a basename that names a
+# generated artefact.
+#
+# The runner flattens each fixture to ONE file renamed `_neutral.<ext>`, which
+# destroys directory layout and filenames. Fact 2 has two halves and only one
+# survives that: a mount DECLARED elsewhere in the tree cannot be gated here
+# (it needs a second file) and is unit-tested instead, while the conventional
+# public-name half (`public/`, `static/`, `www/`) is purely content-keyed and is
+# what these six fixtures gate.
+#
+# Each clean twin differs from its positive in exactly ONE respect — the
+# destination directory moves out of the served tree, everything else including
+# the logging framework, the key and the artefact name is byte-identical. A
+# predicate that keys on "a log file is configured" rather than on where it
+# lands fails every twin.
+
+# ── CWE-538 generated artefact configured into a web-served directory ──
+- {file: p8_infoexp/cwe_538_1.js, language: JavaScript, cwe: "538", expectation: positive, line: 4}
+- {file: p8_infoexp/cwe_538_2.py, language: Python, cwe: "538", expectation: positive, line: 5}
+- {file: p8_infoexp/cwe_538_3.go, language: Go, cwe: "538", expectation: positive, line: 7}
+- {file: p8_infoexp/cwe_538_1_clean.js, language: JavaScript, cwe: "538", expectation: negative}
+- {file: p8_infoexp/cwe_538_2_clean.py, language: Python, cwe: "538", expectation: negative}
+- {file: p8_infoexp/cwe_538_3_clean.go, language: Go, cwe: "538", expectation: negative}

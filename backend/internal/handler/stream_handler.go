@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/vulture/backend/internal/agui"
@@ -41,15 +40,15 @@ type StreamHandler struct {
 	// terminal state (feature 0064 §6/M3). nil when the broker is off.
 	brokerRevoker RunRevoker
 
-	// runMu/inFlight guard against concurrent runs of the SAME audit.
-	// Multiple stream connections (e.g. a CLI scan + an open UI tab, or a
-	// React-StrictMode double-mount opening two EventSources) would each
-	// call runLiveAudit and re-dispatch every agent to the shared plugin
-	// containers, racing on persistence — dropping slow agents' findings
-	// (semgrep) and clobbering scores. The first runner wins; the rest
-	// wait for completion and replay (Feature 0055).
-	runMu    sync.Mutex
-	inFlight map[string]bool
+	// runs maps audit id -> the live (or recently finished) run's broadcaster.
+	//
+	// It is both the single-flight guard that keeps dispatch exactly-once
+	// (feature 0055's original job: two producers for one audit re-dispatch
+	// every agent to the shared plugin containers and double-fire the whole
+	// persist side-effect set) AND the handle a late subscriber needs to attach
+	// to a run already in progress (feature 0071 — before it, the lock loser got
+	// no bytes at all for up to 15 minutes).
+	runs *broadcastRegistry
 }
 
 func NewStreamHandler(auditSvc service.AuditService, sourceSvc service.SourceService, streamSvc service.StreamService, agents map[string]config.AgentConfig) *StreamHandler {
@@ -58,52 +57,7 @@ func NewStreamHandler(auditSvc service.AuditService, sourceSvc service.SourceSer
 		sourceSvc: sourceSvc,
 		streamSvc: streamSvc,
 		agents:    agents,
-		inFlight:  map[string]bool{},
-	}
-}
-
-// tryAcquireRun atomically marks an audit as running. Returns false if a
-// run is already in flight for that audit.
-func (h *StreamHandler) tryAcquireRun(auditID string) bool {
-	h.runMu.Lock()
-	defer h.runMu.Unlock()
-	if h.inFlight[auditID] {
-		return false
-	}
-	h.inFlight[auditID] = true
-	return true
-}
-
-func (h *StreamHandler) releaseRun(auditID string) {
-	h.runMu.Lock()
-	delete(h.inFlight, auditID)
-	h.runMu.Unlock()
-}
-
-// awaitAndReplay waits for an in-flight run (started by another connection)
-// to finish, then replays the persisted result to this client. Bounded by
-// the request context and a hard ceiling so a stuck run can't block forever.
-func (h *StreamHandler) awaitAndReplay(ctx context.Context, sseWriter *agui.SSEWriter, auditID string) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	deadline := time.After(15 * time.Minute)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-deadline:
-			log.Printf("[stream] await timeout for in-flight audit=%s", auditID)
-			return
-		case <-ticker.C:
-			a, err := h.auditSvc.Get(auditID)
-			if err != nil {
-				continue
-			}
-			if a.Status == model.AuditStatusCompleted || a.Status == model.AuditStatusFailed {
-				h.replayCompletedAudit(sseWriter, a)
-				return
-			}
-		}
+		runs:      newBroadcastRegistry(),
 	}
 }
 
@@ -241,12 +195,121 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if audit.Status == model.AuditStatusCompleted {
+	// Feature 0071: this endpoint no longer dispatches. Dispatch belongs to
+	// POST /api/audits, which is the only door behind RequireWrite and
+	// ReadOnlyGuard — both are method-based, so a GET reaching a dispatch was a
+	// write action executable on a read-only instance.
+	//
+	// Precedence matters. A live-or-recent broadcaster wins over the persisted
+	// replay because replayCompletedAudit is a lossy reconstruction: it
+	// synthesizes no StateDelta, no progress and no TextMessageContent (agent
+	// thinking text is never persisted), and it drops findings whose AgentType is
+	// absent from audit.Types.
+	// An empty broadcaster wins ONLY while it is still live. A run that failed
+	// before its first event leaves a CLOSED+empty broadcaster behind; serving
+	// that would give every client a zero-event stream for the whole TTL instead
+	// of the persisted replay, so it must fall through. But a broadcaster that is
+	// empty merely because the autodispatched run has not emitted yet (registered
+	// synchronously by POST, then the run goroutine blocks in drainResult for the
+	// whole scan) is live — attaching is correct, and treating it as an orphan
+	// would mark a running audit FAILED and hand the client a fake RunFinished.
+	if b, ok := h.runs.Get(auditID); ok && (!b.IsEmpty() || !b.Closed()) {
+		h.attachToRun(r, sseWriter, auditID, b)
+		return
+	}
+
+	if audit.Status == model.AuditStatusCompleted || audit.Status == model.AuditStatusFailed {
 		h.replayCompletedAudit(sseWriter, audit)
 		return
 	}
 
-	h.runLiveAudit(r, sseWriter, audit)
+	// Non-terminal with no broadcaster. Two very different causes:
+	//
+	// 1. The rollback switch is set, so POST deliberately did not dispatch. Then
+	//    this endpoint must dispatch, because that IS the pre-0071 behavior being
+	//    restored — including its flaw, that a GET performs a write action on a
+	//    read-only instance. Without this branch the switch would not roll
+	//    anything back: it would leave every audit permanently unrunnable.
+	// 2. Otherwise nothing owns this audit — the process restarted mid-run (the
+	//    registry is per-process, with no durable claim). Say so, rather than
+	//    silently re-dispatching every agent over the earlier partial results.
+	if !autoDispatchEnabled() {
+		log.Printf("[stream] audit=%s lazy dispatch (VULTURE_AUDIT_AUTODISPATCH is off)", auditID)
+		if b, ok := h.runs.Open(auditID, historyFrames()); ok {
+			go h.runAudit(auditID, b)
+			h.attachToRun(r, sseWriter, auditID, b)
+			return
+		}
+		// Lost the race to a concurrent connection; attach to the winner.
+		if b, ok := h.runs.Get(auditID); ok {
+			h.attachToRun(r, sseWriter, auditID, b)
+			return
+		}
+	}
+
+	h.notifyOrphaned(sseWriter, audit)
+}
+
+// attachToRun streams a run's history-so-far followed by its live tail. The
+// subscriber's own goroutine — this request's — is the only writer to this
+// SSEWriter, which has no mutex.
+func (h *StreamHandler) attachToRun(r *http.Request, sseWriter *agui.SSEWriter, auditID string, b *broadcaster) {
+	sub := b.Subscribe(defaultSubscriberBuffer)
+	// Deregister on every exit path. Without this an abandoned subscription stays
+	// registered for the rest of the run, is iterated on every Send, and pins its
+	// buffered frames' bytes past history eviction.
+	defer b.Unsubscribe(sub)
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			// Client hung up. The run continues — that is the point of 0071.
+			return
+		case f, ok := <-sub.C():
+			if !ok {
+				// Run ended (or we were dropped for lagging). Flush whatever is
+				// buffered: the flush policy skips several types, so a stream
+				// ending on one of them would leave the pane blank.
+				sseWriter.Flush()
+				if sub.Lagged() {
+					log.Printf("[stream] audit=%s subscriber dropped for lagging", auditID)
+				}
+				return
+			}
+			if err := sseWriter.WriteFrame(f.typ, f.data); err != nil {
+				log.Printf("[stream] audit=%s write failed, detaching client: %v", auditID, err)
+				return
+			}
+		}
+	}
+}
+
+// notifyOrphaned tells the client the audit has no owner, then ends the stream.
+//
+// It also drives the row to a terminal state. Detecting the orphan is not enough:
+// a row left at `running` by a restart is never advanced by anything else, so
+// `vulture scan --wait` (whose pollUntilDone has no overall deadline) polls it
+// forever. Reconciling the state here is the only place that knows the run has no
+// owner. On a read-only replica the write simply fails and is logged.
+func (h *StreamHandler) notifyOrphaned(sseWriter *agui.SSEWriter, audit *model.Audit) {
+	log.Printf("[stream] audit=%s is %s but no run owns it (orphaned by a restart?)", audit.ID, audit.Status)
+	if audit.Status != model.AuditStatusCompleted && audit.Status != model.AuditStatusFailed {
+		h.failAudit(audit.ID, "interrupted: the backend restarted while this audit was running")
+	}
+	sink := newDirectSink(sseWriter, audit.ID)
+	sink.Send(&model.AgUIEvent{
+		Type:     model.EventRunStarted,
+		RunID:    audit.ID,
+		ThreadID: "t-" + audit.ID,
+	})
+	sink.Send(&model.AgUIEvent{
+		Type:      model.EventTextMessageContent,
+		MessageID: "msg-thinking",
+		Delta: mustJSONString("This audit is not running: no process owns it. " +
+			"It was most likely interrupted by a backend restart. Start a new audit to re-scan."),
+	})
+	sink.Send(&model.AgUIEvent{Type: model.EventRunFinished, RunID: audit.ID})
+	sseWriter.Flush()
 }
 
 func initSSEWriter(w http.ResponseWriter) *agui.SSEWriter {
@@ -261,25 +324,54 @@ func initSSEWriter(w http.ResponseWriter) *agui.SSEWriter {
 	return agui.NewSSEWriter(w, flusher.Flush)
 }
 
-func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter, audit *model.Audit) {
-	// Only one run per audit. If another connection is already running it,
-	// don't re-dispatch (that races persistence and double-scans the shared
-	// plugin containers) — wait for it and replay the result instead.
-	if !h.tryAcquireRun(audit.ID) {
-		log.Printf("[stream] audit=%s already running; attaching (await+replay) instead of re-dispatching", audit.ID)
-		h.awaitAndReplay(r.Context(), sseWriter, audit.ID)
+// DispatchAudit starts a created audit's run in the background. It is the single
+// dispatch door (feature 0071): POST /api/audits calls it, and so does the
+// pipeline. The broadcaster is registered SYNCHRONOUSLY, before the goroutine
+// starts, so a client that connects the instant it receives its 201 always finds
+// a run to attach to.
+//
+// Returns false when another dispatch already owns this audit.
+func (h *StreamHandler) DispatchAudit(auditID string) bool {
+	b, ok := h.runs.Open(auditID, historyFrames())
+	if !ok {
+		log.Printf("[dispatch] audit=%s already has a run; skipping duplicate dispatch", auditID)
+		return false
+	}
+	go h.runAudit(auditID, b)
+	return true
+}
+
+// runAudit is the one background run path. It owns the run from status=running
+// through persistence, and only then ends the subscribers' streams.
+func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
+	// A panic here would take the process down and with it every other in-flight
+	// audit. Before 0071 the run lived on an HTTP goroutine, where net/http
+	// recovered per connection; a bare `go` has no such net.
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[dispatch] audit=%s PANIC in run: %v", auditID, rec)
+			h.failAudit(auditID, fmt.Sprintf("internal error: %v", rec))
+		}
+		// Always end the streams, and only after persistence above: both CLI
+		// consumers treat body EOF as "results are ready" and immediately GET
+		// the audit.
+		h.runs.Release(auditID, broadcastTTL())
+	}()
+
+	audit, err := h.auditSvc.Get(auditID)
+	if err != nil {
+		log.Printf("[dispatch] get audit %s: %v", auditID, err)
 		return
 	}
-	defer h.releaseRun(audit.ID)
 
-	// Source is optional (discover-only audits may have no source)
+	// Source is optional (discover-only audits may have no source).
 	var source *model.Source
 	var sourcePath string
 	if audit.SourceID != "" {
-		var err error
 		source, err = h.sourceSvc.Get(audit.SourceID)
 		if err != nil {
-			log.Printf("[stream] source error: %v", err)
+			log.Printf("[dispatch] source %s: %v", audit.SourceID, err)
+			h.failAudit(auditID, "source unavailable: "+err.Error())
 			return
 		}
 		sourcePath = source.Path
@@ -288,20 +380,49 @@ func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter,
 	audit.Status = model.AuditStatusRunning
 	_ = h.auditSvc.Update(audit)
 
-	eventCh := make(chan *model.AgUIEvent, 256*len(audit.Types))
+	eventCh := make(chan *model.AgUIEvent, eventChCapacity(len(audit.Types)))
 	var priorByAgent map[string][]model.PriorFinding
 	if auditRequestsFresh(audit.Config) {
-		log.Printf("[stream] fresh mode: skipping prior-findings memory (audit=%s)", audit.ID)
+		log.Printf("[dispatch] fresh mode: skipping prior-findings memory (audit=%s)", audit.ID)
 	} else {
 		priorByAgent = h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
 	}
-	go h.streamSvc.StreamWithContext(r.Context(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
-	res := drainResult(eventCh, audit.ID, sseWriter)
+	// context.Background(), never a request context: the run must outlive any
+	// client. Boundedness is unaffected — RunAgentWithContext wraps the caller's
+	// ctx in VULTURE_AGENT_PROXY_TIMEOUT_SEC, and the agent enforces
+	// VULTURE_AGENT_MAX_AUDIT_SECONDS itself.
+	go h.streamSvc.StreamWithContext(context.Background(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
-	log.Printf("[stream] stream complete audit=%s findings=%d proveResults=%d scores=%v", audit.ID, len(res.Findings), len(res.ProveResults), res.Scores)
+	res := drainResult(eventCh, audit.ID, b)
+
+	log.Printf("[dispatch] run complete audit=%s findings=%d proveResults=%d scores=%v",
+		audit.ID, len(res.Findings), len(res.ProveResults), res.Scores)
 	audit.OwaspCoverage = res.OwaspCoverage
-	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
+	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason)
+}
+
+// failAudit marks an audit failed after a dispatch-time error, so it does not sit
+// at running forever with no owner.
+func (h *StreamHandler) failAudit(auditID, reason string) {
+	audit, err := h.auditSvc.Get(auditID)
+	if err != nil {
+		return
+	}
+	h.persistResultsWithError(audit, nil, nil, nil, nil, reason, "")
+}
+
+// eventChCapacity sizes the producer channel. The historical formula yields ZERO
+// for an empty Types list — a reachable state, since an empty list is the
+// documented "default scan" the router expands — which makes the producer's
+// first send block until the reducer reads. The reducer does start immediately,
+// but an unbuffered hop between two goroutines for every event of a full scan is
+// needless, so floor it.
+func eventChCapacity(nTypes int) int {
+	if nTypes < 1 {
+		nTypes = 1
+	}
+	return 256 * nTypes
 }
 
 // drainEventChannel processes all events from eventCh and optionally writes to SSE.
@@ -311,8 +432,8 @@ func (h *StreamHandler) runLiveAudit(r *http.Request, sseWriter *agui.SSEWriter,
 // "ERROR:" so the caller can mark the audit as failed when an agent
 // short-circuited (e.g. discover hitting an invalid config and never
 // running). See drainResult / collectErrorText below.
-func drainEventChannel(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agui.SSEWriter) ([]model.Finding, map[string]int, []model.ProveResult) {
-	res := drainResult(eventCh, auditID, sseWriter)
+func drainEventChannel(eventCh <-chan *model.AgUIEvent, auditID string, sink EventSink) ([]model.Finding, map[string]int, []model.ProveResult) {
+	res := drainResult(eventCh, auditID, sink)
 	return res.Findings, res.Scores, res.ProveResults
 }
 
@@ -325,9 +446,13 @@ type DrainResult struct {
 	ProveResults  []model.ProveResult
 	AgentError    string          // non-empty when an agent emitted "ERROR: …"
 	OwaspCoverage json.RawMessage // OWASP coverage manifest, if the OWASP agent ran (feature 0063)
+	// DegradedReason records a phase the agent LOST but survived — an LLM phase
+	// that failed while skill findings still came through (feature 0070 P5 A.3).
+	// Distinct from AgentError, which means the run itself failed.
+	DegradedReason string
 }
 
-func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agui.SSEWriter) DrainResult {
+func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sink EventSink) DrainResult {
 	var findings []model.Finding
 	var deltaFindings []model.Finding
 	var proveResults []model.ProveResult
@@ -342,9 +467,17 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 	snapshotAgents := map[string]bool{}
 	var agentError string
 	var owaspCoverage json.RawMessage
+	var degradedReason string
 	for evt := range eventCh {
-		if evt != nil && evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
+		if evt == nil {
+			// processEvent and WriteEvent both dereference evt.Type unguarded.
+			continue
+		}
+		if evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
 			snapshotAgents[evt.AgentType] = true
+		}
+		if dr := extractDegradedReason(evt); dr != "" {
+			degradedReason = dr
 		}
 		if cov := extractOwaspCoverage(evt); cov != nil {
 			owaspCoverage = cov
@@ -353,12 +486,11 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 		if agentError == "" {
 			agentError = collectErrorText(evt)
 		}
-		if sseWriter != nil {
-			if err := sseWriter.WriteEvent(evt); err != nil {
-				log.Printf("[stream] write error: %v", err)
-				break
-			}
-		}
+		// Delivery is the sink's problem. It must never abort the drain: this
+		// loop is the run's only reducer, and its caller persists the result, so
+		// a `break` here truncated the persisted finding set whenever a client
+		// disconnected mid-run (fixed in feature 0071).
+		sink.Send(evt)
 	}
 	// Merge: keep all snapshot findings + delta findings ONLY for agents
 	// that never sent a snapshot. Previously this was all-or-nothing
@@ -382,11 +514,12 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sseWriter *agu
 	// stored on the struct; nil-safe when memory lookup isn't configured.
 	findings = applyMemoryPriorIfEnabled(findings)
 	return DrainResult{
-		Findings:      findings,
-		Scores:        scores,
-		ProveResults:  proveResults,
-		AgentError:    agentError,
-		OwaspCoverage: owaspCoverage,
+		Findings:       findings,
+		Scores:         scores,
+		ProveResults:   proveResults,
+		AgentError:     agentError,
+		OwaspCoverage:  owaspCoverage,
+		DegradedReason: degradedReason,
 	}
 }
 
@@ -405,6 +538,24 @@ func extractOwaspCoverage(evt *model.AgUIEvent) json.RawMessage {
 		return nil
 	}
 	return payload.OwaspCoverage
+}
+
+// extractDegradedReason pulls a partial-degradation note off the result
+// snapshot. Feature 0070 P5 (A.3): an audit whose LLM phase failed still
+// returns its skill findings, so completeAuditWithError's `len(findings)==0`
+// gate never fired and the loss was invisible once the stream closed. This is
+// NOT an error — the audit completed, just with less than it intended.
+func extractDegradedReason(evt *model.AgUIEvent) string {
+	if evt == nil || evt.Type != model.EventStateSnapshot || len(evt.Snapshot) == 0 {
+		return ""
+	}
+	var payload struct {
+		DegradedReason string `json:"degraded_reason"`
+	}
+	if json.Unmarshal(evt.Snapshot, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.DegradedReason)
 }
 
 // collectErrorText returns the trimmed error message when evt is a
@@ -610,6 +761,7 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 	keys := make([]string, len(findings))
 	agentsByKey := make(map[string][]string, len(findings))
 	provenanceByKey := make(map[string]string, len(findings))
+	prefer := preferDeterministicDedup()
 
 	for i, f := range findings {
 		key := crossAgentKey(f)
@@ -620,7 +772,7 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 			provenanceByKey[key] = f.Provenance
 		}
 		if prev, ok := seen[key]; ok {
-			if s > prev.score {
+			if crossAgentPrefers(f, findings[prev.index], s, prev.score, prefer) {
 				seen[key] = entry{index: i, score: s}
 			}
 			continue
@@ -720,7 +872,12 @@ func applyCrossAgentValidation(f model.Finding) model.Finding {
 		}
 		id, _ := m["id"].(string)
 		w, _ := m["weight"].(float64)
-		voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w})
+		// Feature 0072 G1: `result` MUST be carried. It is where an obligation's
+		// state and a judge verdict's admissibility live, so dropping it here
+		// erases the gate on the first L3/L4 re-vote while the agent still
+		// believes it applied.
+		res, _ := m["result"].(string)
+		voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w, Result: res})
 	}
 	res := service.Vote(voterChecks)
 	f.ValidationStatus = res.Status
@@ -820,7 +977,9 @@ func applyMemoryPriorIfEnabled(findings []model.Finding) []model.Finding {
 			}
 			id, _ := m["id"].(string)
 			w, _ := m["weight"].(float64)
-			voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w})
+			// Feature 0072 G1: carry `result` — see the L3 site above.
+			res, _ := m["result"].(string)
+			voterChecks = append(voterChecks, service.VoterCheck{ID: id, Weight: w, Result: res})
 		}
 		res := service.Vote(voterChecks)
 		findings[i].ValidationStatus = res.Status
@@ -863,6 +1022,77 @@ func crossAgentKey(f model.Finding) string {
 		return fmt.Sprintf("cat:%s|%s|%d", canonicalCWEGroup(cat), f.FilePath, f.LineStart)
 	}
 	return fmt.Sprintf("%s|%s|%d", title, f.FilePath, f.LineStart)
+}
+
+// preferDeterministicDedup gates feature 0076 §5.5's winner-selection guard.
+// Default on; VULTURE_DEDUP_PREFER_DETERMINISTIC=false restores the 0075
+// score-only selection (one-release rollback switch). Read at merge time so
+// the switch stays flippable — never cached in a package-level var.
+func preferDeterministicDedup() bool {
+	if v := strings.TrimSpace(os.Getenv("VULTURE_DEDUP_PREFER_DETERMINISTIC")); v != "" {
+		return config.EnvTruthy("VULTURE_DEDUP_PREFER_DETERMINISTIC")
+	}
+	return true
+}
+
+// crossAgentPrefers reports whether the challenger should displace the current
+// keeper of a cross-agent key. With the guard off this is the pre-0076 rule:
+// the richer row wins, ties going to the first seen.
+func crossAgentPrefers(challenger, incumbent model.Finding, challengerScore, incumbentScore int, prefer bool) bool {
+	if prefer {
+		if d := deterministicPreference(challenger, incumbent); d != 0 {
+			return d > 0
+		}
+	}
+	return challengerScore > incumbentScore
+}
+
+// deterministicPreference decides a collision on Provenance alone: +1 when the
+// challenger wins, -1 when the incumbent does, 0 when provenance does not
+// decide and findingDetailScore should.
+//
+// 0076 D5: a deterministic row outranks an `llm` row at equal-or-lower
+// severity. Re-anchoring newly creates these collisions, so the guard ships
+// with it. VULTURE_DEDUP_PREFER_DETERMINISTIC=false restores 0075 behaviour.
+// Scope is exactly llm-vs-deterministic: det-vs-det (feature 0058 R6) and
+// llm-vs-llm merges are left to the detail score, as is any collision
+// involving a rollup parent (feature 0045 keeps parents ahead of members).
+func deterministicPreference(challenger, incumbent model.Finding) int {
+	if challenger.IsRollup != incumbent.IsRollup {
+		return 0
+	}
+	challengerLLM, incumbentLLM := isLLMProvenance(challenger), isLLMProvenance(incumbent)
+	if challengerLLM == incumbentLLM {
+		return 0
+	}
+	if challengerLLM {
+		return llmSeverityVerdict(challenger, incumbent)
+	}
+	return -llmSeverityVerdict(incumbent, challenger)
+}
+
+// llmSeverityVerdict returns +1 when the `llm` row is strictly more severe
+// than the deterministic row it collides with — the one case where 0075's
+// behaviour is unchanged — and -1 at equal or lower severity.
+func llmSeverityVerdict(llm, deterministic model.Finding) int {
+	if severityRank(llm.Severity) > severityRank(deterministic.Severity) {
+		return 1
+	}
+	return -1
+}
+
+// isLLMProvenance reports whether a finding was authored by the LLM tier.
+// Every other value (including the empty one) counts as deterministic.
+//
+// The whole `llm*` FAMILY counts, not just the bare tag: the agents promote a
+// surviving LLM row to `llm_l5_verified` after the L5 judge
+// (agents/shared/shared/validate/__init__.py:191), and on the measured target
+// 181 of 710 stored LLM rows carry that tag. Matching only "llm" classified
+// those as deterministic, so this guard did not apply to the LLM findings that
+// had travelled furthest through validation — the ones most likely to be
+// claiming a high severity against a real skill finding.
+func isLLMProvenance(f model.Finding) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.Provenance)), "llm")
 }
 
 // findingDetailScore ranks how rich a finding is. Higher = more detail.
@@ -1048,7 +1278,7 @@ func extractProveResult(delta json.RawMessage, auditID string, fpLookup map[stri
 }
 
 func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult) {
-	h.persistResultsWithError(audit, source, findings, scores, proveResults, "")
+	h.persistResultsWithError(audit, source, findings, scores, proveResults, "", "")
 }
 
 // persistResultsWithError records audit state, propagating an
@@ -1056,11 +1286,11 @@ func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source,
 // short-circuited (zero findings + ERROR text). Discover-agent
 // short-circuits on bad config used to land as status=completed; this
 // path now surfaces the failure.
-func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string) {
+func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string, degradedReason string) {
 	log.Printf("[persist] audit=%s findings=%d scores=%v", audit.ID, len(findings), scores)
 
 	saveFindings(h.auditSvc, audit.ID, findings)
-	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError)
+	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError, degradedReason)
 	// Feature 0064 §6/M3: the run reached a terminal state — revoke its
 	// broker token(s) so a leaked token can't keep spending. No-op when the
 	// broker is off (revoker nil / run had no minted tokens).
@@ -1080,57 +1310,18 @@ func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *mode
 	cleanupRunDir(source, audit)
 }
 
-// RunPipelineStage runs agents for a pipeline-created audit in a background goroutine.
+// RunPipelineStage runs agents for a pipeline-created audit in the background.
+// Satisfies service.PipelineRunner. Feature 0071 collapsed this onto the single
+// dispatch path — the old dedicated variant lacked the OwaspCoverage carry-over
+// and had no panic guard.
 func (h *StreamHandler) RunPipelineStage(auditID string) {
-	go h.runPipelineAudit(auditID)
-}
-
-func (h *StreamHandler) runPipelineAudit(auditID string) {
-	// Guard against a concurrent run of the same audit (e.g. a stream
-	// connection also driving it). First runner wins; this returns if one
-	// is already in flight.
-	if !h.tryAcquireRun(auditID) {
-		log.Printf("[pipeline] audit=%s already running; skipping duplicate dispatch", auditID)
-		return
-	}
-	defer h.releaseRun(auditID)
-
-	audit, err := h.auditSvc.Get(auditID)
-	if err != nil {
-		log.Printf("[pipeline] get audit %s: %v", auditID, err)
-		return
-	}
-
-	var source *model.Source
-	var sourcePath string
-	if audit.SourceID != "" {
-		source, err = h.sourceSvc.Get(audit.SourceID)
-		if err != nil {
-			log.Printf("[pipeline] source %s: %v", audit.SourceID, err)
-			return
-		}
-		sourcePath = source.Path
-	}
-
-	audit.Status = model.AuditStatusRunning
-	_ = h.auditSvc.Update(audit)
-
-	eventCh := make(chan *model.AgUIEvent, 256*len(audit.Types))
-	var priorByAgent map[string][]model.PriorFinding
-	if auditRequestsFresh(audit.Config) {
-		log.Printf("[stream] fresh mode: skipping prior-findings memory (audit=%s)", audit.ID)
-	} else {
-		priorByAgent = h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
-	}
-	go h.streamSvc.StreamWithContext(context.Background(), audit, sourcePath, h.agents, priorByAgent, eventCh)
-
-	res := drainResult(eventCh, audit.ID, nil)
-	log.Printf("[pipeline] stage complete audit=%s findings=%d", audit.ID, len(res.Findings))
-	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError)
+	h.DispatchAudit(auditID)
 }
 
 func consumeEventsNoSSE(eventCh <-chan *model.AgUIEvent, auditID string) ([]model.Finding, map[string]int, []model.ProveResult) {
-	return drainEventChannel(eventCh, auditID, nil)
+	// nopSink, never nil: EventSink is an interface, so a nil would panic on the
+	// first Send rather than being skipped by a nil check.
+	return drainEventChannel(eventCh, auditID, nopSink{})
 }
 
 func saveFindings(svc service.AuditService, auditID string, findings []model.Finding) {
@@ -1154,6 +1345,7 @@ func completeAuditWithError(
 	findings []model.Finding,
 	scores map[string]int,
 	agentError string,
+	degradedReason string,
 ) {
 	now := time.Now().UTC()
 	audit.CompletedAt = &now
@@ -1165,7 +1357,17 @@ func completeAuditWithError(
 		log.Printf("[persist] audit=%s marked FAILED: %s", audit.ID, agentError)
 	} else {
 		audit.Status = model.AuditStatusCompleted
-		log.Printf("[persist] audit=%s marked completed", audit.ID)
+		// Feature 0070 P5 (A.3): a COMPLETED audit can still have lost a phase.
+		// Deliberately outside the branch above — that one requires zero
+		// findings, and skill findings always survive an LLM failure, which is
+		// exactly why the loss used to vanish once the stream closed. Never
+		// overwrite a reason already set.
+		if audit.DegradedReason == "" && degradedReason != "" {
+			audit.DegradedReason = degradedReason
+			log.Printf("[persist] audit=%s completed DEGRADED: %s", audit.ID, degradedReason)
+		} else {
+			log.Printf("[persist] audit=%s marked completed", audit.ID)
+		}
 	}
 	if err := svc.Update(audit); err != nil {
 		log.Printf("[persist] update audit error: %v", err)

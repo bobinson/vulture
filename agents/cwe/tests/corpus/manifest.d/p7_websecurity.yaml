@@ -1,0 +1,87 @@
+# Group: web-security (feature 0070 P7) — 8 new detections in `web_security`.
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# `run_deterministic()` flattens every fixture to ONE file renamed `f.<ext>`, so
+# only the SUFFIX survives. Each entry below is therefore content-keyed, and the
+# suffix is chosen so the owning arm is actually reachable:
+#   * CWE-749  — the WebView arm is `.java`/`.kt` only, the Electron arm `.js`.
+#   * CWE-1022 — the anchor arm is markup-only (`.html`); the window.open arm is
+#                dialect-agnostic (`.js`/`.ts`).
+#   * CWE-644  — `echo`/`print` count as sinks in `.php` only.
+#
+# Every clean twin differs MINIMALLY from its positive, and each twin is a shape
+# the review measured as a false positive of the naive predicate:
+#   * 315 — `password_changed_at` / `ssn_hash` / `cvv_verified`: password
+#     WORKFLOW names, which store no password.
+#   * 539 — identical cookie with a BOUNDED lifetime: the recommended shape,
+#     which a predicate lacking a magnitude test reports as the defect.
+#   * 940 — the same handler with an `event.origin` check.
+#   * 784/565 — server-side session state instead of the cookie, a benign cookie
+#     name, or a signed-value verifier in the ±2-line window.
+#   * 644 — `response.getHeader` instead of `request.getHeader` (a response
+#     header read is not attacker-controlled), and an encoded/serialised sink.
+
+# ── CWE-749 Exposed dangerous method (JS bridge / Electron renderer) ──
+- {file: p7_websecurity/cwe_749_1.kt, language: Kotlin, cwe: "749", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_749_2.java, language: Java, cwe: "749", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_749_3.js, language: JavaScript, cwe: "749", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_749_1_clean.kt, language: Kotlin, cwe: "749", expectation: negative}
+- {file: p7_websecurity/cwe_749_2_clean.java, language: Java, cwe: "749", expectation: negative}
+- {file: p7_websecurity/cwe_749_3_clean.js, language: JavaScript, cwe: "749", expectation: negative}
+
+# ── CWE-1022 window.opener access ──
+- {file: p7_websecurity/cwe_1022_1.js, language: JavaScript, cwe: "1022", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_1022_2.ts, language: TypeScript, cwe: "1022", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_1022_3.html, language: HTML, cwe: "1022", expectation: positive, line: 4}
+- {file: p7_websecurity/cwe_1022_1_clean.js, language: JavaScript, cwe: "1022", expectation: negative}
+- {file: p7_websecurity/cwe_1022_2_clean.ts, language: TypeScript, cwe: "1022", expectation: negative}
+- {file: p7_websecurity/cwe_1022_3_clean.html, language: HTML, cwe: "1022", expectation: negative}
+
+# ── CWE-315 Cleartext sensitive information in a cookie ──
+- {file: p7_websecurity/cwe_315_1.js, language: JavaScript, cwe: "315", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_315_2.py, language: Python, cwe: "315", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_315_3.php, language: PHP, cwe: "315", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_315_1_clean.js, language: JavaScript, cwe: "315", expectation: negative}
+- {file: p7_websecurity/cwe_315_2_clean.py, language: Python, cwe: "315", expectation: negative}
+- {file: p7_websecurity/cwe_315_3_clean.php, language: PHP, cwe: "315", expectation: negative}
+
+# ── CWE-940 Unverified source of a communication channel ──
+- {file: p7_websecurity/cwe_940_1.js, language: JavaScript, cwe: "940", expectation: positive, line: 1}
+- {file: p7_websecurity/cwe_940_2.ts, language: TypeScript, cwe: "940", expectation: positive, line: 1}
+- {file: p7_websecurity/cwe_940_3.html, language: HTML, cwe: "940", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_940_1_clean.js, language: JavaScript, cwe: "940", expectation: negative}
+- {file: p7_websecurity/cwe_940_2_clean.ts, language: TypeScript, cwe: "940", expectation: negative}
+- {file: p7_websecurity/cwe_940_3_clean.html, language: HTML, cwe: "940", expectation: negative}
+
+# ── CWE-784 Cookie relied on in a security DECISION ──
+- {file: p7_websecurity/cwe_784_1.js, language: JavaScript, cwe: "784", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_784_2.py, language: Python, cwe: "784", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_784_3.php, language: PHP, cwe: "784", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_784_1_clean.js, language: JavaScript, cwe: "784", expectation: negative}
+- {file: p7_websecurity/cwe_784_2_clean.py, language: Python, cwe: "784", expectation: negative}
+- {file: p7_websecurity/cwe_784_3_clean.php, language: PHP, cwe: "784", expectation: negative}
+
+# ── CWE-565 Cookie reliance without a decision (bound or passed) ──
+- {file: p7_websecurity/cwe_565_1.js, language: JavaScript, cwe: "565", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_565_2.py, language: Python, cwe: "565", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_565_3.php, language: PHP, cwe: "565", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_565_1_clean.js, language: JavaScript, cwe: "565", expectation: negative}
+- {file: p7_websecurity/cwe_565_2_clean.py, language: Python, cwe: "565", expectation: negative}
+- {file: p7_websecurity/cwe_565_3_clean.php, language: PHP, cwe: "565", expectation: negative}
+
+# ── CWE-539 Persistent cookie holding sensitive information ──
+- {file: p7_websecurity/cwe_539_1.js, language: JavaScript, cwe: "539", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_539_2.py, language: Python, cwe: "539", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_539_3.ts, language: TypeScript, cwe: "539", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_539_1_clean.js, language: JavaScript, cwe: "539", expectation: negative}
+- {file: p7_websecurity/cwe_539_2_clean.py, language: Python, cwe: "539", expectation: negative}
+- {file: p7_websecurity/cwe_539_3_clean.ts, language: TypeScript, cwe: "539", expectation: negative}
+
+# ── CWE-644 Request header reflected into a response ──
+- {file: p7_websecurity/cwe_644_1.php, language: PHP, cwe: "644", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_644_2.js, language: JavaScript, cwe: "644", expectation: positive, line: 2}
+- {file: p7_websecurity/cwe_644_3.java, language: Java, cwe: "644", expectation: positive, line: 3}
+- {file: p7_websecurity/cwe_644_1_clean.php, language: PHP, cwe: "644", expectation: negative}
+- {file: p7_websecurity/cwe_644_2_clean.js, language: JavaScript, cwe: "644", expectation: negative}
+- {file: p7_websecurity/cwe_644_3_clean.java, language: Java, cwe: "644", expectation: negative}

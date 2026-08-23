@@ -28,12 +28,14 @@ func (m *mockPipelineAuditSvc) Get(id string) (*model.Audit, error) {
 	}
 	return nil, nil
 }
-func (m *mockPipelineAuditSvc) Update(*model.Audit) error                                     { return nil }
-func (m *mockPipelineAuditSvc) SaveFindings(string, []model.Finding) error                    { return nil }
-func (m *mockPipelineAuditSvc) List(int, int) ([]model.Audit, error)                          { return nil, nil }
-func (m *mockPipelineAuditSvc) Stats() (*model.DashboardStats, error)                         { return nil, nil }
-func (m *mockPipelineAuditSvc) GetCachedAudit(string, []string) (*model.Audit, error)         { return nil, nil }
-func (m *mockPipelineAuditSvc) FindSourceByPath(string) (*model.Source, error)                 { return nil, nil }
+func (m *mockPipelineAuditSvc) Update(*model.Audit) error                  { return nil }
+func (m *mockPipelineAuditSvc) SaveFindings(string, []model.Finding) error { return nil }
+func (m *mockPipelineAuditSvc) List(int, int) ([]model.Audit, error)       { return nil, nil }
+func (m *mockPipelineAuditSvc) Stats() (*model.DashboardStats, error)      { return nil, nil }
+func (m *mockPipelineAuditSvc) GetCachedAudit(string, []string) (*model.Audit, error) {
+	return nil, nil
+}
+func (m *mockPipelineAuditSvc) FindSourceByPath(string) (*model.Source, error) { return nil, nil }
 func (m *mockPipelineAuditSvc) GetPreviousCompletedAudit(string, []string, string) (*model.Audit, error) {
 	return nil, nil
 }
@@ -51,9 +53,11 @@ func (m *mockPipelineDiscoverSvc) GetResultByAuditID(id string) (*model.Discover
 	}
 	return nil, nil
 }
-func (m *mockPipelineDiscoverSvc) GetResult(string) (*model.DiscoverResult, error)       { return nil, nil }
-func (m *mockPipelineDiscoverSvc) GetResultByTarget(string) (*model.DiscoverResult, error) { return nil, nil }
-func (m *mockPipelineDiscoverSvc) SaveResult(*model.DiscoverResult) error                  { return nil }
+func (m *mockPipelineDiscoverSvc) GetResult(string) (*model.DiscoverResult, error) { return nil, nil }
+func (m *mockPipelineDiscoverSvc) GetResultByTarget(string) (*model.DiscoverResult, error) {
+	return nil, nil
+}
+func (m *mockPipelineDiscoverSvc) SaveResult(*model.DiscoverResult) error { return nil }
 
 // --- RED: Tests for AdvanceStage creating next audit ---
 
@@ -105,10 +109,10 @@ func TestAdvanceStage_CreatesNextAudit(t *testing.T) {
 func TestAdvanceStage_InjectsDiscoverIntoProve(t *testing.T) {
 	pipeline := &model.Pipeline{
 		ID: "p-2", TargetURL: "https://staging.example.com", SourceID: "src-1",
-		Stages:          []string{"scan", "discover", "prove"},
-		Config:          json.RawMessage(`{"types":["owasp"]}`),
-		ScanAuditID:     "a-scan", DiscoverAuditID: "a-discover",
-		Status:          model.PipelineStatusDiscoverRunning,
+		Stages:      []string{"scan", "discover", "prove"},
+		Config:      json.RawMessage(`{"types":["owasp"]}`),
+		ScanAuditID: "a-scan", DiscoverAuditID: "a-discover",
+		Status: model.PipelineStatusDiscoverRunning,
 	}
 	var createdReq *model.AuditRequest
 

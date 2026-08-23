@@ -275,8 +275,8 @@ func TestComputeAvgScoreWithLimit(t *testing.T) {
 		audit := &model.Audit{
 			ID: fmt.Sprintf("avg-audit-%d", i), SourceID: "src-avg",
 			Types: []string{"owasp"}, Config: json.RawMessage("{}"),
-			Status: model.AuditStatusCompleted,
-			Scores: map[string]int{"owasp": 70 + i*10},
+			Status:    model.AuditStatusCompleted,
+			Scores:    map[string]int{"owasp": 70 + i*10},
 			CreatedAt: now, CompletedAt: &now,
 		}
 		if err := repo.CreateAudit(audit); err != nil {

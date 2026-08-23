@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -192,6 +193,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	}
 	llmHealthH := handler.NewLLMHealthHandler(cfg.Agents)
 	auditH.SetLLMHealth(llmHealthH)
+	// 0071: POST /api/audits dispatches the run in the background. Without this
+	// wiring an audit is created and never runs unless someone opens its stream.
+	auditH.SetDispatcher(streamH)
 	fsH := handler.NewFilesystemHandler()
 	// 0036 Phase 3 — confine filesystem browse to cfg.SourceRoot when
 	// set. Empty SourceRoot = legacy denylist-only behaviour.
@@ -421,6 +425,36 @@ const knownWeakDevPasswordHash = "acf06e1920ea3a42ab6607d99a359784f0de53e6c9cddf
 
 func resolveLocalDevPassword() (pw string, generated bool, err error) {
 	if v := os.Getenv("VULTURE_LOCAL_DEV_PASSWORD"); v != "" {
+		// SHA-256 is CORRECT here and a password KDF would be wrong.
+		//
+		// CodeQL's go/weak-sensitive-data-hashing fires on sha256(password),
+		// and its advice — Argon2/scrypt/bcrypt/PBKDF2 — is aimed at password
+		// STORAGE, where slowness is what defeats offline brute force. This is
+		// not storage and not authentication. It is a one-element DENYLIST
+		// FINGERPRINT: the operator's value is compared against the hash of a
+		// single historical hardcoded default so that literal need not reappear
+		// in source (it was scrubbed from git history, 0036 Phase 4).
+		//
+		// The hash is never persisted, never transmitted, and never used to
+		// verify anyone. Preimage resistance is the only property required, and
+		// SHA-256 has it.
+		//
+		// Why not bcrypt: not because a salted KDF cannot express a fixed
+		// comparison — it can, and model/api_key.go already does it via
+		// bcrypt.CompareHashAndPassword, which carries its salt inside the
+		// hash string. The blocker is that the historical default's PLAINTEXT
+		// is gone: it was scrubbed in 0036 Phase 4 and only its SHA-256
+		// survives, so no one can generate a bcrypt digest of it now. Any
+		// replacement would still have to hash the operator's input with
+		// something to compare against what we do have. Separately, with
+		// exactly ONE candidate input a work factor buys nothing an attacker
+		// cares about — the value it protects is a published historical
+		// default.
+		//
+		// If the plaintext is ever recovered, switching to a bcrypt digest
+		// would remove this alert at the root and is the preferred fix.
+		//
+		// codeql[go/weak-sensitive-data-hashing]
 		sum := sha256.Sum256([]byte(v))
 		if hex.EncodeToString(sum[:]) == knownWeakDevPasswordHash {
 			return "", false, fmt.Errorf(
@@ -434,6 +468,30 @@ func resolveLocalDevPassword() (pw string, generated bool, err error) {
 		return "", false, fmt.Errorf("CSPRNG read: %w", err)
 	}
 	return hex.EncodeToString(buf), true, nil
+}
+
+// localDevPasswordPath is where the generated local-dev password is written
+// instead of being logged. Honors $VULTURE_LOCAL_DEV_PASSWORD_FILE, else sits
+// beside the database so it shares that directory's lifecycle and permissions.
+func localDevPasswordPath() string {
+	if v := strings.TrimSpace(os.Getenv("VULTURE_LOCAL_DEV_PASSWORD_FILE")); v != "" {
+		return v
+	}
+	if db := strings.TrimSpace(os.Getenv("VULTURE_DB_PATH")); db != "" {
+		return filepath.Join(filepath.Dir(db), "local-dev-password")
+	}
+	return filepath.Join(os.TempDir(), "vulture-local-dev-password")
+}
+
+// writeLocalDevPassword persists the seeded credential 0600 so an operator can
+// still log in. Failure is reported WITHOUT the password: a write error must not
+// become the leak the file exists to prevent.
+func writeLocalDevPassword(pw string) error {
+	path := localDevPasswordPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(pw+"\n"), 0o600)
 }
 
 func seedLocalUser(userRepo repository.UserRepository, jwtSecret string) {
@@ -456,7 +514,17 @@ func seedLocalUser(userRepo repository.UserRepository, jwtSecret string) {
 		return
 	}
 	if generated {
-		log.Printf("Seeded local dev user: %s / %s", localDevEmail, pw)
+		if err := writeLocalDevPassword(pw); err != nil {
+			log.Printf("warning: could not write the local dev password file: %v", err)
+			log.Printf("  set VULTURE_LOCAL_DEV_PASSWORD to choose the password yourself")
+			return
+		}
+		// The password is deliberately NOT logged. It is a real credential for a
+		// real account, logs are routinely shipped to aggregators and pasted into
+		// issues, and a local-dev account is still an account. The operator gets a
+		// deterministic way to retrieve it instead.
+		log.Printf("Seeded local dev user: %s (password written to %s, mode 0600)",
+			localDevEmail, localDevPasswordPath())
 		log.Printf("  ^ password regenerates every restart unless you export VULTURE_LOCAL_DEV_PASSWORD")
 	} else {
 		log.Printf("Seeded local dev user: %s (password from $VULTURE_LOCAL_DEV_PASSWORD)", localDevEmail)

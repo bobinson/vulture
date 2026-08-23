@@ -135,7 +135,6 @@ def test_ruleset_snapshot_covers_every_vendored_rule_file():
 
 def test_info_version_matches_pyproject_version():
     from fastapi.testclient import TestClient
-
     from src.wrapper import app
 
     pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text())

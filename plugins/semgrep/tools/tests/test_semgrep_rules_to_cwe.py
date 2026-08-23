@@ -17,12 +17,11 @@ Covers:
 import json
 import textwrap
 
-from tools.semgrep_rules_to_cwe import (  # noqa: E402
+from tools.semgrep_rules_to_cwe import (
     convert_rules,
     extract_cwe_id,
     walk_yaml_files,
 )
-
 
 # ----- extract_cwe_id ----------------------------------------------------
 

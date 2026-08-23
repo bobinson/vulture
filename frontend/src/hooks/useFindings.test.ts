@@ -248,4 +248,54 @@ describe("useFindings", () => {
     expect(result.current.totalFiltered).toBe(3);
     expect(result.current.falsePositiveCount).toBe(1);
   });
+
+  // --- hide suspicious (mirrors hide false positives) ---
+  // Suspicious is the single automatic signal validation_status ===
+  // "suspicious"; unlike FP there is no manual-triage set. The toggle
+  // defaults OFF and composes with the FP toggle and the other filters.
+
+  it("defaults hideSuspicious to false (shows everything)", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    expect(result.current.hideSuspicious).toBe(false);
+    expect(result.current.totalFiltered).toBe(4);
+  });
+
+  it("reports suspiciousCount independent of toggle/filters", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    expect(result.current.suspiciousCount).toBe(1);
+    act(() => result.current.setFilterSeverity("critical"));
+    expect(result.current.suspiciousCount).toBe(1);
+  });
+
+  it("hides suspicious findings when toggled on, keeps the rest", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    act(() => result.current.setHideSuspicious(true));
+    const titles = result.current.findings.map((f) => f.title);
+    expect(titles).not.toContain("Suspicious");
+    expect(titles).toContain("Real Critical");
+    expect(titles).toContain("Auto FP");
+    expect(result.current.totalFiltered).toBe(3);
+  });
+
+  it("composes hideSuspicious with hideFalsePositives (both drop)", () => {
+    const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
+    act(() => {
+      result.current.setHideSuspicious(true);
+      result.current.setHideFalsePositives(true);
+    });
+    const titles = result.current.findings.map((f) => f.title);
+    // Real Critical (high_confidence) survives; Suspicious, Auto FP,
+    // Triaged FP are all hidden.
+    expect(titles).toEqual(["Real Critical"]);
+  });
+
+  it("resets page to 0 when the suspicious toggle changes", () => {
+    const many = Array.from({ length: 30 }, (_, i) =>
+      makeFinding({ title: `S${i}` }),
+    );
+    const { result } = renderHook(() => useFindings(many));
+    act(() => result.current.setPage(1));
+    act(() => result.current.setHideSuspicious(true));
+    expect(result.current.page).toBe(0);
+  });
 });

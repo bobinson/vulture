@@ -333,6 +333,11 @@ func migrateAddColumns(db *sql.DB) {
 	// signature_candidate / catalog_rollup / llm / llm_l5_verified) emitted by
 	// the agents — persisted so GET /api/audits/:id can carry it.
 	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN provenance TEXT`)
+
+	// Feature 0072 (P5): persist the evidence window a verdict rested on.
+	// Postgres has carried this column since 001_init.sql; SQLite gains it
+	// here so both dialects round-trip code_snippet (AC18).
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN code_snippet TEXT`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_findings_validation_status
 		ON findings(audit_id, validation_status)`)
 	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN user_label TEXT`)
@@ -359,7 +364,8 @@ func (r *SQLiteRepo) prepareStatements() {
 		COALESCE(is_rollup, 0),
 		COALESCE(rolled_up_into, ''),
 		COALESCE(instance_count, 1),
-		COALESCE(provenance, '')
+		COALESCE(provenance, ''),
+		COALESCE(code_snippet, '')
 		FROM findings WHERE audit_id = ?`
 	stmt, err := r.db.Prepare(getFindingsSQL)
 	if err != nil {
@@ -518,14 +524,14 @@ func (r *SQLiteRepo) UpdateAudit(audit *model.Audit) error {
 }
 
 func (r *SQLiteRepo) SaveFindings(auditID string, findings []model.Finding) error {
-	// SQLite caps bound parameters at 32766; each finding uses 20, so a single
-	// multi-row INSERT exceeds the limit past ~1638 rows and fails with "too
+	// SQLite caps bound parameters at 32766; each finding uses 21, so a single
+	// multi-row INSERT exceeds the limit past ~1560 rows and fails with "too
 	// many SQL variables" — which dropped EVERY finding on large native-install
 	// scans (thousands of findings → 0 persisted). Chunk so each INSERT stays
-	// well under the cap (Feature 0055).
-	const chunk = 500 // 500 × 20 = 10000 params, comfortably < 32766
-	for start := 0; start < len(findings); start += chunk {
-		end := start + chunk
+	// well under the cap (Feature 0055; chunk size shared with the Postgres
+	// repo as findingsInsertChunk since 0072, 1000 × 21 = 21000 < 32766).
+	for start := 0; start < len(findings); start += findingsInsertChunk {
+		end := start + findingsInsertChunk
 		if end > len(findings) {
 			end = len(findings)
 		}
@@ -541,20 +547,25 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 		return nil
 	}
 	valueStrings := make([]string, 0, len(findings))
-	valueArgs := make([]interface{}, 0, len(findings)*20)
+	valueArgs := make([]interface{}, 0, len(findings)*21)
 	for _, f := range findings {
 		valueStrings = append(valueStrings,
-			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		refsJSON, _ := json.Marshal(f.References)
 		var validationJSON string
 		if f.Validation != nil {
 			b, _ := json.Marshal(f.Validation)
 			validationJSON = string(b)
 		}
+		// Sanitise every source-derived text column for DB safety and parity
+		// with the Postgres path (SQLite tolerates NUL / invalid UTF-8, but
+		// persisting them is still wrong and diverges the two stores).
 		valueArgs = append(valueArgs,
 			f.ID, auditID, f.AgentType, string(f.Severity),
-			f.Category, f.Title, f.Description, f.FilePath,
-			f.LineStart, f.LineEnd, f.Recommendation, string(refsJSON), f.Fingerprint,
+			dbSafeText(f.Category), dbSafeText(f.Title), dbSafeText(f.Description),
+			dbSafeText(f.FilePath),
+			f.LineStart, f.LineEnd, dbSafeText(f.Recommendation),
+			string(refsJSON), f.Fingerprint,
 			// Validation (feature 0045) — all nullable; empty string + 0 are
 			// stored when absent so the column query is uniform.
 			nullableString(f.ValidationStatus),
@@ -564,6 +575,7 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			nullableString(f.RolledUpInto),
 			f.InstanceCount,
 			nullableString(f.Provenance),
+			nullableString(clampSnippet(f.CodeSnippet)),
 		)
 	}
 	stmt := fmt.Sprintf(
@@ -571,7 +583,7 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			id, audit_id, agent_type, severity, category, title, description,
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
-			is_rollup, rolled_up_into, instance_count, provenance
+			is_rollup, rolled_up_into, instance_count, provenance, code_snippet
 		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
@@ -884,7 +896,8 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 			        COALESCE(is_rollup, 0),
 			        COALESCE(rolled_up_into, ''),
 			        COALESCE(instance_count, 1),
-			        COALESCE(provenance, '')
+			        COALESCE(provenance, ''),
+			        COALESCE(code_snippet, '')
 			 FROM findings WHERE audit_id = ?`,
 			auditID,
 		)
@@ -903,7 +916,8 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 			&f.Title, &f.Description, &f.FilePath, &f.LineStart, &f.LineEnd,
 			&f.Recommendation, &refsStr, &f.Fingerprint,
 			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
-			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance)
+			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance,
+			&f.CodeSnippet)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}

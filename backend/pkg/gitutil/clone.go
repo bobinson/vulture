@@ -171,7 +171,9 @@ func Clone(ctx context.Context, gitURL, destPath string, depth int, creds *model
 		args = append(args, "--depth", fmt.Sprintf("%d", depth))
 	}
 
-	env := os.Environ()
+	// 0073: clone deliberately inherits (SSH agent socket, proxy and CA vars
+	// are all needed by git); it is not an agent spawn.
+	env := os.Environ() //nolint:forbidigo // git needs the caller's environment
 	effectiveURL := gitURL
 
 	if creds != nil {
@@ -208,7 +210,12 @@ func Clone(ctx context.Context, gitURL, destPath string, depth int, creds *model
 		}
 	}
 
-	args = append(args, effectiveURL, destPath)
+	// "--" ends option parsing so a URL can never be read as a git flag
+	// (e.g. "--upload-pack=..."). ValidateGitURL already rejects such input
+	// — it has no allowed scheme — so this is defence in depth, and it closes
+	// the CodeQL command-injection path by construction rather than by relying
+	// on a validator two call frames away staying correct.
+	args = append(args, "--", effectiveURL, destPath)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = env
 	var stderr bytes.Buffer

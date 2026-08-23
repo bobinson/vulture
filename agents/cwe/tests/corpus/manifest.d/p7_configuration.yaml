@@ -1,0 +1,93 @@
+# Group: p7 configuration reachability (feature 0070 P7).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# The runner flattens each fixture to ONE file named `f.<suffix>`, so every rule
+# gated here is content-keyed. Extension preconditions that MUST hold or a
+# fixture gates as a silent zero:
+#   `.config`/`.csproj`/`.xml` -> configuration_check.XML_EXTENSIONS (own walk)
+#   `.tsx`/`.cs`               -> configuration_check.DEBUG_CODE_EXTENSIONS
+#   `.conf`/`.py`/`.js`/`.ts`/`.yml` -> configuration_check.CONFIG_EXTENSIONS
+#
+# CWE-1021 carries TWO detectors (the frame-switch arm and the low-severity
+# ALLOW-FROM arm) under one id, and the gate is per-CWE at max_fp_rate 0.0 —
+# a clean-twin FP from either arm demotes both, so the twins below exercise
+# both anchors (`frameguard: {action}`, `SAMEORIGIN`, and a
+# `frame-ancestors *.partner.example.com` subdomain allowlist).
+#
+# CWE-426's real-world target (an extensionless `sudoers` file) is reached in
+# production via the skill's extra-filenames entry; the fixtures use `.conf`
+# because a fixture named `sudoers` would not survive flattening.
+
+
+# ── CWE-757 algorithm downgrade (re-tag of the TLS version row) (skill `configuration`) ──
+- {file: p7_configuration/cwe_757_1.py, language: Python, cwe: "757", expectation: positive, line: 5}
+- {file: p7_configuration/cwe_757_1_clean.py, language: Python, cwe: "757", expectation: negative}
+- {file: p7_configuration/cwe_757_2.js, language: JavaScript, cwe: "757", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_757_2_clean.js, language: JavaScript, cwe: "757", expectation: negative}
+- {file: p7_configuration/cwe_757_3.yml, language: YAML, cwe: "757", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_757_3_clean.yml, language: YAML, cwe: "757", expectation: negative}
+
+# ── CWE-1021 framing protection disabled (skill `configuration`) ──
+- {file: p7_configuration/cwe_1021_1.js, language: JavaScript, cwe: "1021", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_1021_1_clean.js, language: JavaScript, cwe: "1021", expectation: negative}
+- {file: p7_configuration/cwe_1021_2.py, language: Python, cwe: "1021", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_1021_2_clean.py, language: Python, cwe: "1021", expectation: negative}
+- {file: p7_configuration/cwe_1021_3.conf, language: Nginx, cwe: "1021", expectation: positive, line: 3}
+- {file: p7_configuration/cwe_1021_3_clean.conf, language: Nginx, cwe: "1021", expectation: negative}
+
+# ── CWE-489 active debug code (breakpoint statements) (skill `configuration`) ──
+- {file: p7_configuration/cwe_489_1.tsx, language: TypeScript, cwe: "489", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_489_1_clean.tsx, language: TypeScript, cwe: "489", expectation: negative}
+- {file: p7_configuration/cwe_489_2.py, language: Python, cwe: "489", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_489_2_clean.py, language: Python, cwe: "489", expectation: negative}
+- {file: p7_configuration/cwe_489_3.cs, language: C#, cwe: "489", expectation: positive, line: 5}
+- {file: p7_configuration/cwe_489_3_clean.cs, language: C#, cwe: "489", expectation: negative}
+
+# ── CWE-756 missing custom error page (skill `configuration`) ──
+- {file: p7_configuration/cwe_756_1.config, language: XML, cwe: "756", expectation: positive, line: 3}
+- {file: p7_configuration/cwe_756_1_clean.config, language: XML, cwe: "756", expectation: negative}
+- {file: p7_configuration/cwe_756_2.xml, language: XML, cwe: "756", expectation: positive, line: 3}
+- {file: p7_configuration/cwe_756_2_clean.xml, language: XML, cwe: "756", expectation: negative}
+- {file: p7_configuration/cwe_756_3.config, language: XML, cwe: "756", expectation: positive, line: 3}
+- {file: p7_configuration/cwe_756_3_clean.config, language: XML, cwe: "756", expectation: negative}
+
+# ── CWE-5 J2EE data transmission without encryption (skill `configuration`) ──
+- {file: p7_configuration/cwe_5_1.xml, language: XML, cwe: "5", expectation: positive, line: 2}
+- {file: p7_configuration/cwe_5_1_clean.xml, language: XML, cwe: "5", expectation: negative}
+- {file: p7_configuration/cwe_5_2.xml, language: XML, cwe: "5", expectation: positive, line: 2}
+- {file: p7_configuration/cwe_5_2_clean.xml, language: XML, cwe: "5", expectation: negative}
+- {file: p7_configuration/cwe_5_3.xml, language: XML, cwe: "5", expectation: positive, line: 2}
+- {file: p7_configuration/cwe_5_3_clean.xml, language: XML, cwe: "5", expectation: negative}
+
+# ── CWE-11 ASP.NET debug binary (skill `configuration`) ──
+- {file: p7_configuration/cwe_11_1.config, language: XML, cwe: "11", expectation: positive, line: 3}
+- {file: p7_configuration/cwe_11_1_clean.config, language: XML, cwe: "11", expectation: negative}
+- {file: p7_configuration/cwe_11_2.xml, language: XML, cwe: "11", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_11_2_clean.xml, language: XML, cwe: "11", expectation: negative}
+- {file: p7_configuration/cwe_11_3.csproj, language: XML, cwe: "11", expectation: positive, line: 2}
+- {file: p7_configuration/cwe_11_3_clean.csproj, language: XML, cwe: "11", expectation: negative}
+
+# ── CWE-444 HTTP request smuggling (lenient parser) (skill `configuration`) ──
+- {file: p7_configuration/cwe_444_1.js, language: JavaScript, cwe: "444", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_444_1_clean.js, language: JavaScript, cwe: "444", expectation: negative}
+- {file: p7_configuration/cwe_444_2.ts, language: TypeScript, cwe: "444", expectation: positive, line: 4}
+- {file: p7_configuration/cwe_444_2_clean.ts, language: TypeScript, cwe: "444", expectation: negative}
+- {file: p7_configuration/cwe_444_3.yml, language: YAML, cwe: "444", expectation: positive, line: 5}
+- {file: p7_configuration/cwe_444_3_clean.yml, language: YAML, cwe: "444", expectation: negative}
+
+# ── CWE-926 Android component exported without permission (skill `configuration`) ──
+- {file: p7_configuration/cwe_926_1.xml, language: XML, cwe: "926", expectation: positive, line: 5}
+- {file: p7_configuration/cwe_926_1_clean.xml, language: XML, cwe: "926", expectation: negative}
+- {file: p7_configuration/cwe_926_2.xml, language: XML, cwe: "926", expectation: positive, line: 5}
+- {file: p7_configuration/cwe_926_2_clean.xml, language: XML, cwe: "926", expectation: negative}
+- {file: p7_configuration/cwe_926_3.xml, language: XML, cwe: "926", expectation: positive, line: 5}
+- {file: p7_configuration/cwe_926_3_clean.xml, language: XML, cwe: "926", expectation: negative}
+
+# ── CWE-426 untrusted search path (sudoers loader variables) (skill `configuration`) ──
+- {file: p7_configuration/cwe_426_1.conf, language: Sudoers, cwe: "426", expectation: positive, line: 3}
+- {file: p7_configuration/cwe_426_1_clean.conf, language: Sudoers, cwe: "426", expectation: negative}
+- {file: p7_configuration/cwe_426_2.conf, language: Sudoers, cwe: "426", expectation: positive, line: 2}
+- {file: p7_configuration/cwe_426_2_clean.conf, language: Sudoers, cwe: "426", expectation: negative}
+- {file: p7_configuration/cwe_426_3.conf, language: Sudoers, cwe: "426", expectation: positive, line: 2}
+- {file: p7_configuration/cwe_426_3_clean.conf, language: Sudoers, cwe: "426", expectation: negative}

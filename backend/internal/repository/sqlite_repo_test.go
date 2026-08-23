@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vulture/backend/internal/model"
 )
@@ -208,6 +210,257 @@ func TestSaveAndGetFindings_ProvenanceRoundTrip_0057(t *testing.T) {
 	}
 	if got.Findings[0].Provenance != "llm_l5_verified" {
 		t.Fatalf("Provenance = %q, want llm_l5_verified", got.Findings[0].Provenance)
+	}
+}
+
+func TestSaveAndGetFindings_CodeSnippetRoundTrip_0072(t *testing.T) {
+	// Feature 0072 P5 (AC18): the evidence window a verdict rested on must
+	// survive persistence, or verdicts cannot be audited after the run.
+	repo := newTestRepo(t)
+
+	src := &model.Source{
+		ID: "src-snip", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1,
+		CreatedAt: time.Now().UTC(),
+	}
+	_ = repo.CreateSource(src)
+
+	audit := &model.Audit{
+		ID: "audit-snip", SourceID: "src-snip", Types: []string{"cwe"},
+		Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
+		Scores: map[string]int{}, CreatedAt: time.Now().UTC(),
+	}
+	_ = repo.CreateAudit(audit)
+
+	snippet := "41: q := \"SELECT * FROM t WHERE id=\" + id\n42: db.Query(q)"
+	findings := []model.Finding{
+		{
+			ID: "f-snip", AuditID: "audit-snip", AgentType: "cwe",
+			Severity: model.SeverityCritical, Category: "CWE-89",
+			Title: "SQL Injection", Description: "Tainted query",
+			FilePath: "db.go", LineStart: 42, LineEnd: 42,
+			CodeSnippet: snippet,
+		},
+		{
+			ID: "f-nosnip", AuditID: "audit-snip", AgentType: "cwe",
+			Severity: model.SeverityLow, Category: "misc",
+			Title: "No snippet", Description: "Snippet left unset",
+			FilePath: "util.go", LineStart: 1, LineEnd: 1,
+		},
+	}
+	if err := repo.SaveFindings("audit-snip", findings); err != nil {
+		t.Fatalf("save findings: %v", err)
+	}
+
+	got, _ := repo.GetAudit("audit-snip")
+	if len(got.Findings) != 2 {
+		t.Fatalf("expected 2 findings, got %d", len(got.Findings))
+	}
+	for _, f := range got.Findings {
+		switch f.ID {
+		case "f-snip":
+			if f.CodeSnippet != snippet {
+				t.Fatalf("CodeSnippet = %q, want %q", f.CodeSnippet, snippet)
+			}
+		case "f-nosnip":
+			if f.CodeSnippet != "" {
+				t.Fatalf("CodeSnippet = %q, want empty", f.CodeSnippet)
+			}
+		}
+	}
+}
+
+func TestSaveFindings_CodeSnippetOversizeClamped_0072(t *testing.T) {
+	// A plugin/container agent can hand the backend an arbitrarily large
+	// snippet; the store must bound it rather than bloat every replay.
+	repo := newTestRepo(t)
+
+	src := &model.Source{
+		ID: "src-big", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1,
+		CreatedAt: time.Now().UTC(),
+	}
+	_ = repo.CreateSource(src)
+	audit := &model.Audit{
+		ID: "audit-big", SourceID: "src-big", Types: []string{"cwe"},
+		Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
+		Scores: map[string]int{}, CreatedAt: time.Now().UTC(),
+	}
+	_ = repo.CreateAudit(audit)
+
+	big := strings.Repeat("x", maxCodeSnippetBytes+4096)
+	findings := []model.Finding{{
+		ID: "f-big", AuditID: "audit-big", AgentType: "cwe",
+		Severity: model.SeverityHigh, Category: "CWE-89",
+		Title: "Big snippet", Description: "d",
+		FilePath: "a.go", LineStart: 1, LineEnd: 1,
+		CodeSnippet: big,
+	}}
+	if err := repo.SaveFindings("audit-big", findings); err != nil {
+		t.Fatalf("save findings: %v", err)
+	}
+	got, _ := repo.GetAudit("audit-big")
+	if n := len(got.Findings[0].CodeSnippet); n > maxCodeSnippetBytes {
+		t.Fatalf("stored snippet is %d bytes, want <= %d", n, maxCodeSnippetBytes)
+	}
+	if got.Findings[0].CodeSnippet == "" {
+		t.Fatal("oversize snippet must be clamped, not dropped")
+	}
+}
+
+func TestSaveFindings_CodeSnippetNulStripped_0072(t *testing.T) {
+	// Feature 0072 P5 regression (dogfood: juice-shop ftp/encrypt.pyc): a
+	// snippet sampled from a binary carries 0x00. Postgres TEXT rejects it and
+	// aborts the whole multi-row INSERT; SQLite tolerates it but persisting a
+	// NUL is still wrong. clampSnippet must strip it in both dialects. The
+	// second finding proves one bad snippet no longer takes its batch-mates
+	// down with it.
+	repo := newTestRepo(t)
+	_ = repo.CreateSource(&model.Source{
+		ID: "src-nul", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1,
+		CreatedAt: time.Now().UTC(),
+	})
+	_ = repo.CreateAudit(&model.Audit{
+		ID: "audit-nul", SourceID: "src-nul", Types: []string{"cwe"},
+		Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
+		Scores: map[string]int{}, CreatedAt: time.Now().UTC(),
+	})
+	findings := []model.Finding{
+		{
+			ID: "f-nul", AuditID: "audit-nul", AgentType: "cwe",
+			Severity: model.SeverityMedium, Category: "CWE-798",
+			Title: "binary blob", Description: "d",
+			FilePath: "ftp/encrypt.pyc", LineStart: 1, LineEnd: 1,
+			CodeSnippet: "1: \x03\x00\x00\x00garbage\x00tail",
+		},
+		{
+			ID: "f-clean", AuditID: "audit-nul", AgentType: "cwe",
+			Severity: model.SeverityHigh, Category: "CWE-89",
+			Title: "real finding", Description: "d",
+			FilePath: "db.go", LineStart: 5, LineEnd: 5,
+			CodeSnippet: "5: db.Query(q)",
+		},
+	}
+	if err := repo.SaveFindings("audit-nul", findings); err != nil {
+		t.Fatalf("save findings: %v", err)
+	}
+	got, _ := repo.GetAudit("audit-nul")
+	if len(got.Findings) != 2 {
+		t.Fatalf("one bad snippet dropped its batch-mate: got %d of 2 findings", len(got.Findings))
+	}
+	for _, f := range got.Findings {
+		if strings.ContainsRune(f.CodeSnippet, 0) {
+			t.Fatalf("finding %s: NUL byte survived into the stored snippet", f.ID)
+		}
+	}
+}
+
+func TestDbSafeText_0072(t *testing.T) {
+	// The generic persistence guard: NUL and invalid UTF-8 are the two byte
+	// hazards Postgres TEXT rejects. Both must be cleaned; clean input passes
+	// through untouched.
+	cases := []struct {
+		name, in, want string
+	}{
+		{"clean", "SELECT * FROM t", "SELECT * FROM t"},
+		{"empty", "", ""},
+		{"nul stripped", "a\x00b\x00c", "abc"},
+		{"invalid utf8 replaced", "ok\xff\xfetail", "ok�tail"},
+		{"nul and invalid mixed", "x\x00\xffy", "x�y"},
+		{"valid multibyte kept", "café — naïve", "café — naïve"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := dbSafeText(c.in)
+			if got != c.want {
+				t.Fatalf("dbSafeText(%q) = %q, want %q", c.in, got, c.want)
+			}
+			if strings.ContainsRune(got, 0) {
+				t.Fatalf("dbSafeText(%q) left a NUL byte", c.in)
+			}
+		})
+	}
+}
+
+func TestSaveFindings_InvalidUtf8AllTextFields_0072(t *testing.T) {
+	// A plugin/container agent can pass raw scanned bytes through ANY text
+	// field, not just code_snippet. Every source-derived column must be
+	// sanitised, and one bad finding must not drop its batch-mate.
+	repo := newTestRepo(t)
+	_ = repo.CreateSource(&model.Source{
+		ID: "src-u8", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1,
+		CreatedAt: time.Now().UTC(),
+	})
+	_ = repo.CreateAudit(&model.Audit{
+		ID: "audit-u8", SourceID: "src-u8", Types: []string{"cwe"},
+		Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
+		Scores: map[string]int{}, CreatedAt: time.Now().UTC(),
+	})
+	findings := []model.Finding{
+		{
+			ID: "f-bad", AuditID: "audit-u8", AgentType: "cwe",
+			Severity: model.SeverityMedium, Category: "CWE-20",
+			Title:       "bad \xff\xfe title",
+			Description: "desc with \x00 nul and \xc3\x28 invalid seq",
+			FilePath:    "weird/\xffname.bin", LineStart: 1, LineEnd: 1,
+			Recommendation: "fix \xed\xa0\x80 it",
+			CodeSnippet:    "1: raw\xffbytes",
+		},
+		{
+			ID: "f-ok", AuditID: "audit-u8", AgentType: "cwe",
+			Severity: model.SeverityHigh, Category: "CWE-89",
+			Title: "clean", Description: "d", FilePath: "db.go",
+			LineStart: 5, LineEnd: 5,
+		},
+	}
+	if err := repo.SaveFindings("audit-u8", findings); err != nil {
+		t.Fatalf("save findings: %v", err)
+	}
+	got, _ := repo.GetAudit("audit-u8")
+	if len(got.Findings) != 2 {
+		t.Fatalf("one bad-byte finding dropped its batch-mate: got %d of 2", len(got.Findings))
+	}
+	for _, f := range got.Findings {
+		for _, field := range []string{f.Title, f.Description, f.FilePath, f.Recommendation, f.CodeSnippet} {
+			if !utf8.ValidString(field) {
+				t.Fatalf("finding %s: stored a field that is not valid UTF-8: %q", f.ID, field)
+			}
+			if strings.ContainsRune(field, 0) {
+				t.Fatalf("finding %s: NUL survived into a stored field", f.ID)
+			}
+		}
+	}
+}
+
+func TestSaveFindings_ChunkedBeyondParamLimit_0072(t *testing.T) {
+	// The Postgres insert used to be one statement; past ~3120 findings that
+	// exceeds the 65535 bind-param limit and persisted nothing. SQLite has its
+	// own 32766 limit. Both must chunk. 2500 > findingsInsertChunk forces at
+	// least three chunks and, on Postgres, would blow a single statement.
+	repo := newTestRepo(t)
+	_ = repo.CreateSource(&model.Source{
+		ID: "src-big-n", Type: model.SourceTypeLocal, Path: "/tmp", FileCount: 1,
+		CreatedAt: time.Now().UTC(),
+	})
+	_ = repo.CreateAudit(&model.Audit{
+		ID: "audit-big-n", SourceID: "src-big-n", Types: []string{"cwe"},
+		Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
+		Scores: map[string]int{}, CreatedAt: time.Now().UTC(),
+	})
+	const n = 2500
+	findings := make([]model.Finding, n)
+	for i := range findings {
+		findings[i] = model.Finding{
+			ID: fmt.Sprintf("f-%d", i), AuditID: "audit-big-n", AgentType: "cwe",
+			Severity: model.SeverityLow, Category: "CWE-20",
+			Title: "t", Description: "d", FilePath: "a.go",
+			LineStart: i, LineEnd: i,
+		}
+	}
+	if err := repo.SaveFindings("audit-big-n", findings); err != nil {
+		t.Fatalf("save %d findings: %v", n, err)
+	}
+	got, _ := repo.GetAudit("audit-big-n")
+	if len(got.Findings) != n {
+		t.Fatalf("chunking lost findings: persisted %d of %d", len(got.Findings), n)
 	}
 }
 
@@ -756,7 +1009,7 @@ func TestGetLatestCompletedAudit_MultipleCompleted(t *testing.T) {
 	older := &model.Audit{
 		ID: "old", SourceID: "src-1", Types: []string{"chaos"},
 		Config: json.RawMessage("{}"), Status: model.AuditStatusCompleted,
-		Scores: map[string]int{"chaos": 70},
+		Scores:    map[string]int{"chaos": 70},
 		CreatedAt: now.Add(-time.Hour), CompletedAt: func() *time.Time { t := now.Add(-time.Hour); return &t }(),
 	}
 	_ = repo.CreateAudit(older)
@@ -766,7 +1019,7 @@ func TestGetLatestCompletedAudit_MultipleCompleted(t *testing.T) {
 	newer := &model.Audit{
 		ID: "new", SourceID: "src-1", Types: []string{"chaos"},
 		Config: json.RawMessage("{}"), Status: model.AuditStatusCompleted,
-		Scores: map[string]int{"chaos": 90},
+		Scores:    map[string]int{"chaos": 90},
 		CreatedAt: now, CompletedAt: &now,
 	}
 	_ = repo.CreateAudit(newer)
@@ -1206,7 +1459,7 @@ func TestListAudits_ScanRow(t *testing.T) {
 		a := &model.Audit{
 			ID: fmt.Sprintf("a-%d", i), SourceID: "src-1", Types: []string{"chaos"},
 			Config: json.RawMessage("{}"), Status: model.AuditStatusRunning,
-			Scores: map[string]int{},
+			Scores:    map[string]int{},
 			CreatedAt: now.Add(time.Duration(i) * time.Second),
 		}
 		_ = repo.CreateAudit(a)

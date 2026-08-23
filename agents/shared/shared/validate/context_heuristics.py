@@ -13,6 +13,10 @@ import functools
 import re
 from typing import Any
 
+from shared.anchor import anchor_weight
+from shared.env import env_truthy
+
+from .refutation import REFUTATION_MAP, Scope, obligation_check, route_model_for
 from .types import ValidationCheck
 
 __all__ = ["run_l1"]
@@ -224,6 +228,58 @@ def _read_lines_cached(file_path: str) -> tuple[str, ...]:
 
 def clear_l1_cache() -> None:
     _read_lines_cached.cache_clear()
+    _scan_for_sanitizer.cache_clear()
+
+
+# ── T2.6: textual matching must not fire on comments or string literals ──
+# A word-level regex like \bsanitize\b matching a comment ("TODO: sanitize
+# this") or a log string would discharge an obligation nothing satisfied.
+# Strings are blanked FIRST (so a '#' or '//' inside a string cannot truncate
+# the code part), then line comments and inline block comments are dropped.
+# Best-effort and line-based by design: multi-line strings/docstrings are not
+# tracked; the failure mode is a missed strip (extra discharge), never a
+# dropped finding — discharge only supports, it cannot refute (§5.1).
+# Single-sourced in shared.tools.line_context so detectors and the validate
+# layer cannot drift apart. NOTE the bias differs by layer: here a missed strip
+# means an extra discharge (safe); in a detector it would mean a dropped
+# finding, which is why that module forbids using it as a hard skip.
+from shared.tools.line_context import (  # noqa: E402 — sited with the
+    # commentary above, which is the whole point: this import is the
+    # single-sourcing decision it documents. Hoisting it to the top
+    # separates the import from the layer-bias warning and invites the
+    # next reader to reuse it as a hard skip in a detector, which would
+    # drop findings rather than merely over-discharge.
+    strip_strings_and_comments,
+)
+
+
+def _strip_comments_and_strings(line: str) -> str:
+    return strip_strings_and_comments(line)
+
+
+@functools.lru_cache(maxsize=4096)
+def _scan_for_sanitizer(
+    file_path: str, category: str, start: int, end: int,
+) -> int:
+    """First sanitizer-pattern hit in lines [start, end) (0-based bounds),
+    after comment/string stripping. Returns the 1-based line, or 0.
+
+    Memoised on (file, class, extent) — T2.4: the extent MUST be in the key,
+    or one function's answer would be served for a different function under a
+    sub-file scope. For FILE scope the extent is stable, so the cache
+    collapses to one entry per (file, class) where it matters most. Cleared
+    per validate() call via clear_l1_cache.
+    """
+    patterns = SANITIZER_MAP.get(category, [])
+    lines = _read_lines_cached(file_path)
+    for i in range(max(0, start), min(end, len(lines))):
+        stripped = _strip_comments_and_strings(lines[i])
+        if not stripped:
+            continue
+        for pat in patterns:
+            if pat.search(stripped):
+                return i + 1
+    return 0
 
 
 def _suppression_check(file_path: str, line_start: int) -> ValidationCheck | None:
@@ -249,12 +305,121 @@ def _suppression_check(file_path: str, line_start: int) -> ValidationCheck | Non
     return None
 
 
+# ─── Feature 0076: the evidence-quote anchor status ─────────────────
+# The LLM phase stamps the verifier's outcome onto the finding as PRIVATE,
+# underscore-prefixed fields and strips them before egress. `run_l1` is their
+# last consumer: the check it emits here is the status's ONLY persisted route
+# (§5.4(4)), because `_apply_validation_to_finding` (validate/__init__.py:194)
+# overwrites `finding["validation"]` wholesale, so a check pre-stamped during
+# the LLM phase would be destroyed before the voter ever saw it (C2/AC16).
+#
+# The WEIGHT is not decided here. `shared.anchor.anchor_weight` is the one
+# authority for it and reads `VULTURE_LLM_QUOTE_DEMOTE_ABSENT` at CALL time:
+# every status is 0.0 except `absent`, and `absent` only while that switch is
+# on. Re-deriving the table here would be the non-DRY alternative, and gating
+# only the AUTHORITATIVE_CHECKS membership while leaving −1.0 applied is the
+# exact silent downgrade AC34 forbids.
+_ANCHOR_ID = "anchor"
+
+# (private stamp, extras key). Numeric provenance only — the status itself is
+# the check's `result`, like every other L1 check's outcome label.
+_ANCHOR_PROVENANCE: tuple[tuple[str, str], ...] = (
+    ("_claimed_line", "claimed_line"),
+    ("_anchor_delta", "delta"),
+    ("_anchor_candidates", "candidates"),
+    ("_anchor_other_path", "other_path"),
+    ("_anchor_quote_chars", "quote_chars"),
+    ("_anchor_quote_tokens", "quote_tokens"),
+)
+
+_KEEP_TEXT = "VULTURE_LLM_QUOTE_KEEP_TEXT"
+
+
+def _kept_quote(finding: dict[str, Any]) -> str:
+    """The redacted quote to retain, or "" — the default retains nothing.
+
+    `VULTURE_LLM_QUOTE_KEEP_TEXT=true` buys offline debugging, never a secret
+    channel: what is retained is `_redact_snippet(quote)`, the same primitive
+    `code_snippet` already goes through. Imported lazily because `audit_runner`
+    imports this package.
+    """
+    quote = str(finding.get("evidence_quote") or "")
+    if not quote or not env_truthy(_KEEP_TEXT):
+        return ""
+    from shared.audit_runner import _redact_snippet
+
+    return _redact_snippet(quote)
+
+
+def _anchor_extras(finding: dict[str, Any]) -> dict[str, Any]:
+    """The verifier's numeric provenance, plus a redacted quote under KEEP_TEXT."""
+    extras: dict[str, Any] = {
+        name: finding[stamp]
+        for stamp, name in _ANCHOR_PROVENANCE
+        if finding.get(stamp) is not None
+    }
+    kept = _kept_quote(finding)
+    if kept:
+        extras["quote_redacted"] = kept
+    return extras
+
+
+def _anchor_reason(finding: dict[str, Any], status: str) -> str:
+    """The verifier's own reason, not just a restatement of the status.
+
+    `anchor.py` distinguishes outcomes the status alone cannot: a truncated
+    quote that still matched exactly is `oversize` with reason `truncated:exact`,
+    and one that matched nowhere is `unquoted` with `oversize_truncated`. Building
+    the reason as f"evidence quote: {status}" discarded that, so the oversize
+    bucket stayed undecomposable in the persisted blob even after the verifier
+    learned to decompose it.
+    """
+    detail = str(finding.get("_anchor_reason") or "")
+    return f"evidence quote: {status}" + (f" ({detail})" if detail else "")
+
+
+def _anchor_check(finding: dict[str, Any]) -> ValidationCheck | None:
+    """The `anchor` check for a finding the verifier stamped, else None.
+
+    A finding with no `_anchor_status` (every skill finding, and every LLM
+    finding when `VULTURE_LLM_QUOTE_VERIFY=off`) carries no anchor check at
+    all — an absent check and a zero-weight one must stay distinguishable.
+    """
+    status = str(finding.get("_anchor_status") or "")
+    if not status:
+        return None
+
+    return ValidationCheck(
+        id=_ANCHOR_ID, result=status, weight=anchor_weight(status),
+        reason=_anchor_reason(finding, status),
+        extras=_anchor_extras(finding),
+    )
+
+
+def _sanitizer_search_extent(
+    file_path: str, line_start: int, category: str,
+) -> tuple[int, int, str]:
+    """(start, end, scope_searched) for the sanitizer scan — 0-based bounds.
+
+    T2.4: a class whose declared refutation scope is FILE **and reviewed**
+    is searched across the whole file, forward as well as backward. Every
+    other class keeps the legacy 20-line backward window — behaviour-
+    preserving until each migrated entry is reviewed (T2.1a). The window
+    actually used is recorded as `scope_searched` so the obligation's
+    `scope_actual` extras (and T7.4's divergence alert) reflect the truth.
+    """
+    lines = _read_lines_cached(file_path)
+    ref = REFUTATION_MAP.get(category)
+    if ref is not None and ref.scope is Scope.FILE and ref.scope_reviewed:
+        return 0, len(lines), "file"
+    return max(0, line_start - 21), min(len(lines), line_start), "window20_backward"
+
+
 def _sanitizer_check(
     file_path: str, line_start: int, category: str,
 ) -> ValidationCheck:
-    """Scan the window [line_start - 20, line_start] for a sanitizer
-    pattern matching the finding's CWE category. Returns a promoting
-    check if found, otherwise a neutral check.
+    """Scan the class's search extent for a sanitizer pattern matching the
+    finding's CWE category (comment- and string-stripped — T2.6/AC17).
     """
     if not file_path or line_start <= 0:
         return ValidationCheck(id="sanitizer", result="skipped", weight=0.0,
@@ -267,45 +432,136 @@ def _sanitizer_check(
     if not lines:
         return ValidationCheck(id="sanitizer", result="no_file", weight=0.0,
                                reason="could not read file")
-    start = max(0, line_start - 21)
-    end = min(len(lines), line_start)
-    for i in range(start, end):
-        for pat in patterns:
-            if pat.search(lines[i]):
-                return ValidationCheck(
-                    id="sanitizer", result="promoted", weight=0.15,
-                    reason=f"sanitizer matched on line {i + 1}",
-                    extras={"sanitizer_at": i + 1, "category": category},
-                )
+    start, end, scope_searched = _sanitizer_search_extent(
+        file_path, line_start, category)
+    hit = _scan_for_sanitizer(file_path, category, start, end)
+    if hit:
+        # Feature 0072 P0: a mitigation match must NEVER promote.
+        #
+        # SANITIZER_MAP holds patterns for SAFE practice (parameterize,
+        # prepared, bind_param, DOMPurify, shlex.quote), so a match is
+        # evidence that the weakness is mitigated. Returning +0.15 here
+        # meant a parameterised query near a CWE-89 sink RAISED the
+        # SQL-injection finding's confidence — the sign was backwards.
+        #
+        # The weight is now neutral and `result` no longer claims a
+        # direction. The state stays distinguishable from "absent"
+        # because the obligation model needs to tell "searched, found a
+        # mitigation" apart from "searched, found nothing".
+        return ValidationCheck(
+            id="sanitizer", result="matched", weight=0.0,
+            reason=f"mitigation pattern matched on line {hit}",
+            extras={"sanitizer_at": hit, "category": category,
+                    "scope_searched": scope_searched},
+        )
     return ValidationCheck(id="sanitizer", result="absent", weight=0.0,
-                           reason="no sanitizer in surrounding lines")
+                           reason="no sanitizer in surrounding lines",
+                           extras={"scope_searched": scope_searched})
 
 
-def run_l1(findings: list[dict[str, Any]]) -> list[list[ValidationCheck]]:
+def _scope_available(category: str, source_root: str = "") -> bool:
+    """Whether the resolver for this class's declared scope can decide HERE.
+
+    WIRING scope is available only when a route model actually resolved routes
+    for this tree. A model that found none means the stack is one no resolver
+    understands, which must report unavailable rather than "searched and clean":
+    a non-degradable class then stays `unknown` instead of discharging at a
+    narrower scope — precisely how an earlier design re-opened the very
+    false-positive class this feature exists to close.
+    """
+    ref = REFUTATION_MAP.get(category)
+    if ref is None or ref.scope is not Scope.WIRING:
+        return True
+    model = route_model_for(source_root)
+    return model is not None and bool(model.routes())
+
+
+def _obligation_for(
+    f: dict[str, Any], san: ValidationCheck, category: str,
+    file_path: str, line_start: int, source_root: str,
+) -> ValidationCheck:
+    """Feature 0072: derive the obligation from the search that just ran.
+
+    `no_map` / `no_file` / `skipped` mean the mitigation was never searched
+    for, which must be distinguishable from "searched and found nothing" — in
+    an additive vote both are weight 0.0.
+
+    A WIRING-scoped class is resolved against the route model when a source
+    root is known; where no model resolves, its scope reports unavailable and
+    the non-degradable classes stay `unknown` rather than discharging at a
+    narrower scope.
+    """
+    return obligation_check(
+        category, san.result,
+        scope_available=_scope_available(category, source_root),
+        file_path=file_path,
+        line_start=line_start,
+        source_root=source_root or None,
+        check_id=f.get("check_id") or "",
+        scope_searched=(san.extras or {}).get("scope_searched", ""),
+    )
+
+
+def _optional_checks(
+    f: dict[str, Any], file_path: str, line_start: int,
+) -> list[ValidationCheck]:
+    """The checks that may not apply at all — a suppression marker, and feature
+    0076's `anchor`.
+
+    Absent rather than neutral: a check that is MISSING and a check that weighs
+    0.0 are different facts, and only the second one says "we looked".
+    """
+    found = (_suppression_check(file_path, line_start), _anchor_check(f))
+    return [c for c in found if c is not None]
+
+
+def _finding_checks(
+    f: dict[str, Any], source_root: str,
+) -> list[ValidationCheck]:
+    """Every L1 check for ONE finding, in blob order."""
+    file_path = f.get("file_path", "") or ""
+    line_start = int(f.get("line_start") or 0)
+    category = f.get("category", "") or ""
+    san = _sanitizer_check(file_path, line_start, category)
+    return [
+        _path_check(file_path),
+        *_optional_checks(f, file_path, line_start),
+        san,
+        _obligation_for(f, san, category, file_path, line_start, source_root),
+    ]
+
+
+def _l1_error_checks(
+    f: dict[str, Any], exc: BaseException,
+) -> list[ValidationCheck]:
+    """RC3: a crashed layer must not read as "checked and clean" — emit a
+    blocking obligation alongside the error so the batch cannot be confirmed
+    on the strength of a layer that never ran.
+    """
+    return [
+        ValidationCheck(
+            id="path", result="error", weight=0.0,
+            reason=f"L1 error: {type(exc).__name__}: {str(exc)[:100]}",
+        ),
+        obligation_check(f.get("category", "") or "", None),
+    ]
+
+
+def run_l1(
+    findings: list[dict[str, Any]], source_root: str = "",
+) -> list[list[ValidationCheck]]:
     """Run L1 against every finding; return per-finding check lists.
+
+    `source_root` enables WIRING-scope refutation: without it an authorization
+    obligation can only ever be `unknown`, because the middleware chain that
+    would refute it lives outside any window this layer can see.
 
     Layer-isolated (RC3): one finding raising does NOT prevent others.
     """
     results: list[list[ValidationCheck]] = []
     for f in findings:
         try:
-            file_path = f.get("file_path", "") or ""
-            line_start = int(f.get("line_start") or 0)
-            category = f.get("category", "") or ""
-
-            checks: list[ValidationCheck] = []
-            checks.append(_path_check(file_path))
-
-            sup = _suppression_check(file_path, line_start)
-            if sup is not None:
-                checks.append(sup)
-
-            checks.append(_sanitizer_check(file_path, line_start, category))
-
-            results.append(checks)
+            results.append(_finding_checks(f, source_root))
         except Exception as exc:    # RC3 layer isolation
-            results.append([ValidationCheck(
-                id="path", result="error", weight=0.0,
-                reason=f"L1 error: {type(exc).__name__}: {str(exc)[:100]}",
-            )])
+            results.append(_l1_error_checks(f, exc))
     return results

@@ -36,7 +36,24 @@ FIXTURE_APP = FIXTURE_DIR / "app.py"
 # stable signal. The CWE agent also emits incidental Flask-shape CWEs (missing
 # auth, CSRF, IDOR, ...); those are NOT asserted individually because they may
 # drift as skills evolve.
-PLANTED_CWES = {78, 89, 328, 502, 532, 611, 755, 798, 918, 937, 1104}
+#
+# Two entries were CORRECTED after this assertion drifted from the skills. The
+# fixture's planted defects were always detected; the skills emit MORE PRECISE
+# ids than the list originally hard-coded, so the test failed while detection
+# was healthy (the two Top-10 coverage assertions below kept passing throughout,
+# which is what proves the pipeline was fine):
+#   937 -> 1395  `requests==2.31.0` is found as CWE-1395 "Dependency on
+#                Vulnerable Third-Party Component" (CVE-2024-35195). 1395 is
+#                this project's canonical id for a known-vulnerable pin — see
+#                POLICY_CLASSES in shared/validate/refutation.py.
+#   755 -> 396   the fixture writes `except Exception:`, which NAMES a type, so
+#                it is CWE-396 "Declaration of Catch for Generic Exception".
+#                error_handling_check.py reserves CWE-755 for the case where no
+#                type is declared at all (`except:`, `catch(...)`, `catch {`),
+#                so 755 could never have fired on this fixture.
+# The app.py header comment still reads "CWE-755/248" at the swallowed-exception
+# site; it describes the weakness class informally, not the emitted id.
+PLANTED_CWES = {78, 89, 328, 396, 502, 532, 611, 798, 918, 1104, 1395}
 
 # The fixture is engineered so the planted + incidental CWEs together cover ALL
 # ten OWASP categories in BOTH editions. A failure of the coverage assertion

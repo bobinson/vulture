@@ -8,7 +8,7 @@ target that leaks stack traces to unauthenticated clients by design:
     server.ts:682   app.use(errorhandler())
 
 The `errorhandler` package exists to send the full stack trace and surrounding
-source context in the HTTP response. juice-shop mounts it unconditionally — no
+source context in the HTTP response. A measured app mounted it unconditionally — no
 `NODE_ENV` guard — and declares it as a *production* dependency
 (package.json:108, not devDependencies), so the leak ships.
 
@@ -43,7 +43,7 @@ def _disclosure(findings: list[dict]) -> list[dict]:
 
 
 class TestLeakyErrorMiddleware:
-    def test_juiceshop_errorhandler_shape(self):
+    def test_errorhandler_shape(self):
         """server.ts:682 — the exact instance the scan missed."""
         body = (
             "const errorhandler = require('errorhandler')\n"

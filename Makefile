@@ -1,5 +1,5 @@
 .PHONY: build build-backend build-agents build-agents-force build-frontend \
-       test test-backend test-agents test-frontend \
+       test test-backend test-race test-agents test-frontend \
        e2e coverage complexity lint \
        docker-up docker-down \
        gen-env config-check \
@@ -41,6 +41,14 @@ test:
 
 test-backend:
 	cd backend && go test ./...
+
+# Race detector on the concurrency-bearing packages. Feature 0071 added a
+# per-audit event broadcaster with a fan-out goroutine per subscriber; none of
+# its failure modes (lost history/tail seam, subscriber map races) are visible to
+# a non-race run, so this is a separate gate rather than a flag on test-backend
+# (which would roughly triple the whole suite's runtime).
+test-race:
+	cd backend && go test -race ./internal/handler/... ./internal/service/... ./internal/agui/...
 
 # Depends on build-agents: the agents import each other (e.g. chaos_agent imports
 # `shared`), so they must be installed editable in the test interpreter first.

@@ -20,7 +20,8 @@ sys.path.insert(0, str(REPO / "agents" / "cwe"))
 sys.path.insert(0, str(REPO / "agents" / "shared"))
 
 from asvs_agent.skills.asvs_requirements_check import (  # noqa: E402
-    _CHECKS, _GENERIC_TOKENS,
+    _CHECKS,
+    _GENERIC_TOKENS,
 )
 
 CATALOG = json.loads(

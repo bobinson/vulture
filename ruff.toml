@@ -1,0 +1,37 @@
+# Root ruff config — makes `ruff check .` from the repo root agree with CI.
+#
+# WHY THIS FILE EXISTS. CI runs `cd agents && ruff check .`, so ruff discovers
+# agents/ruff.toml and lints the agent workspace against the project's curated
+# rule set. Everything OUTSIDE agents/ — plugins/, scripts/, mcp/, tools/ — had
+# no config above it, so a plain `ruff check .` from the root fell back to
+# ruff's built-in defaults. That is not merely noisier; it CONTRADICTS the
+# project's own settings, and following its advice breaks CI:
+#
+#   * target-version was unset, so ruff assumed a Python where `tomllib` is not
+#     stdlib and demanded stdlib imports be moved into a third-party block.
+#     Applying that fix makes the py312-configured run in agents/ flag it back.
+#   * E402 is not in the unconfigured default set, so the load-bearing
+#     `# noqa: E402` directives in scripts/verify_*_coverage.py (they
+#     sys.path.insert before importing) were reported as UNUSED. Deleting them
+#     would red the project-configured run, where E4 — and therefore E402 — is
+#     selected.
+#   * rules the project deliberately REJECTED were enforced: BLE001 and S110.
+#     agents/ruff.toml records why — this is resilient-scanning software that
+#     catches broadly on purpose so one malformed input cannot abort an audit,
+#     and enforcing them produced 205 by-design findings.
+#
+# Extending the agents config means one rule set for the whole repo and one
+# place to change it. agents/cwe and agents/shared still layer their own
+# pyproject.toml settings on top for their subtrees (notably cwe's
+# extend-exclude for the intentionally-vulnerable corpus fixtures), because
+# ruff resolves configuration per file, nearest-first.
+extend = "agents/ruff.toml"
+
+# Vendored, generated, or intentionally-broken trees that are never linted.
+extend-exclude = [
+    "agents/cwe/tests/corpus/fixtures",
+    "**/node_modules",
+    "**/.venv",
+    "**/dist",
+    "frontend",
+]

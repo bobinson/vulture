@@ -1,0 +1,8 @@
+name: deploy
+jobs:
+  publish:
+    runs-on: linux
+    env:
+      SERVICE_API_TOKEN: ${SERVICE_API_TOKEN}
+    steps:
+      - run: ./scripts/publish.sh

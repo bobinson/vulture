@@ -1,5 +1,6 @@
 import pytest
 
+
 @pytest.fixture(autouse=True)
 def vulture_env(monkeypatch):
     """Set minimal env for all tests."""

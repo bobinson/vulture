@@ -1,0 +1,6 @@
+<configuration>
+  <system.web>
+    <authentication mode="Forms" />
+    <compilation targetFramework="4.8" debug="true" />
+  </system.web>
+</configuration>

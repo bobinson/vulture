@@ -1,0 +1,40 @@
+# Group: access-control (feature 0070 P8) — 2 new detections in
+# `access_control_check`. Paths are relative to ../fixtures/. `line` is the
+# expected vuln line (diagnostic only, positives).
+#
+# `run_deterministic()` flattens every fixture to ONE file renamed `f.<ext>`,
+# so only the SUFFIX survives. Both rules here are content-keyed (neither reads
+# a path or a filename), so both are gateable; the suffixes below are chosen so
+# the intended dialect arm is the one exercised.
+#
+# Every clean twin differs MINIMALLY from its positive, and each twin is the
+# shape that was measured as the false positive of the naive predicate:
+#
+#   * 566 — the SAME primary-key lookup with an owner/tenant column added to
+#     the WHERE clause (`UserId`, `owner_id`, `current_user.orders`). That
+#     composite key IS the authorization check, and it was the single most
+#     common shape in the review corpus: a rule that keys on `\w*id` alone
+#     cannot tell it apart from the unscoped lookup and condemns both. Note the
+#     twins still (correctly) carry the general CWE-639 row — 566 is a strict
+#     SUBSET of 639, so only the specialisation has to fall silent.
+#
+#   * 425 — the SAME administrative route with its guard restored, in each
+#     framework's own vocabulary (`security.isAuthorized()`, `@login_required`,
+#     a `RequireAuth()` middleware argument). The path is unchanged, so the
+#     twin isolates the authz decision rather than the URL vocabulary.
+
+# ── CWE-566 Authorization bypass through user-controlled SQL primary key ──
+- {file: p8_access/cwe_566_1.ts, language: TypeScript, cwe: "566", expectation: positive, line: 2}
+- {file: p8_access/cwe_566_2.py, language: Python, cwe: "566", expectation: positive, line: 2}
+- {file: p8_access/cwe_566_3.rb, language: Ruby, cwe: "566", expectation: positive, line: 3}
+- {file: p8_access/cwe_566_1_clean.ts, language: TypeScript, cwe: "566", expectation: negative}
+- {file: p8_access/cwe_566_2_clean.py, language: Python, cwe: "566", expectation: negative}
+- {file: p8_access/cwe_566_3_clean.rb, language: Ruby, cwe: "566", expectation: negative}
+
+# ── CWE-425 Direct request ('forced browsing') to an admin area ──
+- {file: p8_access/cwe_425_1.ts, language: TypeScript, cwe: "425", expectation: positive, line: 2}
+- {file: p8_access/cwe_425_2.py, language: Python, cwe: "425", expectation: positive, line: 1}
+- {file: p8_access/cwe_425_3.go, language: Go, cwe: "425", expectation: positive, line: 2}
+- {file: p8_access/cwe_425_1_clean.ts, language: TypeScript, cwe: "425", expectation: negative}
+- {file: p8_access/cwe_425_2_clean.py, language: Python, cwe: "425", expectation: negative}
+- {file: p8_access/cwe_425_3_clean.go, language: Go, cwe: "425", expectation: negative}

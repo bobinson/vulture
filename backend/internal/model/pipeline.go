@@ -9,12 +9,12 @@ import (
 type PipelineStatus string
 
 const (
-	PipelineStatusPending          PipelineStatus = "pending"
-	PipelineStatusScanRunning      PipelineStatus = "scan_running"
-	PipelineStatusDiscoverRunning  PipelineStatus = "discover_running"
-	PipelineStatusProveRunning     PipelineStatus = "prove_running"
-	PipelineStatusCompleted        PipelineStatus = "completed"
-	PipelineStatusFailed           PipelineStatus = "failed"
+	PipelineStatusPending         PipelineStatus = "pending"
+	PipelineStatusScanRunning     PipelineStatus = "scan_running"
+	PipelineStatusDiscoverRunning PipelineStatus = "discover_running"
+	PipelineStatusProveRunning    PipelineStatus = "prove_running"
+	PipelineStatusCompleted       PipelineStatus = "completed"
+	PipelineStatusFailed          PipelineStatus = "failed"
 )
 
 // Pipeline represents a multi-stage audit pipeline (scan → discover → prove).

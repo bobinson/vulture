@@ -1,0 +1,1 @@
+[{"title": "Unvalidated list literal rendered into JSX", "severity": "medium", "category": "CWE-20", "file_path": "src/List.tsx", "line_start": 8, "line_end": 8, "description": "The literal is rendered without validation.", "recommendation": "Validate before rendering.", "evidence_quote": "const rows = [{ id: 1 }];"}]

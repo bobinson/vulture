@@ -66,5 +66,5 @@ The following components are in scope for security reports:
 ## General Security Practices
 
 - Never commit secrets, API keys, or credentials to the repository.
-- Use the `.env.example` template for configuration; never commit `.env` files.
+- Use the `env.example` template for configuration; never commit `.env` files.
 - Report any accidentally exposed credentials immediately.

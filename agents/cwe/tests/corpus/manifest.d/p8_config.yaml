@@ -1,0 +1,35 @@
+# Group: p8 config reachability (feature 0070 P8).
+# Paths are relative to ../fixtures/. `line` is the expected vuln line
+# (diagnostic only, positives) per the design schema.
+#
+# The runner flattens each fixture to ONE file named `_neutral.<ext>`, so every
+# rule gated here is content-keyed. Extension preconditions that MUST hold or a
+# fixture gates as a silent zero:
+#   `.py`/`.js`/`.java`/`.yml` -> configuration_check.CONFIG_EXTENSIONS
+#   `.sh`                      -> configuration_check.INSTALL_SCRIPT_EXTENSIONS
+#
+# A Dockerfile positive is deliberately absent: an extensionless `Dockerfile`
+# is reached in production through the scanner's well-known-filename set, but
+# flattening renames it, so it would gate as a silent zero. The `--chmod=`
+# build arm is covered by unit tests instead.
+#
+# Every clean twin differs from its positive by ONE token — the mode digit, the
+# mask value, or the source of the assigned value — because that token is the
+# whole predicate.
+
+
+# ── CWE-276 world-modifiable default permissions (skill `configuration`) ──
+- {file: p8_config/cwe_276_1.py, language: Python, cwe: "276", expectation: positive, line: 5}
+- {file: p8_config/cwe_276_1_clean.py, language: Python, cwe: "276", expectation: negative}
+- {file: p8_config/cwe_276_2.sh, language: Shell, cwe: "276", expectation: positive, line: 4}
+- {file: p8_config/cwe_276_2_clean.sh, language: Shell, cwe: "276", expectation: negative}
+- {file: p8_config/cwe_276_3.yml, language: YAML, cwe: "276", expectation: positive, line: 5}
+- {file: p8_config/cwe_276_3_clean.yml, language: YAML, cwe: "276", expectation: negative}
+
+# ── CWE-15 system setting written from request data (skill `configuration`) ──
+- {file: p8_config/cwe_15_1.js, language: JavaScript, cwe: "15", expectation: positive, line: 2}
+- {file: p8_config/cwe_15_1_clean.js, language: JavaScript, cwe: "15", expectation: negative}
+- {file: p8_config/cwe_15_2.py, language: Python, cwe: "15", expectation: positive, line: 5}
+- {file: p8_config/cwe_15_2_clean.py, language: Python, cwe: "15", expectation: negative}
+- {file: p8_config/cwe_15_3.java, language: Java, cwe: "15", expectation: positive, line: 3}
+- {file: p8_config/cwe_15_3_clean.java, language: Java, cwe: "15", expectation: negative}

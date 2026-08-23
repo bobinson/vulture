@@ -4,12 +4,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // 0055: only one run per audit may proceed; concurrent acquirers must
 // see exactly one winner (prevents double-dispatch + persist races).
+//
+// 0071 moved the guard from `inFlight map[string]bool` + tryAcquireRun to the
+// broadcast registry, because a late subscriber needs the run's broadcaster and
+// not merely the knowledge that something is running. The invariant under test
+// is unchanged; only the primitive it is asserted against has moved.
 func TestStreamHandler_RunGuard_SingleWinner(t *testing.T) {
-	h := &StreamHandler{inFlight: map[string]bool{}}
+	r := newBroadcastRegistry()
 	const n = 50
 	var winners int32
 	var wg sync.WaitGroup
@@ -17,7 +23,7 @@ func TestStreamHandler_RunGuard_SingleWinner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if h.tryAcquireRun("audit-x") {
+			if _, ok := r.Open("audit-x", 8192); ok {
 				atomic.AddInt32(&winners, 1)
 			}
 		}()
@@ -26,13 +32,29 @@ func TestStreamHandler_RunGuard_SingleWinner(t *testing.T) {
 	if winners != 1 {
 		t.Fatalf("expected exactly 1 run winner, got %d", winners)
 	}
-	// After release, a new run can acquire.
-	h.releaseRun("audit-x")
-	if !h.tryAcquireRun("audit-x") {
+
+	// After release + immediate eviction, a new run can acquire the same id.
+	r.Release("audit-x", 0)
+	if _, ok := r.Open("audit-x", 8192); !ok {
 		t.Errorf("expected re-acquire after release")
 	}
+
 	// A different audit is independent.
-	if !h.tryAcquireRun("audit-y") {
+	if _, ok := r.Open("audit-y", 8192); !ok {
 		t.Errorf("different audit should acquire independently")
+	}
+}
+
+// While the post-run TTL window is open the audit is still owned: the run is
+// finished, but re-dispatching onto the same id would re-run every agent and
+// double-fire persistence against a completed audit.
+func TestStreamHandler_RunGuard_TTLWindowStillOwnsTheAudit(t *testing.T) {
+	r := newBroadcastRegistry()
+	if _, ok := r.Open("audit-ttl", 8192); !ok {
+		t.Fatal("first Open must win")
+	}
+	r.Release("audit-ttl", 2*time.Second)
+	if _, ok := r.Open("audit-ttl", 8192); ok {
+		t.Error("Open must fail while the post-run TTL window is still open")
 	}
 }

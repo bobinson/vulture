@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,10 +61,24 @@ func DefaultConfig(projectRoot string) *Config {
 	}
 }
 
+// ProcessManager is the seam the launcher spawns through. It exists so the
+// agent wiring is observable in a test: feature 0044 shipped a correct env
+// builder that was never called for three months, and no unit test could have
+// caught it because there was nothing to assert the call site against.
+// *Manager is the production implementation.
+type ProcessManager interface {
+	Start(ctx context.Context, name string, dir string, env []string, args ...string) error
+	StartWithEnv(ctx context.Context, name string, dir string, fullEnv []string, args ...string) error
+	WaitReady(name string, probe func() bool, timeout time.Duration) error
+	WaitAll()
+	StopAll()
+	Status() []ProcessStatus
+}
+
 // Launcher orchestrates all local development processes.
 type Launcher struct {
 	cfg    *Config
-	mgr    *Manager
+	mgr    ProcessManager
 	detect *Detect
 }
 
@@ -129,14 +144,22 @@ func (l *Launcher) Start(ctx context.Context) error {
 		return fmt.Errorf("start agents: %w", err)
 	}
 
-	// 2.5. Probe LLM health via one agent's /health and print canonical
-	// message. Aborts on VULTURE_REQUIRE_LLM=true if degraded. Feature 0039.
-	reportLLMHealthOrAbort(ctx, l.agentURLs())
-
 	// 3. Start Go backend
 	if err := l.startBackend(ctx); err != nil {
 		return fmt.Errorf("start backend: %w", err)
 	}
+
+	// 3.5. Probe LLM health via one agent's /health and print canonical
+	// message. Aborts on VULTURE_REQUIRE_LLM=true if degraded. Feature 0039.
+	//
+	// This runs AFTER the backend, not before it (feature 0073): in broker mode
+	// the agent's provider IS the broker, and the broker is served by the
+	// backend process. Probing first therefore asked whether a component that
+	// had not been started yet was reachable — it never could be, so the banner
+	// always claimed "skills-only" and VULTURE_REQUIRE_LLM=true aborted every
+	// broker-mode start. The ordering was previously masked because the agent
+	// could see OPENAI_BASE_URL and probed the upstream provider directly.
+	reportLLMHealthOrAbort(ctx, l.agentURLs())
 
 	// 4. Start frontend dev server
 	if err := l.startFrontend(ctx); err != nil {
@@ -210,7 +233,7 @@ func (l *Launcher) setupOllama(ctx context.Context) {
 }
 
 // Manager returns the process manager for status/shutdown.
-func (l *Launcher) Manager() *Manager {
+func (l *Launcher) Manager() ProcessManager {
 	return l.mgr
 }
 
@@ -271,7 +294,6 @@ func (l *Launcher) startInstallMode(ctx context.Context) error {
 		if err := l.startAgents(ctx); err != nil {
 			return fmt.Errorf("start agents: %w", err)
 		}
-		reportLLMHealthOrAbort(ctx, l.agentURLs())
 	} else {
 		log.Printf("agents unavailable (no bundled Python runtime at %s); "+
 			"starting backend + embedded SPA only (no agent runtime; agent scanning needs "+
@@ -281,6 +303,12 @@ func (l *Launcher) startInstallMode(ctx context.Context) error {
 
 	if err := l.startBackend(ctx); err != nil {
 		return fmt.Errorf("start backend: %w", err)
+	}
+
+	// After the backend, because in broker mode the broker the agents probe is
+	// served by the backend process. See the dev-mode path for the full note.
+	if agentsStarting {
+		reportLLMHealthOrAbort(ctx, l.agentURLs())
 	}
 	return nil
 }
@@ -357,6 +385,12 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 	pythonBin, agentsDir := l.agentRuntime()
 	started := make([]startedAgent, 0, len(config.AllAgents))
 
+	// Feature 0073. Both of these are loop-invariant, so they are resolved
+	// once: agentBrokerEnv reads only the process env, and the filtered base
+	// is identical for every agent.
+	brokerEnv, withholdKey := agentBrokerEnv(os.Getenv)
+	spawnBase := AgentSpawnEnvFromHost(SpawnEnvPolicyFromEnv(withholdKey))
+
 	for _, entry := range config.AllAgents {
 		agentDir := filepath.Join(agentsDir, entry.DirName)
 		port := l.cfg.AgentPorts[entry.Type]
@@ -394,7 +428,11 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		// per-run token at dispatch) and NO raw provider key — the backend is
 		// the sole key holder (N1). Broker off ⇒ withholdKey=false and keys
 		// pass through exactly as before (Mode A default unchanged).
-		brokerEnv, withholdKey := agentBrokerEnv(os.Getenv)
+		//
+		// Feature 0073: these two conditionals used to be the WHOLE control,
+		// and they never worked — declining to append is not withholding while
+		// the base is os.Environ(). The removal now happens in spawnBase; these
+		// remain as the positive half (adding the key when it is allowed).
 		if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" && !withholdKey {
 			env = append(env, "OPENAI_API_KEY="+apiKey)
 		}
@@ -405,6 +443,12 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		// URL (VULTURE_LLM_BROKER_PROVIDER_BASE_URL). Broker off ⇒ unchanged.
 		if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" && !withholdKey {
 			env = append(env, "OPENAI_BASE_URL="+baseURL)
+		} else if baseURL != "" && withholdKey {
+			// 0073 P2: the agent can no longer SEE the custom endpoint, but it
+			// still needs to know it is talking to one — supports_structured_output
+			// and the 0070-P5 gateway context clamp both key off that shape.
+			// Carry the shape without the URL or the key.
+			env = append(env, "VULTURE_LLM_ENDPOINT_KIND=openai-compatible")
 		}
 		if model := os.Getenv("VULTURE_LLM_MODEL"); model != "" {
 			env = append(env, "VULTURE_LLM_MODEL="+model)
@@ -455,7 +499,11 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		}
 
 		name := "agent-" + entry.Type
-		err := l.mgr.Start(ctx, name, agentDir, env,
+		// slices.Concat, never append(spawnBase, env...): append would hand
+		// every agent a slice over ONE shared backing array, so the second
+		// agent's entries could overwrite the first's in place.
+		full := slices.Concat(spawnBase, env)
+		err := l.mgr.StartWithEnv(ctx, name, agentDir, full,
 			pythonBin, "-m", "uvicorn", entry.Module,
 			"--host", "0.0.0.0", "--port", port,
 		)

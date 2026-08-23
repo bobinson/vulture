@@ -1,0 +1,64 @@
+# Group: crypto (feature 0070 P7, synthesis §1.2). Paths are relative to
+# ../fixtures/. `line` is the expected vuln line (diagnostic only, positives).
+#
+# The runner flattens each fixture to ONE file renamed `f.<suffix>`, so every
+# rule gated here is content-keyed: none of them depends on a filename or on a
+# directory layout. The suffixes chosen are all in the skill's scan set, and
+# the CWE-322 fixtures use suffixes inside that rule's executable/config
+# dialect set (a `.md` fixture would gate as a silent zero, which is the point
+# of the restriction: prose that names an insecure option is not using it).
+
+# ── CWE-322 Key Exchange without Entity Authentication (skill `crypto`) ──
+# Positive 3 / clean 3 are the load-bearing pair: the anonymous suites are
+# PRESENT in both, and the twin differs only by the `!` that EXCLUDES them —
+# which is the recommended hardening, so a predicate that keys on the suite
+# name alone scores the twin as a false positive.
+- {file: p7_crypto/cwe_322_1.sh, language: Shell, cwe: "322", expectation: positive, line: 5}
+- {file: p7_crypto/cwe_322_2.go, language: Go, cwe: "322", expectation: positive, line: 6}
+- {file: p7_crypto/cwe_322_3.conf, language: Config, cwe: "322", expectation: positive, line: 4}
+- {file: p7_crypto/cwe_322_1_clean.sh, language: Shell, cwe: "322", expectation: negative}
+- {file: p7_crypto/cwe_322_2_clean.go, language: Go, cwe: "322", expectation: negative}
+- {file: p7_crypto/cwe_322_3_clean.conf, language: Config, cwe: "322", expectation: negative}
+
+# ── CWE-780 Use of RSA Algorithm without OAEP (skill `crypto`) ──
+# Clean twin 2 is the discriminator that matters: `PKCS1_v1_5` names BOTH the
+# PyCryptodome cipher and the signature module, and only the cipher one is
+# CWE-780 — so the import, not the call, decides.
+- {file: p7_crypto/cwe_780_1.java, language: Java, cwe: "780", expectation: positive, line: 5}
+- {file: p7_crypto/cwe_780_2.py, language: Python, cwe: "780", expectation: positive, line: 7}
+- {file: p7_crypto/cwe_780_3.cs, language: CSharp, cwe: "780", expectation: positive, line: 7}
+- {file: p7_crypto/cwe_780_1_clean.java, language: Java, cwe: "780", expectation: negative}
+- {file: p7_crypto/cwe_780_2_clean.py, language: Python, cwe: "780", expectation: negative}
+- {file: p7_crypto/cwe_780_3_clean.cs, language: CSharp, cwe: "780", expectation: negative}
+
+# ── CWE-338 Use of Cryptographically Weak PRNG (skill `crypto`) ──
+# All three clean twins draw from the SAME weak PRNG as their positive; only
+# the consumed value differs (retry jitter, a greeting, a correlation label).
+# That is the whole rule: the weakness is the security use, not the API.
+- {file: p7_crypto/cwe_338_1.js, language: JavaScript, cwe: "338", expectation: positive, line: 2}
+- {file: p7_crypto/cwe_338_2.py, language: Python, cwe: "338", expectation: positive, line: 5}
+- {file: p7_crypto/cwe_338_3.ts, language: TypeScript, cwe: "338", expectation: positive, line: 2}
+- {file: p7_crypto/cwe_338_1_clean.js, language: JavaScript, cwe: "338", expectation: negative}
+- {file: p7_crypto/cwe_338_2_clean.py, language: Python, cwe: "338", expectation: negative}
+- {file: p7_crypto/cwe_338_3_clean.ts, language: TypeScript, cwe: "338", expectation: negative}
+
+# ── CWE-329 Generation of Predictable IV with CBC Mode (skill `crypto`) ──
+# Clean twin 1 is the measured false positive of the `[^,]+` argument
+# stand-in, verbatim: `Buffer.from(keyHex, 'hex')` in the KEY slot lets a
+# regex slide the IV group onto the `'hex'` literal.
+- {file: p7_crypto/cwe_329_1.js, language: JavaScript, cwe: "329", expectation: positive, line: 4}
+- {file: p7_crypto/cwe_329_2.py, language: Python, cwe: "329", expectation: positive, line: 5}
+- {file: p7_crypto/cwe_329_3.go, language: Go, cwe: "329", expectation: positive, line: 5}
+- {file: p7_crypto/cwe_329_1_clean.js, language: JavaScript, cwe: "329", expectation: negative}
+- {file: p7_crypto/cwe_329_2_clean.py, language: Python, cwe: "329", expectation: negative}
+- {file: p7_crypto/cwe_329_3_clean.go, language: Go, cwe: "329", expectation: negative}
+
+# ── CWE-323 Reusing a Nonce/Key Pair in Encryption (skill `crypto`) ──
+# Mode-partitioned against CWE-329: these constructors carry an AEAD/stream
+# mode token, so one line can never produce both ids.
+- {file: p7_crypto/cwe_323_1.js, language: JavaScript, cwe: "323", expectation: positive, line: 4}
+- {file: p7_crypto/cwe_323_2.py, language: Python, cwe: "323", expectation: positive, line: 5}
+- {file: p7_crypto/cwe_323_3.go, language: Go, cwe: "323", expectation: positive, line: 4}
+- {file: p7_crypto/cwe_323_1_clean.js, language: JavaScript, cwe: "323", expectation: negative}
+- {file: p7_crypto/cwe_323_2_clean.py, language: Python, cwe: "323", expectation: negative}
+- {file: p7_crypto/cwe_323_3_clean.go, language: Go, cwe: "323", expectation: negative}

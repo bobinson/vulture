@@ -6,7 +6,23 @@ version: "2"
 run:
   timeout: 5m
 linters:
+  enable:
+    # Feature 0073: bans direct os.Environ() so agent subprocess environments
+    # can only be built through localdev.AgentSpawnEnv. Feature 0044 (S5) named
+    # this rule in its threat model and never added it — which is why a spawn
+    # path that inherited the backend's JWT secret went unnoticed for months.
+    - forbidigo
   settings:
+    forbidigo:
+      # Required: the default (false) matches on source text only, so an
+      # aliased `import goos "os"; goos.Environ()` would evade the rule.
+      analyze-types: true
+      forbid:
+        - pattern: '^os\.Environ$'
+          msg: >-
+            build agent subprocess env via localdev.AgentSpawnEnv / AgentSpawnEnvFromHost
+            (feature 0073, 0044 S5). If this call legitimately inherits, add
+            //nolint:forbidigo with the reason.
     staticcheck:
       # v2's staticcheck bundles stylecheck (ST*) + quickfix (QF*), which were
       # NOT in v1's default set (v1 ran SA*/gosimple only). Disable both so the

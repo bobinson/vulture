@@ -1,0 +1,24 @@
+# 0076 T5.3 — the golden slice. TEST-ONLY, and deliberately excluded from the
+# production glob by its leading underscore.
+#
+# Two claims, one located and one fabricated, which is the minimum needed to prove
+# that the report's counts track its input: a table rendered over this fragment must
+# say N = 2 while the production table says something else entirely. A hard-coded N
+# passes one of those and fails the other.
+#
+# It references only fixtures that already exist; it adds none of its own, so it can
+# never drift from the Tier V tree.
+
+- id: golden_located
+  file: exact.ts
+  line: 3
+  quote_lines: [3, 3]
+  expect: exact
+  why: the located half of the pair
+
+- id: golden_fabricated
+  file: fabricated.ts
+  line: 5
+  quote: "const adminBypass = grantRootAccess(sessionCookie);"
+  expect: absent
+  why: the fabricated half of the pair
