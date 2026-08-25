@@ -470,6 +470,17 @@ def _pin_llm_client_retries() -> None:
     FALSY, so pinning the attribute to zero selects the default (2, i.e. 3
     attempts) that it was meant to suppress.
 
+    The hazard it was aimed at is real, and `broker.py` names it exactly while
+    bounding its own AsyncOpenAI client: "broker 3x x SDK 2x x agent
+    retry_llm_call 3x". That guard is unreachable off the broker path — with
+    OPENAI_BASE_URL set and the broker off, `get_model()` returns
+    `litellm/openai/<model>` and the SDK takes its LiteLLM path instead.
+    Measured (litellm 1.87.1): `litellm.num_retries` is None — litellm's own
+    retry wrapper is off — but `openai._base_client.DEFAULT_MAX_RETRIES` is 2
+    underneath, a hidden 3x on any retryable status (408/409/429/500). A 413 is
+    not in that set, which is why the observed 413 was not inflated; a 429 would
+    have been, giving 9 attempts where 3 were intended.
+
     The ACTUAL guard is `provider.litellm_retry_extra_args()`, which puts
     `max_retries=0` on the call itself via `ModelSettings.extra_args`. This
     function is retained because it costs nothing, still covers the non-chat

@@ -537,6 +537,17 @@ def _first_spec_match(
 # tree were false (same-origin `window.open` of a generated document,
 # anchors to fixed trusted hosts), and modern browsers imply noopener for
 # `target=_blank`. Do not re-propose; see TestWindowOpenerStaysKilled.
+#
+# Two implementation lessons from that attempt are kept here so a re-proposal
+# does not have to rediscover them (neither made the rule pay for itself):
+#   * The anchor arm is a MARKUP rule and needs a markup-suffix gate. Measured
+#     without one, 2 of its 4 rows were `<a target="_blank">` inside
+#     product-description strings in YAML data files - marketing copy, not a
+#     template under review.
+#   * Its window has to be the WHOLE TAG, not a forward slice: real anchors are
+#     formatter-wrapped as `<a` / `href=` / `target=` / `rel=`, so the href sits
+#     on a PRECEDING line and a forward-only window leaves the mandatory
+#     external-href clause unsatisfiable - i.e. a silent no-op.
 
 
 # ── Cookie name analysis, shared by CWE-315 and CWE-539 ────────────────────

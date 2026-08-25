@@ -82,6 +82,9 @@ CATEGORY_REACH_FLOOR = {
     # it removes an over-claim; no detection capability was lost, because there
     # was none. Proven by feeding the block its own corpus fixtures through the
     # public entry point: 0 findings before deletion.
+    # (#119 carried the same two dead literals, so its side of this table
+    # read 16. The floor stays at the reachable figure: a tree that still
+    # holds the dead literals reads 16, which the >= contract accepts.)
     "A06": 15,
     "A07": 12,
     "A08": 11,
