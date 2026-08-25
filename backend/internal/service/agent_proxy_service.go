@@ -39,9 +39,14 @@ type agentProxyService struct {
 	// auditTimeout bounds a whole per-agent audit (env
 	// VULTURE_AGENT_PROXY_TIMEOUT_SEC, default 600s). A slow local model
 	// (LM Studio/Ollama) scanning a large tree may need longer than the historical
-	// 10-minute cap; raise this to let it finish. Should be >= the agent's own
-	// VULTURE_AGENT_MAX_AUDIT_SECONDS ceiling so the backend doesn't cut the agent
-	// off first.
+	// 10-minute cap; raise this to let it finish.
+	//
+	// MARGIN RULE: must be >= VULTURE_AGENT_MAX_AUDIT_SECONDS +
+	// VULTURE_LLM_CALL_TIMEOUT_SEC, NOT merely >= MAX_AUDIT. The agent checks its
+	// own deadline only BETWEEN llm calls, so it can overshoot by one full call;
+	// if this ceiling fires in that window the agent never sends its result
+	// snapshot and its findings are rescued from the delta path stripped of
+	// provenance, validation and snippets. See timeoutMarginWarning.
 	auditTimeout time.Duration
 	// respHeaderTimeout is how long to wait for the agent's response headers
 	// (env VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC, default 300s).

@@ -91,11 +91,15 @@ services:
       - VULTURE_AGENT_OWASP_URL=http://agent-owasp:${VULTURE_AGENT_OWASP_PORT:-28002}
       - VULTURE_AGENT_SOC2_URL=http://agent-soc2:${VULTURE_AGENT_SOC2_PORT:-28003}
       - VULTURE_AGENT_CWE_URL=http://agent-cwe:${VULTURE_AGENT_CWE_PORT:-28004}
-      # The backend's per-agent cutoff. Must be >= VULTURE_AGENT_MAX_AUDIT_SECONDS
-      # (900 below), or the backend severs the connection while the agent is still
-      # inside its own budget and only the partial (skill-phase) result is
-      # persisted. Neither timeout was plumbed here before, so compose shipped
-      # backend=600s behind agent=900s -- inverted against the documented rule.
+      # The backend's per-agent cutoff. MARGIN RULE: must be >=
+      # VULTURE_AGENT_MAX_AUDIT_SECONDS + VULTURE_LLM_CALL_TIMEOUT_SEC
+      # (900 + 120 below) -- NOT merely >= the agent ceiling: an agent checks its
+      # own deadline only BETWEEN llm calls, so it can overshoot by one whole
+      # VULTURE_LLM_CALL_TIMEOUT_SEC. If the backend severs the connection first,
+      # the agent never sends its result snapshot and only the partial
+      # (skill-phase) result is persisted. Neither timeout was plumbed here
+      # before, so compose shipped backend=600s against agent=900s -- short of
+      # the rule on both counts; 1200 clears 900 + 120.
       - VULTURE_AGENT_PROXY_TIMEOUT_SEC=${VULTURE_AGENT_PROXY_TIMEOUT_SEC:-1200}
       - VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC=${VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC:-600}
       - VULTURE_AGENT_PROVE_URL=http://agent-prove:${VULTURE_AGENT_PROVE_PORT:-28005}
