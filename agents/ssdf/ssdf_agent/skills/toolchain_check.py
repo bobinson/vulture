@@ -40,7 +40,8 @@ def check_toolchain(source_path: str) -> dict:
         findings.append({
             "severity": "high",
             "check_id": "ssdf.po3.no_sast_tool",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No SAST tool configured in CI/CD",
             "description": "No static analysis security tool (semgrep, codeql, snyk, bandit, gosec) found in CI configuration",
             "file_path": source_path,
@@ -53,7 +54,8 @@ def check_toolchain(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.po3.no_dast_tool",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No DAST tool configured in CI/CD",
             "description": "No dynamic analysis tool (ZAP, nuclei, nikto) found in CI configuration",
             "file_path": source_path,
@@ -66,7 +68,8 @@ def check_toolchain(source_path: str) -> dict:
         findings.append({
             "severity": "high",
             "check_id": "ssdf.po3.no_sca_tool",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No SCA/dependency scanning configured",
             "description": "No dependency scanning tool (Dependabot, Renovate, Snyk) configuration found",
             "file_path": source_path,

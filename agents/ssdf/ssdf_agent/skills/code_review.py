@@ -34,7 +34,8 @@ def check_code_review(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.pw7.no_pr_template",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No PR/MR template found",
             "description": "No pull request template with review checklist found",
             "file_path": source_path,
@@ -48,7 +49,8 @@ def check_code_review(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.pw7.no_required_reviews",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No required review configuration found",
             "description": "No required reviewer or approval configuration found in CI or branch rules",
             "file_path": source_path,

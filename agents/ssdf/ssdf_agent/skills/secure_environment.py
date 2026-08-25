@@ -55,7 +55,8 @@ def _check_secrets_management(root: Path, findings: list[dict]) -> None:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.po5.no_secrets_management",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No secrets management solution detected",
             "description": "No secrets management tool (Vault, AWS Secrets Manager, SOPS) references found",
             "file_path": str(root),
@@ -80,7 +81,8 @@ def _check_container_security(root: Path, findings: list[dict]) -> None:
                     findings.append({
                         "severity": "high",
                         "check_id": "ssdf.po5.root_user_container",
-                        "category": "PO-prepare-organization",
+                        "category": "PO",
+                        "practice": "PO-prepare-organization",
                         "title": "Container runs as root user",
                         "description": f"Dockerfile {file_path.name} runs as root",
                         "file_path": str(file_path),
@@ -101,7 +103,8 @@ def _check_container_security(root: Path, findings: list[dict]) -> None:
                 findings.append({
                     "severity": "high",
                     "check_id": "ssdf.po5.privileged_container",
-                    "category": "PO-prepare-organization",
+                    "category": "PO",
+                    "practice": "PO-prepare-organization",
                     "title": "Privileged container detected",
                     "description": f"Container in {file_path.name} runs in privileged mode",
                     "file_path": str(file_path),

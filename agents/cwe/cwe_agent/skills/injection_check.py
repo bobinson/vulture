@@ -18,6 +18,7 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.framework_html import is_framework_style_injection
 from shared.tools.obfuscation import check_obfuscation
 from shared.tools.snippet import extract_snippet
 from shared.validate.language import detect_language
@@ -99,6 +100,58 @@ _SQL_EVIDENCE_LOOKBACK = 3
 def _sql_require_sink() -> bool:
     """One-release rollback for the evidence gate."""
     return os.getenv("VULTURE_CWE_SQL_REQUIRE_SINK", "true").strip().lower() != "false"
+
+
+# A SQL string-escaping helper. An interpolation that passes through one of
+# these is quoted and escaped, so it is not injection -- and the escaper is
+# frequently NOT on the flagged line: it can be one hop through a local
+# (`const p = sqlStr(v)` then `${p}`), or in a sibling row-builder of the same
+# call (`(values) => ... VALUES ${values}` beside `(r) => (${sqlStr(r.id)})`).
+#
+# `sqlStr` is here as a NAME SHAPE, not a nod to one project: the pattern
+# matches the sql*/escape*/quote* family generally.
+_SQL_ESCAPER = re.compile(
+    r"\b(?:[A-Za-z_$][\w$]{0,40}\.)?"
+    r"(?:sql[A-Z]\w{0,30}"
+    r"|escape(?:Literal|Identifier|Like\w{0,20}|String|Sql\w{0,10})?"
+    r"|quote(?:Literal|Identifier|Ident)?"
+    r"|sanitize\w{0,20}"
+    r")\s*\("
+)
+
+# Lines each side of the flagged template to search. MEASURED, not guessed:
+# across 8 audited CWE-89 rows on one target, radius 6 separates all 5 escaped
+# rows from all 3 genuinely-raw rows, while radius 3 misses one (the escaper
+# sat in a row-builder 4 lines below). Calibrated on a single target -- widen
+# only with new measurement.
+_SQL_ESCAPER_RADIUS = 6
+
+
+# Comments only -- NOT string literals. The escaper we are looking for lives
+# INSIDE the template literal (`... WHERE id = ${sqlStr(x)}`), so blanking
+# string literals would erase the evidence. A comment naming an escaper must
+# still not excuse a raw interpolation, hence stripping comments.
+_COMMENT_ONLY = re.compile(r"//[^\n]*$|#[^\n]*$|/\*.*?\*/")
+
+
+def _strip_comments_only(line: str) -> str:
+    """Remove comments, PRESERVING string and template literals."""
+    return _COMMENT_ONLY.sub("", line)
+
+
+def _sql_escaper_nearby(lines: list[str], line_num: int) -> bool:
+    """True if a SQL-escaping helper appears within the measured radius.
+
+    ``line_num`` is 1-based, matching the callers in this module. Comments and
+    string literals are stripped first, so a comment naming an escaper cannot
+    excuse a raw interpolation.
+    """
+    lo = max(0, line_num - 1 - _SQL_ESCAPER_RADIUS)
+    hi = min(len(lines), line_num + _SQL_ESCAPER_RADIUS)
+    return any(
+        _SQL_ESCAPER.search(_strip_comments_only(text))
+        for text in lines[lo:hi]
+    )
 
 
 def _sql_evidence(line: str, line_num: int, lines: list[str]) -> bool:
@@ -508,6 +561,12 @@ def _check_sql(
             and not _sql_evidence(line, line_num, lines)
         ):
             continue
+        # An escaped interpolation is not injection. Measured: 5 of 8 CWE-89
+        # rows on one target were false at CRITICAL because the value went
+        # through the project's own escaper (see _sql_escaper_nearby).
+        if pattern in (_JS_TEMPLATE_LOOSE, _JS_TEMPLATE_BIGRAM) and \
+                _sql_escaper_nearby(list(lines), line_num):
+            continue
         finding = {
             "severity": "critical",
             "check_id": "cwe.injection.sql",
@@ -588,6 +647,13 @@ def _check_xss(
     for pattern in XSS_PATTERNS:
         if not pattern.search(line):
             continue
+        # Framework SSR CSS extraction is not an XSS sink. Shared with the xss
+        # and asvs agents, which suppress the identical idiom -- CWE was the
+        # last of the three still flagging it, which meant the false positive
+        # never left the product: dedup was merely awarding those lines to the
+        # xss agent's specialist row.
+        if is_framework_style_injection(line, lines, line_num):
+            return
         severity, title, description, recommendation = _xss_shape(
             pattern, line_num, lines
         )

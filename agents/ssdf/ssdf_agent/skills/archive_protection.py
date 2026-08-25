@@ -36,7 +36,8 @@ def check_archive_protection(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.ps3.no_release_archive",
-            "category": "PS-protect-software",
+            "category": "PS",
+            "practice": "PS-protect-software",
             "title": "No automated release archival process",
             "description": "No automated release workflow (GitHub releases, goreleaser, semantic-release) found",
             "file_path": source_path,

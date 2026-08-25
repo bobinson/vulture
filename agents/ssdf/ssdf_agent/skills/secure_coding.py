@@ -47,7 +47,8 @@ def check_secure_coding(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.pw5.no_linter_config",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No linter configuration found",
             "description": "No code linter configuration (eslint, ruff, golangci-lint, rubocop) found",
             "file_path": source_path,

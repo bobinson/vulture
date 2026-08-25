@@ -27,14 +27,6 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
-from shared.tools.line_context import strip_strings_and_comments
-from shared.tools.snippet import extract_snippet
-
-from asvs_agent.catalog import (
-    enrich_finding,
-    is_applicable_at_level,
-    load_catalog,
-)
 
 # Reuse hand-crafted CWE regex constants so overlap ASVS reqs don't
 # duplicate patterns. The ASVS registry references these compiled patterns
@@ -43,6 +35,16 @@ from asvs_agent.catalog import (
 # asvs_agent so Docker builds don't require the CWE package and so that
 # CWE-side pattern changes can't silently alter ASVS detection semantics.
 # See asvs_agent/skills/_cwe_patterns.py for the sync protocol.
+from shared.tools.framework_html import is_framework_style_injection
+from shared.tools.line_context import strip_strings_and_comments
+from shared.tools.pattern_union import union_patterns
+from shared.tools.snippet import extract_snippet
+
+from asvs_agent.catalog import (
+    enrich_finding,
+    is_applicable_at_level,
+    load_catalog,
+)
 from asvs_agent.skills._cwe_patterns import (
     BROKEN_CRYPTO_PATTERNS,
     COOKIE_NO_HTTPONLY_PATTERNS,
@@ -319,26 +321,33 @@ _CONTENT_TYPE_NO_CHARSET = re.compile(
 
 # Combine CWE-agent multi-pattern lists into single alternation-regex objects
 # (compiled once at module load) for speed.
-_SUPPORTED_UNION_FLAGS = re.IGNORECASE | re.MULTILINE | re.DOTALL
-
-
-def _union(patterns: list[re.Pattern[str]]) -> re.Pattern[str]:
-    """Combine many compiled patterns into a single one by alternation.
-
-    Preserves IGNORECASE / MULTILINE / DOTALL flags from any sub-pattern.
-    Asserts no unsupported flags are silently dropped so future CWE
-    pattern changes fail loudly rather than change match semantics.
-    """
-    flags = 0
-    unsupported: set[int] = set()
-    for p in patterns:
-        meaningful = p.flags & ~re.UNICODE
-        flags |= meaningful & _SUPPORTED_UNION_FLAGS
-        if meaningful & ~_SUPPORTED_UNION_FLAGS:
-            unsupported.add(meaningful & ~_SUPPORTED_UNION_FLAGS)
-    assert not unsupported, f"_union: cannot preserve flags {unsupported}"
-    joined = "|".join(f"(?:{p.pattern})" for p in patterns)
-    return re.compile(joined, flags)
+#
+# The join itself now lives in `shared.tools.pattern_union` — a leaf module
+# (imports only `re`) so every pattern-based skill inherits the same three
+# guards instead of rediscovering them:
+#
+#   * per-member SCOPED inline flags, so one re.IGNORECASE member cannot
+#     re-flag its case-SENSITIVE siblings. This is the fix that stopped
+#     case-sensitive `ECB\b` in BROKEN_CRYPTO_PATTERNS from matching plain
+#     `ecb` in ordinary identifiers (ECB is also the European Central Bank in
+#     any FX or ledger codebase). Output for non-empty input is byte-identical
+#     to the local helper this replaces — see
+#     tests/unit/test_pattern_union_delegation.py, which re-derives the
+#     expected pattern string for all eight lists independently.
+#   * an EMPTY list yields a NEVER-matching pattern, not `re.compile("")`,
+#     which matches every position of every subject. None of the eight lists
+#     below is empty today, so this changes nothing here — it removes the way
+#     a future data-driven or config-gated list could flood silently.
+#   * DUPLICATE named groups across members are reported with the group name
+#     and both patterns, instead of an `re.error` surfacing from this
+#     module-load line and naming neither.
+#
+# NOTE: unioning RENUMBERS positional capture groups, so a union is safe for
+# `search()` truthiness only. Every registry pattern below is consumed by
+# `_registry_entry_matches`, which uses exactly that; no call site in this
+# module reads `.group(n)`, and the delegation suite asserts that structurally
+# over the whole module's AST.
+_union = union_patterns
 
 
 _HARDCODED_CRED_UNION = _union(HARDCODED_CRED_PATTERNS)
@@ -350,6 +359,35 @@ _SESSION_FIXATION_UNION = _union(SESSION_FIXATION_PATTERNS)
 _DEBUG_PROD_UNION = _union(DEBUG_PROD_PATTERNS)
 _PATH_TRAVERSAL_UNION = _union(PATH_TRAVERSAL_PATTERNS)
 
+
+# Obvious non-secrets. Without this, V13.3.1 reported CRITICAL for a Storybook
+# mock whose value literally says "storybook":
+#     const VERIFICATION_TOKEN = "verification-token-2102-storybook";
+# Kept to markers that appear IN THE VALUE or on the line, so a real secret in
+# a file that merely happens to sit near tests is still reported.
+_CRED_PLACEHOLDER = re.compile(
+    # EVERY alternative is word-anchored. The first cut was not, and unanchored
+    # `foo|bar|baz|sample|example` silenced REAL production secrets --
+    # reproduced: `"barcode-scanner-prod-key-a91f2"` (bar),
+    # `"examplecorp-live-sk-77281"` (example), `"foobar-production-secret"` (foo).
+    # A false NEGATIVE on a hardcoded credential is strictly worse than the
+    # false positive this filter exists to remove, so the vocabulary is now
+    # narrow and anchored rather than broad and substring-matched.
+    #
+    # `foo`/`bar`/`baz` are gone entirely: as whole words they add nothing a
+    # real placeholder does not already say, and as substrings they are a
+    # liability.
+    r"(?:"
+    r"\bstorybook\b|\.stories\b|\bmock(?:ed|s)?\b|\bfixtures?\b"
+    r"|\bdummy\b|\bplaceholder\b|\bchange[-_]?me\b|\breplace[-_]?me\b"
+    r"|\byour[-_](?:token|key|secret|password)\b"
+    r"|\bredacted\b|\bxxxx+\b|<[a-z_]{3,30}>"
+    r"|\btest[-_](?:token|key|secret|password|value)\b"
+    r"|\bexample\.(?:com|org|net)\b"
+    r"|\bsample[-_](?:token|key|secret|password|value)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 _CHECKS: dict[str, CheckSpec] = {
     # -------------------- V1 Encoding & Sanitization --------------------
@@ -439,7 +477,7 @@ _CHECKS: dict[str, CheckSpec] = {
     # V6.2.2 hardcoded credentials (password change / reuse).
     # V13.3.1: use a secrets management solution (hardcoded secrets
     # violate this — no bare credentials committed to source).
-    "V13.3.1": (_HARDCODED_CRED_UNION, "critical", None, _CODE_EXTS),
+    "V13.3.1": (_HARDCODED_CRED_UNION, "critical", _CRED_PLACEHOLDER, _CODE_EXTS),
     # V6.2.5 password composition limits (limit to digits/letters only).
     "V6.2.5": (
         re.compile(r"password.*(?:match|pattern|regex).*\[0-9a-zA-Z\]", re.IGNORECASE),
@@ -759,6 +797,11 @@ def _traversal_rollback_active() -> bool:
     ).strip().lower() in ("1", "true", "yes", "on")
 
 
+# Requirements whose pattern is an HTML-injection sink, and which therefore
+# answer to the framework-CSS carve-out.
+_HTML_SINK_REQS = frozenset({"V3.2.2"})
+
+
 def _registry_entry_matches(
     spec: CheckSpec,
     line: str,
@@ -804,6 +847,16 @@ def _scan_line_registry(
         if req_id in seen_per_file:
             continue
         if not _registry_entry_matches(spec, line, ext):
+            continue
+        # Framework SSR CSS extraction is not an HTML-injection sink. The
+        # single-line safe-context regex above cannot express this, because the
+        # <style> element and the __html attribute are frequently on DIFFERENT
+        # lines; the shared predicate takes the surrounding window. Measured:
+        # this removed 2 of ASVS's V3.2.2 rows, the same two lines the XSS
+        # agent reported for the same reason.
+        if req_id in _HTML_SINK_REQS and is_framework_style_injection(
+            line, list(lines), lineno
+        ):
             continue
         seen_per_file.add(req_id)
         findings.append(_build_finding(req_id, spec[1], path_str, lineno, lines))

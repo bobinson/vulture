@@ -276,15 +276,41 @@ def run_discover(
                 f"Filtered {filtered} previously reported findings"
             )
 
+    # 0078 track C: the per-finding event must carry provenance. The backend
+    # rescues these deltas verbatim when an agent is cut off before its result
+    # snapshot, and an empty provenance silently disables the cross-agent dedup
+    # guard (VULTURE_DEDUP_PREFER_DETERMINISTIC), which arbitrates on it.
+    # Deliberately an EXISTING declared value, not a new one. A
+    # `discover_probe` tag would read more truthfully -- these come from probing
+    # a live target, not from matching patterns -- but the whole point of this
+    # feature is that vocabularies are declared and closed, and the only
+    # semantic the tag carries downstream is "is this the LLM tier?" (backend
+    # isLLMProvenance: prefix `llm`, everything else deterministic). Adding an
+    # undeclared sixth value to make one comment nicer would contradict the
+    # feature.
+    #
+    # ONE public row per finding, used for BOTH the per-finding delta and the
+    # `result` snapshot. discover does not call run_combined_audit, so the
+    # `_finalize_finding_inplace` stamp that keeps the two renderings in step
+    # for every other scanning agent never runs here; building the row once is
+    # what makes them unable to diverge (AC12.1). Keep this dict's keys a
+    # subset of finding_event's parameters -- anything not named there lands in
+    # its **extra and is forwarded to the payload unchanged.
+    finding_dicts = [
+        {
+            "severity": f["severity"],
+            "category": f["category"],
+            "title": f["title"],
+            "description": f["description"],
+            "recommendation": f.get("recommendation", ""),
+            "provenance": f.get("provenance", "skill"),
+        }
+        for f in security_findings
+    ]
+
     # Emit individual findings
-    for finding in security_findings:
-        yield emitter.finding_event(
-            severity=finding["severity"],
-            category=finding["category"],
-            title=finding["title"],
-            description=finding["description"],
-            recommendation=finding.get("recommendation", ""),
-        )
+    for row in finding_dicts:
+        yield emitter.finding_event(**row)
 
     # Emit discover_result event with full SiteMap + learnings context
     yield emitter.discover_result_event(
@@ -300,16 +326,6 @@ def run_discover(
         f"{len(site.urls)} URLs, {len(site.forms)} forms. "
         f"Found {len(security_findings)} security exposures."
     )
-    finding_dicts = [
-        {
-            "severity": f["severity"],
-            "category": f["category"],
-            "title": f["title"],
-            "description": f["description"],
-            "recommendation": f.get("recommendation", ""),
-        }
-        for f in security_findings
-    ]
     yield emitter.result_event(finding_dicts, summary, score)
     yield emitter.run_finished("completed")
 

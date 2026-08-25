@@ -35,7 +35,8 @@ def check_security_criteria(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.po4.no_quality_gates",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No security quality gates in CI/CD",
             "description": "No required status checks or quality gates found in CI configuration",
             "file_path": source_path,
@@ -48,7 +49,8 @@ def check_security_criteria(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.po4.no_merge_policy",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No PR template or merge policy found",
             "description": "No pull request template defining review checklists and merge criteria",
             "file_path": source_path,

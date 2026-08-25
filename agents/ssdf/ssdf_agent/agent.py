@@ -49,4 +49,9 @@ def run_audit(
         validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
         # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
         llm_tier3=config.get("llm_tier3"),
+        # Conform emitted categories to the vocabulary /info advertises.
+        # Measured: 30 of 56 rows (including all 9 skill rows) carried a
+        # category outside this set; the specific practice id is kept in
+        # `practice` so nothing is lost.
+        category_enum=frozenset(ALL_CATEGORIES),
     )

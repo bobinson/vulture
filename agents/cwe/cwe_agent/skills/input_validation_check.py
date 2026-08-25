@@ -1087,6 +1087,64 @@ _PATH_CLAIMS = (
 )
 
 
+# Names BOUND on a line: `const { a, b } = ...`, `const x = ...`, `let y = ...`,
+# `x, y = ...`. Used to tie a downstream guard to THIS extraction.
+_BOUND_NAMES = re.compile(
+    r"(?:const|let|var)\s*\{([^}]{0,200})\}"
+    r"|(?:const|let|var)\s+([A-Za-z_$][\w$]{0,63})\s*="
+    r"|^\s*([A-Za-z_$][\w$]{0,63})\s*="
+)
+
+# A guard SHAPE: a falsy/emptiness check, a regex test, a validator call, or a
+# throw. Kept separate from SAFE_VALIDATION_PATTERNS, which is a vocabulary of
+# validation LIBRARIES rather than of guard syntax.
+_GUARD_SHAPE = re.compile(
+    r"if\s*\(\s*!"
+    r"|if\s*\([^)]{0,120}(?:===|!==|==|!=)\s*(?:undefined|null|\"\"|'')"
+    r"|\.test\s*\("
+    r"|\.(?:parse|safeParse|validateSync|validate)\s*\("
+    r"|\bthrow\s+new\s+\w{0,48}(?:Error|Exception)"
+    r"|\.(?:length|trim)\s*(?:===|!==|<|>|<=|>=)"
+)
+
+# How far AHEAD to look for the guard. Measured: on one real target 80 of 102
+# CWE-20 rows had their guard within 25 lines; 30 covers that with headroom
+# and is still bounded (this is a line-window walk, not a regex quantifier).
+_GUARD_LOOKAHEAD = 30
+
+
+def _bound_names(line: str) -> set[str]:
+    """Identifiers this line binds, including destructured ones."""
+    out: set[str] = set()
+    for braced, single, bare in _BOUND_NAMES.findall(line):
+        if braced:
+            for part in braced.split(","):
+                name = part.split(":")[-1].split("=")[0].strip()
+                if name.isidentifier():
+                    out.add(name)
+        for name in (single, bare):
+            if name and name.isidentifier():
+                out.add(name)
+    return out
+
+
+def _guarded_downstream(lines: list[str], line_num: int, names: set[str]) -> bool:
+    """True if a guard REFERENCING one of ``names`` follows within the window.
+
+    Requiring the name is what keeps this from excusing an extraction merely
+    because some unrelated variable is checked nearby.
+    """
+    if not names:
+        return False
+    end = min(len(lines), line_num + _GUARD_LOOKAHEAD)
+    for text in lines[line_num:end]:
+        if not _GUARD_SHAPE.search(text):
+            continue
+        if any(re.search(rf"\b{re.escape(n)}\b", text) for n in names):
+            return True
+    return False
+
+
 def _check_no_validation(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
@@ -1100,6 +1158,17 @@ def _check_no_validation(
         return
     for pattern in NO_VALIDATION_PATTERNS:
         if pattern.search(line):
+            # The commonest real shape is extract-then-guard, and the 7-line
+            # context above cannot see it. Look ahead for a guard that names a
+            # value bound HERE (see _guarded_downstream for why the name
+            # matters).
+            #
+            # Evaluated AFTER the pattern match, not before: this is a
+            # per-candidate cost, and hoisting it above the loop made every
+            # scanned line pay a regex findall plus a 30-line window walk to
+            # decide something no pattern was going to report anyway.
+            if _guarded_downstream(lines, line_num, _bound_names(line)):
+                return
             finding = {
                 "severity": "medium",
                 "check_id": "cwe.input_validation.missing_validation",

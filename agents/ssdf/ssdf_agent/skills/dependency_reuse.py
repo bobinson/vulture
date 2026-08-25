@@ -35,7 +35,8 @@ def check_dependency_reuse(source_path: str) -> dict:
         findings.append({
             "severity": "high",
             "check_id": "ssdf.pw4.no_lock_file",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No dependency lock file found",
             "description": "No dependency lock file found to ensure reproducible builds",
             "file_path": source_path,
@@ -72,7 +73,8 @@ def _check_unpinned_deps(root: Path, findings: list[dict]) -> None:
                 findings.append({
                     "severity": "medium",
                     "check_id": "ssdf.pw4.unpinned_dependencies",
-                    "category": "PW-produce-well-secured-software",
+                    "category": "PW",
+                    "practice": "PW-produce-well-secured-software",
                     "title": "Unpinned dependency version detected",
                     "description": f"Wildcard or 'latest' dependency version at line {i}",
                     "file_path": str(pkg_json),

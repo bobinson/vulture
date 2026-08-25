@@ -48,7 +48,8 @@ def _check_dockerfiles(root: Path, findings: list[dict]) -> None:
             findings.append({
                 "severity": "low",
                 "check_id": "ssdf.pw6.no_minimal_base_image",
-                "category": "PW-produce-well-secured-software",
+                "category": "PW",
+                "practice": "PW-produce-well-secured-software",
                 "title": "Non-minimal base image in Dockerfile",
                 "description": f"Dockerfile {dockerfile.name} does not use a minimal base image",
                 "file_path": str(dockerfile),

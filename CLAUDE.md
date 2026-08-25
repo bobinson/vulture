@@ -308,7 +308,7 @@ VULTURE_DB_PATH=/data/vulture.db                     # SQLite path (fallback)
 VULTURE_DB_DSN=postgres://...                        # PostgreSQL DSN (if set, uses Postgres)
 VULTURE_JWT_SECRET=change-me-in-production           # JWT signing key
 VULTURE_LOCAL_MODE=true                              # Enable passwordless auth
-VULTURE_AGENT_PROXY_TIMEOUT_SEC=600                  # Backend per-agent whole-audit timeout (default 600s/10m). Raise for slow local models (LM Studio/Ollama) on large trees; should be >= VULTURE_AGENT_MAX_AUDIT_SECONDS so the backend doesn't cut the agent off first
+VULTURE_AGENT_PROXY_TIMEOUT_SEC=600                  # Backend per-agent whole-audit timeout (default 600s/10m). Raise for slow local models (LM Studio/Ollama) on large trees. MARGIN RULE: must be >= VULTURE_AGENT_MAX_AUDIT_SECONDS + VULTURE_LLM_CALL_TIMEOUT_SEC — NOT merely >= MAX_AUDIT. An agent checks its own deadline only BETWEEN llm calls, so it can overshoot by one full call; if the backend closes first the agent never emits its result snapshot and its findings are rescued from the delta path WITHOUT provenance, validation, snippets or score. Measured: 7500/7200/600 satisfied the old rule and still truncated four agents at exactly 2h5m. The backend warns at startup when the margin is unsafe
 VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC=300        # Backend wait for an agent's HTTP response headers (default 300s)
 VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001      # Agent endpoints
 VULTURE_AGENT_OWASP_URL=http://agent-owasp:8002
@@ -380,9 +380,20 @@ VULTURE_LLM_FEED_PROSE=false                         # Send prose/data (.md .txt
 VULTURE_LLM_INELIGIBLE_EXTENSIONS=                   # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding .graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. Populate it (e.g. ".graphql,.gql") if you cannot send config dialects to a third-party provider
 VULTURE_LLM_FEED_UNIFY=true                          # Both feed paths resolve ONE extension set. false restores the pre-0075 asymmetry (narrow for single-shot, wide for the sweep) — that pair IS the defect, so this is an unblock hatch, not a supported configuration
 VULTURE_SECRET_SCAN_PROSE=true                       # CWE agent: scan prose/data files for secrets. The compensating control for VULTURE_LLM_FEED_PROSE=false — without it a credential in a README loses the only tier reading it. Measured live: recovered a real `INBOUND_AUTH_TOKEN` in a README. false re-opens that hole
-# NOTE: Vulture pins litellm.num_retries=0 for the audit path. Retries are owned by
-# retry_llm_call() (which classifies the error and halves oversized bodies first); leaving the
-# client's own retry layer on multiplies attempts and re-sends a too-large body unchanged.
+# NOTE: retries on the audit path are owned by retry_llm_call() (which classifies the error and
+# halves oversized bodies first); leaving the client's own retry layer on multiplies attempts and
+# re-sends a too-large body unchanged. That single authority is enforced by passing max_retries=0
+# (plus its alias num_retries=0) ON THE COMPLETION CALL, via ModelSettings.extra_args from
+# provider.litellm_retry_extra_args(). The MODULE attribute litellm.num_retries=0 does NOT do it —
+# measured against a stub gateway answering 429, one logical call still made 3 HTTP attempts with
+# the module pin applied and 1 with the per-call kwarg (agents/shared/tests/unit/
+# test_0070_p5_d1_retry_pin.py stands the stub up and counts). litellm reads max_retries from
+# per-call kwargs only; the surviving module read is `litellm.num_retries or DEFAULT_MAX_RETRIES`,
+# for which 0 is falsy. The kwarg is gated to LiteLLM-routed models: on the native OpenAI path
+# (gpt-4o) and the broker path, extra_args are splatted into openai's create(), which accepts
+# neither the kwarg nor **kwargs — the broker's own client already sets max_retries=0.
+# SCOPE: this covers the GENERATE path only. The L5 judge builds its own client
+# (validate/llm_judge.py) and is NOT covered — it keeps the SDK default of 2 retries.
 
 # Evidence quotation and anchor verification (feature 0076). The LLM tier now has to QUOTE
 # the source it accuses, and the quote is checked by whitespace-normalised string search in

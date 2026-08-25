@@ -50,4 +50,8 @@ def run_audit(
         validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
         # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
         llm_tier3=config.get("llm_tier3"),
+        # Conform BOTH tiers to the vocabulary /info advertises. The skill
+        # tier violated it too: measured on one target this agent emitted
+        # suffixed and separator-variant forms of its own declared names.
+        category_enum=frozenset(ALL_CATEGORIES),
     )

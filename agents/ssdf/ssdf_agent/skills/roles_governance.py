@@ -35,7 +35,8 @@ def check_roles_governance(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.po2.missing_codeowners",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No CODEOWNERS or maintainers file found",
             "description": "No CODEOWNERS or MAINTAINERS file defining code ownership and review responsibilities",
             "file_path": source_path,

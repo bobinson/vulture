@@ -1,4 +1,5 @@
-# Group: web-security (feature 0070 P7) — 8 new detections in `web_security`.
+# Group: web-security (feature 0070 P7) — 7 live detections in `web_security` (CWE-1022 was reverted; its
+# dead detector and fixtures were removed in P8.2).
 # Paths are relative to ../fixtures/. `line` is the expected vuln line
 # (diagnostic only, positives) per the design schema.
 #
@@ -6,8 +7,6 @@
 # only the SUFFIX survives. Each entry below is therefore content-keyed, and the
 # suffix is chosen so the owning arm is actually reachable:
 #   * CWE-749  — the WebView arm is `.java`/`.kt` only, the Electron arm `.js`.
-#   * CWE-1022 — the anchor arm is markup-only (`.html`); the window.open arm is
-#                dialect-agnostic (`.js`/`.ts`).
 #   * CWE-644  — `echo`/`print` count as sinks in `.php` only.
 #
 # Every clean twin differs MINIMALLY from its positive, and each twin is a shape
@@ -29,14 +28,6 @@
 - {file: p7_websecurity/cwe_749_1_clean.kt, language: Kotlin, cwe: "749", expectation: negative}
 - {file: p7_websecurity/cwe_749_2_clean.java, language: Java, cwe: "749", expectation: negative}
 - {file: p7_websecurity/cwe_749_3_clean.js, language: JavaScript, cwe: "749", expectation: negative}
-
-# ── CWE-1022 window.opener access ──
-- {file: p7_websecurity/cwe_1022_1.js, language: JavaScript, cwe: "1022", expectation: positive, line: 2}
-- {file: p7_websecurity/cwe_1022_2.ts, language: TypeScript, cwe: "1022", expectation: positive, line: 2}
-- {file: p7_websecurity/cwe_1022_3.html, language: HTML, cwe: "1022", expectation: positive, line: 4}
-- {file: p7_websecurity/cwe_1022_1_clean.js, language: JavaScript, cwe: "1022", expectation: negative}
-- {file: p7_websecurity/cwe_1022_2_clean.ts, language: TypeScript, cwe: "1022", expectation: negative}
-- {file: p7_websecurity/cwe_1022_3_clean.html, language: HTML, cwe: "1022", expectation: negative}
 
 # ── CWE-315 Cleartext sensitive information in a cookie ──
 - {file: p7_websecurity/cwe_315_1.js, language: JavaScript, cwe: "315", expectation: positive, line: 2}

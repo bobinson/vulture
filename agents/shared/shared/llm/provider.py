@@ -375,6 +375,52 @@ def estimate_cost(
     return (input_tokens * input_cost + output_tokens * output_cost) / 1_000_000
 
 
+def _broker_on() -> bool:
+    """True when the LLM broker owns provider routing for this process."""
+    return os.environ.get("VULTURE_LLM_BROKER", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def litellm_retry_extra_args(resolved_model: str) -> dict:
+    """Feature 0070 P5 (D.1): per-call kwargs that disable the client's retries.
+
+    ``retry_llm_call`` is meant to be the only retry authority. Setting the
+    MODULE attribute ``litellm.num_retries = 0`` does NOT achieve that, and this
+    was measured, not reasoned: against a stub gateway answering 429, one
+    logical completion still produced **3 HTTP attempts** with the module pin
+    applied, and **1** once ``max_retries=0`` rode along on the call.
+
+    Why the module attribute cannot work:
+
+    * ``litellm.main.completion`` takes ``max_retries`` from per-call kwargs
+      only (``kwargs.get("max_retries", None)``); ``litellm.num_retries`` is
+      read on the speech / transcription paths, never on chat completions.
+    * The one surviving module read is ``litellm.num_retries or
+      openai.DEFAULT_MAX_RETRIES``. ``0`` is FALSY, so pinning the attribute to
+      zero selects the very default (2 → 3 attempts) it was meant to suppress.
+
+    GATED, and the gate is load-bearing rather than defensive: these kwargs are
+    delivered via ``ModelSettings.extra_args``, which the SDK splats into the
+    underlying call. On the LiteLLM path that call is ``litellm.acompletion``,
+    which accepts ``max_retries``. On the native OpenAI path (``gpt-4o``) and on
+    the broker path (``RunConfig`` swaps in an ``OpenAIProvider`` whatever the
+    model prefix says) it is ``client.chat.completions.create``, whose generated
+    signature has neither ``max_retries`` nor ``**kwargs`` — an ungated pin is a
+    ``TypeError`` on every such run. The broker already builds its ``AsyncOpenAI``
+    with ``max_retries=0``, so nothing is lost there.
+
+    ``num_retries`` is sent alongside because litellm treats it as the alias
+    (``if num_retries is not None: max_retries = num_retries``); pinning only
+    one leaves the other free to reintroduce a retry layer.
+    """
+    if not resolved_model.startswith("litellm/"):
+        return {}
+    if _broker_on():
+        return {}
+    return {"max_retries": 0, "num_retries": 0}
+
+
 def get_model_settings(model: str | None = None) -> dict:
     """Return provider-specific model settings for prompt caching.
 
@@ -385,6 +431,9 @@ def get_model_settings(model: str | None = None) -> dict:
         needed.  The pyproject.toml already requires ``litellm>=1.50.0``.
     Google: Implicit caching on Gemini 2.5+.
 
+    Also carries the feature 0070 P5 (D.1) retry pin on LiteLLM-routed models —
+    see ``litellm_retry_extra_args`` for why it has to travel per call.
+
     Returns:
         Dict of settings suitable for ``ModelSettings(**settings)``.
     """
@@ -392,6 +441,9 @@ def get_model_settings(model: str | None = None) -> dict:
     settings: dict = {"temperature": 0.1}
     if "anthropic" in resolved:
         settings["extra_headers"] = {"anthropic-beta": "prompt-caching-2024-07-31"}
+    retry_args = litellm_retry_extra_args(resolved)
+    if retry_args:
+        settings["extra_args"] = retry_args
     return settings
 
 

@@ -142,8 +142,28 @@ validate_home() {
     log "VULTURE_HOME validated: $VULTURE_HOME"
 }
 
+# Version as named by the offline tarball itself: vulture-<version>-<os>-<arch>.tar.gz.
+# Falls back to a literal rather than guessing, so the log never claims a
+# version the artifact does not carry.
+offline_tarball_version() {
+    _base=$(basename "$VULTURE_OFFLINE_TARBALL")
+    _v=$(printf '%s' "$_base" | sed -n 's/^vulture-\(.*\)-[^-]*-[^-]*\.tar\.gz$/\1/p')
+    if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "(offline tarball)"; fi
+}
+
 # ─── 3. resolve_version ────────────────────────────────────────────────────
 resolve_version() {
+    # An offline install takes its bits from the tarball on disk, so the
+    # published release list is irrelevant to it. Resolving anyway made the log
+    # announce "installing version: v0.0.17" while installing a locally built
+    # v0.0.0-dev — misleading in exactly the situation where an operator most
+    # needs to know what they are running. It also made an air-gapped install
+    # wait on a doomed GitHub call and then warn about it.
+    if [ -n "${VULTURE_OFFLINE_TARBALL:-}" ]; then
+        VERSION=${VULTURE_VERSION:-$(offline_tarball_version)}
+        log "installing from offline tarball: $VERSION"
+        return
+    fi
     if [ -n "${VULTURE_VERSION:-}" ]; then
         VERSION=$VULTURE_VERSION
     elif command -v curl >/dev/null 2>&1; then

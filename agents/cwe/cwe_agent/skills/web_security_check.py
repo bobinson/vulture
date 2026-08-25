@@ -14,6 +14,7 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
+from shared.tools.header_taint import header_taint_pattern
 from shared.tools.snippet import extract_snippet
 
 from cwe_agent.catalog import enrich_finding
@@ -23,7 +24,11 @@ OPEN_REDIRECT_PATTERNS = [
     re.compile(r"redirect\s*\(\s*(?:request|req)\.(?:args|params|query|GET)", re.IGNORECASE),
     re.compile(r"(?:res|response)\.redirect\s*\(\s*(?:req|request)\.", re.IGNORECASE),
     re.compile(r"http\.Redirect\([^,]+,\s*[^,]+,\s*r\.", re.IGNORECASE),
-    re.compile(r"Location.*(?:request|req|params|query|user|input)", re.IGNORECASE),
+    # Anchored at both ends. Unanchored, this matched
+    # `const hasProfileLocation = Boolean(userAddressData)` -- "Location"
+    # inside the identifier, "user" inside the value. Shared with the xss
+    # agent, which carried a byte-identical copy of the same defect.
+    header_taint_pattern("Location"),
     re.compile(r"(?:redirect_to|return_to|next|url)\s*=\s*(?:request|req|params)", re.IGNORECASE),
 ]
 
@@ -527,144 +532,11 @@ def _first_spec_match(
     return None
 
 
-# ── CWE-1022: window.opener access via an untrusted target ─────────────────
-# `window.open(` is the half that still matters: modern browsers imply noopener
-# for `target=_blank`, but not for `window.open`.
-_WINDOW_OPEN = re.compile(r"\bwindow\s*\.\s*open\s*\(")
-_NOOPENER = re.compile(r"noopener|noreferrer", re.IGNORECASE)
-_OPENER_NULLED = re.compile(r"\.opener\s*=\s*null")
-_TARGET_BLANK = re.compile(r"target\s*=\s*[{\"'\s]*_blank", re.IGNORECASE)
-_TAG_OPEN = re.compile(r"<(?:a|area|form)\b", re.IGNORECASE)
-_REL_SAFE = re.compile(r"rel\s*=\s*[{\"'\s]*[^\"'}]*(?:noopener|noreferrer)", re.IGNORECASE)
-_EXTERNAL_HREF = re.compile(r"href\s*=\s*[{\"'\s]*(?:https?:)?//", re.IGNORECASE)
-# The anchor arm is a MARKUP rule. Measured on a real tree: without this gate,
-# 2 of its 4 rows were `<a target="_blank">` inside product-description strings
-# in YAML data files — marketing copy, not a template under review.
-_MARKUP_SUFFIXES = frozenset({
-    ".html", ".htm", ".hbs", ".handlebars", ".ejs", ".pug", ".jade",
-    ".mustache", ".twig", ".liquid", ".njk", ".vue", ".svelte", ".astro",
-    ".jsx", ".tsx", ".erb", ".php", ".phtml",
-})
-
-_WINDOW_OPENER_FIELDS = {
-    "category": "CWE-1022",
-    "check_id": "cwe.web_security.window_opener",
-    "title": "window.open without noopener",
-    "description": (
-        "Line {line} opens a window without `noopener`, so the opened document "
-        "keeps a `window.opener` handle back into this origin"
-    ),
-    "recommendation": (
-        "Pass 'noopener' in the window.open features argument, or null the "
-        "returned handle's `opener` immediately"
-    ),
-}
-_TARGET_BLANK_FIELDS = {
-    "category": "CWE-1022",
-    "check_id": "cwe.web_security.target_blank_no_noopener",
-    "title": "External target=_blank link without rel=noopener",
-    "description": (
-        "External link at line {line} opens in a new context with no "
-        "rel=noopener/noreferrer"
-    ),
-    "recommendation": 'Add rel="noopener noreferrer" to external _blank links',
-}
-
-
-def _check_window_opener(
-    file_path: Path, lines: list[str], active: list[tuple[int, str]],
-    findings: list[dict],
-) -> None:
-    """CWE-1022 — the window.open arm, then the (hygiene-only) anchor arm."""
-    _check_window_open_call(file_path, lines, active, findings)
-    _check_blank_anchor(file_path, lines, active, findings)
-
-
-def _check_window_open_call(
-    file_path: Path, lines: list[str], active: list[tuple[int, str]],
-    findings: list[dict],
-) -> None:
-    """One row per file: repeated share helpers are one defect, not five."""
-    line_num = _first_unprotected_window_open(lines, active)
-    if line_num is not None:
-        _emit(findings, _WINDOW_OPENER_FIELDS, file_path, line_num, lines, "medium")
-
-
-def _first_unprotected_window_open(
-    lines: list[str], active: list[tuple[int, str]],
-) -> int | None:
-    """First `window.open(` whose call neither passes noopener nor nulls opener."""
-    for line_num, line in active:
-        if not _WINDOW_OPEN.search(_capped(line)):
-            continue
-        if not _has_opener_guard("\n".join(lines[line_num - 1:line_num + 3])):
-            return line_num
-    return None
-
-
-def _has_opener_guard(window: str) -> bool:
-    """`noopener`/`noreferrer` in the call, or the handle's opener nulled after."""
-    return bool(_NOOPENER.search(window) or _OPENER_NULLED.search(window))
-
-
-def _check_blank_anchor(
-    file_path: Path, lines: list[str], active: list[tuple[int, str]],
-    findings: list[dict],
-) -> None:
-    """Anchor arm: hygiene only, so low severity and one row per file.
-
-    The window is the WHOLE TAG, not a forward slice. Real anchors are
-    formatter-wrapped as `<a` / `href=` / `target=` / `rel=`, so href sits on a
-    PRECEDING line — a forward-only window makes the mandatory external-href
-    clause unsatisfiable and the rule becomes a silent no-op.
-    """
-    if file_path.suffix.lower() not in _MARKUP_SUFFIXES:
-        return
-    line_num = _first_unprotected_blank_anchor(lines, active)
-    if line_num is not None:
-        _emit(findings, _TARGET_BLANK_FIELDS, file_path, line_num, lines, "low")
-
-
-def _first_unprotected_blank_anchor(
-    lines: list[str], active: list[tuple[int, str]],
-) -> int | None:
-    """First `target=_blank` tag that is external and carries no `rel` guard."""
-    for line_num, line in active:
-        if not _TARGET_BLANK.search(_capped(line)):
-            continue
-        if _is_unprotected_external_tag(_enclosing_tag(lines, line_num)):
-            return line_num
-    return None
-
-
-def _is_unprotected_external_tag(tag: str) -> bool:
-    """External href present and no noopener/noreferrer anywhere in the tag."""
-    if _REL_SAFE.search(tag):
-        return False
-    return bool(_EXTERNAL_HREF.search(tag))
-
-
-def _enclosing_tag(lines: list[str], line_num: int, span: int = 10) -> str:
-    """Text of the tag containing line ``line_num`` (bounded by ``span``)."""
-    start = _tag_start(lines, line_num - 1, span)
-    return "\n".join(lines[start:_tag_end(lines, start, line_num - 1, span)])
-
-
-def _tag_start(lines: list[str], idx: int, span: int) -> int:
-    """Index of the nearest preceding tag opener, else ``idx``."""
-    for i in range(idx, max(-1, idx - span), -1):
-        if _TAG_OPEN.search(lines[i]):
-            return i
-    return idx
-
-
-def _tag_end(lines: list[str], start: int, idx: int, span: int) -> int:
-    """Exclusive index of the first `>` at or after the matched line."""
-    limit = min(len(lines), start + span)
-    for i in range(max(start, idx), limit):
-        if ">" in lines[i]:
-            return i + 1
-    return limit
+# CWE-1022 (window.open / target=_blank without noopener) is DELIBERATELY
+# ABSENT. It was implemented, measured, and reverted: all 5 rows on a real
+# tree were false (same-origin `window.open` of a generated document,
+# anchors to fixed trusted hosts), and modern browsers imply noopener for
+# `target=_blank`. Do not re-propose; see TestWindowOpenerStaysKilled.
 
 
 # ── Cookie name analysis, shared by CWE-315 and CWE-539 ────────────────────

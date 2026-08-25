@@ -42,7 +42,8 @@ def check_security_policy(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.po1.missing_security_policy",
-            "category": "PO-prepare-organization",
+            "category": "PO",
+            "practice": "PO-prepare-organization",
             "title": "No security policy document found",
             "description": "No SECURITY.md or security policy documentation found in the repository",
             "file_path": source_path,

@@ -58,6 +58,17 @@ type PriorFinding struct {
 	CreatedAt         string  `json:"created_at,omitempty"`
 	ProveStatus       string  `json:"prove_status,omitempty"`
 	CheckID           string  `json:"check_id,omitempty"`
+	// Evidence carried so a MAPPING agent (OWASP over CWE, feature 0063) can
+	// inherit it instead of emitting a stripped row. Without these, every OWASP
+	// finding reached the DB with an empty provenance — 217 of 217 on the
+	// reference target across three runs — and widening the agent's own carry
+	// set could not fix it, because the transport never delivered the values.
+	//
+	// `code_snippet` remains absent by design (see the note below): the point of
+	// carrying provenance is attribution, which needs no source text.
+	Provenance           string  `json:"provenance,omitempty"`
+	ValidationStatus     string  `json:"validation_status,omitempty"`
+	ValidationConfidence float64 `json:"validation_confidence,omitempty"`
 	// Line location, carried so mapping agents (e.g. OWASP over CWE,
 	// feature 0063) keep the source location. code_snippet is deliberately
 	// NOT carried here — snippets can contain secrets.

@@ -18,6 +18,7 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.framework_html import is_framework_style_injection
 
 # Template unsafe rendering
 TEMPLATE_UNSAFE_PATTERNS = [
@@ -117,6 +118,8 @@ def _check_template_unsafe(
     for pattern in TEMPLATE_UNSAFE_PATTERNS:
         if pattern.search(line):
             if _has_safe_context(lines, line_num):
+                return
+            if is_framework_style_injection(line, lines, line_num):
                 return
             findings.append({
                 "severity": "critical",

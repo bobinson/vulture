@@ -100,9 +100,9 @@ A CWE here FIRES on at least one positive fixture but misses the strict bar (rec
 
 ## DECLARED-ONLY — detectable, not corpus-gated
 
-The agent's dedicated skills emit 157 distinct CWE-id `category` literals and 7 trusted-signature CWE-ids are declared. The CWE-ids below are declared/detectable but are NOT (yet) corpus-VERIFIED, so they are NOT counted in N. The 846-entry CWE v4.19.1 catalog is metadata/context (names, consequences, rollup parents); its keyword-matching path fires ~0 findings on real code and is not counted.
+The agent's dedicated skills emit 170 distinct CWE-id `category` literals and 7 trusted-signature CWE-ids are declared. The CWE-ids below are declared/detectable but are NOT (yet) corpus-VERIFIED, so they are NOT counted in N. The 846-entry CWE v4.19.1 catalog is metadata/context (names, consequences, rollup parents); its keyword-matching path fires ~0 findings on real code and is not counted.
 
-CWE-20, CWE-22, CWE-79, CWE-94, CWE-113, CWE-120, CWE-125, CWE-134, CWE-190, CWE-200, CWE-209, CWE-219, CWE-248, CWE-252, CWE-269, CWE-287, CWE-306, CWE-312, CWE-319, CWE-321, CWE-326, CWE-327, CWE-328, CWE-330, CWE-347, CWE-348, CWE-352, CWE-367, CWE-369, CWE-384, CWE-390, CWE-394, CWE-400, CWE-401, CWE-404, CWE-415, CWE-416, CWE-434, CWE-457, CWE-467, CWE-476, CWE-494, CWE-497, CWE-502, CWE-506, CWE-521, CWE-532, CWE-552, CWE-562, CWE-598, CWE-601, CWE-611, CWE-614, CWE-620, CWE-639, CWE-640, CWE-662, CWE-668, CWE-681, CWE-704, CWE-732, CWE-754, CWE-755, CWE-759, CWE-770, CWE-778, CWE-787, CWE-799, CWE-807, CWE-824, CWE-829, CWE-833, CWE-838, CWE-862, CWE-863, CWE-915, CWE-916, CWE-918, CWE-922, CWE-942, CWE-1004, CWE-1022, CWE-1104, CWE-1188, CWE-1295, CWE-1321, CWE-1336, CWE-1357, CWE-1395
+CWE-20, CWE-22, CWE-42, CWE-43, CWE-46, CWE-48, CWE-49, CWE-50, CWE-51, CWE-52, CWE-54, CWE-55, CWE-56, CWE-57, CWE-79, CWE-94, CWE-113, CWE-120, CWE-125, CWE-134, CWE-158, CWE-159, CWE-190, CWE-200, CWE-209, CWE-219, CWE-248, CWE-252, CWE-269, CWE-287, CWE-306, CWE-312, CWE-319, CWE-321, CWE-326, CWE-327, CWE-328, CWE-330, CWE-347, CWE-348, CWE-352, CWE-367, CWE-369, CWE-384, CWE-390, CWE-394, CWE-400, CWE-401, CWE-404, CWE-415, CWE-416, CWE-434, CWE-457, CWE-467, CWE-476, CWE-494, CWE-497, CWE-502, CWE-506, CWE-521, CWE-532, CWE-552, CWE-562, CWE-598, CWE-601, CWE-611, CWE-614, CWE-620, CWE-639, CWE-640, CWE-662, CWE-668, CWE-681, CWE-704, CWE-732, CWE-754, CWE-755, CWE-759, CWE-770, CWE-778, CWE-787, CWE-799, CWE-807, CWE-824, CWE-829, CWE-833, CWE-838, CWE-862, CWE-863, CWE-915, CWE-916, CWE-918, CWE-922, CWE-942, CWE-1004, CWE-1104, CWE-1188, CWE-1295, CWE-1321, CWE-1336, CWE-1357, CWE-1395
 
 ## LLM-ASSISTED — non-deterministic
 
@@ -122,8 +122,8 @@ The OWASP 2025 edition maps **249** distinct CWEs across 10 categories. This is 
 | ------ | --------: | ------------: | --------------------: |
 | VERIFIED (corpus-gated) | 79 | 76 | 30.5% |
 | DETECTED-below-gate | 0 | 0 | 0.0% |
-| DECLARED-ONLY | 89 | 63 | 25.3% |
-| **deterministic union** | 168 | 139 | 55.8% |
+| DECLARED-ONLY | 102 | 63 | 25.3% |
+| **deterministic union** | 181 | 139 | 55.8% |
 
 Per-category reach of the deterministic union:
 
@@ -133,8 +133,8 @@ Per-category reach of the deterministic union:
 | A02 | 16 | 12 |
 | A03 | 6 | 3 |
 | A04 | 32 | 22 |
-| A05 | 37 | 17 |
-| A06 | 39 | 16 |
+| A05 | 37 | 18 |
+| A06 | 39 | 15 |
 | A07 | 36 | 12 |
 | A08 | 14 | 11 |
 | A09 | 5 | 3 |

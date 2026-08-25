@@ -18,6 +18,7 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.framework_html import is_framework_style_injection
 
 # DB read indicators (preceding lines)
 DB_READ_INDICATORS = re.compile(
@@ -130,6 +131,13 @@ def _check_db_to_unsafe_render(
             if not _has_db_read_nearby(lines, line_num):
                 return
             if _has_safe_context(lines, line_num):
+                return
+            # Framework SSR CSS extraction is not a render sink. The sibling
+            # reflected_xss_check was taught this first; this skill matches
+            # `dangerouslySetInnerHTML` too, so the same line was still
+            # reported here -- verified live on `_document.tsx:86` AFTER the
+            # sibling was fixed. Same shared predicate as cwe and asvs.
+            if is_framework_style_injection(line, lines, line_num):
                 return
             findings.append({
                 "severity": "critical",

@@ -85,7 +85,8 @@ def _check_hardcoded_creds(
             findings.append({
                 "severity": "critical",
                 "check_id": "ssdf.pw9.hardcoded_credentials",
-                "category": "PW-produce-well-secured-software",
+                "category": "PW",
+                "practice": "PW-produce-well-secured-software",
                 "title": "Hardcoded credentials detected",
                 "description": f"Possible hardcoded credential at line {line_num}",
                 "file_path": str(file_path),
@@ -105,7 +106,8 @@ def _check_debug_mode(
             findings.append({
                 "severity": "medium",
                 "check_id": "ssdf.pw9.debug_enabled",
-                "category": "PW-produce-well-secured-software",
+                "category": "PW",
+                "practice": "PW-produce-well-secured-software",
                 "title": "Debug mode enabled in configuration",
                 "description": f"Debug mode enabled at line {line_num}",
                 "file_path": str(file_path),
@@ -124,7 +126,8 @@ def _check_permissive_cors(
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.pw9.permissive_cors",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "Permissive CORS configuration detected",
             "description": f"Wildcard CORS origin at line {line_num}",
             "file_path": str(file_path),

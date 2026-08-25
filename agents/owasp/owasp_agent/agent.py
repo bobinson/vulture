@@ -31,8 +31,51 @@ _PREREQ_NOTICE = (
 
 # Fields carried from a CWE finding onto an OWASP finding. `code_snippet` is
 # deliberately EXCLUDED — snippets can contain secrets and must not be
-# re-emitted here (feature 0063 security constraint).
-_CARRY = ("file_path", "line_start", "line_end", "recommendation")
+# re-emitted here (feature 0063 security constraint). That exclusion is
+# UNCHANGED by 0078.
+#
+# 0078 track D adds the EVIDENCE fields. Before this, every OWASP row reached
+# the DB with no provenance, no validation status and no confidence, however
+# well-evidenced the CWE finding it was derived from — 217 of 217 rows on the
+# reference target, and the entire remaining empty-provenance population
+# fleet-wide once track C had fixed the rest.
+#
+# Provenance is INHERITED, not replaced with an `owasp_categorized` tag: the
+# useful question about an OWASP row is whether the underlying detection was
+# deterministic or a model's guess. Inventing a sixth vocabulary value in the
+# feature whose thesis is closed declared vocabularies would contradict itself.
+#
+# The `validation` blob is carried even though its check labels name the CWE
+# category, because the alternative is worse than staleness: the backend
+# SYNTHESISES a blob when it finds none and then re-votes it, so an absent blob
+# is persisted as a FABRICATED confidence rather than as "unvalidated".
+_CARRY = (
+    "file_path", "line_start", "line_end", "recommendation",
+    "provenance", "validation_status", "validation_confidence", "validation",
+)
+
+# Keys inside a carried `validation` blob that may hold source text. The 0063
+# constraint is about snippets, and a validation extra is another way for one to
+# travel; scrubbed defensively so widening _CARRY cannot re-open that door.
+_SNIPPET_BEARING = ("quote_text", "code_snippet", "snippet", "evidence_quote")
+
+
+def _scrub_validation(blob: Any) -> Any:
+    """Drop snippet-bearing extras from a carried validation blob."""
+    if not isinstance(blob, dict):
+        return blob
+    checks = blob.get("checks")
+    if not isinstance(checks, list):
+        return blob
+    cleaned = []
+    for check in checks:
+        if isinstance(check, dict) and isinstance(check.get("extras"), dict):
+            check = {**check, "extras": {
+                k: v for k, v in check["extras"].items()
+                if k not in _SNIPPET_BEARING
+            }}
+        cleaned.append(check)
+    return {**blob, "checks": cleaned}
 
 
 def _manifest_summary(m: dict) -> str:
@@ -52,6 +95,8 @@ def _relabel(finding: dict, cat, cwe_id: int, run_id: str, idx: int) -> dict:
     malformed prior can never raise (feature 0063 reliability constraint).
     """
     out: dict[str, Any] = {k: finding[k] for k in _CARRY if k in finding}
+    if "validation" in out:
+        out["validation"] = _scrub_validation(out["validation"])
     out["id"] = f"{run_id}-owasp-{idx}"
     out["severity"] = finding.get("severity") or "medium"
     out["description"] = finding.get("description") or ""

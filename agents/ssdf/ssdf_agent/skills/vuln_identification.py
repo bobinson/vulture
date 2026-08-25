@@ -34,7 +34,8 @@ def check_vuln_identification(source_path: str) -> dict:
         findings.append({
             "severity": "high",
             "check_id": "ssdf.rv1.no_vuln_scanning",
-            "category": "RV-respond-to-vulnerabilities",
+            "category": "RV",
+            "practice": "RV-respond-to-vulnerabilities",
             "title": "No vulnerability scanning configured",
             "description": "No dependency or vulnerability scanning tool (Dependabot, Trivy, Snyk, Grype) found",
             "file_path": source_path,
@@ -48,7 +49,8 @@ def check_vuln_identification(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.rv1.no_container_scanning",
-            "category": "RV-respond-to-vulnerabilities",
+            "category": "RV",
+            "practice": "RV-respond-to-vulnerabilities",
             "title": "No container image scanning configured",
             "description": "Dockerfiles found but no container scanning tool in CI",
             "file_path": source_path,

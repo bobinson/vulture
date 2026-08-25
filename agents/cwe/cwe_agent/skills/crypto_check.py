@@ -21,6 +21,7 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import check_context, extract_snippet
+from shared.tools.weak_cipher import NODE_CIPHER_FACTORY_WEAK_SPEC
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._args import arg_slot, call_span_end, split_call_args
@@ -62,6 +63,13 @@ BROKEN_CRYPTO_PATTERNS = [
         r'\s*\(\s*["\']?(?:DES|RC4|BLOWFISH|3DES|TRIPLEDES|ECB)\b',
         re.IGNORECASE,
     ),
+    # The arm above matches `crypto.createCipher(` but NOT `createCipheriv(`,
+    # the modern Node API -- so on current code it is effectively dead, and a
+    # real weak cipher was reaching CWE-327 only through the loose
+    # bare-name + same-line-context path below (whose context vocabulary
+    # includes `key`, satisfied by almost any line). Shared with the asvs
+    # agent, which had the mirror-image gap.
+    NODE_CIPHER_FACTORY_WEAK_SPEC,
 ]
 
 # Bare-name pattern + context check, used together by the detector to
@@ -74,8 +82,18 @@ BROKEN_CRYPTO_BARE_NAME = re.compile(
     r"\b(DES|RC4|Blowfish|3DES|TripleDES|ECB)\b(?!C\b|RIPT|RIPE|EFS)",
     re.IGNORECASE,
 )
+# `key` was REMOVED (0078 track D). It is satisfied by almost any line, so a
+# bare cipher name plus any mention of a key was a finding:
+#     const rate = ecb.rates[key];  -> CWE-327   (European Central Bank)
+#     const rate = ecb.rates[id];   -> nothing
+# It was left in place in the previous round for a sound reason — the false
+# positive and the real lowercase Node cipher specs shared this one mechanism,
+# so removing it then would have deleted the detections too. The shared
+# weak_cipher arm now matches those specs precisely, so the loose path can be
+# tightened without loss; the retained tokens all imply cryptography rather
+# than merely accompanying it.
 BROKEN_CRYPTO_CONTEXT = re.compile(
-    r"\b(?:cipher|crypto|encrypt|decrypt|key|IV|mode)\b",
+    r"\b(?:cipher|crypto|encrypt|decrypt|IV|mode)\b",
     re.IGNORECASE,
 )
 

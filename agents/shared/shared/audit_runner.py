@@ -24,6 +24,7 @@ from shared.cancellation import (
 from shared.env import env_flag, env_truthy
 from shared.llm.errors import retry_skill
 from shared.tools import line_format
+from shared.tools.category_enum import normalize_to_enum
 from shared.tools.file_scanner import (
     clear_caches,
     is_entry_or_config,
@@ -453,19 +454,27 @@ _RETRIES_PINNED = False
 
 
 def _pin_llm_client_retries() -> None:
-    """Feature 0070 P5 (D.1): make `retry_llm_call` the ONLY retry authority.
+    """Feature 0070 P5 (D.1): belt-and-braces ONLY — this is not the retry guard.
 
-    `broker.py` already does this for its AsyncOpenAI client, naming the hazard
-    exactly: "broker 3x x SDK 2x x agent retry_llm_call 3x". That guard is
-    unreachable off the broker path — with OPENAI_BASE_URL set and the broker off,
-    `get_model()` returns `litellm/openai/<model>` and the SDK takes its LiteLLM
-    path instead.
+    Read this before trusting it. Setting the module attributes does NOT bound
+    chat-completion retries, and that was MEASURED, not inferred: against a stub
+    gateway answering 429, one logical completion still made **3 HTTP attempts**
+    with this function applied. See
+    `tests/unit/test_0070_p5_d1_retry_pin.py`, which stands the stub up and
+    counts.
 
-    Measured (litellm 1.87.1): `litellm.num_retries` is None — its own wrapper is
-    off — but `openai._base_client.DEFAULT_MAX_RETRIES` is 2 underneath, a hidden
-    3x on any retryable status (408/409/429/500). A 413 is not in that set, which
-    is why the observed 413 was not inflated; a 429 would have been, giving 9
-    attempts where 3 were intended.
+    Why it cannot work: `litellm.main.completion` reads `max_retries` from
+    per-call kwargs only; `litellm.num_retries` is consulted on the speech and
+    transcription paths, never on chat completions. The one surviving module
+    read is `litellm.num_retries or openai.DEFAULT_MAX_RETRIES` — and `0` is
+    FALSY, so pinning the attribute to zero selects the default (2, i.e. 3
+    attempts) that it was meant to suppress.
+
+    The ACTUAL guard is `provider.litellm_retry_extra_args()`, which puts
+    `max_retries=0` on the call itself via `ModelSettings.extra_args`. This
+    function is retained because it costs nothing, still covers the non-chat
+    litellm surfaces, and pins `litellm.DEFAULT_MAX_RETRIES` where the version
+    exposes it — but on its own it buys zero attempts back on the audit path.
 
     Idempotent, and never fatal: a litellm that does not expose these attributes
     must not break the audit.
@@ -484,6 +493,39 @@ def _pin_llm_client_retries() -> None:
         logger.debug("llm_client_retries_pinned num_retries=0")
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("llm_client_retries_pin_skipped: %s", exc)
+
+
+# Settings that only the SDK's LiteLLM model can carry through to the provider
+# call. `OpenAIChatCompletionsModel` splats `extra_args` into the openai SDK's
+# `create()`, whose generated signature accepts neither of these nor `**kwargs`.
+_LITELLM_ONLY_EXTRA_ARGS = ("max_retries", "num_retries")
+
+
+def _drop_litellm_only_settings(settings: dict, *, broker_active: bool) -> dict:
+    """Strip LiteLLM-only `extra_args` when the run is NOT on the LiteLLM path.
+
+    Feature 0070 P5 (D.1). `get_model_settings()` gates the retry pin on the
+    resolved model prefix and the `VULTURE_LLM_BROKER` env var, but the env var
+    is not the runtime truth: the broker also needs a URL and a per-run token,
+    and only `_run_llm_agent` knows whether `broker_model_provider()` actually
+    built a provider. When it did, `RunConfig` routes through an OpenAI client
+    whatever the model string says, so the pin would be a TypeError rather than
+    a no-op. The runner's answer wins here.
+
+    Returns a copy; the caller's dict is never mutated.
+    """
+    if not broker_active:
+        return settings
+    extra = settings.get("extra_args")
+    if not isinstance(extra, dict):
+        return settings
+    trimmed = {k: v for k, v in extra.items() if k not in _LITELLM_ONLY_EXTRA_ARGS}
+    out = dict(settings)
+    if trimmed:
+        out["extra_args"] = trimmed
+    else:
+        out.pop("extra_args", None)
+    return out
 
 
 def _require_loop_guard() -> bool:
@@ -1787,8 +1829,11 @@ def _redact_finding_inplace(finding: dict[str, Any]) -> None:
 
 # --- Feature 0057 P6b: provenance vocabulary -----------------------------
 # Exactly ONE of these tags is stamped on every finding. The deterministic
-# tiers are set centrally at the finalisation choke point (``_set_provenance``,
-# applied in ``_attach_code_snippet`` BEFORE validate); the ``llm`` tag is set
+# tiers are set centrally at the pre-egress choke point BOTH tiers pass through
+# (``_set_provenance``, applied in ``_finalize_finding_inplace`` immediately
+# BEFORE each per-finding SSE event, so the live delta and the ``result``
+# snapshot agree; ``_attach_code_snippet`` keeps the same call as an idempotent
+# backstop for findings that never reach an emit site); the ``llm`` tag is set
 # at LLM-finding emission time (run_combined_audit) and PRESERVED here via
 # ``setdefault`` semantics; ``llm_l5_verified`` is the L5-survival re-tag set
 # at the validate vote choke point (``validate._apply_validation_to_finding``).
@@ -1884,10 +1929,12 @@ def _attach_code_snippet(
     Mutates findings in place. Additive / no-op for findings that already
     carry a non-empty ``code_snippet`` (several skills set it directly).
 
-    Feature 0057 P6b: this is also the central provenance set-point —
-    ``_set_provenance`` is applied to every finding here (BEFORE validate), so
-    the emitted ``result`` carries the full deterministic provenance vocabulary
-    while preserving the pre-set ``llm`` tag (setdefault semantics).
+    Feature 0057 P6b: ``_set_provenance`` is applied to every finding here too,
+    but it is no longer the set-POINT — this call runs after the per-finding SSE
+    events, which is how the deltas came to carry no provenance at all. The stamp
+    now happens at ``_finalize_finding_inplace`` (immediately before each emit)
+    and this pass is the idempotent BACKSTOP for any finding that reaches the
+    ``result`` snapshot without passing an emit site.
 
     A finding whose path cannot be resolved or whose line is missing/zero is
     left with an empty snippet — the L5 selection layer then SKIPS it (P0.3)
@@ -1895,11 +1942,19 @@ def _attach_code_snippet(
     """
     from shared.tools.file_scanner import read_file_lines
 
-    # P6b: stamp the deterministic provenance tag on EVERY finding first, in a
-    # standalone pass with no I/O. This is decoupled from the best-effort snippet
-    # loop below so that a snippet/read failure (which the caller catches and
-    # logs) can never strip provenance from the whole batch — provenance is a
-    # pure in-memory classification and must always complete. (no-op if `llm`.)
+    # P6b backstop. Say plainly what this is now: as of 0078 track C it is a
+    # NO-OP on every path that exists. `_finalize_finding_inplace` stamps
+    # provenance immediately before both per-finding emits, and rollup parents
+    # are tagged `catalog_rollup` by validate/rollup.py where they are built, so
+    # nothing reaches here untagged.
+    #
+    # It is kept because it costs one dict lookup per finding and it is the
+    # invariant's last line of defence: if a future path appends findings
+    # without going through the emit choke point, this is what stops them
+    # reaching the DB provenance-less — the failure mode that made this whole
+    # section necessary. It stays decoupled from the best-effort snippet loop
+    # below so a read failure there (which the caller catches and logs) cannot
+    # skip it. Idempotent; no-op if already set, `llm` included.
     for f in findings:
         _set_provenance(f)
 
@@ -1951,6 +2006,101 @@ def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> No
     finding["id"] = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def _finalize_finding_inplace(
+    finding: dict[str, Any], run_id: str, index: int,
+) -> None:
+    """The single pre-egress choke point BOTH tiers pass through.
+
+    Every finding that leaves this process — skill row or LLM row — is emitted
+    by ``emitter.finding_event(**_public_view(finding))`` and then carried into
+    the ``result`` snapshot, so anything that must be true of an emitted finding
+    belongs here rather than in one tier's own loop.
+
+    Category conformance used to live only in the two LLM parse branches. The
+    measurement behind it found 30 out-of-vocabulary rows and NINE of them were
+    skill rows — every skill row in that run — so covering the LLM path alone
+    left a third of the violations on the wire.
+
+    Order is deliberate but not load-bearing for the id: ``_assign_finding_id``
+    hashes title + file_path only, so conforming the category first cannot move
+    an id. All three steps are idempotent, so a row reaching here twice is
+    unchanged the second time.
+
+    Safe to move conformance off the parse branches and onto this later point
+    because nothing between them reads ``category``: ``_dedup_key`` keys on
+    ``check_id`` or the normalised title plus path, and ``_adopt_anchor`` merges
+    only the ``_anchor_*`` stamps.
+
+    ``_set_provenance`` runs FIRST, and runs here rather than only in
+    ``_attach_code_snippet``, for the same "two different contents" reason. That
+    call site is reached at the "Combine & emit final result" step — after every
+    per-finding event has been yielded — so the deterministic tags rode only the
+    ``result`` snapshot. That is not merely a live-view cosmetic: the backend
+    rescues DELTA findings from any agent that never sent a snapshot, so an agent
+    cut off by a context deadline persisted provenance-less rows, and which
+    agents those were changed from run to run on the same target. Nothing about
+    a finding decided it — only whether its agent got to finish.
+
+    Deferring it bought nothing: provenance is a pure in-memory classification
+    with no I/O, which is exactly why it is already a standalone pass there. It
+    is first in this function because it reads ``check_id`` /
+    ``signature_status`` and must not depend on what the other two steps touch.
+    ``setdefault`` semantics preserve the LLM tier's pre-set ``llm`` tag, and the
+    later pass in ``_attach_code_snippet`` is now a no-op for everything that
+    egressed through here — keep it: it is the backstop for findings that never
+    pass an emit site.
+    """
+    _set_provenance(finding)
+    _conform_category(finding)
+    _assign_finding_id(finding, run_id, index)
+    _redact_finding_inplace(finding)
+
+
+def _bind_category_enum(
+    fn: Callable[..., Generator[str, None, None]],
+) -> Callable[..., Generator[str, None, None]]:
+    """Bind ``category_enum`` for exactly the wrapped audit's lifetime.
+
+    A decorator rather than an inline ``try``/``finally`` for two reasons. The
+    bind needs an honest ``finally``: a generator body cannot be trusted to
+    reach its own tail, because a client disconnect closes it mid-stream
+    (feature 0061) and an unhandled failure unwinds it — either way the
+    vocabulary would otherwise outlive the run and be applied to the NEXT audit
+    driven by that context. And doing it here rather than in a hand-written
+    wrapper keeps the audit's 12-parameter signature written once.
+
+    ``reset(token)`` rather than ``set(None)`` so an enclosing audit gets its
+    own vocabulary back instead of losing it. The set and the reset both run in
+    the consumer's context (a generator has no context of its own), which for
+    ``_cancellable_stream`` is the one worker context driving the whole run.
+
+    ``category_enum`` is keyword-only here and absent from the wrapped
+    function's parameters, so passing it positionally raises rather than being
+    silently ignored.
+    """
+    @functools.wraps(fn)
+    def wrapper(
+        *args: Any,
+        category_enum: frozenset[str] | None = None,
+        **kwargs: Any,
+    ) -> Generator[str, None, None]:
+        token = _CATEGORY_ENUM.set(category_enum)
+        reset_conform_stats()
+        try:
+            yield from fn(*args, **kwargs)
+        finally:
+            try:
+                _CATEGORY_ENUM.reset(token)
+            except ValueError:
+                # Advanced from a different Context than the one that set it —
+                # no caller does this today, but a stale vocabulary silently
+                # applied to someone else's findings is worse than a lost reset.
+                _CATEGORY_ENUM.set(None)
+
+    return wrapper
+
+
+@_bind_category_enum
 def run_combined_audit(
     run_id: str,
     source_path: str,
@@ -1985,6 +2135,10 @@ def run_combined_audit(
         model: Optional model preference for LLM pass.
         use_llm: Per-request LLM toggle. ``None`` falls back to the
             ``VULTURE_USE_LLM`` env var (module-level ``USE_LLM``).
+        category_enum: Keyword-only, consumed by ``_bind_category_enum``. The
+            vocabulary this agent advertises through ``/info``; every emitted
+            finding is reduced to it at ``_finalize_finding_inplace``. ``None``
+            (the default) leaves categories untouched.
 
     Yields:
         SSE-formatted event strings.
@@ -2076,15 +2230,18 @@ def run_combined_audit(
                 # preserved verbatim. Hash matches backend's
                 # `generateFindingID(auditID, title, file_path, index)`.
                 for finding in findings:
-                    _assign_finding_id(finding, run_id, len(skill_findings))
-                    skill_findings.append(finding)
-                    # Feature 0057 P2a: redact secret-bearing snippets BEFORE the
-                    # per-finding SSE event so the live frontend view (and any
-                    # delta-finding DB persistence on a stalled stream) never sees
-                    # the raw secret. Mutates the dict that is also kept in
-                    # skill_findings, so the finalisation choke point re-sees the
+                    # Conform the category, assign the deterministic id, and
+                    # (feature 0057 P2a) redact secret-bearing snippets BEFORE
+                    # the per-finding SSE event, so the live frontend view — and
+                    # any delta-finding DB persistence on a stalled stream —
+                    # never sees a raw secret or an out-of-vocabulary category.
+                    # Mutates the dict also kept in skill_findings, so the
+                    # `_attach_code_snippet` finalisation pass re-sees the
                     # already-masked form (idempotent).
-                    _redact_finding_inplace(finding)
+                    _finalize_finding_inplace(
+                        finding, run_id, len(skill_findings),
+                    )
+                    skill_findings.append(finding)
                     yield emitter.finding_event(**_public_view(finding))
 
                 completed += 1
@@ -2208,11 +2365,11 @@ def run_combined_audit(
                 # they are non-deterministic (L5-demotable), while skill
                 # findings stay deterministic/trusted (R2 voter floor).
                 finding.setdefault("provenance", "llm")
-                _assign_finding_id(finding, run_id, base_idx + offset)
-                # Feature 0057 P2a: redact secret-bearing LLM-finding snippets
-                # before the per-finding SSE event (LLM is the realistic source
-                # of unquoted / env-style / comment-embedded secrets).
-                _redact_finding_inplace(finding)
+                # Same choke point as the skill tier above: conform, id, and
+                # (feature 0057 P2a) redact secret-bearing LLM-finding snippets
+                # before the per-finding SSE event (the LLM is the realistic
+                # source of unquoted / env-style / comment-embedded secrets).
+                _finalize_finding_inplace(finding, run_id, base_idx + offset)
                 yield emitter.finding_event(**_public_view(finding))
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
@@ -2220,6 +2377,7 @@ def run_combined_audit(
         # §14 P0 rollout gate: the LLM phase did not run (skills-only mode or a
         # cancelled/expired run) — no provider key was used at all.
         logger.info("llm_path run_id=%s path=skills", run_id)
+    log_conform_stats(run_id, domain_label)
 
     # --- Combine & emit final result ---
     all_findings = skill_findings + llm_new_findings
@@ -2825,6 +2983,9 @@ def _parse_llm_result(result: Any) -> list[dict]:
         # 0076 B3: the SAME normaliser as the text path. Duck-typed on
         # ``.findings`` rather than on ``AuditOutput`` because the model-visible
         # schema is narrowed per call (§5.2) and is therefore its own class.
+        # Category conformance is NOT here: it moved to
+        # `_finalize_finding_inplace`, the one choke point the skill tier also
+        # passes through (nine of the thirty measured violations were skill rows).
         return [_normalize_finding(row.model_dump()) for row in rows]
     return _parse_llm_findings(str(final_output) if final_output is not None else "")
 
@@ -2924,6 +3085,13 @@ async def _collect_llm_findings_async(
     sdk_overhead = max(512, 150 * len(all_tools) + 600)
     max_output = min(env_max_output, max(2048, ctx_window - prompt_tokens - sdk_overhead))
     model_settings_dict = get_model_settings(model)
+    # D.1: the retry pin rides in `extra_args` and is only deliverable on the
+    # SDK's LiteLLM path. A per-run broker provider replaces model resolution
+    # with an OpenAI client, so drop it there (the broker's own client already
+    # sets max_retries=0).
+    model_settings_dict = _drop_litellm_only_settings(
+        model_settings_dict, broker_active=run_model_provider is not None,
+    )
     model_settings_dict["max_tokens"] = max_output
 
     # For Anthropic models, embed source code in the system message (instructions)
@@ -2939,6 +3107,10 @@ async def _collect_llm_findings_async(
         )
     else:
         augmented_instructions = instructions
+
+    # Name the declared vocabulary to the model when the agent has one.
+    augmented_instructions = (augmented_instructions or "") + \
+        _category_vocabulary_suffix(current_category_enum())
 
     # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may
     # not support structured output (response_format with JSON schema) alongside
@@ -3087,6 +3259,8 @@ def _parse_llm_findings(output: str) -> list[dict]:
     ``_scan_json_arrays`` (or the pre-0076 bare regex when
     ``VULTURE_LLM_JSON_SCAN=false``) -> ``_salvage_truncated_array`` -> ``[]``.
     """
+    # Category conformance moved to `_finalize_finding_inplace` (see
+    # `_parse_llm_result`) so the skill tier is covered by the same call.
     return [_normalize_finding(row) for row in _extract_finding_rows(output)]
 
 
@@ -3380,6 +3554,158 @@ def _carry_evidence(raw: dict) -> dict[str, Any]:
         carried[name] = snippet
     carried.update(_carry_check_id(raw))
     return carried
+
+
+# The agent's DECLARED category vocabulary, when it opts in by passing
+# `category_enum` to run_combined_audit. Findings are reduced to it before
+# egress, because every consumer -- frontend category filters, cross-agent
+# dedup, the OWASP categorizer -- keys off the enum the agent advertises
+# through /info.
+#
+# Measured: 30 of the SSDF agent's 56 rows carried a category outside its own
+# declared ["PO","PS","PW","RV"], the LLM tier alone inventing 15 distinct
+# strings (`PW-102`, `PW-1/PW-3`, `PW2`, practice-group NAMES). Default None
+# leaves behaviour unchanged for every agent that does not opt in.
+#
+# A ContextVar and NOT a module global. `transport/sse_app.py` drives up to
+# VULTURE_AUDIT_EXECUTOR_WORKERS (default 8) audit generators at once in one
+# interpreter, each inside its own `contextvars.copy_context()`, so a global
+# here is shared mutable state between unrelated audits: whichever generator
+# started second silently reduced the FIRST one's categories against its own
+# enum -- an SSDF run conforming against SOC2's vocabulary, or the reverse,
+# decided by nothing but start order.
+#
+# This is the third time ambient per-run state has been bitten by exactly that.
+# The other two are documented in place and reached the same conclusion: the
+# broker's per-run model provider (`_build_llm_agent` below, and
+# `llm/broker.py:broker_model_provider`) replaced a `set_default_openai_client`
+# process global that "would bleed one run's broker token into another
+# concurrent run's calls". So the vocabulary is bound the way the cancel token
+# and the broker token already are -- per context, set and reset around one run.
+_CATEGORY_ENUM: contextvars.ContextVar[frozenset[str] | None] = contextvars.ContextVar(
+    "vulture_category_enum", default=None,
+)
+
+
+def current_category_enum() -> frozenset[str] | None:
+    """The vocabulary declared by the audit running in THIS context (or None).
+
+    Mirrors ``current_cancel_token`` / ``current_llm_path``: ambient per-run
+    state is read through a function so no caller can capture it at import.
+    """
+    return _CATEGORY_ENUM.get()
+
+
+def _category_vocabulary_suffix(allowed: frozenset[str] | None) -> str:
+    """Prompt text naming the agent's DECLARED category vocabulary.
+
+    Track B conformed categories after the fact, and the normaliser never
+    guesses — right for `PW-3.3` -> `PW`, useless for prose. Measured with the
+    LLM tier running to completion, soc2 produced nine categories, six of them
+    prose labels (`Access Logging`, `Change Management`, ...) with no declared
+    prefix to reduce, so they passed through untouched.
+
+    Prevention at the source; the normaliser stays as the net. Neither alone
+    suffices: a prompt cannot bind a model, and the normaliser cannot rescue a
+    label with nothing to reduce.
+
+    Sorted, so two identical audits build an identical prompt — an unstable
+    system message would defeat prompt caching for no benefit.
+    """
+    if not allowed:
+        return ""
+    values = ", ".join(sorted(allowed))
+    return (
+        "\n\nCATEGORY VOCABULARY: the `category` field must be EXACTLY one of: "
+        f"{values}. Use the identifier only — not a descriptive name, not a "
+        "phrase, and not two joined with a slash. Put any extra specificity in "
+        "`title` or `description` instead."
+    )
+
+
+# AC3.5: a category rewrite must be COUNTED, never silent. The plan gates the
+# whole normalisation on "report, per agent, the count before and after, and the
+# rows that collided" — and the rewrite is precisely what CREATES collisions,
+# because the Go merge makes category the primary dedup discriminant. A collapse
+# can therefore delete a row, and without this it was unobservable.
+#
+# A ContextVar, for the same reason the vocabulary itself is one: up to
+# VULTURE_AUDIT_EXECUTOR_WORKERS audits share the interpreter, and a module
+# counter would blend them.
+_CONFORM_STATS: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "vulture_conform_stats", default=None
+)
+
+
+def reset_conform_stats() -> None:
+    """Start a fresh tally for this audit."""
+    _CONFORM_STATS.set({"rewritten": 0, "unreducible": 0, "pairs": {}})
+
+
+def conform_stats() -> dict[str, Any]:
+    """The tally for this audit; zeroes when nothing has been recorded."""
+    cur = _CONFORM_STATS.get()
+    return cur if cur is not None else {"rewritten": 0, "unreducible": 0, "pairs": {}}
+
+
+def _record_conform(raw: str, fixed: str) -> None:
+    """Tally one decision. ``raw == fixed`` means nothing was rewritten."""
+    cur = _CONFORM_STATS.get()
+    if cur is None:
+        cur = {"rewritten": 0, "unreducible": 0, "pairs": {}}
+        _CONFORM_STATS.set(cur)
+    if raw == fixed:
+        # Unchanged AND not declared: the normaliser refuses to guess, so this
+        # is the number that says the prompt-side fix is not landing.
+        allowed = current_category_enum()
+        if allowed and raw not in allowed:
+            cur["unreducible"] += 1
+        return
+    cur["rewritten"] += 1
+    cur["pairs"][(raw, fixed)] = cur["pairs"].get((raw, fixed), 0) + 1
+
+
+def log_conform_stats(run_id: str, agent_label: str) -> None:
+    """Emit the per-audit summary. Silent when nothing was rewritten."""
+    st = conform_stats()
+    if not st["rewritten"] and not st["unreducible"]:
+        return
+    mapping = ", ".join(
+        f"{src}->{dst}x{n}" for (src, dst), n in sorted(st["pairs"].items())
+    )
+    logger.info(
+        "category_conform run_id=%s agent=%s rewritten=%d unreducible=%d %s",
+        run_id, agent_label, st["rewritten"], st["unreducible"], mapping,
+    )
+
+
+def _conform_category(finding: dict) -> dict:
+    """Reduce ``category`` to the declared enum, preserving the detail."""
+    allowed = current_category_enum()
+    if not allowed:
+        return finding
+    raw = finding.get("category")
+    if not isinstance(raw, str):
+        return finding
+    fixed = normalize_to_enum(raw, allowed)
+    _record_conform(raw, fixed)
+    if fixed == raw:
+        return finding
+    finding["category"] = fixed
+    # Keep the specific id the agent actually said, and keep it somewhere that
+    # SURVIVES. The first cut put it in a `practice` key, which `model.Finding`
+    # has no field for, so the agui unmarshal DISCARDED it at the Go boundary --
+    # it never reached the DB, the SSE consumer or the frontend, which made
+    # "nothing is lost" false end to end. `description` is an existing field on
+    # both models, so appending there actually preserves it.
+    #
+    # `practice` is still set for in-process consumers (the validation layers
+    # run agent-side and can read it), but it is no longer the only copy.
+    finding.setdefault("practice", raw)
+    desc = finding.get("description")
+    if isinstance(desc, str) and raw not in desc:
+        finding["description"] = f"{desc.rstrip()} (reported as: {raw})"
+    return finding
 
 
 def _normalize_finding(raw: dict) -> dict:

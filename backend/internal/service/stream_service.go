@@ -238,6 +238,10 @@ func findingsToPriors(fs []model.Finding) []model.PriorFinding {
 			LineStart:   f.LineStart,
 			LineEnd:     f.LineEnd,
 			CheckID:     f.CheckID,
+			// Evidence, so the mapping agent inherits rather than strips it.
+			Provenance:           f.Provenance,
+			ValidationStatus:     f.ValidationStatus,
+			ValidationConfidence: f.ValidationConfidence,
 		})
 	}
 	return out
