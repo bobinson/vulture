@@ -72,7 +72,7 @@ working one look identical. Five committed groups separate them:
   (against the real dispatch sets as well as a synthetic one-arm CLI), and that
   the widening accuses none of the eight look-alikes that are NOT invocations —
   `~/.vulture/vulture.db`, a URL ending in `/vulture`, `myvulture`, the binary
-  passed as an argument, a bare path argument, `vulture-docs`, `VULTURE_*`, and
+  passed as an argument, a bare path argument, `vulture-notes`, `VULTURE_*`, and
   the `<cmd>` placeholder.
 * `TestDocScope` asserts the scanned set is the documentation TREE rather than a
   remembered list: every markdown file under `docs/` is in it, the glob is
@@ -242,7 +242,7 @@ _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 #: The prefix is matched EXPLICITLY, as a sequence of path segments starting at a
 #: token boundary, rather than by relaxing the lookbehind to accept any preceding
 #: `/`. That distinction is what keeps correct docs unaccused: a token whose start
-#: is not a path segment can never match, so `vulture-docs`, `.vultureignore`,
+#: is not a path segment can never match, so `vulture-notes`, `.vultureignore`,
 #: `~/.vulture/vulture.db`, `myvulture`, `VULTURE_*` and a URL ending in
 #: `/vulture` are all excluded, and a placeholder (`vulture <cmd>`) still cannot
 #: match.
@@ -509,7 +509,7 @@ class TestNonVacuity:
     def test_prose_and_placeholders_are_not_accused(self):
         doc = (
             "Vulture is a platform. The vulture binary lives at `~/.local/bin/vulture`.\n"
-            "See `vulture-docs` and `VULTURE_PORT`. Usage: `vulture <cmd>`.\n"
+            "See `vulture-notes` and `VULTURE_PORT`. Usage: `vulture <cmd>`.\n"
         )
         assert documented_commands(doc) == []
 
@@ -584,7 +584,7 @@ class TestPathPrefixedInvocations:
             "cat ~/.vulture/agents.log tail",  # path deeper in a command
             "git clone https://github.com/bobinson/vulture vulture-src",  # a URL
             "run myvulture list",  # a different program
-            "vulture-docs holds plans",  # a sibling repo
+            "vulture-notes holds plans",  # a hyphenated word, not a command
             "VULTURE_PORT overrides port",  # an env var
             "vulture <cmd> shows usage",  # a placeholder
             "cp vulture bin/vulture",  # the binary as an argument, not a command
