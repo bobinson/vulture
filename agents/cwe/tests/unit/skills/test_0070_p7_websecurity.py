@@ -141,7 +141,35 @@ class TestExposedDangerousMethod:
 # `window.open` of a generated document, and anchors to fixed trusted hosts.
 # The LLD's "Killed — do not re-propose" register had already recorded exactly
 # this outcome, and modern browsers imply noopener for target=_blank anyway.
+#
+# P8.2: the REVERT removed the rule from the dispatcher but left ~140 lines of
+# detector behind — unreferenced, and therefore unable to emit on any input,
+# while its `"category": "CWE-1022"` literals kept the id in the attestation's
+# DECLARED-ONLY (detectable) list. The code is now deleted; these tests pin the
+# absence so a future edit cannot reinstate the killed rule by accident.
+class TestWindowOpenerStaysKilled:
+    WINDOW_OPEN_JS = 'function openReport(url) {\n  window.open(url, "_blank");\n}\n'
+    ANCHOR_HTML = (
+        "<section>\n  <a\n"
+        '    href="https://partner.example/pricing"\n'
+        '    target="_blank"\n'
+        "  >pricing</a>\n</section>\n"
+    )
 
+    def test_window_open_without_noopener_is_not_reported(self):
+        assert _of(_run({"share.js": self.WINDOW_OPEN_JS}), "CWE-1022") == []
+
+    def test_external_blank_anchor_without_rel_is_not_reported(self):
+        assert _of(_run({"page.html": self.ANCHOR_HTML}), "CWE-1022") == []
+
+    def test_no_dead_detector_remains_in_source(self):
+        """A re-added detector must be WIRED, not left unreachable as before."""
+        from cwe_agent.skills import web_security_check as m
+
+        assert not hasattr(m, "_check_window_opener")
+        assert "CWE-1022" not in {
+            f.get("category") for f in _run({"a.js": self.WINDOW_OPEN_JS})
+        }
 
 
 class TestCleartextCookiePayload:
@@ -417,5 +445,12 @@ def test_new_categories_are_source_literals():
 
     src = Path(web_security_check.__file__).read_text()
     literals = set(re.findall(r'"category":\s*"CWE-(\d+)"', src))
-    for cwe in ("749", "1022", "315", "940", "784", "565", "539", "644"):
+    # "1022" is deliberately absent from this list: the rule was reverted and
+    # its dead detector deleted (P8.2). The literal is what the attestation
+    # scans for, so keeping it here would re-assert a detection the agent
+    # cannot perform. See TestWindowOpenerStaysKilled.
+    for cwe in ("749", "315", "940", "784", "565", "539", "644"):
         assert cwe in literals, f"CWE-{cwe} must be a literal, not an f-string"
+    assert "1022" not in literals, (
+        "CWE-1022 was reverted; a literal here would re-declare it detectable"
+    )

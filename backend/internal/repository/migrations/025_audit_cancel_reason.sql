@@ -1,0 +1,17 @@
+-- Migration 025 (feature 0080): record WHY a run ended, so a cancel is
+-- distinguishable from an ordinary failure.
+--
+-- Deliberately NOT a fifth audit status. `status` is a closed, formally
+-- verified datatype: verification/isabelle/Pipeline_State.thy declares
+-- `datatype audit_outcome = AuditCompleted | AuditFailed`, and
+-- verification/conformance/conformance_test.go pins the valid set
+-- exhaustively. 001_init.sql also constrains it with
+--   CHECK (status IN ('pending','running','completed','failed'))
+-- which Postgres would reject a 'cancelled' write against (SQLite has no such
+-- CHECK and would accept it -- a silent cross-store divergence).
+--
+-- A cancelled run is therefore `failed` with a non-empty cancel_reason.
+-- Non-empty <=> cancelled. Every existing terminal-state consumer (the CLI
+-- poll gate, useAudit.ts, pipeline_service, notifyOrphaned, the published CI
+-- polling recipe) keeps working untouched.
+ALTER TABLE audits ADD COLUMN IF NOT EXISTS cancel_reason TEXT NOT NULL DEFAULT '';

@@ -7,9 +7,16 @@ Vocabulary (exactly one per finding):
 
 Phase 1 already stamps ``provenance="llm"`` on LLM findings. Phase 6 EXTENDS
 this to the full deterministic vocabulary at the finalisation choke point
-(``audit_runner._set_provenance`` — applied in ``_attach_code_snippet`` over
-``all_findings`` BEFORE validate) plus the L5-survival re-tag at the validate
+(``audit_runner._set_provenance``) plus the L5-survival re-tag at the validate
 vote choke point (``validate._apply_validation_to_finding``).
+
+Since 0078 track C the deterministic stamp is applied in
+``_finalize_finding_inplace``, i.e. immediately BEFORE each per-finding SSE
+event, not in ``_attach_code_snippet`` afterwards. That matters: the backend
+rescues the per-finding deltas verbatim when an agent is cut off before its
+result snapshot, and the old ordering meant those rescued rows reached the DB
+with no provenance at all. The ``_attach_code_snippet`` pass is retained as a
+no-op backstop.
 
 The tags are ADDITIVE metadata and must NOT change the existing
 ``_is_deterministic`` / ``_is_l5_exempt`` determinations (those key off

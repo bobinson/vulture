@@ -142,8 +142,28 @@ validate_home() {
     log "VULTURE_HOME validated: $VULTURE_HOME"
 }
 
+# Version as named by the offline tarball itself: vulture-<version>-<os>-<arch>.tar.gz.
+# Falls back to a literal rather than guessing, so the log never claims a
+# version the artifact does not carry.
+offline_tarball_version() {
+    _base=$(basename "$VULTURE_OFFLINE_TARBALL")
+    _v=$(printf '%s' "$_base" | sed -n 's/^vulture-\(.*\)-[^-]*-[^-]*\.tar\.gz$/\1/p')
+    if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "(offline tarball)"; fi
+}
+
 # ─── 3. resolve_version ────────────────────────────────────────────────────
 resolve_version() {
+    # An offline install takes its bits from the tarball on disk, so the
+    # published release list is irrelevant to it. Resolving anyway made the log
+    # announce "installing version: v0.0.17" while installing a locally built
+    # v0.0.0-dev — misleading in exactly the situation where an operator most
+    # needs to know what they are running. It also made an air-gapped install
+    # wait on a doomed GitHub call and then warn about it.
+    if [ -n "${VULTURE_OFFLINE_TARBALL:-}" ]; then
+        VERSION=${VULTURE_VERSION:-$(offline_tarball_version)}
+        log "installing from offline tarball: $VERSION"
+        return
+    fi
     if [ -n "${VULTURE_VERSION:-}" ]; then
         VERSION=$VULTURE_VERSION
     elif command -v curl >/dev/null 2>&1; then
@@ -179,7 +199,16 @@ download_artifacts() {
         if [ ! -f "$SHASUM_FILE" ]; then
             SHASUM_FILE="$(dirname "$VULTURE_OFFLINE_TARBALL")/SHA256SUMS"
         fi
+        # Companions must track whichever SHASUM_FILE layout resolved above:
+        # the <stem>.SHA256SUMS sidecar (what build-fixture-tarball.sh emits) or
+        # a plain SHA256SUMS beside the tarball (what you get by downloading the
+        # release assets into one folder). Previously SIG_FILE only ever used the
+        # sidecar name while the cert used the directory name, so the two
+        # disagreed and the second layout could never find its signature.
         SIG_FILE=${VULTURE_OFFLINE_TARBALL%.tar.gz}.sig
+        [ -s "$SIG_FILE" ] || SIG_FILE="${SHASUM_FILE}.sig"
+        BUNDLE_FILE=${VULTURE_OFFLINE_TARBALL%.tar.gz}.bundle
+        [ -s "$BUNDLE_FILE" ] || BUNDLE_FILE="${SHASUM_FILE}.bundle"
         log "using offline tarball: $TARBALL"
         return
     fi
@@ -196,9 +225,15 @@ download_artifacts() {
         2>/dev/null || warn "no cosign signature published"
     fetch "$DOWNLOAD_DIR/SHA256SUMS.pem" "${URL_BASE}/SHA256SUMS.pem" \
         2>/dev/null || true
+    # Sigstore bundle (sig + cert + Rekor proof in one file). Releases up to and
+    # including v0.0.17 do not publish it, so its absence is normal, not a
+    # downgrade — verify_signature falls back to the detached .sig/.pem pair.
+    fetch "$DOWNLOAD_DIR/SHA256SUMS.bundle" "${URL_BASE}/SHA256SUMS.bundle" \
+        2>/dev/null || true
     TARBALL=$DOWNLOAD_DIR/$TARBALL_NAME
     SHASUM_FILE=$DOWNLOAD_DIR/SHA256SUMS
     SIG_FILE=$DOWNLOAD_DIR/SHA256SUMS.sig
+    BUNDLE_FILE=$DOWNLOAD_DIR/SHA256SUMS.bundle
 }
 
 # fetch DEST URL — download URL to DEST with a timeout and bounded retries.
@@ -223,6 +258,24 @@ verify_signature() {
         warn "proceeding with SHA-only verification"
         return
     fi
+    # Bundle first when the release ships one. cosign v3 REMOVED
+    # --output-signature/--output-certificate on the producer side and
+    # deprecated --signature/--certificate/--rekor-url here, so the bundle is
+    # the path that survives; the detached branch below stays for every release
+    # up to v0.0.17, which published only .sig/.pem.
+    #
+    # Selection is on FILE PRESENCE, never on a verification FAILURE: falling
+    # back after a failed check would let a tampered artifact retry down another
+    # path until one passed.
+    if [ -s "${BUNDLE_FILE:-}" ]; then
+        log "verifying release signature (cosign, bundle)"
+        cosign verify-blob \
+            --certificate-identity-regexp "^https://github.com/${REPO_OWNER}/${REPO_NAME}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --bundle "$BUNDLE_FILE" \
+            "$SHASUM_FILE" || err "cosign verification failed"
+        return
+    fi
     # cosign IS installed: a published release must carry sig + cert. A missing
     # one is a downgrade signal (e.g. a mirror that dropped them), so refuse it
     # rather than silently falling back to SHA-only — unless explicitly allowed.
@@ -233,7 +286,9 @@ verify_signature() {
         fi
         err "cosign is installed but no signature was published for this release; refusing silent downgrade to SHA-only (set VULTURE_ALLOW_UNSIGNED=true to override)"
     fi
-    PEM="${SHASUM_FILE%/*}/SHA256SUMS.pem"
+    # Same rule as SIG_FILE: derive from SHASUM_FILE, not from a fixed name.
+    PEM="${SHASUM_FILE}.pem"
+    [ -s "$PEM" ] || PEM="${SHASUM_FILE%/*}/SHA256SUMS.pem"
     if [ ! -s "$PEM" ]; then
         if [ "${VULTURE_ALLOW_UNSIGNED:-}" = "true" ]; then
             warn "no certificate published; VULTURE_ALLOW_UNSIGNED=true; SHA-only verification"
@@ -241,7 +296,7 @@ verify_signature() {
         fi
         err "cosign is installed but no certificate was published for this release; refusing silent downgrade to SHA-only (set VULTURE_ALLOW_UNSIGNED=true to override)"
     fi
-    log "verifying release signature (cosign + Rekor)"
+    log "verifying release signature (cosign + Rekor, detached)"
     cosign verify-blob \
         --certificate-identity-regexp "^https://github.com/${REPO_OWNER}/${REPO_NAME}/" \
         --certificate-oidc-issuer https://token.actions.githubusercontent.com \

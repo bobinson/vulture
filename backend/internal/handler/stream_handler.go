@@ -388,17 +388,30 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 		priorByAgent = h.loadPriorFindings(sourcePath, audit.Types, priorFindingsLimit())
 	}
 
-	// context.Background(), never a request context: the run must outlive any
-	// client. Boundedness is unaffected — RunAgentWithContext wraps the caller's
-	// ctx in VULTURE_AGENT_PROXY_TIMEOUT_SEC, and the agent enforces
+	// b.RunContext() derives from context.Background(), never from a request:
+	// feature 0071 requires the run to outlive any client. Boundedness is
+	// unaffected — RunAgentWithContext wraps the caller's ctx in
+	// VULTURE_AGENT_PROXY_TIMEOUT_SEC, and the agent enforces
 	// VULTURE_AGENT_MAX_AUDIT_SECONDS itself.
-	go h.streamSvc.StreamWithContext(context.Background(), audit, sourcePath, h.agents, priorByAgent, eventCh)
+	//
+	// Feature 0080: what this context ADDS is a handle. Before it, the run was
+	// started on a bare context.Background() and was therefore uncancellable —
+	// a Ctrl-C'd `vulture scan` ran 71 further minutes with no client attached.
+	// Cancelling it closes the outbound agent requests (built with
+	// http.NewRequestWithContext), which trips each agent's already-proven 0061
+	// _cancellable_stream teardown.
+	go h.streamSvc.StreamWithContext(b.RunContext(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
 	res := drainResult(eventCh, audit.ID, b)
 
 	log.Printf("[dispatch] run complete audit=%s findings=%d proveResults=%d scores=%v",
 		audit.ID, len(res.Findings), len(res.ProveResults), res.Scores)
 	audit.OwaspCoverage = res.OwaspCoverage
+	// Feature 0080: a cancelled run must never be recorded as a success. The
+	// ctx error is downgraded upstream to an agentUnavailable notice that lacks
+	// the "ERROR:" prefix collectErrorText requires, so res.AgentError is empty
+	// and the completion branch would otherwise mark this `completed`.
+	audit.CancelReason = b.CancelReason()
 	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason)
 }
 
@@ -1351,7 +1364,22 @@ func completeAuditWithError(
 	audit.CompletedAt = &now
 	audit.Scores = scores
 	audit.Findings = findings
-	if agentError != "" && len(findings) == 0 {
+	if audit.CancelReason != "" {
+		// Feature 0080. Deliberately FIRST, and deliberately not gated on
+		// len(findings) == 0: a cancel arriving after some findings have streamed
+		// is still a cancel, and the old ordering would have called that
+		// `completed` with a partial score that looks authoritative.
+		//
+		// Status stays within the closed, formally verified set
+		// (verification/isabelle/Pipeline_State.thy declares exactly
+		// AuditCompleted | AuditFailed) -- the cancel fact lives in its own
+		// column instead, so no terminal-state consumer needs to learn a fifth
+		// value. Scores are dropped for the same reason a partial score is
+		// misleading; the findings already streamed are kept.
+		audit.Status = model.AuditStatusFailed
+		audit.Scores = nil
+		log.Printf("[persist] audit=%s marked FAILED (cancelled): %s", audit.ID, audit.CancelReason)
+	} else if agentError != "" && len(findings) == 0 {
 		audit.Status = model.AuditStatusFailed
 		audit.DegradedReason = agentError
 		log.Printf("[persist] audit=%s marked FAILED: %s", audit.ID, agentError)
@@ -1545,4 +1573,99 @@ func extractStreamAuditID(path string) string {
 		return ""
 	}
 	return parts[0]
+}
+
+// CancelRun stops a dispatched audit. Feature 0080.
+//
+// The defect it closes: `vulture scan` submits and exits without opening an SSE
+// stream, VULTURE_AUDIT_AUTODISPATCH starts the run in the background, and the
+// run was started on a bare context.Background() — uncancellable. A Ctrl-C'd
+// scan was measured running 71 further minutes and persisting 394 findings with
+// no client attached, because nothing in the process held a handle to it.
+//
+// Cancelling closes the run context, which closes the outbound agent requests
+// (built with http.NewRequestWithContext), which trips each agent's already
+// proven 0061 `_cancellable_stream` teardown. No new agent-side code is needed.
+//
+// Self-gating on method and identity, following CreateStreamToken: /api/audits/
+// is registered WITHOUT RequireWrite (unlike /api/audits), so a mutating
+// sub-path must check for itself rather than relying on the mux.
+func (h *StreamHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/audits/")
+	auditID := strings.TrimSuffix(path, "/cancel")
+	if auditID == "" || auditID == path {
+		writeError(w, http.StatusBadRequest, "audit id required")
+		return
+	}
+
+	// Resolution order matters: report 404 for an id we have never seen and 409
+	// for one that has already finished, so a client can tell "wrong id" from
+	// "too late". Both are read through the audit service, which accepts either
+	// id spelling, before touching the registry.
+	audit := h.getAuditEitherSpelling(auditID)
+	if audit == nil {
+		writeError(w, http.StatusNotFound, "audit not found")
+		return
+	}
+	if audit.Status == model.AuditStatusCompleted || audit.Status == model.AuditStatusFailed {
+		writeError(w, http.StatusConflict, "audit already finished")
+		return
+	}
+
+	reason := cancelReasonFor(r)
+	// The registry resolves either id spelling via canonicalRunKey: generateID()
+	// returns 32 undashed hex chars while Postgres renders the same id dashed, so
+	// every SPA client holds the dashed form. Keying on the raw string once made
+	// the stream handler mark a LIVE audit as failed (broadcaster.go:415-432).
+	effective, did, found := h.runs.Cancel(auditID, reason)
+	if !found {
+		// The row exists and is non-terminal but no run is registered here: this
+		// replica does not own it. Not an error the caller can fix, and NOT a
+		// reason to rewrite the row — that is the orphan-mislabel landmine.
+		writeError(w, http.StatusConflict, "run is not owned by this instance")
+		return
+	}
+	log.Printf("0080 audit-trail: cancel audit=%s reason=%q first=%t", auditID, effective, did)
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"audit_id":      auditID,
+		"cancel_reason": effective,
+		"already":       !did,
+	})
+}
+
+// getAuditEitherSpelling resolves an audit by id in EITHER spelling.
+//
+// One audit legitimately has two string forms: generateID() returns 32 undashed
+// hex chars -- what POST /api/audits returns and what SQLite stores verbatim --
+// while Postgres keeps it in a `uuid` column and renders it back DASHED, so
+// every client that read the audit from the API holds the dashed form.
+//
+// Postgres accepts either spelling natively; SQLite compares strings, so a
+// dashed lookup misses. Without this the cancel endpoint 404s for every SPA
+// client on the default dev/native backend while working on Postgres -- exactly
+// the cross-store divergence class this project has been bitten by before.
+// The registry already solves the same problem with canonicalRunKey.
+func (h *StreamHandler) getAuditEitherSpelling(auditID string) *model.Audit {
+	if a, err := h.auditSvc.Get(auditID); err == nil && a != nil {
+		return a
+	}
+	if alt := canonicalRunKey(auditID); alt != auditID {
+		if a, err := h.auditSvc.Get(alt); err == nil && a != nil {
+			return a
+		}
+	}
+	return nil
+}
+
+// cancelReasonFor builds the recorded reason, naming the principal when one is
+// known so the audit trail says WHO stopped the run.
+func cancelReasonFor(r *http.Request) string {
+	if u := getUserFromContext(r); u != nil && u.Email != "" {
+		return "cancelled by " + u.Email
+	}
+	return "cancelled by client request"
 }

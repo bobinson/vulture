@@ -40,7 +40,8 @@ def check_security_testing(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.pw8.no_security_tests",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No dedicated security test files found",
             "description": "No test files focused on security testing (auth, injection, XSS) found",
             "file_path": source_path,
@@ -53,7 +54,8 @@ def check_security_testing(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.pw8.no_fuzz_tests",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No fuzz testing configured",
             "description": "No fuzz testing framework (go-fuzz, hypothesis, atheris) found",
             "file_path": source_path,
@@ -67,7 +69,8 @@ def check_security_testing(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.pw8.no_coverage_gate",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No test coverage enforcement in CI",
             "description": "No test coverage threshold or gate found in CI configuration",
             "file_path": source_path,

@@ -18,6 +18,8 @@ needs the update. Deliberate out-of-sync is acceptable.
 import os
 import re
 
+from shared.tools.weak_cipher import QUOTED_WEAK_CIPHER_SPEC
+
 HARDCODED_CRED_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']{3,}["\']', re.IGNORECASE),
     re.compile(r'(?:api_key|apikey|api_secret)\s*=\s*["\'][^"\']{3,}["\']', re.IGNORECASE),
@@ -38,6 +40,10 @@ BROKEN_CRYPTO_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'Blowfish\.new\('),
     re.compile(r'mode\s*=\s*["\']?ECB'),
     re.compile(r'MODE_ECB'),
+    # Lowercase Node/OpenSSL cipher specs. Shared with the cwe agent, which
+    # needed the same fact from the other direction -- see the module for why
+    # the IGNORECASE here is declared and scoped rather than leaked.
+    QUOTED_WEAK_CIPHER_SPEC,
 ]
 
 WEAK_RANDOM_PATTERNS: list[re.Pattern[str]] = [

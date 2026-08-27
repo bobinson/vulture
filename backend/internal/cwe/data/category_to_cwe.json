@@ -13,5 +13,11 @@
   "PO-prepare-organization": "CWE-1053",
   "PS-protect-software": "CWE-1357",
   "PW-produce-well-secured-software": "CWE-1059",
-  "RV-respond-to-vulnerabilities": "CWE-1053"
+  "RV-respond-to-vulnerabilities": "CWE-1053",
+
+  "_comment_ssdf_group_ids": "The ssdf agent emits its DECLARED group id (PO/PS/PW/RV); the four *-name keys above are the pre-0078 strings and are retained because findings persisted before the change still carry them.",
+  "PO": "CWE-1053",
+  "PS": "CWE-1357",
+  "PW": "CWE-1059",
+  "RV": "CWE-1053"
 }

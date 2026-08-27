@@ -37,7 +37,8 @@ def check_secure_design(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.pw1.no_threat_model",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No threat model documentation found",
             "description": "No threat model document found in the repository",
             "file_path": source_path,
@@ -50,7 +51,8 @@ def check_secure_design(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.pw2.no_design_review",
-            "category": "PW-produce-well-secured-software",
+            "category": "PW",
+            "practice": "PW-produce-well-secured-software",
             "title": "No design review evidence found",
             "description": "No design review or architecture review documentation found",
             "file_path": source_path,

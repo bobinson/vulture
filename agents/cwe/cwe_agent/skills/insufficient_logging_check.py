@@ -22,6 +22,7 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
+from shared.tools.line_context import strip_strings_and_comments
 from shared.tools.snippet import collect_handler_body, extract_snippet
 
 from cwe_agent.catalog import enrich_finding
@@ -95,6 +96,103 @@ def _body_has_logging(body_lines: list[str]) -> bool:
     return False
 
 
+# An error identifier a propagation call would be handed. Anchored with
+# ``\b`` at both ends so ``entry`` / ``errCount`` are not error names.
+# Case-sensitive by design (see the ``Exception``/``Error`` spellings
+# listed explicitly rather than using re.IGNORECASE).
+_ERR_ARG = (
+    r"(?:e|ex|exc|err|error|exception|reason"
+    r"|E|Ex|Exc|Err|Error|Exception|Reason)\b"
+)
+
+# Handler bodies that FORWARD the error instead of swallowing it. Not a
+# logging defect: the caller still receives the evidence, so CWE-778
+# does not apply. ``raise``/``throw`` are anchored to a statement start
+# (line start, ``{``, ``;`` or ``:``). That anchor alone is NOT enough --
+# ``:`` matches inside prose like "note: throw is avoided here" -- so
+# _body_propagates strips comments and strings before matching.
+# All quantifiers bounded; no nested repetition (ReDoS-safe).
+# The handler hands the error to a dedicated error-handling routine, and that
+# routine is where the logging lives. Measured on one real target: 95 of 168
+# CWE-778 rows were `catch (error) { handleApiError(error, res); }`, and
+# handleApiError logs `console.log("AppError", payload)` ONE HOP away. Matching
+# only DIRECT log calls let a single hop of indirection defeat the whole rule.
+#
+# BOTH halves are required -- an error-handling NAME SHAPE and an error-shaped
+# ARGUMENT -- so `cleanup(e)` and `swallow(e)` are still reported. Accepted
+# limit: a routine NAMED like a handler that discards the error is excused
+# here; resolving that needs cross-file analysis, and the defect would belong
+# to that routine rather than to its caller.
+_ERROR_DELEGATE = re.compile(
+    r"\b(?:[A-Za-z_][A-Za-z0-9_]{0,40}\.)?"
+    r"(?:"
+    r"(?:handle|report|capture|record|notify|forward|log|trace|emit)"
+    r"[A-Za-z0-9_]{0,32}(?:Error|Err|Exception|Failure)"
+    r"|[A-Za-z0-9_]{0,32}(?:Error|Exception)Handler"
+    r"|onError"
+    r")"
+    r"\s*\(\s*" + _ERR_ARG
+)
+
+
+def _body_delegates(body_lines: list[str]) -> bool:
+    """True if the body hands the error to a named error-handling routine."""
+    return any(
+        _ERROR_DELEGATE.search(strip_strings_and_comments(line))
+        for line in body_lines
+    )
+
+
+_PROPAGATES = re.compile(
+    r"(?:^|[{};:])\s{0,80}(?:raise|throw)\b"
+    r"|\bnext\s*\(\s*" + _ERR_ARG +
+    r"|\bnext\s*\(\s*new\s+[A-Za-z_][A-Za-z0-9_.]{0,63}"
+    r"|\breject\s*\("
+    r"|\bcallback\s*\(\s*" + _ERR_ARG +
+    r"|\breturn\s+(?:[A-Za-z_][A-Za-z0-9_.]{0,40}\s*,\s*)?" + _ERR_ARG
+)
+
+
+def _body_propagates(body_lines: list[str]) -> bool:
+    """Return True if the handler body re-raises or forwards the error.
+
+    Propagation (``raise``, ``throw e``, ``next(err)``, ``reject(...)``,
+    ``return err``, ``callback(err)``) preserves the error for the
+    caller, so the handler is not "insufficient logging". An EMPTY body
+    propagates nothing and is deliberately not covered here — empty
+    handlers are reported by their own early-return paths.
+    """
+    for line in body_lines:
+        # Strip comments and string literals FIRST. The statement-start anchor
+        # below includes ``:``, so prose such as ``// note: throw is avoided
+        # here`` would otherwise match and SUPPRESS a real finding. Stripping
+        # fails safe in this direction: if it misses a comment the finding is
+        # still reported, never silently dropped (see line_context's docstring
+        # on not using it as a hard skip -- suppression here is the only use
+        # that could lose a row, and a missed strip cannot cause that).
+        if _PROPAGATES.search(strip_strings_and_comments(line)):
+            return True
+    return False
+
+
+def _handler_is_excused(body: list[str], inline: str = "") -> bool:
+    """True when a NON-EMPTY handler body neither swallows nor hides the
+    error: it logs it, or it forwards it to the caller.
+
+    Args:
+        body: Body lines collected after the handler header.
+        inline: Text following the opening brace on the header line
+            itself (single-line ``catch (err) { next(err) }``), which
+            ``collect_handler_body`` never returns.
+    """
+    lines = [inline, *body]
+    return (
+        _body_has_logging(body)
+        or _body_propagates(lines)
+        or _body_delegates(lines)
+    )
+
+
 def _build_finding(
     file_path: str,
     lineno: int,
@@ -136,8 +234,9 @@ def _scan_py_except(
     if not _PY_EXCEPT.search(line):
         return
     body = collect_handler_body(lines, lineno)  # lineno is 1-based → start at index lineno
-    if not _body_has_logging(body):
-        findings.append(_build_finding(file_path, lineno, lines))
+    if _handler_is_excused(body):
+        return
+    findings.append(_build_finding(file_path, lineno, lines))
 
 
 def _scan_catch(
@@ -151,11 +250,16 @@ def _scan_catch(
     if _CATCH_EMPTY.search(line):
         findings.append(_build_finding(file_path, lineno, lines))
         return
-    if not _CATCH_LINE.search(line):
+    match = _CATCH_LINE.search(line)
+    if not match:
         return
     body = collect_handler_body(lines, lineno)
-    if not _body_has_logging(body):
-        findings.append(_build_finding(file_path, lineno, lines))
+    # A single-line `catch (err) { next(err) }` keeps its whole body on
+    # the header line, which collect_handler_body never returns — so the
+    # text after the opening brace is part of the body for propagation.
+    if _handler_is_excused(body, inline=line[match.end():]):
+        return
+    findings.append(_build_finding(file_path, lineno, lines))
 
 
 def _should_scan(file_path: Path) -> bool:

@@ -17,13 +17,20 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.header_taint import header_taint_pattern
 
 # User input in response headers (CWE-113)
 HEADER_INJECTION_PATTERNS = [
     re.compile(r"(?:set_header|add_header|Header\(\)\.Set|Header\(\)\.Add|setHeader|header\()\s*\([^)]*(?:request|req\.|input|user|body|query|param)", re.IGNORECASE),
-    re.compile(r"Content-Disposition.*(?:request|req\.|input|user|query|param)", re.IGNORECASE),
-    re.compile(r"Content-Type.*(?:request|req\.|input|user|query|param)", re.IGNORECASE),
-    re.compile(r"Location.*(?:request|req\.|input|user|query|param)", re.IGNORECASE),
+    # Both ends must be ANCHORED. Unanchored, these fired on ordinary code:
+    # `const hasProfileLocation = Boolean(userAddressData)` matched the
+    # Location arm because "Location" sits inside `hasProfileLocation` and
+    # "user" inside `userAddressData`. A header name only counts when it
+    # appears AS a header -- quoted, or followed by a colon -- and a taint
+    # token only counts as a whole word.
+    header_taint_pattern("Content-Disposition"),
+    header_taint_pattern("Content-Type"),
+    header_taint_pattern("Location"),
     re.compile(r"w\.Header\(\)\.Set\s*\([^)]*(?:r\.|request)", re.IGNORECASE),
 ]
 

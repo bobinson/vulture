@@ -287,6 +287,10 @@ func migrateAddColumns(db *sql.DB) {
 
 	// Feature 0039: per-audit degraded-mode reason (LLM unreachable at submit time)
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN degraded_reason TEXT NOT NULL DEFAULT ''`)
+	// Feature 0080: the cancel marker. Mirrors migrations/025 on the Postgres
+	// side -- the SQLite schema is NOT managed by the embedded migration runner,
+	// so a .sql file alone would leave this backend without the column.
+	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT ''`)
 
 	// 0055: LLM model recorded at creation — which model the scan ran against
 	// (VULTURE_LLM_MODEL when enabled, else "skills-only").
@@ -472,12 +476,12 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), COALESCE(a.cancel_reason, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = ?`, id)
 	var audit model.Audit
 	var typesStr, cfgStr, scoresStr, owaspCovStr, createdAt string
 	var completedAt sql.NullString
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &createdAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CancelReason, &createdAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -514,8 +518,9 @@ func (r *SQLiteRepo) UpdateAudit(audit *model.Audit) error {
 		owaspCov = string(audit.OwaspCoverage)
 	}
 	_, err := r.db.Exec(
-		`UPDATE audits SET status = ?, scores = ?, completed_at = ?, degraded_reason = ?, owasp_coverage = ? WHERE id = ?`,
-		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, owaspCov, audit.ID,
+		`UPDATE audits SET status = ?, scores = ?, completed_at = ?, degraded_reason = ?, owasp_coverage = ?, cancel_reason = ? WHERE id = ?`,
+		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, owaspCov,
+		audit.CancelReason, audit.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update audit: %w", err)

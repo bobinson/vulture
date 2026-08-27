@@ -37,7 +37,8 @@ def check_root_cause_analysis(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.rv3.no_postmortem_template",
-            "category": "RV-respond-to-vulnerabilities",
+            "category": "RV",
+            "practice": "RV-respond-to-vulnerabilities",
             "title": "No post-mortem/incident template found",
             "description": "No post-mortem or incident report template found in the repository",
             "file_path": source_path,
@@ -50,7 +51,8 @@ def check_root_cause_analysis(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.rv3.no_rca_process",
-            "category": "RV-respond-to-vulnerabilities",
+            "category": "RV",
+            "practice": "RV-respond-to-vulnerabilities",
             "title": "No root cause analysis process documented",
             "description": "No RCA or blameless post-mortem process documentation found",
             "file_path": source_path,

@@ -30,7 +30,8 @@ def check_code_protection(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.ps1.no_pre_commit_hooks",
-            "category": "PS-protect-software",
+            "category": "PS",
+            "practice": "PS-protect-software",
             "title": "No pre-commit hooks configured",
             "description": "No pre-commit hook configuration (pre-commit, husky, lint-staged) found",
             "file_path": source_path,
@@ -43,7 +44,8 @@ def check_code_protection(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.ps1.no_commit_signing",
-            "category": "PS-protect-software",
+            "category": "PS",
+            "practice": "PS-protect-software",
             "title": "No commit signing configuration found",
             "description": "No GPG/SSH commit signing configuration detected",
             "file_path": source_path,

@@ -34,6 +34,14 @@ type Audit struct {
 	ProveCount     int             `json:"prove_count,omitempty"`
 	WebhookURL     string          `json:"webhook_url,omitempty"`
 	DegradedReason string          `json:"degraded_reason,omitempty"` // Feature 0039: canonical LLMHealthStatus.message() when LLM unreachable at submit time
+	// CancelReason is the feature-0080 cancel marker. Non-empty <=> the run was
+	// cancelled rather than failing on its own. It is a separate column, not a
+	// fifth Status value, because Status is a closed formally-verified datatype
+	// (verification/isabelle/Pipeline_State.thy) and 001_init.sql CHECK-
+	// constrains it; and not DegradedReason, because failAudit overwrites that
+	// and the frontend renders it under a hardcoded "running in degraded mode"
+	// heading (LLMDegradedBanner.tsx).
+	CancelReason string `json:"cancel_reason,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
 }

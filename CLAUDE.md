@@ -23,7 +23,7 @@ Frontend (React SPA + Vite) → SSE/REST → Go Backend → HTTP/SSE → Python 
 - **Go Backend** (`backend/`): Orchestrator. Receives audit requests, manages sources (git clone / local path), dispatches to Python agents concurrently, aggregates SSE streams, serves structured SSE events to frontend. PostgreSQL (pgvector) for production, SQLite fallback for local dev.
 - **Python Agents** (`agents/`): Each audit type (chaos, owasp, soc2) is a separate FastAPI microservice using OpenAI Agents SDK + LiteLLM. Shared library in `agents/shared/`.
 - **Frontend** (`frontend/`): React SPA (Vite) + Tailwind + react-i18next. Plain React with native EventSource for SSE streaming. Look and feel must be elegant like https://agentation.dev — intuitive, simple, elegant. Warm cream theme, compact sidebar, terminal-style agent output.
-- **CLI** (`cli/`): Go CLI binary for headless audit execution (`vulture scan`, `vulture watch`, `vulture list`).
+- **CLI** (`cli/`): Go CLI binary for headless audit execution (`vulture scan`, `vulture status`, `vulture results`).
 - **Deployment**: `docker compose` with all services (PostgreSQL, backend, 9 agents, frontend).
 
 ### Deployment Modes
@@ -308,7 +308,7 @@ VULTURE_DB_PATH=/data/vulture.db                     # SQLite path (fallback)
 VULTURE_DB_DSN=postgres://...                        # PostgreSQL DSN (if set, uses Postgres)
 VULTURE_JWT_SECRET=change-me-in-production           # JWT signing key
 VULTURE_LOCAL_MODE=true                              # Enable passwordless auth
-VULTURE_AGENT_PROXY_TIMEOUT_SEC=600                  # Backend per-agent whole-audit timeout (default 600s/10m). Raise for slow local models (LM Studio/Ollama) on large trees; should be >= VULTURE_AGENT_MAX_AUDIT_SECONDS so the backend doesn't cut the agent off first
+VULTURE_AGENT_PROXY_TIMEOUT_SEC=600                  # Backend per-agent whole-audit timeout (default 600s/10m). Raise for slow local models (LM Studio/Ollama) on large trees. MARGIN RULE: must be >= VULTURE_AGENT_MAX_AUDIT_SECONDS + VULTURE_LLM_CALL_TIMEOUT_SEC — NOT merely >= MAX_AUDIT. An agent checks its own deadline only BETWEEN llm calls, so it can overshoot by one full call; if the backend closes first the agent never emits its result snapshot and its findings are rescued from the delta path WITHOUT provenance, validation, snippets or score. Measured: 7500/7200/600 satisfied the old rule and still truncated four agents at exactly 2h5m. The backend warns at startup when the margin is unsafe
 VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC=300        # Backend wait for an agent's HTTP response headers (default 300s)
 VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001      # Agent endpoints
 VULTURE_AGENT_OWASP_URL=http://agent-owasp:8002
@@ -380,9 +380,20 @@ VULTURE_LLM_FEED_PROSE=false                         # Send prose/data (.md .txt
 VULTURE_LLM_INELIGIBLE_EXTENSIONS=                   # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding .graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. Populate it (e.g. ".graphql,.gql") if you cannot send config dialects to a third-party provider
 VULTURE_LLM_FEED_UNIFY=true                          # Both feed paths resolve ONE extension set. false restores the pre-0075 asymmetry (narrow for single-shot, wide for the sweep) — that pair IS the defect, so this is an unblock hatch, not a supported configuration
 VULTURE_SECRET_SCAN_PROSE=true                       # CWE agent: scan prose/data files for secrets. The compensating control for VULTURE_LLM_FEED_PROSE=false — without it a credential in a README loses the only tier reading it. Measured live: recovered a real `INBOUND_AUTH_TOKEN` in a README. false re-opens that hole
-# NOTE: Vulture pins litellm.num_retries=0 for the audit path. Retries are owned by
-# retry_llm_call() (which classifies the error and halves oversized bodies first); leaving the
-# client's own retry layer on multiplies attempts and re-sends a too-large body unchanged.
+# NOTE: retries on the audit path are owned by retry_llm_call() (which classifies the error and
+# halves oversized bodies first); leaving the client's own retry layer on multiplies attempts and
+# re-sends a too-large body unchanged. That single authority is enforced by passing max_retries=0
+# (plus its alias num_retries=0) ON THE COMPLETION CALL, via ModelSettings.extra_args from
+# provider.litellm_retry_extra_args(). The MODULE attribute litellm.num_retries=0 does NOT do it —
+# measured against a stub gateway answering 429, one logical call still made 3 HTTP attempts with
+# the module pin applied and 1 with the per-call kwarg (agents/shared/tests/unit/
+# test_0070_p5_d1_retry_pin.py stands the stub up and counts). litellm reads max_retries from
+# per-call kwargs only; the surviving module read is `litellm.num_retries or DEFAULT_MAX_RETRIES`,
+# for which 0 is falsy. The kwarg is gated to LiteLLM-routed models: on the native OpenAI path
+# (gpt-4o) and the broker path, extra_args are splatted into openai's create(), which accepts
+# neither the kwarg nor **kwargs — the broker's own client already sets max_retries=0.
+# SCOPE: this covers the GENERATE path only. The L5 judge builds its own client
+# (validate/llm_judge.py) and is NOT covered — it keeps the SDK default of 2 retries.
 
 # Evidence quotation and anchor verification (feature 0076). The LLM tier now has to QUOTE
 # the source it accuses, and the quote is checked by whitespace-normalised string search in
@@ -412,7 +423,7 @@ VULTURE_LLM_QUOTE_RADIUS=25                          # Lines. When a quote match
 VULTURE_LLM_QUOTE_MAX_DELTA=200                      # Absolute ceiling, in lines, on how far re-anchoring may move a finding. A 200+ line correction is likelier a coincidental match than a corrected claim, so beyond it the line is left where the model put it
 VULTURE_LLM_QUOTE_NEAR_MISS_MIN=0.6                  # Similarity at or above which a non-matching window is `near_miss` rather than `absent` — the model reformatted rather than invented. ASSERTED, not measured: the one knob here with no corpus behind it, and it exists to keep the single demoting class narrow. Raise it to demote more, lower it to demote less
 VULTURE_DEDUP_PREFER_DETERMINISTIC=true              # GO / backend, not an agent switch. On a cross-agent dedup collision a deterministic (skill) row outranks an `llm` row at equal-or-lower severity, replacing 0075's score-only "richer row wins". Hard prerequisite of re-anchoring: moving an LLM row's line CREATES collisions that did not previously exist, and without the guard the LLM row can displace the skill row that found the same thing. Scope is exactly llm-vs-deterministic — det-vs-det, llm-vs-llm and rollup collisions still go to the detail score. false restores 0075 selection
-VULTURE_AGENT_MAX_AUDIT_SECONDS=900                  # Feature 0061: whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Should be <= the backend per-agent timeout VULTURE_AGENT_PROXY_TIMEOUT_SEC (default 600s) so the backend doesn't cut the agent off first; 0 disables (removes the hard guarantee)
+VULTURE_AGENT_MAX_AUDIT_SECONDS=900                  # Feature 0061: whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. MARGIN RULE (agent side of the rule stated on VULTURE_AGENT_PROXY_TIMEOUT_SEC above): keep this at or below VULTURE_AGENT_PROXY_TIMEOUT_SEC - VULTURE_LLM_CALL_TIMEOUT_SEC — NOT merely <= the backend timeout, because an agent checks its own deadline only BETWEEN llm calls and can overshoot by one full call, and then the backend cuts it off before it sends its result snapshot. The shipped defaults do NOT satisfy it (900 vs 600 - 120); docker compose ships 1200, which covers 900 + 120. 0 disables (removes the hard guarantee)
 VULTURE_LLM_CALL_TIMEOUT_SEC=120                     # Feature 0061: per-LLM-call timeout so a hung model can't starve the between-batch cancel/deadline checks
 VULTURE_AUDIT_EXECUTOR_WORKERS=8                     # Feature 0061: dedicated audit-producer thread pool size = per-agent concurrent-audit cap
 VULTURE_AGENT_PORT=8001                              # Service port (varies per agent)

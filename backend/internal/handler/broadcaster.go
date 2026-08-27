@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -132,6 +133,21 @@ type broadcaster struct {
 	truncated    bool
 	subs         map[*subscription]struct{}
 	closed       bool
+
+	// runCtx / cancelRun are the feature-0080 lifecycle handle. Created in
+	// OpenCancellable under r.mu, BEFORE the producer goroutine starts, so there
+	// is no window in which a run exists without a way to stop it -- and so both
+	// dispatch doors (DispatchAudit and the lazy stream attach) are covered by
+	// one edit.
+	//
+	// The context deliberately derives from context.Background(), not from any
+	// request: feature 0071 requires the run to outlive its client. What 0080
+	// adds is a handle, not a shorter lifetime.
+	runCtx    context.Context
+	cancelRun context.CancelFunc
+	// cancelReason is set once, by the first caller to cancel. Non-empty is the
+	// machine-checkable "this was cancelled, it did not merely fail" fact.
+	cancelReason string
 }
 
 func newBroadcaster(auditID string, maxHistory int) *broadcaster {
@@ -436,7 +452,16 @@ func canonicalRunKey(auditID string) string {
 
 // Open registers a broadcaster for auditID. It returns (nil, false) if one
 // already exists, meaning another dispatch owns this audit.
+//
+// Kept as a wrapper so all pre-0080 call sites compile unchanged.
 func (r *broadcastRegistry) Open(auditID string, maxHistory int) (*broadcaster, bool) {
+	return r.OpenCancellable(auditID, maxHistory)
+}
+
+// OpenCancellable registers a broadcaster together with a cancellable context
+// for the run. The context is created here, under r.mu, so it exists before any
+// producer goroutine does: a run is never observable without a way to stop it.
+func (r *broadcastRegistry) OpenCancellable(auditID string, maxHistory int) (*broadcaster, bool) {
 	key := canonicalRunKey(auditID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -444,8 +469,61 @@ func (r *broadcastRegistry) Open(auditID string, maxHistory int) (*broadcaster, 
 		return nil, false
 	}
 	b := newBroadcaster(auditID, maxHistory)
+	b.runCtx, b.cancelRun = context.WithCancel(context.Background())
 	r.m[key] = b
 	return b, true
+}
+
+// RunContext returns the run's cancellable context, or context.Background() when
+// the broadcaster predates 0080 (a nil ctx must never be passed to a request).
+func (b *broadcaster) RunContext() context.Context {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.runCtx == nil {
+		return context.Background()
+	}
+	return b.runCtx
+}
+
+// Cancel stops the run and records why. It is idempotent: the first caller wins
+// the reason, later callers get (reason, false) and change nothing. Returns the
+// effective reason and whether THIS call performed the cancellation.
+func (b *broadcaster) Cancel(reason string) (string, bool) {
+	b.mu.Lock()
+	if b.cancelReason != "" {
+		existing := b.cancelReason
+		b.mu.Unlock()
+		return existing, false
+	}
+	if reason == "" {
+		reason = "cancelled"
+	}
+	b.cancelReason = reason
+	fn := b.cancelRun
+	b.mu.Unlock()
+	// Called outside the lock: cancelling unblocks goroutines that may call back
+	// into this broadcaster (Publish), and holding b.mu across that self-deadlocks.
+	if fn != nil {
+		fn()
+	}
+	return reason, true
+}
+
+// CancelReason reports the recorded reason, empty when the run was not cancelled.
+func (b *broadcaster) CancelReason() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cancelReason
+}
+
+// Cancel resolves auditID (in either spelling) and cancels its run.
+func (r *broadcastRegistry) Cancel(auditID, reason string) (string, bool, bool) {
+	b, ok := r.Get(auditID)
+	if !ok {
+		return "", false, false
+	}
+	eff, did := b.Cancel(reason)
+	return eff, did, true
 }
 
 // Get returns the broadcaster for auditID if one is registered — either

@@ -103,6 +103,11 @@ jobs:
           # and requires --bundle, breaking the separate .sig/.pem contract
           # that install.sh's verify_signature depends on. Hold at the last
           # v2 line that emits .sig/.pem by default.
+          #
+          # This pin is now a TRANSITION holder, not a permanent one. Releases
+          # from here on also publish a .bundle, and install.sh prefers it. Once
+          # every release users still install from carries a bundle, the pin can
+          # be lifted and the .sig/.pem outputs dropped.
           cosign-release: 'v2.4.3'
       - name: install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
@@ -190,10 +195,14 @@ jobs:
           pip-audit -r agents/requirements-frozen.txt --strict $IGN || true
       - name: cosign sign tarball
         run: |
+          # Bundle emitted alongside .sig/.pem for anyone verifying a tarball
+          # directly; install.sh itself verifies SHA256SUMS and then checksums
+          # the tarball against it.
           cosign sign-blob --yes \
             "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
             --output-signature "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.sig" \
-            --output-certificate "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.pem"
+            --output-certificate "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.pem" \
+            --bundle "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.bundle"
       - name: smoke install
         run: scripts/smoke-install.sh "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
       - name: smoke negative
@@ -235,9 +244,16 @@ jobs:
       - name: cosign sign SHA256SUMS
         run: |
           cd dist
+          # Emit BOTH forms. .sig/.pem keep every already-published installer
+          # working; the bundle (sig + cert + Rekor proof in one file) is what
+          # cosign v3+ expects, and install.sh prefers it when present. Verified
+          # cross-compatible: a v2.4.3-produced bundle verifies on both v2.4.3
+          # and v3.1.3, and the legacy default format is used deliberately —
+          # --new-bundle-format would lock out cosign older than v2.4.
           cosign sign-blob --yes SHA256SUMS \
             --output-signature SHA256SUMS.sig \
-            --output-certificate SHA256SUMS.pem
+            --output-certificate SHA256SUMS.pem \
+            --bundle SHA256SUMS.bundle
       - name: gh release create (draft)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

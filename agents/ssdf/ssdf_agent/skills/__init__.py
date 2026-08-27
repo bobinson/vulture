@@ -58,7 +58,7 @@ SKILL_TOOLS = [
     check_root_cause_analysis_tool,
 ]
 
-SKILL_MAP = {
+LEAF_SKILL_MAP = {
     "security_policy": check_security_policy,
     "roles_governance": check_roles_governance,
     "toolchain": check_toolchain,
@@ -80,7 +80,7 @@ SKILL_MAP = {
 }
 
 __all__ = [
-    "SKILL_MAP",
+    "LEAF_SKILL_MAP",
     "SKILL_TOOLS",
     "check_archive_protection",
     "check_archive_protection_tool",
@@ -119,3 +119,8 @@ __all__ = [
     "check_vuln_remediation",
     "check_vuln_remediation_tool",
 ]
+
+# Renamed from SKILL_MAP (0070 fleet dispatch conformance). The dispatched
+# map is ssdf_agent.practice_groups.SKILL_MAP; this one holds the LEAF checks and is
+# imported by nothing — two importable objects of the same name in one agent
+# package is the ambiguity that let a skill silently go undispatched.

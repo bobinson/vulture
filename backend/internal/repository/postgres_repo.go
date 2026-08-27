@@ -148,12 +148,12 @@ func (r *PostgresRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *PostgresRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), COALESCE(a.cancel_reason, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = $1`, id)
 	var audit model.Audit
 	var cfgStr, scoresStr, owaspCovStr string
 	var completedAt sql.NullTime
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CreatedAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CancelReason, &audit.CreatedAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -185,8 +185,9 @@ func (r *PostgresRepo) UpdateAudit(audit *model.Audit) error {
 		owaspCov = string(audit.OwaspCoverage)
 	}
 	_, err := r.db.Exec(
-		`UPDATE audits SET status = $1, scores = $2, completed_at = $3, degraded_reason = $4, owasp_coverage = $5 WHERE id = $6`,
-		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, owaspCov, audit.ID,
+		`UPDATE audits SET status = $1, scores = $2, completed_at = $3, degraded_reason = $4, owasp_coverage = $5, cancel_reason = $6 WHERE id = $7`,
+		string(audit.Status), string(scoresJSON), completedAt, audit.DegradedReason, owaspCov,
+		dbSafeText(audit.CancelReason), audit.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update audit: %w", err)

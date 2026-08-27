@@ -69,8 +69,23 @@ CATEGORY_REACH_FLOOR = {
     "A02": 12,
     "A03": 3,
     "A04": 22,
-    "A05": 17,
-    "A06": 16,
+    # A05 17 -> 18: path_equivalence_check's categories were emitted through an
+    # f-string, so the attestation's static extractor could not see them. They
+    # are now declared as literals; the skill's runtime output is byte-identical.
+    # This is a measurement gain, not new detection.
+    "A05": 18,
+    # A06 16 -> 15: CWE-1022 was withdrawn. Its detector (_check_window_opener,
+    # web_security_check.py:530-668) was unreachable — absent from _FILE_RULES
+    # and called from nowhere — so the agent never detected CWE-1022 at all. The
+    # two dead `category` literals were still harvested by the attestation, which
+    # means this floor was counting a weakness the agent could not find. Lowering
+    # it removes an over-claim; no detection capability was lost, because there
+    # was none. Proven by feeding the block its own corpus fixtures through the
+    # public entry point: 0 findings before deletion.
+    # (#119 carried the same two dead literals, so its side of this table
+    # read 16. The floor stays at the reachable figure: a tree that still
+    # holds the dead literals reads 16, which the >= contract accepts.)
+    "A06": 15,
     "A07": 12,
     "A08": 11,
     "A09": 3,

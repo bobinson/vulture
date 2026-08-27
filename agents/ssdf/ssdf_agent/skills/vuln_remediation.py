@@ -39,7 +39,8 @@ def check_vuln_remediation(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.rv2.no_security_issue_template",
-            "category": "RV-respond-to-vulnerabilities",
+            "category": "RV",
+            "practice": "RV-respond-to-vulnerabilities",
             "title": "No security issue template found",
             "description": "No dedicated security bug/vulnerability issue template found",
             "file_path": source_path,
@@ -53,7 +54,8 @@ def check_vuln_remediation(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.rv2.no_patching_sla",
-            "category": "RV-respond-to-vulnerabilities",
+            "category": "RV",
+            "practice": "RV-respond-to-vulnerabilities",
             "title": "No patching SLA or remediation timeline defined",
             "description": "No vulnerability patching SLA or remediation timeline found in security docs",
             "file_path": source_path,

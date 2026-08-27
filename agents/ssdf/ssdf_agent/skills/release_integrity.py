@@ -39,7 +39,8 @@ def check_release_integrity(source_path: str) -> dict:
         findings.append({
             "severity": "medium",
             "check_id": "ssdf.ps2.no_release_signing",
-            "category": "PS-protect-software",
+            "category": "PS",
+            "practice": "PS-protect-software",
             "title": "No release signing configured",
             "description": "No code/artifact signing mechanism (cosign, GPG, sigstore) found in release workflow",
             "file_path": source_path,
@@ -52,7 +53,8 @@ def check_release_integrity(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.ps2.no_checksums",
-            "category": "PS-protect-software",
+            "category": "PS",
+            "practice": "PS-protect-software",
             "title": "No checksum generation in build/release",
             "description": "No checksum generation (SHA256) found in build or release processes",
             "file_path": source_path,
@@ -65,7 +67,8 @@ def check_release_integrity(source_path: str) -> dict:
         findings.append({
             "severity": "low",
             "check_id": "ssdf.ps2.no_provenance",
-            "category": "PS-protect-software",
+            "category": "PS",
+            "practice": "PS-protect-software",
             "title": "No supply chain provenance generation",
             "description": "No SLSA provenance or in-toto attestation generation found",
             "file_path": source_path,

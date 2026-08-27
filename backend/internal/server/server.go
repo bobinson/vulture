@@ -281,6 +281,11 @@ func auditsRouter(auditH *handler.AuditHandler) http.HandlerFunc {
 	}
 }
 
+// isCancelPath matches /api/audits/{id}/cancel.
+func isCancelPath(p string) bool {
+	return strings.HasSuffix(p, "/cancel") && strings.HasPrefix(p, "/api/audits/")
+}
+
 func auditDetailRouter(auditH *handler.AuditHandler, streamH *handler.StreamHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if isStreamTokenPath(r.URL.Path) {
@@ -321,6 +326,15 @@ func auditDetailRouter(auditH *handler.AuditHandler, streamH *handler.StreamHand
 				return
 			}
 			writeNotFound(w)
+			return
+		}
+		// Feature 0080. Routed HERE, not registered as its own mux pattern,
+		// because /api/audits/ is registered from two mutually exclusive
+		// branches (registerAuthRoutes vs the local-mode fallback) and both
+		// install this same handler value -- so one edit covers both and cannot
+		// 404 in one mode. The method check lives inside CancelRun.
+		if isCancelPath(r.URL.Path) {
+			streamH.CancelRun(w, r)
 			return
 		}
 		if isComparisonPath(r.URL.Path) && r.Method == http.MethodGet {

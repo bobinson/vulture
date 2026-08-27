@@ -86,6 +86,31 @@ _VARIANTS: list[tuple[str, re.Pattern[str], str, str]] = [
     ("159", re.compile(r"\.\.\\"),                                 "Windows backslash traversal", "high"),
 ]
 
+# The emitted ``category`` values, one row per id in ``_VARIANTS``, as LITERALS.
+# Built with an f-string (``f"CWE-{cwe_id}"``) they never appeared in source, so
+# the reachability attestation — whose extractor scans skill sources for
+# `"category": "CWE-N"` — could not see the 14 ids this skill has always
+# emitted, and every one of them read as unreachable. Runtime output is
+# unchanged; only the construction is. The two tables are locked to each other
+# (both directions) by tests/unit/skills/test_p85_path_equivalence_reachability.
+_CATEGORY_ROWS: dict[str, dict[str, str]] = {
+    "23": {"category": "CWE-23"},
+    "42": {"category": "CWE-42"},
+    "43": {"category": "CWE-43"},
+    "46": {"category": "CWE-46"},
+    "48": {"category": "CWE-48"},
+    "49": {"category": "CWE-49"},
+    "50": {"category": "CWE-50"},
+    "51": {"category": "CWE-51"},
+    "52": {"category": "CWE-52"},
+    "54": {"category": "CWE-54"},
+    "55": {"category": "CWE-55"},
+    "56": {"category": "CWE-56"},
+    "57": {"category": "CWE-57"},
+    "158": {"category": "CWE-158"},
+    "159": {"category": "CWE-159"},
+}
+
 
 def _build_finding(
     cwe_id: str,
@@ -99,7 +124,7 @@ def _build_finding(
     finding = {
         "severity": severity,
         "check_id": f"cwe.path_eq.cwe_{cwe_id}",
-        "category": f"CWE-{cwe_id}",
+        **_CATEGORY_ROWS[cwe_id],
         "title": f"Path Equivalence: {label}",
         "description": (
             f"Filename literal passed to a path-using call "

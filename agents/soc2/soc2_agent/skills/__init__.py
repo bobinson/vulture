@@ -17,7 +17,7 @@ SKILL_TOOLS = [
     check_data_retention_tool,
 ]
 
-SKILL_MAP = {
+LEAF_SKILL_MAP = {
     "access_logging": check_access_logging,
     "encryption": check_encryption,
     "change_management": check_change_management,
@@ -26,7 +26,7 @@ SKILL_MAP = {
 }
 
 __all__ = [
-    "SKILL_MAP",
+    "LEAF_SKILL_MAP",
     "SKILL_TOOLS",
     "check_access_logging",
     "check_access_logging_tool",
@@ -39,3 +39,8 @@ __all__ = [
     "check_monitoring",
     "check_monitoring_tool",
 ]
+
+# Renamed from SKILL_MAP (0070 fleet dispatch conformance). The dispatched
+# map is soc2_agent.clauses.SKILL_MAP; this one holds the LEAF checks and is
+# imported by nothing — two importable objects of the same name in one agent
+# package is the ambiguity that let a skill silently go undispatched.

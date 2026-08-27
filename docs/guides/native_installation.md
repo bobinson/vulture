@@ -218,5 +218,27 @@ build is deterministic for your toolchain; a toolchain mismatch produces a WARN.
 | **D — CI client** (`vulture scan … --server`) | Pipeline integration |
 | **E — Native install** (this guide) | Single-user laptop, no Docker |
 
+## sample config values
+
+
+  VULTURE_USE_LLM=true
+  OPENAI_BASE_URL=http://localhost:1234/v1
+  OPENAI_API_KEY=lm-studio
+  VULTURE_LLM_MODEL=qwen/qwen3.6-35b-a3b
+  VULTURE_LLM_CTX_SIZE=262144
+  # MARGIN RULE: must be >= MAX_AUDIT + LLM_CALL_TIMEOUT (7200 + 600), not merely
+  # >= MAX_AUDIT. An agent checks its own deadline only BETWEEN llm calls, so it can
+  # overshoot by one call; if the backend closes first the agent never sends its result
+  # snapshot and its findings are persisted without provenance, validation or snippets.
+  # 7500 here previously truncated four agents at exactly 2h5m.
+  VULTURE_AGENT_PROXY_TIMEOUT_SEC=7800
+  VULTURE_AGENT_MAX_AUDIT_SECONDS=7200
+  VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC=900
+  VULTURE_LLM_CALL_TIMEOUT_SEC=600
+  VULTURE_VALIDATE_LLM_TIMEOUT_MS=1800000
+  VULTURE_VALIDATE_LLM_PER_BATCH_TIMEOUT_MS=600000
+  VULTURE_PROVE_FINDING_TIMEOUT=600
+  
+
 Full command lines for each mode are in the
 [README](../../README.md#deployment-modes).
