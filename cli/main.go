@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -319,6 +320,11 @@ func main() {
 	switch cmd {
 	case "login":
 		cmdLogin(apiURL)
+	case "cancel":
+		if len(os.Args) < 3 {
+			fatalf("usage: vulture cancel <audit-id>")
+		}
+		cmdCancel(apiURL, os.Args[2], parseCancelFlags(os.Args[3:]))
 	case "scan":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache] [CI flags]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
@@ -409,6 +415,22 @@ func parseScanFlags(args []string) (types []string, noCache bool, fresh bool, ti
 		default:
 			if consumed := parseCIFlag(args, i, &ci); consumed > 0 {
 				i += consumed - 1
+				continue
+			}
+			// Feature 0080: refuse silently-ignored flags.
+			//
+			// A real report: `scan --staging-url X --max-iterations 1233000000
+			// --allow-local --plugins semgrep` had FOUR flags discarded without
+			// a word. Two belong to `prove`, one does not exist, and plugins are
+			// server-side (VULTURE_PLUGINS). The user reasonably believed
+			// --max-iterations was bounding the run. It bounded nothing.
+			if strings.HasPrefix(args[i], "-") {
+				fatalf("unknown flag for `scan`: %s\n"+
+					"  scan accepts: --types --no-cache --fresh --llm-tier3 "+
+					"--validate-llm --validate-llm-top-n, plus the CI flags.\n"+
+					"  --staging-url and --max-iterations belong to `vulture prove`.\n"+
+					"  Plugins are enabled server-side via VULTURE_PLUGINS, not a CLI flag.",
+					args[i])
 			}
 		}
 	}
@@ -1247,6 +1269,21 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, fresh b
 	// Stream results
 	fmt.Fprintln(os.Stderr, "  Streaming results...")
 	fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
+	// Feature 0080: a Ctrl-C must stop the RUN, not just this client.
+	//
+	// The stream below is a broadcaster SUBSCRIBER, not the producer. With
+	// VULTURE_AUDIT_AUTODISPATCH (default on, feature 0071) the run is started
+	// server-side by POST /api/audits and keeps going regardless of who is
+	// watching -- deliberately, so `vulture scan` cannot orphan it by exiting.
+	// Dropping this subscription therefore cancels nothing: a Ctrl-C'd scan was
+	// measured running 71 further minutes and persisting 394 findings.
+	//
+	// So SIGINT explicitly asks the server to cancel. The handler is installed
+	// BEFORE the stream opens, because the window between POST and the stream
+	// being ready is exactly when an impatient user hits Ctrl-C.
+	stopCancelWatch := watchForInterrupt(apiURL, a.ID, token)
+	defer stopCancelWatch()
+
 	streamAudit(apiURL, a.ID, token)
 
 	// Fetch final results
@@ -2202,4 +2239,92 @@ func cliINIPath() string {
 
 func cliLoadINI(path string) map[string]string {
 	return iniutil.ParseINI(path)
+}
+
+// watchForInterrupt cancels the server-side run when the user interrupts the
+// CLI, and returns a function that tears the handler down.
+//
+// Best effort by construction: SIGKILL, a dropped SSH session or a crashed
+// terminal cannot run this, which is why the server-side cancel endpoint is the
+// real fix and this is the convenience on top of it. A second interrupt exits
+// immediately rather than waiting on the request.
+func watchForInterrupt(apiURL, auditID, token string) func() {
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-sigs:
+		}
+		fmt.Fprintf(os.Stderr, "\n  Interrupted — asking the server to cancel audit %s ...\n", auditID)
+		go func() {
+			// A second interrupt while the cancel is in flight exits now.
+			<-sigs
+			fmt.Fprintln(os.Stderr, "  Second interrupt — exiting; the run may still be going.")
+			fmt.Fprintf(os.Stderr, "  Stop it with: vulture cancel %s\n", auditID)
+			os.Exit(130)
+		}()
+		if err := cancelAudit(apiURL, auditID, token); err != nil {
+			fmt.Fprintf(os.Stderr, "  Cancel failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  The run is STILL GOING. Stop it with: vulture cancel %s\n", auditID)
+			os.Exit(130)
+		}
+		fmt.Fprintln(os.Stderr, "  Cancelled.")
+		os.Exit(130)
+	}()
+	return func() { signal.Stop(sigs); close(done) }
+}
+
+// cancelAudit asks the server to stop a dispatched run (feature 0080).
+func cancelAudit(apiURL, auditID, token string) error {
+	req, err := http.NewRequest("POST", apiURL+"/api/audits/"+auditID+"/cancel", strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusAccepted:
+		return nil
+	case resp.StatusCode == http.StatusConflict:
+		// Already finished, or owned by another replica. Nothing to stop.
+		return nil
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return fmt.Errorf("cancel returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+}
+
+// parseCancelFlags reads the CI flags `cancel` shares with the other commands.
+func parseCancelFlags(args []string) ciFlags {
+	var ci ciFlags
+	ci.output = "text"
+	for i := 0; i < len(args); i++ {
+		if consumed := parseCIFlag(args, i, &ci); consumed > 0 {
+			i += consumed - 1
+			continue
+		}
+		if strings.HasPrefix(args[i], "-") {
+			fatalf("unknown flag for `cancel`: %s", args[i])
+		}
+	}
+	return ci
+}
+
+// cmdCancel stops a dispatched run. Feature 0080.
+func cmdCancel(apiURL, auditID string, ci ciFlags) {
+	token := resolveToken(ci.apiKey, apiURL)
+	if err := cancelAudit(apiURL, auditID, token); err != nil {
+		fatalf("cancel: %v", err)
+	}
+	fmt.Printf("  Cancel requested for audit %s\n", auditID)
 }

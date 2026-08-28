@@ -5,6 +5,7 @@ enable or fail to mitigate XSS attacks.
 """
 
 import re
+from xss_agent.skills._check_id import cid
 from pathlib import Path
 
 from agents import function_tool
@@ -126,6 +127,7 @@ def _check_header_injection(
             findings.append({
                 "severity": "high",
                 "category": "CWE-113",
+                **cid("xss.header.crlf_injection"),
                 "title": "HTTP header injection via user input",
                 "description": (
                     f"User input included in HTTP response header "
@@ -155,6 +157,7 @@ def _check_weak_csp(
             findings.append({
                 "severity": "medium",
                 "category": "CWE-644",
+                **cid("xss.header.weak_csp"),
                 "title": "Weak Content-Security-Policy allows XSS",
                 "description": (
                     f"CSP contains unsafe-inline, unsafe-eval, or wildcard "
@@ -183,6 +186,7 @@ def _check_meta_refresh(
             findings.append({
                 "severity": "high",
                 "category": "CWE-113",
+                **cid("xss.header.meta_refresh"),
                 "title": "Meta refresh with user-controlled URL",
                 "description": (
                     f"Meta refresh or Refresh header uses user-controlled "

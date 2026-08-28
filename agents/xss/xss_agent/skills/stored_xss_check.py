@@ -5,6 +5,7 @@ ORM results in |safe/innerHTML, markdown as raw HTML, user uploads as text/html.
 """
 
 import re
+from xss_agent.skills._check_id import cid
 from pathlib import Path
 
 from agents import function_tool
@@ -142,6 +143,7 @@ def _check_db_to_unsafe_render(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-79",
+                **cid("xss.stored.db_render"),
                 "title": "Stored XSS via database content rendered unsafely",
                 "description": (
                     f"Database content rendered without escaping at line {line_num}. "
@@ -170,6 +172,7 @@ def _check_markdown_raw(
             findings.append({
                 "severity": "high",
                 "category": "CWE-79",
+                **cid("xss.stored.markdown_raw_html"),
                 "title": "Stored XSS via markdown rendered as raw HTML",
                 "description": (
                     f"Markdown output inserted as raw HTML at line {line_num}. "
@@ -198,6 +201,7 @@ def _check_upload_html(
             findings.append({
                 "severity": "high",
                 "category": "CWE-79",
+                **cid("xss.stored.upload_as_html"),
                 "title": "Stored XSS via user upload served as HTML",
                 "description": (
                     f"User-uploaded content served with text/html Content-Type "

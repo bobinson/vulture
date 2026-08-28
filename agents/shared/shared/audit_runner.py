@@ -2111,6 +2111,77 @@ def _bind_category_enum(
     return wrapper
 
 
+
+# ── feature 0079 B1: model-health preflight ──────────────────────────────────
+#
+# Six agents (chaos, soc2, ssdf, xss, do178c, asvs) had no preflight. They DO
+# degrade gracefully -- reactively, at the guard below that emits "LLM phase
+# unavailable" and sets degraded_reason. What they lacked is the ability to skip
+# the sweep BEFORE burning the failure budget.
+#
+# Two measured costs of not having it. With an unreachable endpoint each batch
+# is bounded by VULTURE_LLM_CALL_TIMEOUT_SEC and the sweep aborts only after
+# VULTURE_LLM_MAX_CONSECUTIVE_FAILURES -- 3 x 120s ~ 6 minutes, replaced by one
+# ~3s probe. And that abort is gated on `batch_idx + 1 < len(batches)`, so on a
+# tree producing <= 3 batches it never fires at all and the operator gets
+# silently wasted calls with no notice.
+#
+# It lives HERE, not in a per-agent wrapper, for two reasons: one edit reaches
+# every agent, and this point is INSIDE the cancel token and the whole-audit
+# deadline. A wrapper around run_combined_audit would sit outside both, adding
+# an unbounded term to the PROXY >= MAX_AUDIT + LLM_CALL margin rule.
+
+
+def _preflight_mode() -> str:
+    """``off`` / ``observe`` (default) / ``enforce``.
+
+    A mode string, matching VULTURE_OBLIGATION_MODE and VULTURE_LLM_QUOTE_VERIFY.
+    An unrecognised value falls back to ``observe``, never to ``enforce``: a typo
+    must not start vetoing the LLM tier.
+    """
+    raw = os.environ.get("VULTURE_LLM_PREFLIGHT", "").strip().lower()
+    return raw if raw in ("off", "observe", "enforce") else "observe"
+
+
+def _probe_llm_reachable() -> tuple[bool, str]:
+    """(reachable, reason). Seam for tests; real work is in shared.llm.health."""
+    import asyncio
+
+    from shared.llm.health import check_llm_health
+
+    status = asyncio.run(check_llm_health())
+    ok = bool(getattr(status, "healthy", False))
+    return ok, "" if ok else status.message()
+
+
+def _preflight_vetoes(effective_use_llm: bool, run_id: str, agent_label: str) -> tuple[bool, str]:
+    """Should the LLM sweep be skipped? Returns (veto, notice).
+
+    Fails OPEN in every uncertain case. A probe fault is a defect in the guard,
+    not evidence the provider is down, and vetoing on it would let one broken
+    probe disable the LLM tier across the fleet.
+    """
+    if not effective_use_llm:
+        return False, ""          # nothing to protect; never pay for a probe
+    mode = _preflight_mode()
+    if mode == "off":
+        return False, ""
+    try:
+        reachable, reason = _probe_llm_reachable()
+    except Exception as exc:  # noqa: BLE001 - fail open, see docstring
+        logger.info("llm_preflight run_id=%s agent=%s probe_error=%s", run_id, agent_label, exc)
+        return False, ""
+    if reachable:
+        return False, ""
+    logger.info(
+        "llm_preflight run_id=%s agent=%s mode=%s unreachable reason=%s",
+        run_id, agent_label, mode, reason,
+    )
+    if mode != "enforce":
+        return False, ""          # observe: measured and logged, never acted on
+    return True, f"LLM preflight: provider unreachable - {reason}"
+
+
 @_bind_category_enum
 def run_combined_audit(
     run_id: str,
@@ -2303,6 +2374,21 @@ def run_combined_audit(
     # `result` event (→ audits.degraded_reason) as well as the thinking stream,
     # which is transient and unqueryable after the fact.
     degraded_reason = ""
+    # Feature 0079 B1. Probe BEFORE the sweep, so an unreachable provider costs
+    # one ~3s probe rather than VULTURE_LLM_MAX_CONSECUTIVE_FAILURES x
+    # VULTURE_LLM_CALL_TIMEOUT_SEC of dead calls -- and gets a legible reason
+    # instead of a raw litellm error. Placed after the deadline is armed, so the
+    # probe is inside the run's safety envelope.
+    #
+    # Only reached when the phase would otherwise run: skills-only audits and a
+    # cancelled run never pay for it.
+    if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
+        _pf_veto, _pf_notice = _preflight_vetoes(True, run_id, domain_label)
+        if _pf_veto:
+            effective_use_llm = False
+            degraded_reason = _pf_notice
+            yield emitter.text_message(_pf_notice + " - returning skill findings only.")
+
     if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)

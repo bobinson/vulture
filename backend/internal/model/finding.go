@@ -11,20 +11,27 @@ const (
 )
 
 type Finding struct {
-	ID                string   `json:"id"`
-	AuditID           string   `json:"audit_id"`
-	AgentType         string   `json:"agent_type"`
-	Severity          Severity `json:"severity"`
-	Category          string   `json:"category"`
-	Title             string   `json:"title"`
-	Description       string   `json:"description"`
-	FilePath          string   `json:"file_path"`
-	LineStart         int      `json:"line_start"`
-	LineEnd           int      `json:"line_end"`
-	Recommendation    string   `json:"recommendation"`
-	References        []string `json:"references,omitempty"`
-	Fingerprint       string   `json:"fingerprint,omitempty"`
-	CheckID           string   `json:"check_id,omitempty"`
+	ID             string   `json:"id"`
+	AuditID        string   `json:"audit_id"`
+	AgentType      string   `json:"agent_type"`
+	Severity       Severity `json:"severity"`
+	Category       string   `json:"category"`
+	Title          string   `json:"title"`
+	Description    string   `json:"description"`
+	FilePath       string   `json:"file_path"`
+	LineStart      int      `json:"line_start"`
+	LineEnd        int      `json:"line_end"`
+	Recommendation string   `json:"recommendation"`
+	References     []string `json:"references,omitempty"`
+	Fingerprint    string   `json:"fingerprint,omitempty"`
+	CheckID        string   `json:"check_id,omitempty"`
+	// FingerprintV2 is the feature-0079 stable identity (check_id-led,
+	// root-relative path). Written when VULTURE_FINDING_IDENTITY is not off.
+	FingerprintV2 string `json:"fingerprint_v2,omitempty"`
+	// LegacyFingerprint carries the v1 value forward IN MEMORY so lineage can
+	// match on either during the flip. json:"-" and in no column list: it never
+	// reaches a client or a database.
+	LegacyFingerprint string   `json:"-"`
 	CodeSnippet       string   `json:"code_snippet,omitempty"`
 	Provenance        string   `json:"provenance,omitempty"`
 	VerificationHints []string `json:"verification_hints,omitempty"`

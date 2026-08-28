@@ -85,3 +85,20 @@ func clampSnippet(s string) string {
 //   - SQLite: 32766 params / 21 = 1560 rows.
 // 1000 stays comfortably under both and keeps the multi-row fast path.
 const findingsInsertChunk = 1000
+
+// findingInsertColumnCount is the number of columns bound per finding row by
+// SaveFindings, in BOTH repositories. It exists so the bound-parameter
+// invariant is checkable rather than a comment:
+//
+//	findingInsertColumnCount() * findingsInsertChunk < 32766   (SQLite's cap)
+//
+// SQLite is always the binding constraint -- Postgres allows 65,535, so SQLite
+// breaks at 33 columns where Postgres breaks at 65. Feature 0055 is why this
+// matters: exceeding the cap dropped EVERY finding on large native-install
+// scans (thousands of findings -> 0 persisted), silently, because SaveFindings'
+// error is only logged.
+//
+// Keep this in step with the two INSERT column lists. A test asserts the
+// product stays under the cap, so a future column fails in CI instead of on a
+// customer's large scan.
+func findingInsertColumnCount() int { return 23 }

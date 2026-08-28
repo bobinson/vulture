@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
+CLI_DIR="$PROJECT_ROOT/cli"
 # Overridable so tests (and CI) can isolate from a developer's local .env, which
 # load_env sources with `set -a` and would otherwise clobber exported vars.
 ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
@@ -106,6 +107,45 @@ detect_lmstudio_model() {
     first=$(curl -sf "$url/models" 2>/dev/null \
         | python3 -c "import sys,json; models=[m['id'] for m in json.load(sys.stdin)['data'] if 'embed' not in m['id'].lower()]; print(models[0] if models else '')" 2>/dev/null)
     echo "${first:-local-model}"
+}
+
+# stale_against <binary> <source-dir> -- true when any .go file is newer than
+# the binary, or the binary is missing.
+stale_against() {
+    local bin="$1" src="$2" f
+    [[ -x "$bin" ]] || return 0
+    while IFS= read -r -d '' f; do
+        [[ "$f" -nt "$bin" ]] && return 0
+    done < <(find "$src" -name '*.go' -print0 2>/dev/null)
+    return 1
+}
+
+# build_cli keeps cli/bin/vulture in step with its sources.
+#
+# It is a SEPARATE Go module from the backend, with its own bin/vulture, and dev
+# mode used to rebuild only the backend. A developer who edited CLI code and ran
+# `vulture.sh dev` therefore got a fresh server and a SILENTLY STALE client.
+#
+# That is not hypothetical: the feature-0080 Ctrl-C cancel shipped, its tests
+# passed, and the operator's `cli/bin/vulture` was 33 minutes older than the
+# change and contained none of it -- so Ctrl-C did exactly what it had always
+# done and the run kept going. The binary the user actually types has to be
+# rebuilt by the same command that rebuilds the one they do not.
+build_cli() {
+    local bin="$CLI_DIR/bin/vulture"
+    stale_against "$bin" "$CLI_DIR" || return 0
+    echo "  Building CLI..."
+    if ! (cd "$CLI_DIR" && go build -o bin/vulture ./) 2>/dev/null; then
+        # Non-fatal: dev mode can serve without a current CLI, but say so
+        # loudly, because a stale client fails in ways that look like a
+        # server-side bug.
+        if [[ -x "$bin" ]]; then
+            echo "  Warning: CLI build failed — cli/bin/vulture is STALE and may"
+            echo "           be missing recent commands or flags."
+        else
+            echo "  Warning: CLI build failed and no cli/bin/vulture exists."
+        fi
+    fi
 }
 
 build_backend() {
@@ -369,4 +409,5 @@ if [[ "${VULTURE_LAUNCH_DRY_RUN:-}" == "1" ]]; then
 fi
 
 build_backend
+build_cli
 exec "$BACKEND_DIR/vulture" local_start

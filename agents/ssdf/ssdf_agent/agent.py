@@ -3,6 +3,7 @@
 from collections.abc import Generator
 from typing import Any
 
+from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.llm.provider import get_max_findings
 from shared.tools.memory_client import build_prior_context
@@ -28,27 +29,18 @@ def run_audit(
     # `practice_groups` is the canonical schema field (SSDF domain term);
     # keep `categories` as a backward-compat fallback for older payloads.
     categories = config.get("practice_groups", config.get("categories", ALL_CATEGORIES))
-    preloaded = prior_findings if prior_findings else None
-    max_f = get_max_findings()
-    context = build_prior_context(source_path, "ssdf", preloaded=preloaded, max_findings=max_f)
 
-    use_llm_val = config.get("use_llm")
-    # Feature 0046: per-audit override for L5 LLM judge.
-    _v = config.get("validate")
-    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
+    _shared = shared_audit_kwargs(config, source_path, prior_findings, "ssdf")
+    
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
         categories=categories,
         skill_map=SKILL_MAP,
         domain_label="SSDF practice groups",
-        prior_context=context,
+        **_shared,
         skill_tools=SKILL_TOOLS,
         instructions=INSTRUCTIONS,
-        use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
-        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
-        # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
-        llm_tier3=config.get("llm_tier3"),
         # Conform emitted categories to the vocabulary /info advertises.
         # Measured: 30 of 56 rows (including all 9 skill rows) carried a
         # category outside this set; the specific practice id is kept in
