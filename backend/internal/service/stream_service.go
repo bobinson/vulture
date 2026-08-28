@@ -7,13 +7,16 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/vulture/backend/internal/agui"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/staging"
+	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/pluginregistry"
 	"github.com/vulture/backend/pkg/stagerouter"
 )
@@ -486,12 +489,100 @@ func parseAuditConfigMap(raw json.RawMessage) map[string]json.RawMessage {
 	return m
 }
 
+// extractAgentConfig returns the config one agent should receive: every
+// non-agent-type ("flat") key from the audit config, with that agent's own
+// block merged over the top.
+//
+// Feature 0081. Before this it was `cfgMap[agentType]` or `{}`, so a flat key
+// was silently discarded — and four shipped things depended on the flat form:
+//
+//	CLI --validate-llm  {"validate":{"llm":true}}  -> {}  L5 judge never enabled
+//	CLI --llm-tier3     {"llm_tier3":true}         -> {}  sweep never widened
+//	pipeline discover   {"target_url":...}         -> {}  target URL never sent
+//	pipeline prove      {"staging_url":...}        -> {}  staging URL never sent
+//
+// The flat form is an internal CONVENTION, not a client mistake: the largest
+// producer is Vulture's own GetStageAuditConfig. An earlier draft of this fix
+// proposed rejecting unrecognised keys with a 400 and would therefore have
+// broken every pipeline stage.
+//
+// A pipeline stage runs one agent type, so a flat per-stage value reaches
+// exactly its intended agent. In a multi-agent audit a flat key also reaches
+// agents that do not read it, which is harmless: no agent validates its config
+// (they declare additionalProperties:false in config_schema and nothing
+// enforces it at runtime).
 func extractAgentConfig(cfgMap map[string]json.RawMessage, agentType string) json.RawMessage {
 	if cfgMap == nil {
 		return json.RawMessage("{}")
 	}
-	if ac, ok := cfgMap[agentType]; ok {
-		return ac
+	own, hasOwn := cfgMap[agentType]
+	if !configMergeEnabled() {
+		if hasOwn {
+			return own
+		}
+		return json.RawMessage("{}")
 	}
-	return json.RawMessage("{}")
+	merged := make(map[string]json.RawMessage, len(cfgMap))
+	known := knownAgentTypes()
+	var flat []string
+	for k, v := range cfgMap {
+		if known[k] {
+			continue // another agent's block; never cross-contaminate
+		}
+		merged[k] = v
+		flat = append(flat, k)
+	}
+	// The agent's own block wins on conflict: a global default with a per-agent
+	// override is the useful shape, and the reverse never is.
+	if hasOwn {
+		var ownMap map[string]json.RawMessage
+		if err := json.Unmarshal(own, &ownMap); err != nil {
+			// A non-object per-agent block is not mergeable. Preserve the
+			// pre-0081 behaviour for it rather than dropping it.
+			return own
+		}
+		for k, v := range ownMap {
+			merged[k] = v
+		}
+	}
+	if len(merged) == 0 {
+		return json.RawMessage("{}")
+	}
+	if len(flat) > 0 {
+		sort.Strings(flat)
+		log.Printf("[config] agent=%s merged non-agent keys: %v", agentType, flat)
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// configMergeEnabled gates feature 0081. VULTURE_AUDIT_CONFIG_MERGE=false
+// restores per-agent-only routing exactly, re-breaking the four cases above.
+// Read at call time so the switch stays flippable.
+func configMergeEnabled() bool {
+	if v := strings.TrimSpace(os.Getenv("VULTURE_AUDIT_CONFIG_MERGE")); v != "" {
+		return config.EnvTruthy("VULTURE_AUDIT_CONFIG_MERGE")
+	}
+	return true
+}
+
+// knownAgentTypes is every key that addresses ONE agent rather than all of them.
+//
+// Built from AllAgents, NOT ScanAgentTypes(): that helper excludes prove and
+// discover because they are pipeline stages rather than scanners, and treating
+// them as flat keys would merge `{"prove":{...}}` into every agent's config.
+// Plugin names come from the live registry, so a plugin such as semgrep routes
+// correctly with no edit here.
+func knownAgentTypes() map[string]bool {
+	known := make(map[string]bool, len(agentregistry.AllAgents)+4)
+	for _, a := range agentregistry.AllAgents {
+		known[a.Type] = true
+	}
+	for _, pl := range pluginregistry.Default().All() {
+		known[pl.Name()] = true
+	}
+	return known
 }
