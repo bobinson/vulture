@@ -245,6 +245,7 @@ func findingsToPriors(fs []model.Finding) []model.PriorFinding {
 			Provenance:           f.Provenance,
 			ValidationStatus:     f.ValidationStatus,
 			ValidationConfidence: f.ValidationConfidence,
+			Validation:           f.Validation,
 		})
 	}
 	return out
@@ -269,9 +270,26 @@ func withCweStatus(cfg json.RawMessage, status string) json.RawMessage {
 // whether the CWE agent's result snapshot arrived. observe() is called from
 // the single scan-forwarding loop; the mutex guards the accessor snapshot().
 type cweTap struct {
-	mu           sync.Mutex
-	findings     []model.Finding
-	sawCweResult bool
+	mu sync.Mutex
+	// deltas holds every CWE-categorised row seen on the per-finding delta
+	// path, keyed by the agent that emitted it. Any agent may emit a
+	// CWE-categorised finding — xss emits CWE-79/113/644/1336 — so this is
+	// deliberately not restricted to the cwe agent.
+	deltas map[string][]model.Finding
+	// snapshots holds the PARSEABLE CWE-categorised rows from each agent's
+	// result report, keyed the same way (feature 0082 C5: both branches must
+	// filter identically; before 0082 the delta branch accepted every agent
+	// while the snapshot branch accepted only "cwe", so an xss row could never
+	// be superseded by its own finished report).
+	snapshots map[string][]model.Finding
+	malformed map[string]int
+	// sawSnapshot records that an agent sent a result event AT ALL, parseable
+	// or not, with CWE-categorised rows or not. Kept distinct from
+	// len(snapshots[a]) because the rollback path must reproduce the pre-0082
+	// meaning of "the stage finished" exactly: that a snapshot event arrived.
+	// Conflating the two silently re-graded a CWE agent whose report carried no
+	// CWE-categorised rows from "completed" to "failed" on the DEFAULT path.
+	sawSnapshot map[string]bool
 }
 
 func (t *cweTap) observe(ev *model.AgUIEvent) {
@@ -286,25 +304,130 @@ func (t *cweTap) observe(ev *model.AgUIEvent) {
 		for _, f := range agui.ParseDeltaFindings(ev.Delta, ev.AgentType) {
 			if isCWECategory(f.Category) {
 				t.mu.Lock()
-				t.findings = append(t.findings, f)
+				if t.deltas == nil {
+					t.deltas = map[string][]model.Finding{}
+				}
+				t.deltas[f.AgentType] = append(t.deltas[f.AgentType], f)
 				t.mu.Unlock()
 			}
 		}
 	case model.EventStateSnapshot:
-		if ev.AgentType == cweType {
-			t.mu.Lock()
-			t.sawCweResult = true
-			t.mu.Unlock()
+		if len(ev.Snapshot) == 0 {
+			return
+		}
+		// Per-ROW parse (feature 0082 C3). The previous whole-payload unmarshal
+		// meant one row carrying `"line_start": "55"` took the entire report to
+		// zero, and VULTURE_LLM_COERCE_LINES is a documented rollback switch
+		// that re-arms exactly that shape.
+		parsed, malformed := agui.ParseSnapshotFindings(ev.Snapshot, ev.AgentType)
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.snapshots == nil {
+			t.snapshots = map[string][]model.Finding{}
+			t.malformed = map[string]int{}
+			t.sawSnapshot = map[string]bool{}
+		}
+		t.sawSnapshot[ev.AgentType] = true
+		t.malformed[ev.AgentType] += malformed
+		for _, f := range parsed {
+			if isCWECategory(f.Category) {
+				t.snapshots[ev.AgentType] = append(t.snapshots[ev.AgentType], f)
+			}
 		}
 	}
 }
 
+// snapshot resolves what the OWASP mapping stage receives, and whether the CWE
+// stage genuinely finished.
+//
+// RESOLUTION RULE (feature 0082 C6): PER-AGENT all-or-nothing, matching
+// drainResultAt's persistence rule (handler/stream_handler.go). An agent that
+// produced at least one parseable CWE row in its finished report contributes
+// exactly that report; its deltas are discarded. An agent that produced none
+// contributes its deltas. A per-KEY merge was rejected: it made OWASP's priors
+// a strict superset of the PERSISTED CWE set, so every row that
+// _collapse_skill_findings deliberately dropped after its delta had already
+// streamed became an OWASP finding whose CWE twin is absent from the database
+// — a phantom — and inflated the coverage manifest's `detected` set.
+//
+// This is unconditional. It shipped behind VULTURE_OWASP_CONSUME_SNAPSHOT
+// (default off, then default on after a like-for-like gate run on juice-shop:
+// cwe/asvs/xss unchanged, owasp 342 -> 341 where the one dropped row was such a
+// phantom, OWASP rows carrying a real verdict 0/342 -> 341/341). The switch was
+// then removed at the owner's direction: the only thing it could restore was
+// the pre-0082 defect — pre-enrichment delta rows, every OWASP verdict empty
+// and then SYNTHESISED by the backend, plus the phantoms. Rolling this back now
+// means reverting this function and observe() to the delta-only tap, not
+// flipping a flag.
+//
+// IDENTITY (C1): rows are never keyed on (path, line, category). A rollup
+// parent's line_start is min(member line_starts) and it copies the group's
+// category and file_path verbatim, so on that tuple every parent is identical
+// to its own lowest-line child — 69/69 on the reference scan. The per-agent
+// rule needs no key at all, which is the other reason it was chosen; the
+// distinctness of parent and child is asserted by TestTapIsLossless.
+//
+// COLLISION (C7): when several CWE rows map to one OWASP category at one
+// (path, line), the surviving row is chosen downstream by severity and then by
+// tieBreakKey's lexical order (handler.findingDetailScore / tieBreakKey). That
+// selection reads no validation field: it is NOT evidence-ranked.
+//
+// Returns the findings and whether the CWE stage completed. "Completed" means
+// a report ARRIVED and was intelligible — at least one parseable row, or a
+// valid report with zero rows (a clean repository). What is NOT completed is a
+// report whose rows were all unparseable: that yields zero priors and a
+// zero-coverage manifest indistinguishable from the clean case.
 func (t *cweTap) snapshot() ([]model.Finding, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	fs := make([]model.Finding, len(t.findings))
-	copy(fs, t.findings)
-	return fs, t.sawCweResult
+
+	// Every agent that streamed a CWE row OR sent a report. The second set is
+	// required: a CLEAN agent has no deltas and no snapshot rows, so building
+	// the set from rows alone never visits it and misreports the stage as
+	// unfinished. t.snapshots' keys are always a subset of t.sawSnapshot's.
+	agentSet := make(map[string]struct{}, len(t.deltas)+len(t.sawSnapshot))
+	for a := range t.deltas {
+		agentSet[a] = struct{}{}
+	}
+	for a := range t.sawSnapshot {
+		agentSet[a] = struct{}{}
+	}
+	// Sorted so prior order — and therefore the OWASP agent's per-row index and
+	// the ids derived from it — is deterministic for a given event stream
+	// rather than following map iteration order.
+	agents := make([]string, 0, len(agentSet))
+	for a := range agentSet {
+		agents = append(agents, a)
+	}
+	sort.Strings(agents)
+
+	out := make([]model.Finding, 0, 64)
+	cweCompleted := false
+	for _, a := range agents {
+		reported := t.snapshots[a]
+
+		// "Did this agent finish?" and "did it find anything?" are DIFFERENT
+		// questions, and conflating them reports a genuinely clean repository
+		// as a FAILED stage.
+		if a == cweType && t.sawSnapshot[a] && (len(reported) > 0 || t.malformed[a] == 0) {
+			cweCompleted = true
+		}
+
+		if len(reported) > 0 {
+			out = append(out, reported...)
+			continue
+		}
+		// No parseable rows in the report. Fall back to this agent's deltas so
+		// a report we could not read never costs findings the stream already
+		// carried. Harmless for a genuinely clean agent: it has no deltas
+		// either, and the fallback contributes nothing.
+		if t.malformed[a] > 0 {
+			log.Printf("[cwe-tap] agent=%s reported %d rows, ALL unparseable — falling back to %d delta rows (agent_truncated)",
+				a, t.malformed[a], len(t.deltas[a]))
+		}
+		out = append(out, t.deltas[a]...)
+	}
+	return out, cweCompleted
 }
 
 // dispatchLegacy is the pre-0049 path: iterate audit.Types, look up

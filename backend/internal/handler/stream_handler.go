@@ -698,18 +698,21 @@ func (h *StreamHandler) replayCompletedAudit(sseWriter *agui.SSEWriter, audit *m
 }
 
 func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, findings *[]model.Finding, scores map[string]int) {
-	var result struct {
-		Findings []model.Finding `json:"findings"`
-		Score    float64         `json:"score"`
+	// Feature 0082 C3: row extraction is delegated to agui.ParseSnapshotFindings
+	// so the snapshot path is per-row tolerant like the delta path, and so the
+	// two parsers cannot drift. Previously one malformed row (e.g. a model
+	// answering `"line_start": "55"`) failed the whole unmarshal and took every
+	// finding in the report to zero, silently. Id/fingerprint stamping below
+	// stays here — it is persistence policy, not parsing.
+	parsed, malformed := agui.ParseSnapshotFindings(snapshot, agentType)
+	if malformed > 0 {
+		log.Printf("[parseSnapshot] agent=%s malformedRows=%d (dropped individually, batch preserved)", agentType, malformed)
 	}
-	if err := json.Unmarshal(snapshot, &result); err != nil {
-		log.Printf("[parseSnapshot] unmarshal error: %v snapshot=%s", err, truncate(string(snapshot), 200))
-		return
-	}
-	log.Printf("[parseSnapshot] agent=%s parsedFindings=%d score=%.1f", agentType, len(result.Findings), result.Score)
+	score, _ := agui.ParseSnapshotScore(snapshot)
+	log.Printf("[parseSnapshot] agent=%s parsedFindings=%d score=%.1f", agentType, len(parsed), score)
 	baseIndex := len(*findings)
-	for i := range result.Findings {
-		f := &result.Findings[i]
+	for i := range parsed {
+		f := &parsed[i]
 		// Preserve rollup-parent IDs (deterministic SHA-derived).
 		if f.IsRollup {
 			// preserve rollup-parent id verbatim — cross-audit stable by design
@@ -732,7 +735,7 @@ func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, f
 		*findings = append(*findings, *f)
 	}
 	if agentType != "" {
-		scores[agentType] = int(result.Score)
+		scores[agentType] = int(score)
 	}
 }
 

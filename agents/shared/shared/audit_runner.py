@@ -1928,6 +1928,18 @@ def _snippet_params_for(category: str) -> tuple[int, int | None]:
     return 2, 200
 
 
+def _window_parity_enabled() -> bool:
+    """``VULTURE_FINDING_WINDOW_PARITY`` — default TRUE, read at call time.
+
+    Feature 0082 Step 5. Records WHY a finding carries no code window, in the
+    existing ``validation`` blob. Ships ON because it is purely additive: it
+    never removes a window, a finding, or a verdict, and the ``window`` check
+    it writes carries weight 0.0 so it cannot move a confidence score. ``false``
+    restores the pre-0082 state where an empty window was undifferentiated.
+    """
+    return env_flag("VULTURE_FINDING_WINDOW_PARITY", True)
+
+
 def _attach_code_snippet(
     findings: list[dict[str, Any]],
     source_path: str,
@@ -1951,8 +1963,6 @@ def _attach_code_snippet(
     left with an empty snippet — the L5 selection layer then SKIPS it (P0.3)
     rather than judging blind.
     """
-    from shared.tools.file_scanner import read_file_lines
-
     # P6b backstop. Say plainly what this is now: as of 0078 track C it is a
     # NO-OP on every path that exists. `_finalize_finding_inplace` stamps
     # provenance immediately before both per-finding emits, and rollup parents
@@ -1969,38 +1979,13 @@ def _attach_code_snippet(
     for f in findings:
         _set_provenance(f)
 
-    for f in findings:
-        context, max_chars = _snippet_params_for(f.get("category", "") or "")
-        wide = max_chars is None
-        # T5.2: a wide-scope class gets the line-budget window even when a
-        # skill pre-set a narrow one — the window is the judge's evidence,
-        # and 200 chars cannot contain a mitigation that lives lines away.
-        # Narrow classes keep the legacy behaviour: back-fill only.
-        if wide or not f.get("code_snippet"):
-            line_start = f.get("line_start", 0) or 0
-            try:
-                line_start = int(line_start)
-            except (TypeError, ValueError):
-                line_start = 0
-            if line_start >= 1:
-                resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
-                if resolved is not None:
-                    lines = read_file_lines(resolved)
-                    if lines:
-                        snippet = extract_snippet(
-                            lines, line_start,
-                            context=context, max_chars=max_chars,
-                        )
-                        if snippet:
-                            f["code_snippet"] = snippet
+    # Feature 0082 Step 3: the window loop lives in shared/tools/window.py so
+    # reading a window and REDACTING it are one operation no caller can split.
+    # This function keeps the provenance backstop above (deliberately decoupled,
+    # so a read failure below cannot skip it) and delegates the rest.
+    from shared.tools.window import ensure_code_window
 
-        # P2a: mask secret VALUES for secret-bearing CWEs, whether the snippet
-        # was back-filled above OR pre-set by a skill (e.g. auth_check). This
-        # runs at the finalisation choke point so both the SSE result and the
-        # DB row carry the redacted form. (The per-finding `finding` SSE events
-        # are independently redacted at emission time — see run_combined_audit —
-        # so the live frontend view never sees the raw secret either.)
-        _redact_finding_inplace(f)
+    ensure_code_window(findings, source_path, record_reasons=_window_parity_enabled())
 
 
 def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> None:

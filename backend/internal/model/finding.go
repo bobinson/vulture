@@ -76,6 +76,13 @@ type PriorFinding struct {
 	Provenance           string  `json:"provenance,omitempty"`
 	ValidationStatus     string  `json:"validation_status,omitempty"`
 	ValidationConfidence float64 `json:"validation_confidence,omitempty"`
+	// Validation carries the full check blob (feature 0082 C4). Without it a
+	// consuming agent's inherited verdict is not durable: the backend finds no
+	// blob, SYNTHESISES {status, confidence, checks: []}, and re-votes from a
+	// 0.5 base — so an inherited likely_fp/0.05 plus one memory label reaches
+	// high_confidence/0.90. Snippet-bearing extras are stripped agent-side by
+	// _scrub_validation before this ever travels (0063 constraint).
+	Validation map[string]interface{} `json:"validation,omitempty"`
 	// Line location, carried so mapping agents (e.g. OWASP over CWE,
 	// feature 0063) keep the source location. code_snippet is deliberately
 	// NOT carried here — snippets can contain secrets.

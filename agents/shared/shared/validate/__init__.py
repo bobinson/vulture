@@ -32,6 +32,7 @@ from .types import (
     ValidationResult,
 )
 from .voter import JUDGE_UNDECIDED, OBLIGATION_ID, vote
+from shared.tools.window import record_window_reason, window_reason_of
 
 # Verdict states that assert NOTHING about the finding. Neither is a survival
 # signal, so neither may re-tag provenance as judge-verified (0072 T4.8).
@@ -221,10 +222,21 @@ def _apply_validation_to_finding(
     if cfg.compliance_mode:
         v = apply_compliance_mode(v)
     new_f = dict(finding)
+    # Feature 0082 C10: capture any window reason BEFORE the blob is replaced.
+    # This is an overwrite, not a merge — a reason stamped upstream by
+    # ensure_code_window (audit_runner.py:2487, which runs before _validate at
+    # :2550) is otherwise destroyed here, and the "every empty window carries a
+    # reason" guarantee would hold nowhere it is actually measured.
+    prior_window = window_reason_of(finding)
     _strip_private(new_f)
     new_f["validation"] = v.to_json()
     new_f["validation_status"] = v.status
     new_f["validation_confidence"] = v.confidence
+    # Re-attached AFTER the vote, never as an input to it: the check carries
+    # weight 0.0 and recording why evidence is absent must not be able to move
+    # a status or a confidence.
+    if prior_window:
+        record_window_reason(new_f, prior_window)
     _retag_l5_verified(new_f, checks)
     return new_f
 

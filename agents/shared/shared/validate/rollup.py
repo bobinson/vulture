@@ -11,6 +11,8 @@ from typing import Any
 
 from .refutation import obligation_check
 from .types import ValidationCheck
+from shared.env import env_flag
+from shared.tools.window import WINDOW_ROLLUP_PARENT, window_check
 
 __all__ = ["rollup_id", "run_l2"]
 
@@ -122,6 +124,16 @@ def _rollup_description(
     return f"{head} {extra}".rstrip() if extra else head
 
 
+def _window_checks() -> list[dict[str, Any]]:
+    """The window check for a rollup parent, or nothing when feature 0082's
+    VULTURE_FINDING_WINDOW_PARITY is off. Read at call time so the switch is
+    flippable without a restart, and so the rollback genuinely removes the
+    stamp rather than leaving it in place under a disabled flag."""
+    if not env_flag("VULTURE_FINDING_WINDOW_PARITY", True):
+        return []
+    return [window_check(WINDOW_ROLLUP_PARENT)]
+
+
 def _build_rollup_parent(
     audit_id: str, category: str, file_path: str,
     members: list[dict[str, Any]], instance_count: int,
@@ -161,7 +173,13 @@ def _build_rollup_parent(
         "validation": {
             "status": _rollup_status_for(category, instance_count),
             "confidence": 0.40,
-            "checks": [obligation_check(category, None).to_json()],
+            # Feature 0082 C9: a parent's line_start is min(member lines), so
+            # handing it one member's window would present 1 of `instance_count`
+            # sites as evidence for all of them — the misrepresentation E4
+            # forbids, moved from the verdict field into the evidence field. The
+            # parent is LABELLED instead. Weight 0.0: bookkeeping, never evidence.
+            "checks": [obligation_check(category, None).to_json(),
+                       *_window_checks()],
             "validated_at": "",
         },
     }
