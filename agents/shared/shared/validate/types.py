@@ -142,3 +142,15 @@ class ValidateConfig:
     l5_total_timeout_s: float = 300.0   # 0046 D13
     l5_per_batch_timeout_s: float = 30.0   # local 30B models routinely take 10-20 s/batch
     l5_model_override: str = ""         # empty → fall back to caller's LLM model
+    # Feature 0083: PER-REQUEST overrides. Separate fields, defaulting to None,
+    # rather than retyping the settings above — those carry documented defaults
+    # (0046 D4 locks top_n_for_llm at 1000) that existing tests assert, and
+    # retyping them to Optional would break a deliberate contract.
+    #
+    # Precedence, implemented in the resolvers: override → env → the field above.
+    # Because these fields are new, no existing caller sets them, so the
+    # behaviour of every current deployment and test is unchanged by construction
+    # — this time genuinely, unlike the retype that was first proposed.
+    enable_l5_override: bool | None = None
+    l5_top_n_override: int | None = None
+    l5_batch_size_override: int | None = None

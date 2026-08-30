@@ -330,11 +330,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache] [CI flags]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
 			os.Exit(1)
 		}
-		types, noCache, fresh, tier3, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[3:])
-		if ci.server != "" {
-			apiURL = ci.server
+		sf := parseScanFlags(os.Args[3:])
+		if sf.ci.server != "" {
+			apiURL = sf.ci.server
 		}
-		cmdScan(apiURL, os.Args[2], types, noCache, fresh, tier3, ci, validateLLM, validateLLMTopN)
+		cmdScan(apiURL, os.Args[2], sf)
 	case "discover", "discovery":
 		df := parseDiscoverFlags(os.Args[2:])
 		cmdDiscover(apiURL, df)
@@ -370,50 +370,133 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		types, noCache, fresh, tier3, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[2:])
-		if ci.server != "" {
-			apiURL = ci.server
+		sf := parseScanFlags(os.Args[2:])
+		if sf.ci.server != "" {
+			apiURL = sf.ci.server
 		}
-		cmdScan(apiURL, cmd, types, noCache, fresh, tier3, ci, validateLLM, validateLLMTopN)
+		cmdScan(apiURL, cmd, sf)
 	}
 }
 
 // parseScanFlags extracts --types, --no-cache, and CI flags from arguments.
-func parseScanFlags(args []string) (types []string, noCache bool, fresh bool, tier3 bool, validateLLM bool, validateLLMTopN int, ci ciFlags) {
-	types = agentregistry.ScanAgentTypes()
-	ci.output = "text"
+// scanFlags carries everything `scan` parses. A struct, not a positional
+// tuple: feature 0083 added three fields, and the old 7-tuple was already
+// destructured at two sites and passed to a 9-parameter cmdScan in a DIFFERENT
+// order (ci was last in the return, 7th in the call). With four adjacent bools
+// and two adjacent ints, a transposition would compile, vet clean, and pass the
+// suite. parseDiscoverFlags and parseProveFlags already use this shape.
+type scanFlags struct {
+	types                []string
+	noCache              bool
+	fresh                bool
+	tier3                bool
+	noLLM                bool
+	validateLLM          bool
+	validateLLMTopN      int
+	validateLLMBatchSize int
+	ci                   ciFlags
+}
+
+// buildScanConfig turns parsed flags into the audit `config` object. Extracted
+// so the mapping is testable without a server: it is where feature 0083's
+// contract lives, and where the pre-0083 golden table is pinned.
+func buildScanConfig(f scanFlags) map[string]interface{} {
+	cfg := map[string]interface{}{}
+	if f.noLLM {
+		// Flat key: feature 0081 routes it to EVERY agent, and
+		// shared_audit_kwargs already reads it for all seven scan agents.
+		cfg["use_llm"] = false
+	}
+	// The validate block is emitted when ANY of its three settings is present.
+	// Pre-0083 it was gated on `--validate-llm` alone, so --validate-llm-top-n
+	// on its own emitted nothing at all — the flag was dead twice over.
+	validateCfg := map[string]interface{}{}
+	if f.validateLLM {
+		validateCfg["llm"] = true
+	}
+	if f.validateLLMTopN > 0 {
+		validateCfg["llm_top_n"] = f.validateLLMTopN
+	}
+	if f.validateLLMBatchSize > 0 {
+		validateCfg["llm_batch_size"] = f.validateLLMBatchSize
+	}
+	if len(validateCfg) > 0 {
+		cfg["validate"] = validateCfg
+	}
+	if f.fresh {
+		cfg["fresh"] = true
+	}
+	if f.tier3 {
+		cfg["llm_tier3"] = true
+	}
+	return cfg
+}
+
+func parseScanFlags(args []string) scanFlags {
+	f := scanFlags{}
+	f.types = agentregistry.ScanAgentTypes()
+	f.ci.output = "text"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--types":
 			if i+1 < len(args) {
-				types = strings.Split(args[i+1], ",")
+				f.types = strings.Split(args[i+1], ",")
 				i++
 			}
 		case "--no-cache":
-			noCache = true
+			f.noCache = true
 		case "--fresh":
 			// Clean-room scan: ignore the prior-findings memory so the LLM
 			// isn't steered by (nor the result masked by) earlier audits of
 			// this source. Implies --no-cache — a fresh run must re-execute,
 			// not return a cached result. For critical tests / new models.
-			fresh = true
-			noCache = true
+			f.fresh = true
+			f.noCache = true
 		case "--llm-tier3":
 			// 0059: include Tier-3 (non-flagged, non-entry) files in the LLM
 			// sweep — full-tree coverage. Off by default (cost guard).
-			tier3 = true
+			f.tier3 = true
+		case "--no-llm":
+			// Feature 0083: skip the LLM GENERATE phase; skills still run, and
+			// the L5 judge is unaffected (it has its own switch). Emitted as a
+			// flat `use_llm:false`, which 0081 routes to every agent.
+			//
+			// Implies --no-cache: the cache is keyed on (source_id, types) and
+			// ignores config entirely, so without this a --no-llm scan would
+			// happily return a cached FULL-LLM result. --fresh sets the same
+			// pair for the same class of reason.
+			f.noLLM = true
+			f.noCache = true
 		case "--validate-llm":
 			// Feature 0046: opt in to L5 LLM judge for this audit.
-			validateLLM = true
+			f.validateLLM = true
+		case "--validate-llm-batch-size":
+			// Feature 0083: findings per judge call. Not a tuning nicety — a
+			// reasoning model's hidden thinking truncates the verdict JSON at
+			// the default of 10 and L5 returns ZERO verdicts. Measured.
+			if i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 {
+					f.validateLLMBatchSize = n
+				} else {
+					fatalf("--validate-llm-batch-size needs a positive integer, got %q", args[i+1])
+				}
+				i++
+			}
 		case "--validate-llm-top-n":
 			if i+1 < len(args) {
-				if n, err := strconv.Atoi(args[i+1]); err == nil && n >= 0 {
-					validateLLMTopN = n
+				// Feature 0083: was silent on a parse error, so
+				// `--validate-llm-top-n abc` scanned with the default and said
+				// nothing. 0 is rejected too: it would mean "judge nothing",
+				// which --no-validate-llm expresses without the ambiguity.
+				if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 {
+					f.validateLLMTopN = n
+				} else {
+					fatalf("--validate-llm-top-n needs a positive integer, got %q", args[i+1])
 				}
 				i++
 			}
 		default:
-			if consumed := parseCIFlag(args, i, &ci); consumed > 0 {
+			if consumed := parseCIFlag(args, i, &f.ci); consumed > 0 {
 				i += consumed - 1
 				continue
 			}
@@ -426,15 +509,16 @@ func parseScanFlags(args []string) (types []string, noCache bool, fresh bool, ti
 			// --max-iterations was bounding the run. It bounded nothing.
 			if strings.HasPrefix(args[i], "-") {
 				fatalf("unknown flag for `scan`: %s\n"+
-					"  scan accepts: --types --no-cache --fresh --llm-tier3 "+
-					"--validate-llm --validate-llm-top-n, plus the CI flags.\n"+
+					"  scan accepts: --types --no-cache --fresh --no-llm --llm-tier3 "+
+					"--validate-llm --validate-llm-top-n --validate-llm-batch-size, "+
+					"plus the CI flags.\n"+
 					"  --staging-url and --max-iterations belong to `vulture prove`.\n"+
 					"  Plugins are enabled server-side via VULTURE_PLUGINS, not a CLI flag.",
 					args[i])
 			}
 		}
 	}
-	return
+	return f
 }
 
 // parseCIFlag parses a single CI flag at position i. Returns the number of
@@ -1189,7 +1273,8 @@ func cmdLogin(apiURL string) {
 	fmt.Printf("\n  Logged in as %s (%s)\n  Token saved to ~/%s/%s\n\n", auth.User.Name, auth.User.Email, configDir, tokenFile)
 }
 
-func cmdScan(apiURL string, target string, types []string, noCache bool, fresh bool, tier3 bool, ci ciFlags, validateLLM bool, validateLLMTopN int) {
+func cmdScan(apiURL string, target string, f scanFlags) {
+	types, noCache, ci := f.types, f.noCache, f.ci
 	token := resolveToken(ci.apiKey, apiURL)
 
 	// Determine source type
@@ -1234,23 +1319,7 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, fresh b
 
 	// Create audit
 	auditReq := buildAuditBody(src.ID, types, ci)
-	cfg := map[string]interface{}{}
-	if validateLLM {
-		// Feature 0046 §L: per-audit config override for L5 LLM judge.
-		validateCfg := map[string]interface{}{"llm": true}
-		if validateLLMTopN > 0 {
-			validateCfg["llm_top_n"] = validateLLMTopN
-		}
-		cfg["validate"] = validateCfg
-	}
-	if fresh {
-		// Clean-room: backend skips the prior-findings memory for this audit.
-		cfg["fresh"] = true
-	}
-	if tier3 {
-		// 0059: include the Tier-3 long tail in the LLM sweep (full-tree).
-		cfg["llm_tier3"] = true
-	}
+	cfg := buildScanConfig(f)
 	if len(cfg) > 0 {
 		auditReq["config"] = cfg
 	}

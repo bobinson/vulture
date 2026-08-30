@@ -95,8 +95,14 @@ def test_returns_exactly_the_shared_kwargs(tmp_path):
     """Pinned so a future addition is a deliberate act. Anything agent-specific
     -- skill_map, skill_tools, domain_label, instructions -- must STAY at the
     call site, where the 0070 fleet guard can see it."""
+    # Feature 0083: `l5_top_n` and `l5_batch_size` added deliberately. They are
+    # per-request L5 sizing, shared by every scan agent, so they belong at this
+    # seam and not at seven call sites. `--validate-llm-top-n` was already being
+    # sent by the CLI and read by nobody; this is the reader.
     assert set(shared_audit_kwargs({}, str(tmp_path), None, "cwe")) == {
         "prior_context",
+        "l5_top_n",
+        "l5_batch_size",
         "use_llm",
         "validate_use_llm",
         "llm_tier3",
@@ -274,3 +280,32 @@ def test_run_audit_starts_without_a_signature_error(pkg, tmp_path, monkeypatch):
         pytest.fail(f"{pkg.name}: run_audit signature error -> {exc}")
     finally:
         gen.close()
+
+
+# ---- feature 0083: per-request L5 sizing (I4) --------------------------------
+
+def test_0083_l5_sizing_is_none_when_the_request_is_silent(tmp_path):
+    """Behaviour preservation: an empty config must yield None for both, so
+    every existing deployment resolves exactly as before."""
+    out = shared_audit_kwargs({}, str(tmp_path), None, "cwe")
+    assert out["l5_top_n"] is None
+    assert out["l5_batch_size"] is None
+
+
+def test_0083_l5_sizing_is_extracted_from_the_validate_block(tmp_path):
+    cfg = {"validate": {"llm": True, "llm_top_n": 40, "llm_batch_size": 3}}
+    out = shared_audit_kwargs(cfg, str(tmp_path), None, "cwe")
+    assert out["l5_top_n"] == 40
+    assert out["l5_batch_size"] == 3
+    assert out["validate_use_llm"] is True
+
+
+def test_0083_non_int_sizing_is_rejected_not_coerced(tmp_path):
+    """A stray string must not reach int() and raise mid-audit. Booleans are
+    ints in Python, so they are excluded explicitly."""
+    for bad in ("40", 4.5, True, None, [], {}):
+        out = shared_audit_kwargs(
+            {"validate": {"llm_top_n": bad, "llm_batch_size": bad}},
+            str(tmp_path), None, "cwe")
+        assert out["l5_top_n"] is None, f"{bad!r} leaked through"
+        assert out["l5_batch_size"] is None, f"{bad!r} leaked through"

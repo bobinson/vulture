@@ -2180,6 +2180,8 @@ def run_combined_audit(
     model: str | None = None,
     use_llm: bool | None = None,
     validate_use_llm: bool | None = None,
+    l5_top_n: int | None = None,
+    l5_batch_size: int | None = None,
     llm_tier3: bool | None = None,
 ) -> Generator[str, None, None]:
     """Run skills first (full coverage), then optionally LLM (deeper analysis).
@@ -2525,6 +2527,15 @@ def run_combined_audit(
                 enable_l1=True,
                 enable_l2=True,
                 enable_l5=_l5_enabled,
+                # Feature 0083. `enable_l5_override` carries the per-request
+                # decision PAST _resolve_l5_enabled, which otherwise lets the
+                # env defeat it. None when the request was silent, so the env
+                # keeps deciding exactly as before.
+                enable_l5_override=(
+                    bool(validate_use_llm) if validate_use_llm is not None else None
+                ),
+                l5_top_n_override=l5_top_n,
+                l5_batch_size_override=l5_batch_size,
             )
 
             _v_result_box: list = [None]

@@ -1720,6 +1720,10 @@ def _verdict_to_check(
 
 
 def _resolve_top_n(config: ValidateConfig) -> int:
+    # Feature 0083: per-request override wins over the env server default.
+    _ov = getattr(config, "l5_top_n_override", None)
+    if _ov is not None:
+        return int(_ov)
     env = os.getenv("VULTURE_VALIDATE_LLM_TOP_N", "").strip()
     if env.isdigit():
         return int(env)
@@ -1727,6 +1731,10 @@ def _resolve_top_n(config: ValidateConfig) -> int:
 
 
 def _resolve_batch_size(config: ValidateConfig) -> int:
+    # Feature 0083: per-request override wins over the env server default.
+    _ov = getattr(config, "l5_batch_size_override", None)
+    if _ov is not None:
+        return max(1, int(_ov))
     env = os.getenv("VULTURE_VALIDATE_LLM_BATCH_SIZE", "").strip()
     if env.isdigit():
         return max(1, int(env))

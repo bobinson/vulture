@@ -34,7 +34,43 @@ RESOURCE_CONSUMPTION_PATTERNS = [
     re.compile(r"while\s*(?:True|1)\s*:"),  # Python: infinite loop
     re.compile(r"while\s*\(\s*(?:true|1)\s*\)"),  # C/Java: infinite loop
 ]
-BREAK_OR_RETURN = re.compile(r"\b(?:break|return|sys\.exit|os\.Exit)\b")
+# An exit path OR a yield to the scheduler. `await` and `yield` belong here:
+# an awaiting loop is a standard polling/consumer pattern, not a spin — it
+# releases the event loop on every iteration. Measured on juice-shop, every one
+# of the 17 CWE-400 rows was a bounded loop of this shape, reported at HIGH.
+BREAK_OR_RETURN = re.compile(
+    r"\b(?:break|return|sys\.exit|os\.Exit|await|yield)\b"
+)
+
+# How far to read for an exit path. A loop whose exit is more than this many
+# lines away is not "visible" in the sense the finding claims.
+_LOOP_BODY_SCAN_LINES = 40
+
+# Extensions the infinite-loop patterns must NOT run against. These regexes are
+# language-specific — `for\s*\{` is Go, `while True:` is Python — and markup is
+# neither. Measured on juice-shop: after the exit-path guard removed 16 bounded
+# loops, the ONE remaining CWE-400 was the Go pattern matching English prose,
+# "Our Privacy Policy for {{applicationName}} is", in an Angular template.
+_LOOP_PATTERN_SKIP_SUFFIXES = frozenset({
+    ".html", ".htm", ".xhtml", ".vue", ".svelte",
+    ".md", ".markdown", ".rst", ".txt", ".adoc",
+})
+
+
+def _loop_has_visible_exit(lines: list[str], line_num: int) -> bool:
+    """True when the loop opened at ``line_num`` shows an exit path or a
+    scheduler yield within the next few lines.
+
+    The finding's own description says "Unbounded loop without visible exit",
+    and BREAK_OR_RETURN has existed since the rule was written — but nothing
+    ever called it, so every infinite-loop KEYWORD was reported regardless of
+    its body. This makes the code match the sentence.
+    """
+    start = line_num  # 1-indexed line_num -> the line AFTER the loop header
+    for probe in lines[start:start + _LOOP_BODY_SCAN_LINES]:
+        if BREAK_OR_RETURN.search(probe):
+            return True
+    return False
 
 # CWE-404: Improper resource shutdown
 #
@@ -488,8 +524,12 @@ def _check_resource_consumption(
     findings: list[dict],
 ) -> None:
     """Check for uncontrolled resource consumption (CWE-400)."""
+    if file_path.suffix.lower() in _LOOP_PATTERN_SKIP_SUFFIXES:
+        return
     for pattern in RESOURCE_CONSUMPTION_PATTERNS:
         if not pattern.search(line):
+            continue
+        if _loop_has_visible_exit(lines, line_num):
             continue
         finding = {
             "severity": "high",

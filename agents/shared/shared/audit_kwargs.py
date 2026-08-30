@@ -64,6 +64,12 @@ def shared_audit_kwargs(
     validate = config.get("validate")
     validate_llm = validate.get("llm") if isinstance(validate, dict) else None
     use_llm = config.get("use_llm")
+    # Feature 0083: per-request L5 sizing. `--validate-llm-top-n` was delivered
+    # by the CLI and read by nobody; `--validate-llm-batch-size` is new and is
+    # the setting a reasoning model cannot run without.
+    _v = validate if isinstance(validate, dict) else {}
+    llm_top_n = _v.get("llm_top_n")
+    llm_batch_size = _v.get("llm_batch_size")
     context = (
         prior_context
         if prior_context is not None
@@ -85,4 +91,8 @@ def shared_audit_kwargs(
         # Passed through raw because run_combined_audit applies no isinstance
         # guard to it today, and changing that is not this refactor's job.
         "llm_tier3": config.get("llm_tier3"),
+        # int-guarded for the same reason the bools above are isinstance-guarded:
+        # a stray string must not reach int() and raise mid-audit.
+        "l5_top_n": llm_top_n if isinstance(llm_top_n, int) and not isinstance(llm_top_n, bool) else None,
+        "l5_batch_size": llm_batch_size if isinstance(llm_batch_size, int) and not isinstance(llm_batch_size, bool) else None,
     }

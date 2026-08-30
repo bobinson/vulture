@@ -59,6 +59,19 @@ def is_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def _resolve_l5_enabled(cfg: ValidateConfig) -> bool:
+    """Resolve the L5 master switch: per-request override → env → field.
+
+    Feature 0083 W1. The env used to be read FIRST, which made an explicit
+    `--validate-llm` a dead flag on the stock deployment: docker-compose pins
+    `VULTURE_USE_VALIDATE_LLM=${VULTURE_USE_VALIDATE_LLM:-false}` on all ten
+    agent blocks, and `false` defeated the request. Every finding came back
+    stamped `skipped_l5_disabled` while the operator had asked for the judge.
+
+    The env keeps deciding whenever the request is silent, so no existing
+    deployment changes.
+    """
+    if cfg.enable_l5_override is not None:
+        return bool(cfg.enable_l5_override)
     env = os.environ.get("VULTURE_USE_VALIDATE_LLM", "").strip().lower()
     if env in ("true", "1", "yes"):
         return True
