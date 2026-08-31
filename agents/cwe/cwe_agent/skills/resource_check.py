@@ -28,6 +28,66 @@ NULL_DEREF_PATTERNS = [
 ]
 GO_NIL_CHECK = re.compile(r"if\s+\w+\s*[!=]=\s*nil")
 
+# Feature 0085. A Go `:=` assignment is not a nil dereference on its own — it is
+# just a variable binding, and most bind a value type that can never be nil
+# (`os.Getenv` returns string, `DetectMode()` returns a named scalar). Measured
+# on the Vulture tree: 345 of 345 CWE-476 rows were exactly that, all at HIGH.
+#
+# What makes it a candidate is that the bound name is later USED AS A POINTER:
+# `v.Field`, `*v`, or `v[...]`. That is the shape the protected E2E fixture
+# encodes (`val := obj.GetItem()` / `val.Use()`), and it is the shape of the real
+# bug (error discarded, value dereferenced anyway).
+GO_DEREF_OF = "(?:\\*{v}\\b|\\b{v}\\.\\w|\\b{v}\\[)"
+
+# The FIRST bound name, which is the value; the second is conventionally the
+# error. NULL_DEREF_PATTERNS[0]'s own capture group takes the LAST `\w+` before
+# `:=`, so on `req, _ := http.NewRequest(...)` it captured `_` — harmless while
+# nothing read the group, wrong the moment the deref check does.
+GO_ASSIGN_FIRST = re.compile(
+    r"^\s*(?P<first>[A-Za-z_]\w*)\s*(?:,\s*(?P<second>[A-Za-z_]\w*)\s*)?:="
+)
+
+# `x := pkg.NewThing(...)` — the Go constructor convention (single value only).
+GO_NEW_CTOR = re.compile(r":=\s*[\w.]*\bNew[A-Z]\w*\s*\(")
+
+# Go stdlib constructors documented to ALWAYS return a usable non-nil value.
+# Dereferencing one is correct Go, not a defect. Purely suppressive: this list
+# can only remove findings, never add them, so a wrong entry costs recall on one
+# call shape rather than manufacturing noise. Drawn from the residual measured
+# on the Vulture tree after the dereference gate (bufio.NewScanner, hmac.New,
+# flag.NewFlagSet and similar accounted for most of the remaining 100).
+GO_NEVER_NIL_CALL = re.compile(
+    r"""(?:^|[^\w.])(?:
+          bufio\.New\w+ | bytes\.New\w+ | strings\.New\w+ | errors\.New
+        | hmac\.New | sha1\.New | sha256\.New | sha512\.New | md5\.New | fnv\.New\w+
+        | flag\.NewFlagSet | log\.New | tabwriter\.NewWriter
+        | json\.NewEncoder | json\.NewDecoder | csv\.NewReader | csv\.NewWriter
+        | time\.\w+ | strconv\.\w+ | filepath\.\w+ | fmt\.\w+
+        | strings\.\w+ | exec\.\w+ | context\.\w+ | sort\.\w+ | utf8\.\w+
+        | make | new | len | cap | append
+      )\s*\(""",
+    re.VERBOSE,
+)
+
+# A nil guard need not be spelled `if x != nil`. Go writes it in `return`
+# expressions, `&&` chains, assignments and switch cases just as often.
+# GO_NIL_CHECK's literal `if` missed all of those; measured, two of four sampled
+# survivors on the Vulture tree were guarded this way. Variable-specific, unlike
+# GO_NIL_CHECK, so an unrelated `err != nil` no longer clears a real finding.
+GO_VAR_NIL_GUARD = re.compile(r"\b{v}\s*[!=]=\s*nil|\bnil\s*[!=]=\s*{v}\b")
+
+# A nil slice/map has len 0, so a length guard is a real nil guard.
+GO_LEN_GUARD = re.compile(r"\blen\(\s*{v}\s*\)")
+_DEREF_SCAN_LINES = 12
+
+
+def _go_var_is_dereferenced(var: str, lines: list[str], line_num: int) -> bool:
+    """True when ``var`` is later used in a position that would fault if nil."""
+    import re as _re
+    pat = _re.compile(GO_DEREF_OF.format(v=_re.escape(var)))
+    end = min(line_num + _DEREF_SCAN_LINES, len(lines))
+    return any(pat.search(l) for l in lines[line_num:end])
+
 # CWE-400: Uncontrolled resource consumption
 RESOURCE_CONSUMPTION_PATTERNS = [
     re.compile(r"for\s*\{", re.IGNORECASE),  # Go: infinite loop
@@ -121,6 +181,46 @@ UNBOUNDED_ALLOC_PATTERNS = [
     re.compile(r"make\(\[\]\w+,\s*0\)"),  # Go: unbounded slice
 ]
 SIZE_LIMIT = re.compile(r"\b(?:max_size|maxlen|capacity|limit|MAX_)\b", re.IGNORECASE)
+
+# Feature 0085. `.append(` alone is not allocation without limits — it is the
+# ordinary way to build any list. The pattern's own comment has always said
+# "Python list append in loop", but the loop was never checked. Measured on the
+# Vulture tree: 466 of 469 CWE-770 rows were bare appends, 114 of them appending
+# a string LITERAL outside any loop.
+#
+# The weakness needs repetition, so the append must sit inside a loop. Scoped to
+# Python because the indentation walk below is only sound where indentation IS
+# the block syntax — and in JS/TS `.append()` is a DOM/FormData call that
+# allocates nothing.
+_PY_SUFFIXES = frozenset({".py", ".pyi"})
+_PY_LOOP_HEADER = re.compile(r"^\s*(?:for\b|while\b)")
+_PY_SCOPE_HEADER = re.compile(r"^\s*(?:def\b|class\b|async\s+def\b)")
+_LOOP_LOOKBACK_LINES = 30
+
+
+def _py_append_is_in_a_loop(lines: list[str], line_num: int) -> bool:
+    """True when the statement at ``line_num`` is inside a for/while block.
+
+    Walks back for a header at a STRICTLY smaller indent, stopping at the
+    enclosing def/class — a loop in a different function is not this
+    statement's loop.
+    """
+    idx = line_num - 1
+    if idx < 0 or idx >= len(lines):
+        return False
+    indent = len(lines[idx]) - len(lines[idx].lstrip())
+    for j in range(idx - 1, max(-1, idx - _LOOP_LOOKBACK_LINES), -1):
+        cur = lines[j]
+        if not cur.strip():
+            continue
+        cur_indent = len(cur) - len(cur.lstrip())
+        if cur_indent >= indent:
+            continue
+        if _PY_LOOP_HEADER.search(cur):
+            return True
+        if _PY_SCOPE_HEADER.search(cur):
+            return False
+    return False
 
 IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
 
@@ -591,14 +691,54 @@ def _check_null_deref(
     findings: list[dict],
 ) -> None:
     """Check for NULL pointer dereference (CWE-476)."""
+    # Feature 0085 gate 1 — LANGUAGE. Every construct below is Go-specific, and
+    # Python's walrus operator is also `:=`, so without this the Go rule fires
+    # on Python.
+    if file_path.suffix.lower() != ".go":
+        return
     # Focus on Go pattern: assignment from method call without nil check
     if not NULL_DEREF_PATTERNS[0].search(line):
+        return
+    bound = GO_ASSIGN_FIRST.search(line)
+    if not bound:
+        return
+    # Feature 0085 gate 3 — NIL-ABILITY. If the right-hand side is a constructor
+    # that cannot return nil, there is nothing to dereference unsafely.
+    if GO_NEVER_NIL_CALL.search(line):
+        return
+    # Gate 3b — Go's `New*` constructor convention. A SINGLE-value assignment
+    # from a `New…` function returns a ready-to-use value; a constructor that
+    # can fail returns (T, error), which is a two-value assignment and is NOT
+    # suppressed here. This is an assumption, stated plainly: a `New…` that
+    # returns a bare nil on bad input is now missed. Recall knowingly traded
+    # against 56 measured false positives at HIGH severity, all of this shape.
+    if bound.group("second") is None and GO_NEW_CTOR.search(line):
+        return
+    # Feature 0085 gate 2 — the bound name must actually be DEREFERENCED later.
+    # Binding a value and passing it along cannot fault.
+    if not _go_var_is_dereferenced(bound.group("first"), lines, line_num):
         return
     # Check following lines for nil check before use
     window_end = min(line_num + 5, len(lines))
     window = "\n".join(lines[line_num:window_end])
     if GO_NIL_CHECK.search(window):
         return
+    # Feature 0085 gate 4 — a `len(v)` test is a nil guard for slices and maps,
+    # and a guard on THIS variable counts wherever it is written.
+    _v = re.escape(bound.group("first"))
+    if re.search(GO_LEN_GUARD.pattern.format(v=_v), window):
+        return
+    if re.search(GO_VAR_NIL_GUARD.pattern.format(v=_v), window):
+        return
+    # Gate 4b — a check on the assignment's OWN second result guards the first.
+    # `u, err := url.Parse(x)` followed by `err == nil && u.Host != ""` is
+    # correct Go: the error is what tells you the value is usable. Only a NAMED
+    # second result counts — `_` is precisely the discarded-error bug this rule
+    # must keep reporting.
+    _second = bound.group("second")
+    if _second and _second != "_":
+        if re.search(GO_VAR_NIL_GUARD.pattern.format(v=re.escape(_second)), window):
+            return
     finding = {
         "severity": "high",
         "check_id": "cwe.resource.null_deref",
@@ -628,9 +768,18 @@ def _check_unbounded_alloc(
     context = "\n".join(lines[context_start:context_end])
     if SIZE_LIMIT.search(context):
         return
-    for pattern in UNBOUNDED_ALLOC_PATTERNS:
+    for idx, pattern in enumerate(UNBOUNDED_ALLOC_PATTERNS):
         if not pattern.search(line):
             continue
+        # Feature 0085: the `.append` arm (index 0) requires Python AND a loop.
+        # The Go `make([]T, 0)` arm (index 1) is deliberately UNCHANGED — the
+        # protected E2E fixture depends on it, and it was not part of the
+        # measured false-positive mass.
+        if idx == 0:
+            if file_path.suffix.lower() not in _PY_SUFFIXES:
+                continue
+            if not _py_append_is_in_a_loop(lines, line_num):
+                continue
         finding = {
             "severity": "medium",
             "check_id": "cwe.resource.unbounded_alloc",
