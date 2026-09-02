@@ -3,6 +3,8 @@
 import re
 from collections.abc import Sequence
 
+from shared.tools.line_context import strip_strings_and_comments
+
 # Standard ports that shouldn't trigger "hardcoded port" findings.
 STANDARD_PORTS = frozenset({80, 443, 8080, 8443, 3000, 3001, 5000, 8000, 8888})
 
@@ -87,6 +89,89 @@ def collect_handler_body(
         if not lines[i].strip():
             continue
         body.append(lines[i])
+        if len(body) >= max_body_lines:
+            break
+    return body
+
+
+def collect_scoped_body(
+    lines: Sequence[str],
+    header_lineno_1based: int,
+    brace_family: bool,
+    max_body_lines: int = 12,
+    search_window: int = 40,
+) -> list[str]:
+    """Return the handler body, stopping at the END OF ITS SCOPE.
+
+    Feature 0087 §3.5. ``collect_handler_body`` takes the next N non-blank lines
+    within a fixed window and tracks neither brace depth nor indentation, so a
+    logging call in the NEXT FUNCTION silently excuses the current handler. That
+    is a false negative — invisible by construction, which is the failure mode
+    that let the original CWE-778 defect survive unnoticed. It also biases the
+    aggregate "handlers that log" ratio upward, and comparability is that
+    metric's whole value.
+
+    ``collect_handler_body`` is deliberately left untouched for its other callers.
+
+    Args:
+        brace_family: True for C-family / Go / Rust (track ``{}`` depth), False
+            for Python / Ruby (track the indent column).
+    """
+    body: list[str] = []
+    start = header_lineno_1based
+    if start >= len(lines):
+        return body
+    end = min(start + search_window, len(lines))
+
+    if brace_family:
+        # Depth relative to the header line: the header itself opens the block,
+        # so the body ends when depth returns to 0.
+        header = lines[start - 1] if start >= 1 else ""
+        # Count braces from the HANDLER'S OWN opening brace, not from the start
+        # of the line. Counting the whole line conflates the `}` that closes the
+        # preceding `try` with the handler's braces, and `} catch (e) {` -- the
+        # single most common form in every brace language -- nets to zero.
+        # Braces are counted on code with strings and comments REMOVED. A `}`
+        # inside a string literal or a comment otherwise closes the scope early
+        # and truncates the body: `catch (e) { const s = "}"; logger.error(e); }`
+        # lost its logging call and became a false positive.
+        header = strip_strings_and_comments(header)
+        open_idx = header.rfind("{")
+        if open_idx == -1:
+            depth = 1  # Allman style: `{` is on the following line
+        else:
+            tail = header[open_idx:]
+            depth = tail.count("{") - tail.count("}")
+            if depth <= 0:
+                # Opened AND closed on the header line: `catch { }`, or a
+                # one-line handler whose body sits on the header. Either way
+                # there is nothing below to read, and walking on would collect
+                # the NEXT handler's lines and excuse this one with its log
+                # call. Callers treat an empty body as an empty handler.
+                return []
+        for i in range(start, end):
+            cur = lines[i]
+            if cur.strip():
+                body.append(cur)
+            code = strip_strings_and_comments(cur)
+            depth += code.count("{") - code.count("}")
+            if depth <= 0:
+                break
+            if len(body) >= max_body_lines:
+                break
+        return body
+
+    # Indent family. The body is every line indented STRICTLY deeper than the
+    # header; the first line at or left of the header's column closes the scope.
+    header = lines[start - 1] if start >= 1 else ""
+    base = len(header) - len(header.lstrip())
+    for i in range(start, end):
+        cur = lines[i]
+        if not cur.strip():
+            continue
+        if (len(cur) - len(cur.lstrip())) <= base:
+            break
+        body.append(cur)
         if len(body) >= max_body_lines:
             break
     return body

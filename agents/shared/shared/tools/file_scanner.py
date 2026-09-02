@@ -57,7 +57,12 @@ SKIP_FILES = frozenset({
 CODE_EXTENSIONS = frozenset({
     ".py", ".pyw", ".go", ".js", ".ts", ".jsx", ".tsx",
     ".mjs", ".cjs", ".mts", ".cts",
-    ".java", ".rs", ".rb", ".erb", ".php", ".phtml", ".cs", ".cpp",
+    ".java", ".rs", ".rb", ".rake", ".erb", ".php", ".phtml", ".cs", ".cpp",
+    # `.cc`/`.cxx`/`.hpp` are ordinary C++ spellings and `.kts` an ordinary
+    # Kotlin one; without them a C++ project that writes `.cc` was invisible to
+    # EVERY agent, not only to CWE-778. Feature 0087 step 9 names the first
+    # three explicitly.
+    ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".kts",
     ".c", ".h", ".m", ".mm", ".swift", ".kt", ".scala",
     ".yaml", ".yml", ".toml", ".json", ".xml",
     ".sh", ".bash", ".dockerfile",
