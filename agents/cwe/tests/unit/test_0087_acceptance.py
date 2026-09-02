@@ -44,14 +44,32 @@ def _pre_0087_skill():
     pre-0087 copy, in which case the criterion is no longer decidable this way
     and the test skips with that reason rather than passing silently.
     """
+    # Walk the file's history for the newest revision that does NOT contain
+    # 0087. Pinning this to HEAD was wrong: once 0087 is committed HEAD holds
+    # the post-fix skill, the comparison becomes trivial, and the test skips --
+    # which turns a gate that caught a real 62-line regression into a no-op
+    # exactly when it starts mattering most.
     try:
-        src = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "show", f"HEAD:{SKILL_REL}"],
+        revs = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "log", "--format=%H", "-n", "40",
+             "--", SKILL_REL],
             capture_output=True, text=True, timeout=30, check=True,
-        ).stdout
+        ).stdout.split()
     except Exception:
         return None
-    if "_GO_SITE" in src:  # HEAD already contains 0087
+    src = None
+    for rev in revs:
+        try:
+            candidate = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "show", f"{rev}:{SKILL_REL}"],
+                capture_output=True, text=True, timeout=30, check=True,
+            ).stdout
+        except Exception:
+            continue
+        if "_GO_SITE" not in candidate:
+            src = candidate
+            break
+    if src is None:
         return None
     tmp = Path(__file__).parent / "_pre0087_skill.py"
     tmp.write_text(src)
@@ -194,3 +212,250 @@ def test_close_of_previous_block_is_not_the_handler_brace() -> None:
     )
     body = [b.strip() for b in collect_scoped_body(lines, 4, brace_family=True)]
     assert "reject(e);" in body, f"body of `}} catch (e) {{` not collected: {body}"
+
+
+# ---------------------------------------------------------------------------
+# Per-fix pins.
+#
+# A completeness audit found that ~30 of this feature's behaviour fixes were
+# real but unpinned: the suite asserted aggregates (a recall floor of 0.55, a
+# +/-25% count band) that individual reverts slid under. That is not a
+# theoretical worry -- it happened. A perf change made the raw line's pattern
+# match the precondition for stripping, which silently killed the C# `when`
+# filter and no-binding Allman shapes at their own ground-truth fixture sites,
+# and every gate stayed green because 37/39 clears a 0.55 floor.
+#
+# Each test below therefore pins ONE behaviour at the smallest input that
+# distinguishes fixed from broken.
+# ---------------------------------------------------------------------------
+
+from cwe_agent.skills.insufficient_logging_check import (  # noqa: E402
+    _CATCH_LINE,
+    _ERROR_DELEGATE,
+    _KT_RUN_CATCHING,
+    _LOG_CALL,
+    _PHP_SET_HANDLER,
+    _PY_EXCEPT_INLINE,
+    _PY_SUPPRESS,
+    _RUBY_MODIFIER,
+    _SWIFT_CATCH,
+    _SWIFT_TRY_OPT,
+    _lang_extensions,
+    _max_line_chars,
+    check_insufficient_logging,
+)
+
+
+def _scan(tmp_path, name: str, text: str) -> set[int]:
+    """Scan one file from a path the skill will actually look at."""
+    root = tmp_path / "app"
+    root.mkdir(exist_ok=True)
+    (root / name).write_text(text)
+    return {
+        f["line_start"]
+        for f in check_insufficient_logging(str(root)).get("findings", [])
+    }
+
+
+def test_pin_trailing_comment_does_not_hide_a_handler(tmp_path) -> None:
+    """The regression that motivated this whole block.
+
+    A comment after an Allman/`when` header must not make the site invisible.
+    """
+    hits = _scan(
+        tmp_path,
+        "A.cs",
+        "class A {\n"
+        "  long F() {\n"
+        "    try { return 1; }\n"
+        "    catch (SqlException ex) when (ex.Number == 1205) // deadlock victim\n"
+        "    {\n"
+        "      return 0L;\n"
+        "    }\n"
+        "  }\n"
+        "}\n",
+    )
+    assert 4 in hits, (
+        "a `when`-filter header carrying a trailing comment was not reported; "
+        "the site match must retry on stripped code"
+    )
+
+
+def test_pin_allman_header_with_comment(tmp_path) -> None:
+    hits = _scan(
+        tmp_path,
+        "B.cs",
+        "class B {\n"
+        "  long G() {\n"
+        "    try { return 1; }\n"
+        "    catch (IOException) // no binding, brace below\n"
+        "    {\n"
+        "      return 0L;\n"
+        "    }\n"
+        "  }\n"
+        "}\n",
+    )
+    assert 4 in hits, "no-binding Allman header with a trailing comment missed"
+
+
+def test_pin_comment_mentioning_a_handler_is_not_a_finding(tmp_path) -> None:
+    """The opposite direction: prose must not become a finding."""
+    hits = _scan(
+        tmp_path,
+        "C.java",
+        "class C {\n"
+        "  // Opened AND closed on the header line: `catch { }`, or a one-liner.\n"
+        "  int h() { return 1; }\n"
+        "}\n",
+    )
+    assert 2 not in hits, "a comment describing `catch { }` was reported as one"
+
+
+def test_pin_char_guard_skips_counts_and_notes(tmp_path) -> None:
+    """Step 1's per-line guard: skip, count, and surface -- all three."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "D.java").write_text(
+        "class D {\n"
+        "  void f() { try { g(); } catch (Exception e) { } }\n"
+        "  // " + "x" * 3000 + "\n"
+        "}\n"
+    )
+    res = check_insufficient_logging(str(root))
+    assert res.get("skipped_long_lines") == 1, (
+        f"expected 1 skipped long line, got {res.get('skipped_long_lines')!r}"
+    )
+    assert res.get("notes"), "the skipped-line count was not surfaced as a note"
+    assert "partial" in res["notes"][0].lower(), (
+        "the note must say coverage of those lines is partial"
+    )
+    assert any(f["line_start"] == 2 for f in res["findings"]), (
+        "the guard suppressed an ordinary line in the same file"
+    )
+
+
+def test_pin_char_guard_is_overridable(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _max_line_chars() == 2000
+    monkeypatch.setenv("VULTURE_CWE778_MAX_LINE_CHARS", "500")
+    assert _max_line_chars() == 500
+    monkeypatch.setenv("VULTURE_CWE778_MAX_LINE_CHARS", "0")
+    assert _max_line_chars() == 0, "0 must disable the guard"
+    monkeypatch.setenv("VULTURE_CWE778_MAX_LINE_CHARS", "not-a-number")
+    assert _max_line_chars() == 2000, "an unparseable value must fall back, not zero"
+
+
+def test_pin_scala_arm_requires_a_catch(tmp_path) -> None:
+    """A `case` arm outside a catch is ordinary pattern matching, not a handler."""
+    hits = _scan(
+        tmp_path,
+        "E.scala",
+        "object E {\n"
+        "  def f(s: State): State = s match {\n"
+        "    case Scan() => ScanRunning()\n"
+        "    case Prove() => ProveRunning()\n"
+        "  }\n"
+        "}\n",
+    )
+    assert not ({3, 4} & hits), (
+        f"ordinary `match` arms reported as swallowed handlers: {sorted(hits)}"
+    )
+
+
+def test_pin_scala_arm_inside_catch_is_reported(tmp_path) -> None:
+    hits = _scan(
+        tmp_path,
+        "F.scala",
+        "object F {\n"
+        "  def f(): Unit = {\n"
+        "    try { w() } catch {\n"
+        "      case NonFatal(e) =>\n"
+        "        ()\n"
+        "    }\n"
+        "  }\n"
+        "}\n",
+    )
+    assert 4 in hits, "a silent `case NonFatal(e)` arm of a catch must be reported"
+
+
+@pytest.mark.parametrize(
+    ("ext", "present"),
+    [(".cc", True), (".cxx", True), (".hpp", True), (".kts", True),
+     (".c", False), (".h", False)],
+)
+def test_pin_scanner_and_gate_agree_on_extensions(ext: str, present: bool) -> None:
+    """A gate that admits an extension the SCANNER withholds is inert.
+
+    That asymmetry was the original step-9 defect: three of the nine extensions
+    step 9 names passed the skill gate and were never handed to it.
+    """
+    from shared.tools.file_scanner import CODE_EXTENSIONS, WHITELIST_EXTENSIONS
+
+    scannable = set(CODE_EXTENSIONS) | set(WHITELIST_EXTENSIONS)
+    assert (ext in _lang_extensions()) is present, f"{ext} gate membership"
+    if present:
+        assert ext in scannable, (
+            f"{ext} is in the CWE-778 gate but the scanner never yields such "
+            f"files, so the gate entry is inert"
+        )
+
+
+@pytest.mark.parametrize(
+    ("pattern", "text", "expected", "why"),
+    [
+        (_PY_SUPPRESS, "with contextlib.suppress(OSError):", True, "qualified"),
+        (_PY_SUPPRESS, "with suppress(OSError):", True, "from-import"),
+        (_PY_EXCEPT_INLINE, "except X: return None", True, "same-line return"),
+        (_PY_EXCEPT_INLINE, "except X: continue", True, "same-line continue"),
+        (_PY_EXCEPT_INLINE, "except X: pass  # deliberate", True, "trailing comment"),
+        (_SWIFT_CATCH, "do { try f() } catch let e as E {", True, "swift bound"),
+        (_SWIFT_TRY_OPT, "let v = try? f()", True, "try? discards"),
+        (_SWIFT_TRY_OPT, "let v = try! f()", False, "try! aborts loudly"),
+        (_KT_RUN_CATCHING, "runCatching { f() }.getOrNull()", True, "kotlin discard"),
+        (_KT_RUN_CATCHING, "runCatching { f() }.getOrThrow()", False, "propagates"),
+        (_RUBY_MODIFIER, "x = risky rescue nil", True, "ruby modifier"),
+        (_PHP_SET_HANDLER, "set_error_handler(function () { });", True, "empty handler"),
+        (_CATCH_LINE, "promise.catch(handler)", False, "JS method call, not a header"),
+        (_LOG_CALL, 'LOG.warn("x", e)', True, "java constant logger"),
+        (_LOG_CALL, "_logger.LogError(ex)", True, "MS.Extensions.Logging"),
+        (_LOG_CALL, 'log::error!("x")', True, "rust path separator"),
+        (_LOG_CALL, "System.err.println(e)", True, "jvm stderr is the report"),
+        (_LOG_CALL, "e.printStackTrace()", True, "java canonical"),
+        (_LOG_CALL, "NSLog(\"%@\", e)", True, "objc"),
+        (_ERROR_DELEGATE, "self.report_error(&e)", True, "snake_case + borrow"),
+        (_ERROR_DELEGATE, "report($e)", True, "laravel helper"),
+        (_ERROR_DELEGATE, "doWork(e)", False, "not a delegate"),
+    ],
+)
+def test_pin_individual_shape(pattern, text: str, expected: bool, why: str) -> None:
+    """One assertion per shape, so a revert fails HERE and not on an aggregate."""
+    assert bool(pattern.search(text)) is expected, f"{why}: {text!r}"
+
+
+def test_pin_brace_in_string_does_not_truncate_the_body(tmp_path) -> None:
+    """A `}` inside a string literal must not close the handler scope.
+
+    Mutation-proved unpinned before this test existed: reverting the strip in
+    `collect_scoped_body` left 1971 CWE + 2185 shared tests green, produced
+    byte-identical findings on the whole fixture corpus, and changed nothing on
+    six real trees -- while creating false positives on the shape below. The
+    corpus could not see it because no fixture contained an UNBALANCED brace
+    inside a string or comment; 0.27% of real brace-bearing source lines do.
+    """
+    fixture = (
+        Path(__file__).parent.parent / "fixtures" / "cwe778" / "langs" / "braces.ts"
+    )
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "braces.ts").write_text(fixture.read_text())
+    hits = {
+        f["line_start"]
+        for f in check_insufficient_logging(str(root)).get("findings", [])
+    }
+    assert 4 not in hits, (
+        "the handler on line 4 logs on line 6, but a `}` inside the string on "
+        "line 5 truncated the collected body before the log call was seen"
+    )
+    assert 13 not in hits, (
+        "the handler on line 13 logs on line 14, but a `}` inside the trailing "
+        "comment on line 13 truncated the scope"
+    )

@@ -29,3 +29,12 @@ func a() int {
 	}
 	return 0
 }
+
+func inlineForms() int {
+	if err := run(); err != nil { }
+	if err := run(); err != nil {}
+	if err := run(); err != nil { count++ }
+	if err := run(); err != nil { log.Print(err) }
+	if err := run(); err != nil { return fmt.Errorf("x: %w", err) }
+	return 0
+}

@@ -22,25 +22,49 @@ FIXTURES = Path(__file__).parent.parent / "fixtures" / "cwe778"
 
 # The whole-corpus floor stated by EXPECTATIONS.md. Asserted before any verdict,
 # so a parser that silently matched nothing cannot leave this suite green.
-CORPUS_FLOOR = 60
+CORPUS_FLOOR = 140  # 153 marked sites across 13 fixtures
 
 _MARKER = re.compile(r"EXPECT:\s*(finding|clean|deferred)\b")
 _ID = re.compile(r"\bid=([A-Za-z0-9_]+)")
 _COMMENT_ONLY = re.compile(r"^[\s/#*\-]*$")
 
 
+# The value-error family (go_handlers.go, rs_handlers.rs) uses a DIFFERENT
+# marker contract, documented in each of those files: the marker is always
+# TRAILING on the site line and carries no `id=`. Requiring `id=` silently
+# skipped both files -- 81 marked Go and Rust sites contributing zero
+# assertions, while `test_every_language_fixture_is_reached` `continue`d past
+# them because it looks up the file by name and finds no parsed sites. The
+# headline recall figure therefore described the exception family only.
+_NESTED_COMMENT = re.compile(r"^\s*(?://|#)\s*(?://|#)")
+
+
 def _resolve_sites(text: str) -> list[tuple[int, str, str]]:
-    """Return (site_line, verdict, id) for every marked site in one fixture."""
+    """Return (site_line, verdict, id) for every marked site in one fixture.
+
+    Handles both marker contracts. `id=` is required only for files that use
+    it at all, so the value-family files are no longer skipped wholesale.
+    """
     lines = text.splitlines()
+    requires_id = "id=" in text
     out: list[tuple[int, str, str]] = []
     for idx, line in enumerate(lines):
         m = _MARKER.search(line)
         if not m:
             continue
+        # The contract is documented INSIDE each fixture using example marker
+        # lines; those sit in a doubly-commented block and are not sites.
+        if _NESTED_COMMENT.match(line):
+            continue
         ident = _ID.search(line)
-        if not ident:
+        if requires_id and not ident:
             continue
         verdict = m.group(1)
+        if not requires_id:
+            # Value family: the marker is trailing, so the site IS this line.
+            out.append((idx + 1, verdict, f"line{idx + 1}"))
+            continue
+        assert ident is not None
         prefix = line[: m.start()]
         if not _COMMENT_ONLY.match(prefix):
             # Rule 1: attached marker - the site line IS the marker line.
@@ -89,8 +113,8 @@ def test_corpus_is_non_vacuous(corpus) -> None:
         f"assertion in this module would be vacuous"
     )
     verdicts = [v for sites in expected.values() for _, v, _ in sites]
-    assert verdicts.count("finding") >= 20, "too few `finding` sites to measure recall"
-    assert verdicts.count("clean") >= 20, "too few `clean` sites to measure precision"
+    assert verdicts.count("finding") >= 55, "too few `finding` sites to measure recall"
+    assert verdicts.count("clean") >= 55, "too few `clean` sites to measure precision"
 
 
 def test_every_language_fixture_is_reached(corpus) -> None:
@@ -147,11 +171,11 @@ def test_corpus_recall_and_precision(corpus) -> None:
     assert tp + fn > 0, "no `finding` sites evaluated; gate is vacuous"
     recall = tp / (tp + fn)
     precision = tp / (tp + fp) if (tp + fp) else 1.0
-    assert recall >= 0.55, (
+    assert recall >= 0.90, (
         f"corpus recall {recall:.0%} ({tp}/{tp + fn}); missed:\n  "
         + "\n  ".join(misses[:15])
     )
-    assert precision >= 0.70, (
+    assert precision >= 0.90, (
         f"corpus precision {precision:.0%} ({tp}/{tp + fp}); spurious:\n  "
         + "\n  ".join(spurious[:15])
     )

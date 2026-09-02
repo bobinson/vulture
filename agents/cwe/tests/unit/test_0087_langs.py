@@ -176,3 +176,31 @@ def test_step10_language_shapes(
 def test_php_docblock_param_is_not_suppression(scanned3) -> None:
     """`@param` in a docblock is not the `@` error-suppression operator."""
     assert 3 not in scanned3.get("swallow2.php", set())
+
+
+@pytest.mark.parametrize(
+    ("offset", "should_flag", "why"),
+    [
+        (1, True, "`if err != nil { }` -- an empty inline block is the clearest swallow"),
+        (2, True, "`{}` with no space is the same shape"),
+        (3, True, "`{ count++ }` neither logs nor propagates"),
+        (4, False, "`{ log.Print(err) }` records it on the header line"),
+        (5, False, "`{ return fmt.Errorf(..%w..) }` wraps and propagates"),
+    ],
+)
+def test_go_single_line_forms(offset: int, should_flag: bool, why: str, scanned2) -> None:
+    """Single-line `if err != nil { .. }` forms.
+
+    An early `if not body: return` dropped every one of these before the
+    empty-body classification could see them, because collect_scoped_body
+    returns nothing for a block that opens and closes on its header line.
+    """
+    src = (
+        Path(__file__).parent.parent / "fixtures" / "cwe778" / "langs2" / "swallow.go"
+    ).read_text().splitlines()
+    base = next(
+        i for i, line in enumerate(src, 1) if "func inlineForms()" in line
+    )
+    line = base + offset
+    hit = line in scanned2.get("swallow.go", set())
+    assert hit == should_flag, f"swallow.go:{line} -- {why}"

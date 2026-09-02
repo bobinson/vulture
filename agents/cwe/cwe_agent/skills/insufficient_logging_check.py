@@ -45,12 +45,17 @@ from cwe_agent.catalog import enrich_finding
 # line-locally (plan D-drop-1) — `if (rc < 0)` is indistinguishable from ordinary
 # control flow without type information.
 _BASE_LANG_EXTENSIONS: frozenset[str] = frozenset({
-    ".py", ".java", ".js", ".ts", ".go", ".cs", ".rb", ".rake", ".php",
+    ".py", ".java", ".js", ".ts", ".go", ".cs", ".rb", ".php",
 })
 _WIDENED_LANG_EXTENSIONS: frozenset[str] = _BASE_LANG_EXTENSIONS | frozenset({
     ".tsx", ".jsx", ".cjs", ".mjs",           # JS/TS families never gated in
     ".cpp", ".cc", ".cxx", ".hpp",            # already match _CATCH_LINE
     ".kt", ".kts", ".swift", ".scala", ".rs",  # own shapes / brace family
+    # `.rake` is Ruby; `.hh`/`.hxx` are C++ headers. Both were added to the
+    # SCANNER by this feature, so they must have a consuming arm here too --
+    # an extension the scanner yields and no arm accepts is the same inert
+    # asymmetry step 9 existed to remove, only mirrored.
+    ".rake", ".hh", ".hxx",
 })
 
 
@@ -243,6 +248,8 @@ _ERROR_DELEGATE = re.compile(
     # Framework helpers that take the exception and are THE reporting path:
     # Laravel's global `report($e)`, Sentry/Bugsnag/Airbrake capture entrypoints.
     r"|report|notify|capture"
+    # Substrate/ink! runtime event emission is that environment's reporting path.
+    r"|deposit_event|emit[A-Za-z_]{0,20}"
     r")"
     r"\s*\(\s*" + _ERR_ARG
 )
@@ -276,6 +283,15 @@ _PROPAGATES = re.compile(
     r"\b(?:next|callback)\s{0,4}\(\s{0,4}(?:new\s{1,4}[A-Za-z_][A-Za-z0-9_.]{0,63}|"
     + _ERR_ARG + r")"
     r"|\breject\s{0,4}\("
+    # Rust, unioned in rather than given its own pattern (D3: per-language sets
+    # are built by UNION with the shipped alternations). `return Err(..)` is the
+    # propagating form; the panic family aborts loudly, which is CWE-248 not 778;
+    # `bail!`/`ensure!`/`anyhow!` all expand to an early Err return. Bare
+    # `Err(..)` is deliberately absent -- it is the SITE token of two of the
+    # three Rust shapes, and admitting it would excuse every site by its own
+    # header, the self-excusal `_GO_CAPTURED` already hit once.
+    r"|\breturn\s{1,4}Err\b"
+    r"|\b(?:panic|unreachable|todo|unimplemented|bail|ensure|anyhow|eyre)\s{0,4}!"
     r"|\breturn\s{1,4}(?:[A-Za-z_][A-Za-z0-9_.]{0,40}\s{0,4},\s{0,4})?" + _ERR_ARG
 )
 _RAISE_THROW = re.compile(r"\b(?:raise|throw)\b")
@@ -395,6 +411,11 @@ def _build_finding(
     return enrich_finding(finding, "778")
 
 
+# A comment opener in any of the languages this skill scans. Used to decide
+# whether a line that failed the raw site match is worth stripping and retrying.
+_COMMENT_TOKEN = re.compile(r"//|/\*|#|--")
+
+
 def _scan_py_except(
     line: str,
     lineno: int,
@@ -412,7 +433,7 @@ def _scan_py_except(
         _PY_EXCEPT_INLINE.search(line)
         or _PY_EXCEPT.search(line)
         or _PY_SUPPRESS.search(line)
-    ):
+    ) and not _COMMENT_TOKEN.search(line):
         return
     code = strip_strings_and_comments(line)
     if "suppress" in code and _PY_SUPPRESS.search(code):
@@ -455,11 +476,27 @@ def _scan_catch(
     # by every line containing the word `catch`. On the TS-heavy reference repo
     # stripping unconditionally cost 3% of the warm budget, because `.catch(`
     # appears on thousands of lines that are not handler headers.
+    # Try the RAW line first, then -- only if that failed and the line actually
+    # carries a comment token -- strip and retry. Using the raw match alone as
+    # the precondition for stripping was a real defect: `_CATCH_LINE`'s Allman
+    # alternative is anchored `^...$`, so a trailing comment defeats it, the
+    # strip never ran, and the C# `when`-filter and no-binding-Allman shapes
+    # reported ZERO rows -- including at the fixture sites written to demonstrate
+    # them. Gating the strip on a comment token keeps the cost off the thousands
+    # of `.catch(` lines that have no comment, which is what the optimisation was
+    # for, without making a comment hide the site.
     if not (_CATCH_EMPTY.search(line) or _CATCH_LINE.search(line)):
-        return
-    line = strip_strings_and_comments(line)
-    if "catch" not in line:
-        return
+        if not _COMMENT_TOKEN.search(line):
+            return
+        line = strip_strings_and_comments(line)
+        if "catch" not in line or not (
+            _CATCH_EMPTY.search(line) or _CATCH_LINE.search(line)
+        ):
+            return
+    else:
+        line = strip_strings_and_comments(line)
+        if "catch" not in line:
+            return
     if _CATCH_EMPTY.search(line):
         findings.append(_build_finding(file_path, lineno, lines))
         return
@@ -672,8 +709,15 @@ def _scan_go_error_check(
     if not _go_arm_enabled() or not file_path.endswith(".go"):
         return
     body = collect_scoped_body(lines, lineno, brace_family=True)
-    if not body:
-        return
+    # No early return on an empty body. `collect_scoped_body` returns nothing
+    # for a block that opens AND closes on the header line, so returning here
+    # dropped every single-line form -- `if err != nil { }`, `{}` and
+    # `{ count++ }` alike -- before the "is empty" classification below could
+    # see them. It also made the `header_tail` comment two blocks down
+    # unreachable: that exists so a one-line `if err != nil { log.Print(err) }`
+    # is not lost, and this return fired first for exactly those lines.
+    # Rare in gofmt'd Go, which splits the brace onto its own line, but the
+    # shape the empty-body fix claims to cover.
     # Only the part of the header AFTER `{` may count as handling. The init
     # clause of `if err := run(); err != nil {` is the SITE, not a response to
     # it — and it reads as an assignment whose right-hand side mentions `err`,
@@ -788,6 +832,11 @@ def _scan_promise_rejection(
     """Report a promise rejection handler that records nothing."""
     if lineno in seen_lines:
         return
+    # Match the CODE. The other three arms strip; this one was left on raw
+    # text, and its site token is literally `.catch(` -- so a comment or doc
+    # string quoting a promise chain became a finding.
+    if _COMMENT_TOKEN.search(line):
+        line = strip_strings_and_comments(line)
     has_catch = ".catch" in line
     has_then = ".then" in line
     # `"=>" in line` alone admits most lines of a modern TS file and cost 3% of
@@ -909,8 +958,16 @@ _RUBY_MODIFIER = re.compile(r"=\s{0,4}[^\n]{1,120}?\brescue\s+(?!_)[^\n]{1,80}$"
 # so the catch is mid-line. The pattern-bound variant `catch let e as X {` is the
 # reason a Swift arm is needed at all -- the generic `_CATCH_LINE` expects either
 # parentheses or `{` immediately after `catch`, and this form has neither.
-_SWIFT_CATCH = re.compile(r"\bcatch\b(?:\s{1,4}let\b[^\n{]{0,120})?\s{0,4}\{")
-_SWIFT_TRY_OPT = re.compile(r"(?<![\w!?])try\?\s")
+# Requires the `let` binding. A bare `} catch {` is already matched by
+# `_CATCH_LINE` and reported as `cwe_778`, so accepting it here emitted a SECOND
+# row on the same line. The pattern-bound form is the only shape the generic
+# brace pattern cannot express, and therefore the only reason this arm exists.
+_SWIFT_CATCH = re.compile(r"\bcatch\s{1,4}let\b[^\n{]{0,120}\{")
+# `try? await ...` is excluded: awaiting under structured concurrency throws
+# CancellationError on cancellation, and discarding it is the documented idiom
+# (`try? await Task.sleep(...)` is the canonical cancellable sleep). Measured on
+# a real Swift tree, 33% of this arm's 322 rows were exactly that call.
+_SWIFT_TRY_OPT = re.compile(r"(?<![\w!?])try\?\s(?!\s{0,4}await\b)")
 _SCALA_CASE_ARM = re.compile(
     r"^\s{0,80}case\s{1,4}(?:NonFatal\s{0,4}\(|_\s{0,4}:|[A-Za-z_]\w{0,60}\s{0,4}:|[A-Z]\w{0,60})"
     r"[^\n]{0,120}=>"
@@ -920,8 +977,14 @@ _SCALA_TRY_TOOPTION = re.compile(
 )
 _RUST_IF_LET_ERR = re.compile(r"^\s{0,80}if\s+let\s+(?:Some\s*\(\s*)?Err\s*\(")
 _RUST_MATCH_ERR = re.compile(r"^\s{0,80}Err\s*\((?:_|\w{1,40})?\)?\s{0,4}=>")
+# Statement position only. `[^;=\n]` rather than an explicit character class:
+# the receiver is an arbitrary expression and may contain quotes, generics or
+# operators (`fs::remove_dir_all(root.join("scratch")).ok();` was missed by a
+# class that omitted `"`). Excluding `=` is what keeps `let v = x.ok();` out --
+# that ASSIGNS the Option, which is a legitimate conversion, not a discard.
+# Anchored at both ends so the scan cost is one attempt per line.
 _RUST_OK_DISCARD = re.compile(
-    r"^\s{0,80}[\w.()\[\]:&*\?]{1,120}\.ok\s*\(\s*\)\s*;\s{0,8}(?://.{0,200})?$"
+    r"^\s{0,80}[^;=\n]{1,160}\.ok\s{0,4}\(\s{0,4}\)\s{0,4};\s{0,8}(?://.{0,200})?$"
 )
 # `@` suppression. A docblock `@param` is not a call, so the trailing `(` is
 # required; the lookbehind keeps `"@foo("` inside a string from matching.
@@ -989,6 +1052,11 @@ def _extra_langs_enabled() -> bool:
     return os.environ.get("VULTURE_CWE778_EXTRA_LANGS", "true").strip().lower() != "false"
 
 
+# Rust-specific excusals. The shared predicates were written for
+# exception languages: they do not know that returning `Err(..)`, invoking a
+# `panic!`-family macro, emitting a runtime event, or calling a snake_case
+# error handler all REPORT the failure. Measured on a real Rust tree, 23 of 33
+# rust_* rows had one of these in the body.
 def _rust_arm_enabled() -> bool:
     """``VULTURE_CWE778_RUST`` — default TRUE (0087 step 12)."""
     return os.environ.get("VULTURE_CWE778_RUST", "true").strip().lower() != "false"
