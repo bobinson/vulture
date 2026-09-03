@@ -921,6 +921,11 @@ def _call_with_strict_retry(
     parsed = _parse_response(raw, batch_size) if raw else None
     if parsed is not None:
         return parsed
+    # Whether the first attempt produced NOTHING or produced something
+    # unparseable decides what the failure message should say. Collapsing both
+    # into "JSON parse failed" sent an operator looking at the model's output
+    # format when the real cause was that no response ever arrived.
+    first_was_empty = not raw
     # feature 0061: an in-flight batch must not issue a SECOND (retry) LLM call
     # once the audit is cancelled — the token is passed in (not ambient) because
     # this runs on an L5 pool worker that does not inherit contextvars.
@@ -935,7 +940,18 @@ def _call_with_strict_retry(
     raw2 = _call_llm(system_prompt, retry_user, model, timeout_s)
     parsed = _parse_response(raw2, batch_size) if raw2 else None
     if parsed is None:
-        log.warning("[validate.l5] batch %d JSON parse failed twice", batch_idx)
+        if first_was_empty and not raw2:
+            log.warning(
+                "[validate.l5] batch %d got NO RESPONSE twice (not a parse "
+                "failure) — the endpoint or model is unreachable/misconfigured; "
+                "see the endpoint warning above",
+                batch_idx,
+            )
+        else:
+            log.warning(
+                "[validate.l5] batch %d JSON parse failed twice (a response "
+                "arrived but was not the expected JSON)", batch_idx,
+            )
         return []
     return parsed
 
@@ -1399,8 +1415,46 @@ def _log_call_failure(exc: Exception, mode: str) -> None:
             "exceeded the gateway limit even after the byte clamp — lower "
             "VULTURE_VALIDATE_LLM_BATCH_SIZE", mode, exc,
         )
+    elif _is_endpoint_error(exc):
+        # The actionable detail is WHERE it tried to reach, and this must not
+        # sit at INFO. A whole run's worth of batches failed to connect to an
+        # endpoint that does not resolve, and the only visible symptom was
+        # "JSON parse failed twice" — a message about a response that never
+        # arrived. Name the endpoint, at WARNING.
+        base_url, _ = _client_env_key()
+        log.warning(
+            "[validate.l5] %s call could not reach the LLM endpoint %s (%s) — "
+            "no verdicts will be produced. Check VULTURE_VALIDATE_LLM_MODEL and "
+            "the resolved base URL; `host.docker.internal` resolves only inside "
+            "a container, not in native dev mode",
+            mode, base_url or "<default>", type(exc).__name__,
+        )
     else:
         log.info("[validate.l5] %s call failed (%s)", mode, type(exc).__name__)
+
+
+def _is_endpoint_error(exc: Exception) -> bool:
+    """True for a failure to reach or authenticate against the endpoint.
+
+    Distinguished from a model-behaviour failure because the remedy is
+    different: this one is configuration, and it fails EVERY batch.
+    """
+    name = type(exc).__name__
+    if name in {
+        "APIConnectionError", "APITimeoutError", "AuthenticationError",
+        "NotFoundError", "PermissionDeniedError", "InternalServerError",
+        "ConnectError", "ConnectTimeout",
+    }:
+        return True
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "connection", "name or service not known", "failed to resolve",
+            "nodename nor servname", "timed out", "unauthorized",
+            "invalid_api_key", "incorrect api key", "model_not_found",
+        )
+    )
 
 
 # ── User-message rendering ───────────────────────────────────────────
@@ -1833,12 +1887,61 @@ def _auto_detect_model() -> str:
 
 
 def _resolve_model(config: ValidateConfig) -> str:
+    """Pick the judge's model — the one the RUN is actually configured to use.
+
+    `VULTURE_VALIDATE_LLM_MODEL` used to win unconditionally, which let a stale
+    value silently override the provider the run was launched with. Observed:
+    `dev gemini gemini-2.5-flash` set `VULTURE_LLM_MODEL=gemini-2.5-flash` and
+    routed L5 through the broker, while a leftover
+    `VULTURE_VALIDATE_LLM_MODEL=qwen/qwen3.8-27b` in `.env` made the judge ask
+    that broker for a model it does not front. Every batch failed, and because
+    an errored call yields no text the failure surfaced as "JSON parse failed
+    twice" — a message about output format, for a request that never succeeded.
+
+    So when the run routes through the broker, the run's model wins: the broker
+    is key-isolated per provider and can only serve what it was configured for,
+    which makes an L5-specific override there a guaranteed failure rather than a
+    choice. The override still applies on the direct path, and a disagreement is
+    logged instead of being resolved in silence.
+    """
+    l5_override = os.getenv("VULTURE_VALIDATE_LLM_MODEL", "").strip()
+    run_model = os.getenv("VULTURE_LLM_MODEL", "").strip()
+    # An explicitly chosen judge model (`--validate-model`) is honoured even on
+    # the broker path: the operator was told there that the broker fronts one
+    # provider. Only an INHERITED value — a leftover in .env — is superseded,
+    # because that is drift rather than a decision.
+    explicit = os.getenv("VULTURE_VALIDATE_LLM_MODEL_EXPLICIT", "").strip() != ""
+    if (
+        l5_override
+        and run_model
+        and l5_override != run_model
+        and not explicit
+        and _via_broker()
+    ):
+        log.warning(
+            "[validate.l5] ignoring VULTURE_VALIDATE_LLM_MODEL=%s: this run "
+            "routes L5 through the LLM broker, which fronts %s and cannot serve "
+            "another model. Using %s. Pass --validate-model to choose one "
+            "deliberately, or unset VULTURE_VALIDATE_LLM_MODEL",
+            l5_override, run_model, run_model,
+        )
+        return run_model
     return (
-        os.getenv("VULTURE_VALIDATE_LLM_MODEL", "").strip()
+        l5_override
         or getattr(config, "l5_model_override", "").strip()
-        or os.getenv("VULTURE_LLM_MODEL", "").strip()
+        or run_model
         or _auto_detect_model()
     )
+
+
+def _via_broker() -> bool:
+    """True when this run's L5 calls are routed through the LLM broker."""
+    try:
+        from shared.llm.broker import current_broker_token, resolve_broker_config
+
+        return resolve_broker_config(current_broker_token()) is not None
+    except Exception:
+        return False
 
 
 # ── Misc helpers ─────────────────────────────────────────────────────

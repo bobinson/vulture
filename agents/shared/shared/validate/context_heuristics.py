@@ -24,6 +24,29 @@ __all__ = ["run_l1"]
 
 # ─── Path classification (demote test/vendor, promote production) ──
 
+# Non-production FILENAME conventions.
+#
+# `_DEMOTING_PATH_RE` below matches DIRECTORY segments only, so it cannot see a
+# file whose non-production status is carried by its name. Measured on one
+# 336-finding TypeScript audit: 6 findings were path-demoted, while 30 more sat
+# in `frontend/lib/qa/*`, `pages/api/qa/seed-*.qa.ts` and `.storybook/` — 17 of
+# them the "Insufficient Logging" class where the LLM judge's verdict is
+# useless, because it scores exploitability rather than correctness. A path
+# demotion is deterministic and reproducible, which is what makes it usable as
+# the SECOND independent demoter `_classify` requires.
+#
+# Bare `stories` as a directory segment is deliberately NOT here: "stories" is
+# a product concept in social applications, so a `stories/` directory is as
+# likely to be a feature as a Storybook folder. The `.stories.` filename
+# suffix and the `.storybook` config directory are unambiguous; the bare
+# segment is not.
+_DEMOTING_FILENAME_RE = re.compile(
+    r"\.(?:stories|story|test|spec|qa|mock|mocks|fixture|fixtures|e2e|cy)\."
+    r"|(?:^|/)(?:qa|mocks?|__mocks__|__fixtures__|\.storybook)(?:/|$)"
+    r"|(?:^|/)seed[-_][^/]*$",
+    re.IGNORECASE,
+)
+
 _DEMOTING_PATH_RE = re.compile(
     r"(?:^|/)(?:"
     # Standard test / fixture conventions
@@ -201,6 +224,13 @@ def _path_check(file_path: str) -> ValidationCheck:
             id="path", result="demoted", weight=-0.20,
             reason="path matches test/vendor/docs/examples",
             extras={"file_path": file_path},
+        )
+    if _DEMOTING_FILENAME_RE.search(file_path):
+        return ValidationCheck(
+            id="path", result="demoted", weight=-0.20,
+            reason="filename matches a non-production convention "
+                   "(test/spec/stories/qa/mock/fixture/seed)",
+            extras={"file_path": file_path, "matched": "filename"},
         )
     if _PROMOTING_PATH_RE.search(file_path):
         return ValidationCheck(

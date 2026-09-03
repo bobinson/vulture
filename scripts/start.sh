@@ -109,6 +109,52 @@ detect_lmstudio_model() {
     echo "${first:-local-model}"
 }
 
+# Ask LM Studio for the context length it actually LOADED the model with.
+#
+# Neither the model table nor family inference can know this: the same
+# `qwen/qwen3.8-27b` is 32K under Ollama's default and 256K here, because the
+# window is a runtime setting of the server, not a property of the model. The
+# family table says 32768 for qwen3 (correct for Ollama), so without this the
+# window is understated 8x and prompts are truncated for no reason.
+#
+# `/api/v0/models` is LM Studio's native endpoint and reports
+# `loaded_context_length`; it does not exist on other OpenAI-compatible
+# servers, so a failure here is silent and the normal resolution applies.
+detect_lmstudio_ctx() {
+    local base="${1:-$LMSTUDIO_DEFAULT_URL}" want="$2" root ctx
+    root="${base%/v1}"; root="${root%/}"
+    ctx=$(curl -sf --max-time 5 "$root/api/v0/models" 2>/dev/null | python3 -c "
+import sys, json
+want = sys.argv[1] if len(sys.argv) > 1 else ''
+# Try the id as given AND with a LiteLLM routing prefix removed. \`openai/\` is
+# ambiguous: it is LiteLLM's prefix, but it is ALSO part of real LM Studio ids
+# such as \`openai/gpt-oss-20b\`, so stripping unconditionally loses the match.
+cands = [want]
+for pfx in ('openai/', 'litellm/'):
+    if want.startswith(pfx):
+        cands.append(want[len(pfx):])
+try:
+    models = json.load(sys.stdin).get('data', [])
+except Exception:
+    raise SystemExit(0)
+def ctx_of(m):
+    return m.get('loaded_context_length') or m.get('max_context_length') or 0
+def is_embed(m):
+    return 'embed' in (m.get('id') or '').lower() or m.get('type') == 'embeddings'
+# 1. the requested model, exact id
+for m in models:
+    if not is_embed(m) and m.get('id') in cands and ctx_of(m):
+        print(ctx_of(m)); raise SystemExit(0)
+# 2. otherwise whatever chat model is actually loaded. Embeddings are skipped:
+#    a loaded embedding model reports a 2048 window and would be picked here,
+#    silently capping the chat window to a value from the wrong model.
+for m in models:
+    if not is_embed(m) and m.get('state') == 'loaded' and ctx_of(m):
+        print(ctx_of(m)); raise SystemExit(0)
+" "$want" 2>/dev/null)
+    [[ "$ctx" =~ ^[0-9]+$ ]] && echo "$ctx"
+}
+
 # stale_against <binary> <source-dir> -- true when any .go file is newer than
 # the binary, or the binary is missing.
 stale_against() {
@@ -188,6 +234,10 @@ build_backend() {
 # and equals ("--embed-url=X") forms are accepted.
 EMBED_URL=""
 EMBED_MODEL=""
+# Per-tier model overrides. Absent both, the positional model is used for
+# everything — one argument stays sufficient, which is the common case.
+SCAN_MODEL=""
+VALIDATE_MODEL=""
 USE_BROKER=0
 NO_BROKER=0
 BROKER_BUDGET=""
@@ -204,6 +254,16 @@ while [[ $# -gt 0 ]]; do
             EMBED_MODEL="$2"; shift 2 ;;
         --embed-model=*)
             EMBED_MODEL="${1#*=}"; shift ;;
+        --scan-model|--generate-model)
+            [[ $# -ge 2 ]] || { echo "Error: $1 needs a value"; exit 1; }
+            SCAN_MODEL="$2"; shift 2 ;;
+        --scan-model=*|--generate-model=*)
+            SCAN_MODEL="${1#*=}"; shift ;;
+        --validate-model|--judge-model)
+            [[ $# -ge 2 ]] || { echo "Error: $1 needs a value"; exit 1; }
+            VALIDATE_MODEL="$2"; shift 2 ;;
+        --validate-model=*|--judge-model=*)
+            VALIDATE_MODEL="${1#*=}"; shift ;;
         --broker)
             USE_BROKER=1; shift ;;
         --no-broker)
@@ -222,6 +282,10 @@ set -- "${POSITIONAL[@]:-}"
 
 PROVIDER="$1"
 MODEL="${2:-}"
+# Substituted here, ahead of the provider block, so an explicit scan model gets
+# exactly the same defaulting, prefixing and key checks as a positional one.
+# Doing it later would mean re-implementing those rules.
+MODEL="${SCAN_MODEL:-$MODEL}"
 
 load_env
 export PATH="${GOPATH:-${HOME}/go}/bin:$PATH"
@@ -245,6 +309,36 @@ echo
 echo "  Vulture — starting with provider: $PROVIDER"
 echo
 
+
+# Apply the provider's model-id convention to an arbitrary model string.
+# Extracted so --validate-model gets the SAME treatment as the scan model: an
+# unprefixed Gemini id would be routed to the wrong provider entirely.
+normalize_model() {
+    _nm_provider="$1"; _nm="$2"
+    [[ -z "$_nm" ]] && { printf '%s' ""; return; }
+    case "$_nm_provider" in
+        gemini)
+            if [[ "$_nm" != "gemini-pro" && "$_nm" != litellm/* ]]; then
+                _nm="litellm/gemini/${_nm#gemini/}"
+            fi ;;
+        lmstudio)
+            [[ "$_nm" != openai/* ]] && _nm="openai/$_nm" ;;
+    esac
+    printf '%s' "$_nm"
+}
+
+# The broker speaks to providers through native adapters and wants a BARE model
+# id, so it strips the LiteLLM routing prefix the tiers above add. Mirrors the
+# per-provider stripping in the broker block below.
+strip_broker_prefix() {
+    _sb_provider="$1"; _sb="$2"
+    case "$_sb_provider" in
+        gemini)    _sb="${_sb#litellm/gemini/}"; _sb="${_sb#gemini/}" ;;
+        lmstudio)  _sb="${_sb#openai/}" ;;
+        anthropic) _sb="${_sb#litellm/anthropic/}"; _sb="${_sb#anthropic/}" ;;
+    esac
+    printf '%s' "$_sb"
+}
 
 case "$PROVIDER" in
     openai)
@@ -271,9 +365,7 @@ case "$PROVIDER" in
         # `gemini-pro` is a built-in alias (provider.py → litellm/gemini/...).
         # Any other Gemini model gets the litellm/gemini/ prefix so LiteLLM routes
         # it to Google (parallels the lmstudio arm's openai/ prefixing).
-        if [[ "$MODEL" != "gemini-pro" && "$MODEL" != litellm/* ]]; then
-            MODEL="litellm/gemini/${MODEL#gemini/}"
-        fi
+        MODEL="$(normalize_model gemini "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
         ;;
@@ -298,11 +390,18 @@ case "$PROVIDER" in
             echo "  Auto-detected model: $MODEL"
         fi
         # LiteLLM needs openai/ prefix for OpenAI-compatible endpoints
-        if [[ "$MODEL" != openai/* ]]; then
-            MODEL="openai/$MODEL"
-        fi
+        MODEL="$(normalize_model lmstudio "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
+        # Trust the server's own loaded window over the family table, unless the
+        # operator pinned one explicitly.
+        if [[ -z "${VULTURE_LLM_CTX_SIZE:-}" ]]; then
+            _LM_CTX="$(detect_lmstudio_ctx "$OPENAI_BASE_URL" "$MODEL")"
+            if [[ -n "$_LM_CTX" ]]; then
+                export VULTURE_LLM_CTX_SIZE="$_LM_CTX"
+                echo "  Context:   $_LM_CTX tokens (reported by LM Studio)"
+            fi
+        fi
         ;;
 
     skills|none)
@@ -379,8 +478,56 @@ if [[ -n "$EMBED_MODEL" ]]; then
     export VULTURE_EMBEDDING_MODEL="$EMBED_MODEL"
 fi
 
+# ── Per-tier model resolution ────────────────────────────────────────
+#
+# The model named on the command line is authoritative for EVERY tier that uses
+# an LLM, not just generate. The L5 judge reads its own
+# VULTURE_VALIDATE_LLM_MODEL, so a stale value in .env used to silently win:
+# `dev gemini gemini-2.5-flash` ran generate on Gemini while the judge asked the
+# Gemini-fronting broker for `qwen/qwen3.8-27b`, which it cannot serve. Every
+# batch failed, and an errored call returns no text, so it surfaced as "JSON
+# parse failed twice" — a message about output format, for a request that never
+# succeeded.
+#
+#   (no flags)                 both tiers use the positional model
+#   --scan-model M             generate uses M (substituted above)
+#   --validate-model M         the judge uses M
+#
+# A judge model is only meaningful when the run can actually reach it: on the
+# broker path the broker fronts ONE provider, so a different validate model is
+# accepted but flagged. VULTURE_VALIDATE_LLM_MODEL_EXPLICIT tells the judge the
+# value was chosen deliberately, so it does not override it the way it overrides
+# a stale environment value.
+_SCAN_FINAL="${VULTURE_LLM_MODEL:-}"
+if [[ -n "$VALIDATE_MODEL" ]]; then
+    _V="$(normalize_model "$PROVIDER" "$VALIDATE_MODEL")"
+    if [[ "$USE_BROKER" == "1" ]]; then
+        _V="$(strip_broker_prefix "$PROVIDER" "$_V")"
+        if [[ -n "$_SCAN_FINAL" && "$_V" != "$_SCAN_FINAL" ]]; then
+            echo "  Warning: --validate-model $_V differs from the scan model" \
+                 "$_SCAN_FINAL while the broker is on. The broker fronts one" \
+                 "provider — if it cannot serve $_V, every judge batch will fail."
+        fi
+    fi
+    export VULTURE_VALIDATE_LLM_MODEL="$_V"
+    export VULTURE_VALIDATE_LLM_MODEL_EXPLICIT=1
+elif [[ -n "$_SCAN_FINAL" ]]; then
+    if [[ -n "${VULTURE_VALIDATE_LLM_MODEL:-}" \
+          && "$VULTURE_VALIDATE_LLM_MODEL" != "$_SCAN_FINAL" ]]; then
+        echo "  Note: VULTURE_VALIDATE_LLM_MODEL=$VULTURE_VALIDATE_LLM_MODEL" \
+             "from the environment is superseded by $_SCAN_FINAL" \
+             "(pass --validate-model to choose one explicitly)"
+    fi
+    export VULTURE_VALIDATE_LLM_MODEL="$_SCAN_FINAL"
+    unset VULTURE_VALIDATE_LLM_MODEL_EXPLICIT 2>/dev/null || true
+fi
+
 echo "  Provider:  $PROVIDER"
 echo "  Model:     ${VULTURE_LLM_MODEL:-$MODEL}"
+if [[ -n "${VULTURE_VALIDATE_LLM_MODEL:-}" \
+      && "$VULTURE_VALIDATE_LLM_MODEL" != "${VULTURE_LLM_MODEL:-$MODEL}" ]]; then
+    echo "  Validate:  $VULTURE_VALIDATE_LLM_MODEL"
+fi
 echo "  LLM:       ${VULTURE_USE_LLM:-false}"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
     echo "  Broker:    on"

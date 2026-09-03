@@ -82,8 +82,37 @@ vulture /path/to/project
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--types` | Comma-separated audit types: `chaos`, `owasp`, `soc2`, `cwe`, `xss`, `ssdf` | All scan types |
-| `--no-cache` | Skip cached results and force a fresh audit | Off (uses cache) |
+| `--types <list>` | Comma-separated audit types: `chaos`, `owasp`, `soc2`, `cwe`, `xss`, `ssdf` | all scan types |
+| `--no-cache` | Ignore cached results; re-execute the audit | off |
+| `--fresh` | Clean-room scan: also ignore prior-findings memory. Implies `--no-cache` | off |
+| `--no-llm` | Skip the LLM generate phase; skills still run. Implies `--no-cache` | off |
+| `--llm-tier3` | Include non-flagged, non-entry files in the LLM sweep (full-tree, costlier) | off |
+| `--validate-llm` | Enable the L5 LLM judge for this audit | off |
+| `--validate-llm-top-n <n>` | Cap findings sent to the judge | server default |
+| `--validate-llm-batch-size <n>` | Findings per judge request | server default |
+
+**CI flags** (accepted by `scan`, `discover` and `prove`):
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--server <url>` | Backend base URL; overrides `VULTURE_API_URL` | `http://localhost:28080` |
+| `--api-key <key>` | Authenticate with an API key instead of a stored token | - |
+| `--wait` | Block until the audit completes | off (returns after dispatch) |
+| `--output <path>` | Write the result as JSON to `<path>` | stdout only |
+| `--exit-on <sev>` | Exit non-zero if a finding at or above `<sev>` exists | never |
+| `--webhook <url>` | POST the result to `<url>` on completion | - |
+| `--ref <ref>` | Git ref (branch, tag or SHA) to check out | default branch |
+| `--git-credentials <spec>` | Credentials for a private repository | - |
+
+Flags are validated per subcommand. `scan` rejects an unknown flag rather
+than ignoring it, and names the subcommand that owns it:
+
+```
+$ vulture scan . --staging-url https://staging.example.com
+Error: unknown flag for `scan`: --staging-url
+  --staging-url and --max-iterations belong to `vulture prove`.
+  Plugins are enabled server-side via VULTURE_PLUGINS, not a CLI flag.
+```
 
 **What happens:**
 
@@ -207,10 +236,30 @@ vulture -h
 
 ## Environment Variables
 
+Read by the CLI:
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VULTURE_API_URL` | Backend API base URL | `http://localhost:28080` |
 | `VULTURE_FRONTEND_URL` | Frontend URL (used in result links) | `http://localhost:23001` |
+
+Read by the server and agents, set at start time. Prefer the launcher flags in
+[Model Selection](#model-selection) — they keep the tiers consistent:
+
+| Variable | Description |
+|----------|-------------|
+| `VULTURE_LLM_MODEL` | Model for the generate phase |
+| `VULTURE_VALIDATE_LLM_MODEL` | Model for the L5 judge; superseded by the launcher unless set via `--validate-model` |
+| `VULTURE_USE_LLM` | Enable the LLM generate phase |
+| `VULTURE_USE_VALIDATE_LLM` | Enable the L5 judge |
+| `OPENAI_BASE_URL` | OpenAI-compatible chat endpoint |
+| `VULTURE_EMBEDDING_URL` | Embedding endpoint; falls back to `OPENAI_BASE_URL`, then OpenAI cloud |
+| `VULTURE_EMBEDDING_MODEL` | Embedding model |
+| `VULTURE_PLUGINS` | Plugin activation: `all`, `none`, or a comma list. Server-side only — there is no CLI flag |
+
+`host.docker.internal` resolves only inside a container. In bare-metal dev mode
+use `localhost`; a Docker-only address there fails every call, and a judge whose
+calls all fail reports a parse error rather than a connection error.
 
 Example with a remote server:
 
@@ -267,6 +316,104 @@ vulture scan /path/to/project --types owasp,soc2,cwe
 |---------|-------------|
 | `vulture discover` | Endpoint discovery — maps API endpoints and infrastructure configuration |
 | `vulture prove` | Formal verification — attempts to prove or disprove findings with evidence |
+
+## Model Selection
+
+Models are chosen when the stack starts, not per scan. These are flags of the
+launcher `scripts/vulture.sh`, not of the `vulture` CLI.
+
+```
+scripts/vulture.sh dev <provider> [model] [--scan-model M] [--validate-model M]
+```
+
+| Flag | Applies to | Default |
+|------|------------|---------|
+| `<model>` (positional) | every LLM tier | provider default |
+| `--scan-model M`, `--generate-model M` | the generate phase | positional model |
+| `--validate-model M`, `--judge-model M` | the L5 judge | positional model |
+
+Both `--flag M` and `--flag=M` forms are accepted.
+
+```bash
+# one model everywhere
+scripts/vulture.sh dev gemini gemini-2.5-flash --pg
+
+# cheap generate, stronger judge
+scripts/vulture.sh dev gemini gemini-2.5-flash --validate-model gemini-2.5-pro
+```
+
+The positional model applies to **every** tier. Omit the flags unless a tier
+needs to differ.
+
+### Precedence
+
+For each tier, the first value that is set wins:
+
+```
+--scan-model      >  positional model  >  provider default        (generate)
+--validate-model  >  positional model  >  VULTURE_LLM_MODEL        (judge)
+```
+
+A `VULTURE_VALIDATE_LLM_MODEL` inherited from the environment or `.env` is
+**superseded** by the launcher and the substitution is reported:
+
+```
+Note: VULTURE_VALIDATE_LLM_MODEL=qwen/qwen3.8-27b from the environment
+      is superseded by gemini-2.5-flash (pass --validate-model to choose one explicitly)
+```
+
+This is deliberate. A stale value silently winning is how a run ends up scanning
+with one provider while the judge requests a model the broker cannot serve —
+every judge batch then fails, and because a failed call returns no text the
+symptom is a parse error, not a configuration error. Pass `--validate-model` to
+make the choice explicit; the launcher then honours it.
+
+### Broker caveat
+
+With the LLM broker on (the default), the broker fronts a single provider. A
+`--validate-model` naming a model that provider cannot serve is accepted, but
+warned about, and every judge batch will fail:
+
+```
+Warning: --validate-model X differs from the scan model Y while the broker is
+         on. The broker fronts one provider — if it cannot serve X, every judge
+         batch will fail.
+```
+
+Use `--no-broker` to reach two providers independently.
+
+### Provider model-id conventions
+
+The launcher applies the provider's own convention to whichever model you pass,
+so all three options accept a bare id:
+
+| Provider | Bare id | Sent as |
+|----------|---------|---------|
+| `gemini` | `gemini-2.5-flash` | `litellm/gemini/gemini-2.5-flash` |
+| `lmstudio` | `qwen/qwen3.8-27b` | `openai/qwen/qwen3.8-27b` |
+| `openai`, `anthropic`, `ollama` | as given | as given |
+
+Under the broker the routing prefix is stripped again — the broker's native
+adapters take a bare id.
+
+### Embeddings
+
+Embeddings are configured separately from chat, so a run can use a cloud chat
+model with local embeddings:
+
+| Flag | Variable |
+|------|----------|
+| `--embed-url URL` | `VULTURE_EMBEDDING_URL` |
+| `--embed-model NAME` | `VULTURE_EMBEDDING_MODEL` |
+
+An empty `VULTURE_EMBEDDING_URL` falls back to `OPENAI_BASE_URL`, then to the
+OpenAI cloud endpoint. Leaving it empty while `OPENAI_API_KEY` holds a local
+placeholder sends that placeholder to OpenAI and every embedding returns 401.
+
+Changing the embedding model changes the vector width (`text-embedding-3-small`
+is 1536, `nomic-embed-text-v1.5` is 768). The column is untyped, so both store,
+but vectors of different widths are not comparable — similarity search silently
+degrades across the boundary.
 
 ## Using Local Models
 
