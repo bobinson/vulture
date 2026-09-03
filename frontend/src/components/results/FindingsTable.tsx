@@ -16,6 +16,7 @@ import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import { findingToMarkdown } from "@/lib/markdown.ts";
 import { ProveStatusBadge } from "./ProveStatusBadge.tsx";
 import type { Finding, LineageStatus, ProveResult, Severity } from "@/lib/types.ts";
+import { ELLIPSIS, pageItems } from "@/lib/pagination";
 
 interface FindingsTableProps {
   findings: Finding[];
@@ -721,7 +722,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
             <button
               type="button"
               aria-label={t("common.back")}
-              className="px-2 py-1 text-[11px] rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent"
+              className="px-2 py-1 shrink-0 text-[11px] rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent"
               disabled={page === 0}
               onClick={() => setPage(page - 1)}
             >
@@ -729,24 +730,35 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
               </svg>
             </button>
-            {Array.from({ length: totalPages }, (_, i) => i).map((p) => (
-              <button
-                key={p}
-                type="button"
-                className={`w-7 h-7 text-[11px] rounded-md transition-colors cursor-pointer font-medium tabular-nums ${
-                  page === p
-                    ? "bg-foreground text-surface"
-                    : "text-muted hover:text-foreground hover:bg-cream-dark"
-                }`}
-                onClick={() => setPage(p)}
-              >
-                {p + 1}
-              </button>
-            ))}
+            {pageItems(page, totalPages).map((item, i) =>
+              item === ELLIPSIS ? (
+                <span
+                  key={`gap-${i}`}
+                  aria-hidden="true"
+                  className="w-5 h-7 flex items-center justify-center text-[11px] text-muted select-none"
+                >
+                  &hellip;
+                </span>
+              ) : (
+                <button
+                  key={item}
+                  type="button"
+                  aria-current={page === item ? "page" : undefined}
+                  className={`w-7 h-7 shrink-0 text-[11px] rounded-md transition-colors cursor-pointer font-medium tabular-nums ${
+                    page === item
+                      ? "bg-foreground text-surface"
+                      : "text-muted hover:text-foreground hover:bg-cream-dark"
+                  }`}
+                  onClick={() => setPage(item)}
+                >
+                  {item + 1}
+                </button>
+              ),
+            )}
             <button
               type="button"
               aria-label={t("common.next")}
-              className="px-2 py-1 text-[11px] rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent"
+              className="px-2 py-1 shrink-0 text-[11px] rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent"
               disabled={page === totalPages - 1}
               onClick={() => setPage(page + 1)}
             >
