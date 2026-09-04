@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from .fragment import CONFLICTING, Role, Stance
+from .fragment import CONFLICTING, Stance
 from .registry import get
 
 

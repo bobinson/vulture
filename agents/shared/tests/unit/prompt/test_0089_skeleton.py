@@ -11,8 +11,8 @@ import time
 import pytest
 
 from shared.prompt import Mode, PromptSpec, Slot, Stance, profile_for, render
-from shared.prompt.fragment import CONFLICTING, Fragment, Role
-from shared.prompt.profile import MODEL_PROFILES, Structured, ToolSchema, family_for
+from shared.prompt.fragment import CONFLICTING
+from shared.prompt.profile import MODEL_PROFILES, Structured, family_for
 
 
 class TestProfileResolution:

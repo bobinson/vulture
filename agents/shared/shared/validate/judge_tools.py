@@ -32,8 +32,8 @@ __all__ = [
     "DEFAULT_MAX_TOOL_CALLS",
     "JUDGE_TOOL_SPECS",
     "TOOL_DISCIPLINE_PROMPT",
-    "tool_discipline_prompt",
     "JudgeToolExecutor",
+    "tool_discipline_prompt",
 ]
 
 DEFAULT_MAX_TOOL_CALLS = 4       # T3.9: enough to read a span and search twice

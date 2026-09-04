@@ -13,14 +13,13 @@ input unchanged; no rule contains a profile if-ladder.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 from . import registry
 from .fragment import Fragment, Role, Stance
-from .profile import ModelProfile, Structured, ToolSchema
-from .slots import Slot, new_nonce, wrap
+from .profile import ModelProfile, Structured
+from .slots import new_nonce, wrap
 
 
 class Mode(str, Enum):

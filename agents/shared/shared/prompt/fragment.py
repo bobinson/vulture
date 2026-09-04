@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -67,7 +67,7 @@ class Fragment:
         return frozenset(re.findall(r"\{([a-z_][a-z0-9_]*)\}", self.text))
 
 
-_FM = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.S)
+_FM = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.DOTALL)
 
 
 def _scalar(v: str) -> object:
