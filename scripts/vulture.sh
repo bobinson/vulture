@@ -15,6 +15,9 @@
 #
 #   dev <provider>     Mode A: Dev-local — bare metal, everything on one machine
 #                      Options: [--pg] [--plugins all|none|<comma-list>]
+#                               [--scan-model M] [--validate-model M]
+#                      The positional model applies to EVERY LLM tier. Pass
+#                      --scan-model / --validate-model to differ per tier.
 #                               [--no-broker] [--budget <usd>]   (broker on by default)
 #   server <provider>  Mode B: Central server — Docker + remote DB
 #                      Options: [--no-broker] [--budget <usd>]   (broker on by default)
@@ -110,7 +113,7 @@ case "$COMMAND" in
 
     # ── Mode A: Dev-local (bare metal) ────────────────────────────────────
     dev)
-        [ $# -lt 1 ] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--embed-url URL] [--embed-model NAME] [--pg] [--plugins <comma-list>]"; exit 1; }
+        [ $# -lt 1 ] && { echo "Usage: scripts/vulture.sh dev <provider> [model] [--scan-model M] [--validate-model M] [--embed-url URL] [--embed-model NAME] [--pg] [--plugins <comma-list>]"; exit 1; }
         # --pg flag (any position): bring up the postgres docker
         # container and export VULTURE_DB_DSN so local_start uses
         # Postgres instead of SQLite.

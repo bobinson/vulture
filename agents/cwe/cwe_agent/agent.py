@@ -41,6 +41,7 @@ import os
 from collections.abc import Generator
 from typing import Any
 
+from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.env import env_truthy
 from shared.llm import health as _health
@@ -225,9 +226,6 @@ def run_audit(
     so model findings are verified before being reported.
     """
     categories = config.get("categories", ALL_CATEGORIES)
-    preloaded = prior_findings if prior_findings else None
-    max_f = get_max_findings()
-    context = build_prior_context(source_path, "cwe", preloaded=preloaded, max_findings=max_f)
 
     # Inject catalog context into LLM instructions for deeper analysis
     catalog_ctx = _build_llm_catalog_context()
@@ -256,18 +254,24 @@ def run_audit(
         from shared.transport.event_emitter import AgUiEventEmitter
         yield AgUiEventEmitter(run_id).text_message(llm_notice)
 
+    _shared = shared_audit_kwargs(config, source_path, prior_findings, "cwe")
+    # cwe owns these two: _resolve_cwe_llm applies the model-health gate and the
+    # VULTURE_CWE_DISABLE_LLM kill switch, so its resolved values must win over
+    # the fleet defaults. Popped rather than shadowed -- passing both a **splat
+    # and an explicit keyword is a TypeError, not an override.
+    _shared.pop("use_llm", None)
+    _shared.pop("validate_use_llm", None)
+    
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
         categories=categories,
         skill_map=SKILL_MAP,
         domain_label="CWE categories",
-        prior_context=context,
+        **_shared,
         skill_tools=SKILL_TOOLS,
         instructions=enhanced_instructions,
         model=os.environ.get("VULTURE_LLM_MODEL"),
         use_llm=effective_use_llm,
         validate_use_llm=validate_use_llm,
-        # 0059: per-audit Tier-3 LLM toggle (config > VULTURE_LLM_TIER3 env > OFF).
-        llm_tier3=config.get("llm_tier3"),
     )

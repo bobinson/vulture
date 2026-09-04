@@ -8,9 +8,24 @@ const resources: Record<string, { translation: Record<string, unknown> }> = {
   en: { translation: en },
 };
 
+// Every locale EXCEPT en. The template-literal form `import(`./locales/${lng}.json`)`
+// makes en.json a candidate of the dynamic import too, and a module that is BOTH
+// statically and dynamically imported cannot be split into its own chunk — the
+// bundler keeps it in the main one and warns INEFFECTIVE_DYNAMIC_IMPORT. en is
+// deliberately static: it is the default and the fallback, so it must be present
+// before the first render. Excluding it here is what lets the other five split.
+const localeLoaders = import.meta.glob<{ default: Record<string, unknown> }>([
+  "./locales/*.json",
+  "!./locales/en.json",
+]);
+
 export async function loadLanguage(lng: string): Promise<void> {
   if (resources[lng]) return;
-  const mod = await import(`./locales/${lng}.json`);
+  const load = localeLoaders[`./locales/${lng}.json`];
+  // An unrecognised language is not an error: i18next falls back to en. The
+  // previous form threw here and every caller swallowed it.
+  if (!load) return;
+  const mod = await load();
   resources[lng] = { translation: mod.default };
   i18n.addResourceBundle(lng, "translation", mod.default, true, true);
 }

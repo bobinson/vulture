@@ -12,6 +12,7 @@ from collections.abc import Generator
 from functools import lru_cache
 from typing import Any
 
+from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.llm.provider import get_context_window, get_max_findings
 from shared.tools.memory_client import build_prior_context
@@ -176,9 +177,10 @@ def run_audit(
 ) -> Generator[str, None, None]:
     """Execute the ASVS audit and yield SSE events."""
     categories = config.get("categories", ALL_CATEGORIES)
-    preloaded = prior_findings if prior_findings else None
-    max_f = get_max_findings()
-    context = _safe_build_prior_context(source_path, preloaded, max_f)
+    # prior_findings passed straight through: the old
+    # `preloaded = prior_findings if prior_findings else None` was a no-op,
+    # because build_prior_context already branches on truthiness.
+    context = _safe_build_prior_context(source_path, prior_findings, get_max_findings())
 
     model = os.environ.get("VULTURE_LLM_MODEL")
     # Scale catalog context to the active model's window so small local
@@ -193,22 +195,18 @@ def run_audit(
             + catalog_ctx
         )
 
-    use_llm_val = config.get("use_llm")
-    # Feature 0046: per-audit override for L5 LLM judge.
-    _v = config.get("validate")
-    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
+    _shared = shared_audit_kwargs(
+        config, source_path, prior_findings, "asvs", prior_context=context,
+    )
+    
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
         categories=categories,
         skill_map=SKILL_MAP,
         domain_label="ASVS requirements",
-        prior_context=context,
+        **_shared,
         skill_tools=SKILL_TOOLS,
         instructions=enhanced_instructions,
         model=model,
-        use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
-        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
-        # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
-        llm_tier3=config.get("llm_tier3"),
     )

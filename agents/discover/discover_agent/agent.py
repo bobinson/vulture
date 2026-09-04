@@ -35,6 +35,8 @@ from shared.discovery.plugin_base import DiscoveryContext
 from shared.discovery.runner import run_discovery
 from shared.discovery.sitemap import SiteMap
 from shared.transport.event_emitter import AgUiEventEmitter
+from shared.env import env_flag
+from shared.tools.window import WINDOW_NO_CODE_LOCATION, record_window_reason
 
 from discover_agent.findings import analyze_security_exposures
 from discover_agent.learning_store import (
@@ -42,6 +44,12 @@ from discover_agent.learning_store import (
     load_learnings,
     save_learnings,
 )
+
+
+def _window_parity_enabled() -> bool:
+    """``VULTURE_FINDING_WINDOW_PARITY`` — default TRUE, read at call time."""
+    return env_flag("VULTURE_FINDING_WINDOW_PARITY", True)
+
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +318,12 @@ def run_discover(
 
     # Emit individual findings
     for row in finding_dicts:
+        # Feature 0082 C10: a discover finding describes a live HTTP surface,
+        # not a source line — it carries no file_path and no line_start at all,
+        # so there is nothing to read a window from. Recording that keeps it
+        # distinguishable from a source finding whose read failed.
+        if _window_parity_enabled() and not row.get("code_snippet"):
+            record_window_reason(row, WINDOW_NO_CODE_LOCATION)
         yield emitter.finding_event(**row)
 
     # Emit discover_result event with full SiteMap + learnings context

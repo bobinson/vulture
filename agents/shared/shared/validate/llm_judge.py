@@ -18,6 +18,7 @@ import contextvars
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -152,7 +153,8 @@ class _L5Runtime:
     model: str
     system_prompt: str
     # Feature 0072 P3b: the scanned tree's root. What lets the judge hold
-    # read-only tools — empty means no tools regardless of the flag.
+    # read-only tools — empty means no tools, since reads could not be
+    # confined.
     source_root: str = ""
     tools_on: bool = False
     max_tool_calls: int = 0
@@ -162,7 +164,7 @@ def _resolve_l5_runtime(
     config: ValidateConfig, source_path: str = "",
 ) -> Optional[_L5Runtime]:
     """Resolve all run_l5 runtime knobs; None on hard precondition fail."""
-    from .judge_tools import max_tool_calls, tools_enabled
+    from .judge_tools import DEFAULT_MAX_TOOL_CALLS
 
     model = _resolve_model(config)
     if not model:
@@ -181,8 +183,10 @@ def _resolve_l5_runtime(
         model=model,
         system_prompt=system_prompt,
         source_root=source_path,
-        tools_on=tools_enabled() and bool(source_path),
-        max_tool_calls=max_tool_calls(),
+        # Tools need a root to confine reads to; without one they cannot be
+        # offered safely, so the source path is the only precondition.
+        tools_on=bool(source_path),
+        max_tool_calls=DEFAULT_MAX_TOOL_CALLS,
     )
 
 
@@ -921,6 +925,11 @@ def _call_with_strict_retry(
     parsed = _parse_response(raw, batch_size) if raw else None
     if parsed is not None:
         return parsed
+    # Whether the first attempt produced NOTHING or produced something
+    # unparseable decides what the failure message should say. Collapsing both
+    # into "JSON parse failed" sent an operator looking at the model's output
+    # format when the real cause was that no response ever arrived.
+    first_was_empty = not raw
     # feature 0061: an in-flight batch must not issue a SECOND (retry) LLM call
     # once the audit is cancelled — the token is passed in (not ambient) because
     # this runs on an L5 pool worker that does not inherit contextvars.
@@ -935,7 +944,18 @@ def _call_with_strict_retry(
     raw2 = _call_llm(system_prompt, retry_user, model, timeout_s)
     parsed = _parse_response(raw2, batch_size) if raw2 else None
     if parsed is None:
-        log.warning("[validate.l5] batch %d JSON parse failed twice", batch_idx)
+        if first_was_empty and not raw2:
+            log.warning(
+                "[validate.l5] batch %d got NO RESPONSE twice (not a parse "
+                "failure) — the endpoint or model is unreachable/misconfigured; "
+                "see the endpoint warning above",
+                batch_idx,
+            )
+        else:
+            log.warning(
+                "[validate.l5] batch %d JSON parse failed twice (a response "
+                "arrived but was not the expected JSON)", batch_idx,
+            )
         return []
     return parsed
 
@@ -1080,7 +1100,7 @@ def _call_llm_with_tools(
     total deadline (T3.9) — the loop adds no second budget, only a bounded
     number of requests (``max_calls`` tool executions, +2 framing turns).
     """
-    from .judge_tools import JUDGE_TOOL_SPECS, TOOL_DISCIPLINE_PROMPT
+    from .judge_tools import JUDGE_TOOL_SPECS, tool_discipline_prompt
 
     client = _get_client()
     if client is None:
@@ -1090,7 +1110,7 @@ def _call_llm_with_tools(
     actual_model = _strip_model_prefix(model)
     messages: list[dict[str, Any]] = [
         {"role": "system",
-         "content": system_prompt + "\n\n" + TOOL_DISCIPLINE_PROMPT},
+         "content": system_prompt + "\n\n" + tool_discipline_prompt(batch_size)},
         {"role": "user", "content": user_msg},
     ]
     calls_used = 0
@@ -1399,8 +1419,46 @@ def _log_call_failure(exc: Exception, mode: str) -> None:
             "exceeded the gateway limit even after the byte clamp — lower "
             "VULTURE_VALIDATE_LLM_BATCH_SIZE", mode, exc,
         )
+    elif _is_endpoint_error(exc):
+        # The actionable detail is WHERE it tried to reach, and this must not
+        # sit at INFO. A whole run's worth of batches failed to connect to an
+        # endpoint that does not resolve, and the only visible symptom was
+        # "JSON parse failed twice" — a message about a response that never
+        # arrived. Name the endpoint, at WARNING.
+        base_url, _ = _client_env_key()
+        log.warning(
+            "[validate.l5] %s call could not reach the LLM endpoint %s (%s) — "
+            "no verdicts will be produced. Check VULTURE_VALIDATE_LLM_MODEL and "
+            "the resolved base URL; `host.docker.internal` resolves only inside "
+            "a container, not in native dev mode",
+            mode, base_url or "<default>", type(exc).__name__,
+        )
     else:
         log.info("[validate.l5] %s call failed (%s)", mode, type(exc).__name__)
+
+
+def _is_endpoint_error(exc: Exception) -> bool:
+    """True for a failure to reach or authenticate against the endpoint.
+
+    Distinguished from a model-behaviour failure because the remedy is
+    different: this one is configuration, and it fails EVERY batch.
+    """
+    name = type(exc).__name__
+    if name in {
+        "APIConnectionError", "APITimeoutError", "AuthenticationError",
+        "NotFoundError", "PermissionDeniedError", "InternalServerError",
+        "ConnectError", "ConnectTimeout",
+    }:
+        return True
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "connection", "name or service not known", "failed to resolve",
+            "nodename nor servname", "timed out", "unauthorized",
+            "invalid_api_key", "incorrect api key", "model_not_found",
+        )
+    )
 
 
 # ── User-message rendering ───────────────────────────────────────────
@@ -1506,15 +1564,57 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
+# ASCII-only on purpose (`re.ASCII`): `float()` accepts any Unicode decimal
+# digit and PEP-515 underscores, so a blanket float() read "٨" as 8.0 and
+# "1_0" as 10.0 — each then clamped to 1.0, i.e. CERTAINLY exploitable. An
+# allowlist pattern also subsumes the "%"/exponent refusal: "80%", "1e-1",
+# "nan" and "inf" all simply fail to match.
+_PLAIN_DECIMAL = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)\Z", re.ASCII)
+
+
+def _plain_decimal(text: str) -> Optional[float]:
+    """A quoted probability, or None when it is not a PLAIN decimal.
+
+    Refusing rather than interpreting is the point: reading ``"80%"`` as 0.8
+    guesses at the model's units, and a probability in scientific notation is
+    far likelier a stray token than a real ``1e-1``. A token this function
+    cannot read must become NO verdict, never a maximal one.
+    """
+    text = text.strip()
+    if not _PLAIN_DECIMAL.match(text):
+        return None
+    # A 400-digit match parses to inf rather than raising; the caller's
+    # finiteness test is what stops it.
+    return float(text)
+
+
+def _coerce_exploitable(value: Any) -> Optional[float]:
+    """The verdict probability as a finite float, or None if it isn't one.
+
+    Mirrors `_coerce_line` (audit_runner.py): a model that answers
+    ``"exploitable": "0.8"`` was dropped in silence for the sake of a pair of
+    quotes, losing the whole verdict. NaN/Infinity are refused explicitly
+    because the caller's clamp does not stop them — ``min(1.0, nan)`` is 1.0,
+    so junk would arrive as CERTAINLY exploitable rather than as no verdict.
+    """
+    if isinstance(value, str):
+        out = _plain_decimal(value)
+    elif isinstance(value, (int, float)):
+        out = float(value)
+    else:
+        return None
+    return out if out is not None and math.isfinite(out) else None
+
+
 def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
     """Validate + normalise one verdict dict; None if shape is wrong."""
     if not isinstance(v, dict):
         return None
     fid = v.get("id")
-    prob = v.get("exploitable")
-    if not isinstance(fid, str) or not isinstance(prob, (int, float)):
+    prob = _coerce_exploitable(v.get("exploitable"))
+    if not isinstance(fid, str) or prob is None:
         return None
-    prob = max(0.0, min(1.0, float(prob)))
+    prob = max(0.0, min(1.0, prob))
     reasoning = (v.get("reasoning") or "")[:_REASONING_MAX_CHARS]
     # Pass the closure assertion through. This normaliser rebuilds a WHITELISTED
     # dict, so any field not named here is silently dropped — which is how the
@@ -1612,11 +1712,21 @@ def _parse_response(raw: str, batch_size: int) -> Optional[list[dict[str, Any]]]
     verdicts = data.get("verdicts")
     if not isinstance(verdicts, list):
         return None
+    considered = verdicts[:batch_size]   # defensive cap
     cleaned: list[dict[str, Any]] = []
-    for v in verdicts[:batch_size]:   # defensive cap
+    for v in considered:
         coerced = _coerce_verdict(v)
         if coerced is not None:
             cleaned.append(coerced)
+    if considered and not cleaned:
+        # The model answered, but every verdict was unusable. Returning [] here
+        # reads to every caller as a SUCCESSFUL parse of nothing, so the
+        # strict-JSON retry never fired and the batch was lost without a log
+        # line. That is a structural failure — say so. An array the model
+        # genuinely returned empty still parses to [] and must not retry.
+        log.warning("[validate.l5] all %d verdicts in a response were "
+                    "malformed; treating as a parse failure", len(considered))
+        return None
     return cleaned
 
 
@@ -1720,6 +1830,10 @@ def _verdict_to_check(
 
 
 def _resolve_top_n(config: ValidateConfig) -> int:
+    # Feature 0083: per-request override wins over the env server default.
+    _ov = getattr(config, "l5_top_n_override", None)
+    if _ov is not None:
+        return int(_ov)
     env = os.getenv("VULTURE_VALIDATE_LLM_TOP_N", "").strip()
     if env.isdigit():
         return int(env)
@@ -1727,6 +1841,10 @@ def _resolve_top_n(config: ValidateConfig) -> int:
 
 
 def _resolve_batch_size(config: ValidateConfig) -> int:
+    # Feature 0083: per-request override wins over the env server default.
+    _ov = getattr(config, "l5_batch_size_override", None)
+    if _ov is not None:
+        return max(1, int(_ov))
     env = os.getenv("VULTURE_VALIDATE_LLM_BATCH_SIZE", "").strip()
     if env.isdigit():
         return max(1, int(env))
@@ -1825,12 +1943,61 @@ def _auto_detect_model() -> str:
 
 
 def _resolve_model(config: ValidateConfig) -> str:
+    """Pick the judge's model — the one the RUN is actually configured to use.
+
+    `VULTURE_VALIDATE_LLM_MODEL` used to win unconditionally, which let a stale
+    value silently override the provider the run was launched with. Observed:
+    `dev gemini gemini-2.5-flash` set `VULTURE_LLM_MODEL=gemini-2.5-flash` and
+    routed L5 through the broker, while a leftover
+    `VULTURE_VALIDATE_LLM_MODEL=qwen/qwen3.8-27b` in `.env` made the judge ask
+    that broker for a model it does not front. Every batch failed, and because
+    an errored call yields no text the failure surfaced as "JSON parse failed
+    twice" — a message about output format, for a request that never succeeded.
+
+    So when the run routes through the broker, the run's model wins: the broker
+    is key-isolated per provider and can only serve what it was configured for,
+    which makes an L5-specific override there a guaranteed failure rather than a
+    choice. The override still applies on the direct path, and a disagreement is
+    logged instead of being resolved in silence.
+    """
+    l5_override = os.getenv("VULTURE_VALIDATE_LLM_MODEL", "").strip()
+    run_model = os.getenv("VULTURE_LLM_MODEL", "").strip()
+    # An explicitly chosen judge model (`--validate-model`) is honoured even on
+    # the broker path: the operator was told there that the broker fronts one
+    # provider. Only an INHERITED value — a leftover in .env — is superseded,
+    # because that is drift rather than a decision.
+    explicit = os.getenv("VULTURE_VALIDATE_LLM_MODEL_EXPLICIT", "").strip() != ""
+    if (
+        l5_override
+        and run_model
+        and l5_override != run_model
+        and not explicit
+        and _via_broker()
+    ):
+        log.warning(
+            "[validate.l5] ignoring VULTURE_VALIDATE_LLM_MODEL=%s: this run "
+            "routes L5 through the LLM broker, which fronts %s and cannot serve "
+            "another model. Using %s. Pass --validate-model to choose one "
+            "deliberately, or unset VULTURE_VALIDATE_LLM_MODEL",
+            l5_override, run_model, run_model,
+        )
+        return run_model
     return (
-        os.getenv("VULTURE_VALIDATE_LLM_MODEL", "").strip()
+        l5_override
         or getattr(config, "l5_model_override", "").strip()
-        or os.getenv("VULTURE_LLM_MODEL", "").strip()
+        or run_model
         or _auto_detect_model()
     )
+
+
+def _via_broker() -> bool:
+    """True when this run's L5 calls are routed through the LLM broker."""
+    try:
+        from shared.llm.broker import current_broker_token, resolve_broker_config
+
+        return resolve_broker_config(current_broker_token()) is not None
+    except Exception:
+        return False
 
 
 # ── Misc helpers ─────────────────────────────────────────────────────

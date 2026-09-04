@@ -9,13 +9,22 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from .refutation import obligation_check
-from .types import ValidationCheck
+from shared.env import env_flag
+from shared.tools.window import WINDOW_ROLLUP_PARENT, window_check
 
-__all__ = ["rollup_id", "run_l2"]
+from .refutation import obligation_check
+from .types import ValidationCheck, _utc_now_iso
+
+__all__ = ["derive_parent_verdicts", "rollup_id", "run_l2"]
 
 
 _NORM_WS_RE = re.compile(r"\s+")
+
+# The verdict a parent carries until its members supply one. Kept as the
+# fallback rather than removed: a parent whose members cannot be resolved
+# must not read as confirmed, and must not read as dismissed either.
+PLACEHOLDER_CONFIDENCE = 0.40
+PLACEHOLDER_STATUS = "suspicious"
 
 
 def _normalize_title(title: str) -> str:
@@ -122,6 +131,16 @@ def _rollup_description(
     return f"{head} {extra}".rstrip() if extra else head
 
 
+def _window_checks() -> list[dict[str, Any]]:
+    """The window check for a rollup parent, or nothing when feature 0082's
+    VULTURE_FINDING_WINDOW_PARITY is off. Read at call time so the switch is
+    flippable without a restart, and so the rollback genuinely removes the
+    stamp rather than leaving it in place under a disabled flag."""
+    if not env_flag("VULTURE_FINDING_WINDOW_PARITY", True):
+        return []
+    return [window_check(WINDOW_ROLLUP_PARENT)]
+
+
 def _build_rollup_parent(
     audit_id: str, category: str, file_path: str,
     members: list[dict[str, Any]], instance_count: int,
@@ -160,11 +179,95 @@ def _build_rollup_parent(
         # is the only place that sees the parent before it ships.
         "validation": {
             "status": _rollup_status_for(category, instance_count),
-            "confidence": 0.40,
-            "checks": [obligation_check(category, None).to_json()],
+            "confidence": PLACEHOLDER_CONFIDENCE,
+            # Feature 0082 C9: a parent's line_start is min(member lines), so
+            # handing it one member's window would present 1 of `instance_count`
+            # sites as evidence for all of them — the misrepresentation E4
+            # forbids, moved from the verdict field into the evidence field. The
+            # parent is LABELLED instead. Weight 0.0: bookkeeping, never evidence.
+            "checks": [obligation_check(category, None).to_json(),
+                       *_window_checks()],
             "validated_at": "",
         },
     }
+
+
+def _member_confidence(member: dict[str, Any]) -> float | None:
+    """A member's voted confidence, or None if it never got one.
+
+    None and 0.0 must stay distinguishable: an unvoted member carries no
+    information and is skipped, whereas a member voted to 0.0 is a real
+    dismissal and belongs in the max.
+    """
+    raw = member.get("validation_confidence")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def derive_parent_verdicts(
+    findings: list[dict[str, Any]], rollups: list[dict[str, Any]],
+) -> None:
+    """Give each rollup parent the verdict of its strongest member.
+
+    A parent is synthesised in L2, after L1, and appended to the result only
+    after ``validate()`` has returned, so it never reaches the voter and L5
+    skips it by name. Until this ran, every parent shipped
+    ``PLACEHOLDER_STATUS`` at ``PLACEHOLDER_CONFIDENCE`` — a literal, not a
+    judgement. Measured on one 336-finding run: 83 rows (24.7%) carried
+    ``suspicious`` / 0.40 regardless of what their members said, and
+    ``likely_fp`` was unreachable for all of them, because ``_classify``
+    needs two demoting checks and a parent's own checks are all weight 0.0.
+
+    The members ARE fully voted by the time this runs, so the information
+    already exists. MAX, not mean: a rollup groups instances of one weakness
+    in one file, so a group holding a confirmed bug must be reviewed at that
+    strength — averaging it against its siblings would bury it. Symmetrically
+    a group whose every member was dismissed inherits the dismissal.
+
+    Mutates the parents in place. Idempotent per call site; the derived
+    ``rollup`` check replaces any earlier one so re-running cannot stack
+    duplicates.
+    """
+    if not rollups:
+        return
+    by_id = {f["id"]: f for f in findings if f.get("id")}
+    for parent in rollups:
+        blob = parent.setdefault("validation", {})
+        checks = [c for c in blob.get("checks", [])
+                  if c.get("id") != "rollup"]
+        scored = [
+            (conf, mid) for mid in parent.get("rolled_up_member_ids", [])
+            if (m := by_id.get(mid)) is not None
+            and (conf := _member_confidence(m)) is not None
+        ]
+        if not scored:
+            checks.append(ValidationCheck(
+                id="rollup", result="orphan", weight=0.0,
+                reason="no voted member resolved; verdict is the placeholder",
+                extras={"members_total": len(
+                    parent.get("rolled_up_member_ids", []))},
+            ).to_json())
+            blob["checks"] = checks
+            continue
+        best_conf, best_id = max(scored)
+        best = by_id[best_id]
+        blob["confidence"] = best_conf
+        blob["status"] = best.get("validation_status") or PLACEHOLDER_STATUS
+        blob["validated_at"] = _utc_now_iso()
+        checks.append(ValidationCheck(
+            id="rollup", result="derived", weight=0.0,
+            reason=(f"inherited from the strongest of {len(scored)} voted "
+                    f"member(s)"),
+            extras={"inherited_from": best_id,
+                    "members_voted": len(scored),
+                    "members_total": len(
+                        parent.get("rolled_up_member_ids", []))},
+        ).to_json())
+        blob["checks"] = checks
 
 
 def _mark_rollup_members(

@@ -245,4 +245,12 @@ def test_schema_version_bumped_for_evidence_line():
     """F2: the verdict schema changed (evidence_line), so cached pre-change
     verdicts must become unreachable. One deliberate cold-cache run per
     deployment is the documented cost (plan §10)."""
-    assert l5_cache._VERDICT_SCHEMA_VERSION == "v3-evidence"
+    # v4-tools: the judge's read-only tools became unconditional, so a
+    # verdict reached WITHOUT them must not be replayed for up to 30 days.
+    # The invariant this test guards (a schema/capability change bumps the
+    # version, making pre-change rows unreachable) is unchanged.
+    # v5-tool-trigger: feature 0089 §10.1 inverted the tool contract
+    # (positive obligation first, real budget interpolated) and qualified
+    # the abstention sentence. A verdict reached under the OLD prompt —
+    # which measured zero tool calls — must not be replayed for 30 days.
+    assert l5_cache._VERDICT_SCHEMA_VERSION == "v5-tool-trigger"

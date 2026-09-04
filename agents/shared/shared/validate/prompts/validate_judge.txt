@@ -41,7 +41,8 @@ Say false whenever the phrase "this is probably handled elsewhere" would
 describe your reasoning. A snippet can prove a contradiction; it can never
 prove an absence. Guessing that an unseen helper is safe is the one error that
 hides a real vulnerability, so prefer false when unsure. Being unable to see
-enough is not a failure — it is the answer.
+enough is not a failure — but when you have tools it is not yet the answer
+either. Look first; report false only if the answer is still out of reach.
 
 Evidence citation:
   evidence_line = the ONE line number (from the numbered snippet) your
@@ -54,7 +55,8 @@ Evidence citation:
   point at the code that would have to do it, that is window_sufficient =
   false and evidence_line = null, not a confident verdict.
 
-Output STRICT JSON only — no prose, no markdown, no code fences:
+Your FINAL message must be STRICT JSON only — no prose, no markdown, no
+code fences. Tool calls before it are expected and are not a violation:
 {"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"reasoning":"<up to 60 words>"}]}
 
 Every finding in the batch must appear in the response by id. If you

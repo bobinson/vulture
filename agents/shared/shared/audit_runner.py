@@ -10,6 +10,7 @@ import re
 import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,6 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.finding_collapse import collapse_line_stacks
 from shared.tools.memory_client import _normalize_title, estimate_tokens, safe_estimate_tokens
-from shared.tools.snippet import extract_snippet
 from shared.transport.event_emitter import AgUiEventEmitter
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,9 @@ _SKILL_WORKERS = _safe_int_env("VULTURE_SKILL_WORKERS", min(os.cpu_count() or 4,
 # ``VULTURE_LLM_JSON_SCAN=false`` puts the regex back.
 _LLM_JSON_FENCED_RE = re.compile(r"```json\s*(\[.*?\])\s*```", re.DOTALL)
 _LLM_JSON_BARE_RE = re.compile(r"(\[\s*\{.*?\}\s*\])", re.DOTALL)
+
+# A whole-response code fence, label optional — see `_strip_code_fence`.
+_ANY_FENCE_RE = re.compile(r"^```[A-Za-z0-9_+-]*\s*(.*?)\s*```$", re.DOTALL)
 
 # The keys that make a decoded array look like a findings payload. `id` is
 # deliberately absent: it is the only key of the everyday decoy
@@ -1910,14 +1913,59 @@ _WIDE_SNIPPET_CONTEXT = 10   # 21 lines; must stay under the judge's
                              # _WINDOW_LINES_MAX render ceiling (T5.4)
 
 
+# Classes whose evidence is a DATA FLOW: the thing that decides the finding
+# is not on the cited line, so a narrow window cannot show both ends.
+#
+# Width used to be gated solely on `scope_reviewed`, which is bookkeeping
+# about whether a human has reviewed a class's refutation SET — unrelated to
+# how many lines a reader needs. The conflation left every injection class on
+# +/-2 lines, since CWE-89/78/79/22/94/918 are all `_legacy` entries with
+# `scope_reviewed=False`, and left CWE-200 there too for having no entry.
+#
+# Both halves of this set are measured, not assumed:
+#   * the injection six are the codebase's own `SANITIZER_MAP` data-flow
+#     classes (its 770/755 entries are resource and exception handling, not
+#     a flow, and stay narrow). Measured: at +/-2 lines the judge could not
+#     see the anchored-UUID guard at a handler entry ~100 lines above a SQL
+#     sink and confirmed the finding at 0.99.
+#   * the exposure pair. Measured: a genuine plaintext-private-key finding
+#     drew "the snippet only shows privateKey as part of an object literal
+#     ... does not show the database interaction", returned `undecided` at
+#     weight 0, and a real critical settled at the bare 0.5 base — the
+#     `updateUserById` call was 8 lines ABOVE the cited line, which no
+#     downward widening reaches.
+#
+# Add a class here only with new measurement; every entry costs prompt budget
+# on every finding of that class.
+# CWE-89 and CWE-79 are deliberately ABSENT despite being the same shape.
+# Both are pinned narrow by existing contracts — `test_p5_auditability`
+# names CWE-89 in its tight-window list, and CWE-79 is the committed
+# byte-identity golden's canonical "narrow" case in
+# `test_0082_window_extract`. Widening them is a decision about those
+# contracts, not something to fold into a defect fix. Their measured false
+# positives are addressed instead by the `input_validation` check, which
+# resolves the interpolated identifier deterministically and needs no extra
+# prompt budget at all.
+_FLOW_EVIDENCE_CATEGORIES: frozenset[str] = frozenset({
+    "CWE-78",    # OS command injection
+    "CWE-22",    # path traversal
+    "CWE-94",    # code injection
+    "CWE-918",   # SSRF
+    "CWE-200",   # information exposure
+    "CWE-532",   # sensitive data into a log
+})
+
+
 def _snippet_params_for(category: str) -> tuple[int, int | None]:
     """(context_lines, max_chars) for extract_snippet, per weakness class.
 
-    Wide only for classes whose declared scope is wider than a statement AND
-    reviewed (T2.1a): an unreviewed legacy entry still searches the narrow
-    window, so widening its snippet would spend §10's token budget on
-    obligations that cannot use it — today that keeps the widening to the
-    authorization family.
+    Wide for a class whose declared scope is wider than a statement AND
+    reviewed (T2.1a) — today the authorization family — or whose evidence is
+    a data flow (`_FLOW_EVIDENCE_CATEGORIES`).
+
+    Everything else keeps the tight legacy window: a policy class decides on
+    one line, so widening it would spend §10's token budget for nothing and
+    enlarge what `_redact_snippet` has to cover on every secret-bearing CWE.
     """
     from shared.validate.refutation import REFUTATION_MAP, Scope
 
@@ -1925,7 +1973,21 @@ def _snippet_params_for(category: str) -> tuple[int, int | None]:
     if (ref is not None and ref.scope_reviewed
             and ref.scope in (Scope.FUNCTION, Scope.FILE, Scope.WIRING)):
         return _WIDE_SNIPPET_CONTEXT, None
+    if category in _FLOW_EVIDENCE_CATEGORIES:
+        return _WIDE_SNIPPET_CONTEXT, None
     return 2, 200
+
+
+def _window_parity_enabled() -> bool:
+    """``VULTURE_FINDING_WINDOW_PARITY`` — default TRUE, read at call time.
+
+    Feature 0082 Step 5. Records WHY a finding carries no code window, in the
+    existing ``validation`` blob. Ships ON because it is purely additive: it
+    never removes a window, a finding, or a verdict, and the ``window`` check
+    it writes carries weight 0.0 so it cannot move a confidence score. ``false``
+    restores the pre-0082 state where an empty window was undifferentiated.
+    """
+    return env_flag("VULTURE_FINDING_WINDOW_PARITY", True)
 
 
 def _attach_code_snippet(
@@ -1951,8 +2013,6 @@ def _attach_code_snippet(
     left with an empty snippet — the L5 selection layer then SKIPS it (P0.3)
     rather than judging blind.
     """
-    from shared.tools.file_scanner import read_file_lines
-
     # P6b backstop. Say plainly what this is now: as of 0078 track C it is a
     # NO-OP on every path that exists. `_finalize_finding_inplace` stamps
     # provenance immediately before both per-finding emits, and rollup parents
@@ -1969,38 +2029,13 @@ def _attach_code_snippet(
     for f in findings:
         _set_provenance(f)
 
-    for f in findings:
-        context, max_chars = _snippet_params_for(f.get("category", "") or "")
-        wide = max_chars is None
-        # T5.2: a wide-scope class gets the line-budget window even when a
-        # skill pre-set a narrow one — the window is the judge's evidence,
-        # and 200 chars cannot contain a mitigation that lives lines away.
-        # Narrow classes keep the legacy behaviour: back-fill only.
-        if wide or not f.get("code_snippet"):
-            line_start = f.get("line_start", 0) or 0
-            try:
-                line_start = int(line_start)
-            except (TypeError, ValueError):
-                line_start = 0
-            if line_start >= 1:
-                resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
-                if resolved is not None:
-                    lines = read_file_lines(resolved)
-                    if lines:
-                        snippet = extract_snippet(
-                            lines, line_start,
-                            context=context, max_chars=max_chars,
-                        )
-                        if snippet:
-                            f["code_snippet"] = snippet
+    # Feature 0082 Step 3: the window loop lives in shared/tools/window.py so
+    # reading a window and REDACTING it are one operation no caller can split.
+    # This function keeps the provenance backstop above (deliberately decoupled,
+    # so a read failure below cannot skip it) and delegates the rest.
+    from shared.tools.window import ensure_code_window
 
-        # P2a: mask secret VALUES for secret-bearing CWEs, whether the snippet
-        # was back-filled above OR pre-set by a skill (e.g. auth_check). This
-        # runs at the finalisation choke point so both the SSE result and the
-        # DB row carry the redacted form. (The per-finding `finding` SSE events
-        # are independently redacted at emission time — see run_combined_audit —
-        # so the live frontend view never sees the raw secret either.)
-        _redact_finding_inplace(f)
+    ensure_code_window(findings, source_path, record_reasons=_window_parity_enabled())
 
 
 def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> None:
@@ -2111,6 +2146,77 @@ def _bind_category_enum(
     return wrapper
 
 
+
+# ── feature 0079 B1: model-health preflight ──────────────────────────────────
+#
+# Six agents (chaos, soc2, ssdf, xss, do178c, asvs) had no preflight. They DO
+# degrade gracefully -- reactively, at the guard below that emits "LLM phase
+# unavailable" and sets degraded_reason. What they lacked is the ability to skip
+# the sweep BEFORE burning the failure budget.
+#
+# Two measured costs of not having it. With an unreachable endpoint each batch
+# is bounded by VULTURE_LLM_CALL_TIMEOUT_SEC and the sweep aborts only after
+# VULTURE_LLM_MAX_CONSECUTIVE_FAILURES -- 3 x 120s ~ 6 minutes, replaced by one
+# ~3s probe. And that abort is gated on `batch_idx + 1 < len(batches)`, so on a
+# tree producing <= 3 batches it never fires at all and the operator gets
+# silently wasted calls with no notice.
+#
+# It lives HERE, not in a per-agent wrapper, for two reasons: one edit reaches
+# every agent, and this point is INSIDE the cancel token and the whole-audit
+# deadline. A wrapper around run_combined_audit would sit outside both, adding
+# an unbounded term to the PROXY >= MAX_AUDIT + LLM_CALL margin rule.
+
+
+def _preflight_mode() -> str:
+    """``off`` / ``observe`` (default) / ``enforce``.
+
+    A mode string, matching VULTURE_OBLIGATION_MODE and VULTURE_LLM_QUOTE_VERIFY.
+    An unrecognised value falls back to ``observe``, never to ``enforce``: a typo
+    must not start vetoing the LLM tier.
+    """
+    raw = os.environ.get("VULTURE_LLM_PREFLIGHT", "").strip().lower()
+    return raw if raw in ("off", "observe", "enforce") else "observe"
+
+
+def _probe_llm_reachable() -> tuple[bool, str]:
+    """(reachable, reason). Seam for tests; real work is in shared.llm.health."""
+    import asyncio
+
+    from shared.llm.health import check_llm_health
+
+    status = asyncio.run(check_llm_health())
+    ok = bool(getattr(status, "healthy", False))
+    return ok, "" if ok else status.message()
+
+
+def _preflight_vetoes(effective_use_llm: bool, run_id: str, agent_label: str) -> tuple[bool, str]:
+    """Should the LLM sweep be skipped? Returns (veto, notice).
+
+    Fails OPEN in every uncertain case. A probe fault is a defect in the guard,
+    not evidence the provider is down, and vetoing on it would let one broken
+    probe disable the LLM tier across the fleet.
+    """
+    if not effective_use_llm:
+        return False, ""          # nothing to protect; never pay for a probe
+    mode = _preflight_mode()
+    if mode == "off":
+        return False, ""
+    try:
+        reachable, reason = _probe_llm_reachable()
+    except Exception as exc:
+        logger.info("llm_preflight run_id=%s agent=%s probe_error=%s", run_id, agent_label, exc)
+        return False, ""
+    if reachable:
+        return False, ""
+    logger.info(
+        "llm_preflight run_id=%s agent=%s mode=%s unreachable reason=%s",
+        run_id, agent_label, mode, reason,
+    )
+    if mode != "enforce":
+        return False, ""          # observe: measured and logged, never acted on
+    return True, f"LLM preflight: provider unreachable - {reason}"
+
+
 @_bind_category_enum
 def run_combined_audit(
     run_id: str,
@@ -2124,6 +2230,8 @@ def run_combined_audit(
     model: str | None = None,
     use_llm: bool | None = None,
     validate_use_llm: bool | None = None,
+    l5_top_n: int | None = None,
+    l5_batch_size: int | None = None,
     llm_tier3: bool | None = None,
 ) -> Generator[str, None, None]:
     """Run skills first (full coverage), then optionally LLM (deeper analysis).
@@ -2303,6 +2411,21 @@ def run_combined_audit(
     # `result` event (→ audits.degraded_reason) as well as the thinking stream,
     # which is transient and unqueryable after the fact.
     degraded_reason = ""
+    # Feature 0079 B1. Probe BEFORE the sweep, so an unreachable provider costs
+    # one ~3s probe rather than VULTURE_LLM_MAX_CONSECUTIVE_FAILURES x
+    # VULTURE_LLM_CALL_TIMEOUT_SEC of dead calls -- and gets a legible reason
+    # instead of a raw litellm error. Placed after the deadline is armed, so the
+    # probe is inside the run's safety envelope.
+    #
+    # Only reached when the phase would otherwise run: skills-only audits and a
+    # cancelled run never pay for it.
+    if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
+        _pf_veto, _pf_notice = _preflight_vetoes(True, run_id, domain_label)
+        if _pf_veto:
+            effective_use_llm = False
+            degraded_reason = _pf_notice
+            yield emitter.text_message(_pf_notice + " - returning skill findings only.")
+
     if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
@@ -2454,6 +2577,15 @@ def run_combined_audit(
                 enable_l1=True,
                 enable_l2=True,
                 enable_l5=_l5_enabled,
+                # Feature 0083. `enable_l5_override` carries the per-request
+                # decision PAST _resolve_l5_enabled, which otherwise lets the
+                # env defeat it. None when the request was silent, so the env
+                # keeps deciding exactly as before.
+                enable_l5_override=(
+                    bool(validate_use_llm) if validate_use_llm is not None else None
+                ),
+                l5_top_n_override=l5_top_n,
+                l5_batch_size_override=l5_batch_size,
             )
 
             _v_result_box: list = [None]
@@ -2986,7 +3118,39 @@ def _extract_token_usage(result: Any, model: str | None = None) -> tuple[int, in
 _CUSTOM_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 
 
-def _parse_llm_result(result: Any) -> list[dict]:
+@dataclass(frozen=True, eq=False)
+class ParseOutcome:
+    """The parsed rows AND whether the response could be parsed at all.
+
+    A bare ``list`` cannot tell "the model answered and NOTHING parsed" from
+    "the model found nothing" — both are ``[]``. The batch sweep books a failure
+    only on a raised exception, so an unparseable model reset the consecutive-
+    failure counter on every batch and swept the entire tree to report a clean,
+    green, zero-finding run. ``parsed`` is that missing bit.
+
+    Kept sequence-shaped because every caller before this existed to read the
+    rows: a caller that wants only ``rows`` needs no change.
+    """
+
+    rows: list[dict]
+    parsed: bool
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        return self.rows[index]
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, ParseOutcome):
+            return self.rows == other.rows and self.parsed == other.parsed
+        return self.rows == other
+
+
+def _parse_llm_result(result: Any) -> ParseOutcome:
     """Parse findings from an Agent SDK result, handling structured and raw output."""
     final_output = getattr(result, "final_output", None)
     rows = getattr(final_output, "findings", None)
@@ -2997,7 +3161,9 @@ def _parse_llm_result(result: Any) -> list[dict]:
         # Category conformance is NOT here: it moved to
         # `_finalize_finding_inplace`, the one choke point the skill tier also
         # passes through (nine of the thirty measured violations were skill rows).
-        return [_normalize_finding(row.model_dump()) for row in rows]
+        # The structured branch parsed by construction: the SDK already decoded
+        # the schema, so `parsed` is never in doubt on this path.
+        return ParseOutcome([_normalize_finding(row.model_dump()) for row in rows], True)
     return _parse_llm_findings(str(final_output) if final_output is not None else "")
 
 
@@ -3194,7 +3360,8 @@ async def _collect_llm_findings_async(
     try:
         result = await retry_llm_call(_run_agent, max_attempts=3)
         actual_input, actual_output = _extract_token_usage(result, model=model)
-        findings = _verify_and_strip(_parse_llm_result(result), source_path)
+        outcome = _parse_llm_result(result)
+        findings = _verify_and_strip(outcome.rows, source_path)
         cooldown_manager.record_success(resolved_model)
     except LoopDetectedError as exc:
         # Loop is an agent reasoning failure, not a model failure — don't cool down the model.
@@ -3234,7 +3401,21 @@ async def _collect_llm_findings_async(
         # leak in the long-lived agent process (no-op when the broker was off).
         await aclose_broker_client()
 
-    return findings, None, actual_input, actual_output
+    return findings, _unparsed_error(outcome), actual_input, actual_output
+
+
+def _unparsed_error(outcome: ParseOutcome) -> str | None:
+    """A response no extraction strategy matched is a CONTRACT failure, not
+    "nothing found", and must reach the sweep as an ``error``.
+
+    ``_collect_llm_findings_batched_async`` counts only a non-empty ``error``
+    toward ``VULTURE_LLM_MAX_CONSECUTIVE_FAILURES``, and a success RESETS the
+    counter — so before this, a model whose every answer was unparseable walked
+    every batch and finished clean.
+    """
+    if outcome.parsed:
+        return None
+    return "LLM analysis failed (unparseable): no findings array in the model response"
 
 
 def compute_score(findings: list[dict], total_items: int) -> float:
@@ -3262,7 +3443,7 @@ def build_summary(findings: list[dict], categories: list[str], domain_label: str
 
 
 
-def _parse_llm_findings(output: str) -> list[dict]:
+def _parse_llm_findings(output: str) -> ParseOutcome:
     """Extract structured findings from LLM text output.
 
     Attempt order (feature 0076 §5.1), each falling through only on failure so a
@@ -3272,16 +3453,74 @@ def _parse_llm_findings(output: str) -> list[dict]:
     """
     # Category conformance moved to `_finalize_finding_inplace` (see
     # `_parse_llm_result`) so the skill tier is covered by the same call.
-    return [_normalize_finding(row) for row in _extract_finding_rows(output)]
+    rows = _extract_finding_rows(output)
+    return ParseOutcome(
+        rows=[_normalize_finding(row) for row in rows or []],
+        # No text at all is the model saying nothing — there is no payload that
+        # could have failed to parse, so it is not a contract breach.
+        parsed=rows is not None or not output.strip(),
+    )
 
 
-def _extract_finding_rows(output: str) -> list[dict]:
-    """The first attempt that produces a row list wins; ``[]`` when none does."""
-    for attempt in (_fenced_json_rows, _scanned_json_rows, _salvage_truncated_array):
+def _extract_finding_rows(output: str) -> list[dict] | None:
+    """The first attempt that produces a row list wins; ``None`` when none does.
+
+    ``None`` rather than ``[]`` because a strategy that succeeds with zero rows
+    (``[]`` from a compliant model) and no strategy matching at all are opposite
+    outcomes for :class:`ParseOutcome`.
+    """
+    for attempt in (
+        _fenced_json_rows, _scanned_json_rows, _salvage_truncated_array,
+        _empty_array_answer,
+    ):
         rows = attempt(output)
         if rows is not None:
             return rows
-    return []
+    return None
+
+
+def _empty_array_answer(output: str) -> list[dict] | None:
+    """LAST resort: a response that IS an empty JSON array — "nothing found".
+
+    ``_score_array`` rejects a zero-hit array so a prose decoy cannot shadow a
+    real payload, and ``[]`` has zero hits — so the compliant empty answer left
+    ``_extract_finding_rows`` as "no strategy matched", which P5 now reads as an
+    LLM contract FAILURE. Measured: a 20-batch sweep over a clean tree, model
+    answering a bare ``[]``, aborted at batch 3/20 and lost 17 batches. Only the
+    ```` ```json ```` fence was covered; a bare or unlabelled-fence ``[]`` was not.
+
+    Runs last and yields only ``[]``, so it can neither add nor drop a finding:
+    it decides ``parsed``, nothing else.
+    """
+    body = _strip_code_fence(output.strip())
+    return [] if _is_empty_payload(_try_decode(body, 0)) else None
+
+
+def _is_empty_payload(value: Any) -> bool:
+    """Does this decoded response carry a findings array, and is it empty?
+
+    The wrapper arm exists because the two halves of ``{"findings": [...]}`` are
+    treated OPPOSITELY today: with rows, ``_scan_json_arrays`` reaches the inner
+    array and parses; with none, the zero-hit score rejects it. A model that
+    always wraps then works on dirty batches and fails on clean ones.
+
+    Deliberately NOT "any well-formed JSON is an answer": the response must
+    actually contain an empty array, or the contract-failure signal P5 exists
+    for is gone.
+    """
+    if isinstance(value, list):
+        return not value
+    if isinstance(value, dict):
+        return any(item == [] for item in value.values())
+    return False
+
+
+def _strip_code_fence(body: str) -> str:
+    """The inside of a whole-response code fence, labelled or not; *body* as-is
+    when it is not fenced. ``_fenced_json_rows`` only knows the ```` ```json ````
+    label, and a model that omits it is not thereby unparseable."""
+    match = _ANY_FENCE_RE.match(body)
+    return match.group(1).strip() if match is not None else body
 
 
 def _loads_list(text: str | None) -> list | None:
@@ -3726,11 +3965,19 @@ def _normalize_finding(raw: dict) -> dict:
     used to call ``model_dump()`` directly, which is how ``code_snippet`` and
     ``check_id`` leaked from the model on that path only.
     """
+    # The text fields get the same treatment `_coerce_line` gives the numeric
+    # ones (B2): junk costs the FIELD, never the FINDING. Without it a model
+    # emitting `"severity": null` reached `normalize_severity`'s `raw.lower()`,
+    # and the AttributeError escaped the parse into the batch-level
+    # `except Exception` in `_collect_llm_findings_async` — one malformed field
+    # of one row discarded EVERY finding in the batch and booked it as an LLM
+    # failure. `or` rather than a mere `str()` so an explicit null falls back to
+    # the default instead of becoming the string "None".
     normalized: dict[str, Any] = {
-        "severity": normalize_severity(raw.get("severity", "info")),
-        "category": raw.get("category", "unknown"),
-        "title": raw.get("title", "Untitled finding"),
-        "description": raw.get("description", ""),
+        "severity": normalize_severity(str(raw.get("severity") or "info")),
+        "category": str(raw.get("category") or "unknown"),
+        "title": str(raw.get("title") or "Untitled finding"),
+        "description": str(raw.get("description") or ""),
         "file_path": _coerce_path(raw.get("file_path", "")),
         "recommendation": raw.get("recommendation", ""),
     }

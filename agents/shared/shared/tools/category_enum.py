@@ -21,16 +21,55 @@ from __future__ import annotations
 
 import re
 
+from shared.env import env_flag
+
 # Separators are equalised before comparison: an agent may DECLARE
 # `blast_radius` while a tier EMITS `blast-radius`, and those are the same
 # concept. Folding to a single canonical separator is what lets the reduction
 # see that.
 _SEP = re.compile(r"[-_.\s]+")
 
+# Feature 0079 C2. The COMPOUND JOINERS, folded like any other separator when
+# the switch is on.
+#
+# Without them a compound value never matches its leading declared token on a
+# token boundary -- `circuit_breaker, retry` folds to `circuit_breaker,_retry`,
+# the prefix test fails on the comma, and `_fallback_token`'s re.findall then
+# scans the WHOLE string and can return a LATER member. Measured:
+#
+#     normalize_to_enum("circuit_breaker, retry", chaos) -> "retry"
+#
+# A circuit-breaker finding filed under retry. It is a silent misclassification,
+# not a survival: the result is inside the declared vocabulary, so no consumer
+# can tell. Folding the joiner makes the documented rule -- reduce to the
+# LEADING declared token -- apply to compounds too.
+#
+# ssdf and soc2 are unaffected: their declared tokens are short prefixes that
+# already matched (`PW-1/PW-3` -> `PW`), and folding a joiner cannot change a
+# match that already succeeded on the first token.
+_JOINER = re.compile(r"[,/]+")
+
+
+def _joiner_folding_enabled() -> bool:
+    """Read at call time so the rollback stays flippable.
+
+    ``VULTURE_CATEGORY_JOINER=false`` restores the pre-0079 behaviour exactly,
+    including the misclassification -- it exists for the operator who sees a
+    categorisation shift and needs to reverse precisely this.
+    """
+    return env_flag("VULTURE_CATEGORY_JOINER", True)
+
 
 def _fold(value: str) -> str:
-    """Lowercase and collapse -/_/./whitespace runs to one underscore."""
-    return _SEP.sub("_", value.strip().lower()).strip("_")
+    """Lowercase and collapse separator runs to one underscore.
+
+    Separators are ``-`` ``_`` ``.`` and whitespace, plus (feature 0079 C2) the
+    compound joiners ``,`` and ``/``.
+    """
+    text = value.strip().lower()
+    if _joiner_folding_enabled():
+        text = _JOINER.sub("_", text)
+    return _SEP.sub("_", text).strip("_")
 
 
 def normalize_to_enum(category: str, allowed: frozenset[str] | set[str]) -> str:

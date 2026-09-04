@@ -122,7 +122,12 @@ def _connect() -> Optional[sqlite3.Connection]:
 # v3-evidence: the verdict gained `evidence_line` (feature 0072 T5.3,
 # observation-only). Cached v2 rows lack it and must become unreachable —
 # the first post-deploy run judges from a cold cache, once, by design (§10).
-_VERDICT_SCHEMA_VERSION = "v3-evidence"
+# Bumped for the unconditional judge tools. The key carries no tool-mode
+# component, so without this bump a verdict reached WITHOUT tools stays
+# servable for the full 30-day TTL — suppressing the new capability on
+# exactly the findings already judged, which are the ones a reader looks
+# at first. Old rows become unreachable rather than being deleted.
+_VERDICT_SCHEMA_VERSION = "v5-tool-trigger"
 
 
 def cache_key(*, file_path: str, line_start: int, line_end: int,

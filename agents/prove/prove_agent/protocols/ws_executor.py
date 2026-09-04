@@ -14,6 +14,11 @@ from prove_agent.strategies.base import (
     ProbeProtocol,
     ProofPlan,
 )
+from prove_agent.strategies.shared import (
+    _as_bool,
+    rejected_path_result,
+    validate_url_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +45,10 @@ async def execute_websocket(
     finding_title: str,
 ) -> ExecutionResult:
     """Execute a WebSocket probe — connect, send, collect messages, analyze."""
-    ws_url = to_ws_url(staging_url, plan.url_path)
+    safe_path = validate_url_path(plan.url_path)
+    if safe_path is None:
+        return rejected_path_result(plan.url_path, ProbeProtocol.WEBSOCKET.value)
+    ws_url = to_ws_url(staging_url, safe_path)
 
     try:
         messages: list[str] = []
@@ -95,8 +103,8 @@ async def execute_websocket(
                 expected_indicators=json.dumps(plan.expected_indicators),
             ))
             return ExecutionResult(
-                conclusive=llm_result.get("conclusive", False),
-                reproduced=llm_result.get("reproduced", False),
+                conclusive=_as_bool(llm_result.get("conclusive", False)),
+                reproduced=_as_bool(llm_result.get("reproduced", False)),
                 evidence=llm_result.get("evidence", f"WS: {len(messages)} messages"),
                 response_snippet=snippet,
                 protocol_used=ProbeProtocol.WEBSOCKET.value,

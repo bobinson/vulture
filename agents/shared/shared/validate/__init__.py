@@ -12,6 +12,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from shared.tools.window import record_window_reason, window_reason_of
+
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
 from .llm_judge import (
@@ -24,7 +26,7 @@ from .llm_judge import (
     stamp_coverage,
 )
 from .refutation import clear_route_model_cache, obligation_check
-from .rollup import run_l2
+from .rollup import derive_parent_verdicts, run_l2
 from .types import (
     FindingValidation,
     ValidateConfig,
@@ -58,6 +60,19 @@ def is_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def _resolve_l5_enabled(cfg: ValidateConfig) -> bool:
+    """Resolve the L5 master switch: per-request override → env → field.
+
+    Feature 0083 W1. The env used to be read FIRST, which made an explicit
+    `--validate-llm` a dead flag on the stock deployment: docker-compose pins
+    `VULTURE_USE_VALIDATE_LLM=${VULTURE_USE_VALIDATE_LLM:-false}` on all ten
+    agent blocks, and `false` defeated the request. Every finding came back
+    stamped `skipped_l5_disabled` while the operator had asked for the judge.
+
+    The env keeps deciding whenever the request is silent, so no existing
+    deployment changes.
+    """
+    if cfg.enable_l5_override is not None:
+        return bool(cfg.enable_l5_override)
     env = os.environ.get("VULTURE_USE_VALIDATE_LLM", "").strip().lower()
     if env in ("true", "1", "yes"):
         return True
@@ -221,10 +236,21 @@ def _apply_validation_to_finding(
     if cfg.compliance_mode:
         v = apply_compliance_mode(v)
     new_f = dict(finding)
+    # Feature 0082 C10: capture any window reason BEFORE the blob is replaced.
+    # This is an overwrite, not a merge — a reason stamped upstream by
+    # ensure_code_window (audit_runner.py:2487, which runs before _validate at
+    # :2550) is otherwise destroyed here, and the "every empty window carries a
+    # reason" guarantee would hold nowhere it is actually measured.
+    prior_window = window_reason_of(finding)
     _strip_private(new_f)
     new_f["validation"] = v.to_json()
     new_f["validation_status"] = v.status
     new_f["validation_confidence"] = v.confidence
+    # Re-attached AFTER the vote, never as an input to it: the check carries
+    # weight 0.0 and recording why evidence is absent must not be able to move
+    # a status or a confidence.
+    if prior_window:
+        record_window_reason(new_f, prior_window)
     _retag_l5_verified(new_f, checks)
     return new_f
 
@@ -501,6 +527,11 @@ def _emit_summary(
         f"fp={counts['likely_fp']} · "
         f"rollups={len(rollups)}"
     )
+    # Derive each parent's verdict from its members BEFORE mirroring: the
+    # members are fully voted by now (L1 + L2 + L5), and until this ran the
+    # mirror copied a hardcoded placeholder onto the columns, so every parent
+    # row read `suspicious` / 0.40 whatever its members said.
+    derive_parent_verdicts(out_findings, rollups)
     # Mirror status/confidence onto rollup parents so the UI's
     # status filter doesn't skip parent rows persisted with NULL.
     for parent in rollups:

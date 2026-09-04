@@ -19,6 +19,11 @@ from prove_agent.strategies.base import (
     ProbeProtocol,
     ProofPlan,
 )
+from prove_agent.strategies.shared import (
+    _as_bool,
+    rejected_path_result,
+    validate_url_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +65,10 @@ async def execute_jsonrpc(
     finding_title: str,
 ) -> ExecutionResult:
     """Execute a JSON-RPC probe, auto-selecting transport."""
+    # Validated once here: both transports below join this path onto the origin.
+    if validate_url_path(plan.url_path) is None:
+        return rejected_path_result(plan.url_path, ProbeProtocol.JSONRPC.value)
+
     rpc_method = plan.rpc_method or "rpc_methods"
     rpc_params = plan.rpc_params if plan.rpc_params is not None else []
 
@@ -192,8 +201,8 @@ async def _analyze_rpc_response(
             expected_indicators=json.dumps(plan.expected_indicators),
         ))
         return ExecutionResult(
-            conclusive=llm_result.get("conclusive", False),
-            reproduced=llm_result.get("reproduced", False),
+            conclusive=_as_bool(llm_result.get("conclusive", False)),
+            reproduced=_as_bool(llm_result.get("reproduced", False)),
             evidence=llm_result.get("evidence", f"RPC {rpc_method}"),
             status_code=result.status_code,
             response_snippet=snippet,

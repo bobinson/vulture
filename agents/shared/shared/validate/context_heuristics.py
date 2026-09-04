@@ -10,6 +10,7 @@ cached; this layer doesn't trust that and re-caches defensively).
 from __future__ import annotations
 
 import functools
+import pathlib
 import re
 from typing import Any
 
@@ -214,13 +215,57 @@ def _path_check(file_path: str) -> ValidationCheck:
     )
 
 
+# The scan root for the audit in flight, set once per validate call.
+#
+# L1 was written against SKILL findings, which carry absolute paths because the
+# skills walk the filesystem. LLM findings carry paths RELATIVE to the scan
+# root, because that is the form the prompt shows the model. A bare `open()`
+# resolves those against the agent process's CWD (`agents/cwe`), so every one
+# failed. Measured on a 336-finding audit: 0 of 195 absolute-path findings
+# failed to read, 57 of 141 relative-path ones did — and each of those silently
+# lost its `sanitizer` and `obligation` checks, reported as weight-0
+# "could not read file". A broken reader and a reader that looked and found
+# nothing are indistinguishable in the blob, which is why this went unnoticed.
+#
+# `run_l1` already receives `source_root`; it simply never reached the reader.
+_l1_source_root: str = ""
+
+
+def set_l1_source_root(root: str) -> None:
+    """Bind the scan root used to resolve relative finding paths."""
+    global _l1_source_root
+    _l1_source_root = root or ""
+
+
+def _resolve_in_root(file_path: str) -> str:
+    """Absolute path for *file_path*, joining the scan root when relative.
+
+    Containment is checked: a finding path is model-supplied for LLM findings,
+    so `../` must not be able to walk out of the audited tree.
+    """
+    if not file_path:
+        return file_path
+    p = pathlib.Path(file_path)
+    if p.is_absolute() or not _l1_source_root:
+        return file_path
+    root = pathlib.Path(_l1_source_root).resolve()
+    try:
+        candidate = (root / p).resolve()
+    except (OSError, RuntimeError):
+        return file_path
+    if candidate == root or root in candidate.parents:
+        return str(candidate)
+    return file_path
+
+
 @functools.lru_cache(maxsize=256)
 def _read_lines_cached(file_path: str) -> tuple[str, ...]:
     """Module-level cache to avoid re-reading the same file for
     multiple findings. Use `clear_l1_cache()` between validate calls.
     """
     try:
-        with open(file_path, encoding="utf-8", errors="replace") as f:
+        with open(_resolve_in_root(file_path), encoding="utf-8",
+                  errors="replace") as f:
             return tuple(f.read().splitlines())
     except (OSError, PermissionError):
         return ()
@@ -515,6 +560,371 @@ def _optional_checks(
     return [c for c in found if c is not None]
 
 
+# ── Secret-value presence (feature: redaction-safe secret check) ───────────
+#
+# For a secret-bearing class the redacted region IS the evidence. `_redact_
+# finding_inplace` masks the value at every egress point — deliberately, and
+# 0057 made read-and-redact one operation no caller may split — so the L5 judge
+# is shown `admin_secret:` next to `version: ***REDACTED***` and cannot tell an
+# EMPTY key from a masked one. Measured: `backend/config.yaml:3` is literally
+# `admin_secret:` with no value, and the judge reported "a sensitive credential
+# is hardcoded" at exploitable=0.9, reaching 0.99 high_confidence on a finding
+# that is simply false.
+#
+# The question is decidable without a model and without egressing anything: read
+# the cited line from source and report whether a value is actually present.
+# Only the FACT crosses the boundary — a boolean and a length — never the value.
+_SECRET_CLASS_CWES: frozenset[str] = frozenset({
+    "CWE-798", "CWE-319", "CWE-312", "CWE-256", "CWE-259", "CWE-321", "CWE-522",
+})
+
+# `key: value` / `key = value` / `key: "value"` across yaml, env, ini and code.
+_ASSIGNMENT_RE = re.compile(r"""[:=]\s*(?P<value>.*?)\s*(?:[,;]\s*)?$""")
+
+# A value that is present but carries no secret. `${VAR}` and `{{ }}` are
+# indirection, not a credential; the rest are conventional fill-ins.
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:''|\"\"|``|null|nil|none|true|false|0|\{\{.*\}\}|\$\{[^}]*\}"
+    r"|\$[A-Z_][A-Z0-9_]*|<[^>]*>|x{3,}|change[-_]?me|your[-_].*|todo|tbd"
+    r"|placeholder|example|dummy|sample|redacted|\*+)$",
+    re.IGNORECASE,
+)
+
+
+def _secret_value_check(
+    file_path: str, line_start: int, category: str,
+) -> ValidationCheck | None:
+    """Is a secret actually present on the cited line? None when N/A."""
+    if str(category).strip().upper() not in _SECRET_CLASS_CWES:
+        return None
+    if line_start < 1:
+        return None
+    # Imported locally, matching the deliberate local import below: the
+    # module-level form invites reuse as a hard skip in a detector.
+    from shared.tools.line_context import strip_strings_and_comments
+    lines = _read_lines_cached(file_path)
+    if not lines or line_start > len(lines):
+        return ValidationCheck(
+            id="secret_value", result="unreadable", weight=0.0,
+            reason="could not read the cited line to confirm a value is present",
+        )
+    raw = lines[line_start - 1]
+    # Comment-only lines carry no assignment worth reporting on.
+    stripped = strip_strings_and_comments(raw) if raw else ""
+    m = _ASSIGNMENT_RE.search(raw)
+    value = (m.group("value") if m else "").strip().strip("\"'")
+    if not value:
+        return ValidationCheck(
+            id="secret_value", result="absent", weight=-0.30,
+            reason="the cited line declares the key but assigns NO value, so no "
+                   "secret is present here",
+            extras={"value_present": False, "value_chars": 0,
+                    "code_present": bool(stripped.strip())},
+        )
+    if _PLACEHOLDER_RE.match(value):
+        return ValidationCheck(
+            id="secret_value", result="placeholder", weight=-0.30,
+            reason="the assigned value is a placeholder or an indirection, not a "
+                   "literal credential",
+            extras={"value_present": True, "value_chars": len(value),
+                    "placeholder": True},
+        )
+    return ValidationCheck(
+        id="secret_value", result="present", weight=0.0,
+        reason="a non-placeholder value is assigned on the cited line",
+        extras={"value_present": True, "value_chars": len(value)},
+    )
+
+
+# ─── Input validation on the interpolated value (injection family) ──
+#
+# An interpolated value that is provably validated cannot carry an injection,
+# and nothing in the pipeline could see that. Measured on one run:
+# `seed-poll-verifications.qa.ts:423` interpolates `pollId` into a SQL string
+# and scored 0.99 `high_confidence`, while the identifier is validated at the
+# handler entry ~100 lines above by an anchored regex
+# (`UUID_RE.test(pollId)`, `UUID_RE = /^[0-9a-f]{8}-...$/i`) — so no quote or
+# semicolon can reach the sink. A sibling row interpolates `targetLabel`,
+# whitelisted by `VALID_LABELS.includes(targetLabel)`.
+#
+# Why this is not the existing `sanitizer` check with a weight put back on it:
+# that one matches a MITIGATION PATTERN anywhere in the class's search extent,
+# so a file using prepared statements in nine places and interpolating in the
+# tenth would be demoted. Its weight was zeroed for that reason (it had also
+# been the wrong SIGN, promoting SQLi found next to a prepared statement). This
+# check instead resolves the specific identifiers interpolated AT THE CITED
+# LINE and demotes only when EVERY one of them is individually guarded.
+#
+# Anchoring is load-bearing. An unanchored pattern proves nothing —
+# `/[0-9a-f-]+/.test(x)` passes for `' OR 1=1--` on a substring — so only a
+# `/^...$/` literal counts.
+#
+# Deliberately conservative in three ways, because the failure this must never
+# introduce is dismissing a real injection:
+#   * only bare identifiers are resolved. `${r.id}`, `${sqlStr(v)}` and every
+#     other expression count as UNGUARDED, so they can only withhold a
+#     demotion, never cause one.
+#   * only two guard shapes are recognised (anchored regex, membership). The
+#     equality-chain shape (`c !== "CA" && c !== "US"`) and numeric coercion
+#     are not, so findings guarded that way keep their score.
+#   * the search is FILE scope, matching what the obligation check already
+#     uses for these classes. A file that guards one path and leaves another
+#     open is therefore only demoted to `suspicious`, never dismissed.
+_INPUT_VALIDATION_CWES: frozenset[str] = frozenset({
+    "CWE-89", "CWE-78", "CWE-79", "CWE-22", "CWE-94", "CWE-918",
+})
+# `${ ... }` — JS/TS template literal. The body cannot itself contain braces,
+# which keeps a nested object literal out rather than mis-parsing it.
+_INTERP_JS_RE = re.compile(r"\$\{([^{}]{1,200})\}")
+# `{ ... }` inside an f-string. Requires the `f"`/`f'` prefix on the same line
+# so a plain dict literal is not read as interpolation.
+_INTERP_PY_RE = re.compile(r"\{([^{}!:]{1,200})\}")
+_FSTRING_HINT_RE = re.compile(r"""(?<![\w.])f["']""")
+_BARE_IDENT_RE = re.compile(r"^[A-Za-z_$][\w$]{0,63}$")
+# `const UUID_RE = /^...$/i` — a name bound to an ANCHORED regex literal.
+_RE_BINDING_RE = re.compile(
+    r"^\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]{0,63})\s*(?::[^=]{1,80})?=")
+_ANCHORED_LITERAL_RE = re.compile(r"/\^.{1,400}\$/[gimsuy]{0,6}")
+_INPUT_VALIDATION_ID = "input_validation"
+
+
+# A value that can only ever be one of a few constants cannot carry a quote
+# or a semicolon, so the sink is unreachable however it is concatenated.
+# Measured: `seed-poll-verifications.qa.ts:367` interpolates `pollId` AND
+# `label`, where `label` is a local assigned only `"UNVERIFIED"` /
+# `"PLATINUM"` / `"GOLD"`. With only the pattern and membership shapes that
+# row came out `partial` and kept its 0.99.
+#
+# A bare literal, and nothing else: an interpolated template (`` `x${q}` ``)
+# and a concatenation (`"a" + q`) both fail, which is the whole point.
+_LITERAL_RHS_RE = re.compile(
+    r'^(?:"[^"\\]{0,200}"'                  # "..."
+    r"|'[^'\\]{0,200}'"                     # '...'
+    r"|`[^`$\\]{0,200}`"                    # `...`, no ${} interpolation
+    r"|[+-]?\d{1,20}(?:\.\d{1,20})?"        # numeric
+    r"|true|false|null|True|False|None"     # JS + Python singletons
+    r")$"
+)
+# Lines that can introduce a name from OUTSIDE the file's control.
+_PARAM_LINE_TOKENS = ("function", "=>", "def ", "catch", "lambda")
+
+
+def _is_literal_rhs(text: str) -> bool:
+    """Is this right-hand side a bare literal?
+
+    Three candidates rather than one strip pass, so a literal that CONTAINS a
+    comment marker (`let u = "http://x"`) is not truncated into a non-literal
+    by the comment strip and then wrongly refused.
+    """
+    for cand in (text, text.split(";", 1)[0],
+                 text.split("//", 1)[0].split(";", 1)[0]):
+        stripped = cand.strip().rstrip(",").rstrip(";").strip()
+        if stripped and _LITERAL_RHS_RE.match(stripped):
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize=256)
+def _ident_literal_patterns(ident: str) -> tuple[re.Pattern[str], ...]:
+    """(plain assignment, compound assignment, destructuring, signature line)."""
+    esc = re.escape(ident)
+    return (
+        # `x =` — never `==`, `===`, `!=`, `<=`, `>=`, `x:` (a `+=` cannot
+        # match either: `\s{0,8}` cannot consume the `+`).
+        re.compile(rf"(?<![\w.$]){esc}\s{{0,8}}=(?!=)"),
+        # `x += q` — an assignment this scan would otherwise never see, so it
+        # has to disqualify explicitly rather than be counted as literal.
+        re.compile(rf"(?<![\w.$]){esc}\s{{0,8}}(?:\+|-|\*|/|%|&|\||\^|<<|>>)="),
+        # `const { x } = request.body` / `const [x] = ...`
+        re.compile(rf"(?:const|let|var)\s{{1,4}}[{{\[][^;]{{0,200}}"
+                   rf"(?<![\w.$]){esc}(?![\w$])"),
+        # `  x: string,` / `  x,` — one line of a multi-line signature.
+        re.compile(rf"^\s{{0,32}}{esc}\s{{0,4}}(?::\s{{0,4}}[^,;=]{{0,80}})?,?\s{{0,4}}$"),
+    )
+
+
+def _is_bound_input(ident: str, lines: tuple[str, ...]) -> bool:
+    """Is `ident` introduced as a parameter or a destructuring target?
+
+    Load-bearing: without it a literal local in one function would vouch for a
+    same-named tainted parameter in another. Deliberately over-approximates —
+    a false hit only withholds a demotion, so an object-literal shorthand read
+    as a signature line costs nothing.
+    """
+    word = _ident_word_re(ident)
+    _plain, _compound, destructure, sig_line = _ident_literal_patterns(ident)
+    for raw in lines:
+        if ident not in raw:            # prefilter; a word match implies this
+            continue
+        if not word.search(raw):
+            continue
+        if destructure.search(raw) or sig_line.match(raw):
+            return True
+        if any(tok in raw for tok in _PARAM_LINE_TOKENS):
+            _head, paren, rest = raw.partition("(")
+            if paren and word.search(rest.split(")", 1)[0]):
+                return True
+    return False
+
+
+@functools.lru_cache(maxsize=256)
+def _ident_word_re(ident: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![\w.$]){re.escape(ident)}(?![\w$])")
+
+
+def _is_literal_only(ident: str, lines: tuple[str, ...]) -> bool:
+    """Is every value `ident` can hold in this file a bare literal?"""
+    if _is_bound_input(ident, lines):
+        return False
+    plain, compound, _destructure, _sig = _ident_literal_patterns(ident)
+    assignments = 0
+    for raw in lines:
+        if ident not in raw:
+            continue
+        if compound.search(raw):
+            return False
+        m = plain.search(raw)
+        if m is None:
+            continue
+        assignments += 1
+        if not _is_literal_rhs(raw[m.end():]):
+            return False
+    return assignments > 0
+
+
+@functools.lru_cache(maxsize=256)
+def _ident_guard_patterns(ident: str) -> tuple[re.Pattern[str], ...]:
+    """Compiled guard shapes for one identifier, in evidence order.
+
+    Every shape requires a REJECTION form — a leading `!`, or `indexOf`
+    compared against -1. A validation gate rejects a value outside the
+    permitted set (`if (!UUID_RE.test(id)) return 400`), so it reads negated;
+    a bare membership test constrains nothing about what follows it.
+    Measured: `scripts/lib/staged-io.cjs` interpolates a `file` parameter into
+    a git argv while a DIFFERENT function reads
+    `if (NOISE_FILES.has(file)) return true;` — a skip-filter. Crediting that
+    reintroduced exactly the flaw the file-scope `sanitizer` match was zeroed
+    for.
+
+    A positive gate wrapping the sink (`if (VALID.includes(x)) { sink }`) is
+    equally sound but deliberately unrecognised: refusing to demote is the
+    safe direction, and every measured true positive is negated.
+    """
+    esc = re.escape(ident)
+    return (
+        # `!/^...$/.test(x)` — anchored literal used inline
+        re.compile(rf"!\s{{0,4}}/\^.{{1,400}}\$/[gimsuy]{{0,6}}\s*\.test\("
+                   rf"\s*{esc}\s*[,)]"),
+        # `!NAME.test(x)` — NAME resolved against the file's anchored bindings
+        re.compile(rf"!\s{{0,4}}([A-Za-z_$][\w$]{{0,63}})\.test\(\s*{esc}\s*[,)]"),
+        # `!LIST.includes(x)` / `!SET.has(x)`
+        re.compile(rf"!\s{{0,4}}[\w.$]{{0,64}}\.(?:includes|has)\(\s*{esc}\s*[,)]"),
+        # `LIST.indexOf(x) === -1` / `< 0` — indexOf's own rejection form
+        re.compile(rf"\.indexOf\(\s*{esc}\s*\)\s{{0,4}}"
+                   rf"(?:={{2,3}}\s{{0,4}}-\s{{0,4}}1|<\s{{0,4}}0)"),
+    )
+
+
+def _anchored_regex_names(lines: tuple[str, ...]) -> frozenset[str]:
+    """Names in this file bound to an anchored (`/^...$/`) regex literal."""
+    names: set[str] = set()
+    for raw in lines:
+        if "/^" not in raw:
+            continue
+        m = _RE_BINDING_RE.match(raw)
+        if m and _ANCHORED_LITERAL_RE.search(raw):
+            names.add(m.group(1))
+    return frozenset(names)
+
+
+def _interpolated_identifiers(line: str) -> tuple[list[str], int]:
+    """(bare identifiers interpolated here, count of unresolvable expressions)."""
+    exprs = [m.group(1) for m in _INTERP_JS_RE.finditer(line)]
+    if not exprs and _FSTRING_HINT_RE.search(line):
+        exprs = [m.group(1) for m in _INTERP_PY_RE.finditer(line)]
+    idents: list[str] = []
+    opaque = 0
+    for expr in exprs:
+        candidate = expr.strip()
+        if _BARE_IDENT_RE.match(candidate):
+            if candidate not in idents:
+                idents.append(candidate)
+        else:
+            opaque += 1
+    return idents, opaque
+
+
+def _guard_for(
+    ident: str, lines: tuple[str, ...], anchored: frozenset[str],
+) -> str | None:
+    """How `ident` is guarded in this file, or None."""
+    inline_re, named_re, member_re, indexof_re = _ident_guard_patterns(ident)
+    for raw in lines:
+        if ident not in raw:        # prefilter — cheaper than any of the four
+            continue
+        if inline_re.search(raw):
+            return "anchored_regex"
+        m = named_re.search(raw)
+        if m and m.group(1) in anchored:
+            return "anchored_regex"
+        if member_re.search(raw) or indexof_re.search(raw):
+            return "membership"
+    # Checked last: it is a whole-file property rather than a single line, so
+    # it costs a second pass and the two cheap line shapes above usually win.
+    if _is_literal_only(ident, lines):
+        return "literal_only"
+    return None
+
+
+def _input_validation_check(
+    file_path: str, line_start: int, category: str,
+) -> ValidationCheck | None:
+    """Are the values interpolated at the cited line provably validated?"""
+    if str(category).strip().upper() not in _INPUT_VALIDATION_CWES:
+        return None
+    if line_start < 1:
+        return None
+    lines = _read_lines_cached(file_path)
+    if not lines or line_start > len(lines):
+        return ValidationCheck(
+            id=_INPUT_VALIDATION_ID, result="unreadable", weight=0.0,
+            reason="could not read the cited line to resolve its interpolations",
+        )
+    idents, opaque = _interpolated_identifiers(lines[line_start - 1])
+    if not idents:
+        return ValidationCheck(
+            id=_INPUT_VALIDATION_ID, result="no_identifiers", weight=0.0,
+            reason="no bare interpolated identifier to resolve on the cited line",
+            extras={"opaque_expressions": opaque},
+        )
+    anchored = _anchored_regex_names(lines)
+    guards = {i: _guard_for(i, lines, anchored) for i in idents}
+    unguarded = [i for i, g in guards.items() if g is None]
+    extras: dict[str, Any] = {
+        "identifiers": idents,
+        "guards": {i: g for i, g in guards.items() if g},
+        "unguarded": unguarded,
+        "opaque_expressions": opaque,
+    }
+    if unguarded or opaque:
+        result = "partial" if len(unguarded) < len(idents) or opaque else "unguarded"
+        if not any(guards.values()):
+            result = "unguarded"
+        return ValidationCheck(
+            id=_INPUT_VALIDATION_ID, result=result, weight=0.0,
+            reason=("not every interpolated value is provably validated, so the "
+                    "sink stays reachable"),
+            extras=extras,
+        )
+    return ValidationCheck(
+        id=_INPUT_VALIDATION_ID, result="guarded", weight=-0.40,
+        reason=("every value interpolated here is validated in this file "
+                "(anchored pattern or membership), so no metacharacter reaches "
+                "the sink"),
+        extras=extras,
+    )
+
+
 def _finding_checks(
     f: dict[str, Any], source_root: str,
 ) -> list[ValidationCheck]:
@@ -523,9 +933,13 @@ def _finding_checks(
     line_start = int(f.get("line_start") or 0)
     category = f.get("category", "") or ""
     san = _sanitizer_check(file_path, line_start, category)
+    secret = _secret_value_check(file_path, line_start, category)
+    inputval = _input_validation_check(file_path, line_start, category)
     return [
         _path_check(file_path),
         *_optional_checks(f, file_path, line_start),
+        *([secret] if secret is not None else []),
+        *([inputval] if inputval is not None else []),
         san,
         _obligation_for(f, san, category, file_path, line_start, source_root),
     ]
@@ -558,6 +972,7 @@ def run_l1(
 
     Layer-isolated (RC3): one finding raising does NOT prevent others.
     """
+    set_l1_source_root(source_root)
     results: list[list[ValidationCheck]] = []
     for f in findings:
         try:

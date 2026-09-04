@@ -22,6 +22,8 @@ from shared.audit_runner import compute_score
 from shared.owasp.coverage import STATUS_ABSENT, STATUS_COMPLETED, build_manifest
 from shared.owasp.mapping import Edition, UnknownEditionError, load_edition, parse_cwe_id
 from shared.transport.event_emitter import AgUiEventEmitter
+from shared.env import env_flag
+from shared.tools.window import WINDOW_INHERITED, record_window_reason
 
 _PREREQ_NOTICE = (
     "OWASP agent requires the CWE agent to run first. No CWE findings were "
@@ -59,9 +61,22 @@ _CARRY = (
 # travel; scrubbed defensively so widening _CARRY cannot re-open that door.
 _SNIPPET_BEARING = ("quote_text", "code_snippet", "snippet", "evidence_quote")
 
+# The window check id, dropped on carry — see _scrub_validation.
+_WINDOW_CHECK_ID = "window"
+
 
 def _scrub_validation(blob: Any) -> Any:
-    """Drop snippet-bearing extras from a carried validation blob."""
+    """Drop snippet-bearing extras, and the twin's window reason, from a
+    carried validation blob.
+
+    The window check is dropped because the WINDOW is the one thing this carry
+    deliberately does not bring: 0063 forbids the snippet, so a CWE twin's
+    `window: present` would assert evidence that is not on this row — and
+    because `record_window_reason` lets the first reason win, it would also
+    suppress the truthful `inherited` stamp applied in `_relabel`. Measured
+    before this drop: 339 of 340 persisted OWASP rows had an empty snippet and
+    claimed `present`.
+    """
     if not isinstance(blob, dict):
         return blob
     checks = blob.get("checks")
@@ -69,6 +84,8 @@ def _scrub_validation(blob: Any) -> Any:
         return blob
     cleaned = []
     for check in checks:
+        if isinstance(check, dict) and check.get("id") == _WINDOW_CHECK_ID:
+            continue
         if isinstance(check, dict) and isinstance(check.get("extras"), dict):
             check = {**check, "extras": {
                 k: v for k, v in check["extras"].items()
@@ -86,6 +103,11 @@ def _manifest_summary(m: dict) -> str:
             f"mapped CWEs found ({c['status']})"
         )
     return "\n".join(lines)
+
+
+def _window_parity_enabled() -> bool:
+    """``VULTURE_FINDING_WINDOW_PARITY`` — default TRUE, read at call time."""
+    return env_flag("VULTURE_FINDING_WINDOW_PARITY", True)
 
 
 def _relabel(finding: dict, cat, cwe_id: int, run_id: str, idx: int) -> dict:
@@ -108,6 +130,14 @@ def _relabel(finding: dict, cat, cwe_id: int, run_id: str, idx: int) -> dict:
     out["references"] = list(dict.fromkeys([*finding.get("references", []), cat.source_url]))
     title = finding.get("title") or f"CWE-{cwe_id}"
     out["title"] = title if title.startswith(f"[{cat.id}]") else f"[{cat.id}] {title}"
+    # Feature 0082 C10: this agent never reads source (see the module docstring)
+    # and 0063 forbids carrying the CWE row's snippet, so an OWASP row has no
+    # code window BY DESIGN. Record that, so an empty window here is
+    # distinguishable from a failed read. `inherited` is the honest label even
+    # for the 71 of 342 rows that sit at a rollup parent's line — what happened
+    # is that the window was not carried, not that a parent stood in for members.
+    if _window_parity_enabled() and not out.get("code_snippet"):
+        record_window_reason(out, WINDOW_INHERITED)
     return out
 
 
