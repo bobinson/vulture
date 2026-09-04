@@ -133,7 +133,7 @@ class ValidateConfig:
     top_n_for_llm: int = 1000          # feature 0046 D4: locked at 1000
     enable_l1: bool = True
     enable_l2: bool = True
-    enable_l5: bool = False             # master switch for L5 LLM judge (0046)
+    enable_l5: bool = False            # master switch for L5 LLM judge (0046)
     preserve_validation_history: bool = False
     line_tolerance: int = 2             # L3 grouping width (currently Go-side; here for parity)
     # L5-specific knobs (feature 0046 §I, all overridable via env)

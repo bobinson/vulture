@@ -180,9 +180,17 @@ def ensure_code_window(
                 if resolved is not None:
                     lines = read_file_lines(resolved)
                     if lines:
+                        # Pass the declared END so a multi-line finding is
+                        # windowed over its whole range, not just around its
+                        # first line — see _SPAN_MAX_LINES in snippet.py.
+                        try:
+                            line_end = int(f.get("line_end") or 0)
+                        except (TypeError, ValueError):
+                            line_end = 0
                         snippet = extract_snippet(
                             lines, line_start,
                             context=context, max_chars=max_chars,
+                            line_end=line_end or None,
                         )
                         if snippet:
                             f["code_snippet"] = snippet

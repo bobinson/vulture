@@ -169,7 +169,11 @@ class TestCacheCarriesClosure:
             check_id="c", model="m",
         )
         # v3-evidence: 0072 T5.3 added evidence_line to the verdict schema.
-        assert l5_cache._VERDICT_SCHEMA_VERSION == "v3-evidence"
+        # v4-tools: the judge's read-only tools became unconditional, so a
+        # verdict reached WITHOUT them must not be replayed for up to 30 days.
+        # The invariant this test guards (a schema/capability change bumps the
+        # version, making pre-change rows unreachable) is unchanged.
+        assert l5_cache._VERDICT_SCHEMA_VERSION == "v4-tools"
         # A version bump must change the key, so pre-change rows go unreachable.
         old = l5_cache._VERDICT_SCHEMA_VERSION
         try:

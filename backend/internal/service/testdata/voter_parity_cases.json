@@ -9,7 +9,7 @@
     "the failure mode it exists to catch.",
     "",
     "Built by feature 0072. Before it, both voter headers described this test and",
-    "the Python one claimed CI enforced it — neither the fixture nor either test",
+    "the Python one claimed CI enforced it \u2014 neither the fixture nor either test",
     "existed, so the two implementations were free to drift silently."
   ],
   "cases": [
@@ -517,7 +517,7 @@
     },
     {
       "name": "0076: an absent anchor demotes authoritatively, solo",
-      "_note": "feature 0076 seats `anchor` in the authoritative demoting set. ONE demoting check must reach likely_fp — the additive path could not (clamp(0.5+0.4-1.0)=0.0 with demoting_count=1 classifies as `suspicious`) — and the cap pins confidence at <=0.05. The operator's own positive label does not save it: an evidence quote that matches nowhere is mechanical, not advisory.",
+      "_note": "feature 0076 seats `anchor` in the authoritative demoting set. ONE demoting check must reach likely_fp \u2014 the additive path could not (clamp(0.5+0.4-1.0)=0.0 with demoting_count=1 classifies as `suspicious`) \u2014 and the cap pins confidence at <=0.05. The operator's own positive label does not save it: an evidence quote that matches nowhere is mechanical, not advisory.",
       "checks": [
         {
           "id": "anchor",
@@ -557,7 +557,7 @@
     },
     {
       "name": "0076: a located anchor status never promotes",
-      "_note": "AC27: every status but `absent` carries weight exactly 0.0. A quote that WAS found is not evidence the accusation is true — on the adjudicated population the best-quoting rows include the worst false positives — so `exact` leaves the 0.5 prior alone.",
+      "_note": "AC27: every status but `absent` carries weight exactly 0.0. A quote that WAS found is not evidence the accusation is true \u2014 on the adjudicated population the best-quoting rows include the worst false positives \u2014 so `exact` leaves the 0.5 prior alone.",
       "checks": [
         {
           "id": "anchor",
@@ -568,6 +568,101 @@
       "want": {
         "status": "suspicious",
         "confidence": 0.5
+      }
+    },
+    {
+      "name": "secret_value absent withholds confirmation from a strong judge",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "real_bug",
+          "weight": 0.6
+        },
+        {
+          "id": "secret_value",
+          "result": "absent",
+          "weight": -0.3
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.8
+      }
+    },
+    {
+      "name": "secret_value present does not withhold confirmation",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "real_bug",
+          "weight": 0.6
+        },
+        {
+          "id": "secret_value",
+          "result": "present",
+          "weight": 0.0
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.99
+      }
+    },
+    {
+      "name": "input_validation guarded withholds confirmation from a strong judge",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "real_bug",
+          "weight": 0.525
+        },
+        {
+          "id": "input_validation",
+          "result": "guarded",
+          "weight": -0.4
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.625
+      }
+    },
+    {
+      "name": "input_validation partial does not withhold confirmation",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "real_bug",
+          "weight": 0.525
+        },
+        {
+          "id": "input_validation",
+          "result": "partial",
+          "weight": 0.0
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.99
+      }
+    },
+    {
+      "name": "input_validation guarded plus a demoting judge reaches likely_fp",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "demoted",
+          "weight": -0.6
+        },
+        {
+          "id": "input_validation",
+          "result": "guarded",
+          "weight": -0.4
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.0
       }
     }
   ]

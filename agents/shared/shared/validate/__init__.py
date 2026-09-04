@@ -12,6 +12,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from shared.tools.window import record_window_reason, window_reason_of
+
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
 from .llm_judge import (
@@ -24,7 +26,7 @@ from .llm_judge import (
     stamp_coverage,
 )
 from .refutation import clear_route_model_cache, obligation_check
-from .rollup import run_l2
+from .rollup import derive_parent_verdicts, run_l2
 from .types import (
     FindingValidation,
     ValidateConfig,
@@ -32,7 +34,6 @@ from .types import (
     ValidationResult,
 )
 from .voter import JUDGE_UNDECIDED, OBLIGATION_ID, vote
-from shared.tools.window import record_window_reason, window_reason_of
 
 # Verdict states that assert NOTHING about the finding. Neither is a survival
 # signal, so neither may re-tag provenance as judge-verified (0072 T4.8).
@@ -526,6 +527,11 @@ def _emit_summary(
         f"fp={counts['likely_fp']} · "
         f"rollups={len(rollups)}"
     )
+    # Derive each parent's verdict from its members BEFORE mirroring: the
+    # members are fully voted by now (L1 + L2 + L5), and until this ran the
+    # mirror copied a hardcoded placeholder onto the columns, so every parent
+    # row read `suspicious` / 0.40 whatever its members said.
+    derive_parent_verdicts(out_findings, rollups)
     # Mirror status/confidence onto rollup parents so the UI's
     # status filter doesn't skip parent rows persisted with NULL.
     for parent in rollups:

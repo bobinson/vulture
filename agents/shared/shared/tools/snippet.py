@@ -20,16 +20,36 @@ def is_standard_port(port: int) -> bool:
 _LINE_BUDGET_LINE_CHARS = 400
 
 
+# A finding that declares a RANGE must be windowed over that range. Measured:
+# `prepaidLetterCheckout.action.ts` declared line_start=120, line_end=131 and
+# got a 5-line window at 118-122, because only `line_num` was ever consulted.
+# The `} catch { ... }` at line 129 — the evidence that REFUTED the finding —
+# sat outside it, so the L5 judge answered "the catch block is not visible,
+# making it impossible to confirm", returned weight 0, and a factually false
+# finding shipped at critical severity.
+#
+# Capped so a finding claiming a whole file cannot blow the prompt budget.
+_SPAN_MAX_LINES = 40
+# A 200-char whole-snippet cut cannot hold a multi-line span, so a spanned
+# window is given the line-budget treatment instead of being truncated
+# mid-token — which would reintroduce exactly the invisible-evidence problem.
+_SPAN_MIN_CHARS = 2000
+
+
 def extract_snippet(
     lines: Sequence[str], line_num: int, context: int = 2,
-    max_chars: int | None = 200,
+    max_chars: int | None = 200, line_end: int | None = None,
 ) -> str:
-    """Extract ±context lines around line_num.
+    """Extract ±context lines around line_num, or the declared span.
 
     Args:
         lines: Source file split into lines.
         line_num: 1-based line number of the finding.
         context: Number of surrounding lines to include.
+        line_end: 1-based END of a declared multi-line range. When it exceeds
+            ``line_num`` the window covers the whole range plus ``context`` on
+            each side, capped at ``_SPAN_MAX_LINES``. Omitted or <= line_num
+            reproduces the previous symmetric behaviour byte for byte.
         max_chars: Character truncation for the whole snippet — 200 by
             default (the legacy contract every skill call site relies on).
             Pass ``None`` for LINE-budget mode (feature 0072 T5.2): the
@@ -44,6 +64,15 @@ def extract_snippet(
         return ""
     start = max(0, line_num - 1 - context)
     end = min(len(lines), line_num + context)
+    try:
+        span_end = int(line_end) if line_end is not None else 0
+    except (TypeError, ValueError):
+        span_end = 0
+    if span_end > line_num:
+        end = min(len(lines), span_end + context, start + _SPAN_MAX_LINES)
+        # A character cut would truncate the span it was just widened to hold.
+        if max_chars is not None:
+            max_chars = max(max_chars, _SPAN_MIN_CHARS)
     if max_chars is None:
         snippet = "\n".join(
             f"{i + 1}: {lines[i][:_LINE_BUDGET_LINE_CHARS]}"

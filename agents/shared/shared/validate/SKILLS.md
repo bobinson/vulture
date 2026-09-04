@@ -62,8 +62,16 @@ models (`text-embedding-*`) automatically.
 | `VULTURE_VALIDATE_LLM_TIMEOUT_MS` | `300000` (5 min) | Raise for very large codebases or very slow models |
 | `VULTURE_VALIDATE_LLM_PER_BATCH_TIMEOUT_MS` | `30000` (30 s) | Raise to 60–120 s for ≥20B local models |
 | `VULTURE_VALIDATE_LLM_MODEL` | (unset) | Override the L5 model independently of the audit's main LLM |
-| `VULTURE_VALIDATE_LLM_TOOLS` | `false` | 0072 P3b: give the judge read-only tools (`read_file`, `search_pattern`, `parse_ast`), source-root confined. Off by default — the `tools=` parameter breaks some local providers (those batches fall back to plain judging) |
-| `VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS` | `4` | Tool-call budget per batch request (enough to read a span and search twice). Exhaustion yields *could not decide* — never a verdict from the partial view. With tools on, lower `VULTURE_VALIDATE_LLM_BATCH_SIZE` (1–3) so the budget serves few findings |
+
+**The judge's tools are unconditional.** It holds read-only `read_file`,
+`search_pattern` and `parse_ast`, confined to the scanned root, wherever a
+source root is available — there is no switch. The tool budget is fixed at 4
+calls per batch request (enough to read a span and search twice); exhausting it
+yields *could not decide* for the whole batch, never a verdict built on the
+partial view. Because that budget is per batch, lower
+`VULTURE_VALIDATE_LLM_BATCH_SIZE` to 1–3 when you want the judge to actually
+use the tools. A provider that rejects the `tools=` parameter is handled by the
+fallback in `_judge_batch`, which degrades that batch to plain judging.
 
 ### Obligation gate knobs (feature 0072)
 

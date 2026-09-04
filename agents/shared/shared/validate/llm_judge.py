@@ -152,7 +152,8 @@ class _L5Runtime:
     model: str
     system_prompt: str
     # Feature 0072 P3b: the scanned tree's root. What lets the judge hold
-    # read-only tools — empty means no tools regardless of the flag.
+    # read-only tools — empty means no tools, since reads could not be
+    # confined.
     source_root: str = ""
     tools_on: bool = False
     max_tool_calls: int = 0
@@ -162,7 +163,7 @@ def _resolve_l5_runtime(
     config: ValidateConfig, source_path: str = "",
 ) -> Optional[_L5Runtime]:
     """Resolve all run_l5 runtime knobs; None on hard precondition fail."""
-    from .judge_tools import max_tool_calls, tools_enabled
+    from .judge_tools import DEFAULT_MAX_TOOL_CALLS
 
     model = _resolve_model(config)
     if not model:
@@ -181,8 +182,10 @@ def _resolve_l5_runtime(
         model=model,
         system_prompt=system_prompt,
         source_root=source_path,
-        tools_on=tools_enabled() and bool(source_path),
-        max_tool_calls=max_tool_calls(),
+        # Tools need a root to confine reads to; without one they cannot be
+        # offered safely, so the source path is the only precondition.
+        tools_on=bool(source_path),
+        max_tool_calls=DEFAULT_MAX_TOOL_CALLS,
     )
 
 

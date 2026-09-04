@@ -21,7 +21,6 @@ non-raising: a tool failure returns an error STRING the model can read.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -34,8 +33,6 @@ __all__ = [
     "JUDGE_TOOL_SPECS",
     "TOOL_DISCIPLINE_PROMPT",
     "JudgeToolExecutor",
-    "max_tool_calls",
-    "tools_enabled",
 ]
 
 DEFAULT_MAX_TOOL_CALLS = 4       # T3.9: enough to read a span and search twice
@@ -44,22 +41,16 @@ _READ_MAX_LINES = 120
 _READ_LINE_CHARS = 400           # matches the judge's render cap
 _SEARCH_MAX_RESULTS = 25
 _RESULT_MAX_CHARS = 8000         # hard byte-ish bound on any tool result
+_UNLOADED = object()             # sentinel: ignore spec not yet loaded
 
 
-def tools_enabled() -> bool:
-    """Opt-in: the tools change the L5 call shape (``tools=`` parameter),
-    which some local providers reject outright. Default off."""
-    return os.getenv("VULTURE_VALIDATE_LLM_TOOLS", "").strip().lower() in (
-        "1", "true", "yes", "on")
-
-
-def max_tool_calls() -> int:
-    """T3.9: tool-call budget per batch request. Invalid / non-positive
-    values fall back to the default (repo env convention)."""
-    raw = os.getenv("VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS", "").strip()
-    if raw.isdigit() and int(raw) > 0:
-        return int(raw)
-    return DEFAULT_MAX_TOOL_CALLS
+# The tools were opt-in because the ``tools=`` parameter breaks some local
+# providers. That is a provider-compatibility failure, and it already has a
+# real handler: ``_judge_batch`` catches a rejected tool call and degrades to
+# plain judging with a logged notice. The switch guarded a failure the code
+# recovers from anyway, and its cost was that the judge could not open a file
+# on any run — the capability inversion this feature exists to repair. So the
+# tools are unconditional and the fallback is the compatibility story.
 
 
 JUDGE_TOOL_SPECS: list[dict[str, Any]] = [
@@ -166,6 +157,10 @@ class JudgeToolExecutor:
         self.root: Optional[Path] = (
             Path(source_root).resolve() if source_root else None
         )
+        # Loaded lazily and once: parsing .gitignore/.vultureignore per tool
+        # call would re-read them on every judge batch. _UNLOADED distinguishes
+        # "not looked yet" from a legitimately absent spec (None).
+        self._spec: Any = _UNLOADED
 
     # ── dispatch ─────────────────────────────────────────────────────
 
@@ -196,6 +191,104 @@ class JudgeToolExecutor:
 
     # ── helpers ──────────────────────────────────────────────────────
 
+    def _ignore_spec(self):
+        """The scanned tree's own exclusion spec, loaded once per executor.
+
+        Root confinement alone is not the scan's policy. The scanner refuses
+        `.gitignore` and `.vultureignore` paths as well, and those files exist
+        precisely to keep recorded fixtures, vendored blobs and credentials out
+        of an audit. The judge reaching past them would put content the scan
+        never opened into a provider prompt — with the path chosen by a model
+        the judge's own system prompt describes as reading untrusted input.
+        """
+        if self._spec is _UNLOADED:
+            from shared.tools.file_scanner import _load_ignore_spec
+            try:
+                self._spec = _load_ignore_spec(str(self.root))
+            except Exception:
+                # Fail CLOSED-ish: no spec means no extra filtering, which is
+                # the pre-existing behaviour for a tree with no ignore files.
+                self._spec = None
+        return self._spec
+
+    def _is_excluded(self, resolved: Path) -> bool:
+        """Would the scanner have skipped this path? All THREE layers.
+
+        Adversarial review caught this answering only the ignore-spec question.
+        `.gitignore` does not list `.git/`, `node_modules/` or lock files — the
+        scanner skips those through the hardcoded SKIP_DIRS / SKIP_FILES — so a
+        spec-only guard served `.git/config`, which routinely carries a clone
+        token. It also resolved THROUGH symlinks, while the scanner's walker
+        skips them outright, which silently turned a never-scanned entry into a
+        readable one.
+        """
+        from shared.tools.file_scanner import (
+            SKIP_DIRS,
+            SKIP_FILES,
+            _is_backup_dir,
+            _is_path_ignored,
+        )
+        root = Path(self.root)                      # type: ignore[arg-type]
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            return True                             # outside the root: refuse
+        # Layer 1a — a symlink anywhere on the path. `_walk_filtered` never
+        # yields one, so following it reaches content the scan never saw.
+        probe = root
+        for part in rel.parts:
+            probe = probe / part
+            if probe.is_symlink():
+                return True
+        # Layer 1b — the hardcoded skip lists.
+        parts = rel.parts
+        for comp in parts[:-1] if len(parts) > 1 else ():
+            if comp in SKIP_DIRS or _is_backup_dir(comp):
+                return True
+        if parts and (parts[-1] in SKIP_FILES
+                      or parts[-1] in SKIP_DIRS or _is_backup_dir(parts[-1])):
+            return True
+        # Layers 2/3 — .gitignore and .vultureignore at the scan root.
+        spec = self._ignore_spec()
+        if spec is None:
+            return False
+        try:
+            if _is_path_ignored(resolved, root, spec):
+                return True
+            # The walker PRUNES ignored directories and never descends, so a
+            # negation pattern re-including a file inside a pruned directory
+            # ("secrets/" plus "!secrets/keep.txt") leaves that file unscanned
+            # while pathspec reports the file itself as not-ignored. Testing
+            # the file alone therefore diverges from the scan; test every
+            # ancestor the walker would have had to enter.
+            probe = root
+            for part in rel.parts[:-1]:
+                probe = probe / part
+                if _is_path_ignored(probe, root, spec):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _readable(self, path: str) -> "tuple[Optional[Path], str]":
+        """The ONE chokepoint every tool goes through: (resolved, error).
+
+        Hoisted after review found `parse_ast` and `search_pattern` had no
+        exclusion check at all — each tool had been re-implementing the
+        precondition, and two of the three forgot it.
+        """
+        resolved = self._resolve(path)
+        if resolved is None:
+            return None, "Error: path is outside the audited tree"
+        if self._is_excluded(resolved):
+            # T3.8: a bare error invites the model to read this as "the file is
+            # absent", and an absence is the one thing it must not conclude.
+            return None, ("Error: path is excluded from this audit by the "
+                          "scanner's skip rules, .gitignore or .vultureignore "
+                          "— it was never scanned. Do not treat this as "
+                          "evidence of absence.")
+        return resolved, ""
+
     def _resolve(self, path: str) -> Optional[Path]:
         """Resolve a model-supplied path inside the root; None if it escapes."""
         if not path:
@@ -208,7 +301,9 @@ class JudgeToolExecutor:
         return candidate.resolve()
 
     def _read_file(self, path: str, start_line: int, end_line: int) -> str:
-        resolved = self._resolve(path)
+        resolved, err = self._readable(path)
+        if err:
+            return err
         if resolved is None or not resolved.is_file():
             return "Error: path is outside the audited tree or not a file"
         # Bounded read: the model chooses the path, so a huge vendored/minified/
@@ -232,19 +327,45 @@ class JudgeToolExecutor:
             return "Error: empty pattern"
         base: Optional[Path] = self.root
         if subdir:
-            base = self._resolve(subdir)
+            base, err = self._readable(subdir)
+            if err:
+                return err
             if base is None or not base.is_dir():
                 return "Error: subdir is outside the audited tree or not a directory"
-        results = _shared_search_pattern(str(base), pattern)[:_SEARCH_MAX_RESULTS]
-        payload = json.dumps(
-            [{"file": r.get("file", ""), "line": r.get("line", 0),
-              "match": str(r.get("match", ""))[:_READ_LINE_CHARS]}
-             for r in results]
-        )
-        return payload[:_RESULT_MAX_CHARS]
+        # ALWAYS search from the scan ROOT, never from the subdir. The shared
+        # helper re-loads the ignore spec from the directory it is given, so
+        # handing it `sub/` dropped the root's .gitignore entirely — an
+        # ordinary, non-excluded subdir was enough to disable every exclusion.
+        # Scope to the subdir by filtering results instead.
+        results = _shared_search_pattern(str(self.root), pattern)
+        kept = []
+        for r in results:
+            raw = r.get("file", "")
+            if not raw:
+                continue
+            try:
+                hit = Path(raw).resolve()
+            except (OSError, RuntimeError):
+                continue
+            if base is not None and base != self.root:
+                try:
+                    hit.relative_to(base)
+                except ValueError:
+                    continue
+            # Defence in depth: the helper applies the root spec, this also
+            # applies layer 1 and rejects anything the walker would not yield.
+            if self._is_excluded(hit):
+                continue
+            kept.append({"file": raw, "line": r.get("line", 0),
+                         "match": str(r.get("match", ""))[:_READ_LINE_CHARS]})
+            if len(kept) >= _SEARCH_MAX_RESULTS:
+                break
+        return json.dumps(kept)[:_RESULT_MAX_CHARS]
 
     def _parse_ast(self, path: str) -> str:
-        resolved = self._resolve(path)
+        resolved, err = self._readable(path)
+        if err:
+            return err
         if resolved is None or not resolved.is_file():
             return "Error: path is outside the audited tree or not a file"
         return json.dumps(_shared_parse_ast(str(resolved)))[:_RESULT_MAX_CHARS]

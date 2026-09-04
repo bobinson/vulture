@@ -35,7 +35,6 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.finding_collapse import collapse_line_stacks
 from shared.tools.memory_client import _normalize_title, estimate_tokens, safe_estimate_tokens
-from shared.tools.snippet import extract_snippet
 from shared.transport.event_emitter import AgUiEventEmitter
 
 logger = logging.getLogger(__name__)
@@ -1910,20 +1909,67 @@ _WIDE_SNIPPET_CONTEXT = 10   # 21 lines; must stay under the judge's
                              # _WINDOW_LINES_MAX render ceiling (T5.4)
 
 
+# Classes whose evidence is a DATA FLOW: the thing that decides the finding
+# is not on the cited line, so a narrow window cannot show both ends.
+#
+# Width used to be gated solely on `scope_reviewed`, which is bookkeeping
+# about whether a human has reviewed a class's refutation SET — unrelated to
+# how many lines a reader needs. The conflation left every injection class on
+# +/-2 lines, since CWE-89/78/79/22/94/918 are all `_legacy` entries with
+# `scope_reviewed=False`, and left CWE-200 there too for having no entry.
+#
+# Both halves of this set are measured, not assumed:
+#   * the injection six are the codebase's own `SANITIZER_MAP` data-flow
+#     classes (its 770/755 entries are resource and exception handling, not
+#     a flow, and stay narrow). Measured: at +/-2 lines the judge could not
+#     see the anchored-UUID guard at a handler entry ~100 lines above a SQL
+#     sink and confirmed the finding at 0.99.
+#   * the exposure pair. Measured: a genuine plaintext-private-key finding
+#     drew "the snippet only shows privateKey as part of an object literal
+#     ... does not show the database interaction", returned `undecided` at
+#     weight 0, and a real critical settled at the bare 0.5 base — the
+#     `updateUserById` call was 8 lines ABOVE the cited line, which no
+#     downward widening reaches.
+#
+# Add a class here only with new measurement; every entry costs prompt budget
+# on every finding of that class.
+# CWE-89 and CWE-79 are deliberately ABSENT despite being the same shape.
+# Both are pinned narrow by existing contracts — `test_p5_auditability`
+# names CWE-89 in its tight-window list, and CWE-79 is the committed
+# byte-identity golden's canonical "narrow" case in
+# `test_0082_window_extract`. Widening them is a decision about those
+# contracts, not something to fold into a defect fix. Their measured false
+# positives are addressed instead by the `input_validation` check, which
+# resolves the interpolated identifier deterministically and needs no extra
+# prompt budget at all.
+_FLOW_EVIDENCE_CATEGORIES: frozenset[str] = frozenset({
+    "CWE-78",    # OS command injection
+    "CWE-22",    # path traversal
+    "CWE-94",    # code injection
+    "CWE-918",   # SSRF
+    "CWE-200",   # information exposure
+    "CWE-532",   # sensitive data into a log
+})
+
+
 def _snippet_params_for(category: str) -> tuple[int, int | None]:
     """(context_lines, max_chars) for extract_snippet, per weakness class.
 
-    Wide only for classes whose declared scope is wider than a statement AND
-    reviewed (T2.1a): an unreviewed legacy entry still searches the narrow
-    window, so widening its snippet would spend §10's token budget on
-    obligations that cannot use it — today that keeps the widening to the
-    authorization family.
+    Wide for a class whose declared scope is wider than a statement AND
+    reviewed (T2.1a) — today the authorization family — or whose evidence is
+    a data flow (`_FLOW_EVIDENCE_CATEGORIES`).
+
+    Everything else keeps the tight legacy window: a policy class decides on
+    one line, so widening it would spend §10's token budget for nothing and
+    enlarge what `_redact_snippet` has to cover on every secret-bearing CWE.
     """
     from shared.validate.refutation import REFUTATION_MAP, Scope
 
     ref = REFUTATION_MAP.get(category or "")
     if (ref is not None and ref.scope_reviewed
             and ref.scope in (Scope.FUNCTION, Scope.FILE, Scope.WIRING)):
+        return _WIDE_SNIPPET_CONTEXT, None
+    if category in _FLOW_EVIDENCE_CATEGORIES:
         return _WIDE_SNIPPET_CONTEXT, None
     return 2, 200
 
@@ -2153,7 +2199,7 @@ def _preflight_vetoes(effective_use_llm: bool, run_id: str, agent_label: str) ->
         return False, ""
     try:
         reachable, reason = _probe_llm_reachable()
-    except Exception as exc:  # noqa: BLE001 - fail open, see docstring
+    except Exception as exc:
         logger.info("llm_preflight run_id=%s agent=%s probe_error=%s", run_id, agent_label, exc)
         return False, ""
     if reachable:

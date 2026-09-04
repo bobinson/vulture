@@ -21,8 +21,6 @@
 from __future__ import annotations
 
 import logging
-import os
-
 from collections.abc import Iterable
 
 from .types import ValidationCheck
@@ -63,6 +61,14 @@ __all__ = [
 # population a located quote is not a true claim, so no anchor status
 # promotes (0076 AC27).
 AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression", "anchor"})
+
+# Secret-presence check (see context_heuristics._secret_value_check). `absent`
+# means the cited line was read and assigns no value at all.
+SECRET_VALUE_ID = "secret_value"
+SECRET_VALUE_ABSENT = "absent"
+
+INPUT_VALIDATION_ID = "input_validation"
+INPUT_VALIDATION_GUARDED = "guarded"
 
 # ── Feature 0072: obligations ────────────────────────────────────────
 # An obligation is emitted as its OWN check, carrying its state in the
@@ -204,55 +210,39 @@ def _may_confirm(checks: list[ValidationCheck]) -> bool:
     if any(c.id == OBLIGATION_ID and c.result == OBLIGATION_UNKNOWN
            for c in checks):
         return False
-    return not _sole_promoter_is_inadmissible_judge(checks)
-
-
-# ── Solo strong-judge demotion (observe by default) ─────────────────────────
-#
-# `_classify` needs `demoting_count >= 2`, and in practice no second demoter
-# exists. Measured on one 336-finding audit: 95 findings the L5 judge rated
-# NEGATIVE, 94 of which had exactly ONE demoting check -- the judge itself --
-# so only 1 reached `likely_fp`; 80 were blocked solely by the count. Of the
-# other checks, `anchor`/`window`/`obligation`/`coverage`/`sanitizer`/`rollup`
-# are weight-0 by design or ship non-demoting, `path` fired 3 times and
-# `suppression` twice, and `memory` was absent because the run had no prior
-# labels. The judge disagreeing alone is therefore structurally unable to
-# demote, which is why the same pipeline produced 87 likely_fp of 1331 when
-# prior labels supplied a second demoter and 3 of 336 when they did not.
-#
-# The rule below treats a STRONG judge verdict as sufficient on its own:
-# magnitude and score are two independent signals, where a weak verdict plus a
-# low score is one. It does NOT lower `demoting_count >= 2` for everything --
-# that guard exists so a single noisy check cannot bury a finding.
-#
-#   off      rule absent
-#   observe  the counterfactual is recorded, the status is UNCHANGED (default)
-#   enforce  a strong solo judge verdict reaches likely_fp
-SOLO_DEMOTE_JUDGE_ID = "llm_judge"
-SOLO_DEMOTE_MIN_MAGNITUDE = 0.5
-SOLO_DEMOTE_MAX_CONFIDENCE = 0.30
-
-
-def _solo_demote_mode() -> str:
-    """``VULTURE_VOTER_SOLO_DEMOTE`` — off / observe / enforce. Read at call time."""
-    raw = os.environ.get("VULTURE_VOTER_SOLO_DEMOTE", "").strip().lower()
-    return raw if raw in ("off", "observe", "enforce") else "observe"
-
-
-def _solo_demote_applies(
-    checks: list[ValidationCheck], confidence: float, demoting_count: int
-) -> bool:
-    """True when a single strong negative judge verdict should demote.
-
-    Requires that the judge is the ONLY demoter -- with two or more,
-    `_classify` already reaches `likely_fp` and this rule is not consulted.
-    """
-    if confidence >= SOLO_DEMOTE_MAX_CONFIDENCE or demoting_count != 1:
+    # A secret-class finding whose cited line verifiably assigns NO value may
+    # not be CONFIRMED. The value is what the finding is about, and its absence
+    # was read from source — a fact, not an opinion, so a model verdict must not
+    # outrank it. Measured: `backend/config.yaml:3` is literally `admin_secret:`
+    # with nothing after the colon, and the judge (shown a snippet where sibling
+    # values were masked to ***REDACTED***, so it could not tell empty from
+    # masked) called it a hardcoded credential at exploitable=0.9, reaching
+    # 0.99 high_confidence.
+    #
+    # This withholds the LABEL, it does not assert likely_fp: the cited line can
+    # be off by one, or the value can live on a continuation line, and neither
+    # case justifies dismissing the finding outright.
+    if any(c.id == SECRET_VALUE_ID and c.result == SECRET_VALUE_ABSENT
+           for c in checks):
         return False
-    return any(
-        c.id == SOLO_DEMOTE_JUDGE_ID and c.weight <= -SOLO_DEMOTE_MIN_MAGNITUDE
-        for c in checks
-    )
+    # An injection finding whose every interpolated value is provably
+    # validated may not be CONFIRMED. Like `secret_value`, this was read from
+    # source — the identifier is guarded by an anchored pattern or a
+    # membership test in the cited file — so a model verdict formed on a
+    # +/-2-line window must not outrank it. Measured: the judge scored
+    # `seed-poll-verifications.qa.ts:423` a real bug at exploitable=0.85
+    # while `pollId` was UUID-validated at the handler entry 100 lines above.
+    #
+    # The additive weight alone does not settle it: 0.5 base + 0.525 judge -
+    # 0.40 here is 0.625, still inside the confirmed band.
+    #
+    # And, as with `secret_value`, this withholds the LABEL rather than
+    # asserting likely_fp — the guard can be removed tomorrow, and a
+    # file-scope guard need not cover every path into the sink.
+    if any(c.id == INPUT_VALIDATION_ID and c.result == INPUT_VALIDATION_GUARDED
+           for c in checks):
+        return False
+    return not _sole_promoter_is_inadmissible_judge(checks)
 
 
 def vote(checks: Iterable[ValidationCheck]) -> tuple[str, float]:
@@ -279,29 +269,7 @@ def vote(checks: Iterable[ValidationCheck]) -> tuple[str, float]:
     # findings by detection strength is how the refuter itself gets audited.
     if _is_refuted(checks_list):
         return "likely_fp", confidence
-    demoting_count = _count_demoting(checks_list)
-    status = _classify(confidence, demoting_count)
-    # Solo strong-judge demotion. In `observe` the counterfactual is logged and
-    # the status is left exactly as `_classify` returned it, so the delta can be
-    # measured before anything acts on it.
-    mode = _solo_demote_mode()
-    if (
-        mode != "off"
-        and status != "likely_fp"
-        and _solo_demote_applies(checks_list, confidence, demoting_count)
-    ):
-        if mode == "enforce":
-            status = "likely_fp"
-        else:
-            log.info(
-                "[voter] solo_demote_would_apply status=%s confidence=%.3f "
-                "judge_weight=%.3f",
-                status, confidence,
-                next(
-                    c.weight for c in checks_list
-                    if c.id == SOLO_DEMOTE_JUDGE_ID
-                ),
-            )
+    status = _classify(confidence, _count_demoting(checks_list))
     # Withhold the LABEL, never the number. A blocking obligation deliberately
     # does not prevent `likely_fp` — independent refutation may still dismiss a
     # finding whose obligations were never searched.

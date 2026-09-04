@@ -469,6 +469,69 @@ _PHP_RUBY_COMMAND_PATTERNS = COMMAND_INJECTION_PATTERNS + [_BARE_SYSTEM]
 # immediately precedes the matched command sink.
 _CMD_DEF_BEFORE = re.compile(r"\b(?:def|function)\s+$")
 
+# A TypeScript interface member named `eval`/`exec` is a SIGNATURE, not a
+# call. Measured on a real target: 3 of the top-20 critical rows were this
+# one shape in three files, a Redis client's declaration of the EVAL command
+# (Lua scripts for atomic rate limiting):
+#
+#     interface RedisLikeClient {
+#       eval(
+#         script: string,
+#         options: { keys: string[]; arguments: string[] },
+#       ): Promise<unknown>;
+#     }
+#
+# Nothing executes and there is no argument to taint, but
+# `(?<![\w.\]\)])eval\s*\(` sees only an indent before `eval(`.
+#
+# The discriminator is syntactic and free: a parameter type annotation in the
+# argument position is impossible in a call expression — `f(a: T)` is not
+# valid JavaScript — so wherever one appears the construct is a declaration.
+# Two shapes cover the family:
+#
+#   _DECL_PARAM_ANNOTATION   `eval(script: string`   and its `x?: T` optional
+#   _DECL_RETURN_ANNOTATION  `eval(): Promise<void>` — a zero-arg member,
+#                            which carries no parameter to annotate
+#
+# Neither can misread a real call. `eval(a ? b : a)` fails the parameter form
+# (`?` is consumed, then `b` appears where `:` must be) and `eval({ m: 1 })`
+# fails it too (an object literal opens with `{`, not an identifier).
+#
+# This is the TypeScript half of the class `_CMD_DEF_BEFORE` closed for
+# Ruby/PHP.
+_DECL_PARAM_ANNOTATION = re.compile(r"^\s*[A-Za-z_$][\w$]{0,63}\s*\??\s*:")
+_DECL_RETURN_ANNOTATION = re.compile(r"^\s*\)\s*:")
+# A signature's parameter list is formatted one-per-line; 3 is enough to
+# reach the first parameter past the open paren without walking a body.
+_DECL_LOOKAHEAD = 3
+
+
+def _is_declaration_not_call(
+    line: str, match_end: int, line_num: int, lines: list[str],
+) -> bool:
+    """Whether the matched `eval(`/`exec(` opens a SIGNATURE, not a call.
+
+    `match_end` is the offset just past the matched `(`. The argument text is
+    whatever follows it on the same line; when the paren ends the line the
+    argument is on a following one, so look ahead a bounded few.
+    """
+    candidates = [line[match_end:]]
+    if not candidates[0].strip():
+        for nxt in lines[line_num:line_num + _DECL_LOOKAHEAD]:
+            if nxt.strip():
+                candidates.append(nxt)
+                break
+    for text in candidates:
+        # Prefilter: both shapes require a colon. Cheaper than either regex
+        # and skips the overwhelming majority of real calls outright.
+        if ":" not in text:
+            continue
+        if _DECL_PARAM_ANNOTATION.search(text):
+            return True
+        if _DECL_RETURN_ANNOTATION.search(text):
+            return True
+    return False
+
 
 def check_injection(source_path: str) -> dict:
     """Check for CWE injection vulnerabilities (SQL, command, XSS, code).
@@ -754,8 +817,11 @@ def _check_code_injection(
 ) -> None:
     """Check for CWE-94 code injection."""
     for pattern in CODE_INJECTION_PATTERNS:
-        if pattern.search(line):
+        m = pattern.search(line)
+        if m:
             if SAFE_STATIC_CALL.search(line):
+                return
+            if _is_declaration_not_call(line, m.end(), line_num, lines):
                 return
             finding = {
                 "severity": "critical",
