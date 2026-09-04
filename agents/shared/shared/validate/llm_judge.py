@@ -18,6 +18,7 @@ import contextvars
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -1099,7 +1100,7 @@ def _call_llm_with_tools(
     total deadline (T3.9) — the loop adds no second budget, only a bounded
     number of requests (``max_calls`` tool executions, +2 framing turns).
     """
-    from .judge_tools import JUDGE_TOOL_SPECS, TOOL_DISCIPLINE_PROMPT
+    from .judge_tools import JUDGE_TOOL_SPECS, tool_discipline_prompt
 
     client = _get_client()
     if client is None:
@@ -1109,7 +1110,7 @@ def _call_llm_with_tools(
     actual_model = _strip_model_prefix(model)
     messages: list[dict[str, Any]] = [
         {"role": "system",
-         "content": system_prompt + "\n\n" + TOOL_DISCIPLINE_PROMPT},
+         "content": system_prompt + "\n\n" + tool_discipline_prompt(batch_size)},
         {"role": "user", "content": user_msg},
     ]
     calls_used = 0
@@ -1563,15 +1564,57 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
+# ASCII-only on purpose (`re.ASCII`): `float()` accepts any Unicode decimal
+# digit and PEP-515 underscores, so a blanket float() read "٨" as 8.0 and
+# "1_0" as 10.0 — each then clamped to 1.0, i.e. CERTAINLY exploitable. An
+# allowlist pattern also subsumes the "%"/exponent refusal: "80%", "1e-1",
+# "nan" and "inf" all simply fail to match.
+_PLAIN_DECIMAL = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)\Z", re.ASCII)
+
+
+def _plain_decimal(text: str) -> Optional[float]:
+    """A quoted probability, or None when it is not a PLAIN decimal.
+
+    Refusing rather than interpreting is the point: reading ``"80%"`` as 0.8
+    guesses at the model's units, and a probability in scientific notation is
+    far likelier a stray token than a real ``1e-1``. A token this function
+    cannot read must become NO verdict, never a maximal one.
+    """
+    text = text.strip()
+    if not _PLAIN_DECIMAL.match(text):
+        return None
+    # A 400-digit match parses to inf rather than raising; the caller's
+    # finiteness test is what stops it.
+    return float(text)
+
+
+def _coerce_exploitable(value: Any) -> Optional[float]:
+    """The verdict probability as a finite float, or None if it isn't one.
+
+    Mirrors `_coerce_line` (audit_runner.py): a model that answers
+    ``"exploitable": "0.8"`` was dropped in silence for the sake of a pair of
+    quotes, losing the whole verdict. NaN/Infinity are refused explicitly
+    because the caller's clamp does not stop them — ``min(1.0, nan)`` is 1.0,
+    so junk would arrive as CERTAINLY exploitable rather than as no verdict.
+    """
+    if isinstance(value, str):
+        out = _plain_decimal(value)
+    elif isinstance(value, (int, float)):
+        out = float(value)
+    else:
+        return None
+    return out if out is not None and math.isfinite(out) else None
+
+
 def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
     """Validate + normalise one verdict dict; None if shape is wrong."""
     if not isinstance(v, dict):
         return None
     fid = v.get("id")
-    prob = v.get("exploitable")
-    if not isinstance(fid, str) or not isinstance(prob, (int, float)):
+    prob = _coerce_exploitable(v.get("exploitable"))
+    if not isinstance(fid, str) or prob is None:
         return None
-    prob = max(0.0, min(1.0, float(prob)))
+    prob = max(0.0, min(1.0, prob))
     reasoning = (v.get("reasoning") or "")[:_REASONING_MAX_CHARS]
     # Pass the closure assertion through. This normaliser rebuilds a WHITELISTED
     # dict, so any field not named here is silently dropped — which is how the
@@ -1669,11 +1712,21 @@ def _parse_response(raw: str, batch_size: int) -> Optional[list[dict[str, Any]]]
     verdicts = data.get("verdicts")
     if not isinstance(verdicts, list):
         return None
+    considered = verdicts[:batch_size]   # defensive cap
     cleaned: list[dict[str, Any]] = []
-    for v in verdicts[:batch_size]:   # defensive cap
+    for v in considered:
         coerced = _coerce_verdict(v)
         if coerced is not None:
             cleaned.append(coerced)
+    if considered and not cleaned:
+        # The model answered, but every verdict was unusable. Returning [] here
+        # reads to every caller as a SUCCESSFUL parse of nothing, so the
+        # strict-JSON retry never fired and the batch was lost without a log
+        # line. That is a structural failure — say so. An array the model
+        # genuinely returned empty still parses to [] and must not retry.
+        log.warning("[validate.l5] all %d verdicts in a response were "
+                    "malformed; treating as a parse failure", len(considered))
+        return None
     return cleaned
 
 

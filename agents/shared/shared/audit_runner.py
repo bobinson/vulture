@@ -10,6 +10,7 @@ import re
 import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,9 @@ _SKILL_WORKERS = _safe_int_env("VULTURE_SKILL_WORKERS", min(os.cpu_count() or 4,
 # ``VULTURE_LLM_JSON_SCAN=false`` puts the regex back.
 _LLM_JSON_FENCED_RE = re.compile(r"```json\s*(\[.*?\])\s*```", re.DOTALL)
 _LLM_JSON_BARE_RE = re.compile(r"(\[\s*\{.*?\}\s*\])", re.DOTALL)
+
+# A whole-response code fence, label optional — see `_strip_code_fence`.
+_ANY_FENCE_RE = re.compile(r"^```[A-Za-z0-9_+-]*\s*(.*?)\s*```$", re.DOTALL)
 
 # The keys that make a decoded array look like a findings payload. `id` is
 # deliberately absent: it is the only key of the everyday decoy
@@ -3114,7 +3118,39 @@ def _extract_token_usage(result: Any, model: str | None = None) -> tuple[int, in
 _CUSTOM_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 
 
-def _parse_llm_result(result: Any) -> list[dict]:
+@dataclass(frozen=True, eq=False)
+class ParseOutcome:
+    """The parsed rows AND whether the response could be parsed at all.
+
+    A bare ``list`` cannot tell "the model answered and NOTHING parsed" from
+    "the model found nothing" — both are ``[]``. The batch sweep books a failure
+    only on a raised exception, so an unparseable model reset the consecutive-
+    failure counter on every batch and swept the entire tree to report a clean,
+    green, zero-finding run. ``parsed`` is that missing bit.
+
+    Kept sequence-shaped because every caller before this existed to read the
+    rows: a caller that wants only ``rows`` needs no change.
+    """
+
+    rows: list[dict]
+    parsed: bool
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        return self.rows[index]
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, ParseOutcome):
+            return self.rows == other.rows and self.parsed == other.parsed
+        return self.rows == other
+
+
+def _parse_llm_result(result: Any) -> ParseOutcome:
     """Parse findings from an Agent SDK result, handling structured and raw output."""
     final_output = getattr(result, "final_output", None)
     rows = getattr(final_output, "findings", None)
@@ -3125,7 +3161,9 @@ def _parse_llm_result(result: Any) -> list[dict]:
         # Category conformance is NOT here: it moved to
         # `_finalize_finding_inplace`, the one choke point the skill tier also
         # passes through (nine of the thirty measured violations were skill rows).
-        return [_normalize_finding(row.model_dump()) for row in rows]
+        # The structured branch parsed by construction: the SDK already decoded
+        # the schema, so `parsed` is never in doubt on this path.
+        return ParseOutcome([_normalize_finding(row.model_dump()) for row in rows], True)
     return _parse_llm_findings(str(final_output) if final_output is not None else "")
 
 
@@ -3322,7 +3360,8 @@ async def _collect_llm_findings_async(
     try:
         result = await retry_llm_call(_run_agent, max_attempts=3)
         actual_input, actual_output = _extract_token_usage(result, model=model)
-        findings = _verify_and_strip(_parse_llm_result(result), source_path)
+        outcome = _parse_llm_result(result)
+        findings = _verify_and_strip(outcome.rows, source_path)
         cooldown_manager.record_success(resolved_model)
     except LoopDetectedError as exc:
         # Loop is an agent reasoning failure, not a model failure — don't cool down the model.
@@ -3362,7 +3401,21 @@ async def _collect_llm_findings_async(
         # leak in the long-lived agent process (no-op when the broker was off).
         await aclose_broker_client()
 
-    return findings, None, actual_input, actual_output
+    return findings, _unparsed_error(outcome), actual_input, actual_output
+
+
+def _unparsed_error(outcome: ParseOutcome) -> str | None:
+    """A response no extraction strategy matched is a CONTRACT failure, not
+    "nothing found", and must reach the sweep as an ``error``.
+
+    ``_collect_llm_findings_batched_async`` counts only a non-empty ``error``
+    toward ``VULTURE_LLM_MAX_CONSECUTIVE_FAILURES``, and a success RESETS the
+    counter — so before this, a model whose every answer was unparseable walked
+    every batch and finished clean.
+    """
+    if outcome.parsed:
+        return None
+    return "LLM analysis failed (unparseable): no findings array in the model response"
 
 
 def compute_score(findings: list[dict], total_items: int) -> float:
@@ -3390,7 +3443,7 @@ def build_summary(findings: list[dict], categories: list[str], domain_label: str
 
 
 
-def _parse_llm_findings(output: str) -> list[dict]:
+def _parse_llm_findings(output: str) -> ParseOutcome:
     """Extract structured findings from LLM text output.
 
     Attempt order (feature 0076 §5.1), each falling through only on failure so a
@@ -3400,16 +3453,74 @@ def _parse_llm_findings(output: str) -> list[dict]:
     """
     # Category conformance moved to `_finalize_finding_inplace` (see
     # `_parse_llm_result`) so the skill tier is covered by the same call.
-    return [_normalize_finding(row) for row in _extract_finding_rows(output)]
+    rows = _extract_finding_rows(output)
+    return ParseOutcome(
+        rows=[_normalize_finding(row) for row in rows or []],
+        # No text at all is the model saying nothing — there is no payload that
+        # could have failed to parse, so it is not a contract breach.
+        parsed=rows is not None or not output.strip(),
+    )
 
 
-def _extract_finding_rows(output: str) -> list[dict]:
-    """The first attempt that produces a row list wins; ``[]`` when none does."""
-    for attempt in (_fenced_json_rows, _scanned_json_rows, _salvage_truncated_array):
+def _extract_finding_rows(output: str) -> list[dict] | None:
+    """The first attempt that produces a row list wins; ``None`` when none does.
+
+    ``None`` rather than ``[]`` because a strategy that succeeds with zero rows
+    (``[]`` from a compliant model) and no strategy matching at all are opposite
+    outcomes for :class:`ParseOutcome`.
+    """
+    for attempt in (
+        _fenced_json_rows, _scanned_json_rows, _salvage_truncated_array,
+        _empty_array_answer,
+    ):
         rows = attempt(output)
         if rows is not None:
             return rows
-    return []
+    return None
+
+
+def _empty_array_answer(output: str) -> list[dict] | None:
+    """LAST resort: a response that IS an empty JSON array — "nothing found".
+
+    ``_score_array`` rejects a zero-hit array so a prose decoy cannot shadow a
+    real payload, and ``[]`` has zero hits — so the compliant empty answer left
+    ``_extract_finding_rows`` as "no strategy matched", which P5 now reads as an
+    LLM contract FAILURE. Measured: a 20-batch sweep over a clean tree, model
+    answering a bare ``[]``, aborted at batch 3/20 and lost 17 batches. Only the
+    ```` ```json ```` fence was covered; a bare or unlabelled-fence ``[]`` was not.
+
+    Runs last and yields only ``[]``, so it can neither add nor drop a finding:
+    it decides ``parsed``, nothing else.
+    """
+    body = _strip_code_fence(output.strip())
+    return [] if _is_empty_payload(_try_decode(body, 0)) else None
+
+
+def _is_empty_payload(value: Any) -> bool:
+    """Does this decoded response carry a findings array, and is it empty?
+
+    The wrapper arm exists because the two halves of ``{"findings": [...]}`` are
+    treated OPPOSITELY today: with rows, ``_scan_json_arrays`` reaches the inner
+    array and parses; with none, the zero-hit score rejects it. A model that
+    always wraps then works on dirty batches and fails on clean ones.
+
+    Deliberately NOT "any well-formed JSON is an answer": the response must
+    actually contain an empty array, or the contract-failure signal P5 exists
+    for is gone.
+    """
+    if isinstance(value, list):
+        return not value
+    if isinstance(value, dict):
+        return any(item == [] for item in value.values())
+    return False
+
+
+def _strip_code_fence(body: str) -> str:
+    """The inside of a whole-response code fence, labelled or not; *body* as-is
+    when it is not fenced. ``_fenced_json_rows`` only knows the ```` ```json ````
+    label, and a model that omits it is not thereby unparseable."""
+    match = _ANY_FENCE_RE.match(body)
+    return match.group(1).strip() if match is not None else body
 
 
 def _loads_list(text: str | None) -> list | None:
@@ -3854,11 +3965,19 @@ def _normalize_finding(raw: dict) -> dict:
     used to call ``model_dump()`` directly, which is how ``code_snippet`` and
     ``check_id`` leaked from the model on that path only.
     """
+    # The text fields get the same treatment `_coerce_line` gives the numeric
+    # ones (B2): junk costs the FIELD, never the FINDING. Without it a model
+    # emitting `"severity": null` reached `normalize_severity`'s `raw.lower()`,
+    # and the AttributeError escaped the parse into the batch-level
+    # `except Exception` in `_collect_llm_findings_async` — one malformed field
+    # of one row discarded EVERY finding in the batch and booked it as an LLM
+    # failure. `or` rather than a mere `str()` so an explicit null falls back to
+    # the default instead of becoming the string "None".
     normalized: dict[str, Any] = {
-        "severity": normalize_severity(raw.get("severity", "info")),
-        "category": raw.get("category", "unknown"),
-        "title": raw.get("title", "Untitled finding"),
-        "description": raw.get("description", ""),
+        "severity": normalize_severity(str(raw.get("severity") or "info")),
+        "category": str(raw.get("category") or "unknown"),
+        "title": str(raw.get("title") or "Untitled finding"),
+        "description": str(raw.get("description") or ""),
         "file_path": _coerce_path(raw.get("file_path", "")),
         "recommendation": raw.get("recommendation", ""),
     }

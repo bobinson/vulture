@@ -127,7 +127,7 @@ def _connect() -> Optional[sqlite3.Connection]:
 # servable for the full 30-day TTL — suppressing the new capability on
 # exactly the findings already judged, which are the ones a reader looks
 # at first. Old rows become unreachable rather than being deleted.
-_VERDICT_SCHEMA_VERSION = "v4-tools"
+_VERDICT_SCHEMA_VERSION = "v5-tool-trigger"
 
 
 def cache_key(*, file_path: str, line_start: int, line_end: int,
