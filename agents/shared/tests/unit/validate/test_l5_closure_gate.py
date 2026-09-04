@@ -173,7 +173,11 @@ class TestCacheCarriesClosure:
         # verdict reached WITHOUT them must not be replayed for up to 30 days.
         # The invariant this test guards (a schema/capability change bumps the
         # version, making pre-change rows unreachable) is unchanged.
-        assert l5_cache._VERDICT_SCHEMA_VERSION == "v4-tools"
+        # v5-tool-trigger: feature 0089 §10.1 inverted the tool contract
+        # (positive obligation first, real budget interpolated) and qualified
+        # the abstention sentence. A verdict reached under the OLD prompt —
+        # which measured zero tool calls — must not be replayed for 30 days.
+        assert l5_cache._VERDICT_SCHEMA_VERSION == "v5-tool-trigger"
         # A version bump must change the key, so pre-change rows go unreachable.
         old = l5_cache._VERDICT_SCHEMA_VERSION
         try:
