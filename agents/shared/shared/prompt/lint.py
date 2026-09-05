@@ -3,10 +3,18 @@
 Every check is decidable without calling a model. The check number IS the test
 name: check_01_orphan_field -> test_lint_01_orphan_field. A thirteenth check is
 a thirteenth function, never a branch inside an existing one.
+
+Phase 3 adds the CI gate on top, without touching a check: `gate()` partitions
+`lint()`'s output by the spec's own `allow` list, and `main()` sweeps every
+manifest against every capability family. `lint()` itself is unchanged and
+still returns EVERY finding — Phase 1's manifest tests assert that specific
+checks fire, so a filtering `lint()` would silence the very audit record this
+phase exists to gate.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from dataclasses import dataclass
@@ -43,16 +51,29 @@ def check_02_duplicate_contract(spec, rp) -> list[LintFinding]:
             for f in declaring]
 
 
+def _sites(frags, stance) -> list[str]:
+    return [f.id for f in frags if stance in f.stance]
+
+
+def _conflict_pairs(frags, a, b) -> list[LintFinding]:
+    msg = f"{a.value} conflicts with {b.value}"
+    return [LintFinding("stance_conflict", f"{x}+{y}", msg)
+            for x in _sites(frags, a) for y in _sites(frags, b)]
+
+
 def check_03_stance_conflict(spec, rp) -> list[LintFinding]:
-    """No two fragments in one render may hold opposing stances."""
-    present = {s: f.id for f in _frags(spec) for s in f.stance}
-    out = []
-    for pair in CONFLICTING:
-        a, b = tuple(pair)
-        if a in present and b in present:
-            out.append(LintFinding("stance_conflict", f"{present[a]}+{present[b]}",
-                                   f"{a.value} conflicts with {b.value}"))
-    return out
+    """No two fragments in one render may hold opposing stances.
+
+    Reports every conflicting SITE pair, not one row per conflicting stance
+    pair. The motivating defect is several clauses blessing abstention against
+    one tool-permitting fragment (`fragment.py`: "four clauses"), and keying
+    the report on the stance collapsed them to whichever fragment came last —
+    so the 0.e report named one site and a reader who fixed it left the rest
+    in place, with the linter then reporting nothing at all.
+    """
+    frags = _frags(spec)
+    return [f for pair in CONFLICTING
+            for f in _conflict_pairs(frags, *tuple(pair))]
 
 
 def check_04_vocab_closure(spec, rp) -> list[LintFinding]:
@@ -151,3 +172,257 @@ CHECKS = (
 
 def lint(spec, rp) -> list[LintFinding]:
     return [f for check in CHECKS for f in check(spec, rp)]
+
+
+# ── Phase 3: the CI gate ──────────────────────────────────────────────────
+#
+# A violation fails CI unless it is annotated on the spec's manifest. The
+# annotation is a `LintAllow` in the spec's `allow` tuple, and it is not a
+# silencer: an entry with no owner or no reason is an error of its own AND is
+# not honoured, and an entry matching nothing is an error too. A stale allow is
+# the specific way a gate like this rots — the backlog item gets fixed, the
+# check stops firing, and the annotation stays behind asserting a defect that
+# no longer exists, so the next real occurrence is admitted silently.
+
+
+@dataclass(frozen=True)
+class LintAllow:
+    """One owned, explained exemption, annotated on the spec's manifest.
+
+    `reason` must name the item that owns the fix, so the allow list reads as a
+    backlog rather than as a list of checks somebody turned off.
+    """
+
+    check: str
+    fragment: str
+    reason: str = ""
+    owner: str = ""
+
+
+@dataclass(frozen=True)
+class LintReport:
+    """`lint()` partitioned by the spec's `allow` list."""
+
+    findings: tuple[LintFinding, ...] = ()   # unannotated — these fail CI
+    allowed: tuple[LintFinding, ...] = ()    # annotated, owned backlog
+    errors: tuple[LintFinding, ...] = ()     # defects in the allow list itself
+
+    @property
+    def ok(self) -> bool:
+        return not self.findings and not self.errors
+
+
+# Both are required, and both are checked the same way, so they are data.
+_ALLOW_REQUIRED = ("owner", "reason")
+
+
+def _akey(allow) -> str:
+    return f"{allow.check}+{allow.fragment}"
+
+
+def _field(allow, name: str) -> str:
+    return str(getattr(allow, name, "") or "").strip()
+
+
+def _allow_incomplete(allows) -> list[LintFinding]:
+    """An unowned or unexplained exemption is not an exemption."""
+    return [LintFinding("allow_incomplete", _akey(a), f"allow entry has no {name}")
+            for a in allows for name in _ALLOW_REQUIRED if not _field(a, name)]
+
+
+def _allow_stale(allows, live: set) -> list[LintFinding]:
+    """An allow that matches nothing must fail rather than rot silently."""
+    return [LintFinding("allow_stale", _akey(a), "matches no finding in this render")
+            for a in allows if (a.check, a.fragment) not in live]
+
+
+def _honoured(allows) -> set:
+    """Keys of the entries complete enough to grant an exemption."""
+    return {(a.check, a.fragment) for a in allows
+            if all(_field(a, n) for n in _ALLOW_REQUIRED)}
+
+
+def _split(findings, held: set) -> tuple[tuple, tuple]:
+    """(unannotated, allowed) — one pass, so the two can never disagree."""
+    unannotated, allowed = [], []
+    for f in findings:
+        bucket = allowed if (f.check, f.fragment) in held else unannotated
+        bucket.append(f)
+    return tuple(unannotated), tuple(allowed)
+
+
+def gate(spec, rp) -> LintReport:
+    """`lint()` plus the spec's allow list: what remains is what fails CI."""
+    findings = lint(spec, rp)
+    allows = tuple(getattr(spec, "allow", ()))
+    live = {(f.check, f.fragment) for f in findings}
+    unannotated, allowed = _split(findings, _honoured(allows))
+    return LintReport(
+        findings=unannotated, allowed=allowed,
+        errors=tuple(_allow_incomplete(allows)) + tuple(_allow_stale(allows, live)),
+    )
+
+
+# ── the sweep ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SweepRow:
+    spec: str
+    family: str
+    report: LintReport
+
+
+def family_models() -> dict[str, str]:
+    """One representative model string per capability family.
+
+    Derived by inverting `profile._FAMILY_PATTERNS` rather than by listing
+    models: a family added to `MODEL_PROFILES` alongside its pattern is then
+    swept automatically. A hardcoded model list is the one thing in this file
+    that could go stale with no test noticing — it would still render, still
+    pass, and simply stop covering the new family.
+
+    Resolution goes through `profile_for()`, never `ModelProfile(**caps)`: the
+    `MODEL_PROFILES` values carry capabilities only, and `family`, `ctx_window`
+    and `ctx_provenance` are resolved from `shared.llm.provider`.
+    """
+    from .profile import _FAMILY_PATTERNS, MODEL_PROFILES
+
+    first: dict[str, str] = {}
+    for needle, family in _FAMILY_PATTERNS:
+        first.setdefault(family, needle)
+    return {f: first[f] for f in sorted(MODEL_PROFILES) if f in first}
+
+
+def sweep() -> list[SweepRow]:
+    """Gate every manifest against every capability family, in ADAPT.
+
+    Imports are local: `shared/prompt/__init__` imports this module, and the
+    manifest package plus `provider`'s model table are far heavier than the
+    checks. Nothing on an audit path pays for the gate.
+    """
+    from .manifests import MANIFESTS
+    from .profile import profile_for
+    from .render import Mode, render
+
+    models = family_models()
+    return [SweepRow(sid, fam,
+                     gate(spec, render(spec, profile_for(model), mode=Mode.ADAPT)))
+            for sid, spec in sorted(MANIFESTS.items())
+            for fam, model in models.items()]
+
+
+# ── reporting ─────────────────────────────────────────────────────────────
+
+def _collapse(rows: list[SweepRow], bucket: str) -> dict:
+    """Group one bucket of the sweep by (check, spec, fragment, message).
+
+    Only `check_10_budget` reads the rendered prompt at all; every other check
+    reads the SPEC, so a row repeats identically across all ten families.
+    Collapsing keeps the report readable while still naming the families a row
+    came from, so a genuinely profile-dependent row is visible as a partial set
+    rather than hidden inside a count.
+    """
+    out: dict[tuple[str, str, str, str], set[str]] = {}
+    for row in rows:
+        for f in getattr(row.report, bucket):
+            key = (f.check, row.spec, f.fragment, f.message)
+            out.setdefault(key, set()).add(row.family)
+    return out
+
+
+def _fmt_rows(check: str, groups: dict, n_fam: int) -> list[str]:
+    out = []
+    for key in sorted(k for k in groups if k[0] == check):
+        fams = groups[key]
+        where = "all families" if len(fams) == n_fam else ",".join(sorted(fams))
+        out.append(f"    {key[1]} :: {key[2]} — {key[3]} [{where}]")
+    return out
+
+
+def _checks_in(groups: dict) -> list[str]:
+    return sorted({k[0] for k in groups})
+
+
+def _count_for(groups: dict, check: str) -> int:
+    return sum(1 for k in groups if k[0] == check)
+
+
+def _fmt_group(title: str, groups: dict, n_fam: int) -> list[str]:
+    if not groups:
+        return [f"{title}: none"]
+    lines = [f"{title} ({len(groups)} rows):"]
+    for check in _checks_in(groups):
+        lines.append(f"  {check}  x{_count_for(groups, check)}")
+        lines += _fmt_rows(check, groups, n_fam)
+    return lines
+
+
+def _json_rows(groups: dict) -> list[dict]:
+    return [{"check": k[0], "spec": k[1], "fragment": k[2], "message": k[3],
+             "families": sorted(v)} for k, v in sorted(groups.items())]
+
+
+_BUCKETS = ("findings", "errors", "allowed")
+_TITLES = {"findings": "unannotated violations (fail CI)",
+           "errors": "allow-list errors (fail CI)",
+           "allowed": "annotated backlog (allowed)"}
+
+
+def _text_report(rows: list[SweepRow], n_fam: int, buckets: dict, ok: bool) -> str:
+    n_specs = len({r.spec for r in rows})
+    lines = [f"promptlint — {n_specs} specs x {n_fam} families = {len(rows)} renders",
+             f"allow entries: {_allow_entry_count()}", ""]
+    for name in _BUCKETS:
+        lines += _fmt_group(_TITLES[name], buckets[name], n_fam) + [""]
+    return "\n".join(lines + ["PASS" if ok else "FAIL"])
+
+
+def _json_report(rows: list[SweepRow], n_fam: int, buckets: dict, ok: bool) -> str:
+    payload = {"specs": len({r.spec for r in rows}), "families": n_fam,
+               "renders": len(rows), "allow_entries": _allow_entry_count(), "ok": ok}
+    payload.update({name: _json_rows(buckets[name]) for name in _BUCKETS})
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _allow_entry_count() -> int:
+    """Annotations committed across every manifest — the backlog's size."""
+    from .manifests import MANIFESTS
+
+    return sum(len(getattr(s, "allow", ())) for s in MANIFESTS.values())
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Sweep, report, and exit non-zero on anything unannotated.
+
+    `python -m shared.prompt.lint` prints a runpy RuntimeWarning to STDERR
+    ("found in sys.modules ... may result in unpredictable behaviour") because
+    the package `__init__` imports this module before runpy re-executes it as
+    `__main__`. It is expected and harmless here: the `__main__` guard below
+    delegates straight back to the canonical module, and the report goes to
+    stdout, so `--json` output stays parseable.
+    """
+    ap = argparse.ArgumentParser(
+        prog="python -m shared.prompt.lint",
+        description="Gate every prompt manifest against every model family.")
+    ap.add_argument("--json", action="store_true", help="machine-readable report")
+    args = ap.parse_args(argv)
+
+    rows = sweep()
+    n_fam = len(family_models())
+    buckets = {name: _collapse(rows, name) for name in _BUCKETS}
+    ok = not buckets["findings"] and not buckets["errors"]
+    report = _json_report if args.json else _text_report
+    print(report(rows, n_fam, buckets, ok))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    # Delegate to the CANONICAL module object. `python -m shared.prompt.lint`
+    # imports the package first (whose `__init__` imports this module), then
+    # executes this file again as `__main__`, so two copies of every class
+    # exist. `gate()` is duck-typed and works across them, but the manifests
+    # hold `shared.prompt.lint.LintAllow` and the report should be built by the
+    # same objects the tests exercise — so run that module's `main`, not ours.
+    from shared.prompt.lint import main as _canonical_main
+
+    raise SystemExit(_canonical_main())

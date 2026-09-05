@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.strategies.base import (
     AttemptRecord,
     BaseStrategy,
@@ -26,8 +26,17 @@ from prove_agent.strategies.shared import (
 if TYPE_CHECKING:
     from prove_agent.protocols.detection import TargetCapabilities
 
+from shared.prompt.manifests.prove_plan import PROVE_PLAN_DOMAIN
+from shared.prompt.manifests.prove_reflect import (
+    PROVE_REFLECT_DOMAIN,
+)
+
 logger = logging.getLogger(__name__)
 
+# NOT the prompt source any more — feature 0089 Phase 2.6. The runtime renders
+# `prove/plan` / `prove/reflect` with `PROVE_PLAN_DOMAIN["chaos"]` /
+# `PROVE_REFLECT_DOMAIN["chaos"]`. These literals stay as the byte-pinned
+# transcription oracle (see the fuller note in `strategies/cwe.py`).
 _PLAN_PROMPT = """You are a resilience tester. Given this chaos engineering finding, create an HTTP request to verify missing resilience patterns on the staging server.
 
 RULES:
@@ -87,7 +96,8 @@ class ChaosStrategy(BaseStrategy):
             prior_attempts, reflection, cross_learnings,
         )
         result = await llm_json_call(
-            _PLAN_PROMPT.format(
+            render_prove_prompt(
+                "prove/plan", PROVE_PLAN_DOMAIN["chaos"],
                 title=finding.get("title", ""),
                 category=finding.get("category", ""),
                 description=finding.get("description", ""),
@@ -139,7 +149,8 @@ class ChaosStrategy(BaseStrategy):
         self, finding: dict, attempts: list[AttemptRecord],
     ) -> ReflectionResult:
         history = format_attempt_history(attempts)
-        result = await llm_json_call(_REFLECT_PROMPT.format(
+        result = await llm_json_call(render_prove_prompt(
+            "prove/reflect", PROVE_REFLECT_DOMAIN["chaos"],
             title=finding.get("title", ""),
             category=finding.get("category", ""),
             description=finding.get("description", ""),

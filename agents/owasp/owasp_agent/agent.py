@@ -19,11 +19,11 @@ from collections.abc import Generator
 from typing import Any
 
 from shared.audit_runner import compute_score
+from shared.env import env_flag
 from shared.owasp.coverage import STATUS_ABSENT, STATUS_COMPLETED, build_manifest
 from shared.owasp.mapping import Edition, UnknownEditionError, load_edition, parse_cwe_id
-from shared.transport.event_emitter import AgUiEventEmitter
-from shared.env import env_flag
 from shared.tools.window import WINDOW_INHERITED, record_window_reason
+from shared.transport.event_emitter import AgUiEventEmitter
 
 _PREREQ_NOTICE = (
     "OWASP agent requires the CWE agent to run first. No CWE findings were "

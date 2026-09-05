@@ -14,8 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from shared.validate import ValidateConfig
 from shared.validate.llm_judge import (
-    _resolve_batch_size, _resolve_concurrency, _resolve_per_batch_timeout,
-    _resolve_top_n, _resolve_total_timeout,
+    _resolve_batch_size,
+    _resolve_concurrency,
+    _resolve_per_batch_timeout,
+    _resolve_top_n,
+    _resolve_total_timeout,
 )
 
 RESOLVERS = [

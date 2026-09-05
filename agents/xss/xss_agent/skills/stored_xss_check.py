@@ -5,7 +5,6 @@ ORM results in |safe/innerHTML, markdown as raw HTML, user uploads as text/html.
 """
 
 import re
-from xss_agent.skills._check_id import cid
 from pathlib import Path
 
 from agents import function_tool
@@ -20,6 +19,8 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.framework_html import is_framework_style_injection
+
+from xss_agent.skills._check_id import cid
 
 # DB read indicators (preceding lines)
 DB_READ_INDICATORS = re.compile(

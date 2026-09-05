@@ -6,6 +6,7 @@ augmentation (when VULTURE_USE_LLM=true or config.use_llm=True).
 """
 from asvs_agent.agent import INSTRUCTIONS, _build_llm_catalog_context
 from asvs_agent.skills import SKILL_MAP, SKILL_TOOLS
+from shared.prompt.manifests.generate import domain_instructions
 
 
 def test_instructions_cite_asvs_version():
@@ -25,9 +26,19 @@ def test_instructions_describe_self_learning_protocol():
     assert "DEMOTE" in INSTRUCTIONS
 
 
-def test_instructions_mention_cwe_linkage():
-    """Findings should carry linked_cwe metadata when the crosswalk maps."""
-    assert "linked_cwe" in INSTRUCTIONS
+def test_rendered_field_list_does_not_ask_for_linked_cwe():
+    """The prompt must not ask for a field nothing parses.
+
+    Feature 0089 Phase 2.5. `linked_cwe` is in neither `_SCHEMA_FIELDS` nor
+    `_MODEL_VISIBLE_FIELDS`, so a model that obeyed the old line had the value
+    dropped on parse — promptlint reported it as `orphan_field` against
+    `domains/asvs`, and 2.5 is the item that owned the fix.
+
+    Asserted against the RENDERED identity turn, because that is what the model
+    is shown: from 2.5 on `domains/asvs` is the source and `INSTRUCTIONS` is
+    only the byte oracle, so a reappearance in the fragment fails here.
+    """
+    assert "linked_cwe" not in domain_instructions("domains/asvs")
 
 
 def test_skill_tools_exposed_to_llm_phase():

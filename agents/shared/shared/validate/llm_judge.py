@@ -25,10 +25,15 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from shared.cancellation import current_audit_deadline, current_cancel_token
+from shared.prompt import Mode, RenderedPrompt, profile_for, render
+from shared.prompt.manifests.validate_judge import (
+    VALIDATE_JUDGE,
+    VALIDATE_JUDGE_PLAIN,
+)
 from shared.tools.line_format import strip_line_number
 
 from . import l5_cache
@@ -141,6 +146,54 @@ _PROMPTS_DIR = os.path.join(_THIS_DIR, "prompts")
 EmitFn = Callable[[list[dict[str, Any]]], None]
 
 
+# ── Prompt assembly (feature 0089 phase 2) ───────────────────────────
+#
+# The judge's three prompt bodies — the system sections, the tool contract and
+# the user template — are fragments in `shared.prompt`, and these three helpers
+# are the only place L5 asks for them. Mode is TRANSCRIBE: no adaptive rule
+# runs, so the render reproduces byte for byte what `prompts/validate_judge.txt`
+# read whole, `judge_tools.tool_discipline_prompt()` and
+# `prompts/validate_judge_user.txt` formatted used to produce when this module
+# concatenated them itself.
+#
+# The profile reaches nothing but `output_budget_hint` under TRANSCRIBE, which
+# L5 does not read, so `profile_for()` resolving from the ambient model cannot
+# move a prompt byte — it is passed rather than faked because a future ADAPT
+# render must get the real one.
+#
+# Both `.txt` files and `judge_tools._TOOL_DISCIPLINE_TEMPLATE` are still on
+# disk and are now UNREAD by this module. They stay because they are the
+# transcription's oracle — `tests/unit/prompt/test_0089_manifest_validate.py`
+# compares every fragment's text against them — and because leaving them keeps
+# the flip revertible in one hunk.
+
+
+def _judge_prompt(spec, **variables) -> RenderedPrompt:
+    """Render one judge prompt spec. Pure: no I/O; the registry is frozen."""
+    return render(replace(spec, variables=variables),
+                  profile_for(), mode=Mode.TRANSCRIBE)
+
+
+def _judge_system_prompt(batch_size: int) -> str:
+    """The tool path's system turn: the judge's sections + the tool contract.
+
+    `max(1, batch_size)` is `tool_discipline_prompt`'s own clamp, carried over
+    with it: the sentence it feeds names the batch count ("... for all N
+    findings in this batch"), and a batch is never really zero findings wide.
+    """
+    return _judge_prompt(VALIDATE_JUDGE, n=max(1, batch_size)).instructions
+
+
+def _judge_system_prompt_plain() -> str:
+    """The no-tools system turn: the same sections, no tool contract.
+
+    Reached whenever `_judge_batch` has no tool executor (no source root to
+    confine reads to) or the provider rejected `tools=` — see
+    `VALIDATE_JUDGE_PLAIN`, which exists because that is a different prompt.
+    """
+    return _judge_prompt(VALIDATE_JUDGE_PLAIN).instructions
+
+
 # ── Public entry point ───────────────────────────────────────────────
 
 
@@ -171,9 +224,13 @@ def _resolve_l5_runtime(
         log.warning("[validate.l5] no model resolved; skipping (set VULTURE_LLM_MODEL)")
         return None
     try:
-        system_prompt = _read_prompt("validate_judge.txt")
-    except OSError as exc:
-        log.warning("[validate.l5] cannot read system prompt: %s", exc)
+        system_prompt = _judge_system_prompt_plain()
+    except (KeyError, ValueError) as exc:
+        # Was an OSError from reading the prompt file. The fragments are loaded
+        # and validated once at import now, so what can still fail here is a
+        # spec naming a fragment the registry does not hold (KeyError) — same
+        # RC3 contract either way: L5 declines, validate carries on.
+        log.warning("[validate.l5] cannot render system prompt: %s", exc)
         return None
     return _L5Runtime(
         batch_size=_resolve_batch_size(config),
@@ -1032,8 +1089,12 @@ def _judge_batch(
     # that rejects the `tools=` parameter must degrade to plain judging, not
     # kill the layer.
     if tool_executor is not None:
+        # No `system_prompt`: the tool path's system turn depends on the batch
+        # size (the tool contract names it), so it renders its own from
+        # VALIDATE_JUDGE. `rt.system_prompt` is the TOOL-FREE turn and is only
+        # what the fallback below sends.
         parsed, exhausted, ok = _call_llm_with_tools(
-            system_prompt, user_msg, model, per_batch_timeout_s,
+            user_msg, model, per_batch_timeout_s,
             tool_executor, max_tool_calls, len(uncached_batch), cancel=cancel,
             pool_active=pool_active,
         )
@@ -1078,7 +1139,6 @@ def _judge_batch(
 
 
 def _call_llm_with_tools(
-    system_prompt: str,
     user_msg: str,
     model: str,
     timeout_s: float,
@@ -1100,7 +1160,7 @@ def _call_llm_with_tools(
     total deadline (T3.9) — the loop adds no second budget, only a bounded
     number of requests (``max_calls`` tool executions, +2 framing turns).
     """
-    from .judge_tools import JUDGE_TOOL_SPECS, tool_discipline_prompt
+    from .judge_tools import JUDGE_TOOL_SPECS
 
     client = _get_client()
     if client is None:
@@ -1109,8 +1169,7 @@ def _call_llm_with_tools(
     user_msg = _clamp_request_body(user_msg)
     actual_model = _strip_model_prefix(model)
     messages: list[dict[str, Any]] = [
-        {"role": "system",
-         "content": system_prompt + "\n\n" + tool_discipline_prompt(batch_size)},
+        {"role": "system", "content": _judge_system_prompt(batch_size)},
         {"role": "user", "content": user_msg},
     ]
     calls_used = 0
@@ -1521,7 +1580,6 @@ def _sanitize_untrusted(s: str, max_len: int = 300) -> str:
 def _render_user_message(
     audit_id: str, batch: list[tuple[int, dict[str, Any], str]]
 ) -> str:
-    template = _read_prompt("validate_judge_user.txt")
     blocks: list[str] = []
     for n, (_, finding, lang) in enumerate(batch, start=1):
         fid = finding.get("id") or f"f{n}"
@@ -1546,11 +1604,16 @@ def _render_user_message(
             f"<<<CODE\n{snippet}\nCODE>>>\n"
         )
         blocks.append(block)
-    return template.format(
+    # `validate/user_template` is a `verbatim` whole-turn fragment, so `render`
+    # passes its bytes through untouched with these three filled in — including
+    # the template's own trailing newline, which `template.format(...)` also
+    # carried and which is part of the message.
+    return _judge_prompt(
+        VALIDATE_JUDGE,
         audit_id=audit_id or "(unspecified)",
         n=len(batch),
         findings_block="\n".join(blocks),
-    )
+    ).user
 
 
 # ── Response parsing ─────────────────────────────────────────────────
@@ -2010,6 +2073,12 @@ def _read_prompt(name: str) -> str:
 
     Issue #12: errors='replace' on malformed UTF-8 — a bad-encoding
     prompt file logs a warning but doesn't crash L5 entirely.
+
+    NO PRODUCTION CALLER since feature 0089 phase 2 — the judge's prompts come
+    from `shared.prompt` now (see `_judge_prompt` above). This survives, with
+    `prompts/*.txt`, because those files are the transcription's oracle: the
+    0089 parity suite reads them THROUGH this function and would silently stop
+    having an opinion if either went away.
     """
     if name != os.path.basename(name) or not name or name.startswith("."):
         raise ValueError(f"invalid prompt name: {name!r}")

@@ -11,7 +11,6 @@ flag feature 0083's headline command (`--no-llm --validate-llm`) depends on.
 
 Correct precedence: explicit per-request > env > built-in default.
 """
-import os
 import sys
 from pathlib import Path
 
@@ -32,7 +31,6 @@ def _set(monkeypatch, val):
 def test_non_vacuity_env_alone_still_decides_when_request_is_silent():
     """Guard: if the env var stopped working entirely, the assertions below
     would pass for the wrong reason."""
-    import contextlib
     with pytest.MonkeyPatch.context() as mp:
         _set(mp, "true")
         assert _resolve_l5_enabled(ValidateConfig(enable_l5_override=None)) is True

@@ -17,10 +17,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from shared.tools.window import (
-    WINDOW_NO_CODE_LOCATION, record_window_reason, window_reason_of,
+    WINDOW_NO_CODE_LOCATION,
+    record_window_reason,
+    window_reason_of,
 )
-from shared.validate import ValidateConfig
-from shared.validate import _apply_validation_to_finding
+from shared.validate import ValidateConfig, _apply_validation_to_finding
 from shared.validate.types import ValidationCheck
 
 

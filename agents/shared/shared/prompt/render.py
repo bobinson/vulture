@@ -13,6 +13,7 @@ input unchanged; no rule contains a profile if-ladder.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -57,13 +58,46 @@ def _texts(ids: tuple[str, ...]) -> list[Fragment]:
     return [registry.get(i) for i in ids]
 
 
+# A `{name}` placeholder: lowercase identifier, matching `Fragment.variables()`.
+_PLACEHOLDER_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+
+
 def _fill(text: str, variables: dict) -> str:
+    """Substitute `{name}` placeholders in ONE pass.
+
+    Not `str.format`, because a prompt may contain literal braces — a JSON
+    exemplar does — and `.format` would raise on them or demand they be doubled,
+    which is how a fragment ends up recording the ENCODING of a prompt instead
+    of the prompt (feature 0089 defects #6/#7).
+
+    But not sequential `str.replace` either, which is what this was. That
+    rescans text it has already substituted, so a VALUE containing a later
+    key's placeholder gets expanded too:
+
+        variables = {"a": "x{b}y", "b": "B"}
+        replace-loop -> "xBy"      # the value steered the template
+        one pass     -> "x{b}y"    # the value is data
+
+    That difference is reachable with attacker-controlled input. Discovery does
+    `site.technologies.append(f"Server: {server}")` from the scanned target's
+    raw `Server` header (`shared/discovery/helpers.py`), so a target answering
+    `Server: {framework_hints}` could splice another variable's contents into
+    its own line — 10 of 20 ordered pairs of the discover prompt's five
+    variables diverged, every one a forward reference. It does not widen egress
+    (both sides are the same target's own bytes) but a value must never be able
+    to act as template, and the pre-flip `.format` call did not allow it.
+
+    An unknown placeholder is left verbatim rather than raising: a fragment may
+    legitimately name a variable a different call site supplies, and
+    `check_09_placeholder_echo` plus the parity tests are what catch a genuinely
+    unfilled one.
+    """
     if not variables:
         return text
-    out = text
-    for k, v in variables.items():
-        out = out.replace("{" + k + "}", str(v))
-    return out
+    return _PLACEHOLDER_RE.sub(
+        lambda m: str(variables[m.group(1)]) if m.group(1) in variables else m.group(0),
+        text,
+    )
 
 
 # ── ADAPT rules — one function each, <= 5 branches, order matters ──────────
@@ -98,6 +132,43 @@ def _budget(profile: ModelProfile, prompt_chars: int) -> int:
     return max(512, headroom - profile.reasoning_overhead_tokens)
 
 
+def _seam_join(frags: list[tuple[str, str, bool]]) -> str:
+    """Assemble parts, each declaring the seam that precedes it.
+
+    `frags` is (text, seam, keep_trailing). Trailing newlines are dropped unless
+    the fragment declares them content; leading blank lines are always kept, so
+    a seam WIDER than one blank line lives visibly in the fragment file.
+
+    The separator belongs to the renderer, not to the fragment: a fragment read
+    from a file carries the file's own trailing newline, so a bare
+    ``"\n\n".join`` emits ``\n\n\n`` at every boundary and a trailing newline at
+    the end. Against the live judge prompt that was +6 blank lines and +1
+    terminator -- 5077 bytes rendered against 5070 live.
+
+    The goldens could not have caught that. They were captured FROM the
+    renderer, so they encode its own join byte for byte and stay green while
+    every boundary is wrong. Only parity against the live builder sees it, which
+    is the argument for Phase 1 existing at all (0089 §4).
+
+    Nor could a single seam width serve every tier: see `Fragment.seam`.
+    """
+    out = ""
+    for i, (text, seam, keep) in enumerate(frags):
+        body = text if keep else text.rstrip("\n")
+        if not body.strip("\n"):
+            continue
+        if not out:
+            out = body.lstrip("\n")
+            continue
+        out += ("\n" if seam == "tight" else "\n\n") + body
+    return out
+
+
+def _join(parts) -> str:
+    """Seamless assembly for callers with plain strings (slots, wrapped blocks)."""
+    return _seam_join([(p, "blank", False) for p in parts])
+
+
 def render(spec, profile: ModelProfile, *, mode: Mode = Mode.TRANSCRIBE) -> RenderedPrompt:
     """Compose `spec` for `profile`. Pure: no env reads, no I/O."""
     sys_frags = _texts(spec.fragments)
@@ -114,10 +185,15 @@ def render(spec, profile: ModelProfile, *, mode: Mode = Mode.TRANSCRIBE) -> Rend
         elif mirrored:
             usr_frags = mirrored + usr_frags
 
-    sys_text = "\n\n".join(_fill(f.text, spec.variables) for f in sys_frags)
-    usr_parts = [_fill(f.text, spec.variables) for f in usr_frags]
-    usr_parts += [wrap(s, nonce) for s in spec.slots]
-    usr_text = "\n\n".join(p for p in usr_parts if p)
+    sys_text = _seam_join([(_fill(f.text, spec.variables), f.seam, f.keep_trailing)
+                           for f in sys_frags])
+    if len(usr_frags) == 1 and usr_frags[0].verbatim and not spec.slots:
+        usr_text = _fill(usr_frags[0].text, spec.variables)
+    else:
+        usr_seams = [(_fill(f.text, spec.variables), f.seam, f.keep_trailing)
+                     for f in usr_frags]
+        usr_seams += [(wrap(s, nonce), "blank", False) for s in spec.slots]
+        usr_text = _seam_join(usr_seams)
 
     messages: list[dict] = []
     if sys_text:

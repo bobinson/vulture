@@ -45,8 +45,13 @@ from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.env import env_truthy
 from shared.llm import health as _health
-from shared.llm.provider import get_max_findings
-from shared.tools.memory_client import build_prior_context
+from shared.llm.provider import (
+    get_max_findings,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
+)
+from shared.prompt.manifests.generate import domain_instructions
+from shared.tools.memory_client import (
+    build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
+)
 
 from cwe_agent.catalog import build_catalog_context, get_static_detectable
 from cwe_agent.config import ALL_CATEGORIES
@@ -55,6 +60,15 @@ from cwe_agent.skills import SKILL_MAP, SKILL_TOOLS
 # Collect CWE IDs covered by catalog for LLM context
 _CATALOG_CWE_IDS = [e["id"] for e in get_static_detectable(min_score=0.3)][:80]
 
+# NOT the prompt source any more — feature 0089 Phase 2.5 moved that to the
+# fragment `domains/cwe`, named at the `run_combined_audit` call below and
+# rendered by `domain_instructions()` (see its note in
+# `shared/prompt/manifests/generate.py`). This literal stays as the
+# transcription's INDEPENDENT oracle: `test_0089_manifest_generate.py` reads it
+# out of this file by AST and asserts the fragment equals it byte for byte, so
+# it is the one assertion that can still see the fragment drift from the prompt
+# this agent shipped. Do not reword, reformat or delete it: edit the fragment,
+# then this, together.
 INSTRUCTIONS = """You are a CWE (Common Weakness Enumeration) Security Auditor using CWE v4.19.1.
 
 ## Catalog Coverage (honest, multi-tier)
@@ -227,15 +241,17 @@ def run_audit(
     """
     categories = config.get("categories", ALL_CATEGORIES)
 
-    # Inject catalog context into LLM instructions for deeper analysis
+    # Inject catalog context into LLM instructions for deeper analysis.
+    # The per-run half of the system turn. It is NOT a fragment: the catalog
+    # body is built per audit from the detectable-CWE list, so it is a value,
+    # not prompt text. Appended to the library's render at the call site below,
+    # in the position and with the bytes the pre-2.5 concatenation used.
     catalog_ctx = _build_llm_catalog_context()
-    enhanced_instructions = INSTRUCTIONS
-    if catalog_ctx:
-        enhanced_instructions += (
-            "\n\n## CWE Catalog Reference\n"
-            "Use this catalog data to identify weakness patterns:\n\n"
-            + catalog_ctx
-        )
+    catalog_suffix = (
+        "\n\n## CWE Catalog Reference\n"
+        "Use this catalog data to identify weakness patterns:\n\n"
+        + catalog_ctx
+    ) if catalog_ctx else ""
 
     # Feature 0057 P1a: CWE runs the LLM phase by default, model-gated.
     effective_use_llm, llm_notice = _resolve_cwe_llm(config)
@@ -270,8 +286,16 @@ def run_audit(
         domain_label="CWE categories",
         **_shared,
         skill_tools=SKILL_TOOLS,
-        instructions=enhanced_instructions,
+        instructions=domain_instructions(
+            "domains/cwe",
+        ) + catalog_suffix,
         model=os.environ.get("VULTURE_LLM_MODEL"),
         use_llm=effective_use_llm,
         validate_use_llm=validate_use_llm,
+        # 0089 Phase 2.3 — stated, not defaulted (see run_combined_audit's
+        # `category_enum` docs). `None`, deliberately: CWE's declared keys are
+        # skill GROUPS (`injection`, `memory_safety`, ...) while its skills emit
+        # ~73 distinct `CWE-nnn` literals, so conforming would rewrite or
+        # orphan every one of them.
+        category_enum=None,
     )

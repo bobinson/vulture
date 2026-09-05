@@ -5,8 +5,11 @@ import json
 import logging
 
 import websockets
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
+)
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.protocols.detection import TargetCapabilities, to_ws_url
 from prove_agent.strategies.base import (
     ExecutionResult,
@@ -26,6 +29,10 @@ _WS_CONNECT_TIMEOUT = 10.0
 _WS_RECV_TIMEOUT = 5.0
 _MAX_MESSAGES = 5
 
+# NOT the prompt source any more — feature 0089 Phase 2.6. The runtime renders
+# `prove/analyze` with `PROVE_ANALYZE_DOMAIN["ws"]` (see `execute_websocket`
+# below). This literal stays as the byte-pinned transcription oracle (see the
+# fuller note in `strategies/cwe.py`).
 _ANALYZE_PROMPT = """Did this WebSocket response confirm the vulnerability?
 
 Finding: {title} ({category})
@@ -95,7 +102,8 @@ async def execute_websocket(
         combined = "\n".join(f"[{i+1}] {m}" for i, m in enumerate(messages))
         snippet = combined[:500]
         try:
-            llm_result = await llm_json_call(_ANALYZE_PROMPT.format(
+            llm_result = await llm_json_call(render_prove_prompt(
+                "prove/analyze", PROVE_ANALYZE_DOMAIN["ws"],
                 title=finding_title,
                 category=finding_category,
                 url=ws_url,

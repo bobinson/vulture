@@ -3,7 +3,6 @@
 import asyncio
 import contextvars
 import functools
-import json
 import logging
 import os
 import re
@@ -24,6 +23,19 @@ from shared.cancellation import (
 )
 from shared.env import env_flag, env_truthy
 from shared.llm.errors import retry_skill
+
+# Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
+# empty-answer, plus the reasoning strip) now lives in ONE place, shared with the
+# object path prove and discover use. Names re-exported rather than aliased so
+# `shared.audit_runner._score_array` and friends keep resolving — they are the
+# subject of the 0076 parser tests.
+from shared.prompt.extract import (  # noqa: F401  (re-exported for 0076 tests)
+    _FINDING_KEYS,
+    _extract_finding_rows,
+    _salvage_truncated_array,
+    _scan_json_arrays,
+    _score_array,
+)
 from shared.tools import line_format
 from shared.tools.category_enum import normalize_to_enum
 from shared.tools.file_scanner import (
@@ -59,26 +71,9 @@ def _safe_int_env(name: str, default: int) -> int:
 # workloads or high-core machines, tune via VULTURE_SKILL_WORKERS.
 _SKILL_WORKERS = _safe_int_env("VULTURE_SKILL_WORKERS", min(os.cpu_count() or 4, 8))
 
-# Pre-compiled patterns for _parse_llm_findings (avoid per-call re.compile).
-# The BARE pattern is no longer part of the default attempt order (feature 0076
-# B1): a non-greedy ``}\s*]`` cannot survive a string value that itself contains
-# ``}]``, and ``[{ id: 1 }]`` is an everyday TS/JSX literal — so a model quoting
-# such a line loses the WHOLE batch. ``_scan_json_arrays`` replaces it;
-# ``VULTURE_LLM_JSON_SCAN=false`` puts the regex back.
-_LLM_JSON_FENCED_RE = re.compile(r"```json\s*(\[.*?\])\s*```", re.DOTALL)
-_LLM_JSON_BARE_RE = re.compile(r"(\[\s*\{.*?\}\s*\])", re.DOTALL)
-
-# A whole-response code fence, label optional — see `_strip_code_fence`.
-_ANY_FENCE_RE = re.compile(r"^```[A-Za-z0-9_+-]*\s*(.*?)\s*```$", re.DOTALL)
-
-# The keys that make a decoded array look like a findings payload. `id` is
-# deliberately absent: it is the only key of the everyday decoy
-# ``[{"id":1},{"id":2},{"id":3}]``, and admitting it would let a three-row TS
-# example in model prose outrank the real one-row answer.
-_FINDING_KEYS = frozenset({
-    "title", "severity", "category", "file_path", "line_start",
-    "line_end", "description", "recommendation", "evidence_quote",
-})
+# The response-extraction patterns and `_FINDING_KEYS` moved to
+# `shared/prompt/extract.py` with the chain that reads them (feature 0089 §11.3);
+# they are imported above so this module's public names are unchanged.
 
 # TWO fields, TWO switches — they are not the same risk (0076 §5.1, recall-3).
 # ``code_snippet`` is a fabricated-evidence risk; ``check_id`` is a DEDUP
@@ -2257,7 +2252,21 @@ def run_combined_audit(
         category_enum: Keyword-only, consumed by ``_bind_category_enum``. The
             vocabulary this agent advertises through ``/info``; every emitted
             finding is reduced to it at ``_finalize_finding_inplace``. ``None``
-            (the default) leaves categories untouched.
+            leaves categories untouched.
+
+            REQUIRED OF EVERY SCAN AGENT (feature 0089 Phase 2.3): all seven
+            state it at their own call site, `None` included, because it moves
+            two things at once and neither should be inherited from a default.
+            A non-empty enum adds a CATEGORY VOCABULARY block to the SYSTEM
+            PROMPT (``generate/vocab_category``) *and* starts rewriting every
+            emitted ``category`` through ``_conform_category`` — so the four
+            agents that pass ``None`` are declining a prompt change and a
+            data change together, and each says why on its own line.
+
+            The signature keeps ``None`` as its default rather than making the
+            argument mandatory: ~40 call sites in this repo's own unit and E2E
+            suites drive ``run_combined_audit`` directly, and those tests are
+            the audit runner's business contract, not callers to be rewritten.
 
     Yields:
         SSE-formatted event strings.
@@ -3039,6 +3048,183 @@ def _quote_contract_suffix() -> str:
     return f"\n{_quote_obligation()}"
 
 
+def _reference_augmented_instructions(
+    instructions: str | None,
+    source_context: str,
+    vocabulary: frozenset[str] | None,
+    *,
+    anthropic: bool,
+    use_structured: bool,
+) -> str:
+    """The pre-0089 inline system turn, kept verbatim. NO PRODUCTION CALLER.
+
+    Feature 0089 Phase 2.3 moved this assembly to ``shared.prompt``: production
+    renders ``manifests.generate.live_spec()`` through
+    :func:`_generate_system_prompt`. This copy survives, unread, because it is
+    the transcription's only INDEPENDENT oracle. Once both sides of
+    ``tests/unit/prompt/test_0089_parity_generate*.py`` go through ``render()``
+    those files compare the library to itself; the system role is still a real
+    comparison precisely because these bytes are still built here, out of
+    :func:`_category_vocabulary_suffix`, :func:`_quote_contract_suffix` and the
+    fenced-JSON literal below — which the parity suite reads out of this module
+    by AST.
+
+    So do not reword, reformat or delete it: edit the fragment
+    (``prompt/fragments/generate/``), then this, together.
+    """
+    if anthropic and source_context:
+        augmented_instructions = (
+            f"{instructions}\n\n"
+            "The source code files are provided below. Analyze them carefully "
+            "for security and compliance issues.\n\n"
+            f"{source_context}"
+        )
+    else:
+        augmented_instructions = instructions
+    augmented_instructions = (augmented_instructions or "") + \
+        _category_vocabulary_suffix(vocabulary)
+    if not use_structured:
+        augmented_instructions += (
+            "\n\nIMPORTANT: Return findings as a JSON array. Each object must have: "
+            "severity, category, title, description, file_path, line_start, line_end, recommendation. "
+            "Wrap the array in ```json ... ``` fences."
+        ) + _quote_contract_suffix()
+    return augmented_instructions
+
+
+# ── GENERATE prompt assembly (feature 0089 Phase 2.3, 2.5) ───────────────────
+#
+# The tier's shared suffixes are fragments in ``shared.prompt`` now, and the two
+# helpers below are the only place the audit path asks for them. Phase 2.5 moved
+# the remaining half — the agent's identity — into the library too, but not into
+# this module: it is rendered from ``domains/<agent>`` at each agent's own call
+# site and arrives as ``instructions`` (see :func:`_generate_system_prompt`), so
+# nothing here resolves a domain fragment and the identity has exactly one
+# channel into the prompt. Mode is
+# TRANSCRIBE, because Phase 2 is a pure refactor and every adaptive rule changes
+# bytes: the render reproduces, byte for byte, what :func:`_field_contract`,
+# :func:`_quote_contract_suffix`, :func:`_category_vocabulary_suffix` and the
+# fenced-JSON literal produced when this module concatenated them itself.
+#
+# The four of them, and :func:`_reference_augmented_instructions` above, are
+# still here and are now UNREAD by the audit path — see that docstring for why.
+#
+# ``profile_for()`` reaches nothing but ``output_budget_hint`` under TRANSCRIBE,
+# which nothing here reads, so the ambient model cannot move a prompt byte. It
+# is resolved rather than faked because a future ADAPT render needs the real one.
+
+
+def _source_branch(source_context: str, source_in_system: bool) -> str:
+    """Which of the three source presentations this call uses.
+
+    The live builder's own ``if source_in_system / elif source_context / else``,
+    named once so the system turn and the user turn cannot disagree about it.
+    """
+    if source_in_system:
+        return "system"
+    return "inline" if source_context else "none"
+
+
+def _generate_rendered(
+    source_path: str,
+    categories: list[str],
+    domain_label: str,
+    source_context: str,
+    prior_context: str,
+    source_in_system: bool = False,
+    vocabulary: frozenset[str] | None = None,
+    fenced: bool = False,
+):
+    """Render one generate call's prompt. Pure: no env writes, no I/O.
+
+    ``quote_max_lines`` is supplied from :func:`_quote_max_lines`, i.e. from the
+    verifier's own ``VULTURE_LLM_QUOTE_MAX_LINES``, read at call time. The
+    fragment interpolates it rather than stating a number, because a model told
+    "1-3 lines" while the verifier clamps at 2 would be refused for doing
+    exactly what it was asked (0076 §5.2 property 3).
+    """
+    from shared.prompt import Mode, profile_for, render
+    from shared.prompt.manifests.generate import live_spec
+
+    spec = live_spec(
+        source=_source_branch(source_context, source_in_system),
+        vocabulary=bool(vocabulary),
+        fenced=fenced,
+        quote=_quote_required(),
+        prior=bool(prior_context),
+        variables={
+            "source_path": source_path,
+            "domain_label": domain_label,
+            "categories": ", ".join(categories),
+            # Sorted, so two identical audits build an identical system message
+            # — an unstable one would defeat prompt caching for no benefit.
+            "category_vocabulary": ", ".join(sorted(vocabulary or ())),
+            "source_context": source_context,
+            "prior_context": prior_context,
+            "quote_max_lines": str(_quote_max_lines()),
+        },
+    )
+    return render(spec, profile_for(), mode=Mode.TRANSCRIBE)
+
+
+def _generate_system_prompt(
+    instructions: str | None,
+    source_context: str,
+    vocabulary: frozenset[str] | None,
+    *,
+    source_in_system: bool,
+    fenced: bool,
+) -> str:
+    """The system turn: the agent's own instructions, then the tier's suffix.
+
+    ``instructions`` IS a fragment render as of feature 0089 Phase 2.5, and the
+    docstring this replaces said it could not be. Until 2.5 the identity — the
+    one thing the seven transcribed specs differ by — reached here as each
+    agent's own ``INSTRUCTIONS`` constant, so the library could render only
+    everything AFTER it. Now every scan agent names ``domains/<agent>`` at its
+    own ``run_combined_audit`` call and
+    ``shared.prompt.manifests.generate.domain_instructions`` produces the bytes;
+    the constants stay in the agent packages purely as the transcription's byte
+    oracle, unread by this path. So both halves of the system turn come from the
+    library, and this still joins them, in the same two places for the same
+    reason: the identity half is rendered by the caller (which is what lets asvs
+    and cwe concatenate a per-run catalog block onto it without a new channel),
+    and this half is rendered here from ``live_spec``.
+
+    That split is also why the identity cannot be emitted twice. This function
+    resolves no domain fragment and ``live_spec`` lists none, so ``instructions``
+    is the ONLY channel into the head; there is no configuration in which a
+    fragment list and a populated ``instructions=`` both reach the prompt.
+    ``tests/unit/test_0089_generate_flip.py::test_identity_appears_exactly_once``
+    counts it per agent, because a doubled identity is correct bytes twice over
+    and no parity or golden assertion in this feature can see one.
+
+    A caller that passes no rendered identity still works unchanged — ~40 unit
+    and E2E call sites drive this with a plain string like ``"audit"``, and those
+    tests are the runner's business contract.
+
+    The seam is one blank line, which is the width the live builder used on every
+    branch: ``_category_vocabulary_suffix()`` and the fenced-JSON literal both
+    open with ``"\\n\\n"``, and the anthropic path spells it as
+    ``f"{instructions}\\n\\n"``. That path's ``f"{instructions}"`` is kept
+    distinct from ``instructions or ""`` deliberately — the two differ for a
+    falsy ``instructions``, where the f-string renders the string "None", and
+    reproducing the live bytes matters more here than tidying them.
+    """
+    # One spec describes the WHOLE call, so this render composes the user turn
+    # too and drops it — `_build_llm_prompt` is the caller that wants that half,
+    # and it stays a separate entry point because it is the one every prompt
+    # test in 0075/0076 drives. Hence the empty user-turn inputs here: they
+    # reach no system fragment. The cost is a second pass over ~6 fragments of
+    # string concatenation, per LLM call.
+    suffix = _generate_rendered(
+        "", [], "", source_context, "",
+        source_in_system=source_in_system, vocabulary=vocabulary, fenced=fenced,
+    ).instructions
+    head = f"{instructions}" if source_in_system else (instructions or "")
+    return f"{head}\n\n{suffix}" if suffix else head
+
+
 def _build_llm_prompt(
     source_path: str,
     categories: list[str],
@@ -3053,27 +3239,18 @@ def _build_llm_prompt(
         source_in_system: If True, source code is embedded in the agent's
             instructions (system message) for Anthropic prompt caching.
             The user prompt then omits the source code to avoid duplication.
+
+    The user turn is ``generate/task`` + ``generate/field_contract`` +
+    ``generate/quote_obligation`` + ``generate/prior_context`` + one of
+    ``generate/source_inline`` / ``generate/source_in_system_ref`` /
+    ``generate/tools_only``, in that order — the order this function's own
+    ``"\\n".join(parts)`` had, with prior context ahead of the source so the LLM
+    sees known issues early and primes attention.
     """
-    parts = [
-        f"Audit the source code at: {source_path}",
-        f"Focus on these {domain_label}: {', '.join(categories)}",
-        *_field_contract(),
-    ]
-    # Place prior context before source code so the LLM sees known issues
-    # early and primes LLM attention.
-    if prior_context:
-        parts.append(f"\nContext from prior audits:\n{prior_context}")
-    if source_in_system:
-        parts.append("\nAnalyze the source code provided in the system instructions.")
-    elif source_context:
-        parts.append(
-            "\nThe source code files are provided below. Analyze them carefully "
-            "for security and compliance issues.\n"
-        )
-        parts.append(source_context)
-    else:
-        parts.append("Use the available tools to analyze the code thoroughly.")
-    return "\n".join(parts)
+    return _generate_rendered(
+        source_path, categories, domain_label, source_context, prior_context,
+        source_in_system=source_in_system,
+    ).user
 
 
 def _extract_token_usage(result: Any, model: str | None = None) -> tuple[int, int]:
@@ -3271,35 +3448,31 @@ async def _collect_llm_findings_async(
     )
     model_settings_dict["max_tokens"] = max_output
 
-    # For Anthropic models, embed source code in the system message (instructions)
-    # so it benefits from prompt caching across repeated audits of the same codebase.
-    # LiteLLM auto-injects cache_control breakpoints on system messages when the
-    # anthropic-beta header is present (see get_model_settings).
-    if "anthropic" in resolved_model and source_context:
-        augmented_instructions = (
-            f"{instructions}\n\n"
-            "The source code files are provided below. Analyze them carefully "
-            "for security and compliance issues.\n\n"
-            f"{source_context}"
-        )
-    else:
-        augmented_instructions = instructions
-
-    # Name the declared vocabulary to the model when the agent has one.
-    augmented_instructions = (augmented_instructions or "") + \
-        _category_vocabulary_suffix(current_category_enum())
-
     # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may
     # not support structured output (response_format with JSON schema) alongside
     # the function-calling tools we always attach.  Skip output_type in those
-    # cases and rely on prompt-based JSON + _parse_llm_findings fallback.
+    # cases and rely on prompt-based JSON + _parse_llm_findings fallback — the
+    # shape is then asked for in prose instead, by `generate/json_fenced`
+    # ("Wrap the array in ```json ... ``` fences"), which is what `fenced=`
+    # below selects.
     use_structured = supports_structured_output(resolved_model)
-    if not use_structured:
-        augmented_instructions += (
-            "\n\nIMPORTANT: Return findings as a JSON array. Each object must have: "
-            "severity, category, title, description, file_path, line_start, line_end, recommendation. "
-            "Wrap the array in ```json ... ``` fences."
-        ) + _quote_contract_suffix()
+
+    # The system turn (feature 0089 Phase 2.3: assembled by `shared.prompt`,
+    # not here — see `_generate_system_prompt`). Three things ride on it:
+    #
+    #  * For Anthropic models the source code goes in the system message so it
+    #    benefits from prompt caching across repeated audits of the same
+    #    codebase; LiteLLM auto-injects cache_control breakpoints on system
+    #    messages when the anthropic-beta header is present (get_model_settings).
+    #    `source_in_system` is that decision, made once above and shared with
+    #    the user turn so the two cannot both carry the body.
+    #  * The agent's DECLARED category vocabulary is named to the model when it
+    #    has one (`current_category_enum()` — per-run, never a global).
+    #  * The prose JSON contract, on the unstructured branch only.
+    augmented_instructions = _generate_system_prompt(
+        instructions, source_context, current_category_enum(),
+        source_in_system=source_in_system, fenced=not use_structured,
+    )
 
     agent_kwargs: dict[str, Any] = {
         "name": "auditor",
@@ -3460,262 +3633,6 @@ def _parse_llm_findings(output: str) -> ParseOutcome:
         # could have failed to parse, so it is not a contract breach.
         parsed=rows is not None or not output.strip(),
     )
-
-
-def _extract_finding_rows(output: str) -> list[dict] | None:
-    """The first attempt that produces a row list wins; ``None`` when none does.
-
-    ``None`` rather than ``[]`` because a strategy that succeeds with zero rows
-    (``[]`` from a compliant model) and no strategy matching at all are opposite
-    outcomes for :class:`ParseOutcome`.
-    """
-    for attempt in (
-        _fenced_json_rows, _scanned_json_rows, _salvage_truncated_array,
-        _empty_array_answer,
-    ):
-        rows = attempt(output)
-        if rows is not None:
-            return rows
-    return None
-
-
-def _empty_array_answer(output: str) -> list[dict] | None:
-    """LAST resort: a response that IS an empty JSON array — "nothing found".
-
-    ``_score_array`` rejects a zero-hit array so a prose decoy cannot shadow a
-    real payload, and ``[]`` has zero hits — so the compliant empty answer left
-    ``_extract_finding_rows`` as "no strategy matched", which P5 now reads as an
-    LLM contract FAILURE. Measured: a 20-batch sweep over a clean tree, model
-    answering a bare ``[]``, aborted at batch 3/20 and lost 17 batches. Only the
-    ```` ```json ```` fence was covered; a bare or unlabelled-fence ``[]`` was not.
-
-    Runs last and yields only ``[]``, so it can neither add nor drop a finding:
-    it decides ``parsed``, nothing else.
-    """
-    body = _strip_code_fence(output.strip())
-    return [] if _is_empty_payload(_try_decode(body, 0)) else None
-
-
-def _is_empty_payload(value: Any) -> bool:
-    """Does this decoded response carry a findings array, and is it empty?
-
-    The wrapper arm exists because the two halves of ``{"findings": [...]}`` are
-    treated OPPOSITELY today: with rows, ``_scan_json_arrays`` reaches the inner
-    array and parses; with none, the zero-hit score rejects it. A model that
-    always wraps then works on dirty batches and fails on clean ones.
-
-    Deliberately NOT "any well-formed JSON is an answer": the response must
-    actually contain an empty array, or the contract-failure signal P5 exists
-    for is gone.
-    """
-    if isinstance(value, list):
-        return not value
-    if isinstance(value, dict):
-        return any(item == [] for item in value.values())
-    return False
-
-
-def _strip_code_fence(body: str) -> str:
-    """The inside of a whole-response code fence, labelled or not; *body* as-is
-    when it is not fenced. ``_fenced_json_rows`` only knows the ```` ```json ````
-    label, and a model that omits it is not thereby unparseable."""
-    match = _ANY_FENCE_RE.match(body)
-    return match.group(1).strip() if match is not None else body
-
-
-def _loads_list(text: str | None) -> list | None:
-    """``json.loads`` restricted to arrays; ``None`` on absent or invalid input."""
-    if text is None:
-        return None
-    try:
-        value = json.loads(text)
-    except ValueError:
-        return None
-    return value if isinstance(value, list) else None
-
-
-def _only_dicts(value: list) -> list[dict]:
-    """Every dict entry of a decoded array — RECALL, not ranking: a sloppy row
-    such as ``{"title": "b"}`` is too key-poor to make an array look like a
-    payload and is still a finding."""
-    return [row for row in value if isinstance(row, dict)]
-
-
-def _dict_rows(value: list | None) -> list[dict] | None:
-    """:func:`_only_dicts`, tolerant of the "nothing decoded" signal."""
-    if value is None:
-        return None
-    return _only_dicts(value)
-
-
-def _fenced_json_rows(output: str) -> list[dict] | None:
-    """The ```` ```json ... ``` ```` block — tried FIRST and unchanged (0076 T1.2)."""
-    match = _LLM_JSON_FENCED_RE.search(output)
-    if match is None:
-        return None
-    return _dict_rows(_loads_list(match.group(1)))
-
-
-def _scanned_json_rows(output: str) -> list[dict] | None:
-    """The brace-safe scan, or the pre-0076 regex under the rollback switch."""
-    if _json_scan_enabled():
-        return _scan_json_arrays(output)
-    match = _LLM_JSON_BARE_RE.search(output)
-    return _dict_rows(_loads_list(match.group(1) if match else None))
-
-
-def _json_scan_enabled() -> bool:
-    """``VULTURE_LLM_JSON_SCAN`` — default TRUE, read at call time (D14)."""
-    return env_flag("VULTURE_LLM_JSON_SCAN", True)
-
-
-def _json_salvage_enabled() -> bool:
-    """``VULTURE_LLM_JSON_SALVAGE`` — default TRUE, read at call time (D14)."""
-    return env_flag("VULTURE_LLM_JSON_SALVAGE", True)
-
-
-def _try_decode(output: str, index: int) -> Any:
-    """``raw_decode`` at *index*, or ``None`` when nothing valid starts there."""
-    try:
-        value, _end = json.JSONDecoder().raw_decode(output, index)
-    except ValueError:
-        return None
-    return value
-
-
-def _score_array(value: list) -> tuple[int, int, int] | None:
-    """Rank a decoded array as a findings payload, or ``None`` if it is not one.
-
-    KEY EVIDENCE DOMINATES ROW COUNT, and the ordering is load-bearing. Scored
-    ``(len(rows), hits)`` instead, tuple comparison puts row count first and the
-    three-row decoy ``[{"id":1},{"id":2},{"id":3}]`` — an everyday TS example in
-    model prose, scoring ``(3, 3)`` — outranks the real one-row payload
-    ``(1, 9)``, losing the whole batch in a new shape. Returning ``None`` for a
-    zero-hit array is the other half: a decoy that carries no finding key is not
-    a candidate at all, whatever the ordering downstream turns out to be.
-    """
-    hits = [_key_hits(row) for row in value]
-    if not any(hits):
-        return None
-    return (_strong_rows(hits), sum(hits), len(_only_dicts(value)))
-
-
-def _key_hits(row: Any) -> int:
-    """Finding-shaped keys carried by one decoded entry; ``0`` for a non-dict."""
-    if not isinstance(row, dict):
-        return 0
-    return len(_FINDING_KEYS & set(row))
-
-
-def _strong_rows(hits: list[int]) -> int:
-    """Rows carrying at least two finding keys — the DOMINANT evidence term."""
-    return sum(1 for count in hits if count >= 2)
-
-
-def _decoded_arrays(output: str) -> Generator[list, None, None]:
-    """Every JSON array that decodes from a ``[`` in *output*, in order.
-
-    Exact where the regex was heuristic. Scanning EVERY ``[`` rather than
-    returning the first that decodes is a recall requirement: a model that opens
-    with prose containing ``["a","b"]``, or whose quote holds ``[{ id: 1 }]``,
-    would otherwise have its real payload shadowed by the decoy.
-    """
-    for index, char in enumerate(output):
-        if char != "[":
-            continue
-        value = _try_decode(output, index)
-        if isinstance(value, list):
-            yield value
-
-
-def _better_candidate(
-    best: tuple[tuple[int, int, int], list[dict]] | None, value: list,
-) -> tuple[tuple[int, int, int], list[dict]] | None:
-    """Keep the higher-scoring array; ties take the LATER one, because a model
-    that restates its answer puts the corrected payload at the end."""
-    score = _score_array(value)
-    if score is None:
-        return best
-    if best is not None and score < best[0]:
-        return best
-    return (score, _only_dicts(value))
-
-
-def _scan_json_arrays(output: str) -> list[dict] | None:
-    """Find the BEST JSON array of findings in *output*, brace-safely.
-
-    ``None`` — not ``[]`` — is the "nothing here" signal, so the caller can fall
-    through to salvage instead of treating a decoy-only response as an answer.
-    """
-    best: tuple[tuple[int, int, int], list[dict]] | None = None
-    for value in _decoded_arrays(output):
-        best = _better_candidate(best, value)
-    return None if best is None else best[1]
-
-
-def _unclosed_array_start(output: str) -> int | None:
-    """Index of the FIRST ``[`` that does not decode — the truncated array.
-
-    It must be the first, not the last. A truncated payload's opening bracket
-    fails to decode because nothing closes it, but so does every ``[`` inside a
-    string value after it — and 0076 makes those the common case, because
-    ``evidence_quote`` is VERBATIM SOURCE and `m[key]`, `x[i]`, `map[string]int`
-    are everyday code. Taking the last match started the salvage in the middle
-    of a string literal, recovered nothing, and lost the whole truncated batch:
-    the exact recall failure salvage exists to prevent.
-    """
-    for index, char in enumerate(output):
-        if char == "[" and _try_decode(output, index) is None:
-            return index
-    return None
-
-
-def _whole_objects_from(output: str, start: int) -> list[dict]:
-    """Decode successive whole objects after ``output[start] == '['``.
-
-    Stops at the first fragment, which is the partial tail the output-token cap
-    cut off. Linear: ``raw_decode`` returns the index it stopped at, so each
-    character is consumed once.
-    """
-    rows: list[dict] = []
-    index = start + 1
-    decoder = json.JSONDecoder()
-    while index < len(output):
-        index = _skip_separators(output, index)
-        try:
-            value, index = decoder.raw_decode(output, index)
-        except ValueError:
-            return rows
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
-
-
-def _skip_separators(output: str, index: int) -> int:
-    """Advance past commas and whitespace between two array elements."""
-    while index < len(output) and output[index] in ", \t\r\n":
-        index += 1
-    return index
-
-
-def _salvage_truncated_array(output: str) -> list[dict] | None:
-    """Recover rows from an array the model never closed.
-
-    A response cut at ``VULTURE_LLM_MAX_OUTPUT_TOKENS`` ends mid-array; without
-    this the whole batch is lost because neither pattern can match text with no
-    ``]``. Gated by ``VULTURE_LLM_JSON_SALVAGE`` (default true) and never silent:
-    the recovered row count is logged as ``llm_json_salvaged``.
-    """
-    if not _json_salvage_enabled():
-        return None
-    start = _unclosed_array_start(output)
-    if start is None:
-        return None
-    rows = _whole_objects_from(output, start)
-    if not rows:
-        return None
-    logger.warning("llm_json_salvaged rows=%d", len(rows))
-    return rows
 
 
 def _coerce_path(value: Any) -> str:

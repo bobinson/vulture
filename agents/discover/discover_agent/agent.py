@@ -34,9 +34,9 @@ from shared.discovery.helpers import filter_static_endpoints
 from shared.discovery.plugin_base import DiscoveryContext
 from shared.discovery.runner import run_discovery
 from shared.discovery.sitemap import SiteMap
-from shared.transport.event_emitter import AgUiEventEmitter
 from shared.env import env_flag
 from shared.tools.window import WINDOW_NO_CODE_LOCATION, record_window_reason
+from shared.transport.event_emitter import AgUiEventEmitter
 
 from discover_agent.findings import analyze_security_exposures
 from discover_agent.learning_store import (

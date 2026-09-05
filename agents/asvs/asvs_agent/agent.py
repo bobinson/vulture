@@ -15,6 +15,7 @@ from typing import Any
 from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.llm.provider import get_context_window, get_max_findings
+from shared.prompt.manifests.generate import domain_instructions
 from shared.tools.memory_client import build_prior_context
 
 from asvs_agent.catalog import build_catalog_context, load_catalog
@@ -102,6 +103,15 @@ def _prioritized_req_ids(limit: int = 60) -> list[str]:
     return selected
 
 
+# NOT the prompt source any more — feature 0089 Phase 2.5 moved that to the
+# fragment `domains/asvs`, named at the `run_combined_audit` call below and
+# rendered by `domain_instructions()` (see its note in
+# `shared/prompt/manifests/generate.py`). This literal stays as the
+# transcription's INDEPENDENT oracle: `test_0089_manifest_generate.py` reads it
+# out of this file by AST and asserts the fragment equals it byte for byte, so
+# it is the one assertion that can still see the fragment drift from the prompt
+# this agent shipped. Do not reword, reformat or delete it: edit the fragment,
+# then this, together.
 INSTRUCTIONS = """You are an ASVS (Application Security Verification Standard)
 auditor using OWASP ASVS v5.0.0 — 345 requirements across 17 chapters and 3
 verification levels (L1, L2, L3).
@@ -139,7 +149,6 @@ For each finding, provide:
 - description: detailed explanation with data-flow trace.
 - file_path, line_start, line_end.
 - recommendation: actionable fix.
-- linked_cwe (optional): if the req maps to a CWE in our crosswalk, cite it.
 
 Cite ASVS req IDs in the form 'ASVS-V{X}.{Y}.{Z}' so findings can be
 grouped by chapter in the frontend.
@@ -187,13 +196,15 @@ def run_audit(
     # models don't waste budget on requirements they won't have room to
     # analyze anyway.
     catalog_ctx = _build_llm_catalog_context(get_context_window(model))
-    enhanced_instructions = INSTRUCTIONS
-    if catalog_ctx:
-        enhanced_instructions += (
-            "\n\n## ASVS Catalog Reference\n"
-            "Use this catalog data to identify requirement violations:\n\n"
-            + catalog_ctx
-        )
+    # The per-run half of the system turn. It is NOT a fragment: the catalog
+    # body is selected per audit from the active model's window, so it is a
+    # value, not prompt text. Appended to the library's render at the call site
+    # below, in the position and with the bytes the pre-2.5 concatenation used.
+    catalog_suffix = (
+        "\n\n## ASVS Catalog Reference\n"
+        "Use this catalog data to identify requirement violations:\n\n"
+        + catalog_ctx
+    ) if catalog_ctx else ""
 
     _shared = shared_audit_kwargs(
         config, source_path, prior_findings, "asvs", prior_context=context,
@@ -207,6 +218,13 @@ def run_audit(
         domain_label="ASVS requirements",
         **_shared,
         skill_tools=SKILL_TOOLS,
-        instructions=enhanced_instructions,
+        instructions=domain_instructions(
+            "domains/asvs",
+        ) + catalog_suffix,
         model=model,
+        # 0089 Phase 2.3 — stated, not defaulted (see run_combined_audit's
+        # `category_enum` docs). `None`, deliberately: ASVS declares one coarse
+        # key (`asvs_requirements`) while findings carry chapter ids (V1..V17),
+        # so conforming to the declared set would erase the chapter.
+        category_enum=None,
     )

@@ -86,7 +86,7 @@ def _go_var_is_dereferenced(var: str, lines: list[str], line_num: int) -> bool:
     import re as _re
     pat = _re.compile(GO_DEREF_OF.format(v=_re.escape(var)))
     end = min(line_num + _DEREF_SCAN_LINES, len(lines))
-    return any(pat.search(l) for l in lines[line_num:end])
+    return any(pat.search(ln) for ln in lines[line_num:end])
 
 # CWE-400: Uncontrolled resource consumption
 RESOURCE_CONSUMPTION_PATTERNS = [
@@ -736,9 +736,10 @@ def _check_null_deref(
     # second result counts — `_` is precisely the discarded-error bug this rule
     # must keep reporting.
     _second = bound.group("second")
-    if _second and _second != "_":
-        if re.search(GO_VAR_NIL_GUARD.pattern.format(v=re.escape(_second)), window):
-            return
+    if _second and _second != "_" and re.search(
+        GO_VAR_NIL_GUARD.pattern.format(v=re.escape(_second)), window
+    ):
+        return
     finding = {
         "severity": "high",
         "check_id": "cwe.resource.null_deref",

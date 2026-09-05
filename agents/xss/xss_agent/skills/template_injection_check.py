@@ -5,7 +5,6 @@ or remote code execution via dynamic template compilation with user input.
 """
 
 import re
-from xss_agent.skills._check_id import cid
 from pathlib import Path
 
 from agents import function_tool
@@ -19,6 +18,8 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+
+from xss_agent.skills._check_id import cid
 
 # Jinja2 SSTI
 JINJA2_PATTERNS = [

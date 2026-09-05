@@ -126,9 +126,12 @@ def test_agent_discovery_is_not_vacuous():
 def _calls_shared_helper(agent_py: pathlib.Path) -> bool:
     tree = ast.parse(agent_py.read_text())
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "shared_audit_kwargs":
-                return True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "shared_audit_kwargs"
+        ):
+            return True
     return False
 
 
@@ -244,7 +247,7 @@ def _agent_entry(pkg: pathlib.Path):
         sys.path.insert(0, root)
     try:
         mod = importlib.import_module(f"{pkg.name}.agent")
-    except Exception:  # noqa: BLE001 - an unimportable agent is reported below
+    except Exception:
         return "IMPORT_FAILED"
     return getattr(mod, "run_audit", None)
 

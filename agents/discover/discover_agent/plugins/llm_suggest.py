@@ -5,6 +5,7 @@ that likely exist but weren't found by automated scanning. Degrades gracefully
 if no LLM is configured.
 """
 
+import dataclasses
 import logging
 import os
 
@@ -15,9 +16,22 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.prompt import Mode, profile_for, render
+from shared.prompt.extract import extract_object
+from shared.prompt.manifests.discover_suggest import DISCOVER_SUGGEST
 
 logger = logging.getLogger(__name__)
 
+# NOT the prompt source any more — feature 0089 Phase 2.1 moved that to the
+# fragment `discover/suggest`, which `DISCOVER_SUGGEST` names and `render()`
+# assembles (see `_suggest_messages`). This literal stays because it is the
+# transcription's only INDEPENDENT oracle: once both sides of
+# `test_0089_parity_discover*.py` go through `render()` those tests compare the
+# library to itself, and `test_0089_manifest_discover.py` — which reads this
+# constant out of this file by AST and asserts the fragment equals it byte for
+# byte, `str.format`'s `{{`/`}}` encoding resolved — becomes the one assertion
+# that can still see the fragment drift from the prompt this agent shipped.
+# Do not reword, reformat or delete it: edit the fragment, then this, together.
 _LLM_DISCOVER_PROMPT = """You are a web security expert. Given the following discovered information about a web application, suggest additional API endpoints that likely exist but weren't found by automated scanning.
 
 Technologies detected: {technologies}
@@ -83,23 +97,7 @@ class LLMEndpointPlugin(DiscoveryPlugin):
         """Suggest endpoints via LLM analysis of discovered tech stack."""
         result = DiscoveryResult()
 
-        framework_hints = _build_framework_hints(ctx.site)
-        prompt = _LLM_DISCOVER_PROMPT.format(
-            technologies=", ".join(ctx.site.technologies) or "unknown",
-            api_endpoints="\n".join(
-                f"  {e}" for e in ctx.site.api_endpoints[:20]
-            ) or "none found",
-            forms="\n".join(
-                f"  {f['method']} {f['action']} inputs={f.get('inputs', [])}"
-                for f in ctx.site.forms[:10]
-            ) or "none found",
-            headers="\n".join(
-                f"  {k}: {v}" for k, v in ctx.site.headers.items()
-            ) or "none",
-            framework_hints="\n".join(
-                f"  - {h}" for h in framework_hints
-            ) or "none detected",
-        )
+        messages = _suggest_messages(ctx.site)
 
         try:
             import litellm
@@ -108,16 +106,26 @@ class LLMEndpointPlugin(DiscoveryPlugin):
             model = resolve_model_for_litellm()
             kwargs: dict = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": messages,
                 "timeout": 30.0,
             }
             # Custom endpoints (vLLM, LM Studio) may not support response_format
             if not uses_custom_endpoint():
                 kwargs["response_format"] = {"type": "json_object"}
             resp = await litellm.acompletion(**kwargs)
-            import json
             text = resp.choices[0].message.content or ""
-            data = json.loads(text)
+            # `json.loads(text)` until 0089 Phase 2.1: it needs the response to
+            # BE the object and nothing else, so a fenced ```json block or a
+            # reasoning model's `<think>` preamble lost the whole suggestion
+            # round — and `response_format` is withheld from exactly the custom
+            # endpoints (LM Studio, vLLM) whose local models fence and think.
+            data = extract_object(text)
+            if data is None:
+                logger.warning(
+                    "LLM endpoint suggestion returned no JSON object (%d chars)",
+                    len(text),
+                )
+                return result
             endpoints = data.get("endpoints", [])
             for ep in endpoints:
                 if isinstance(ep, str) and ep.startswith("/") and not is_static_path(ep):
@@ -137,6 +145,45 @@ class LLMEndpointPlugin(DiscoveryPlugin):
             logger.warning("LLM endpoint suggestion failed: %s", exc)
 
         return result
+
+
+def _prompt_variables(site) -> dict[str, str]:
+    """The five interpolated blocks, shaped as the prompt expects them.
+
+    Lifted verbatim out of the old ``_LLM_DISCOVER_PROMPT.format(...)`` call —
+    the same joins, the same two-space indents, the same ``or`` fallbacks — so
+    the values are unchanged and only their destination moved. This shaping is
+    still the call site's job: the fragment declares ``{technologies}`` & co.
+    as plain placeholders, and 0089 Phase 2 has not yet turned them into
+    declared slots.
+    """
+    return {
+        "technologies": ", ".join(site.technologies) or "unknown",
+        "api_endpoints": "\n".join(
+            f"  {e}" for e in site.api_endpoints[:20]
+        ) or "none found",
+        "forms": "\n".join(
+            f"  {f['method']} {f['action']} inputs={f.get('inputs', [])}"
+            for f in site.forms[:10]
+        ) or "none found",
+        "headers": "\n".join(
+            f"  {k}: {v}" for k, v in site.headers.items()
+        ) or "none",
+        "framework_hints": "\n".join(
+            f"  - {h}" for h in _build_framework_hints(site)
+        ) or "none detected",
+    }
+
+
+def _suggest_messages(site) -> list[dict]:
+    """The request turns for one endpoint-suggestion round.
+
+    TRANSCRIBE, not ADAPT: 0089 Phase 2 is a pure refactor, and every adaptive
+    rule changes bytes. The spec declares no system fragments, so ``render``
+    returns the single user turn this plugin has always sent.
+    """
+    spec = dataclasses.replace(DISCOVER_SUGGEST, variables=_prompt_variables(site))
+    return render(spec, profile_for(), mode=Mode.TRANSCRIBE).messages
 
 
 def _build_framework_hints(site) -> list[str]:

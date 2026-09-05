@@ -5,7 +5,6 @@ template unsafe rendering, direct DOM writes, framework-specific patterns.
 """
 
 import re
-from xss_agent.skills._check_id import cid
 from pathlib import Path
 
 from agents import function_tool
@@ -20,6 +19,8 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.framework_html import is_framework_style_injection
+
+from xss_agent.skills._check_id import cid
 
 # Template unsafe rendering
 TEMPLATE_UNSAFE_PATTERNS = [

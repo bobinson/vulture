@@ -10,8 +10,11 @@ import logging
 
 import httpx
 import websockets
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
+)
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.protocols.detection import TargetCapabilities, to_ws_url
 from prove_agent.strategies.base import (
     ExecutionResult,
@@ -46,6 +49,10 @@ SUBSTRATE_METHODS: dict[str, str] = {
     "rpc_methods": "List all available RPC methods",
 }
 
+# NOT the prompt source any more — feature 0089 Phase 2.6. The runtime renders
+# `prove/analyze` with `PROVE_ANALYZE_DOMAIN["jsonrpc"]` (see
+# `_analyze_rpc_response` below). This literal stays as the byte-pinned
+# transcription oracle (see the fuller note in `strategies/cwe.py`).
 _ANALYZE_PROMPT = """Did this JSON-RPC response confirm the vulnerability?
 
 Finding: {title} ({category})
@@ -193,7 +200,8 @@ async def _analyze_rpc_response(
 
     # Phase 2: LLM analysis
     try:
-        llm_result = await llm_json_call(_ANALYZE_PROMPT.format(
+        llm_result = await llm_json_call(render_prove_prompt(
+            "prove/analyze", PROVE_ANALYZE_DOMAIN["jsonrpc"],
             title=finding_title,
             category=finding_category,
             method=rpc_method,

@@ -52,13 +52,15 @@ Evidence citation:
   own line just to fill the field. Assuming an unseen mitigation is ABSENT
   is the same error as assuming an unseen helper is safe — with the sign
   flipped. If your reasoning is "nothing sanitises this" and you cannot
-  point at the code that would have to do it, that is window_sufficient =
-  false and evidence_line = null, not a confident verdict.
+  point at the code that would have to do it, READ THE FILE and look for it
+  first; only if it is still not there is that window_sufficient = false and
+  evidence_line = null, not a confident verdict.
 
 Your FINAL message must be STRICT JSON only — no prose, no markdown, no
 code fences. Tool calls before it are expected and are not a violation:
 {"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"reasoning":"<up to 60 words>"}]}
 
 Every finding in the batch must appear in the response by id. If you
-cannot judge a specific finding, set exploitable=0.5 and explain why
-in reasoning.
+cannot judge a specific finding from the code shown, spend a tool call on it
+before answering; if it is still undecidable, set exploitable=0.5 and explain
+why in reasoning.

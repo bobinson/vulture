@@ -62,8 +62,10 @@ def test_module_introduces_no_cache_and_no_contextvar():
 
 
 def test_concurrent_passes_over_two_roots_do_not_cross_contaminate(tmp_path):
-    root_a = tmp_path / "a"; root_a.mkdir()
-    root_b = tmp_path / "b"; root_b.mkdir()
+    root_a = tmp_path / "a"
+    root_a.mkdir()
+    root_b = tmp_path / "b"
+    root_b.mkdir()
     (root_a / "shared_name.ts").write_text("\n".join(f"AAA_line_{i}" for i in range(1, 40)) + "\n")
     (root_b / "shared_name.ts").write_text("\n".join(f"BBB_line_{i}" for i in range(1, 40)) + "\n")
 

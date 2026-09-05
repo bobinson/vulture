@@ -25,3 +25,13 @@ class PromptSpec:
     tools: tuple[str, ...] = ()
     slots: tuple[Any, ...] = ()
     variables: dict[str, Any] = field(default_factory=dict)
+    # Owned, explained exemptions from promptlint — `lint.LintAllow` entries,
+    # read by `lint.gate()`. Typed `Any` for the same reason `slots` is: this
+    # module is the call-site contract and imports nothing from the package, so
+    # the lint layer can depend on the spec without the spec depending back.
+    #
+    # On the SPEC rather than in one central table because the exemption and
+    # the fragment list it excuses have to be edited together: a fragment
+    # removed from a manifest whose allow entry stays behind is exactly the
+    # stale annotation `gate()` reports.
+    allow: tuple[Any, ...] = ()

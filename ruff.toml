@@ -30,8 +30,35 @@ extend = "agents/ruff.toml"
 # Vendored, generated, or intentionally-broken trees that are never linted.
 extend-exclude = [
     "agents/cwe/tests/corpus/fixtures",
+    "agents/cwe/tests/fixtures",
     "**/node_modules",
     "**/.venv",
     "**/dist",
     "frontend",
 ]
+
+# NOT SUPPORTED: `ruff check --config ruff.toml .`
+#
+# `--config` FORCES this file as the sole configuration and switches off the
+# nearest-first, per-file resolution described above, so agents/cwe/pyproject.toml
+# and agents/shared/pyproject.toml stop applying to their own subtrees. The run
+# then reports ~160 import-order findings that CI does not have, and every one is
+# an artefact of cwd rather than a defect:
+#
+#   * `agents` is the OpenAI Agents SDK — third-party — but this repo also has a
+#     directory named `agents/`. CI's `cd agents` resolves the name to the
+#     installed package; a forced run from the root sees the directory and calls
+#     it first-party.
+#   * `shared`, `cwe_agent`, `asvs_agent` and friends are first-party under CI,
+#     because `cd agents` puts them on the import path. From the root they do not
+#     resolve, so a single import block gets split across two groups.
+#
+# Applying those fixes reorders imports to satisfy the wrong classification, and
+# the CI run flags every one of them back — the same contradiction this header
+# opens with, arriving by a different route. Pinning `src` and
+# `known-third-party` here does not fix it either: it was measured to move the
+# count 162 -> 95 -> 139, because the real difference is the bypassed subtree
+# configs, not the classification.
+#
+# Use `ruff check .` from the root. It discovers this file AND the subtree
+# configs, and agrees with CI exactly.

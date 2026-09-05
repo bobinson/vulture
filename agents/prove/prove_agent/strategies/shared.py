@@ -7,8 +7,11 @@ import re
 from typing import Any
 
 import httpx
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
+)
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.strategies.base import (
     AttemptRecord,
     ExecutionResult,
@@ -643,6 +646,11 @@ def rejected_path_result(path: str, protocol: str = ProbeProtocol.HTTP.value) ->
     )
 
 
+# NOT the prompt source any more — feature 0089 Phase 2.6 collapsed the three
+# per-protocol analyze copies onto one template (`prove/analyze`), rendered with
+# `PROVE_ANALYZE_DOMAIN["http"]` (see `execute_and_analyze` below). http is the
+# base the analyze family is transcribed from. This literal stays as the
+# byte-pinned transcription oracle (see the fuller note in `strategies/cwe.py`).
 _ANALYZE_PROMPT = """Did this HTTP response confirm the vulnerability?
 
 Finding: {title} ({category})
@@ -741,7 +749,8 @@ async def execute_and_analyze(
             return rule_result
 
         # Phase 2: LLM analysis (may fail with small models)
-        llm_result = await llm_json_call(_ANALYZE_PROMPT.format(
+        llm_result = await llm_json_call(render_prove_prompt(
+            "prove/analyze", PROVE_ANALYZE_DOMAIN["http"],
             title=plan.description,
             category=finding_category,
             method=plan.method,

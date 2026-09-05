@@ -39,4 +39,8 @@ line-length = 100
 # as text by the corpus runner (never imported/executed). They legitimately
 # reference undefined framework symbols (e.g. StaticHandler), so do not lint
 # them as real modules.
-extend-exclude = ["tests/corpus/fixtures"]
+# `tests/fixtures` holds the CWE-778 language corpus: files whose bare
+# `except: pass` one-liners, undefined `logger` and unused `e` ARE the
+# detector's subject. Linting them reports the defect the fixture exists to
+# contain, and "fixing" one would silently weaken a detection test.
+extend-exclude = ["tests/corpus/fixtures", "tests/fixtures"]

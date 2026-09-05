@@ -6,13 +6,27 @@ from typing import Any
 
 from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
-from shared.llm.provider import get_max_findings
-from shared.tools.memory_client import build_prior_context
+from shared.llm.provider import (
+    get_max_findings,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
+)
+from shared.prompt.manifests.generate import domain_instructions
+from shared.tools.memory_client import (
+    build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
+)
 from shared.transport.event_emitter import AgUiEventEmitter
 
 from do178c_agent.config import ALL_CATEGORIES, dal_skip
 from do178c_agent.skills import SKILL_MAP, SKILL_TOOLS
 
+# NOT the prompt source any more — feature 0089 Phase 2.5 moved that to the
+# fragment `domains/do178c`, named at the `run_combined_audit` call below and
+# rendered by `domain_instructions()` (see its note in
+# `shared/prompt/manifests/generate.py`). This literal stays as the
+# transcription's INDEPENDENT oracle: `test_0089_manifest_generate.py` reads it
+# out of this file by AST and asserts the fragment equals it byte for byte, so
+# it is the one assertion that can still see the fragment drift from the prompt
+# this agent shipped. Do not reword, reformat or delete it: edit the fragment,
+# then this, together.
 INSTRUCTIONS = """You are a DO-178C Software Assurance Auditor. Analyze source code against
 RTCA DO-178C/ED-12C objectives for the specified Design Assurance Level (DAL).
 Focus on: dead/deactivated code, MC/DC structural coverage gaps, recursion and
@@ -56,6 +70,13 @@ def run_audit(
         domain_label="DO-178C objectives",
         **_shared,
         skill_tools=SKILL_TOOLS,
-        instructions=INSTRUCTIONS,
+        instructions=domain_instructions(
+            "domains/do178c",
+        ),
         model=os.environ.get("VULTURE_LLM_MODEL"),
+        # 0089 Phase 2.3 — stated, not defaulted (see run_combined_audit's
+        # `category_enum` docs). `None`, deliberately: findings carry DO-178C
+        # table/objective references alongside the six declared keys, so opting
+        # in is a measurement to run, not part of a refactor.
+        category_enum=None,
     )

@@ -57,6 +57,33 @@ class Fragment:
     references: tuple[str, ...] = ()
     exemplars: tuple[str, ...] = ()
     version: str = ""
+    # A whole-turn TEMPLATE, not a section composed with others: its bytes pass
+    # through untouched. The distinction is load-bearing, not cosmetic — the
+    # live judge user turn is `template.format(...)` whose own trailing newline
+    # is part of the message, while the system turn is sections joined by one
+    # blank line and carries no terminator. One strip rule cannot serve both, so
+    # the fragment declares which it is instead of the renderer inferring it
+    # from position (a section that happens to be last is still a section).
+    verbatim: bool = False
+    # How this fragment joins to the part BEFORE it. Default "blank" is one
+    # blank line; "tight" is a single newline. The declaration sits on the
+    # FOLLOWING fragment for the same reason leading blank lines do: a seam is
+    # information about where a fragment begins, and the fragment that begins
+    # there is the only one that can know.
+    #
+    # Needed because the live GENERATE prompt genuinely has both widths:
+    # `_quote_contract_suffix()` returns `f"\n{...}"` while every other appended
+    # block opens with `\n\n`, and `_build_llm_prompt` does `"\n".join(parts)`.
+    # A join that only ever emits `\n\n` can widen a seam but never tighten one,
+    # so those bytes were unreachable from the fragment layer at all.
+    seam: str = "blank"
+    # Keep this fragment's trailing newlines instead of treating them as an
+    # editor artefact. Off by default because for 38 of 40 fragments they ARE an
+    # artefact — but `domains/asvs` and `domains/xss` end with a newline that is
+    # content (asvs's literal ends with one; xss reads a `.md` file), and their
+    # live prompts carry the resulting blank line. Stripping it made those two
+    # agents' bytes unreachable, which is how this flag was found.
+    keep_trailing: bool = False
 
     @property
     def fingerprint(self) -> str:
@@ -97,6 +124,12 @@ def parse_fragment(path: Path) -> Fragment:
         meta[key.strip()] = _scalar(val)
     text = m.group(2)
     vocab = ()
+    _true = ("true", "yes", "1")
+    verbatim = str(meta.get("verbatim", "")).strip().casefold() in _true
+    seam = str(meta.get("seam", "blank")).strip().casefold() or "blank"
+    if seam not in ("blank", "tight"):
+        raise ValueError(f"{path}: seam must be 'blank' or 'tight', got {seam!r}")
+    keep_trailing = str(meta.get("keep_trailing", "")).strip().casefold() in _true
     return Fragment(
         id=str(meta.get("id") or path.stem),
         text=text,
@@ -107,4 +140,7 @@ def parse_fragment(path: Path) -> Fragment:
         references=tuple(meta.get("references") or ()),
         exemplars=tuple(meta.get("exemplars") or ()),
         version=str(meta.get("version", "")),
+        verbatim=verbatim,
+        seam=seam,
+        keep_trailing=keep_trailing,
     )

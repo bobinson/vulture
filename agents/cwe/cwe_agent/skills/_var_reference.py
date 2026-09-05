@@ -11,7 +11,7 @@ test modules are untouched, which is what makes the move provably
 behaviour-preserving.
 """
 
-from shared.tools.var_reference import (  # noqa: F401
+from shared.tools.var_reference import (
     _RHS_CAPTURE,
     _VAR_REF_RE,
     is_variable_reference,
@@ -19,8 +19,8 @@ from shared.tools.var_reference import (  # noqa: F401
 )
 
 __all__ = [
+    "_RHS_CAPTURE",
+    "_VAR_REF_RE",
     "is_variable_reference",
     "line_value_is_variable_ref",
-    "_VAR_REF_RE",
-    "_RHS_CAPTURE",
 ]
