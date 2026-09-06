@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     is_generated_file,
@@ -31,8 +33,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import collect_handler_body, extract_snippet
-
-from cwe_agent.catalog import enrich_finding
 
 # Language gate. Only extensions the scanner actually yields are listed:
 # ``.cc``/``.cxx``/``.hpp`` are in neither CODE_EXTENSIONS nor

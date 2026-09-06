@@ -1,6 +1,7 @@
 """Unit tests for all 5 XSS scanner skills."""
 
 import pytest
+
 from xss_agent.config import AGENT_INFO, ALL_CATEGORIES, CONFIG_SCHEMA
 from xss_agent.skills import SKILL_MAP, SKILL_TOOLS
 from xss_agent.skills.dom_xss_check import (

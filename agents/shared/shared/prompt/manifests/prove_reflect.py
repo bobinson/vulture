@@ -2,8 +2,20 @@
 
 Five per-strategy reflection prompts, kept as separate specs (they diverge in
 domain wording). Each emits the same four-field contract, including an
-`analysis` free-text field — the field that contradicts `prove/system`'s
-FORBIDS_PROSE stance, a real audit finding this transcription records honestly.
+`analysis` free-text field. That field is compatible with `prove/system`'s
+FORBIDS_PROSE stance, which Item 4.5 clarified to be envelope-scoped (strict
+JSON, no prose around the object) — free-text values inside the object's
+fields are exactly what the contract asks for.
+
+Item 4.8 added `core/language` to the system turn. These five specs carried no
+`language_pin` annotation to retire — `check_12`'s free-text field set is
+`reasoning`/`description`/`title`/`recommendation`/`evidence`, and this schema
+names none of them, so the check never fired here even though `analysis`,
+`suggested_approach` and `learnings` are exactly as free and egress exactly as
+far. They list the clause anyway, for two reasons: the drift it prevents does
+not care which field name the schema chose, and their `fragments` tuple IS the
+system turn `llm_helper` sends, so a spec that omitted it would be describing a
+turn production does not send.
 """
 
 from __future__ import annotations
@@ -18,7 +30,8 @@ PROVE_REFLECT: dict[str, PromptSpec] = {
     name: PromptSpec(
         id=f"prove_reflect_{name}",
         tier="prove",
-        fragments=("prove/system",),
+        version=3,  # 4.5: shared prove/system reworded. 4.8: core/language
+        fragments=("prove/system", "core/language"),
         user_fragments=(f"prove/reflect_{name}",),
         schema_fields=_REFLECT_SCHEMA,
     )

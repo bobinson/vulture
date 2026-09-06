@@ -53,13 +53,15 @@ Finding: {title}
 Category: {category}
 Description: {description}
 File: {file_path}:{line_start}
+Code: {code_snippet}
+Hints: {verification_hints}
 Staging URL: {staging_url}
 Attempt: {iteration}
 {prior_context}
 {site_context}
 
 Reply with ONLY a JSON object (no markdown, no explanation):
-{{"description":"what this tests","method":"GET or POST","url_path":"/real-path","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
+{{"description":"what this tests","method":"GET or POST","url_path":"/api/users","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
 
 _REFLECT_PROMPT = """You are a SOC2 compliance auditor reflecting on failed verification attempts.
 
@@ -95,6 +97,8 @@ class Soc2Strategy(BaseStrategy):
         prior_context = build_prior_context(
             prior_attempts, reflection, cross_learnings,
         )
+        hints = finding.get("verification_hints", [])
+        hints_str = ", ".join(hints) if hints else "None"
         result = await llm_json_call(
             render_prove_prompt(
                 "prove/plan", PROVE_PLAN_DOMAIN["soc2"],
@@ -103,6 +107,8 @@ class Soc2Strategy(BaseStrategy):
                 description=finding.get("description", ""),
                 file_path=finding.get("file_path", ""),
                 line_start=finding.get("line_start", 0),
+                code_snippet=finding.get("code_snippet", ""),
+                verification_hints=hints_str,
                 staging_url=staging_url,
                 iteration=iteration,
                 site_context=ctx,

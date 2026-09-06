@@ -20,14 +20,52 @@ or `in`-tests: the two assertions are `==` on the whole role string, which is
 the only comparison that can catch all three defects above.
 
 WHY THE UNSTRUCTURED BRANCH. The builder appends `generate/json_fenced`'s
-sentence only when `supports_structured_output()` is False, and `Mode.
-TRANSCRIBE` renders every fragment a spec lists — so TRANSCRIBE mirrors the
-unstructured branch, and that is the branch compared here. The branch is
+sentence only when `supports_structured_output()` is False, and the seven
+committed specs list that fragment unconditionally — so they mirror the
+unstructured branch, and that is the branch compared here. Under ADAPT the
+mirroring is the renderer's rule 4+5 rather than TRANSCRIBE's "render
+everything", which is why `MODEL` must resolve to a `Structured.NONE`
+profile as well as to a False `supports_structured_output`. The branch is
 *selected by the live function*, not asserted by this file: `_live_prompt`
 resolves the model through `get_model_with_fallback` and checks
 `supports_structured_output` before it builds anything, so if that predicate
 ever changes for this model the precondition fails loudly instead of silently
 comparing against the wrong half of an `if`.
+
+FIVE SECTIONS HAVE NO LIVE COUNTERPART, AND PHASE 4 IS WHY. Three parts of the
+system turn are still read from the pre-library builder — the agent's own
+`INSTRUCTIONS` literal, `_category_vocabulary_suffix`, and the inline JSON
+sentence read with `ast` — so that much of the live side is genuinely
+independent of the library. The rest is not, and each one names the item that
+spent it:
+
+* `core/untrusted` (item 4.3) — the tier had NO untrusted-content text at all
+  before it, which is the defect that item fixes (raw repository source inlined
+  with zero marking, `audit_runner.py:3038`, 0089 LLD §9.2);
+* `generate/source_presentation`, `generate/evidence_discipline`,
+  `generate/tool_trigger`, `generate/vocab_severity` (item 4.4) — four
+  sentences the tier never had. The `--- path ---` / `NN: ` contract was never
+  stated, three file tools were attached with no sentence permitting their use,
+  and `severity`'s closed set was silently coerced rather than named.
+
+There is nothing pre-library to read any of the five from, so
+`_library_only_section()` below takes their text from the fragment and this
+file no longer has an opinion about those bytes.
+
+What it still has an opinion about, for each, is its POSITION and its SEAM,
+both of which are literals here — insert one elsewhere in the turn, or join it
+with one newline instead of two, and this fails. What is genuinely unobserved
+is a reword of the text itself, and that is pinned by
+`test_0089_version_bump.py`, which exists for precisely this: a Phase 4 item
+spends a parity oracle, and the hand-written digest in that file becomes the
+fragment's pin.
+
+ITEM 4.4 ALSO FLIPPED THE MODE. Both of this tier's call sites render
+`Mode.ADAPT` now, so the expected side below does too — the live side calls
+`_build_llm_prompt`, which IS one of them. On `MODEL` the two modes are
+byte-identical (gemini has a system role and `Structured.NONE`, so neither the
+fold nor rule 4+5 bites), which is what makes the flip show up here as "nothing
+moved" rather than as a diff.
 
 HERMETIC. No network, no model call, no agent-package import (each agent's
 `INSTRUCTIONS` is read with `ast`, as Phase 0.c reads it). The two knobs that
@@ -164,14 +202,53 @@ def _domain_label(agent: str) -> str:
     return labels[0]
 
 
+# The seam between two appended system blocks, as a literal: the live builder
+# joins every one of them with a blank line (`_category_vocabulary_suffix` and
+# the JSON sentence both open `"\n\n"`), and `_generate_system_prompt` spells
+# the identity seam `f"{head}\n\n{suffix}"`.
+_UNTRUSTED_SEAM = "\n\n"
+
+# What each library-only section interpolates, supplied here as literals so the
+# expected side never shares a reading with the code under test. The two tool
+# budgets are `shared.llm.loop_detector`'s, cross-checked against the detector
+# it configures by `test_0089_parity_generate_repair.py::
+# test_the_pinned_tool_budgets_are_the_ones_the_loop_guard_enforces`.
+_SECTION_VARIABLES = {"tool_call_budget": "100", "tool_repeat_budget": "20"}
+
+
+def _library_only_section(fragment_id: str) -> str:
+    """One section of the turn that has no pre-library source. See the docstring.
+
+    Read from the fragment because there is nothing else to read it from. The
+    seam and the insertion point are this file's own literals, so ordering and
+    join width remain independently checked.
+    """
+    from shared.prompt.registry import get
+
+    text = get(fragment_id).text
+    for name, value in _SECTION_VARIABLES.items():
+        text = text.replace("{" + name + "}", value)
+    return _UNTRUSTED_SEAM + text.rstrip("\n")
+
+
 def _json_fenced_literal() -> str:
     """The unstructured branch's JSON sentence, read out of the live builder.
 
-    It is an inline literal inside `_collect_llm_findings_async`, not behind a
-    function, so there is nothing to call. The shape asserted here IS the live
-    statement — `augmented_instructions += (<literal>) +
-    _quote_contract_suffix()` — so a reworded literal changes these bytes and a
-    restructured statement fails the assertions instead of quietly matching.
+    It is an inline literal, not behind a function, so there is nothing to
+    call. The shape asserted here IS the live statement —
+    `augmented_instructions += (<literal>)` — so a reworded literal changes
+    these bytes and a restructured statement fails the assertions instead of
+    quietly matching.
+
+    BEFORE feature 0089 item 4.4 the statement added a second term,
+    `+ _quote_contract_suffix()`, and this asserted that shape::
+
+        assert isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add)
+        assert value.right.func.id == "_quote_contract_suffix"
+
+    4.4 removed the placement and the function. The assertion that no second
+    term exists takes its place, so a re-appended copy of any sentence fails
+    here instead of being silently taken as the left operand.
     """
     from shared import audit_runner as ar
 
@@ -185,11 +262,11 @@ def _json_fenced_literal() -> str:
     ]
     assert len(found) == 1, f"expected one `augmented_instructions +=`, got {len(found)}"
     value = found[0]
-    assert isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add)
-    assert isinstance(value.right, ast.Call)
-    assert isinstance(value.right.func, ast.Name)
-    assert value.right.func.id == "_quote_contract_suffix"
-    literal = _str_constant(value.left)
+    assert not isinstance(value, ast.BinOp), (
+        "the unstructured branch appends a second term again; item 4.4 left it "
+        "one literal, and a second term is a second author"
+    )
+    literal = _str_constant(value)
     assert literal, "the JSON-array sentence is no longer a plain literal"
     return literal
 
@@ -224,10 +301,28 @@ def _live_prompt(agent: str) -> Assembled:
     # `_category_vocabulary_suffix(current_category_enum())` is the live line;
     # `current_category_enum()` would return exactly this frozenset, so the
     # vocabulary is passed straight in rather than bound through the ContextVar.
-    instructions = (_instructions(agent) or "") + ar._category_vocabulary_suffix(VOCABULARY)
-    instructions += _json_fenced_literal() + ar._quote_contract_suffix()
+    instructions = (_instructions(agent) or "") + _library_only_section("core/untrusted")
+    for fid in ("generate/source_presentation", "generate/evidence_discipline",
+                "generate/tool_trigger"):
+        instructions += _library_only_section(fid)
+    instructions += ar._category_vocabulary_suffix(VOCABULARY)
+    instructions += _library_only_section("generate/vocab_severity")
+    instructions += _json_fenced_literal()
+    # `vocabulary` and `fenced` are the SAME two facts the instructions above
+    # are built from, and until item 4.7 this call passed neither — it took the
+    # defaults (`vocabulary=None`, `fenced=False`), i.e. the branch with no
+    # category enum and no JSON contract, while the string two lines up appended
+    # both. The mismatch could not be observed: `generate/vocab_category` and
+    # `generate/json_fenced` are SYSTEM fragments, and the live system turn here
+    # is hand-assembled rather than read from `_generate_system_prompt`, so
+    # neither ever reached the role this call returns. Item 4.7 mirrors the JSON
+    # contract into the user turn, which is the first time the branch the file's
+    # own docstring says it compares ("WHY THE UNSTRUCTURED BRANCH") had to
+    # actually be the branch requested. Passing them widens the comparison; it
+    # does not relax it.
     user = ar._build_llm_prompt(
         SOURCE_PATH, CATEGORIES, _domain_label(agent), SOURCE_BODY, PRIOR_CONTEXT,
+        vocabulary=VOCABULARY, fenced=True,
     )
     return Assembled(instructions=instructions, user=user)
 
@@ -261,9 +356,11 @@ def _rendered_prompt(agent: str) -> Assembled:
             # not by calling `_quote_max_lines()` — one reading shared by both
             # sides would move them together.
             "quote_max_lines": "3",
+            # Item 4.4's two tool budgets, as literals for the same reason.
+            **_SECTION_VARIABLES,
         },
     )
-    rp = render(spec, profile_for(MODEL), mode=Mode.TRANSCRIBE)
+    rp = render(spec, profile_for(MODEL), mode=Mode.ADAPT)
     return Assembled(instructions=rp.instructions, user=rp.user)
 
 

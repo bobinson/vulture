@@ -1,32 +1,34 @@
-"""Feature 0089 Phase 0.c — the DISCOVER tier transcription.
+"""Feature 0089 Phase 0.c — the DISCOVER tier, pinned against production.
 
-The point of a transcription phase is that it changes NO bytes. So the test
-that matters is not "does it render" but "is the rendered text the same string
-the shipping call site sends today". The expected value is read out of
+The point of a transcription phase was that it changed NO bytes, so the test
+that mattered was not "does it render" but "is the rendered text the same
+string the shipping call site sends". The expected values are read out of
 `discover_agent/plugins/llm_suggest.py` by AST, never retyped here: a golden
 copied by hand is a second source of truth, which is the thing 0089 removes.
 
-WHAT "BYTE FOR BYTE" IS MEASURED AGAINST, and why it is not the raw literal.
-`_LLM_DISCOVER_PROMPT` is a `str.format` TEMPLATE, so its JSON example is
-written `{{"endpoints": ...}}` — doubled braces that `str.format` collapses.
-The bytes the model receives therefore carry SINGLE braces, and the fragment
-holds the prompt, not the Python source that encodes it.
+PHASE 4.6 CHANGED THE BYTES, and three of the assertions below with them. It is
+the item that was allowed to: it split the single user turn into
+`discover/system` (persona, focus list, output contract, rules) and
+`discover/suggest` (the discovered evidence and the ask), replaced an invalid
+JSON exemplar, added an abstention clause and widened the path rule. What did
+NOT change is the arrangement this file defends: production still carries a
+literal copy of each fragment, and each is still compared byte for byte.
 
-Nor could the fragment hold the escapes: the renderer's interpolation is
-`render._fill`, a plain `{name}` -> value `.replace`, deliberately NOT
-`str.format` (a `str.format`-based fill would raise on any prompt containing a
-JSON brace, which is most of them). `{{` has no meaning in that syntax — it is
-two literal braces — so an escaped fragment renders `{{` straight to the model
-and `render()` can never reproduce the live request. That is exactly what
-`test_0089_parity_discover*.py` measured: rendered 1411 chars against the live
-plugin's 1409.
+Before 4.6 there was one literal, `_LLM_DISCOVER_PROMPT`, and it was a
+`str.format` TEMPLATE — its JSON example was written `{{"endpoints": ...}}`,
+doubled braces that `str.format` collapses. The expectation therefore had to be
+the literal with each placeholder mapped to ITSELF, so that `.format` resolved
+the escapes and left `{technologies}` & co. standing. Nothing calls `.format`
+on the literals any more (`render._fill` does the substitution, and it is a
+one-pass `{name}` -> value substitution for which `{{` is simply two literal
+braces), so the literals now carry SINGLE braces, in the same syntax the
+fragments use, and the comparison is direct.
 
-So the expectation here is the live literal with each placeholder mapped to
-ITSELF (`_expected_fragment_text`): `str.format` resolves the escapes and
-leaves `{technologies}` & co. standing. Still one source of truth, still
-production's own bytes, and still byte equality — a reworded prompt, a changed
-example or a tidied `...` all fail. The `...` (an invalid-JSON example, and the
-audit record Phase 4.6 owns) is untouched by this and still linted below.
+That cost one guard, which is restored explicitly rather than dropped: the old
+`.format` call raised KeyError if the call site grew a sixth interpolated
+block. `test_the_five_interpolated_blocks_are_the_call_sites_own` reads the
+keys `_prompt_variables` returns, by AST, and compares them to the placeholders
+the fragments declare.
 """
 
 from __future__ import annotations
@@ -60,56 +62,114 @@ def _source_constant(path: Path, name: str) -> str:
     raise AssertionError(f"{name} not found in {path}")
 
 
-# The five keys `llm_suggest.discover()` passes to `.format` (llm_suggest.py:
-# 85-104). Hardcoded so that a key added to the live call site — a sixth
-# interpolated block, i.e. new prompt bytes — raises KeyError here instead of
-# being quietly absent from the expectation.
+def _source_dict_keys(path: Path, func: str) -> tuple[str, ...]:
+    """The string keys of the dict literal a function returns, by AST."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != func:
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Dict):
+                return tuple(ast.literal_eval(k) for k in sub.value.keys)
+    raise AssertionError(f"{func} has no dict return in {path}")
+
+
+# The five interpolated blocks `llm_suggest._prompt_variables()` builds.
+# Hardcoded so that a key added to the live call site — a sixth block, i.e. new
+# prompt bytes — is a failure here instead of being quietly absent.
 _LIVE_FORMAT_KEYS = (
     "technologies", "api_endpoints", "forms", "headers", "framework_hints",
 )
 
+# fragment id -> the production literal that must equal it, byte for byte.
+# Two since Phase 4.6 split the turn; see the module docstring.
+_FRAGMENT_LITERALS = {
+    "discover/system": "_LLM_DISCOVER_SYSTEM",
+    "discover/suggest": "_LLM_DISCOVER_USER",
+}
 
-def _expected_fragment_text() -> str:
-    """The live template as the renderer's placeholder syntax spells it.
 
-    `str.format` with every placeholder bound to its own `{name}` resolves the
-    `{{`/`}}` escapes and nothing else, so this is `_LLM_DISCOVER_PROMPT` with
-    the `str.format` encoding removed and the template still a template.
-    Derived from production; retypes none of it.
+@pytest.mark.parametrize("fragment_id", sorted(_FRAGMENT_LITERALS))
+def test_discover_fragment_is_byte_exact(fragment_id):
+    """Each fragment IS its production literal, byte for byte.
+
+    Not "contains" and not "normalised": a reworded prompt, a changed example
+    or a moved rule all fail. The literals hold the renderer's placeholder
+    syntax directly (nothing calls `.format` on them), so `{{`/`}}` must not
+    appear on either side — a doubled brace would ship two literal braces to
+    the model inside the JSON exemplar, the one place the output contract has
+    to be exact.
     """
-    template = _source_constant(_SRC, "_LLM_DISCOVER_PROMPT")
-    return template.format(**{k: "{" + k + "}" for k in _LIVE_FORMAT_KEYS})
-
-
-def test_discover_fragment_is_byte_exact():
-    """The fragment text IS `_LLM_DISCOVER_PROMPT`, byte for byte.
-
-    Byte for byte against the template as SENT — `str.format`'s `{{`/`}}`
-    encoding resolved (see the module docstring), the placeholders left
-    standing, and the invalid `...` example untouched: a transcription that
-    tidies the example is no longer a transcription, and Phase 4.6 loses the
-    before/after it needs to prove a fix helped.
-    """
-    frag = get("discover/suggest")
-    assert frag.text == _expected_fragment_text()
-    # The escapes belong to `str.format`, not to the prompt: they must not
-    # survive into the fragment, or `render()` sends `{{` to the model.
+    frag = get(fragment_id)
+    assert frag.text == _source_constant(_SRC, _FRAGMENT_LITERALS[fragment_id])
     assert "{{" not in frag.text and "}}" not in frag.text
-    # Sent as a lone user message with no system role (llm_suggest.py:110-121).
-    assert frag.role is Role.USER
+
+
+def test_discover_declares_a_system_turn_and_a_user_turn():
+    """The split Phase 4.6 made, pinned on both halves.
+
+    BEFORE 4.6: `fragments=()`, one USER fragment, and the plugin sent
+    `messages=[{"role": "user", ...}]` with no system message at all.
+    AFTER: the standing instructions are a SYSTEM fragment and only the
+    per-target evidence stays in the user turn.
+
+    Item 4.8 appended a second SYSTEM fragment, `core/language`. The split this
+    test is about is unchanged — the standing instructions are still the system
+    turn and the per-target evidence still the user turn — so the tuple grows
+    rather than the claim changing.
+    """
+    assert get("discover/system").role is Role.SYSTEM
+    assert get("discover/suggest").role is Role.USER
+    assert get("core/language").role is Role.SYSTEM
+    assert DISCOVER_SUGGEST.fragments == ("discover/system", "core/language")
+    assert DISCOVER_SUGGEST.user_fragments == ("discover/suggest",)
+
+
+def test_the_five_interpolated_blocks_are_the_call_sites_own():
+    """The fragments interpolate exactly what the call site fills, no more.
+
+    Restores the guard the old `.format`-based expectation gave for free: a
+    sixth block added to `_prompt_variables` (new prompt bytes) or a
+    placeholder added to a fragment that nothing fills (a `{name}` shipped
+    verbatim to the model) both fail here.
+    """
+    assert _source_dict_keys(_SRC, "_prompt_variables") == _LIVE_FORMAT_KEYS
+    declared = set(get("discover/system").variables()) | set(
+        get("discover/suggest").variables())
+    assert declared == set(_LIVE_FORMAT_KEYS)
 
 
 def test_manifest_discover_renders():
-    """TRANSCRIBE puts the whole prompt in the user turn and nothing in system."""
-    rp = render(DISCOVER_SUGGEST, profile_for("gpt-4o"), mode=Mode.TRANSCRIBE)
-    expected = _expected_fragment_text()
-    assert rp.instructions == ""
-    assert rp.user == expected
-    assert [m["role"] for m in rp.messages] == ["user"]
-    assert rp.messages[0]["content"] == expected
-    assert rp.response_format is None
+    """The instructions land in the system turn, the evidence in the user turn.
+
+    BEFORE 4.6 this read `rp.instructions == ""` and `[m["role"] ...] ==
+    ["user"]`, because the transcription had no system fragment to place.
+
+    `Mode.ADAPT` AS OF ITEM 4.8, and the mode is now load-bearing rather than
+    incidental. The call site has rendered ADAPT since 4.6
+    (`llm_suggest._suggest_messages`), and until 4.8 the two modes emitted the
+    same bytes on this profile, so rendering TRANSCRIBE here compared
+    production's oracle against a render production does not perform and got
+    away with it. 4.8 lists `core/language`, which rule 9 drops for `gpt-4o`
+    and TRANSCRIBE keeps — so the TRANSCRIBE render is now 476 bytes the
+    plugin never sends, and the comparison against `_LLM_DISCOVER_SYSTEM`
+    (which the plugin retains as its byte oracle) has to be against the mode
+    the plugin uses. The language pin's own placement is asserted in
+    `test_0089_4_8_language_pin.py`, on a profile that receives it.
+    """
+    rp = render(DISCOVER_SUGGEST, profile_for("gpt-4o"), mode=Mode.ADAPT)
+    assert rp.instructions == _source_constant(_SRC, "_LLM_DISCOVER_SYSTEM")
+    assert rp.user == _source_constant(_SRC, "_LLM_DISCOVER_USER")
+    assert [m["role"] for m in rp.messages] == ["system", "user"]
+    assert [m["content"] for m in rp.messages] == [rp.instructions, rp.user]
+    # ADAPT arms `response_format` where the profile can enforce a shape, and
+    # `gpt-4o` can. It was `is None` while this test rendered TRANSCRIBE. The
+    # plugin takes `.messages` only and derives its own `response_format` from
+    # `uses_custom_endpoint()`, a transport fact no profile carries — so this
+    # asserts what the renderer emits, and `test_0089_4_6_discover_adapt.py`
+    # is where the call site's discarding of it is pinned.
+    assert rp.response_format == {"type": "json_object"}
     assert DISCOVER_SUGGEST.schema_fields == ("endpoints", "reasoning")
-    assert DISCOVER_SUGGEST.fragments == ()
 
 
 def test_discover_template_variables_are_unresolved():
@@ -123,20 +183,31 @@ def test_discover_template_variables_are_unresolved():
     })
 
 
-def test_lint_catches_discover_invalid_exemplar():
-    """The one example in the prompt is not parseable JSON.
+def test_the_invalid_exemplar_audit_record_is_closed():
+    """INVERTED BY PHASE 4.6. The example in the prompt now parses.
 
-    `{"endpoints": ["/api/path1", "/api/path2", ...], ...}` — a bare `...`
-    inside the array. A model that copies the shape it was shown emits
-    something `json.loads` rejects, and the whole suggestion round is lost.
-    This is an audit blocker recorded by the transcription, not fixed by it.
+    BEFORE, and what this test asserted: `{"endpoints": ["/api/path1",
+    "/api/path2", ...], "reasoning": "brief explanation"}` — a bare `...`
+    inside the array, so `check_08_exemplar_validity` fired and the assertion
+    was `assert exemplar, ...`. A model that copied the shape it was shown
+    emitted something no reader could parse and the whole suggestion round was
+    lost.
+
+    AFTER: `{"endpoints": ["/api/users", "/api/auth/login"], "reasoning":
+    "brief explanation"}`. The finding is gone, and so are the two allow
+    entries that annotated it — `exemplar_validity` and the `placeholder_echo`
+    the same `...` raised. The round trip through the production reader is
+    `test_0089_4_6_discover_adapt.py`; what is asserted here is the manifest's
+    own audit record, which is this file's subject.
     """
     rp = render(DISCOVER_SUGGEST, profile_for("gpt-4o"), mode=Mode.TRANSCRIBE)
-    findings = lint(DISCOVER_SUGGEST, rp)
-    exemplar = [f for f in findings if f.check == "exemplar_validity"]
-    assert exemplar, f"expected an exemplar_validity finding, got {findings}"
-    assert all(f.fragment == "discover/suggest" for f in exemplar)
-    assert any("endpoints" in f.message for f in exemplar)
+    fired = {f.check for f in lint(DISCOVER_SUGGEST, rp)}
+    assert "exemplar_validity" not in fired and "placeholder_echo" not in fired
+    annotated = {a.check for a in DISCOVER_SUGGEST.allow}
+    # Was `{"language_pin"}` until item 4.8 listed `core/language` here. This
+    # manifest now carries no exemption at all, which is the strongest form of
+    # the claim this test makes: the audit record is closed, not annotated.
+    assert annotated == set(), annotated
 
 
 @pytest.mark.parametrize("check", ["orphan_field", "duplicate_contract",

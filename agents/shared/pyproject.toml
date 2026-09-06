@@ -38,6 +38,22 @@ packages = ["shared"]
 
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `probe` marks a LIVE-MODEL measurement, not a unit test: it needs an
+# OpenAI-compatible endpoint serving a named model and it costs real inference
+# time. Feature 0089 item 4.1's tool-call rate is the first one
+# (tests/unit/validate/test_0089_4_1_tool_call_rate.py).
+#
+# `addopts` deselects them by default, which is what keeps them out of CI —
+# `.github/workflows/ci.yml` and `make test` both run a bare
+# `python -m pytest <pkg>/tests/`, so a marker alone would not have. Selecting
+# one is explicit and overrides this, because argparse takes the LAST `-m`:
+#
+#     python -m pytest tests/unit/validate/test_0089_4_1_tool_call_rate.py \
+#         -m probe -rs -v
+markers = [
+    "probe: live-model measurement; deselected by default, run with `-m probe`",
+]
+addopts = ["-m", "not probe"]
 
 [tool.ruff]
 extend = "../ruff.toml"   # shared agents lint rule set (matches CI)

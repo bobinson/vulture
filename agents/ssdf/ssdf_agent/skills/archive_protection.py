@@ -4,8 +4,8 @@ import re
 from pathlib import Path
 
 from agents import function_tool
-from shared.tools.file_scanner import read_file_safe
 
+from shared.tools.file_scanner import read_file_safe
 from ssdf_agent.skills._ci_utils import gather_ci_content
 
 _RELEASE_PATTERNS = re.compile(

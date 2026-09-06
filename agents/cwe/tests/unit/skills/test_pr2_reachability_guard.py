@@ -47,6 +47,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from shared.owasp.mapping import load_edition
 
 _CORPUS = Path(__file__).resolve().parents[2] / "corpus"

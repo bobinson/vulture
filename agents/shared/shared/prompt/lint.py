@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from .fragment import CONFLICTING, Stance
 from .registry import get
+from .slots import KINDS, forged_markers
 
 
 @dataclass(frozen=True)
@@ -76,29 +77,75 @@ def check_03_stance_conflict(spec, rp) -> list[LintFinding]:
             for f in _conflict_pairs(frags, *tuple(pair))]
 
 
+def _bound_fields(spec) -> set[str]:
+    """Field names some fragment in this render actually binds a vocabulary for.
+
+    Keyed on the FIELD, not on the fragment: see `fragment._vocab` — a value
+    that parses but names no field would bind nothing while looking like it
+    closed the gap, which is the one failure this pair must not produce
+    silently.
+    """
+    return {k for f in _frags(spec) if f.binds_vocabulary for k, _ in f.binds_vocabulary}
+
+
 def check_04_vocab_closure(spec, rp) -> list[LintFinding]:
     """A field with a vocabulary needs exactly one binding fragment."""
-    bound = [f for f in _frags(spec) if f.binds_vocabulary]
-    fields = {k for f in bound for k, _ in f.binds_vocabulary}
+    fields = _bound_fields(spec)
     return [LintFinding("vocab_closure", "-", f"{k!r} has no binding fragment")
             for k, _ in spec.vocabulary if k not in fields]
 
 
+def _channels(spec) -> set[str]:
+    """Untrusted channels this render carries, from both declaration sites.
+
+    `slots` is content the spec holds; `channels` is content the call site
+    supplies at runtime (item 4.3, `spec.py`). A check that read only the first
+    would be blind to every tier whose untrusted bytes are per finding or per
+    tool call — which is all of them.
+    """
+    return {s.kind for s in spec.slots} | set(getattr(spec, "channels", ()))
+
+
+def _marked_channels(frags) -> set[str]:
+    """Channels the render's MARKS_UNTRUSTED fragments actually name."""
+    text = "\n".join(f.text for f in frags if Stance.MARKS_UNTRUSTED in f.stance)
+    return {k for k in KINDS if k in text}
+
+
 def check_05_slot_marking(spec, rp) -> list[LintFinding]:
-    """Untrusted bytes require the marker fragment in the same render."""
-    if not spec.slots:
+    """Every untrusted channel in this render must be named by the policy.
+
+    Item 4.3 made this per CHANNEL. Before it the check asked only whether SOME
+    MARKS_UNTRUSTED fragment was present, which the judge satisfied with a
+    fragment that enumerated two marker pairs — while three file tools returned
+    unmarked bytes on a third channel the policy said nothing about (0089 LLD
+    §9.2, classified *major*). "A marker fragment is present" and "this
+    channel is covered" are different claims, and only the second is the one
+    worth making.
+    """
+    used = _channels(spec)
+    if not used:
         return []
-    marks = any(Stance.MARKS_UNTRUSTED in f.stance for f in _frags(spec))
-    if marks:
-        return []
+    uncovered = used - _marked_channels(_frags(spec))
     return [LintFinding("slot_marking", spec.id,
-                        f"{len(spec.slots)} slot(s) with no MARKS_UNTRUSTED fragment")]
+                        f"{k} content with no MARKS_UNTRUSTED fragment naming it")
+            for k in sorted(uncovered)]
 
 
 def check_06_marker_forgery(spec, rp) -> list[LintFinding]:
-    """Slot content may not carry its own closing marker."""
-    return [LintFinding("marker_forgery", spec.id, f"{s.kind} slot contains its closer")
-            for s in spec.slots if f"{s.kind}:" in s.content and ">>>" in s.content]
+    """Slot content may not carry a marker of its own, for any channel.
+
+    Delegates the shape to `slots.forged_markers`, which is also what
+    `slots.scrub` neutralises: a token one of them recognised and the other did
+    not would be a hole in whichever is narrower, and nothing else in the suite
+    would show it. The pre-4.3 test — `f"{kind}:" in content and ">>>" in
+    content` — was narrower in both directions at once, missing the tokenless
+    `CODE>>>` the prompt itself documented as a delimiter and firing on an
+    unrelated `>>>` anywhere in the same file.
+    """
+    return [LintFinding("marker_forgery", spec.id,
+                        f"{s.kind} slot content carries marker {tok!r}")
+            for s in spec.slots for tok in forged_markers(s.content)]
 
 
 def check_07_dangling_reference(spec, rp) -> list[LintFinding]:

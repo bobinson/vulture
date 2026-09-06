@@ -13,12 +13,15 @@ Measured, and why the wording is pinned rather than left to taste:
     still returns unnumbered text, so a model that widens its view with its tool
     is pushed straight back into the mislocated class (A5). AC4 closes that with
     0075's EXISTING switch — one switch, one policy — not a second one.
-  * Two contracts carry the field list: the builder at ``audit_runner:2347-2348``
-    (reached on every call, both branches) and the unstructured instruction at
-    ``:2536-2541``. They are the same policy written twice, so a fix applied to
-    one silently works on one path only. AC9 asserts both, on the RENDERED text,
-    with the endpoint pinned on each branch (D7: the structured path is off
-    whenever a custom endpoint is configured).
+  * Two contracts carried the field list: the builder (reached on every call,
+    both branches) and the unstructured instruction. They were the same policy
+    written twice, so a fix applied to one silently worked on one path only.
+    AC9 asserted both, on the RENDERED text, with the endpoint pinned on each
+    branch (D7: the structured path is off whenever a custom endpoint is
+    configured). FEATURE 0089 ITEM 4.4 REMOVED THE SECOND: the obligation is
+    stated once, in the user turn, and the two AC9 tests below now assert the
+    requirement directly — the quote is requested on BOTH branches, by EXACTLY
+    ONE author. Each of them quotes the assertion it replaces.
   * The consequence clause is *"will be reported as unverified"*, never *"do not
     report findings you cannot quote"*. AC20 locks that: a prompt that instructs
     suppression is a deletion mechanism living OUTSIDE every switch this feature
@@ -45,6 +48,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 # The obligation, verbatim from 0076 §5.2. Compared whitespace-insensitively so
 # the implementation may wrap it across prompt parts, but the WORDS are pinned:
@@ -178,32 +183,68 @@ def test_the_builder_contract_requests_the_evidence_quote():
     )
 
 
-def test_both_prompt_contracts_request_the_quote(monkeypatch, tmp_path):
-    """T2.2 / AC9 — the A3 duplication guard.
+@pytest.mark.parametrize("structured", [True, False])
+def test_the_quote_is_requested_on_both_branches(monkeypatch, tmp_path, structured):
+    """T2.2 / AC9 — the requirement the A3 duplication guard was protecting.
 
-    Two contracts, one policy, two places. This is the test a fix applied to only
-    one of them must fail: the builder's user message AND the unstructured
-    branch's ``augmented_instructions`` are asserted on the SAME run.
+    BEFORE feature 0089 item 4.4 this was
+    ``test_both_prompt_contracts_request_the_quote``, and it asserted the
+    sentence in BOTH rendered contracts of ONE (unstructured) run::
+
+        contracts = _capture(monkeypatch, tmp_path, structured=False)
+        for label, text in contracts.both:
+            assert _squash(_OBLIGATION) in _squash(text)
+
+    That was the right test while there were two contracts. 4.4 removed the
+    second: ``_quote_contract_suffix()`` appended the sentence to the SYSTEM
+    turn only on the unstructured branch, so the number of times a model was
+    told to quote its evidence depended on whether its endpoint could enforce a
+    JSON schema — once for gpt-4o, twice for LM Studio or Gemini. The sentence
+    is now stated once, in the user turn, on every path.
+
+    So AC9's requirement — "the model must be ASKED to quote the code it
+    accuses, on every path" — is asserted directly instead of through the
+    duplicate: the same run is captured on BOTH branches and the obligation
+    must reach the model on each. A fix that touched one branch's rendering
+    still fails here; what no longer fails is having one authority instead of
+    two.
     """
-    contracts = _capture(monkeypatch, tmp_path, structured=False)
-    wanted = _squash(_OBLIGATION)
-    for label, text in contracts.both:
-        assert wanted in _squash(text), (
-            f"the {label} must request evidence_quote verbatim — a fix to one "
-            f"prompt path only leaves the other blind (0076 A3). Rendered:\n{text}"
-        )
+    contracts = _capture(monkeypatch, tmp_path, structured=structured)
+    whole = _squash(contracts.prompt + " " + contracts.instructions)
+    assert _squash(_OBLIGATION) in whole, (
+        f"the {'structured' if structured else 'unstructured'} branch must "
+        f"request evidence_quote verbatim (0076 §5.2 / AC9). Rendered user "
+        f"turn:\n{contracts.prompt}\n\nRendered system turn:\n"
+        f"{contracts.instructions}"
+    )
 
 
-def test_the_two_contracts_carry_the_identical_sentence(monkeypatch, tmp_path):
-    """DRY (rule 3): not merely 'both ask for a quote' but both ask in the SAME
-    words, so there is one authority for the obligation and not two that can
-    drift apart. Two differently-worded requests are two policies."""
-    contracts = _capture(monkeypatch, tmp_path, structured=False)
-    wanted = _squash(_OBLIGATION)
-    assert _squash(contracts.prompt).count(wanted) >= 1
-    assert _squash(contracts.instructions).count(wanted) >= 1, (
-        "the unstructured instruction must repeat the builder's sentence "
-        "verbatim, not a paraphrase of it"
+@pytest.mark.parametrize("structured", [True, False])
+def test_the_obligation_has_exactly_one_author_on_every_branch(
+    monkeypatch, tmp_path, structured,
+):
+    """DRY (rule 3), strengthened by feature 0089 item 4.4.
+
+    BEFORE 4.4 this was ``test_the_two_contracts_carry_the_identical_sentence``
+    and it asserted ``>= 1`` occurrence in EACH of the two contracts — "both ask
+    in the SAME words, so there is one authority for the obligation and not two
+    that can drift apart". Two copies from one authority was the best available
+    arrangement while two places emitted it.
+
+    One place emits it now, so the stronger property is available and is what is
+    asserted: exactly ONE occurrence across the whole call, on both branches. A
+    second author reintroduced anywhere — in either turn, on either branch —
+    fails this, which the old ``>= 1`` could not see.
+    """
+    contracts = _capture(monkeypatch, tmp_path, structured=structured)
+    whole = _squash(contracts.prompt + " " + contracts.instructions)
+    assert whole.count(_squash(_OBLIGATION)) == 1, (
+        "the obligation must be stated exactly once per call; a second copy is "
+        "a second authority, and the count must not depend on the branch"
+    )
+    assert _squash(_OBLIGATION) in _squash(contracts.prompt), (
+        "the surviving copy belongs in the USER turn — the one turn no gateway "
+        "and no chat template drops"
     )
 
 

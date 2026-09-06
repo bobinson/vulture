@@ -36,6 +36,19 @@ _SPAN_MAX_LINES = 40
 _SPAN_MIN_CHARS = 2000
 
 
+def window_first_line(line_num: int, context: int) -> int:
+    """The 1-based FILE line of the FIRST row :func:`extract_snippet` returns.
+
+    Feature 0089 item 4.2. The window's start depends only on ``line_num`` and
+    ``context``: ``line_end`` moves the END, and both truncation modes
+    (``max_chars``, the per-line cap) only ever shorten what is already there.
+    So this is the whole arithmetic, and it is used BY ``extract_snippet``
+    rather than restated beside it — a second copy is how the render came to
+    number windows against coordinates the reader never produced.
+    """
+    return max(0, line_num - 1 - context) + 1
+
+
 def extract_snippet(
     lines: Sequence[str], line_num: int, context: int = 2,
     max_chars: int | None = 200, line_end: int | None = None,
@@ -62,7 +75,7 @@ def extract_snippet(
     """
     if not lines or line_num < 1:
         return ""
-    start = max(0, line_num - 1 - context)
+    start = window_first_line(line_num, context) - 1
     end = min(len(lines), line_num + context)
     try:
         span_end = int(line_end) if line_end is not None else 0

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -22,8 +24,6 @@ from shared.tools.framework_html import is_framework_style_injection
 from shared.tools.obfuscation import check_obfuscation
 from shared.tools.snippet import extract_snippet
 from shared.validate.language import detect_language
-
-from cwe_agent.catalog import enrich_finding
 
 # CWE-89: SQL Injection.
 #

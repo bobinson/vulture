@@ -3,14 +3,20 @@
 Two halves, both new behaviour with no prior coverage:
 
 1. The prompt is assembled by `render(DISCOVER_SUGGEST, ...)`, not by an inline
-   `str.format`. Byte parity with the old builder is pinned in the shared
-   suite (`tests/unit/prompt/test_0089_manifest_discover.py` compares the
-   fragment to `_LLM_DISCOVER_PROMPT` read out of production by AST). The flip
-   was byte-neutral, which is the point and also the difficulty: no comparison
-   of prompt bytes can tell a call site that reads the library from one that
-   kept a local copy. `test_call_site_reads_the_fragment` is the single
-   assertion in this file that can, and it was verified by reverting the
-   prompt build to the inline literal — 12 of these 13 tests stayed green.
+   `str.format`. Byte parity with the builder is pinned in the shared suite
+   (`tests/unit/prompt/test_0089_manifest_discover.py` compares each fragment
+   to its production literal, read out by AST). The 2.1 flip was byte-neutral,
+   which is the point and also the difficulty: no comparison of prompt bytes
+   can tell a call site that reads the library from one that kept a local copy.
+   `test_call_site_reads_the_fragment` is the single assertion in this file
+   that can, and it was verified by reverting the prompt build to the inline
+   literal — 12 of these 13 tests stayed green.
+
+   PHASE 4.6 then changed the bytes on purpose: two turns instead of one, the
+   standing instructions in `discover/system` and the discovered evidence in
+   `discover/suggest`, and `Mode.ADAPT` so the split follows the model's
+   capabilities. Three assertions here read "one user turn" and are updated in
+   place, each quoting what it said before.
 
 2. The response is read by `shared.prompt.extract.extract_object`, not by a
    bare `json.loads`. That is the reason the flip is worth doing: `json.loads`
@@ -28,6 +34,7 @@ import types
 
 import litellm
 import pytest
+
 from discover_agent.plugins.llm_suggest import (
     LLMEndpointPlugin,
     _prompt_variables,
@@ -89,17 +96,25 @@ def test_wire_bytes_agree_with_the_library(monkeypatch):
     the plugin does not follow, this goes red.
     """
     messages, _ = _run(monkeypatch, _OBJECT)
+    profile = profile_for()
     expected = render(
         dataclasses.replace(DISCOVER_SUGGEST, variables=_prompt_variables(_site())),
-        profile_for(), mode=Mode.TRANSCRIBE,
+        profile, mode=Mode.ADAPT,
     )
     assert messages == expected.messages
-    # The plugin has always sent one user turn and no system turn.
-    assert [m["role"] for m in messages] == ["user"]
-    assert expected.instructions == ""
+    # BEFORE 4.6: `== ["user"]` and `expected.instructions == ""` — the plugin
+    # sent one user turn and no system turn. It now sends two where the model
+    # has a system role, and the folded single turn where it does not.
+    assert [m["role"] for m in messages] == (
+        ["system", "user"] if profile.system_role else ["user"])
+    assert bool(expected.instructions) is profile.system_role
 
 
-def test_call_site_reads_the_fragment(monkeypatch):
+@pytest.mark.parametrize("fragment_id,anchor", [
+    ("discover/suggest", "Technologies detected:"),
+    ("discover/system", "Return ONLY a JSON object:"),
+])
+def test_call_site_reads_the_fragment(monkeypatch, fragment_id, anchor):
     """Mutate the FRAGMENT; the prompt on the wire must change with it.
 
     The one assertion here that a byte-neutral flip cannot fake. A call site
@@ -110,18 +125,25 @@ def test_call_site_reads_the_fragment(monkeypatch):
 
     Patched through `registry.FRAGMENTS` rather than by writing the `.md` file
     so the mutation is scoped to this test and cannot survive it.
+
+    BEFORE 4.6 this mutated the single fragment `discover/suggest` on the
+    anchor "Return ONLY a JSON object:" and asserted `marker in
+    messages[0]["content"]`. That anchor now lives in `discover/system` and
+    `messages[0]` is the system turn, so both fragments are driven — a call
+    site reading one and inlining the other would otherwise pass.
     """
-    frag = registry.FRAGMENTS["discover/suggest"]
+    frag = registry.FRAGMENTS[fragment_id]
     marker = "SENTINEL-0089-2-1"
     assert marker not in frag.text
+    assert anchor in frag.text, f"{fragment_id} no longer contains {anchor!r}"
     monkeypatch.setitem(
-        registry.FRAGMENTS, "discover/suggest",
+        registry.FRAGMENTS, fragment_id,
         dataclasses.replace(frag, text=frag.text.replace(
-            "Return ONLY a JSON object:", f"Return ONLY a JSON object ({marker}):")),
+            anchor, f"{anchor} ({marker})")),
     )
     messages, _ = _run(monkeypatch, _OBJECT)
-    assert marker in messages[0]["content"], (
-        "the fragment was mutated and the prompt did not change — this call "
+    assert marker in "".join(m["content"] for m in messages), (
+        f"{fragment_id} was mutated and the prompt did not change — this call "
         "site is not reading the prompt library"
     )
 
@@ -132,9 +154,14 @@ def test_interpolated_values_reach_the_prompt(monkeypatch):
     A render that silently dropped `spec.variables` would leave the
     placeholders standing and still be a "library" prompt, so the fixture's
     own strings are looked for and the raw placeholders are asserted gone.
+
+    BEFORE 4.6 this read `body = messages[0]["content"]`, which was the only
+    turn. `messages[0]` is now the system turn on a model that has one, and the
+    interpolated blocks live in the user turn — so the whole request is
+    searched, which is also what the assertion means.
     """
     messages, _ = _run(monkeypatch, _OBJECT)
-    body = messages[0]["content"]
+    body = "".join(m["content"] for m in messages)
     for expected in ("Next.js 14", "  /api/users", "  POST /login inputs=['user']",
                      "  Server: nginx/1.25.3",
                      "  - Next.js (API routes in /api/*, NextAuth.js common)"):

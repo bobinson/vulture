@@ -1,7 +1,9 @@
-"""Code-window production and window-absence accounting (feature 0082).
+"""Code-window production, coordinates and window-absence accounting.
 
-Two responsibilities, deliberately in one module because they are two halves of
-one question — *does this finding carry evidence, and if not, why not?*
+Feature 0082, extended by feature 0089 item 4.2. Three responsibilities,
+deliberately in one module because they are three parts of one question —
+*does this finding carry evidence, where in the file is it, and if there is
+none, why not?*
 
 ``ensure_code_window``
     Reads the source window for a batch of findings and REDACTS it in the same
@@ -12,6 +14,13 @@ one question — *does this finding carry evidence, and if not, why not?*
     ``_redact_finding_inplace`` keys on ``finding["category"]`` and the OWASP
     agent overwrites that with its own slug before emitting. A caller that
     cannot obtain a window without redaction cannot reproduce that bug.
+
+``confirmed_window_start`` / ``CODE_SNIPPET_START``
+    Records WHERE the window sits — the true 1-based file line of its first
+    row — so the L5 render can number it instead of deriving a start from the
+    finding's own line. That derivation was wrong for every window not
+    symmetric about ``line_start``, and `evidence_line` and every
+    ``citation_class`` figure to date were measured against its numbers.
 
 ``record_window_reason``
     Stamps WHY a finding has no window, into the existing ``validation`` blob.
@@ -38,8 +47,17 @@ before.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from types import MappingProxyType
 from typing import Any
+
+from shared.tools.line_format import read_line_number, strip_line_number
+
+# `audit_runner._REDACTION_PLACEHOLDER`, restated rather than imported: this
+# module is a LEAF and may not name `audit_runner` at import time. The value is
+# pinned equal to it by test_0089_4_2_evidence_coordinates.py, so the two cannot
+# drift silently.
+_REDACTED = "***REDACTED***"
 
 # The closed vocabulary of reasons a finding can carry no code window. Closed on
 # purpose: an open-ended free-text reason is how "unvalidated" became
@@ -57,6 +75,22 @@ WINDOW_REASONS = frozenset({
 })
 
 _WINDOW_CHECK = "window"
+
+# Where the window's own first FILE line is stamped (feature 0089 item 4.2).
+#
+# UNDERSCORE-PREFIXED ON PURPOSE, and not by style. ``emitter.finding_event(
+# **_public_view(finding))`` forwards ``**extra`` verbatim while Go's fixed
+# ``model.Finding`` has no such column, so a PLAIN name would appear on the live
+# SSE stream and vanish on replay — one finding with two contents depending on
+# when you looked. ``_public_view`` drops every ``_``-prefixed key, which is the
+# mechanism the seven ``_anchor_*`` stamps already rely on.
+#
+# It is deliberately NOT on ``audit_runner._PRIVATE_FIELDS``: that roster is
+# deleted by ``_apply_validation_to_finding``, which runs in the provisional
+# vote BEFORE ``_run_l5_phase``, and the L5 render is this value's only
+# consumer. Listing it there would ship the item inert — the same trap the
+# ``_anchor_*`` comment records from the other end.
+CODE_SNIPPET_START = "_code_snippet_start"
 
 # Human-readable text for the UI tooltip, one per vocabulary member. Wrapped in
 # MappingProxyType so it is genuinely read-only: this module must hold no
@@ -134,6 +168,103 @@ def window_reason_of(finding: dict[str, Any]) -> str:
     return ""
 
 
+def _row_matches(row: str, expected: str) -> bool:
+    """One snippet row against the numbered file line it claims to be.
+
+    ``startswith`` rather than equality because every way ``extract_snippet``
+    shortens a row leaves a PREFIX: ``max_chars`` cuts the joined snippet
+    (which can land mid-prefix, leaving a last row of literally ``"20"``) and
+    the line-budget mode caps each line at 400 characters. A row can therefore
+    be shorter than the file's, never different from it.
+
+    A redacted row is exempt from the TEXT comparison and from nothing else.
+    ``_redact_snippet`` rewrites the secret in place, so a secret-bearing
+    finding's window genuinely does not equal its source — and refusing those
+    would leave exactly the CWE-798 findings a judge most wants to cite with no
+    coordinates. Its neighbours still have to match at their own claimed lines,
+    so the window's position is still fixed by the file, not by the row that
+    was allowed to differ.
+    """
+    if _REDACTED in row:
+        return True
+    return expected.startswith(row)
+
+
+def _window_matches(rows: list[str], lines: Sequence[str], claim: int) -> bool:
+    """Does the file carry every row's text at the line that row claims?
+
+    Compared against the NUMBERED form of the file line, so each row's own
+    ``NN: `` prefix is checked too — not just the first one's. That is what
+    makes the claim corroborated rather than merely plausible: a window
+    shifted by one would have to be wrong on every row to pass.
+
+    At least one row must carry actual content: a window of blank lines is a
+    prefix of every blank line in the file, so it matches everywhere and may
+    therefore confirm nowhere.
+    """
+    placed = all(
+        _row_matches(row, f"{claim + i}: {lines[claim - 1 + i]}")
+        for i, row in enumerate(rows)
+    )
+    return placed and any(strip_line_number(row).strip() for row in rows)
+
+
+def confirmed_window_start(snippet: str, lines: Sequence[str]) -> int:
+    """The 1-based FILE line ``snippet`` begins at, or 0 if the file disagrees.
+
+    Feature 0089 item 4.2. ``extract_snippet`` writes absolute file numbers as
+    ``"NN: "`` prefixes, so the coordinate the render needs is already in the
+    window — the render simply threw it away and re-derived a wrong one.
+
+    Reading the number back is not the same as believing it, which is what
+    keeps A-3 (anti-spoofing) intact. The claim is accepted only when the FILE
+    carries that exact text at that exact line, for every row, and only when at
+    least one row is non-blank — a window of blank lines matches everywhere and
+    so may confirm nowhere. A snippet that merely LOOKS numbered ("4: ...") is
+    refused, and a finding whose start cannot be confirmed is rendered
+    unnumbered rather than mis-numbered.
+    """
+    rows = snippet.splitlines()
+    # `read_line_number` matches `\d+`, so a claim is never negative and 0 is
+    # falsy — "no prefix" and "line 0" are refused by the same test.
+    claim = read_line_number(rows[0]) if rows else None
+    if not claim or claim + len(rows) - 1 > len(lines):
+        return 0
+    return claim if _window_matches(rows, lines, claim) else 0
+
+
+def _record_window_start(finding: dict[str, Any], source_path: str) -> None:
+    """Stamp the window's true first FILE line, decided by reading the file.
+
+    One path for both cases, because ``extract_snippet`` is the only producer
+    of code windows in this tree and it numbers every row absolutely: a window
+    this module just read and a window a skill set earlier are corroborated by
+    the same file, with the same comparison.
+
+    That the skill case is covered at all is not a detail. Measured on a
+    skills-only CWE run over ``backend/internal``, **99.0% of findings reach
+    this function with a ``code_snippet`` already set**, which the loop below
+    deliberately does not re-read. Recording only on the read branch — the
+    literal reading of the 0089 LLD spec — would have left almost every judged
+    finding with no line numbers at all.
+
+    ``read_file_lines`` is ``lru_cache``d and the skill phase has just read
+    these same files, so the confirming read is a cache hit in the ordinary
+    case.
+    """
+    from shared.audit_runner import _resolve_finding_path
+    from shared.tools.file_scanner import read_file_lines
+
+    snippet = finding.get("code_snippet") or ""
+    if not snippet:
+        return
+    resolved = _resolve_finding_path(finding.get("file_path", ""), source_path)
+    lines = read_file_lines(resolved) if resolved is not None else None
+    start = confirmed_window_start(snippet, lines or ())
+    if start >= 1:
+        finding[CODE_SNIPPET_START] = start
+
+
 def ensure_code_window(
     findings: list[dict[str, Any]],
     source_path: str,
@@ -199,6 +330,11 @@ def ensure_code_window(
                     reason = WINDOW_UNREADABLE
             elif not f.get("code_snippet"):
                 reason = WINDOW_NO_LINE if f.get("file_path") else WINDOW_NO_CODE_LOCATION
+
+        # Feature 0089 item 4.2: the window's own coordinates, before redaction
+        # can alter the bytes the confirmation compares. The L5 render numbers
+        # from this instead of re-deriving a start from `line_start`.
+        _record_window_start(f, source_path)
 
         # Mask secret VALUES for secret-bearing CWEs, whether the window was
         # back-filled above OR pre-set by a skill. In the same pass as the read,

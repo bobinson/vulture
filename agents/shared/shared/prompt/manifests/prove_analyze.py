@@ -2,16 +2,16 @@
 
 Three protocol variants (HTTP, WebSocket, JSON-RPC) that ask the model to judge
 whether a probe response confirmed the vulnerability. Each interpolates a raw,
-untrusted response body — and NONE of them marks it as untrusted. That gap is
-deliberately preserved here (no MARKS_UNTRUSTED stance on the fragments); it is
-the audit finding. Slots are empty at this phase, so promptlint's slot_marking
-check stays silent until the interpolation moves onto a Slot in a later phase.
+untrusted response body. Item 4.5 moved that body to the END of the prompt,
+with the output contract and an undecidable clause ("set conclusive to false"
+when the response does not decide it) placed ABOVE it, so no interpolated
+response can sit after an instruction. The body is still not wrapped in a Slot
+(no MARKS_UNTRUSTED stance yet); that stronger guard is a later phase, and with
+slots empty promptlint's slot_marking check stays silent until then.
 """
 
 from __future__ import annotations
 
-from ..backlog import LANGUAGE_PIN, OWNER
-from ..lint import LintAllow
 from ..spec import PromptSpec
 
 _ANALYZE_SCHEMA = ("conclusive", "reproduced", "evidence")
@@ -22,14 +22,15 @@ PROVE_ANALYZE: dict[str, PromptSpec] = {
     proto: PromptSpec(
         id=f"prove_analyze_{proto}",
         tier="prove",
-        fragments=("prove/system",),
+        version=3,  # 4.5: prove/system reworded. 4.8: core/language
+        # `evidence` is free text that egresses; item 4.8 binds its language
+        # with `core/language` and retires the `language_pin` entry that stood
+        # here. The untrusted-body gap named in the docstring above is a
+        # different, still-open finding: promptlint cannot see it while `slots`
+        # is empty, and it is pinned by the prove parity tests instead.
+        fragments=("prove/system", "core/language"),
         user_fragments=(f"prove/analyze_{proto}",),
         schema_fields=_ANALYZE_SCHEMA,
-        # `evidence` is free text that egresses. The untrusted-body gap named
-        # in the docstring above is NOT here: promptlint cannot see it while
-        # `slots` is empty, and it is pinned by the prove parity tests instead.
-        allow=(LintAllow("language_pin", f"prove_analyze_{proto}",
-                         owner=OWNER, reason=LANGUAGE_PIN),),
     )
     for proto in _PROTOCOLS
 }

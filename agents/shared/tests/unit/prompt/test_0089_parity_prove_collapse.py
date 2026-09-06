@@ -36,12 +36,12 @@ tree exactly as the sibling `test_0089_parity_prove.py` does.
 from __future__ import annotations
 
 from _format_pin import as_fragment_text
+
 from prove_agent.llm_helper import render_prove_prompt
 from prove_agent.protocols.jsonrpc_executor import _ANALYZE_PROMPT as RPC_ANALYZE
 from prove_agent.protocols.ws_executor import _ANALYZE_PROMPT as WS_ANALYZE
 from prove_agent.strategies import chaos, cwe, owasp, soc2, ssdf
 from prove_agent.strategies.shared import _ANALYZE_PROMPT as HTTP_ANALYZE
-
 from shared.prompt import Mode, profile_for, registry, render
 from shared.prompt.manifests.prove_analyze import PROVE_ANALYZE_DOMAIN
 from shared.prompt.manifests.prove_plan import PROVE_PLAN_DOMAIN
@@ -198,25 +198,21 @@ _PLAN_RT = dict(
     verification_hints="try a quote", staging_url="http://staging",
     iteration=2, site_context="/api/users", prior_context="none",
 )
-_PLAN_RT_NO_EVIDENCE = {
-    k: v for k, v in _PLAN_RT.items()
-    if k not in ("code_snippet", "verification_hints")
-}
 _REFLECT_RT = dict(
     title="T", category="C", description="D", attempt_history="A1: GET /x -> 200",
 )
 
 
 def test_runtime_fill_matches_live_format_for_every_plan_strategy():
-    for name in ("cwe", "owasp"):  # evidence block carries runtime placeholders
+    # Item 4.5 added the Code/Hints evidence block to soc2/ssdf/chaos too, so
+    # ALL five strategies now carry runtime code placeholders and are driven with
+    # the full `_PLAN_RT`. BEFORE 4.5 only cwe/owasp used `_PLAN_RT`; soc2/ssdf/
+    # chaos had no evidence block and used `_PLAN_RT_NO_EVIDENCE` (that variant is
+    # gone).
+    for name in _STRATEGIES:
         got = render_prove_prompt("prove/plan", PROVE_PLAN_DOMAIN[name], **_PLAN_RT)
         assert got == _MODS[name]._PLAN_PROMPT.format(**_PLAN_RT), name
         assert "cur.execute(q)" in got  # the evidence really was filled, not left {…}
-    for name in ("soc2", "ssdf", "chaos"):  # no evidence block
-        got = render_prove_prompt(
-            "prove/plan", PROVE_PLAN_DOMAIN[name], **_PLAN_RT_NO_EVIDENCE
-        )
-        assert got == _MODS[name]._PLAN_PROMPT.format(**_PLAN_RT_NO_EVIDENCE), name
 
 
 def test_runtime_fill_matches_live_format_for_every_reflect_strategy():

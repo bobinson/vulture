@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -2700,8 +2701,18 @@ def run_combined_audit(
     result_extra = {"degraded_reason": degraded_reason} if degraded_reason else None
     if degraded_reason:
         logger.warning("audit_degraded run_id=%s reason=%s", run_id, degraded_reason)
+    # `_public_view` here for the same reason it is on every `finding_event`:
+    # a private stamp must not reach a consumer through one emit and be absent
+    # from the other. A no-op for the seven `_anchor_*` stamps, which
+    # `validate._strip_private` deletes before the vote — but feature 0089 item
+    # 4.2's `_code_snippet_start` is deliberately NOT on that roster (the L5
+    # render is its consumer and the vote runs first), so it is the first
+    # private field that reaches this point, and this is what keeps it off the
+    # wire. Go drops unknown keys silently, so without this the omission would
+    # have been invisible rather than caught.
     yield emitter.result_event(
-        findings=all_findings, summary=summary, score=score, extra=result_extra,
+        findings=[_public_view(f) for f in all_findings],
+        summary=summary, score=score, extra=result_extra,
     )
     yield emitter.run_finished()
 
@@ -3034,18 +3045,17 @@ def _field_contract() -> list[str]:
     return parts
 
 
-def _quote_contract_suffix() -> str:
-    """The obligation as a suffix for the unstructured instruction block, or ``""``.
-
-    A3: the builder's contract (:func:`_field_contract`) and the unstructured
-    branch's instruction block are one policy written twice, in two places that
-    are edited independently — which is how a fix applied to one of them silently
-    works on one path only. Both therefore append the SAME sentence, from the
-    same authority, rather than a paraphrase of it.
-    """
-    if not _quote_required():
-        return ""
-    return f"\n{_quote_obligation()}"
+# ``_quote_contract_suffix()`` used to live here. It appended
+# :func:`_quote_obligation`'s sentence to the SYSTEM turn as well, but only on
+# the unstructured branch — so a structured-output model was told to quote its
+# evidence once and an LM Studio / Gemini model twice, a count that turned on
+# whether the endpoint could enforce a JSON schema. Feature 0089 item 4.4
+# removed the placement, and removed the function with it: leaving a second
+# authority behind is how the duplication its own docstring described ("one
+# policy written twice, in two places that are edited independently") gets
+# re-appended by the next edit. :func:`_field_contract` is now the only caller
+# of :func:`_quote_obligation`, and `generate/quote_obligation` is listed in
+# exactly one turn (see `prompt/manifests/generate.py`).
 
 
 def _reference_augmented_instructions(
@@ -3056,7 +3066,7 @@ def _reference_augmented_instructions(
     anthropic: bool,
     use_structured: bool,
 ) -> str:
-    """The pre-0089 inline system turn, kept verbatim. NO PRODUCTION CALLER.
+    """The independent oracle for the parts of the system turn it still owns.
 
     Feature 0089 Phase 2.3 moved this assembly to ``shared.prompt``: production
     renders ``manifests.generate.live_spec()`` through
@@ -3065,12 +3075,23 @@ def _reference_augmented_instructions(
     ``tests/unit/prompt/test_0089_parity_generate*.py`` go through ``render()``
     those files compare the library to itself; the system role is still a real
     comparison precisely because these bytes are still built here, out of
-    :func:`_category_vocabulary_suffix`, :func:`_quote_contract_suffix` and the
-    fenced-JSON literal below — which the parity suite reads out of this module
-    by AST.
+    :func:`_category_vocabulary_suffix` and the fenced-JSON literal below —
+    which the parity suite reads out of this module by AST.
 
-    So do not reword, reformat or delete it: edit the fragment
+    So do not reword, reformat or delete either of those: edit the fragment
     (``prompt/fragments/generate/``), then this, together.
+
+    WHAT IT NO LONGER OWNS. Item 4.4 added four sections to the system turn
+    (``source_presentation``, ``evidence_discipline``, ``tool_trigger``,
+    ``vocab_severity``) that have no pre-library source at all, and removed the
+    duplicated quote sentence this function used to append. Copying the four
+    here would not make them independently checked — it would make this a
+    hand-written duplicate of the fragments, written from the same head in the
+    same minute, which is the second-authority arrangement the feature exists
+    to remove. The parity suite reads those four from the fragment (as item 4.3
+    already does for ``core/untrusted``) and keeps its own opinion about their
+    POSITION and SEAM; their bytes are pinned by
+    ``tests/unit/prompt/test_0089_version_bump.py``.
     """
     if anthropic and source_context:
         augmented_instructions = (
@@ -3085,10 +3106,10 @@ def _reference_augmented_instructions(
         _category_vocabulary_suffix(vocabulary)
     if not use_structured:
         augmented_instructions += (
-            "\n\nIMPORTANT: Return findings as a JSON array. Each object must have: "
-            "severity, category, title, description, file_path, line_start, line_end, recommendation. "
-            "Wrap the array in ```json ... ``` fences."
-        ) + _quote_contract_suffix()
+            "\n\nIMPORTANT: Return findings as a JSON array - one object per finding, "
+            "carrying exactly the fields the task asks for and no others. "
+            "Wrap the array in a ```json fenced block and write nothing outside the fences."
+        )
     return augmented_instructions
 
 
@@ -3125,6 +3146,36 @@ def _source_branch(source_context: str, source_in_system: bool) -> str:
     return "inline" if source_context else "none"
 
 
+def _endpoint_profile(model: str | None, fenced: bool):
+    """The capability profile for THIS call, not just for the model family.
+
+    ``fenced`` is the call site's own ``not supports_structured_output(model)``,
+    and that predicate is False behind ANY custom endpoint — LM Studio, vLLM, a
+    gateway — which is a transport fact ``MODEL_PROFILES`` does not carry. Under
+    ADAPT, rule 4+5 drops ``REQUIRES_FENCE`` fragments whenever
+    ``profile.structured`` is not ``NONE``, so an openai- or claude-family model
+    behind a gateway would lose the prose JSON contract while the runtime also
+    withheld ``output_type``: no contract at all, from either side.
+
+    So the profile is told the truth about this endpoint. Narrowing only —
+    ``structured`` is forced DOWN to ``NONE`` when the call site says the shape
+    cannot be enforced, and is left alone otherwise.
+
+    The model string is resolved before ``profile_for`` sees it because that
+    function is ``lru_cache``d on its argument: ``profile_for()`` would freeze
+    the first caller's ambient model under the key ``None`` for the whole
+    process, which was harmless while nothing read the profile and is not now.
+    """
+    from shared.llm.provider import get_model
+    from shared.prompt import profile_for
+    from shared.prompt.profile import Structured
+
+    profile = profile_for(get_model(model))
+    if fenced and profile.structured is not Structured.NONE:
+        return _dc_replace(profile, structured=Structured.NONE)
+    return profile
+
+
 def _generate_rendered(
     source_path: str,
     categories: list[str],
@@ -3134,6 +3185,7 @@ def _generate_rendered(
     source_in_system: bool = False,
     vocabulary: frozenset[str] | None = None,
     fenced: bool = False,
+    model: str | None = None,
 ):
     """Render one generate call's prompt. Pure: no env writes, no I/O.
 
@@ -3142,8 +3194,20 @@ def _generate_rendered(
     fragment interpolates it rather than stating a number, because a model told
     "1-3 lines" while the verifier clamps at 2 would be refused for doing
     exactly what it was asked (0076 §5.2 property 3).
+
+    The two tool budgets are supplied the same way, from
+    ``shared.llm.loop_detector`` — the module whose ``LoopDetector.record``
+    returns KILL and whose KILL aborts the whole call, discarding every finding
+    the batch had already produced. A retyped number in the fragment could drift
+    from the one enforced, and a prompt that promises a bound nothing enforces
+    teaches the model a rule it can break for free.
+
+    Mode is ADAPT as of feature 0089 item 4.4 (`_generate_system_prompt` and
+    `manifests.generate.domain_instructions` flip together; they compose the two
+    halves of one system message).
     """
-    from shared.prompt import Mode, profile_for, render
+    from shared.llm.loop_detector import GLOBAL_CALL_LIMIT, KILL_THRESHOLD
+    from shared.prompt import Mode, render
     from shared.prompt.manifests.generate import live_spec
 
     spec = live_spec(
@@ -3162,9 +3226,11 @@ def _generate_rendered(
             "source_context": source_context,
             "prior_context": prior_context,
             "quote_max_lines": str(_quote_max_lines()),
+            "tool_call_budget": str(GLOBAL_CALL_LIMIT),
+            "tool_repeat_budget": str(KILL_THRESHOLD),
         },
     )
-    return render(spec, profile_for(), mode=Mode.TRANSCRIBE)
+    return render(spec, _endpoint_profile(model, fenced), mode=Mode.ADAPT)
 
 
 def _generate_system_prompt(
@@ -3174,6 +3240,7 @@ def _generate_system_prompt(
     *,
     source_in_system: bool,
     fenced: bool,
+    model: str | None = None,
 ) -> str:
     """The system turn: the agent's own instructions, then the tier's suffix.
 
@@ -3217,9 +3284,18 @@ def _generate_system_prompt(
     # test in 0075/0076 drives. Hence the empty user-turn inputs here: they
     # reach no system fragment. The cost is a second pass over ~6 fragments of
     # string concatenation, per LLM call.
+    #
+    # Under ADAPT (item 4.4) `suffix` is EMPTY for a family whose chat template
+    # has no system role: the fold moves every system fragment into the user
+    # turn, and this render's user turn is the one being discarded. That is
+    # correct rather than lossy only because `_build_llm_prompt` is given the
+    # same `vocabulary` / `fenced` facts, so its render folds the identical set
+    # into the turn that IS used. Change one of the two signatures without the
+    # other and the whole tier policy silently disappears for that family.
     suffix = _generate_rendered(
         "", [], "", source_context, "",
         source_in_system=source_in_system, vocabulary=vocabulary, fenced=fenced,
+        model=model,
     ).instructions
     head = f"{instructions}" if source_in_system else (instructions or "")
     return f"{head}\n\n{suffix}" if suffix else head
@@ -3232,6 +3308,9 @@ def _build_llm_prompt(
     source_context: str,
     prior_context: str,
     source_in_system: bool = False,
+    vocabulary: frozenset[str] | None = None,
+    fenced: bool = False,
+    model: str | None = None,
 ) -> str:
     """Assemble the LLM audit prompt from source context and prior findings.
 
@@ -3239,6 +3318,15 @@ def _build_llm_prompt(
         source_in_system: If True, source code is embedded in the agent's
             instructions (system message) for Anthropic prompt caching.
             The user prompt then omits the source code to avoid duplication.
+        vocabulary, fenced, model: the same three facts
+            :func:`_generate_system_prompt` is given. They reach no user-turn
+            fragment directly, and before item 4.4 this function did not take
+            them. It has to now: under ADAPT a family with no system role
+            (gemma) has its whole system turn folded into the user turn, and a
+            render that was never told the call is fenced, or which category
+            enum it has, folds a SHORTER list than the system render dropped.
+            The difference would not be an ordering nit — it is the JSON
+            contract and the category vocabulary vanishing for that family.
 
     The user turn is ``generate/task`` + ``generate/field_contract`` +
     ``generate/quote_obligation`` + ``generate/prior_context`` + one of
@@ -3249,7 +3337,8 @@ def _build_llm_prompt(
     """
     return _generate_rendered(
         source_path, categories, domain_label, source_context, prior_context,
-        source_in_system=source_in_system,
+        source_in_system=source_in_system, vocabulary=vocabulary, fenced=fenced,
+        model=model,
     ).user
 
 
@@ -3419,9 +3508,24 @@ async def _collect_llm_findings_async(
     all_tools = list(skill_tools) + extra_tools
 
     source_in_system = "anthropic" in resolved_model and bool(source_context)
+    # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may
+    # not support structured output (response_format with JSON schema) alongside
+    # the function-calling tools we always attach.  Skip output_type in those
+    # cases and rely on prompt-based JSON + _parse_llm_findings fallback — the
+    # shape is then asked for in prose instead, by `generate/json_fenced`
+    # ("Wrap the array in a ```json fenced block"), which is what `fenced=`
+    # selects.
+    #
+    # Resolved HERE, above both turns, rather than beside the `output_type` it
+    # gates: item 4.4 renders in ADAPT, where a family with no system role has
+    # its system turn folded into the user turn, so the two renders must be
+    # given the same facts or the user render folds a shorter list than the
+    # system render dropped.
+    use_structured = supports_structured_output(resolved_model)
     prompt_text = _build_llm_prompt(
         source_path, categories, domain_label, source_context, prior_context,
-        source_in_system=source_in_system,
+        source_in_system=source_in_system, vocabulary=current_category_enum(),
+        fenced=not use_structured, model=resolved_model,
     )
 
     # Truncate BEFORE computing max_output so the token budget is based on
@@ -3448,15 +3552,6 @@ async def _collect_llm_findings_async(
     )
     model_settings_dict["max_tokens"] = max_output
 
-    # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may
-    # not support structured output (response_format with JSON schema) alongside
-    # the function-calling tools we always attach.  Skip output_type in those
-    # cases and rely on prompt-based JSON + _parse_llm_findings fallback — the
-    # shape is then asked for in prose instead, by `generate/json_fenced`
-    # ("Wrap the array in ```json ... ``` fences"), which is what `fenced=`
-    # below selects.
-    use_structured = supports_structured_output(resolved_model)
-
     # The system turn (feature 0089 Phase 2.3: assembled by `shared.prompt`,
     # not here — see `_generate_system_prompt`). Three things ride on it:
     #
@@ -3472,6 +3567,7 @@ async def _collect_llm_findings_async(
     augmented_instructions = _generate_system_prompt(
         instructions, source_context, current_category_enum(),
         source_in_system=source_in_system, fenced=not use_structured,
+        model=resolved_model,
     )
 
     agent_kwargs: dict[str, Any] = {

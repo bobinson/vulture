@@ -19,13 +19,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from shared.tools.snippet import collect_scoped_body
 
 from cwe_agent.skills.insufficient_logging_check import (
     _body_delegates,
     _body_has_logging,
     _body_propagates,
 )
+from shared.tools.snippet import collect_scoped_body
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SKILL_REL = "agents/cwe/cwe_agent/skills/insufficient_logging_check.py"

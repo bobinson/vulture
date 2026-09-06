@@ -4,6 +4,8 @@ import os
 from collections.abc import Generator
 from typing import Any
 
+from chaos_agent.config import ALL_CATEGORIES
+from chaos_agent.skills import SKILL_MAP, SKILL_TOOLS
 from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.llm.provider import (
@@ -13,9 +15,6 @@ from shared.prompt.manifests.generate import domain_instructions
 from shared.tools.memory_client import (
     build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
 )
-
-from chaos_agent.config import ALL_CATEGORIES
-from chaos_agent.skills import SKILL_MAP, SKILL_TOOLS
 
 # NOT the prompt source any more — feature 0089 Phase 2.5 moved that to the
 # fragment `domains/chaos`, named at the `run_combined_audit` call below and

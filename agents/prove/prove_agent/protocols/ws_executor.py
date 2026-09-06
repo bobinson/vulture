@@ -5,9 +5,6 @@ import json
 import logging
 
 import websockets
-from shared.prompt.manifests.prove_analyze import (
-    PROVE_ANALYZE_DOMAIN,
-)
 
 from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.protocols.detection import TargetCapabilities, to_ws_url
@@ -21,6 +18,9 @@ from prove_agent.strategies.shared import (
     _as_bool,
     rejected_path_result,
     validate_url_path,
+)
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,12 +36,14 @@ _MAX_MESSAGES = 5
 _ANALYZE_PROMPT = """Did this WebSocket response confirm the vulnerability?
 
 Finding: {title} ({category})
-Request: WebSocket message to {url}
-Messages received: {messages}
 Expected indicators: {expected_indicators}
 
 Reply with JSON only:
-{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}"""
+{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}
+If the response does not clearly confirm or refute the finding, set "conclusive" to false.
+
+Request: WebSocket message to {url}
+Messages received: {messages}"""
 
 
 async def execute_websocket(

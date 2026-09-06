@@ -15,9 +15,6 @@ from collections.abc import AsyncGenerator
 from enum import Enum
 from urllib.parse import urlparse
 
-from shared.llm.loop_detector import LoopAction, LoopDetector, hash_result
-from shared.transport.event_emitter import AgUiEventEmitter
-
 from prove_agent.protocols.detection import TargetCapabilities
 from prove_agent.strategies.base import (
     AttemptRecord,
@@ -26,6 +23,8 @@ from prove_agent.strategies.base import (
     ReflectionResult,
 )
 from prove_agent.strategies.shared import stepped_backoff_delay_adaptive
+from shared.llm.loop_detector import LoopAction, LoopDetector, hash_result
+from shared.transport.event_emitter import AgUiEventEmitter
 
 logger = logging.getLogger(__name__)
 

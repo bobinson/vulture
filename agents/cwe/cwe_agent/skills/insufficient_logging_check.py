@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     is_generated_file,
     is_test_file,
@@ -30,8 +32,6 @@ from shared.tools.snippet import (
     collect_scoped_body,
     extract_snippet,
 )
-
-from cwe_agent.catalog import enrich_finding
 
 # Language gate — logging conventions differ and the regex targets these.
 # 0087 B7/step 9. Six of the languages the LLD called "structurally blind" were

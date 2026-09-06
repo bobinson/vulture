@@ -12,7 +12,6 @@ from shared.prompt.manifests.generate import domain_instructions
 from shared.tools.memory_client import (
     build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
 )
-
 from ssdf_agent.config import ALL_CATEGORIES
 from ssdf_agent.practice_groups import SKILL_MAP
 from ssdf_agent.skills import SKILL_TOOLS

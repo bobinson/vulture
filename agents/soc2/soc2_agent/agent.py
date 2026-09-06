@@ -13,7 +13,6 @@ from shared.prompt.manifests.generate import domain_instructions
 from shared.tools.memory_client import (
     build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
 )
-
 from soc2_agent.clauses import SKILL_MAP
 from soc2_agent.config import ALL_CATEGORIES
 from soc2_agent.skills import SKILL_TOOLS

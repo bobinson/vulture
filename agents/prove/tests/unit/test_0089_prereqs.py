@@ -12,6 +12,7 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from prove_agent.protocols import jsonrpc_executor as jsonrpc_mod
 from prove_agent.protocols import ws_executor as ws_mod
 from prove_agent.protocols.detection import TargetCapabilities

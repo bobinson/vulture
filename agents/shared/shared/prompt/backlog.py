@@ -6,21 +6,21 @@ module-level `PromptSpec` (the registry harvests them, and
 none, precisely so a manifest cannot go missing from the golden gate and the
 lint sweep at once). A constants module has no spec to offer, so it lives here.
 
-It exists because `language_pin` fires on every tier for one reason — no
-fragment in the library carries `BINDS_LANGUAGE` at all — and a reason
-transcribed into five manifests is five places it can drift from the fix that
-eventually lands. Tier-specific reasons stay in their own manifest, next to the
-fragment list they excuse.
+It existed for one constant, `LANGUAGE_PIN`, and item 4.8 retired it. That
+entry read the same on every tier — no fragment in the library carried
+`BINDS_LANGUAGE`, so `check_12_language_pin` fired on eighteen specs at once —
+and transcribing one reason into five manifests would have been five places it
+could drift from the fix. `core/language` is that fix, so the constant is gone
+rather than left behind describing a defect that no longer exists; that is the
+`allow_stale` rule (`lint.gate`) applied to the reason text as well as to the
+entries.
+
+`OWNER` stays. Two exemptions still stand — `duplicate_contract` and
+`orphan_field` on the `domains/` fragments of cwe and asvs, plus the judge's
+`exemplar_validity` — and each names its own tier-specific reason next to the
+fragment list it excuses, which is where a reason that is NOT shared belongs.
 """
 
 from __future__ import annotations
 
 OWNER = "bobinson"
-
-# Every spec with a free-text schema field trips this, in all six tiers.
-LANGUAGE_PIN = (
-    "Phase 4.8 — no fragment in the library carries BINDS_LANGUAGE, so every "
-    "free-text field egresses with no bound output language. 4.8 adds "
-    "`core/language`, admitted by `render._rule_language` only where the "
-    "profile's `output_language_pin` is set (4 of the 10 families)."
-)

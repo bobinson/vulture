@@ -253,4 +253,24 @@ def test_schema_version_bumped_for_evidence_line():
     # (positive obligation first, real budget interpolated) and qualified
     # the abstention sentence. A verdict reached under the OLD prompt —
     # which measured zero tool calls — must not be replayed for 30 days.
-    assert l5_cache._VERDICT_SCHEMA_VERSION == "v5-tool-trigger"
+    # v6-one-coordinate-space: item 4.2 gave the verdict `evidence_file` and
+    # put `evidence_line` in ONE coordinate space (the file's own numbering).
+    # A v5 row carries no file and its line was measured against a renumbered
+    # window, so replaying it would serve a snippet-relative number as a file
+    # coordinate.
+    # v7-untrusted-by-channel: item 4.3 states the untrusted policy per
+    # CHANNEL and delimits the judge's tool results, which carried no
+    # markers at all. A v6 row was judged by a model told to distrust two
+    # marker pairs while reading unmarked tool output — a judgment made
+    # under different instructions, and indistinguishable from a v7 row.
+    # v8-output-language-pin: item 4.8 adds `core/language` to the
+    # judge's system turn. The site renders TRANSCRIBE, so the clause
+    # reaches every model, not just the four families whose profile pins
+    # the output language: a v7 row was judged with no bound output
+    # language and no instruction to copy quoted evidence verbatim.
+    # v9-judge-adapt: item 4.1 flips the call site to `Mode.ADAPT`. The mirror
+    # restates the contract in the user turn, rule 9 removes the v8 language
+    # clause again for the six families that do not pin, and rule 1 folds the
+    # system turn away entirely for a no-system-role family — so a v8 row is a
+    # verdict reached under a prompt that had none of that applied to it.
+    assert l5_cache._VERDICT_SCHEMA_VERSION == "v9-judge-adapt"

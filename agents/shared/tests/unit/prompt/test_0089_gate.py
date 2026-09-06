@@ -38,7 +38,82 @@ from shared.prompt.render import Mode, render
 # The number of annotations in the tree at the end of Phase 3. It is a
 # CEILING, not a target: Phase 4 drives it to zero, and nothing may raise it
 # without the raise being a visible, reviewed edit to this line.
-COMMITTED_ALLOW_ENTRIES = 71
+#
+# 71 -> 69: Phase 4.6 replaced the DISCOVER exemplar with valid JSON, which
+# retired BOTH of `discover_suggest`'s text findings at once — `exemplar_validity`
+# and `placeholder_echo`, which `check_09` raised on the same bare `...`. The
+# manifest recorded them as needing "different repairs (valid JSON vs. no
+# echoable placeholder)"; one repair satisfied both, because the ellipsis WAS
+# the invalid token.
+#
+# 69 -> 63: Item 4.5 retired six more — the five `placeholder_echo` exemptions
+# on `prove/plan_*` (the exemplar no longer teaches `/real-path` or `payload
+# if POST`) and cwe's one `orphan_field` (the plan schema now carries
+# `filename`).
+#
+# 63 -> 61: Item 4.2 retired the `dangling_reference` exemption on
+# `validate/evidence_citation`, which `_judge_allow` hands to BOTH judge specs
+# — hence two entries for one repair. The fragment declared
+# `references: [numbered_snippet]` against a render that supplies no such
+# variable and no such slot, because the "numbered snippet" coordinate space
+# existed in that one sentence and nowhere else. 4.2 states one space (the
+# file's own numbering), so the reference has nothing left to dangle from.
+#
+# 61 -> 59: item 4.3 retired the `placeholder_echo` exemption on
+# `validate/untrusted_warning` — again two entries for one repair, because
+# `_judge_allow` gives it to both judge specs. The exemption was not addressed;
+# the FRAGMENT was retired. Its `...` came from documenting the marker pairs as
+# `<<<CODE ... CODE>>>`, i.e. from eliding the content between them, and
+# `core/untrusted` documents the same markers as `<<<CHANNEL:TOKEN` — naming
+# the part that matters instead of eliding the part that does not, so there is
+# no ellipsis left to annotate.
+#
+# Note what 4.3 did NOT add. It put `check_05_slot_marking` and
+# `check_06_marker_forgery` into force on real manifests for the first time —
+# both were structurally silent while no spec declared an untrusted channel —
+# and neither needed an entry, which is that item's stated measurement.
+#
+# 59 -> 26: item 4.4, the largest single retirement in Phase 4. All 33 were
+# GENERATE entries, and each went because the prompt change its reason named
+# actually landed — 7 specs x 4 tier-wide entries plus 5 specs x 1:
+#
+#   tool_announcement    x7  `generate/tool_trigger` is on every branch, so the
+#                            three file tools attached to every call are
+#                            permitted by a sentence the model is shown. It
+#                            states the two budgets `shared.llm.loop_detector`
+#                            actually kills at, read from that module.
+#   vocab_closure        x7  `generate/vocab_severity` binds `severity`'s closed
+#                            set. That needed `parse_fragment` to start reading
+#                            a `binds_vocabulary:` key at all — it hardcoded
+#                            `()`, so no fragment on disk could close one.
+#   duplicate_contract   x7  on `generate/json_fenced`: it states the wire shape
+#                            and no longer enumerates the eight field names.
+#   placeholder_echo     x7  on the same fragment: the `...` it reported was
+#                            fence-syntax illustration in the sentence that was
+#                            rewritten.
+#   duplicate_contract   x5  on `generate/field_contract`, for the five agents
+#                            whose `domains/` fragment ships no field list. cwe
+#                            and asvs keep theirs: that half is the agent
+#                            identity's "## Reporting Format" block, pinned
+#                            byte-for-byte against the constant those agents'
+#                            own unit tests assert on.
+#
+# 26 -> 8: item 4.8, and the last block that spanned every tier. All 18 were
+# `language_pin`, one per spec with a free-text schema field — 1 discover, 7
+# generate, 3 prove_analyze, 5 prove_plan, 2 validate — and one fragment
+# retired all of them: `core/language` is the library's first and only
+# `BINDS_LANGUAGE` fragment, which is the stance `check_12` looks for. Before
+# it, the check could not have passed anywhere; the annotation was recording
+# the absence of a fragment rather than a per-tier defect, which is why one
+# addition closed 18 entries.
+#
+# What remains is 8, and none of it is tier-wide: the two `domains/` fragments
+# of cwe and asvs ship their own "## Reporting Format" field list (5 entries
+# across `duplicate_contract` / `orphan_field` / `placeholder_echo`) and the
+# judge's verdict exemplar uses angle-bracket type placeholders instead of
+# parseable JSON (2 entries, one per judge spec). Both belong to text this
+# feature does not own.
+COMMITTED_ALLOW_ENTRIES = 8
 
 # A reason has to name the item that owns the fix. Both forms are accepted
 # because the backlog spans phases of this feature and one item (`linked_cwe`)
@@ -201,12 +276,24 @@ def test_a_stale_allow_entry_fails_the_gate():
 
 
 def test_lint_still_returns_every_finding_for_phase_1_callers():
-    """`lint()` must not filter: Phase 1 asserts these very findings fire."""
+    """`lint()` must not filter: Phase 1 asserts these very findings fire.
+
+    The set was `{orphan_field, duplicate_contract, language_pin}` until item
+    4.8, which retired `language_pin` on this spec along with seventeen others
+    — the check no longer fires here, so requiring it would be requiring a
+    defect to still exist. The two that remain are enough for what this test
+    asserts, which is that `lint()` reports what `gate()` then annotates away:
+    the gate is clean below and the raw check output is not.
+    """
     spec = MANIFESTS["generate/asvs"]
     rp = _render(spec)
     assert gate(spec, rp).findings == ()          # gate is clean
     checks = {f.check for f in lint(spec, rp)}    # lint is not
-    assert {"orphan_field", "duplicate_contract", "language_pin"} <= checks
+    assert {"orphan_field", "duplicate_contract"} <= checks
+    assert "language_pin" not in checks, (
+        "item 4.8 retired this finding; `lint()` reporting it again means "
+        "`core/language` left this render"
+    )
 
 
 # ── the CLI ───────────────────────────────────────────────────────────────

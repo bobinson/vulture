@@ -62,7 +62,7 @@ Attempt: {iteration}
 {site_context}
 
 Reply with ONLY a JSON object (no markdown, no explanation):
-{{"description":"what this tests","method":"GET or POST","url_path":"/real-path","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
+{{"description":"what this tests","method":"GET or POST","url_path":"/api/users","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
 
 _REFLECT_PROMPT = """You are a security researcher reflecting on failed verification attempts.
 

@@ -4,6 +4,8 @@ import os
 from collections.abc import Generator
 from typing import Any
 
+from do178c_agent.config import ALL_CATEGORIES, dal_skip
+from do178c_agent.skills import SKILL_MAP, SKILL_TOOLS
 from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.llm.provider import (
@@ -14,9 +16,6 @@ from shared.tools.memory_client import (
     build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
 )
 from shared.transport.event_emitter import AgUiEventEmitter
-
-from do178c_agent.config import ALL_CATEGORIES, dal_skip
-from do178c_agent.skills import SKILL_MAP, SKILL_TOOLS
 
 # NOT the prompt source any more — feature 0089 Phase 2.5 moved that to the
 # fragment `domains/do178c`, named at the `run_combined_audit` call below and

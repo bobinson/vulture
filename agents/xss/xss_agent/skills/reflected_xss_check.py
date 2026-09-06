@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -19,7 +20,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.framework_html import is_framework_style_injection
-
 from xss_agent.skills._check_id import cid
 
 # Template unsafe rendering

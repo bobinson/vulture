@@ -7,14 +7,13 @@ learnings.source_routes for warm start on next session.
 
 import logging
 
+from discover_agent.source_analyzer import SourceAnalysisResult
 from shared.discovery.plugin_base import (
     DiscoveryContext,
     DiscoveryPlugin,
     DiscoveryResult,
     register_plugin,
 )
-
-from discover_agent.source_analyzer import SourceAnalysisResult
 
 logger = logging.getLogger(__name__)
 

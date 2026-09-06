@@ -1,6 +1,7 @@
 """Unit tests for chaos engineering skills."""
 
 import pytest
+
 from chaos_agent.config import AGENT_INFO, ALL_CATEGORIES, CONFIG_SCHEMA
 from chaos_agent.skills.retry_analysis import (
     HTTP_CALL_PATTERNS,

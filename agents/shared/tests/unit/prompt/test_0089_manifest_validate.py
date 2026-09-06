@@ -32,7 +32,16 @@ USER_SRC = (_PROMPTS / "validate_judge_user.txt").read_text(encoding="utf-8")
 # fragment id -> the source text it was transcribed out of.
 TRANSCRIBED: dict[str, str] = {
     "validate/role": SYSTEM_SRC,
-    "validate/untrusted_warning": SYSTEM_SRC,
+    # RENAMED BY ITEM 4.3, not merely re-keyed. The row was
+    # `"validate/untrusted_warning": SYSTEM_SRC` and that fragment is gone: its
+    # policy was two marker pairs, which cannot describe a channel that has no
+    # marker, and the judge's tool results are exactly that channel. The
+    # replacement is a `core/` fragment because GENERATE needs the same policy.
+    # `validate_judge.txt` — this map's oracle, retained and unread by
+    # production — had its untrusted section replaced with the new text in the
+    # same change, which is what keeps the byte-exactness claim below a real
+    # comparison against a file rather than a fragment compared with itself.
+    "core/untrusted": SYSTEM_SRC,
     "validate/language_idioms": SYSTEM_SRC,
     "validate/calibration": SYSTEM_SRC,
     "validate/evidence_citation": SYSTEM_SRC,
@@ -109,9 +118,6 @@ def _is_closure_vs_tools(f) -> bool:
     return "tool_discipline" in f.fragment and "closure" in f.fragment
 
 
-def _is_numbered_snippet_dangle(f) -> bool:
-    return f.fragment == "validate/evidence_citation" and "numbered_snippet" in f.message
-
 
 def test_manifest_validate_judge_renders():
     """The manifest renders, and its system text carries the real sections."""
@@ -143,23 +149,36 @@ def test_validate_fragments_are_byte_exact():
 
 
 def test_lint_surfaces_validate_blockers():
-    """promptlint reports the evidence_line blocker without calling a model.
+    """promptlint's standing report on the judge, without calling a model.
 
-    The stance conflict is NOT asserted here any more, and its absence is the
-    point: feature 0089 item 4.1 landed ahead of the migration and qualified
-    the Closure sentence, so `validate/closure` now honestly declares
-    BLESSES_ABSTENTION_AFTER_LOOKING and the live prompt genuinely no longer
-    holds the contradiction. Asserting a conflict here would require declaring
-    the fragment dishonestly, which is the one failure mode §0.c forbids.
-    The check itself is pinned by
-    `test_lint_catches_the_pre_41_stance_conflict` below, against a fixture
-    carrying the pre-4.1 text.
+    Two of the audit's blockers used to be visible here and both are now
+    REPAIRED rather than reported, which is what Phase 4 is for. The
+    assertions therefore state their absence, because an absence is the only
+    honest form the claim can take once the defect is gone.
+
+    * the stance conflict: item 4.1 qualified the Closure sentence, so
+      `validate/closure` honestly declares BLESSES_ABSTENTION_AFTER_LOOKING and
+      the composition no longer contradicts itself. The check itself stays
+      pinned by `test_lint_catches_the_pre_41_stance_conflict` below, against a
+      fixture carrying the pre-4.1 text.
+
+    * the dangling reference: BEFORE item 4.2 this asserted
+      `any(f.fragment == "validate/evidence_citation" and "numbered_snippet"
+      in f.message for f in dangling)` — the fragment declared
+      `references: [numbered_snippet]`, which resolved to no variable and no
+      slot, because "the numbered snippet" was a coordinate space that existed
+      in one sentence of the prompt and nowhere in the render. 4.2 states ONE
+      space (the file's own numbering), the fragment references nothing, and
+      the allow entry that annotated this was retired with it. Repaired, so
+      the assertion inverts.
     """
     rp = render(VALIDATE_JUDGE, _profile(), mode=Mode.TRANSCRIBE)
     findings = lint(VALIDATE_JUDGE, rp)
 
-    dangling = _of_check(findings, "dangling_reference")
-    assert any(map(_is_numbered_snippet_dangle, dangling)), f"no dangle: {findings}"
+    assert _of_check(findings, "dangling_reference") == [], (
+        "item 4.2 removed the snippet coordinate space; a dangle here means a "
+        "fragment references something the render does not supply"
+    )
     assert not any(map(_is_closure_vs_tools, _of_check(findings, "stance_conflict"))), (
         "4.1 qualified the Closure sentence; a conflict here means a fragment "
         "was declared dishonestly"
@@ -204,13 +223,20 @@ def test_lint_catches_the_pre_41_stance_conflict():
 
 def test_schema_fields_are_the_verdict_schema():
     """One field list. `check_01_orphan_field` reads this tuple, and a local
-    copy of the five names is a second place L5's contract can drift from
-    `llm_judge._coerce_verdict`."""
+    copy of the names is a second place L5's contract can drift from
+    `llm_judge._coerce_verdict`.
+
+    `evidence_file` was added by item 4.2. BEFORE it the tuple was
+    `("id", "exploitable", "window_sufficient", "evidence_line", "reasoning")`
+    and `evidence_line` carried two coordinate spaces at once; the sixth field
+    is what lets a tool-read citation name its own file instead.
+    """
     from shared.prompt.schema import VERDICT_SCHEMA
 
     assert VALIDATE_JUDGE.schema_fields == tuple(f.name for f in VERDICT_SCHEMA.fields)
     assert VALIDATE_JUDGE.schema_fields == (
-        "id", "exploitable", "window_sufficient", "evidence_line", "reasoning")
+        "id", "exploitable", "window_sufficient", "evidence_line",
+        "evidence_file", "reasoning")
     declared = get("validate/output_contract").declares_fields
     assert set(declared) == set(VALIDATE_JUDGE.schema_fields)
 

@@ -25,6 +25,13 @@ from collections.abc import Generator
 from typing import Any
 
 import httpx
+
+from discover_agent.findings import analyze_security_exposures
+from discover_agent.learning_store import (
+    format_learnings_context,
+    load_learnings,
+    save_learnings,
+)
 from shared.discovery.cache import (
     is_cache_fresh,
     load_cached_discovery,
@@ -37,13 +44,6 @@ from shared.discovery.sitemap import SiteMap
 from shared.env import env_flag
 from shared.tools.window import WINDOW_NO_CODE_LOCATION, record_window_reason
 from shared.transport.event_emitter import AgUiEventEmitter
-
-from discover_agent.findings import analyze_security_exposures
-from discover_agent.learning_store import (
-    format_learnings_context,
-    load_learnings,
-    save_learnings,
-)
 
 
 def _window_parity_enabled() -> bool:

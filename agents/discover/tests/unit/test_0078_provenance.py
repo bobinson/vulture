@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import discover_agent.agent as agent_mod
 import pytest
+
+import discover_agent.agent as agent_mod
 from shared.discovery.sitemap import SiteMap
 
 

@@ -157,12 +157,18 @@ def test_prereq_verdict_other_fields_unchanged(field, value, expected):
 
 def test_prereq_verdict_field_whitelist_unchanged():
     # The rebuilt dict is a whitelist: an unnamed field must not survive, and
-    # the five named ones must always be present (a caller reads them with
+    # the named ones must always be present (a caller reads them with
     # `v["exploitable"]`, not `.get`).
+    #
+    # `evidence_file` was ADDED to this set by feature 0089 item 4.2. BEFORE it
+    # the set was the five names {id, exploitable, reasoning,
+    # window_sufficient, evidence_line} and `evidence_line` was asked for in
+    # two coordinate spaces at once; the sixth name is what separates a
+    # tool-read citation from a window citation.
     out = llm_judge._coerce_verdict(
         {"id": "f0", "exploitable": "0.8", "bogus": "x"})
-    assert set(out) == {"id", "exploitable", "reasoning",
-                        "window_sufficient", "evidence_line"}
+    assert set(out) == {"id", "exploitable", "reasoning", "window_sufficient",
+                        "evidence_line", "evidence_file"}
 
 
 # ── P3 end to end: at the HTTP boundary, not the _call_llm seam ──────

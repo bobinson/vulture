@@ -34,12 +34,12 @@ way.
 from __future__ import annotations
 
 from _format_pin import as_fragment_text
+
 from prove_agent.llm_helper import _SYSTEM_MSG
 from prove_agent.protocols.jsonrpc_executor import _ANALYZE_PROMPT as RPC_ANALYZE
 from prove_agent.protocols.ws_executor import _ANALYZE_PROMPT as WS_ANALYZE
 from prove_agent.strategies import chaos, cwe, owasp, soc2, ssdf
 from prove_agent.strategies.shared import _ANALYZE_PROMPT as HTTP_ANALYZE
-
 from shared.prompt.manifests.prove_analyze import PROVE_ANALYZE
 from shared.prompt.manifests.prove_plan import PROVE_PLANS
 from shared.prompt.manifests.prove_reflect import PROVE_REFLECT
@@ -88,14 +88,20 @@ _ANALYZE_CONTRACT_TAIL = (
 
 
 def _assert_assembled_equals(spec, live_text: str, frag_id: str) -> str:
-    """Assert the TRANSCRIBE render of ``spec`` reproduces ``live_text`` exactly.
+    """Assert the render of ``spec`` reproduces ``live_text`` exactly.
 
     Returns the rendered system text so callers can compare copies to the base.
-    Every check here is a raw byte ``==``; nothing is normalised. The profile is
-    resolved per call (offline, from the provider table) and, in TRANSCRIBE mode,
-    influences only the numeric budget hint — never a byte of the text.
+    Every check here is a raw byte ``==``; nothing is normalised.
+
+    ITEM 4.8 CHANGED THE MODE HERE, and the change is what the comparison is
+    about. `_SYSTEM_MSG` is `render(PROVE_SYSTEM, ..., ADAPT).instructions`
+    (item 4.5 flipped the call site), so comparing against a TRANSCRIBE render
+    was only ever correct while the two modes emitted the same bytes. 4.8 lists
+    `core/language` in this tier's system turn, which rule 9 drops for `gpt-4o`
+    and TRANSCRIBE keeps, so the modes now differ by 476 bytes and the render
+    compared here has to be the one production performs.
     """
-    rp = render(spec, profile_for("gpt-4o"), mode=Mode.TRANSCRIBE)
+    rp = render(spec, profile_for("gpt-4o"), mode=Mode.ADAPT)
     # The assembled USER text is the live prompt, byte for byte. This asserted
     # `rp.instructions == live_text` and `rp.user == ""` until Phase 1 measured
     # the live call site: `llm_json_call` sends TWO turns and the prompt is the
@@ -107,7 +113,10 @@ def _assert_assembled_equals(spec, live_text: str, frag_id: str) -> str:
         {"role": "user", "content": live_text},
     ]
     # …assembled from exactly the fragments the call site names, in order.
-    assert rp.fragments == ("prove/system", frag_id)
+    # `core/language` is listed (item 4.8) and is in this tuple, which reports
+    # the SPEC's list rather than what the rules admitted — the bytes above are
+    # where its absence on this profile is actually asserted.
+    assert rp.fragments == ("prove/system", "core/language", frag_id)
     return rp.user
 
 
@@ -174,10 +183,12 @@ def test_prove_analyze_assembled_parity():
     assert _ANALYZE_LIVE["http"].startswith(
         "Did this HTTP response confirm the vulnerability?"
     )
-    assert (
-        _ANALYZE_LIVE["http"][-len(_ANALYZE_CONTRACT_TAIL):]
-        == _ANALYZE_CONTRACT_TAIL
-    )
+    # Item 4.5 moved the output contract ABOVE the untrusted response block, so
+    # the prompt no longer ENDS with the contract. BEFORE 4.5 this asserted
+    # `_ANALYZE_LIVE["http"][-len(_ANALYZE_CONTRACT_TAIL):] == _ANALYZE_CONTRACT_TAIL`
+    # (contract last). Now the contract must merely be PRESENT; its position is
+    # checked against the untrusted block below.
+    assert _ANALYZE_CONTRACT_TAIL in _ANALYZE_LIVE["http"]
 
     # Headline: render(prove_analyze) equals the HTTP executor's live text.
     base = _assert_assembled_equals(
@@ -195,5 +206,10 @@ def test_prove_analyze_assembled_parity():
     for proto in ("ws", "jsonrpc"):
         assert rendered[proto] != base
 
-    for text in rendered.values():
-        assert text[-len(_ANALYZE_CONTRACT_TAIL):] == _ANALYZE_CONTRACT_TAIL
+    # 4.5: the contract sits ABOVE the untrusted response block, which now ends
+    # the prompt (before 4.5 the contract was the tail; see the note above).
+    _untrusted = {"http": "Response (truncated):", "ws": "Messages received:",
+                  "jsonrpc": "RPC method:"}
+    for proto, text in rendered.items():
+        assert _ANALYZE_CONTRACT_TAIL in text
+        assert text.index(_ANALYZE_CONTRACT_TAIL) < text.index(_untrusted[proto])

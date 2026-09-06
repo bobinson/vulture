@@ -62,17 +62,27 @@ _DEFAULT_MAX_TOKENS = _safe_int_env("VULTURE_PROVE_MAX_OUTPUT_TOKENS", 4096)
 # parity net is `agents/shared/tests/unit/prompt/test_0089_parity_prove_wire.py`
 # and `..._parity_prove_system.py`.
 #
-# Rendered once at import. TRANSCRIBE mode is pure — no env reads, no I/O beyond
-# the fragment registry's own import-time load — and the model profile cannot
-# move a byte in it: the profile reaches only `output_budget_hint` and
-# `response_format`, and this call site uses neither. So there is nothing per
-# model to vary and nothing to defer to call time.
+# Rendered once at import against the resolved model profile. Item 4.5 flips the
+# render below to ADAPT: on the default openai profile that is byte-identical to
+# the transcription (the profile reaches only `output_budget_hint` and
+# `response_format`, and this call site uses neither), so the shipped default
+# moves no byte. ADAPT earns its keep on a profile whose chat template has no
+# system role (gemma), where it relocates the JSON-API system turn into the
+# user turn rather than emitting a system message the template would drop.
 _PROMPT_PROFILE = profile_for(None)
 
 
 def _render(spec) -> RenderedPrompt:
-    """TRANSCRIBE-render one prove spec. Byte-for-byte, never adaptive."""
-    return render(spec, _PROMPT_PROFILE, mode=Mode.TRANSCRIBE)
+    """ADAPT-render one prove spec for the resolved model profile (Item 4.5).
+
+    ADAPT, not TRANSCRIBE: on the default openai profile it is byte-identical
+    to the transcription (the profile reaches only `response_format`, which
+    this JSON call site discards), so the flip moves no byte for the shipped
+    default. It earns its keep on a profile whose chat template has no system
+    role (gemma), where ADAPT folds the JSON-API system turn into the front of
+    the single user turn instead of emitting a system message that would be
+    dropped."""
+    return render(spec, _PROMPT_PROFILE, mode=Mode.ADAPT)
 
 
 def render_prove_prompt(user_fragment: str, domain: dict[str, str], **runtime) -> str:
@@ -82,7 +92,7 @@ def render_prove_prompt(user_fragment: str, domain: dict[str, str], **runtime) -
     or `"prove/analyze"`); `domain` is the per-strategy / per-protocol slot table
     (`persona`, `domain_rules`, …); `runtime` are the per-call fills (`title`,
     `category`, …). They merge into one variables dict and resolve in a single
-    TRANSCRIBE pass, so this reproduces byte for byte what
+    ADAPT pass (Item 4.5), so this reproduces byte for byte what
     `_{PLAN,REFLECT,ANALYZE}_PROMPT.format(**runtime)` produced before the flip —
     the five/five/three inline copies are gone from the runtime, replaced by one
     template each.
@@ -122,6 +132,29 @@ def render_prove_prompt(user_fragment: str, domain: dict[str, str], **runtime) -
 # hardcoded role here is exactly how every prove prompt could end up in the
 # wrong turn, so the placement is the library's to state, not this module's.
 _SYSTEM_TURN: tuple[dict, ...] = tuple(_render(PROVE_SYSTEM).messages)
+
+
+def _compose_turns(user_content: str) -> list[dict]:
+    """The wire turns, with no two consecutive user messages.
+
+    `_system_turn()` renders whatever role the library says the JSON-API message
+    belongs in. Under ADAPT with a profile that has NO system role (rule 2), that
+    message comes back as a USER turn — and concatenating it in front of the real
+    user turn produced `['user', 'user']` on the wire. Gemma's template, the very
+    family that motivates rule 2, is alternation-strict, so the flip broke exactly
+    the case it was made for. Baseline before the flip: `['system', 'user']`.
+
+    So a user-role system turn is FOLDED into the front of the user content
+    rather than emitted as its own message. A real system turn is passed
+    through untouched.
+    """
+    turns = _system_turn()
+    lead = [t for t in turns if t.get("role") == "user"]
+    rest = [t for t in turns if t.get("role") != "user"]
+    if lead:
+        prefix = "\n\n".join(t["content"] for t in lead if t.get("content"))
+        user_content = f"{prefix}\n\n{user_content}" if prefix else user_content
+    return [*rest, {"role": "user", "content": user_content}]
 
 
 def _system_turn() -> list[dict]:
@@ -269,10 +302,7 @@ async def llm_json_call(
             # variant carries its own leading blank line (see the fragments'
             # `verbatim: true`), so a joiner here would emit four newlines
             # where the live payload has two.
-            messages = [
-                *_system_turn(),
-                {"role": "user", "content": prompt + guidance},
-            ]
+            messages = _compose_turns(prompt + guidance)
             kwargs = {**base_kwargs, "messages": messages, "temperature": _TEMPERATURES[attempt]}
             response = await acompletion(**kwargs)
             text = response.choices[0].message.content or ""

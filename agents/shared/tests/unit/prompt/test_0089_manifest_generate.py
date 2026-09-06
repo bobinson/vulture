@@ -42,18 +42,23 @@ XSS_INSTRUCTIONS = AGENTS_DIR / "xss" / "xss_agent" / "INSTRUCTIONS.md"
 SEVEN_AGENTS = frozenset({"chaos", "soc2", "ssdf", "do178c", "asvs", "cwe", "xss"})
 
 # Every fragment that states the eight-field list in a `generate/cwe` render.
-# `generate/json_fenced` belongs here: its own text enumerates the SAME eight
-# fields as `generate/field_contract`, in the SYSTEM turn, appended by a
-# different branch of the builder — and `audit_runner._quote_contract_suffix`
-# documents that pair as "one policy written twice, in two places that are
-# edited independently". A declaration that omitted it would hide from
-# `check_02` the one duplication the source itself warns about.
+#
+# BEFORE feature 0089 item 4.4 this was a set of THREE — `generate/json_fenced`
+# enumerated the same eight fields as `generate/field_contract`, in the SYSTEM
+# turn, appended by a different branch of the builder, and
+# `audit_runner._quote_contract_suffix` documented that pair as "one policy
+# written twice, in two places that are edited independently". 4.4 resolved the
+# tier's half: `generate/json_fenced` states the WIRE SHAPE and declares no
+# fields. What is left is the half that belongs to the agent identity —
+# `domains/cwe` ships its own "## Reporting Format" block — and it is annotated
+# on the manifest rather than fixed here, because that text is pinned
+# byte-for-byte against the constant cwe's own unit tests assert on.
 FIELD_LIST = frozenset({
-    "generate/field_contract", "generate/json_fenced", "domains/cwe",
+    "generate/field_contract", "domains/cwe",
 })
 
-# The eight fields `generate/json_fenced` names in its own sentence.
-JSON_FENCED_FIELDS = (
+# The eight fields the tier's ONE declaring fragment names in its own sentence.
+CONTRACT_FIELDS = (
     "severity", "category", "title", "description",
     "file_path", "line_start", "line_end", "recommendation",
 )
@@ -210,10 +215,17 @@ def _assert_cwe_contract(cwe: list) -> None:
 
 
 def _assert_cwe_tools(cwe: list) -> None:
-    """Three tools attached and not one fragment permits using them: GENERATE's
-    only tool sentence sits in the `else` branch that a non-empty source
-    context makes unreachable. And every field cwe names is in the schema."""
-    assert "tool_announcement" in _checks(cwe)
+    """Three tools are attached and a fragment now permits using them.
+
+    BEFORE feature 0089 item 4.4 this read `assert "tool_announcement" in
+    _checks(cwe)`: GENERATE's only tool sentence (`generate/tools_only`) sat in
+    the `else` branch that a non-empty source context makes unreachable, so the
+    render held three tools and no permission. `generate/tool_trigger` is on
+    every branch now, which is the fix that finding named — so the assertion is
+    inverted rather than deleted, and it fails if the fragment is dropped.
+    And every field cwe names is in the schema.
+    """
+    assert "tool_announcement" not in _checks(cwe)
     assert "orphan_field" not in _checks(cwe)
 
 
@@ -234,42 +246,68 @@ def test_lint_surfaces_generate_blockers():
 def test_json_fenced_declares_the_fields_its_text_names():
     """A fragment's `declares_fields` must match what its text SAYS.
 
-    `generate/json_fenced` spells the field list out ("Each object must have:
-    severity, category, ... recommendation"), so it declares that list. This is
-    the transcription's honesty check: a fragment that names a contract while
-    declaring nothing is invisible to `check_02_duplicate_contract`, which
-    would let the tier's real duplication pass review unreported.
+    The honesty check, in both directions. A fragment that names a contract
+    while declaring nothing is invisible to `check_02_duplicate_contract`,
+    which would let a real duplication pass review unreported; a fragment that
+    declares a contract its text does not state manufactures a duplication that
+    is not in the prompt.
+
+    BEFORE feature 0089 item 4.4 this asserted the FIRST direction on
+    `generate/json_fenced`:
+
+        for name in JSON_FENCED_FIELDS:
+            assert name in frag.text, name
+        assert frag.declares_fields == JSON_FENCED_FIELDS
+
+    — because the fragment then spelled the list out ("Each object must have:
+    severity, category, ... recommendation"). 4.4 removed the list from that
+    sentence, so the same rule now demands the opposite declaration, and the
+    test asserts the second direction on the same fragment plus the first on
+    `generate/field_contract`, the author the list moved to. Both fragments are
+    still checked; neither is exempted.
     """
-    frag = get("generate/json_fenced")
-    for name in JSON_FENCED_FIELDS:
-        assert name in frag.text, name
-    assert frag.declares_fields == JSON_FENCED_FIELDS
+    fenced = get("generate/json_fenced")
+    assert fenced.declares_fields == ()
+    for name in CONTRACT_FIELDS:
+        assert name not in fenced.text, f"json_fenced still names {name!r}"
+
+    contract = get("generate/field_contract")
+    assert contract.declares_fields == CONTRACT_FIELDS
+    for name in CONTRACT_FIELDS:
+        assert name in contract.text, name
 
 
-# The two agents whose own domain instructions add a third field list.
+# The two agents whose own domain instructions add a second field list.
 OWN_REPORTING_FORMAT = frozenset({"cwe", "asvs"})
-SHARED_CONTRACT = frozenset({"generate/field_contract", "generate/json_fenced"})
 
 
-def _assert_shared_contract_twice(agent: str) -> None:
-    findings = _lint(agent)
-    declaring = set(_fragments_for(findings, "duplicate_contract"))
-    assert "duplicate_contract" in _checks(findings), agent
-    assert SHARED_CONTRACT <= declaring, agent
-    expected = 3 if agent in OWN_REPORTING_FORMAT else 2
-    assert len(declaring) == expected, (agent, declaring)
+def _assert_contract_declared_once(agent: str) -> None:
+    declaring = set(_fragments_for(_lint(agent), "duplicate_contract"))
+    if agent in OWN_REPORTING_FORMAT:
+        assert declaring == {"generate/field_contract", f"domains/{agent}"}, agent
+    else:
+        assert declaring == set(), agent
 
 
-def test_duplicate_contract_fires_on_every_generate_spec():
-    """The shared eight-field contract is stated TWICE in all seven renders.
+def test_duplicate_contract_fires_only_where_a_domain_ships_its_own():
+    """The tier's own duplication is gone; the identity's is what remains.
 
-    `generate/field_contract` states it in the user turn and
-    `generate/json_fenced` states it again in the system turn. That is true of
-    every agent, so the finding is tier-wide — not a cwe/asvs peculiarity
-    caused by those two agents shipping their own "## Reporting Format" block.
+    BEFORE feature 0089 item 4.4 this test was
+    `test_duplicate_contract_fires_on_every_generate_spec`, and it asserted the
+    opposite: that the eight-field contract was stated TWICE in ALL SEVEN
+    renders (three times for cwe and asvs), because `generate/field_contract`
+    stated it in the user turn and `generate/json_fenced` stated it again in
+    the system turn. Its docstring called that "tier-wide — not a cwe/asvs
+    peculiarity". 4.4 made it exactly that peculiarity: `generate/json_fenced`
+    no longer declares a list, so five renders declare it once and only the two
+    agents whose `domains/` fragment carries a "## Reporting Format" block
+    still declare it twice.
+
+    Inverted rather than deleted, so the finding cannot come back unnoticed:
+    add a second declaring fragment to any of the five and this fails.
     """
     for agent in sorted(SEVEN_AGENTS):
-        _assert_shared_contract_twice(agent)
+        _assert_contract_declared_once(agent)
 
 
 def test_quote_obligation_field_is_in_the_schema():

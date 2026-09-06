@@ -1,13 +1,18 @@
 """Feature 0089 Phase 1 — ASSEMBLED byte parity for the DISCOVER tier.
 
-`test_0089_manifest_discover.py` already pins the TEMPLATE: the fragment text
-equals `_LLM_DISCOVER_PROMPT` byte for byte. That is necessary and not
+`test_0089_manifest_discover.py` already pins the TEMPLATES: each fragment's
+text equals its production literal byte for byte. That is necessary and not
 sufficient. What the shipping plugin actually sends is the template *after*
-interpolation — `_LLM_DISCOVER_PROMPT.format(technologies=..., forms=..., ...)`
-at `discover_agent/plugins/llm_suggest.py:85-104`, wrapped in
-`messages=[{"role": "user", ...}]` at :110-113. Phase 2 can only swap the call
-site for `render()` if the ASSEMBLED bytes agree, so that is what is compared
-here.
+interpolation, wrapped in chat turns, so that is what is compared here.
+
+PHASE 4.6 moved two things under this file. The call site renders in
+`Mode.ADAPT` and the spec declares a system fragment, so the envelope is two
+turns where the model has a system role — the assertions that read
+`len(live_messages) == 1` and `rp.instructions == ""` were pinning the
+transcription and now pin the split. And the expected side renders with
+`profile_for()`, the same resolution the plugin performs, because under ADAPT
+the profile decides placement: a hardcoded model here could disagree with the
+one production resolves and report that as drift.
 
 The live side is not re-implemented: the real `LLMEndpointPlugin.discover()`
 runs against a fixture `SiteMap` with `litellm.acompletion` replaced by a
@@ -32,11 +37,11 @@ import difflib
 import types
 
 import litellm
+
 from discover_agent.plugins.llm_suggest import (
     LLMEndpointPlugin,
     _build_framework_hints,
 )
-
 from shared.discovery.plugin_base import DiscoveryContext
 from shared.discovery.sitemap import SiteMap
 from shared.prompt import Mode, profile_for, render
@@ -116,19 +121,23 @@ def _diff(rendered: str, live: str) -> str:
 
 def test_parity_discover(monkeypatch):
     """The assembled DISCOVER prompt matches the live builder, byte for byte."""
+    profile = profile_for()
     live_messages = _live_messages(monkeypatch)
     rp = render(dataclasses.replace(DISCOVER_SUGGEST, variables=_vars()),
-                profile_for("gpt-4o"), mode=Mode.TRANSCRIBE)
+                profile, mode=Mode.ADAPT)
 
-    # Envelope: the plugin sends one user turn and no system turn at all.
+    # Envelope. BEFORE 4.6 this read `len(live_messages) == 1`, `role ==
+    # "user"` and `rp.instructions == ""`: the transcription declared no system
+    # fragment, so the plugin sent one turn. It now sends two where the model
+    # has a system role, and one — everything folded — where it does not.
+    #
     # NOT compared: the live request also carries `model`, `timeout` and
-    # `response_format={"type": "json_object"}` (llm_suggest.py:106-115), and
-    # TRANSCRIBE returns `response_format=None` by construction
-    # (render.py:129). That half of the envelope becomes comparable only under
-    # ADAPT, so asserting it here would fail for a reason that is not drift.
-    assert len(live_messages) == 1
-    assert live_messages[0]["role"] == "user"
-    assert rp.instructions == ""
+    # `response_format`, which the call site derives from
+    # `uses_custom_endpoint()` rather than from the render.
+    expected_roles = ["system", "user"] if profile.system_role else ["user"]
+    assert [m["role"] for m in live_messages] == expected_roles
+    assert bool(rp.instructions) is profile.system_role
 
-    assert rp.user == live_messages[0]["content"], _diff(rp.user, live_messages[0]["content"])
+    live_user = next(m for m in live_messages if m["role"] == "user")["content"]
+    assert rp.user == live_user, _diff(rp.user, live_user)
     assert rp.messages == live_messages

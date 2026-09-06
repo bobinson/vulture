@@ -42,7 +42,7 @@ _PLAN_PROMPT = """You are a NIST SSDF v1.1 compliance auditor. Given this SSDF f
 RULES:
 1. Use the discovered site map below to pick REAL URLs that exist on the target.
 2. Do NOT use "/" as the url_path — pick a specific endpoint.
-3. NEVER target static files (.js, .css, .png, .svg, .woff, .map files).
+3. NEVER target static files (.js, .css, .png, .svg, .woff, .map files) or build artifacts (_next/static/*, _buildManifest.js, etc.). These are NOT API endpoints.
 4. PREFER API endpoints (/api/*, /v1/*, /graphql), form actions, and backend routes.
 5. Each attempt MUST target a DIFFERENT endpoint or check a different aspect.
 6. For PO.5/PW.9: check response headers (HSTS, CSP, X-Frame-Options), probe debug endpoints.
@@ -55,13 +55,15 @@ Finding: {title}
 Category: {category}
 Description: {description}
 File: {file_path}:{line_start}
+Code: {code_snippet}
+Hints: {verification_hints}
 Staging URL: {staging_url}
 Attempt: {iteration}
 {prior_context}
 {site_context}
 
 Reply with ONLY a JSON object (no markdown, no explanation):
-{{"description":"what this tests","method":"GET or POST","url_path":"/real-path","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
+{{"description":"what this tests","method":"GET or POST","url_path":"/api/users","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
 
 _REFLECT_PROMPT = """You are a NIST SSDF v1.1 compliance auditor reflecting on failed verification attempts.
 
@@ -97,6 +99,8 @@ class SsdfStrategy(BaseStrategy):
         prior_context = build_prior_context(
             prior_attempts, reflection, cross_learnings,
         )
+        hints = finding.get("verification_hints", [])
+        hints_str = ", ".join(hints) if hints else "None"
         result = await llm_json_call(
             render_prove_prompt(
                 "prove/plan", PROVE_PLAN_DOMAIN["ssdf"],
@@ -105,6 +109,8 @@ class SsdfStrategy(BaseStrategy):
                 description=finding.get("description", ""),
                 file_path=finding.get("file_path", ""),
                 line_start=finding.get("line_start", 0),
+                code_snippet=finding.get("code_snippet", ""),
+                verification_hints=hints_str,
                 staging_url=staging_url,
                 iteration=iteration,
                 site_context=ctx,

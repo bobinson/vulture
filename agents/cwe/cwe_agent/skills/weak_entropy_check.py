@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._args import arg_slot, split_call_args
 from shared.tools.file_scanner import (
     is_generated_file,
     is_prose_file,
@@ -39,9 +42,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
-
-from cwe_agent.catalog import enrich_finding
-from cwe_agent.skills._args import arg_slot, split_call_args
 
 # Assignment anchor that binds a weak-RNG call to a target identifier.
 _ASSIGN = re.compile(

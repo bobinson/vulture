@@ -11,12 +11,12 @@ interpolate a raw HTTP body with no MARKS_UNTRUSTED marker.
 from __future__ import annotations
 
 from _format_pin import as_fragment_text
+
 from prove_agent.llm_helper import _RETRY_GUIDANCE, _SYSTEM_MSG
 from prove_agent.protocols.jsonrpc_executor import _ANALYZE_PROMPT as RPC_ANALYZE
 from prove_agent.protocols.ws_executor import _ANALYZE_PROMPT as WS_ANALYZE
 from prove_agent.strategies import chaos, cwe, owasp, soc2, ssdf
 from prove_agent.strategies.shared import _ANALYZE_PROMPT as HTTP_ANALYZE
-
 from shared.prompt import Mode, Stance, lint, profile_for, registry, render
 from shared.prompt.manifests import MANIFESTS
 from shared.prompt.manifests.prove_analyze import PROVE_ANALYZE
@@ -56,10 +56,13 @@ def test_prove_fragments_are_byte_exact():
 
 
 def test_manifest_prove_renders_all_five_strategies():
+    """ADAPT as of item 4.8: `_SYSTEM_MSG` is an ADAPT render, and the two
+    modes stopped agreeing when `core/language` joined this tier's system
+    turn (rule 9 drops it for `gpt-4o`; TRANSCRIBE keeps it)."""
     prof = profile_for("gpt-4o")
     assert set(PROVE_PLANS) == {"cwe", "owasp", "soc2", "ssdf", "chaos"}
     for name, spec in PROVE_PLANS.items():
-        rp = render(spec, prof, mode=Mode.TRANSCRIBE)
+        rp = render(spec, prof, mode=Mode.ADAPT)
         # The USER turn, and as bytes: live sends the prompt as the user
         # message beside a separate `_SYSTEM_MSG`. This read `in rp.instructions`
         # before the placement was corrected — wrong turn, and a substring where
@@ -81,11 +84,16 @@ def test_manifest_prove_renders_all_five_strategies():
 
 def test_lint_surfaces_prove_blockers():
     prof = profile_for("gpt-4o")
-    # cwe's plan tells the model to emit `filename`, a field no schema has.
+    # Item 4.5 widened the plan schema to the full ProofPlan, so cwe's
+    # `filename` instruction (rule 8, file upload) is no longer an orphan_field.
+    # BEFORE 4.5 this asserted `any("filename" in f.message for f in orphans)` —
+    # `filename` declared on the fragment but absent from `_PLAN_SCHEMA`. 4.5
+    # added it (with protocol/rpc_method/rpc_params), so the orphan is now GONE.
     cwe_spec = PROVE_PLANS["cwe"]
     rp = render(cwe_spec, prof, mode=Mode.TRANSCRIBE)
     orphans = [f for f in lint(cwe_spec, rp) if f.check == "orphan_field"]
-    assert any("filename" in f.message for f in orphans)
+    assert orphans == [], orphans
+    assert "filename" in cwe_spec.schema_fields
     # slot_marking is silent ONLY because slots are empty at this phase; the
     # real gap is that no analyze fragment MARKS_UNTRUSTED the raw HTTP body.
     for spec in PROVE_ANALYZE.values():

@@ -4,65 +4,33 @@ Five per-strategy plan prompts, kept as separate specs. They are 66-75%
 similar; Phase 2.6 will collapse them. Unifying now would break Phase 1 parity,
 so this phase transcribes each byte-for-byte.
 
-`schema_fields` is the real ProofPlan contract each exemplar emits. cwe's plan
-additionally instructs the model to emit `filename` (rule 8, file upload),
-which no schema has — declared on the fragment so promptlint reports it as an
-`orphan_field` ("unfielded instruction").
+`schema_fields` is the real ProofPlan contract each exemplar emits. Item 4.5
+widened it to the full ProofPlan — `filename` (rule 8, file upload) plus the
+protocol fields `protocol` / `rpc_method` / `rpc_params` — so cwe's `filename`
+instruction is no longer an `orphan_field`.
 """
 
 from __future__ import annotations
 
-from ..backlog import LANGUAGE_PIN, OWNER
-from ..lint import LintAllow
 from ..spec import PromptSpec
 
 _PLAN_SCHEMA = ("description", "method", "url_path", "headers", "body",
-                "expected_indicators")
+                "expected_indicators", "filename", "protocol",
+                "rpc_method", "rpc_params")
 
 _STRATEGIES = ("cwe", "owasp", "soc2", "ssdf", "chaos")
 
-# The one exemption in this file that is a true positive of exactly the class
-# `check_09` is named for: the executor SENDS `url_path`, so an exemplar that
-# teaches `/real-path` teaches a request to a path that does not exist.
-_ECHO_REASON = (
-    "Phase 4.5 — the plan exemplar teaches `url_path: \"/real-path\"` (and, on "
-    "cwe, `body: \"payload if POST\"`), and the prove executor sends `url_path` "
-    "as a real HTTP request, so a model that copies the exemplar probes a path "
-    "that does not exist. This is the defect class `check_09` is named for, "
-    "not a reporting artefact."
-)
-
-
-def _plan_allow(name: str) -> tuple[LintAllow, ...]:
-    return (
-        LintAllow("language_pin", f"prove_plan_{name}", owner=OWNER,
-                  reason=LANGUAGE_PIN),
-        LintAllow("placeholder_echo", f"prove/plan_{name}", owner=OWNER,
-                  reason=_ECHO_REASON),
-    )
-
-
-# cwe's plan alone instructs the model to emit `filename` (rule 8, file
-# upload), which `_PLAN_SCHEMA` does not have.
-_CWE_ALLOW: tuple[LintAllow, ...] = (
-    LintAllow(
-        "orphan_field", "prove/plan_cwe", owner=OWNER,
-        reason="Phase 4.5 — `prove/plan_cwe` instructs the model to emit "
-               "`filename`, which is not in `_PLAN_SCHEMA`, so the field is "
-               "dropped on parse and the file-upload probe it describes cannot "
-               "be built. 4.5 either adds the field to the ProofPlan contract "
-               "or removes the instruction.",
-    ),
-)
-
+# No `allow` left on this family. Item 4.8 retired the last one — a
+# `language_pin` entry per strategy, five of the eighteen — by listing
+# `core/language`, so `_plan_allow` is gone rather than left returning `()`.
 PROVE_PLANS: dict[str, PromptSpec] = {
     name: PromptSpec(
         id=f"prove_plan_{name}",
         tier="prove",
-        fragments=("prove/system",),
+        version=3,  # 4.5: prove/system reworded. 4.8: core/language
+        fragments=("prove/system", "core/language"),
         user_fragments=(f"prove/plan_{name}",),
         schema_fields=_PLAN_SCHEMA,
-        allow=_plan_allow(name) + (_CWE_ALLOW if name == "cwe" else ()),
     )
     for name in _STRATEGIES
 }
@@ -90,8 +58,9 @@ for _name, _spec in PROVE_PLANS.items():
 #
 # `prove/plan` is deliberately NOT its own manifest spec: the per-strategy specs
 # already carry this family's golden + lint coverage, and a second manifest would
-# only duplicate their `/real-path` placeholder_echo and language_pin backlog
-# entries under a new id (raising the Phase-3 allow ceiling for no new coverage).
+# only duplicate this family's golden and lint coverage under a new id (it had a
+# `/real-path` placeholder_echo and a language_pin entry to duplicate until 4.5
+# and 4.8 retired both).
 # The collapsed template is pinned instead — more strongly than a self-
 # referential golden — by `test_0089_parity_prove_collapse.py`, which renders it
 # with each strategy's slots and asserts byte equality against that strategy's
@@ -122,7 +91,7 @@ PROVE_PLAN_DOMAIN: dict[str, dict[str, str]] = {
             "8. For file upload: target upload endpoints with malicious filenames.",
         )),
         "evidence_block": "Code: {code_snippet}\nHints: {verification_hints}\n",
-        "body_example": "payload if POST",
+        "body_example": "1' OR '1'='1",
     },
     "owasp": {
         "persona": "You are a security tester. Given this OWASP finding, create an HTTP request to verify it against a staging server.",
@@ -149,14 +118,14 @@ PROVE_PLAN_DOMAIN: dict[str, dict[str, str]] = {
             "7. For access control: try accessing protected pages without auth.",
             "8. For config exposure: check settings pages, env endpoints, health checks.",
         )),
-        "evidence_block": "",
+        "evidence_block": "Code: {code_snippet}\nHints: {verification_hints}\n",
         "body_example": "",
     },
     "ssdf": {
         "persona": "You are a NIST SSDF v1.1 compliance auditor. Given this SSDF finding, create an HTTP request to verify the compliance gap on the staging server.",
         "domain_rules": "\n".join((
             '2. Do NOT use "/" as the url_path — pick a specific endpoint.',
-            "3. NEVER target static files (.js, .css, .png, .svg, .woff, .map files).",
+            "3. NEVER target static files (.js, .css, .png, .svg, .woff, .map files) or build artifacts (_next/static/*, _buildManifest.js, etc.). These are NOT API endpoints.",
             "4. PREFER API endpoints (/api/*, /v1/*, /graphql), form actions, and backend routes.",
             "5. Each attempt MUST target a DIFFERENT endpoint or check a different aspect.",
             "6. For PO.5/PW.9: check response headers (HSTS, CSP, X-Frame-Options), probe debug endpoints.",
@@ -165,7 +134,7 @@ PROVE_PLAN_DOMAIN: dict[str, dict[str, str]] = {
             "9. For PW.9: probe default credentials, debug endpoints (/debug/, /admin/).",
             "10. For PO.1/PS.2: check for /.well-known/security.txt, /security.txt.",
         )),
-        "evidence_block": "",
+        "evidence_block": "Code: {code_snippet}\nHints: {verification_hints}\n",
         "body_example": "",
     },
     "chaos": {
@@ -179,7 +148,7 @@ PROVE_PLAN_DOMAIN: dict[str, dict[str, str]] = {
             "7. For missing retries: target endpoints that call external services.",
             "8. For missing fallbacks: test degraded mode behavior.",
         )),
-        "evidence_block": "",
+        "evidence_block": "Code: {code_snippet}\nHints: {verification_hints}\n",
         "body_example": "",
     },
 }

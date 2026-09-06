@@ -10,6 +10,7 @@ import logging
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
 
+from discover_agent.learning_store import record_known_404, record_reachable_endpoint
 from shared.discovery.helpers import (
     COMMON_PATHS,
     extract_forms,
@@ -25,8 +26,6 @@ from shared.discovery.plugin_base import (
     register_plugin,
 )
 from shared.discovery.sitemap import SiteMap
-
-from discover_agent.learning_store import record_known_404, record_reachable_endpoint
 
 logger = logging.getLogger(__name__)
 

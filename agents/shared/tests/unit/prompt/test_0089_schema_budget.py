@@ -64,14 +64,22 @@ class TestOutputSchema:
 
     def test_verdict_schema_is_the_judge_shape(self):
         """`_coerce_verdict` rebuilds a whitelisted dict; this is that whitelist."""
+        # `evidence_file` joined the set in feature 0089 item 4.2. BEFORE it
+        # the shape was the five names below without it, and `evidence_line`
+        # was defined in two coordinate spaces (the system prompt said "from
+        # the numbered snippet", the tool contract said "in the file you read
+        # it from"). The line is now always the file's own numbering and this
+        # field says which file.
         assert VERDICT_SCHEMA.field_names() == frozenset({
-            "id", "exploitable", "window_sufficient", "evidence_line", "reasoning",
+            "id", "exploitable", "window_sufficient", "evidence_line",
+            "evidence_file", "reasoning",
         })
         props = VERDICT_SCHEMA.as_json_schema()["schema"]["properties"][
             VERDICT_SCHEMA.array_key]["items"]["properties"]
         assert props["exploitable"]["type"] == "number"
         assert props["window_sufficient"]["type"] == "boolean"
         assert props["evidence_line"]["type"] == "integer"
+        assert props["evidence_file"]["type"] == "string"
 
     def test_lint_reads_field_names(self):
         """check_01_orphan_field's `spec.schema_fields` is fed from here."""
@@ -144,8 +152,8 @@ class TestProseContractIsReproducible:
 
     * ``_field_contract()`` names the eight required fields and appends the
       quote as a SEPARATE, ``_quote_required()``-GATED obligation sentence.
-    * the unstructured branch (``audit_runner.py:3295``) names the same eight
-      as a plain comma list.
+    * the unstructured branch named the same eight as a plain comma list —
+      until feature 0089 item 4.4. See ``COPY_B`` below.
 
     ``evidence_quote`` is therefore not a member of either sentence's list.
     Folding it in changes policy as well as bytes: it asks for the quote even
@@ -154,13 +162,30 @@ class TestProseContractIsReproducible:
     bare field name. These tests pin the rendering Phase 1 can actually use.
     """
 
-    # Transcribed byte-exactly from audit_runner.py:3294-3296. The test below
-    # asserts this string is still present in the source, so it cannot drift
-    # silently into a stale copy of the sentence it is standing in for.
+    # The unstructured branch's sentence, transcribed byte-exactly from
+    # `_reference_augmented_instructions`. The test below asserts this string is
+    # still present in the source, so it cannot drift silently into a stale copy
+    # of the sentence it is standing in for.
+    #
+    # ITEM 4.4 REWROTE IT, and the change is why this comment is longer than the
+    # string. BEFORE:
+    #
+    #     "IMPORTANT: Return findings as a JSON array. Each object must have: "
+    #     "severity, category, title, description, file_path, line_start, "
+    #     "line_end, recommendation. Wrap the array in ```json ... ``` fences."
+    #
+    # That sentence was the SECOND author of the eight-field list — the first
+    # being `_field_contract()` in the user turn — which is the duplication
+    # `_quote_contract_suffix`'s docstring described as "one policy written
+    # twice, in two places that are edited independently". 4.4 left the field
+    # list with one author and reduced this sentence to the wire shape, so it
+    # names no field at all. `test_prose_rendering_is_byte_exact_in_the_shipped_
+    # sentence` below moved with it, for the same reason: the eight-name list is
+    # no longer a substring of copy B, because copy B no longer contains a list.
     COPY_B = (
-        "IMPORTANT: Return findings as a JSON array. Each object must have: "
-        "severity, category, title, description, file_path, line_start, line_end, recommendation. "
-        "Wrap the array in ```json ... ``` fences."
+        "IMPORTANT: Return findings as a JSON array - one object per finding, "
+        "carrying exactly the fields the task asks for and no others. "
+        "Wrap the array in a ```json fenced block and write nothing outside the fences."
     )
 
     @staticmethod
@@ -181,8 +206,26 @@ class TestProseContractIsReproducible:
 
         A rendering that is merely 'about right' cannot transcribe; one
         character of drift is a different prompt.
+
+        BEFORE feature 0089 item 4.4 this read
+        ``assert FINDING_SCHEMA.as_required_field_list() in self.COPY_B``:
+        the unstructured branch spelled the eight names as a plain comma list,
+        so the schema's rendering was a verbatim substring of a shipped
+        sentence. 4.4 left the field list with exactly one author and reduced
+        ``COPY_B`` to the wire shape, so no shipped sentence contains the bare
+        comma list any more — the surviving one, ``_field_contract()``, writes
+        an Oxford "and" before the last name.
+
+        The claim therefore moves rather than relaxes: the shipped sentence
+        must be the schema's rendering with exactly that one substitution, and
+        the second assertion pins the loss so the old form cannot creep back as
+        a third author. One character of drift in either still fails.
         """
-        assert FINDING_SCHEMA.as_required_field_list() in self.COPY_B
+        listed = FINDING_SCHEMA.as_required_field_list()
+        head, _, last = listed.rpartition(", ")
+        sentence = " ".join(" ".join(audit_runner._field_contract()[:2]).split())
+        assert f"provide {head}, and {last}." in sentence
+        assert listed not in self.COPY_B
 
     def test_prose_rendering_matches_field_contract_order(self):
         """`_field_contract()`'s own sentence names the same eight, in order."""

@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -17,8 +19,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
-
-from cwe_agent.catalog import enrich_finding
 
 MEMORY_EXTENSIONS = frozenset({".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".go", ".rs"})
 

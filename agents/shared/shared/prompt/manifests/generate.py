@@ -4,59 +4,67 @@ One spec per agent that HAS an LLM generate path. There are seven: `owasp` is
 absent because it is a categorizer over the CWE agent's findings with no LLM
 path and no instructions to transcribe (feature 0063).
 
-Assembly order is `_collect_llm_findings_async`'s, not a tidier one:
+ITEM 4.4 IS WHERE THIS TIER STOPPED BEING A TRANSCRIPTION. Phases 0-3 held the
+bytes still; 4.4 flips both of the tier's call sites to `Mode.ADAPT` and adds
+four sentences the prompt never had. Assembly is now:
 
-  SYSTEM  domains/<agent>          the agent's identity (Phase 2.5: rendered
-                                   from this fragment at the agent's own call
-                                   site; before it, the agent's INSTRUCTIONS)
-          generate/vocab_category  += _category_vocabulary_suffix(...)
-          generate/json_fenced     += the unstructured fence block
-  USER    generate/field_contract  _build_llm_prompt: *_field_contract()
-          generate/quote_obligation                   ... + the 0076 obligation
-          generate/source_inline                      ... + the source tail
+  SYSTEM  domains/<agent>              the agent's identity (Phase 2.5:
+                                       rendered at the agent's own call site)
+          core/untrusted               the by-channel distrust policy (4.3)
+          generate/source_presentation the `--- path ---` / `NN: ` contract
+          generate/evidence_discipline what the shown bytes may support
+          generate/tool_trigger        when to call a tool, and the budget
+          generate/vocab_category      the agent's per-run category enum
+          generate/vocab_severity      the closed severity set
+          core/language                output language (4.8, BINDS_LANGUAGE)
+          generate/json_fenced         the wire shape (REQUIRES_FENCE)
+  USER    generate/task
+          generate/field_contract      the eight field names — ONE author now
+          generate/quote_obligation    the 0076 obligation, stated once
+          generate/source_inline       the packed source listing
 
 Three branches of the live builder are deliberately NOT in these specs, and
-each is a Phase 2 renderer decision rather than a call-site one:
+each is a renderer decision rather than a call-site one:
 
 * `generate/source_in_system` — the anthropic-only path that moves the source
   body into the system message for prompt caching. Whether source belongs in
   the system turn is `ModelProfile`, not agent identity.
 * `generate/source_in_system_ref` — the user-turn pointer that path substitutes
   for the source body.
-* `generate/tools_only` — reached only when the source context is EMPTY, and
-  the sole sentence in the whole tier that permits tool use. Three file tools
-  are attached on every call regardless, so `check_11_tool_announcement` fires
-  on all seven specs. That finding is the point; it is not fixed by listing an
-  unreachable fragment here.
+* `generate/tools_only` — reached only when the source context is EMPTY. Until
+  4.4 it was the sole sentence in the whole tier that permitted tool use, while
+  three file tools were attached on EVERY call, so `check_11_tool_announcement`
+  fired on all seven specs. `generate/tool_trigger` is the fix: it is on every
+  branch, so the permission is stated wherever the tools are attached.
 
-`generate/field_contract` and `generate/json_fenced` BOTH declare the eight
-field names, so `check_02_duplicate_contract` fires on all seven specs, not
-just on the two agents that ship their own "## Reporting Format" block. That is
-not an artefact of the fragment boundary: the two are separate sentences in
-separate roles, appended by separate branches, and
-`audit_runner._quote_contract_suffix`'s own docstring calls them "one policy
-written twice, in two places that are edited independently". Contrast
-`generate/quote_obligation`, which names `evidence_quote` and deliberately does
-NOT declare it — it and `generate/field_contract` are two halves of the single
-list `_field_contract()` returns, so declaring both would manufacture a
-duplication that does not exist in the prompt.
+WHAT 4.4 RESOLVED, AND WHAT IT DID NOT. The eight-field contract had two
+authors — `generate/field_contract` in the user turn and `generate/json_fenced`
+in the system turn, which `audit_runner._quote_contract_suffix`'s docstring
+called "one policy written twice, in two places that are edited independently".
+`generate/json_fenced` now states the WIRE SHAPE only and declares no fields,
+so five of the seven renders declare the list exactly once. cwe and asvs still
+declare it twice because their `domains/` fragment carries a "## Reporting
+Format" block of its own; that half belongs to the agent identity, not to this
+tier, and is annotated (`_own_field_list_allow`).
 
-One live placement is still untranscribed: `_quote_contract_suffix()` appends
-the SAME obligation sentence to the SYSTEM turn in the unstructured branch, so
-that sentence really occupies both roles. These specs carry only the user-turn
-copy, which means the tier's transcription under-reports the quote sentence's
-duplication even now that the field list's is visible. `Role.SYSTEM_USER_MIRROR`
-is the mechanism for it; wiring it is a Phase 2 renderer decision.
+The quote obligation had the same shape and a worse symptom: `_field_contract()`
+emitted it in the user turn and `_quote_contract_suffix()` again in the system
+turn, but only on the unstructured branch — so a structured-output model saw it
+once and an LM Studio / Gemini model twice, a count that turned on a capability
+with nothing to do with evidence. It is now stated once, in the user turn, for
+every profile, and `_quote_contract_suffix()` is gone from `audit_runner`.
 
-`generate/json_fenced` IS listed even though the live builder appends it only
+`generate/json_fenced` IS listed even though the live builder appended it only
 when `supports_structured_output` is false: it carries `REQUIRES_FENCE`, and
 `render`'s ADAPT rule 4+5 drops it for a profile whose API can enforce the
-shape. Which is the whole reason the stance exists.
+shape. Which is the whole reason the stance exists — and why the call site
+renders against a profile whose `structured` reflects THIS endpoint, not just
+the model family (see `audit_runner._generate_rendered`).
 """
 
 from __future__ import annotations
 
-from ..backlog import LANGUAGE_PIN, OWNER
+from ..backlog import OWNER
 from ..lint import LintAllow
 from ..profile import profile_for
 from ..render import Mode, render
@@ -74,11 +82,13 @@ _SCHEMA_FIELDS: tuple[str, ...] = (
 )
 
 # `severity` has a closed vocabulary (`_SEVERITY_WEIGHTS` / `_SEVERITY_ALIASES`
-# in audit_runner) that NO fragment in this tier states — every out-of-set
-# value is silently coerced to `info` after the fact. Declared here so
-# `check_04_vocab_closure` reports the gap rather than the gap staying
-# invisible. `category` is deliberately absent: `generate/vocab_category`
-# does state it, per run, from the agent's declared enum.
+# in audit_runner) and every out-of-set value is coerced to `info` after the
+# fact by `normalize_severity`. Phase 0.c declared it here with NO binding
+# fragment on purpose, so `check_04_vocab_closure` would report that the prompt
+# never stated the set; item 4.4 adds `generate/vocab_severity`, which binds it
+# in the front matter, so the check now passes and that annotation is retired.
+# `category` is deliberately absent: `generate/vocab_category` states it per
+# run, from the agent's declared enum.
 _VOCABULARY: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("severity", ("critical", "high", "medium", "low", "info")),
 )
@@ -86,15 +96,63 @@ _VOCABULARY: tuple[tuple[str, tuple[str, ...]], ...] = (
 # Attached on EVERY generate call, confined to the audit source root.
 _TOOLS: tuple[str, ...] = ("read_file", "list_files", "search_pattern")
 
-# `generate/quote_obligation` is listed in BOTH turns because the live builder
-# emits it twice per call: once in the user turn via `_field_contract()` and
-# again in the system turn via `_quote_contract_suffix()`. Note the system copy
-# exists ONLY on the unstructured branch, so a structured-output model sees the
-# sentence once and an LM Studio / Gemini model sees it twice. That asymmetry is
-# a Phase 4 question; Phase 1 reproduces it.
+# The system turn, in the order the model reads it: the distrust policy governs
+# everything after it; the presentation contract says how to read the listing;
+# evidence discipline says what may be reported from it; the tool trigger says
+# when to look past it; the two vocabularies close the enum fields; `core/
+# language` closes the free-text ones (item 4.8); the wire shape comes last and
+# is dropped for a profile whose API can enforce it.
+#
+# `core/language` sits with the vocabularies and not at the end because it is
+# the third field-level constraint, not part of the wire shape: `vocab_category`
+# and `vocab_severity` close the two enum fields, and it closes `title`,
+# `description` and `recommendation`. It is also the one section of this turn
+# whose presence depends on the model rather than on the run — rule 9 drops it
+# for the six families that do not drift — so putting it before
+# `generate/json_fenced`, which rule 4+5 already drops per profile, keeps both
+# conditional sections adjacent instead of straddling the contract.
+#
+# `generate/quote_obligation` is NOT here as of item 4.4. Until then it was
+# listed in BOTH turns, because the live builder emitted it twice per call —
+# once in the user turn via `_field_contract()` and again in the system turn via
+# `_quote_contract_suffix()`, the second only on the unstructured branch, so a
+# structured-output model saw the sentence once and an LM Studio / Gemini model
+# twice. It is now stated exactly once, in the USER turn: that is the turn no
+# gateway drops, so single placement buys the protection `SYSTEM+USER_MIRROR`
+# existed to buy by duplication. A mirror listing could not have served — ADAPT
+# prepends a mirrored fragment to the user turn WITHOUT removing it from the
+# system turn, so a fragment listed in both turns AND mirrored renders three
+# times.
 _SYSTEM_SUFFIX: tuple[str, ...] = (
-    "generate/vocab_category", "generate/json_fenced", "generate/quote_obligation",
+    "core/untrusted",
+    "generate/source_presentation",
+    "generate/evidence_discipline",
+    "generate/tool_trigger",
+    "generate/vocab_category",
+    "generate/vocab_severity",
+    "core/language",
+    "generate/json_fenced",
 )
+
+# The channels this tier feeds. SOURCE is the packed `--- rel ---` file blocks
+# `generate/source_inline` (or `generate/source_in_system`) carries; TOOL is
+# whatever the three file tools above return. Item 4.3 added both, and the
+# marking they get is the by-channel DISTRUST statement, not a nonce delimiter:
+# the source blocks are still delimited by `--- rel ---`, which is
+# attacker-influenced (it is built from a filename) and is simultaneously a
+# production parser boundary (`_FILE_BLOCK_HEADER_RE`). Item 4.4 added
+# `generate/source_presentation`, which DESCRIBES that delimiter to the model
+# so a claimed `file_path` and `line_start` can be read off it — it does not
+# convert the source to a nonce-wrapped `Slot`. That conversion stays open: a
+# Slot moves the source body inside `<<<SOURCE:TOKEN` markers minted per
+# render, and this tier renders its two turns from two SEPARATE renders, so it
+# needs a shared nonce before it can have a shared marker. What 4.3 fixes is
+# that the tier had no untrusted
+# fragment AT ALL: raw repository source was inlined with zero marking
+# (`audit_runner.py:3038`, 0089 LLD §9.2) and nothing told the model that the
+# bytes between the dashes were data.
+_CHANNELS: tuple[str, ...] = ("SOURCE", "TOOL")
+
 _USER_TURN: tuple[str, ...] = (
     "generate/task", "generate/field_contract", "generate/quote_obligation",
     "generate/source_inline",
@@ -103,75 +161,62 @@ _USER_TURN: tuple[str, ...] = (
 
 # ── promptlint exemptions (Phase 3 gate) ──────────────────────────────────
 #
-# Everything the tier trips is a transcription of what the live builder emits
-# today, so all of it is annotated rather than fixed here: Phase 1 recorded the
-# "before" and changing a fragment now would erase it. Each entry names the
-# Phase 4 item that owns the fix.
+# ITEM 4.8 EMPTIED THE TIER-WIDE BUILDER, so the builder is gone with it. Every
+# GENERATE spec carried exactly one exemption in common — `language_pin`,
+# because no fragment in the library declared `BINDS_LANGUAGE` at all — and
+# `core/language` in `_SYSTEM_SUFFIX` above retires all seven of those at once.
+# Five agents therefore carry NO annotation now (`allow=()` is written out at
+# each of them rather than left to a helper that returns an empty tuple: an
+# empty exemption list is a fact about that spec, and a call returning `()`
+# reads as a list somebody forgot to fill).
 #
-# `language_pin` and `tool_announcement` key on the SPEC id (their findings
-# report `spec.id`, not a fragment), so they cannot live in a flat shared tuple
-# — hence the builder.
+# cwe and asvs keep only what their own `domains/` fragment causes.
+#
+# Item 4.4 retired five more before 4.8, and each was retired by the prompt
+# change the entry named rather than by deleting the entry:
+#
+#   * `tool_announcement` — `generate/tool_trigger` is on every branch now, so
+#     the three file tools attached to every call are positively permitted by a
+#     sentence the model is actually shown.
+#   * `vocab_closure` — `generate/vocab_severity` binds the closed set, which
+#     needed `parse_fragment` to start reading a `binds_vocabulary:` key at all
+#     (it hardcoded `()` before, so no fragment on disk could close one).
+#   * `duplicate_contract` on `generate/json_fenced` — that fragment states the
+#     wire shape and no longer enumerates the eight field names.
+#   * `duplicate_contract` on `generate/field_contract` — retired for the five
+#     agents whose domain fragment ships no field list of its own.
+#   * `placeholder_echo` on `generate/json_fenced` — the fence-syntax
+#     illustration lost the ellipsis `check_09` reported.
 
-def _tier_allow(spec_id: str) -> tuple[LintAllow, ...]:
-    """The six exemptions every GENERATE spec carries."""
-    return (
-        LintAllow("language_pin", spec_id, owner=OWNER, reason=LANGUAGE_PIN),
-        LintAllow(
-            "tool_announcement", spec_id, owner=OWNER,
-            reason="Phase 4.4 — `generate/tools_only` is the tier's only "
-                   "PERMITS_TOOL_USE fragment and the live builder appends it "
-                   "ONLY when the source context is empty, yet three file "
-                   "tools are attached on every call. Listing it here would "
-                   "assert a permission the prompt does not give; 4.4 adds "
-                   "`generate/tool_trigger` on every branch with the real "
-                   "budget.",
-        ),
-        LintAllow(
-            "vocab_closure", "-", owner=OWNER,
-            reason="Phase 4.4 — DELIBERATE. `_VOCABULARY` above declares "
-                   "`severity`'s closed set precisely so this check reports "
-                   "that no fragment states it; every out-of-set value is "
-                   "silently coerced to `info` after the fact. Dropping the "
-                   "declaration would hide the gap, not close it.",
-        ),
-        LintAllow(
-            "duplicate_contract", "generate/field_contract", owner=OWNER,
-            reason="Phase 4.4 — `generate/field_contract` (user turn) and "
-                   "`generate/json_fenced` (system turn) declare the SAME "
-                   "eight field names, so the contract is stated twice per "
-                   "render. Recorded alongside it: `_quote_contract_suffix()` "
-                   "emits the quote obligation a second time in the system "
-                   "turn on the unstructured branch only, so a "
-                   "structured-output model sees that sentence once and an LM "
-                   "Studio / Gemini model twice.",
-        ),
-        LintAllow(
-            "duplicate_contract", "generate/json_fenced", owner=OWNER,
-            reason="Phase 4.4 — the second half of the field-list duplication "
-                   "described on the `generate/field_contract` entry. Note the "
-                   "check reads `spec.fragments`, so it reports this fragment "
-                   "even for a profile whose ADAPT render drops it under rule "
-                   "4+5 (REQUIRES_FENCE).",
-        ),
-        LintAllow(
-            "placeholder_echo", "generate/json_fenced", owner=OWNER,
-            reason="Phase 4.4 — the `...` here is fence-syntax illustration "
-                   "('Wrap the array in ```json ... ``` fences'), not an "
-                   "exemplar value an executor could send. It is reported "
-                   "because `_PLACEHOLDERS` carries a bare `...`; 4.4 reviews "
-                   "that entry with the tier's other prompt work.",
-        ),
+
+# cwe and asvs ship their own "## Reporting Format" block inside the agent
+# identity, so those two renders still state the field list twice and
+# `check_02` still reports BOTH declaring fragments. The remaining half cannot
+# be fixed from this tier: the block is the agent's own INSTRUCTIONS text, which
+# `tests/unit/prompt/test_0089_no_second_source_of_truth.py` pins byte-for-byte
+# against the constant those agents' own unit tests assert on.
+def _own_field_list_allow(spec_id: str) -> LintAllow:
+    return LintAllow(
+        "duplicate_contract", "generate/field_contract", owner=OWNER,
+        reason=f"Phase 4.4 — {spec_id} keeps one half of the field-list "
+               "duplication: its `domains/` fragment carries a '## Reporting "
+               "Format' block of its own, so `generate/field_contract` is the "
+               "second declaring fragment in this render. The tier's own half "
+               "(`generate/json_fenced`) was resolved; this one belongs to the "
+               "agent identity and is annotated rather than fixed here.",
     )
 
 
 # `domains/asvs` is a THIRD fragment declaring the field list, and the only one
 # declaring a field no schema has.
 _ASVS_ALLOW: tuple[LintAllow, ...] = (
+    _own_field_list_allow("generate/asvs"),
     LintAllow(
         "duplicate_contract", "domains/asvs", owner=OWNER,
         reason="Phase 4.4 — `domains/asvs` ships its own '## Reporting "
-               "Format' block, making it a THIRD fragment declaring the field "
-               "list in this render.",
+               "Format' block, so it is the SECOND fragment declaring the "
+               "field list in this render (it was the third until 4.4 stopped "
+               "`generate/json_fenced` declaring one).",
     ),
     LintAllow(
         "orphan_field", "domains/asvs", owner=OWNER,
@@ -189,10 +234,12 @@ _ASVS_ALLOW: tuple[LintAllow, ...] = (
 )
 
 _CWE_ALLOW: tuple[LintAllow, ...] = (
+    _own_field_list_allow("generate/cwe"),
     LintAllow(
         "duplicate_contract", "domains/cwe", owner=OWNER,
         reason="Phase 4.4 — `domains/cwe` also ships a '## Reporting Format' "
-               "block, so this render states the field contract three times.",
+               "block, so this render still states the field contract twice "
+               "(three times until 4.4 resolved the tier's own half).",
     ),
     LintAllow(
         "placeholder_echo", "domains/cwe", owner=OWNER,
@@ -206,34 +253,42 @@ _CWE_ALLOW: tuple[LintAllow, ...] = (
 
 CHAOS = PromptSpec(
     id="generate/chaos", tier="generate",
+    version=5,                       # item 4.8: core/language (4.7 -> 4)
     fragments=("domains/chaos", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
-    allow=_tier_allow("generate/chaos"),
+    channels=_CHANNELS,
+    allow=(),
 )
 
 SOC2 = PromptSpec(
     id="generate/soc2", tier="generate",
+    version=5,                       # item 4.8: core/language (4.7 -> 4)
     fragments=("domains/soc2", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
-    allow=_tier_allow("generate/soc2"),
+    channels=_CHANNELS,
+    allow=(),
 )
 
 SSDF = PromptSpec(
     id="generate/ssdf", tier="generate",
+    version=5,                       # item 4.8: core/language (4.7 -> 4)
     fragments=("domains/ssdf", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
-    allow=_tier_allow("generate/ssdf"),
+    channels=_CHANNELS,
+    allow=(),
 )
 
 DO178C = PromptSpec(
     id="generate/do178c", tier="generate",
+    version=5,                       # item 4.8: core/language (4.7 -> 4)
     fragments=("domains/do178c", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
-    allow=_tier_allow("generate/do178c"),
+    channels=_CHANNELS,
+    allow=(),
 )
 
 # `domains/asvs` carries its own "## Reporting Format" field list AND declares
@@ -241,28 +296,34 @@ DO178C = PromptSpec(
 # tier-wide pair below, plus orphan_field.
 ASVS = PromptSpec(
     id="generate/asvs", tier="generate",
+    version=5,                       # item 4.8: core/language (4.7 -> 4)
     fragments=("domains/asvs", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
-    allow=_tier_allow("generate/asvs") + _ASVS_ALLOW,
+    channels=_CHANNELS,
+    allow=_ASVS_ALLOW,
 )
 
 # `domains/cwe` also carries a "## Reporting Format" field list, so this render
 # states the contract three times. Not merged — the duplication is the finding.
 CWE = PromptSpec(
     id="generate/cwe", tier="generate",
+    version=5,                       # item 4.8: core/language (4.7 -> 4)
     fragments=("domains/cwe", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
-    allow=_tier_allow("generate/cwe") + _CWE_ALLOW,
+    channels=_CHANNELS,
+    allow=_CWE_ALLOW,
 )
 
 XSS = PromptSpec(
     id="generate/xss", tier="generate",
+    version=5,                       # item 4.8: core/language (4.7 -> 4)
     fragments=("domains/xss", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
-    allow=_tier_allow("generate/xss"),
+    channels=_CHANNELS,
+    allow=(),
 )
 
 
@@ -303,8 +364,9 @@ GENERATE_SPECS: dict[str, PromptSpec] = {
 #                            prompt caching: the body moves to the system turn
 #                            and the user turn gets a pointer to it)
 #                "none"   -> generate/tools_only           (empty source
-#                            context — the tier's only sentence that permits
-#                            tool use)
+#                            context; `generate/tool_trigger` is on every
+#                            branch, so this is a task sentence now, not the
+#                            tier's only tool permission)
 #   vocabulary=  the agent passed a non-empty `category_enum`; mirrors
 #                `_category_vocabulary_suffix()` returning "" for a falsy one.
 #   fenced=      `not supports_structured_output(model)` — the API cannot
@@ -312,12 +374,11 @@ GENERATE_SPECS: dict[str, PromptSpec] = {
 #   quote=       `VULTURE_LLM_QUOTE_REQUIRED`, read at call time (0076 D14).
 #   prior=       the memory bank returned context for this codebase.
 #
-# KNOWN ASYMMETRY, reproduced deliberately (Phase 4.4 owns the fix): the quote
-# obligation is emitted twice per call — user turn via `_field_contract()`,
-# system turn via `_quote_contract_suffix()` — and the SYSTEM copy exists only
-# on the unstructured branch. Hence `fenced and quote` below, against a bare
-# `quote` in the user turn. A structured-output model sees the sentence once
-# and an LM Studio / Gemini model sees it twice.
+# THE ASYMMETRY IS GONE (item 4.4). `quote` now gates exactly one listing, in
+# the user turn. It used to gate two — `fenced and quote` on the system side
+# against a bare `quote` on the user side — which is how the number of times a
+# model was told to quote its evidence came to depend on whether its endpoint
+# could enforce a JSON schema.
 
 _SOURCE_SYSTEM: dict[str, tuple[str, ...]] = {
     "system": ("generate/source_in_system",),
@@ -333,6 +394,28 @@ _SOURCE_USER: dict[str, str] = {
 
 def _keep(ids: tuple[str, ...], drop: frozenset[str]) -> tuple[str, ...]:
     return tuple(i for i in ids if i not in drop)
+
+
+def _when(flag: bool, *ids: str) -> tuple[str, ...]:
+    """`ids` when `flag`, otherwise nothing.
+
+    A named conditional so `live_spec` below reads as the branch table it is.
+    The five booleans it takes are per-run facts, and spelling each one as an
+    inline `(...) if flag else ()` put six ternaries in one function — the
+    branches were the noise, not the information.
+    """
+    return ids if flag else ()
+
+
+def _unless(flag: bool, *ids: str) -> list[str]:
+    """The fragment ids to DROP when `flag` is false. The inverse of `_when`.
+
+    Separate from `_when` because the two feed opposite sides: `_when` builds a
+    fragment list, `_unless` builds the drop set `_keep` filters against, and
+    collapsing them into one helper with a polarity argument would put the
+    branch back.
+    """
+    return [] if flag else list(ids)
 
 
 def live_spec(
@@ -359,12 +442,11 @@ def live_spec(
     of this tier and they carry both.
     """
     drop = frozenset(
-        ([] if vocabulary else ["generate/vocab_category"])
-        + ([] if fenced else ["generate/json_fenced"])
-        + ([] if fenced and quote else ["generate/quote_obligation"]),
+        _unless(vocabulary, "generate/vocab_category")
+        + _unless(fenced, "generate/json_fenced"),
     )
     user = _keep(_USER_TURN, frozenset(
-        ([] if quote else ["generate/quote_obligation"])
+        _unless(quote, "generate/quote_obligation")
         + ["generate/source_inline"],
     ))
     return PromptSpec(
@@ -372,10 +454,18 @@ def live_spec(
         fragments=(*_SOURCE_SYSTEM[source], *_keep(_SYSTEM_SUFFIX, drop)),
         user_fragments=(
             *user,
-            *(("generate/prior_context",) if prior else ()),
+            *_when(prior, "generate/prior_context"),
             _SOURCE_USER[source],
         ),
         schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
+        # Per BRANCH, not the tier constant: `source="none"` inlines no
+        # repository bytes at all, and PRIOR only arrives when the memory bank
+        # had something to say. The seven committed specs transcribe the
+        # ordinary path and carry `_CHANNELS`; this is the one place the set
+        # actually varies, and declaring it accurately here is what keeps
+        # `check_05` a statement about the render rather than about the tier.
+        channels=(*_when(source != "none", "SOURCE"), "TOOL",
+                  *_when(prior, "PRIOR")),
         variables=variables or {},
     )
 
@@ -413,7 +503,7 @@ def live_spec(
 # transcription and they carry both.
 
 
-def domain_instructions(*fragments: str) -> str:
+def domain_instructions(*fragments: str, model: str | None = None) -> str:
     """Render the SYSTEM-turn identity half of one generate call.
 
     `fragments` is the call site's EXPLICIT list, one id per line, resolved in
@@ -428,15 +518,37 @@ def domain_instructions(*fragments: str) -> str:
     `keep_trailing`; `render`'s join would otherwise strip the byte their live
     prompts carry.
 
-    Mode is TRANSCRIBE, so `profile_for()` reaches nothing but
-    `output_budget_hint` — which this discards — and the ambient model therefore
-    cannot move a prompt byte. It is resolved rather than faked because a future
-    ADAPT render needs the real one.
+    ITEM 4.4 FLIPPED THE MODE TO ADAPT, and this render is still byte-neutral
+    across all ten families — `test_0089_4_4_generate_adapt.py` asserts it per
+    agent, per family. It flips with `_generate_rendered` because the two
+    compose the two halves of ONE system message and rendering them under two
+    rule sets would be incoherent, not because a rule bites here: a `domains/`
+    fragment carries neither `REQUIRES_FENCE` (rule 4+5) nor `BINDS_LANGUAGE`
+    (rule 9), so the only rule that can reach it is the no-system-role fold —
+    and this function returns ONE string for ONE channel, which the caller
+    hands to `run_combined_audit(instructions=...)` either way. `.instructions
+    or .user` is that fold's inverse: a relocation with nowhere to relocate to.
+
+    The identity of a no-system-role family (gemma) is therefore still sent as
+    a system message the chat template may drop. That is unchanged by 4.4 and
+    not fixable here — `instructions` is a runner parameter, so folding it into
+    the user turn is a `run_combined_audit` signature question, not a render.
+
+    `model` resolves the profile, defaulting to the ambient one. It is resolved
+    to a model STRING before `profile_for` sees it: that function is
+    `lru_cache`d on its argument, so `profile_for()` caches whatever the first
+    caller's environment resolved to under the key `None` for the life of the
+    process. Harmless while the mode was TRANSCRIBE (the profile reached
+    nothing but a discarded budget hint); under ADAPT the profile decides
+    placement, and a stale one decides it wrongly.
     """
     if not fragments:
         raise ValueError("domain_instructions() needs at least one fragment id")
+    from shared.llm.provider import get_model
+
     spec = PromptSpec(
         id="generate/domain", tier="generate", fragments=fragments,
         schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
     )
-    return render(spec, profile_for(), mode=Mode.TRANSCRIBE).instructions
+    rp = render(spec, profile_for(get_model(model)), mode=Mode.ADAPT)
+    return rp.instructions or rp.user

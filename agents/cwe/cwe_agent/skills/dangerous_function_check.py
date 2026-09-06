@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.env import env_truthy
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
@@ -31,8 +33,6 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.snippet import extract_snippet
 from shared.validate.language import detect_language
-
-from cwe_agent.catalog import enrich_finding
 
 # --- Sink patterns (data) -------------------------------------------------
 # Each is ReDoS-safe (bounded, no nested quantifiers). The C/Rust bare-name

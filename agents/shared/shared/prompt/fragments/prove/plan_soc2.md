@@ -19,10 +19,12 @@ Finding: {title}
 Category: {category}
 Description: {description}
 File: {file_path}:{line_start}
+Code: {code_snippet}
+Hints: {verification_hints}
 Staging URL: {staging_url}
 Attempt: {iteration}
 {prior_context}
 {site_context}
 
 Reply with ONLY a JSON object (no markdown, no explanation):
-{"description":"what this tests","method":"GET or POST","url_path":"/real-path","headers":{},"body":"","expected_indicators":["indicator"]}
+{"description":"what this tests","method":"GET or POST","url_path":"/api/users","headers":{},"body":"","expected_indicators":["indicator"]}

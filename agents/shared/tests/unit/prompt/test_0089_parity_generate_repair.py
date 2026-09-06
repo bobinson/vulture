@@ -81,7 +81,7 @@ from pathlib import Path
 import pytest
 
 from shared.prompt import Mode, profile_for, registry, render
-from shared.prompt.fragment import Role
+from shared.prompt.fragment import Role, Stance
 from shared.prompt.manifests.generate import GENERATE_SPECS
 from shared.prompt.spec import PromptSpec
 
@@ -166,14 +166,49 @@ PINS: dict[str, Pin] = {
         f"domains/{a}": Pin(lead="", trail=_DOMAIN_TRAIL[a], role=Role.SYSTEM)
         for a in AGENTS
     },
+    # Item 4.3. No trailing run, like every other fragment in this tier: the
+    # GENERATE fragments transcribe Python string literals, not lines of a
+    # prompt file, and a trailing newline here would be one the live builder
+    # never emitted. (`core/untrusted` is also listed by both judge specs,
+    # whose own fragments do end with one — the two conventions are reconciled
+    # on `test_0089_parity_validate_assembly.py::
+    # test_validate_fragment_files_carry_exactly_one_terminator`.)
+    # Item 4.7. ROLE CHANGED on both of these, and the change is the item:
+    # `SYSTEM` -> `SYSTEM+USER_MIRROR`, so each is now emitted in the system turn
+    # AND at the front of the user turn (LLD rule 2 — "the marker rule" and "the
+    # output contract"). The bodies are untouched, which is why only the `role`
+    # column moves and the two newline runs do not. Note the pin's standing
+    # reason has GAINED force rather than lost it: TRANSCRIBE still ignores front
+    # matter, so this flip is invisible to every TRANSCRIBE golden in the tree,
+    # and under ADAPT it now moves real bytes — a revert would be silent in the
+    # first mode and lossy in the second.
+    "core/untrusted": Pin(lead="", trail="", role=Role.SYSTEM_USER_MIRROR),
     "generate/vocab_category": Pin(lead="", trail="", role=Role.SYSTEM),
-    "generate/json_fenced": Pin(lead="", trail="", role=Role.SYSTEM),
+    "generate/json_fenced": Pin(lead="", trail="", role=Role.SYSTEM_USER_MIRROR),
     "generate/task": Pin(lead="", trail="", role=Role.USER),
     "generate/field_contract": Pin(lead="", trail="", role=Role.USER),
-    # One sentence in both turns: `_field_contract()` returns it and
-    # `_quote_contract_suffix()` appends it again.
-    "generate/quote_obligation": Pin(lead="", trail="", role=Role.SYSTEM_USER_MIRROR),
+    # Item 4.4. ROLE CHANGED, and the change is the item. This was
+    # `Role.SYSTEM_USER_MIRROR` and the fragment was listed in BOTH turns,
+    # because `_field_contract()` returned the sentence and
+    # `_quote_contract_suffix()` appended it again — but only on the
+    # unstructured branch, so a structured-output model was told to quote its
+    # evidence once and an LM Studio / Gemini model twice. It is `USER` now and
+    # listed once. The mirror role could not have served: ADAPT prepends a
+    # mirrored fragment to the user turn WITHOUT removing it from the system
+    # turn, so listed-in-both plus mirrored renders three copies.
+    "generate/quote_obligation": Pin(lead="", trail="", role=Role.USER),
     "generate/source_inline": Pin(lead="", trail="", role=Role.USER),
+    # The four sections item 4.4 added. Same convention as the rest of the
+    # tier: no boundary newline runs, so the `.md` files carry no terminator.
+    "generate/source_presentation": Pin(lead="", trail="", role=Role.SYSTEM),
+    "generate/evidence_discipline": Pin(lead="", trail="", role=Role.SYSTEM),
+    "generate/tool_trigger": Pin(lead="", trail="", role=Role.SYSTEM),
+    "generate/vocab_severity": Pin(lead="", trail="", role=Role.SYSTEM),
+    # Item 4.8. Same convention again — no boundary runs — which is what lets
+    # one file serve this tier and VALIDATE, whose own fragments end with
+    # exactly one newline (`test_0089_parity_validate_assembly.py` scopes that
+    # rule to `validate/` ids for this reason).
+    "core/language": Pin(lead="", trail="", role=Role.SYSTEM),
 }
 
 # The bytes the LIVE builder puts BETWEEN two adjacent fragments' RAW bodies,
@@ -190,16 +225,41 @@ PINS: dict[str, Pin] = {
 # between the field-contract lines — which is why it is pinned per PAIR here
 # and not inferred from a fragment's position.
 _SEAM_INSTRUCTIONS_TO_VOCAB = "\n\n"
+# Item 4.3 inserted `core/untrusted` between the agent identity and the
+# vocabulary block, so the seam that used to run identity -> vocab is now two
+# seams of the same width. Both are pinned, and both are literals here rather
+# than derived from `Fragment.seam`, for this table's standing reason: a seam
+# read from the same declaration the renderer reads would move both sides of
+# the comparison together.
 LIVE_SEAMS: dict[tuple[str, str], str] = {
     **{
-        (f"domains/{a}", "generate/vocab_category"): _SEAM_INSTRUCTIONS_TO_VOCAB
+        (f"domains/{a}", "core/untrusted"): _SEAM_INSTRUCTIONS_TO_VOCAB
         for a in AGENTS
     },
-    ("generate/vocab_category", "generate/json_fenced"): "\n\n",
-    ("generate/json_fenced", "generate/quote_obligation"): "\n",
+    # Item 4.4 inserted three sections between the policy and the vocabulary
+    # block and one more between the two vocabularies, all at the tier's one
+    # system-turn width. `("generate/json_fenced", "generate/quote_obligation")`
+    # is GONE from this table because that adjacency is gone: the quote
+    # obligation is a user-turn fragment now and the fenced sentence ends the
+    # system turn.
+    ("core/untrusted", "generate/source_presentation"): "\n\n",
+    ("generate/source_presentation", "generate/evidence_discipline"): "\n\n",
+    ("generate/evidence_discipline", "generate/tool_trigger"): "\n\n",
+    ("generate/tool_trigger", "generate/vocab_category"): "\n\n",
+    ("generate/vocab_category", "generate/vocab_severity"): "\n\n",
+    ("generate/vocab_severity", "generate/json_fenced"): "\n\n",
     ("generate/task", "generate/field_contract"): "\n",
     ("generate/field_contract", "generate/quote_obligation"): "\n",
     ("generate/quote_obligation", "generate/source_inline"): "\n\n",
+    # Item 4.7's two NEW adjacencies, both in the USER turn: rule 2 prepends the
+    # mirrored marker rule and the mirrored wire shape ahead of `generate/task`,
+    # at the tier's ordinary blank-line width. `("core/untrusted",
+    # "generate/json_fenced")` is a different PAIR from the system turn's
+    # `("core/untrusted", "generate/source_presentation")` even though the left
+    # side is the same fragment — which is the reason this table is keyed on
+    # pairs and not on a per-fragment "seam before me".
+    ("core/untrusted", "generate/json_fenced"): "\n\n",
+    ("generate/json_fenced", "generate/task"): "\n\n",
 }
 
 # The placeholders the templated fragments interpolate, pinned so a rename
@@ -220,6 +280,11 @@ PLACEHOLDERS: dict[str, frozenset[str]] = {
     # same reason the other three are — a rename would leave a literal
     # `{quote_max_lines}` standing in the prompt as though it were content.
     "generate/quote_obligation": frozenset({"quote_max_lines"}),
+    # Item 4.4. Both budgets are read from `shared.llm.loop_detector`, the
+    # module whose `LoopDetector.record` returns KILL at exactly these two
+    # counts, rather than retyped into the fragment — a prompt that promises a
+    # bound nothing enforces teaches the model a rule it can break for free.
+    "generate/tool_trigger": frozenset({"tool_call_budget", "tool_repeat_budget"}),
 }
 
 # The `domain_label=` each agent passes at its own `run_combined_audit` call
@@ -235,6 +300,15 @@ PLACEHOLDERS: dict[str, frozenset[str]] = {
 # cases in this file green, and the whole `tests/unit/prompt` suite unmoved.
 # So the render is fed the pinned literal and the live builder the `ast`
 # reading — the same two-independent-sources discipline as `LIVE_SEAMS`.
+# The two tool budgets `generate/tool_trigger` interpolates, pinned as DATA for
+# the reason `LIVE_SEAMS` and `CALL_SITE_DOMAIN_LABELS` are: a value read from
+# `shared.llm.loop_detector` here would move both sides of every comparison in
+# this file together. `test_the_pinned_tool_budgets_are_the_ones_the_loop_guard_
+# enforces` is where these two literals meet the code that enforces them, and it
+# drives the real `LoopDetector` rather than comparing constant to constant.
+PINNED_TOOL_CALL_BUDGET = "100"
+PINNED_TOOL_REPEAT_BUDGET = "20"
+
 CALL_SITE_DOMAIN_LABELS: dict[str, str] = {
     "asvs": "ASVS requirements",
     "chaos": "resilience categories",
@@ -297,9 +371,20 @@ def _json_fenced_literal() -> str:
     """The unstructured branch's JSON sentence, read out of the live builder.
 
     The shape asserted here IS the live statement — `augmented_instructions +=
-    (<literal>) + _quote_contract_suffix()` — so a reworded literal changes
-    these bytes and a restructured statement fails loudly instead of quietly
-    matching.
+    (<literal>)` — so a reworded literal changes these bytes and a restructured
+    statement fails loudly instead of quietly matching.
+
+    BEFORE feature 0089 item 4.4 the statement was `augmented_instructions +=
+    (<literal>) + _quote_contract_suffix()`, and this function asserted that
+    shape::
+
+        assert isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add)
+        assert value.right.func.id == "_quote_contract_suffix"
+
+    4.4 removed the second term and the function it called. The assertion that
+    NO call is added is kept in its place — otherwise a future edit could
+    re-append a second copy of any sentence and this reader would simply take
+    the left operand and report nothing.
     """
     from shared import audit_runner as ar
 
@@ -313,11 +398,11 @@ def _json_fenced_literal() -> str:
     ]
     assert len(found) == 1, f"expected one `augmented_instructions +=`, got {len(found)}"
     value = found[0]
-    assert isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add)
-    assert isinstance(value.right, ast.Call)
-    assert isinstance(value.right.func, ast.Name)
-    assert value.right.func.id == "_quote_contract_suffix"
-    literal = _str_constant(value.left)
+    assert not isinstance(value, ast.BinOp), (
+        "the unstructured branch appends a second term again; item 4.4 left it "
+        "one literal, and a second term is a second author"
+    )
+    literal = _str_constant(value)
     assert literal, "the JSON-array sentence is no longer a plain literal"
     return literal
 
@@ -344,6 +429,13 @@ def _per_run(agent: str) -> dict[str, str]:
         # sets: reading it from `_quote_max_lines()` would be the one reading
         # shared by both sides of every comparison here.
         "quote_max_lines": "3",
+        # The two tool budgets `generate/tool_trigger` interpolates. Pinned as
+        # literals for this table's standing reason — reading them from
+        # `loop_detector` here would be one reading shared by both sides — and
+        # cross-checked against the enforcing code by
+        # `test_the_pinned_tool_budgets_are_the_ones_the_loop_guard_enforces`.
+        "tool_call_budget": PINNED_TOOL_CALL_BUDGET,
+        "tool_repeat_budget": PINNED_TOOL_REPEAT_BUDGET,
     }
 
 
@@ -418,12 +510,92 @@ def _live(agent: str, vocabulary) -> Assembled:
     from shared import audit_runner as ar
 
     _assert_branch_preconditions()
-    instructions = (_instructions(agent) or "") + ar._category_vocabulary_suffix(vocabulary)
-    instructions += _json_fenced_literal() + ar._quote_contract_suffix()
+    # FIVE sections of this turn have no pre-library source: `core/untrusted`
+    # (item 4.3) and the four `generate/*` sections item 4.4 added. The tier
+    # had no untrusted-content text, no presentation contract, no evidence
+    # discipline, no tool permission and no severity vocabulary at all, so
+    # there is no live literal, no helper and no retained file to read any of
+    # them from. Their BYTES therefore come from the fragment and are not
+    # independently observed here — `test_0089_version_bump.py` is the pin for
+    # them. Their POSITION and their SEAM still are: every one is a `LIVE_SEAMS`
+    # entry and this statement's ordering, so a moved or re-joined section
+    # fails. What remains genuinely independent is the agent's own
+    # `INSTRUCTIONS` literal, `_category_vocabulary_suffix` and the fenced-JSON
+    # literal, all three read out of code this file does not render.
+    instructions = (_instructions(agent) or "") + "\n\n"
+    instructions += registry.get("core/untrusted").text.rstrip("\n")
+    for fid in ("generate/source_presentation", "generate/evidence_discipline",
+                "generate/tool_trigger"):
+        instructions += "\n\n" + _part(fid, _per_run(agent)).rstrip("\n")
+    instructions += ar._category_vocabulary_suffix(vocabulary)
+    instructions += "\n\n" + registry.get("generate/vocab_severity").text.rstrip("\n")
+    instructions += _json_fenced_literal()
+    # The same two facts the string above was just built from. Until item 4.7
+    # this call took the defaults — `vocabulary=None`, `fenced=False` — so it
+    # requested the branch WITHOUT the category enum and WITHOUT the JSON
+    # contract while the instructions beside it appended both. Unobservable
+    # until now, because both are SYSTEM fragments and this file assembles the
+    # live system turn by hand; rule 2 puts the wire shape into the USER turn,
+    # which is the role this call returns. Supplying them makes the request
+    # match the branch, and widens what the comparison covers.
     user = ar._build_llm_prompt(
         SOURCE_PATH, CATEGORIES, _domain_label(agent), SOURCE_BODY, PRIOR_CONTEXT,
+        vocabulary=vocabulary, fenced=True,
     )
     return Assembled(instructions=instructions, user=user)
+
+
+def _admitted(ids: tuple[str, ...]) -> tuple[str, ...]:
+    """`ids` minus the fragments ADAPT's rule 9 drops for this file's `MODEL`.
+
+    Item 4.8. Rule 9 admits a `BINDS_LANGUAGE` fragment only for a profile
+    whose `output_language_pin` is set, and `MODEL` is deliberately not one:
+    this file's subject is the live builder's UNSTRUCTURED branch, and the
+    families that pin the output language are the ones
+    `supports_structured_output` answers True for, so the two cannot be
+    satisfied by one model. `core/language` is therefore listed by all seven
+    specs and rendered by none of them here — and every expectation below is
+    built from the spec's fragment LIST, so each has to be filtered the way the
+    renderer filters or the recipe describes a prompt production never sends.
+
+    Read from the fragment's declared `stance` and the profile's own flag, not
+    by calling `render._rule_language`: the discipline this file keeps is that
+    the expected side never shares a reading with the code under test, and
+    `_mirrored` reads `role` the same way for the same reason.
+
+    WHAT THIS LEAVES UNCOVERED, deliberately: the two seams `core/language`
+    introduces on a profile that DOES pin it
+    (`generate/vocab_severity` -> `core/language` -> `generate/json_fenced`)
+    are not pinned in this file, because no model can put them on the branch
+    this file reads. They are pinned as bytes by the `<manifest>.glm.txt`
+    goldens and asserted as placement by `test_0089_4_8_language_pin.py`.
+    """
+    if profile_for(MODEL).output_language_pin:
+        return tuple(ids)
+    return tuple(i for i in ids
+                 if Stance.BINDS_LANGUAGE not in registry.get(i).stance)
+
+
+def _mirrored(spec) -> tuple[str, ...]:
+    """This spec's system fragments that rule 2 also emits in the user turn.
+
+    Read from each fragment's declared `role` on disk, never from `render` — the
+    whole point of `_live_role` is to rebuild the turn from the DECLARATIONS, so
+    a composition taken from the renderer would move both sides of the
+    comparison together, which is the failure mode this file was written to fix.
+    """
+    return tuple(f for f in _admitted(spec.fragments)
+                 if registry.get(f).role is Role.SYSTEM_USER_MIRROR)
+
+
+def _user_ids(spec) -> tuple[str, ...]:
+    """The USER turn's fragment order under item 4.7: mirrored first, then own.
+
+    `render` prepends (`usr_frags = mirrored + usr_frags`), so the mirrored
+    parts lead. Stated here as its own function so the ORDER is an assertion
+    this file makes rather than an assumption buried in a call.
+    """
+    return _mirrored(spec) + tuple(spec.user_fragments)
 
 
 def _live_role(fragment_ids: tuple[str, ...], variables: dict[str, str]) -> str:
@@ -451,9 +623,17 @@ def _live_role(fragment_ids: tuple[str, ...], variables: dict[str, str]) -> str:
 
 
 def _rendered(agent: str) -> Assembled:
-    """#3 — what the library actually renders for `agent`. The SUT."""
+    """#3 — what the library actually renders for `agent`. The SUT.
+
+    `Mode.ADAPT` as of item 4.4, following the call site: `_build_llm_prompt`
+    on the live side renders ADAPT now, and comparing it against a TRANSCRIBE
+    render would be comparing two modes. On this file's `MODEL` the two are
+    byte-identical anyway — gemini has a system role and
+    `Structured.NONE`, so neither the fold nor rule 4+5 bites — which is what
+    makes the flip observable here as "nothing moved" rather than as a diff.
+    """
     spec = dataclasses.replace(GENERATE_SPECS[agent], variables=_variables(agent))
-    rp = render(spec, profile_for(MODEL), mode=Mode.TRANSCRIBE)
+    rp = render(spec, profile_for(MODEL), mode=Mode.ADAPT)
     return Assembled(instructions=rp.instructions, user=rp.user)
 
 
@@ -471,7 +651,7 @@ def _render_pair(role: str, left: str, right: str, variables: dict[str, str]) ->
         user_fragments=() if role == "instructions" else ids,
         variables=variables,
     )
-    rp = render(spec, profile_for(MODEL), mode=Mode.TRANSCRIBE)
+    rp = render(spec, profile_for(MODEL), mode=Mode.ADAPT)
     return rp.instructions if role == "instructions" else rp.user
 
 
@@ -480,7 +660,11 @@ def _adjacent_pairs():
     out = []
     for agent in AGENTS:
         spec = GENERATE_SPECS[agent]
-        for role, ids in (("instructions", spec.fragments), ("user", spec.user_fragments)):
+        # `_user_ids`, not `spec.user_fragments`: item 4.7's mirror creates two
+        # adjacencies that exist only in the rendered user turn, and a pair
+        # enumerated from the spec's own list alone would never see them.
+        for role, ids in (("instructions", _admitted(spec.fragments)),
+                          ("user", _user_ids(spec))):
             for left, right in zip(ids, ids[1:], strict=False):
                 out.append(pytest.param(
                     agent, role, left, right, id=f"{agent}-{role}-{left}-to-{right}",
@@ -569,13 +753,14 @@ def test_live_roles_are_the_raw_fragment_bytes(agent: str, vocabulary):
     """
     live = _live(agent, vocabulary)
     spec, variables = GENERATE_SPECS[agent], _variables(agent)
-    assert _live_role(spec.fragments, variables) == live.instructions, _msg(
+    system_ids = _admitted(spec.fragments)
+    assert _live_role(system_ids, variables) == live.instructions, _msg(
         f"generate/{agent} instructions", "live/audit_runner", live.instructions,
-        "recipe/raw-fragment-bytes", _live_role(spec.fragments, variables),
+        "recipe/raw-fragment-bytes", _live_role(system_ids, variables),
     )
-    assert _live_role(spec.user_fragments, variables) == live.user, _msg(
+    assert _live_role(_user_ids(spec), variables) == live.user, _msg(
         f"generate/{agent} user", "live/audit_runner", live.user,
-        "recipe/raw-fragment-bytes", _live_role(spec.user_fragments, variables),
+        "recipe/raw-fragment-bytes", _live_role(_user_ids(spec), variables),
     )
 
 
@@ -712,6 +897,39 @@ def test_spec_transcribes_the_call_sites_domain_label(agent: str):
     )
 
 
+def test_the_pinned_tool_budgets_are_the_ones_the_loop_guard_enforces():
+    """Where the pinned literals meet the code that actually stops the run.
+
+    Item 4.4's `generate/tool_trigger` tells the model a number, and the whole
+    point of interpolating it is that the number is the enforced one. This file
+    feeds the render a PINNED literal (`_per_run`) so that a change to
+    `loop_detector` cannot move both sides of a comparison at once — which
+    leaves exactly one thing to check here, and it is checked by DRIVING the
+    detector rather than by reading its constants: a renamed or re-defaulted
+    threshold, or a `record()` that stopped returning KILL at the stated count,
+    fails here.
+    """
+    from shared.llm.loop_detector import LoopAction, LoopDetector
+
+    total = LoopDetector()
+    actions = [total.record(f"tool_{i}", None, f"result_{i}")
+               for i in range(int(PINNED_TOOL_CALL_BUDGET))]
+    assert actions[-1] is LoopAction.KILL, (
+        f"the prompt promises the run stops at {PINNED_TOOL_CALL_BUDGET} tool "
+        "calls; the guard did not stop it there"
+    )
+    assert LoopAction.KILL not in actions[:-1], "it stops EARLIER than promised"
+
+    repeat = LoopDetector()
+    repeats = [repeat.record("read_file", None, "same")
+               for _ in range(int(PINNED_TOOL_REPEAT_BUDGET))]
+    assert repeats[-1] is LoopAction.KILL, (
+        f"the prompt promises the run stops after {PINNED_TOOL_REPEAT_BUDGET} "
+        "identical calls; the guard did not stop it there"
+    )
+    assert LoopAction.KILL not in repeats[:-1]
+
+
 # ── coverage: nothing may be added to one side alone ─────────────────────
 
 def test_repair_covers_every_generate_agent_fragment_and_seam():
@@ -732,7 +950,11 @@ def test_repair_covers_every_generate_agent_fragment_and_seam():
     assembled_pairs = {
         (left, right)
         for spec in GENERATE_SPECS.values()
-        for ids in (spec.fragments, spec.user_fragments)
+        # `_user_ids`, not `spec.user_fragments` — same reason as
+        # `_adjacent_pairs`: item 4.7's mirror assembles two pairs that appear in
+        # no spec list, and enumerating from the lists alone would call the table
+        # complete while two of its entries were unreachable.
+        for ids in (_admitted(spec.fragments), _user_ids(spec))
         for left, right in zip(ids, ids[1:], strict=False)
     }
     assert assembled_pairs == set(LIVE_SEAMS)

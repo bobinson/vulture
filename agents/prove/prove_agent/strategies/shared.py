@@ -7,9 +7,6 @@ import re
 from typing import Any
 
 import httpx
-from shared.prompt.manifests.prove_analyze import (
-    PROVE_ANALYZE_DOMAIN,
-)
 
 from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.strategies.base import (
@@ -22,6 +19,9 @@ from prove_agent.strategies.base import (
 )
 from prove_agent.strategies.rule_analyzer import analyze_response
 from prove_agent.techniques import pick_next_technique
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -654,14 +654,16 @@ def rejected_path_result(path: str, protocol: str = ProbeProtocol.HTTP.value) ->
 _ANALYZE_PROMPT = """Did this HTTP response confirm the vulnerability?
 
 Finding: {title} ({category})
-Request: {method} {url}
-Status: {status_code}
-Response headers: {response_headers}
-Response (truncated): {response_snippet}
 Expected indicators: {expected_indicators}
 
 Reply with JSON only:
-{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}"""
+{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}
+If the response does not clearly confirm or refute the finding, set "conclusive" to false.
+
+Request: {method} {url}
+Status: {status_code}
+Response headers: {response_headers}
+Response (truncated): {response_snippet}"""
 
 
 async def execute_and_analyze(

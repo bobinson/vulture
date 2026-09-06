@@ -14,15 +14,24 @@ turns and the wire payload, never a fragment in isolation.
 from __future__ import annotations
 
 import pytest
-from prove_agent.llm_helper import _RETRY_GUIDANCE, _SYSTEM_MSG
 
+from prove_agent.llm_helper import _RETRY_GUIDANCE, _SYSTEM_MSG
 from shared.prompt.manifests.prove_system import PROVE_RETRY, PROVE_SYSTEM
 from shared.prompt.profile import profile_for
 from shared.prompt.render import Mode, render
 
 
 def _r(spec):
-    return render(spec, profile_for("gpt-4o"), mode=Mode.TRANSCRIBE)
+    """ADAPT, following the call site (item 4.5 flipped it).
+
+    It was TRANSCRIBE until item 4.8, which is when the distinction started to
+    matter: `_SYSTEM_MSG` and `_RETRY_GUIDANCE` are ADAPT renders, and
+    `core/language` — listed in `PROVE_SYSTEM`, dropped by rule 9 for `gpt-4o`
+    — is 476 bytes that TRANSCRIBE keeps and production never sends. Comparing
+    the live payload against the mode it is not rendered in would fail for a
+    reason that says nothing about the payload.
+    """
+    return render(spec, profile_for("gpt-4o"), mode=Mode.ADAPT)
 
 
 def test_prove_system_turn_is_the_system_message_alone():
@@ -34,7 +43,9 @@ def test_prove_system_turn_is_the_system_message_alone():
     assert rp.user == ""
     assert _RETRY_GUIDANCE[1] not in rp.instructions
     assert _RETRY_GUIDANCE[2] not in rp.instructions
-    assert rp.fragments == ("prove/system",)
+    # The SPEC's list, which item 4.8 grew; the rendered bytes above are where
+    # the clause's absence on this profile is asserted.
+    assert rp.fragments == ("prove/system", "core/language")
 
 
 @pytest.mark.parametrize("attempt", (1, 2))

@@ -41,6 +41,9 @@ import os
 from collections.abc import Generator
 from typing import Any
 
+from cwe_agent.catalog import build_catalog_context, get_static_detectable
+from cwe_agent.config import ALL_CATEGORIES
+from cwe_agent.skills import SKILL_MAP, SKILL_TOOLS
 from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.env import env_truthy
@@ -52,10 +55,6 @@ from shared.prompt.manifests.generate import domain_instructions
 from shared.tools.memory_client import (
     build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
 )
-
-from cwe_agent.catalog import build_catalog_context, get_static_detectable
-from cwe_agent.config import ALL_CATEGORIES
-from cwe_agent.skills import SKILL_MAP, SKILL_TOOLS
 
 # Collect CWE IDs covered by catalog for LLM context
 _CATALOG_CWE_IDS = [e["id"] for e in get_static_detectable(min_score=0.3)][:80]

@@ -12,6 +12,7 @@ Verifies end-to-end DRY behavior:
 from unittest.mock import patch
 
 import pytest
+
 from asvs_agent.agent import run_audit
 
 

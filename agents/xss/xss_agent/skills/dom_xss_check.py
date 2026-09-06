@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -17,7 +18,6 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
-
 from xss_agent.skills._check_id import cid
 
 # DOM sources — user-controllable input in the browser

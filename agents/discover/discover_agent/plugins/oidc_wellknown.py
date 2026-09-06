@@ -8,14 +8,13 @@ authorization server metadata endpoint.
 import logging
 from urllib.parse import urlparse
 
+from discover_agent.plugins._shared import probe_endpoint
 from shared.discovery.plugin_base import (
     DiscoveryContext,
     DiscoveryPlugin,
     DiscoveryResult,
     register_plugin,
 )
-
-from discover_agent.plugins._shared import probe_endpoint
 
 logger = logging.getLogger(__name__)
 

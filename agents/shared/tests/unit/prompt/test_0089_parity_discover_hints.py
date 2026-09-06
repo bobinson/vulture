@@ -48,11 +48,11 @@ import difflib
 import types
 
 import litellm
+
 from discover_agent.plugins.llm_suggest import (
     LLMEndpointPlugin,
     _build_framework_hints,
 )
-
 from shared.discovery.plugin_base import DiscoveryContext
 from shared.discovery.sitemap import SiteMap
 from shared.prompt import Mode, profile_for, render
@@ -140,8 +140,15 @@ def _live_messages(monkeypatch) -> list[dict]:
 
 
 def _rendered():
+    """`Mode.ADAPT` and `profile_for()` since Phase 4.6 — what the plugin does.
+
+    Under TRANSCRIBE the profile could not affect a byte, so `"gpt-4o"` was
+    free. Under ADAPT it decides turn placement, and a model string hardcoded
+    here that disagreed with the one production resolves would be reported as
+    prompt drift.
+    """
     return render(dataclasses.replace(DISCOVER_SUGGEST, variables=dict(_VARS)),
-                  profile_for("gpt-4o"), mode=Mode.TRANSCRIBE)
+                  profile_for(), mode=Mode.ADAPT)
 
 
 def _attribution() -> str:
@@ -257,16 +264,18 @@ def test_parity_discover_multi(monkeypatch):
     live_messages = _live_messages(monkeypatch)
     rp = _rendered()
 
-    # Envelope: the plugin sends one user turn and no system turn at all.
+    # Envelope. BEFORE 4.6: one user turn, no system turn, `rp.instructions ==
+    # ""`. The split makes it two turns where the model has a system role.
     # NOT compared: the live request also carries `model`, `timeout` and
-    # `response_format={"type": "json_object"}` (llm_suggest.py:106-115), and
-    # TRANSCRIBE returns `response_format=None` by construction, so asserting
-    # that half here would fail for a reason that is not drift.
-    assert len(live_messages) == 1
-    assert live_messages[0]["role"] == "user"
-    assert rp.instructions == ""
+    # `response_format`, which the call site derives from
+    # `uses_custom_endpoint()` rather than from the render.
+    profile = profile_for()
+    expected_roles = ["system", "user"] if profile.system_role else ["user"]
+    assert [m["role"] for m in live_messages] == expected_roles
+    assert bool(rp.instructions) is profile.system_role
 
-    assert rp.user == live_messages[0]["content"], _diff(rp.user, live_messages[0]["content"])
+    live_user = next(m for m in live_messages if m["role"] == "user")["content"]
+    assert rp.user == live_user, _diff(rp.user, live_user)
     assert rp.messages == live_messages
 
 
@@ -274,24 +283,29 @@ def test_discover_envelope_shape(monkeypatch):
     """The request envelope, asserted where it can actually execute.
 
     Envelope equality lives at the END of both parity tests, after the content
-    assertion, so it has never run: the content assertion fails first on the
-    renderer's `{{`/`}}` defect. A system turn appearing, a second turn, or an
-    extra key on the message dict is therefore unguarded until that defect is
-    fixed. These assertions do not touch the content bytes, so they execute and
-    hold today."""
+    assertion, so it never ran while the content assertion was failing on the
+    renderer's `{{`/`}}` defect. A turn appearing or disappearing, or an extra
+    key on the message dict, is therefore checked here where nothing can fail
+    ahead of it.
+
+    PHASE 4.6 IS THE TRANSITION THIS TEST WAS WRITTEN FOR. It previously
+    asserted `["user"]`, `rp.instructions == ""`, `fragments == ()` and closed
+    with: "When a second id is added here, ordering becomes a real surface and
+    the byte comparison above starts covering it — this pin is what makes that
+    transition visible instead of silent." A second id has now been added, so
+    the pin is updated to the new shape rather than deleted, and ordering is
+    covered by `test_parity_discover_multi` above.
+    """
     live_messages = _live_messages(monkeypatch)
     rp = _rendered()
+    profile = profile_for()
 
-    assert [m["role"] for m in live_messages] == ["user"]
-    assert [sorted(m) for m in live_messages] == [["content", "role"]]
+    expected_roles = ["system", "user"] if profile.system_role else ["user"]
+    assert [m["role"] for m in live_messages] == expected_roles
+    assert [sorted(m) for m in live_messages] == [["content", "role"]] * len(expected_roles)
     assert [m["role"] for m in rp.messages] == [m["role"] for m in live_messages]
     assert [sorted(m) for m in rp.messages] == [sorted(m) for m in live_messages]
-    assert rp.instructions == ""
+    assert bool(rp.instructions) is profile.system_role
 
-    # The transcription declares no system fragment and exactly one user
-    # fragment, which is why fragment ORDERING has nothing to get wrong yet.
-    # When a second id is added here, ordering becomes a real surface and the
-    # byte comparison above starts covering it — this pin is what makes that
-    # transition visible instead of silent.
-    assert DISCOVER_SUGGEST.fragments == ()
+    assert DISCOVER_SUGGEST.fragments == ("discover/system", "core/language")
     assert DISCOVER_SUGGEST.user_fragments == ("discover/suggest",)

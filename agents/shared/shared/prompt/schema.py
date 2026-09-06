@@ -167,6 +167,12 @@ VERDICT_SCHEMA = OutputSchema(
         Field("exploitable", NUMBER),
         Field("window_sufficient", BOOLEAN, required=False),
         Field("evidence_line", INTEGER, required=False),
+        # Feature 0089 item 4.2. `evidence_line` used to be asked for in two
+        # coordinate spaces at once — "from the numbered snippet" in the system
+        # prompt, "in the file you read it from" in the tool contract. The line
+        # is now always the FILE's own numbering; this names WHICH file, and is
+        # absent whenever that is the finding's own.
+        Field("evidence_file", STRING, required=False),
         Field("reasoning", STRING, required=False),
     ),
 )

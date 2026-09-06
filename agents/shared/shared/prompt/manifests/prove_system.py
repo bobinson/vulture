@@ -1,9 +1,12 @@
 """PROVE system manifest — feature 0089 Phase 0.c (transcribe).
 
 The JSON-API system message, and the retry guidance the prove agent appends when
-a response fails to parse. `prove/system` declares FORBIDS_PROSE; the reflect
-prompts declare an `analysis` field, so that stance is an honest record of a real
-contradiction, not a wish.
+a response fails to parse. `prove/system` declares FORBIDS_PROSE as an
+ENVELOPE-scoped stance — the reply is a single JSON object with no prose
+around it — exactly as `validate/output_contract` carries it beside its own
+free-text `reasoning` field. Item 4.5 reworded the text so it no longer names
+the reflect schema's `analysis` field in its forbid list; the earlier text
+did, which was the real contradiction.
 
 **Phase 1 correction.** `prove/retry_guidance` was listed here as a second
 SYSTEM fragment. `llm_helper.py:194-197` does not do that: the system turn is
@@ -20,16 +23,47 @@ for a faithful transcription:
 Nothing asserted the assembled turn before Phase 1: the manifest test called
 `render(PROVE_SYSTEM, ...)` for its side effect and discarded the result, so a
 byte-perfect fragment sat in the wrong turn undetected.
+
+**Item 4.7 deliberately gives this tier NO `SYSTEM+USER_MIRROR` fragment**, and
+records the reason here rather than leaving the absence to be read as an
+oversight. Rule 2 exists to keep the output contract alive when a gateway drops
+the system turn; PROVE already survives that, because every user fragment of
+the tier states the contract itself — `prove/plan` ("Reply with ONLY a JSON
+object (no markdown, no explanation)"), `prove/reflect` and `prove/analyze`
+("Reply with JSON only"), and both retry guidances. That is the same argument
+item 4.4 made for `generate/quote_obligation`: single placement in the turn no
+gateway drops buys what the mirror buys by duplication, for none of the cost.
+
+The second reason is a wire-shape one, particular to this tier. `PROVE_SYSTEM`
+has no user fragments, and `llm_helper._SYSTEM_TURN` is
+`render(PROVE_SYSTEM, ...).messages` — so a mirror here would not prepend a
+prelude to the prompt, it would emit a second user MESSAGE, which
+`llm_json_call` then puts ahead of the real one. Two user turns on the wire,
+the first restating a contract the second states again.
+
+The exemption is enforced, not just written down:
+`tests/unit/prompt/test_0089_4_7_mirror.py::NO_MIRROR` fails if this tier ever
+carries a mirrored fragment while this reason still stands.
 """
 
 from __future__ import annotations
 
 from ..spec import PromptSpec
 
+# `core/language` is listed HERE, and that is what makes the pin reach the wire:
+# `llm_helper._SYSTEM_TURN` is `render(PROVE_SYSTEM, ...).messages` and every
+# plan / reflect / analyze call sends it, while the user turns are rendered from
+# a spec built per call (`render_prove_prompt`) that lists no system fragment at
+# all. The three per-strategy manifest families list it too — their
+# `fragments=("prove/system", "core/language")` is the same system turn — so the
+# transcription and production cannot disagree about what this tier sends.
 PROVE_SYSTEM = PromptSpec(
     id="prove_system",
     tier="prove",
-    fragments=("prove/system",),
+    # 2: item 4.5 reworded `prove/system` to constrain shape only.
+    # 3: item 4.8 appended `core/language`.
+    version=3,
+    fragments=("prove/system", "core/language"),
 )
 
 # Keyed by attempt index, mirroring `_RETRY_GUIDANCE`. Attempt 0 is absent
