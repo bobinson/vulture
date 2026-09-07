@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
     COMMENT_INDICATORS,
@@ -16,8 +18,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
-
-from cwe_agent.catalog import enrich_finding
 
 # CWE-22: Path traversal.
 #

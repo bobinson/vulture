@@ -2,6 +2,7 @@
 
 
 import pytest
+
 from shared.discovery.helpers import (
     filter_static_endpoints,
     is_page_path,

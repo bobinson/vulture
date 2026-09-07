@@ -5,6 +5,7 @@ import time
 from unittest.mock import AsyncMock
 
 import pytest
+
 from discover_agent.learning_store import GraphQLSchemaCache, SessionLearnings
 from discover_agent.plugins import (
     DISCOVERY_PLUGINS,

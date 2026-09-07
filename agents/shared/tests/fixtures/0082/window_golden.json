@@ -1,0 +1,10 @@
+{
+  "hardcoded key": "1: import os\n2: AWS_KEY = '***REDACTED***'\n3: PASSWORD = '***REDACTED***'\n4: def f():",
+  "hardcoded pw": "1: import os\n2: AWS_KEY = '***REDACTED***'\n3: PASSWORD = '***REDACTED***'\n4: def f():\n5:     return AWS_KEY",
+  "narrow": "28: const line28 = 28;\n29: const line29 = 29;\n30: const line30 = 30;\n31: const line31 = 31;\n32: const line32 = 32;",
+  "no line": "",
+  "preset narrow": "PRESET BY SKILL",
+  "string line": "20: const line20 = 20;\n21: const line21 = 21;\n22: const line22 = 22;\n23: const line23 = 23;\n24: const line24 = 24;",
+  "unreadable": "",
+  "wide scope": "38: \tstep38()\n39: \tstep39()\n40: \tstep40()\n41: \tstep41()\n42: \tstep42()"
+}

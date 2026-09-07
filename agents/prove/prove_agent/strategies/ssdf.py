@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.strategies.base import (
     AttemptRecord,
     BaseStrategy,
@@ -26,14 +26,23 @@ from prove_agent.strategies.shared import (
 if TYPE_CHECKING:
     from prove_agent.protocols.detection import TargetCapabilities
 
+from shared.prompt.manifests.prove_plan import PROVE_PLAN_DOMAIN
+from shared.prompt.manifests.prove_reflect import (
+    PROVE_REFLECT_DOMAIN,
+)
+
 logger = logging.getLogger(__name__)
 
+# NOT the prompt source any more — feature 0089 Phase 2.6. The runtime renders
+# `prove/plan` / `prove/reflect` with `PROVE_PLAN_DOMAIN["ssdf"]` /
+# `PROVE_REFLECT_DOMAIN["ssdf"]`. These literals stay as the byte-pinned
+# transcription oracle (see the fuller note in `strategies/cwe.py`).
 _PLAN_PROMPT = """You are a NIST SSDF v1.1 compliance auditor. Given this SSDF finding, create an HTTP request to verify the compliance gap on the staging server.
 
 RULES:
 1. Use the discovered site map below to pick REAL URLs that exist on the target.
 2. Do NOT use "/" as the url_path — pick a specific endpoint.
-3. NEVER target static files (.js, .css, .png, .svg, .woff, .map files).
+3. NEVER target static files (.js, .css, .png, .svg, .woff, .map files) or build artifacts (_next/static/*, _buildManifest.js, etc.). These are NOT API endpoints.
 4. PREFER API endpoints (/api/*, /v1/*, /graphql), form actions, and backend routes.
 5. Each attempt MUST target a DIFFERENT endpoint or check a different aspect.
 6. For PO.5/PW.9: check response headers (HSTS, CSP, X-Frame-Options), probe debug endpoints.
@@ -46,13 +55,15 @@ Finding: {title}
 Category: {category}
 Description: {description}
 File: {file_path}:{line_start}
+Code: {code_snippet}
+Hints: {verification_hints}
 Staging URL: {staging_url}
 Attempt: {iteration}
 {prior_context}
 {site_context}
 
 Reply with ONLY a JSON object (no markdown, no explanation):
-{{"description":"what this tests","method":"GET or POST","url_path":"/real-path","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
+{{"description":"what this tests","method":"GET or POST","url_path":"/api/users","headers":{{}},"body":"","expected_indicators":["indicator"]}}"""
 
 _REFLECT_PROMPT = """You are a NIST SSDF v1.1 compliance auditor reflecting on failed verification attempts.
 
@@ -88,13 +99,18 @@ class SsdfStrategy(BaseStrategy):
         prior_context = build_prior_context(
             prior_attempts, reflection, cross_learnings,
         )
+        hints = finding.get("verification_hints", [])
+        hints_str = ", ".join(hints) if hints else "None"
         result = await llm_json_call(
-            _PLAN_PROMPT.format(
+            render_prove_prompt(
+                "prove/plan", PROVE_PLAN_DOMAIN["ssdf"],
                 title=finding.get("title", ""),
                 category=finding.get("category", ""),
                 description=finding.get("description", ""),
                 file_path=finding.get("file_path", ""),
                 line_start=finding.get("line_start", 0),
+                code_snippet=finding.get("code_snippet", ""),
+                verification_hints=hints_str,
                 staging_url=staging_url,
                 iteration=iteration,
                 site_context=ctx,
@@ -141,7 +157,8 @@ class SsdfStrategy(BaseStrategy):
         self, finding: dict, attempts: list[AttemptRecord],
     ) -> ReflectionResult:
         history = format_attempt_history(attempts)
-        result = await llm_json_call(_REFLECT_PROMPT.format(
+        result = await llm_json_call(render_prove_prompt(
+            "prove/reflect", PROVE_REFLECT_DOMAIN["ssdf"],
             title=finding.get("title", ""),
             category=finding.get("category", ""),
             description=finding.get("description", ""),

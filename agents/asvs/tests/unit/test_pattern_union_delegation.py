@@ -29,6 +29,7 @@ import pathlib
 import re
 
 import pytest
+
 from asvs_agent.skills import asvs_requirements_check as mod
 from asvs_agent.skills._cwe_patterns import (
     BROKEN_CRYPTO_PATTERNS,

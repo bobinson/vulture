@@ -106,6 +106,7 @@ def _connect() -> Optional[sqlite3.Connection]:
             for col, decl in (
                 ("window_sufficient", "INTEGER"),   # closure gate
                 ("evidence_line", "INTEGER"),       # feature 0072 T5.3
+                ("evidence_file", "TEXT"),          # feature 0089 item 4.2
             ):
                 if col not in existing_cols:
                     conn.execute(f"ALTER TABLE l5_cache ADD COLUMN {col} {decl}")
@@ -122,7 +123,50 @@ def _connect() -> Optional[sqlite3.Connection]:
 # v3-evidence: the verdict gained `evidence_line` (feature 0072 T5.3,
 # observation-only). Cached v2 rows lack it and must become unreachable —
 # the first post-deploy run judges from a cold cache, once, by design (§10).
-_VERDICT_SCHEMA_VERSION = "v3-evidence"
+# Bumped for the unconditional judge tools. The key carries no tool-mode
+# component, so without this bump a verdict reached WITHOUT tools stays
+# servable for the full 30-day TTL — suppressing the new capability on
+# exactly the findings already judged, which are the ones a reader looks
+# at first. Old rows become unreachable rather than being deleted.
+# Bumped again for item 4.2. Two reasons, either alone sufficient: the verdict
+# gained `evidence_file`, which a v5 row cannot carry; and the judge prompt now
+# asks for `evidence_line` in ONE coordinate space (the file's own) where v5
+# asked for it in two. A replayed v5 verdict's line was measured against the
+# renumbered window and would be served as though it were a file coordinate.
+# Bumped again for item 4.3. The verdict SHAPE is unchanged, and that is
+# exactly why it is worth saying why this still moves: a v6 verdict was
+# produced by a model that had been told to distrust two marker pairs, holding
+# tool results that carried no markers at all. Under v7 the same finding is
+# judged with the tool channel delimited and the policy stated per channel, so
+# a v6 row is a judgment made under different instructions — indistinguishable
+# from a v7 row in the cache, and served for the full 30-day TTL precisely on
+# the findings a reader looks at first. Old rows become unreachable rather than
+# being deleted.
+# Bumped again for item 4.8, and this one is a PROMPT change with no schema
+# change at all. `core/language` joins the judge's system turn, and because this
+# call site still renders `Mode.TRANSCRIBE` (item 4.1 owns the flip) the rule
+# that would confine the clause to the four language-pinning families does not
+# run here — so every model now judges under a prompt that binds its output
+# language and exempts quoted evidence from translation. A v7 row is a verdict
+# reached without either instruction; its `reasoning` may be in another
+# language and its `evidence_line` was produced under different guidance about
+# quoting. Indistinguishable from a v8 row in the cache, and servable for the
+# full 30-day TTL. Old rows become unreachable rather than being deleted.
+# Bumped again for item 4.1, the mode flip, and it is the largest prompt move
+# of the four: this call site renders `Mode.ADAPT` now, so for the first time
+# the judge's prompt DEPENDS ON THE MODEL. Three rules reach it. Rule 2 places
+# `core/untrusted` and the verdict contract at the head of the user turn as
+# well as in the system turn (item 4.7 declared that and could not ship it).
+# Rule 9 confines `core/language` to the four families whose profile pins the
+# output language, undoing the "every model gets it" of v8 for the other six.
+# Rule 1 folds the entire system turn into the user turn for a no-system-role
+# family. Measured on the default profile: system 7143 -> 6667 bytes, user
+# 79 -> 2063. A v8 row is therefore a verdict reached under a prompt that
+# stated its rules once instead of twice, and — depending on the family — said
+# something different about output language. The model is already part of the
+# cache key, so what this version adds is the PROMPT dimension the key cannot
+# otherwise see. Old rows become unreachable rather than being deleted.
+_VERDICT_SCHEMA_VERSION = "v9-judge-adapt"
 
 
 def cache_key(*, file_path: str, line_start: int, line_end: int,
@@ -160,7 +204,7 @@ def lookup(key: str) -> Optional[dict]:
         with _LOCK:
             row = conn.execute(
                 "SELECT exploitable, reasoning, model, language, judged_at, "
-                "window_sufficient, evidence_line "
+                "window_sufficient, evidence_line, evidence_file "
                 "FROM l5_cache WHERE cache_key = ?",
                 (key,),
             ).fetchone()
@@ -179,6 +223,10 @@ def lookup(key: str) -> Optional[dict]:
             # that as "not asserted" and keeps the finding protected.
             "window_sufficient": None if row[5] is None else bool(row[5]),
             "evidence_line": None if row[6] is None else int(row[6]),
+            # Feature 0089 item 4.2: the line's file. A replayed verdict must
+            # carry the WHOLE coordinate — a line without its file is the
+            # two-space ambiguity the item removed, reintroduced by the cache.
+            "evidence_file": row[7] or None,
         }
     except Exception as exc:
         log.warning("[validate.l5] cache lookup failed: %s", exc)
@@ -188,7 +236,8 @@ def lookup(key: str) -> Optional[dict]:
 def store(key: str, *, exploitable: float, reasoning: str,
           model: str, language: str,
           window_sufficient: Optional[bool] = None,
-          evidence_line: Optional[int] = None) -> None:
+          evidence_line: Optional[int] = None,
+          evidence_file: Optional[str] = None) -> None:
     """Best-effort write. Silent on failure (caching is a perf nicety,
     not a correctness requirement)."""
     conn = _connect()
@@ -200,10 +249,12 @@ def store(key: str, *, exploitable: float, reasoning: str,
             conn.execute(
                 "INSERT OR REPLACE INTO l5_cache "
                 "(cache_key, exploitable, reasoning, model, language, judged_at, "
-                "window_sufficient, evidence_line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "window_sufficient, evidence_line, evidence_file) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (key, float(exploitable), reasoning, model, language, time.time(),
                  None if window_sufficient is None else int(window_sufficient),
-                 None if evidence_line is None else int(evidence_line)),
+                 None if evidence_line is None else int(evidence_line),
+                 evidence_file or None),
             )
     except Exception as exc:
         log.warning("[validate.l5] cache store failed: %s", exc)

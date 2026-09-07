@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+
 from prove_agent.runner import prove_finding_with_timeout
 from prove_agent.strategies.base import (
     BaseStrategy,

@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -19,6 +20,7 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.framework_html import is_framework_style_injection
+from xss_agent.skills._check_id import cid
 
 # Template unsafe rendering
 TEMPLATE_UNSAFE_PATTERNS = [
@@ -124,6 +126,7 @@ def _check_template_unsafe(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-79",
+                **cid("xss.reflected.template_render"),
                 "title": "Reflected XSS via unsafe template rendering",
                 "description": (
                     f"Template renders content without escaping at line {line_num}. "
@@ -152,6 +155,7 @@ def _check_dom_writes(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-79",
+                **cid("xss.reflected.inner_html"),
                 "title": "Reflected XSS via innerHTML/document.write",
                 "description": (
                     f"Dynamic content written to DOM without sanitization "
@@ -179,6 +183,7 @@ def _check_server_response(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-79",
+                **cid("xss.reflected.server_response"),
                 "title": "Reflected XSS via server response",
                 "description": (
                     f"User input written directly to HTTP response without "

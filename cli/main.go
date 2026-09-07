@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -319,16 +320,21 @@ func main() {
 	switch cmd {
 	case "login":
 		cmdLogin(apiURL)
+	case "cancel":
+		if len(os.Args) < 3 {
+			fatalf("usage: vulture cancel <audit-id>")
+		}
+		cmdCancel(apiURL, os.Args[2], parseCancelFlags(os.Args[3:]))
 	case "scan":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "Usage: vulture scan <path-or-git-url> [--types %s] [--no-cache] [CI flags]\n", strings.Join(agentregistry.ScanAgentTypes(), ","))
 			os.Exit(1)
 		}
-		types, noCache, fresh, tier3, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[3:])
-		if ci.server != "" {
-			apiURL = ci.server
+		sf := parseScanFlags(os.Args[3:])
+		if sf.ci.server != "" {
+			apiURL = sf.ci.server
 		}
-		cmdScan(apiURL, os.Args[2], types, noCache, fresh, tier3, ci, validateLLM, validateLLMTopN)
+		cmdScan(apiURL, os.Args[2], sf)
 	case "discover", "discovery":
 		df := parseDiscoverFlags(os.Args[2:])
 		cmdDiscover(apiURL, df)
@@ -364,55 +370,155 @@ func main() {
 			printUsage()
 			os.Exit(1)
 		}
-		types, noCache, fresh, tier3, validateLLM, validateLLMTopN, ci := parseScanFlags(os.Args[2:])
-		if ci.server != "" {
-			apiURL = ci.server
+		sf := parseScanFlags(os.Args[2:])
+		if sf.ci.server != "" {
+			apiURL = sf.ci.server
 		}
-		cmdScan(apiURL, cmd, types, noCache, fresh, tier3, ci, validateLLM, validateLLMTopN)
+		cmdScan(apiURL, cmd, sf)
 	}
 }
 
 // parseScanFlags extracts --types, --no-cache, and CI flags from arguments.
-func parseScanFlags(args []string) (types []string, noCache bool, fresh bool, tier3 bool, validateLLM bool, validateLLMTopN int, ci ciFlags) {
-	types = agentregistry.ScanAgentTypes()
-	ci.output = "text"
+// scanFlags carries everything `scan` parses. A struct, not a positional
+// tuple: feature 0083 added three fields, and the old 7-tuple was already
+// destructured at two sites and passed to a 9-parameter cmdScan in a DIFFERENT
+// order (ci was last in the return, 7th in the call). With four adjacent bools
+// and two adjacent ints, a transposition would compile, vet clean, and pass the
+// suite. parseDiscoverFlags and parseProveFlags already use this shape.
+type scanFlags struct {
+	types                []string
+	noCache              bool
+	fresh                bool
+	tier3                bool
+	noLLM                bool
+	validateLLM          bool
+	validateLLMTopN      int
+	validateLLMBatchSize int
+	ci                   ciFlags
+}
+
+// buildScanConfig turns parsed flags into the audit `config` object. Extracted
+// so the mapping is testable without a server: it is where feature 0083's
+// contract lives, and where the pre-0083 golden table is pinned.
+func buildScanConfig(f scanFlags) map[string]interface{} {
+	cfg := map[string]interface{}{}
+	if f.noLLM {
+		// Flat key: feature 0081 routes it to EVERY agent, and
+		// shared_audit_kwargs already reads it for all seven scan agents.
+		cfg["use_llm"] = false
+	}
+	// The validate block is emitted when ANY of its three settings is present.
+	// Pre-0083 it was gated on `--validate-llm` alone, so --validate-llm-top-n
+	// on its own emitted nothing at all — the flag was dead twice over.
+	validateCfg := map[string]interface{}{}
+	if f.validateLLM {
+		validateCfg["llm"] = true
+	}
+	if f.validateLLMTopN > 0 {
+		validateCfg["llm_top_n"] = f.validateLLMTopN
+	}
+	if f.validateLLMBatchSize > 0 {
+		validateCfg["llm_batch_size"] = f.validateLLMBatchSize
+	}
+	if len(validateCfg) > 0 {
+		cfg["validate"] = validateCfg
+	}
+	if f.fresh {
+		cfg["fresh"] = true
+	}
+	if f.tier3 {
+		cfg["llm_tier3"] = true
+	}
+	return cfg
+}
+
+func parseScanFlags(args []string) scanFlags {
+	f := scanFlags{}
+	f.types = agentregistry.ScanAgentTypes()
+	f.ci.output = "text"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--types":
 			if i+1 < len(args) {
-				types = strings.Split(args[i+1], ",")
+				f.types = strings.Split(args[i+1], ",")
 				i++
 			}
 		case "--no-cache":
-			noCache = true
+			f.noCache = true
 		case "--fresh":
 			// Clean-room scan: ignore the prior-findings memory so the LLM
 			// isn't steered by (nor the result masked by) earlier audits of
 			// this source. Implies --no-cache — a fresh run must re-execute,
 			// not return a cached result. For critical tests / new models.
-			fresh = true
-			noCache = true
+			f.fresh = true
+			f.noCache = true
 		case "--llm-tier3":
 			// 0059: include Tier-3 (non-flagged, non-entry) files in the LLM
 			// sweep — full-tree coverage. Off by default (cost guard).
-			tier3 = true
+			f.tier3 = true
+		case "--no-llm":
+			// Feature 0083: skip the LLM GENERATE phase; skills still run, and
+			// the L5 judge is unaffected (it has its own switch). Emitted as a
+			// flat `use_llm:false`, which 0081 routes to every agent.
+			//
+			// Implies --no-cache: the cache is keyed on (source_id, types) and
+			// ignores config entirely, so without this a --no-llm scan would
+			// happily return a cached FULL-LLM result. --fresh sets the same
+			// pair for the same class of reason.
+			f.noLLM = true
+			f.noCache = true
 		case "--validate-llm":
 			// Feature 0046: opt in to L5 LLM judge for this audit.
-			validateLLM = true
+			f.validateLLM = true
+		case "--validate-llm-batch-size":
+			// Feature 0083: findings per judge call. Not a tuning nicety — a
+			// reasoning model's hidden thinking truncates the verdict JSON at
+			// the default of 10 and L5 returns ZERO verdicts. Measured.
+			if i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 {
+					f.validateLLMBatchSize = n
+				} else {
+					fatalf("--validate-llm-batch-size needs a positive integer, got %q", args[i+1])
+				}
+				i++
+			}
 		case "--validate-llm-top-n":
 			if i+1 < len(args) {
-				if n, err := strconv.Atoi(args[i+1]); err == nil && n >= 0 {
-					validateLLMTopN = n
+				// Feature 0083: was silent on a parse error, so
+				// `--validate-llm-top-n abc` scanned with the default and said
+				// nothing. 0 is rejected too: it would mean "judge nothing",
+				// which --no-validate-llm expresses without the ambiguity.
+				if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 {
+					f.validateLLMTopN = n
+				} else {
+					fatalf("--validate-llm-top-n needs a positive integer, got %q", args[i+1])
 				}
 				i++
 			}
 		default:
-			if consumed := parseCIFlag(args, i, &ci); consumed > 0 {
+			if consumed := parseCIFlag(args, i, &f.ci); consumed > 0 {
 				i += consumed - 1
+				continue
+			}
+			// Feature 0080: refuse silently-ignored flags.
+			//
+			// A real report: `scan --staging-url X --max-iterations 1233000000
+			// --allow-local --plugins semgrep` had FOUR flags discarded without
+			// a word. Two belong to `prove`, one does not exist, and plugins are
+			// server-side (VULTURE_PLUGINS). The user reasonably believed
+			// --max-iterations was bounding the run. It bounded nothing.
+			if strings.HasPrefix(args[i], "-") {
+				fatalf("unknown flag for `scan`: %s\n"+
+					"  scan accepts: --types --no-cache --fresh --no-llm --llm-tier3 "+
+					"--validate-llm --validate-llm-top-n --validate-llm-batch-size, "+
+					"plus the CI flags.\n"+
+					"  --staging-url and --max-iterations belong to `vulture prove`.\n"+
+					"  Plugins are enabled server-side via VULTURE_PLUGINS, not a CLI flag.",
+					args[i])
 			}
 		}
 	}
-	return
+	return f
 }
 
 // parseCIFlag parses a single CI flag at position i. Returns the number of
@@ -1167,7 +1273,8 @@ func cmdLogin(apiURL string) {
 	fmt.Printf("\n  Logged in as %s (%s)\n  Token saved to ~/%s/%s\n\n", auth.User.Name, auth.User.Email, configDir, tokenFile)
 }
 
-func cmdScan(apiURL string, target string, types []string, noCache bool, fresh bool, tier3 bool, ci ciFlags, validateLLM bool, validateLLMTopN int) {
+func cmdScan(apiURL string, target string, f scanFlags) {
+	types, noCache, ci := f.types, f.noCache, f.ci
 	token := resolveToken(ci.apiKey, apiURL)
 
 	// Determine source type
@@ -1212,23 +1319,7 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, fresh b
 
 	// Create audit
 	auditReq := buildAuditBody(src.ID, types, ci)
-	cfg := map[string]interface{}{}
-	if validateLLM {
-		// Feature 0046 §L: per-audit config override for L5 LLM judge.
-		validateCfg := map[string]interface{}{"llm": true}
-		if validateLLMTopN > 0 {
-			validateCfg["llm_top_n"] = validateLLMTopN
-		}
-		cfg["validate"] = validateCfg
-	}
-	if fresh {
-		// Clean-room: backend skips the prior-findings memory for this audit.
-		cfg["fresh"] = true
-	}
-	if tier3 {
-		// 0059: include the Tier-3 long tail in the LLM sweep (full-tree).
-		cfg["llm_tier3"] = true
-	}
+	cfg := buildScanConfig(f)
 	if len(cfg) > 0 {
 		auditReq["config"] = cfg
 	}
@@ -1247,6 +1338,21 @@ func cmdScan(apiURL string, target string, types []string, noCache bool, fresh b
 	// Stream results
 	fmt.Fprintln(os.Stderr, "  Streaming results...")
 	fmt.Fprintln(os.Stderr, strings.Repeat("-", 60))
+	// Feature 0080: a Ctrl-C must stop the RUN, not just this client.
+	//
+	// The stream below is a broadcaster SUBSCRIBER, not the producer. With
+	// VULTURE_AUDIT_AUTODISPATCH (default on, feature 0071) the run is started
+	// server-side by POST /api/audits and keeps going regardless of who is
+	// watching -- deliberately, so `vulture scan` cannot orphan it by exiting.
+	// Dropping this subscription therefore cancels nothing: a Ctrl-C'd scan was
+	// measured running 71 further minutes and persisting 394 findings.
+	//
+	// So SIGINT explicitly asks the server to cancel. The handler is installed
+	// BEFORE the stream opens, because the window between POST and the stream
+	// being ready is exactly when an impatient user hits Ctrl-C.
+	stopCancelWatch := watchForInterrupt(apiURL, a.ID, token)
+	defer stopCancelWatch()
+
 	streamAudit(apiURL, a.ID, token)
 
 	// Fetch final results
@@ -2202,4 +2308,92 @@ func cliINIPath() string {
 
 func cliLoadINI(path string) map[string]string {
 	return iniutil.ParseINI(path)
+}
+
+// watchForInterrupt cancels the server-side run when the user interrupts the
+// CLI, and returns a function that tears the handler down.
+//
+// Best effort by construction: SIGKILL, a dropped SSH session or a crashed
+// terminal cannot run this, which is why the server-side cancel endpoint is the
+// real fix and this is the convenience on top of it. A second interrupt exits
+// immediately rather than waiting on the request.
+func watchForInterrupt(apiURL, auditID, token string) func() {
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-sigs:
+		}
+		fmt.Fprintf(os.Stderr, "\n  Interrupted — asking the server to cancel audit %s ...\n", auditID)
+		go func() {
+			// A second interrupt while the cancel is in flight exits now.
+			<-sigs
+			fmt.Fprintln(os.Stderr, "  Second interrupt — exiting; the run may still be going.")
+			fmt.Fprintf(os.Stderr, "  Stop it with: vulture cancel %s\n", auditID)
+			os.Exit(130)
+		}()
+		if err := cancelAudit(apiURL, auditID, token); err != nil {
+			fmt.Fprintf(os.Stderr, "  Cancel failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  The run is STILL GOING. Stop it with: vulture cancel %s\n", auditID)
+			os.Exit(130)
+		}
+		fmt.Fprintln(os.Stderr, "  Cancelled.")
+		os.Exit(130)
+	}()
+	return func() { signal.Stop(sigs); close(done) }
+}
+
+// cancelAudit asks the server to stop a dispatched run (feature 0080).
+func cancelAudit(apiURL, auditID, token string) error {
+	req, err := http.NewRequest("POST", apiURL+"/api/audits/"+auditID+"/cancel", strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusAccepted:
+		return nil
+	case resp.StatusCode == http.StatusConflict:
+		// Already finished, or owned by another replica. Nothing to stop.
+		return nil
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return fmt.Errorf("cancel returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+}
+
+// parseCancelFlags reads the CI flags `cancel` shares with the other commands.
+func parseCancelFlags(args []string) ciFlags {
+	var ci ciFlags
+	ci.output = "text"
+	for i := 0; i < len(args); i++ {
+		if consumed := parseCIFlag(args, i, &ci); consumed > 0 {
+			i += consumed - 1
+			continue
+		}
+		if strings.HasPrefix(args[i], "-") {
+			fatalf("unknown flag for `cancel`: %s", args[i])
+		}
+	}
+	return ci
+}
+
+// cmdCancel stops a dispatched run. Feature 0080.
+func cmdCancel(apiURL, auditID string, ci ciFlags) {
+	token := resolveToken(ci.apiKey, apiURL)
+	if err := cancelAudit(apiURL, auditID, token); err != nil {
+		fatalf("cancel: %v", err)
+	}
+	fmt.Printf("  Cancel requested for audit %s\n", auditID)
 }

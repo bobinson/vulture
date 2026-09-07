@@ -30,8 +30,35 @@ extend = "agents/ruff.toml"
 # Vendored, generated, or intentionally-broken trees that are never linted.
 extend-exclude = [
     "agents/cwe/tests/corpus/fixtures",
+    "agents/cwe/tests/fixtures",
     "**/node_modules",
     "**/.venv",
     "**/dist",
     "frontend",
 ]
+
+# `agents` is the OpenAI Agents SDK — a THIRD-PARTY package — but this repo also
+# contains a directory literally named `agents/`. CI runs `cd agents && ruff
+# check .`, so its cwd is inside that directory and the name resolves to the
+# installed package. A run from the REPO ROOT sees the directory first and would
+# classify it first-party. Pin it, rather than leave the answer to cwd.
+[lint.isort]
+known-third-party = ["agents"]
+
+# ── On `ruff check --config ruff.toml` ────────────────────────────────────────
+#
+# Use `ruff check .` (or CI's `cd agents && ruff check .`). Both are clean.
+#
+# Passing `--config` FORCES this file as the sole configuration and switches off
+# the nearest-first, per-file resolution the header describes, so
+# `agents/cwe/pyproject.toml` and `agents/shared/pyproject.toml` stop applying to
+# their own subtrees. It then reports ~110 import-order findings CI does not
+# have, and applying them would RED the CI run.
+#
+# This is not a gap to be closed. The classification is per-subtree BY DESIGN:
+# for a file under `agents/cwe/`, `cwe_agent` is first-party and `shared` is
+# third-party; for a file under `agents/xss/`, `cwe_agent` is third-party. A
+# single global `known-first-party` cannot express both at once — measured:
+# baseline 177, `known-third-party = ["agents"]` 110 (kept, it is simply true),
+# adding `src` 144, adding a global `known-first-party` list 142. Every attempt
+# to force agreement made it worse than the pin alone.

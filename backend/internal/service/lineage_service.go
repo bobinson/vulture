@@ -40,9 +40,24 @@ func (s *lineageService) ProcessAuditFindings(audit *model.Audit, source *model.
 		if f.Fingerprint == "" {
 			continue
 		}
-		currentFingerprints[f.Fingerprint] = true
 		agentTypes[f.AgentType] = true
-		fps = append(fps, f.Fingerprint)
+		// Feature 0079 A3, the dual-key bridge. Under VULTURE_FINDING_IDENTITY
+		// =enforce, Fingerprint holds the NEW v2 value and LegacyFingerprint the
+		// v1 one the stored rows are keyed on. Both are looked up and both count
+		// as "currently present".
+		//
+		// Without this the first enforce run would find no match for any of the
+		// 5,109 stored lineage rows, detectFixed would mark every one of them
+		// FIXED, and createNewLineage would mint a fresh VLT ref for every
+		// finding — a one-time destruction of human triage state
+		// (accepted_risk, false_positive, notes, ticket_url).
+		//
+		// LegacyFingerprint is json:"-" and in no column list, so this bridge
+		// lives entirely in memory and needs no backfill migration.
+		for _, fp := range fingerprintsOf(f) {
+			currentFingerprints[fp] = true
+			fps = append(fps, fp)
+		}
 	}
 
 	// Batch-fetch existing lineage records
@@ -56,8 +71,14 @@ func (s *lineageService) ProcessAuditFindings(audit *model.Audit, source *model.
 		if f.Fingerprint == "" {
 			continue
 		}
-		key := f.Fingerprint + "|" + f.AgentType
-		existing := existingMap[key]
+		existing := existingMap[f.Fingerprint+"|"+f.AgentType]
+		if existing == nil && f.LegacyFingerprint != "" {
+			// Fall back to the pre-0079 identity so a row stored under v1 is
+			// UPDATED in place rather than duplicated. updateExistingLineage
+			// upserts `existing`, which still carries its original fingerprint,
+			// so the row keeps its identity and its ref_number.
+			existing = existingMap[f.LegacyFingerprint+"|"+f.AgentType]
+		}
 
 		if existing == nil {
 			if err := s.createNewLineage(audit, source, &f, now); err != nil {
@@ -229,4 +250,14 @@ func (s *lineageService) ListByAudit(auditID string) ([]model.FindingLineage, er
 
 func (s *lineageService) GetTimeline(lineageID string) ([]model.LineageEvent, error) {
 	return s.repo.GetEvents(lineageID)
+}
+
+// fingerprintsOf returns every identity a finding may be stored under: its
+// current fingerprint, plus the pre-0079 one when the A3 identity flip is
+// active. Feature 0079 A3.
+func fingerprintsOf(f model.Finding) []string {
+	if f.LegacyFingerprint == "" || f.LegacyFingerprint == f.Fingerprint {
+		return []string{f.Fingerprint}
+	}
+	return []string{f.Fingerprint, f.LegacyFingerprint}
 }

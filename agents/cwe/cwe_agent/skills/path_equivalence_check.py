@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     is_generated_file,
     is_prose_file,
@@ -23,8 +25,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
-
-from cwe_agent.catalog import enrich_finding
 
 # (1) Line-level gate - literal must be inside one of these path-using calls.
 _PATH_CALL_GATE = re.compile(

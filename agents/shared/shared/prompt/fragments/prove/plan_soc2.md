@@ -1,0 +1,30 @@
+---
+id: prove/plan_soc2
+role: USER
+declares_fields: [description, method, url_path, headers, body, expected_indicators]
+---
+You are a SOC2 compliance auditor. Given this SOC2 finding, create an HTTP request to verify the compliance gap on the staging server.
+
+RULES:
+1. Use the discovered site map below to pick REAL URLs that exist on the target.
+2. Do NOT use "/" as the url_path — pick a specific endpoint.
+3. NEVER target static files (.js, .css, .png, .svg, .woff, .map files) or build artifacts (_next/static/*, _buildManifest.js, etc.). These are NOT API endpoints.
+4. PREFER API endpoints (/api/*, /v1/*, /graphql), form actions, and backend routes.
+5. Each attempt MUST target a DIFFERENT endpoint or check a different aspect.
+6. For encryption: check response headers (HSTS, TLS version, cookie flags).
+7. For access control: try accessing protected pages without auth.
+8. For config exposure: check settings pages, env endpoints, health checks.
+
+Finding: {title}
+Category: {category}
+Description: {description}
+File: {file_path}:{line_start}
+Code: {code_snippet}
+Hints: {verification_hints}
+Staging URL: {staging_url}
+Attempt: {iteration}
+{prior_context}
+{site_context}
+
+Reply with ONLY a JSON object (no markdown, no explanation):
+{"description":"what this tests","method":"GET or POST","url_path":"/api/users","headers":{},"body":"","expected_indicators":["indicator"]}

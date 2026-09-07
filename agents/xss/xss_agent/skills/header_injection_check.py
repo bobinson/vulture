@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -18,6 +19,7 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.header_taint import header_taint_pattern
+from xss_agent.skills._check_id import cid
 
 # User input in response headers (CWE-113)
 HEADER_INJECTION_PATTERNS = [
@@ -126,6 +128,7 @@ def _check_header_injection(
             findings.append({
                 "severity": "high",
                 "category": "CWE-113",
+                **cid("xss.header.crlf_injection"),
                 "title": "HTTP header injection via user input",
                 "description": (
                     f"User input included in HTTP response header "
@@ -155,6 +158,7 @@ def _check_weak_csp(
             findings.append({
                 "severity": "medium",
                 "category": "CWE-644",
+                **cid("xss.header.weak_csp"),
                 "title": "Weak Content-Security-Policy allows XSS",
                 "description": (
                     f"CSP contains unsafe-inline, unsafe-eval, or wildcard "
@@ -183,6 +187,7 @@ def _check_meta_refresh(
             findings.append({
                 "severity": "high",
                 "category": "CWE-113",
+                **cid("xss.header.meta_refresh"),
                 "title": "Meta refresh with user-controlled URL",
                 "description": (
                     f"Meta refresh or Refresh header uses user-controlled "

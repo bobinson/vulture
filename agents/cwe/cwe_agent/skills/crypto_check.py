@@ -8,20 +8,6 @@ from pathlib import Path
 from typing import NamedTuple
 
 from agents import function_tool
-from shared.tools.file_scanner import (
-    COMMENT_INDICATORS,
-    SCANNER_DEF_LINE,
-    effective_name,
-    effective_suffix,
-    is_generated_file,
-    is_prose_file,
-    is_test_file,
-    read_file_lines,
-    read_file_safe,
-    scan_code_files,
-)
-from shared.tools.snippet import check_context, extract_snippet
-from shared.tools.weak_cipher import NODE_CIPHER_FACTORY_WEAK_SPEC
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._args import arg_slot, call_span_end, split_call_args
@@ -38,6 +24,20 @@ from cwe_agent.skills.weak_entropy_check import (
 from cwe_agent.skills.weak_entropy_check import (
     _looks_like_flow as _entropy_flow_target,
 )
+from shared.tools.file_scanner import (
+    COMMENT_INDICATORS,
+    SCANNER_DEF_LINE,
+    effective_name,
+    effective_suffix,
+    is_generated_file,
+    is_prose_file,
+    is_test_file,
+    read_file_lines,
+    read_file_safe,
+    scan_code_files,
+)
+from shared.tools.snippet import check_context, extract_snippet
+from shared.tools.weak_cipher import NODE_CIPHER_FACTORY_WEAK_SPEC
 
 # CWE-327: Broken or risky cryptographic algorithm.
 #

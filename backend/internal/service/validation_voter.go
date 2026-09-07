@@ -50,6 +50,14 @@ const (
 	ObligationDischarged = "discharged"
 	ObligationRefuted    = "refuted"
 
+	// Deterministic L1 checks that read the cited source and withhold
+	// confirmation on what they found there. PARITY: mirrored in
+	// validate/voter.py as SECRET_VALUE_* / INPUT_VALIDATION_*.
+	SecretValueID          = "secret_value"
+	SecretValueAbsent      = "absent"
+	InputValidationID      = "input_validation"
+	InputValidationGuarded = "guarded"
+
 	// A promoting llm_judge verdict carries its admissibility in Result,
 	// decided at ingestion in the agent where the source is readable.
 	JudgeCited   = "real_bug"
@@ -179,6 +187,24 @@ func mayConfirm(checks []VoterCheck) bool {
 	}
 	for _, c := range checks {
 		if c.ID == ObligationID && c.Result == ObligationUnknown {
+			return false
+		}
+		// A secret-class finding whose cited line verifiably assigns NO value
+		// may not be CONFIRMED. The value is what the finding is about, and its
+		// absence was read from source — a fact, not an opinion, so a model
+		// verdict must not outrank it.
+		if c.ID == SecretValueID && c.Result == SecretValueAbsent {
+			return false
+		}
+		// An injection finding whose every interpolated value is provably
+		// validated may not be CONFIRMED either. Same grounds: the identifier
+		// is guarded by an anchored pattern or a membership test in the cited
+		// file, so a judge verdict formed on a narrow window cannot outrank it.
+		//
+		// Both withhold the LABEL rather than asserting likely_fp — a guard can
+		// be removed tomorrow, and a file-scope guard need not cover every path
+		// into the sink.
+		if c.ID == InputValidationID && c.Result == InputValidationGuarded {
 			return false
 		}
 	}

@@ -12,13 +12,14 @@ from collections.abc import Generator
 from functools import lru_cache
 from typing import Any
 
-from shared.audit_runner import run_combined_audit
-from shared.llm.provider import get_context_window, get_max_findings
-from shared.tools.memory_client import build_prior_context
-
 from asvs_agent.catalog import build_catalog_context, load_catalog
 from asvs_agent.config import ALL_CATEGORIES
 from asvs_agent.skills import SKILL_MAP, SKILL_TOOLS
+from shared.audit_kwargs import shared_audit_kwargs
+from shared.audit_runner import run_combined_audit
+from shared.llm.provider import get_context_window, get_max_findings
+from shared.prompt.manifests.generate import domain_instructions
+from shared.tools.memory_client import build_prior_context
 
 _log = logging.getLogger(__name__)
 
@@ -101,6 +102,15 @@ def _prioritized_req_ids(limit: int = 60) -> list[str]:
     return selected
 
 
+# NOT the prompt source any more — feature 0089 Phase 2.5 moved that to the
+# fragment `domains/asvs`, named at the `run_combined_audit` call below and
+# rendered by `domain_instructions()` (see its note in
+# `shared/prompt/manifests/generate.py`). This literal stays as the
+# transcription's INDEPENDENT oracle: `test_0089_manifest_generate.py` reads it
+# out of this file by AST and asserts the fragment equals it byte for byte, so
+# it is the one assertion that can still see the fragment drift from the prompt
+# this agent shipped. Do not reword, reformat or delete it: edit the fragment,
+# then this, together.
 INSTRUCTIONS = """You are an ASVS (Application Security Verification Standard)
 auditor using OWASP ASVS v5.0.0 — 345 requirements across 17 chapters and 3
 verification levels (L1, L2, L3).
@@ -138,7 +148,6 @@ For each finding, provide:
 - description: detailed explanation with data-flow trace.
 - file_path, line_start, line_end.
 - recommendation: actionable fix.
-- linked_cwe (optional): if the req maps to a CWE in our crosswalk, cite it.
 
 Cite ASVS req IDs in the form 'ASVS-V{X}.{Y}.{Z}' so findings can be
 grouped by chapter in the frontend.
@@ -176,39 +185,45 @@ def run_audit(
 ) -> Generator[str, None, None]:
     """Execute the ASVS audit and yield SSE events."""
     categories = config.get("categories", ALL_CATEGORIES)
-    preloaded = prior_findings if prior_findings else None
-    max_f = get_max_findings()
-    context = _safe_build_prior_context(source_path, preloaded, max_f)
+    # prior_findings passed straight through: the old
+    # `preloaded = prior_findings if prior_findings else None` was a no-op,
+    # because build_prior_context already branches on truthiness.
+    context = _safe_build_prior_context(source_path, prior_findings, get_max_findings())
 
     model = os.environ.get("VULTURE_LLM_MODEL")
     # Scale catalog context to the active model's window so small local
     # models don't waste budget on requirements they won't have room to
     # analyze anyway.
     catalog_ctx = _build_llm_catalog_context(get_context_window(model))
-    enhanced_instructions = INSTRUCTIONS
-    if catalog_ctx:
-        enhanced_instructions += (
-            "\n\n## ASVS Catalog Reference\n"
-            "Use this catalog data to identify requirement violations:\n\n"
-            + catalog_ctx
-        )
+    # The per-run half of the system turn. It is NOT a fragment: the catalog
+    # body is selected per audit from the active model's window, so it is a
+    # value, not prompt text. Appended to the library's render at the call site
+    # below, in the position and with the bytes the pre-2.5 concatenation used.
+    catalog_suffix = (
+        "\n\n## ASVS Catalog Reference\n"
+        "Use this catalog data to identify requirement violations:\n\n"
+        + catalog_ctx
+    ) if catalog_ctx else ""
 
-    use_llm_val = config.get("use_llm")
-    # Feature 0046: per-audit override for L5 LLM judge.
-    _v = config.get("validate")
-    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
+    _shared = shared_audit_kwargs(
+        config, source_path, prior_findings, "asvs", prior_context=context,
+    )
+    
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
         categories=categories,
         skill_map=SKILL_MAP,
         domain_label="ASVS requirements",
-        prior_context=context,
+        **_shared,
         skill_tools=SKILL_TOOLS,
-        instructions=enhanced_instructions,
+        instructions=domain_instructions(
+            "domains/asvs",
+        ) + catalog_suffix,
         model=model,
-        use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
-        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
-        # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
-        llm_tier3=config.get("llm_tier3"),
+        # 0089 Phase 2.3 — stated, not defaulted (see run_combined_audit's
+        # `category_enum` docs). `None`, deliberately: ASVS declares one coarse
+        # key (`asvs_requirements`) while findings carry chapter ids (V1..V17),
+        # so conforming to the declared set would erase the chapter.
+        category_enum=None,
     )

@@ -1,7 +1,6 @@
 """XSS vulnerability scanner agent FastAPI application."""
 
 from shared.transport.sse_app import create_sse_app
-
 from xss_agent.agent import run_audit
 from xss_agent.config import AGENT_INFO
 

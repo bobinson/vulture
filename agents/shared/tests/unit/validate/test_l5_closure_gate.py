@@ -169,7 +169,37 @@ class TestCacheCarriesClosure:
             check_id="c", model="m",
         )
         # v3-evidence: 0072 T5.3 added evidence_line to the verdict schema.
-        assert l5_cache._VERDICT_SCHEMA_VERSION == "v3-evidence"
+        # v4-tools: the judge's read-only tools became unconditional, so a
+        # verdict reached WITHOUT them must not be replayed for up to 30 days.
+        # The invariant this test guards (a schema/capability change bumps the
+        # version, making pre-change rows unreachable) is unchanged.
+        # v5-tool-trigger: feature 0089 §10.1 inverted the tool contract
+        # (positive obligation first, real budget interpolated) and qualified
+        # the abstention sentence. A verdict reached under the OLD prompt —
+        # which measured zero tool calls — must not be replayed for 30 days.
+        # v6-one-coordinate-space: feature 0089 item 4.2 gave the verdict
+        # `evidence_file` and put `evidence_line` in ONE coordinate space (the
+        # file's own numbering). A v5 row carries no file and its line was
+        # measured against a renumbered window, so replaying it would serve a
+        # snippet-relative number as though it were a file coordinate.
+        # v7-untrusted-by-channel: item 4.3 states the untrusted policy per
+        # CHANNEL and delimits the judge's tool results, which carried no
+        # markers at all. A v6 row was judged by a model told to distrust two
+        # marker pairs while reading unmarked tool output — a judgment made
+        # under different instructions, and indistinguishable from a v7 row.
+        # v8-output-language-pin: item 4.8 adds `core/language` to the
+        # judge's system turn. The site renders TRANSCRIBE, so the clause
+        # reaches every model, not just the four families whose profile pins
+        # the output language: a v7 row was judged with no bound output
+        # language and no instruction to copy quoted evidence verbatim.
+        # v9-judge-adapt: item 4.1 flips the call site to `Mode.ADAPT`, so the
+        # judge's prompt now depends on the MODEL. The mirror puts the verdict
+        # contract and the untrusted policy in the user turn as well as the
+        # system turn, rule 9 takes the v8 language clause back off the six
+        # families that do not pin, and a no-system-role family gets one turn
+        # instead of two. A v8 row was judged under a prompt none of those
+        # rules had touched.
+        assert l5_cache._VERDICT_SCHEMA_VERSION == "v9-judge-adapt"
         # A version bump must change the key, so pre-change rows go unreachable.
         old = l5_cache._VERDICT_SCHEMA_VERSION
         try:

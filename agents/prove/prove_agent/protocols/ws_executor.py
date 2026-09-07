@@ -6,13 +6,21 @@ import logging
 
 import websockets
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.protocols.detection import TargetCapabilities, to_ws_url
 from prove_agent.strategies.base import (
     ExecutionResult,
     FailureReason,
     ProbeProtocol,
     ProofPlan,
+)
+from prove_agent.strategies.shared import (
+    _as_bool,
+    rejected_path_result,
+    validate_url_path,
+)
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,15 +29,21 @@ _WS_CONNECT_TIMEOUT = 10.0
 _WS_RECV_TIMEOUT = 5.0
 _MAX_MESSAGES = 5
 
+# NOT the prompt source any more — feature 0089 Phase 2.6. The runtime renders
+# `prove/analyze` with `PROVE_ANALYZE_DOMAIN["ws"]` (see `execute_websocket`
+# below). This literal stays as the byte-pinned transcription oracle (see the
+# fuller note in `strategies/cwe.py`).
 _ANALYZE_PROMPT = """Did this WebSocket response confirm the vulnerability?
 
 Finding: {title} ({category})
-Request: WebSocket message to {url}
-Messages received: {messages}
 Expected indicators: {expected_indicators}
 
 Reply with JSON only:
-{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}"""
+{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}
+If the response does not clearly confirm or refute the finding, set "conclusive" to false.
+
+Request: WebSocket message to {url}
+Messages received: {messages}"""
 
 
 async def execute_websocket(
@@ -40,7 +54,10 @@ async def execute_websocket(
     finding_title: str,
 ) -> ExecutionResult:
     """Execute a WebSocket probe — connect, send, collect messages, analyze."""
-    ws_url = to_ws_url(staging_url, plan.url_path)
+    safe_path = validate_url_path(plan.url_path)
+    if safe_path is None:
+        return rejected_path_result(plan.url_path, ProbeProtocol.WEBSOCKET.value)
+    ws_url = to_ws_url(staging_url, safe_path)
 
     try:
         messages: list[str] = []
@@ -87,7 +104,8 @@ async def execute_websocket(
         combined = "\n".join(f"[{i+1}] {m}" for i, m in enumerate(messages))
         snippet = combined[:500]
         try:
-            llm_result = await llm_json_call(_ANALYZE_PROMPT.format(
+            llm_result = await llm_json_call(render_prove_prompt(
+                "prove/analyze", PROVE_ANALYZE_DOMAIN["ws"],
                 title=finding_title,
                 category=finding_category,
                 url=ws_url,
@@ -95,8 +113,8 @@ async def execute_websocket(
                 expected_indicators=json.dumps(plan.expected_indicators),
             ))
             return ExecutionResult(
-                conclusive=llm_result.get("conclusive", False),
-                reproduced=llm_result.get("reproduced", False),
+                conclusive=_as_bool(llm_result.get("conclusive", False)),
+                reproduced=_as_bool(llm_result.get("reproduced", False)),
                 evidence=llm_result.get("evidence", f"WS: {len(messages)} messages"),
                 response_snippet=snippet,
                 protocol_used=ProbeProtocol.WEBSOCKET.value,

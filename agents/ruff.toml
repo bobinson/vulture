@@ -46,3 +46,33 @@ select = [
 #
 # NB: FURB192 (sorted(...)[0] -> min) is a preview rule, intentionally not
 # enabled (turning on `preview` pulls in unrelated preview rules).
+
+# ── Who owns which import ─────────────────────────────────────────────────────
+#
+# Stated here, in the base every config extends, because otherwise the answer
+# depends on the CWD of whoever runs ruff — and it was genuinely inconsistent:
+# `shared` is Vulture's own library, yet it sorted as first-party inside
+# `agents/shared/**` and as third-party inside `agents/cwe/**`. Same library,
+# two answers, purely because ruff resolved it per subtree. Cross-agent imports
+# exist (chaos_agent, prove_agent and discover_agent are each imported from
+# outside their own tree), so "these packages are ours" is one true statement
+# for the whole repo, not a per-folder one.
+#
+# `agents` is the OPPOSITE case and needs pinning for the same reason: it is the
+# third-party OpenAI Agents SDK, but this repo also has a directory named
+# `agents/`, so a run from the repo root would otherwise call it ours.
+[lint.isort]
+known-first-party = [
+    "asvs_agent",
+    "chaos_agent",
+    "cwe_agent",
+    "discover_agent",
+    "do178c_agent",
+    "owasp_agent",
+    "prove_agent",
+    "shared",
+    "soc2_agent",
+    "ssdf_agent",
+    "xss_agent",
+]
+known-third-party = ["agents"]

@@ -1,0 +1,25 @@
+{
+ "juice-shop": {
+  "total": 32,
+  "by_check": {
+   "cwe.insufficient_logging.cwe_778": 32
+  }
+ },
+ "vulture": {
+  "total": 439,
+  "by_check": {
+   "cwe.insufficient_logging.auth_decision": 3,
+   "cwe.insufficient_logging.cwe_778": 258,
+   "cwe.insufficient_logging.go_swallow": 168,
+   "cwe.insufficient_logging.promise_swallow": 10
+  }
+ },
+ "togetherapp": {
+  "total": 77,
+  "by_check": {
+   "cwe.insufficient_logging.auth_decision": 1,
+   "cwe.insufficient_logging.cwe_778": 75,
+   "cwe.insufficient_logging.promise_swallow": 1
+  }
+ }
+}

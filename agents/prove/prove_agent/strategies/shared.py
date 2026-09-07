@@ -4,19 +4,24 @@ import json
 import logging
 import os
 import re
+from typing import Any
 
 import httpx
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.strategies.base import (
     AttemptRecord,
     ExecutionResult,
     FailureReason,
+    ProbeProtocol,
     ProofPlan,
     ReflectionResult,
 )
 from prove_agent.strategies.rule_analyzer import analyze_response
 from prove_agent.techniques import pick_next_technique
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -560,17 +565,105 @@ async def retry_with_backoff(
             await asyncio.sleep(delay)
     raise last_exc  # type: ignore[misc]
 
+# --- Untrusted model output: verdicts and URL paths ---
+
+_AFFIRMATIVE = frozenset({"true", "yes", "1"})
+
+
+def _as_bool(v: Any) -> bool:
+    """True only for a real boolean True or an explicit affirmative string.
+
+    The exploit-confirmation verdict is model-authored; before this, the
+    string "false" was truthy and marked a finding REPRODUCED.
+    """
+    if v is True:
+        return True
+    return str(v).strip().casefold() in _AFFIRMATIVE
+
+
+_MAX_URL_PATH_CHARS = 2048
+
+# C0 controls plus DEL. Neither client tolerates these usefully: httpx raises
+# InvalidURL (so a rejectable plan is reported as a transport failure instead),
+# and websockets 16.0 silently DELETES them — "/x\r\nHost: evil" is probed as
+# "/xHost: evil", i.e. the path probed is not the path planned.
+_CONTROL_CHARS = frozenset(chr(c) for c in range(0x20)) | {"\x7f"}
+
+# Table-driven so each new rejection costs a row, not a branch (complexity <= 5).
+_URL_PATH_REJECTIONS: tuple[tuple[Any, str], ...] = (
+    (lambda p: not p, "empty"),
+    (lambda p: len(p) > _MAX_URL_PATH_CHARS, f"longer than {_MAX_URL_PATH_CHARS} chars"),
+    (lambda p: not p.startswith("/"), "not rooted at '/'"),
+    (lambda p: p.startswith("//"), "protocol-relative — would repoint the host"),
+    # A WHATWG parser folds "\" to "/", so "/\evil.host/x" IS the protocol-relative
+    # case above. Our clients happen to be RFC-3986 parsers that keep the host, but
+    # the guard must not rest on which parser is linked. A real path escapes it %5C.
+    (lambda p: "\\" in p, "contains a backslash — folds to '//' under a WHATWG parser"),
+    (lambda p: not _CONTROL_CHARS.isdisjoint(p), "contains a control character"),
+    (lambda p: "@" in p, "contains '@' — would repoint the host via userinfo"),
+    (lambda p: "://" in p, "contains a scheme separator"),
+    (lambda p: ".." in p.split("?")[0].split("#")[0].split("/"), "contains a '..' segment"),
+)
+
+
+def _url_path_rejection(path: str) -> str:
+    """Return the reason this path is unusable, or "" if it is acceptable."""
+    for predicate, reason in _URL_PATH_REJECTIONS:
+        if predicate(path):
+            return reason
+    return ""
+
+
+def validate_url_path(path: str) -> str | None:
+    """The model authors this path; it is concatenated onto the target
+    origin. Returns the path, or None (caller logs and skips).
+
+    A bare join accepts "//evil.host/x" and "@evil.host/", both of which make
+    the probe leave the staging origin entirely.
+    """
+    if not isinstance(path, str):
+        logger.warning("Rejecting model-authored URL path %r: not a string", path)
+        return None
+    reason = _url_path_rejection(path)
+    if not reason:
+        return path
+    logger.warning("Rejecting model-authored URL path %r: %s", path, reason)
+    return None
+
+
+def rejected_path_result(path: str, protocol: str = ProbeProtocol.HTTP.value) -> ExecutionResult:
+    """Skip-this-attempt result for a path validate_url_path refused.
+
+    Skipping rather than raising keeps one bad plan from ending the whole
+    verification loop — the next iteration can plan a different path.
+    """
+    return ExecutionResult(
+        conclusive=False,
+        reproduced=False,
+        evidence=f"Skipped unsafe plan URL path: {path!r}",
+        failure_reason=FailureReason.FORMAT_ERROR,
+        protocol_used=protocol,
+    )
+
+
+# NOT the prompt source any more — feature 0089 Phase 2.6 collapsed the three
+# per-protocol analyze copies onto one template (`prove/analyze`), rendered with
+# `PROVE_ANALYZE_DOMAIN["http"]` (see `execute_and_analyze` below). http is the
+# base the analyze family is transcribed from. This literal stays as the
+# byte-pinned transcription oracle (see the fuller note in `strategies/cwe.py`).
 _ANALYZE_PROMPT = """Did this HTTP response confirm the vulnerability?
 
 Finding: {title} ({category})
-Request: {method} {url}
-Status: {status_code}
-Response headers: {response_headers}
-Response (truncated): {response_snippet}
 Expected indicators: {expected_indicators}
 
 Reply with JSON only:
-{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}"""
+{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}
+If the response does not clearly confirm or refute the finding, set "conclusive" to false.
+
+Request: {method} {url}
+Status: {status_code}
+Response headers: {response_headers}
+Response (truncated): {response_snippet}"""
 
 
 async def execute_and_analyze(
@@ -589,7 +682,10 @@ async def execute_and_analyze(
     Args:
         client: Optional shared httpx.AsyncClient to reuse TCP connections.
     """
-    url = staging_url.rstrip("/") + plan.url_path
+    safe_path = validate_url_path(plan.url_path)
+    if safe_path is None:
+        return rejected_path_result(plan.url_path)
+    url = staging_url.rstrip("/") + safe_path
 
     async def _do_request() -> httpx.Response:
         _client = client or httpx.AsyncClient(
@@ -655,7 +751,8 @@ async def execute_and_analyze(
             return rule_result
 
         # Phase 2: LLM analysis (may fail with small models)
-        llm_result = await llm_json_call(_ANALYZE_PROMPT.format(
+        llm_result = await llm_json_call(render_prove_prompt(
+            "prove/analyze", PROVE_ANALYZE_DOMAIN["http"],
             title=plan.description,
             category=finding_category,
             method=plan.method,
@@ -666,8 +763,8 @@ async def execute_and_analyze(
             expected_indicators=json.dumps(plan.expected_indicators),
         ))
         return ExecutionResult(
-            conclusive=llm_result.get("conclusive", False),
-            reproduced=llm_result.get("reproduced", False),
+            conclusive=_as_bool(llm_result.get("conclusive", False)),
+            reproduced=_as_bool(llm_result.get("reproduced", False)),
             evidence=llm_result.get("evidence", f"HTTP {response.status_code}"),
             status_code=response.status_code,
             response_snippet=snippet,

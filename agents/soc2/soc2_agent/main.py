@@ -1,7 +1,6 @@
 """SOC2 Compliance agent FastAPI application."""
 
 from shared.transport.sse_app import create_sse_app
-
 from soc2_agent.agent import run_audit
 from soc2_agent.config import AGENT_INFO
 

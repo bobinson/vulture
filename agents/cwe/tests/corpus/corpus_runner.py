@@ -45,9 +45,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from shared.tools.file_scanner import clear_caches
 
 from cwe_agent.skills import SKILL_MAP
+from shared.tools.file_scanner import clear_caches
 
 # tests/corpus/ — this file's own directory.
 CORPUS_DIR = Path(__file__).resolve().parent

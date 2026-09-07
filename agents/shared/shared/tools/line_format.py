@@ -70,3 +70,27 @@ def strip_line_number(line: str) -> str:
     if match is None:
         return line
     return match.group(3)
+
+
+def read_line_number(line: str) -> int | None:
+    """The NUMBER out of one ``"NN: "`` prefix, or ``None`` when there is none.
+
+    The other half of the read direction. :func:`strip_line_number` recovers the
+    TEXT a numbered render was built from; this recovers the coordinate, off the
+    same :data:`NUMBER_RE`, so the two cannot come to disagree about what a
+    prefix is.
+
+    Added by feature 0089 item 4.2, which needs to ask *"what line does this
+    window claim to start at?"* before checking that claim against the file.
+    The alternative was a second pattern at the asking site, which is exactly
+    how the 0076 feed probe and ``_redact_snippet`` came to disagree about
+    leading whitespace.
+
+    Reading a number here is never the same as believing it: the caller
+    (:func:`shared.tools.window.confirmed_window_start`) corroborates the claim
+    against the source before any coordinate is recorded.
+    """
+    match = NUMBER_RE.match(line)
+    if match is None:
+        return None
+    return int(match.group(2))

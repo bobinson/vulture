@@ -5,6 +5,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -17,8 +19,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import check_context, extract_snippet
-
-from cwe_agent.catalog import enrich_finding
 
 # CWE-1188: Insecure Default Initialization of Resource
 INSECURE_DEFAULT_PATTERNS = [

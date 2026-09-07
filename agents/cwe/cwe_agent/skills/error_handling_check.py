@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -15,8 +17,6 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.snippet import extract_snippet
 from shared.validate.language import detect_language
-
-from cwe_agent.catalog import enrich_finding
 
 # CWE-252: Unchecked return value
 UNCHECKED_RETURN_GO = [
