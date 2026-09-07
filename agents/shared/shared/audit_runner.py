@@ -3,13 +3,14 @@
 import asyncio
 import contextvars
 import functools
-import json
 import logging
 import os
 import re
 import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,19 @@ from shared.cancellation import (
 )
 from shared.env import env_flag, env_truthy
 from shared.llm.errors import retry_skill
+
+# Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
+# empty-answer, plus the reasoning strip) now lives in ONE place, shared with the
+# object path prove and discover use. Names re-exported rather than aliased so
+# `shared.audit_runner._score_array` and friends keep resolving — they are the
+# subject of the 0076 parser tests.
+from shared.prompt.extract import (  # noqa: F401  (re-exported for 0076 tests)
+    _FINDING_KEYS,
+    _extract_finding_rows,
+    _salvage_truncated_array,
+    _scan_json_arrays,
+    _score_array,
+)
 from shared.tools import line_format
 from shared.tools.category_enum import normalize_to_enum
 from shared.tools.file_scanner import (
@@ -35,7 +49,6 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.finding_collapse import collapse_line_stacks
 from shared.tools.memory_client import _normalize_title, estimate_tokens, safe_estimate_tokens
-from shared.tools.snippet import extract_snippet
 from shared.transport.event_emitter import AgUiEventEmitter
 
 logger = logging.getLogger(__name__)
@@ -59,23 +72,9 @@ def _safe_int_env(name: str, default: int) -> int:
 # workloads or high-core machines, tune via VULTURE_SKILL_WORKERS.
 _SKILL_WORKERS = _safe_int_env("VULTURE_SKILL_WORKERS", min(os.cpu_count() or 4, 8))
 
-# Pre-compiled patterns for _parse_llm_findings (avoid per-call re.compile).
-# The BARE pattern is no longer part of the default attempt order (feature 0076
-# B1): a non-greedy ``}\s*]`` cannot survive a string value that itself contains
-# ``}]``, and ``[{ id: 1 }]`` is an everyday TS/JSX literal — so a model quoting
-# such a line loses the WHOLE batch. ``_scan_json_arrays`` replaces it;
-# ``VULTURE_LLM_JSON_SCAN=false`` puts the regex back.
-_LLM_JSON_FENCED_RE = re.compile(r"```json\s*(\[.*?\])\s*```", re.DOTALL)
-_LLM_JSON_BARE_RE = re.compile(r"(\[\s*\{.*?\}\s*\])", re.DOTALL)
-
-# The keys that make a decoded array look like a findings payload. `id` is
-# deliberately absent: it is the only key of the everyday decoy
-# ``[{"id":1},{"id":2},{"id":3}]``, and admitting it would let a three-row TS
-# example in model prose outrank the real one-row answer.
-_FINDING_KEYS = frozenset({
-    "title", "severity", "category", "file_path", "line_start",
-    "line_end", "description", "recommendation", "evidence_quote",
-})
+# The response-extraction patterns and `_FINDING_KEYS` moved to
+# `shared/prompt/extract.py` with the chain that reads them (feature 0089 §11.3);
+# they are imported above so this module's public names are unchanged.
 
 # TWO fields, TWO switches — they are not the same risk (0076 §5.1, recall-3).
 # ``code_snippet`` is a fabricated-evidence risk; ``check_id`` is a DEDUP
@@ -1910,14 +1909,59 @@ _WIDE_SNIPPET_CONTEXT = 10   # 21 lines; must stay under the judge's
                              # _WINDOW_LINES_MAX render ceiling (T5.4)
 
 
+# Classes whose evidence is a DATA FLOW: the thing that decides the finding
+# is not on the cited line, so a narrow window cannot show both ends.
+#
+# Width used to be gated solely on `scope_reviewed`, which is bookkeeping
+# about whether a human has reviewed a class's refutation SET — unrelated to
+# how many lines a reader needs. The conflation left every injection class on
+# +/-2 lines, since CWE-89/78/79/22/94/918 are all `_legacy` entries with
+# `scope_reviewed=False`, and left CWE-200 there too for having no entry.
+#
+# Both halves of this set are measured, not assumed:
+#   * the injection six are the codebase's own `SANITIZER_MAP` data-flow
+#     classes (its 770/755 entries are resource and exception handling, not
+#     a flow, and stay narrow). Measured: at +/-2 lines the judge could not
+#     see the anchored-UUID guard at a handler entry ~100 lines above a SQL
+#     sink and confirmed the finding at 0.99.
+#   * the exposure pair. Measured: a genuine plaintext-private-key finding
+#     drew "the snippet only shows privateKey as part of an object literal
+#     ... does not show the database interaction", returned `undecided` at
+#     weight 0, and a real critical settled at the bare 0.5 base — the
+#     `updateUserById` call was 8 lines ABOVE the cited line, which no
+#     downward widening reaches.
+#
+# Add a class here only with new measurement; every entry costs prompt budget
+# on every finding of that class.
+# CWE-89 and CWE-79 are deliberately ABSENT despite being the same shape.
+# Both are pinned narrow by existing contracts — `test_p5_auditability`
+# names CWE-89 in its tight-window list, and CWE-79 is the committed
+# byte-identity golden's canonical "narrow" case in
+# `test_0082_window_extract`. Widening them is a decision about those
+# contracts, not something to fold into a defect fix. Their measured false
+# positives are addressed instead by the `input_validation` check, which
+# resolves the interpolated identifier deterministically and needs no extra
+# prompt budget at all.
+_FLOW_EVIDENCE_CATEGORIES: frozenset[str] = frozenset({
+    "CWE-78",    # OS command injection
+    "CWE-22",    # path traversal
+    "CWE-94",    # code injection
+    "CWE-918",   # SSRF
+    "CWE-200",   # information exposure
+    "CWE-532",   # sensitive data into a log
+})
+
+
 def _snippet_params_for(category: str) -> tuple[int, int | None]:
     """(context_lines, max_chars) for extract_snippet, per weakness class.
 
-    Wide only for classes whose declared scope is wider than a statement AND
-    reviewed (T2.1a): an unreviewed legacy entry still searches the narrow
-    window, so widening its snippet would spend §10's token budget on
-    obligations that cannot use it — today that keeps the widening to the
-    authorization family.
+    Wide for a class whose declared scope is wider than a statement AND
+    reviewed (T2.1a) — today the authorization family — or whose evidence is
+    a data flow (`_FLOW_EVIDENCE_CATEGORIES`).
+
+    Everything else keeps the tight legacy window: a policy class decides on
+    one line, so widening it would spend §10's token budget for nothing and
+    enlarge what `_redact_snippet` has to cover on every secret-bearing CWE.
     """
     from shared.validate.refutation import REFUTATION_MAP, Scope
 
@@ -1925,7 +1969,21 @@ def _snippet_params_for(category: str) -> tuple[int, int | None]:
     if (ref is not None and ref.scope_reviewed
             and ref.scope in (Scope.FUNCTION, Scope.FILE, Scope.WIRING)):
         return _WIDE_SNIPPET_CONTEXT, None
+    if category in _FLOW_EVIDENCE_CATEGORIES:
+        return _WIDE_SNIPPET_CONTEXT, None
     return 2, 200
+
+
+def _window_parity_enabled() -> bool:
+    """``VULTURE_FINDING_WINDOW_PARITY`` — default TRUE, read at call time.
+
+    Feature 0082 Step 5. Records WHY a finding carries no code window, in the
+    existing ``validation`` blob. Ships ON because it is purely additive: it
+    never removes a window, a finding, or a verdict, and the ``window`` check
+    it writes carries weight 0.0 so it cannot move a confidence score. ``false``
+    restores the pre-0082 state where an empty window was undifferentiated.
+    """
+    return env_flag("VULTURE_FINDING_WINDOW_PARITY", True)
 
 
 def _attach_code_snippet(
@@ -1951,8 +2009,6 @@ def _attach_code_snippet(
     left with an empty snippet — the L5 selection layer then SKIPS it (P0.3)
     rather than judging blind.
     """
-    from shared.tools.file_scanner import read_file_lines
-
     # P6b backstop. Say plainly what this is now: as of 0078 track C it is a
     # NO-OP on every path that exists. `_finalize_finding_inplace` stamps
     # provenance immediately before both per-finding emits, and rollup parents
@@ -1969,38 +2025,13 @@ def _attach_code_snippet(
     for f in findings:
         _set_provenance(f)
 
-    for f in findings:
-        context, max_chars = _snippet_params_for(f.get("category", "") or "")
-        wide = max_chars is None
-        # T5.2: a wide-scope class gets the line-budget window even when a
-        # skill pre-set a narrow one — the window is the judge's evidence,
-        # and 200 chars cannot contain a mitigation that lives lines away.
-        # Narrow classes keep the legacy behaviour: back-fill only.
-        if wide or not f.get("code_snippet"):
-            line_start = f.get("line_start", 0) or 0
-            try:
-                line_start = int(line_start)
-            except (TypeError, ValueError):
-                line_start = 0
-            if line_start >= 1:
-                resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
-                if resolved is not None:
-                    lines = read_file_lines(resolved)
-                    if lines:
-                        snippet = extract_snippet(
-                            lines, line_start,
-                            context=context, max_chars=max_chars,
-                        )
-                        if snippet:
-                            f["code_snippet"] = snippet
+    # Feature 0082 Step 3: the window loop lives in shared/tools/window.py so
+    # reading a window and REDACTING it are one operation no caller can split.
+    # This function keeps the provenance backstop above (deliberately decoupled,
+    # so a read failure below cannot skip it) and delegates the rest.
+    from shared.tools.window import ensure_code_window
 
-        # P2a: mask secret VALUES for secret-bearing CWEs, whether the snippet
-        # was back-filled above OR pre-set by a skill (e.g. auth_check). This
-        # runs at the finalisation choke point so both the SSE result and the
-        # DB row carry the redacted form. (The per-finding `finding` SSE events
-        # are independently redacted at emission time — see run_combined_audit —
-        # so the live frontend view never sees the raw secret either.)
-        _redact_finding_inplace(f)
+    ensure_code_window(findings, source_path, record_reasons=_window_parity_enabled())
 
 
 def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> None:
@@ -2111,6 +2142,77 @@ def _bind_category_enum(
     return wrapper
 
 
+
+# ── feature 0079 B1: model-health preflight ──────────────────────────────────
+#
+# Six agents (chaos, soc2, ssdf, xss, do178c, asvs) had no preflight. They DO
+# degrade gracefully -- reactively, at the guard below that emits "LLM phase
+# unavailable" and sets degraded_reason. What they lacked is the ability to skip
+# the sweep BEFORE burning the failure budget.
+#
+# Two measured costs of not having it. With an unreachable endpoint each batch
+# is bounded by VULTURE_LLM_CALL_TIMEOUT_SEC and the sweep aborts only after
+# VULTURE_LLM_MAX_CONSECUTIVE_FAILURES -- 3 x 120s ~ 6 minutes, replaced by one
+# ~3s probe. And that abort is gated on `batch_idx + 1 < len(batches)`, so on a
+# tree producing <= 3 batches it never fires at all and the operator gets
+# silently wasted calls with no notice.
+#
+# It lives HERE, not in a per-agent wrapper, for two reasons: one edit reaches
+# every agent, and this point is INSIDE the cancel token and the whole-audit
+# deadline. A wrapper around run_combined_audit would sit outside both, adding
+# an unbounded term to the PROXY >= MAX_AUDIT + LLM_CALL margin rule.
+
+
+def _preflight_mode() -> str:
+    """``off`` / ``observe`` (default) / ``enforce``.
+
+    A mode string, matching VULTURE_OBLIGATION_MODE and VULTURE_LLM_QUOTE_VERIFY.
+    An unrecognised value falls back to ``observe``, never to ``enforce``: a typo
+    must not start vetoing the LLM tier.
+    """
+    raw = os.environ.get("VULTURE_LLM_PREFLIGHT", "").strip().lower()
+    return raw if raw in ("off", "observe", "enforce") else "observe"
+
+
+def _probe_llm_reachable() -> tuple[bool, str]:
+    """(reachable, reason). Seam for tests; real work is in shared.llm.health."""
+    import asyncio
+
+    from shared.llm.health import check_llm_health
+
+    status = asyncio.run(check_llm_health())
+    ok = bool(getattr(status, "healthy", False))
+    return ok, "" if ok else status.message()
+
+
+def _preflight_vetoes(effective_use_llm: bool, run_id: str, agent_label: str) -> tuple[bool, str]:
+    """Should the LLM sweep be skipped? Returns (veto, notice).
+
+    Fails OPEN in every uncertain case. A probe fault is a defect in the guard,
+    not evidence the provider is down, and vetoing on it would let one broken
+    probe disable the LLM tier across the fleet.
+    """
+    if not effective_use_llm:
+        return False, ""          # nothing to protect; never pay for a probe
+    mode = _preflight_mode()
+    if mode == "off":
+        return False, ""
+    try:
+        reachable, reason = _probe_llm_reachable()
+    except Exception as exc:
+        logger.info("llm_preflight run_id=%s agent=%s probe_error=%s", run_id, agent_label, exc)
+        return False, ""
+    if reachable:
+        return False, ""
+    logger.info(
+        "llm_preflight run_id=%s agent=%s mode=%s unreachable reason=%s",
+        run_id, agent_label, mode, reason,
+    )
+    if mode != "enforce":
+        return False, ""          # observe: measured and logged, never acted on
+    return True, f"LLM preflight: provider unreachable - {reason}"
+
+
 @_bind_category_enum
 def run_combined_audit(
     run_id: str,
@@ -2124,6 +2226,8 @@ def run_combined_audit(
     model: str | None = None,
     use_llm: bool | None = None,
     validate_use_llm: bool | None = None,
+    l5_top_n: int | None = None,
+    l5_batch_size: int | None = None,
     llm_tier3: bool | None = None,
 ) -> Generator[str, None, None]:
     """Run skills first (full coverage), then optionally LLM (deeper analysis).
@@ -2149,7 +2253,21 @@ def run_combined_audit(
         category_enum: Keyword-only, consumed by ``_bind_category_enum``. The
             vocabulary this agent advertises through ``/info``; every emitted
             finding is reduced to it at ``_finalize_finding_inplace``. ``None``
-            (the default) leaves categories untouched.
+            leaves categories untouched.
+
+            REQUIRED OF EVERY SCAN AGENT (feature 0089 Phase 2.3): all seven
+            state it at their own call site, `None` included, because it moves
+            two things at once and neither should be inherited from a default.
+            A non-empty enum adds a CATEGORY VOCABULARY block to the SYSTEM
+            PROMPT (``generate/vocab_category``) *and* starts rewriting every
+            emitted ``category`` through ``_conform_category`` — so the four
+            agents that pass ``None`` are declining a prompt change and a
+            data change together, and each says why on its own line.
+
+            The signature keeps ``None`` as its default rather than making the
+            argument mandatory: ~40 call sites in this repo's own unit and E2E
+            suites drive ``run_combined_audit`` directly, and those tests are
+            the audit runner's business contract, not callers to be rewritten.
 
     Yields:
         SSE-formatted event strings.
@@ -2303,6 +2421,21 @@ def run_combined_audit(
     # `result` event (→ audits.degraded_reason) as well as the thinking stream,
     # which is transient and unqueryable after the fact.
     degraded_reason = ""
+    # Feature 0079 B1. Probe BEFORE the sweep, so an unreachable provider costs
+    # one ~3s probe rather than VULTURE_LLM_MAX_CONSECUTIVE_FAILURES x
+    # VULTURE_LLM_CALL_TIMEOUT_SEC of dead calls -- and gets a legible reason
+    # instead of a raw litellm error. Placed after the deadline is armed, so the
+    # probe is inside the run's safety envelope.
+    #
+    # Only reached when the phase would otherwise run: skills-only audits and a
+    # cancelled run never pay for it.
+    if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
+        _pf_veto, _pf_notice = _preflight_vetoes(True, run_id, domain_label)
+        if _pf_veto:
+            effective_use_llm = False
+            degraded_reason = _pf_notice
+            yield emitter.text_message(_pf_notice + " - returning skill findings only.")
+
     if effective_use_llm and skill_tools and instructions and not _cancelled_or_expired():
         yield emitter.text_message("Enhancing with LLM analysis...")
         logger.info("llm_phase_start run_id=%s", run_id)
@@ -2454,6 +2587,15 @@ def run_combined_audit(
                 enable_l1=True,
                 enable_l2=True,
                 enable_l5=_l5_enabled,
+                # Feature 0083. `enable_l5_override` carries the per-request
+                # decision PAST _resolve_l5_enabled, which otherwise lets the
+                # env defeat it. None when the request was silent, so the env
+                # keeps deciding exactly as before.
+                enable_l5_override=(
+                    bool(validate_use_llm) if validate_use_llm is not None else None
+                ),
+                l5_top_n_override=l5_top_n,
+                l5_batch_size_override=l5_batch_size,
             )
 
             _v_result_box: list = [None]
@@ -2559,8 +2701,18 @@ def run_combined_audit(
     result_extra = {"degraded_reason": degraded_reason} if degraded_reason else None
     if degraded_reason:
         logger.warning("audit_degraded run_id=%s reason=%s", run_id, degraded_reason)
+    # `_public_view` here for the same reason it is on every `finding_event`:
+    # a private stamp must not reach a consumer through one emit and be absent
+    # from the other. A no-op for the seven `_anchor_*` stamps, which
+    # `validate._strip_private` deletes before the vote — but feature 0089 item
+    # 4.2's `_code_snippet_start` is deliberately NOT on that roster (the L5
+    # render is its consumer and the vote runs first), so it is the first
+    # private field that reaches this point, and this is what keeps it off the
+    # wire. Go drops unknown keys silently, so without this the omission would
+    # have been invisible rather than caught.
     yield emitter.result_event(
-        findings=all_findings, summary=summary, score=score, extra=result_extra,
+        findings=[_public_view(f) for f in all_findings],
+        summary=summary, score=score, extra=result_extra,
     )
     yield emitter.run_finished()
 
@@ -2893,18 +3045,260 @@ def _field_contract() -> list[str]:
     return parts
 
 
-def _quote_contract_suffix() -> str:
-    """The obligation as a suffix for the unstructured instruction block, or ``""``.
+# ``_quote_contract_suffix()`` used to live here. It appended
+# :func:`_quote_obligation`'s sentence to the SYSTEM turn as well, but only on
+# the unstructured branch — so a structured-output model was told to quote its
+# evidence once and an LM Studio / Gemini model twice, a count that turned on
+# whether the endpoint could enforce a JSON schema. Feature 0089 item 4.4
+# removed the placement, and removed the function with it: leaving a second
+# authority behind is how the duplication its own docstring described ("one
+# policy written twice, in two places that are edited independently") gets
+# re-appended by the next edit. :func:`_field_contract` is now the only caller
+# of :func:`_quote_obligation`, and `generate/quote_obligation` is listed in
+# exactly one turn (see `prompt/manifests/generate.py`).
 
-    A3: the builder's contract (:func:`_field_contract`) and the unstructured
-    branch's instruction block are one policy written twice, in two places that
-    are edited independently — which is how a fix applied to one of them silently
-    works on one path only. Both therefore append the SAME sentence, from the
-    same authority, rather than a paraphrase of it.
+
+def _reference_augmented_instructions(
+    instructions: str | None,
+    source_context: str,
+    vocabulary: frozenset[str] | None,
+    *,
+    anthropic: bool,
+    use_structured: bool,
+) -> str:
+    """The independent oracle for the parts of the system turn it still owns.
+
+    Feature 0089 Phase 2.3 moved this assembly to ``shared.prompt``: production
+    renders ``manifests.generate.live_spec()`` through
+    :func:`_generate_system_prompt`. This copy survives, unread, because it is
+    the transcription's only INDEPENDENT oracle. Once both sides of
+    ``tests/unit/prompt/test_0089_parity_generate*.py`` go through ``render()``
+    those files compare the library to itself; the system role is still a real
+    comparison precisely because these bytes are still built here, out of
+    :func:`_category_vocabulary_suffix` and the fenced-JSON literal below —
+    which the parity suite reads out of this module by AST.
+
+    So do not reword, reformat or delete either of those: edit the fragment
+    (``prompt/fragments/generate/``), then this, together.
+
+    WHAT IT NO LONGER OWNS. Item 4.4 added four sections to the system turn
+    (``source_presentation``, ``evidence_discipline``, ``tool_trigger``,
+    ``vocab_severity``) that have no pre-library source at all, and removed the
+    duplicated quote sentence this function used to append. Copying the four
+    here would not make them independently checked — it would make this a
+    hand-written duplicate of the fragments, written from the same head in the
+    same minute, which is the second-authority arrangement the feature exists
+    to remove. The parity suite reads those four from the fragment (as item 4.3
+    already does for ``core/untrusted``) and keeps its own opinion about their
+    POSITION and SEAM; their bytes are pinned by
+    ``tests/unit/prompt/test_0089_version_bump.py``.
     """
-    if not _quote_required():
-        return ""
-    return f"\n{_quote_obligation()}"
+    if anthropic and source_context:
+        augmented_instructions = (
+            f"{instructions}\n\n"
+            "The source code files are provided below. Analyze them carefully "
+            "for security and compliance issues.\n\n"
+            f"{source_context}"
+        )
+    else:
+        augmented_instructions = instructions
+    augmented_instructions = (augmented_instructions or "") + \
+        _category_vocabulary_suffix(vocabulary)
+    if not use_structured:
+        augmented_instructions += (
+            "\n\nIMPORTANT: Return findings as a JSON array - one object per finding, "
+            "carrying exactly the fields the task asks for and no others. "
+            "Wrap the array in a ```json fenced block and write nothing outside the fences."
+        )
+    return augmented_instructions
+
+
+# ── GENERATE prompt assembly (feature 0089 Phase 2.3, 2.5) ───────────────────
+#
+# The tier's shared suffixes are fragments in ``shared.prompt`` now, and the two
+# helpers below are the only place the audit path asks for them. Phase 2.5 moved
+# the remaining half — the agent's identity — into the library too, but not into
+# this module: it is rendered from ``domains/<agent>`` at each agent's own call
+# site and arrives as ``instructions`` (see :func:`_generate_system_prompt`), so
+# nothing here resolves a domain fragment and the identity has exactly one
+# channel into the prompt. Mode is
+# TRANSCRIBE, because Phase 2 is a pure refactor and every adaptive rule changes
+# bytes: the render reproduces, byte for byte, what :func:`_field_contract`,
+# :func:`_quote_contract_suffix`, :func:`_category_vocabulary_suffix` and the
+# fenced-JSON literal produced when this module concatenated them itself.
+#
+# The four of them, and :func:`_reference_augmented_instructions` above, are
+# still here and are now UNREAD by the audit path — see that docstring for why.
+#
+# ``profile_for()`` reaches nothing but ``output_budget_hint`` under TRANSCRIBE,
+# which nothing here reads, so the ambient model cannot move a prompt byte. It
+# is resolved rather than faked because a future ADAPT render needs the real one.
+
+
+def _source_branch(source_context: str, source_in_system: bool) -> str:
+    """Which of the three source presentations this call uses.
+
+    The live builder's own ``if source_in_system / elif source_context / else``,
+    named once so the system turn and the user turn cannot disagree about it.
+    """
+    if source_in_system:
+        return "system"
+    return "inline" if source_context else "none"
+
+
+def _endpoint_profile(model: str | None, fenced: bool):
+    """The capability profile for THIS call, not just for the model family.
+
+    ``fenced`` is the call site's own ``not supports_structured_output(model)``,
+    and that predicate is False behind ANY custom endpoint — LM Studio, vLLM, a
+    gateway — which is a transport fact ``MODEL_PROFILES`` does not carry. Under
+    ADAPT, rule 4+5 drops ``REQUIRES_FENCE`` fragments whenever
+    ``profile.structured`` is not ``NONE``, so an openai- or claude-family model
+    behind a gateway would lose the prose JSON contract while the runtime also
+    withheld ``output_type``: no contract at all, from either side.
+
+    So the profile is told the truth about this endpoint. Narrowing only —
+    ``structured`` is forced DOWN to ``NONE`` when the call site says the shape
+    cannot be enforced, and is left alone otherwise.
+
+    The model string is resolved before ``profile_for`` sees it because that
+    function is ``lru_cache``d on its argument: ``profile_for()`` would freeze
+    the first caller's ambient model under the key ``None`` for the whole
+    process, which was harmless while nothing read the profile and is not now.
+    """
+    from shared.llm.provider import get_model
+    from shared.prompt import profile_for
+    from shared.prompt.profile import Structured
+
+    profile = profile_for(get_model(model))
+    if fenced and profile.structured is not Structured.NONE:
+        return _dc_replace(profile, structured=Structured.NONE)
+    return profile
+
+
+def _generate_rendered(
+    source_path: str,
+    categories: list[str],
+    domain_label: str,
+    source_context: str,
+    prior_context: str,
+    source_in_system: bool = False,
+    vocabulary: frozenset[str] | None = None,
+    fenced: bool = False,
+    model: str | None = None,
+):
+    """Render one generate call's prompt. Pure: no env writes, no I/O.
+
+    ``quote_max_lines`` is supplied from :func:`_quote_max_lines`, i.e. from the
+    verifier's own ``VULTURE_LLM_QUOTE_MAX_LINES``, read at call time. The
+    fragment interpolates it rather than stating a number, because a model told
+    "1-3 lines" while the verifier clamps at 2 would be refused for doing
+    exactly what it was asked (0076 §5.2 property 3).
+
+    The two tool budgets are supplied the same way, from
+    ``shared.llm.loop_detector`` — the module whose ``LoopDetector.record``
+    returns KILL and whose KILL aborts the whole call, discarding every finding
+    the batch had already produced. A retyped number in the fragment could drift
+    from the one enforced, and a prompt that promises a bound nothing enforces
+    teaches the model a rule it can break for free.
+
+    Mode is ADAPT as of feature 0089 item 4.4 (`_generate_system_prompt` and
+    `manifests.generate.domain_instructions` flip together; they compose the two
+    halves of one system message).
+    """
+    from shared.llm.loop_detector import GLOBAL_CALL_LIMIT, KILL_THRESHOLD
+    from shared.prompt import Mode, render
+    from shared.prompt.manifests.generate import live_spec
+
+    spec = live_spec(
+        source=_source_branch(source_context, source_in_system),
+        vocabulary=bool(vocabulary),
+        fenced=fenced,
+        quote=_quote_required(),
+        prior=bool(prior_context),
+        variables={
+            "source_path": source_path,
+            "domain_label": domain_label,
+            "categories": ", ".join(categories),
+            # Sorted, so two identical audits build an identical system message
+            # — an unstable one would defeat prompt caching for no benefit.
+            "category_vocabulary": ", ".join(sorted(vocabulary or ())),
+            "source_context": source_context,
+            "prior_context": prior_context,
+            "quote_max_lines": str(_quote_max_lines()),
+            "tool_call_budget": str(GLOBAL_CALL_LIMIT),
+            "tool_repeat_budget": str(KILL_THRESHOLD),
+        },
+    )
+    return render(spec, _endpoint_profile(model, fenced), mode=Mode.ADAPT)
+
+
+def _generate_system_prompt(
+    instructions: str | None,
+    source_context: str,
+    vocabulary: frozenset[str] | None,
+    *,
+    source_in_system: bool,
+    fenced: bool,
+    model: str | None = None,
+) -> str:
+    """The system turn: the agent's own instructions, then the tier's suffix.
+
+    ``instructions`` IS a fragment render as of feature 0089 Phase 2.5, and the
+    docstring this replaces said it could not be. Until 2.5 the identity — the
+    one thing the seven transcribed specs differ by — reached here as each
+    agent's own ``INSTRUCTIONS`` constant, so the library could render only
+    everything AFTER it. Now every scan agent names ``domains/<agent>`` at its
+    own ``run_combined_audit`` call and
+    ``shared.prompt.manifests.generate.domain_instructions`` produces the bytes;
+    the constants stay in the agent packages purely as the transcription's byte
+    oracle, unread by this path. So both halves of the system turn come from the
+    library, and this still joins them, in the same two places for the same
+    reason: the identity half is rendered by the caller (which is what lets asvs
+    and cwe concatenate a per-run catalog block onto it without a new channel),
+    and this half is rendered here from ``live_spec``.
+
+    That split is also why the identity cannot be emitted twice. This function
+    resolves no domain fragment and ``live_spec`` lists none, so ``instructions``
+    is the ONLY channel into the head; there is no configuration in which a
+    fragment list and a populated ``instructions=`` both reach the prompt.
+    ``tests/unit/test_0089_generate_flip.py::test_identity_appears_exactly_once``
+    counts it per agent, because a doubled identity is correct bytes twice over
+    and no parity or golden assertion in this feature can see one.
+
+    A caller that passes no rendered identity still works unchanged — ~40 unit
+    and E2E call sites drive this with a plain string like ``"audit"``, and those
+    tests are the runner's business contract.
+
+    The seam is one blank line, which is the width the live builder used on every
+    branch: ``_category_vocabulary_suffix()`` and the fenced-JSON literal both
+    open with ``"\\n\\n"``, and the anthropic path spells it as
+    ``f"{instructions}\\n\\n"``. That path's ``f"{instructions}"`` is kept
+    distinct from ``instructions or ""`` deliberately — the two differ for a
+    falsy ``instructions``, where the f-string renders the string "None", and
+    reproducing the live bytes matters more here than tidying them.
+    """
+    # One spec describes the WHOLE call, so this render composes the user turn
+    # too and drops it — `_build_llm_prompt` is the caller that wants that half,
+    # and it stays a separate entry point because it is the one every prompt
+    # test in 0075/0076 drives. Hence the empty user-turn inputs here: they
+    # reach no system fragment. The cost is a second pass over ~6 fragments of
+    # string concatenation, per LLM call.
+    #
+    # Under ADAPT (item 4.4) `suffix` is EMPTY for a family whose chat template
+    # has no system role: the fold moves every system fragment into the user
+    # turn, and this render's user turn is the one being discarded. That is
+    # correct rather than lossy only because `_build_llm_prompt` is given the
+    # same `vocabulary` / `fenced` facts, so its render folds the identical set
+    # into the turn that IS used. Change one of the two signatures without the
+    # other and the whole tier policy silently disappears for that family.
+    suffix = _generate_rendered(
+        "", [], "", source_context, "",
+        source_in_system=source_in_system, vocabulary=vocabulary, fenced=fenced,
+        model=model,
+    ).instructions
+    head = f"{instructions}" if source_in_system else (instructions or "")
+    return f"{head}\n\n{suffix}" if suffix else head
 
 
 def _build_llm_prompt(
@@ -2914,6 +3308,9 @@ def _build_llm_prompt(
     source_context: str,
     prior_context: str,
     source_in_system: bool = False,
+    vocabulary: frozenset[str] | None = None,
+    fenced: bool = False,
+    model: str | None = None,
 ) -> str:
     """Assemble the LLM audit prompt from source context and prior findings.
 
@@ -2921,27 +3318,28 @@ def _build_llm_prompt(
         source_in_system: If True, source code is embedded in the agent's
             instructions (system message) for Anthropic prompt caching.
             The user prompt then omits the source code to avoid duplication.
+        vocabulary, fenced, model: the same three facts
+            :func:`_generate_system_prompt` is given. They reach no user-turn
+            fragment directly, and before item 4.4 this function did not take
+            them. It has to now: under ADAPT a family with no system role
+            (gemma) has its whole system turn folded into the user turn, and a
+            render that was never told the call is fenced, or which category
+            enum it has, folds a SHORTER list than the system render dropped.
+            The difference would not be an ordering nit — it is the JSON
+            contract and the category vocabulary vanishing for that family.
+
+    The user turn is ``generate/task`` + ``generate/field_contract`` +
+    ``generate/quote_obligation`` + ``generate/prior_context`` + one of
+    ``generate/source_inline`` / ``generate/source_in_system_ref`` /
+    ``generate/tools_only``, in that order — the order this function's own
+    ``"\\n".join(parts)`` had, with prior context ahead of the source so the LLM
+    sees known issues early and primes attention.
     """
-    parts = [
-        f"Audit the source code at: {source_path}",
-        f"Focus on these {domain_label}: {', '.join(categories)}",
-        *_field_contract(),
-    ]
-    # Place prior context before source code so the LLM sees known issues
-    # early and primes LLM attention.
-    if prior_context:
-        parts.append(f"\nContext from prior audits:\n{prior_context}")
-    if source_in_system:
-        parts.append("\nAnalyze the source code provided in the system instructions.")
-    elif source_context:
-        parts.append(
-            "\nThe source code files are provided below. Analyze them carefully "
-            "for security and compliance issues.\n"
-        )
-        parts.append(source_context)
-    else:
-        parts.append("Use the available tools to analyze the code thoroughly.")
-    return "\n".join(parts)
+    return _generate_rendered(
+        source_path, categories, domain_label, source_context, prior_context,
+        source_in_system=source_in_system, vocabulary=vocabulary, fenced=fenced,
+        model=model,
+    ).user
 
 
 def _extract_token_usage(result: Any, model: str | None = None) -> tuple[int, int]:
@@ -2986,7 +3384,39 @@ def _extract_token_usage(result: Any, model: str | None = None) -> tuple[int, in
 _CUSTOM_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 
 
-def _parse_llm_result(result: Any) -> list[dict]:
+@dataclass(frozen=True, eq=False)
+class ParseOutcome:
+    """The parsed rows AND whether the response could be parsed at all.
+
+    A bare ``list`` cannot tell "the model answered and NOTHING parsed" from
+    "the model found nothing" — both are ``[]``. The batch sweep books a failure
+    only on a raised exception, so an unparseable model reset the consecutive-
+    failure counter on every batch and swept the entire tree to report a clean,
+    green, zero-finding run. ``parsed`` is that missing bit.
+
+    Kept sequence-shaped because every caller before this existed to read the
+    rows: a caller that wants only ``rows`` needs no change.
+    """
+
+    rows: list[dict]
+    parsed: bool
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        return self.rows[index]
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, ParseOutcome):
+            return self.rows == other.rows and self.parsed == other.parsed
+        return self.rows == other
+
+
+def _parse_llm_result(result: Any) -> ParseOutcome:
     """Parse findings from an Agent SDK result, handling structured and raw output."""
     final_output = getattr(result, "final_output", None)
     rows = getattr(final_output, "findings", None)
@@ -2997,7 +3427,9 @@ def _parse_llm_result(result: Any) -> list[dict]:
         # Category conformance is NOT here: it moved to
         # `_finalize_finding_inplace`, the one choke point the skill tier also
         # passes through (nine of the thirty measured violations were skill rows).
-        return [_normalize_finding(row.model_dump()) for row in rows]
+        # The structured branch parsed by construction: the SDK already decoded
+        # the schema, so `parsed` is never in doubt on this path.
+        return ParseOutcome([_normalize_finding(row.model_dump()) for row in rows], True)
     return _parse_llm_findings(str(final_output) if final_output is not None else "")
 
 
@@ -3076,9 +3508,24 @@ async def _collect_llm_findings_async(
     all_tools = list(skill_tools) + extra_tools
 
     source_in_system = "anthropic" in resolved_model and bool(source_context)
+    # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may
+    # not support structured output (response_format with JSON schema) alongside
+    # the function-calling tools we always attach.  Skip output_type in those
+    # cases and rely on prompt-based JSON + _parse_llm_findings fallback — the
+    # shape is then asked for in prose instead, by `generate/json_fenced`
+    # ("Wrap the array in a ```json fenced block"), which is what `fenced=`
+    # selects.
+    #
+    # Resolved HERE, above both turns, rather than beside the `output_type` it
+    # gates: item 4.4 renders in ADAPT, where a family with no system role has
+    # its system turn folded into the user turn, so the two renders must be
+    # given the same facts or the user render folds a shorter list than the
+    # system render dropped.
+    use_structured = supports_structured_output(resolved_model)
     prompt_text = _build_llm_prompt(
         source_path, categories, domain_label, source_context, prior_context,
-        source_in_system=source_in_system,
+        source_in_system=source_in_system, vocabulary=current_category_enum(),
+        fenced=not use_structured, model=resolved_model,
     )
 
     # Truncate BEFORE computing max_output so the token budget is based on
@@ -3105,35 +3552,23 @@ async def _collect_llm_findings_async(
     )
     model_settings_dict["max_tokens"] = max_output
 
-    # For Anthropic models, embed source code in the system message (instructions)
-    # so it benefits from prompt caching across repeated audits of the same codebase.
-    # LiteLLM auto-injects cache_control breakpoints on system messages when the
-    # anthropic-beta header is present (see get_model_settings).
-    if "anthropic" in resolved_model and source_context:
-        augmented_instructions = (
-            f"{instructions}\n\n"
-            "The source code files are provided below. Analyze them carefully "
-            "for security and compliance issues.\n\n"
-            f"{source_context}"
-        )
-    else:
-        augmented_instructions = instructions
-
-    # Name the declared vocabulary to the model when the agent has one.
-    augmented_instructions = (augmented_instructions or "") + \
-        _category_vocabulary_suffix(current_category_enum())
-
-    # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may
-    # not support structured output (response_format with JSON schema) alongside
-    # the function-calling tools we always attach.  Skip output_type in those
-    # cases and rely on prompt-based JSON + _parse_llm_findings fallback.
-    use_structured = supports_structured_output(resolved_model)
-    if not use_structured:
-        augmented_instructions += (
-            "\n\nIMPORTANT: Return findings as a JSON array. Each object must have: "
-            "severity, category, title, description, file_path, line_start, line_end, recommendation. "
-            "Wrap the array in ```json ... ``` fences."
-        ) + _quote_contract_suffix()
+    # The system turn (feature 0089 Phase 2.3: assembled by `shared.prompt`,
+    # not here — see `_generate_system_prompt`). Three things ride on it:
+    #
+    #  * For Anthropic models the source code goes in the system message so it
+    #    benefits from prompt caching across repeated audits of the same
+    #    codebase; LiteLLM auto-injects cache_control breakpoints on system
+    #    messages when the anthropic-beta header is present (get_model_settings).
+    #    `source_in_system` is that decision, made once above and shared with
+    #    the user turn so the two cannot both carry the body.
+    #  * The agent's DECLARED category vocabulary is named to the model when it
+    #    has one (`current_category_enum()` — per-run, never a global).
+    #  * The prose JSON contract, on the unstructured branch only.
+    augmented_instructions = _generate_system_prompt(
+        instructions, source_context, current_category_enum(),
+        source_in_system=source_in_system, fenced=not use_structured,
+        model=resolved_model,
+    )
 
     agent_kwargs: dict[str, Any] = {
         "name": "auditor",
@@ -3194,7 +3629,8 @@ async def _collect_llm_findings_async(
     try:
         result = await retry_llm_call(_run_agent, max_attempts=3)
         actual_input, actual_output = _extract_token_usage(result, model=model)
-        findings = _verify_and_strip(_parse_llm_result(result), source_path)
+        outcome = _parse_llm_result(result)
+        findings = _verify_and_strip(outcome.rows, source_path)
         cooldown_manager.record_success(resolved_model)
     except LoopDetectedError as exc:
         # Loop is an agent reasoning failure, not a model failure — don't cool down the model.
@@ -3234,7 +3670,21 @@ async def _collect_llm_findings_async(
         # leak in the long-lived agent process (no-op when the broker was off).
         await aclose_broker_client()
 
-    return findings, None, actual_input, actual_output
+    return findings, _unparsed_error(outcome), actual_input, actual_output
+
+
+def _unparsed_error(outcome: ParseOutcome) -> str | None:
+    """A response no extraction strategy matched is a CONTRACT failure, not
+    "nothing found", and must reach the sweep as an ``error``.
+
+    ``_collect_llm_findings_batched_async`` counts only a non-empty ``error``
+    toward ``VULTURE_LLM_MAX_CONSECUTIVE_FAILURES``, and a success RESETS the
+    counter — so before this, a model whose every answer was unparseable walked
+    every batch and finished clean.
+    """
+    if outcome.parsed:
+        return None
+    return "LLM analysis failed (unparseable): no findings array in the model response"
 
 
 def compute_score(findings: list[dict], total_items: int) -> float:
@@ -3262,7 +3712,7 @@ def build_summary(findings: list[dict], categories: list[str], domain_label: str
 
 
 
-def _parse_llm_findings(output: str) -> list[dict]:
+def _parse_llm_findings(output: str) -> ParseOutcome:
     """Extract structured findings from LLM text output.
 
     Attempt order (feature 0076 §5.1), each falling through only on failure so a
@@ -3272,211 +3722,13 @@ def _parse_llm_findings(output: str) -> list[dict]:
     """
     # Category conformance moved to `_finalize_finding_inplace` (see
     # `_parse_llm_result`) so the skill tier is covered by the same call.
-    return [_normalize_finding(row) for row in _extract_finding_rows(output)]
-
-
-def _extract_finding_rows(output: str) -> list[dict]:
-    """The first attempt that produces a row list wins; ``[]`` when none does."""
-    for attempt in (_fenced_json_rows, _scanned_json_rows, _salvage_truncated_array):
-        rows = attempt(output)
-        if rows is not None:
-            return rows
-    return []
-
-
-def _loads_list(text: str | None) -> list | None:
-    """``json.loads`` restricted to arrays; ``None`` on absent or invalid input."""
-    if text is None:
-        return None
-    try:
-        value = json.loads(text)
-    except ValueError:
-        return None
-    return value if isinstance(value, list) else None
-
-
-def _only_dicts(value: list) -> list[dict]:
-    """Every dict entry of a decoded array — RECALL, not ranking: a sloppy row
-    such as ``{"title": "b"}`` is too key-poor to make an array look like a
-    payload and is still a finding."""
-    return [row for row in value if isinstance(row, dict)]
-
-
-def _dict_rows(value: list | None) -> list[dict] | None:
-    """:func:`_only_dicts`, tolerant of the "nothing decoded" signal."""
-    if value is None:
-        return None
-    return _only_dicts(value)
-
-
-def _fenced_json_rows(output: str) -> list[dict] | None:
-    """The ```` ```json ... ``` ```` block — tried FIRST and unchanged (0076 T1.2)."""
-    match = _LLM_JSON_FENCED_RE.search(output)
-    if match is None:
-        return None
-    return _dict_rows(_loads_list(match.group(1)))
-
-
-def _scanned_json_rows(output: str) -> list[dict] | None:
-    """The brace-safe scan, or the pre-0076 regex under the rollback switch."""
-    if _json_scan_enabled():
-        return _scan_json_arrays(output)
-    match = _LLM_JSON_BARE_RE.search(output)
-    return _dict_rows(_loads_list(match.group(1) if match else None))
-
-
-def _json_scan_enabled() -> bool:
-    """``VULTURE_LLM_JSON_SCAN`` — default TRUE, read at call time (D14)."""
-    return env_flag("VULTURE_LLM_JSON_SCAN", True)
-
-
-def _json_salvage_enabled() -> bool:
-    """``VULTURE_LLM_JSON_SALVAGE`` — default TRUE, read at call time (D14)."""
-    return env_flag("VULTURE_LLM_JSON_SALVAGE", True)
-
-
-def _try_decode(output: str, index: int) -> Any:
-    """``raw_decode`` at *index*, or ``None`` when nothing valid starts there."""
-    try:
-        value, _end = json.JSONDecoder().raw_decode(output, index)
-    except ValueError:
-        return None
-    return value
-
-
-def _score_array(value: list) -> tuple[int, int, int] | None:
-    """Rank a decoded array as a findings payload, or ``None`` if it is not one.
-
-    KEY EVIDENCE DOMINATES ROW COUNT, and the ordering is load-bearing. Scored
-    ``(len(rows), hits)`` instead, tuple comparison puts row count first and the
-    three-row decoy ``[{"id":1},{"id":2},{"id":3}]`` — an everyday TS example in
-    model prose, scoring ``(3, 3)`` — outranks the real one-row payload
-    ``(1, 9)``, losing the whole batch in a new shape. Returning ``None`` for a
-    zero-hit array is the other half: a decoy that carries no finding key is not
-    a candidate at all, whatever the ordering downstream turns out to be.
-    """
-    hits = [_key_hits(row) for row in value]
-    if not any(hits):
-        return None
-    return (_strong_rows(hits), sum(hits), len(_only_dicts(value)))
-
-
-def _key_hits(row: Any) -> int:
-    """Finding-shaped keys carried by one decoded entry; ``0`` for a non-dict."""
-    if not isinstance(row, dict):
-        return 0
-    return len(_FINDING_KEYS & set(row))
-
-
-def _strong_rows(hits: list[int]) -> int:
-    """Rows carrying at least two finding keys — the DOMINANT evidence term."""
-    return sum(1 for count in hits if count >= 2)
-
-
-def _decoded_arrays(output: str) -> Generator[list, None, None]:
-    """Every JSON array that decodes from a ``[`` in *output*, in order.
-
-    Exact where the regex was heuristic. Scanning EVERY ``[`` rather than
-    returning the first that decodes is a recall requirement: a model that opens
-    with prose containing ``["a","b"]``, or whose quote holds ``[{ id: 1 }]``,
-    would otherwise have its real payload shadowed by the decoy.
-    """
-    for index, char in enumerate(output):
-        if char != "[":
-            continue
-        value = _try_decode(output, index)
-        if isinstance(value, list):
-            yield value
-
-
-def _better_candidate(
-    best: tuple[tuple[int, int, int], list[dict]] | None, value: list,
-) -> tuple[tuple[int, int, int], list[dict]] | None:
-    """Keep the higher-scoring array; ties take the LATER one, because a model
-    that restates its answer puts the corrected payload at the end."""
-    score = _score_array(value)
-    if score is None:
-        return best
-    if best is not None and score < best[0]:
-        return best
-    return (score, _only_dicts(value))
-
-
-def _scan_json_arrays(output: str) -> list[dict] | None:
-    """Find the BEST JSON array of findings in *output*, brace-safely.
-
-    ``None`` — not ``[]`` — is the "nothing here" signal, so the caller can fall
-    through to salvage instead of treating a decoy-only response as an answer.
-    """
-    best: tuple[tuple[int, int, int], list[dict]] | None = None
-    for value in _decoded_arrays(output):
-        best = _better_candidate(best, value)
-    return None if best is None else best[1]
-
-
-def _unclosed_array_start(output: str) -> int | None:
-    """Index of the FIRST ``[`` that does not decode — the truncated array.
-
-    It must be the first, not the last. A truncated payload's opening bracket
-    fails to decode because nothing closes it, but so does every ``[`` inside a
-    string value after it — and 0076 makes those the common case, because
-    ``evidence_quote`` is VERBATIM SOURCE and `m[key]`, `x[i]`, `map[string]int`
-    are everyday code. Taking the last match started the salvage in the middle
-    of a string literal, recovered nothing, and lost the whole truncated batch:
-    the exact recall failure salvage exists to prevent.
-    """
-    for index, char in enumerate(output):
-        if char == "[" and _try_decode(output, index) is None:
-            return index
-    return None
-
-
-def _whole_objects_from(output: str, start: int) -> list[dict]:
-    """Decode successive whole objects after ``output[start] == '['``.
-
-    Stops at the first fragment, which is the partial tail the output-token cap
-    cut off. Linear: ``raw_decode`` returns the index it stopped at, so each
-    character is consumed once.
-    """
-    rows: list[dict] = []
-    index = start + 1
-    decoder = json.JSONDecoder()
-    while index < len(output):
-        index = _skip_separators(output, index)
-        try:
-            value, index = decoder.raw_decode(output, index)
-        except ValueError:
-            return rows
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
-
-
-def _skip_separators(output: str, index: int) -> int:
-    """Advance past commas and whitespace between two array elements."""
-    while index < len(output) and output[index] in ", \t\r\n":
-        index += 1
-    return index
-
-
-def _salvage_truncated_array(output: str) -> list[dict] | None:
-    """Recover rows from an array the model never closed.
-
-    A response cut at ``VULTURE_LLM_MAX_OUTPUT_TOKENS`` ends mid-array; without
-    this the whole batch is lost because neither pattern can match text with no
-    ``]``. Gated by ``VULTURE_LLM_JSON_SALVAGE`` (default true) and never silent:
-    the recovered row count is logged as ``llm_json_salvaged``.
-    """
-    if not _json_salvage_enabled():
-        return None
-    start = _unclosed_array_start(output)
-    if start is None:
-        return None
-    rows = _whole_objects_from(output, start)
-    if not rows:
-        return None
-    logger.warning("llm_json_salvaged rows=%d", len(rows))
-    return rows
+    rows = _extract_finding_rows(output)
+    return ParseOutcome(
+        rows=[_normalize_finding(row) for row in rows or []],
+        # No text at all is the model saying nothing — there is no payload that
+        # could have failed to parse, so it is not a contract breach.
+        parsed=rows is not None or not output.strip(),
+    )
 
 
 def _coerce_path(value: Any) -> str:
@@ -3726,11 +3978,19 @@ def _normalize_finding(raw: dict) -> dict:
     used to call ``model_dump()`` directly, which is how ``code_snippet`` and
     ``check_id`` leaked from the model on that path only.
     """
+    # The text fields get the same treatment `_coerce_line` gives the numeric
+    # ones (B2): junk costs the FIELD, never the FINDING. Without it a model
+    # emitting `"severity": null` reached `normalize_severity`'s `raw.lower()`,
+    # and the AttributeError escaped the parse into the batch-level
+    # `except Exception` in `_collect_llm_findings_async` — one malformed field
+    # of one row discarded EVERY finding in the batch and booked it as an LLM
+    # failure. `or` rather than a mere `str()` so an explicit null falls back to
+    # the default instead of becoming the string "None".
     normalized: dict[str, Any] = {
-        "severity": normalize_severity(raw.get("severity", "info")),
-        "category": raw.get("category", "unknown"),
-        "title": raw.get("title", "Untitled finding"),
-        "description": raw.get("description", ""),
+        "severity": normalize_severity(str(raw.get("severity") or "info")),
+        "category": str(raw.get("category") or "unknown"),
+        "title": str(raw.get("title") or "Untitled finding"),
+        "description": str(raw.get("description") or ""),
         "file_path": _coerce_path(raw.get("file_path", "")),
         "recommendation": raw.get("recommendation", ""),
     }

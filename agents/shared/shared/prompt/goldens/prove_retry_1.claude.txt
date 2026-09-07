@@ -1,0 +1,10 @@
+=== SYSTEM ===
+
+=== USER ===
+
+
+IMPORTANT: Your previous response was not valid JSON. Reply with ONLY a JSON object — no markdown, no explanation, no Thinking Process, no analysis preamble.
+=== TOOLS ===
+(none)
+=== RESPONSE_FORMAT ===
+{'type': 'json_object'}

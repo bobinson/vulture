@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+
 from discover_agent.learning_store import SessionLearnings
 from discover_agent.plugins import DISCOVERY_PLUGINS, DiscoveryContext
 from discover_agent.plugins._shared import find_files_by_name, read_source_file

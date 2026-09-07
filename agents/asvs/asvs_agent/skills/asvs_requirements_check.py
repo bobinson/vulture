@@ -17,6 +17,24 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
+
+from asvs_agent.catalog import (
+    enrich_finding,
+    is_applicable_at_level,
+    load_catalog,
+)
+from asvs_agent.skills._cwe_patterns import (
+    BROKEN_CRYPTO_PATTERNS,
+    COOKIE_NO_HTTPONLY_PATTERNS,
+    COOKIE_NO_SECURE_PATTERNS,
+    DEBUG_PROD_PATTERNS,
+    HARDCODED_CRED_PATTERNS,
+    PATH_TRAVERSAL_PATTERNS,
+    SAFE_COOKIE_PATTERNS,
+    SAFE_SECURE_PATTERNS,
+    SESSION_FIXATION_PATTERNS,
+    WEAK_RANDOM_PATTERNS,
+)
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -39,24 +57,6 @@ from shared.tools.framework_html import is_framework_style_injection
 from shared.tools.line_context import strip_strings_and_comments
 from shared.tools.pattern_union import union_patterns
 from shared.tools.snippet import extract_snippet
-
-from asvs_agent.catalog import (
-    enrich_finding,
-    is_applicable_at_level,
-    load_catalog,
-)
-from asvs_agent.skills._cwe_patterns import (
-    BROKEN_CRYPTO_PATTERNS,
-    COOKIE_NO_HTTPONLY_PATTERNS,
-    COOKIE_NO_SECURE_PATTERNS,
-    DEBUG_PROD_PATTERNS,
-    HARDCODED_CRED_PATTERNS,
-    PATH_TRAVERSAL_PATTERNS,
-    SAFE_COOKIE_PATTERNS,
-    SAFE_SECURE_PATTERNS,
-    SESSION_FIXATION_PATTERNS,
-    WEAK_RANDOM_PATTERNS,
-)
 
 # Type alias for a per-requirement check specification.
 CheckSpec = tuple[

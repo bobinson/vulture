@@ -1,9 +1,8 @@
 """OWASP Security agent FastAPI application."""
 
-from shared.transport.sse_app import create_sse_app
-
 from owasp_agent.agent import run_audit
 from owasp_agent.config import AGENT_INFO
+from shared.transport.sse_app import create_sse_app
 
 app = create_sse_app(
     agent_name="owasp",

@@ -21,6 +21,13 @@ from pathlib import Path
 from typing import Any
 
 from agents import function_tool
+
+from cwe_agent.catalog import (
+    enrich_finding,
+    get_static_detectable,
+    load_catalog,
+)
+from cwe_agent.skills.signatures.detector import match_signatures
 from shared.env import env_truthy
 from shared.tools.file_scanner import (
     SCANNER_DEF_LINE as _SCANNER_DEF,
@@ -33,13 +40,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
-
-from cwe_agent.catalog import (
-    enrich_finding,
-    get_static_detectable,
-    load_catalog,
-)
-from cwe_agent.skills.signatures.detector import match_signatures
 
 # Signature-tier escape hatches (audit MEDIUM "ROLLBACK-killswitch"), read at
 # scan time so a per-request env change takes effect without reimport:

@@ -21,10 +21,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from shared.tools.snippet import extract_snippet
-
 from cwe_agent.skills.signatures.registry import SIGNATURES
 from cwe_agent.skills.signatures.schema import CweSignature
+from shared.tools.snippet import extract_snippet
 
 # Catalog language name → file extensions (kept in sync with catalog_detector
 # _LANG_EXTENSIONS; duplicated minimally here to avoid a circular import).

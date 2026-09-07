@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.strategies.base import (
     AttemptRecord,
     BaseStrategy,
@@ -27,8 +27,23 @@ from prove_agent.strategies.shared import (
 if TYPE_CHECKING:
     from prove_agent.protocols.detection import TargetCapabilities
 
+from shared.prompt.manifests.prove_plan import PROVE_PLAN_DOMAIN
+from shared.prompt.manifests.prove_reflect import (
+    PROVE_REFLECT_DOMAIN,
+)
+
 logger = logging.getLogger(__name__)
 
+# NOT the prompt source any more — feature 0089 Phase 2.6 collapsed the five
+# per-strategy plan/reflect copies onto one template each (`prove/plan`,
+# `prove/reflect`), rendered with this strategy's slot values from
+# `PROVE_PLAN_DOMAIN["cwe"]` / `PROVE_REFLECT_DOMAIN["cwe"]` (see `plan` and
+# `reflect` below). These two literals stay because they are the transcription's
+# INDEPENDENT oracle: `test_0089_parity_prove*.py` pin the `prove/plan_cwe` /
+# `prove/reflect_cwe` fragments against them byte for byte (cwe is the base the
+# whole family is transcribed from), and `test_0089_parity_prove_collapse.py`
+# then pins the collapsed render against those same fragments. Do not reword,
+# reformat or delete them: edit the fragment, then this, together.
 _PLAN_PROMPT = """You are a vulnerability researcher. Given this CWE finding, create an HTTP request to verify the vulnerability on the staging server.
 
 RULES:
@@ -53,7 +68,7 @@ Attempt: {iteration}
 {site_context}
 
 Reply with ONLY a JSON object (no markdown, no explanation):
-{{"description":"what this tests","method":"GET or POST","url_path":"/real-path","headers":{{}},"body":"payload if POST","expected_indicators":["indicator"]}}"""
+{{"description":"what this tests","method":"GET or POST","url_path":"/api/users","headers":{{}},"body":"1' OR '1'='1","expected_indicators":["indicator"]}}"""
 
 _REFLECT_PROMPT = """You are a vulnerability researcher reflecting on failed verification attempts.
 
@@ -92,7 +107,8 @@ class CweStrategy(BaseStrategy):
         hints = finding.get("verification_hints", [])
         hints_str = ", ".join(hints) if hints else "None"
         result = await llm_json_call(
-            _PLAN_PROMPT.format(
+            render_prove_prompt(
+                "prove/plan", PROVE_PLAN_DOMAIN["cwe"],
                 title=finding.get("title", ""),
                 category=finding.get("category", ""),
                 description=finding.get("description", ""),
@@ -162,7 +178,8 @@ class CweStrategy(BaseStrategy):
         self, finding: dict, attempts: list[AttemptRecord],
     ) -> ReflectionResult:
         history = format_attempt_history(attempts)
-        result = await llm_json_call(_REFLECT_PROMPT.format(
+        result = await llm_json_call(render_prove_prompt(
+            "prove/reflect", PROVE_REFLECT_DOMAIN["cwe"],
             title=finding.get("title", ""),
             category=finding.get("category", ""),
             description=finding.get("description", ""),

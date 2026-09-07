@@ -1,10 +1,9 @@
 """CWE Weakness Auditor agent FastAPI application."""
 
-from shared.transport.sse_app import create_sse_app
-
 from cwe_agent.agent import run_audit
 from cwe_agent.catalog import preload as preload_catalog
 from cwe_agent.config import AGENT_INFO
+from shared.transport.sse_app import create_sse_app
 
 # Warm the 2 MB CWE catalog at import time so the first request doesn't
 # stall behind parsing it. Subsequent skill threads find it already in

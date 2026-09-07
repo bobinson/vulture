@@ -10,6 +10,7 @@ import os
 from uuid import uuid4
 
 import httpx
+
 from shared.discovery.sitemap import SiteMap
 
 logger = logging.getLogger(__name__)

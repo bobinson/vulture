@@ -12,6 +12,7 @@ from prove_agent.strategies.base import (
     ProbeProtocol,
     ProofPlan,
 )
+from prove_agent.strategies.shared import rejected_path_result, validate_url_path
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,12 @@ async def execute_grpc(
     Attempts native grpcio first. Falls back to HTTP/2 + proto encoding
     if grpcio is not installed.
     """
+    # The fourth model-authored-path join site: _try_grpc_http2 concatenates
+    # plan.url_path onto the origin. Validated here, at the dispatch point, so
+    # neither the native nor the HTTP/2 branch can be reached with a bad path.
+    if validate_url_path(plan.url_path) is None:
+        return rejected_path_result(plan.url_path, ProbeProtocol.GRPC.value)
+
     grpc_services = getattr(capabilities, "grpc_services", [])
 
     # Try native grpcio

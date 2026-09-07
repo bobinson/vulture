@@ -11,13 +11,21 @@ import logging
 import httpx
 import websockets
 
-from prove_agent.llm_helper import llm_json_call
+from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.protocols.detection import TargetCapabilities, to_ws_url
 from prove_agent.strategies.base import (
     ExecutionResult,
     FailureReason,
     ProbeProtocol,
     ProofPlan,
+)
+from prove_agent.strategies.shared import (
+    _as_bool,
+    rejected_path_result,
+    validate_url_path,
+)
+from shared.prompt.manifests.prove_analyze import (
+    PROVE_ANALYZE_DOMAIN,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,15 +49,21 @@ SUBSTRATE_METHODS: dict[str, str] = {
     "rpc_methods": "List all available RPC methods",
 }
 
+# NOT the prompt source any more — feature 0089 Phase 2.6. The runtime renders
+# `prove/analyze` with `PROVE_ANALYZE_DOMAIN["jsonrpc"]` (see
+# `_analyze_rpc_response` below). This literal stays as the byte-pinned
+# transcription oracle (see the fuller note in `strategies/cwe.py`).
 _ANALYZE_PROMPT = """Did this JSON-RPC response confirm the vulnerability?
 
 Finding: {title} ({category})
-RPC method: {method}
-Response: {response}
 Expected indicators: {expected_indicators}
 
 Reply with JSON only:
-{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}"""
+{{"conclusive":true,"reproduced":true,"evidence":"explanation"}}
+If the response does not clearly confirm or refute the finding, set "conclusive" to false.
+
+RPC method: {method}
+Response: {response}"""
 
 
 async def execute_jsonrpc(
@@ -60,6 +74,10 @@ async def execute_jsonrpc(
     finding_title: str,
 ) -> ExecutionResult:
     """Execute a JSON-RPC probe, auto-selecting transport."""
+    # Validated once here: both transports below join this path onto the origin.
+    if validate_url_path(plan.url_path) is None:
+        return rejected_path_result(plan.url_path, ProbeProtocol.JSONRPC.value)
+
     rpc_method = plan.rpc_method or "rpc_methods"
     rpc_params = plan.rpc_params if plan.rpc_params is not None else []
 
@@ -184,7 +202,8 @@ async def _analyze_rpc_response(
 
     # Phase 2: LLM analysis
     try:
-        llm_result = await llm_json_call(_ANALYZE_PROMPT.format(
+        llm_result = await llm_json_call(render_prove_prompt(
+            "prove/analyze", PROVE_ANALYZE_DOMAIN["jsonrpc"],
             title=finding_title,
             category=finding_category,
             method=rpc_method,
@@ -192,8 +211,8 @@ async def _analyze_rpc_response(
             expected_indicators=json.dumps(plan.expected_indicators),
         ))
         return ExecutionResult(
-            conclusive=llm_result.get("conclusive", False),
-            reproduced=llm_result.get("reproduced", False),
+            conclusive=_as_bool(llm_result.get("conclusive", False)),
+            reproduced=_as_bool(llm_result.get("reproduced", False)),
             evidence=llm_result.get("evidence", f"RPC {rpc_method}"),
             status_code=result.status_code,
             response_snippet=snippet,

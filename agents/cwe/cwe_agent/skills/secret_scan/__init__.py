@@ -17,13 +17,6 @@ import os
 from pathlib import Path
 
 from agents import function_tool
-from shared.tools.file_scanner import (
-    CODE_EXTENSIONS,
-    LLM_PROSE_EXTENSIONS,
-    is_generated_file,
-    read_file_safe,
-    scan_code_files,
-)
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills.secret_scan import (
@@ -35,6 +28,13 @@ from cwe_agent.skills.secret_scan import (
 )
 from cwe_agent.skills.secret_scan import context as ctx
 from cwe_agent.skills.secret_scan import entropy as entropy_mod
+from shared.tools.file_scanner import (
+    CODE_EXTENSIONS,
+    LLM_PROSE_EXTENSIONS,
+    is_generated_file,
+    read_file_safe,
+    scan_code_files,
+)
 
 # Per-skill extension override. Includes secret-bearing file types
 # that aren't in the default CODE_EXTENSIONS — .pem / .key / .crt

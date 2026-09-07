@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -17,6 +18,7 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from xss_agent.skills._check_id import cid
 
 # DOM sources — user-controllable input in the browser
 SOURCE_PATTERNS = [
@@ -128,6 +130,7 @@ def _check_direct_flow(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-79",
+                **cid("xss.dom.direct_flow"),
                 "title": "DOM XSS via direct source-to-sink flow",
                 "description": (
                     f"User-controlled DOM source flows directly into a "
@@ -165,6 +168,7 @@ def _check_source_near_sink(
             findings.append({
                 "severity": "high",
                 "category": "CWE-79",
+                **cid("xss.dom.source_near_sink"),
                 "title": "DOM XSS via source near dangerous sink",
                 "description": (
                     f"A DOM source (location, document.URL, etc.) was found "

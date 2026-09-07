@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 import httpx
+
 from shared.discovery.cache import (  # noqa: F401
     is_cache_fresh,
     load_cached_discovery,

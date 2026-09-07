@@ -22,8 +22,24 @@ logger = logging.getLogger(__name__)
 
 _MAX_SCAN_FILES = 500
 
+# Extensions that CANNOT declare an HTTP route or an API surface. They are
+# subtracted from the inherited set because `scan_code_files` truncates at
+# `_MAX_SCAN_FILES` in WALK ORDER, not by usefulness: a tree with 600
+# `include/*.hpp` files consumes the whole 500-file budget before the walk
+# reaches `src/`, and the route-bearing source is silently dropped. Measured on
+# a synthetic tree, admitting C++ headers took flask route discovery from 31/31
+# to 10/31, and from 2 routes to 0 in the total-loss case.
+#
+# The underlying defect is the cap combined with order-dependent truncation and
+# no partial-coverage notice; this subtraction removes the trigger, not the
+# defect. Tracked as a follow-up.
+_NON_API_EXTENSIONS = frozenset({
+    ".h", ".hh", ".hpp", ".hxx",   # C/C++ headers: declarations, never routes
+    ".rake",                        # Rake tasks: build steps, not endpoints
+})
+
 # Extend default code extensions to include GraphQL, proto, WSDL, mobile
-_SOURCE_EXTENSIONS = CODE_EXTENSIONS | frozenset({
+_SOURCE_EXTENSIONS = (CODE_EXTENSIONS - _NON_API_EXTENSIONS) | frozenset({
     ".graphql", ".gql",
     ".kt", ".kts",       # Kotlin (Spring Boot, Android)
     ".ex", ".exs",        # Elixir (Phoenix)

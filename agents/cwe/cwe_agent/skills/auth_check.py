@@ -4,6 +4,9 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._var_reference import line_value_is_variable_ref
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -16,9 +19,6 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.snippet import check_context, extract_snippet
 from shared.tools.suppression import AUTH_CHECK_SUPPRESSIONS, should_suppress
-
-from cwe_agent.catalog import enrich_finding
-from cwe_agent.skills._var_reference import line_value_is_variable_ref
 
 # CWE-798: Hardcoded credentials.
 #

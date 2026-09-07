@@ -57,9 +57,8 @@ def test_prose_files_are_enumerated_by_the_secret_scan_walk():
     is the detectors' business and is covered by test_0070_p8_secrets.py and
     test_secret_scan_actions_expressions.py.
     """
-    from shared.tools.file_scanner import scan_code_files
-
     from cwe_agent.skills.secret_scan import secret_scan_extensions
+    from shared.tools.file_scanner import scan_code_files
 
     root = _tree({
         "README.md": f"# Setup\n\n{_AWS}\n",
@@ -79,9 +78,8 @@ def test_switch_off_removes_prose_from_the_walk():
     exactly the hole 0075's prose subtraction would otherwise leave."""
     import os
 
-    from shared.tools.file_scanner import scan_code_files
-
     from cwe_agent.skills.secret_scan import secret_scan_extensions
+    from shared.tools.file_scanner import scan_code_files
 
     root = _tree({"README.md": f"{_AWS}\n", "app.ts": "const x = 1;\n"})
     prev = os.environ.get("VULTURE_SECRET_SCAN_PROSE")

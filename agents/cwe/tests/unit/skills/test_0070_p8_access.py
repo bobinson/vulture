@@ -42,9 +42,9 @@ import re
 from pathlib import Path
 
 import pytest
-from shared.tools.finding_collapse import collapse_line_stacks
 
 from cwe_agent.skills.access_control_check import check_access_control
+from shared.tools.finding_collapse import collapse_line_stacks
 
 SKILL_SRC = (
     Path(__file__).resolve().parents[3]

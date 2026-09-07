@@ -291,6 +291,23 @@ func migrateAddColumns(db *sql.DB) {
 	// side -- the SQLite schema is NOT managed by the embedded migration runner,
 	// so a .sql file alone would leave this backend without the column.
 	_, _ = db.Exec(`ALTER TABLE audits ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT ''`)
+	// Feature 0079 A2: the finding's stable per-detector identity. Postgres got
+	// this column in migration 008 and has never had a writer; the SQLite
+	// findings table did not define it at all.
+	//
+	// NULLABLE on purpose. Every findings column added since 001 is nullable
+	// (validation_status, validation, provenance, code_snippet) so the
+	// nullableString binder is safe against them. Declaring this one NOT NULL
+	// while binding a NULL for the ~97% of rows that carry no check_id would
+	// abort the whole 1000-row INSERT -- and SaveFindings only LOGS that, so the
+	// audit would complete with zero findings persisted. It is bound with
+	// dbSafeText (empty string, not NULL) and read through COALESCE, so the
+	// nullable/NOT NULL difference from Postgres is invisible above the driver.
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN check_id TEXT`)
+	// Feature 0079 A3, mirroring migrations/026 — the SQLite schema is not
+	// managed by the embedded migration runner, so the .sql file alone is half
+	// the change.
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN fingerprint_v2 TEXT`)
 
 	// 0055: LLM model recorded at creation — which model the scan ran against
 	// (VULTURE_LLM_MODEL when enabled, else "skills-only").
@@ -369,7 +386,9 @@ func (r *SQLiteRepo) prepareStatements() {
 		COALESCE(rolled_up_into, ''),
 		COALESCE(instance_count, 1),
 		COALESCE(provenance, ''),
-		COALESCE(code_snippet, '')
+		COALESCE(code_snippet, ''),
+		COALESCE(check_id, ''),
+		COALESCE(fingerprint_v2, '')
 		FROM findings WHERE audit_id = ?`
 	stmt, err := r.db.Prepare(getFindingsSQL)
 	if err != nil {
@@ -555,7 +574,7 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 	valueArgs := make([]interface{}, 0, len(findings)*21)
 	for _, f := range findings {
 		valueStrings = append(valueStrings,
-			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		refsJSON, _ := json.Marshal(f.References)
 		var validationJSON string
 		if f.Validation != nil {
@@ -581,6 +600,8 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			f.InstanceCount,
 			nullableString(f.Provenance),
 			nullableString(clampSnippet(f.CodeSnippet)),
+			dbSafeText(f.CheckID),
+			dbSafeText(f.FingerprintV2),
 		)
 	}
 	stmt := fmt.Sprintf(
@@ -588,7 +609,8 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			id, audit_id, agent_type, severity, category, title, description,
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
-			is_rollup, rolled_up_into, instance_count, provenance, code_snippet
+			is_rollup, rolled_up_into, instance_count, provenance, code_snippet,
+			check_id, fingerprint_v2
 		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
@@ -902,7 +924,9 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 			        COALESCE(rolled_up_into, ''),
 			        COALESCE(instance_count, 1),
 			        COALESCE(provenance, ''),
-			        COALESCE(code_snippet, '')
+			        COALESCE(code_snippet, ''),
+			        COALESCE(check_id, ''),
+			        COALESCE(fingerprint_v2, '')
 			 FROM findings WHERE audit_id = ?`,
 			auditID,
 		)
@@ -922,7 +946,7 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 			&f.Recommendation, &refsStr, &f.Fingerprint,
 			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
 			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance,
-			&f.CodeSnippet)
+			&f.CodeSnippet, &f.CheckID, &f.FingerprintV2)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}

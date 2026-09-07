@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+
 from discover_agent.learning_store import SessionLearnings
 from discover_agent.plugins import DiscoveryContext
 from discover_agent.plugins.blockchain_rpc import BlockchainRPCPlugin

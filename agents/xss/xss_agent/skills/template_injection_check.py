@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from agents import function_tool
+
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
@@ -18,6 +19,7 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from xss_agent.skills._check_id import cid
 
 # Jinja2 SSTI
 JINJA2_PATTERNS = [
@@ -123,6 +125,7 @@ def _check_jinja2(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-1336",
+                **cid("xss.template.jinja2_ssti"),
                 "title": "Jinja2 SSTI via dynamic template compilation",
                 "description": (
                     f"User input passed to Jinja2 Template() or from_string() "
@@ -150,6 +153,7 @@ def _check_django(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-1336",
+                **cid("xss.template.django_ssti"),
                 "title": "Django SSTI via dynamic template compilation",
                 "description": (
                     f"User input passed to Django Template().render() "
@@ -175,6 +179,7 @@ def _check_handlebars(
             findings.append({
                 "severity": "high",
                 "category": "CWE-1336",
+                **cid("xss.template.handlebars"),
                 "title": "Handlebars unsafe rendering or SSTI",
                 "description": (
                     f"Triple-stache or dynamic compile with user input "
@@ -201,6 +206,7 @@ def _check_ejs(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-1336",
+                **cid("xss.template.ejs_ssti"),
                 "title": "EJS SSTI via dynamic template rendering",
                 "description": (
                     f"User input passed to ejs.render() or ejs.compile() "
@@ -226,6 +232,7 @@ def _check_go_template(
             findings.append({
                 "severity": "critical",
                 "category": "CWE-1336",
+                **cid("xss.template.go_html"),
                 "title": "Go template injection via template.HTML()",
                 "description": (
                     f"User input passed to template.HTML() or dynamic "

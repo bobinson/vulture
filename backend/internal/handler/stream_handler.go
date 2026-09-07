@@ -402,7 +402,7 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 	// _cancellable_stream teardown.
 	go h.streamSvc.StreamWithContext(b.RunContext(), audit, sourcePath, h.agents, priorByAgent, eventCh)
 
-	res := drainResult(eventCh, audit.ID, b)
+	res := drainResultAt(eventCh, audit.ID, sourcePath, b)
 
 	log.Printf("[dispatch] run complete audit=%s findings=%d proveResults=%d scores=%v",
 		audit.ID, len(res.Findings), len(res.ProveResults), res.Scores)
@@ -466,6 +466,14 @@ type DrainResult struct {
 }
 
 func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sink EventSink) DrainResult {
+	return drainResultAt(eventCh, auditID, "", sink)
+}
+
+// drainResultAt is drainResult with the audit's source root, used by feature
+// 0079 A1 to canonicalise the cross-agent dedup key. An empty root reproduces
+// pre-0079 behaviour exactly, which is what keeps the three existing
+// drainResult call sites and their tests unchanged.
+func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, sink EventSink) DrainResult {
 	var findings []model.Finding
 	var deltaFindings []model.Finding
 	var proveResults []model.ProveResult
@@ -520,7 +528,12 @@ func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sink EventSink
 		log.Printf("[stream] rescued %d delta findings from agents that never sent a snapshot (audit=%s)",
 			rescued, auditID)
 	}
-	findings = deduplicateCrossAgent(findings)
+	findings = deduplicateCrossAgentAt(findings, sourceRoot)
+	// Feature 0079 A3: stamp the stable identity. No-op unless
+	// VULTURE_FINDING_IDENTITY is set; under enforce it also swaps which value
+	// `fingerprint` carries, retaining the v1 value in LegacyFingerprint so
+	// lineage can still match stored rows.
+	stampIdentity(findings, sourceRoot)
 	// L4 memory_prior (feature 0045): inherit labels from
 	// audit_memories.user_label by exact fingerprint match.
 	// applyMemoryPrior is wired through the StreamHandler via a closure
@@ -685,18 +698,21 @@ func (h *StreamHandler) replayCompletedAudit(sseWriter *agui.SSEWriter, audit *m
 }
 
 func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, findings *[]model.Finding, scores map[string]int) {
-	var result struct {
-		Findings []model.Finding `json:"findings"`
-		Score    float64         `json:"score"`
+	// Feature 0082 C3: row extraction is delegated to agui.ParseSnapshotFindings
+	// so the snapshot path is per-row tolerant like the delta path, and so the
+	// two parsers cannot drift. Previously one malformed row (e.g. a model
+	// answering `"line_start": "55"`) failed the whole unmarshal and took every
+	// finding in the report to zero, silently. Id/fingerprint stamping below
+	// stays here — it is persistence policy, not parsing.
+	parsed, malformed := agui.ParseSnapshotFindings(snapshot, agentType)
+	if malformed > 0 {
+		log.Printf("[parseSnapshot] agent=%s malformedRows=%d (dropped individually, batch preserved)", agentType, malformed)
 	}
-	if err := json.Unmarshal(snapshot, &result); err != nil {
-		log.Printf("[parseSnapshot] unmarshal error: %v snapshot=%s", err, truncate(string(snapshot), 200))
-		return
-	}
-	log.Printf("[parseSnapshot] agent=%s parsedFindings=%d score=%.1f", agentType, len(result.Findings), result.Score)
+	score, _ := agui.ParseSnapshotScore(snapshot)
+	log.Printf("[parseSnapshot] agent=%s parsedFindings=%d score=%.1f", agentType, len(parsed), score)
 	baseIndex := len(*findings)
-	for i := range result.Findings {
-		f := &result.Findings[i]
+	for i := range parsed {
+		f := &parsed[i]
 		// Preserve rollup-parent IDs (deterministic SHA-derived).
 		if f.IsRollup {
 			// preserve rollup-parent id verbatim — cross-audit stable by design
@@ -719,7 +735,7 @@ func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, f
 		*findings = append(*findings, *f)
 	}
 	if agentType != "" {
-		scores[agentType] = int(result.Score)
+		scores[agentType] = int(score)
 	}
 }
 
@@ -762,8 +778,27 @@ func generateFingerprint(title, filePath, category, agentType string) string {
 // When duplicates exist, the finding with richer detail is kept.
 // The winner's CrossAgentOrigins is set to the list of other agent types.
 func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
+	return deduplicateCrossAgentAt(findings, "")
+}
+
+// deduplicateCrossAgentAt is deduplicateCrossAgent with a source root for the
+// feature-0079 A1 key canonicalisation. root == "" reproduces the pre-0079
+// behaviour byte for byte, which is how the replay path and all 14 existing
+// call sites stay unaffected.
+func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []model.Finding {
 	if len(findings) <= 1 {
 		return findings
+	}
+	mode := pathCanonMode()
+	if mode == pathCanonObserve && sourceRoot != "" {
+		// Measure only: report what enforce WOULD merge, mutate nothing. This
+		// second pass is why observe is opt-in rather than the default -- it was
+		// benchmarked at +114% over the dedup baseline at 50k findings.
+		logPathCanonDelta(findings, sourceRoot)
+	}
+	keyRoot := ""
+	if mode == pathCanonEnforce {
+		keyRoot = sourceRoot
 	}
 	type entry struct {
 		index int
@@ -777,7 +812,7 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 	prefer := preferDeterministicDedup()
 
 	for i, f := range findings {
-		key := crossAgentKey(f)
+		key := crossAgentKeyWithRoot(f, keyRoot)
 		keys[i] = key
 		s := findingDetailScore(f)
 		agentsByKey[key] = append(agentsByKey[key], f.AgentType)
@@ -1057,7 +1092,58 @@ func crossAgentPrefers(challenger, incumbent model.Finding, challengerScore, inc
 			return d > 0
 		}
 	}
-	return challengerScore > incumbentScore
+	if challengerScore != incumbentScore {
+		return challengerScore > incumbentScore
+	}
+	// Feature 0079 D1. Everything above is unchanged; this only decides what
+	// used to be decided by ARRIVAL ORDER.
+	//
+	// The old rule ended `return challengerScore > incumbentScore`, false on a
+	// tie, so the first row to reach the map kept the key -- and that order is
+	// the interleaving of concurrent agent goroutines into one channel. Measured
+	// consequence: helpers.ts:138 flipped 4-2 across six runs of the same image
+	// between two xss rows scoring 53-53, and three findings produced THREE
+	// different winners across the six permutations of one set.
+	//
+	// That matters beyond the flip itself: generateFingerprint hashes the title,
+	// so whichever row survives determines the run's cross-audit identity.
+	//
+	// This lands BEFORE the key changes in the rest of 0079 because each of them
+	// manufactures collisions that do not exist today; without a total order,
+	// every new collision would be resolved by coin flip.
+	if !stableTieBreakEnabled() {
+		return false
+	}
+	return tieBreakKey(challenger) < tieBreakKey(incumbent)
+}
+
+// stableTieBreakEnabled gates the deterministic tie-break.
+// VULTURE_DEDUP_STABLE_TIEBREAK=false restores, exactly, the pre-0079
+// first-seen-wins behaviour: an equal-score challenger never displaces the
+// incumbent. Read at merge time so the switch stays flippable.
+func stableTieBreakEnabled() bool {
+	if v := strings.TrimSpace(os.Getenv("VULTURE_DEDUP_STABLE_TIEBREAK")); v != "" {
+		return config.EnvTruthy("VULTURE_DEDUP_STABLE_TIEBREAK")
+	}
+	return true
+}
+
+// tieBreakKey is a deterministic total order over findings, used only when the
+// detail scores are equal.
+//
+// Every component is CONTENT, so the order is stable across processes, machines
+// and runs. Deliberately excluded: model.Finding.ID, which is itself
+// order-dependent -- the agent hashes the accumulation index into it
+// (audit_runner.py `raw = f"{audit_id}:{title}:{file_path}:{index}"`, fed by
+// `len(skill_findings)` under a nondeterministic as_completed), so keying on it
+// would import the very nondeterminism this removes. Also excluded: anything
+// address-, hash-seed- or clock-derived.
+//
+// check_id leads because it is the stable per-detector identity this feature
+// makes persistent; where two rows carry one, it decides without consulting the
+// free text at all.
+func tieBreakKey(f model.Finding) string {
+	return f.AgentType + "\x00" + f.CheckID + "\x00" + f.Category + "\x00" + f.Title
 }
 
 // deterministicPreference decides a collision on Provenance alone: +1 when the

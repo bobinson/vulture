@@ -4,14 +4,28 @@ import os
 from collections.abc import Generator
 from typing import Any
 
-from shared.audit_runner import run_combined_audit
-from shared.llm.provider import get_max_findings
-from shared.tools.memory_client import build_prior_context
-from shared.transport.event_emitter import AgUiEventEmitter
-
 from do178c_agent.config import ALL_CATEGORIES, dal_skip
 from do178c_agent.skills import SKILL_MAP, SKILL_TOOLS
+from shared.audit_kwargs import shared_audit_kwargs
+from shared.audit_runner import run_combined_audit
+from shared.llm.provider import (
+    get_max_findings,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
+)
+from shared.prompt.manifests.generate import domain_instructions
+from shared.tools.memory_client import (
+    build_prior_context,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
+)
+from shared.transport.event_emitter import AgUiEventEmitter
 
+# NOT the prompt source any more — feature 0089 Phase 2.5 moved that to the
+# fragment `domains/do178c`, named at the `run_combined_audit` call below and
+# rendered by `domain_instructions()` (see its note in
+# `shared/prompt/manifests/generate.py`). This literal stays as the
+# transcription's INDEPENDENT oracle: `test_0089_manifest_generate.py` reads it
+# out of this file by AST and asserts the fragment equals it byte for byte, so
+# it is the one assertion that can still see the fragment drift from the prompt
+# this agent shipped. Do not reword, reformat or delete it: edit the fragment,
+# then this, together.
 INSTRUCTIONS = """You are a DO-178C Software Assurance Auditor. Analyze source code against
 RTCA DO-178C/ED-12C objectives for the specified Design Assurance Level (DAL).
 Focus on: dead/deactivated code, MC/DC structural coverage gaps, recursion and
@@ -44,26 +58,24 @@ def run_audit(
         yield emitter.run_finished()
         return
 
-    preloaded = prior_findings if prior_findings else None
-    max_f = get_max_findings()
-    context = build_prior_context(source_path, "do178c", preloaded=preloaded, max_findings=max_f)
 
-    use_llm_val = config.get("use_llm")
-    # Feature 0046: per-audit override for L5 LLM judge.
-    _v = config.get("validate")
-    validate_use_llm_val = _v.get("llm") if isinstance(_v, dict) else None
+    _shared = shared_audit_kwargs(config, source_path, prior_findings, "do178c")
+    
     yield from run_combined_audit(
         run_id=run_id,
         source_path=source_path,
         categories=categories,
         skill_map=SKILL_MAP,
         domain_label="DO-178C objectives",
-        prior_context=context,
+        **_shared,
         skill_tools=SKILL_TOOLS,
-        instructions=INSTRUCTIONS,
+        instructions=domain_instructions(
+            "domains/do178c",
+        ),
         model=os.environ.get("VULTURE_LLM_MODEL"),
-        use_llm=use_llm_val if isinstance(use_llm_val, bool) else None,
-        validate_use_llm=validate_use_llm_val if isinstance(validate_use_llm_val, bool) else None,
-        # 0059: honor per-audit Tier-3 toggle (config > VULTURE_LLM_TIER3 > OFF)
-        llm_tier3=config.get("llm_tier3"),
+        # 0089 Phase 2.3 — stated, not defaulted (see run_combined_audit's
+        # `category_enum` docs). `None`, deliberately: findings carry DO-178C
+        # table/objective references alongside the six declared keys, so opting
+        # in is a measurement to run, not part of a refactor.
+        category_enum=None,
     )

@@ -5,6 +5,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+
 from discover_agent.agent import _compute_discovery_score
 from discover_agent.findings import (
     _check_exposed_debug_endpoints,

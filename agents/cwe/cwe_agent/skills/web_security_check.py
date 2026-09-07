@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents import function_tool
+
+from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -16,8 +18,6 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.header_taint import header_taint_pattern
 from shared.tools.snippet import extract_snippet
-
-from cwe_agent.catalog import enrich_finding
 
 # CWE-601: URL Redirection to Untrusted Site (Open Redirect)
 OPEN_REDIRECT_PATTERNS = [

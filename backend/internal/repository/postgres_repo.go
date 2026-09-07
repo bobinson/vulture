@@ -221,19 +221,23 @@ func (r *PostgresRepo) saveFindingsChunk(auditID string, findings []model.Findin
 	// +6 columns for validation (feature 0045), +1 provenance (feature 0057),
 	// +1 code_snippet (feature 0072 P5 — the column existed since 001_init.sql
 	// but was written by no code path).
-	const cols = 21
+	// Must equal findingInsertColumnCount() -- the bound-parameter invariant is
+	// checked against it, and a mismatch here silently shifts every $n.
+	const cols = 23
 	valueStrings := make([]string, 0, len(findings))
 	valueArgs := make([]interface{}, 0, len(findings)*cols)
 	for i, f := range findings {
 		base := i * cols
-		valueStrings = append(valueStrings, fmt.Sprintf(
-			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, "+
-				"$%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			base+1, base+2, base+3, base+4, base+5, base+6,
-			base+7, base+8, base+9, base+10, base+11, base+12, base+13,
-			base+14, base+15, base+16, base+17, base+18, base+19, base+20,
-			base+21,
-		))
+		// Generated, not a hand-written literal. The literal form carried one
+		// `$%d` per column and a matching positional arg, and adding a column
+		// meant editing both by hand in step -- which silently produced a
+		// 22-placeholder string with 23 args the first time feature 0079 added
+		// one. Deriving both from `cols` makes that class of drift impossible.
+		ph := make([]string, cols)
+		for c := 0; c < cols; c++ {
+			ph[c] = fmt.Sprintf("$%d", base+c+1)
+		}
+		valueStrings = append(valueStrings, "("+strings.Join(ph, ", ")+")")
 		refsJSON, _ := json.Marshal(f.References)
 		var validationJSON interface{}
 		if f.Validation != nil {
@@ -272,6 +276,11 @@ func (r *PostgresRepo) saveFindingsChunk(auditID string, findings []model.Findin
 			validationStatus, validationConfidence, validationJSON,
 			f.IsRollup, rolledUpInto, f.InstanceCount, provenance,
 			codeSnippet,
+			// dbSafeText, never nullableString: migration 008 declared this
+			// column NOT NULL DEFAULT '', so a NULL bind violates the
+			// constraint and aborts the entire 1000-row statement.
+			dbSafeText(f.CheckID),
+			dbSafeText(f.FingerprintV2),
 		)
 	}
 	stmt := fmt.Sprintf(
@@ -279,7 +288,8 @@ func (r *PostgresRepo) saveFindingsChunk(auditID string, findings []model.Findin
 			id, audit_id, agent_type, severity, category, title, description,
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
-			is_rollup, rolled_up_into, instance_count, provenance, code_snippet
+			is_rollup, rolled_up_into, instance_count, provenance, code_snippet,
+			check_id, fingerprint_v2
 		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
@@ -486,7 +496,9 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 		        COALESCE(rolled_up_into, ''),
 		        COALESCE(instance_count, 1),
 		        COALESCE(provenance, ''),
-		        COALESCE(code_snippet, '')
+		        COALESCE(code_snippet, ''),
+		        COALESCE(check_id, ''),
+		        COALESCE(fingerprint_v2, '')
 		 FROM findings WHERE audit_id = $1`,
 		auditID,
 	)
@@ -505,7 +517,7 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 			&f.Recommendation, &refsStr, &f.Fingerprint,
 			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
 			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance,
-			&f.CodeSnippet)
+			&f.CodeSnippet, &f.CheckID, &f.FingerprintV2)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}

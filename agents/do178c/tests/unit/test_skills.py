@@ -1,6 +1,7 @@
 """Unit tests for DO-178C agent skills."""
 
 import pytest
+
 from do178c_agent.skills.dead_code_check import check_dead_code
 from do178c_agent.skills.malloc_check import check_malloc
 from do178c_agent.skills.mcdc_coverage import check_mcdc_coverage

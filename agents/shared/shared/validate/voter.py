@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 
 from .types import ValidationCheck
@@ -60,6 +61,14 @@ __all__ = [
 # population a located quote is not a true claim, so no anchor status
 # promotes (0076 AC27).
 AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression", "anchor"})
+
+# Secret-presence check (see context_heuristics._secret_value_check). `absent`
+# means the cited line was read and assigns no value at all.
+SECRET_VALUE_ID = "secret_value"
+SECRET_VALUE_ABSENT = "absent"
+
+INPUT_VALIDATION_ID = "input_validation"
+INPUT_VALIDATION_GUARDED = "guarded"
 
 # ── Feature 0072: obligations ────────────────────────────────────────
 # An obligation is emitted as its OWN check, carrying its state in the
@@ -112,6 +121,9 @@ AUTHORITATIVE_POSITIVE: frozenset[str] = frozenset({"memory"})
 #
 # PARITY: mirrored in validation_voter.go; pinned by the shared fixture.
 CONFIDENCE_CEILING_UNVERIFIED: float = 0.99
+
+
+log = logging.getLogger(__name__)
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -196,6 +208,38 @@ def _may_confirm(checks: list[ValidationCheck]) -> bool:
     if _has_authoritative_positive(checks):
         return True
     if any(c.id == OBLIGATION_ID and c.result == OBLIGATION_UNKNOWN
+           for c in checks):
+        return False
+    # A secret-class finding whose cited line verifiably assigns NO value may
+    # not be CONFIRMED. The value is what the finding is about, and its absence
+    # was read from source — a fact, not an opinion, so a model verdict must not
+    # outrank it. Measured: `backend/config.yaml:3` is literally `admin_secret:`
+    # with nothing after the colon, and the judge (shown a snippet where sibling
+    # values were masked to ***REDACTED***, so it could not tell empty from
+    # masked) called it a hardcoded credential at exploitable=0.9, reaching
+    # 0.99 high_confidence.
+    #
+    # This withholds the LABEL, it does not assert likely_fp: the cited line can
+    # be off by one, or the value can live on a continuation line, and neither
+    # case justifies dismissing the finding outright.
+    if any(c.id == SECRET_VALUE_ID and c.result == SECRET_VALUE_ABSENT
+           for c in checks):
+        return False
+    # An injection finding whose every interpolated value is provably
+    # validated may not be CONFIRMED. Like `secret_value`, this was read from
+    # source — the identifier is guarded by an anchored pattern or a
+    # membership test in the cited file — so a model verdict formed on a
+    # +/-2-line window must not outrank it. Measured: the judge scored
+    # `seed-poll-verifications.qa.ts:423` a real bug at exploitable=0.85
+    # while `pollId` was UUID-validated at the handler entry 100 lines above.
+    #
+    # The additive weight alone does not settle it: 0.5 base + 0.525 judge -
+    # 0.40 here is 0.625, still inside the confirmed band.
+    #
+    # And, as with `secret_value`, this withholds the LABEL rather than
+    # asserting likely_fp — the guard can be removed tomorrow, and a
+    # file-scope guard need not cover every path into the sink.
+    if any(c.id == INPUT_VALIDATION_ID and c.result == INPUT_VALIDATION_GUARDED
            for c in checks):
         return False
     return not _sole_promoter_is_inadmissible_judge(checks)

@@ -18,8 +18,6 @@ from shared.validate.judge_tools import (
     DEFAULT_MAX_TOOL_CALLS,
     JUDGE_TOOL_SPECS,
     JudgeToolExecutor,
-    max_tool_calls,
-    tools_enabled,
 )
 from shared.validate.llm_judge import run_l5
 from shared.validate.types import ValidateConfig
@@ -83,20 +81,26 @@ def test_executor_never_raises_on_garbage():
     assert isinstance(ex2.execute("unknown_tool", "{}"), str)
 
 
-def test_budget_env_parsing(monkeypatch):
-    monkeypatch.delenv("VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS", raising=False)
-    assert max_tool_calls() == DEFAULT_MAX_TOOL_CALLS
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS", "7")
-    assert max_tool_calls() == 7
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS", "0")
-    assert max_tool_calls() == DEFAULT_MAX_TOOL_CALLS
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS", "banana")
-    assert max_tool_calls() == DEFAULT_MAX_TOOL_CALLS
+def test_the_tool_budget_is_a_fixed_value():
+    """Was VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS. 4 is enough to read a span
+    and search twice, which is the whole intended shape of the loop."""
+    assert DEFAULT_MAX_TOOL_CALLS == 4
 
 
-def test_tools_are_off_by_default(monkeypatch):
-    monkeypatch.delenv("VULTURE_VALIDATE_LLM_TOOLS", raising=False)
-    assert tools_enabled() is False
+def test_the_env_gate_is_gone():
+    """VULTURE_VALIDATE_LLM_TOOLS and VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS.
+
+    The gate guarded a provider-compatibility failure the code already
+    recovers from (`test_provider_rejecting_tools_falls_back_to_plain_judging`),
+    and its cost was that the judge could not open a file on any run — the
+    capability inversion this feature exists to repair. What replaces it is
+    the fallback, not another switch, so the module must expose no gate at
+    all: a re-introduced one would silently blind the judge again.
+    """
+    import shared.validate.judge_tools as jt
+
+    assert not hasattr(jt, "tools_enabled")
+    assert not hasattr(jt, "max_tool_calls")
 
 
 # ── fake OpenAI client for the loop ────────────────────────────────────────
@@ -185,7 +189,6 @@ def _l5_check(finding):
 
 
 def test_tool_call_then_verdict(monkeypatch, tmp_path):
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_TOOLS", "true")
     f = _finding(tmp_path)
     calls = []
     script = [
@@ -213,17 +216,30 @@ def test_ac31_budget_exhaustion_yields_undecided(monkeypatch, tmp_path):
     """A model that keeps asking for tools past the budget gets no verdict —
     every finding in the batch lands at 'could not decide', never at the
     claim the model would have made from its partial view."""
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_TOOLS", "true")
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_MAX_TOOL_CALLS", "2")
     f = _finding(tmp_path)
     calls = []
     def ask(i):
         return _FakeMessage(tool_calls=[_FakeToolCall(
             f"t{i}", "read_file", json.dumps({"path": "handler.js"}))])
-    # Asks for tools forever; after the budget the loop must stop on its own.
-    script = [ask(i) for i in range(10)]
+    # Anchored to the constant, not a magic 10: the loop runs
+    # range(DEFAULT_MAX_TOOL_CALLS + 2) turns and trips exhaustion once
+    # calls_used reaches the budget, so DEFAULT_MAX_TOOL_CALLS + 1 asks is the
+    # minimum that reaches it. Scripting from the constant keeps this test
+    # honest if the budget ever changes -- a fixed 10 would silently stop
+    # exercising exhaustion the moment the budget passed 9.
+    script = [ask(i) for i in range(DEFAULT_MAX_TOOL_CALLS + 2)]
     _wire_fake_client(monkeypatch, script, calls)
     run_l5([f], [[]], _cfg(), source_path=str(tmp_path))
+    # THE discriminator. Every assertion below is also satisfied when the
+    # script merely runs out (the stub then returns an empty verdict list, the
+    # finding gets no verdict, and it lands undecided for an unrelated reason),
+    # so without this the test passed even with the budget raised to 100 —
+    # where exhaustion is unreachable. Pinning the call count to the budget is
+    # what ties the observed outcome to the mechanism the test names.
+    assert len(calls) == DEFAULT_MAX_TOOL_CALLS + 1, (
+        f"the loop must stop AT the budget: {len(calls)} calls for a budget of "
+        f"{DEFAULT_MAX_TOOL_CALLS}"
+    )
     check = _l5_check(f)
     assert check["result"] == JUDGE_UNDECIDED
     assert check["weight"] == 0.0
@@ -237,7 +253,6 @@ def test_ac30_uncited_tool_demotion_loses_closure(monkeypatch, tmp_path):
     """'I searched and found nothing' is an absence claim over a bounded
     search. A tool-run demotion citing no found construct must not carry the
     closure assertion that would let it override the deterministic tier."""
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_TOOLS", "true")
     f = _finding(tmp_path)
     calls = []
     script = [
@@ -256,7 +271,6 @@ def test_ac30_uncited_tool_demotion_loses_closure(monkeypatch, tmp_path):
 
 
 def test_ac30_cited_tool_demotion_keeps_closure(monkeypatch, tmp_path):
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_TOOLS", "true")
     f = _finding(tmp_path)
     # A deterministic finding would have the demotion suppressed anyway;
     # use a non-deterministic one so the honoured demotion is visible.
@@ -282,7 +296,6 @@ def test_ac30_cited_tool_demotion_keeps_closure(monkeypatch, tmp_path):
 def test_provider_rejecting_tools_falls_back_to_plain_judging(monkeypatch, tmp_path):
     """Enabling the flag against a provider that 400s on `tools=` must not
     kill L5 — the batch falls back to the tool-less call path."""
-    monkeypatch.setenv("VULTURE_VALIDATE_LLM_TOOLS", "true")
     f = _finding(tmp_path)
 
     class _RejectingCompletions:
@@ -308,14 +321,36 @@ def test_provider_rejecting_tools_falls_back_to_plain_judging(monkeypatch, tmp_p
     assert check["weight"] > 0, "fallback path must still produce the verdict"
 
 
-def test_tools_disabled_keeps_the_legacy_call_shape(monkeypatch, tmp_path):
-    monkeypatch.delenv("VULTURE_VALIDATE_LLM_TOOLS", raising=False)
-    f = _finding(tmp_path)
-    calls = []
+def test_tools_are_offered_whenever_reads_can_be_confined(monkeypatch, tmp_path):
+    """The inverse of the old default.
+
+    This previously asserted the toolless call shape with the flag off, which
+    was every run. The judge now gets its tools whenever there is a root to
+    confine reads to, and the toolless shape survives for the case where
+    there is none — a provider that rejects `tools=` is handled by the
+    fallback instead (see
+    `test_provider_rejecting_tools_falls_back_to_plain_judging`).
+    """
     script = [_FakeMessage(content=json.dumps({"verdicts": [{
         "id": "f0", "exploitable": 0.9, "reasoning": "x"}]}))]
-    _wire_fake_client(monkeypatch, script, calls)
-    run_l5([f], [[]], _cfg(), source_path=str(tmp_path))
-    assert all("tools" not in kw for kw in calls), (
-        "with the flag off, the call shape must be byte-identical to pre-P3b"
+
+    with_root = []
+    _wire_fake_client(monkeypatch, list(script), with_root)
+    run_l5([_finding(tmp_path)], [[]], _cfg(), source_path=str(tmp_path))
+    assert any("tools" in kw for kw in with_root), (
+        "a confinable root is the only precondition for offering tools"
+    )
+
+    # A DIFFERENT finding: both halves judging the same one let the L5 verdict
+    # cache short-circuit the second run_l5, so `no_root` stayed empty and the
+    # assertion below passed vacuously over an empty list.
+    other = _finding(tmp_path)
+    other["id"] = "f1"
+    other["line_start"] = (other.get("line_start") or 1) + 1
+    no_root = []
+    _wire_fake_client(monkeypatch, list(script), no_root)
+    run_l5([other], [[]], _cfg(), source_path="")
+    assert no_root, "the judge must actually have been called for this to mean anything"
+    assert all("tools" not in kw for kw in no_root), (
+        "with no root, reads cannot be confined, so no tools are offered"
     )

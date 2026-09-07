@@ -4,10 +4,8 @@ Includes token tracking, cooldown/fallback, context-window-aware prompt
 truncation, and proper model string resolution for direct litellm calls.
 """
 
-import json
 import logging
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,6 +16,10 @@ from shared.llm.provider import (
     get_context_window,
     resolve_model_for_litellm_with_fallback,
 )
+from shared.prompt import Mode, PromptSpec, RenderedPrompt, profile_for, render
+from shared.prompt.extract import _balanced_object, _fenced_lines, extract_object
+from shared.prompt.manifests.prove_system import PROVE_RETRY, PROVE_SYSTEM
+from shared.prompt.render import _fill
 
 # Cache resolved model string to avoid cooldown/fallback logic on every call
 _cached_model: str | None = None
@@ -37,13 +39,6 @@ def _get_cached_model(preference: str | None = None) -> str:
 
 logger = logging.getLogger(__name__)
 
-# Thinking preamble patterns (text-based, not XML tags)
-_THINKING_PREAMBLE_RE = re.compile(
-    r"^.*?(?:Thinking Process|Analysis|Reasoning|Thought|Step[- ]by[- ]Step|Let me)"
-    r".*?(?=\{)",
-    re.DOTALL,
-)
-
 _MAX_RETRIES = 3
 _TEMPERATURES = [0.1, 0.4, 0.8]
 # Cap output tokens — must be large enough for verbose models that
@@ -60,18 +55,129 @@ def _safe_int_env(name: str, default: int) -> int:
 
 _DEFAULT_MAX_TOKENS = _safe_int_env("VULTURE_PROVE_MAX_OUTPUT_TOKENS", 4096)
 
-# System message to enforce JSON-only output (effective across model families)
-_SYSTEM_MSG = (
-    "You are a JSON API. Reply with ONLY a single JSON object. "
-    "No thinking process, no analysis, no markdown, no explanation. "
-    "Just the JSON object."
-)
+# ── Prompt bytes come from the shared prompt library (feature 0089 Phase 2.2) ─
+# The JSON-only system message and the retry guidance were spelled out inline
+# here. They are now rendered from the fragments under
+# `shared/prompt/fragments/prove/`, which transcribe them byte for byte; the
+# parity net is `agents/shared/tests/unit/prompt/test_0089_parity_prove_wire.py`
+# and `..._parity_prove_system.py`.
+#
+# Rendered once at import against the resolved model profile. Item 4.5 flips the
+# render below to ADAPT: on the default openai profile that is byte-identical to
+# the transcription (the profile reaches only `output_budget_hint` and
+# `response_format`, and this call site uses neither), so the shipped default
+# moves no byte. ADAPT earns its keep on a profile whose chat template has no
+# system role (gemma), where it relocates the JSON-API system turn into the
+# user turn rather than emitting a system message the template would drop.
+_PROMPT_PROFILE = profile_for(None)
 
-# Retry guidance appended on retries to steer the model toward valid JSON
+
+def _render(spec) -> RenderedPrompt:
+    """ADAPT-render one prove spec for the resolved model profile (Item 4.5).
+
+    ADAPT, not TRANSCRIBE: on the default openai profile it is byte-identical
+    to the transcription (the profile reaches only `response_format`, which
+    this JSON call site discards), so the flip moves no byte for the shipped
+    default. It earns its keep on a profile whose chat template has no system
+    role (gemma), where ADAPT folds the JSON-API system turn into the front of
+    the single user turn instead of emitting a system message that would be
+    dropped."""
+    return render(spec, _PROMPT_PROFILE, mode=Mode.ADAPT)
+
+
+def render_prove_prompt(user_fragment: str, domain: dict[str, str], **runtime) -> str:
+    """The USER turn for one plan / reflect / analyze call (feature 0089 Phase 2.6).
+
+    `user_fragment` is the collapsed template id (`"prove/plan"`, `"prove/reflect"`
+    or `"prove/analyze"`); `domain` is the per-strategy / per-protocol slot table
+    (`persona`, `domain_rules`, …); `runtime` are the per-call fills (`title`,
+    `category`, …). They merge into one variables dict and resolve in a single
+    ADAPT pass (Item 4.5), so this reproduces byte for byte what
+    `_{PLAN,REFLECT,ANALYZE}_PROMPT.format(**runtime)` produced before the flip —
+    the five/five/three inline copies are gone from the runtime, replaced by one
+    template each.
+
+    The spec is built here, not imported from a manifest, on purpose: this
+    family keeps its per-strategy `prove/plan_{name}` specs as the golden/lint
+    oracle (they carry cwe's `filename` orphan and the family's goldens), and a
+    parallel collapsed manifest would only duplicate their backlog annotations
+    under a new id. The template's bytes are pinned instead by
+    `test_0089_parity_prove_collapse.py`. Only `user_fragments` is set; the
+    JSON-API system turn is prepended separately by `_system_turn()` inside
+    `llm_json_call`, unchanged by this flip.
+
+    Why the domain values are resolved against `runtime` FIRST: `render._fill`
+    substitutes in ONE pass and never rescans a value (feature 0089's
+    value-is-not-template guarantee), so a `{code_snippet}` sitting INSIDE the
+    cwe/owasp `evidence_block` slot value would survive verbatim if it were only
+    handed to the skeleton fill. The live `_PLAN_PROMPT.format(...)` filled those
+    positions, so reproducing its bytes means resolving them too. Doing it here,
+    on the DOMAIN table (authored library constants), is safe in a way a second
+    pass over the whole prompt would not be: it cannot turn an
+    attacker-controlled runtime value into a template, because runtime values are
+    never rescanned — only the trusted domain templates are, and only once.
+    """
+    resolved_domain = {k: _fill(v, runtime) for k, v in domain.items()}
+    spec = PromptSpec(
+        id=f"prove_runtime_{user_fragment.rsplit('/', 1)[-1]}",
+        tier="prove",
+        fragments=(),
+        user_fragments=(user_fragment,),
+        variables={**resolved_domain, **runtime},
+    )
+    return _render(spec).user
+
+
+# The system turn as the LIBRARY places it, role included. Phase 1 found that a
+# hardcoded role here is exactly how every prove prompt could end up in the
+# wrong turn, so the placement is the library's to state, not this module's.
+_SYSTEM_TURN: tuple[dict, ...] = tuple(_render(PROVE_SYSTEM).messages)
+
+
+def _compose_turns(user_content: str) -> list[dict]:
+    """The wire turns, with no two consecutive user messages.
+
+    `_system_turn()` renders whatever role the library says the JSON-API message
+    belongs in. Under ADAPT with a profile that has NO system role (rule 2), that
+    message comes back as a USER turn — and concatenating it in front of the real
+    user turn produced `['user', 'user']` on the wire. Gemma's template, the very
+    family that motivates rule 2, is alternation-strict, so the flip broke exactly
+    the case it was made for. Baseline before the flip: `['system', 'user']`.
+
+    So a user-role system turn is FOLDED into the front of the user content
+    rather than emitted as its own message. A real system turn is passed
+    through untouched.
+    """
+    turns = _system_turn()
+    lead = [t for t in turns if t.get("role") == "user"]
+    rest = [t for t in turns if t.get("role") != "user"]
+    if lead:
+        prefix = "\n\n".join(t["content"] for t in lead if t.get("content"))
+        user_content = f"{prefix}\n\n{user_content}" if prefix else user_content
+    return [*rest, {"role": "user", "content": user_content}]
+
+
+def _system_turn() -> list[dict]:
+    """A fresh copy of the rendered system turn, for one request.
+
+    Copied per call because the messages list is handed to litellm, which is
+    free to rewrite it for a provider; the shared render must not be edited in
+    place. A function rather than an inline comprehension so `llm_json_call`'s
+    branch count is unchanged by this flip.
+    """
+    return [dict(turn) for turn in _SYSTEM_TURN]
+
+
+# The system text alone: `_truncate_prompt` budgets for it.
+_SYSTEM_MSG = _render(PROVE_SYSTEM).instructions
+
+# Retry guidance, indexed by attempt. `PROVE_RETRY` has no entry for attempt 0
+# because live sends no guidance then, and the empty string at index 0 is that
+# absence rather than prompt text — a property of this call site, which is why
+# the library declines to represent it.
 _RETRY_GUIDANCE = [
-    "",  # no guidance on first attempt
-    "\n\nIMPORTANT: Your previous response was not valid JSON. Reply with ONLY a JSON object — no markdown, no explanation, no Thinking Process, no analysis preamble.",
-    "\n\nCRITICAL: Previous attempts failed JSON parsing. Output EXACTLY one JSON object: {\"key\": \"value\"}. Nothing else. No text before or after the JSON.",
+    _render(PROVE_RETRY[n]).user if n in PROVE_RETRY else ""
+    for n in range(max(PROVE_RETRY) + 1)
 ]
 
 # Rough chars-per-token multiplier (same as shared.tools.memory_client)
@@ -192,10 +298,11 @@ async def llm_json_call(
         try:
             # Append retry guidance on subsequent attempts
             guidance = _RETRY_GUIDANCE[min(attempt, len(_RETRY_GUIDANCE) - 1)]
-            messages = [
-                {"role": "system", "content": _SYSTEM_MSG},
-                {"role": "user", "content": prompt + guidance},
-            ]
+            # `prompt + guidance` is concatenation, not a join: each guidance
+            # variant carries its own leading blank line (see the fragments'
+            # `verbatim: true`), so a joiner here would emit four newlines
+            # where the live payload has two.
+            messages = _compose_turns(prompt + guidance)
             kwargs = {**base_kwargs, "messages": messages, "temperature": _TEMPERATURES[attempt]}
             response = await acompletion(**kwargs)
             text = response.choices[0].message.content or ""
@@ -254,101 +361,34 @@ def _record_usage(response: object, model: str) -> None:
 def _extract_json(text: str) -> dict:
     """Extract a JSON object from LLM text.
 
-    Handles: <think> XML tags, text-based thinking preambles,
-    markdown code fences, and arbitrarily nested JSON objects.
+    Delegates to the shared library's object path. That chain IS this
+    function's, moved to `shared/prompt/extract.py` in feature 0089 §11.3 —
+    same four strategies in the same order (direct parse, thinking-preamble
+    skip, markdown fences, brace-counted balanced object) — plus the `<think>`
+    reasoning strip the findings-array path already had, which stops a
+    reasoning model's abandoned draft being returned instead of its answer.
+
+    `extract_object` returns `None` for "no object anywhere" where this returns
+    `{}`, so the warning below fires only on a genuine parse failure and a model
+    that really answered `{}` is no longer logged as one.
     """
-    # Strip <think>...</think> blocks (qwen/deepseek)
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    # Strip <output>...</output> wrapper (some models)
-    text = re.sub(r"</?output>", "", text)
-    text = text.strip()
+    found = extract_object(text)
+    if found is None:
+        logger.warning("Could not extract JSON from LLM response: %.200s", text)
+        return {}
+    return found
 
-    # Try direct parse first
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
 
-    # Strip text-based thinking preambles ("Thinking Process:", "Analysis:", etc.)
-    if _THINKING_PREAMBLE_RE.match(text):
-        text = text[text.index("{"):]
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-    # Strip markdown code fences — extract fenced content
-    if "```" in text:
-        text = _strip_markdown_fences(text)
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-    # Find first balanced JSON object via brace counting
-    extracted = _find_balanced_json(text)
-    if extracted:
-        return extracted
-
-    logger.warning("Could not extract JSON from LLM response: %.200s", text)
-    return {}
+# Both parsers below now live in the shared library, whose docstrings record
+# them as moved from this module (`_balanced_object` <- `_find_balanced_json`,
+# `_fenced_lines` <- `_strip_markdown_fences`). Kept here as delegations rather
+# than as second copies, so the tree holds exactly one implementation of each
+# and the version under test is the version that runs.
+def _find_balanced_json(text: str) -> dict | None:
+    """The first balanced `{...}` in *text*, brace-counted; `None` if there is none."""
+    return _balanced_object(text)
 
 
 def _strip_markdown_fences(text: str) -> str:
-    """Extract content from within markdown code fences."""
-    lines = text.split("\n")
-    filtered = []
-    in_fence = False
-    for line in lines:
-        if line.strip().startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            filtered.append(line)
-    # If we captured fenced content, use it; otherwise return original
-    if filtered:
-        return "\n".join(filtered).strip()
-    return text
-
-
-def _find_balanced_json(text: str) -> dict | None:
-    """Find the first balanced JSON object using brace counting.
-
-    Handles arbitrary nesting depth unlike a simple regex.
-    Skips braces inside quoted strings.
-    """
-    start = text.find("{")
-    if start == -1:
-        return None
-
-    depth = 0
-    in_string = False
-    escape_next = False
-
-    for i in range(start, len(text)):
-        ch = text[i]
-        if escape_next:
-            escape_next = False
-            continue
-        if ch == "\\":
-            escape_next = True
-            continue
-        if ch == '"' and not escape_next:
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start:i + 1])
-                except json.JSONDecodeError:
-                    # This brace pair wasn't valid JSON, try next opening brace
-                    next_start = text.find("{", start + 1)
-                    if next_start != -1 and next_start < i:
-                        return _find_balanced_json(text[next_start:])
-                    return None
-    return None
+    """The content between markdown fence markers; *text* when none was captured."""
+    return _fenced_lines(text)

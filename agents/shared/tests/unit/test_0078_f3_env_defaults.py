@@ -398,6 +398,11 @@ def _explicit_resolvers() -> dict[str, Resolver]:
             file_scanner._llm_feed_prose,
             "agents/shared/shared/tools/file_scanner.py _llm_feed_prose() [called]",
         ),
+        # Mode string, resolved by calling the reader on an empty env.
+        "VULTURE_LLM_PREFLIGHT": (
+            audit_runner._preflight_mode,
+            "agents/shared/shared/audit_runner.py _preflight_mode() [called]",
+        ),
     }
     resolvers.update(_quote_knob_resolvers())
     resolvers.update(_judge_resolvers())
@@ -485,6 +490,26 @@ def values_agree(stated: str, code: Any) -> bool:
 # ── exemptions, each one on the record ───────────────────────────────────────
 
 ALLOWLIST: dict[str, str] = {
+    "VULTURE_FINDING_IDENTITY": (
+        "Go-side STRING mode switch (handler.findingIdentityMode, "
+        "off|observe|enforce). Same limitation as VULTURE_FINDING_PATH_CANON "
+        "below: _go_defaults resolves bool and int literals only. The default "
+        "is pinned by TestFingerprintV2DefaultsToOff in "
+        "backend/internal/handler/fingerprint_v2_test.go, which asserts the off "
+        "default and the full parse table. Delete this entry if that Go test "
+        "goes away."
+    ),
+    "VULTURE_FINDING_PATH_CANON": (
+        "Go-side STRING mode switch (handler.pathCanonMode, off|observe|enforce). "
+        "_go_defaults resolves bool and int literals only, so a string-valued "
+        "switch resolves to nothing here. Widening _GO_LITERAL_RE to strings was "
+        "tried and reverted: several string literals per function make "
+        "_sole_candidate ambiguous and it broke eight tests in this file. The "
+        "default is pinned instead by TestPathCanonDefaultsToOff in "
+        "backend/internal/handler/path_canon_test.go, which asserts both the "
+        "off default and the full parse table. Delete this entry if that Go "
+        "test goes away."
+    ),
     "VULTURE_LLM_CTX_SIZE": (
         "Example override, not a default restatement. There is no numeric code "
         "fallback for this var: llm/provider.py reads os.environ.get(name, '') and, "
