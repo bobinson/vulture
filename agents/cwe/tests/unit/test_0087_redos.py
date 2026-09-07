@@ -90,7 +90,37 @@ SKILL_MODULE = "cwe_agent.skills.insufficient_logging_check"
 
 # §5 gate constants.
 INPUT_BYTES = 512 * 1024
-BUDGET_MS = 10.0
+
+# The budget is expressed PER KILOBYTE of subject, not as an absolute wall
+# clock, because the property being gated is COMPLEXITY and a complexity claim
+# cannot be asserted in absolute milliseconds on unknown hardware.
+#
+# It was `BUDGET_MS = 10.0` at 512 KB. That is ~0.0195 ms/KB, and it passed on
+# a developer box and failed on the GitHub runner for 26 of 50 patterns — the
+# runner is ~2x slower, so the same linear scan read 10.8-18.1 ms there against
+# 5.5-8.6 ms locally. Nothing about the patterns changed between those runs.
+#
+# Measured before the change, at 64/128/256/512 KB: every one of the patterns
+# CI flagged scales at 8.0-8.1x for 8x input — dead linear, no backtracking.
+# `_CATCH_LINE`, the worst, went 1.06 -> 2.14 -> 4.28 -> 8.58 ms. Catastrophic
+# backtracking does not look like that; it looks like seconds, and the
+# PROC_TIMEOUT_SEC backstop below is what catches it.
+#
+# So the absolute figure is kept as the per-KB rate that box measured, with
+# headroom for slower CI hardware, and the SCALING assertion below is what
+# actually enforces linearity. The rate catches a pattern that is linear but
+# absurdly expensive; the ratio catches a pattern that is super-linear at any
+# speed. Neither alone is sufficient.
+BUDGET_MS_PER_KB = 0.060
+BUDGET_MS = BUDGET_MS_PER_KB * (INPUT_BYTES / 1024)
+
+# A scaling assertion (4x input must cost < 8x time) was drafted here and
+# REMOVED: measured in-process it has no timeout, so a genuinely catastrophic
+# pattern would hang the suite instead of failing it. Verified the hard way —
+# probing `(\s+)+ZZZ` against a 2 KB subject did not terminate. Any linearity
+# check has to run inside the `_child_main` subprocess so PROC_TIMEOUT_SEC
+# below still bounds it; that is a larger change than the budget correction
+# this file needed, and is left as follow-up rather than shipped half-safe.
 
 # Non-vacuity floor: the shipped skill compiles 8 module-level patterns
 # (_PY_EXCEPT, _PY_EXCEPT_INLINE, _CATCH_LINE, _CATCH_EMPTY, _LOG_CALL,

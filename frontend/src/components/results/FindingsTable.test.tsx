@@ -42,8 +42,9 @@ describe("FindingsTable", () => {
 
   it("shows file name from path", () => {
     render(<FindingsTable findings={[makeFinding({ file_path: "/very/deep/path/db.ts", line_start: 42 })]} />);
-    // Path "/very/deep/path/db.ts" is shortened to last 3 segments: "deep/path/db.ts"
-    expect(screen.getByText("deep/path/db.ts:42")).toBeInTheDocument();
+    // Shortened to `…/` + the last TWO segments — the FILE column is width-bounded
+    // so a deep path cannot widen the table past its scroll container.
+    expect(screen.getByText("…/path/db.ts:42")).toBeInTheDocument();
   });
 
   it("renders filter buttons for severities", () => {
@@ -195,9 +196,9 @@ describe("FindingsTable", () => {
 
     // All three line numbers must be present (10, 50, 90). The bug
     // collapsed them to a single row.
-    expect(screen.getByText("src/web/auth.go:10")).toBeInTheDocument();
-    expect(screen.getByText("src/web/auth.go:50")).toBeInTheDocument();
-    expect(screen.getByText("src/web/auth.go:90")).toBeInTheDocument();
+    expect(screen.getByText("…/web/auth.go:10")).toBeInTheDocument();
+    expect(screen.getByText("…/web/auth.go:50")).toBeInTheDocument();
+    expect(screen.getByText("…/web/auth.go:90")).toBeInTheDocument();
     // CWE finding should be filtered out.
     expect(screen.queryByText("SQL injection")).toBeNull();
     // Filter count reflects the 3 OWASP rows.
@@ -218,8 +219,8 @@ describe("FindingsTable", () => {
     render(<FindingsTable findings={findings} />);
     // Three distinct line numbers must render — bug collapsed them
     // into a single row by colliding React keys on shared fingerprint.
-    expect(screen.getByText("src/lib/f.go:1")).toBeInTheDocument();
-    expect(screen.getByText("src/lib/f.go:2")).toBeInTheDocument();
-    expect(screen.getByText("src/lib/f.go:3")).toBeInTheDocument();
+    expect(screen.getByText("…/lib/f.go:1")).toBeInTheDocument();
+    expect(screen.getByText("…/lib/f.go:2")).toBeInTheDocument();
+    expect(screen.getByText("…/lib/f.go:3")).toBeInTheDocument();
   });
 });
