@@ -110,7 +110,7 @@ jobs:
           # be lifted and the .sig/.pem outputs dropped.
           cosign-release: 'v2.4.3'
       - name: install syft
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
       - name: install trivy
         # Official cross-platform installer (detects OS/arch). PINNED to the
         # v0.71.0 tag of contrib/install.sh *and* the installed version, so we
