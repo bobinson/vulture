@@ -13,6 +13,7 @@ import (
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
+	"github.com/vulture/backend/pkg/pluginregistry"
 )
 
 // AuditDispatcher starts a created audit's run in the background. Satisfied by
@@ -38,7 +39,18 @@ type AuditHandler struct {
 	lineageRepo repository.LineageRepository
 	llmHealth   *LLMHealthHandler
 	dispatcher  AuditDispatcher
+	// pluginReg is the SAME registry stagerouter dispatches from, so the set
+	// of types accepted here cannot drift from the set that can actually run.
+	// Recomputing it via pluginregistry.Default() would build a second
+	// registry and reintroduce exactly that drift.
+	pluginReg pluginregistry.Registry
 }
+
+// SetPluginRegistry wires the plugin registry consulted when validating
+// requested audit types. Mirrors AgentHandler.SetPluginRegistry. nil-safe:
+// unset, only in-tree agent types are accepted, which is correct for the
+// degraded nil-router startup path where no plugin can dispatch anyway.
+func (h *AuditHandler) SetPluginRegistry(reg pluginregistry.Registry) { h.pluginReg = reg }
 
 // SetDispatcher wires background dispatch-on-create (feature 0071). When unset,
 // Create only creates — which is the pre-0071 behavior and what unit tests
@@ -86,6 +98,15 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// DegradedReason overwrite below).
 	req.BrokerToken = ""
 	req.ContextWindow = 0 // §31: broker-injected at dispatch, never client-supplied
+
+	// Reject a type that names no dispatchable agent BEFORE anything is
+	// persisted or probed. Dispatch silently skips an unresolvable type, so
+	// without this the run is created, completes in milliseconds and reports
+	// a clean result it never earned.
+	if err := validateAuditTypes(req.Types, h.pluginReg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Feature 0039: per-audit LLM-health preflight. Best-effort — if the
 	// aggregator cannot reach any agent, proceed without populating
@@ -185,6 +206,14 @@ func (h *AuditHandler) CachedAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	types := strings.Split(typesParam, ",")
+	// Same contract as Create. The cache probe short-circuits the scan when it
+	// hits, so without this a repeat of an invalid invocation re-serves the
+	// empty audit that invocation produced the first time — reporting a cached
+	// clean result for a run that never dispatched an agent.
+	if err := validateAuditTypes(types, h.pluginReg); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	audit, err := h.svc.GetCachedAudit(sourceID, types)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

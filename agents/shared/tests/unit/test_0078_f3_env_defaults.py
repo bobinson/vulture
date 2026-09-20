@@ -490,26 +490,6 @@ def values_agree(stated: str, code: Any) -> bool:
 # ── exemptions, each one on the record ───────────────────────────────────────
 
 ALLOWLIST: dict[str, str] = {
-    "VULTURE_FINDING_IDENTITY": (
-        "Go-side STRING mode switch (handler.findingIdentityMode, "
-        "off|observe|enforce). Same limitation as VULTURE_FINDING_PATH_CANON "
-        "below: _go_defaults resolves bool and int literals only. The default "
-        "is pinned by TestFingerprintV2DefaultsToOff in "
-        "backend/internal/handler/fingerprint_v2_test.go, which asserts the off "
-        "default and the full parse table. Delete this entry if that Go test "
-        "goes away."
-    ),
-    "VULTURE_FINDING_PATH_CANON": (
-        "Go-side STRING mode switch (handler.pathCanonMode, off|observe|enforce). "
-        "_go_defaults resolves bool and int literals only, so a string-valued "
-        "switch resolves to nothing here. Widening _GO_LITERAL_RE to strings was "
-        "tried and reverted: several string literals per function make "
-        "_sole_candidate ambiguous and it broke eight tests in this file. The "
-        "default is pinned instead by TestPathCanonDefaultsToOff in "
-        "backend/internal/handler/path_canon_test.go, which asserts both the "
-        "off default and the full parse table. Delete this entry if that Go "
-        "test goes away."
-    ),
     "VULTURE_LLM_CTX_SIZE": (
         "Example override, not a default restatement. There is no numeric code "
         "fallback for this var: llm/provider.py reads os.environ.get(name, '') and, "
@@ -670,7 +650,7 @@ def test_resolution_reaches_all_three_mechanisms() -> None:
     """
     static, _ = _resolve("VULTURE_LLM_MAX_BODY_BYTES")
     called, _ = _resolve("VULTURE_LLM_QUOTE_MIN_CHARS")
-    go, _ = _resolve("VULTURE_DEDUP_PREFER_DETERMINISTIC")
+    go, _ = _resolve("VULTURE_DEDUP_STABLE_TIEBREAK")
     assert static == 131072, f"static AST scan resolved {static!r}, expected 131072"
     assert called == 24, f"anchor._knob('MIN_CHARS') resolved {called!r}, expected 24"
     assert _as_bool(go) is True, f"Go extraction resolved {go!r}, expected true"
@@ -793,10 +773,10 @@ def test_injected_go_side_mismatch_is_caught(env_copy: pathlib.Path) -> None:
     """The Go-side switches are checked against the Go source, not skipped."""
     patched = _inject(
         env_copy,
-        "# VULTURE_DEDUP_PREFER_DETERMINISTIC=true",
-        "# VULTURE_DEDUP_PREFER_DETERMINISTIC=false",
+        "# VULTURE_DEDUP_STABLE_TIEBREAK=true",
+        "# VULTURE_DEDUP_STABLE_TIEBREAK=false",
     )
-    violation = _violation_for(check(patched), "VULTURE_DEDUP_PREFER_DETERMINISTIC")
+    violation = _violation_for(check(patched), "VULTURE_DEDUP_STABLE_TIEBREAK")
     assert "stream_handler.go" in violation.message, violation.message
 
 

@@ -15,7 +15,7 @@ func TestProcessAuditFindings_NewFinding(t *testing.T) {
 		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) { return nil, nil },
 		UpsertLineageFn:            func(l *model.FindingLineage) error { upserted = l; l.ID = "lineage-1"; return nil },
 		AddEventFn:                 func(e *model.LineageEvent) error { addedEvent = e; return nil },
-		GetOpenBySourcePathFn:      func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
+		GetActiveBySourcePathFn:    func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
 	}
 	svc := NewLineageService(mock)
 
@@ -66,10 +66,10 @@ func TestProcessAuditFindings_Regression(t *testing.T) {
 		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) {
 			return map[string]*model.FindingLineage{"fp-1|chaos": existing}, nil
 		},
-		UpsertLineageFn:       func(l *model.FindingLineage) error { return nil },
-		MarkRegressionFn:      func(id, aid, c string) error { regressionCalled = true; return nil },
-		AddEventFn:            func(e *model.LineageEvent) error { regressionEvent = e; return nil },
-		GetOpenBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
+		UpsertLineageFn:         func(l *model.FindingLineage) error { return nil },
+		MarkRegressionFn:        func(id, aid, c string) error { regressionCalled = true; return nil },
+		AddEventFn:              func(e *model.LineageEvent) error { regressionEvent = e; return nil },
+		GetActiveBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) { return nil, nil },
 	}
 	svc := NewLineageService(mock)
 
@@ -98,7 +98,7 @@ func TestProcessAuditFindings_FixDetection(t *testing.T) {
 		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) { return nil, nil },
 		UpsertLineageFn:            func(l *model.FindingLineage) error { l.ID = "lineage-new"; return nil },
 		AddEventFn:                 func(e *model.LineageEvent) error { return nil },
-		GetOpenBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) {
+		GetActiveBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) {
 			return openLineages, nil
 		},
 		MarkFixedFn: func(id, aid, c string) error { fixedID = id; return nil },
@@ -128,7 +128,7 @@ func TestProcessAuditFindings_AcceptedRiskNotAutoFixed(t *testing.T) {
 		GetLineageByFingerprintsFn: func(fps []string, sp string) (map[string]*model.FindingLineage, error) { return nil, nil },
 		UpsertLineageFn:            func(l *model.FindingLineage) error { l.ID = "lineage-x"; return nil },
 		AddEventFn:                 func(e *model.LineageEvent) error { return nil },
-		GetOpenBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) {
+		GetActiveBySourcePathFn: func(sp, at string) ([]model.FindingLineage, error) {
 			return openLineages, nil
 		},
 		MarkFixedFn: func(id, aid, c string) error { fixedCalled = true; return nil },

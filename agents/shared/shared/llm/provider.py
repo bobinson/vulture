@@ -8,6 +8,8 @@ For Ollama, install and run: ``ollama pull qwen3:1.7b && ollama serve``
 import logging
 import os
 
+from shared.llm.env import resolve_call_timeout
+
 logger = logging.getLogger(__name__)
 
 MODEL_MAP: dict[str, str] = {
@@ -20,7 +22,22 @@ MODEL_MAP: dict[str, str] = {
     "gpt-4o": "gpt-4o",
     # Update version date when new Claude releases are available
     "claude-sonnet": "litellm/anthropic/claude-sonnet-4-5-20250514",
-    "gemini-pro": "litellm/gemini/gemini-1.5-pro",
+    # `gemini-1.5-pro` was retired: ListModels omits it and generateContent
+    # returns 404 NOT_FOUND — measured as 33 upstream 404s in one run, reaching
+    # the operator as a generic endpoint error.
+    #
+    # The replacement stays in the SAME TIER. Pointing `gemini-pro` at a flash
+    # model was tried and reverted: it answers, but `pro` and `flash` differ in
+    # capability and price, and every table keyed on this alias
+    # (CONTEXT_WINDOWS, COST_PER_1M_TOKENS) would go on describing a pro model.
+    # A dead alias fails loudly and gets fixed; a lying one is billed and
+    # trusted. `gemini-2.5-pro` is tier-gated on some keys and 404s there —
+    # that failure is now legible, because the broker's `model_not_found` code
+    # reaches the operator (validate/llm_judge._broker_detail).
+    # Pinned by test_gemini_model_ids_are_live.py.
+    "gemini-pro": "litellm/gemini/gemini-2.5-pro",
+    # The launcher's default tier, addressable by name.
+    "gemini-flash": "litellm/gemini/gemini-2.5-flash",
     # Local Ollama models (zero cost, no API key needed)
     # Format: "litellm/ollama/X" — the "litellm/" prefix routes through the
     # Agents SDK's LiteLLM provider, which then handles "ollama/X" natively.
@@ -47,6 +64,7 @@ EMBEDDING_MODELS: dict[str, str] = {
     "gpt-4o": "text-embedding-3-small",           # 1536d, OpenAI API
     "claude-sonnet": "text-embedding-3-small",     # 1536d, OpenAI API
     "gemini-pro": "text-embedding-3-small",        # 1536d, OpenAI API
+    "gemini-flash": "text-embedding-3-small",      # 1536d, OpenAI API
     "qwen3:1.7b": "nomic-embed-text",             # 768d, Ollama local
     "qwen3:8b": "nomic-embed-text",               # 768d, Ollama local
     "qwen3:14b": "nomic-embed-text",              # 768d, Ollama local
@@ -59,6 +77,7 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-4o": 128_000,
     "claude-sonnet": 200_000,
     "gemini-pro": 1_048_576,
+    "gemini-flash": 1_048_576,
     "qwen3:1.7b": 32_000,
     "qwen3:8b": 32_000,    # Ollama native default; override via VULTURE_LLM_CTX_SIZE if YaRN enabled
     "qwen3:14b": 32_000,   # Ollama native default; override via VULTURE_LLM_CTX_SIZE if YaRN enabled
@@ -343,7 +362,12 @@ def supports_structured_output(model: str | None = None) -> bool:
 COST_PER_1M_TOKENS: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "claude-sonnet": (3.00, 15.00),
-    "gemini-pro": (1.25, 5.00),
+    # Google list price per 1M tokens. These are the 2.5-generation numbers and
+    # they are NOT interchangeable between tiers — the old (1.25, 5.00) was
+    # gemini-1.5-pro's and would have mispriced a flash run ~4x on input.
+    # Verify against Google's pricing page before trusting a budget cap.
+    "gemini-pro": (1.25, 10.00),
+    "gemini-flash": (0.30, 2.50),
     "qwen3:1.7b": (0.0, 0.0),
     "qwen3:8b": (0.0, 0.0),
     "qwen3:14b": (0.0, 0.0),
@@ -382,6 +406,26 @@ def _broker_on() -> bool:
     }
 
 
+def _call_timeout_s() -> float:
+    """Feature 0093 W1: the per-call socket budget for the LiteLLM path.
+
+    The broker ships OFF (docker-compose: `VULTURE_LLM_BROKER=off`), so this is
+    the path most deployments actually run — and it set no timeout at all,
+    inheriting litellm's `request_timeout=6000.0`. Travels per call for the
+    same reason `max_retries` does: litellm reads these from per-call kwargs.
+
+    Derived from `resolve_call_timeout`, not a literal. This site originally
+    hardcoded the historical 120s default while the batch bound
+    (`audit_runner`) and the socket read (`llm.broker`) both derived ~439s from
+    the output-token budget — so on shipped defaults the tightest of the three
+    bound, silently, below the number the other two had agreed on. That is the
+    same "two defaults that cannot both be right" failure 0093 exists to
+    remove, one layer down; the resolver's own docstring calls for exactly one
+    function here.
+    """
+    return float(resolve_call_timeout())
+
+
 def litellm_retry_extra_args(resolved_model: str) -> dict:
     """Feature 0070 P5 (D.1): per-call kwargs that disable the client's retries.
 
@@ -418,7 +462,7 @@ def litellm_retry_extra_args(resolved_model: str) -> dict:
         return {}
     if _broker_on():
         return {}
-    return {"max_retries": 0, "num_retries": 0}
+    return {"max_retries": 0, "timeout": _call_timeout_s(), "num_retries": 0}
 
 
 def get_model_settings(model: str | None = None) -> dict:

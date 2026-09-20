@@ -10,7 +10,13 @@ var priceUSDPer1M = map[string][2]float64{
 	"gpt-4o":        {2.50, 10.00},
 	"gpt-4o-mini":   {0.15, 0.60},
 	"claude-sonnet": {3.00, 15.00},
-	"gemini-pro":    {1.25, 5.00},
+	// ALIASES, priced as what they RESOLVE to (see MODEL_MAP in
+	// agents/shared/shared/llm/provider.py). `gemini-pro` was {1.25, 5.00} here:
+	// input matched gemini-2.5-pro but output was half its real 10.00, so a
+	// VULTURE_LLM_BUDGET_USD cap was reached at roughly twice the spend it was
+	// set for — under-reporting, the direction a budget cannot tolerate.
+	"gemini-pro":   {1.25, 10.00},
+	"gemini-flash": {0.30, 2.50},
 	// §30 native adapters — representative rates (unlisted models still fall
 	// back to the conservative high rate below; never under-charge).
 	"gemini-2.5-flash":  {0.30, 2.50},

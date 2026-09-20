@@ -48,6 +48,8 @@ export interface Audit {
   id: string;
   source_id: string;
   source_path?: string;
+  /** Feature 0091: the target this scan belongs to (lineage grouping key). */
+  target_key?: string;
   status: AuditStatus;
   types: string[];
   config?: Record<string, unknown>;
@@ -231,8 +233,41 @@ export interface OwaspCoverageManifest {
   categories: OwaspCategoryCoverage[];
 }
 
-export type LineageStatus = "open" | "in_progress" | "resolved" | "accepted_risk" | "false_positive" | "fixed" | "regression";
-export type LineageEventType = "detected" | "status_change" | "fixed" | "regression" | "note_added";
+export type LineageStatus =
+  | "open"
+  | "in_progress"
+  | "unconfirmed"
+  | "resolved"
+  | "accepted_risk"
+  | "false_positive"
+  | "fixed"
+  | "regression";
+
+/**
+ * Feature 0091: the lineage event vocabulary. The first five predate 0091; the
+ * rest are the evidence-check and scope outcomes recorded by the P0-P3 scan
+ * pass. Kept as a union so a component that switches on the type cannot
+ * silently forget one, but every consumer also has a generic fallback because
+ * a future backend may emit an event this build has never heard of.
+ */
+export type LineageEventType =
+  | "detected"
+  | "status_change"
+  | "fixed"
+  | "regression"
+  | "note_added"
+  | "confirmed_by_evidence"
+  | "evidence_gone"
+  | "unconfirmable"
+  | "out_of_scope"
+  | "scope_unknown"
+  | "absent_in_result"
+  | "skipped_degraded"
+  | "memory_synced"
+  | "merged";
+
+/** Detection tier of a lineage row: deterministic skill, or LLM. */
+export type FindingTier = "det" | "llm";
 
 export interface FindingLineage {
   id: string;
@@ -260,6 +295,32 @@ export interface FindingLineage {
   created_at: string;
   updated_at: string;
   events?: LineageEvent[];
+  // --- feature 0091 ---
+  /** Stable identity of the codebase the finding belongs to. */
+  target_key?: string;
+  /** Path-independent fingerprint; `seen_in` is computed from it. */
+  fingerprint_v2?: string;
+  git_branch?: string;
+  seen_count?: number;
+  last_seen_audit_id?: string;
+  /** Result of the last evidence re-read of the cited file. */
+  evidence?: LineageEvidence;
+  /** Audit ids this finding was reported in, newest first. */
+  seen_in?: string[];
+}
+
+/**
+ * Feature 0091: the outcome of re-reading the cited file for the stored
+ * evidence quote. `last_outcome` is what decides whether an LLM-tier row may
+ * close; the window and file hash say what was actually read.
+ */
+export interface LineageEvidence {
+  last_outcome: string;
+  reason?: string;
+  line_start?: number;
+  line_end?: number;
+  file_hash?: string;
+  checked_at?: string;
 }
 
 export interface LineageEvent {
@@ -361,6 +422,87 @@ export interface DiscoverResult {
   form_count: number;
   technologies: string[];
   created_at: string;
+}
+
+// --- Targets and the aggregate report (feature 0091) ---
+
+/** One row of GET /api/targets. */
+export interface TargetSummary {
+  target_key: string;
+  display_name: string;
+  scan_count: number;
+  active_count: number;
+  unconfirmed_count: number;
+  fixed_count: number;
+  last_scan_at?: string;
+  last_audit_id?: string;
+}
+
+/** One row of GET /api/targets/{key}/scans, newest first. */
+export interface TargetScan {
+  audit_id: string;
+  created_at: string;
+  /** "" for a scan of the target root. */
+  sub_path: string;
+  git_branch?: string;
+  det_count: number;
+  llm_count: number;
+  types: string[];
+}
+
+/**
+ * One unique finding of the aggregate report. Computed from `finding_lineage`
+ * alone — there is no `Finding` behind it, which is why the fields are named
+ * for the lineage row (`rel_path`, `seen_count`) rather than for a finding.
+ */
+export interface AggregateRow {
+  lineage_id: string;
+  ref: string;
+  severity: Severity;
+  category: string;
+  title: string;
+  rel_path: string;
+  line_start?: number;
+  tier: FindingTier;
+  /** Scans this finding was seen in, out of `scan_count` scans of the target. */
+  seen_count: number;
+  scan_count: number;
+  status: LineageStatus;
+  first_seen_at: string;
+  last_seen_at: string;
+  /** Free-form: a build may not know every event the backend can emit. */
+  last_event: string;
+}
+
+export interface AggregateTiles {
+  unique: number;
+  active: number;
+  unconfirmed: number;
+  fixed: number;
+  critical: number;
+}
+
+export interface AggregateResponse {
+  total: number;
+  page: number;
+  page_size: number;
+  tiles: AggregateTiles;
+  rows: AggregateRow[];
+}
+
+/**
+ * Query of GET /api/targets/{key}/aggregate. Every field is optional and an
+ * omitted field means the server default ("all scans", "both tiers",
+ * "active only") — the client never invents a default of its own.
+ */
+export interface AggregateFilters {
+  scans?: string[];
+  status?: "active" | "all";
+  tier?: FindingTier;
+  min_seen?: number;
+  severity?: string[];
+  page?: number;
+  page_size?: number;
 }
 
 /** Validate URL has http/https scheme to prevent javascript: XSS. */

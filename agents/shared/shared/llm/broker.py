@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from shared.llm.env import resolve_call_timeout
+
 # Same truthiness contract as VULTURE_LLM_TIER3 (audit_runner) — keep in sync.
 _TRUTHY = ("on", "true", "1", "yes")
 
@@ -171,6 +173,45 @@ def broker_model_provider(
     return make_provider(client)
 
 
+
+# ── the socket budget (feature 0093 W1) ─────────────────────────────────────
+#
+# THE DEFECT: this client was built with no `timeout=`, so it silently ran on
+# the openai SDK default — measured `Timeout(connect=5.0, read=600, write=600,
+# pool=600)`. `VULTURE_LLM_CALL_TIMEOUT_SEC` is documented as the per-call
+# bound and is honoured by the agent's batch `asyncio.wait_for` and by the
+# broker's own deadline, but it never reached the socket. An operator raising
+# it past 600 got three futile 600s attempts instead of one long call.
+#
+# ONLY `read` TRACKS THE BUDGET. The first cut scaled write and pool with it
+# too, which at call=2700 would turn a pool-exhaustion bug into a 45-minute
+# silent hang and give 2730s to send a body that VULTURE_LLM_MAX_BODY_BYTES
+# caps at 128KB. Neither is a generation-length question.
+#
+# AND THE SOCKET NESTS INSIDE THE BATCH BUDGET, not outside it. An earlier
+# draft used `call + 30` so the socket would "outlive the broker's deadline";
+# adversarial review showed audit_runner wraps the whole batch in
+# `asyncio.wait_for(..., timeout=call)` using the same variable, so a socket
+# above it can never fire at any value. The socket bounds ONE HTTP call, the
+# wait_for bounds the batch, and a bound that cannot fire is not a bound.
+_CONNECT_TIMEOUT_S = 15.0  # connect failure is not a generation-length question
+_WRITE_TIMEOUT_S = 60.0    # request body is capped at 128KB
+_POOL_TIMEOUT_S = 30.0     # max_connections=1000; waiting long here is a bug, not a budget
+
+
+def _client_timeout() -> Any:
+    """httpx.Timeout for the broker client, read-bounded by the documented knob."""
+    import httpx  # function-local: this module deliberately hard-imports neither SDK
+
+    call = resolve_call_timeout()
+    return httpx.Timeout(
+        connect=_CONNECT_TIMEOUT_S,
+        read=float(call),
+        write=_WRITE_TIMEOUT_S,
+        pool=_POOL_TIMEOUT_S,
+    )
+
+
 def _default_client_factory(*, base_url: str, api_key: str) -> Any:
     """Real SDK client (lazy import so this module needs no openai at import).
 
@@ -189,7 +230,13 @@ def _default_client_factory(*, base_url: str, api_key: str) -> Any:
     # the SDK's own client-side retries so a transient failure is not amplified
     # (broker 3× × SDK 2× × agent retry_llm_call 3×). max_retries=0 leaves the
     # broker as the single retry authority.
-    return AsyncOpenAI(base_url=base_url, api_key=api_key, default_headers=headers or None, max_retries=0)
+    return AsyncOpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        default_headers=headers or None,
+        max_retries=0,
+        timeout=_client_timeout(),
+    )
 
 
 def _default_provider_factory(client: Any) -> Any:

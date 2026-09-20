@@ -15,12 +15,13 @@ import (
 	"time"
 
 	"github.com/vulture/backend/internal/agui"
+	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 )
 
 type AgentProxyService interface {
 	RunAgent(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, eventCh chan<- *model.AgUIEvent) error
-	RunAgentWithContext(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, priorFindings []model.PriorFinding, eventCh chan<- *model.AgUIEvent) error
+	RunAgentWithContext(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, priorFindings []model.PriorFinding, lineageChecks *model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) error
 }
 
 // BrokerMinter mints the per-run LLM-broker token injected into an agent
@@ -58,8 +59,16 @@ type agentProxyService struct {
 const (
 	defaultAgentProxyTimeoutSec      = 600 // 10 minutes
 	defaultAgentRespHeaderTimeoutSec = 300
-	// Mirrors the agent-side default in audit_runner._call_timeout.
-	defaultLLMCallTimeoutSec = 120
+	// Mirrors the agent-side default, which feature 0093 made DERIVED rather
+	// than fixed: shared/llm/env.resolve_call_timeout sizes the per-call budget
+	// to VULTURE_LLM_MAX_OUTPUT_TOKENS (16384) at a conservative 40 tok/s plus
+	// overhead, because the old pair of defaults (120s for a 16384-token
+	// answer) was impossible on every provider. This constant must track it:
+	// the margin check below uses it to decide whether the SHIPPED
+	// configuration is safe, so a stale value here declares an unsafe margin
+	// safe. Pinned from the Python side by
+	// agents/shared/tests/unit/test_0093_transport_diagnostics.py.
+	defaultLLMCallTimeoutSec = config.DefaultLLMCallTimeoutSec
 	// Mirrors the agent-side default whole-audit ceiling, i.e.
 	// audit_runner's _safe_int_env("VULTURE_AGENT_MAX_AUDIT_SECONDS", 900).
 	// An UNSET var therefore does not mean "no agent deadline": the agent
@@ -204,10 +213,10 @@ func envAgentMaxAuditSec() time.Duration {
 }
 
 func (s *agentProxyService) RunAgent(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, eventCh chan<- *model.AgUIEvent) error {
-	return s.RunAgentWithContext(ctx, agentURL, agentType, runID, sourcePath, config, nil, eventCh)
+	return s.RunAgentWithContext(ctx, agentURL, agentType, runID, sourcePath, config, nil, nil, eventCh)
 }
 
-func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, priorFindings []model.PriorFinding, eventCh chan<- *model.AgUIEvent) error {
+func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL string, agentType string, runID string, sourcePath string, config json.RawMessage, priorFindings []model.PriorFinding, lineageChecks *model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) error {
 	// Wrap caller context with the configured max audit duration (env
 	// VULTURE_AGENT_PROXY_TIMEOUT_SEC, default 600s).
 	ctx, cancel := context.WithTimeout(ctx, s.auditTimeout)
@@ -220,6 +229,13 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 	}
 	if len(priorFindings) > 0 {
 		payload["prior_findings"] = priorFindings
+	}
+	// Feature 0091 §6.1: ask the agent to verify the lineage rows the backend
+	// believes are still in this tree. Omitted entirely when there is nothing
+	// to ask, so an agent that does not know the key never sees it — the block
+	// is versioned (`schema`) for the same reason the result is.
+	if lineageChecks != nil && len(lineageChecks.Rows) > 0 {
+		payload["lineage_checks_requested"] = lineageChecks
 	}
 	// Feature 0064 §25.2: when the broker is enabled, mint a per-run token
 	// scoped to this agent's task_type and inject it (+ task_type for the

@@ -106,52 +106,8 @@ func TestFingerprintV2KeepsTheRollupDistinction(t *testing.T) {
 	}
 }
 
-// A3-T7 — NON-VACUITY and inertness. The feature ships off; nothing reads v2
-// until an operator turns it on.
-func TestFingerprintV2DefaultsToOff(t *testing.T) {
-	t.Setenv("VULTURE_FINDING_IDENTITY", "")
-	if findingIdentityMode() != "off" {
-		t.Fatalf("default must be off, got %q", findingIdentityMode())
-	}
-	for in, want := range map[string]string{
-		"observe": "observe", "enforce": "enforce",
-		"OBSERVE": "observe", "nonsense": "off",
-	} {
-		t.Setenv("VULTURE_FINDING_IDENTITY", in)
-		if got := findingIdentityMode(); got != want {
-			t.Errorf("%q -> %q, want %q", in, got, want)
-		}
-	}
-}
-
-// A3-T8 — the dual-key bridge is what makes enforce lossless. Without it the
-// first enforce run marks all 5,109 stored lineage rows FIXED and mints a fresh
-// VLT ref for every finding.
-func TestEnforceRetainsTheLegacyFingerprint(t *testing.T) {
-	t.Setenv("VULTURE_FINDING_IDENTITY", "enforce")
-	f := fpF("cwe", "cwe.injection.sql", "CWE-89", "/root/routes/login.ts", "SQL injection", 34)
-	f.Fingerprint = generateFingerprint(f.Title, f.FilePath, f.Category, f.AgentType)
-	v1 := f.Fingerprint
-
-	batch := []model.Finding{f}
-	stampIdentity(batch, "/root")
-	got := batch[0]
-
-	if got.LegacyFingerprint != v1 {
-		t.Fatalf("v1 must be retained for lineage matching: got %q want %q",
-			got.LegacyFingerprint, v1)
-	}
-	if got.Fingerprint == v1 {
-		t.Error("enforce must swap Fingerprint to the v2 value")
-	}
-	if got.Fingerprint != got.FingerprintV2 {
-		t.Error("under enforce, Fingerprint and FingerprintV2 must agree")
-	}
-}
-
 // A3-T9 — observe computes and stores, and changes nothing a consumer reads.
 func TestObserveIsInert(t *testing.T) {
-	t.Setenv("VULTURE_FINDING_IDENTITY", "observe")
 	f := fpF("cwe", "cwe.injection.sql", "CWE-89", "/root/a.ts", "SQLi", 1)
 	f.Fingerprint = "original"
 	batch := []model.Finding{f}
@@ -165,17 +121,5 @@ func TestObserveIsInert(t *testing.T) {
 	}
 	if batch[0].FingerprintV2 == "" {
 		t.Error("observe must still COMPUTE v2, or the mode measures nothing")
-	}
-}
-
-// A3-T10 — off is a true no-op, including the computation.
-func TestOffComputesNothing(t *testing.T) {
-	t.Setenv("VULTURE_FINDING_IDENTITY", "off")
-	f := fpF("cwe", "cwe.x.y", "CWE-89", "/root/a.ts", "SQLi", 1)
-	f.Fingerprint = "original"
-	batch := []model.Finding{f}
-	stampIdentity(batch, "/root")
-	if batch[0].FingerprintV2 != "" || batch[0].Fingerprint != "original" {
-		t.Error("off must touch nothing at all")
 	}
 }

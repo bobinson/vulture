@@ -767,3 +767,32 @@ func float32SliceToVec(v []float32) string {
 	b.WriteByte(']')
 	return b.String()
 }
+
+// SetRemediationStatus propagates a lineage status onto every audit_memories
+// row carrying the same fingerprint (feature 0091 §8, defect D1a).
+//
+// WHY THIS EXISTS. `remediation_status` was written once, as "open", at insert
+// and nowhere else. The prior-findings block the agents receive is built from
+// these rows, so a finding the scanner had marked `fixed` was still presented
+// to the model as a known open issue, with "skip known issues" attached. It
+// could never be re-reported and therefore never regress: permanently
+// invisible. Only `resolved` leaves the block; `false_positive` and
+// `accepted_risk` stay in it deliberately, so a dismissed finding is not
+// re-reported either.
+//
+// Unlike UpdateRemediation this touches neither remediation_notes nor
+// confidence_score: a scanner transition is not a human judgement about the
+// finding's quality, and folding it into the confidence signal would let a
+// rescan inflate the score of anything it re-confirmed.
+func (r *PostgresMemoryRepo) SetRemediationStatus(fingerprint string, status string) error {
+	if fingerprint == "" {
+		return nil
+	}
+	_, err := r.db.Exec(`
+		UPDATE audit_memories SET remediation_status = $1, updated_at = $2
+		WHERE fingerprint = $3`, status, time.Now().UTC(), fingerprint)
+	if err != nil {
+		return fmt.Errorf("set remediation status: %w", err)
+	}
+	return nil
+}

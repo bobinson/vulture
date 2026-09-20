@@ -11,7 +11,12 @@ def test_get_model_cloud_providers():
     from shared.llm.provider import get_model
     assert get_model("gpt-4o") == "gpt-4o"
     assert get_model("claude-sonnet") == "litellm/anthropic/claude-sonnet-4-5-20250514"
-    assert get_model("gemini-pro") == "litellm/gemini/gemini-1.5-pro"
+    # The alias target moved off `gemini-1.5-pro`: Google retired it, so every
+    # call 404'd and the gemini provider was dead. See
+    # test_gemini_model_ids_are_live.py, which pins the ids against a
+    # verified-callable list rather than restating this one string.
+    assert get_model("gemini-pro") == "litellm/gemini/gemini-2.5-pro"
+    assert get_model("gemini-flash") == "litellm/gemini/gemini-2.5-flash"
 
 
 def test_get_model_ollama_models():
@@ -331,9 +336,15 @@ class TestEstimateCost:
     def test_uses_env_default(self, monkeypatch):
         from shared.llm.provider import estimate_cost
         monkeypatch.setenv("VULTURE_LLM_MODEL", "gemini-pro")
-        # gemini-pro: input $1.25, output $5.00
+        # Read the rate from the table rather than restating it: the old literal
+        # 6.25 encoded gemini-1.5-pro's (1.25, 5.00), so when the retired alias
+        # target was replaced this test failed for a reason that had nothing to
+        # do with the cost arithmetic it exists to check.
+        from shared.llm.provider import COST_PER_1M_TOKENS
+
+        rate_in, rate_out = COST_PER_1M_TOKENS["gemini-pro"]
         cost = estimate_cost(1_000_000, 1_000_000)
-        assert cost == 6.25
+        assert abs(cost - (rate_in + rate_out)) < 1e-9
 
 
 # --- Tests for get_model_settings ---

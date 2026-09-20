@@ -18,6 +18,7 @@ type Audit struct {
 	ID            string          `json:"id"`
 	SourceID      string          `json:"source_id"`
 	SourcePath    string          `json:"source_path,omitempty"`
+	TargetKey     string          `json:"target_key,omitempty"` // Feature 0091: the codebase this scan belongs to, joined from sources. The per-scan page reads it to render the scan-history rail and to link to the codebase's aggregate report; without it both are silently absent.
 	Types         []string        `json:"types"`
 	Config        json.RawMessage `json:"config"`
 	LLMModel      string          `json:"llm_model,omitempty"` // LLM recorded at creation: VULTURE_LLM_MODEL when enabled, else "skills-only" (see auditLLMModel)
@@ -41,9 +42,9 @@ type Audit struct {
 	// constrains it; and not DegradedReason, because failAudit overwrites that
 	// and the frontend renders it under a hardcoded "running in degraded mode"
 	// heading (LLMDegradedBanner.tsx).
-	CancelReason string `json:"cancel_reason,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
+	CancelReason string     `json:"cancel_reason,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 }
 
 type AuditRequest struct {

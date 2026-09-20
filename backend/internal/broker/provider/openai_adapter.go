@@ -93,9 +93,10 @@ func (a *openAIAdapter) Complete(ctx context.Context, creds Credentials, req Com
 	}
 	defer resp.Body.Close()
 
-	if err := statusError(resp.StatusCode); err != nil {
-		drainErrBody(a.name, resp.StatusCode, body, resp.Body) // N6: drain; log only under debug flag
-		return nil, err
+	if statusError(resp.StatusCode) != nil {
+		// N6: the body is logged here and, for the allowlisted class only,
+		// carried into the typed error (see upstream_detail.go).
+		return nil, errorFromResponse(a.name, resp.StatusCode, body, resp.Body)
 	}
 
 	var wire chatWireResponse

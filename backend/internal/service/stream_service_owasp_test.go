@@ -21,10 +21,10 @@ type fakeOwaspProxy struct {
 }
 
 func (f *fakeOwaspProxy) RunAgent(ctx context.Context, url, at, rid, sp string, cfg json.RawMessage, ch chan<- *model.AgUIEvent) error {
-	return f.RunAgentWithContext(ctx, url, at, rid, sp, cfg, nil, ch)
+	return f.RunAgentWithContext(ctx, url, at, rid, sp, cfg, nil, nil, ch)
 }
 
-func (f *fakeOwaspProxy) RunAgentWithContext(ctx context.Context, url, at, rid, sp string, cfg json.RawMessage, prior []model.PriorFinding, ch chan<- *model.AgUIEvent) error {
+func (f *fakeOwaspProxy) RunAgentWithContext(ctx context.Context, url, at, rid, sp string, cfg json.RawMessage, prior []model.PriorFinding, lineageChecks *model.LineageChecksRequest, ch chan<- *model.AgUIEvent) error {
 	switch at {
 	case "cwe":
 		f.mu.Lock()
@@ -58,7 +58,7 @@ func TestStream_OwaspReceivesCweFindingsAsPriors(t *testing.T) {
 	audit := &model.Audit{ID: "a1", Types: []string{"cwe", "owasp"}, Config: json.RawMessage(`{}`)}
 	agents := map[string]config.AgentConfig{"cwe": {URL: "http://cwe"}, "owasp": {URL: "http://owasp"}}
 	ch := make(chan *model.AgUIEvent, 128)
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, ch)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, ch)
 	drain(ch)
 
 	if len(fp.owaspPriors) != 1 {
@@ -83,7 +83,7 @@ func TestStream_OwaspAutoInjectsCwePrereq(t *testing.T) {
 	audit := &model.Audit{ID: "a2", Types: []string{"owasp"}, Config: json.RawMessage(`{}`)}
 	agents := map[string]config.AgentConfig{"cwe": {URL: "http://cwe"}, "owasp": {URL: "http://owasp"}}
 	ch := make(chan *model.AgUIEvent, 128)
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, ch)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, ch)
 	drain(ch)
 
 	if !fp.cweRan {
@@ -100,7 +100,7 @@ func TestStream_OwaspStatusFailedWhenCweHasNoResult(t *testing.T) {
 	audit := &model.Audit{ID: "a3", Types: []string{"cwe", "owasp"}, Config: json.RawMessage(`{}`)}
 	agents := map[string]config.AgentConfig{"cwe": {URL: "http://cwe"}, "owasp": {URL: "http://owasp"}}
 	ch := make(chan *model.AgUIEvent, 128)
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, ch)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, ch)
 	drain(ch)
 
 	var cfg map[string]any
@@ -117,7 +117,7 @@ func TestStream_OwaspStatusAbsentWhenCweUnconfigured(t *testing.T) {
 	audit := &model.Audit{ID: "a4", Types: []string{"owasp"}, Config: json.RawMessage(`{}`)}
 	agents := map[string]config.AgentConfig{"owasp": {URL: "http://owasp"}}
 	ch := make(chan *model.AgUIEvent, 128)
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, ch)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, ch)
 	drain(ch)
 
 	var cfg map[string]any
@@ -138,7 +138,7 @@ func TestStream_NoOwaspNoDeferredPhase(t *testing.T) {
 	audit := &model.Audit{ID: "a5", Types: []string{"cwe"}, Config: json.RawMessage(`{}`)}
 	agents := map[string]config.AgentConfig{"cwe": {URL: "http://cwe"}, "owasp": {URL: "http://owasp"}}
 	ch := make(chan *model.AgUIEvent, 128)
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, ch)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, ch)
 	drain(ch)
 
 	if len(fp.owaspPriors) != 0 || fp.owaspCfg != nil {

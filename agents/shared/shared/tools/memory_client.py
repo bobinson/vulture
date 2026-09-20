@@ -199,7 +199,8 @@ def memory_update_remediation(memory_id: str, status: str, notes: str = "") -> b
 
 
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-_SKIP_STATUSES = {"resolved", "false_positive"}
+
+
 def _safe_int_env(name: str, default: int) -> int:
     val = os.environ.get(name, "")
     if not val:
@@ -568,12 +569,17 @@ def _fetch_edge_clusters(memories: list[dict[str, Any]], max_fetch: int = 10) ->
 
 
 def _text_dedup(memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Filter resolved findings and deduplicate by normalized title+file_path."""
+    """Deduplicate by normalized title+file_path, keeping the first of a group.
+
+    Status is NOT judged here (feature 0091 §8). It used to be, against a set
+    that also dropped ``false_positive`` — which S13 requires to STAY in the
+    known block — and it ran INSIDE the dedup, so a dismissed row could win its
+    group and be discarded, taking a still-open twin out of the block with it.
+    ``_filter_and_dedup`` now applies the one status rule, once, upstream.
+    """
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for m in memories:
-        if m.get("remediation_status", "open") in _SKIP_STATUSES:
-            continue
         key = _dedup_key(m)
         if key not in seen:
             seen.add(key)
@@ -599,6 +605,22 @@ def _edge_dedup(unique: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _is_resolved(memory: dict[str, Any]) -> bool:
+    """Whether this memory row has been closed and should leave the known block.
+
+    ONLY ``resolved`` (feature 0091 §8, S13). ``false_positive`` and
+    ``accepted_risk`` deliberately STAY in the block: a human dismissed those,
+    and dropping them would invite the model to re-report exactly the findings
+    someone has already ruled on.
+    """
+    return str(memory.get("remediation_status") or "").strip().lower() == "resolved"
+
+
+def _drop_resolved(memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every memory that has NOT been closed."""
+    return [m for m in memories if not _is_resolved(m)]
+
+
 def _filter_and_dedup(
     memories: list[dict[str, Any]],
     max_count: int = _MAX_CONTEXT_FINDINGS,
@@ -613,7 +635,16 @@ def _filter_and_dedup(
 
     Returns unique, actionable findings sorted by severity (critical first).
     """
-    unique = _text_dedup(memories)
+    # Feature 0091 §8 (D1a). The status rule lived INSIDE `_text_dedup` and was
+    # wrong in both directions: it also dropped `false_positive`, which S13
+    # requires to stay, and running it inside the dedup let a dismissed row win
+    # its title+path group and then be discarded — taking a still-open twin out
+    # of the block with it. It is one rule, applied once, upstream of both dedup
+    # passes. It matters more now that lineage transitions write
+    # `remediation_status` back to the memory row: a finding the scanner has
+    # closed must LEAVE the "Skip known issues" block, or it can never be
+    # re-reported and never become a `regression` (S11).
+    unique = _text_dedup(_drop_resolved(memories))
 
     if use_edges and len(unique) > 1:
         unique = _edge_dedup(unique)

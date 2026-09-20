@@ -69,14 +69,24 @@ func (r *PostgresRepo) DB() *sql.DB {
 
 func (r *PostgresRepo) CreateSource(src *model.Source) error {
 	_, err := r.db.Exec(
-		`INSERT INTO sources (id, type, url, path, file_count, git_branch, git_commit_hash, git_commit_short, git_remote_url, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		`INSERT INTO sources (id, type, url, path, file_count, git_branch, git_commit_hash, git_commit_short, git_remote_url, target_key, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		src.ID, string(src.Type), src.URL, src.Path, src.FileCount,
-		src.GitBranch, src.GitCommitHash, src.GitCommitShort, src.GitRemoteURL,
+		src.GitBranch, src.GitCommitHash, src.GitCommitShort, src.GitRemoteURL, nullIfEmpty(src.TargetKey),
 		src.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert source: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresRepo) UpdateSourceTargetKey(id, targetKey string) error {
+	if targetKey == "" {
+		return nil
+	}
+	if _, err := r.db.Exec(`UPDATE sources SET target_key = $1 WHERE id = $2`, targetKey, id); err != nil {
+		return fmt.Errorf("update source target key: %w", err)
 	}
 	return nil
 }
@@ -96,12 +106,12 @@ func (r *PostgresRepo) GetSource(id string) (*model.Source, error) {
 	row := r.db.QueryRow(
 		`SELECT id, type, COALESCE(url, ''), path, file_count,
 		        COALESCE(git_branch, ''), COALESCE(git_commit_hash, ''), COALESCE(git_commit_short, ''), COALESCE(git_remote_url, ''),
-		        created_at
+		        COALESCE(target_key, ''), created_at
 		 FROM sources WHERE id = $1`, id)
 	var src model.Source
 	err := row.Scan(&src.ID, &src.Type, &src.URL, &src.Path, &src.FileCount,
 		&src.GitBranch, &src.GitCommitHash, &src.GitCommitShort, &src.GitRemoteURL,
-		&src.CreatedAt)
+		&src.TargetKey, &src.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -115,12 +125,12 @@ func (r *PostgresRepo) FindSourceByPath(path string) (*model.Source, error) {
 	row := r.db.QueryRow(
 		`SELECT id, type, COALESCE(url, ''), path, file_count,
 		        COALESCE(git_branch, ''), COALESCE(git_commit_hash, ''), COALESCE(git_commit_short, ''), COALESCE(git_remote_url, ''),
-		        created_at
+		        COALESCE(target_key, ''), created_at
 		 FROM sources WHERE path = $1 ORDER BY created_at DESC LIMIT 1`, path)
 	var src model.Source
 	err := row.Scan(&src.ID, &src.Type, &src.URL, &src.Path, &src.FileCount,
 		&src.GitBranch, &src.GitCommitHash, &src.GitCommitShort, &src.GitRemoteURL,
-		&src.CreatedAt)
+		&src.TargetKey, &src.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -148,12 +158,12 @@ func (r *PostgresRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *PostgresRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), COALESCE(a.cancel_reason, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), COALESCE(s.target_key, ''), a.types, a.config, a.status, COALESCE(a.scores, '{}'), COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), COALESCE(a.cancel_reason, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = $1`, id)
 	var audit model.Audit
 	var cfgStr, scoresStr, owaspCovStr string
 	var completedAt sql.NullTime
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CancelReason, &audit.CreatedAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &audit.TargetKey, pq.Array(&audit.Types), &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CancelReason, &audit.CreatedAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

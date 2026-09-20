@@ -53,7 +53,10 @@ func (h *LineageHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "lineage id required")
 		return
 	}
-	lineage, err := h.svc.GetLineage(id)
+	// Feature 0091 §10.1: the payload gained `evidence` and `seen_in`. The
+	// `lineage` and `events` keys are byte-identical to the pre-0091 response,
+	// because /audit/{id} deep links already read them.
+	detail, err := h.svc.GetDetail(id)
 	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "lineage not found")
 		return
@@ -62,16 +65,7 @@ func (h *LineageHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Embed events in response
-	events, _ := h.svc.GetTimeline(id)
-	if events == nil {
-		events = []model.LineageEvent{}
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"lineage": lineage,
-		"events":  events,
-	})
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // UpdateStatus handles PATCH /api/lineage/:id

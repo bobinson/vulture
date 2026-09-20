@@ -1,4 +1,6 @@
+import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
+import { ROUTES } from "@/lib/constants.ts";
 import type { Audit } from "@/lib/types.ts";
 
 interface AuditHistoryTimelineProps {
@@ -42,8 +44,11 @@ export function AuditHistoryTimeline({ audits, currentAuditId }: AuditHistoryTim
                   <div className={`flex-1 h-0.5 ${count <= prev ? "bg-[#22C55E]/40" : "bg-[#CF222E]/40"}`} />
                 )}
                 {i === 0 && <div className="flex-1" />}
-                <a
-                  href={`/audits/${audit.id}`}
+                {/* /audits/{id} is not a route: the plain anchor triggered a
+                    full page load that the catch-all bounced to the dashboard.
+                    The per-scan page is /audit/{id}, reached in-app. */}
+                <Link
+                  to={ROUTES.AUDIT_RESULTS(audit.id)}
                   className={`relative z-10 rounded-full border-2 ${
                     isCurrent
                       ? "w-4 h-4 bg-accent border-accent"

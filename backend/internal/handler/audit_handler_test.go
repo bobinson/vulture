@@ -148,6 +148,12 @@ func (m *mockMemoryService) GetWithEdges(id string) (*model.MemoryWithEdges, err
 	}
 	return &model.MemoryWithEdges{AuditMemory: model.AuditMemory{ID: id}}, nil
 }
+
+// Feature 0091 §8: lineage status propagation to audit_memories. Inert here.
+func (m *mockMemoryService) SetRemediationStatus(fingerprint, status string) error {
+	return nil
+}
+
 func (m *mockMemoryService) UpdateRemediation(id, status, notes string) error {
 	if m.updateRemFn != nil {
 		return m.updateRemFn(id, status, notes)
@@ -203,7 +209,7 @@ func (m *mockStreamService) Stream(ctx context.Context, audit *model.Audit, sour
 	}
 	close(eventCh)
 }
-func (m *mockStreamService) StreamWithContext(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, eventCh chan<- *model.AgUIEvent) {
+func (m *mockStreamService) StreamWithContext(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, checksByAgent map[string]*model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) {
 	if m.streamWithContextFn != nil {
 		m.streamWithContextFn(ctx, audit, sourcePath, agents, priorByAgent, eventCh)
 		return

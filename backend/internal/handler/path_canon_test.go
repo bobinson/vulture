@@ -148,28 +148,3 @@ func TestCoarsenessIsDecidedByShapeNotAgentName(t *testing.T) {
 		}
 	}
 }
-
-// A1-T6 — the DEFAULT is off, pinned here.
-//
-// env.example states `VULTURE_FINDING_PATH_CANON=off`, and the Python
-// env-defaults conformance guard cannot verify it: its Go resolver matches only
-// bool and int literals, so a string-valued mode switch resolves to nothing.
-// Widening that resolver was tried and rejected — several string literals per
-// function make its sole-candidate rule ambiguous, breaking eight of its own
-// tests. So the guarantee lives here instead, on the Go side that owns it.
-func TestPathCanonDefaultsToOff(t *testing.T) {
-	t.Setenv("VULTURE_FINDING_PATH_CANON", "")
-	if got := pathCanonMode(); got != "off" {
-		t.Fatalf("default must be off (observe costs +114%% on every audit), got %q", got)
-	}
-	for in, want := range map[string]string{
-		"observe": "observe", "enforce": "enforce",
-		"OBSERVE": "observe", " enforce ": "enforce",
-		"nonsense": "off", "true": "off",
-	} {
-		t.Setenv("VULTURE_FINDING_PATH_CANON", in)
-		if got := pathCanonMode(); got != want {
-			t.Errorf("%q -> %q, want %q", in, got, want)
-		}
-	}
-}

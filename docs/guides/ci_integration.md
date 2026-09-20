@@ -251,9 +251,26 @@ Use separate keys per CI system (one for GitHub Actions, one for GitLab, one for
 |------|---------|
 | 0 | Audit completed successfully. No findings at or above the `--exit-on` severity threshold. |
 | 1 | Audit completed. One or more findings at or above the `--exit-on` threshold were detected. |
-| 2 | Audit execution error: network failure, authentication failure, LLM error, or server-side fault. |
+| 2 | Audit execution error: the run did not complete the coverage it was asked for. Network or authentication failure, a cancelled run, or a requested agent that never ran. |
 
 When `--exit-on` is not specified, the CLI exits 0 on successful completion regardless of findings.
+
+**Code 2 is independent of `--exit-on`.** That flag is a findings-severity
+policy; an audit the server marked `failed` is not a findings question, so it
+exits 2 whether or not a threshold is set, and 2 takes precedence over 1. An
+incomplete run's finding set is no basis for "findings at or above the
+threshold" — the detector that would have raised the decisive finding may be
+precisely the one that did not run. Treat 2 as "do not trust this run",
+distinct from 1's "this run is trustworthy and the code has problems".
+
+The reason is printed on the `Reason:` line of the summary and stored on the
+audit's `degraded_reason` / `cancel_reason` fields, so a pipeline does not have
+to read the server log to find out what was lost. Example:
+
+```
+  Status: failed
+  Reason: requested agents did not run: semgrep
+```
 
 Severity levels from lowest to highest: `info`, `low`, `medium`, `high`, `critical`. Setting `--exit-on medium` will cause exit code 1 if any finding is `medium`, `high`, or `critical`.
 

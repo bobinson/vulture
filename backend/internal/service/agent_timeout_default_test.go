@@ -76,7 +76,8 @@ func captureConstructorLog(t *testing.T) string {
 // to the pure function.
 //
 // Shipped defaults are proxy=600, agent ceiling=900 (audit_runner's own
-// fallback), llm call=120, so the required proxy ceiling is 1020 > 600. The
+// fallback), llm call=439 (derived from the 16384-token output default since
+// 0093), so the required proxy ceiling is 1339 > 600. The
 // configuration is unsafe as shipped and the operator has to be told.
 func TestShippedDefaultsWarnThroughConstructor(t *testing.T) {
 	unsetTimeoutEnv(t)
@@ -102,8 +103,8 @@ func TestShippedDefaultsWarnThroughConstructor(t *testing.T) {
 		"VULTURE_AGENT_PROXY_TIMEOUT_SEC",
 		"VULTURE_AGENT_MAX_AUDIT_SECONDS",
 		"VULTURE_LLM_CALL_TIMEOUT_SEC",
-		"1020", // 900 + 120, the required proxy ceiling for the shipped defaults
-		"Raise VULTURE_AGENT_PROXY_TIMEOUT_SEC to at least 1020",
+		"1339", // 900 + 439, the required proxy ceiling for the shipped defaults
+		"Raise VULTURE_AGENT_PROXY_TIMEOUT_SEC to at least 1339",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("the shipped-defaults warning must name %q so an operator does not have "+
@@ -256,8 +257,8 @@ func TestShippedDefaultTripleIsStillTheUnsafeOne(t *testing.T) {
 			defaultAgentProxyTimeoutSec, defaultAgentMaxAuditSec, defaultLLMCallTimeoutSec,
 			required)
 	}
-	if required != 1020 {
-		t.Fatalf("required minimum is now %d, not 1020; update the literals this file asserts "+
+	if required != 1339 {
+		t.Fatalf("required minimum is now %d, not 1339; update the literals this file asserts "+
 			"in the warning text", required)
 	}
 }

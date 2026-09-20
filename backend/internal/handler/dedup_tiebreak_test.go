@@ -50,8 +50,8 @@ func TestTieBreakIsTotal(t *testing.T) {
 	b := fx("b", "xss", "Beta", "h.ts", 138, model.SeverityCritical)
 	sa, sb := findingDetailScore(a), findingDetailScore(b)
 
-	ab := crossAgentPrefers(a, b, sa, sb, true)
-	ba := crossAgentPrefers(b, a, sb, sa, true)
+	ab := crossAgentPrefers(a, b, sa, sb)
+	ba := crossAgentPrefers(b, a, sb, sa)
 	if ab == ba {
 		t.Fatalf("not total: prefers(a,b)=%v and prefers(b,a)=%v — the winner "+
 			"depends on arrival order, which is exactly the coin flip", ab, ba)
@@ -72,7 +72,7 @@ func TestTieBreakIsTransitiveAcrossPermutations(t *testing.T) {
 		keeper := rows[p[0]]
 		for _, i := range p[1:] {
 			ch := rows[i]
-			if crossAgentPrefers(ch, keeper, findingDetailScore(ch), findingDetailScore(keeper), true) {
+			if crossAgentPrefers(ch, keeper, findingDetailScore(ch), findingDetailScore(keeper)) {
 				keeper = ch
 			}
 		}
@@ -91,10 +91,10 @@ func TestTieBreakPreservesRollupAndDeterministicRules(t *testing.T) {
 		parent := fx("p", "cwe", "Zzz last alphabetically", "h.ts", 1, model.SeverityLow)
 		parent.IsRollup = true
 		member := fx("m", "cwe", "Aaa first alphabetically", "h.ts", 1, model.SeverityCritical)
-		if !crossAgentPrefers(parent, member, findingDetailScore(parent), findingDetailScore(member), true) {
+		if !crossAgentPrefers(parent, member, findingDetailScore(parent), findingDetailScore(member)) {
 			t.Error("a rollup parent must still displace a member regardless of the tie-break")
 		}
-		if crossAgentPrefers(member, parent, findingDetailScore(member), findingDetailScore(parent), true) {
+		if crossAgentPrefers(member, parent, findingDetailScore(member), findingDetailScore(parent)) {
 			t.Error("a member must never displace a rollup parent")
 		}
 	})
@@ -104,7 +104,7 @@ func TestTieBreakPreservesRollupAndDeterministicRules(t *testing.T) {
 		det.Provenance = "skill"
 		llm := fx("l", "cwe", "Aaa", "h.ts", 1, model.SeverityHigh)
 		llm.Provenance = "llm"
-		if !crossAgentPrefers(det, llm, findingDetailScore(det), findingDetailScore(llm), true) {
+		if !crossAgentPrefers(det, llm, findingDetailScore(det), findingDetailScore(llm)) {
 			t.Error("the 0076 deterministic preference must outrank the tie-break")
 		}
 	})
@@ -112,7 +112,7 @@ func TestTieBreakPreservesRollupAndDeterministicRules(t *testing.T) {
 	t.Run("a higher score still wins outright", func(t *testing.T) {
 		rich := fx("r", "cwe", "Zzz", "h.ts", 1, model.SeverityCritical)
 		poor := fx("p", "cwe", "Aaa", "h.ts", 1, model.SeverityLow)
-		if !crossAgentPrefers(rich, poor, findingDetailScore(rich), findingDetailScore(poor), true) {
+		if !crossAgentPrefers(rich, poor, findingDetailScore(rich), findingDetailScore(poor)) {
 			t.Error("score must still dominate the tie-break")
 		}
 	})
@@ -124,7 +124,7 @@ func TestTieBreakRollbackRestoresFirstSeen(t *testing.T) {
 	a := fx("a", "xss", "Alpha", "h.ts", 138, model.SeverityCritical)
 	b := fx("b", "xss", "Beta", "h.ts", 138, model.SeverityCritical)
 	sa, sb := findingDetailScore(a), findingDetailScore(b)
-	if crossAgentPrefers(b, a, sb, sa, true) {
+	if crossAgentPrefers(b, a, sb, sa) {
 		t.Error("with the tie-break off, an equal-score challenger must NOT displace " +
 			"the incumbent — that is the pre-0079 first-seen rule")
 	}

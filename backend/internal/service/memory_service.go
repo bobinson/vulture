@@ -23,6 +23,10 @@ type MemoryService interface {
 	Get(id string) (*model.AuditMemory, error)
 	GetWithEdges(id string) (*model.MemoryWithEdges, error)
 	UpdateRemediation(id string, status string, notes string) error
+	// SetRemediationStatus propagates a lineage transition onto the memory
+	// rows for a fingerprint (feature 0091 §8). This is what keeps a finding
+	// the scanner closed out of the next scan's "skip known issues" block.
+	SetRemediationStatus(fingerprint string, status string) error
 	ListByAudit(auditID string) ([]model.AuditMemory, error)
 	ListByCodebasePath(path string, agentType string, limit int) ([]model.AuditMemory, error)
 	ListByCodebasePathMulti(path string, agentTypes []string, limit int) (map[string][]model.AuditMemory, error)
@@ -216,6 +220,16 @@ func (s *memoryService) GetWithEdges(id string) (*model.MemoryWithEdges, error) 
 
 func (s *memoryService) UpdateRemediation(id string, status string, notes string) error {
 	return s.repo.UpdateRemediation(id, status, notes)
+}
+
+func (s *memoryService) SetRemediationStatus(fingerprint string, status string) error {
+	if fingerprint == "" || status == "" {
+		return nil
+	}
+	if err := s.repo.SetRemediationStatus(fingerprint, status); err != nil {
+		return fmt.Errorf("set remediation status: %w", err)
+	}
+	return nil
 }
 
 func (s *memoryService) ListByAudit(auditID string) ([]model.AuditMemory, error) {

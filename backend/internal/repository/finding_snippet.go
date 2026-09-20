@@ -83,6 +83,7 @@ func clampSnippet(s string) string {
 //     limited to 65535 parameters" — a latent large-repo bug independent of
 //     the encoding one above.
 //   - SQLite: 32766 params / 21 = 1560 rows.
+//
 // 1000 stays comfortably under both and keeps the multi-row fast path.
 const findingsInsertChunk = 1000
 

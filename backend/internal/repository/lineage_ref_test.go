@@ -157,7 +157,7 @@ func TestLineageRefNumber_ReturnedInGetByFingerprint(t *testing.T) {
 	}
 }
 
-func TestLineageRefNumber_ReturnedInGetOpenBySourcePath(t *testing.T) {
+func TestLineageRefNumber_ReturnedInGetActiveBySourcePath(t *testing.T) {
 	repo := setupSQLiteLineageRepo(t)
 
 	l := makeTestLineage("fp-open", "/repo", "chaos")
@@ -165,9 +165,9 @@ func TestLineageRefNumber_ReturnedInGetOpenBySourcePath(t *testing.T) {
 		t.Fatalf("insert lineage: %v", err)
 	}
 
-	items, err := repo.GetOpenBySourcePath("/repo", "chaos")
+	items, err := repo.GetActiveBySourcePath("/repo", "chaos")
 	if err != nil {
-		t.Fatalf("get open by source path: %v", err)
+		t.Fatalf("get active by source path: %v", err)
 	}
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))

@@ -196,6 +196,11 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	migrateAddColumns(db)
+	// Feature 0091 P3: the SQLite half of migration 027 steps 3-6. It runs
+	// after migrateAddColumns because it needs the columns that adds, and it
+	// is predicated on outstanding work so it is a no-op on every start after
+	// the first.
+	migrateLineageTargetIdentity(db)
 	// Feature 0064 §29: the LLM broker's stores now run on SQLite too.
 	if err := MigrateBrokerTables(db); err != nil {
 		return err
@@ -269,6 +274,41 @@ func migrateAddColumns(db *sql.DB) {
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_path_agent ON audit_memories(codebase_path, agent_type)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id, target_id)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_lineage_fingerprint ON finding_lineage(fingerprint, source_path, agent_type)`)
+	// Parity with migration 004's idx_lineage_events_lineage, which SQLite
+	// never got. Feature 0091's aggregate resolves the last event of the rows
+	// on one page in a single lookup; without this index that lookup is a scan
+	// of every event ever recorded, on the store the native installer ships.
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_lineage_events_lineage ON lineage_events(lineage_id, created_at)`)
+
+	// Feature 0091 (parity with migration 027 steps 1-2). SQLite's schema is
+	// managed here, not by the Postgres runner, so the columns are added by
+	// hand. The CHECK-constraint half of 027 has no SQLite counterpart: the
+	// inline CREATE TABLE above never constrained current_status or event_type,
+	// so `unconfirmed` and the nine new event types are already writable.
+	//
+	// Errors are swallowed the way every statement in this function does —
+	// "duplicate column name" is the expected outcome on every start after the
+	// first, and SQLite has no ADD COLUMN IF NOT EXISTS.
+	for _, col := range []string{
+		"ALTER TABLE finding_lineage ADD COLUMN target_key TEXT",
+		"ALTER TABLE finding_lineage ADD COLUMN fingerprint_v2 TEXT",
+		"ALTER TABLE finding_lineage ADD COLUMN git_branch TEXT",
+		"ALTER TABLE finding_lineage ADD COLUMN provenance TEXT",
+		"ALTER TABLE finding_lineage ADD COLUMN quote_hash TEXT",
+		"ALTER TABLE finding_lineage ADD COLUMN evidence_line_start INTEGER",
+		"ALTER TABLE finding_lineage ADD COLUMN evidence_line_end INTEGER",
+		"ALTER TABLE finding_lineage ADD COLUMN evidence_file_hash TEXT",
+		"ALTER TABLE finding_lineage ADD COLUMN seen_count INTEGER DEFAULT 1",
+		"ALTER TABLE finding_lineage ADD COLUMN last_seen_audit_id TEXT",
+		"ALTER TABLE finding_lineage ADD COLUMN merged_into TEXT",
+		// P3: the canonical target identity, computed at ingest.
+		"ALTER TABLE sources ADD COLUMN target_key TEXT",
+	} {
+		_, _ = db.Exec(col)
+	}
+
+	// The step-6 indexes are built by migrateLineageTargetIdentity, which has
+	// to take the unique one DOWN around its own backfill.
 
 	// Feature 0031: API keys table
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (
@@ -411,14 +451,24 @@ func (r *SQLiteRepo) DB() *sql.DB {
 
 func (r *SQLiteRepo) CreateSource(src *model.Source) error {
 	_, err := r.db.Exec(
-		`INSERT INTO sources (id, type, url, path, file_count, git_branch, git_commit_hash, git_commit_short, git_remote_url, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sources (id, type, url, path, file_count, git_branch, git_commit_hash, git_commit_short, git_remote_url, target_key, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		src.ID, string(src.Type), src.URL, src.Path, src.FileCount,
-		src.GitBranch, src.GitCommitHash, src.GitCommitShort, src.GitRemoteURL,
+		src.GitBranch, src.GitCommitHash, src.GitCommitShort, src.GitRemoteURL, src.TargetKey,
 		src.CreatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("insert source: %w", err)
+	}
+	return nil
+}
+
+func (r *SQLiteRepo) UpdateSourceTargetKey(id, targetKey string) error {
+	if targetKey == "" {
+		return nil
+	}
+	if _, err := r.db.Exec(`UPDATE sources SET target_key = ? WHERE id = ?`, targetKey, id); err != nil {
+		return fmt.Errorf("update source target key: %w", err)
 	}
 	return nil
 }
@@ -438,13 +488,13 @@ func (r *SQLiteRepo) GetSource(id string) (*model.Source, error) {
 	row := r.db.QueryRow(
 		`SELECT id, type, COALESCE(url, ''), path, file_count,
 		        COALESCE(git_branch, ''), COALESCE(git_commit_hash, ''), COALESCE(git_commit_short, ''), COALESCE(git_remote_url, ''),
-		        created_at
+		        COALESCE(target_key, ''), created_at
 		 FROM sources WHERE id = ?`, id)
 	var src model.Source
 	var createdAt string
 	err := row.Scan(&src.ID, &src.Type, &src.URL, &src.Path, &src.FileCount,
 		&src.GitBranch, &src.GitCommitHash, &src.GitCommitShort, &src.GitRemoteURL,
-		&createdAt)
+		&src.TargetKey, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -459,13 +509,13 @@ func (r *SQLiteRepo) FindSourceByPath(path string) (*model.Source, error) {
 	row := r.db.QueryRow(
 		`SELECT id, type, COALESCE(url, ''), path, file_count,
 		        COALESCE(git_branch, ''), COALESCE(git_commit_hash, ''), COALESCE(git_commit_short, ''), COALESCE(git_remote_url, ''),
-		        created_at
+		        COALESCE(target_key, ''), created_at
 		 FROM sources WHERE path = ? ORDER BY created_at DESC LIMIT 1`, path)
 	var src model.Source
 	var createdAt string
 	err := row.Scan(&src.ID, &src.Type, &src.URL, &src.Path, &src.FileCount,
 		&src.GitBranch, &src.GitCommitHash, &src.GitCommitShort, &src.GitRemoteURL,
-		&createdAt)
+		&src.TargetKey, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -495,12 +545,12 @@ func (r *SQLiteRepo) CreateAudit(audit *model.Audit) error {
 
 func (r *SQLiteRepo) GetAudit(id string) (*model.Audit, error) {
 	row := r.db.QueryRow(
-		`SELECT a.id, a.source_id, COALESCE(s.path, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), COALESCE(a.cancel_reason, ''), a.created_at, a.completed_at
+		`SELECT a.id, a.source_id, COALESCE(s.path, ''), COALESCE(s.target_key, ''), a.types, a.config, a.status, a.scores, COALESCE(a.webhook_url, ''), COALESCE(a.degraded_reason, ''), COALESCE(a.llm_model, ''), COALESCE(a.owasp_coverage, ''), COALESCE(a.cancel_reason, ''), a.created_at, a.completed_at
 		 FROM audits a LEFT JOIN sources s ON a.source_id = s.id WHERE a.id = ?`, id)
 	var audit model.Audit
 	var typesStr, cfgStr, scoresStr, owaspCovStr, createdAt string
 	var completedAt sql.NullString
-	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CancelReason, &createdAt, &completedAt)
+	err := row.Scan(&audit.ID, &audit.SourceID, &audit.SourcePath, &audit.TargetKey, &typesStr, &cfgStr, &audit.Status, &scoresStr, &audit.WebhookURL, &audit.DegradedReason, &audit.LLMModel, &owaspCovStr, &audit.CancelReason, &createdAt, &completedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -115,9 +115,9 @@ func TestSaveFindings_DbSafe_PG_0072(t *testing.T) {
 		{
 			ID: bad, AuditID: auditID, AgentType: "cwe",
 			Severity: model.SeverityMedium, Category: "CWE-20",
-			Title:          "bad \xff\xfe title",
-			Description:    "desc \x00 nul \xc3\x28 invalid",
-			FilePath:       "weird/\xffname.bin", LineStart: 1, LineEnd: 1,
+			Title:       "bad \xff\xfe title",
+			Description: "desc \x00 nul \xc3\x28 invalid",
+			FilePath:    "weird/\xffname.bin", LineStart: 1, LineEnd: 1,
 			Recommendation: "fix \xed\xa0\x80 it",
 			CodeSnippet:    "1: raw\xff\x00bytes",
 		},

@@ -1,0 +1,508 @@
+<title>Unified Target Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+<style>
+/* ── Storybook chrome: minimal, derived from product tokens ─────────────── */
+:root{ --canvas: var(--color-cream-darker); --ink: var(--color-foreground); --ink-2: var(--color-secondary); --ink-3: var(--color-muted); --rule: var(--color-border-dark); --paper: var(--color-cream); }
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --canvas:#1A1B1E; --ink:#ECEBE6; --ink-2:#B8B7B1; --ink-3:#83827C; --rule:#2E2F34; --paper:#22232A; } }
+:root[data-theme="dark"]{ --canvas:#1A1B1E; --ink:#ECEBE6; --ink-2:#B8B7B1; --ink-3:#83827C; --rule:#2E2F34; --paper:#22232A; }
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto} }
+body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.55 var(--font-sans);-webkit-font-smoothing:antialiased}
+a{color:var(--color-accent-dark)}
+.top{position:sticky;top:0;z-index:20;background:var(--canvas);border-bottom:1px solid var(--rule)}
+.top-in{max-width:1280px;margin:0 auto;padding:10px 24px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.top h1{margin:0;font:600 14px/1 var(--font-sans);letter-spacing:-.01em}
+.top h1 small{font-weight:500;color:var(--ink-3);margin-left:8px}
+.flow{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+.flow a{font:500 12px/1 var(--font-sans);color:var(--ink-2);text-decoration:none;padding:6px 9px;border-radius:6px;display:inline-flex;gap:6px;align-items:center}
+.flow a b{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);font-weight:500}
+.flow a:hover,.flow a:focus-visible{background:var(--paper);color:var(--ink)}
+.flow a + a::before{content:"→";color:var(--rule);margin-right:6px}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 24px 96px}
+.lede{max-width:72ch;margin:0 0 28px;color:var(--ink-2)}
+.lede p{margin:0 0 8px}
+.story{margin:0 0 56px;scroll-margin-top:64px}
+.story header{display:grid;gap:4px;margin:0 0 14px;max-width:80ch}
+.eyebrow{font:500 11px/1 var(--font-mono);color:var(--ink-3);letter-spacing:.04em}
+.story h2{margin:0;font:600 20px/1.25 var(--font-sans);letter-spacing:-.015em;text-wrap:balance}
+.intent{margin:0;color:var(--ink-2)}
+.route{font:500 11.5px/1 var(--font-mono);color:var(--ink-2);background:var(--paper);display:inline-block;padding:6px 9px;border-radius:6px;margin-top:4px;border:1px solid var(--rule)}
+/* frame: the browser window around a product screen */
+.frame{position:relative;background:var(--paper);border:1px solid var(--rule);border-radius:12px;padding:8px;overflow-x:auto}
+.frame .url{display:flex;gap:6px;align-items:center;padding:2px 6px 8px;font:500 11px/1 var(--font-mono);color:var(--ink-3)}
+.frame .url i{width:8px;height:8px;border-radius:50%;background:var(--rule);display:inline-block}
+.frame .url span{margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.screen{position:relative;width:1200px;min-height:420px;border-radius:8px;overflow:hidden;font-size:var(--text-base);border:1px solid var(--color-border)}
+/* hotspots: the in-mockup links that make the flows navigable */
+.hot{position:absolute;border:1.5px dashed var(--color-accent);border-radius:6px;background:transparent;z-index:4;text-decoration:none;display:flex;align-items:flex-start;justify-content:flex-end;padding:3px}
+.hot span{font:600 10px/1 var(--font-mono);background:var(--color-accent);color:var(--color-surface);padding:3px 6px;border-radius:4px;transform:translate(6px,-14px);white-space:nowrap}
+.hot:hover,.hot:focus-visible{background:color-mix(in srgb, var(--color-accent) 6%, transparent)}
+/* annotation pins */
+.pin{position:absolute;width:20px;height:20px;border-radius:50%;background:var(--color-foreground);color:var(--color-surface);font:600 11px/20px var(--font-mono);text-align:center;z-index:5;box-shadow:0 0 0 2px var(--color-surface)}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 24px;margin:14px 0 0;padding:0;list-style:none;max-width:1200px}
+.notes li{display:grid;grid-template-columns:20px minmax(0,1fr);gap:10px;font-size:13px;color:var(--ink-2)}
+.notes li b.k{width:20px;height:20px;border-radius:50%;background:var(--color-foreground);color:var(--color-surface);font:600 11px/20px var(--font-mono);text-align:center}
+.notes li strong{color:var(--ink);font-weight:600}
+.notes code,.intent code,.lede code{font-family:var(--font-mono);font-size:12px;background:var(--paper);padding:1px 5px;border-radius:4px;border:1px solid var(--rule)}
+.aside{background:var(--paper);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;font-size:13px;max-width:80ch;margin-top:14px;color:var(--ink-2)}
+.aside b{color:var(--ink)}
+/* decisions */
+.dec{width:100%;border-collapse:collapse;font-size:13px;max-width:1200px}
+.dec th,.dec td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--rule)}
+.dec th{font:600 11px/1 var(--font-mono);letter-spacing:.04em;color:var(--ink-3)}
+.dec td:first-child{font-family:var(--font-mono);font-size:12px;color:var(--ink-3)}
+.dec td:nth-child(2){font-weight:600;color:var(--ink)}
+.dec td:nth-child(3){color:var(--ink)}
+.dec small{color:var(--ink-3)}
+.box{display:inline-block;width:13px;height:13px;border:1.5px solid var(--ink-3);border-radius:3px;vertical-align:-2px;margin-right:6px}
+.box.y{background:var(--color-success);border-color:var(--color-success);position:relative}
+.box.y::after{content:"";position:absolute;left:3.5px;top:.5px;width:4px;height:7px;border:solid var(--color-surface);border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
+/* routes */
+.routes{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:start;max-width:960px}
+.rbox{background:var(--paper);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;font:400 12px/1.7 var(--font-mono);display:grid;gap:2px}
+.rbox .h{font:600 11px/1 var(--font-mono);color:var(--ink-3);margin-bottom:6px;letter-spacing:.04em}
+.rbox .old{color:var(--ink-3);text-decoration:line-through}
+.rbox b{font-weight:600}
+.arrow{font:500 12px/1 var(--font-sans);color:var(--ink-3);text-align:center;padding-top:22px}
+/* sidebar icon glyphs (same paths as Sidebar.tsx NavIcon) */
+.v-nav-item svg{display:block}
+</style>
+
+<div class="top"><div class="top-in">
+  <h1>Unified Target Report <small>design · 0093 · for review</small></h1>
+  <nav class="flow" aria-label="Flow">
+    <a href="#s1"><b>S1</b>Home</a><a href="#s2"><b>S2</b>Report</a><a href="#s3"><b>S3</b>Filters</a><a href="#s4"><b>S4</b>One scan</a><a href="#s5"><b>S5</b>Running</a><a href="#s6"><b>S6</b>Closed</a><a href="#s7"><b>S7</b>Compare</a><a href="#s8"><b>S8</b>Finding</a><a href="#s9"><b>S9</b>Edges</a><a href="#s10"><b>S10</b>Routes</a><a href="#dec"><b>D</b>Decisions</a>
+  </nav>
+</div></div>
+
+<div class="wrap">
+<div class="lede">
+  <p>One page per codebase. A scan is a selection on that page, not a destination. Every screen below is the current Vulture UI — same sidebar, header, cards, badges and buttons, drawn from <code>designs/tokens.css</code> and <code>designs/components.css</code> — showing <b>blu-simulator</b>'s real rows and its nine real scans.</p>
+  <p>Dashed outlines inside a screen are the active flows: click one to follow it to the next state. Numbered pins are notes.</p>
+</div>
+
+<!-- ═══════════ S1 ═══════════ -->
+<section class="story" id="s1">
+<header><div class="eyebrow">S1 · Home</div><h2>Home is the list of codebases</h2><p class="intent">One row per codebase. Scans live inside a row. Replaces the Dashboard's scan list (decision D1).</p><span class="route">/</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>localhost:23001/</span></div>
+<div class="screen v-shell v-body">
+  <aside class="v-sidebar">
+    <div class="v-sidebar-brand"><span class="v-logo">V</span></div>
+    <nav class="v-nav">
+      <a class="v-nav-item active" title="Codebases"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a>
+      <a class="v-nav-item" title="New scan"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></a>
+      <a class="v-nav-item" title="Memories"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></a>
+      <a class="v-nav-item" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></a>
+    </nav>
+    <div class="v-sidebar-foot"><span class="v-avatar">B</span></div>
+  </aside>
+  <div class="v-page">
+    <header class="v-header" style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px">
+      <div><h1 class="v-title">Codebases</h1><p class="v-subtitle">7 codebases · 154 scans · last scan today 13:57</p></div>
+      <div style="display:flex;gap:8px"><span class="btn-secondary">Import archive</span><span class="btn-primary">New scan</span></div>
+    </header>
+    <div class="card v-table">
+      <div class="v-row head" style="grid-template-columns:minmax(0,1.5fr) 80px 80px 90px 100px 130px 170px"><span>Codebase</span><span>Critical</span><span>High</span><span>Active</span><span>Unconfirmed</span><span>Closed</span><span>Last 8 scans</span></div>
+      <div class="v-row" style="grid-template-columns:minmax(0,1.5fr) 80px 80px 90px 100px 130px 170px">
+        <span><span class="v-finding">blu-simulator</span><span class="v-path">/home/user/danger/blu-simulator · <b>package.json</b></span></span>
+        <span class="badge severity-critical" style="justify-self:start">5</span><span class="badge severity-high" style="justify-self:start">7</span><span style="font-weight:600;font-variant-numeric:tabular-nums">32</span><span class="tone-muted">0</span>
+        <span style="font-variant-numeric:tabular-nums">9 <span class="v-tag bad" style="margin-left:4px">9 by absence</span></span>
+        <span class="v-seen"><span class="bars"><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i></span><small>13:57 · 17 findings · degraded</small></span>
+      </div>
+      <div class="v-row" style="grid-template-columns:minmax(0,1.5fr) 80px 80px 90px 100px 130px 170px">
+        <span><span class="v-finding">idattestor</span><span class="v-path">/home/user/src/idattestor · <b>go.mod</b></span></span>
+        <span class="badge severity-critical" style="justify-self:start">3</span><span class="badge severity-high" style="justify-self:start">41</span><span style="font-weight:600;font-variant-numeric:tabular-nums">254</span><span class="tone-muted">0</span><span style="font-variant-numeric:tabular-nums">52</span>
+        <span class="v-seen"><span class="bars"><i></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i></span><small>09 Sep · 7 scans</small></span>
+      </div>
+      <div class="v-row" style="grid-template-columns:minmax(0,1.5fr) 80px 80px 90px 100px 130px 170px">
+        <span><span class="v-finding">vulture</span><span class="v-path">/home/user/src/vulture · <b>github.com/bobinson/vulture</b></span></span>
+        <span class="badge severity-critical" style="justify-self:start">2</span><span class="badge severity-high" style="justify-self:start">118</span><span style="font-weight:600;font-variant-numeric:tabular-nums">1,703</span><span class="tone-muted">0</span><span style="font-variant-numeric:tabular-nums">405</span>
+        <span class="v-seen"><span class="bars"><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i><i class="seen"></i></span><small>07 Sep · 26 scans</small></span>
+      </div>
+      <div class="v-row dimmed" style="grid-template-columns:minmax(0,1.5fr) 80px 80px 90px 100px 130px 170px">
+        <span><span class="v-finding">Unattributed scans</span><span class="v-path">/mnt/source — container mount, no project segment</span></span>
+        <span class="tone-muted">—</span><span class="tone-muted">—</span><span style="font-weight:600;font-variant-numeric:tabular-nums">2,350</span><span class="tone-muted">0</span><span style="font-variant-numeric:tabular-nums">125</span>
+        <span class="v-seen"><small>27 scans · <a>attribute →</a></small></span>
+      </div>
+    </div>
+  </div>
+  <a class="hot" href="#s2" style="left:84px;top:126px;width:1080px;height:56px"><span>row → S2 report</span></a>
+  <a class="hot" href="#s9" style="left:84px;top:296px;width:1080px;height:50px"><span>→ S9 unattributed</span></a>
+  <span class="pin" style="left:760px;top:132px">1</span>
+  <span class="pin" style="left:1080px;top:132px">2</span>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>Closed carries its own warning at the list level.</strong> "9 by absence" is a closure with no evidence behind it, flagged before you open the codebase.</span></li>
+  <li><b class="k">2</b><span><strong>Eight-scan spark.</strong> Solid = completed scan, hatched = degraded. blu-simulator's last three are visibly degraded from the home page.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ S2 ═══════════ -->
+<section class="story" id="s2">
+<header><div class="eyebrow">S2 · Report</div><h2>The report at rest: all scans, active findings, grouped by severity</h2><p class="intent">This is the default view — the aggregate. Tiles summarise and filter; groups open critical-first; each row shows how many of the selected scans saw it. The rail on the right is the scan selector.</p><span class="route">/targets/marker:cfd43c7a…</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>localhost:23001/targets/marker%3Acfd43c7a48d3d3f888f8c9ac3b6373d8c3678de5</span></div>
+<div class="screen v-shell v-body" style="min-height:600px">
+  <aside class="v-sidebar"><div class="v-sidebar-brand"><span class="v-logo">V</span></div><nav class="v-nav"><a class="v-nav-item active"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a><a class="v-nav-item"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></a><a class="v-nav-item"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></a></nav><div class="v-sidebar-foot"><span class="v-avatar">B</span></div></aside>
+  <div class="v-page">
+    <header class="v-header" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-end;gap:16px">
+      <div><nav class="v-crumbs"><a>Codebases</a><span class="sep">/</span><span>blu-simulator</span></nav><h1 class="v-title">blu-simulator</h1><p class="v-subtitle">/home/user/danger/blu-simulator · 9 scans, 07 Sep → today · <code>marker:cfd43c7a</code></p></div>
+      <div style="display:flex;gap:8px"><span class="btn-secondary">Export</span><span class="btn-primary">Rescan</span></div>
+    </header>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:16px">
+      <div style="display:grid;gap:12px;align-content:start">
+        <div class="v-tiles">
+          <div class="card v-tile"><span class="k">Critical</span><span class="n tone-critical">5</span></div>
+          <div class="card v-tile"><span class="k">High</span><span class="n tone-high">7</span></div>
+          <div class="card v-tile"><span class="k">Medium</span><span class="n tone-medium">18</span></div>
+          <div class="card v-tile"><span class="k">Low</span><span class="n tone-low">2</span></div>
+          <div class="card v-tile"><span class="k">Info</span><span class="n tone-muted">—</span></div>
+          <div class="card v-tile" style="background:var(--color-cream-dark)"><span class="k">Closed</span><span class="n" style="color:var(--color-secondary)">9</span><span class="split"><span>0 by evidence</span><span class="absent">9 by absence</span></span></div>
+        </div>
+        <div class="card" style="padding:10px 16px;display:grid;gap:8px">
+          <div class="v-filter-row"><span class="legend">Framework:</span><span class="v-chip on">All <span class="count">16</span></span><span class="v-chip">CWE <span class="count">16</span></span><span class="v-chip">OWASP 2025 <span class="count">16</span></span><span class="v-chip zero">SOC2 <span class="count">0</span></span><span class="v-chip zero">Chaos <span class="count">0</span></span><span class="v-search">Filter by path, title or ref…</span></div>
+          <div class="v-filter-row"><span class="legend">Show:</span><span class="v-chip on">Active</span><span class="v-chip">All incl. closed</span><span style="width:10px"></span><span class="legend" style="min-width:auto">Tier:</span><span class="v-chip">Deterministic</span><span class="v-chip">LLM</span><span style="width:10px"></span><span class="legend" style="min-width:auto">Seen in:</span><span class="v-chip">≥ 2 scans</span></div>
+        </div>
+        <div class="card v-table">
+          <div class="v-row head"><span>Ref</span><span>Category</span><span>Finding</span><span>Where</span><span>Seen in scans</span><span>Tier</span></div>
+          <div class="v-group"><span class="caret">▾</span><span class="badge severity-critical">CRITICAL</span><span class="count">5</span></div>
+          <div class="v-row"><span class="v-ref">VLT-90259</span><span class="v-cat">CWE-94<small>A05 injection</small></span><span class="v-finding">Code injection via dynamic execution</span><span class="v-path">server/controllers/<b>auth.js</b>:88</span><span class="v-seen"><span class="bars"><i class="seen"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i></span><small>4 of 9 · 5 out of scope</small></span><span class="v-tier llm">llm</span></div>
+          <div class="v-row"><span class="v-ref">VLT-90260</span><span class="v-cat">CWE-321<small>A04 crypto failures</small></span><span class="v-finding">Hardcoded cryptographic key</span><span class="v-path">server/<b>config.js</b>:14</span><span class="v-seen"><span class="bars"><i class="seen"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i></span><small>4 of 9 · 5 out of scope</small></span><span class="v-tier llm">llm</span></div>
+          <div class="v-row"><span class="v-ref">VLT-92561</span><span class="v-cat">CWE-506<small>—</small></span><span class="v-finding">VS Code task runs a command on folder open</span><span class="v-path">.vscode/<b>tasks.json</b>:7</span><span class="v-seen"><span class="bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="seen"></i><i class="seen"></i></span><small>2 of 9</small></span><span class="v-tier">skill</span></div>
+          <div class="v-row dimmed"><span class="v-ref">…</span><span class="v-cat">2 more</span><span></span><span></span><span></span><span></span></div>
+          <div class="v-group"><span class="caret">▾</span><span class="badge severity-high">HIGH</span><span class="count">7</span></div>
+          <div class="v-row"><span class="v-ref">VLT-90258</span><span class="v-cat">CWE-862<small>A01 access control</small></span><span class="v-finding">Route handler without authorization</span><span class="v-path">server/<b>app.js</b>:41</span><span class="v-seen"><span class="bars"><i class="seen"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i></span><small>4 of 9</small></span><span class="v-tier llm">llm</span></div>
+          <div class="v-row dimmed"><span class="v-ref">…</span><span class="v-cat">6 more</span><span></span><span></span><span></span><span></span></div>
+          <div class="v-group"><span class="caret">▸</span><span class="badge severity-medium">MEDIUM</span><span class="count">18</span></div>
+          <div class="v-group"><span class="caret">▸</span><span class="badge severity-low">LOW</span><span class="count">2</span></div>
+        </div>
+      </div>
+      <aside class="card v-rail">
+        <div class="head"><span>Scans <span style="color:var(--color-muted);font-weight:500">9 of 9</span></span><a>Clear</a></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">Today 13:57<small>root · cwe</small></span><span class="n">17 <span class="degraded">▲</span></span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">Today 12:55<small>.vscode · cwe</small></span><span class="n">1 <span class="degraded">▲</span></span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">Today 12:49<small>.vscode · cwe</small></span><span class="n">0 <span class="degraded">▲</span></span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">Today 12:33<small>.vscode · cwe</small></span><span class="n">0 <span class="degraded">▲</span></span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">09 Sep 10:49<small>root · cwe, owasp</small></span><span class="n">32 <span class="degraded">▲</span></span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">09 Sep 10:37<small>.vscode · cwe, owasp</small></span><span class="n">6</span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">09 Sep 09:48<small>.vscode · cwe</small></span><span class="n">1</span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">08 Sep 07:43<small>root · cwe</small></span><span class="n">16</span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">07 Sep 15:20<small>root · cwe</small></span><span class="n">21</span></div>
+      </aside>
+    </div>
+  </div>
+  <a class="hot" href="#s6" style="left:704px;top:118px;width:200px;height:72px"><span>Closed tile → S6</span></a>
+  <a class="hot" href="#s3" style="left:84px;top:200px;width:820px;height:70px"><span>filters → S3</span></a>
+  <a class="hot" href="#s4" style="left:918px;top:150px;width:250px;height:60px"><span>check one scan → S4</span></a>
+  <a class="hot" href="#s8" style="left:84px;top:342px;width:820px;height:34px"><span>row → S8 finding</span></a>
+  <a class="hot" href="#s5" style="left:1082px;top:60px;width:86px;height:34px"><span>Rescan → S5</span></a>
+  <span class="pin" style="left:60px;top:126px">1</span>
+  <span class="pin" style="left:692px;top:126px">2</span>
+  <span class="pin" style="left:230px;top:212px">3</span>
+  <span class="pin" style="left:640px;top:352px">4</span>
+  <span class="pin" style="left:1160px;top:230px">5</span>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>Tiles are TileRow as shipped</strong> (card, 11px uppercase label, xl semibold number) — now clickable as a severity filter, and "Info" shows a dash when zero.</span></li>
+  <li><b class="k">2</b><span><strong>Closed is split by how.</strong> "0 by evidence / 9 by absence" renders the two closures 0091 distinguished as two numbers; absence is in the danger colour.</span></li>
+  <li><b class="k">3</b><span><strong>Framework is a lens, not a duplicate row.</strong> CWE and OWASP both read 16 because the OWASP categorizer mirrors CWE rows; the report counts a finding once and shows its OWASP category under the CWE id. Decision D3 — it changes "32 active" to "16 findings".</span></li>
+  <li><b class="k">4</b><span><strong>"Seen in scans" is the honesty bar.</strong> Solid = reported, hatched = that scan could not see the file, blank = not reported. "4 of 9 · 5 out of scope" says the five blanks are not evidence of anything.</span></li>
+  <li><b class="k">5</b><span><strong>The rail is ScanPicker, promoted.</strong> All checked = aggregate; degraded scans carry ▲; check exactly one → S4; exactly two → S7.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ S3 ═══════════ -->
+<section class="story" id="s3">
+<header><div class="eyebrow">S3 · Filters</div><h2>Filters compose, live in the URL, and say what they will yield</h2><p class="intent">Framework → category is a cascade: choose OWASP and the category row speaks OWASP; choose CWE and it lists the CWE ids present. Every chip carries the count it would leave. The active set repeats as removable chips so a pasted link explains itself.</p><span class="route">…?fw=owasp&cat=A01,A05&severity=critical,high&q=auth.js</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>…/targets/marker%3Acfd43c7a…?fw=owasp&amp;cat=A01,A05&amp;severity=critical,high&amp;q=auth.js</span></div>
+<div class="screen v-shell v-body" style="min-height:440px">
+  <aside class="v-sidebar"><div class="v-sidebar-brand"><span class="v-logo">V</span></div><nav class="v-nav"><a class="v-nav-item active"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a></nav></aside>
+  <div class="v-page">
+    <nav class="v-crumbs" style="margin-bottom:12px"><a>Codebases</a><span class="sep">/</span><span>blu-simulator</span></nav>
+    <div class="v-tiles" style="margin-bottom:12px">
+      <div class="card v-tile selected"><span class="k">Critical</span><span class="n tone-critical">5</span></div>
+      <div class="card v-tile selected"><span class="k">High</span><span class="n tone-high">7</span></div>
+      <div class="card v-tile dimmed"><span class="k">Medium</span><span class="n tone-medium">18</span></div>
+      <div class="card v-tile dimmed"><span class="k">Low</span><span class="n tone-low">2</span></div>
+      <div class="card v-tile dimmed"><span class="k">Info</span><span class="n tone-muted">—</span></div>
+      <div class="card v-tile" style="background:var(--color-cream-dark)"><span class="k">Closed</span><span class="n" style="color:var(--color-secondary)">9</span><span class="split"><span>0 by evidence</span><span class="absent">9 by absence</span></span></div>
+    </div>
+    <div class="card" style="padding:10px 16px;display:grid;gap:8px;margin-bottom:12px">
+      <div class="v-filter-row"><span class="legend">Framework:</span><span class="v-chip">All <span class="count">16</span></span><span class="v-chip">CWE <span class="count">16</span></span><span class="v-chip on">OWASP 2025 <span class="count">16</span></span><span class="v-chip zero">SOC2 <span class="count">0</span></span><span class="v-chip zero">ASVS <span class="count">0</span></span><span class="v-search"><b>auth.js</b></span></div>
+      <div class="v-filter-row"><span class="legend">Category:</span><span class="v-chip on">A01 Broken access control <span class="count">4</span></span><span class="v-chip">A02 Security misconfig <span class="count">2</span></span><span class="v-chip">A04 Crypto failures <span class="count">1</span></span><span class="v-chip on">A05 Injection <span class="count">1</span></span><span class="v-chip">A09 Logging failures <span class="count">6</span></span><span class="v-chip">A10 Exceptional conditions <span class="count">1</span></span><span class="v-chip" style="border-style:dashed">+ 4 more</span></div>
+      <div class="v-filter-row"><span class="legend">Show:</span><span class="v-chip on">Active</span><span class="v-chip">All incl. closed</span><span style="width:10px"></span><span class="legend" style="min-width:auto">Tier:</span><span class="v-chip">Deterministic <span class="count">1</span></span><span class="v-chip">LLM <span class="count">15</span></span><span style="width:10px"></span><span class="legend" style="min-width:auto">Seen in:</span><span class="v-chip">≥ 2 scans <span class="count">14</span></span></div>
+      <div class="v-filter-row" style="border-top:1px dashed var(--color-border);padding-top:8px"><span class="legend">Active:</span><span class="v-chip on removable">OWASP 2025</span><span class="v-chip on removable">A01</span><span class="v-chip on removable">A05</span><span class="v-chip on removable">critical</span><span class="v-chip on removable">high</span><span class="v-chip on removable">auth.js</span><a style="font-size:var(--text-2xs);margin-left:4px">Clear all</a><span style="margin-left:auto;font-size:var(--text-xs);color:var(--color-muted)">3 of 16 findings</span></div>
+    </div>
+    <div class="card v-table">
+      <div class="v-group"><span class="caret">▾</span><span class="badge severity-critical">CRITICAL</span><span class="count">1</span></div>
+      <div class="v-row"><span class="v-ref">VLT-90259</span><span class="v-cat">A05<small>CWE-94</small></span><span class="v-finding">Code injection via dynamic execution</span><span class="v-path">server/controllers/<b>auth.js</b>:88</span><span class="v-seen"><span class="bars"><i class="seen"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i></span><small>4 of 9</small></span><span class="v-tier llm">llm</span></div>
+      <div class="v-group"><span class="caret">▾</span><span class="badge severity-high">HIGH</span><span class="count">2</span></div>
+      <div class="v-row"><span class="v-ref">VLT-90268</span><span class="v-cat">A01<small>CWE-352</small></span><span class="v-finding">Missing CSRF protection</span><span class="v-path">server/controllers/<b>auth.js</b>:52</span><span class="v-seen"><span class="bars"><i class="seen"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i><i class="oos"></i><i class="oos"></i><i class="oos"></i><i class="seen"></i></span><small>4 of 9</small></span><span class="v-tier llm">llm</span></div>
+      <div class="v-row"><span class="v-ref">VLT-90258</span><span class="v-cat">A01<small>CWE-862</small></span><span class="v-finding">Route handler without authorization</span><span class="v-path">server/<b>app.js</b>:41 <span class="v-tag warn" style="margin-left:6px">matched by category, not by q</span></span><span class="v-seen"><small>—</small></span><span class="v-tier llm">llm</span></div>
+    </div>
+  </div>
+  <a class="hot" href="#s2" style="left:84px;top:96px;width:600px;height:64px"><span>clear tiles → S2</span></a>
+  <span class="pin" style="left:230px;top:198px">1</span>
+  <span class="pin" style="left:1080px;top:170px">2</span>
+  <span class="pin" style="left:1080px;top:284px">3</span>
+  <span class="pin" style="left:60px;top:284px">4</span>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>Cascade.</strong> Choosing a framework re-labels the category row in that framework's vocabulary. Categories are normalised before they become chips — soc2's <code>CC6</code>, <code>CC6 </code>, <code>CC6-</code>, <code>CC6/</code> collapse to one chip (D4).</span></li>
+  <li><b class="k">2</b><span><strong>Free text</strong> matches path, title and ref — the fastest route to "what's wrong in auth.js". The third table row is deliberately wrong for the mockup: it does not match <code>q</code> and would not render. Filters are AND across rows, OR within a row.</span></li>
+  <li><b class="k">3</b><span><strong>"3 of 16"</strong> keeps the denominator on screen so a narrow filter never reads as a clean codebase.</span></li>
+  <li><b class="k">4</b><span><strong>The active row is the shareable state.</strong> Each chip is a URL parameter; removing one updates the URL.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ S4 ═══════════ -->
+<section class="story" id="s4">
+<header><div class="eyebrow">S4 · One scan</div><h2>Select exactly one scan and the page becomes that scan's report</h2><p class="intent">Same page, same table, same filters. The per-scan panels appear (score, deltas, scope, timeline, agent output); the seen-bar collapses to this scan; rows this scan could not see are marked, not dropped.</p><span class="route">/targets/marker:cfd43c7a…?scans=34050e08   ← where /audit/34050e08… now lands</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>…/targets/marker%3Acfd43c7a…?scans=34050e08-6c22-b61d-c9e5-3b65314c23a5</span></div>
+<div class="screen v-shell v-body" style="min-height:520px">
+  <aside class="v-sidebar"><div class="v-sidebar-brand"><span class="v-logo">V</span></div><nav class="v-nav"><a class="v-nav-item active"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a></nav></aside>
+  <div class="v-page">
+    <nav class="v-crumbs" style="margin-bottom:10px"><a>Codebases</a><span class="sep">/</span><a>blu-simulator</a><span class="sep">/</span><span>Scan · today 12:55 · .vscode</span></nav>
+    <div class="v-banner warn" style="margin-bottom:12px"><span>▲</span><span><b>This scan was degraded.</b> The LLM tier failed (auth_error 401); only deterministic checks ran. No LLM-tier row was closed by this scan — each is shown as <em>not checked</em>, never as fixed. Deterministic checks ran in full and their results stand.</span></div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:16px">
+      <div style="display:grid;gap:12px;align-content:start">
+        <div class="v-panels">
+          <div class="card v-panel"><span class="k">Score</span><span class="n">100</span><span class="s">cwe · deterministic only</span></div>
+          <div class="card v-panel"><span class="k">This scan</span><span class="n">1 <small>finding</small></span><span class="s">1 re-found · 0 new · 0 confirmed gone</span></div>
+          <div class="card v-panel"><span class="k">Scope</span><span class="n">3 <small>files</small></span><span class="s">.vscode/ only · 30 rows out of scope</span></div>
+          <div class="card v-panel"><span class="k">Timeline</span><span class="s">12:55:21 queued · :24 cwe start · :53 result · 32s</span><span class="s" style="color:var(--color-warning)">llm_call_failed ×3 · degraded</span></div>
+        </div>
+        <div class="terminal" style="padding:8px 0"><div class="terminal-line"><span class="terminal-time">12:55:24</span><span class="terminal-muted">[cwe] scan_complete path=…/blu-simulator/.vscode files=3</span></div><div class="terminal-line"><span class="terminal-time">12:55:25</span><span class="terminal-green">[cwe] workspace_autorun: 1 finding · tasks.json:7 · runOn=folderOpen</span></div><div class="terminal-line"><span class="terminal-time">12:55:31</span><span class="terminal-yellow">[cwe] llm_call_failed attempt=1/3 kind=auth_error</span></div><div class="terminal-line"><span class="terminal-time">12:55:52</span><span class="terminal-red">[cwe] audit_degraded reason=LLM analysis failed (auth_error)</span></div><div class="terminal-line"><span class="terminal-time">12:55:53</span><span class="terminal-muted">[cwe] result findings=1 lineage_checks=0 pruned_dirs=[]   ▸ 41 more lines</span></div></div>
+        <div class="card v-table">
+          <div class="v-group"><span class="caret">▾</span><span class="badge severity-critical">CRITICAL</span><span class="count">1 in this scan</span><span class="right">4 out of scope</span></div>
+          <div class="v-row fresh"><span class="v-ref">VLT-92561</span><span class="v-cat">CWE-506</span><span class="v-finding">VS Code task runs a command on folder open <span class="v-tag" style="margin-left:6px">re-found</span></span><span class="v-path">.vscode/<b>tasks.json</b>:7</span><span class="v-seen"><small>seen · 2nd time</small></span><span class="v-tier">skill</span></div>
+          <div class="v-row dimmed"><span class="v-ref">VLT-90259</span><span class="v-cat">CWE-94</span><span class="v-finding">Code injection via dynamic execution <span class="v-tag warn" style="margin-left:6px">out of scope</span></span><span class="v-path">server/controllers/<b>auth.js</b>:88</span><span class="v-seen"><small>not in .vscode/</small></span><span class="v-tier llm">llm</span></div>
+          <div class="v-row dimmed"><span class="v-ref">…</span><span class="v-cat">3 more</span><span class="v-finding" style="color:var(--color-muted-light)">out of scope for a .vscode scan — still open</span><span></span><span></span><span></span></div>
+        </div>
+      </div>
+      <aside class="card v-rail">
+        <div class="head"><span>Scans <span style="color:var(--color-muted);font-weight:500">1 of 9</span></span><a>All scans</a></div>
+        <div class="v-scan"><span class="box"></span><span class="when">Today 13:57<small>root · cwe</small></span><span class="n">17 <span class="degraded">▲</span></span></div>
+        <div class="v-scan on"><span class="box"></span><span class="when">Today 12:55<small>.vscode · cwe</small></span><span class="n">1 <span class="degraded">▲</span></span></div>
+        <div class="v-scan"><span class="box"></span><span class="when">Today 12:49<small>.vscode · cwe</small></span><span class="n">0 <span class="degraded">▲</span></span></div>
+        <div class="v-scan"><span class="box"></span><span class="when">Today 12:33<small>.vscode · cwe</small></span><span class="n">0 <span class="degraded">▲</span></span></div>
+        <div class="v-scan"><span class="box"></span><span class="when">09 Sep 10:49<small>root · cwe, owasp</small></span><span class="n">32 <span class="degraded">▲</span></span></div>
+        <div class="v-scan"><span class="box"></span><span class="when">09 Sep 10:37<small>.vscode</small></span><span class="n">6</span></div>
+        <div class="v-scan"><span class="box"></span><span class="when">09 Sep 09:48<small>.vscode</small></span><span class="n">1</span></div>
+        <div class="v-scan"><span class="box"></span><span class="when">08 Sep 07:43<small>root</small></span><span class="n">16</span></div>
+        <div class="v-scan"><span class="box"></span><span class="when">07 Sep 15:20<small>root</small></span><span class="n">21</span></div>
+      </aside>
+    </div>
+  </div>
+  <a class="hot" href="#s2" style="left:1096px;top:130px;width:72px;height:22px"><span>All scans → S2</span></a>
+  <a class="hot" href="#s7" style="left:918px;top:154px;width:250px;height:82px"><span>check a 2nd → S7</span></a>
+  <span class="pin" style="left:60px;top:90px">1</span>
+  <span class="pin" style="left:60px;top:150px">2</span>
+  <span class="pin" style="left:60px;top:250px">3</span>
+  <span class="pin" style="left:640px;top:408px">4</span>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>Degraded is a banner that states its consequence:</strong> this scan closes nothing (D5).</span></li>
+  <li><b class="k">2</b><span><strong>Per-scan panels appear only with one scan selected</strong> — they are properties of a scan, not a codebase. ScoreCard, AuditTimeline and OwaspCoverage fold into four cards.</span></li>
+  <li><b class="k">3</b><span><strong>Agent output is the shipped <code>terminal</code></strong>, collapsed to the finding, the failure and the result line.</span></li>
+  <li><b class="k">4</b><span><strong>Out-of-scope rows stay, dimmed and labelled.</strong> A .vscode scan cannot see <code>auth.js</code>; the report says so rather than implying auth.js is clean.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ S5 ═══════════ -->
+<section class="story" id="s5">
+<header><div class="eyebrow">S5 · Running</div><h2>A running scan is S4 with the stream open and rows arriving</h2><p class="intent">"Rescan" creates the audit and navigates to the codebase page with that scan selected. The URL is already the final URL — refresh or share it and you land on the same view, live or at rest.</p><span class="route">…?scans=31869cb8…</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>…?scans=31869cb8-fb17-bd65-0e7c-d938317cb734</span></div>
+<div class="screen v-shell v-body" style="min-height:400px">
+  <aside class="v-sidebar"><div class="v-sidebar-brand"><span class="v-logo">V</span></div><nav class="v-nav"><a class="v-nav-item active"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a></nav></aside>
+  <div class="v-page">
+    <nav class="v-crumbs" style="margin-bottom:10px"><a>Codebases</a><span class="sep">/</span><a>blu-simulator</a><span class="sep">/</span><span>Scan · running</span></nav>
+    <div class="v-panels" style="margin-bottom:12px">
+      <div class="card v-panel"><span class="k">Status</span><span class="n" style="color:var(--color-success)">Running</span><span class="s">cwe · 00:41 elapsed</span></div>
+      <div class="card v-panel"><span class="k">Progress</span><span class="n">38 <small>/ 42 files</small></span><div class="v-progress"><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i></i></div></div>
+      <div class="card v-panel"><span class="k">So far</span><span class="n">12 <small>findings</small></span><span class="s">11 re-found · 1 new · lineage checks pending</span></div>
+      <div class="card v-panel"><span class="k">Known context</span><span class="n">32</span><span class="s">prior findings sent as memory · model told to report new only</span></div>
+    </div>
+    <div class="terminal" style="padding:8px 0;margin-bottom:12px"><div class="terminal-line"><span class="terminal-time">13:57:04</span><span class="terminal-muted">[cwe] scan_complete path=/home/user/danger/blu-simulator files=42 pruned=[node_modules,.git]</span></div><div class="terminal-line"><span class="terminal-time">13:57:06</span><span class="terminal-green">[cwe] secret_scan: 2 findings · server/config.js:11,14</span></div><div class="terminal-line"><span class="terminal-time">13:57:06</span><span class="terminal-green">[cwe] workspace_autorun: 1 finding · .vscode/tasks.json:7</span></div><div class="terminal-line"><span class="terminal-time">13:57:09</span><span class="terminal-yellow">[cwe] llm_phase start · 19 files fit context · 2 batches</span></div><div class="terminal-line"><span class="terminal-time">13:57:41</span><span class="terminal-muted">[cwe] batch 1/2 → gemini-pro … ▌</span></div></div>
+    <div class="card v-table">
+      <div class="v-group"><span class="caret">▾</span><span class="badge severity-critical">CRITICAL</span><span class="count">3 so far</span></div>
+      <div class="v-row fresh"><span class="v-ref">VLT-92561</span><span class="v-cat">CWE-506</span><span class="v-finding">VS Code task runs a command on folder open <span class="v-tag">re-found</span></span><span class="v-path">.vscode/<b>tasks.json</b>:7</span><span class="v-seen"><small>seen · 3rd time</small></span><span class="v-tier">skill</span></div>
+      <div class="v-row fresh"><span class="v-ref" style="color:var(--color-success)">new</span><span class="v-cat">CWE-798</span><span class="v-finding">Hard-coded database password in source <span class="v-tag">new this scan</span></span><span class="v-path">server/<b>config.js</b>:11</span><span class="v-seen"><small>first sighting</small></span><span class="v-tier">skill</span></div>
+    </div>
+  </div>
+  <a class="hot" href="#s4" style="left:84px;top:96px;width:1090px;height:70px"><span>result event → S4</span></a>
+  <span class="pin" style="left:900px;top:104px">1</span>
+  <span class="pin" style="left:60px;top:300px">2</span>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>"Known context" is on screen.</strong> The model was handed 32 prior findings and told to report new only — the mechanism behind every silent closure this feature ends, shown while it happens.</span></li>
+  <li><b class="k">2</b><span><strong>Rows are provisional until the result event.</strong> A finding with no ref yet reads "new"; refs are assigned when lineage runs; the tiles tick up live.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ S6 ═══════════ -->
+<section class="story" id="s6">
+<header><div class="eyebrow">S6 · Closed</div><h2>Closed findings are never hidden — and the report says how each was closed</h2><p class="intent">The Closed tile opens this. Rows are grouped by the evidence behind the closure. "By absence" — the group that lied today — is first, in the danger colour, with a one-click reopen.</p><span class="route">…?status=closed</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>…/targets/marker%3Acfd43c7a…?status=closed</span></div>
+<div class="screen v-shell v-body" style="min-height:420px">
+  <aside class="v-sidebar"><div class="v-sidebar-brand"><span class="v-logo">V</span></div><nav class="v-nav"><a class="v-nav-item active"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a></nav></aside>
+  <div class="v-page">
+    <nav class="v-crumbs" style="margin-bottom:10px"><a>Codebases</a><span class="sep">/</span><a>blu-simulator</a><span class="sep">/</span><span>Closed</span></nav>
+    <div class="v-banner warn" style="margin-bottom:12px"><span>▲</span><span><b>9 findings were closed because a later scan did not mention them — not because the code was checked.</b> All 9 were raised by the LLM tier; the closing scans either could not see the file or ran without an LLM. <a>Re-verify all 9</a> · <a>Reopen all 9</a></span></div>
+    <div class="card v-table">
+      <div class="v-group absence"><span class="caret">▾</span><span class="badge severity-critical">CLOSED BY ABSENCE</span><span class="count">9 · 5 critical · 1 high · 3 medium</span><span class="right" style="color:var(--color-danger)">no evidence the code changed</span></div>
+      <div class="v-row" style="grid-template-columns:96px 100px minmax(0,1fr) 220px 200px 84px"><span class="v-ref">VLT-90272</span><span class="v-cat">CWE-94</span><span class="v-finding">Remote code execution via new Function on untrusted HTTP response</span><span class="v-path">server/controllers/<b>auth.js</b></span><span style="font-size:var(--text-2xs);color:var(--color-muted)">closed 08 Sep · <span class="v-tag bad">code still present</span></span><span class="btn-secondary btn-sm" style="justify-self:start">Reopen</span></div>
+      <div class="v-row" style="grid-template-columns:96px 100px minmax(0,1fr) 220px 200px 84px"><span class="v-ref">VLT-90273</span><span class="v-cat">CWE-200</span><span class="v-finding">Exfiltration of entire process environment to remote endpoint</span><span class="v-path">server/controllers/<b>auth.js</b></span><span style="font-size:var(--text-2xs);color:var(--color-muted)">closed 08 Sep · <span class="v-tag bad">code still present</span></span><span class="btn-secondary btn-sm" style="justify-self:start">Reopen</span></div>
+      <div class="v-row" style="grid-template-columns:96px 100px minmax(0,1fr) 220px 200px 84px"><span class="v-ref">VLT-90274</span><span class="v-cat">CWE-287</span><span class="v-finding">Authentication bypass: password check hardcoded to always succeed</span><span class="v-path">server/controllers/<b>auth.js</b></span><span style="font-size:var(--text-2xs);color:var(--color-muted)">closed 08 Sep · <span class="v-tag bad">code still present</span></span><span class="btn-secondary btn-sm" style="justify-self:start">Reopen</span></div>
+      <div class="v-row" style="grid-template-columns:96px 100px minmax(0,1fr) 220px 200px 84px"><span class="v-ref">VLT-92190</span><span class="v-cat">CWE-506</span><span class="v-finding">Malicious auto-executing VS Code task runs hidden arbitrary code…</span><span class="v-path">.vscode/<b>tasks.json</b></span><span style="font-size:var(--text-2xs);color:var(--color-muted)">closed twice · re-found as <span class="v-ref">VLT-92561</span> <span class="v-tag warn">duplicate</span></span><span class="btn-secondary btn-sm" style="justify-self:start">Merge</span></div>
+      <div class="v-row dimmed" style="grid-template-columns:96px 100px minmax(0,1fr) 220px 200px 84px"><span class="v-ref">…</span><span class="v-cat">5 more</span><span></span><span></span><span></span><span></span></div>
+      <div class="v-group"><span class="caret">▸</span><span class="badge severity-info">CLOSED BY EVIDENCE</span><span class="count">0</span><span class="right">agent re-read the file; the quote is gone</span></div>
+      <div class="v-group"><span class="caret">▸</span><span class="badge severity-info">RESOLVED BY A PERSON</span><span class="count">0</span><span class="right">false positive · accepted risk · resolved</span></div>
+    </div>
+  </div>
+  <a class="hot" href="#s8" style="left:84px;top:276px;width:1090px;height:34px"><span>Merge → S8 twin</span></a>
+  <span class="pin" style="left:60px;top:90px">1</span>
+  <span class="pin" style="left:60px;top:158px">2</span>
+  <span class="pin" style="left:760px;top:196px">3</span>
+  <span class="pin" style="left:60px;top:352px">4</span>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>The banner states the mechanism in one sentence</strong> and offers both remedies: re-verify (0091's evidence check, on demand — D7) or reopen.</span></li>
+  <li><b class="k">2</b><span><strong>Three closure classes, always in this order</strong>, straight from the lineage events: <code>fixed</code> by absence, <code>evidence_gone</code>, <code>status_change</code> by a person.</span></li>
+  <li><b class="k">3</b><span><strong>"Code still present" is computed</strong> from the last re-verify; without one it reads "unverified". Today all nine would read unverified until re-verify runs.</span></li>
+  <li><b class="k">4</b><span><strong>Empty groups still render with their definition</strong> — "0 by evidence" is information: the evidence path has never fired on this codebase.</span></li>
+</ul>
+<div class="aside"><b>Why S6 exists.</b> 0091's aggregate defaults to active-only and hides closed rows. On blu-simulator that hid a live RCE chain behind a "9 fixed" tile. S6 keeps the default but makes the tile say how much of that 9 is trustworthy, and puts the untrustworthy group one click away, first.</div>
+</section>
+
+<!-- ═══════════ S7 ═══════════ -->
+<section class="story" id="s7">
+<header><div class="eyebrow">S7 · Compare</div><h2>Select exactly two scans and the table becomes a diff</h2><p class="intent">Comparison survives the fold as a state of the same page. "Gone" is strict: the later scan looked at the file and the finding was not there. Rows closed by absence between the two are listed in S6, not here.</p><span class="route">…?scans=7ec46f63,31869cb8&amp;view=compare</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>…?scans=7ec46f63,31869cb8&amp;view=compare</span></div>
+<div class="screen v-shell v-body" style="min-height:300px">
+  <aside class="v-sidebar"><div class="v-sidebar-brand"><span class="v-logo">V</span></div><nav class="v-nav"><a class="v-nav-item active"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a></nav></aside>
+  <div class="v-page">
+    <nav class="v-crumbs" style="margin-bottom:10px"><a>Codebases</a><span class="sep">/</span><a>blu-simulator</a><span class="sep">/</span><span>Compare</span></nav>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:12px"><div><h2 class="v-title" style="font-size:var(--text-md)">08 Sep 07:43 <span style="color:var(--color-muted-light);font-weight:400">→</span> today 13:57</h2><p class="v-subtitle">both root scans · both cwe · 16 → 17 findings · same branch</p></div><div style="display:flex;gap:6px"><span class="v-chip">Table</span><span class="v-chip on">Diff</span></div></div>
+    <div class="v-compare">
+      <div class="card"><div class="v-col-head gone"><span>Gone</span><span class="count">0</span></div><div class="v-col-item" style="grid-template-columns:1fr;color:var(--color-muted)">Nothing the earlier scan reported is missing from the later one. The 5 rows closed by absence between them are <b>not</b> "gone".</div></div>
+      <div class="card"><div class="v-col-head new"><span>New</span><span class="count">1</span></div><div class="v-col-item"><span class="badge severity-critical">CRIT</span><span>VLT-92561 · VS Code task runs on folder open</span></div></div>
+      <div class="card"><div class="v-col-head same"><span>In both</span><span class="count">16</span></div><div class="v-col-item"><span class="badge severity-critical">CRIT</span><span>VLT-90259 · Code injection via dynamic execution</span></div><div class="v-col-item"><span class="badge severity-critical">CRIT</span><span>VLT-90260 · Hardcoded cryptographic key</span></div><div class="v-col-item"><span class="badge severity-high">HIGH</span><span>VLT-90258 · Route handler without authorization</span></div><div class="v-col-item" style="color:var(--color-muted-light)"><span></span><span>+ 13 more</span></div></div>
+    </div>
+  </div>
+  <a class="hot" href="#s2" style="left:1044px;top:96px;width:124px;height:28px"><span>Table → S2 (2 scans)</span></a>
+  <span class="pin" style="left:60px;top:170px">1</span>
+</div></div>
+<ul class="notes"><li><b class="k">1</b><span><strong>The diff refuses to launder absence.</strong> Only a row the later scan looked for and did not find is "gone".</span></li></ul>
+</section>
+
+<!-- ═══════════ S8 ═══════════ -->
+<section class="story" id="s8">
+<header><div class="eyebrow">S8 · Finding</div><h2>A finding opens in a drawer: its life across every scan, and the evidence</h2><p class="intent">Clicking a row never leaves the page. The drawer shows the lineage timeline, the last evidence verification, the twin if the system failed to match one, and the actions a person can take.</p><span class="route">…?finding=VLT-92561</span></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>…/targets/marker%3Acfd43c7a…?finding=VLT-92561</span></div>
+<div class="screen v-shell v-body" style="min-height:560px">
+  <aside class="v-sidebar"><div class="v-sidebar-brand"><span class="v-logo">V</span></div><nav class="v-nav"><a class="v-nav-item active"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg></a></nav></aside>
+  <div class="v-page" style="opacity:.6">
+    <nav class="v-crumbs" style="margin-bottom:10px"><a>Codebases</a><span class="sep">/</span><span>blu-simulator</span></nav>
+    <div class="v-tiles" style="margin-bottom:12px"><div class="card v-tile"><span class="k">Critical</span><span class="n tone-critical">5</span></div><div class="card v-tile"><span class="k">High</span><span class="n tone-high">7</span></div><div class="card v-tile"><span class="k">Medium</span><span class="n tone-medium">18</span></div><div class="card v-tile"><span class="k">Low</span><span class="n tone-low">2</span></div><div class="card v-tile"><span class="k">Info</span><span class="n tone-muted">—</span></div><div class="card v-tile"><span class="k">Closed</span><span class="n" style="color:var(--color-secondary)">9</span></div></div>
+    <div class="card v-table"><div class="v-group"><span class="caret">▾</span><span class="badge severity-critical">CRITICAL</span><span class="count">5</span></div><div class="v-row"><span class="v-ref">VLT-90259</span><span class="v-cat">CWE-94</span><span class="v-finding">Code injection via dynamic execution</span><span class="v-path">server/controllers/auth.js:88</span><span></span><span class="v-tier llm">llm</span></div><div class="v-row highlight"><span class="v-ref">VLT-92561</span><span class="v-cat">CWE-506</span><span class="v-finding">VS Code task runs a command on folder open</span><span class="v-path">.vscode/tasks.json:7</span><span></span><span class="v-tier">skill</span></div></div>
+  </div>
+  <div class="v-veil"></div>
+  <div class="v-drawer">
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="badge severity-critical">CRITICAL</span><span class="v-cat">CWE-506 · Embedded malicious code</span></div><h4>VS Code task runs a command on folder open</h4></div><span class="v-ref" style="font-size:var(--text-xs)">VLT-92561</span></div>
+    <dl class="v-kv"><dt>Where</dt><dd><code class="v-mono">.vscode/tasks.json:7</code></dd><dt>Detector</dt><dd><code class="v-mono">cwe.workspace_autorun.vscode_task</code> · deterministic</dd><dt>First seen</dt><dd>today 12:55 · scan of .vscode</dd><dt>Seen in</dt><dd>2 of 9 scans · 7 before it existed</dd><dt>Twin</dt><dd><span class="v-ref">VLT-92190</span> closed by absence twice · <a>merge into this row</a></dd></dl>
+    <div><span class="label">Evidence · verified today 13:57</span><div class="v-quote">"command": "node -e \"console.log('Welcome to Node.js v24.11.0.\\nType .help…')\" && npm install -s && npm start",
+"runOptions": { "runOn": "folderOpen" }</div><div style="font-size:var(--text-2xs);color:var(--color-muted);margin-top:4px">anchor <b style="color:var(--color-success)">exact</b> · file hash unchanged since first seen</div></div>
+    <div><span class="label">Timeline</span>
+      <div class="v-timeline">
+        <div class="v-event ok">Re-found · root scan<small>today 13:57 · seen_count 2 · file hash unchanged</small></div>
+        <div class="v-event acc">Detected<small>today 12:55 · scan of .vscode · deterministic</small></div>
+        <div class="v-event bad">Twin VLT-92190 closed by absence<small>today 12:33 · degraded scan, 0 findings</small></div>
+        <div class="v-event">Twin reopened by a person<small>09 Sep 17:54 · "0091 P0 data correction"</small></div>
+        <div class="v-event bad">Twin closed by absence<small>09 Sep 10:39 · .vscode scan, 6 findings, not this one</small></div>
+        <div class="v-event acc">Twin detected · LLM tier<small>09 Sep 10:03 · llm_l5_verified</small></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><span class="btn-primary">Mark false positive</span><span class="btn-secondary">Accept risk</span><span class="btn-secondary">Add note</span><span class="btn-ghost">Copy markdown</span></div>
+  </div>
+  <a class="hot" href="#s2" style="left:60px;top:14px;width:680px;height:40px"><span>click outside → S2</span></a>
+  <span class="pin" style="left:748px;top:176px">1</span>
+  <span class="pin" style="left:748px;top:262px">2</span>
+  <span class="pin" style="left:748px;top:392px">3</span>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>Twin is a first-class field.</strong> Two rows sharing file, category and detector but not an identity name each other and offer a merge — how the 92190 / 92561 pair gets resolved by a person in one click (D8).</span></li>
+  <li><b class="k">2</b><span><strong>Evidence is the quote and its anchor status</strong> from 0076's verifier, plus whether the file hash moved. A closed row would show "gone" or "unverified" here.</span></li>
+  <li><b class="k">3</b><span><strong>The timeline interleaves the twin's history</strong>, labelled, so the whole story of one finding is readable rather than the half that landed on the surviving ref.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ S9 ═══════════ -->
+<section class="story" id="s9">
+<header><div class="eyebrow">S9 · Edges</div><h2>Edge states have a face: unattributed, filtered to nothing, first scan</h2><p class="intent">Three states that today look broken or empty. Each gets one sentence and the one action that resolves it.</p></header>
+<div class="frame"><div class="url"><i></i><i></i><i></i><span>three states</span></div>
+<div class="screen v-body" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;background:var(--paper);border:0;min-height:260px">
+  <div class="v-page card" style="padding:16px 18px">
+    <nav class="v-crumbs"><a>Codebases</a><span class="sep">/</span><span>Unattributed scans</span></nav>
+    <div class="v-banner info" style="margin:10px 0"><span>ⓘ</span><span><b>27 scans could not be tied to a codebase.</b> They ran on <code class="v-mono">/mnt/source</code> with no project segment. Their 2,350 findings are real; they have no home yet.</span></div>
+    <div class="card v-table"><div class="v-row" style="grid-template-columns:1fr auto"><span>Files match <b>togetherapp</b></span><span class="btn-secondary btn-sm">Attribute 19</span></div><div class="v-row" style="grid-template-columns:1fr auto"><span>Files match <b>juice-shop</b></span><span class="btn-secondary btn-sm">Attribute 5</span></div><div class="v-row dimmed" style="grid-template-columns:1fr auto"><span>3 scans match nothing</span><span></span></div></div>
+  </div>
+  <div class="v-page card" style="padding:16px 18px">
+    <nav class="v-crumbs"><a>Codebases</a><span class="sep">/</span><span>blu-simulator</span></nav>
+    <div class="v-filter-row" style="margin:10px 0"><span class="v-chip on removable">SOC2</span><span class="v-chip on removable">critical</span><span style="margin-left:auto;font-size:var(--text-xs);color:var(--color-muted)">0 of 16</span></div>
+    <div class="card v-empty"><b>No SOC2 findings on this codebase.</b>No SOC2 scan has run here. The 16 active findings are CWE / OWASP.<div style="display:flex;gap:8px;justify-content:center;margin-top:10px"><span class="btn-secondary btn-sm">Clear SOC2</span><span class="btn-primary btn-sm">Run a SOC2 scan</span></div></div>
+  </div>
+  <div class="v-page card" style="padding:16px 18px">
+    <nav class="v-crumbs"><a>Codebases</a><span class="sep">/</span><span>new-project</span></nav>
+    <div class="v-tiles" style="grid-template-columns:repeat(3,1fr);margin:10px 0"><div class="card v-tile"><span class="k">Critical</span><span class="n tone-muted">—</span></div><div class="card v-tile"><span class="k">High</span><span class="n tone-muted">—</span></div><div class="card v-tile"><span class="k">Active</span><span class="n tone-muted">—</span></div></div>
+    <div class="card v-empty"><b>First scan is running.</b>Counts appear as findings arrive. There is no history yet — every finding this scan reports will be "new".</div>
+  </div>
+</div></div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>Unattributed</strong> gets the attribution tool as a page, not a script: path-vocabulary matching with a confidence gate.</span></li>
+  <li><b class="k">2</b><span><strong>Zero rows distinguishes "no findings" from "never scanned for this"</strong> and offers the scan.</span></li>
+  <li><b class="k">3</b><span><strong>First scan shows dashes, not zeros.</strong> A zero is a claim; a dash is an absence of data.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ S10 ═══════════ -->
+<section class="story" id="s10">
+<header><div class="eyebrow">S10 · Routes</div><h2>Nothing that links to a scan today breaks</h2><p class="intent">The CLI prints <code>/audit/:id</code>; so do webhooks, bookmarks and the scan archive. The old route resolves the scan's codebase and redirects into the folded page with that scan selected.</p></header>
+<div class="routes">
+  <div class="rbox"><span class="h">TODAY</span><span>/                        Dashboard (scans)</span><span>/audit/:id               per-scan report</span><span>/audit/:id/compare       scan diff</span><span>/targets                 codebases (0091)</span><span>/targets/:key            aggregate (0091)</span></div>
+  <div class="arrow">→</div>
+  <div class="rbox"><span class="h">0093</span><span>/                        <b>Codebases</b></span><span><span class="old">/audit/:id</span>  302 → /targets/:key?scans=:id</span><span><span class="old">/audit/:id/compare</span>  302 → …?scans=:prev,:id&amp;view=compare</span><span><span class="old">/targets</span>  302 → /</span><span>/targets/:key            <b>the one report</b></span><span>/targets/:key?scans=…    scan · running · compare</span><span>/targets/:key?finding=…  drawer deep link</span></div>
+</div>
+<ul class="notes">
+  <li><b class="k">1</b><span><strong>One new backend route</strong>: <code>GET /api/audits/:id/target</code> returns the key so the SPA can redirect without loading the audit.</span></li>
+  <li><b class="k">2</b><span><strong>The aggregate API grows four parameters</strong> — <code>fw</code>, <code>cat</code>, <code>q</code>, <code>view</code> — and one response block, <code>facets</code>, with per-chip counts computed in the same SQL pass as the page.</span></li>
+  <li><b class="k">3</b><span><strong>Nothing is removed from the API.</strong> <code>GET /api/audits/:id</code> stays; the CLI's <code>results</code> is unaffected.</span></li>
+</ul>
+</section>
+
+<!-- ═══════════ Decisions ═══════════ -->
+<section class="story" id="dec">
+<header><div class="eyebrow">D · Register</div><h2>Decisions this design assumes</h2><p class="intent">Two are yours. The rest are defaults taken to draw the screens; each is reversible before the LLD.</p></header>
+<table class="dec">
+  <thead><tr><th style="width:44px">#</th><th style="width:210px">Decision</th><th>Taken as</th><th style="width:280px">Alternatives</th><th style="width:130px">Status</th></tr></thead>
+  <tbody>
+    <tr><td>D0</td><td>Fold aggregate and per-scan into one page</td><td>Yes — one page per codebase; a scan is a selection on it (S2 → S4)</td><td>Two pages with shared components; tabs</td><td><span class="box y"></span>yours</td></tr>
+    <tr><td>D1</td><td>Home page</td><td>Codebases list (S1). The scan list survives only as each codebase's rail.</td><td>Keep Dashboard; both</td><td><span class="box"></span>assumed</td></tr>
+    <tr><td>D2</td><td>Default view</td><td>All scans · active only · grouped by severity, critical open first (S2)</td><td>Flat sortable table; latest scan only</td><td><span class="box"></span>assumed</td></tr>
+    <tr><td>D3</td><td>OWASP rows vs CWE rows</td><td>A finding is counted once; OWASP is a lens (framework filter + sub-label). "32 active" → "16 findings" on blu-simulator.</td><td>Keep both rows; OWASP only when its agent ran</td><td><span class="box"></span>assumed <small>· changes headline numbers</small></td></tr>
+    <tr><td>D4</td><td>Category normalisation</td><td>At read time, for facets (CC6 / CC6- / CC6 / → CC6); stored values untouched</td><td>Backfill the column; show four chips</td><td><span class="box"></span>assumed</td></tr>
+    <tr><td>D5</td><td>Degraded scans and closure</td><td>A degraded scan closes no <b>LLM-tier</b> row — already shipped (<code>applyLLM</code> emits <code>skipped_degraded</code>). Deterministic results of a scan whose only failure was its LLM tier remain complete and may still close on absence. The incident slipped past this gate only because the rows carried no tier; migration 028 backfilled it, and the rescan on 14 Sep recorded <code>skipped_degraded</code> on all nine.</td><td>Blanket "degraded closes nothing" — rejected: it would discard complete deterministic results</td><td><span class="box y"></span>resolved <small>· by 028, not new code</small></td></tr>
+    <tr><td>D6</td><td>Closed rows in the default view</td><td>Hidden from the table; the Closed tile always shows the by-absence count in red (S2, S6)</td><td>Inline collapsed Closed group</td><td><span class="box"></span>assumed</td></tr>
+    <tr><td>D7</td><td>Re-verify on demand</td><td>Runs 0091's evidence check for selected rows without a full scan (S6)</td><td>Only via rescan</td><td><span class="box"></span>assumed <small>· new agent endpoint</small></td></tr>
+    <tr><td>D8</td><td>Manual merge of twins</td><td>A person can merge two rows the system failed to match (S6, S8), reusing 027's merge semantics</td><td>Wait for the identity backfill</td><td><span class="box"></span>assumed</td></tr>
+    <tr><td>D9</td><td>Compare</td><td>A view toggle when exactly two scans are selected (S7); "gone" excludes absence closures</td><td>Drop compare; keep the separate page</td><td><span class="box"></span>assumed</td></tr>
+    <tr><td>D10</td><td>Old routes</td><td>302 redirects, kept indefinitely (S10)</td><td>Redirect one release, then 410</td><td><span class="box"></span>assumed</td></tr>
+    <tr><td>D11</td><td>Design system</td><td><code>designs/tokens.css</code> is the source of truth; parity with <code>src/index.css</code> is test-enforced; <code>components.css</code> §3 names the classes the implementation exposes</td><td>Keep tokens only in Tailwind @theme</td><td><span class="box y"></span>yours</td></tr>
+  </tbody>
+</table>
+<div class="aside"><b>Not in scope, on purpose.</b> The identity/provenance backfill, re-opening blu-simulator's nine rows and the broker 401 are live-data and infra work already on your desk. This design assumes the backfill has run — S2's "seen in 4 of 9" bars need it — and says so rather than drawing a report the data cannot yet support.</div>
+</section>
+</div>

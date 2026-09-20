@@ -82,6 +82,16 @@ func TestRunPipelineStage_ExecutesAndPersists(t *testing.T) {
 	streamSvc := &mockStreamService{
 		streamWithContextFn: func(_ context.Context, _ *model.Audit, _ string, _ map[string]config.AgentConfig, _ map[string][]model.PriorFinding, eventCh chan<- *model.AgUIEvent) {
 			eventCh <- &model.AgUIEvent{Type: model.EventRunStarted, RunID: "a-1"}
+			// The requested agent has to actually REPORT. This fixture used to
+			// emit only RunStarted, i.e. an owasp that produced no snapshot, no
+			// score and no finding — which the completeness rule now correctly
+			// reads as "the requested agent never ran" and fails. The test is
+			// about RunPipelineStage executing and persisting, so the fixture,
+			// not the assertion, was the unrealistic part.
+			eventCh <- &model.AgUIEvent{
+				Type: model.EventStateSnapshot, RunID: "a-1", AgentType: "owasp",
+				Snapshot: json.RawMessage(`{"findings":[],"summary":"ok","score":80}`),
+			}
 			close(eventCh)
 		},
 	}

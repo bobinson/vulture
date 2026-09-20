@@ -1,4 +1,5 @@
 import type {
+  AggregateResponse,
   AgentInfo,
   Audit,
   AuditComparison,
@@ -18,8 +19,11 @@ import type {
   Pipeline,
   ProveResult,
   Source,
+  TargetScan,
+  TargetSummary,
 } from "./types.ts";
 import type { User } from "./auth.tsx";
+import { normalizeLineageDetail } from "./lineage.ts";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
@@ -190,8 +194,14 @@ export const api = {
   },
 
   // Lineage
-  getLineage(id: string): Promise<FindingLineage> {
-    return request<FindingLineage>(`/api/lineage/${id}`);
+  /**
+   * One lineage row with everything the detail view needs. The endpoint
+   * answers `{ lineage, events, evidence, seen_in }`; `normalizeLineageDetail`
+   * merges that into the single row shape the UI reads (and passes a flat
+   * payload through untouched).
+   */
+  async getLineage(id: string): Promise<FindingLineage> {
+    return normalizeLineageDetail(await request<unknown>(`/api/lineage/${id}`));
   },
 
   listLineage(sourcePath: string, status?: string, limit = 50, offset = 0): Promise<FindingLineage[]> {
@@ -217,6 +227,26 @@ export const api = {
 
   getProveResultsByFingerprint(fingerprint: string): Promise<ProveResult[]> {
     return request<ProveResult[]>(`/api/prove-results?fingerprint=${encodeURIComponent(fingerprint)}`);
+  },
+
+  // Targets and the aggregate report (feature 0091)
+  listTargets(): Promise<TargetSummary[]> {
+    return request<TargetSummary[]>("/api/targets");
+  },
+
+  listTargetScans(targetKey: string): Promise<TargetScan[]> {
+    return request<TargetScan[]>(`/api/targets/${encodeURIComponent(targetKey)}/scans`);
+  },
+
+  /**
+   * The aggregate is paged and filtered SERVER-side: `query` is the already
+   * serialised search string (see `buildAggregateQuery`), so the wire format
+   * has exactly one definition and a filter change is one request for one page.
+   */
+  getAggregate(targetKey: string, query = ""): Promise<AggregateResponse> {
+    return request<AggregateResponse>(
+      `/api/targets/${encodeURIComponent(targetKey)}/aggregate${query}`,
+    );
   },
 
   getAuditComparison(auditId: string): Promise<AuditComparison> {
