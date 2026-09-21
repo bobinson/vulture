@@ -22,7 +22,7 @@ import (
 // Passing 0 as the fallback instead lands on the guard's `agentMax <= 0`
 // vacuous branch, so the single most common configuration on earth — all three
 // vars unset — was silently declared safe while the real triple is
-// 600 / 900 / 120, required 1020 > 600.
+// 600 / 900 / 439, required 1339 > 600.
 //
 // The distinction that makes this fixable without breaking AC14.3 is presence:
 // `envDurationSec` cannot tell an explicit `0` from an unset var, and
@@ -95,9 +95,9 @@ func TestNewAgentProxyServiceWarnsForShippedDefaults(t *testing.T) {
 		wantRequired             string
 	}{
 		{
-			// Nothing configured: Mode E / bare dev. 600 / 900 / 120 -> 1020.
+			// Nothing configured: Mode E / bare dev. 600 / 900 / 439 -> 1339.
 			name:     "all unset is unsafe and says so",
-			wantWarn: true, wantRequired: "1020",
+			wantWarn: true, wantRequired: "1339",
 		},
 		{
 			// AC14.3 — an operator who explicitly disabled the agent deadline
@@ -163,19 +163,57 @@ func TestNewAgentProxyServiceWarnsForShippedDefaults(t *testing.T) {
 // test noticed. This guard reads the agent's own resolution site so the next
 // divergence fails here instead of at 2am in a truncated run.
 func TestMirroredAgentDefaultsMatchAuditRunner(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "agents", "shared", "shared", "audit_runner.py")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+	// TWO resolution sites since 0093. VULTURE_AGENT_MAX_AUDIT_SECONDS is still
+	// a literal default in audit_runner.py, but the call timeout is no longer a
+	// literal anywhere: it is DERIVED from VULTURE_LLM_MAX_OUTPUT_TOKENS in
+	// shared/llm/env.py, because a fixed 120s could not generate the 16384-token
+	// default answer on any provider. The guard's job is unchanged — prove the
+	// backend mirrors what the agent will actually use — so it now reads the
+	// derivation's inputs and recomputes it rather than grepping for a literal.
+	read := func(rel ...string) string {
+		parts := append([]string{"..", "..", ".."}, rel...)
+		data, err := os.ReadFile(filepath.Join(parts...))
+		if err != nil {
+			t.Fatalf("read %v: %v", rel, err)
+		}
+		return string(data)
 	}
-	body := string(data)
+	body := read("agents", "shared", "shared", "audit_runner.py")
+	envBody := read("agents", "shared", "shared", "llm", "env.py")
+
+	// Recompute the agent's derived call-timeout default from the constants it
+	// actually uses, so a change to any of them fails here.
+	num := func(src, name string) int {
+		m := regexp.MustCompile(regexp.QuoteMeta(name) + `\s*=\s*([0-9.]+)`).FindStringSubmatch(src)
+		if m == nil {
+			t.Fatalf("%s is gone from env.py; the derived call timeout cannot be verified", name)
+		}
+		f, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			t.Fatalf("unparseable %s = %q", name, m[1])
+		}
+		return int(f)
+	}
+	tokens := num(envBody, "DEFAULT_MAX_OUTPUT_TOKENS")
+	rate := num(envBody, "_CONSERVATIVE_TOK_PER_SEC")
+	overhead := num(envBody, "_CALL_TIMEOUT_OVERHEAD_S")
+	floor := num(envBody, "_CALL_TIMEOUT_FLOOR_S")
+	derived := tokens/rate + overhead
+	if derived < floor {
+		derived = floor
+	}
+	if derived != defaultLLMCallTimeoutSec {
+		t.Fatalf("the agent derives a %ds call-timeout default (%d tokens / %d tok/s + %ds) "+
+			"but the backend mirrors %d — the margin check would compare values that are not "+
+			"in force, which is the exact defect this guard exists for",
+			derived, tokens, rate, overhead, defaultLLMCallTimeoutSec)
+	}
 
 	cases := []struct {
 		envVar   string
 		mirrored int
 	}{
 		{"VULTURE_AGENT_MAX_AUDIT_SECONDS", defaultAgentMaxAuditSec},
-		{"VULTURE_LLM_CALL_TIMEOUT_SEC", defaultLLMCallTimeoutSec},
 	}
 	for _, tc := range cases {
 		t.Run(tc.envVar, func(t *testing.T) {

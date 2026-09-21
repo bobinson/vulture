@@ -188,11 +188,20 @@ class TestFilterAndDedup:
         assert len(result) == 1
         assert result[0]["title"] == "B"
 
-    def test_removes_false_positive(self):
+    def test_keeps_false_positive(self):
+        """Feature 0091 §8 / S13 reversed this: a dismissed row STAYS.
+
+        The block exists to stop the model re-reporting what is already known.
+        A human ruling "false positive" is the strongest possible reason not to
+        hear about it again, so dropping the row invited exactly the re-report
+        it was meant to prevent. Only `resolved` — the scanner-set closure —
+        leaves the block now, so a fixed finding can be re-found and become a
+        `regression` (S11).
+        """
         memories = [
             {"title": "FP", "severity": "low", "remediation_status": "false_positive"},
         ]
-        assert _filter_and_dedup(memories) == []
+        assert [m["title"] for m in _filter_and_dedup(memories)] == ["FP"]
 
     def test_deduplicates_by_title_and_path(self):
         memories = [

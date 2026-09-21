@@ -115,7 +115,7 @@ func (s *Server) callEmbed(ctx context.Context, adapter provider.Adapter, creds 
 		return e
 	})
 	if err != nil {
-		return nil, mapProviderErr(err)
+		return nil, mapProviderErrWithUpstream(err)
 	}
 	if resp == nil {
 		return nil, errProviderUnavailable

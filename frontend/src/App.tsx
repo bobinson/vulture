@@ -2,6 +2,9 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router";
 import { AuthProvider, useAuth } from "@/lib/auth.tsx";
 import { Layout } from "@/components/layout/Layout.tsx";
 import { Dashboard } from "@/pages/Dashboard.tsx";
+import { Targets } from "@/pages/Targets.tsx";
+import { TargetReport } from "@/pages/TargetReport.tsx";
+import { LineageDetail } from "@/pages/LineageDetail.tsx";
 import { AuditNew } from "@/pages/AuditNew.tsx";
 import { AuditResults } from "@/pages/AuditResults.tsx";
 import { Settings } from "@/pages/Settings.tsx";
@@ -62,6 +65,12 @@ function AppRoutes() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/audit" element={<AuditNew />} />
         <Route path="/audit/:id" element={<AuditResults />} />
+        {/* Feature 0091: targets are the unit of navigation; a target's
+            aggregate report is its default view. /audit/:id above is
+            unchanged — no URL a user has today may break. */}
+        <Route path="/targets" element={<Targets />} />
+        <Route path="/targets/:key" element={<TargetReport />} />
+        <Route path="/lineage/:id" element={<LineageDetail />} />
         <Route path="/memories" element={<Memories />} />
         <Route path="/settings" element={<Settings />} />
       </Route>

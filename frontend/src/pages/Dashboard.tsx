@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { ROUTES, AGENT_TYPES, agentLabel } from "@/lib/constants.ts";
 import { api } from "@/lib/api.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
+import { useTargets } from "@/hooks/useTargets.ts";
+import { TargetsList } from "@/components/targets/TargetsList.tsx";
 import type { Audit, AuditStatus, DashboardStats } from "@/lib/types.ts";
 
 function AuditIdCopy({ id, className }: { id: string; className?: string }) {
@@ -45,6 +47,10 @@ export function Dashboard() {
   const [limit, setLimit] = useState(10);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // Feature 0091: the dashboard leads with TARGETS — the codebase, not the
+  // individual run, is what a reader navigates by. Loaded independently of the
+  // audit list so neither can block the other's first paint.
+  const { targets, loading: targetsLoading, error: targetsError, reload: reloadTargets } = useTargets();
 
   useEffect(() => {
     Promise.all([
@@ -80,15 +86,7 @@ export function Dashboard() {
     setLimit((l) => l + 10);
   }, []);
 
-  if (loading) {
-    return (
-      <div className="max-w-5xl flex items-center justify-center py-20">
-        <div className="w-5 h-5 border-2 border-accent/20 border-t-accent rounded-full animate-spin" />
-      </div>
-    );
-  }
-
-  if (error && audits.length === 0) {
+  if (error && audits.length === 0 && !loading) {
     return (
       <div className="max-w-5xl">
         <div className="card p-8 text-center space-y-3">
@@ -122,9 +120,32 @@ export function Dashboard() {
         ].map((stat) => (
           <div key={stat.label} className="card px-4 py-3">
             <p className="text-[11px] text-muted font-medium uppercase tracking-wide mb-1">{stat.label}</p>
-            <p className="text-xl font-semibold text-foreground tabular-nums tracking-tight">{stat.value}</p>
+            {loading ? (
+              // Same box, same height — the number arrives INTO the card
+              // rather than the card arriving with it. Mirrors TileRow on the
+              // target report.
+              <div className="h-7 w-10 rounded bg-cream-dark animate-pulse" aria-hidden="true" />
+            ) : (
+              <p className="text-xl font-semibold text-foreground tabular-nums tracking-tight">{stat.value}</p>
+            )}
           </div>
         ))}
+      </div>
+
+      {/* Targets — click one to open its aggregate report */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-[13px] font-semibold text-foreground">{t("targets.title")}</h2>
+          <Link to={ROUTES.TARGETS} className="text-[11px] text-muted hover:text-accent transition-colors">
+            {t("targets.allTargets")}
+          </Link>
+        </div>
+        <TargetsList
+          targets={targets}
+          loading={targetsLoading}
+          error={targetsError}
+          onRetry={reloadTargets}
+        />
       </div>
 
       {/* Quick action */}
@@ -217,7 +238,15 @@ export function Dashboard() {
           </div>
         )}
 
-        {audits.length === 0 ? (
+        {loading ? (
+          // The audit list is the ONLY thing that waits on the audit request.
+          // It used to be the whole page: the target list, which loads from a
+          // different endpoint and usually first, could not paint until the
+          // audit list had.
+          <div className="card p-8 flex items-center justify-center">
+            <div className="w-5 h-5 border-2 border-accent/20 border-t-accent rounded-full animate-spin" />
+          </div>
+        ) : audits.length === 0 ? (
           <div className="card p-8 text-center">
             <p className="text-[13px] text-muted">{t("dashboard.noAudits")}</p>
           </div>

@@ -378,11 +378,21 @@ class TestEnhancedConfig:
         assert "catalog_generic" in SKILL_MAP
 
     def test_skill_tools_has_catalog_generic_tool(self):
-        from cwe_agent.skills import SKILL_TOOLS
-        # 22 hand-crafted skills + 1 secret_scan (feature 0042)
-        # + 1 plaintext_transmission (audit batch 4, CWE-319)
-        # = 24 total.
-        assert len(SKILL_TOOLS) == 24
+        """Every registered skill is also exposed as a tool.
+
+        This asserted `len(SKILL_TOOLS) == 24`, a magic number that had to be
+        edited every time a skill was added and that said nothing about what
+        was wrong when it failed — the same defect
+        `test_skill_dispatch_conformance.py` was written to remove from
+        `ALL_CATEGORIES`. The invariant is that the tool list and the registry
+        are two views of one thing, so assert that instead: a tool missing here
+        is a skill the LLM phase cannot call.
+        """
+        from cwe_agent.skills import SKILL_MAP, SKILL_TOOLS
+        assert {tool.name for tool in SKILL_TOOLS} == {
+            fn.__name__ for fn in SKILL_MAP.values()
+        }
+        assert len(SKILL_TOOLS) == len(SKILL_MAP)
 
 
 # === Agent Tests ===

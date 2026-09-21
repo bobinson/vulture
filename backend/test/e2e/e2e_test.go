@@ -22,6 +22,23 @@ import (
 func startTestServer(t *testing.T, cfg *config.Config) (string, func()) {
 	t.Helper()
 
+	// Hermetic VULTURE_HOME. server.New reads the real one in two places —
+	// localdev.DetectMode() (via vhome.IsInstall(), which keys on
+	// $VULTURE_HOME/VERSION) and the plugin registry's DefaultLoadOptions /
+	// DefaultStatePath — so without this the suite's result depends on the
+	// developer's home directory.
+	//
+	// Measured: with a leftover ~/.vulture/VERSION from any past install.sh,
+	// DetectMode() returns ModeInstall, server.go registers the embedded SPA
+	// as a catch-all at "/", and a POST to an unregistered /api/api-keys falls
+	// through to handler.StaticHandler, which answers 405 for a non-GET
+	// instead of the 404 the mux would have returned.
+	// TestCIWorkflow_APIKeyRoutesGatedByEnvFlag then failed on a correct
+	// server — the route really was unregistered — purely because of a file in
+	// $HOME. An empty temp dir pins every test to dev mode and to an empty
+	// plugin registry.
+	t.Setenv("VULTURE_HOME", t.TempDir())
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)

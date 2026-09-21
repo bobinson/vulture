@@ -19,9 +19,27 @@ type mockLineageService struct {
 	listByAuditFn      func(string) ([]model.FindingLineage, error)
 	updateStatusFn     func(string, *model.LineageStatusUpdate) error
 	getTimelineFn      func(string) ([]model.LineageEvent, error)
+	// Feature 0091: the closure-pass hooks, following the same per-method Fn
+	// pattern. Nil keeps the inert stub behaviour the lineage handler tests
+	// rely on; the persist-path tests set them to observe the calls.
+	recordScanOutcomeFn func(*model.Audit, *model.Source, string, *model.ScanResult) error
+	pendingChecksFn     func(*model.Source, []string) map[string]*model.LineageChecksRequest
 }
 
 func (m *mockLineageService) ProcessAuditFindings(a *model.Audit, s *model.Source, f []model.Finding) error {
+	return nil
+}
+
+func (m *mockLineageService) RecordScanOutcome(a *model.Audit, s *model.Source, agentType string, r *model.ScanResult) error {
+	if m.recordScanOutcomeFn != nil {
+		return m.recordScanOutcomeFn(a, s, agentType, r)
+	}
+	return nil
+}
+func (m *mockLineageService) PendingChecks(s *model.Source, agentTypes []string) map[string]*model.LineageChecksRequest {
+	if m.pendingChecksFn != nil {
+		return m.pendingChecksFn(s, agentTypes)
+	}
 	return nil
 }
 func (m *mockLineageService) GetLineage(id string) (*model.FindingLineage, error) {
@@ -51,6 +69,22 @@ func (m *mockLineageService) UpdateStatus(id string, u *model.LineageStatusUpdat
 	}
 	return nil
 }
+
+// GetDetail (feature 0091 §10.1) composes the extended payload out of the two
+// hooks that already exist, so a test that stubs GetLineage keeps describing
+// the same behaviour through the endpoint's new shape.
+func (m *mockLineageService) GetDetail(id string) (*model.LineageDetail, error) {
+	lineage, err := m.GetLineage(id)
+	if err != nil {
+		return nil, err
+	}
+	events, _ := m.GetTimeline(id)
+	if events == nil {
+		events = []model.LineageEvent{}
+	}
+	return &model.LineageDetail{Lineage: lineage, Events: events, SeenIn: []string{}}, nil
+}
+
 func (m *mockLineageService) GetTimeline(id string) ([]model.LineageEvent, error) {
 	if m.getTimelineFn != nil {
 		return m.getTimelineFn(id)

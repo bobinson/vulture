@@ -239,15 +239,27 @@ def test_private_field_roster_is_the_documented_nine():
     assert len(_PRIVATE_FIELDS) == len(set(_PRIVATE_FIELDS)), "no duplicates in the roster"
 
 
-def test_strip_removes_every_private_field_and_leaves_the_finding_intact():
+def test_strip_removes_every_private_field_and_leaves_the_finding_intact(tmp_path,
+                                                                         monkeypatch):
     """The primitive, in isolation: it deletes all nine, mutates in place, returns
     None, is idempotent, and touches nothing else.
 
     The last clause is the recall half. A strip that took `line_start` or
     `description` with it would turn a leak fix into a data-loss bug, and every
     other test in this file asserts ABSENCE, so none of them would notice.
+
+    Feature 0091 gave the strip one ADDITION alongside its deletions: the quote
+    is written to the agent-local store and replaced by `quote_hash` — this is
+    the last moment the text exists, so it is the only place the write can
+    happen. The expectation is widened by exactly that one key rather than
+    relaxed, because "the strip adds nothing else" is the same guarantee this
+    test was written to hold.
     """
+    from shared import quote_store
     from shared.audit_runner import _PRIVATE_FIELDS, _strip_private_fields
+
+    monkeypatch.setenv("VULTURE_L5_CACHE_PATH", str(tmp_path / "l5_cache.db"))
+    quote_store.reset_for_tests()
 
     public = {
         "title": "Hardcoded credential",
@@ -261,14 +273,17 @@ def test_strip_removes_every_private_field_and_leaves_the_finding_intact():
     }
     finding = dict(public)
     finding.update({name: "x" for name in _PRIVATE_FIELDS})
+    expected = dict(public, quote_hash=quote_store.quote_hash("x"))
 
     assert _strip_private_fields(finding) is None, "the strip mutates in place"
     for name in _PRIVATE_FIELDS:
         assert name not in finding, f"{name} survived the strip"
-    assert finding == public, "the strip must not disturb any public field"
+    assert finding == expected, "the strip must not disturb any public field"
 
     _strip_private_fields(finding)  # idempotent: a second pass is a no-op
-    assert finding == public
+    assert finding == expected
+
+    quote_store.reset_for_tests()
 
 
 # ---------------------------------------------------------------------------

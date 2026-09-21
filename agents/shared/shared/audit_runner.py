@@ -16,13 +16,15 @@ from typing import Any
 
 from pydantic import BaseModel, create_model
 
-from shared import anchor
+from shared import anchor, quote_store
 from shared.cancellation import (
     current_audit_deadline,
     current_cancel_token,
     set_audit_deadline,
 )
 from shared.env import env_flag, env_truthy
+from shared.lineage_checks import verify_lineage_checks
+from shared.lineage_context import current_lineage_checks_requested
 from shared.llm.errors import retry_skill
 
 # Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
@@ -44,6 +46,7 @@ from shared.tools.file_scanner import (
     is_entry_or_config,
     is_generated_file,
     is_test_file,
+    pruned_dirs,
     read_file_safe,
     scan_code_files,
 )
@@ -71,6 +74,79 @@ def _safe_int_env(name: str, default: int) -> int:
 # saturate disk I/O without excessive thread overhead.  For CPU-bound
 # workloads or high-core machines, tune via VULTURE_SKILL_WORKERS.
 _SKILL_WORKERS = _safe_int_env("VULTURE_SKILL_WORKERS", min(os.cpu_count() or 4, 8))
+
+# Feature 0091 §6.1: the version of the `result` event this agent emits.
+# 1 (implicit, by absence) = pre-0091: no `pruned_dirs`, no `lineage_checks`.
+# 2 = both keys present and meaningful. The backend treats "< 2 or absent" as
+# scope-unknown and refuses every LLM-tier and pruned-dir closure for the scan
+# (S26), so this constant is the whole handshake — bump it only alongside a
+# backend that understands the new shape.
+RESULT_SCHEMA = 2
+
+# The version of `lineage_checks_requested` this agent understands (§6.1).
+LINEAGE_REQUEST_SCHEMA = 1
+
+
+def _warn_if_request_schema_ahead(requested: dict) -> None:
+    """Say so when the backend speaks a newer request schema than this agent.
+
+    The rows are still answered on a best-effort basis: refusing them outright
+    would close nothing but would degrade every requested row to
+    ``unconfirmed``, which is a worse answer than an old agent's honest one.
+    """
+    schema = requested.get("schema", LINEAGE_REQUEST_SCHEMA)
+    if isinstance(schema, int) and schema > LINEAGE_REQUEST_SCHEMA:
+        logger.warning("lineage_request_schema_ahead schema=%s supported=%d",
+                       schema, LINEAGE_REQUEST_SCHEMA)
+
+
+def _lineage_rows(requested: Any) -> list[dict]:
+    """The row list out of a ``lineage_checks_requested`` payload, or ``[]``.
+
+    Tolerant by design: a malformed question must produce no answers (which the
+    backend reads as ``unconfirmable``), never an exception that costs the scan
+    its findings.
+    """
+    if not isinstance(requested, dict):
+        return []
+    _warn_if_request_schema_ahead(requested)
+    rows = requested.get("rows")
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _resolve_lineage_request(requested: Any) -> Any:
+    """The question this run was asked: the explicit argument, else the ambient one.
+
+    The backend sends ``lineage_checks_requested`` at the top level of the
+    ``/run`` body, and no agent's ``run_audit`` has a parameter for it, so the
+    transport binds it into the run's context (``shared.lineage_context``) and
+    this is where the two paths meet. An explicit argument wins — that is how
+    the tests drive the pass, and it is what a direct caller expects.
+    """
+    if requested is not None:
+        return requested
+    return current_lineage_checks_requested()
+
+
+def _run_lineage_checks(requested: Any, source_path: str) -> list[dict]:
+    """Verify every requested lineage row against the code (§6.2).
+
+    Guarded: the evidence pass is an ADDITION to the scan, and a failure in it
+    must degrade to "answered nothing" — which the backend reads as
+    ``unconfirmable(missing)``, the safe direction — rather than take the
+    findings down with it.
+    """
+    rows = _lineage_rows(_resolve_lineage_request(requested))
+    if not rows:
+        return []
+    try:
+        return verify_lineage_checks(rows, source_path)
+    except Exception as exc:  # degradation guard, not a swallow
+        logger.warning("lineage_checks_failed rows=%d error=%s", len(rows), exc)
+        return []
+
 
 # The response-extraction patterns and `_FINDING_KEYS` moved to
 # `shared/prompt/extract.py` with the chain that reads them (feature 0089 §11.3);
@@ -436,6 +512,12 @@ def _max_consecutive_failures() -> int:
     by ~84%.
     """
     return max(0, _safe_int_env("VULTURE_LLM_MAX_CONSECUTIVE_FAILURES", 3))
+
+
+
+# The per-call/per-batch budget lives in shared.llm.env so the socket read
+# timeout (llm.broker) resolves the identical number — see resolve_call_timeout.
+from shared.llm.env import resolve_call_timeout as _resolve_call_timeout  # noqa: E402
 
 
 def _max_turns() -> int:
@@ -1331,6 +1413,35 @@ def _public_view(finding: dict) -> dict:
     return {k: v for k, v in finding.items() if not k.startswith("_")}
 
 
+def _persist_evidence_quote(finding: dict) -> None:
+    """Feature 0091 §6.2: remember the quote HERE, where it still exists.
+
+    This is the last moment the evidence quote is in the process — the very next
+    statement deletes it — and it is the only artefact that can later decide
+    whether the accused code is still there. It is written to the agent-local
+    quote store (never to SSE, the DB or a prompt) and replaced on the finding
+    by its hash, which egresses nothing.
+
+    The hash is stamped from the ACTUAL quote, overwriting whatever
+    ``_carry_evidence`` admitted — the model authors the quote, never its
+    identity.
+
+    No quote means no stamp and, deliberately, no deletion either: the strip is
+    documented and tested as idempotent, and a second pass (which by then finds
+    the quote already gone) must not take the hash the FIRST pass earned.
+
+    Best-effort: a cache failure must cost the cache, never the finding.
+    """
+    quote = str(finding.get("evidence_quote") or "")
+    if not quote.strip():
+        return
+    try:
+        finding["quote_hash"] = quote_store.store_by_hash(quote)
+    except Exception as exc:  # a store that raises would lose the finding
+        logger.warning("quote_store_write_failed error=%s", exc)
+        finding.pop("quote_hash", None)
+
+
 def _strip_private_fields(
     finding: dict, fields: tuple[str, ...] = _PRIVATE_FIELDS,
 ) -> None:
@@ -1352,6 +1463,8 @@ def _strip_private_fields(
     ``model.Finding`` boundary — one finding with two different contents
     depending on whether you watched it live or replayed it.
     """
+    if "evidence_quote" in fields:
+        _persist_evidence_quote(finding)
     for name in fields:
         finding.pop(name, None)
 
@@ -2229,6 +2342,7 @@ def run_combined_audit(
     l5_top_n: int | None = None,
     l5_batch_size: int | None = None,
     llm_tier3: bool | None = None,
+    lineage_checks_requested: dict[str, Any] | None = None,
 ) -> Generator[str, None, None]:
     """Run skills first (full coverage), then optionally LLM (deeper analysis).
 
@@ -2250,6 +2364,14 @@ def run_combined_audit(
         model: Optional model preference for LLM pass.
         use_llm: Per-request LLM toggle. ``None`` falls back to the
             ``VULTURE_USE_LLM`` env var (module-level ``USE_LLM``).
+        lineage_checks_requested: Feature 0091 §6.1 — the backend's
+            ``{"schema": 1, "rows": [...]}`` question about existing LLM-tier
+            lineage rows. Answered on the ``result`` event as
+            ``lineage_checks``. ``None`` (the ordinary case) asks nothing and
+            changes nothing; the ``result_schema`` and ``pruned_dirs`` keys are
+            emitted either way, because the backend keys "this agent speaks
+            0091" off ``result_schema`` and would otherwise disable closure for
+            every scan that happened not to be asked a question.
         category_enum: Keyword-only, consumed by ``_bind_category_enum``. The
             vocabulary this agent advertises through ``/info``; every emitted
             finding is reduced to it at ``_finalize_finding_inplace``. ``None``
@@ -2410,6 +2532,18 @@ def run_combined_audit(
             f"Collapsed {_collapsed} generalisation "
             f"{'finding' if _collapsed == 1 else 'findings'} into the more "
             "specific weakness reported on the same line."
+        )
+
+    # --- Feature 0091 §6.2: answer the backend's evidence questions ---
+    # Here and not later: the skill phase has warmed the file cache, so each
+    # cited file is already read, and the answer is independent of anything the
+    # LLM phase does — an LLM phase that degrades must not take the evidence
+    # checks with it (a missing check is read as `unconfirmable`, §6.4).
+    lineage_check_results = _run_lineage_checks(lineage_checks_requested, source_path)
+    if lineage_check_results:
+        yield emitter.text_message(
+            f"Verified {len(lineage_check_results)} prior finding(s) against the "
+            "current code."
         )
 
     # --- Phase 2: LLM enhancement (optional) ---
@@ -2698,8 +2832,17 @@ def run_combined_audit(
     score = compute_score(all_findings, total)
     summary = build_summary(all_findings, categories, domain_label)
     logger.info("audit_done run_id=%s total_findings=%d score=%.1f", run_id, len(all_findings), score)
-    result_extra = {"degraded_reason": degraded_reason} if degraded_reason else None
+    # Feature 0091 §6.1. `result_schema` is UNCONDITIONAL: the backend reads its
+    # absence as "old agent, scope unknown" and then performs no LLM-tier and no
+    # pruned-dir closures at all (S26), so making it conditional on having been
+    # asked something would silently disable the feature for every ordinary scan.
+    result_extra: dict[str, Any] = {
+        "result_schema": RESULT_SCHEMA,
+        "pruned_dirs": pruned_dirs(source_path),
+        "lineage_checks": lineage_check_results,
+    }
     if degraded_reason:
+        result_extra["degraded_reason"] = degraded_reason
         logger.warning("audit_degraded run_id=%s reason=%s", run_id, degraded_reason)
     # `_public_view` here for the same reason it is on every `finding_event`:
     # a private stamp must not reach a consumer through one emit and be absent
@@ -2882,9 +3025,7 @@ async def _collect_llm_findings_batched_async(
     _pin_llm_client_retries()
     _consec_cap = _max_consecutive_failures()
     _consec_failures = 0
-    _call_timeout = _safe_int_env("VULTURE_LLM_CALL_TIMEOUT_SEC", 120)
-    if _call_timeout <= 0:  # 0/negative would make asyncio.wait_for insta-timeout every call
-        _call_timeout = 120
+    _call_timeout = _resolve_call_timeout()
     for batch_idx, (batch_text, batch_paths) in enumerate(batches):
         if _cancel is not None and _cancel.cancelled():
             notice = (
@@ -3433,6 +3574,50 @@ def _parse_llm_result(result: Any) -> ParseOutcome:
     return _parse_llm_findings(str(final_output) if final_output is not None else "")
 
 
+
+# Feature 0093 W3': THE LOOP BRANCH BELOW WAS DEAD CODE, AND ITS COMMENT WAS
+# THE THING BEING VIOLATED.
+#
+# `create_loop_guard_hooks` raises `LoopDetectedError` from `on_tool_end`. The
+# Agents SDK wraps any non-`AgentsException` raised from a tool hook:
+#
+#     if isinstance(e, AgentsException):
+#         raise e
+#     raise UserError(f"Error running tool {func_tool.name}: {e}") from e
+#         — agents/run_internal/tool_execution.py
+#
+# `LoopDetectedError` subclasses plain `Exception`, so what actually propagates
+# is a `UserError` carrying the loop error on `__cause__`. `except
+# LoopDetectedError` therefore never matched, and every loop trip fell through
+# to the generic handler that records a model cooldown — precisely what the
+# branch exists to prevent.
+#
+# Measured across every agent log at the time of the fix: 33
+# `ping_pong_detected` events and ZERO `loop_detected run_id` lines, with the
+# observed degraded reason reading "LLM analysis failed (unknown): Error
+# running tool list_files_confined: Tool loop detected…" — the generic path's
+# wording, not this branch's.
+#
+# Detected by walking `__cause__` rather than by catching the SDK's exception
+# type, so the fix does not depend on an SDK class that may be renamed and
+# needs no import that could fail where the SDK is absent.
+def _loop_error_from(exc: BaseException | None) -> Any | None:
+    """The LoopDetectedError in `exc`'s cause chain, or None. Never raises."""
+    from shared.llm.loop_guard import LoopDetectedError as _LDE
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    for _ in range(5):
+        if cur is None or id(cur) in seen:
+            return None
+        if isinstance(cur, _LDE):
+            return cur
+        seen.add(id(cur))
+        cur = getattr(cur, "__cause__", None)
+    return None
+
+
+
 async def _collect_llm_findings_async(
     run_id: str,
     source_path: str,
@@ -3582,8 +3767,14 @@ async def _collect_llm_findings_async(
 
     agent = Agent(**agent_kwargs)
 
-    from shared.llm.errors import LLMErrorKind, classify_llm_error, retry_llm_call
-    from shared.llm.loop_guard import LoopDetectedError, create_loop_guard_hooks
+    from shared.llm.errors import (
+        LLMErrorKind,
+        classify_llm_error,
+        exception_detail,
+        llm_failure_message,
+        retry_llm_call,
+    )
+    from shared.llm.loop_guard import create_loop_guard_hooks
 
     # Feature 0070 P5 (defect C): ``hooks`` is a ``Runner.run()`` parameter, not
     # a RunConfig field — on any SDK version. The old code passed it to
@@ -3632,11 +3823,19 @@ async def _collect_llm_findings_async(
         outcome = _parse_llm_result(result)
         findings = _verify_and_strip(outcome.rows, source_path)
         cooldown_manager.record_success(resolved_model)
-    except LoopDetectedError as exc:
-        # Loop is an agent reasoning failure, not a model failure — don't cool down the model.
-        logger.info("loop_detected run_id=%s: %s (not recording model cooldown)", run_id, exc)
-        return [], f"LLM agent aborted: {exc}", 0, 0
     except Exception as exc:
+        # The loop check runs FIRST and on the cause chain, because the SDK
+        # wraps the guard's exception (see _loop_error_from). A loop is an
+        # agent reasoning failure, not a model failure, so it must not cool
+        # down the model — that is what this branch has always claimed to do
+        # and, until 0093, never did.
+        loop_exc = _loop_error_from(exc)
+        if loop_exc is not None:
+            logger.info(
+                "loop_detected run_id=%s: %s (not recording model cooldown)",
+                run_id, loop_exc,
+            )
+            return [], f"LLM agent aborted: {loop_exc}", 0, 0
         kind = classify_llm_error(exc)
         # Feature 0070 P5 (A.2): a size rejection is NOT transient — retrying the
         # identical request fails identically, which is why CONTEXT_OVERFLOW is
@@ -3663,8 +3862,14 @@ async def _collect_llm_findings_async(
                 _size_retry=True,
             )
         cooldown_manager.record_failure(resolved_model, error_kind=kind.value)
-        logger.warning("llm_failed kind=%s error=%s", kind.value, str(exc)[:200])
-        return [], f"LLM analysis failed ({kind.value}): {str(exc)[:200]}", 0, 0
+        # Same renderer as retry_llm_call: `str(exc)` for an APIConnectionError
+        # is the constant "Connection error." and names nothing.
+        logger.warning("llm_failed kind=%s error=%s", kind.value, exception_detail(exc))
+        # llm_failure_message, not an f-string: the return value becomes
+        # `llm_error`, which is emitted on the thinking stream AND persisted as
+        # audits.degraded_reason. See shared.llm.errors for why the raw
+        # str(exc) rendering was the wrong thing to durably record.
+        return [], llm_failure_message(kind, exc), 0, 0
     finally:
         # §26/M7: close this run's broker client so its httpx pool/FDs don't
         # leak in the long-lived agent process (no-op when the broker was off).
@@ -3812,6 +4017,17 @@ def _carry_evidence(raw: dict) -> dict[str, Any]:
     # add a key to every finding a non-complying model returns, which changes the
     # normaliser's output shape for callers that never asked for the feature.
     carried: dict[str, Any] = _non_empty("evidence_quote", raw.get("evidence_quote"))
+    # Feature 0091: `quote_hash` is a PUBLIC field — a hash egresses nothing, and
+    # the backend stores it on the lineage row so a later scan can validate its
+    # cache entry (§5.1). Admitted here so the key survives the normaliser's
+    # whitelist on both parse branches, but ONLY as half of an evidence PAIR: a
+    # hash with no quote beside it is a hash of nothing this process can check,
+    # and a fabricated one on a lineage row would resolve every future check of
+    # that row to `no_quote` forever. `_persist_evidence_quote` overwrites the
+    # admitted value with the real hash at the strip, so the model's copy is
+    # never what reaches the wire.
+    if carried:
+        carried.update(_non_empty("quote_hash", raw.get("quote_hash")))
     snippet = raw.get(name) or ""
     if snippet and env_truthy(_TRUST_MODEL_SNIPPET):
         carried[name] = snippet

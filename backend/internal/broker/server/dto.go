@@ -288,15 +288,28 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeErr renders a typed apiError as the OpenAI error envelope (§5/N6). The
-// body carries only the static message/type/code — never a secret.
+// writeErr renders a typed apiError as the OpenAI error envelope (§5/N6).
+//
+// `message`/`type`/`code` are STATIC strings chosen by this package and
+// interpolate nothing from the request. The optional `upstream` object is the
+// one exception and is not static: it carries a provider's own words, and it is
+// attached only for the status whose body cannot echo request content (404),
+// after that text has been sanitised and redacted by the provider layer and the
+// status re-checked here. Calling the whole envelope "never a secret" stopped
+// being true the moment that field existed, and a comment that overstates a
+// guarantee is how the next change to this function skips the check.
 func writeErr(w http.ResponseWriter, e *apiError) {
-	writeJSON(w, e.status, map[string]any{
-		"error": map[string]any{
-			"message":     e.message,
-			"type":        e.code,
-			"code":        e.code,
-			"x_retriable": e.retriable,
-		},
-	})
+	body := map[string]any{
+		"message":     e.message,
+		"type":        e.code,
+		"code":        e.code,
+		"x_retriable": e.retriable,
+	}
+	// Added only when there is something to say. An absent key — rather than a
+	// null or an empty object — is what keeps every existing consumer's parse
+	// byte-identical for the errors it already handles.
+	if e.upstream != nil && e.upstream.Message != "" {
+		body["upstream"] = e.upstream
+	}
+	writeJSON(w, e.status, map[string]any{"error": body})
 }

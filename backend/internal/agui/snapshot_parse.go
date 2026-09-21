@@ -62,3 +62,48 @@ func ParseSnapshotScore(snapshot json.RawMessage) (float64, bool) {
 	}
 	return *envelope.Score, true
 }
+
+// ParseScanOutcome reads the feature-0091 scope and evidence keys off a
+// `result` StateSnapshot: `result_schema`, `pruned_dirs`, `lineage_checks`,
+// plus `degraded_reason` and `scan_truncated`.
+//
+// It deliberately does NOT re-parse findings. Findings keep their own per-row
+// tolerant path (ParseSnapshotFindings) because ONE malformed finding must
+// cost one finding, not the report — and by the same argument one malformed
+// lineage check must not be able to cost the findings. The two live in
+// separate envelopes so neither can take the other down, which is the same
+// split ParseSnapshotScore already makes for the score.
+//
+// The whole payload is optional and every field is absent on a pre-0091 agent.
+// An unparseable snapshot, or one with no `result_schema`, yields a zero
+// ResultSchema — and that value is load-bearing rather than a default: it is
+// what tells the closure pass that scope is UNKNOWN, so the scan may perform
+// no LLM-tier and no pruned-dir closures (S26). Reading "absent" as "schema 2
+// with nothing pruned" would silently restore the defect for every old agent
+// in the fleet.
+//
+// translateResult forwards the result payload verbatim as the snapshot, so
+// this reads exactly the bytes the agent sent; there is no parallel parser and
+// no second transport.
+func ParseScanOutcome(snapshot json.RawMessage) *model.ScanResult {
+	out := &model.ScanResult{}
+	if len(snapshot) == 0 {
+		return out
+	}
+	var envelope struct {
+		ResultSchema   int                  `json:"result_schema"`
+		PrunedDirs     []string             `json:"pruned_dirs"`
+		LineageChecks  []model.LineageCheck `json:"lineage_checks"`
+		DegradedReason string               `json:"degraded_reason"`
+		ScanTruncated  bool                 `json:"scan_truncated"`
+	}
+	if json.Unmarshal(snapshot, &envelope) != nil {
+		return out
+	}
+	out.ResultSchema = envelope.ResultSchema
+	out.PrunedDirs = envelope.PrunedDirs
+	out.LineageChecks = envelope.LineageChecks
+	out.DegradedReason = envelope.DegradedReason
+	out.ScanTruncated = envelope.ScanTruncated
+	return out
+}

@@ -138,18 +138,48 @@ class TestIssue4CustomEndpointContextWindow:
 class TestIssue5LoopDetectedNoCooldown:
     """LoopDetectedError handler must NOT call record_failure."""
 
+    def test_a_wrapped_loop_error_is_recognised(self):
+        """The contract, checked against BEHAVIOUR rather than source text.
+
+        This test previously asserted that the `except LoopDetectedError`
+        block contains no `record_failure` call, by reading the source. It
+        passed for the whole life of the bug it was written to prevent: the
+        Agents SDK wraps any non-AgentsException raised from a tool hook in a
+        `UserError`, so that block never executed and every loop trip fell
+        through to the generic handler, which DOES record a cooldown. Measured
+        at the time of the fix: 33 `ping_pong_detected` events and zero
+        `loop_detected` lines across every agent log.
+
+        A source-text assertion cannot see that. This one keys on the same
+        predicate the handler now uses, so it fails if the wrapper stops being
+        recognised.
+        """
+        from shared.audit_runner import _loop_error_from
+        from shared.llm.loop_guard import LoopDetectedError
+
+        inner = LoopDetectedError("Tool loop detected: list_files", total_calls=4)
+        try:
+            raise inner
+        except LoopDetectedError as e:
+            try:
+                raise RuntimeError(f"Error running tool list_files: {e}") from e
+            except RuntimeError as wrapped:
+                assert _loop_error_from(wrapped) is inner
+
     def test_loop_handler_does_not_record_failure(self):
-        """Verify the source code no longer calls record_failure for LoopDetectedError."""
+        """The loop path must return BEFORE any cooldown is recorded."""
         import inspect
 
         from shared.audit_runner import _collect_llm_findings_async
+
         source = inspect.getsource(_collect_llm_findings_async)
-        # Find the LoopDetectedError except block
-        loop_block_start = source.index("except LoopDetectedError")
-        # Find the next except block
-        next_except = source.index("except Exception", loop_block_start + 1)
-        loop_block = source[loop_block_start:next_except]
-        assert "record_failure" not in loop_block
+        loop_check = source.index("_loop_error_from(exc)")
+        record = source.index("record_failure", loop_check)
+        early_return = source.index("LLM agent aborted", loop_check)
+        assert early_return < record, (
+            "the loop branch must return before cooldown_manager.record_failure; "
+            "a loop is an agent reasoning failure, not a model failure"
+        )
 
 
 # ---------------------------------------------------------------------------

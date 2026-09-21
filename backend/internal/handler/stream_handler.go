@@ -75,6 +75,13 @@ func (h *StreamHandler) SetMemoryService(svc service.MemoryService) {
 	h.memorySvc = svc
 }
 
+// MemoryService exposes the wired memory service so the composition root can
+// hand it to the lineage service as its §8 status sync. Returns nil when
+// memory is not configured, which the lineage service treats as "sync off".
+func (h *StreamHandler) MemoryService() service.MemoryService {
+	return h.memorySvc
+}
+
 func (h *StreamHandler) SetLineageService(svc service.LineageService) {
 	h.lineageSvc = svc
 }
@@ -400,7 +407,13 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 	// Cancelling it closes the outbound agent requests (built with
 	// http.NewRequestWithContext), which trips each agent's already-proven 0061
 	// _cancellable_stream teardown.
-	go h.streamSvc.StreamWithContext(b.RunContext(), audit, sourcePath, h.agents, priorByAgent, eventCh)
+	// Feature 0091 §6.1: ask each agent to re-verify the LLM-tier lineage rows
+	// the backend still believes are in this tree. This is the ONLY way an
+	// LLM-tier row can be closed or carried forward — without it the agent
+	// answers no checks and every such row lands at `unconfirmed`.
+	checksByAgent := h.pendingLineageChecks(source, audit.Types)
+
+	go h.streamSvc.StreamWithContext(b.RunContext(), audit, sourcePath, h.agents, priorByAgent, checksByAgent, eventCh)
 
 	res := drainResultAt(eventCh, audit.ID, sourcePath, b)
 
@@ -412,7 +425,7 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 	// the "ERROR:" prefix collectErrorText requires, so res.AgentError is empty
 	// and the completion branch would otherwise mark this `completed`.
 	audit.CancelReason = b.CancelReason()
-	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason)
+	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason, res.ScanOutcomes)
 }
 
 // failAudit marks an audit failed after a dispatch-time error, so it does not sit
@@ -422,7 +435,7 @@ func (h *StreamHandler) failAudit(auditID, reason string) {
 	if err != nil {
 		return
 	}
-	h.persistResultsWithError(audit, nil, nil, nil, nil, reason, "")
+	h.persistResultsWithError(audit, nil, nil, nil, nil, reason, "", nil)
 }
 
 // eventChCapacity sizes the producer channel. The historical formula yields ZERO
@@ -463,6 +476,11 @@ type DrainResult struct {
 	// that failed while skill findings still came through (feature 0070 P5 A.3).
 	// Distinct from AgentError, which means the run itself failed.
 	DegradedReason string
+	// ScanOutcomes carries, per agent type, the feature-0091 scope and evidence
+	// keys off that agent's result snapshot. An agent that never sent a
+	// snapshot — or sent a pre-0091 one — has no entry, and the closure pass
+	// then treats its scope as UNKNOWN, which is the safe reading (S26).
+	ScanOutcomes map[string]*model.ScanResult
 }
 
 func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sink EventSink) DrainResult {
@@ -486,6 +504,8 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 	// Audit 2026-05-26: this fix recovers ~1000 findings per audit
 	// when one agent's LLM phase stalls.
 	snapshotAgents := map[string]bool{}
+	// Feature 0091: the scope + evidence half of each agent's result snapshot.
+	scanOutcomes := map[string]*model.ScanResult{}
 	var agentError string
 	var owaspCoverage json.RawMessage
 	var degradedReason string
@@ -496,6 +516,9 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 		}
 		if evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
 			snapshotAgents[evt.AgentType] = true
+			// Read the 0091 keys off the same bytes the findings parser reads,
+			// via its own envelope so neither half can cost the other.
+			scanOutcomes[evt.AgentType] = agui.ParseScanOutcome(evt.Snapshot)
 		}
 		if dr := extractDegradedReason(evt); dr != "" {
 			degradedReason = dr
@@ -528,7 +551,13 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 		log.Printf("[stream] rescued %d delta findings from agents that never sent a snapshot (audit=%s)",
 			rescued, auditID)
 	}
-	findings = deduplicateCrossAgentAt(findings, sourceRoot)
+	findings, rollupShadowed := dedupCrossAgentWithShadow(findings, sourceRoot)
+	// Feature 0091 S21. The set is global to the run — the parent and the leaf
+	// it shadows are routinely different agents — so it is stamped on every
+	// agent's outcome rather than split per agent.
+	for at := range scanOutcomes {
+		scanOutcomes[at].RollupShadowed = rollupShadowed
+	}
 	// Feature 0079 A3: stamp the stable identity. No-op unless
 	// VULTURE_FINDING_IDENTITY is set; under enforce it also swaps which value
 	// `fingerprint` carries, retaining the v1 value in LegacyFingerprint so
@@ -546,6 +575,7 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 		AgentError:     agentError,
 		OwaspCoverage:  owaspCoverage,
 		DegradedReason: degradedReason,
+		ScanOutcomes:   scanOutcomes,
 	}
 }
 
@@ -786,20 +816,37 @@ func deduplicateCrossAgent(findings []model.Finding) []model.Finding {
 // behaviour byte for byte, which is how the replay path and all 14 existing
 // call sites stay unaffected.
 func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []model.Finding {
+	kept, _ := dedupCrossAgentWithShadow(findings, sourceRoot)
+	return kept
+}
+
+// dedupCrossAgentWithShadow is deduplicateCrossAgentAt plus the fingerprints
+// it removed BECAUSE a rollup parent covering the same site won the key.
+//
+// FEATURE 0091 S21. `findingDetailScore` gives a rollup parent 1_000_000, so a
+// parent always evicts a leaf twin sharing its (category-group, file, line).
+// The leaf is then absent from the result the closure pass sees, and the
+// deterministic rule reads absence as repair — closing a finding whose code is
+// demonstrably still there, for a purely structural reason, and re-opening it
+// as a regression on the next scan that does not roll it up. That churn is
+// exactly what §14 promised to end.
+//
+// Recorded HERE rather than re-derived in the pass because this is the only
+// place the relation is a fact rather than a guess: the pass holds fingerprints
+// and a lineage row whose `file_path` may be stored in either coordinate form,
+// so re-deriving "is a parent covering this row present" would compare paths
+// that do not have to match. The eviction itself is unambiguous.
+func dedupCrossAgentWithShadow(findings []model.Finding, sourceRoot string) ([]model.Finding, map[string]bool) {
 	if len(findings) <= 1 {
-		return findings
+		return findings, nil
 	}
-	mode := pathCanonMode()
-	if mode == pathCanonObserve && sourceRoot != "" {
-		// Measure only: report what enforce WOULD merge, mutate nothing. This
-		// second pass is why observe is opt-in rather than the default -- it was
-		// benchmarked at +114% over the dedup baseline at 50k findings.
-		logPathCanonDelta(findings, sourceRoot)
-	}
-	keyRoot := ""
-	if mode == pathCanonEnforce {
-		keyRoot = sourceRoot
-	}
+	// The dedup key is always canonicalised against the source root. The two
+	// tiers emit systematically different path forms for the same file -- the
+	// deterministic tier the absolute path it walked, the LLM tier the relative
+	// one the prompt showed -- so with a raw key they can never collide, and one
+	// weakness becomes two findings and two lineage rows. An empty root is
+	// identity, which is how the replay path keeps byte-identical behaviour.
+	keyRoot := sourceRoot
 	type entry struct {
 		index int
 		score int
@@ -809,7 +856,6 @@ func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []mode
 	keys := make([]string, len(findings))
 	agentsByKey := make(map[string][]string, len(findings))
 	provenanceByKey := make(map[string]string, len(findings))
-	prefer := preferDeterministicDedup()
 
 	for i, f := range findings {
 		key := crossAgentKeyWithRoot(f, keyRoot)
@@ -820,7 +866,7 @@ func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []mode
 			provenanceByKey[key] = f.Provenance
 		}
 		if prev, ok := seen[key]; ok {
-			if crossAgentPrefers(f, findings[prev.index], s, prev.score, prefer) {
+			if crossAgentPrefers(f, findings[prev.index], s, prev.score) {
 				seen[key] = entry{index: i, score: s}
 			}
 			continue
@@ -831,6 +877,25 @@ func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []mode
 	kept := make(map[int]bool, len(seen))
 	for _, e := range seen {
 		kept[e.index] = true
+	}
+	// The rollup half of the eviction record (S21): a finding removed because
+	// the row that won its key IS a rollup parent was reported by the agent
+	// and consolidated, not repaired.
+	var shadowed map[string]bool
+	for i, f := range findings {
+		if kept[i] || f.IsRollup || f.Fingerprint == "" {
+			continue
+		}
+		if w, ok := seen[keys[i]]; !ok || !findings[w.index].IsRollup {
+			continue
+		}
+		if shadowed == nil {
+			shadowed = map[string]bool{}
+		}
+		shadowed[f.Fingerprint] = true
+		if f.FingerprintV2 != "" {
+			shadowed[f.FingerprintV2] = true
+		}
 	}
 	result := make([]model.Finding, 0, len(findings))
 	for i, f := range findings {
@@ -863,9 +928,10 @@ func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []mode
 		result = append(result, f)
 	}
 	if removed := len(findings) - len(result); removed > 0 {
-		log.Printf("[dedup] removed %d cross-agent duplicate findings (%d → %d)", removed, len(findings), len(result))
+		log.Printf("[dedup] removed %d cross-agent duplicate findings (%d → %d, %d shadowed by a rollup parent)",
+			removed, len(findings), len(result), len(shadowed))
 	}
-	return result
+	return result, shadowed
 }
 
 // applyCrossAgentValidation appends an L3 cross-agent merge check to a
@@ -1072,22 +1138,12 @@ func crossAgentKey(f model.Finding) string {
 	return fmt.Sprintf("%s|%s|%d", title, f.FilePath, f.LineStart)
 }
 
-// preferDeterministicDedup gates feature 0076 §5.5's winner-selection guard.
-// Default on; VULTURE_DEDUP_PREFER_DETERMINISTIC=false restores the 0075
-// score-only selection (one-release rollback switch). Read at merge time so
-// the switch stays flippable — never cached in a package-level var.
-func preferDeterministicDedup() bool {
-	if v := strings.TrimSpace(os.Getenv("VULTURE_DEDUP_PREFER_DETERMINISTIC")); v != "" {
-		return config.EnvTruthy("VULTURE_DEDUP_PREFER_DETERMINISTIC")
-	}
-	return true
-}
-
 // crossAgentPrefers reports whether the challenger should displace the current
-// keeper of a cross-agent key. With the guard off this is the pre-0076 rule:
-// the richer row wins, ties going to the first seen.
-func crossAgentPrefers(challenger, incumbent model.Finding, challengerScore, incumbentScore int, prefer bool) bool {
-	if prefer {
+// keeper of a cross-agent key. A deterministic (skill) row outranks an `llm`
+// row at equal-or-lower severity; anything the provenance rule does not settle
+// falls through to the detail score, ties going to the first seen.
+func crossAgentPrefers(challenger, incumbent model.Finding, challengerScore, incumbentScore int) bool {
+	{
 		if d := deterministicPreference(challenger, incumbent); d != 0 {
 			return d > 0
 		}
@@ -1377,7 +1433,7 @@ func extractProveResult(delta json.RawMessage, auditID string, fpLookup map[stri
 }
 
 func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult) {
-	h.persistResultsWithError(audit, source, findings, scores, proveResults, "", "")
+	h.persistResultsWithError(audit, source, findings, scores, proveResults, "", "", nil)
 }
 
 // persistResultsWithError records audit state, propagating an
@@ -1385,11 +1441,12 @@ func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source,
 // short-circuited (zero findings + ERROR text). Discover-agent
 // short-circuits on bad config used to land as status=completed; this
 // path now surfaces the failure.
-func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string, degradedReason string) {
+func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string, degradedReason string, scanOutcomes map[string]*model.ScanResult) {
 	log.Printf("[persist] audit=%s findings=%d scores=%v", audit.ID, len(findings), scores)
 
 	saveFindings(h.auditSvc, audit.ID, findings)
-	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError, degradedReason)
+	missing := missingRequestedAgents(audit.Types, scanOutcomes, scores, findings)
+	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError, degradedReason, missing)
 	// Feature 0064 §6/M3: the run reached a terminal state — revoke its
 	// broker token(s) so a leaked token can't keep spending. No-op when the
 	// broker is off (revoker nil / run had no minted tokens).
@@ -1398,7 +1455,7 @@ func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *mode
 	}
 	dispatchWebhook(h.webhookSvc, audit, findings, scores)
 	backfillAndSaveProve(h.proveSvc, findings, proveResults, audit.ID)
-	storeMemoriesAndLineage(h, audit, source, findings)
+	storeMemoriesAndLineage(h, audit, source, findings, scanOutcomes)
 
 	if h.pipelineSvc != nil {
 		if err := h.pipelineSvc.AdvanceStage(audit.ID, audit.Status); err != nil {
@@ -1434,6 +1491,79 @@ func saveFindings(svc service.AuditService, auditID string, findings []model.Fin
 	}
 }
 
+// missingRequestedAgents returns the agent types this audit asked for that
+// produced no result snapshot, in the order requested.
+//
+// Stated over the OUTCOME rather than over each skip site, deliberately.
+// Dispatch has at least five ways to drop a requested agent without raising an
+// error:
+//
+//   - dispatchLegacy: the type names an agent with no URL configured;
+//   - dispatchViaRouter: source staging failed;
+//   - dispatchViaRouter: the type produced no router target while others did —
+//     not even logged;
+//   - runOwaspMapping: OWASP unconfigured, which sends an agentUnavailable
+//     NOTICE that deliberately lacks the "ERROR:" prefix collectErrorText needs;
+//   - an agent dispatched that died before emitting its snapshot.
+//
+// Every one of them used to persist as `completed` with an empty
+// degraded_reason. Measured live: audit 914bd27a requested {cwe,semgrep},
+// semgrep was skipped because the staging root was root-owned, and the record
+// read completed / scores {"cwe":16} / no reason. The requested detector never
+// ran and nothing said so — a false all-clear for everything it would have
+// caught.
+//
+// A per-site check would have to be repeated at every future `continue`. This
+// one cannot be bypassed, because it asks the only question that matters: did
+// the detector the caller asked for actually report?
+//
+// An empty Types list is the documented "default scan" — the router chooses the
+// set, so there is no per-agent contract to violate.
+//
+// "Did not run" is judged on THREE signals, not just the snapshot: an agent
+// counts as having reported if it sent a result snapshot, or carries a score,
+// or contributed a finding. A snapshot-only test was too strict and wrongly
+// failed an agent whose findings and score were both present — and it would
+// have re-failed the rescued-delta path (an agent that streamed findings then
+// died before its snapshot), whose whole purpose is to salvage that work. A
+// genuinely skipped agent contributes none of the three, which is exactly what
+// makes the disjunction safe: it is narrow enough to still catch every skip
+// path and wide enough never to accuse an agent that did something.
+func missingRequestedAgents(
+	requested []string,
+	reported map[string]*model.ScanResult,
+	scores map[string]int,
+	findings []model.Finding,
+) []string {
+	if len(requested) == 0 {
+		return nil
+	}
+	contributed := make(map[string]bool, len(reported)+len(scores))
+	for at := range reported {
+		contributed[at] = true
+	}
+	for at := range scores {
+		contributed[at] = true
+	}
+	for _, f := range findings {
+		if f.AgentType != "" {
+			contributed[f.AgentType] = true
+		}
+	}
+	var missing []string
+	seen := make(map[string]bool, len(requested))
+	for _, t := range requested {
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		if !contributed[t] {
+			missing = append(missing, t)
+		}
+	}
+	return missing
+}
+
 // completeAuditWithError records final state. When agentError is
 // non-empty AND no findings landed, the audit is marked failed with
 // the error captured in degraded_reason. This surfaces silent-failure
@@ -1445,6 +1575,7 @@ func completeAuditWithError(
 	scores map[string]int,
 	agentError string,
 	degradedReason string,
+	missingAgents []string,
 ) {
 	now := time.Now().UTC()
 	audit.CompletedAt = &now
@@ -1469,6 +1600,28 @@ func completeAuditWithError(
 		audit.Status = model.AuditStatusFailed
 		audit.DegradedReason = agentError
 		log.Printf("[persist] audit=%s marked FAILED: %s", audit.ID, agentError)
+	} else if len(missingAgents) > 0 {
+		// A requested agent that never reported means the audit's coverage is
+		// not the coverage that was asked for, and a scan reporting completion
+		// it did not earn is the worst failure mode this tool has.
+		//
+		// Deliberately NOT gated on len(findings) == 0, for the same reason the
+		// cancel branch above is not: the agents that DID run produce findings,
+		// and the old ordering called that `completed` with a score that looks
+		// authoritative for a detector set that never ran.
+		//
+		// Findings and scores are KEPT. The verdict is about completeness, not
+		// about the evidence — discarding real findings would make the honest
+		// answer more expensive than the dishonest one, which is how a guard
+		// ends up switched off. The score map's key set is itself the record of
+		// which agents reported.
+		audit.Status = model.AuditStatusFailed
+		reason := "requested agents did not run: " + strings.Join(missingAgents, ", ")
+		if degradedReason != "" {
+			reason += "; " + degradedReason
+		}
+		audit.DegradedReason = reason
+		log.Printf("[persist] audit=%s marked FAILED (incomplete coverage): %s", audit.ID, reason)
 	} else {
 		audit.Status = model.AuditStatusCompleted
 		// Feature 0070 P5 (A.3): a COMPLETED audit can still have lost a phase.
@@ -1550,8 +1703,24 @@ func cleanupRunDir(source *model.Source, audit *model.Audit) {
 	}
 }
 
-func storeMemoriesAndLineage(h *StreamHandler, audit *model.Audit, source *model.Source, findings []model.Finding) {
-	if len(findings) == 0 {
+// hasWorkToRecord reports whether this run has anything to persist.
+//
+// FEATURE 0091. The guard used to be `len(findings) == 0`, which was right
+// while a scan could only ever CREATE lineage from what it reported. It is now
+// wrong in the one case that matters most: a scan that finds nothing still
+// carries scope and the agent's evidence answers, and it is precisely the scan
+// on which closure decisions are due. Dropping it here meant the backend
+// asked for evidence, the agent read the files and answered, and the reply was
+// discarded — silently, and only on clean scans, so a target that was actually
+// fixed would keep its rows open forever and a row whose code was still there
+// would never record `confirmed_by_evidence`.
+func hasWorkToRecord(findings []model.Finding, scanOutcomes map[string]*model.ScanResult) bool {
+	return len(findings) > 0 || len(scanOutcomes) > 0
+}
+
+func storeMemoriesAndLineage(h *StreamHandler, audit *model.Audit, source *model.Source,
+	findings []model.Finding, scanOutcomes map[string]*model.ScanResult) {
+	if !hasWorkToRecord(findings, scanOutcomes) {
 		return
 	}
 	sourcePath := ""
@@ -1564,12 +1733,77 @@ func storeMemoriesAndLineage(h *StreamHandler, audit *model.Audit, source *model
 				log.Printf("store memories: %v", err)
 			}
 		}
-		if h.lineageSvc != nil && source != nil {
-			if err := h.lineageSvc.ProcessAuditFindings(audit, source, findings); err != nil {
-				log.Printf("process lineage: %v", err)
-			}
+		if h.lineageSvc == nil || source == nil {
+			return
 		}
+		recordLineageOutcomes(h.lineageSvc, audit, source, findings, scanOutcomes)
 	}()
+}
+
+// recordLineageOutcomes runs one closure pass per agent that actually ran.
+//
+// The per-agent split is the point (S17): fix detection must run only for the
+// agent types this scan dispatched, or shrinking the agent set would close
+// every row belonging to the agents that were dropped. Each pass carries that
+// agent's own result — its scope and its evidence — so one agent's degraded
+// LLM phase cannot suppress, or licence, closures for another.
+//
+// An agent with no recorded outcome (it never sent a snapshot, or predates
+// 0091) falls back to an empty ScanResult, i.e. UNKNOWN scope: deterministic
+// closure still applies, LLM-tier closure does not.
+// agentsThatSpoke groups findings by agent and adds an empty entry for every
+// agent that sent a result but no findings. That second half matters: an agent
+// can report ZERO findings and still carry scope and evidence, and dropping it
+// would leave its rows unexamined — silently, and only on the clean scans.
+func agentsThatSpoke(findings []model.Finding, scanOutcomes map[string]*model.ScanResult) map[string][]model.Finding {
+	byAgent := map[string][]model.Finding{}
+	for _, f := range findings {
+		if f.AgentType != "" {
+			byAgent[f.AgentType] = append(byAgent[f.AgentType], f)
+		}
+	}
+	for at := range scanOutcomes {
+		if _, ok := byAgent[at]; !ok {
+			byAgent[at] = nil
+		}
+	}
+	return byAgent
+}
+
+func recordLineageOutcomes(svc service.LineageService, audit *model.Audit, source *model.Source,
+	findings []model.Finding, scanOutcomes map[string]*model.ScanResult) {
+	byAgent := agentsThatSpoke(findings, scanOutcomes)
+	for at, agentFindings := range byAgent {
+		result := scanOutcomes[at]
+		if result == nil {
+			// This agent contributed findings but never sent a result
+			// snapshot, so it was killed, cancelled or crashed and what we
+			// hold is the partial delta rescue. An agent that COMPLETED
+			// always leaves a snapshot, even a pre-0091 one — so the two are
+			// distinguishable here, and only this one must be barred from
+			// closing rows on its silence.
+			result = &model.ScanResult{NoResultSnapshot: true}
+		}
+		result.Findings = agentFindings
+		if err := svc.RecordScanOutcome(audit, source, at, result); err != nil {
+			log.Printf("process lineage agent=%s: %v", at, err)
+		}
+	}
+}
+
+// pendingLineageChecks builds the per-agent `lineage_checks_requested` block.
+// Nil-safe on every dependency: a run with no lineage service, or no source,
+// simply asks for nothing and every LLM-tier row is left untouched — which is
+// the conservative outcome, never a closure.
+func (h *StreamHandler) pendingLineageChecks(source *model.Source, auditTypes []string) map[string]*model.LineageChecksRequest {
+	if h.lineageSvc == nil || source == nil || len(auditTypes) == 0 {
+		return nil
+	}
+	checks := h.lineageSvc.PendingChecks(source, auditTypes)
+	for at, req := range checks {
+		log.Printf("[lineage] agent=%s lineage_checks_requested rows=%d", at, len(req.Rows))
+	}
+	return checks
 }
 
 func (h *StreamHandler) loadPriorFindings(sourcePath string, auditTypes []string, limit int) map[string][]model.PriorFinding {
@@ -1590,6 +1824,19 @@ func (h *StreamHandler) loadPriorFindings(sourcePath string, auditTypes []string
 	for at, memories := range memoriesByAgent {
 		prior := make([]model.PriorFinding, 0, len(memories))
 		for _, m := range memories {
+			// Feature 0091 §8. A memory the scanner has already closed must
+			// leave the prior-findings block, because that block carries
+			// "skip known issues, report NEW findings only". Left in, a fixed
+			// finding is suppressed on every later scan: it can never be
+			// re-reported and therefore never regress — permanently invisible.
+			//
+			// Only `resolved` is dropped. `false_positive` and
+			// `accepted_risk` deliberately STAY (S13): a human dismissed
+			// those, and the point of showing them to the model is to stop it
+			// re-reporting them.
+			if m.RemediationStatus == "resolved" {
+				continue
+			}
 			pf := model.PriorFinding{
 				ID:                m.ID,
 				AgentType:         m.AgentType,

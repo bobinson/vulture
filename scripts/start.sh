@@ -21,7 +21,7 @@ Usage: scripts/vulture.sh dev <provider> [model]
 Providers:
   openai [model]       OpenAI API (default: gpt-4o)
   anthropic [model]    Anthropic API (default: claude-sonnet)
-  gemini [model]       Google Gemini API — remote (default: gemini-pro); needs GEMINI_API_KEY
+  gemini [model]       Google Gemini API — remote (default: gemini-2.5-flash); needs GEMINI_API_KEY
   ollama [model]       Local Ollama (default: qwen3:1.7b)
   lmstudio [model]     LM Studio (default: local-model)
   skills               Skills only — no LLM (fastest, no API key needed)
@@ -34,7 +34,7 @@ Examples:
   scripts/vulture.sh dev openai
   scripts/vulture.sh dev openai gpt-4o
   scripts/vulture.sh dev anthropic claude-sonnet
-  GEMINI_API_KEY=AIza... scripts/vulture.sh dev gemini            # remote Gemini (default gemini-pro)
+  GEMINI_API_KEY=AIza... scripts/vulture.sh dev gemini            # remote Gemini (default gemini-2.5-flash)
   GEMINI_API_KEY=AIza... scripts/vulture.sh dev gemini gemini-2.5-flash
   scripts/vulture.sh dev ollama qwen3:8b
   scripts/vulture.sh dev lmstudio my-model
@@ -318,7 +318,22 @@ normalize_model() {
     [[ -z "$_nm" ]] && { printf '%s' ""; return; }
     case "$_nm_provider" in
         gemini)
-            if [[ "$_nm" != "gemini-pro" && "$_nm" != litellm/* ]]; then
+            # Expand ALIASES here rather than exempting them: the broker receives
+            # a BARE model id and cannot consult MODEL_MAP, so an unexpanded
+            # alias is sent to Google verbatim and 404s.
+            #
+            # A TABLE, not an `if`, because the single hardcoded `gemini-pro`
+            # comparison this replaces made every FUTURE alias born broken —
+            # `gemini-flash` was added in the same change that fixed
+            # `gemini-pro` and inherited the bug immediately. Keep in step with
+            # MODEL_MAP in agents/shared/shared/llm/provider.py; parity in both
+            # directions is enforced by test_gemini_alias_shell_parity.py, which
+            # fails when an alias is added on either side alone.
+            case "$_nm" in
+                gemini-pro)   _nm="gemini-2.5-pro" ;;
+                gemini-flash) _nm="gemini-2.5-flash" ;;
+            esac
+            if [[ "$_nm" != litellm/* ]]; then
                 _nm="litellm/gemini/${_nm#gemini/}"
             fi ;;
         lmstudio)
@@ -359,10 +374,15 @@ case "$PROVIDER" in
         # Remote Google Gemini via LiteLLM's NATIVE provider (GEMINI_API_KEY) —
         # NOT an OpenAI-compat shim. Clear any inherited OPENAI_BASE_URL (e.g. a
         # leftover lmstudio/nvidia value) so calls go to Google, not localhost.
-        MODEL="${MODEL:-gemini-pro}"
+        # A REAL upstream id, not the `gemini-pro` alias. The broker is handed
+        # the BARE model (strip_broker_prefix below), so an alias only the agent
+        # can expand reaches Google verbatim — and `gemini-pro` is retired there,
+        # which made every gemini call 404. Pinned by
+        # agents/shared/tests/unit/test_gemini_model_ids_are_live.py.
+        MODEL="${MODEL:-gemini-2.5-flash}"
         require_key GEMINI_API_KEY "Gemini"
         unset OPENAI_BASE_URL 2>/dev/null || true
-        # `gemini-pro` is a built-in alias (provider.py → litellm/gemini/...).
+        # A bare Gemini id gets the litellm/gemini/ prefix so LiteLLM routes it
         # Any other Gemini model gets the litellm/gemini/ prefix so LiteLLM routes
         # it to Google (parallels the lmstudio arm's openai/ prefixing).
         MODEL="$(normalize_model gemini "$MODEL")"

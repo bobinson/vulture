@@ -256,16 +256,21 @@ type source struct {
 }
 
 type audit struct {
-	ID            string         `json:"id"`
-	SourceID      string         `json:"source_id"`
-	SourcePath    string         `json:"source_path"`
-	Status        string         `json:"status"`
-	Types         []string       `json:"types"`
-	Findings      []finding      `json:"findings"`
-	FindingsCount int            `json:"findings_count"`
-	Scores        map[string]int `json:"scores"`
-	CreatedAt     string         `json:"created_at"`
-	CompletedAt   string         `json:"completed_at"`
+	ID         string `json:"id"`
+	SourceID   string `json:"source_id"`
+	SourcePath string `json:"source_path"`
+	Status     string `json:"status"`
+	// DegradedReason is why a run failed or lost a phase — e.g. "requested
+	// agents did not run: semgrep". Carried so exit 2 can say what happened;
+	// without it the operator gets a red build and a status word.
+	DegradedReason string         `json:"degraded_reason"`
+	CancelReason   string         `json:"cancel_reason"`
+	Types          []string       `json:"types"`
+	Findings       []finding      `json:"findings"`
+	FindingsCount  int            `json:"findings_count"`
+	Scores         map[string]int `json:"scores"`
+	CreatedAt      string         `json:"created_at"`
+	CompletedAt    string         `json:"completed_at"`
 }
 
 type finding struct {
@@ -432,6 +437,25 @@ func buildScanConfig(f scanFlags) map[string]interface{} {
 	return cfg
 }
 
+// splitTypes tokenizes a --types value.
+//
+// Trimming and dropping empty tokens is the CLI's own hygiene: `--types
+// "cwe, owasp"` and `--types "cwe,"` are ordinary shell spellings, and the
+// tokens a naive Split produces from them (" owasp", "") name no agent and are
+// rejected by the server. The NAMES themselves are passed through verbatim —
+// the server owns the valid set, because only it knows which plugins this
+// deployment has enabled — and it answers 400 with the canonical spelling when
+// one is wrong.
+func splitTypes(v string) []string {
+	out := make([]string, 0, 4)
+	for _, t := range strings.Split(v, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func parseScanFlags(args []string) scanFlags {
 	f := scanFlags{}
 	f.types = agentregistry.ScanAgentTypes()
@@ -440,7 +464,11 @@ func parseScanFlags(args []string) scanFlags {
 		switch args[i] {
 		case "--types":
 			if i+1 < len(args) {
-				f.types = strings.Split(args[i+1], ",")
+				types := splitTypes(args[i+1])
+				if len(types) == 0 {
+					fatalf("--types was given but names no audit type: %q", args[i+1])
+				}
+				f.types = types
 				i++
 			}
 		case "--no-cache":
@@ -888,7 +916,11 @@ func parseProveFlags(args []string) proveFlags {
 			}
 		case "--types":
 			if i+1 < len(args) {
-				pf.types = strings.Split(args[i+1], ",")
+				types := splitTypes(args[i+1])
+				if len(types) == 0 {
+					fatalf("--types was given but names no audit type: %q", args[i+1])
+				}
+				pf.types = types
 				i++
 			}
 		case "--max-iterations":
@@ -1884,6 +1916,27 @@ func outputResult(a audit, ci ciFlags, apiURL string) {
 // computeExitCode returns 1 if any finding meets or exceeds the given severity
 // threshold, 0 otherwise. Returns 0 if exitOn is empty.
 func computeExitCode(a audit, exitOn string) int {
+	// A failed audit is an EXECUTION error, not a findings verdict, and
+	// docs/guides/ci_integration.md has always reserved code 2 for exactly
+	// that ("Audit execution error: network failure, authentication failure,
+	// LLM error, or server-side fault"). Nothing returned it; a failed audit
+	// exited 0 and CI went green. Measured on audit 2de1852f, where semgrep
+	// never ran, the backend correctly recorded `failed`, and `vulture scan`
+	// still exited 0.
+	//
+	// Checked BEFORE the --exit-on early return on purpose. --exit-on is a
+	// findings-severity policy, and a run that did not complete is not a
+	// findings question; leaving the check below that return would keep
+	// exiting 0 for the default invocation, which is what most pipelines use.
+	//
+	// It also dominates a threshold hit. An incomplete run's finding set is no
+	// basis for "1 = findings at or above the threshold" — the detector that
+	// would have raised the decisive finding may be exactly the one that never
+	// ran — and both 0 and 1 are documented as "Audit completed", which this
+	// audit did not.
+	if a.Status == "failed" {
+		return 2
+	}
 	if exitOn == "" {
 		return 0
 	}
@@ -2106,9 +2159,25 @@ func (a audit) findingCount() int {
 	return a.FindingsCount
 }
 
+// firstNonEmpty returns the first argument that is not blank.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func printAuditSummary(a audit, apiURL string) {
 	fmt.Printf("\n  Audit: %s\n", a.ID)
 	fmt.Printf("  Status: %s\n", colorStatus(a.Status))
+	// Say WHY. A red build whose only explanation is the word "failed" sends
+	// the operator to the server log to find out that, say, a requested agent
+	// never ran — which is exactly the dig this reason exists to save.
+	if reason := strings.TrimSpace(firstNonEmpty(a.CancelReason, a.DegradedReason)); reason != "" {
+		fmt.Printf("  Reason: %s\n", reason)
+	}
 	fmt.Printf("  Types: %s\n", joinAgentNames(a.Types))
 	fmt.Printf("  Findings: %d\n", a.findingCount())
 

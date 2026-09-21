@@ -46,7 +46,7 @@ var errCallerAborted = errors.New("broker/server: caller aborted the request")
 // an agent must not read it as "the provider was down" and retry — the two
 // warrant different behavior. Declared alongside the abort sentinel it maps
 // from; the rest of the §5 vocabulary lives in errors.go.
-var errRequestAborted = &apiError{"request_aborted", "request aborted by caller", statusClientClosedRequest, false}
+var errRequestAborted = &apiError{code: "request_aborted", message: "request aborted by caller", status: statusClientClosedRequest, retriable: false}
 
 // HandleComplete serves POST /internal/v1/llm/complete (§5). It runs the
 // verify → reserve → select → egress-check → call → reconcile pipeline and
@@ -160,7 +160,7 @@ func (s *Server) tryCandidates(ctx context.Context, claims *token.Claims, req *c
 	if called >= 2 {
 		return nil, errAllProvidersDown
 	}
-	return nil, mapProviderErr(lastErr)
+	return nil, mapProviderErrWithUpstream(lastErr)
 }
 
 // classifyEgressErr logs ONE candidate's failure and returns the typed error to
@@ -185,7 +185,7 @@ func classifyEgressErr(prov, model string, err error) *apiError {
 	}
 	log.Printf("broker: egress failed provider=%s model=%s: %v", prov, model, err)
 	if !isFailover(err) {
-		return mapProviderErr(err)
+		return mapProviderErrWithUpstream(err)
 	}
 	return nil
 }

@@ -1,8 +1,10 @@
 """Smart file scanner that handles large repositories efficiently."""
 
+import fnmatch
 import logging
 import os
 import re
+import threading
 from collections.abc import Iterable, Iterator
 from functools import lru_cache
 from pathlib import Path
@@ -116,6 +118,133 @@ WELL_KNOWN_FILENAMES = frozenset({
     # Extensionless, and carries privilege-escalation configuration.
     "sudoers",
 })
+
+
+# Feature 0091 §9 — root-relative paths that can EXECUTE when a project is
+# merely OPENED, before anybody runs anything.
+#
+# THE DEFECT. `.vscode`, `.idea` and `.claude` are all in :data:`SKIP_DIRS`, so
+# a scan of a project root never descended into them and the single most
+# dangerous thing a repository can carry — a VS Code task with
+# ``"runOn": "folderOpen"`` that shells out the moment the folder is opened —
+# was invisible to every skill. The one time it WAS reported it came from the
+# LLM tier of a scan rooted at `.vscode` itself, and the next scan's
+# prior-findings block suppressed it, its absence was read as repair, and the
+# lineage row closed while the line sat in the file byte for byte.
+#
+# THE RULE. The walker yields exactly these paths out of an otherwise-pruned
+# directory. Everything else in that directory stays pruned AND stays reported
+# through :func:`pruned_dirs`, at the granularity that is actually pruned — the
+# container itself is NOT reported, because it WAS walked and a blanket prefix
+# would put the file we just read out of scope, which would make the finding
+# uncloseable forever (feature 0091 §6.5 / S15).
+#
+# Patterns are root-relative, ``/``-separated, and matched segment by segment,
+# so ``*`` never crosses a directory boundary.
+# ``cwe_agent.skills.workspace_autorun_check`` IMPORTS this set rather than
+# restating it: one list, and one anti-drift test that every entry here is
+# matched by at least one of the skill's rules.
+WELL_KNOWN_AUTORUN_FILES: frozenset[str] = frozenset({
+    ".vscode/tasks.json",
+    ".vscode/launch.json",
+    ".vscode/settings.json",
+    ".idea/runConfigurations/*.xml",
+    ".idea/workspace.xml",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".claude/hooks/*",
+    ".devcontainer/devcontainer.json",
+    ".devcontainer/*.sh",
+})
+
+
+def _ancestor_prefixes(patterns: Iterable[str]) -> frozenset[str]:
+    """Every directory prefix that must be entered to reach ``patterns``."""
+    out: set[str] = set()
+    for pattern in patterns:
+        parts = pattern.split("/")
+        for i in range(1, len(parts)):
+            out.add("/".join(parts[:i]))
+    return frozenset(out)
+
+
+# `.vscode`, `.idea`, `.idea/runConfigurations`, `.claude`, `.claude/hooks`,
+# `.devcontainer` — derived, never restated, so a new pattern above cannot be
+# unreachable because somebody forgot to un-prune its parent.
+_AUTORUN_DIR_PREFIXES: frozenset[str] = _ancestor_prefixes(WELL_KNOWN_AUTORUN_FILES)
+
+
+def match_rel_pattern(rel_path: str, pattern: str) -> bool:
+    """Segment-wise fnmatch: ``*`` matches within one segment, never across.
+
+    Public because :mod:`cwe_agent.skills.workspace_autorun_check` decides which
+    of its rules owns a walked file with the SAME matcher the walker used to
+    yield it. Two matchers would be two definitions of the allowlist.
+    """
+    parts = rel_path.split("/")
+    pattern_parts = pattern.split("/")
+    if len(parts) != len(pattern_parts):
+        return False
+    return all(fnmatch.fnmatchcase(a, b) for a, b in zip(parts, pattern_parts))
+
+
+def is_autorun_path(rel_path: str) -> bool:
+    """True when a root-relative path is a known editor/IDE autorun FILE."""
+    return any(match_rel_pattern(rel_path, pat) for pat in WELL_KNOWN_AUTORUN_FILES)
+
+
+# The deepest pattern in the allowlist, in segments. Bounds how far
+# :func:`is_autorun_entry` may climb above a scan root looking for the segments
+# that identify a file, so the climb is decided by the allowlist rather than by
+# a number someone has to keep in step with it.
+_AUTORUN_MAX_DEPTH: int = max(len(p.split("/")) for p in WELL_KNOWN_AUTORUN_FILES)
+
+
+def autorun_rel_path(scan_root: Path, entry: Path) -> str:
+    """``entry`` as the path the autorun allowlist recognises, or ``""``.
+
+    An autorun file is identified by segments the scan root can CONSUME. The
+    patterns are rooted at the repository (``.vscode/tasks.json``), so pointing
+    a scan at ``.vscode`` itself leaves the relative path ``tasks.json`` — the
+    identifying segment is gone and the file stops being recognised. Measured:
+    a rescan of ``…/blu-simulator/.vscode`` returned 0 findings with the
+    malicious ``tasks.json`` on disk, and absence closed the row.
+
+    So the root-relative path is tried first, then the same path re-anchored at
+    each ancestor of the scan root, up to the deepest pattern in the allowlist.
+    The MATCHING path is returned rather than a bool because the walker and the
+    skill must agree on more than membership: the skill picks which rule owns
+    the file from this same string, and a rule chosen from an unanchored path
+    is no rule at all — the file is read and reported on by nobody.
+
+    Climbing cannot widen what counts as an autorun file: every candidate is
+    matched against the same patterns, and a file whose real path never spells
+    one out still matches nothing.
+    """
+    rel = _rel_of(scan_root, entry)
+    if not rel:
+        return ""
+    if is_autorun_path(rel):
+        return rel
+    ancestor = scan_root
+    for _ in range(_AUTORUN_MAX_DEPTH - 1):
+        if ancestor.parent == ancestor:  # reached the filesystem root
+            break
+        ancestor = ancestor.parent
+        candidate = _rel_of(ancestor, entry)
+        if candidate and is_autorun_path(candidate):
+            return candidate
+    return ""
+
+
+def is_autorun_entry(scan_root: Path, entry: Path) -> bool:
+    """True when ``entry`` is an autorun file, however deep the scan root sits."""
+    return autorun_rel_path(scan_root, entry) != ""
+
+
+def _is_autorun_dir(rel_path: str) -> bool:
+    """True when a root-relative DIRECTORY must be entered to reach one."""
+    return any(match_rel_pattern(rel_path, pat) for pat in _AUTORUN_DIR_PREFIXES)
 
 
 def _env_extensions(name: str) -> frozenset[str]:
@@ -359,7 +488,9 @@ def scan_code_files(
     # Part of the cache key: flipping VULTURE_SCAN_MINIFIED or the extension
     # whitelist must not return a stale walk from the opposite setting.
     return list(
-        _scan_code_files_cached(source_path, exts, max_files, extras, _scan_minified())
+        _scan_code_files_cached(
+            source_path, exts, max_files, extras, _scan_minified(),
+        )
     )
 
 
@@ -574,6 +705,29 @@ def _walk_unfiltered_by_extension(source_path: str) -> Iterable[Path]:
     return _walk_filtered(root, root, _load_ignore_spec(str(root)))
 
 
+def scan_autorun_files(source_path: str) -> list[Path]:
+    """Every editor / IDE / devcontainer autorun file under ``source_path``.
+
+    Deliberately independent of the extension allowlist, exactly as
+    :func:`scan_backup_files` is: membership is decided by the PATH, not by the
+    file type, and a `.claude/hooks/` entry routinely carries no extension at
+    all. The walk itself still applies SKIP_DIRS, the ignore spec and
+    """
+    return list(_scan_autorun_files_cached(source_path))
+
+
+@lru_cache(maxsize=16)
+def _scan_autorun_files_cached(source_path: str) -> tuple[Path, ...]:
+    """Cached inner autorun walk — keyed by path."""
+    root = Path(source_path)
+    if not root.is_dir():
+        return ()
+    spec = _load_ignore_spec(str(root))
+    return tuple(
+        p for p in _walk_filtered(root, root, spec) if is_autorun_entry(root, p)
+    )
+
+
 @lru_cache(maxsize=16)
 def _scan_backup_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
     """Cached inner backup walk — keyed by (path, max_files)."""
@@ -657,7 +811,132 @@ def _load_ignore_spec(source_path: str):
         return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
 
-def _walk_filtered(root: Path, scan_root: Path, spec) -> Iterator[Path]:
+# Feature 0091 §6.5: the root-relative prefixes each scan refused to descend
+# into, keyed by the scanned root. The backend subtracts these from the scan's
+# scope: without them it cannot tell "this scan proved nothing is there" from
+# "this scan never looked", and the latter would close every lineage row under
+# a pruned tree. Keyed by root (not per-call) because the walk itself is
+# lru_cached — a second skill scanning the same tree reuses the cached walk and
+# would otherwise record nothing. Cleared with the walk caches.
+_PRUNED_LOCK = threading.Lock()
+_PRUNED_DIRS: dict[str, set[str]] = {}
+
+
+def _rel_of(scan_root: Path, entry: Path) -> str:
+    """``entry`` as a root-relative POSIX path, or ``""`` if it is outside."""
+    try:
+        return entry.relative_to(scan_root).as_posix()
+    except ValueError:
+        return ""
+
+
+def _record_pruned(scan_root: Path, entry: Path) -> None:
+    """Remember one prefix the walk did not look inside (or at).
+
+    Usually a directory. Inside a restricted (autorun-only) directory it is
+    also the individual FILES that were not read: the container itself was
+    walked, so reporting it as a blanket prefix would put the autorun file we
+    DID read out of scope, and an out-of-scope row can never close.
+    """
+    rel = _rel_of(scan_root, entry)
+    if not rel or rel == ".":
+        return
+    with _PRUNED_LOCK:
+        _PRUNED_DIRS.setdefault(str(scan_root), set()).add(rel)
+
+
+def pruned_dirs(source_path: str) -> list[str]:
+    """Root-relative prefixes the walker skipped under ``source_path``.
+
+    Root-relative and never absolute: the backend joins these onto the scanned
+    root it already knows, and cannot do that with a host path.
+    """
+    with _PRUNED_LOCK:
+        return sorted(_PRUNED_DIRS.get(str(Path(source_path)), set()))
+
+
+def _prune(scan_root: Path, entry: Path) -> str:
+    """Record ``entry`` when it is a directory, and classify it as skipped."""
+    if entry.is_dir():
+        _record_pruned(scan_root, entry)
+    return "skip"
+
+
+def _excluded_entry(entry: Path, scan_root: Path, spec) -> bool:
+    """A symlink (loop guard) or an ignore-spec match: never walked, never yielded."""
+    return entry.is_symlink() or _is_path_ignored(entry, scan_root, spec)
+
+
+def _pruned_dir_name(name: str) -> bool:
+    """A directory name the hardcoded baseline never descends into."""
+    return name in SKIP_DIRS or _is_backup_dir(name)
+
+
+def _classify_file(entry: Path, scan_root: Path, restricted: bool) -> str:
+    """``"file"`` / ``"skip"`` for one walked FILE.
+
+    Inside a restricted directory — one the walker entered ONLY to reach an
+    autorun file — every other file is left unread and recorded, so the backend
+    can still tell "read it and the finding is gone" from "never opened it".
+    """
+    if not restricted:
+        return "file"
+    if is_autorun_entry(scan_root, entry):
+        return "file"
+    _record_pruned(scan_root, entry)
+    return "skip"
+
+
+def _classify_pruned_dir(scan_root: Path, entry: Path, rel: str) -> str:
+    """A ``SKIP_DIRS`` name: entered ONLY when D2 needs an autorun file inside
+    it, and then only for that file."""
+    if _is_autorun_dir(rel):
+        return "restricted"
+    return _prune(scan_root, entry)
+
+
+def _classify_dir(entry: Path, scan_root: Path, restricted: bool) -> str:
+    """``"dir"`` / ``"restricted"`` / ``"skip"`` for one walked DIRECTORY."""
+    rel = _rel_of(scan_root, entry)
+    if restricted:
+        return "restricted" if _is_autorun_dir(rel) else _prune(scan_root, entry)
+    if not _pruned_dir_name(entry.name):
+        return "dir"
+    return _classify_pruned_dir(scan_root, entry, rel)
+
+
+def _classify_entry(entry: Path, scan_root: Path, spec, restricted: bool = False) -> str:
+    """``"file"`` / ``"dir"`` / ``"restricted"`` / ``"skip"`` for one entry.
+
+    Split out of :func:`_walk_filtered` so that every reason a path is not
+    looked at passes through exactly one recording point — a prune the walker
+    performs but does not report is a lineage row the backend closes without
+    evidence.
+
+    Order matters: the name test is applied only after the entry is known to be
+    a directory, because ``SKIP_DIRS`` holds bare names (``data``, ``fixtures``)
+    that a FILE may legitimately carry.
+    """
+    if _excluded_entry(entry, scan_root, spec):
+        return _prune(scan_root, entry)
+    if entry.is_file():
+        return _classify_file(entry, scan_root, restricted)
+    if not entry.is_dir():
+        return "skip"
+    return _classify_dir(entry, scan_root, restricted)
+
+
+def _sorted_entries(root: Path) -> list[Path]:
+    """``root``'s children in a stable order, or nothing if unreadable."""
+    try:
+        return sorted(root.iterdir())
+    except PermissionError:
+        return []
+
+
+def _walk_filtered(
+    root: Path, scan_root: Path, spec, restricted: bool = False,
+) -> Iterator[Path]:
     """Walk directory tree, skipping ignored directories.
 
     Skips entries that:
@@ -665,25 +944,24 @@ def _walk_filtered(root: Path, scan_root: Path, spec) -> Iterator[Path]:
     - Match a `.vultureignore` / `.gitignore` pattern from ``scan_root``.
     - Are symlinks (avoid loops).
     - Are backup directories (`-backup`, `_old`, etc.).
+
+    Feature 0091 D2 carves ONE hole in that: a pruned directory on the path to
+    a :data:`WELL_KNOWN_AUTORUN_FILES` entry is entered in ``restricted`` mode
+    and yields those files and nothing else.
+
+    Every prefix the walk did not look inside is recorded (feature 0091 §6.5)
+    and readable back through :func:`pruned_dirs`.
     """
-    try:
-        entries = sorted(root.iterdir())
-    except PermissionError:
-        return
-
-    dirs: list[Path] = []
-    for entry in entries:
-        if entry.is_symlink():
-            continue
-        if _is_path_ignored(entry, scan_root, spec):
-            continue
-        if entry.is_file():
+    dirs: list[tuple[Path, bool]] = []
+    for entry in _sorted_entries(root):
+        kind = _classify_entry(entry, scan_root, spec, restricted)
+        if kind == "file":
             yield entry
-        elif entry.is_dir() and entry.name not in SKIP_DIRS and not _is_backup_dir(entry.name):
-            dirs.append(entry)
+        elif kind in ("dir", "restricted"):
+            dirs.append((entry, kind == "restricted"))
 
-    for d in dirs:
-        yield from _walk_filtered(d, scan_root, spec)
+    for directory, child_restricted in dirs:
+        yield from _walk_filtered(directory, scan_root, spec, child_restricted)
 
 
 def _is_path_ignored(entry: Path, scan_root: Path, spec) -> bool:
@@ -983,6 +1261,12 @@ def clear_caches() -> None:
     # score a stale tree. Clearing more is always safe.
     _scan_backup_files_cached.cache_clear()
     _scan_all_files_cached.cache_clear()
+    _scan_autorun_files_cached.cache_clear()
+    # Feature 0091 §6.5: the pruned-prefix record is produced BY those walks and
+    # keyed the same way, so it must be dropped with them — a stale entry would
+    # report the previous run's tree as out of scope for this one.
+    with _PRUNED_LOCK:
+        _PRUNED_DIRS.clear()
     # Feature 0076: the anchor verifier caches the NORMALISED form of the same
     # files, keyed the same way. Imported at call time — `shared.anchor` imports
     # `shared.tools.line_format`, so a module-level import here would close a

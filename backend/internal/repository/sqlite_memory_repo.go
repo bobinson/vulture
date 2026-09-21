@@ -466,3 +466,19 @@ func (r *SQLiteMemoryRepo) scanMemories(rows *sql.Rows) ([]model.AuditMemory, er
 	}
 	return memories, rows.Err()
 }
+
+// SetRemediationStatus is the SQLite twin of the Postgres implementation; see
+// the comment there for why lineage transitions have to reach audit_memories
+// at all (feature 0091 §8, defect D1a).
+func (r *SQLiteMemoryRepo) SetRemediationStatus(fingerprint string, status string) error {
+	if fingerprint == "" {
+		return nil
+	}
+	_, err := r.db.Exec(`
+		UPDATE audit_memories SET remediation_status = ?, updated_at = ?
+		WHERE fingerprint = ?`, status, time.Now().UTC().Format(time.RFC3339), fingerprint)
+	if err != nil {
+		return fmt.Errorf("set remediation status: %w", err)
+	}
+	return nil
+}

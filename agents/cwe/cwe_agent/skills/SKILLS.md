@@ -1,6 +1,6 @@
 # CWE Weakness Auditor - Skills
 
-Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities. The deterministic skill phase detects ~73 declared CWE-ID `category` literals across 23 dedicated skills plus 7 corpus-trusted signature CWEs; of those, N=10 CWE types are corpus-VERIFIED (recall 1.0 / fp 0.0 — see `tests/corpus/VERIFIED_CWES.md`, computed by the gate, not asserted). The 846-entry CWE v4.19.1 catalog is metadata/context (names, consequences, rollup parents) — NOT a detection-coverage claim; it drives self-learning confidence scoring and MMR-based memory retrieval with embedding similarity.
+Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabilities. The deterministic skill phase detects ~73 declared CWE-ID `category` literals across 24 dedicated skills plus 7 corpus-trusted signature CWEs; of those, N=10 CWE types are corpus-VERIFIED (recall 1.0 / fp 0.0 — see `tests/corpus/VERIFIED_CWES.md`, computed by the gate, not asserted). The 846-entry CWE v4.19.1 catalog is metadata/context (names, consequences, rollup parents) — NOT a detection-coverage claim; it drives self-learning confidence scoring and MMR-based memory retrieval with embedding similarity.
 
 ## injection_check
 
@@ -274,7 +274,7 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 ## catalog_detector
 
 - **Function**: `check_catalog_generic(source_path: str) -> dict`
-- **Purpose**: Catalog-driven generic CWE detection engine that keyword-matches against the enriched CWE v4.19.1 metadata. HONESTY NOTE: this path fires ~0 findings on real code — it is metadata/context (catalog names, consequences, rollup parents), NOT a detection-coverage claim. The deterministic detection surface is the 23 dedicated skills (~73 declared CWE-ID categories) plus 7 trusted signatures; N=10 of those are corpus-VERIFIED (see `tests/corpus/VERIFIED_CWES.md`).
+- **Purpose**: Catalog-driven generic CWE detection engine that keyword-matches against the enriched CWE v4.19.1 metadata. HONESTY NOTE: this path fires ~0 findings on real code — it is metadata/context (catalog names, consequences, rollup parents), NOT a detection-coverage claim. The deterministic detection surface is the 24 dedicated skills (~73 declared CWE-ID categories) plus 7 trusted signatures; N=10 of those are corpus-VERIFIED (see `tests/corpus/VERIFIED_CWES.md`).
 - **Mechanism**:
   - Loads all CWEs with static-detectability score >= 0.3 from enriched catalog
   - Builds keyword-to-CWE inverted index for fast file-level matching
@@ -323,6 +323,30 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **CWE Coverage**: **CWE-319** Cleartext Transmission of Sensitive Information.
 - **Suppression**: test-fixture paths, local-loopback hosts (`127.0.0.1`, `localhost`) and documentation comments do not report — a plaintext scheme against loopback is not a transmission exposure.
 - **Dispatch note**: this skill and `secret_scan` were implemented and present in `SKILL_MAP` but absent from `config.ALL_CATEGORIES` (the dispatch list), so neither ran. `tests/unit/test_skill_dispatch_conformance.py` now pins `set(ALL_CATEGORIES) == set(SKILL_MAP)` so the two cannot diverge again.
+
+## workspace_autorun_check
+
+- **Function**: `check_workspace_autorun(source_path: str) -> dict`
+- **Purpose**: Detection of workspace/editor/IDE/devcontainer configuration that **executes a command when the project is merely opened**, before anybody runs anything and before the command has been reviewed.
+- **Why it is a dedicated skill (feature 0091 D2)**: `.vscode`, `.idea`, `.eclipse` and `.claude` are all in the walker's `SKIP_DIRS`, so a scan of a project ROOT never descended into them and this class was invisible to every skill. The one time it was reported it came from the LLM tier of a scan rooted at `.vscode` itself — and an LLM-tier finding enters the next scan's prior-findings block, which instructs the model to skip known issues. The model complied, the absence was read as repair, and the lineage row closed while the offending line sat in the file byte for byte. A deterministic skill is reproducible on every scan, never enters that suppression block, and closes only when the pattern actually leaves the file.
+- **File allowlist**: the skill IMPORTS `WELL_KNOWN_AUTORUN_FILES` from `shared.tools.file_scanner` — the same set the walker uses to lift these paths out of an otherwise-pruned directory. One list, never two; `tests/unit/skills/test_0091_workspace_autorun.py::test_the_two_lists_are_one_list` pins the rules' claims equal to the walker's allowlist so neither half can grow alone. Enumeration goes through `scan_autorun_files()`, which is keyed on the PATH and ignores the extension allowlist, because a `.claude/hooks/` entry routinely carries no extension.
+- **Rules**:
+
+  | `check_id` | reads | fires on | CWE |
+  |---|---|---|---|
+  | `cwe.workspace_autorun.vscode_task` | `.vscode/tasks.json`, `.vscode/launch.json` | a task with `runOn: folderOpen` (at the task or inside `runOptions`) that carries a `command` | **CWE-506** |
+  | `cwe.workspace_autorun.vscode_env` | `.vscode/settings.json` | a `terminal.integrated.env.*` value containing `$(` or a backtick — evaluated on every integrated-terminal open | **CWE-506** |
+  | `cwe.workspace_autorun.idea_run_config` | `.idea/runConfigurations/*.xml`, `.idea/workspace.xml` | a `<command>` element, or a `SCRIPT_TEXT` / `INTERPRETER_PATH` option | **CWE-506** |
+  | `cwe.workspace_autorun.devcontainer_hook` | `.devcontainer/devcontainer.json`, `.devcontainer/*.sh` | an `initializeCommand` / `onCreateCommand` / `updateContentCommand` / `postCreateCommand` / `postStartCommand` / `postAttachCommand`; in a script, remote content piped into an interpreter | **CWE-829** |
+  | `cwe.workspace_autorun.claude_hook` | `.claude/settings.json`, `.claude/settings.local.json`, `.claude/hooks/*` | a settings `hooks` entry with a `command`, or a hook script that shells out (`sh -c`, `eval`, `curl … \| sh`) | **CWE-506** |
+
+- **CWE split**: the four rules whose trigger is "this runs because the project was opened" emit **CWE-506** (Embedded Malicious Code). The devcontainer rules emit **CWE-829** (Inclusion of Functionality from an Untrusted Control Sphere): a lifecycle command provisions the workspace from an image, a registry or a fetched install script the developer does not control.
+- **JSONC**: `tasks.json`, `settings.json`, `devcontainer.json` and Claude settings legally carry `//` and `/* */` comments and trailing commas, all three of which `json.loads` rejects. The skill strips them (string literals preserved) before parsing, so a task cannot be hidden behind one `//`.
+- **Line attribution**: line numbers are recovered from the RAW text, not from the parsed document — a finding must cite the line that executes (the reference incident is `.vscode/tasks.json:7`, the `"command"` line), and JSON parsing discards positions. A second task with its own `command` lands on its own line rather than re-citing the first.
+- **`code_snippet`**: the COMMAND text (capped at 400 chars), not a source window. The thing a reviewer has to judge is the text that will run.
+- **False-positive discipline**: un-pruning a directory that nearly every repository carries is only defensible if what comes back is the autorun class and nothing else. A `.vscode/settings.json` holding only editor preferences, a task without `folderOpen`, a literal `terminal.integrated.env` value, an ordinary `workspace.xml`, a devcontainer with no lifecycle hook and an inert hook script all produce **zero** findings; each has its own test.
+- **Scope reporting**: the walker enters an editor directory only to reach these files, and reports everything else in it — the unread files and the sub-directories — through `pruned_dirs()` at that granularity. The container itself is deliberately NOT reported: the backend's scope check is a prefix match, so a bare `.vscode` would put the file that WAS read out of scope, and an out-of-scope lineage row returns before the tier rules and could never close. See `shared/tests/unit/test_0091_editor_config_scope.py`.
+- **Rollback**: `VULTURE_SCAN_EDITOR_CONFIG=false` prunes the editor directories in full again, exactly as before feature 0091. The container becomes the reported prefix, every path beneath it is correctly out of scope, and this skill reports nothing from them.
 
 ## Self-Learning (LLM Phase)
 

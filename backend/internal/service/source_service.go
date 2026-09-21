@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -129,6 +130,12 @@ func (s *sourceService) ingestLocal(ctx context.Context, req *model.SourceReques
 			existing.GitRemoteURL = gi.RemoteURL
 			_ = s.repo.UpdateSourceGitInfo(existing.ID, gi.Branch, gi.CommitHash, gi.CommitShort, gi.RemoteURL)
 		}
+		// Feature 0091 §7.1: re-ingest is where a source row written before
+		// target identity existed acquires its key, and where a source whose
+		// remote was only just discovered acquires the better one. Recomputed
+		// rather than trusted, because the answer depends on the remote that
+		// was just refreshed above.
+		s.stampTargetKey(existing)
 		return existing, nil
 	}
 
@@ -149,10 +156,26 @@ func (s *sourceService) ingestLocal(ctx context.Context, req *model.SourceReques
 		src.GitCommitShort = gi.CommitShort
 		src.GitRemoteURL = gi.RemoteURL
 	}
+	src.TargetKey = ResolveTarget(src).Key
 	if err := s.repo.CreateSource(src); err != nil {
 		return nil, fmt.Errorf("create source: %w", err)
 	}
 	return src, nil
+}
+
+// stampTargetKey (re)computes and persists a source's target key. A failure is
+// logged, never fatal: an ingest that succeeded must not be turned into an
+// error because a denormalised convenience column could not be written — the
+// scan itself resolves the key from the source record either way.
+func (s *sourceService) stampTargetKey(src *model.Source) {
+	key := ResolveTarget(src).Key
+	if key == "" || key == src.TargetKey {
+		return
+	}
+	src.TargetKey = key
+	if err := s.repo.UpdateSourceTargetKey(src.ID, key); err != nil {
+		log.Printf("[source] persist target key id=%s: %v", src.ID, err)
+	}
 }
 
 func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest) (*model.Source, error) {
@@ -193,6 +216,9 @@ func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest)
 		src.GitCommitShort = gi.CommitShort
 		src.GitRemoteURL = gi.RemoteURL
 	}
+	// The clone directory is fresh on EVERY ingest, so for a git source the
+	// path can never be the identity; the remote is (§7.1 step 1).
+	src.TargetKey = ResolveTarget(src).Key
 	if err := s.repo.CreateSource(src); err != nil {
 		return nil, fmt.Errorf("create source: %w", err)
 	}
