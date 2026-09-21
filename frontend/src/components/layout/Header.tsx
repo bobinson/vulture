@@ -5,6 +5,7 @@ const TITLES: Record<string, string> = {
   "/": "dashboard.title",
   "/audit": "audit.title",
   "/memories": "memories.title",
+  "/targets": "targets.title",
   "/settings": "settings.title",
 };
 
@@ -13,9 +14,14 @@ export function Header() {
   const { t } = useTranslation();
 
   const segments = location.pathname.split("/").filter(Boolean);
-  const titleKey = TITLES[location.pathname] ?? (
-    segments.length > 1 && segments[0] === "audit" ? "results.title" : "app.name"
-  );
+  const DETAIL_TITLES: Record<string, string> = {
+    audit: "results.title",
+    targets: "targets.reportTitle",
+    lineage: "lineage.detailTitle",
+  };
+  const titleKey =
+    TITLES[location.pathname] ??
+    (segments.length > 1 ? (DETAIL_TITLES[segments[0]] ?? "app.name") : "app.name");
 
   const crumbs = [{ label: t("nav.home"), path: "/" }];
   if (segments.length > 0) {
@@ -27,6 +33,10 @@ export function Header() {
           path: `/audit/${segments[1]}`,
         });
       }
+    } else if (segments[0] === "targets") {
+      crumbs.push({ label: t("targets.title"), path: "/targets" });
+    } else if (segments[0] === "lineage") {
+      crumbs.push({ label: t("lineage.detailTitle"), path: location.pathname });
     } else if (segments[0] === "memories") {
       crumbs.push({ label: t("nav.memories"), path: "/memories" });
     } else if (segments[0] === "settings") {

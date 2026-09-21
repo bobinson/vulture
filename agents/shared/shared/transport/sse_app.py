@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from shared.cancellation import CancelToken, set_cancel_token
+from shared.lineage_context import set_lineage_checks_requested
 from shared.llm.broker import set_broker_task_type, set_broker_token, set_context_window
 from shared.models.audit_request import AuditRequest
 
@@ -70,6 +71,12 @@ async def _cancellable_stream(
     # get_context_window prefers it over the local table (custom-gateway models
     # the agent doesn't know). None (broker off) → the agent resolves its own.
     ctx.run(set_context_window, getattr(req, "context_window", None))
+    # feature 0091 §6.1: bind the backend's lineage evidence question. Ambient
+    # for the same reason as the three above — `run_audit` has no parameter for
+    # it and widening ten agent signatures to carry one dict from the request
+    # to `run_combined_audit` would touch every agent and every agent test.
+    # `getattr` guards a caller that constructed an AuditRequest by hand.
+    ctx.run(set_lineage_checks_requested, getattr(req, "lineage_checks_requested", None))
     loop = asyncio.get_running_loop()
     # UNBOUNDED by design (feature 0061 §3.2 R-3): a bounded queue would block
     # the producer on `put` once a disconnected consumer stops draining,

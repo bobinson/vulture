@@ -3,7 +3,6 @@ package handler
 import (
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/vulture/backend/internal/model"
@@ -31,27 +30,7 @@ import (
 // stable per-detector identity satisfies both — check_id, which A2 now
 // persists. That is why A3 lands last in this feature and not first.
 
-const (
-	identityOff     = "off"
-	identityObserve = "observe"
-	identityEnforce = "enforce"
-)
-
-// findingIdentityMode reads VULTURE_FINDING_IDENTITY at call time.
-//
-// Default OFF. v2 is computed and stored but nothing reads it until an operator
-// opts in, because changing which fingerprint LINEAGE resolves on is a one-way
-// door for stored triage state.
-func findingIdentityMode() string {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("VULTURE_FINDING_IDENTITY"))) {
-	case "observe":
-		return "observe"
-	case "enforce":
-		return "enforce"
-	default:
-		return "off"
-	}
-}
+const ()
 
 // fingerprintV2 is the stable identity: per-detector where one exists, and
 // deployment-invariant either way.
@@ -93,27 +72,14 @@ func fingerprintV2(f model.Finding, sourceRoot string) string {
 	return fmt.Sprintf("%x", h[:16])
 }
 
-// stampIdentity fills FingerprintV2 (and, under enforce, swaps the resolution
-// order) for a batch of findings.
+// stampIdentity fills FingerprintV2 for a batch of findings.
 //
-// LegacyFingerprint carries the v1 value forward in memory so lineage can match
-// on EITHER. It is json:"-" and appears in no column list, so it never reaches
-// a client or a database — it exists purely so the flip is lossless for the
-// 5,109 stored lineage rows whose UNIQUE key is the v1 fingerprint.
+// Always: computing v2 is additive and reversible — a row keeps whatever v2 it
+// has, and lineage matching tries v2 then falls back to the v1 fingerprint, so
+// a row stamped by an older build still resolves. `fingerprint` itself is never
+// rewritten; that would move the key stored triage hangs on.
 func stampIdentity(findings []model.Finding, sourceRoot string) {
-	if findingIdentityMode() == identityOff {
-		return
-	}
 	for i := range findings {
-		v2 := fingerprintV2(findings[i], sourceRoot)
-		findings[i].FingerprintV2 = v2
-		if findingIdentityMode() == identityEnforce {
-			// Keep the v1 value reachable: detectFixed marks any absent
-			// fingerprint FIXED, so without this the first enforce run would
-			// mark every historical finding fixed and mint a new VLT ref for
-			// each one — a one-time destruction of triage state.
-			findings[i].LegacyFingerprint = findings[i].Fingerprint
-			findings[i].Fingerprint = v2
-		}
+		findings[i].FingerprintV2 = fingerprintV2(findings[i], sourceRoot)
 	}
 }

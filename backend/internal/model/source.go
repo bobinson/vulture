@@ -19,7 +19,12 @@ type Source struct {
 	GitCommitHash  string     `json:"git_commit_hash,omitempty"`
 	GitCommitShort string     `json:"git_commit_short,omitempty"`
 	GitRemoteURL   string     `json:"git_remote_url,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
+	// TargetKey is the canonical identity of the codebase this source points
+	// at (feature 0091 §7.1): the normalised git remote, else a scan-root
+	// marker, else the canonical path. It is what lineage groups by, so that a
+	// history survives the tree being scanned under a different mount.
+	TargetKey string    `json:"target_key,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // GitCredentials carries per-source git auth. Never persisted.

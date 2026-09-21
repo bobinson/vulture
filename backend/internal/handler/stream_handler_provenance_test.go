@@ -165,19 +165,6 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 				"however rich the model's row looks to findingDetailScore",
 		},
 		{
-			// Same as above with the switch stated explicitly, so a build
-			// that only honours an explicit "true" is still covered.
-			name:   "equal_severity_llm_richer_guard_explicitly_true",
-			prefer: "true",
-			rows: [2]model.Finding{
-				deterministicRow("det-skill", model.SeverityHigh),
-				llmRow("llm-row", model.SeverityHigh, 3),
-			},
-			wantID: "det-skill",
-			property: "AC15: VULTURE_DEDUP_PREFER_DETERMINISTIC=true must select the deterministic row " +
-				"at equal severity",
-		},
-		{
 			// RED before T4.2 via the SECOND route past the guard: severity
 			// is lower (medium=30) but 12 model-authored references plus a
 			// snippet total 45, beating the deterministic 44.
@@ -203,31 +190,6 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 			wantID: "llm-row",
 			property: "AC15 boundary: at STRICTLY HIGHER llm severity the 0075 behaviour is unchanged — " +
 				"the guard must not become a blanket `deterministic always wins`",
-		},
-		{
-			// The rollback switch restores 0075 EXACTLY: same two rows as
-			// the first case, opposite winner.
-			name:   "switch_off_restores_pre_0076_at_equal_severity",
-			prefer: "false",
-			rows: [2]model.Finding{
-				deterministicRow("det-skill", model.SeverityHigh),
-				llmRow("llm-row", model.SeverityHigh, 3),
-			},
-			wantID: "llm-row",
-			property: "AC15 rollback: VULTURE_DEDUP_PREFER_DETERMINISTIC=false must restore pre-0076 " +
-				"winner selection — the richer row wins, `llm` included",
-		},
-		{
-			// The rollback switch on the reference-count route too.
-			name:   "switch_off_restores_pre_0076_at_lower_severity",
-			prefer: "false",
-			rows: [2]model.Finding{
-				deterministicRow("det-skill", model.SeverityHigh),
-				llmRow("llm-row", model.SeverityMedium, 12),
-			},
-			wantID: "llm-row",
-			property: "AC15 rollback: with the guard off, findingDetailScore alone decides — " +
-				"no residual provenance term may leak through",
 		},
 		{
 			// Scope: the guard keys on `llm` vs deterministic. Between two

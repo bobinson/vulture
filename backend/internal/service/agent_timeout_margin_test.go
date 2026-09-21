@@ -19,7 +19,8 @@ import (
 // provenance-less delta path.
 //
 // The correct invariant is:
-//     PROXY >= AGENT_MAX + LLM_CALL_TIMEOUT
+//
+//	PROXY >= AGENT_MAX + LLM_CALL_TIMEOUT
 func TestTimeoutMarginInvariant(t *testing.T) {
 	cases := []struct {
 		name                     string
@@ -29,33 +30,33 @@ func TestTimeoutMarginInvariant(t *testing.T) {
 		{
 			// The measured configuration. Satisfies the OLD invariant, and is
 			// exactly the one that truncated four agents.
-			name: "measured 3c168626 config is unsafe",
+			name:  "measured 3c168626 config is unsafe",
 			proxy: 7500 * time.Second, agentMax: 7200 * time.Second,
 			llmCall: 600 * time.Second, wantWarn: true,
 		},
 		{
-			name: "margin exactly equal to one call is safe",
+			name:  "margin exactly equal to one call is safe",
 			proxy: 7800 * time.Second, agentMax: 7200 * time.Second,
 			llmCall: 600 * time.Second, wantWarn: false,
 		},
 		{
-			name: "generous margin is safe",
+			name:  "generous margin is safe",
 			proxy: 9000 * time.Second, agentMax: 7200 * time.Second,
 			llmCall: 600 * time.Second, wantWarn: false,
 		},
 		{
-			name: "proxy below agent max is unsafe under either invariant",
+			name:  "proxy below agent max is unsafe under either invariant",
 			proxy: 600 * time.Second, agentMax: 900 * time.Second,
 			llmCall: 120 * time.Second, wantWarn: true,
 		},
 		{
 			// Defaults as shipped: 600 / 900 / 120.
-			name: "shipped defaults are flagged",
+			name:  "shipped defaults are flagged",
 			proxy: 600 * time.Second, agentMax: 900 * time.Second,
 			llmCall: 120 * time.Second, wantWarn: true,
 		},
 		{
-			name: "agent deadline disabled means no constraint",
+			name:  "agent deadline disabled means no constraint",
 			proxy: 600 * time.Second, agentMax: 0,
 			llmCall: 120 * time.Second, wantWarn: false,
 		},

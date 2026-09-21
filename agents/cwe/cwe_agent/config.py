@@ -30,6 +30,11 @@ ALL_CATEGORIES: list[str] = [
     # test_skill_dispatch_conformance.py now pins ALL_CATEGORIES == SKILL_MAP.
     "secrets",
     "plaintext_transmission",
+    # Feature 0091 D2: editor/IDE/devcontainer autorun configuration. The class
+    # that used to be reachable only by scanning `.vscode` as its own root, and
+    # then only from the LLM tier — which put it straight into the next scan's
+    # suppression block and let its silence be read as repair.
+    "workspace_autorun",
 ]
 
 CONFIG_SCHEMA: dict = {
@@ -85,5 +90,6 @@ AGENT_INFO: dict = {
         "catalog_detector",
         "secret_scan",
         "plaintext_transmission_check",
+        "workspace_autorun_check",
     ],
 }

@@ -23,9 +23,14 @@ Content-Type: application/json
   "config": {
     // agent-specific configuration
   },
-  "prior_findings": [...]
+  "prior_findings": [...],
+  "lineage_checks_requested": { "schema": 1, "rows": [...] }
 }
 ```
+
+`lineage_checks_requested` is optional and omitted entirely when the backend has
+nothing to ask; see [Lineage evidence checks](#lineage-evidence-checks-feature-0091-versioned)
+below.
 
 ### Response (Python → Go via SSE)
 
@@ -56,6 +61,77 @@ data: {"findings": [...], "summary": "...", "score": 72}
 event: agent_end
 data: {"run_id": "uuid", "status": "completed"}
 ```
+
+### Lineage evidence checks (feature 0091, versioned)
+
+Absence from an LLM result is not evidence that the code was repaired: the
+prior-findings block asks the model to skip known issues, so it complies and the
+finding is missing from a scan that never disagreed with it. The evidence quote
+that could settle the question never leaves the agent process, so the backend
+cannot re-verify anything — it **asks**, and the agent **answers**.
+
+The **request** gains one optional key. Rows are LLM-tier lineage rows only;
+deterministic rows keep the unchanged present/absent rule and are never sent.
+
+```json
+"lineage_checks_requested": {
+  "schema": 1,
+  "rows": [
+    { "lineage_id": "…", "fingerprint_v2": "…", "rel_path": ".vscode/tasks.json",
+      "line_start": 7, "line_end": 7, "quote_hash": "sha256:…",
+      "status": "open" | "fixed", "file_hash": "sha256:…" }
+  ]
+}
+```
+
+The **`result` event** gains three keys, emitted on **every** scan whether or not
+anything was asked:
+
+```json
+"result_schema": 2,
+"pruned_dirs": ["node_modules", "src/__pycache__"],
+"lineage_checks": [
+  { "lineage_id": "…",
+    "outcome": "confirmed" | "reanchored" | "ambiguous" | "gone" | "unconfirmable",
+    "reason": "…", "line_start": 7, "line_end": 7, "file_hash": "sha256:…" }
+]
+```
+
+* `result_schema` is the handshake. Absent (or `< 2`) means an agent that predates
+  0091: the backend must then treat the scan's scope as unknown and perform no
+  LLM-tier and no pruned-dir closures for it. That is why the key is
+  unconditional — emitting it only when asked a question would silently disable
+  closure for every ordinary scan.
+* `pruned_dirs` are **root-relative** prefixes the walker did not descend into.
+  Without them "this scan proved nothing is there" is indistinguishable from
+  "this scan never looked", and the second would close every row beneath.
+* `lineage_checks` answers every requested row, in request order. A requested row
+  that comes back with no check is read as `unconfirmable`, so a dropped row can
+  never close a finding.
+* `gone` is the only outcome that closes anything. Every failure that is a fact
+  about the **checker** rather than the **code** — a lost quote, an unreadable or
+  oversize file, a crashing verifier — resolves to `unconfirmable` instead.
+* The evidence quote itself never appears on the wire in any configuration; the
+  lineage row carries only `quote_hash`.
+
+**How the request reaches the runner.** `lineage_checks_requested` is a field on
+`shared.models.audit_request.AuditRequest` — it has to be declared there, because
+pydantic drops an undeclared key silently and the payload would vanish at the door
+with both ends of the wire still looking correct. The transport then binds it into
+the run's context (`shared.lineage_context.set_lineage_checks_requested`), the same
+way the cancel token and the broker token are bound, and `run_combined_audit` reads
+it from there. **An agent does not forward it**: `run_audit(run_id, source_path,
+config, prior_findings)` keeps its four-argument shape, and a new agent gets the
+evidence pass for free.
+
+**The key names are pinned across the two languages** by one shared fixture,
+`agents/shared/tests/contract/0091_lineage_wire.json`, asserted against by
+`backend/internal/agui/wire_contract_0091_test.go` and
+`agents/shared/tests/e2e/test_0091_wire_seam.py`. Every field above is optional on
+both sides, so a rename does not error anywhere — it reads as "absent", which is a
+legal and quiet wrong answer. Rename a key in one language and that language's
+suite fails against the fixture; edit the fixture to match and the other language's
+suite fails instead.
 
 ### Health Check
 

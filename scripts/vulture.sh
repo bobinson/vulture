@@ -32,7 +32,7 @@
 #   ollama [model]     Local Ollama (default: qwen3:1.7b)
 #   openai [model]     OpenAI API (default: gpt-4o)
 #   anthropic [model]  Anthropic API (default: claude-sonnet)
-#   gemini [model]     Google Gemini API — remote (default: gemini-pro); needs GEMINI_API_KEY
+#   gemini [model]     Google Gemini API — remote (default: gemini-2.5-flash); needs GEMINI_API_KEY
 #
 # LLM broker (feature 0064 §30) — ON BY DEFAULT whenever LLM is enabled:
 #   Routes agents through the backend's internal broker (per-run scoped tokens,

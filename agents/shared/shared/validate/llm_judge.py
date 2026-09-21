@@ -29,6 +29,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from shared.cancellation import current_audit_deadline, current_cancel_token
+from shared.llm.errors import broker_detail
+from shared.llm.jsonscan import iter_balanced_objects
 from shared.prompt import Mode, RenderedPrompt, Slot, profile_for, render
 from shared.prompt.manifests.validate_judge import (
     VALIDATE_JUDGE,
@@ -1567,8 +1569,48 @@ def _try_both_modes(do_call: Any, budget: int) -> str:
         return ""
 
 
+# `_broker_detail` moved to shared.llm.errors so the generate path — whose
+# rendering is PERSISTED, not merely logged — uses the same implementation.
+# The private name is kept as an alias: it is referenced by this module's
+# failure handler and by the tests that pin the SDK's real envelope shape.
+_broker_detail = broker_detail
+
+
 def _log_call_failure(exc: Exception, mode: str) -> None:
     """Name a size rejection as such — it is actionable, a generic error is not."""
+    # CANCELLATION IS CHECKED FIRST, AND IT IS NOT A FAULT.
+    #
+    # Cancelling an audit revokes its per-run broker lease. L5 runs its batches
+    # in a thread pool, so calls already in flight reach the broker AFTER the
+    # revocation and come back 401 — which `_is_endpoint_error` classifies as a
+    # configuration problem and escalates to WARNING, one line per in-flight
+    # batch, advising the operator to check VULTURE_VALIDATE_LLM_MODEL and the
+    # base URL. Both were correct; the run had simply been cancelled.
+    #
+    # Measured: 13 such lines inside a 45-second window, every one in the
+    # interval immediately after three audits were cancelled, and none at all
+    # in three earlier logs of runs that were never cancelled. The advice is
+    # confidently wrong, which is worse than silence — it cost a debugging
+    # session on mint keys and contextvar propagation before the timestamps
+    # lined the errors up against the cancellations.
+    #
+    # The token is the same ambient CancelToken the batch loop already polls,
+    # so this asks the question the rest of the phase is already asking.
+    cancel = current_cancel_token()
+    if cancel is not None and cancel.cancelled():
+        # The diagnosis is still recorded, at INFO. Cancellation explains the
+        # TIMING of a failure, not its CAUSE: a revoked-lease 401 and a
+        # model_not_found 404 both arrive in this window, and dropping the
+        # detail meant a real misconfiguration was indistinguishable from the
+        # expected teardown noise — discovered only by cancelling a run that
+        # had been failing for an unrelated reason all along.
+        detail = _broker_detail(exc)
+        log.info(
+            "[validate.l5] %s call failed after the run was cancelled (%s)%s — expected; "
+            "no verdicts for the batches still in flight",
+            mode, type(exc).__name__, f" [{detail}]" if detail else "",
+        )
+        return
     if _is_size_error(exc):
         log.warning(
             "[validate.l5] %s call rejected for SIZE (%s); the request body "
@@ -1582,6 +1624,17 @@ def _log_call_failure(exc: Exception, mode: str) -> None:
         # "JSON parse failed twice" — a message about a response that never
         # arrived. Name the endpoint, at WARNING.
         base_url, _ = _client_env_key()
+        # The broker's own code, when it is the thing that answered. It names
+        # the cause the class name cannot: a retired model id and a revoked
+        # token both arrive as a bare 5xx/401 otherwise.
+        detail = _broker_detail(exc)
+        if detail:
+            log.warning(
+                "[validate.l5] %s call rejected by %s (%s) — %s. No verdicts will be "
+                "produced for this batch.", mode, base_url or "the LLM endpoint",
+                type(exc).__name__, detail,
+            )
+            return
         log.warning(
             "[validate.l5] %s call could not reach the LLM endpoint %s (%s) — "
             "no verdicts will be produced. Check VULTURE_VALIDATE_LLM_MODEL and "
@@ -1858,36 +1911,11 @@ def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
     }
 
 
-def _iter_balanced_objects(text: str):
-    """Yield each top-level balanced ``{...}`` substring of `text`.
-
-    Tracks JSON string literals (double-quoted, with ``\\`` escapes) so braces
-    inside strings — or inside leaked reasoning prose like ``{"role":"x"}`` —
-    don't throw off the depth count. A single O(n) pass.
-    """
-    depth = 0
-    start = -1
-    in_str = False
-    esc = False
-    for i, ch in enumerate(text):
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}" and depth > 0:
-            depth -= 1
-            if depth == 0:
-                yield text[start:i + 1]
+# Moved to shared.llm.jsonscan: `llm.errors` needs the same scan to find the
+# broker's envelope inside an exception message, and a second copy of a
+# string-state brace counter is a second chance to get the escape handling
+# wrong. The private name stays as an alias for this module's callers.
+_iter_balanced_objects = iter_balanced_objects
 
 
 def _loads_object(text: str) -> Optional[dict[str, Any]]:

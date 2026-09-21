@@ -11,6 +11,7 @@ type MockMemoryRepository struct {
 	FindSimilarByVectorFn     func(string, []float32, int) ([]model.AuditMemory, error)
 	GetMemoryFn               func(string) (*model.AuditMemory, error)
 	UpdateRemediationFn       func(string, string, string) error
+	SetRemediationStatusFn    func(string, string) error
 	ListMemoriesByAuditFn     func(string) ([]model.AuditMemory, error)
 	ListByCodebasePathFn      func(string, string, int) ([]model.AuditMemory, error)
 	ListByCodebasePathMultiFn func(string, []string, int) (map[string][]model.AuditMemory, error)
@@ -116,4 +117,11 @@ func (m *MockMemoryRepository) GetEdges(memoryID string) ([]model.MemoryEdge, er
 		return m.GetEdgesFn(memoryID)
 	}
 	return nil, nil
+}
+
+func (m *MockMemoryRepository) SetRemediationStatus(fingerprint string, status string) error {
+	if m.SetRemediationStatusFn != nil {
+		return m.SetRemediationStatusFn(fingerprint, status)
+	}
+	return nil
 }

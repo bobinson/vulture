@@ -37,9 +37,9 @@ func (r *recordingManager) StartWithEnv(_ context.Context, name, _ string, fullE
 }
 
 func (r *recordingManager) WaitReady(string, func() bool, time.Duration) error { return nil }
-func (r *recordingManager) WaitAll()                                          {}
-func (r *recordingManager) StopAll()                                          {}
-func (r *recordingManager) Status() []ProcessStatus                           { return nil }
+func (r *recordingManager) WaitAll()                                           {}
+func (r *recordingManager) StopAll()                                           {}
+func (r *recordingManager) Status() []ProcessStatus                            { return nil }
 
 // lastValue returns the effective value of key under os/exec's last-wins
 // duplicate resolution — the semantics that make the append-after-base

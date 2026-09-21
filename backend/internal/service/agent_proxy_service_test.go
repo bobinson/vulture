@@ -67,7 +67,7 @@ func TestAgentProxyService_RunAgentWithContext_PriorFindings(t *testing.T) {
 	priorFindings := []model.PriorFinding{
 		{Title: "XSS", Severity: "high"},
 	}
-	err := proxy.RunAgentWithContext(context.Background(), server.URL, "owasp", "run-2", "/src", json.RawMessage("{}"), priorFindings, eventCh)
+	err := proxy.RunAgentWithContext(context.Background(), server.URL, "owasp", "run-2", "/src", json.RawMessage("{}"), priorFindings, nil, eventCh)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestAgentProxyService_RunAgentWithContext_NoPriorFindings(t *testing.T) {
 	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
-	err := proxy.RunAgentWithContext(context.Background(), server.URL, "owasp", "run-3", "/src", json.RawMessage("{}"), nil, eventCh)
+	err := proxy.RunAgentWithContext(context.Background(), server.URL, "owasp", "run-3", "/src", json.RawMessage("{}"), nil, nil, eventCh)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestAgentProxyService_RunAgent_NonOKStatus(t *testing.T) {
 	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
-	err := proxy.RunAgentWithContext(context.Background(), server.URL, "chaos", "run-4", "/src", json.RawMessage("{}"), nil, eventCh)
+	err := proxy.RunAgentWithContext(context.Background(), server.URL, "chaos", "run-4", "/src", json.RawMessage("{}"), nil, nil, eventCh)
 	if err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
@@ -124,7 +124,7 @@ func TestAgentProxyService_RunAgent_ConnectionError(t *testing.T) {
 	proxy := NewAgentProxyService(nil)
 	eventCh := make(chan *model.AgUIEvent, 100)
 
-	err := proxy.RunAgentWithContext(context.Background(), "http://localhost:1", "chaos", "run-5", "/src", json.RawMessage("{}"), nil, eventCh)
+	err := proxy.RunAgentWithContext(context.Background(), "http://localhost:1", "chaos", "run-5", "/src", json.RawMessage("{}"), nil, nil, eventCh)
 	if err == nil {
 		t.Fatal("expected error for connection failure")
 	}
@@ -143,7 +143,7 @@ func TestAgentProxyService_RunAgent_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	err := proxy.RunAgentWithContext(ctx, server.URL, "chaos", "run-6", "/src", json.RawMessage("{}"), nil, eventCh)
+	err := proxy.RunAgentWithContext(ctx, server.URL, "chaos", "run-6", "/src", json.RawMessage("{}"), nil, nil, eventCh)
 	if err == nil {
 		t.Fatal("expected error for canceled context")
 	}
@@ -298,7 +298,7 @@ func TestAgentProxyService_InjectsBrokerTokenAndTaskType(t *testing.T) {
 	m := &stubMinter{token: "run-token-xyz", ctxWindow: 131072}
 	proxy := NewAgentProxyService(m)
 	ch := make(chan *model.AgUIEvent, 10)
-	if err := proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-42", "/src", json.RawMessage("{}"), nil, ch); err != nil {
+	if err := proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-42", "/src", json.RawMessage("{}"), nil, nil, ch); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if m.gotRun != "run-42" || m.gotTask != "cwe" {
@@ -328,7 +328,7 @@ func TestAgentProxyService_NilMinter_NoBrokerToken(t *testing.T) {
 
 	proxy := NewAgentProxyService(nil)
 	ch := make(chan *model.AgUIEvent, 10)
-	_ = proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-1", "/src", json.RawMessage("{}"), nil, ch)
+	_ = proxy.RunAgentWithContext(context.Background(), srv.URL, "cwe", "run-1", "/src", json.RawMessage("{}"), nil, nil, ch)
 	if strings.Contains(body, "broker_token") {
 		t.Errorf("Mode A payload must not carry broker_token: %s", body)
 	}

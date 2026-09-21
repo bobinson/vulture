@@ -100,7 +100,7 @@ services:
       # (skill-phase) result is persisted. Neither timeout was plumbed here
       # before, so compose shipped backend=600s against agent=900s -- short of
       # the rule on both counts; 1200 clears 900 + 120.
-      - VULTURE_AGENT_PROXY_TIMEOUT_SEC=${VULTURE_AGENT_PROXY_TIMEOUT_SEC:-1200}
+      - VULTURE_AGENT_PROXY_TIMEOUT_SEC=${VULTURE_AGENT_PROXY_TIMEOUT_SEC:-1500}
       - VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC=${VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC:-600}
       - VULTURE_AGENT_PROVE_URL=http://agent-prove:${VULTURE_AGENT_PROVE_PORT:-28005}
       - VULTURE_AGENT_XSS_URL=http://agent-xss:${VULTURE_AGENT_XSS_PORT:-28006}
@@ -280,6 +280,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-chaos-cache:/root/.vulture
     restart: unless-stopped
 
   agent-owasp:
@@ -373,6 +383,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-owasp-cache:/root/.vulture
     restart: unless-stopped
 
   agent-soc2:
@@ -466,6 +486,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-soc2-cache:/root/.vulture
     restart: unless-stopped
 
   agent-cwe:
@@ -559,6 +589,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-cwe-cache:/root/.vulture
     restart: unless-stopped
 
   agent-prove:
@@ -653,6 +693,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-prove-cache:/root/.vulture
     depends_on:
       agent-discover:
         condition: service_healthy
@@ -749,6 +799,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-xss-cache:/root/.vulture
     restart: unless-stopped
 
   agent-ssdf:
@@ -842,6 +902,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-ssdf-cache:/root/.vulture
     restart: unless-stopped
 
   agent-discover:
@@ -935,6 +1005,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-discover-cache:/root/.vulture
     restart: unless-stopped
 
   agent-do178c:
@@ -1028,6 +1108,16 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-do178c-cache:/root/.vulture
     restart: unless-stopped
 
   agent-asvs:
@@ -1121,8 +1211,28 @@ services:
     volumes:
       - source-cache:/tmp/sources:ro
       - ${VULTURE_SOURCE_DIR:-./}:/mnt/source:ro
+      # Feature 0091 §6.2 / LLD §15 Q3: the agent-local cache that holds the L5
+      # verdicts AND the evidence quotes the lineage checks verify against.
+      # It was ephemeral until now — every `docker compose up` started the
+      # fleet with an empty ~/.vulture, so a container restart already cost
+      # every cached verdict and would cost every quote, resolving each check
+      # to `unconfirmable` (S9) rather than confirming or closing anything.
+      # One named volume per agent, not a shared one: agents run concurrently
+      # against one SQLite file only within a process, and per-service volumes
+      # keep a wedged cache blast-radius-limited to the agent that wedged it.
+      - agent-asvs-cache:/root/.vulture
     restart: unless-stopped
 
 volumes:
   pgdata:
   source-cache:
+  agent-chaos-cache:
+  agent-owasp-cache:
+  agent-soc2-cache:
+  agent-cwe-cache:
+  agent-prove-cache:
+  agent-xss-cache:
+  agent-ssdf-cache:
+  agent-discover-cache:
+  agent-do178c-cache:
+  agent-asvs-cache:

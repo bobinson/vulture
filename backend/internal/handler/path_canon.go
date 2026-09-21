@@ -1,14 +1,11 @@
 package handler
 
 import (
-	"log"
-	"os"
-	"path"
 	"regexp"
 	"strings"
 
-	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/pathutil"
 )
 
 // Feature 0079 A1 + A4: one dedup identity for both finding tiers.
@@ -33,61 +30,17 @@ import (
 // the A1<->A3 coupling: no stored fingerprint moves, so no finding_lineage row
 // is orphaned and no triage state is lost.
 
-const (
-	pathCanonOff     = "off"
-	pathCanonObserve = "observe"
-	pathCanonEnforce = "enforce"
-)
-
-// pathCanonMode reads VULTURE_FINDING_PATH_CANON at call time.
-//
-// Default OFF, deliberately, against the plan's original "observe by default".
-// `observe` runs the dedup a second time to report the delta, and that was
-// benchmarked at +38.2ms over a 33.4ms baseline at 50k findings — a 114%
-// increase that every audit would pay forever. An opt-in measurement mode is
-// worth having; a default-on one is not.
-func pathCanonMode() string {
-	// String literals, not the named constants above: the 0078 env-defaults
-	// conformance guard resolves a Go switch's default by reading the literals
-	// in the enclosing function, and a constant reference is invisible to it.
-	// Keeping the default legible to that check is worth more than the
-	// indirection.
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("VULTURE_FINDING_PATH_CANON"))) {
-	case "observe":
-		return "observe"
-	case "enforce":
-		return "enforce"
-	default:
-		return "off"
-	}
-}
-
 // canonicalFindingPath maps a finding path to its source-root-relative form.
 //
 // An empty root is identity, which is how the replay path and every existing
 // test keep byte-identical behaviour.
+//
+// Feature 0091 moved the body to pathutil.RelToRoot without changing a byte of
+// its behaviour: target identity has to strip the same kind of prefix from the
+// same kind of path, and two copies of "what does it mean to be under this
+// root" is how the two answers start disagreeing.
 func canonicalFindingPath(filePath, root string) string {
-	if root == "" || filePath == "" {
-		return filePath
-	}
-	cleanRoot := strings.TrimRight(path.Clean(root), "/")
-	cleanPath := path.Clean(filePath)
-	if cleanPath == cleanRoot {
-		// A finding ON the root itself. ~25 SSDF/SOC2 repo-level rows use
-		// file_path == source_path with line 1; mapping them to "" would put
-		// every one of them on a single key and destroy all but one.
-		return "."
-	}
-	// Path-BOUNDARY match, not a string prefix. _normalize_dedup_path has the
-	// prefix bug today: root /x/repo turns /x/repo-backup/a.py into
-	// "-backup/a.py". Requiring the separator makes that impossible.
-	if strings.HasPrefix(cleanPath, cleanRoot+"/") {
-		return strings.TrimPrefix(cleanPath, cleanRoot+"/")
-	}
-	// Outside the root: leave it absolute. Stripping the leading slash would
-	// turn /etc/passwd into etc/passwd, which is harmless in a private key and
-	// a real hazard anywhere it is rendered.
-	return cleanPath
+	return pathutil.RelToRoot(filePath, root)
 }
 
 // fineGrainedCategory matches a category specific enough to identify ONE
@@ -102,16 +55,6 @@ var fineGrainedCategory = regexp.MustCompile(`^(?i)(CWE-\d{1,5}|(ASVS-)?V\d+(\.\
 // CC6/CC7/CC8, chaos pattern names, owasp A0x-* ids, asvs "asvs_requirements".
 func isFineGrainedCategory(category string) bool {
 	return fineGrainedCategory.MatchString(strings.TrimSpace(category))
-}
-
-// weaknessVetoEnabled gates A4. Never flip this to false as a rollback: it is
-// the only switch here whose false value can LOSE a finding, because it lets
-// two different weaknesses at one line merge.
-func weaknessVetoEnabled() bool {
-	if v := strings.TrimSpace(os.Getenv("VULTURE_DEDUP_WEAKNESS_VETO")); v != "" {
-		return config.EnvTruthy("VULTURE_DEDUP_WEAKNESS_VETO")
-	}
-	return true
 }
 
 // crossAgentKeyWithRoot is crossAgentKey with the path canonicalised against
@@ -145,7 +88,7 @@ func crossAgentKeyWithRoot(f model.Finding, root string) string {
 // Splitting a key can only ADD rows, never lose one, and fine-grained (CWE-,
 // ASVS-) keys are byte-identical because the suffix is empty for them.
 func coarseCategorySuffix(category, title string) string {
-	if !weaknessVetoEnabled() || isFineGrainedCategory(category) {
+	if isFineGrainedCategory(category) {
 		return ""
 	}
 	return "|" + strings.ToLower(strings.TrimSpace(title))
@@ -172,54 +115,4 @@ func itoaInt(n int) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
-}
-
-// logPathCanonDelta reports what `enforce` WOULD merge, without changing
-// anything. This is the whole deliverable of `observe` mode.
-//
-// It splits the delta by collision class, because the classes carry different
-// risk: det-vs-llm merges are the 22 genuine duplicates the feature exists to
-// remove, while a cross-weakness pair is a finding that must NOT merge. An
-// operator needs both numbers before flipping to enforce, not a single total.
-func logPathCanonDelta(findings []model.Finding, root string) {
-	rawKeys := make(map[string]int, len(findings))
-	canonKeys := make(map[string][]int, len(findings))
-	for i, f := range findings {
-		rawKeys[crossAgentKeyWithRoot(f, "")]++
-		k := crossAgentKeyWithRoot(f, root)
-		canonKeys[k] = append(canonKeys[k], i)
-	}
-	var detLLM, detDet, llmLLM, coarseSplit int
-	for _, idx := range canonKeys {
-		if len(idx) < 2 {
-			continue
-		}
-		llm, det := 0, 0
-		for _, i := range idx {
-			if isLLMProvenance(findings[i]) {
-				llm++
-			} else {
-				det++
-			}
-		}
-		switch {
-		case llm > 0 && det > 0:
-			detLLM++
-		case det > 1:
-			detDet++
-		case llm > 1:
-			llmLLM++
-		}
-	}
-	// How many keys the coarse-category veto is currently holding apart. Zero
-	// here with a non-zero det_llm count means the veto is not firing and the
-	// cross-weakness merges are NOT being prevented.
-	for _, f := range findings {
-		if f.Category != "" && !isFineGrainedCategory(f.Category) {
-			coarseSplit++
-		}
-	}
-	log.Printf("[dedup] path_canon mode=observe raw_keys=%d canon_keys=%d "+
-		"merges det_llm=%d det_det=%d llm_llm=%d coarse_rows_vetoed=%d",
-		len(rawKeys), len(canonKeys), detLLM, detDet, llmLLM, coarseSplit)
 }

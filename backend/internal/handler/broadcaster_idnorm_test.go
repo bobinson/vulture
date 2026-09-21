@@ -169,8 +169,8 @@ func TestTrueOrphanStillReconciledAfterNormalisation(t *testing.T) {
 // unchanged.
 func TestCanonicalRunKey(t *testing.T) {
 	cases := map[string]string{
-		dashedID:   undashedID,
-		undashedID: undashedID,
+		dashedID:                  undashedID,
+		undashedID:                undashedID,
 		strings.ToUpper(dashedID): undashedID,
 		"":                        "",
 		"not-a-uuid":              "notauuid",

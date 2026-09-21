@@ -27,7 +27,7 @@ func (m *mockAgentProxyService) RunAgent(ctx context.Context, agentURL, agentTyp
 	return nil
 }
 
-func (m *mockAgentProxyService) RunAgentWithContext(ctx context.Context, agentURL, agentType, runID, sourcePath string, cfg json.RawMessage, priorFindings []model.PriorFinding, eventCh chan<- *model.AgUIEvent) error {
+func (m *mockAgentProxyService) RunAgentWithContext(ctx context.Context, agentURL, agentType, runID, sourcePath string, cfg json.RawMessage, priorFindings []model.PriorFinding, lineageChecks *model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) error {
 	if m.runAgentWithContextFn != nil {
 		return m.runAgentWithContextFn(ctx, agentURL, agentType, runID, sourcePath, cfg, priorFindings, eventCh)
 	}
@@ -103,7 +103,7 @@ func TestStreamService_StreamWithContext(t *testing.T) {
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, priorByAgent, eventCh)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, priorByAgent, nil, eventCh)
 
 	for range eventCh {
 	}
@@ -135,7 +135,7 @@ func TestStreamService_SkipUnconfiguredAgent(t *testing.T) {
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, eventCh)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, eventCh)
 	for range eventCh {
 	}
 }
@@ -160,7 +160,7 @@ func TestStreamService_SkipEmptyURL(t *testing.T) {
 	}
 	eventCh := make(chan *model.AgUIEvent, 100)
 
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, eventCh)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, eventCh)
 	for range eventCh {
 	}
 
@@ -195,7 +195,7 @@ func TestStreamService_MultipleAgents(t *testing.T) {
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	// StreamWithContext blocks until all agents are done, then sends RunFinished and closes eventCh
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, eventCh)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, eventCh)
 	for range eventCh {
 	}
 
@@ -226,7 +226,7 @@ func TestStreamService_AgentError(t *testing.T) {
 	eventCh := make(chan *model.AgUIEvent, 100)
 
 	// Should not panic even when agent errors
-	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, eventCh)
+	svc.StreamWithContext(context.Background(), audit, "/src", agents, nil, nil, eventCh)
 	for range eventCh {
 	}
 }

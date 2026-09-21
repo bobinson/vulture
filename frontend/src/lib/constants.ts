@@ -2,6 +2,9 @@ export const ROUTES = {
   DASHBOARD: "/",
   AUDIT: "/audit",
   AUDIT_RESULTS: (id: string) => `/audit/${id}`,
+  TARGETS: "/targets",
+  TARGET_REPORT: (key: string) => `/targets/${encodeURIComponent(key)}`,
+  LINEAGE: (id: string) => `/lineage/${id}`,
   MEMORIES: "/memories",
   SETTINGS: "/settings",
 } as const;

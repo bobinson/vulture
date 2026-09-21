@@ -8,6 +8,7 @@ type MockAuditRepository struct {
 	GetSourceFn                 func(string) (*model.Source, error)
 	FindSourceByPathFn          func(string) (*model.Source, error)
 	UpdateSourceGitInfoFn       func(string, string, string, string, string) error
+	UpdateSourceTargetKeyFn     func(string, string) error
 	CreateAuditFn               func(*model.Audit) error
 	GetAuditFn                  func(string) (*model.Audit, error)
 	UpdateAuditFn               func(*model.Audit) error
@@ -38,6 +39,13 @@ func (m *MockAuditRepository) FindSourceByPath(path string) (*model.Source, erro
 		return m.FindSourceByPathFn(path)
 	}
 	return nil, nil
+}
+
+func (m *MockAuditRepository) UpdateSourceTargetKey(id, targetKey string) error {
+	if m.UpdateSourceTargetKeyFn != nil {
+		return m.UpdateSourceTargetKeyFn(id, targetKey)
+	}
+	return nil
 }
 
 func (m *MockAuditRepository) UpdateSourceGitInfo(id, branch, commitHash, commitShort, remoteURL string) error {

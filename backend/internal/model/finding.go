@@ -31,9 +31,18 @@ type Finding struct {
 	// LegacyFingerprint carries the v1 value forward IN MEMORY so lineage can
 	// match on either during the flip. json:"-" and in no column list: it never
 	// reaches a client or a database.
-	LegacyFingerprint string   `json:"-"`
-	CodeSnippet       string   `json:"code_snippet,omitempty"`
-	Provenance        string   `json:"provenance,omitempty"`
+	LegacyFingerprint string `json:"-"`
+	CodeSnippet       string `json:"code_snippet,omitempty"`
+	Provenance        string `json:"provenance,omitempty"`
+	// QuoteHash (feature 0091) is sha256 of the whitespace-normalised
+	// `evidence_quote` the 0076 verifier used, stamped by the agent when it
+	// first emits the finding. The QUOTE stays agent-local — it is stripped
+	// before SSE by `_strip_private_fields` and the backend has never seen it.
+	// Only the hash crosses, and it egresses nothing: it is what lets the
+	// agent, on a later scan, prove that the quote in its local cache is the
+	// one this finding was raised on. Without it an LLM-tier row is
+	// permanently unconfirmable (S9).
+	QuoteHash         string   `json:"quote_hash,omitempty"`
 	VerificationHints []string `json:"verification_hints,omitempty"`
 	RequiresContext   bool     `json:"requires_context,omitempty"`
 	CrossAgentOrigins []string `json:"cross_agent_origins,omitempty"`

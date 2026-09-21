@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "model_not_found",
+    "message": "model not found or not routable",
+    "type": "model_not_found",
+    "upstream": {
+      "provider": "gemini",
+      "status": 404,
+      "message": "models/gemini-pro is not found for API version v1beta, or is not supported for generateContent. Call ListModels to see the list of available models."
+    },
+    "x_retriable": false
+  }
+}
+

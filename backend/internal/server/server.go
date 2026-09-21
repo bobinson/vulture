@@ -191,6 +191,10 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	if reg != nil {
 		agentH.SetPluginRegistry(reg, stagerouter.NewURLResolver(cfg.Agents).Resolve)
 	}
+	// Same registry the stagerouter dispatches from, so POST /api/audits can
+	// reject a type that could never have run instead of accepting it and
+	// completing the audit empty.
+	auditH.SetPluginRegistry(reg)
 	llmHealthH := handler.NewLLMHealthHandler(cfg.Agents)
 	auditH.SetLLMHealth(llmHealthH)
 	// 0071: POST /api/audits dispatches the run in the background. Without this
@@ -702,7 +706,19 @@ func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, s
 	} else {
 		return
 	}
-	lineageSvc := service.NewLineageService(lineageRepo)
+	// Feature 0091 §8. registerMemoryRoutes runs BEFORE this and has already
+	// set the memory service on the stream handler, so reading it back here is
+	// what gives lineage transitions a path into audit_memories. Without the
+	// sync a finding the scanner closes stays "open" in memory and the next
+	// scan's prior-findings block still tells the model to skip it, so it can
+	// never be re-reported and never regress. A nil service (memory not
+	// configured) leaves the sync off and changes nothing else.
+	var lineageSvc service.LineageService
+	if memorySvc := streamH.MemoryService(); memorySvc != nil {
+		lineageSvc = service.NewLineageServiceWithMemory(lineageRepo, memorySvc)
+	} else {
+		lineageSvc = service.NewLineageService(lineageRepo)
+	}
 	lineageH := handler.NewLineageHandler(lineageSvc)
 
 	streamH.SetLineageService(lineageSvc)
@@ -713,6 +729,21 @@ func registerLineageRoutes(mux *http.ServeMux, pgDB *sql.DB, sqliteDB *sql.DB, s
 	// 0065 §H1: method-gated write guard — viewer GET stays open, PATCH
 	// (status update) requires member/admin.
 	mux.HandleFunc("/api/lineage/", protect(handler.RequireWrite(ReadOnlyGuard(readOnly, lineageRouter(lineageH)))))
+	registerTargetRoutes(mux, lineageRepo, protect, readOnly)
+}
+
+// registerTargetRoutes mounts the feature-0091 §10.1 target endpoints: the
+// dashboard's list of codebases, one codebase's scan history, and the
+// aggregate report.
+//
+// All three are reads, so the read-only viewer keeps them: ReadOnlyGuard lets
+// GET through and refuses everything else, which is the whole point of a
+// viewer VM — it exists to show stored results, and the aggregate is now the
+// main way results are read.
+func registerTargetRoutes(mux *http.ServeMux, lineageRepo repository.LineageRepository, protect authWrapper, readOnly bool) {
+	targetH := handler.NewTargetHandler(service.NewTargetService(lineageRepo))
+	mux.HandleFunc("/api/targets", protect(ReadOnlyGuard(readOnly, targetH.List)))
+	mux.HandleFunc("/api/targets/", protect(ReadOnlyGuard(readOnly, targetH.Route)))
 }
 
 func lineageRouter(lineageH *handler.LineageHandler) http.HandlerFunc {

@@ -12,18 +12,57 @@ import (
 	"strings"
 )
 
-// drainErrBody reads the error response body and ALWAYS logs the upstream error
-// body on a non-2xx (truncated). The provider's error body is a DIAGNOSTIC — it
+// errBodyReadMax bounds what is read from a provider error body. It is a
+// MEMORY bound, not a formatting one: the reader is the network.
+const errBodyReadMax = 8 << 10
+
+// drainErrBody reads the error response body and ALWAYS logs it on a non-2xx
+// (sanitised and truncated). The provider's error body is a DIAGNOSTIC — it
 // names the rejected field / reason — not prompt/completion content, so surfacing
 // it is N6-safe and is exactly what an operator needs to fix a 4xx (the whole
 // reason a Gemini 400 was undiagnosable). The REQUEST body (which DOES contain
 // the prompt, secret-class) is logged only under VULTURE_BROKER_DEBUG_EGRESS.
-func drainErrBody(providerName string, status int, reqBody []byte, respBody io.Reader) {
-	b, _ := io.ReadAll(io.LimitReader(respBody, 8<<10))
-	log.Printf("broker: egress %s upstream=%d error_body=%s", providerName, status, truncStr(string(b), 2000))
+//
+// THE LOG IS A WIDER SURFACE THAN THE EGRESS ENVELOPE, in both dimensions:
+// upstreamMessage speaks only on 404 and only from the `message` field, whereas
+// this logs EVERY non-2xx and the WHOLE body. So the sanitising the envelope
+// gets is applied here too, and for a stronger reason — a 400 body is the one
+// that echoes the request, and a provider (or anything that can influence a
+// model id) could otherwise put ANSI, a bidi override, or a forged second log
+// line into the operator's terminal on a status the carve-out never admitted.
+// The RETURNED bytes are deliberately left raw: upstreamMessage parses JSON and
+// does its own sanitising after extracting one field.
+func drainErrBody(providerName string, status int, reqBody []byte, respBody io.Reader) []byte {
+	// One byte over the cap, so hitting it is DISTINGUISHABLE from a body that
+	// happens to be exactly errBodyReadMax long.
+	b, _ := io.ReadAll(io.LimitReader(respBody, errBodyReadMax+1))
+	truncated := len(b) > errBodyReadMax
+	if truncated {
+		b = b[:errBodyReadMax]
+	}
+	// Reported explicitly because a body cut at the cap is invalid JSON, and an
+	// unparseable body yields NO diagnosis at all — without this flag the
+	// operator reads "the provider said nothing" when the provider said a great
+	// deal and the broker dropped it.
+	log.Printf("broker: egress %s upstream=%d body_truncated=%v error_body=%s",
+		providerName, status, truncated,
+		truncStr(redactForLog(string(b)), 2000))
 	if os.Getenv("VULTURE_BROKER_DEBUG_EGRESS") != "" && len(reqBody) > 0 {
 		log.Printf("broker: DEBUG egress %s request_body=%s", providerName, truncStr(string(reqBody), 16<<10))
 	}
+	return b
+}
+
+// errorFromResponse is the ONE error path every adapter takes on a non-2xx.
+//
+// It exists so the log and the returned error read the SAME body: before this,
+// drainErrBody logged the provider's diagnosis and threw it away, and the
+// caller returned a static class. Three adapters doing that by hand is three
+// chances for one of them to forget the pass-through, so they call this
+// instead. Whether the message survives into the error is decided in exactly
+// one place (upstreamAllowed), not per adapter.
+func errorFromResponse(providerName string, status int, reqBody []byte, respBody io.Reader) error {
+	return statusErrorWithBody(providerName, status, drainErrBody(providerName, status, reqBody, respBody))
 }
 
 func truncStr(s string, n int) string {

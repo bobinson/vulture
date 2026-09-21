@@ -35,7 +35,7 @@ func isCWECategory(c string) bool { return cweCategoryRe.MatchString(c) }
 
 type StreamService interface {
 	Stream(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, eventCh chan<- *model.AgUIEvent)
-	StreamWithContext(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, eventCh chan<- *model.AgUIEvent)
+	StreamWithContext(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, checksByAgent map[string]*model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent)
 }
 
 type streamService struct {
@@ -62,10 +62,10 @@ func NewStreamServiceWithRouter(proxy AgentProxyService, router stagerouter.Rout
 }
 
 func (s *streamService) Stream(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, eventCh chan<- *model.AgUIEvent) {
-	s.StreamWithContext(ctx, audit, sourcePath, agents, nil, eventCh)
+	s.StreamWithContext(ctx, audit, sourcePath, agents, nil, nil, eventCh)
 }
 
-func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, eventCh chan<- *model.AgUIEvent) {
+func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, checksByAgent map[string]*model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) {
 	defer close(eventCh)
 
 	if !send(ctx, eventCh, &model.AgUIEvent{
@@ -86,7 +86,7 @@ func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audi
 		// Pre-0063 behavior preserved exactly: dispatch audit.Types as-is
 		// (an empty/nil list means "default scan" — the router expands it to
 		// all enabled scan plugins). No tap needed on this path.
-		if !s.dispatchScanPhase(ctx, audit, audit.Types, sourcePath, agents, priorByAgent, nil, eventCh) {
+		if !s.dispatchScanPhase(ctx, audit, audit.Types, sourcePath, agents, priorByAgent, checksByAgent, nil, eventCh) {
 			return
 		}
 		send(ctx, eventCh, &model.AgUIEvent{Type: model.EventRunFinished, RunID: audit.ID})
@@ -100,7 +100,7 @@ func (s *streamService) StreamWithContext(ctx context.Context, audit *model.Audi
 	// NOT dispatch — an empty type list would make the router run ALL scan
 	// plugins (its "no filter" default), which the user did not request.
 	if len(scanTypes) > 0 {
-		if !s.dispatchScanPhase(ctx, audit, scanTypes, sourcePath, agents, priorByAgent, tap, eventCh) {
+		if !s.dispatchScanPhase(ctx, audit, scanTypes, sourcePath, agents, priorByAgent, checksByAgent, tap, eventCh) {
 			return // consumer gone
 		}
 	}
@@ -155,16 +155,16 @@ func ensureCwe(scan []string, agents map[string]config.AgentConfig) ([]string, b
 // dispatchScanPhase runs the scan agents, forwarding every event to eventCh
 // while tapping CWE-category findings into tap. Returns false if the consumer
 // went away (context cancelled) so the caller stops cleanly.
-func (s *streamService) dispatchScanPhase(ctx context.Context, audit *model.Audit, scanTypes []string, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, tap *cweTap, eventCh chan<- *model.AgUIEvent) bool {
+func (s *streamService) dispatchScanPhase(ctx context.Context, audit *model.Audit, scanTypes []string, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, checksByAgent map[string]*model.LineageChecksRequest, tap *cweTap, eventCh chan<- *model.AgUIEvent) bool {
 	scanAudit := *audit
 	scanAudit.Types = scanTypes
 
 	scanCh := make(chan *model.AgUIEvent, 64)
 	go func() {
 		if s.router != nil {
-			s.dispatchViaRouter(ctx, &scanAudit, sourcePath, agents, priorByAgent, scanCh)
+			s.dispatchViaRouter(ctx, &scanAudit, sourcePath, agents, priorByAgent, checksByAgent, scanCh)
 		} else {
-			s.dispatchLegacy(ctx, &scanAudit, sourcePath, agents, priorByAgent, scanCh)
+			s.dispatchLegacy(ctx, &scanAudit, sourcePath, agents, priorByAgent, checksByAgent, scanCh)
 		}
 		close(scanCh)
 	}()
@@ -206,7 +206,10 @@ func (s *streamService) runOwaspMapping(ctx context.Context, audit *model.Audit,
 
 	log.Printf("[stream-svc] deferred owasp mapping: cwe_findings=%d status=%s", len(priors), status)
 	var wg sync.WaitGroup
-	s.launch(ctx, &wg, cfg.URL, owaspType, audit.ID, sourcePath, owaspCfg, priors, eventCh)
+	// OWASP is a CATEGORIZER over CWE findings, not a detector: it never reads
+	// the tree, so it has nothing to verify a quote against and is sent no
+	// lineage checks.
+	s.launch(ctx, &wg, cfg.URL, owaspType, audit.ID, sourcePath, owaspCfg, priors, nil, eventCh)
 	wg.Wait()
 }
 
@@ -433,7 +436,7 @@ func (t *cweTap) snapshot() ([]model.Finding, bool) {
 // dispatchLegacy is the pre-0049 path: iterate audit.Types, look up
 // cfg.Agents, fan out goroutines. Used when no stage router is wired
 // (NewStreamService callers + degraded-mode startup).
-func (s *streamService) dispatchLegacy(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, eventCh chan<- *model.AgUIEvent) {
+func (s *streamService) dispatchLegacy(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, checksByAgent map[string]*model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) {
 	cfgMap := parseAuditConfigMap(audit.Config)
 	var wg sync.WaitGroup
 	for _, auditType := range audit.Types {
@@ -446,7 +449,7 @@ func (s *streamService) dispatchLegacy(ctx context.Context, audit *model.Audit, 
 		prior := priorByAgent[auditType]
 		// 0065 §L5: quote request/manifest-derived fields so a CR/LF cannot forge a log record.
 		log.Printf("[stream-svc] launching agent=%s url=%s", strconv.Quote(auditType), strconv.Quote(agentCfg.URL))
-		s.launch(ctx, &wg, agentCfg.URL, auditType, audit.ID, sourcePath, agentConfig, prior, eventCh)
+		s.launch(ctx, &wg, agentCfg.URL, auditType, audit.ID, sourcePath, agentConfig, prior, checksByAgent[auditType], eventCh)
 	}
 	wg.Wait()
 	log.Printf("[stream-svc] all agents done for audit=%s", audit.ID)
@@ -464,7 +467,7 @@ func (s *streamService) dispatchLegacy(ctx context.Context, audit *model.Audit, 
 // works. Without this, `types=['prove']` audits silently no-op.
 // (Bug introduced when the VULTURE_STAGE_ROUTER feature flag was
 // removed; the legacy path was the previous safety net.)
-func (s *streamService) dispatchViaRouter(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, eventCh chan<- *model.AgUIEvent) {
+func (s *streamService) dispatchViaRouter(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, priorByAgent map[string][]model.PriorFinding, checksByAgent map[string]*model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) {
 	cfgMap := parseAuditConfigMap(audit.Config)
 	targets, err := s.router.Route(stagerouter.RouteRequest{
 		Stage:          stagerouter.StageScan,
@@ -472,12 +475,12 @@ func (s *streamService) dispatchViaRouter(ctx context.Context, audit *model.Audi
 	})
 	if err != nil {
 		log.Printf("[stream-svc] router error: %v (falling back to legacy)", err)
-		s.dispatchLegacy(ctx, audit, sourcePath, agents, priorByAgent, eventCh)
+		s.dispatchLegacy(ctx, audit, sourcePath, agents, priorByAgent, checksByAgent, eventCh)
 		return
 	}
 	if len(targets) == 0 && len(audit.Types) > 0 {
 		log.Printf("[stream-svc] router returned 0 scan targets for types=%v; falling back to legacy (likely a prove/discover/validate audit)", audit.Types)
-		s.dispatchLegacy(ctx, audit, sourcePath, agents, priorByAgent, eventCh)
+		s.dispatchLegacy(ctx, audit, sourcePath, agents, priorByAgent, checksByAgent, eventCh)
 		return
 	}
 	// LocalMode (native launcher): container plugins mount only the
@@ -509,9 +512,19 @@ func (s *streamService) dispatchViaRouter(ctx context.Context, audit *model.Audi
 		}
 		// 0065 §L5: quote manifest-derived name/url and staged source path.
 		log.Printf("[stream-svc] router dispatch agent=%s url=%s source=%s", strconv.Quote(t.PluginName), strconv.Quote(t.URL), strconv.Quote(src))
-		s.launch(ctx, &wg, t.URL, t.PluginName, audit.ID, src, agentConfig, prior, eventCh)
+		s.launch(ctx, &wg, t.URL, t.PluginName, audit.ID, src, agentConfig, prior, checksByAgent[t.PluginName], eventCh)
 	}
 	wg.Wait()
+	// A requested type that produced no target is dropped here with nothing
+	// said — the two `continue`s above at least log. The handler fails the
+	// audit either way (missingRequestedAgents), but without this line the
+	// operator has a failed audit and no clue which layer dropped the agent.
+	for _, want := range audit.Types {
+		if !seen[want] {
+			log.Printf("[stream-svc] agent=%s was requested but the router produced no scan target for it (audit=%s)",
+				strconv.Quote(want), audit.ID)
+		}
+	}
 	log.Printf("[stream-svc] all router-dispatched agents done for audit=%s", audit.ID)
 }
 
@@ -562,11 +575,11 @@ func (c *containerStager) reap() {
 	}
 }
 
-func (s *streamService) launch(ctx context.Context, wg *sync.WaitGroup, url, agentType, auditID, sourcePath string, agentConfig json.RawMessage, prior []model.PriorFinding, eventCh chan<- *model.AgUIEvent) {
+func (s *streamService) launch(ctx context.Context, wg *sync.WaitGroup, url, agentType, auditID, sourcePath string, agentConfig json.RawMessage, prior []model.PriorFinding, checks *model.LineageChecksRequest, eventCh chan<- *model.AgUIEvent) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := s.proxy.RunAgentWithContext(ctx, url, agentType, auditID, sourcePath, agentConfig, prior, eventCh); err != nil {
+		if err := s.proxy.RunAgentWithContext(ctx, url, agentType, auditID, sourcePath, agentConfig, prior, checks, eventCh); err != nil {
 			// Graceful degradation (feature 0058 R9/P1c): an unreachable
 			// agent is an augmentation tier that isn't active, not an
 			// audit failure. Emit a notice and let the other agents flow.

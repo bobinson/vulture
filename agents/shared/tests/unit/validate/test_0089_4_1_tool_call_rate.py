@@ -248,7 +248,12 @@ LEDGER: tuple[Insufficient, ...] = (
     Insufficient(
         key="client_key",
         rel_path="agents/shared/shared/llm/broker.py",
-        anchor="return AsyncOpenAI(base_url=base_url, api_key=api_key,",
+        # Re-pointed by 0093: the call was reformatted to multi-line when the
+        # socket timeout was added, so the old single-line anchor no longer
+        # exists. `api_key=api_key,` with one line of context still frames
+        # exactly what this fixture cites — the credential on the line below
+        # the caller-supplied base URL.
+        anchor="api_key=api_key,",
         context=1,
         category="CWE-522",
         severity="medium",

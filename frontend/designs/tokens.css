@@ -1,0 +1,97 @@
+/*
+ * Vulture design tokens — the single source of truth.
+ *
+ * Every value here mirrors `src/index.css` `@theme` byte for byte, and
+ * `src/designs.parity.test.ts` fails the build if the two drift. Designs in
+ * this folder and components in the app draw from the same names, so a review
+ * of a mockup is a review of what the implementation will render.
+ *
+ * Plain `:root` custom properties (not `@theme`) so a static HTML design can
+ * `<link>` this file directly, with no build step.
+ */
+:root {
+  /* ── Surface palette — warm-neutral, Linear-style elevation ─────────── */
+  --color-cream: #F8F7F4;
+  --color-cream-dark: #F0EFEC;
+  --color-cream-darker: #E6E5E1;
+  --color-surface: #FFFFFF;
+
+  /* ── Accent — desaturated indigo-blue ───────────────────────────────── */
+  --color-accent: #5B6BF0;
+  --color-accent-light: #7B88F5;
+  --color-accent-dark: #4A57D4;
+
+  /* ── Status ─────────────────────────────────────────────────────────── */
+  --color-success: #2DA44E;
+  --color-success-light: #3FB950;
+  --color-warning: #BF8700;
+  --color-danger: #CF222E;
+  --color-danger-light: #F85149;
+
+  /* ── Terminal (agent output) ────────────────────────────────────────── */
+  --color-terminal: #161B22;
+  --color-terminal-text: #79C0FF;
+  --color-terminal-green: #56D364;
+  --color-terminal-yellow: #E3B341;
+  --color-terminal-red: #F85149;
+  --color-terminal-blue: #79C0FF;
+  --color-terminal-muted: #484F58;
+
+  /* ── Text hierarchy — four levels ───────────────────────────────────── */
+  --color-foreground: #1B1B1F;
+  --color-secondary: #54545C;
+  --color-muted: #6E6E76;
+  --color-muted-light: #9898A0;
+
+  /* ── Borders ────────────────────────────────────────────────────────── */
+  --color-border: #E4E4E7;
+  --color-border-dark: #D4D4D8;
+
+  /* ── Severity — background / foreground pairs (SeverityBadge) ───────── */
+  --color-severity-critical-bg: #FEE2E2;
+  --color-severity-critical: #991B1B;
+  --color-severity-high-bg: #FFEDD5;
+  --color-severity-high: #9A3412;
+  --color-severity-medium-bg: #FEF3C7;
+  --color-severity-medium: #92400E;
+  --color-severity-low-bg: #DBEAFE;
+  --color-severity-low: #1E40AF;
+  --color-severity-info-bg: #F1F5F9;
+  --color-severity-info: #475569;
+
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, monospace;
+
+  /* Type scale as used across the app (px). 14 is body. */
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-xl: 20px;
+  --text-2xl: 22px;
+  --tracking-tight: -0.02em;
+  --tracking-body: -0.006em;
+  --tracking-label: 0.06em;
+
+  /* ── Shape ──────────────────────────────────────────────────────────── */
+  --radius-card: 10px;
+  --radius-control: 8px;
+  --radius-badge: 6px;
+  --radius-chip: 6px;
+
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  --sidebar-collapsed: 52px;
+  --sidebar-expanded: 220px;
+  --topbar-height: 52px;
+  --page-padding-x: 32px;
+  --page-padding-y: 24px;
+  --content-max: 72rem;
+
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  --ease-standard: ease;
+  --duration-fast: 120ms;
+  --duration-base: 150ms;
+  --duration-slow: 300ms;
+}

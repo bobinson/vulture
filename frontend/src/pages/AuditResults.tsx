@@ -13,7 +13,8 @@ import { SeveritySummary } from "@/components/results/SeveritySummary.tsx";
 import { TokenSavings } from "@/components/results/TokenSavings.tsx";
 import { OwaspCoverage } from "@/components/results/OwaspCoverage.tsx";
 import { GitContextHeader } from "@/components/results/GitContextHeader.tsx";
-import { AuditHistoryTimeline } from "@/components/results/AuditHistoryTimeline.tsx";
+import { ScanHistoryRail } from "@/components/results/ScanHistoryRail.tsx";
+import { CarriedForwardBanner } from "@/components/results/CarriedForwardBanner.tsx";
 import { ProveSummaryCard } from "@/components/results/ProveSummaryCard.tsx";
 import { CrossAgentSummary } from "@/components/results/CrossAgentSummary.tsx";
 import { AuditComparisonView } from "@/components/results/AuditComparisonView.tsx";
@@ -160,7 +161,10 @@ export function AuditResults() {
 
   // Comparison & history hooks
   const comparison = useAuditComparison(id, isTerminal);
-  const auditHistory = useAuditHistory(audit?.source_path);
+  // Feature 0091: the history of this scan's TARGET, not of its source path —
+  // a scan of the same codebase under a different mount belongs on the same
+  // rail.
+  const { scans: targetScans } = useAuditHistory(audit?.target_key);
 
   // For completed audits, agent output is collapsed by default
   const [showStream, setShowStream] = useState(false);
@@ -220,8 +224,20 @@ export function AuditResults() {
         {/* Git context + comparison delta */}
         <GitContextHeader source={source} comparison={comparison} previousAuditId={comparison?.previous_audit_id} />
 
-        {/* Audit history timeline */}
-        <AuditHistoryTimeline audits={auditHistory} currentAuditId={id} />
+        {/* Every scan of this codebase, newest first, this one marked, with
+            the way out to everything ever reported for the codebase. This
+            REPLACES the old finding-count sparkline: now that history is keyed
+            by codebase rather than by path, consecutive entries can be scans
+            of different sub-paths, and a trend line drawn between them painted
+            a rise or fall that never happened. */}
+        <ScanHistoryRail
+          scans={targetScans}
+          currentAuditId={id}
+          targetKey={audit?.target_key}
+        />
+
+        {/* How much of this scan was already known before it ran */}
+        <CarriedForwardBanner comparison={comparison} />
 
         {/* Summary row: scores + severity side-by-side */}
         {(hasScores || findings.length > 0) && (
@@ -355,6 +371,8 @@ export function AuditResults() {
         </span>
         <span className="text-[11px] text-muted-light font-mono">{id}</span>
       </div>
+
+      <ScanHistoryRail scans={targetScans} currentAuditId={id} targetKey={audit?.target_key} />
 
       {/* Main grid: stream + timeline */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">

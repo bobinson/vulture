@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth.tsx";
 const NAV_ITEMS = [
   { path: ROUTES.DASHBOARD, icon: "dashboard", labelKey: "nav.dashboard" },
   { path: ROUTES.AUDIT, icon: "audit", labelKey: "nav.audit" },
+  { path: ROUTES.TARGETS, icon: "targets", labelKey: "nav.targets" },
   { path: ROUTES.MEMORIES, icon: "memories", labelKey: "nav.memories" },
   { path: "/settings", icon: "settings", labelKey: "nav.settings" },
 ] as const;
@@ -28,6 +29,12 @@ function NavIcon({ type, className }: { type: string; className?: string }) {
       return (
         <svg className={cn} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      );
+    case "targets":
+      return (
+        <svg className={cn} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9 9 0 100-18 9 9 0 000 18zm0-4.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9zm0-3a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
         </svg>
       );
     case "memories":

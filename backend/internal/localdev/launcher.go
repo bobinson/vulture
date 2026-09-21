@@ -613,8 +613,11 @@ func (l *Launcher) startBackend(ctx context.Context) error {
 	} else {
 		backendDir := filepath.Join(l.cfg.ProjectRoot, "backend")
 		bin, wd = filepath.Join(backendDir, "bin", "vulture"), backendDir
-		// Build if binary doesn't exist
-		if _, err := os.Stat(bin); os.IsNotExist(err) {
+		// Build if the binary is missing OR older than any build input.
+		// Existence alone is not enough: it made the first binary ever built
+		// permanent, so every later source change was invisible at runtime
+		// while the supervisor still reported a healthy start.
+		if backendNeedsRebuild(bin, backendDir) {
 			log.Println("building backend binary...")
 			buildCmd := fmt.Sprintf("cd %s && %s build -o bin/vulture ./cmd/vulture/", backendDir, l.detect.GoPath)
 			buildProc := NewManager()

@@ -110,9 +110,10 @@ func (a *anthropicAdapter) Complete(ctx context.Context, creds Credentials, req 
 		return nil, transportError(ctx, err) // §32.1 #3
 	}
 	defer resp.Body.Close()
-	if err := statusError(resp.StatusCode); err != nil {
-		drainErrBody(a.name, resp.StatusCode, body, resp.Body) // N6: drain; log only under debug flag
-		return nil, err
+	if statusError(resp.StatusCode) != nil {
+		// N6: the body is logged here and, for the allowlisted class only,
+		// carried into the typed error (see upstream_detail.go).
+		return nil, errorFromResponse(a.name, resp.StatusCode, body, resp.Body)
 	}
 	var wire anthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {

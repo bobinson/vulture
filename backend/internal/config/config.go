@@ -165,6 +165,27 @@ func Load() *Config {
 }
 
 // loadBrokerConfig resolves the feature 0064 LLM-broker configuration.
+// DefaultLLMCallTimeoutSec is the per-call LLM budget when the operator has
+// not set VULTURE_LLM_CALL_TIMEOUT_SEC.
+//
+// It mirrors shared/llm/env.resolve_call_timeout, which feature 0093 made
+// DERIVED rather than fixed: VULTURE_LLM_MAX_OUTPUT_TOKENS (16384) at a
+// conservative 40 tok/s plus 30s overhead. The old pair of defaults — 120s for
+// a 16384-token answer — was impossible on every provider.
+//
+// This is the canonical Go copy. internal/service's margin check reads it from
+// here rather than keeping its own literal, because two Go constants for one
+// number is how the broker came to cut at 120s while the agent allowed 439s:
+// the broker sits BETWEEN the agent and the provider, so its shorter deadline
+// fired first and surfaced as `502 provider_unavailable` — a provider fault,
+// not a timeout — and the agent's correct budget never got to matter. Measured
+// live (audit cde171bd): broker egress deadline at exactly T+120s, LLM tier
+// contributing 0 of 34 findings.
+//
+// Pinned against the Python resolver by
+// agents/shared/tests/unit/test_0093_transport_diagnostics.py.
+const DefaultLLMCallTimeoutSec = 439
+
 // Broker is off unless VULTURE_LLM_BROKER=on. Every field follows the
 // env > config.ini > default precedence used elsewhere in this file.
 func loadBrokerConfig(ini iniValues) BrokerConfig {
@@ -177,7 +198,7 @@ func loadBrokerConfig(ini iniValues) BrokerConfig {
 		ProviderAllowlist: parseCSV(resolve(ini, "VULTURE_LLM_PROVIDER_ALLOWLIST", "broker", "provider_allowlist", "")),
 		BudgetShards:      atoiOr(resolve(ini, "VULTURE_LLM_BUDGET_SHARDS", "broker", "budget_shards", ""), 1),
 		BudgetUSD:         atofOr(resolve(ini, "VULTURE_LLM_BUDGET_USD", "broker", "budget_usd", ""), 0),
-		CallTimeoutSec:    atoiOr(resolve(ini, "VULTURE_LLM_CALL_TIMEOUT_SEC", "broker", "call_timeout_sec", ""), 120),
+		CallTimeoutSec:    atoiOr(resolve(ini, "VULTURE_LLM_CALL_TIMEOUT_SEC", "broker", "call_timeout_sec", ""), DefaultLLMCallTimeoutSec),
 		Listen:            resolve(ini, "VULTURE_LLM_BROKER_LISTEN", "broker", "listen", "127.0.0.1:8090"),
 		Fallbacks:         parseCSV(resolve(ini, "VULTURE_LLM_FALLBACKS", "broker", "fallbacks", "")),
 		Provider:          resolve(ini, "VULTURE_LLM_BROKER_PROVIDER", "broker", "provider", "openai"),

@@ -41,3 +41,17 @@ class AuditRequest(BaseModel):
             "default). Additive/optional; never client-supplied."
         ),
     )
+    lineage_checks_requested: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Feature 0091 §6.1: the backend's `{\"schema\": 1, \"rows\": [...]}` "
+            "question about LLM-tier lineage rows it believes are still in this "
+            "tree. Answered on the `result` event as `lineage_checks`. "
+            "DECLARING IT HERE IS LOAD-BEARING: pydantic drops an undeclared key "
+            "without a word, so before this field the backend asked, no agent "
+            "heard, and every requested row degraded to `unconfirmed` on every "
+            "scan while both sides looked correct. Bound ambiently by the "
+            "transport (shared.lineage_context) because run_audit has no "
+            "parameter for it. None (the ordinary case) asks nothing."
+        ),
+    )

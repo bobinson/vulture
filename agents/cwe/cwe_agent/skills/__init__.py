@@ -51,6 +51,10 @@ from cwe_agent.skills.uncaught_exception_check import (
 )
 from cwe_agent.skills.weak_entropy_check import check_weak_entropy, check_weak_entropy_tool
 from cwe_agent.skills.web_security_check import check_web_security, check_web_security_tool
+from cwe_agent.skills.workspace_autorun_check import (
+    check_workspace_autorun,
+    check_workspace_autorun_tool,
+)
 
 SKILL_TOOLS = [
     check_injection_tool,
@@ -77,6 +81,7 @@ SKILL_TOOLS = [
     check_plaintext_transmission_tool,
     check_catalog_generic_tool,
     check_secrets_tool,
+    check_workspace_autorun_tool,
 ]
 
 SKILL_MAP = {
@@ -104,6 +109,7 @@ SKILL_MAP = {
     "plaintext_transmission": check_plaintext_transmission,
     "catalog_generic": check_catalog_generic,
     "secrets": check_secrets,
+    "workspace_autorun": check_workspace_autorun,
 }
 
 __all__ = [
@@ -157,4 +163,6 @@ __all__ = [
     "check_weak_entropy_tool",
     "check_web_security",
     "check_web_security_tool",
+    "check_workspace_autorun",
+    "check_workspace_autorun_tool",
 ]
