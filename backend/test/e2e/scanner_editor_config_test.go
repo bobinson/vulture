@@ -14,11 +14,13 @@ import (
 //
 // THE DEFECT THIS PINS. `.vscode`, `.idea`, `.eclipse` and `.claude` are in the
 // scanner's hardcoded SKIP_DIRS, so a root scan never descends into them.
-// Feature 0091 P2 (D2) un-prunes the well-known autorun files inside them, and
-// `VULTURE_SCAN_EDITOR_CONFIG=false` is that change's rollback: with it set the
-// editor directories are pruned in full again, exactly as they are today.
+// Feature 0091 P2 (D2) un-prunes the well-known autorun files inside them. That
+// is unconditional now -- VULTURE_SCAN_EDITOR_CONFIG was retired with the 0091
+// flag clean-up -- but an editor directory holding NO allowlisted autorun file
+// is still never entered, and is still reported as the whole container. That is
+// the case this pins, and it is reachable today without any switch.
 //
-// Under rollback the scan looks at nothing in `.vscode`. Its silence about a
+// When the directory is pruned whole the scan looks at nothing in `.vscode`. Its silence about a
 // finding there is worth nothing, and the whole reason the scope check exists
 // is that this silence is otherwise indistinguishable from repair. Before
 // feature 0091 it only failed to bite because a scan of `.vscode` and a scan of
@@ -71,10 +73,10 @@ func editorConfigLineageFinding(fingerprint, filePath string) model.Finding {
 	return f
 }
 
-// prunedEditorDirResult is the result of a scan run with
-// VULTURE_SCAN_EDITOR_CONFIG=false: the agent speaks the 0091 protocol, reports
-// the editor directories it refused to descend into, and reports no finding
-// from either of them.
+// prunedEditorDirResult is the result of a scan of a tree whose editor
+// directories hold no allowlisted autorun file: the agent speaks the 0091
+// protocol, reports the editor directories it refused to descend into, and
+// reports no finding from either of them.
 func prunedEditorDirResult() *model.ScanResult {
 	return &model.ScanResult{
 		ResultSchema: model.ScanResultSchemaEvidence,

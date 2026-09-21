@@ -35,8 +35,10 @@ type scopeContract struct {
 }
 
 type scopeContractCase struct {
-	Name               string   `json:"name"`
-	ScanEditorConfig   bool     `json:"scan_editor_config"`
+	Name string `json:"name"`
+	// No scan_editor_config field: VULTURE_SCAN_EDITOR_CONFIG was retired with
+	// the 0091 flag clean-up, the autorun allowlist is unconditional, and this
+	// side never read the value anyway.
 	Scanned            []string `json:"scanned"`
 	PrunedDirs         []string `json:"pruned_dirs"`
 	ExplicitOutOfScope []string `json:"out_of_scope"`

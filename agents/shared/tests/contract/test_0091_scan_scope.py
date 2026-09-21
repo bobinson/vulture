@@ -19,13 +19,19 @@ that report means for a lineage row". Renaming, widening or coarsening either
 half fails the other side's assertion against this file, and editing the file to
 silence one side moves the failure to the other — which is the point.
 
-The two cases are each other's control. With ``VULTURE_SCAN_EDITOR_CONFIG`` on,
-the walker ENTERS ``.vscode``/``.idea`` for the allowlisted autorun files and
-must report the prune at child granularity, because a bare ``.vscode`` in
-``pruned_dirs`` would put the file it just read out of scope — and an
-out-of-scope row returns before the tier rules, so it could never close. With
-the switch off, nothing in there is read and the CONTAINER is the honest prefix
-again.
+The case carries its own control. The walker ENTERS ``.vscode``/``.idea`` for
+the allowlisted autorun files and must report the prune at CHILD granularity,
+because a bare ``.vscode`` in ``pruned_dirs`` would put the file it just read
+out of scope — and an out-of-scope row returns before the tier rules, so it
+could never close. ``node_modules`` sits in the same tree with nothing
+allowlisted inside it, is never entered, and is reported as the CONTAINER. Those
+two shapes side by side are what prove child-granularity reporting happens
+because the walker entered, not because containers stopped being reported.
+
+That control used to be a second case toggled by ``VULTURE_SCAN_EDITOR_CONFIG``.
+The 0091 flag retirement removed the switch — the allowlist is unconditional now
+— so the off-case described behaviour the walker no longer has. It was deleted
+rather than "fixed" to match, which would only have duplicated the on-case.
 """
 
 from __future__ import annotations
@@ -74,12 +80,8 @@ def _rels(root: Path, paths: list[Path]) -> list[str]:
 
 @pytest.mark.parametrize("case", _contract()["cases"], ids=lambda c: c["name"])
 def test_walker_reproduces_the_scope_contract(
-    case: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    case: dict[str, Any], tmp_path: Path
 ) -> None:
-    monkeypatch.setenv(
-        "VULTURE_SCAN_EDITOR_CONFIG",
-        "true" if case["scan_editor_config"] else "false",
-    )
     root = tmp_path / "tree"
     _build_tree(root, _contract()["tree"]["files"])
 

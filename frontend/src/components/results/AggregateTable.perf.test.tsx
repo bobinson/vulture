@@ -112,99 +112,127 @@ function Harness({ rows }: { rows: AggregateRow[] }) {
   );
 }
 
+// Wall-clock budget for the measurements below.
+//
+// These tests take medians over repeated mounts — test 1 alone mounts 22 times,
+// five of them at 1000 rows — so they are DELIBERATELY slow. On this workstation
+// that is ~3s against vitest's 5s default; a GitHub runner is roughly twice as
+// slow and blew straight through it, failing on the clock while both assertions
+// were nowhere near tripping.
+//
+// Raised rather than sampled less, because the sample count is what keeps the
+// medians stable: cutting it would trade a timeout flake for a noisier ratio,
+// which fails as a false POSITIVE and is far worse. Nothing here asserts an
+// absolute duration — `perRow1000 < perRow50 * 3` and `rerender < mount / 5`
+// are both ratios and hold on any hardware — so a generous budget weakens no
+// claim.
+const PERF_TIMEOUT_MS = 30_000;
+
 describe("AggregateTable render cost", () => {
-  it("mounts 50 / 200 / 1000 rows in a cost that grows linearly, not worse", () => {
-    // Warm up: the first mount in a file pays module init and jsdom warm-up.
-    timeMount(makeRows(50), 3);
+  it(
+    "mounts 50 / 200 / 1000 rows in a cost that grows linearly, not worse",
+    () => {
+      // Warm up: the first mount in a file pays module init and jsdom warm-up.
+      timeMount(makeRows(50), 3);
 
-    const at50 = timeMount(makeRows(50), 7);
-    const at200 = timeMount(makeRows(200), 7);
-    const at1000 = timeMount(makeRows(1000), 5);
+      const at50 = timeMount(makeRows(50), 7);
+      const at200 = timeMount(makeRows(200), 7);
+      const at1000 = timeMount(makeRows(1000), 5);
 
-    const perRow50 = at50 / 50;
-    const perRow1000 = at1000 / 1000;
-    console.log(
-      `AggregateTable mount (jsdom, median):\n` +
-        `    50 rows: ${at50.toFixed(1)}ms  (${(perRow50 * 1000).toFixed(0)}us/row)\n` +
-        `   200 rows: ${at200.toFixed(1)}ms  (${((at200 / 200) * 1000).toFixed(0)}us/row)\n` +
-        `  1000 rows: ${at1000.toFixed(1)}ms  (${(perRow1000 * 1000).toFixed(0)}us/row)`,
-    );
+      const perRow50 = at50 / 50;
+      const perRow1000 = at1000 / 1000;
+      console.log(
+        `AggregateTable mount (jsdom, median):\n` +
+          `    50 rows: ${at50.toFixed(1)}ms  (${(perRow50 * 1000).toFixed(0)}us/row)\n` +
+          `   200 rows: ${at200.toFixed(1)}ms  (${((at200 / 200) * 1000).toFixed(0)}us/row)\n` +
+          `  1000 rows: ${at1000.toFixed(1)}ms  (${(perRow1000 * 1000).toFixed(0)}us/row)`,
+      );
 
-    // Linear, not quadratic: the per-row cost at 1000 rows must not be far
-    // above the per-row cost at 50. A super-linear shape here is the signature
-    // of work done per row that depends on the row COUNT.
-    expect(perRow1000).toBeLessThan(perRow50 * 3);
-  });
+      // Linear, not quadratic: the per-row cost at 1000 rows must not be far
+      // above the per-row cost at 50. A super-linear shape here is the signature
+      // of work done per row that depends on the row COUNT.
+      expect(perRow1000).toBeLessThan(perRow50 * 3);
+    },
+    PERF_TIMEOUT_MS,
+  );
 
-  it("does not re-render its rows when the parent re-renders with the same rows", () => {
-    const rows = makeRows(1000);
-    const { getByTestId } = render(<Harness rows={rows} />);
-    const button = getByTestId("rerender");
+  it(
+    "does not re-render its rows when the parent re-renders with the same rows",
+    () => {
+      const rows = makeRows(1000);
+      const { getByTestId } = render(<Harness rows={rows} />);
+      const button = getByTestId("rerender");
 
-    // act() is not decoration here: without it the state update is scheduled
-    // and the timer closes before React has committed anything, so the
-    // measurement reads ~0.1ms and proves nothing.
-    act(() => button.click());
-
-    const samples: number[] = [];
-    for (let i = 0; i < 7; i++) {
-      const start = performance.now();
-      act(() => button.click());
-      samples.push(performance.now() - start);
-    }
-    const rerender = median(samples);
-    const mount = timeMount(rows, 3);
-    console.log(
-      `AggregateTable re-render with a stable rows reference (1000 rows): ` +
-        `${rerender.toFixed(1)}ms vs ${mount.toFixed(1)}ms to mount`,
-    );
-
-    // memo() on the row means a parent re-render costs the table's own frame,
-    // not a thousand rows. A fifth of the mount cost is a loose bound on
-    // "the rows were skipped".
-    expect(rerender).toBeLessThan(mount / 5);
-  });
-
-  it("costs a full row pass when a filter change brings new row objects", () => {
-    // The filter-change case, which memo cannot help with and is not supposed
-    // to: the server returned a different page, so every row object is new.
-    // What this pins is the SIZE of that cost at the page sizes the endpoint
-    // can actually return — 50 by default, 500 at the handler's cap.
-    for (const size of [50, 500]) {
-      function Refetching() {
-        const [gen, setGen] = useState(0);
-        return (
-          <>
-            <button
-              type="button"
-              data-testid="refetch"
-              onClick={() => setGen((n) => n + 1)}
-            >
-              refetch
-            </button>
-            <AggregateTable
-              rows={makeRows(size).map((r) => ({
-                ...r,
-                seen_count: 1 + (gen % 5),
-              }))}
-            />
-          </>
-        );
-      }
-      const { getByTestId, unmount } = render(<Refetching />);
-      const button = getByTestId("refetch");
+      // act() is not decoration here: without it the state update is scheduled
+      // and the timer closes before React has committed anything, so the
+      // measurement reads ~0.1ms and proves nothing.
       act(() => button.click());
 
       const samples: number[] = [];
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 7; i++) {
         const start = performance.now();
         act(() => button.click());
         samples.push(performance.now() - start);
       }
+      const rerender = median(samples);
+      const mount = timeMount(rows, 3);
       console.log(
-        `AggregateTable filter change (${size} new row objects): ${median(samples).toFixed(1)}ms`,
+        `AggregateTable re-render with a stable rows reference (1000 rows): ` +
+          `${rerender.toFixed(1)}ms vs ${mount.toFixed(1)}ms to mount`,
       );
-      unmount();
-    }
-  });
+
+      // memo() on the row means a parent re-render costs the table's own frame,
+      // not a thousand rows. A fifth of the mount cost is a loose bound on
+      // "the rows were skipped".
+      expect(rerender).toBeLessThan(mount / 5);
+    },
+    PERF_TIMEOUT_MS,
+  );
+
+  it(
+    "costs a full row pass when a filter change brings new row objects",
+    () => {
+      // The filter-change case, which memo cannot help with and is not supposed
+      // to: the server returned a different page, so every row object is new.
+      // What this pins is the SIZE of that cost at the page sizes the endpoint
+      // can actually return — 50 by default, 500 at the handler's cap.
+      for (const size of [50, 500]) {
+        function Refetching() {
+          const [gen, setGen] = useState(0);
+          return (
+            <>
+              <button
+                type="button"
+                data-testid="refetch"
+                onClick={() => setGen((n) => n + 1)}
+              >
+                refetch
+              </button>
+              <AggregateTable
+                rows={makeRows(size).map((r) => ({
+                  ...r,
+                  seen_count: 1 + (gen % 5),
+                }))}
+              />
+            </>
+          );
+        }
+        const { getByTestId, unmount } = render(<Refetching />);
+        const button = getByTestId("refetch");
+        act(() => button.click());
+
+        const samples: number[] = [];
+        for (let i = 0; i < 5; i++) {
+          const start = performance.now();
+          act(() => button.click());
+          samples.push(performance.now() - start);
+        }
+        console.log(
+          `AggregateTable filter change (${size} new row objects): ${median(samples).toFixed(1)}ms`,
+        );
+        unmount();
+      }
+    },
+    PERF_TIMEOUT_MS,
+  );
 });
