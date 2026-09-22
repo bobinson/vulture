@@ -59,12 +59,12 @@ func TestMemoryPriorLookup_MatchesPersistedFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new memory repo: %v", err)
 	}
-	// The memory repo's own schema now carries the fingerprint column; the
-	// user_label column is added by the shared SQLite migration in production,
-	// so replicate just that one here for the L4 read path.
-	if _, err := db.Exec(`ALTER TABLE audit_memories ADD COLUMN user_label TEXT`); err != nil {
-		t.Fatalf("add user_label column: %v", err)
-	}
+	// No hand-added user_label here any more. This test used to ALTER it in,
+	// on the stated premise that "the shared SQLite migration adds it in
+	// production" -- and that premise was the bug: the shared migration runs
+	// before this constructor, so on a fresh install the column was never
+	// added and the L4 lookup failed. migrateMemory owns it now, so patching
+	// the schema here would only hide whether production has it.
 
 	mem := &model.AuditMemory{
 		ID:                "mem-l4",
