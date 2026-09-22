@@ -42,6 +42,9 @@ func migrateMemory(db *sql.DB) error {
 			file_paths TEXT NOT NULL DEFAULT '[]',
 			remediation_status TEXT NOT NULL DEFAULT 'open',
 			remediation_notes TEXT NOT NULL DEFAULT '',
+			user_label TEXT,
+			labelled_by TEXT,
+			labelled_at TIMESTAMP,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL DEFAULT ''
 		);
@@ -71,6 +74,32 @@ func migrateMemory(db *sql.DB) error {
 	// SQLite cannot use B-tree indexes for LIKE with leading %, but the index
 	// benefits exact-match and prefix queries on this column.
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memories_keywords ON audit_memories(keywords)`)
+
+	// Upgrade path for databases written before the label columns existed.
+	// These live HERE, next to the CREATE that is their other half, and not in
+	// sqlite_repo.go's migrate(): that function runs from openRepo, which the
+	// server calls BEFORE registerMemoryRoutes reaches this constructor, so on
+	// a fresh install the ALTERs ran against a table that did not exist yet and
+	// were swallowed by their ignored error. The install then healed itself on
+	// the next boot, which is why only a one-boot release smoke ever saw
+	//
+	//	[validate.l4] lookup failed (skipping): no such column: user_label
+	//
+	// A column needed by a table is now added only by the code that owns that
+	// table, so the two halves cannot be separated by a startup ordering again.
+	for _, col := range []string{
+		"ALTER TABLE audit_memories ADD COLUMN user_label TEXT",
+		"ALTER TABLE audit_memories ADD COLUMN labelled_by TEXT",
+		"ALTER TABLE audit_memories ADD COLUMN labelled_at TIMESTAMP",
+		"ALTER TABLE audit_memories ADD COLUMN fingerprint TEXT",
+	} {
+		// Duplicate-column is the expected outcome on every boot but the first.
+		_, _ = db.Exec(col)
+	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_memories_label
+		ON audit_memories(user_label)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_memories_fingerprint
+		ON audit_memories(fingerprint)`)
 	return nil
 }
 

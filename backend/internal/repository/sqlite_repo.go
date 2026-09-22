@@ -401,17 +401,10 @@ func migrateAddColumns(db *sql.DB) {
 	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN code_snippet TEXT`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_findings_validation_status
 		ON findings(audit_id, validation_status)`)
-	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN user_label TEXT`)
-	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN labelled_by TEXT`)
-	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN labelled_at TIMESTAMP`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_memories_label
-		ON audit_memories(user_label)`)
-	// Migration 021 parity: the L4 memory-prior lookup queries
-	// audit_memories.fingerprint; 017 added the label columns but not
-	// this one. Without it the lookup errors on every audit.
-	_, _ = db.Exec(`ALTER TABLE audit_memories ADD COLUMN fingerprint TEXT`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audit_memories_fingerprint
-		ON audit_memories(fingerprint)`)
+	// audit_memories is owned by SQLiteMemoryRepo, which creates it in
+	// migrateMemory. Its columns are added there too: this function runs first
+	// at startup, so an ALTER on that table here would silently do nothing on a
+	// fresh install and then appear to work on the next boot.
 }
 
 // prepareStatements pre-compiles frequently executed queries for reuse.
