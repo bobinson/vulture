@@ -18,6 +18,7 @@ import (
 	"github.com/vulture/backend/internal/llm"
 	"github.com/vulture/backend/internal/localdev"
 	"github.com/vulture/backend/internal/server"
+	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/gitutil"
 )
 
@@ -30,6 +31,23 @@ import (
 // `main.Version` to match that ldflag — otherwise the injection is a silent
 // no-op and the binary misreports its version. 0055 follow-up.
 var Version = "dev"
+
+// scanAuditTypes is the agent set this command asks for.
+//
+// It asks the registry rather than filtering cfg.Agents by hand. The hand-
+// written version excluded `prove` ("it runs post-audit") and nothing else,
+// which left `discover` in the list — also a pipeline stage, also incapable of
+// running at scan stage. The router produced no target for it, so it never
+// reported, and the request quietly went unanswered on every release smoke run
+// until a missing agent started failing the audit.
+//
+// AllScanAgentTypes drops both pipeline stages and KEEPS the Optional scanners
+// (owasp, do178c), which is what this command wants: everything that can
+// actually run against a source tree. ScanAgentTypes would be wrong here — it
+// also drops Optional, silently narrowing what a release build exercises.
+func scanAuditTypes() []string {
+	return agentregistry.AllScanAgentTypes()
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -301,14 +319,7 @@ func runScan() {
 	}
 	fmt.Printf("Source ID: %s\n", sourceID)
 
-	// Create audit with all configured agent types (excluding prove — it runs post-audit)
-	auditTypes := make([]string, 0, len(cfg.Agents))
-	for agentType := range cfg.Agents {
-		if agentType != "prove" {
-			auditTypes = append(auditTypes, agentType)
-		}
-	}
-	auditID, err := createAudit(apiURL, sourceID, auditTypes)
+	auditID, err := createAudit(apiURL, sourceID, scanAuditTypes())
 	if err != nil {
 		log.Fatalf("create audit: %v", err)
 	}
