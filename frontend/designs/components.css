@@ -6,7 +6,7 @@
  * class to know what to build. The first block mirrors the `@utility` rules
  * already shipped in `src/index.css` (card, btn-*, input-field, label, badge,
  * severity-*, terminal-*). The second block is the report vocabulary added by
- * feature 0093 — the classes an implementation of the unified target report
+ * feature 0091 — the classes an implementation of the unified target report
  * is expected to introduce, named here first so design and code agree.
  *
  * `src/designs.parity.test.ts` rejects any hex literal in this file.
@@ -115,7 +115,7 @@
 .v-subtitle code, .v-mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   3. Report vocabulary — feature 0093 (unified target report)
+   3. Report vocabulary — feature 0091 (unified target report)
    Named here first so the design and the implementation share one language.
    ═══════════════════════════════════════════════════════════════════════ */
 

@@ -73,7 +73,7 @@ a{color:var(--color-accent-dark)}
 </style>
 
 <div class="top"><div class="top-in">
-  <h1>Unified Target Report <small>design · 0093 · for review</small></h1>
+  <h1>Unified Target Report <small>design · 0091 · for review</small></h1>
   <nav class="flow" aria-label="Flow">
     <a href="#s1"><b>S1</b>Home</a><a href="#s2"><b>S2</b>Report</a><a href="#s3"><b>S3</b>Filters</a><a href="#s4"><b>S4</b>One scan</a><a href="#s5"><b>S5</b>Running</a><a href="#s6"><b>S6</b>Closed</a><a href="#s7"><b>S7</b>Compare</a><a href="#s8"><b>S8</b>Finding</a><a href="#s9"><b>S9</b>Edges</a><a href="#s10"><b>S10</b>Routes</a><a href="#dec"><b>D</b>Decisions</a>
   </nav>
@@ -474,7 +474,7 @@ a{color:var(--color-accent-dark)}
 <div class="routes">
   <div class="rbox"><span class="h">TODAY</span><span>/                        Dashboard (scans)</span><span>/audit/:id               per-scan report</span><span>/audit/:id/compare       scan diff</span><span>/targets                 codebases (0091)</span><span>/targets/:key            aggregate (0091)</span></div>
   <div class="arrow">→</div>
-  <div class="rbox"><span class="h">0093</span><span>/                        <b>Codebases</b></span><span><span class="old">/audit/:id</span>  302 → /targets/:key?scans=:id</span><span><span class="old">/audit/:id/compare</span>  302 → …?scans=:prev,:id&amp;view=compare</span><span><span class="old">/targets</span>  302 → /</span><span>/targets/:key            <b>the one report</b></span><span>/targets/:key?scans=…    scan · running · compare</span><span>/targets/:key?finding=…  drawer deep link</span></div>
+  <div class="rbox"><span class="h">PROPOSED</span><span>/                        <b>Codebases</b></span><span><span class="old">/audit/:id</span>  302 → /targets/:key?scans=:id</span><span><span class="old">/audit/:id/compare</span>  302 → …?scans=:prev,:id&amp;view=compare</span><span><span class="old">/targets</span>  302 → /</span><span>/targets/:key            <b>the one report</b></span><span>/targets/:key?scans=…    scan · running · compare</span><span>/targets/:key?finding=…  drawer deep link</span></div>
 </div>
 <ul class="notes">
   <li><b class="k">1</b><span><strong>One new backend route</strong>: <code>GET /api/audits/:id/target</code> returns the key so the SPA can redirect without loading the audit.</span></li>
