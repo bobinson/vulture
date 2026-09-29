@@ -30,6 +30,11 @@ interface FindingsTableProps {
    */
   owaspCategory?: string;
   onOwaspCategoryChange?: (id: string) => void;
+  /**
+   * 0096 follow-up: called once a finding's lineage status is saved, so the
+   * page can re-read what the triage changed server side (OWASP coverage).
+   */
+  onLineageSaved?: () => void;
 }
 
 interface OwaspCategoryFilterProps {
@@ -139,7 +144,7 @@ function RowCopyButton({ finding, auditId }: { finding: Finding; auditId?: strin
   );
 }
 
-export function FindingsTable({ findings: allFindings, auditId, proveResults, owaspCategory: controlledCategory, onOwaspCategoryChange }: FindingsTableProps) {
+export function FindingsTable({ findings: allFindings, auditId, proveResults, owaspCategory: controlledCategory, onOwaspCategoryChange, onLineageSaved }: FindingsTableProps) {
   const { t } = useTranslation();
   const [localCategory, setLocalCategory] = useState("all");
   const owaspCategory = controlledCategory ?? localCategory;
@@ -147,7 +152,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
   const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const { lineageFor, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId);
+  const { lineageFor, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId, { onStatusSaved: onLineageSaved });
 
   // 0045/0036 follow-up — a finding manually triaged as false_positive
   // (its OWN lineage row, resolved v2-first like the backend). Combined with

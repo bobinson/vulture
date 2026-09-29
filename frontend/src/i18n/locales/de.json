@@ -120,6 +120,8 @@
     "owaspFilterByCategory": "Befunde in {{id}} {{name}} anzeigen",
     "owaspSourceLink": "{{id}} auf owasp.org",
     "owaspNotSelected": "nicht ausgewählt",
+    "owaspFalsePositiveNote_one": "{{count}} als Fehlalarm markiert",
+    "owaspFalsePositiveNote_other": "{{count}} als Fehlalarme markiert",
     "tokens": "Tokens",
     "priorFindings": "{{count}} frühere(r) Befund(e) wiederverwendet",
     "duplicatesRemoved": "{{count}} Duplikat(e) entfernt",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api.ts";
 import { normalizeSeverity } from "@/lib/severity.ts";
 import type { Audit } from "@/lib/types.ts";
@@ -43,14 +43,20 @@ export function useAudit(auditId?: string) {
     [],
   );
 
+  // Several reads can be in flight at once (the poll, a re-read after a
+  // triage save); only the latest one started may set the state, so a slow,
+  // earlier response never overwrites a newer one.
+  const readSeqRef = useRef(0);
+
   const fetchAudit = useCallback(async (id: string) => {
+    const seq = ++readSeqRef.current;
     try {
       const result = await api.getAudit(id);
-      setAudit(normalizeAudit(result));
+      if (seq === readSeqRef.current) setAudit(normalizeAudit(result));
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to fetch audit";
-      setError(message);
+      if (seq === readSeqRef.current) setError(message);
       return null;
     }
   }, []);

@@ -240,6 +240,12 @@ events precede it:
   plus `"selected": false` (not checked, rather than clean). A rejected mapping,
   or a manifest for another edition than the mapping, has its found and unmapped
   values cleared and no `selected` key; an unreadable manifest is dropped.
+  The copy `GET /api/audits/{id}` and the replay **serve** is derived from the
+  stored one each time the audit is read: findings whose own lineage row is
+  `false_positive` are left out of the found values and of `unmapped_*`, and
+  each category gains `false_positive_count`. The stored copy is not changed;
+  an older audit's manifest, or one served when lineage or the findings
+  cannot be read, is served as stored.
 * `summary` reads `Mapped N finding(s) into k/T OWASP Top 10:<edition>
   categories.`: `N` is the number of priors counted by `score`; `T` is the
   number of selected categories in the edition — every category of the edition

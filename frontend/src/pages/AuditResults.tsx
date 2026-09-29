@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { useParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useAudit } from "@/hooks/useAudit.ts";
@@ -66,7 +66,7 @@ export function AuditResults() {
 
 function AuditResultsView({ id }: { id: string | undefined }) {
   const { t } = useTranslation();
-  const { audit } = useAudit(id);
+  const { audit, fetchAudit } = useAudit(id);
 
   const status = audit?.status ?? "pending";
   const isTerminal = status === "completed" || status === "failed";
@@ -90,6 +90,15 @@ function AuditResultsView({ id }: { id: string | undefined }) {
   const coverage = isTerminal
     ? (audit?.owasp_coverage ?? null)
     : (owaspCoverage ?? audit?.owasp_coverage ?? null);
+
+  // 0096 follow-up: the backend leaves findings triaged false positive out of
+  // the coverage it serves, computed when the audit is READ. A status saved in
+  // the findings table therefore reaches the card only through a re-read.
+  // Offered only when there is a card to update.
+  const refreshAudit = useCallback(() => {
+    if (id) void fetchAudit(id);
+  }, [id, fetchAudit]);
+  const onLineageSaved = coverage ? refreshAudit : undefined;
 
   useEffect(() => {
     if (streamLines.length > 0 && !hadLiveStream) {
@@ -384,6 +393,7 @@ function AuditResultsView({ id }: { id: string | undefined }) {
             proveResults={proveResults}
             owaspCategory={owaspCategory}
             onOwaspCategoryChange={setOwaspCategory}
+            onLineageSaved={onLineageSaved}
           />
         )}
 

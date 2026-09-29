@@ -119,4 +119,54 @@ describe("OwaspCoverage", () => {
       expect(onSelect).toHaveBeenCalledWith("all");
     });
   });
+
+  describe("triaged false positives (0096 follow-up)", () => {
+    // On a mapping-mode audit the backend serves the EFFECTIVE manifest: the
+    // found values leave out findings whose own lineage row is triaged
+    // false_positive, and false_positive_count says how many there were.
+    const triaged: OwaspCoverageManifest = {
+      edition: "2025",
+      cwe_stage_status: "completed",
+      categories: [
+        { id: "A05", name: "Injection", mapped_count: 37, found_cwes: ["CWE-89"], found_count: 1, status: "found", source_url: "https://owasp.org/a05", false_positive_count: 1 },
+        { id: "A07", name: "Authentication Failures", mapped_count: 36, found_cwes: [], found_count: 0, status: "clean-or-undetected", source_url: "https://owasp.org/a07", false_positive_count: 2 },
+        { id: "A01", name: "Broken Access Control", mapped_count: 40, found_cwes: [], found_count: 0, status: "clean-or-undetected", source_url: "https://owasp.org/a01", false_positive_count: 0 },
+        { id: "A02", name: "Security Misconfiguration", mapped_count: 16, found_cwes: [], found_count: 0, status: "clean-or-undetected", source_url: "https://owasp.org/a02", selected: false, false_positive_count: 0 },
+      ],
+    };
+    const row = (id: string) => screen.getByText(new RegExp(`${id} `)).closest("li")!;
+
+    it("notes how many findings of a category were marked false positive", () => {
+      render(<OwaspCoverage manifest={triaged} />);
+      const note = screen.getByTestId("owasp-coverage-fp-A05");
+      expect(note).toHaveTextContent("results.owaspFalsePositiveNote");
+      expect(row("A05")).toContainElement(note);
+      // Still found: an untriaged finding remains.
+      expect(row("A05")).toHaveTextContent("1 / 37");
+    });
+
+    it("reads a category found only through false positives as not found, with the note", () => {
+      render(<OwaspCoverage manifest={triaged} />);
+      const a07 = row("A07");
+      expect(a07).toHaveTextContent("0 / 36");
+      expect(a07).toContainElement(screen.getByTestId("owasp-coverage-fp-A07"));
+      // The grey not-found dot, never the green found one.
+      expect(a07.querySelector(".bg-success")).toBeNull();
+      expect(screen.getByText("0 / 36")).not.toHaveClass("text-success");
+      // One of the three selected categories is found.
+      expect(screen.getByText("1/3")).toBeInTheDocument();
+    });
+
+    it("shows no note for a category with no false positives", () => {
+      render(<OwaspCoverage manifest={triaged} />);
+      expect(screen.queryByTestId("owasp-coverage-fp-A01")).toBeNull();
+      expect(screen.queryByTestId("owasp-coverage-fp-A02")).toBeNull();
+      expect(row("A01")).not.toHaveTextContent("results.owaspFalsePositiveNote");
+    });
+
+    it("shows no note when the manifest predates the field", () => {
+      render(<OwaspCoverage manifest={manifest} />);
+      expect(screen.queryByText(/results.owaspFalsePositiveNote/)).toBeNull();
+    });
+  });
 });

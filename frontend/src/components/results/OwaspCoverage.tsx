@@ -77,6 +77,25 @@ function dotTone(hit: boolean, notSelected: boolean): string {
 }
 
 /**
+ * 0096 follow-up: how many of a category's findings were triaged false
+ * positive. The backend already left them out of the found count, so a
+ * category found only through them reads as not found; the note says why.
+ */
+function FalsePositiveNote({ category: c }: { category: OwaspCategoryCoverage }) {
+  const { t } = useTranslation();
+  const count = c.false_positive_count ?? 0;
+  if (count <= 0) return null;
+  return (
+    <span
+      data-testid={`owasp-coverage-fp-${c.id}`}
+      className="text-[11px] italic text-muted-light"
+    >
+      {t("results.owaspFalsePositiveNote", { count })}
+    </span>
+  );
+}
+
+/**
  * One category of the card. A category the audit did not select (feature
  * 0096) says so instead of "0 / N", which would read as checked and clean,
  * and is never a filter: no finding carries its label.
@@ -95,8 +114,11 @@ function CategoryRow({ category: c, selected, onSelect }: CategoryRowProps) {
       {notSelected ? (
         <span className="ml-auto shrink-0 italic text-muted-light">{t("results.owaspNotSelected")}</span>
       ) : (
-        <span className={`ml-auto font-mono shrink-0 ${hit ? "text-success" : "text-muted-light"}`}>
-          {c.found_count} / {c.mapped_count}
+        <span className="ml-auto flex items-baseline gap-2 shrink-0">
+          <FalsePositiveNote category={c} />
+          <span className={`font-mono ${hit ? "text-success" : "text-muted-light"}`}>
+            {c.found_count} / {c.mapped_count}
+          </span>
         </span>
       )}
     </li>
