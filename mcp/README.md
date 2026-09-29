@@ -176,12 +176,41 @@ vulture-mcp
 | Tool | Description | Writes? |
 |------|-------------|---------|
 | `vulture_list_audits` | Recent audit summaries | No |
-| `vulture_get_findings` | Paginated findings with filters (severity, category, agent) | No |
+| `vulture_get_findings` | Paginated findings with filters (severity, category, agent, framework, edition) | No |
 | `vulture_get_finding_detail` | Single finding + lineage history | No |
 | `vulture_get_comparison` | Diff vs previous audit (new/fixed/changed) | No |
-| `vulture_search_findings` | Semantic search via pgvector | No |
+| `vulture_search_findings` | Semantic search via pgvector, optional framework/category/edition filter | No |
 | `vulture_list_lineage` | Lineage records with status filter | No |
 | `vulture_update_status` | Triage: mark as false_positive, fixed, etc. | Yes (opt-in) |
+
+OWASP Top 10 categories are labels (`compliance_labels`) on the CWE-categorised
+findings of the scan agents, not rows of their own. Filter with
+`framework="owasp"` and `category="A07"`. `agent_type` is always a literal agent
+filter, so `agent_type="owasp"` returns nothing on current audits. Older audits
+still hold OWASP agent rows; the `framework` filter matches those too, reading
+the category id from their `check_id` (`owasp.A07.cwe-798`) or category slug
+(`A07-authentication-failures`). With `framework`, every returned record
+carries `compliance_labels`; on an older OWASP row that is the one label its own
+fields name, marked `"legacy": true` and with an empty `category_name`. Without
+`framework`, `category` matches a finding's own category (e.g. `CWE-89`).
+
+A category id is edition-specific: `A03` is Injection in OWASP 2021 and
+Software Supply Chain Failures in 2025. Add `edition="2025"` to keep one
+edition's labels; without it a search across audits can mix editions, and each
+label names its `edition`. An older OWASP row takes its edition from its
+category slug when only one edition has that slug; otherwise its label has
+`edition: ""` (unknown) and it matches no edition filter.
+
+`vulture_search_findings` resolves labels by fetching the audits its matches
+came from. Only a CWE-categorised match of a scan agent can carry a label, so
+only the audits of such matches are fetched: at most 10 per call, in relevance
+order; those matches from further audits are left out of a framework-filtered
+result. The lookups share the rate limit with other calls: when other requests
+keep it busy for about two seconds the search stops fetching and answers with
+the audits it has resolved, rather than wait. Whenever matches are left out
+this way the tool sends a `warning` log message to the client (and to stderr)
+saying how many, from how many audits, and why. An audit that cannot be fetched
+(deleted, or a server error) is skipped without failing the search.
 
 ## Environment variables
 

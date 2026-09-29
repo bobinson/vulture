@@ -3,6 +3,8 @@ import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import { SeverityBadge } from "./SeverityBadge.tsx";
 import { LineageStatusBadge } from "./LineageStatusBadge.tsx";
+import { OwaspChip } from "./OwaspChip.tsx";
+import { lineageOwaspLabels } from "@/lib/compliance.ts";
 import { lastEventOutcome } from "@/lib/lineage.ts";
 import { parseWireDate } from "@/lib/targets.ts";
 import type { AggregateRow } from "@/lib/types.ts";
@@ -151,6 +153,14 @@ const AggregateRowView = memo(function AggregateRowView({ row }: { row: Aggregat
       </td>
       <td className="px-3 py-2 align-top whitespace-nowrap">
         <span className="text-[11px] text-muted font-mono">{row.category}</span>
+        {/* Feature 0096: the lineage row's OWASP labels, one chip per edition. */}
+        {row.compliance_labels && (
+          <div className="flex gap-1 mt-0.5">
+            {lineageOwaspLabels(row.compliance_labels).map((l) => (
+              <OwaspChip key={`${l.edition}/${l.id}`} id={l.id} edition={l.edition} />
+            ))}
+          </div>
+        )}
       </td>
       <td className="px-3 py-2 align-top whitespace-nowrap">
         <TierChip tier={row.tier} />

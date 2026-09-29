@@ -95,6 +95,22 @@ type ScanResult struct {
 	// It is global to the run rather than per agent because the parent and
 	// the leaf it shadows are routinely different agents.
 	RollupShadowed map[string]bool `json:"-"`
+
+	// MappingMode marks an OWASP result that answered with a `mapping` member
+	// (feature 0096 §2.2): its findings are empty BY DESIGN, because the
+	// labels ride on the CWE-categorised rows, so any rows it carries are not
+	// persisted (I1). Backend-set from the member's presence alone, not its
+	// type or validity — a mapping this backend cannot read still carries zero
+	// findings on purpose — and sticky for the run once set (M2). Lineage does
+	// not read it: a mapper agent owns no lineage in any mode (M1). Not
+	// parsed, like the two above.
+	MappingMode bool `json:"-"`
+
+	// ComplianceMapping is the run's validated compliance mapping (feature
+	// 0096 §4.2), or nil. Global to the run, like RollupShadowed: the mapper
+	// sends it, and every OTHER agent's sighting writes the lineage labels
+	// it implies. Backend-set and unparsed.
+	ComplianceMapping *ComplianceMapping `json:"-"`
 }
 
 // HasEvidenceProtocol reports whether the agent that produced this result

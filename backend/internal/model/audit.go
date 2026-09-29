@@ -83,6 +83,15 @@ type AuditComparison struct {
 	NewFindings           []ComparisonFindingSummary `json:"new_findings,omitempty"`
 	FixedFindings         []ComparisonFindingSummary `json:"fixed_findings,omitempty"`
 	ChangedFindings       []ComparisonChangedFinding `json:"changed_findings,omitempty"`
+
+	// ExcludedLegacyCopies counts the older audit's mapper-agent rows (the
+	// pre-0096 OWASP re-emissions of other agents' findings) left out of the
+	// new/fixed/persistent/changed classification because the newer audit is
+	// in mapping mode and labels those findings instead of copying them.
+	// PreviousFindingsCount and CurrentFindingsCount count the rows AFTER this
+	// exclusion, so previous = persistent + changed + fixed and current =
+	// persistent + changed + new; the copies are counted here only.
+	ExcludedLegacyCopies int `json:"excluded_legacy_copies,omitempty"`
 }
 
 // ComparisonFindingSummary is a lightweight summary for new/fixed findings.

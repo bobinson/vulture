@@ -176,3 +176,20 @@ describe("AggregateTable", () => {
     expect(screen.getByTestId("aggregate-table-scroll").className).toMatch(/overflow-x-auto/);
   });
 });
+
+describe("AggregateTable OWASP labels (0096)", () => {
+  it("renders one chip per edition label of the lineage row", () => {
+    render(
+      <AggregateTable
+        rows={[
+          makeRow({ lineage_id: "a", compliance_labels: { "owasp:2025": ["A07"], "owasp:2021": ["A07"] } }),
+          makeRow({ lineage_id: "b", ref: "VLT-2" }),
+        ]}
+      />,
+    );
+    const [labelled, plain] = screen.getAllByTestId("aggregate-row");
+    const chips = within(labelled).getAllByTestId("owasp-chip");
+    expect(chips.map((c) => c.textContent)).toEqual(["A07", "A07"]);
+    expect(within(plain).queryByTestId("owasp-chip")).toBeNull();
+  });
+});

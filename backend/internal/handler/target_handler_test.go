@@ -163,3 +163,42 @@ func TestTargetHandlerRoutes(t *testing.T) {
 		t.Fatalf("POST .../aggregate = %d, want 405", w.Code)
 	}
 }
+
+// Feature 0096 §7.3: the compliance filter is validated, not clamped.
+func TestParseComplianceFilter(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		values  url.Values
+		want    model.AggregateQuery
+		wantErr bool
+	}{
+		{"absent is no filter", url.Values{}, model.AggregateQuery{}, false},
+		{"category and edition", url.Values{"framework": {"owasp"}, "category": {"A07"}, "edition": {"2025"}},
+			model.AggregateQuery{Framework: "owasp", Category: "A07", Edition: "2025"}, false},
+		{"surrounding space trimmed", url.Values{"framework": {" owasp "}, "category": {" A07"}, "edition": {"2021 "}},
+			model.AggregateQuery{Framework: "owasp", Category: "A07", Edition: "2021"}, false},
+		// A category id names different categories in different editions
+		// (A03 is Injection in 2021, Software Supply Chain Failures in 2025),
+		// and the backend never picks an edition, so one is required.
+		{"edition missing", url.Values{"framework": {"owasp"}, "category": {"A07"}}, model.AggregateQuery{}, true},
+		{"edition blank", url.Values{"framework": {"owasp"}, "category": {"A07"}, "edition": {" "}}, model.AggregateQuery{}, true},
+		{"unknown framework", url.Values{"framework": {"nist"}, "category": {"A07"}}, model.AggregateQuery{}, true},
+		{"category missing", url.Values{"framework": {"owasp"}}, model.AggregateQuery{}, true},
+		{"category malformed", url.Values{"framework": {"owasp"}, "category": {"A7"}}, model.AggregateQuery{}, true},
+		{"edition malformed", url.Values{"framework": {"owasp"}, "category": {"A07"}, "edition": {"25"}}, model.AggregateQuery{}, true},
+		{"category without framework", url.Values{"category": {"A07"}}, model.AggregateQuery{}, true},
+		{"edition without framework", url.Values{"edition": {"2025"}}, model.AggregateQuery{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var q model.AggregateQuery
+			err := parseComplianceFilter(&q, tc.values)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if q.Framework != tc.want.Framework || q.Category != tc.want.Category || q.Edition != tc.want.Edition {
+				t.Fatalf("filter = (%q, %q, %q), want (%q, %q, %q)", q.Framework, q.Category, q.Edition,
+					tc.want.Framework, tc.want.Category, tc.want.Edition)
+			}
+		})
+	}
+}

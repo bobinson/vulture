@@ -2,6 +2,7 @@
 
 import asyncio
 import contextvars
+import inspect
 import logging
 import os
 from collections.abc import AsyncGenerator, Callable, Generator
@@ -41,6 +42,28 @@ _AUDIT_POOL = ThreadPoolExecutor(
     max_workers=_int_env("VULTURE_AUDIT_EXECUTOR_WORKERS", 8),
     thread_name_prefix="vulture-audit",
 )
+
+
+# Optional per-run request fields a run handler may opt into by DECLARING a
+# keyword parameter of the same name (feature 0096). Every agent's entry point
+# has the fixed four-argument shape, so a field is passed only to a handler
+# that names it: the other agents keep their call unchanged. A `**kwargs`
+# handler did not declare it and is not told.
+_OPT_IN_FIELDS = ("accepts_mapping",)
+
+
+def _handler_kwargs(run_handler: RunHandler, req: AuditRequest) -> dict[str, Any]:
+    """The opt-in request fields *run_handler* declares, read from *req*."""
+    try:
+        params = inspect.signature(run_handler).parameters
+    except (TypeError, ValueError):  # builtins / odd callables: opt into nothing
+        return {}
+    kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    return {
+        name: getattr(req, name, None)
+        for name in _OPT_IN_FIELDS
+        if name in params and params[name].kind in kinds
+    }
 
 
 async def _cancellable_stream(
@@ -85,10 +108,12 @@ async def _cancellable_stream(
     q: "asyncio.Queue[Any]" = asyncio.Queue()
     _DONE = object()
 
+    extra = _handler_kwargs(run_handler, req)
+
     def _produce() -> None:
         try:
             for chunk in run_handler(
-                req.run_id, req.source_path, req.config, req.prior_findings,
+                req.run_id, req.source_path, req.config, req.prior_findings, **extra,
             ):
                 loop.call_soon_threadsafe(q.put_nowait, chunk)
         except BaseException as exc:  # surface to consumer (F8), never swallow
@@ -135,7 +160,9 @@ def create_sse_app(
         agent_name: Short agent identifier (e.g. 'chaos').
         agent_info: Info dict returned by GET /info.
         run_handler: Generator function(run_id, source_path, config, prior_findings)
-                     yielding SSE strings.
+                     yielding SSE strings. A handler that declares a keyword
+                     parameter named in ``_OPT_IN_FIELDS`` (``accepts_mapping``)
+                     also receives that top-level request field.
 
     Returns:
         Configured FastAPI application.

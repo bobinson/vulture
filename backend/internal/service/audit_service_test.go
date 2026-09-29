@@ -303,3 +303,39 @@ func TestAuditService_FindSourceByPath(t *testing.T) {
 		t.Errorf("got id=%q, want s-1", src.ID)
 	}
 }
+
+// Feature 0096 §7.7: an audit holding mapper (OWASP) rows is the pre-0096
+// shape and is a cache miss; one without them is served.
+func TestAuditService_GetCachedAuditMissesMapperRows(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		findings []model.Finding
+		wantHit  bool
+	}{
+		{"no findings", nil, true},
+		{"scanner rows only", []model.Finding{{AgentType: "cwe"}, {AgentType: "xss"}}, true},
+		{"mapper copy rows", []model.Finding{{AgentType: "cwe"}, {AgentType: "owasp"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &repository.MockAuditRepository{
+				GetLatestCompletedAuditFn: func(string, []string) (*model.Audit, error) {
+					return &model.Audit{ID: "a", Findings: tc.findings}, nil
+				},
+			}
+			audit, err := NewAuditService(repo).GetCachedAudit("src", []string{"cwe", "owasp"})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if (audit != nil) != tc.wantHit {
+				t.Fatalf("hit = %v, want %v", audit != nil, tc.wantHit)
+			}
+		})
+	}
+	boom := errors.New("boom")
+	repo := &repository.MockAuditRepository{
+		GetLatestCompletedAuditFn: func(string, []string) (*model.Audit, error) { return nil, boom },
+	}
+	if _, err := NewAuditService(repo).GetCachedAudit("src", []string{"owasp"}); !errors.Is(err, boom) {
+		t.Fatalf("repository error must propagate, got %v", err)
+	}
+}

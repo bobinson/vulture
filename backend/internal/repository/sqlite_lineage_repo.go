@@ -82,8 +82,8 @@ func (r *SQLiteLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 			ref_number,
 			provenance, quote_hash, fingerprint_v2, git_branch, target_key,
 			seen_count, last_seen_audit_id,
-			evidence_line_start, evidence_line_end
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			evidence_line_start, evidence_line_end, compliance_labels
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, l.Fingerprint, l.SourcePath, l.AgentType, string(l.CurrentStatus),
 		l.Notes, l.TicketURL, l.FirstAuditID, l.FirstFoundAt.Format(time.RFC3339), l.FirstCommit,
 		l.LatestAuditID, nullIfEmpty(latestFoundAt), l.LatestCommit,
@@ -93,7 +93,7 @@ func (r *SQLiteLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 		l.RefNumber,
 		l.Provenance, l.QuoteHash, l.FingerprintV2, l.GitBranch, nullIfEmpty(l.TargetKey),
 		defaultSeenCount(l.SeenCount), nullIfEmpty(l.LastSeenAuditID),
-		l.EvidenceLineStart, l.EvidenceLineEnd,
+		l.EvidenceLineStart, l.EvidenceLineEnd, lineageLabelsColumn(l.ComplianceLabels),
 	)
 	if isTargetIdentityConflict(err) {
 		// The row already exists under this target's OTHER identity key. See
@@ -152,14 +152,25 @@ func (r *SQLiteLineageRepo) updateLineageRow(l *model.FindingLineage,
 	if l.LatestFoundAt != nil {
 		latestFoundAt = l.LatestFoundAt.Format(time.RFC3339)
 	}
+	// compliance_labels (feature 0096 §4.2): the sighting's framework:edition
+	// keys replace the row's and every other key is kept — json_patch on two
+	// objects, the SQLite spelling of the Postgres `||` in pgMergeLabels. The
+	// COALESCE chain keeps NULL meaning "no labels" either way round.
+	// json_valid guards json_patch, which raises on a malformed stored value
+	// and would fail this whole sighting update: a corrupt value is replaced
+	// by the sighting's labels, or kept when the sighting carries none.
+	labels := lineageLabelsColumn(l.ComplianceLabels)
 	if _, err := r.db.Exec(`
 		UPDATE finding_lineage SET latest_audit_id = ?, latest_found_at = ?, latest_commit = ?, updated_at = ?,
 			provenance = ?, quote_hash = ?, fingerprint_v2 = ?, git_branch = ?, target_key = COALESCE(?, target_key),
-			evidence_line_start = ?, evidence_line_end = ?, file_path = ?
+			evidence_line_start = ?, evidence_line_end = ?, file_path = ?,
+			compliance_labels = COALESCE(
+				CASE WHEN json_valid(compliance_labels) THEN json_patch(compliance_labels, ?) ELSE ? END,
+				?, compliance_labels)
 		WHERE id = ?`,
 		l.LatestAuditID, nullIfEmpty(latestFoundAt), l.LatestCommit, now.Format(time.RFC3339),
 		l.Provenance, l.QuoteHash, l.FingerprintV2, l.GitBranch, nullIfEmpty(l.TargetKey),
-		l.EvidenceLineStart, l.EvidenceLineEnd, l.FilePath, id); err != nil {
+		l.EvidenceLineStart, l.EvidenceLineEnd, l.FilePath, labels, labels, labels, id); err != nil {
 		return fmt.Errorf("update lineage: %w", err)
 	}
 	l.ID = id
@@ -256,14 +267,31 @@ func (r *SQLiteLineageRepo) ListBySourcePath(sourcePath, status string, limit, o
 	return scanSQLiteLineageRows(rows)
 }
 
+// ListByAudit returns the lineage rows behind one audit's findings: a row a
+// finding matches on the v1 fingerprint, OR on fingerprint_v2 within the
+// audit's target and agent type — the same two identities the lineage writer
+// matches on (feature 0091 §7.3). The v1 arm alone dropped every row a finding
+// reaches only through v2 (an OWASP re-mapping, a rescan under a new mount),
+// and the results page then showed no ref and no triage for it. The v2 arm is
+// target-scoped because v2 is root-canonical: another codebase with the same
+// relative path and check has the same v2 and its own triage. NULLIF keeps a
+// source with no target key from matching the un-keyed rows of every other.
 func (r *SQLiteLineageRepo) ListByAudit(auditID string) ([]model.FindingLineage, error) {
 	rows, err := r.db.Query(`
 		SELECT `+sqliteLineageColsFL+`
 		FROM finding_lineage fl
-		INNER JOIN findings f ON f.fingerprint = fl.fingerprint
-			AND f.agent_type = fl.agent_type
-		WHERE f.audit_id = ? AND fl.merged_into IS NULL
-		GROUP BY fl.id
+		WHERE fl.merged_into IS NULL AND fl.id IN (
+			SELECT l.id FROM findings f
+			JOIN finding_lineage l ON l.fingerprint = f.fingerprint AND l.agent_type = f.agent_type
+			WHERE f.audit_id = ?1
+			UNION
+			SELECT l.id FROM finding_lineage l
+			WHERE l.merged_into IS NULL
+			  AND l.target_key = (SELECT NULLIF(s.target_key, '') FROM audits a
+			                      JOIN sources s ON s.id = a.source_id WHERE a.id = ?1)
+			  AND (l.agent_type, l.fingerprint_v2) IN (
+			      SELECT f.agent_type, f.fingerprint_v2 FROM findings f
+			      WHERE f.audit_id = ?1 AND f.fingerprint_v2 <> ''))
 		ORDER BY fl.updated_at DESC`, auditID)
 	if err != nil {
 		return nil, fmt.Errorf("list lineage by audit: %w", err)
@@ -433,6 +461,7 @@ type sqliteLineageScanner struct {
 	l                                  model.FindingLineage
 	firstFoundAt, createdAt, updatedAt string
 	latestFoundAt, fixedAt             sql.NullString
+	labels                             string
 }
 
 // targets returns the scan destinations in column order.
@@ -449,12 +478,15 @@ func (s *sqliteLineageScanner) targets() []interface{} {
 		&l.TargetKey, &l.FingerprintV2, &l.GitBranch, &l.Provenance, &l.QuoteHash,
 		&l.EvidenceLineStart, &l.EvidenceLineEnd, &l.EvidenceFileHash,
 		&l.SeenCount, &l.LastSeenAuditID, &l.MergedInto,
+		&s.labels,
 	}
 }
 
-// finish converts SQLite's text timestamps and derives the display ref.
+// finish converts SQLite's text timestamps and JSON labels, and derives the
+// display ref.
 func (s *sqliteLineageScanner) finish() *model.FindingLineage {
 	l := &s.l
+	decodeLabelsColumn(s.labels, &l.ComplianceLabels)
 	l.FirstFoundAt, _ = time.Parse(time.RFC3339, s.firstFoundAt)
 	l.CreatedAt, _ = time.Parse(time.RFC3339, s.createdAt)
 	l.UpdatedAt, _ = time.Parse(time.RFC3339, s.updatedAt)
@@ -564,6 +596,18 @@ func (r *SQLiteLineageRepo) MarkUnconfirmed(id, auditID string) error {
 		WHERE id = ?`, nullIfEmpty(auditID), now, id)
 	if err != nil {
 		return fmt.Errorf("mark lineage unconfirmed: %w", err)
+	}
+	return nil
+}
+
+func (r *SQLiteLineageRepo) ReopenUnconfirmed(id, auditID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.db.Exec(`
+		UPDATE finding_lineage SET current_status = 'open',
+			last_seen_audit_id = ?, updated_at = ?
+		WHERE id = ? AND current_status = 'unconfirmed'`, nullIfEmpty(auditID), now, id)
+	if err != nil {
+		return fmt.Errorf("reopen unconfirmed lineage: %w", err)
 	}
 	return nil
 }

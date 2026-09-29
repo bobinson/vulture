@@ -91,6 +91,9 @@ func (s *targetService) Aggregate(q model.AggregateQuery) (*model.AggregateRepor
 	if report.Rows == nil {
 		report.Rows = []model.AggregateRow{}
 	}
+	if report.LabelEditions == nil {
+		report.LabelEditions = []model.LabelEdition{}
+	}
 	return report, nil
 }
 

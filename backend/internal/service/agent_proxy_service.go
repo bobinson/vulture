@@ -225,7 +225,13 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 	payload := map[string]interface{}{
 		"run_id":      runID,
 		"source_path": sourcePath,
-		"config":      json.RawMessage(config),
+		"config":      json.RawMessage(stripAcceptsMapping(config)),
+	}
+	// Feature 0096 §2.1 (H1): the OWASP mapping capability is OUT OF BAND —
+	// a top-level field only this proxy writes, only for the OWASP agent. It
+	// is never read from, or forwarded in, the user-controllable config.
+	if agentType == owaspType {
+		payload[acceptsMappingKey] = owaspMappingVersion
 	}
 	if len(priorFindings) > 0 {
 		payload["prior_findings"] = priorFindings
@@ -321,4 +327,35 @@ func (s *agentProxyService) readSSEStream(ctx context.Context, agentType string,
 	}
 	log.Printf("[sse-read] stream ended agent=%s", agentType)
 	return nil
+}
+
+// acceptsMappingKey names the OWASP mapping capability (feature 0096 §2.1).
+const acceptsMappingKey = "accepts_mapping"
+
+// stripAcceptsMapping removes a top-level accepts_mapping from an agent's
+// config (feature 0096 §2.1, H1). The capability is carried out of band, and a
+// pre-0096 backend forwards arbitrary user config keys, so an agent must never
+// be able to find it in config — this backend strips it for EVERY agent,
+// whatever the user put there (flat, or in the agent's own block, which
+// extractAgentConfig has already merged to the top level).
+//
+// A config without the key, or one that is not a JSON object (a pre-0081
+// per-agent block), is returned byte for byte: the rewrite happens only when
+// there is something to remove.
+func stripAcceptsMapping(cfg json.RawMessage) json.RawMessage {
+	// No byte-level pre-check: a JSON-escaped key ("accepts\u005fmapping")
+	// decodes to accepts_mapping on the agent side and must be caught too.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(cfg, &m); err != nil {
+		return cfg
+	}
+	if _, ok := m[acceptsMappingKey]; !ok {
+		return cfg
+	}
+	delete(m, acceptsMappingKey)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return cfg
+	}
+	return out
 }

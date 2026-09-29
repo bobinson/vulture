@@ -145,3 +145,35 @@ func TestStream_NoOwaspNoDeferredPhase(t *testing.T) {
 		t.Fatal("owasp must not run when not requested")
 	}
 }
+
+// Feature 0096 §2.1 (H1): the mapping capability travels OUT OF BAND, as a
+// top-level /run field the agent proxy writes (agentProxyService), never in
+// the user-controllable config. The OWASP config the backend builds therefore
+// never carries accepts_mapping — not even one the user supplied, which is
+// dropped here and again by the proxy for every agent. cwe_stage_status stays
+// backend-owned, and the user's own keys survive the merge.
+func TestOwaspRequestConfigNeverCarriesAcceptsMapping(t *testing.T) {
+	for _, in := range []string{
+		``,
+		`not json`,
+		`{"accepts_mapping":0,"edition":"2021"}`,
+		`{"accepts_mapping":1}`,
+		`{"accepts_mapping":2,"cwe_stage_status":"completed"}`,
+	} {
+		var got map[string]any
+		if err := json.Unmarshal(owaspRequestConfig(json.RawMessage(in), "failed"), &got); err != nil {
+			t.Fatalf("config %q: output is not JSON: %v", in, err)
+		}
+		if v, present := got["accepts_mapping"]; present {
+			t.Errorf("config %q: accepts_mapping = %#v in the OWASP config; the capability is out of band only", in, v)
+		}
+		if got["cwe_stage_status"] != "failed" {
+			t.Errorf("config %q: cwe_stage_status = %#v, want \"failed\"", in, got["cwe_stage_status"])
+		}
+	}
+	var got map[string]any
+	_ = json.Unmarshal(owaspRequestConfig(json.RawMessage(`{"edition":"2021"}`), "completed"), &got)
+	if got["edition"] != "2021" {
+		t.Errorf("the user's edition must survive the merge, got %#v", got["edition"])
+	}
+}

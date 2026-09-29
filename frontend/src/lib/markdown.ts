@@ -1,3 +1,4 @@
+import { groupByOwaspCategory, owaspLabels } from "./compliance.ts";
 import type { Audit, Finding, ProveResult } from "./types.ts";
 
 /** Escape text for use inside a markdown table cell. */
@@ -39,6 +40,11 @@ export function findingToMarkdown(finding: Finding, auditId?: string): string {
 
   if (finding.compliance_ref) {
     lines.push(`| Compliance | ${escapeCell(finding.compliance_ref)} |`);
+  }
+
+  // Feature 0096: OWASP Top 10 categories the finding is labelled with.
+  for (const l of owaspLabels(finding)) {
+    lines.push(`| OWASP | ${escapeCell(`${l.category_id} ${l.category_name} (${l.edition})`)} |`);
   }
 
   lines.push("");
@@ -157,7 +163,44 @@ export function auditReportToMarkdown(audit: Audit, findings: Finding[], sourceP
   lines.push("---");
   lines.push("");
 
+  const owasp = owaspSectionMarkdown(findings);
+  if (owasp) {
+    lines.push(owasp);
+    lines.push("---");
+    lines.push("");
+  }
+
   lines.push(findings.map((f) => findingToMarkdown(f, audit.id)).join("\n---\n\n"));
 
+  return lines.join("\n");
+}
+
+function fileRefOf(finding: Finding): string {
+  return finding.line_start ? `${finding.file_path}:${finding.line_start}` : finding.file_path;
+}
+
+/**
+ * Feature 0096: the report's OWASP Top 10 section — one heading per edition,
+ * one sub-heading per category, the labelled findings under each. Computed
+ * from the findings' labels, so a finding is listed under every category it
+ * maps to but counted once in the report. Empty when nothing is labelled.
+ */
+function owaspSectionMarkdown(findings: Finding[]): string {
+  const groups = groupByOwaspCategory(findings);
+  const lines: string[] = [];
+  let edition = "";
+  for (const g of groups) {
+    if (g.edition !== edition) {
+      edition = g.edition;
+      lines.push(`## OWASP Top 10:${edition}`);
+      lines.push("");
+    }
+    lines.push(`### ${g.id} ${g.name} (${g.findings.length})`);
+    lines.push("");
+    for (const f of g.findings) {
+      lines.push(`- [${f.severity.toUpperCase()}] ${f.title} — \`${fileRefOf(f)}\``);
+    }
+    lines.push("");
+  }
   return lines.join("\n");
 }

@@ -55,6 +55,21 @@ type Finding struct {
 	IsRollup             bool                   `json:"is_rollup,omitempty"`
 	RolledUpInto         string                 `json:"rolled_up_into,omitempty"`
 	InstanceCount        int                    `json:"instance_count,omitempty"`
+
+	// ComplianceLabels (feature 0096) are the framework categories this
+	// finding falls under, applied by the backend from a mapping agent's
+	// table. Absent — never `[]` — when the finding has none.
+	ComplianceLabels []ComplianceLabel `json:"compliance_labels,omitempty"`
+
+	// AbsorbedCategories (feature 0096 H2) are the distinct canonical CWE
+	// categories of the rows cross-agent dedup folded into this one, its own
+	// excluded. Dedup merges CWE ids of one taxonomy family ({CWE-89,
+	// CWE-943}, {CWE-22, CWE-73}) that an edition may map differently, so the
+	// survivor is labelled from its own category AND these — otherwise the
+	// absorbed row's categories vanish with it. In memory only: set by the
+	// drain, read by the label pass, the coverage recount and the lineage
+	// sighting of the same run, never persisted or sent.
+	AbsorbedCategories []string `json:"-"`
 }
 
 // PriorFinding is a lightweight summary of a previous finding passed to agents

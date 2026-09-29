@@ -204,6 +204,13 @@ type FindingLineage struct {
 	// MergedInto is set on the loser of a duplicate merge (P3); such a row is
 	// excluded from every read.
 	MergedInto string `json:"merged_into,omitempty"`
+
+	// ComplianceLabels (feature 0096 §4.2) maps "framework:edition" (e.g.
+	// "owasp:2025") to the category ids of that edition's FULL table, so the
+	// row keeps its labels across runs that select a subset of categories. A
+	// sighting replaces only the keys it carries: a CWE-only scan, or a run of
+	// another edition, leaves every other key as it was.
+	ComplianceLabels map[string][]string `json:"compliance_labels,omitempty"`
 }
 
 // FormatRef returns the human-readable reference string (e.g. "VLT-0042").

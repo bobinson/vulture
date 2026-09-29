@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emit a design as one self-contained HTML file.
 
-    python3 designs/inline.py designs/0093-unified-target-report.html > out.html
+    python3 designs/inline.py designs/0091-unified-target-report.html > out.html
 
 Replaces each ``<link rel="stylesheet" href="X.css">`` that points at a local
 file with an inline ``<style>`` block, so the result can be attached, pasted or

@@ -274,6 +274,40 @@ func TestPGEvidenceWritesRoundTrip(t *testing.T) {
 		}
 		t.Fatal("an unconfirmed row must remain active and visible")
 	})
+
+	t.Run("ReopenUnconfirmed returns the row to open", func(t *testing.T) {
+		// Runs after the subtest above left the row unconfirmed.
+		reopenAudit := fx.audit(t, owner, "reopen")
+		if err := repo.ReopenUnconfirmed(row.ID, reopenAudit); err != nil {
+			t.Fatalf("ReopenUnconfirmed: %v", err)
+		}
+		got, err := repo.GetLineage(row.ID)
+		if err != nil {
+			t.Fatalf("GetLineage: %v", err)
+		}
+		if got.CurrentStatus != model.LineageStatusOpen {
+			t.Fatalf("status = %q, want %q", got.CurrentStatus, model.LineageStatusOpen)
+		}
+		if got.LastSeenAuditID != reopenAudit {
+			t.Errorf("last_seen_audit_id = %q, want %q", got.LastSeenAuditID, reopenAudit)
+		}
+	})
+
+	t.Run("ReopenUnconfirmed never touches a row in another status", func(t *testing.T) {
+		// The guard is what makes a stale snapshot harmless: a row a human
+		// marked false_positive after the pass read it must stay that way.
+		dismissed := pgLineage(t, repo, owner, fx, "fp-dismissed", model.LineageStatusFalsePositive)
+		if err := repo.ReopenUnconfirmed(dismissed.ID, fx.audit(t, owner, "stale")); err != nil {
+			t.Fatalf("ReopenUnconfirmed: %v", err)
+		}
+		got, err := repo.GetLineage(dismissed.ID)
+		if err != nil {
+			t.Fatalf("GetLineage: %v", err)
+		}
+		if got.CurrentStatus != model.LineageStatusFalsePositive {
+			t.Fatalf("status = %q, want %q", got.CurrentStatus, model.LineageStatusFalsePositive)
+		}
+	})
 }
 
 // TestPGRecentlyFixedBySourcePath pins the bounded fixed-row re-check (S11) on
@@ -434,5 +468,55 @@ func TestPGUpsertRecoversFromTheTargetIdentityConflict(t *testing.T) {
 	if reloaded.FilePath != "src/api.py" || reloaded.SourcePath != "/home/x/proj" {
 		t.Errorf("recovered row = file_path %q source_path %q; the update branch must run "+
 			"against the surviving row", reloaded.FilePath, reloaded.SourcePath)
+	}
+}
+
+// TestPGListByAuditMatchesFingerprintV2WithinTarget pins the Postgres half of
+// GET /api/audits/{id}/lineage (the SQLite half is the backend E2E suite):
+// a row reached only through fingerprint_v2 is returned when it is in the
+// audit's target and agent, and a v2 twin in another target is not.
+func TestPGListByAuditMatchesFingerprintV2WithinTarget(t *testing.T) {
+	repo, owner, fx := newPGLineageRepo(t)
+	if err := owner.UpdateSourceTargetKey(fx.audits["__source__"], "marker:pg-k"); err != nil {
+		t.Fatalf("set source target key: %v", err)
+	}
+	auditID := fx.audit(t, owner, "listed")
+	if err := owner.SaveFindings(auditID, []model.Finding{
+		{ID: uuid.NewString(), AgentType: "cwe", Severity: model.SeverityHigh, Title: "v1 control",
+			FilePath: "a.ts", LineStart: 1, Fingerprint: "pg-v1-control", FingerprintV2: "pg-v2-control"},
+		{ID: uuid.NewString(), AgentType: "cwe", Severity: model.SeverityHigh, Title: "v2 only",
+			FilePath: "b.ts", LineStart: 2, Fingerprint: "pg-v1-new", FingerprintV2: "pg-v2-shared"},
+	}); err != nil {
+		t.Fatalf("save findings: %v", err)
+	}
+
+	seed := func(v1, v2, target string) string {
+		l := pgLineage(t, repo, owner, fx, v1, model.LineageStatusOpen)
+		if _, err := owner.DB().Exec(`UPDATE finding_lineage SET fingerprint_v2 = $1, target_key = $2 WHERE id = $3`,
+			v2, target, l.ID); err != nil {
+			t.Fatalf("set identity on %s: %v", v1, err)
+		}
+		return l.ID
+	}
+	control := seed("pg-v1-control", "pg-v2-control", "marker:pg-k")
+	viaV2 := seed("pg-v1-old", "pg-v2-shared", "marker:pg-k")
+	otherTarget := seed("pg-v1-elsewhere", "pg-v2-shared", "marker:pg-o")
+
+	rows, err := repo.ListByAudit(auditID)
+	if err != nil {
+		t.Fatalf("ListByAudit: %v", err)
+	}
+	got := map[string]int{}
+	for _, r := range rows {
+		got[r.ID]++
+	}
+	if got[control] != 1 {
+		t.Errorf("v1 match: returned %d times, want 1", got[control])
+	}
+	if got[viaV2] != 1 {
+		t.Errorf("v2-only match in the audit's target: returned %d times, want 1", got[viaV2])
+	}
+	if got[otherTarget] != 0 {
+		t.Errorf("v2 twin in another target must not be returned (got %d)", got[otherTarget])
 	}
 }
