@@ -112,6 +112,14 @@
     "tokensSaved": "tokens saved",
     "owaspCoverage": "OWASP Top 10 coverage",
     "owaspCweStageWarning": "Coverage may be incomplete — CWE stage:",
+    "owaspCategory": "OWASP category",
+    "owaspCategoryAll": "All categories",
+    "owaspEdition": "OWASP edition",
+    "owaspChipTitle": "{{id}} {{name}} — OWASP Top 10:{{edition}}",
+    "owaspChipTitleShort": "{{id}} — OWASP Top 10:{{edition}}",
+    "owaspFilterByCategory": "Show findings in {{id}} {{name}}",
+    "owaspSourceLink": "{{id}} on owasp.org",
+    "owaspNotSelected": "not selected",
     "tokens": "tokens",
     "priorFindings": "{{count}} prior finding(s) reused",
     "duplicatesRemoved": "{{count}} duplicate(s) removed",
@@ -364,7 +372,9 @@
     "fixedTab": "Fixed",
     "changedTab": "Changed",
     "persistentTab": "Persistent",
-    "fixedSinceLastScan": "Fixed since last scan"
+    "fixedSinceLastScan": "Fixed since last scan",
+    "excludedLegacyCopies_one": "{{count}} legacy OWASP copy row in the previous scan was left out of this comparison; this scan labels those findings instead.",
+    "excludedLegacyCopies_other": "{{count}} legacy OWASP copy rows in the previous scan were left out of this comparison; this scan labels those findings instead."
   },
   "crossAgent": {
     "title": "Cross-Agent Detection",

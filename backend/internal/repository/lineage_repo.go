@@ -102,6 +102,9 @@ func lineageSelectCols(prefix string, pg bool) string {
 		"COALESCE(" + p("seen_count") + ", 1)",
 		txt("last_seen_audit_id"),
 		txt("merged_into"),
+		// Feature 0096 (migration 030): JSONB on Postgres, so it takes the
+		// same ::text cast as the UUID columns; decoded in the scanners.
+		txt("compliance_labels"),
 	}, ", ")
 }
 
@@ -231,6 +234,11 @@ type LineageRepository interface {
 	// from UpdateStatus, which is the USER-facing path and overwrites notes and
 	// ticket_url — a scanner transition must never erase human triage text.
 	MarkUnconfirmed(id, auditID string) error
+	// ReopenUnconfirmed returns an `unconfirmed` row to `open` once a scan has
+	// positively observed it again (re-reported, or its quote verified in
+	// place). Guarded on the current status so it can never reopen a row a
+	// human or another pass has moved since the snapshot was read.
+	ReopenUnconfirmed(id, auditID string) error
 	// MarkSeen records that the scan observed the finding, without changing
 	// its status: seen_count+1 and last_seen_audit_id.
 	MarkSeen(id, auditID string) error

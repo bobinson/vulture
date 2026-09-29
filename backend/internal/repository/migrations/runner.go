@@ -3,9 +3,12 @@ package migrations
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // advisoryLockKey is the Postgres advisory-lock identifier the runner
@@ -67,6 +70,7 @@ func applyFromFS(ctx context.Context, db *sql.DB, dialect Dialect, f migrationFS
 		return err
 	}
 	defer release()
+	defer relayNotices(conn, dialect)()
 
 	applied, err := readSchemaMigrations(ctx, conn, dialect, migs)
 	if err != nil {
@@ -84,6 +88,46 @@ func lockIfPostgres(ctx context.Context, conn *sql.Conn, dialect Dialect) (func(
 		return func() {}, nil
 	}
 	return acquireAdvisoryLock(ctx, conn)
+}
+
+// relayNotices carries the NOTICEs a migration RAISEs into the backend log, on
+// the pinned connection only and only for the duration of Apply; the returned
+// function unsets the handler before the connection goes back to the pool. A
+// data migration reports what it did this way (031 prints its counts) — lib/pq
+// otherwise discards every notice.
+//
+// Only a PL/pgSQL RAISE is relayed (the server reports its routine as
+// exec_stmt_raise). The server's own "already exists, skipping" / "does not
+// exist, skipping" notices from IF [NOT] EXISTS DDL are noise, and SQLSTATE
+// cannot tell them apart: a DROP ... IF EXISTS notice carries 00000 too.
+func relayNotices(conn *sql.Conn, dialect Dialect) func() {
+	if dialect != Postgres {
+		return func() {}
+	}
+	setNoticeHandler(conn, logRaisedNotice)
+	return func() { setNoticeHandler(conn, nil) }
+}
+
+func logRaisedNotice(e *pq.Error) {
+	if e.Routine == "exec_stmt_raise" {
+		log.Print(e.Message)
+	}
+}
+
+// setNoticeHandler is best-effort: a connection that is not lib/pq's (pq
+// panics on those) simply gets no relay — the migration itself is unaffected.
+func setNoticeHandler(conn *sql.Conn, h func(*pq.Error)) {
+	_ = conn.Raw(func(dc any) (err error) {
+		defer func() {
+			if recover() != nil {
+				err = fmt.Errorf("not a lib/pq connection")
+			}
+		}()
+		if c, ok := dc.(driver.Conn); ok {
+			pq.SetNoticeHandler(c, h)
+		}
+		return nil
+	})
 }
 
 // readSchemaMigrations bootstraps schema_migrations if missing, loads

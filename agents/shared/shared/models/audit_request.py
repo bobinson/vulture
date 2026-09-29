@@ -55,3 +55,20 @@ class AuditRequest(BaseModel):
             "parameter for it. None (the ordinary case) asks nothing."
         ),
     )
+    # Untyped ON PURPOSE: pydantic's lax int coercion would turn `true`,
+    # `1.0` or `"1"` into `1` and defeat the consumer's strict-integer check,
+    # and a StrictInt would 422 the whole run over one malformed capability.
+    accepts_mapping: Any = Field(
+        default=None,
+        description=(
+            "Feature 0096 §2.1: the OWASP mapping-result version the backend can "
+            "consume, as a TOP-LEVEL /run field written by the backend's agent "
+            "proxy for the OWASP agent only. Deliberately OUT OF BAND: a "
+            "pre-0096 backend forwards arbitrary user `config` keys to agents, "
+            "so a capability read from config could be claimed by a user on a "
+            "backend that cannot honour it. Passed to a run handler as the "
+            "`accepts_mapping` keyword only when the handler declares that "
+            "parameter. None (absent) is every pre-0096 backend. The value is "
+            "kept exactly as sent; the consumer validates it."
+        ),
+    )

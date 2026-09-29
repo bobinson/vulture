@@ -3,10 +3,12 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { FindingsTable } from "../FindingsTable";
 import type { Finding } from "@/lib/types";
 
-// Mock useLineage to avoid API calls
+// Mock useLineage to avoid API calls. `lineageFor` is hoisted so its identity
+// is stable across renders, as the real hook's memoised resolver is.
+const noLineage = vi.hoisted(() => () => undefined);
 vi.mock("@/hooks/useLineage.ts", () => ({
   useLineage: () => ({
-    lineageMap: new Map(),
+    lineageFor: noLineage,
     timelineMap: new Map(),
     showTimeline: null,
     editingLineage: new Map(),

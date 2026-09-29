@@ -10,6 +10,7 @@ import (
 
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
+	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/gitutil"
 )
 
@@ -129,8 +130,38 @@ func (s *auditService) Stats() (*model.DashboardStats, error) {
 	return s.repo.GetStats()
 }
 
+// GetCachedAudit returns the newest completed audit of the source with exactly
+// these types, or nil for a miss.
+//
+// Feature 0096 §7.7: an audit holding rows written by a MAPPER agent (OWASP)
+// is the pre-0096 shape — a mapper now labels other agents' findings and
+// persists none of its own — so it is a miss, and the scan the miss triggers
+// produces the new shape. There is no fallback to an older audit: the newest
+// is the only candidate, and anything older is staler than a fresh run. The
+// check reads the findings the repository already loaded, so it costs no
+// query; an audit whose types exclude every mapper cannot hold mapper rows and
+// is unaffected. The repository returns an ERROR when that findings load
+// fails (never the audit with no findings), so a legacy audit cannot pass
+// this check by failing to load its rows.
 func (s *auditService) GetCachedAudit(sourceID string, types []string) (*model.Audit, error) {
-	return s.repo.GetLatestCompletedAudit(sourceID, types)
+	audit, err := s.repo.GetLatestCompletedAudit(sourceID, types)
+	if err != nil || audit == nil {
+		return audit, err
+	}
+	if holdsMapperRows(audit.Findings) {
+		return nil, nil
+	}
+	return audit, nil
+}
+
+// holdsMapperRows reports whether any finding was persisted by a mapper agent.
+func holdsMapperRows(findings []model.Finding) bool {
+	for i := range findings {
+		if agentregistry.IsMapper(findings[i].AgentType) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *auditService) FindSourceByPath(path string) (*model.Source, error) {

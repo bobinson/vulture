@@ -159,12 +159,24 @@ func (p *scanPass) applyLLM(row *model.FindingLineage) {
 	}
 	check, ok := p.checks[row.ID]
 	if !ok {
-		// The row was asked about and nothing came back. An agent that drops a
-		// row must not be able to close it by omission.
-		p.markUnconfirmed(row, "missing")
+		// No check for this row. Either it was never asked about — a row with
+		// no quote hash has nothing to verify, so PendingChecks skips it (S9)
+		// — or it was asked about and the agent dropped it. Both leave the row
+		// unconfirmed, because an omission must never close anything, but the
+		// reason has to say which: `missing` on a row nobody requested sends
+		// the reader hunting for an agent bug that does not exist.
+		p.markUnconfirmed(row, uncheckedReason(row))
 		return
 	}
 	p.applyCheck(row, check)
+}
+
+// uncheckedReason names why an LLM row reached the closure pass with no check.
+func uncheckedReason(row *model.FindingLineage) string {
+	if row.QuoteHash == "" {
+		return "no_quote"
+	}
+	return "missing"
 }
 
 // applyCheck maps one agent outcome onto a transition (§6.4). An outcome the
@@ -205,7 +217,8 @@ func (p *scanPass) applyEvidencePresent(row *model.FindingLineage, check model.L
 		log.Printf("[lineage] apply evidence id=%s: %v", row.ID, err)
 		return
 	}
-	p.event(row, model.LineageEventConfirmedByEvidence, evidenceReason(check), row.CurrentStatus)
+	settled := check.Outcome != model.LineageOutcomeAmbiguous
+	p.event(row, model.LineageEventConfirmedByEvidence, evidenceReason(check), p.settleUnconfirmed(row, settled))
 }
 
 // applyEvidenceGone is the ONLY way an LLM-tier row closes: the agent read the
@@ -250,7 +263,27 @@ func (p *scanPass) markSeen(row *model.FindingLineage) {
 	if err := p.svc.repo.MarkSeen(row.ID, p.audit.ID); err != nil {
 		log.Printf("[lineage] mark seen id=%s: %v", row.ID, err)
 	}
-	p.event(row, model.LineageEventReported, "", row.CurrentStatus)
+	p.event(row, model.LineageEventReported, "", p.settleUnconfirmed(row, true))
+}
+
+// settleUnconfirmed returns an `unconfirmed` row to `open` when this scan
+// positively observed it, and reports the status the row now holds.
+//
+// `unconfirmed` means "a scan could not settle this row". Without a way back,
+// every row that ever took that path — each one that predates the quote store
+// takes it on its first absent scan (S9) — stayed there however many times it
+// was re-found. `ambiguous` evidence is not a positive observation (several
+// equally plausible matches), so it settles nothing.
+func (p *scanPass) settleUnconfirmed(row *model.FindingLineage, observed bool) model.LineageStatus {
+	if !observed || row.CurrentStatus != model.LineageStatusUnconfirmed {
+		return row.CurrentStatus
+	}
+	if err := p.svc.repo.ReopenUnconfirmed(row.ID, p.audit.ID); err != nil {
+		log.Printf("[lineage] reopen unconfirmed id=%s: %v", row.ID, err)
+		return row.CurrentStatus
+	}
+	p.svc.syncMemory(row, model.LineageStatusOpen)
+	return model.LineageStatusOpen
 }
 
 func (p *scanPass) markRegression(row *model.FindingLineage, reason string) {

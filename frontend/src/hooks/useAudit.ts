@@ -1,19 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api.ts";
-import type { Audit, Severity } from "@/lib/types.ts";
-
-/** Map LLM severity abbreviations/variants to canonical form. */
-const SEVERITY_ALIASES: Record<string, Severity> = {
-  c: "critical", crit: "critical", critical: "critical",
-  h: "high", high: "high",
-  m: "medium", med: "medium", medium: "medium",
-  l: "low", low: "low",
-  i: "info", info: "info", informational: "info",
-};
-
-function normalizeSeverity(raw: string): Severity {
-  return SEVERITY_ALIASES[raw.toLowerCase().trim()] ?? "info";
-}
+import { normalizeSeverity } from "@/lib/severity.ts";
+import type { Audit } from "@/lib/types.ts";
 
 /** Normalize finding severity from LLM output to canonical lowercase form. */
 function normalizeAudit(audit: Audit): Audit {

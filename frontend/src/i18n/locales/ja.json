@@ -112,6 +112,14 @@
     "tokensSaved": "トークン節約",
     "owaspCoverage": "OWASP Top 10 カバレッジ",
     "owaspCweStageWarning": "カバレッジが不完全な可能性があります — CWEステージ:",
+    "owaspCategory": "OWASP カテゴリ",
+    "owaspCategoryAll": "すべてのカテゴリ",
+    "owaspEdition": "OWASP 版",
+    "owaspChipTitle": "{{id}} {{name}} — OWASP Top 10:{{edition}}",
+    "owaspChipTitleShort": "{{id}} — OWASP Top 10:{{edition}}",
+    "owaspFilterByCategory": "{{id}} {{name}} の検出結果を表示",
+    "owaspSourceLink": "owasp.org の {{id}}",
+    "owaspNotSelected": "未選択",
     "tokens": "トークン",
     "priorFindings": "{{count}} 件の過去の検出事項を再利用",
     "duplicatesRemoved": "{{count}} 件の重複を削除",
@@ -364,7 +372,9 @@
     "fixedTab": "修正済み",
     "changedTab": "変更あり",
     "persistentTab": "継続",
-    "fixedSinceLastScan": "前回スキャン以降の修正"
+    "fixedSinceLastScan": "前回スキャン以降の修正",
+    "excludedLegacyCopies_one": "前回のスキャンの旧OWASPコピー行{{count}}件をこの比較から除外しました。今回のスキャンでは該当する指摘にラベルを付けています。",
+    "excludedLegacyCopies_other": "前回のスキャンの旧OWASPコピー行{{count}}件をこの比較から除外しました。今回のスキャンでは該当する指摘にラベルを付けています。"
   },
   "crossAgent": {
     "title": "クロスエージェント検出",

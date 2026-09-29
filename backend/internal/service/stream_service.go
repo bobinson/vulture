@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,9 +28,9 @@ const (
 	cweType   = "cwe"
 )
 
-var cweCategoryRe = regexp.MustCompile(`^CWE-\d+$`)
-
-func isCWECategory(c string) bool { return cweCategoryRe.MatchString(c) }
+// isCWECategory is the one CWE predicate the prior tap and the backend's
+// label pass share (model.IsCWECategory, feature 0096 §0).
+func isCWECategory(c string) bool { return model.IsCWECategory(c) }
 
 type StreamService interface {
 	Stream(ctx context.Context, audit *model.Audit, sourcePath string, agents map[string]config.AgentConfig, eventCh chan<- *model.AgUIEvent)
@@ -202,7 +201,7 @@ func (s *streamService) runOwaspMapping(ctx context.Context, audit *model.Audit,
 	priors := findingsToPriors(findings)
 
 	baseCfg := extractAgentConfig(parseAuditConfigMap(audit.Config), owaspType)
-	owaspCfg := withCweStatus(baseCfg, status)
+	owaspCfg := owaspRequestConfig(baseCfg, status)
 
 	log.Printf("[stream-svc] deferred owasp mapping: cwe_findings=%d status=%s", len(priors), status)
 	var wg sync.WaitGroup
@@ -254,14 +253,34 @@ func findingsToPriors(fs []model.Finding) []model.PriorFinding {
 	return out
 }
 
-// withCweStatus merges cwe_stage_status into the OWASP agent's config JSON.
-func withCweStatus(cfg json.RawMessage, status string) json.RawMessage {
+// owaspMappingVersion is the OWASP mapping-result version this backend can
+// consume (feature 0096 §2.1). The agent proxy sends it as a TOP-LEVEL
+// `accepts_mapping` field of the OWASP agent's /run body — never inside config
+// (H1: a pre-0096 backend forwards arbitrary user config keys, so a capability
+// read from config could be claimed by a user on a backend that cannot honour
+// it) — and the agent answers with a mapping only when it sees it; absent or
+// 0 means legacy copy rows. Negotiated, never inferred from the result's
+// shape, so any version skew degrades to the legacy copies rather than to a
+// zero-finding OWASP result a pre-0096 backend would close every OWASP
+// lineage row on (§2.3). The advertisement is safe only because this backend
+// never lets a mapping-mode result reach the closure pass
+// (handler.extractOwaspMapping, recordLineageOutcomes): claiming the
+// capability without that guard would be the destructive skew itself.
+const owaspMappingVersion = 1
+
+// owaspRequestConfig merges the backend-owned cwe_stage_status (0063) into the
+// OWASP agent's config JSON, set last so a user config cannot spoof it. A
+// user-supplied accepts_mapping is dropped: the capability is out of band
+// (agentProxyService writes it), and the proxy strips it again for every
+// agent.
+func owaspRequestConfig(cfg json.RawMessage, status string) json.RawMessage {
 	m := map[string]json.RawMessage{}
 	if len(cfg) > 0 {
 		_ = json.Unmarshal(cfg, &m) // best-effort; start fresh on garbage
 	}
 	statusJSON, _ := json.Marshal(status)
 	m["cwe_stage_status"] = statusJSON
+	delete(m, acceptsMappingKey)
 	out, err := json.Marshal(m)
 	if err != nil {
 		return cfg

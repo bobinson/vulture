@@ -44,6 +44,107 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **Feature 0096 — OWASP Top 10 categories are labels, not duplicate
+  findings.** The OWASP agent no longer re-emits each CWE finding as a second
+  `agent_type = owasp` row with its own lineage and `VLT-` ref. It returns its
+  edition's CWE→category table (mapping v1), and the backend labels the final,
+  deduplicated CWE-categorised findings of every scan agent. A weakness is now
+  persisted, counted and triaged once. What changes for consumers, for audits
+  run after the upgrade:
+  - **Agent protocol**: the backend asks for a mapping with `accepts_mapping: 1`,
+    a top-level field of the OWASP agent's `/run` body. It is never a config
+    key: an older backend forwards user config to agents, so the agent ignores
+    `config.accepts_mapping` and the backend strips it from every agent's
+    config. The presence of a `mapping` member on the result marks mapping mode
+    for the rest of the run; such a result persists none of its rows. See
+    [docs/architecture/agent_protocol.md](docs/architecture/agent_protocol.md).
+  - **REST** (`GET /api/audits/{id}`) and **CLI JSON** output no longer contain
+    `agent_type = owasp` rows. Findings gain `compliance_labels`:
+    `[{framework, edition, category_id, category_name, cwe}]`, where `cwe`
+    names the CWE the label came from (a dedup survivor keeps the categories of
+    the rows it absorbed; `CWE-089` is read as `CWE-89`). Lineage rows gain
+    `compliance_labels` keyed `framework:edition` (e.g. `owasp:2025`). The CLI
+    human summary adds per-category counts under an "OWASP Top 10:<edition>"
+    heading.
+  - **Counts drop by the removed copies.** The webhook payload is unchanged in
+    shape, but its `findings_count` no longer includes OWASP copies; audit
+    totals, severity counts and `vulture scan --exit-on` count each weakness
+    once. On an OWASP audit the copies can be close to half of all rows.
+    `--exit-on` now prints `Exit 1: <n> finding(s) at or above <severity>
+    (--exit-on)` to stderr when it fails the build.
+  - **Comparison**: `GET /api/audits/{id}/comparison` leaves the older audit's
+    OWASP copy rows out of the diff when the newer audit is in mapping mode, and
+    reports them as `excluded_legacy_copies`; the finding counts reconcile with
+    the classification (previous = persistent + changed + fixed, current =
+    persistent + changed + new).
+  - **MCP**: `vulture_get_findings` and `vulture_search_findings` gain
+    `framework`, `category` and `edition` filters (`framework="owasp"`,
+    `category="A07"`). `agent_type` stays a literal agent filter, so
+    `agent_type="owasp"` matches only audits run before this change. With
+    `framework`, older OWASP rows match too, carrying one label marked
+    `"legacy": true`.
+  - **Target aggregate**: `GET /api/targets/{key}/aggregate` accepts
+    `framework=owasp&category=A07&edition=2025`; the three go together, and a
+    partial or malformed filter is rejected with 400. Every response carries
+    `label_editions`, the editions and categories the target's lineage rows
+    carry, which the target report offers as its filter. The filter returns
+    only lineage rows that carry labels, and no row has any at upgrade (see
+    Upgrade below), so an empty answer right after the upgrade does not mean
+    "no OWASP findings".
+  - **Coverage**: the `owasp_coverage` persisted on the audit (GET
+    `/api/audits/{id}`, and the replay once the broadcast TTL has passed) is
+    authoritative. It keeps the agent's `mapped_count`; `found_cwes` /
+    `found_count` / `status` and `unmapped_cwes` / `unmapped_count` are
+    recomputed from the persisted findings, so a CWE whose only finding was
+    deduplicated away is no longer reported as found. Under a `categories`
+    subset, each unselected category reports 0 found and carries
+    `"selected": false`: not checked, not clean. If the backend rejects the
+    mapping, or the manifest is for another edition, the found and unmapped
+    values are cleared; an unreadable manifest is not stored. Only the OWASP
+    agent's result can supply it. The copy on the streamed OWASP `result`
+    event is provisional: the agent's own manifest, counted before dedup over
+    every category, with no `selected` key. SSE consumers should re-read the
+    audit once it is terminal.
+  - **Results page**: an OWASP chip per label and an OWASP category filter; a
+    coverage category filters the table when some finding carries its label.
+    Labels appear live during a run on provisional, pre-dedup rows that the
+    persisted rows replace at the end. Audits run before the change still list
+    their OWASP rows, but after the upgrade those rows show no VLT ref or triage
+    status: migration 031 folded their lineage into the twin finding's row, or
+    retired it. Use the twin's ref and timeline for their history.
+  - **Audit cache**: a cached audit that still holds OWASP copy rows is a miss,
+    so the request runs fresh instead of replaying the old shape. With an
+    upgraded agent the fresh run produces labels.
+  - **Plugins**: `matches_check_id_prefix` entries starting `owasp.` match only
+    OWASP copy rows, which only an older OWASP agent still produces. Match the
+    CWE ids with `matches_cwe` instead.
+  - **Upgrade**: at first start, migration 031 (SQLite: a one-shot step) folds
+    existing OWASP lineage rows into the lineage row of the finding each was
+    copied from, with a `merged` event on both; rows with no twin are retired.
+    Twins keep their status, notes and ticket. If a triaged OWASP row disagrees
+    with its twin the migration aborts, naming every disagreeing pair, and the
+    backend does not start until each pair's statuses match. To recover, start
+    the previous release against the same database (it ignores the
+    `compliance_labels` columns, the only change left behind), set the statuses
+    through the UI or `PATCH /api/lineage/{id}` (the twin's, to keep the OWASP
+    row's decision; the OWASP row's, to drop it), then start the new release
+    again. To avoid the stop, check before upgrading for triaged
+    (`false_positive`, `accepted_risk`, `resolved`) OWASP lineage rows whose
+    twin (same target, same file, same title without the `[Axx] ` prefix) has a
+    different status. Existing lineage rows get no OWASP labels: the new column
+    starts empty, and the fold does not move a folded row's category onto its
+    twin. A row gains labels only when an OWASP-enabled scan with an upgraded
+    agent sights it again, so run one per target to populate the aggregate's
+    `framework` filter; a row that is never sighted again (a fixed finding,
+    say) stays unlabelled.
+  - **Version skew**: an older backend with a newer agent keeps the previous
+    copy-row behaviour (the agent's copy mode is retained for one release). A
+    newer backend with an older agent still gets copy rows; they are persisted
+    as findings but create, update and close no lineage rows, since the OWASP
+    agent no longer owns lineage in any mode. Such audits carry no labels, count
+    the copies, and are never served from the cache. Upgrade the OWASP agent
+    together with the backend. See
+    [docs/guides/owasp_agent.md](docs/guides/owasp_agent.md).
 - **Removed a hardcoded admin backdoor password** that shipped in early
   commits (rejected by hash at startup; the literal was purged from git
   history in the 0036 Phase 4 release scrub). The seeded local

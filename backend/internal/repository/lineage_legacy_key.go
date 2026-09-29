@@ -100,36 +100,71 @@ type targetAliases struct {
 // only for the rows the backfill and the resolver disagree about.
 func loadTargetAliases(db *sql.DB) (targetAliases, error) {
 	out := targetAliases{byTarget: map[string][]string{}, resolved: map[string]string{}}
-	roots, err := knownScanRoots(db)
-	if err != nil {
-		return out, fmt.Errorf("target aliases: %w", err)
-	}
-	rows, err := db.Query(`SELECT DISTINCT COALESCE(target_key,''), path FROM sources
-	                        WHERE COALESCE(target_key,'') <> ''`)
-	if err != nil {
-		return out, fmt.Errorf("target aliases: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key, p string
-		if err := rows.Scan(&key, &p); err != nil {
-			return out, fmt.Errorf("scan target alias: %w", err)
-		}
-		legacy := stringTargetKey(p, roots)
-		if legacy == "" || legacy == key {
-			continue
-		}
-		if _, taken := out.resolved[legacy]; taken {
+	pairs, err := sourceKeyAliases(db)
+	for _, p := range pairs {
+		if _, taken := out.resolved[p.legacy]; taken {
 			// Two resolved targets claiming one legacy key: the backfill's
 			// first-segment rule pooled two projects that the live resolver
 			// separates. Attributing the rows to either would be a guess, so
 			// the bridge declines and they stay where they are.
 			continue
 		}
-		out.resolved[legacy] = key
-		out.byTarget[key] = append(out.byTarget[key], legacy)
+		out.resolved[p.legacy] = p.resolved
+		out.byTarget[p.resolved] = append(out.byTarget[p.resolved], p.legacy)
+	}
+	return out, err
+}
+
+// keyAlias is one source's two keys: the legacy one 027 would give its path,
+// and the resolved one it carries. Only sources where they differ yield one.
+type keyAlias struct{ legacy, resolved string }
+
+func sourceKeyAliases(db *sql.DB) ([]keyAlias, error) {
+	roots, err := knownScanRoots(db)
+	if err != nil {
+		return nil, fmt.Errorf("target aliases: %w", err)
+	}
+	rows, err := db.Query(`SELECT DISTINCT COALESCE(target_key,''), path FROM sources
+	                        WHERE COALESCE(target_key,'') <> ''`)
+	if err != nil {
+		return nil, fmt.Errorf("target aliases: %w", err)
+	}
+	defer rows.Close()
+	var out []keyAlias
+	for rows.Next() {
+		var key, p string
+		if err := rows.Scan(&key, &p); err != nil {
+			return out, fmt.Errorf("scan target alias: %w", err)
+		}
+		if legacy := stringTargetKey(p, roots); legacy != "" && legacy != key {
+			out = append(out, keyAlias{legacy: legacy, resolved: key})
+		}
 	}
 	return out, rows.Err()
+}
+
+// unambiguousTargetAliases maps each legacy key to the ONE resolved key it
+// belongs to, leaving out a legacy key two resolved keys claim. It is the
+// bridge as a deterministic function, which is what a one-shot data migration
+// needs (feature 0096's OWASP fold, and migration 031 in SQL): the read-side
+// map above keeps whichever claimant `sources` happened to return first.
+func unambiguousTargetAliases(db *sql.DB) (map[string]string, error) {
+	pairs, err := sourceKeyAliases(db)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	ambiguous := map[string]bool{}
+	for _, p := range pairs {
+		if prev, ok := out[p.legacy]; ok && prev != p.resolved {
+			ambiguous[p.legacy] = true
+		}
+		out[p.legacy] = p.resolved
+	}
+	for legacy := range ambiguous {
+		delete(out, legacy)
+	}
+	return out, nil
 }
 
 // targetReadKeys is the key list every target-scoped READ scopes to: the key

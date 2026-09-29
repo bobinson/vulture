@@ -102,4 +102,4 @@ const findingsInsertChunk = 1000
 // Keep this in step with the two INSERT column lists. A test asserts the
 // product stays under the cap, so a future column fails in CI instead of on a
 // customer's large scan.
-func findingInsertColumnCount() int { return 23 }
+func findingInsertColumnCount() int { return 24 }

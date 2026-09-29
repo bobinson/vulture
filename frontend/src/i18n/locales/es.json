@@ -112,6 +112,14 @@
     "tokensSaved": "tokens ahorrados",
     "owaspCoverage": "Cobertura OWASP Top 10",
     "owaspCweStageWarning": "La cobertura puede estar incompleta — etapa CWE:",
+    "owaspCategory": "Categoría OWASP",
+    "owaspCategoryAll": "Todas las categorías",
+    "owaspEdition": "Edición OWASP",
+    "owaspChipTitle": "{{id}} {{name}} — OWASP Top 10:{{edition}}",
+    "owaspChipTitleShort": "{{id}} — OWASP Top 10:{{edition}}",
+    "owaspFilterByCategory": "Mostrar hallazgos de {{id}} {{name}}",
+    "owaspSourceLink": "{{id}} en owasp.org",
+    "owaspNotSelected": "no seleccionada",
     "tokens": "tokens",
     "priorFindings": "{{count}} hallazgo(s) previo(s) reutilizado(s)",
     "duplicatesRemoved": "{{count}} duplicado(s) eliminado(s)",
@@ -364,7 +372,9 @@
     "fixedTab": "Corregidos",
     "changedTab": "Cambiados",
     "persistentTab": "Persistentes",
-    "fixedSinceLastScan": "Corregidos desde el último escaneo"
+    "fixedSinceLastScan": "Corregidos desde el último escaneo",
+    "excludedLegacyCopies_one": "Se excluyó de esta comparación {{count}} fila de copia OWASP heredada del escaneo anterior; este escaneo etiqueta esos hallazgos en su lugar.",
+    "excludedLegacyCopies_other": "Se excluyeron de esta comparación {{count}} filas de copia OWASP heredadas del escaneo anterior; este escaneo etiqueta esos hallazgos en su lugar."
   },
   "crossAgent": {
     "title": "Detección Multi-Agente",

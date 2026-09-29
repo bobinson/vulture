@@ -112,6 +112,19 @@ describe("useAggregate — query serialisation", () => {
     );
   });
 
+  it("serialises the 0096 compliance filter as framework, category and edition", async () => {
+    const { result } = renderHook(() =>
+      useAggregate(TARGET_KEY, { framework: "owasp", category: "A07", edition: "2025" }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const q = lastQuery();
+    expect(q.get("framework")).toBe("owasp");
+    expect(q.get("category")).toBe("A07");
+    expect(q.get("edition")).toBe("2025");
+    expect([...q.keys()].sort()).toEqual(["category", "edition", "framework"]);
+  });
+
   it("comma-joins multi-valued filters rather than repeating the parameter", async () => {
     const { result } = renderHook(() =>
       useAggregate(TARGET_KEY, { severity: ["critical", "high", "medium"] }),

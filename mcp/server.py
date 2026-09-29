@@ -9,7 +9,7 @@ from collections import deque
 from time import monotonic
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 # ---------------------------------------------------------------------------
 # Redaction
@@ -40,8 +40,17 @@ def redact_secrets(text: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+class RateLimitExceeded(Exception):
+    """No request slot was free, or none freed up within a waiting call's bound."""
+
+
 class VultureClient:
     """Async HTTP client for Vulture API. Holds credentials; never exposes them."""
+
+    # How long a waiting call may wait for a slot. An uncontended slot frees
+    # within one 1s window, so only a caller that keeps half the window busy
+    # for this long makes a waiting call give up.
+    _WAIT_MAX_SEC = 2.0
 
     def __init__(self, base_url: str, api_key: str | None, rate_limit: int = 10):
         self._base = base_url.rstrip("/")
@@ -58,17 +67,38 @@ class VultureClient:
         self._timestamps: deque[float] = deque()
         self._rate_lock = asyncio.Lock()
 
-    async def _enforce_rate_limit(self) -> None:
-        async with self._rate_lock:
-            now = monotonic()
-            while self._timestamps and now - self._timestamps[0] > 1.0:
-                self._timestamps.popleft()
-            if len(self._timestamps) >= self._rate_limit:
-                raise Exception(f"Rate limit exceeded ({self._rate_limit} req/s)")
+    def _take_slot(self, ceiling: int) -> float | None:
+        """Record a request if fewer than `ceiling` slots are in use (None);
+        otherwise return the seconds until the oldest slot frees."""
+        now = monotonic()
+        while self._timestamps and now - self._timestamps[0] > 1.0:
+            self._timestamps.popleft()
+        if len(self._timestamps) < ceiling:
             self._timestamps.append(now)
+            return None
+        return 1.0 - (now - self._timestamps[0])
 
-    async def _request(self, method: str, path: str, **kwargs) -> dict | list:
-        await self._enforce_rate_limit()
+    async def _enforce_rate_limit(self, wait: bool = False) -> None:
+        """Take a request slot. With wait=True, sleep for the next free slot
+        instead of raising — for fan-out a single tool call makes on its own.
+        A waiting caller takes a slot only while fewer than half are in use
+        (all of them at rate_limit=1), so its fan-out leaves the rest to
+        concurrent tool calls; it raises RateLimitExceeded if no slot frees
+        up within _WAIT_MAX_SEC, so busy callers cannot make it hang."""
+        ceiling, budget = ((max(self._rate_limit // 2, 1), self._WAIT_MAX_SEC) if wait
+                           else (self._rate_limit, 0.0))
+        give_up = monotonic() + budget
+        while True:
+            async with self._rate_lock:
+                delay = self._take_slot(ceiling)
+            if delay is None:
+                return
+            if monotonic() + delay > give_up:
+                raise RateLimitExceeded(f"Rate limit exceeded ({self._rate_limit} req/s)")
+            await asyncio.sleep(max(delay, 0.0))
+
+    async def _request(self, method: str, path: str, wait: bool = False, **kwargs) -> dict | list:
+        await self._enforce_rate_limit(wait)
         resp = await self._client.request(method, path, **kwargs)
         if resp.status_code >= 400:
             safe_body = redact_secrets(resp.text[:200])
@@ -81,8 +111,8 @@ class VultureClient:
             params["status"] = status
         return await self._request("GET", "/api/audits", params=params)
 
-    async def get_audit(self, audit_id: str) -> dict:
-        return await self._request("GET", f"/api/audits/{audit_id}")
+    async def get_audit(self, audit_id: str, wait: bool = False) -> dict:
+        return await self._request("GET", f"/api/audits/{audit_id}", wait=wait)
 
     async def get_comparison(self, audit_id: str) -> dict:
         return await self._request("GET", f"/api/audits/{audit_id}/comparison")
@@ -177,20 +207,259 @@ def _redact_record(f: dict) -> dict:
     return out
 
 
+# Compliance frameworks a finding can be labelled with (feature 0096), each with
+# the shape of its category ids, and the shape of an edition. Matches the
+# backend's own mapping validation.
+_FRAMEWORK_CATEGORY_IDS: dict[str, re.Pattern] = {"owasp": re.compile(r"^A\d{2}$")}
+_EDITION_PATTERN = re.compile(r"^\d{4}$")
+
+
+def _normalize_framework_filter(
+    framework: str | None, category: str | None, edition: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Validate a framework filter. With a framework, `category` is that
+    framework's category id (normalised, e.g. "a07" -> "A07") and `edition`
+    narrows it to one edition; without one, category is returned untouched and
+    keeps its literal meaning, and an edition is an error."""
+    if framework is None:
+        if edition is not None:
+            raise ValueError('edition needs a framework (e.g. framework="owasp")')
+        return None, category, None
+    fw = _normalize_framework(framework)
+    return fw, _normalize_category(fw, category), _normalize_edition(edition)
+
+
+def _normalize_framework(framework: str) -> str:
+    fw = framework.strip().lower()
+    if fw not in _FRAMEWORK_CATEGORY_IDS:
+        valid = ", ".join(sorted(_FRAMEWORK_CATEGORY_IDS))
+        raise ValueError(f"Unknown framework '{framework}'. Valid: {valid}")
+    return fw
+
+
+def _normalize_category(fw: str, category: str | None) -> str | None:
+    if category is None:
+        return None
+    cat = category.strip().upper()
+    if not _FRAMEWORK_CATEGORY_IDS[fw].match(cat):
+        raise ValueError(f"Invalid {fw} category '{category}': expected an id like A07")
+    return cat
+
+
+def _normalize_edition(edition: str | None) -> str | None:
+    if edition is None:
+        return None
+    ed = edition.strip()
+    if not _EDITION_PATTERN.match(ed):
+        raise ValueError(f"Invalid edition '{edition}': expected a year like 2025")
+    return ed
+
+
+# Where a pre-0096 OWASP copy row keeps the category id it stood for: its
+# check_id ("owasp.A07.cwe-798") and its category slug ("A07-authentication-failures").
+_LEGACY_OWASP_ID_FIELDS: tuple[tuple[str, re.Pattern], ...] = (
+    ("check_id", re.compile(r"^owasp\.(A\d{2})\.")),
+    ("category", re.compile(r"^(A\d{2})-")),
+)
+
+# The edition a pre-0096 OWASP row's category slug names. Those rows were
+# written from the 2021 and 2025 tables only, so this is a closed, historical
+# set: a slug found in just one of them names that edition. A slug both share
+# (A01-broken-access-control), or a row with no slug, names no edition.
+_LEGACY_OWASP_SLUG_EDITIONS: dict[str, str] = {
+    "A02-cryptographic-failures": "2021",
+    "A03-injection": "2021",
+    "A04-insecure-design": "2021",
+    "A05-security-misconfiguration": "2021",
+    "A06-vulnerable-and-outdated-components": "2021",
+    "A07-identification-and-authentication-failures": "2021",
+    "A08-software-and-data-integrity-failures": "2021",
+    "A09-security-logging-and-monitoring-failures": "2021",
+    "A10-ssrf": "2021",
+    "A02-security-misconfiguration": "2025",
+    "A03-software-supply-chain-failures": "2025",
+    "A04-cryptographic-failures": "2025",
+    "A05-injection": "2025",
+    "A06-insecure-design": "2025",
+    "A07-authentication-failures": "2025",
+    "A08-software-or-data-integrity-failures": "2025",
+    "A09-security-logging-and-alerting-failures": "2025",
+    "A10-mishandling-of-exceptional-conditions": "2025",
+}
+
+
+def _legacy_owasp_labels(finding: dict) -> list[dict]:
+    """The OWASP label a pre-0096 OWASP agent row stood for, read from the
+    fields the backend persists, marked `legacy`. Empty for any other row. Its
+    edition is "" when the row does not say, so it matches no edition filter."""
+    category_id = _legacy_owasp_id(finding) if finding.get("agent_type") == "owasp" else None
+    if not category_id:
+        return []
+    edition = _LEGACY_OWASP_SLUG_EDITIONS.get(finding.get("category") or "", "")
+    return [{"framework": "owasp", "edition": edition, "category_id": category_id,
+             "category_name": "", "legacy": True}]
+
+
+def _legacy_owasp_id(finding: dict) -> str | None:
+    matches = (p.match(finding.get(field) or "") for field, p in _LEGACY_OWASP_ID_FIELDS)
+    return next((m.group(1) for m in matches if m), None)
+
+
+def _framework_labels(finding: dict) -> list[dict]:
+    """A finding's compliance labels, plus the label a pre-0096 OWASP copy row
+    stood for (such a row carries no labels of its own)."""
+    return list(finding.get("compliance_labels") or []) + _legacy_owasp_labels(finding)
+
+
+def _with_legacy_labels(finding: dict) -> dict:
+    """A pre-0096 OWASP row with the label it matched on made visible, so a
+    framework-filtered result carries `compliance_labels` on every record."""
+    return dict(finding, compliance_labels=_framework_labels(finding)) if _legacy_owasp_labels(finding) else finding
+
+
+def _framework_output(records: list[dict], framework: str | None) -> list[dict]:
+    return [_with_legacy_labels(r) for r in records] if framework else records
+
+
+def _labelled(framework: str, category: str | None, edition: str | None):
+    def match(f: dict) -> bool:
+        return any(
+            lb.get("framework") == framework
+            and category in (None, lb.get("category_id"))
+            and edition in (None, lb.get("edition"))
+            for lb in _framework_labels(f)
+        )
+    return match
+
+
+def _field_is(field: str, value: str | None):
+    return (lambda f: f.get(field) == value) if value else None
+
+
+def _category_pred(category: str | None, framework: str | None, edition: str | None):
+    return _labelled(framework, category, edition) if framework else _field_is("category", category)
+
+
+def _active(*preds):
+    return [p for p in preds if p]
+
+
 def _filter_findings(
     findings: list[dict],
     severity: str | None,
     category: str | None,
     agent_type: str | None,
+    framework: str | None = None,
+    edition: str | None = None,
 ) -> list[dict]:
-    """Filter findings by optional criteria. Extracted to keep tool CC < 5."""
-    if severity:
-        findings = [f for f in findings if f.get("severity") == severity]
-    if category:
-        findings = [f for f in findings if f.get("category") == category]
-    if agent_type:
-        findings = [f for f in findings if f.get("agent_type") == agent_type]
-    return findings
+    """Filter findings by optional criteria. Extracted to keep tool CC < 5.
+
+    agent_type is always literal. With a framework, category and edition
+    filter that framework's labels; without one, category is the finding's own."""
+    preds = _active(_field_is("severity", severity), _field_is("agent_type", agent_type),
+                    _category_pred(category, framework, edition))
+    return [f for f in findings if all(p(f) for p in preds)]
+
+
+# Distinct audits one framework-filtered search may fetch to resolve labels.
+# Each lookup downloads a whole audit, so the fan-out is bounded.
+_LABEL_LOOKUP_MAX_AUDITS = 10
+
+
+async def _audit_label_map(client: "VultureClient", audit_id: str) -> dict[str, list[dict]]:
+    """category -> compliance labels for one audit. A label is a pure function
+    of the audit's mapping and the finding's category, so any labelled finding
+    of a category speaks for all of them. Empty on failure, so a record whose
+    audit is unreadable simply matches no framework filter. A busy client
+    (RateLimitExceeded) is not a per-audit failure, so it propagates."""
+    try:
+        audit = await client.get_audit(audit_id, wait=True)
+    except RateLimitExceeded:
+        raise
+    except Exception:
+        return {}
+    return {f.get("category", ""): f["compliance_labels"]
+            for f in audit.get("findings", []) if f.get("compliance_labels")}
+
+
+async def _attach_labels(client: "VultureClient", records: list[dict]) -> list[dict]:
+    """Give search records the labels of the findings they were made from.
+
+    Memory records carry no labels; their audit's findings do, joined on
+    (audit_id, category). One lookup per distinct audit, in relevance order
+    and at most _LABEL_LOOKUP_MAX_AUDITS, counting only audits of records that
+    can carry a label; a record of a later audit stays unlabelled and so
+    matches no framework filter. The lookups stop at the first one the client
+    is too busy to serve, so a busy client costs one wait bound rather than
+    one per audit. Returns the records and, when some were left unresolved,
+    a message saying how many and why (None otherwise)."""
+    ordered = list(dict.fromkeys(r["audit_id"] for r in records if _needs_labels(r)))
+    wanted = ordered[:_LABEL_LOOKUP_MAX_AUDITS]
+    by_audit = await _audit_label_maps(client, wanted)
+    return [_with_labels(r, by_audit) for r in records], _left_out_report(records, by_audit, len(wanted))
+
+
+def _left_out_report(records: list[dict], by_audit: dict, wanted: int) -> str | None:
+    """How many records needing a label were left unresolved, and why."""
+    left = _unresolved_audit_ids(records, by_audit)
+    if not left:
+        return None
+    why = ("the server was busy with other requests" if len(by_audit) < wanted
+           else f"labels are looked up for the {_LABEL_LOOKUP_MAX_AUDITS} most relevant audits only")
+    return (f"{len(left)} match(es) from {len(set(left))} audit(s) could not be checked against "
+            f"the framework filter and were left out: {why}.")
+
+
+def _unresolved_audit_ids(records: list[dict], by_audit: dict) -> list[str]:
+    """The audit id of every record that needed a label its audit was never asked for."""
+    return [r["audit_id"] for r in records if _needs_labels(r) and r["audit_id"] not in by_audit]
+
+
+async def _warn(ctx: Context | None, message: str) -> None:
+    """Report to the operator (stderr) and, within a request, to the client."""
+    sys.stderr.write(f"vulture-mcp: warning: {message}\n")
+    if ctx is None:
+        return
+    try:
+        await ctx.warning(message)
+    except ValueError:  # no request to report to (a direct, request-less call)
+        pass
+
+
+async def _audit_label_maps(client: "VultureClient", audit_ids: list[str]) -> dict[str, dict[str, list[dict]]]:
+    """Label maps of audit_ids, fetched in order until the client is too busy."""
+    by_audit: dict[str, dict[str, list[dict]]] = {}
+    for aid in audit_ids:
+        try:
+            by_audit[aid] = await _audit_label_map(client, aid)
+        except RateLimitExceeded:
+            break
+    return by_audit
+
+
+# The backend's label predicate (isLabelCandidate): the mapping labels only a
+# CWE-categorised finding of a scan agent, never an OWASP agent row.
+_CWE_CATEGORY = re.compile(r"^CWE-\d+$")
+
+
+def _can_carry_labels(record: dict) -> bool:
+    return record.get("agent_type") != "owasp" and bool(_CWE_CATEGORY.match(record.get("category") or ""))
+
+
+def _needs_labels(record: dict) -> bool:
+    """A record needs a lookup when its audit could have labelled it and it
+    does not carry labels already. Any other record (a chaos pattern, an OWASP
+    agent row, a record without an audit) can never gain a label from one."""
+    if "compliance_labels" in record or not _can_carry_labels(record):
+        return False
+    return bool(record.get("audit_id"))
+
+
+def _with_labels(record: dict, by_audit: dict[str, dict[str, list[dict]]]) -> dict:
+    if not _needs_labels(record):
+        return record
+    labels = by_audit.get(record["audit_id"], {}).get(record.get("category", ""))
+    return dict(record, compliance_labels=labels) if labels else record
 
 
 def _redact_comparison(comparison: dict) -> dict:
@@ -202,13 +471,54 @@ def _redact_comparison(comparison: dict) -> dict:
     return out
 
 
+# Lineage resolution mirrors the backend writer (`resolveExisting`) and the UI
+# findings table (frontend/src/lib/lineage.ts indexLineage/resolveLineage):
+# agent-scoped, fingerprint_v2 first, then the v1 fingerprint; v1 alone only
+# when the caller knows no agent. v1 alone is not enough — a row recognised
+# through v2 keeps its ORIGINAL v1, and several findings can share one v1 while
+# each belongs to a different row. First row wins per key (the endpoint returns
+# rows newest-updated first).
+def _agent_key(agent: str | None) -> str:
+    return (agent or "").strip().lower()
+
+
+def _index_lineage(rows: list) -> dict:
+    """Index lineage rows by (agent, v2), (agent, v1) and bare v1."""
+    index: dict = {"v2": {}, "v1": {}, "v1_any": {}, "v1_agentless": {}}
+    for row in rows:
+        agent = _agent_key(row.get("agent_type"))
+        fp, fp2 = row.get("fingerprint"), row.get("fingerprint_v2")
+        if fp2:
+            index["v2"].setdefault((agent, fp2), row)
+        if fp:
+            index["v1"].setdefault((agent, fp), row)
+            index["v1_any"].setdefault(fp, row)
+            if not agent:
+                index["v1_agentless"].setdefault(fp, row)
+    return index
+
+
+def _resolve_lineage(index: dict, item: dict) -> dict | None:
+    """The lineage row a finding (or anything carrying its fingerprints) belongs to."""
+    fp, fp2 = item.get("fingerprint"), item.get("fingerprint_v2")
+    agent = _agent_key(item.get("agent_type") or item.get("agent_id"))
+    if not agent:
+        return index["v1_any"].get(fp) if fp else None
+    row = index["v2"].get((agent, fp2)) if fp2 else None
+    if row is None and fp:
+        # A row carrying no agent is resolved as the UI resolves a caller that
+        # knows no agent: by v1 alone. The backend always writes agent_type, so
+        # this only reaches rows from a client that omits it.
+        row = index["v1"].get((agent, fp)) or index["v1_agentless"].get(fp)
+    return row
+
+
 async def _build_lineage_map(client: VultureClient, audit_id: str) -> dict:
-    """Build fingerprint -> lineage dict for an audit. Returns empty dict on failure."""
+    """Build the lineage index for an audit. Returns an empty index on failure."""
     try:
-        lineages = await client.get_audit_lineage(audit_id)
-        return {ln.get("fingerprint", ""): ln for ln in lineages if ln.get("fingerprint")}
+        return _index_lineage(await client.get_audit_lineage(audit_id))
     except Exception:
-        return {}
+        return _index_lineage([])
 
 
 def _compute_ref(lineage: dict) -> str:
@@ -223,8 +533,7 @@ def _compute_ref(lineage: dict) -> str:
 def _enrich_finding(finding: dict, lineage_map: dict) -> dict:
     """Add lineage_id, lineage_status, and ref to a finding."""
     result = _redact_record(finding)
-    fp = finding.get("fingerprint", "")
-    lineage = lineage_map.get(fp)
+    lineage = _resolve_lineage(lineage_map, finding)
     if lineage:
         result["lineage_id"] = lineage.get("id", "")
         result["lineage_status"] = lineage.get("current_status", "open")
@@ -265,9 +574,10 @@ def _match_lineage(lineages: list, ref: str | None, fingerprint: str | None, aud
                 return ln["id"]
         raise ValueError(f"Finding ref '{ref}' not found in audit {audit_id}")
     if fingerprint:
-        for ln in lineages:
-            if ln.get("fingerprint") == fingerprint:
-                return ln["id"]
+        # The caller names a v1 fingerprint and no agent: v1 alone, first row wins.
+        lineage = _resolve_lineage(_index_lineage(lineages), {"fingerprint": fingerprint})
+        if lineage:
+            return lineage["id"]
         raise ValueError(f"Fingerprint '{fingerprint}' not found in audit {audit_id}")
     raise ValueError("Provide one of: ref, fingerprint, or lineage_id")
 
@@ -297,11 +607,32 @@ async def vulture_get_findings(
     agent_type: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    framework: str | None = None,
+    edition: str | None = None,
 ) -> dict:
-    """Get findings from a specific audit with filtering and pagination."""
+    """Get findings from a specific audit with filtering and pagination.
+
+    For an OWASP Top 10 category use framework="owasp" with category="A07";
+    framework="owasp" alone returns every finding carrying an OWASP label.
+    A category id is edition-specific (A03 is Injection in 2021 but Software
+    Supply Chain Failures in 2025): add edition="2025" to keep that edition's
+    labels only. With framework, every returned finding carries
+    `compliance_labels`, each label naming its `edition`. A pre-0096 OWASP
+    agent row (older audits kept them) carries the one label its own check_id
+    or category slug names, marked `legacy`: true, with an empty
+    category_name; its edition is the one its slug names when only one
+    edition uses that slug, otherwise edition "" (unknown), which matches no
+    edition filter. OWASP categories are labels (`compliance_labels`) on the CWE-categorised
+    findings of the scan agents: the OWASP agent keeps no findings of its own,
+    so agent_type is a literal agent filter and agent_type="owasp" returns
+    nothing on current audits. Without framework, category matches a
+    finding's own category literally (e.g. "CWE-89")."""
+    framework, category, edition = _normalize_framework_filter(framework, category, edition)
     client = await _get_client()
     audit = await client.get_audit(audit_id)
-    findings = _filter_findings(audit.get("findings", []), severity, category, agent_type)
+    findings = _framework_output(
+        _filter_findings(audit.get("findings", []), severity, category, agent_type, framework, edition),
+        framework)
 
     # Enrich with lineage status and ref
     lineage_map = await _build_lineage_map(client, audit_id)
@@ -329,7 +660,7 @@ async def vulture_get_finding_detail(audit_id: str, fingerprint: str) -> dict:
     result = _redact_record(finding)
     try:
         lineages = await client.get_audit_lineage(audit_id)
-        lineage = next((ln for ln in lineages if ln.get("fingerprint") == fingerprint), None)
+        lineage = _resolve_lineage(_index_lineage(lineages), finding)
         if lineage:
             result["lineage"] = _redact_record(lineage)
     except Exception as exc:
@@ -346,10 +677,43 @@ async def vulture_get_comparison(audit_id: str) -> dict:
 
 
 @mcp.tool()
-async def vulture_search_findings(query: str, limit: int = 20) -> list[dict]:
-    """Semantic search across all audit findings using pgvector embeddings."""
+async def vulture_search_findings(
+    query: str,
+    limit: int = 20,
+    framework: str | None = None,
+    category: str | None = None,
+    edition: str | None = None,
+    ctx: Context | None = None,
+) -> list[dict]:
+    """Semantic search across all audit findings using pgvector embeddings.
+
+    To keep only matches in an OWASP Top 10 category use framework="owasp"
+    with category="A07" (framework="owasp" alone keeps every OWASP-labelled
+    match); matched records gain `compliance_labels`. A category id is
+    edition-specific (A03 is Injection in 2021 but Software Supply Chain
+    Failures in 2025) and a search spans audits of either edition, so add
+    edition="2025" to keep that edition's labels only; without it results can
+    mix editions, each label naming its `edition`. A pre-0096 OWASP record
+    (older audits kept OWASP agent rows) carries the one label its own
+    category slug or check_id names, marked `legacy`: true, with an empty
+    category_name; its edition is the one its slug names when only one
+    edition uses that slug, otherwise edition "" (unknown), which matches no
+    edition filter. The filter applies to the top `limit` semantic matches.
+    Labels are looked up in the audits the matches came from, and only a
+    CWE-categorised match of a scan agent can carry one, so only those are
+    looked up: for the 10 most relevant such audits, and not once the server
+    is busy with other requests. Such a match left unchecked is left out,
+    and the tool then sends a warning log message saying how many were left
+    out and why. Without framework, category matches a record's own category
+    literally (e.g. "CWE-89")."""
+    framework, category, edition = _normalize_framework_filter(framework, category, edition)
     client = await _get_client()
     results = await client.search_memories(query, limit=limit)
+    if framework:
+        results, left_out = await _attach_labels(client, results)
+        if left_out:
+            await _warn(ctx, left_out)
+    results = _framework_output(_filter_findings(results, None, category, None, framework, edition), framework)
     return [_redact_record(r) for r in results]
 
 

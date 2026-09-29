@@ -285,6 +285,10 @@ type finding struct {
 	Recommendation string `json:"recommendation"`
 	Fingerprint    string `json:"fingerprint"`
 	Ref            string `json:"ref,omitempty"`
+	// ComplianceLabels are the framework categories this finding falls under
+	// (feature 0096), e.g. its OWASP Top 10 category. A label is not a row:
+	// the finding is counted once however many frameworks name it.
+	ComplianceLabels []complianceLabel `json:"compliance_labels,omitempty"`
 }
 
 type lineageRec struct {
@@ -1940,24 +1944,43 @@ func computeExitCode(a audit, exitOn string) int {
 	if exitOn == "" {
 		return 0
 	}
-	severityRank := map[string]int{
-		"critical": 4,
-		"high":     3,
-		"medium":   2,
-		"low":      1,
-		"info":     0,
-	}
-	threshold, ok := severityRank[exitOn]
-	if !ok {
+	if _, ok := severityRank[exitOn]; !ok {
 		fmt.Fprintf(os.Stderr, "  Warning: unknown severity %q for --exit-on (expected critical, high, medium, low)\n", exitOn)
 		return 0
 	}
+	n := countAtOrAbove(a, exitOn)
+	if n == 0 {
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "  Exit 1: %d finding(s) at or above %s (--exit-on)\n", n, exitOn)
+	return 1
+}
+
+// severityRank orders finding severities for --exit-on. An unknown severity
+// ranks as info.
+var severityRank = map[string]int{
+	"critical": 4,
+	"high":     3,
+	"medium":   2,
+	"low":      1,
+	"info":     0,
+}
+
+// countAtOrAbove returns how many findings meet or exceed the exitOn
+// severity, 0 for an unknown threshold. It counts rows, one per weakness: a
+// finding's compliance labels never add to the count (feature 0096).
+func countAtOrAbove(a audit, exitOn string) int {
+	threshold, ok := severityRank[exitOn]
+	if !ok {
+		return 0
+	}
+	n := 0
 	for _, f := range a.Findings {
 		if severityRank[f.Severity] >= threshold {
-			return 1
+			n++
 		}
 	}
-	return 0
+	return n
 }
 
 // --- Helpers ---
@@ -2205,6 +2228,7 @@ func printAuditSummary(a audit, apiURL string) {
 		}
 		fmt.Println(strings.Join(parts, ", "))
 	}
+	printOWASPSummary(a.Findings)
 
 	// Show UI link
 	frontendURL := uiURL(apiURL)

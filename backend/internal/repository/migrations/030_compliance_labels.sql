@@ -1,0 +1,22 @@
+-- Migration 030 (feature 0096): compliance labels on findings and lineage.
+--
+-- The OWASP agent (0063) categorised CWE findings by RE-EMITTING each one as a
+-- second finding row with its own lineage row, VLT ref and triage: double
+-- counting, double triage, and an identity (`owasp.{cat}.cwe-{N}`) that folded
+-- unrelated findings into one lineage. 0096 replaces the copy with a label on
+-- the finding the copy was made from.
+--
+--   findings.compliance_labels        [{framework, edition, category_id,
+--                                       category_name, cwe}, ...]
+--   finding_lineage.compliance_labels {"owasp:2025": ["A07", ...], ...}
+--
+-- The lineage shape is keyed per framework:edition so a sighting replaces
+-- only the editions it carries: a CWE-only scan, or a 2021 run over a row
+-- labelled for 2025, leaves the other keys alone (`||` on the upsert).
+--
+-- Nullable, no default: NULL is "no labels", read back as nil and omitted on
+-- the wire. No index in v1 — the aggregate filter is measured first and a GIN
+-- index is added only if it misses its latency budget. Additive and
+-- idempotent; SQLite gains the same columns (as TEXT) in sqlite_repo.go.
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS compliance_labels JSONB;
+ALTER TABLE finding_lineage ADD COLUMN IF NOT EXISTS compliance_labels JSONB;

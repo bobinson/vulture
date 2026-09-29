@@ -230,10 +230,10 @@ func (r *PostgresRepo) saveFindingsChunk(auditID string, findings []model.Findin
 	}
 	// +6 columns for validation (feature 0045), +1 provenance (feature 0057),
 	// +1 code_snippet (feature 0072 P5 — the column existed since 001_init.sql
-	// but was written by no code path).
+	// but was written by no code path), +1 compliance_labels (feature 0096).
 	// Must equal findingInsertColumnCount() -- the bound-parameter invariant is
 	// checked against it, and a mismatch here silently shifts every $n.
-	const cols = 23
+	const cols = 24
 	valueStrings := make([]string, 0, len(findings))
 	valueArgs := make([]interface{}, 0, len(findings)*cols)
 	for i, f := range findings {
@@ -291,6 +291,7 @@ func (r *PostgresRepo) saveFindingsChunk(auditID string, findings []model.Findin
 			// constraint and aborts the entire 1000-row statement.
 			dbSafeText(f.CheckID),
 			dbSafeText(f.FingerprintV2),
+			findingLabelsColumn(f.ComplianceLabels),
 		)
 	}
 	stmt := fmt.Sprintf(
@@ -299,7 +300,7 @@ func (r *PostgresRepo) saveFindingsChunk(auditID string, findings []model.Findin
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
 			is_rollup, rolled_up_into, instance_count, provenance, code_snippet,
-			check_id, fingerprint_v2
+			check_id, fingerprint_v2, compliance_labels
 		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
@@ -410,7 +411,13 @@ func (r *PostgresRepo) GetLatestCompletedAudit(sourceID string, types []string) 
 	if completedAt.Valid {
 		audit.CompletedAt = &completedAt.Time
 	}
-	audit.Findings, _ = r.getFindings(audit.ID)
+	// Feature 0096 M6: the only caller is the cache probe, which decides
+	// hit/miss from these findings — a failed load must not read as "none".
+	findings, err := r.getFindings(audit.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get latest completed audit %s findings: %w", audit.ID, err)
+	}
+	audit.Findings = findings
 	audit.FindingsCount = len(audit.Findings)
 	return &audit, nil
 }
@@ -508,7 +515,8 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 		        COALESCE(provenance, ''),
 		        COALESCE(code_snippet, ''),
 		        COALESCE(check_id, ''),
-		        COALESCE(fingerprint_v2, '')
+		        COALESCE(fingerprint_v2, ''),
+		        COALESCE(compliance_labels::text, '')
 		 FROM findings WHERE audit_id = $1`,
 		auditID,
 	)
@@ -521,13 +529,13 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 	findings := make([]model.Finding, 0, 64)
 	for rows.Next() {
 		var f model.Finding
-		var refsStr, validationStr string
+		var refsStr, validationStr, labelsStr string
 		err := rows.Scan(&f.ID, &f.AuditID, &f.AgentType, &f.Severity, &f.Category,
 			&f.Title, &f.Description, &f.FilePath, &f.LineStart, &f.LineEnd,
 			&f.Recommendation, &refsStr, &f.Fingerprint,
 			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
 			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance,
-			&f.CodeSnippet, &f.CheckID, &f.FingerprintV2)
+			&f.CodeSnippet, &f.CheckID, &f.FingerprintV2, &labelsStr)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}
@@ -535,6 +543,7 @@ func (r *PostgresRepo) getFindings(auditID string) ([]model.Finding, error) {
 		if validationStr != "" {
 			_ = json.Unmarshal([]byte(validationStr), &f.Validation)
 		}
+		decodeLabelsColumn(labelsStr, &f.ComplianceLabels)
 		findings = append(findings, f)
 	}
 	return findings, rows.Err()

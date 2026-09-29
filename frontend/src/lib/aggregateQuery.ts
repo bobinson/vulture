@@ -31,6 +31,9 @@ export function buildAggregateQuery(filters: AggregateFilters): string {
   scalar("tier", filters.tier);
   scalar("min_seen", filters.min_seen);
   list("severity", filters.severity);
+  scalar("framework", filters.framework);
+  scalar("category", filters.category);
+  scalar("edition", filters.edition);
   scalar("page", filters.page);
   scalar("page_size", filters.page_size);
 

@@ -1,7 +1,9 @@
-"""OWASP agent configuration (mapping mode, feature 0063).
+"""OWASP agent configuration (feature 0063).
 
-The OWASP agent maps CWE findings onto OWASP Top 10 categories; it performs
-no detection. Edition options are read lazily and fault-tolerantly so a bad
+The OWASP agent categorises CWE findings into OWASP Top 10 categories; it
+performs no detection. (Not to be confused with 0096's "mapping answer", which
+is negotiated per request by the backend's top-level ``accepts_mapping`` /run
+field — deliberately NOT a config option, so it is absent from CONFIG_SCHEMA.) Edition options are read lazily and fault-tolerantly so a bad
 data file can never break agent import (the agent must always start).
 """
 

@@ -1,0 +1,132 @@
+{
+ "run_id": "owasp-0096-flow",
+ "config": {
+  "edition": "2025",
+  "categories": [
+   "A05",
+   "A07"
+  ],
+  "cwe_stage_status": "completed"
+ },
+ "accepts_mapping": 1,
+ "cwe_findings": [
+  {
+   "severity": "high",
+   "category": "CWE-798",
+   "title": "Hardcoded credential",
+   "description": "secret assigned in source",
+   "file_path": "config/secrets.py",
+   "line_start": 3,
+   "line_end": 3,
+   "recommendation": "load from a vault",
+   "provenance": "skill",
+   "check_id": "cwe.secret.generic"
+  },
+  {
+   "severity": "critical",
+   "category": "CWE-89",
+   "title": "SQL injection",
+   "description": "string interpolation in query",
+   "file_path": "app/db.py",
+   "line_start": 12,
+   "line_end": 12,
+   "recommendation": "use parameters",
+   "provenance": "skill",
+   "check_id": "cwe.injection.sql"
+  },
+  {
+   "severity": "high",
+   "category": "CWE-918",
+   "title": "Server-side request forgery",
+   "description": "user-controlled url",
+   "file_path": "app/net.py",
+   "line_start": 7,
+   "line_end": 7,
+   "recommendation": "allowlist hosts",
+   "provenance": "skill",
+   "check_id": "cwe.injection.ssrf"
+  },
+  {
+   "severity": "medium",
+   "category": "CWE-532",
+   "title": "Sensitive data in log",
+   "description": "token written to a log",
+   "file_path": "app/log.py",
+   "line_start": 40,
+   "line_end": 40,
+   "recommendation": "redact",
+   "provenance": "skill",
+   "check_id": "cwe.logging.sensitive"
+  },
+  {
+   "severity": "low",
+   "category": "CWE-1234",
+   "title": "Weakness no edition maps",
+   "description": "unmapped",
+   "file_path": "native/x.c",
+   "line_start": 2,
+   "line_end": 2,
+   "recommendation": "review",
+   "provenance": "skill",
+   "check_id": "cwe.misc.unmapped"
+  }
+ ],
+ "priors": [
+  {
+   "title": "Hardcoded credential",
+   "severity": "high",
+   "category": "CWE-798",
+   "description": "secret assigned in source",
+   "file_path": "config/secrets.py",
+   "line_start": 3,
+   "line_end": 3,
+   "check_id": "cwe.secret.generic",
+   "provenance": "skill"
+  },
+  {
+   "title": "SQL injection",
+   "severity": "critical",
+   "category": "CWE-89",
+   "description": "string interpolation in query",
+   "file_path": "app/db.py",
+   "line_start": 12,
+   "line_end": 12,
+   "check_id": "cwe.injection.sql",
+   "provenance": "skill"
+  },
+  {
+   "title": "Server-side request forgery",
+   "severity": "high",
+   "category": "CWE-918",
+   "description": "user-controlled url",
+   "file_path": "app/net.py",
+   "line_start": 7,
+   "line_end": 7,
+   "check_id": "cwe.injection.ssrf",
+   "provenance": "skill"
+  },
+  {
+   "title": "Sensitive data in log",
+   "severity": "medium",
+   "category": "CWE-532",
+   "description": "token written to a log",
+   "file_path": "app/log.py",
+   "line_start": 40,
+   "line_end": 40,
+   "check_id": "cwe.logging.sensitive",
+   "provenance": "skill"
+  },
+  {
+   "title": "Weakness no edition maps",
+   "severity": "low",
+   "category": "CWE-1234",
+   "description": "unmapped",
+   "file_path": "native/x.c",
+   "line_start": 2,
+   "line_end": 2,
+   "check_id": "cwe.misc.unmapped",
+   "provenance": "skill"
+  }
+ ],
+ "stream": "event: agent_start\ndata: {\"agent_name\": \"\", \"run_id\": \"owasp-0096-flow\"}\n\nevent: thinking\ndata: {\"content\": \"Categorizing 5 CWE finding(s) against OWASP Top 10:2025.\"}\n\nevent: thinking\ndata: {\"content\": \"Mapping v1: returning the OWASP Top 10:2025 table (249 CWEs, selected=A05,A07); the CWE findings are labelled with it, and no OWASP finding rows are emitted.\"}\n\nevent: thinking\ndata: {\"content\": \"OWASP Top 10:2025 coverage (CWE stage: completed):\\n  A01 Broken Access Control: 1/40 mapped CWEs found (found)\\n  A02 Security Misconfiguration: 0/16 mapped CWEs found (clean-or-undetected)\\n  A03 Software Supply Chain Failures: 0/6 mapped CWEs found (clean-or-undetected)\\n  A04 Cryptographic Failures: 0/32 mapped CWEs found (clean-or-undetected)\\n  A05 Injection: 1/37 mapped CWEs found (found)\\n  A06 Insecure Design: 0/39 mapped CWEs found (clean-or-undetected)\\n  A07 Authentication Failures: 1/36 mapped CWEs found (found)\\n  A08 Software or Data Integrity Failures: 0/14 mapped CWEs found (clean-or-undetected)\\n  A09 Security Logging and Alerting Failures: 1/5 mapped CWEs found (found)\\n  A10 Mishandling of Exceptional Conditions: 0/24 mapped CWEs found (clean-or-undetected)\"}\n\nevent: progress\ndata: {\"files_analyzed\": 5, \"total_files\": 5, \"findings_count\": 0}\n\nevent: result\ndata: {\"findings\": [], \"findings_count\": 0, \"summary\": \"Mapped 2 finding(s) into 2/2 OWASP Top 10:2025 categories.\", \"score\": 78.1, \"owasp_coverage\": {\"edition\": \"2025\", \"cwe_stage_status\": \"completed\", \"categories\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\", \"mapped_count\": 40, \"found_cwes\": [\"CWE-918\"], \"found_count\": 1, \"status\": \"found\", \"source_url\": \"https://owasp.org/Top10/2025/A01_2025-Broken_Access_Control/\"}, {\"id\": \"A02\", \"name\": \"Security Misconfiguration\", \"mapped_count\": 16, \"found_cwes\": [], \"found_count\": 0, \"status\": \"clean-or-undetected\", \"source_url\": \"https://owasp.org/Top10/2025/A02_2025-Security_Misconfiguration/\"}, {\"id\": \"A03\", \"name\": \"Software Supply Chain Failures\", \"mapped_count\": 6, \"found_cwes\": [], \"found_count\": 0, \"status\": \"clean-or-undetected\", \"source_url\": \"https://owasp.org/Top10/2025/A03_2025-Software_Supply_Chain_Failures/\"}, {\"id\": \"A04\", \"name\": \"Cryptographic Failures\", \"mapped_count\": 32, \"found_cwes\": [], \"found_count\": 0, \"status\": \"clean-or-undetected\", \"source_url\": \"https://owasp.org/Top10/2025/A04_2025-Cryptographic_Failures/\"}, {\"id\": \"A05\", \"name\": \"Injection\", \"mapped_count\": 37, \"found_cwes\": [\"CWE-89\"], \"found_count\": 1, \"status\": \"found\", \"source_url\": \"https://owasp.org/Top10/2025/A05_2025-Injection/\"}, {\"id\": \"A06\", \"name\": \"Insecure Design\", \"mapped_count\": 39, \"found_cwes\": [], \"found_count\": 0, \"status\": \"clean-or-undetected\", \"source_url\": \"https://owasp.org/Top10/2025/A06_2025-Insecure_Design/\"}, {\"id\": \"A07\", \"name\": \"Authentication Failures\", \"mapped_count\": 36, \"found_cwes\": [\"CWE-798\"], \"found_count\": 1, \"status\": \"found\", \"source_url\": \"https://owasp.org/Top10/2025/A07_2025-Authentication_Failures/\"}, {\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\", \"mapped_count\": 14, \"found_cwes\": [], \"found_count\": 0, \"status\": \"clean-or-undetected\", \"source_url\": \"https://owasp.org/Top10/2025/A08_2025-Software_or_Data_Integrity_Failures/\"}, {\"id\": \"A09\", \"name\": \"Security Logging and Alerting Failures\", \"mapped_count\": 5, \"found_cwes\": [\"CWE-532\"], \"found_count\": 1, \"status\": \"found\", \"source_url\": \"https://owasp.org/Top10/2025/A09_2025-Security_Logging_and_Alerting_Failures/\"}, {\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\", \"mapped_count\": 24, \"found_cwes\": [], \"found_count\": 0, \"status\": \"clean-or-undetected\", \"source_url\": \"https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/\"}], \"unmapped_cwes\": [\"CWE-1234\"], \"unmapped_count\": 1}, \"mapping\": {\"version\": 1, \"framework\": \"owasp\", \"edition\": \"2025\", \"selected\": [\"A05\", \"A07\"], \"table\": {\"CWE-5\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-11\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-13\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-15\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-16\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-20\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-22\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-23\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-36\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-59\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-61\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-65\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-73\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-74\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-76\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-77\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-78\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-79\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-80\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-83\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-86\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-88\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-89\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-90\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-91\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-93\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-94\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-95\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-96\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-97\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-98\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-99\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-103\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-104\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-112\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-113\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-114\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-115\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-116\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-117\": [{\"id\": \"A09\", \"name\": \"Security Logging and Alerting Failures\"}], \"CWE-129\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-159\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-183\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-200\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-201\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-209\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-215\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-219\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-221\": [{\"id\": \"A09\", \"name\": \"Security Logging and Alerting Failures\"}], \"CWE-223\": [{\"id\": \"A09\", \"name\": \"Security Logging and Alerting Failures\"}], \"CWE-234\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-235\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-248\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-252\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-256\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-258\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-259\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-260\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-261\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-266\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-269\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-274\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-276\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-280\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-281\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-282\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-283\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-284\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-285\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-286\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-287\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-288\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-289\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-290\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-291\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-293\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-294\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-295\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-296\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-297\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-298\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-299\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-300\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-302\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-303\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-304\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-305\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-306\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-307\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-308\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-309\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-311\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-312\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-313\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-315\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-316\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-319\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-320\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-321\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-322\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-323\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-324\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-325\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-326\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-327\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-328\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-329\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-330\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-331\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-332\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-334\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-335\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-336\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-337\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-338\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-340\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-342\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-345\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-346\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-347\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-350\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-352\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-353\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-359\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-362\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-369\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-377\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-379\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-382\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-384\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-390\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-391\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-394\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-396\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-397\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-402\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-419\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-424\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-425\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-426\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-427\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-434\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-436\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-441\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-444\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-447\": [{\"id\": \"A03\", \"name\": \"Software Supply Chain Failures\"}], \"CWE-451\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-454\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-460\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-470\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-472\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-476\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-478\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-484\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-489\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-493\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-494\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-497\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-500\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-501\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-502\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-506\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-509\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-521\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-522\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-523\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-525\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-526\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-532\": [{\"id\": \"A09\", \"name\": \"Security Logging and Alerting Failures\"}], \"CWE-538\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-539\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-540\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-547\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-548\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-550\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-552\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-564\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-565\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-566\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-598\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-601\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-602\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-610\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-611\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-613\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-614\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-615\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-620\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-628\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-636\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-639\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-640\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-642\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-643\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-644\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-646\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-653\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-656\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-657\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-668\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-676\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-693\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-703\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-732\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-749\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-754\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-755\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-756\": [{\"id\": \"A10\", \"name\": \"Mishandling of Exceptional Conditions\"}], \"CWE-757\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-759\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-760\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-776\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-778\": [{\"id\": \"A09\", \"name\": \"Security Logging and Alerting Failures\"}], \"CWE-780\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-784\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-798\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-799\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-807\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-829\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-830\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-841\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-862\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-863\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-915\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-916\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-917\": [{\"id\": \"A05\", \"name\": \"Injection\"}], \"CWE-918\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-922\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-926\": [{\"id\": \"A08\", \"name\": \"Software or Data Integrity Failures\"}], \"CWE-940\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-941\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-942\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-1004\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-1021\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-1022\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-1035\": [{\"id\": \"A03\", \"name\": \"Software Supply Chain Failures\"}], \"CWE-1104\": [{\"id\": \"A03\", \"name\": \"Software Supply Chain Failures\"}], \"CWE-1125\": [{\"id\": \"A06\", \"name\": \"Insecure Design\"}], \"CWE-1174\": [{\"id\": \"A02\", \"name\": \"Security Misconfiguration\"}], \"CWE-1240\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-1241\": [{\"id\": \"A04\", \"name\": \"Cryptographic Failures\"}], \"CWE-1275\": [{\"id\": \"A01\", \"name\": \"Broken Access Control\"}], \"CWE-1329\": [{\"id\": \"A03\", \"name\": \"Software Supply Chain Failures\"}], \"CWE-1357\": [{\"id\": \"A03\", \"name\": \"Software Supply Chain Failures\"}], \"CWE-1390\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-1391\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-1392\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-1393\": [{\"id\": \"A07\", \"name\": \"Authentication Failures\"}], \"CWE-1395\": [{\"id\": \"A03\", \"name\": \"Software Supply Chain Failures\"}]}}}\n\nevent: agent_end\ndata: {\"run_id\": \"owasp-0096-flow\", \"status\": \"completed\"}\n\n"
+}
