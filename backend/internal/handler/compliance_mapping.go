@@ -335,8 +335,7 @@ func recomputeOwaspCoverage(raw json.RawMessage, findings []model.Finding, m *mo
 	}
 	found, unmapped := recountCoverage(findings, m)
 	for _, c := range cats {
-		var id string
-		_ = json.Unmarshal(c["id"], &id)
+		id := categoryIDOf(c)
 		setCategoryFound(c, found[id])
 		markSelection(c, m.Selects(id))
 	}
@@ -465,6 +464,13 @@ func markSelection(c map[string]json.RawMessage, selected bool) {
 		return
 	}
 	c["selected"] = json.RawMessage(`false`)
+}
+
+// categoryIDOf is a manifest category's id, "" when it has none.
+func categoryIDOf(c map[string]json.RawMessage) string {
+	var id string
+	_ = json.Unmarshal(c["id"], &id)
+	return id
 }
 
 // setCategoryFound writes found_cwes (in the agent's numeric order),

@@ -9,10 +9,20 @@ interface LineageEdit {
   ticketUrl: string;
 }
 
+interface UseLineageOptions {
+  /**
+   * 0096 follow-up: called with the updated row once a status save lands.
+   * A triage changes what the backend serves as the audit's OWASP coverage
+   * (triaged false positives are left out when the audit is read), so the
+   * page uses this to re-fetch the audit.
+   */
+  onStatusSaved?: (updated: FindingLineage) => void;
+}
+
 // Edit state, the saved flag and the timeline are keyed by lineage ROW id:
 // that is the thing being edited, and several findings can share a v1
 // fingerprint while belonging to different rows.
-export function useLineage(auditId?: string) {
+export function useLineage(auditId?: string, { onStatusSaved }: UseLineageOptions = {}) {
   const [lineageRows, setLineageRows] = useState<FindingLineage[]>([]);
   const [timelineMap, setTimelineMap] = useState<Map<string, LineageEvent[]>>(new Map());
   const [showTimeline, setShowTimeline] = useState<string | null>(null);
@@ -29,6 +39,11 @@ export function useLineage(auditId?: string) {
 
   const editingLineageRef = useRef(editingLineage);
   useEffect(() => { editingLineageRef.current = editingLineage; });
+
+  // Read through a ref so saveStatus keeps one identity whatever callback
+  // the caller passes on each render.
+  const onStatusSavedRef = useRef(onStatusSaved);
+  useEffect(() => { onStatusSavedRef.current = onStatusSaved; });
 
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(savedTimerRef.current), []);
@@ -80,6 +95,7 @@ export function useLineage(auditId?: string) {
       setSavedFeedback(lineageId);
       clearTimeout(savedTimerRef.current);
       savedTimerRef.current = setTimeout(() => setSavedFeedback((prev) => (prev === lineageId ? null : prev)), 2000);
+      onStatusSavedRef.current?.(updated);
     }).catch((err) => {
       setError(err instanceof Error ? err.message : "Failed to update lineage status");
     });

@@ -248,6 +248,14 @@ export interface OwaspCategoryCoverage {
    * (including every manifest the agent streams live).
    */
   selected?: boolean;
+  /**
+   * Feature 0096 follow-up: how many distinct findings carrying a label of
+   * this category are triaged false positive (their own lineage row). The
+   * backend leaves those findings out of found_cwes / found_count when the
+   * audit is read. Present on mapping-mode manifests served by the backend;
+   * absent on a streamed or pre-0096 manifest.
+   */
+  false_positive_count?: number;
 }
 
 export interface OwaspCoverageManifest {

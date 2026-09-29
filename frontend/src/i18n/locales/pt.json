@@ -120,6 +120,8 @@
     "owaspFilterByCategory": "Mostrar achados de {{id}} {{name}}",
     "owaspSourceLink": "{{id}} em owasp.org",
     "owaspNotSelected": "não selecionada",
+    "owaspFalsePositiveNote_one": "{{count}} marcado como falso positivo",
+    "owaspFalsePositiveNote_other": "{{count}} marcados como falsos positivos",
     "tokens": "tokens",
     "priorFindings": "{{count}} constatação(ões) anterior(es) reutilizada(s)",
     "duplicatesRemoved": "{{count}} duplicata(s) removida(s)",

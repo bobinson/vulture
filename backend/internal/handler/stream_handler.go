@@ -726,7 +726,9 @@ func (h *StreamHandler) replayCompletedAudit(sseWriter *agui.SSEWriter, audit *m
 
 	// Feature 0063: re-emit the persisted OWASP coverage manifest so the
 	// attach/replay path renders it just like a live stream (the synthesized
-	// per-agent snapshots above only carry findings + score).
+	// per-agent snapshots above only carry findings + score). 0096 follow-up:
+	// the same effective manifest GET /api/audits/{id} serves.
+	withEffectiveOwaspCoverage(audit, h.lineageSvc)
 	if len(audit.OwaspCoverage) > 0 {
 		snapshot, _ := json.Marshal(map[string]interface{}{
 			"findings":       []model.Finding{},

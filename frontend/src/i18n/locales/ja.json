@@ -120,6 +120,8 @@
     "owaspFilterByCategory": "{{id}} {{name}} の検出結果を表示",
     "owaspSourceLink": "owasp.org の {{id}}",
     "owaspNotSelected": "未選択",
+    "owaspFalsePositiveNote_one": "{{count}}件を誤検知としてマーク",
+    "owaspFalsePositiveNote_other": "{{count}}件を誤検知としてマーク",
     "tokens": "トークン",
     "priorFindings": "{{count}} 件の過去の検出事項を再利用",
     "duplicatesRemoved": "{{count}} 件の重複を削除",

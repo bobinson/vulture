@@ -248,6 +248,9 @@ func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.enrichProveResults(audit)
+	// 0096 follow-up: serve the effective coverage (triaged false positives
+	// left out); the persisted column stays the scan-time record.
+	withEffectiveOwaspCoverage(audit, h.lineageRepo)
 	writeJSON(w, http.StatusOK, audit)
 }
 

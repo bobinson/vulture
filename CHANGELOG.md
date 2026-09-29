@@ -105,6 +105,16 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     event is provisional: the agent's own manifest, counted before dedup over
     every category, with no `selected` key. SSE consumers should re-read the
     audit once it is terminal.
+  - **Coverage ignores false positives**: the served `owasp_coverage` leaves
+    out findings whose own lineage row is marked `false_positive`, so a
+    category found only through them reads `clean-or-undetected`, and an
+    unmapped CWE is dropped once all its findings are marked. Each category
+    gains `false_positive_count`. `accepted_risk` and `resolved` still count.
+    It is worked out each time the audit is read and the stored manifest is
+    not changed, so clearing the mark restores the count; audits run before
+    labels, and reads where lineage or the findings cannot be loaded, are
+    served as stored. The results page shows the count on each
+    category and refreshes the card after a status change.
   - **Results page**: an OWASP chip per label and an OWASP category filter; a
     coverage category filters the table when some finding carries its label.
     Labels appear live during a run on provisional, pre-dedup rows that the

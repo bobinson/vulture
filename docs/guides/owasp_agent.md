@@ -198,6 +198,9 @@ There are two copies of `owasp_coverage`, and they can differ:
   completed audit. The backend recomputes it from the labelled findings as
   described below. This is the authoritative copy (**persisted**): an SSE consumer should
   re-read the audit once it is terminal, as the results page does.
+  Those two responses serve it **triage-aware**: findings marked false
+  positive are left out when the audit is read (see *False positives* below),
+  while the stored copy stays the record of the scan.
 
 The persisted shape:
 
@@ -238,9 +241,27 @@ The persisted shape:
   results page alike).
 - `cwe_stage_status` — `completed` | `partial` | `failed` | `absent`. Anything
   other than `completed` means coverage may be incomplete; the UI flags it.
+- `false_positive_count` — how many distinct findings carrying this
+  category's label are marked false positive; `0` when none. Present on every
+  category of a labelled audit's manifest as served; absent from the streamed
+  copy and from audits run before labels.
+
+**False positives.** A finding counts as a false positive when its own
+lineage row (matched on `fingerprint_v2` first, then `fingerprint`, within the
+finding's agent) has status `false_positive`. Such findings are left out of
+`found_cwes` / `found_count` / `status`, so a category found only through them
+reads `clean-or-undetected`, and an unmapped CWE is dropped from
+`unmapped_cwes` once every finding categorised with that CWE is marked.
+`accepted_risk` and `resolved` findings, a `likely_fp` validation verdict, and
+findings with no lineage row still count. The adjustment is made each time the audit is read
+and nothing is written, so clearing the mark restores the count. It applies
+only to labelled audits: an older audit's manifest, or one served when lineage
+or the audit's findings cannot be read, is returned exactly as stored.
 
 The results page renders the streamed manifest while the run is live and the
-persisted one once the audit is terminal. A category is a toggle for the
+persisted one once the audit is terminal. A category with marked false
+positives says how many; saving a status in the findings table re-reads the
+audit, so the card updates without a reload. A category is a toggle for the
 findings table's OWASP filter only when some finding carries its label; each
 labelled finding shows a chip per OWASP category. During a live run the page
 applies the streamed mapping to the rows it has streamed so far, so chips
@@ -351,7 +372,8 @@ curl -X POST "$API/api/audits" -H "Authorization: Bearer $TOKEN" \
 ```
 
 Then open the audit's stream (or `GET /api/audits/<id>` after it completes —
-`owasp_coverage` is in the response, and each labelled finding carries
+`owasp_coverage` is in the response, without findings marked false positive,
+and each labelled finding carries
 `compliance_labels`). The CLI's human summary prints per-category counts under
 an "OWASP Top 10:<edition>" heading, and its JSON output carries
 `compliance_labels` on each finding.
