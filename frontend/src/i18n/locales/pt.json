@@ -131,6 +131,7 @@
     "verificationEvidence": "Evidência de Verificação",
     "copied": "Copiado!",
     "copyAll": "Copiar tudo como issues",
+    "copyAllTitle": "Copia as {{count}} descobertas exibidas pelos filtros atuais",
     "copyIssue": "Copiar como issue",
     "estimated": "(estimado)",
     "findingsDeduped": "{{count}} constatação(ões) desduplicada(s)"

@@ -181,6 +181,9 @@ export function useFindings(
 
   return {
     findings,
+    // Every finding the active filters keep, in table order, across all
+    // pages — what "Copy All as Issues" exports.
+    filteredFindings: sorted,
     totalFiltered: sorted.length,
     page: safePage,
     totalPages,

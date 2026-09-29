@@ -181,6 +181,11 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **"Copy All as Issues" copies what the table shows.** The export now follows
+  every active filter — hidden false positives, severity, agent, tier, OWASP
+  category, hidden suspicious — across all pages and in table order, instead of
+  the audit's unfiltered finding list. The button shows how many findings it
+  will copy.
 - **Install-mode UI/URL reporting.** Added a `localdev.UIPort` helper so the
   CLI reports the correct UI address — in install mode the backend serves both
   the API and the embedded SPA on one port (the phantom `23000` is gone).

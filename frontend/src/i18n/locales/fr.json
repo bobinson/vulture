@@ -131,6 +131,7 @@
     "verificationEvidence": "Preuve de Vérification",
     "copied": "Copié !",
     "copyAll": "Tout copier comme tickets",
+    "copyAllTitle": "Copie les {{count}} résultats affichés par les filtres actuels",
     "copyIssue": "Copier comme ticket",
     "estimated": "(estimé)",
     "findingsDeduped": "{{count}} constat(s) dédupliqué(s)"

@@ -129,6 +129,7 @@
     "estimated": "(estimado)",
     "copyIssue": "Copiar como Incidencia",
     "copyAll": "Copiar Todo como Incidencias",
+    "copyAllTitle": "Copia los {{count}} hallazgos que muestran los filtros actuales",
     "copied": "¡Copiado!",
     "exportReport": "Exportar Informe",
     "reportGenerated": "Informe descargado",

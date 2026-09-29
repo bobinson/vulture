@@ -129,6 +129,7 @@
     "estimated": "(estimated)",
     "copyIssue": "Copy as Issue",
     "copyAll": "Copy All as Issues",
+    "copyAllTitle": "Copies the {{count}} findings the current filters show",
     "copied": "Copied!",
     "exportReport": "Export Report",
     "reportGenerated": "Report downloaded",

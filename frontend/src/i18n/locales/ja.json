@@ -131,6 +131,7 @@
     "verificationEvidence": "検証証拠",
     "copied": "コピーしました",
     "copyAll": "すべてを Issue としてコピー",
+    "copyAllTitle": "現在のフィルターで表示されている {{count}} 件の検出結果をコピーします",
     "copyIssue": "Issue としてコピー",
     "estimated": "(推定)",
     "findingsDeduped": "{{count}} 件の指摘を重複除去しました"
