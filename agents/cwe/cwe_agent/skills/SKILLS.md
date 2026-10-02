@@ -348,6 +348,16 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **Scope reporting**: the walker enters an editor directory only to reach these files, and reports everything else in it — the unread files and the sub-directories — through `pruned_dirs()` at that granularity. The container itself is deliberately NOT reported: the backend's scope check is a prefix match, so a bare `.vscode` would put the file that WAS read out of scope, and an out-of-scope lineage row returns before the tier rules and could never close. See `shared/tests/unit/test_0091_editor_config_scope.py`.
 - **Rollback**: `VULTURE_SCAN_EDITOR_CONFIG=false` prunes the editor directories in full again, exactly as before feature 0091. The container becomes the reported prefix, every path beneath it is correctly out of scope, and this skill reports nothing from them.
 
+## next_middleware_matcher_check
+
+- **Function**: `check_next_middleware_matcher(source_path: str) -> dict`
+- **Purpose**: Detection of Next.js middleware whose `export const config.matcher` uses the advanced object form with a `missing` or `has` condition. Those conditions key on a request attribute the client controls (a header such as `next-router-prefetch`, a cookie, or a query param), so a request shaped to be excluded by the matcher skips the middleware entirely — and with it any auth gate the middleware enforces. This is the CVE-2025-29927 class.
+- **CWE Coverage**: **CWE-288** Authentication Bypass Using an Alternate Path or Channel. Severity `high`.
+- **Content-based, not filename-based**: a module counts as middleware only when it imports from `next/server` AND exports a middleware entry (default export, or a named `middleware` function). Middleware is often wired from a module not named `middleware.ts`, so keying on the filename would miss it. A plain object that merely spells `matcher`/`missing` outside a middleware module is not flagged.
+- **Trigger**: a `matcher:` declaration AND a `missing:`/`has:` condition both present; the finding is anchored to the first `missing`/`has` line. A path-only string matcher (`matcher: ['/dashboard/:path*']`) is the safe form and produces zero findings.
+- **Deterministic**: LLM-free, so it fires on every scan (stop hook, CI) regardless of `VULTURE_LLM_TIER3`. Detection favours recall; a legitimate `missing`/`has` in middleware is allowed to fire and is expected to be filtered by a downstream LLM-verify gate.
+- **Recommendation emitted**: match routes by path only and enforce auth inside the middleware body rather than via matcher conditions; also ensure the `x-middleware-subrequest` header is not trusted (CVE-2025-29927).
+
 ## Self-Learning (LLM Phase)
 
 When the LLM phase is enabled (`VULTURE_USE_LLM=true`), the agent augments skill findings with:
