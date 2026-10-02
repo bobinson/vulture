@@ -40,3 +40,16 @@ cryptography>=50.0.0; sys_platform != "darwin"
 # again (watch https://pypi.org/project/litellm/#files for a macosx_/universal2/
 # py3-none-any wheel on a newer release).
 litellm<1.92.0
+
+# Security floors for transitive deps flagged by the audit-python gate
+# (scripts + .github/workflows audit `agents/requirements-frozen.txt` with
+# pip-audit). Both are pure-Python (universal wheel), so no marker split is
+# needed — one version for every platform. Raise/remove each floor once the
+# requirers (urllib3 via requests; pyjwt is the sole `cryptography` consumer)
+# carry an equal-or-higher minimum on their own and uv resolves above the floor.
+#
+# urllib3: 2.7.0 is affected by PYSEC-2026-4175/4176/4177 — fixed in 2.8.0.
+urllib3>=2.8.0
+# pyjwt: 2.13.0 is affected by PYSEC-2026-4140..4152 — fixed in 2.14.0, except
+# PYSEC-2026-4141 which needs 2.15.0; floor at 2.15.0 to clear the whole set.
+pyjwt>=2.15.0
