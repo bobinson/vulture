@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -52,45 +52,41 @@ func (a *windowAgent) handleRun(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
-	writeWindowAgentEvents(w, fmt.Sprintf("%v", req["run_id"]))
+	f, _ := w.(http.Flusher)
+	for _, e := range windowAgentEvents(fmt.Sprintf("%v", req["run_id"])) {
+		b, _ := json.Marshal(e.data)
+		writeSSE(w, f, e.name, string(b))
+	}
 }
 
-func writeWindowAgentEvents(w http.ResponseWriter, runID string) {
+type windowEvent struct {
+	name string
+	data any
+}
+
+func windowAgentEvents(runID string) []windowEvent {
 	llmWindow := map[string]any{
 		"resolved": 32_768, "effective": 32_768, "provenance": "broker",
 		"source": "family", "model": windowModel0074,
 	}
-	events := []struct {
-		name string
-		data any
-	}{
+	return []windowEvent{
 		{"agent_start", map[string]any{"agent_name": "MockAgent", "run_id": runID, "llm_window": llmWindow}},
 		{"result", map[string]any{"findings": []any{}, "summary": "done", "score": 100}},
 		{"agent_end", map[string]any{"run_id": runID, "status": "completed"}},
-	}
-	for _, e := range events {
-		b, _ := json.Marshal(e.data)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.name, b)
-		w.(http.Flusher).Flush()
 	}
 }
 
 func startWindowAgent(t *testing.T) (*windowAgent, string) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen mock agent: %v", err)
-	}
 	a := &windowAgent{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/run", a.handleRun)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"status":"healthy","agent":"mock","model":"test"}`)
 	})
-	srv := &http.Server{Handler: mux}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	return a, "http://" + ln.Addr().String()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return a, srv.URL
 }
 
 // brokerWindowConfig enables the broker on the harness's SQLite store with a
@@ -105,26 +101,12 @@ func brokerWindowConfig(t *testing.T, agentURL string) *config.Config {
 	return cfg
 }
 
-// runWindowAudit creates a source and an audit carrying extra (client-supplied)
-// fields, then drains the audit's SSE stream and returns its raw text.
+// runWindowAudit creates a source and a chaos audit carrying extra
+// (client-supplied) fields, then drains the audit's SSE stream and returns its
+// raw text.
 func runWindowAudit(t *testing.T, addr string, extra map[string]any) string {
 	t.Helper()
-	resp, err := httpPost(addr, "/api/sources", map[string]string{"type": "local", "path": createTestSourceDir(t)})
-	if err != nil {
-		t.Fatalf("POST /api/sources: %v", err)
-	}
-	var src map[string]any
-	readJSON(t, resp, &src)
-	body := map[string]any{"source_id": src["id"], "types": []string{"chaos"}, "config": map[string]any{}}
-	for k, v := range extra {
-		body[k] = v
-	}
-	if resp, err = httpPost(addr, "/api/audits", body); err != nil {
-		t.Fatalf("POST /api/audits: %v", err)
-	}
-	var audit map[string]any
-	readJSON(t, resp, &audit)
-	return drainStream(t, addr, fmt.Sprintf("%v", audit["id"]))
+	return drainStream(t, addr, createAuditForDispatch(t, addr, extra))
 }
 
 func drainStream(t *testing.T, addr, auditID string) string {
@@ -169,17 +151,25 @@ func llmWindowInFrame(line string) map[string]any {
 	return obj
 }
 
-// AC1 (Go side) + AC34: with the broker on, the agent is dispatched the
-// broker's window AND its source. A client that posts its own
-// context_window / context_window_source (claiming an operator override) is
-// ignored: the dispatched values are the broker's.
-func TestWindowSource0074_DispatchCarriesWindowAndItsSource(t *testing.T) {
+// TestWindowSource0074 runs ONE broker-on audit, posted with a client's own
+// context_window / context_window_source, and checks both ends of it: what the
+// agent was dispatched and what the backend streamed.
+func TestWindowSource0074(t *testing.T) {
 	agent, agentURL := startWindowAgent(t)
 	addr, cleanup := startTestServer(t, brokerWindowConfig(t, agentURL))
 	defer cleanup()
 
-	runWindowAudit(t, addr, map[string]any{"context_window": 999_999, "context_window_source": "env"})
+	stream := runWindowAudit(t, addr, map[string]any{"context_window": 999_999, "context_window_source": "env"})
 
+	t.Run("DispatchCarriesWindowAndItsSource", func(t *testing.T) { assertBrokerWindowDispatched(t, agent) })
+	t.Run("LLMWindowReachesTheStream", func(t *testing.T) { assertStreamLLMWindow(t, stream) })
+}
+
+// AC1 (Go side) + AC34: with the broker on, the agent is dispatched the
+// broker's window AND its source. A client that posts its own
+// context_window / context_window_source (claiming an operator override) is
+// ignored: the dispatched values are the broker's.
+func assertBrokerWindowDispatched(t *testing.T, agent *windowAgent) {
 	p := requireDispatched(t, agent)
 	if tok, _ := p["broker_token"].(string); tok == "" {
 		t.Fatalf("broker is enabled but no broker_token was dispatched: %v", p)
@@ -226,13 +216,7 @@ func TestWindowSource0074_ModeADispatchesNeither(t *testing.T) {
 
 // AC7 / R6: the llm_window object the agent publishes on agent_start reaches
 // the backend's event stream on the agent's StepStarted frame, unchanged.
-func TestWindowSource0074_LLMWindowReachesTheStream(t *testing.T) {
-	_, agentURL := startWindowAgent(t)
-	addr, cleanup := startTestServer(t, brokerWindowConfig(t, agentURL))
-	defer cleanup()
-
-	stream := runWindowAudit(t, addr, nil)
-
+func assertStreamLLMWindow(t *testing.T, stream string) {
 	got := stepStartedLLMWindow(stream)
 	if got == nil {
 		t.Fatalf("no StepStarted frame carried llm_window; stream:\n%s", stream)

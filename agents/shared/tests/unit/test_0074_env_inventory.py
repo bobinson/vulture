@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -50,13 +51,21 @@ def _is_production_source(rel: str) -> bool:
     return Path(rel).suffix in _SOURCE_SUFFIXES and not _is_test_path(rel)
 
 
-def _worktree_files() -> list[str]:
-    return _git("ls-files", "--cached", "--others", "--exclude-standard").splitlines()
+@lru_cache(maxsize=1)
+def _worktree_files() -> tuple[str, ...]:
+    """Listed once per session; three tests walk it."""
+    return tuple(_git("ls-files", "--cached", "--others", "--exclude-standard").splitlines())
+
+
+@lru_cache(maxsize=None)
+def _text(rel: str) -> str:
+    """A repo file's text, read once per session ("" when it is not a file)."""
+    path = _REPO_ROOT / rel
+    return path.read_text(errors="ignore") if path.is_file() else ""
 
 
 def _mentions(rel: str, needle: str) -> bool:
-    path = _REPO_ROOT / rel
-    return path.is_file() and needle in path.read_text(errors="ignore")
+    return needle in _text(rel)
 
 
 def test_no_production_source_reads_the_retired_switch():
@@ -97,9 +106,7 @@ def _names_at_base(base: str) -> set[str]:
 def _names_now() -> set[str]:
     names: set[str] = set()
     for rel in filter(_is_production_source, _worktree_files()):
-        path = _REPO_ROOT / rel
-        if path.is_file():
-            names |= set(_ENV_NAME.findall(path.read_text(errors="ignore")))
+        names |= set(_ENV_NAME.findall(_text(rel)))
     return names
 
 

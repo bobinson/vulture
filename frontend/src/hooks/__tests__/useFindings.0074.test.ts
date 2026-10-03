@@ -5,7 +5,9 @@ import { act, renderHook } from "@testing-library/react";
 //
 // Contract (extends the 0058 exact-match filter, which stays as it is):
 //   setFilterProvenance("llm_family") keeps exactly the rows whose
-//     finding.provenance is "llm" or "llm_l5_verified".
+//     finding.provenance is the LLM family: trimmed and lower-cased, it starts
+//     with "llm" (the one D1b rule, Go isLLMProvenance / Python
+//     _is_deterministic). The filter value itself is exact and case-sensitive.
 //   setFilterProvenance("both") keeps exactly the rows whose
 //     validation.provenance_origins names a deterministic tier AND an LLM tier.
 //     The split is O1's: a provenance starting with "llm" is the LLM family,
@@ -13,6 +15,12 @@ import { act, renderHook } from "@testing-library/react";
 //   Neither value reads, writes or reorders validation_status /
 //   validation_confidence / validation (AC10, AC11), and both are one
 //   constant-time test per row (O(1) per row, linear overall).
+//
+// Which rows each value selects (edge cases included) is pinned ONCE, against
+// the fixture the API and MCP share, in useFindings.provenanceParity.0074.test.ts.
+// This file keeps only what that fixture cannot express: the filterProvenance
+// state, composition with severity and hide-false-positives, the per-audit
+// validation counts, and linear scaling.
 import { useFindings } from "../useFindings";
 import type { Finding } from "@/lib/types";
 
@@ -28,33 +36,11 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
   };
 }
 
-function row(title: string, provenance: string | undefined, origins?: unknown): Finding {
-  const validation = origins === undefined ? undefined : { provenance_origins: origins };
-  return makeFinding({ title, provenance, validation });
-}
-
 function deepFreeze<T>(value: T): T {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
   Object.values(value as Record<string, unknown>).forEach(deepFreeze);
   return Object.freeze(value);
 }
-
-const ROWS: Finding[] = deepFreeze([
-  row("skill only", "skill", ["skill"]),
-  row("llm only", "llm", ["llm"]),
-  row("l5 only", "llm_l5_verified", ["llm_l5_verified"]),
-  row("skill won merge", "skill", ["skill", "llm"]),
-  row("llm won merge", "llm", ["llm", "skill"]),
-  row("l5 merged with signature", "llm_l5_verified", ["signature", "llm_l5_verified"]),
-  row("semgrep merged with llm", "semgrep", ["semgrep", "llm"]),
-  row("same-agent llm pair", "llm", ["llm", "llm_l5_verified"]),
-  row("two deterministic tiers", "skill", ["skill", "signature"]),
-  row("llm, no origins recorded", "llm"),
-  row("untagged legacy row", undefined),
-  row("empty tier is not a tier", "llm", ["", "llm"]),
-  row("origins malformed (string)", "skill", "skill,llm"),
-  row("origins malformed (null)", "llm", null),
-]);
 
 const titles = (fs: Finding[]) => fs.map((f) => f.title).sort();
 
@@ -64,26 +50,8 @@ function filtered(findings: Finding[], value: string) {
   return result.current;
 }
 
-describe("useFindings llm_family filter (0074 AC39, T2.1)", () => {
-  it("keeps exactly the llm and llm_l5_verified rows", () => {
-    const r = filtered(ROWS, "llm_family");
-    expect(r.filterProvenance).toBe("llm_family");
-    expect(titles(r.filteredFindings)).toEqual(
-      titles(ROWS.filter((f) => f.provenance === "llm" || f.provenance === "llm_l5_verified")),
-    );
-    expect(r.totalFiltered).toBe(8);
-  });
-
-  it("excludes untagged and deterministic rows even when their origins include an LLM tier", () => {
-    const r = filtered(ROWS, "llm_family");
-    const kept = new Set(titles(r.filteredFindings));
-    expect(kept.size).toBe(8);
-    expect(kept.has("untagged legacy row")).toBe(false);
-    expect(kept.has("skill won merge")).toBe(false);
-    expect(kept.has("semgrep merged with llm")).toBe(false);
-  });
-
-  it("composes with the severity filter and the hide-false-positives toggle", () => {
+describe("useFindings tier-family filters compose (0074 AC39, T2.1)", () => {
+  it("composes llm_family with the severity filter and the hide-false-positives toggle", () => {
     const rows = deepFreeze([
       makeFinding({ title: "llm crit", provenance: "llm", severity: "critical" }),
       makeFinding({ title: "l5 crit fp", provenance: "llm_l5_verified", severity: "critical", validation_status: "likely_fp" }),
@@ -98,48 +66,6 @@ describe("useFindings llm_family filter (0074 AC39, T2.1)", () => {
     expect(titles(result.current.filteredFindings)).toEqual(["l5 crit fp", "llm crit"]);
     act(() => result.current.setHideFalsePositives(true));
     expect(titles(result.current.filteredFindings)).toEqual(["llm crit"]);
-  });
-
-  it("regression pin (0058): the exact 'llm' value still excludes llm_l5_verified", () => {
-    const r = filtered(ROWS, "llm");
-    expect(r.filteredFindings.every((f) => f.provenance === "llm")).toBe(true);
-    expect(r.totalFiltered).toBe(6);
-  });
-});
-
-describe("useFindings both filter (0074 AC39, T2.5)", () => {
-  it("keeps exactly the rows whose provenance_origins spans a deterministic and an LLM tier", () => {
-    const r = filtered(ROWS, "both");
-    expect(r.filterProvenance).toBe("both");
-    expect(titles(r.filteredFindings)).toEqual(
-      ["l5 merged with signature", "llm won merge", "semgrep merged with llm", "skill won merge"].sort(),
-    );
-  });
-
-  it("is decided by provenance_origins, not by the winning row's provenance", () => {
-    const r = filtered(ROWS, "both");
-    const kept = new Set(titles(r.filteredFindings));
-    // Winner is deterministic in one, LLM in the other: both are in.
-    expect(kept.has("skill won merge")).toBe(true);
-    expect(kept.has("llm won merge")).toBe(true);
-    // Two tiers of one family are not "both".
-    expect(kept.has("same-agent llm pair")).toBe(false);
-    expect(kept.has("two deterministic tiers")).toBe(false);
-  });
-
-  it("treats missing, empty or malformed origins as not-both without throwing", () => {
-    const r = filtered(ROWS, "both");
-    const kept = new Set(titles(r.filteredFindings));
-    expect(kept.size).toBe(4);
-    for (const t of [
-      "llm, no origins recorded",
-      "untagged legacy row",
-      "empty tier is not a tier",
-      "origins malformed (string)",
-      "origins malformed (null)",
-    ]) {
-      expect(kept.has(t), t).toBe(false);
-    }
   });
 });
 
@@ -156,6 +82,7 @@ describe("tier-family filters never touch the validation axis (0074 AC10, AC11)"
   it.each(["llm_family", "both"])("returns the input rows themselves, unmodified, under %s", (value) => {
     const before = JSON.stringify(VALIDATED);
     const r = filtered(VALIDATED, value);
+    expect(r.filterProvenance).toBe(value);
     expect(r.totalFiltered).toBeGreaterThan(0);
     for (const f of r.filteredFindings) {
       expect(VALIDATED).toContain(f); // identity: no clone, no relabel

@@ -37,7 +37,6 @@ QUOTE_AT_3 = "const parsed = eval(userInput);"
 ABSENT_QUOTE = "window.location.href = attackerControlledUrl;"
 
 RANGE_KEY = "claimed_line_range"
-RANGES = frozenset({"in_file", "past_eof", "no_line"})
 
 # The nine 0076 statuses. O3 = C keeps this vocabulary exactly.
 NINE_STATUSES = frozenset({
@@ -84,10 +83,10 @@ def llm_row(path: Path, line: int | None, quote: str | None = None,
     return row
 
 
-def set_quote_mode(monkeypatch: Any, mode: str, reanchor: str = "true") -> None:
+def set_quote_mode(monkeypatch: Any, mode: str) -> None:
     """Pin 0076's switches explicitly, independent of whatever default ships."""
     monkeypatch.setenv("VULTURE_LLM_QUOTE_VERIFY", mode)
-    monkeypatch.setenv("VULTURE_LLM_QUOTE_REANCHOR", reanchor)
+    monkeypatch.setenv("VULTURE_LLM_QUOTE_REANCHOR", "true")
     monkeypatch.setenv("VULTURE_LLM_QUOTE_DEMOTE_ABSENT", "false")
 
 

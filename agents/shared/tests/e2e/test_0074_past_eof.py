@@ -119,21 +119,6 @@ def test_reanchorable_quote_is_not_shadowed_and_its_claim_records_past_eof(
     assert extras.get(RANGE_KEY) == "past_eof"
 
 
-@pytest.mark.parametrize("line", [0, None], ids=["line_zero", "line_absent"])
-def test_no_usable_line_records_no_line(monkeypatch, tmp_path, module, line):
-    """AC15 — line 0 or no ``line_start`` is "no line", never ``past_eof``."""
-    set_quote_mode(monkeypatch, "enforce")
-    _out, checks = _pipeline([llm_row(module, line)], tmp_path)
-    assert anchor_extras(checks[0]).get(RANGE_KEY) == "no_line"
-
-
-def test_in_file_citation_records_in_file(monkeypatch, tmp_path, module):
-    """AC15 negative — a real line is ``in_file``; the label is not blanket."""
-    set_quote_mode(monkeypatch, "enforce")
-    _out, checks = _pipeline([llm_row(module, 2)], tmp_path)
-    assert anchor_extras(checks[0]).get(RANGE_KEY) == "in_file"
-
-
 @pytest.mark.parametrize("quote", [None, ABSENT_QUOTE], ids=["unquoted", "absent"])
 def test_window_stage_records_out_of_range_never_unreadable(
     monkeypatch, tmp_path, module, quote,
@@ -156,7 +141,8 @@ def test_reanchored_row_windows_its_verified_line(monkeypatch, tmp_path, module)
 
 def test_mixed_batch_labels_every_row(monkeypatch, tmp_path, batch):
     """AC14 + AC15 together, one batch: every row survives and carries the
-    range its own claim earned."""
+    range its own claim earned. Line 0 or no ``line_start`` is "no line",
+    never ``past_eof``; a real line is ``in_file`` (the label is not blanket)."""
     set_quote_mode(monkeypatch, "enforce")
     _out, checks = _pipeline(batch, tmp_path)
     ranges = [anchor_extras(row_checks).get(RANGE_KEY) for row_checks in checks]

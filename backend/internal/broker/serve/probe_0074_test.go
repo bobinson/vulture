@@ -1,12 +1,8 @@
 package serve
 
 import (
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,10 +140,7 @@ func TestProbe_RunsAtMostOncePerUpstreamAndModel(t *testing.T) {
 // concurrently, as many audits dispatching many agents would.
 func hammerContextWindow(t *testing.T, b *Broker, n int) {
 	t.Helper()
-	sw, ok := any(b).(sourcedWindow)
-	if !ok {
-		t.Fatal("Broker.ContextWindow must return (window int, source string)")
-	}
+	sw := sourced(t, b)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		sw.ContextWindow()
@@ -168,16 +161,6 @@ func TestProbe_UpstreamErrorYieldsRegistryAndIsNotRetried(t *testing.T) {
 	if n := u.count(lmStudioModelsPath); n > 1 {
 		t.Errorf("failed probe retried: %d requests, want at most 1", n)
 	}
-}
-
-// AC5: connection refused yields the registry value and never panics.
-func TestProbe_ConnectionRefusedYieldsRegistry(t *testing.T) {
-	u := newUpstream(t, lmStudioRoutes("lmstudio_api_v0_models.json"))
-	base := u.v1()
-	u.srv.Close()
-	b := probeBroker(t, "openai-compatible", base, capturedLoadedModel, true)
-	w, src := afterGrace(t, b)
-	assertWindow(t, w, src, 32_768, "family")
 }
 
 // AC5 / §5.2 "Timeout": an upstream that never answers cannot block dispatch.
@@ -206,54 +189,96 @@ func hangingHandler(release <-chan struct{}) http.Handler {
 	})
 }
 
-// AC35: the probe goes through the existing egress/SSRF validator. Without
-// allow-local egress a loopback http upstream is rejected by the validator,
-// so the probe must never call it.
-func TestProbe_SSRFRejectedUpstreamIsNeverCalled(t *testing.T) {
-	u := newUpstream(t, lmStudioRoutes("lmstudio_api_v0_models.json"))
-	b := probeBroker(t, "openai-compatible", u.v1(), capturedLoadedModel, false)
-	w, src := afterGrace(t, b)
-	if u.total() != 0 {
-		t.Errorf("SSRF-rejected upstream received %d requests, want 0", u.total())
-	}
-	assertWindow(t, w, src, 32_768, "family")
+// requests counts what an upstream received: everyPath counts all of it,
+// onPath(p) one path.
+type requests func(*fakeUpstream) int
+
+var everyPath requests = (*fakeUpstream).total
+
+func onPath(p string) requests {
+	return func(u *fakeUpstream) int { return u.count(p) }
 }
 
-// AC35: cloud-default providers (openai, gemini, anthropic) are never probed,
-// even when their base URL is overridden to a reachable server.
-func TestProbe_CloudDefaultProvidersAreNeverProbed(t *testing.T) {
-	for _, p := range []string{"openai", "gemini", "anthropic"} {
-		t.Run(p, func(t *testing.T) {
-			u := newUpstream(t, lmStudioRoutes("lmstudio_api_v0_models.json"))
-			b := probeBroker(t, p, u.v1(), capturedLoadedModel, true)
-			w, src := afterGrace(t, b)
-			if u.total() != 0 {
-				t.Errorf("provider %s: upstream received %d requests, want 0", p, u.total())
-			}
-			assertWindow(t, w, src, 32_768, "family")
+// neverProbed is one "the registry stands" case: the broker is built for
+// model against an upstream serving routes, and silent counts the requests that
+// must be zero (nil = no request assertion).
+type neverProbed struct {
+	name, provider, model string
+	routes                map[string]string
+	allowLocal, refused   bool
+	silent                requests
+	wantW                 int
+}
+
+var neverProbedCases = []neverProbed{
+	// AC5: connection refused yields the registry value and never panics.
+	{name: "connection refused", provider: "openai-compatible", model: capturedLoadedModel,
+		routes: lmStudioRoutes("lmstudio_api_v0_models.json"), allowLocal: true, refused: true, wantW: 32_768},
+	// AC35: the probe goes through the existing egress/SSRF validator. Without
+	// allow-local egress a loopback http upstream is rejected by the validator,
+	// so the probe must never call it.
+	{name: "SSRF rejected", provider: "openai-compatible", model: capturedLoadedModel,
+		routes: lmStudioRoutes("lmstudio_api_v0_models.json"), silent: everyPath, wantW: 32_768},
+	// AC35: cloud-default providers (openai, gemini, anthropic) are never
+	// probed, even when their base URL is overridden to a reachable server.
+	{name: "cloud openai", provider: "openai", model: capturedLoadedModel,
+		routes: lmStudioRoutes("lmstudio_api_v0_models.json"), allowLocal: true, silent: everyPath, wantW: 32_768},
+	{name: "cloud gemini", provider: "gemini", model: capturedLoadedModel,
+		routes: lmStudioRoutes("lmstudio_api_v0_models.json"), allowLocal: true, silent: everyPath, wantW: 32_768},
+	{name: "cloud anthropic", provider: "anthropic", model: capturedLoadedModel,
+		routes: lmStudioRoutes("lmstudio_api_v0_models.json"), allowLocal: true, silent: everyPath, wantW: 32_768},
+	// T0.5 fixture gate: no Ollama capture exists, so Ollama is NOT probed —
+	// POST /api/show is never sent, and neither num_ctx nor the model_info
+	// context length is used.
+	{name: "ollama without capture", provider: "openai-compatible", model: "llama3.1:8b",
+		routes: map[string]string{"/api/show": "synthetic_ollama_api_show.json"}, allowLocal: true,
+		silent: onPath("/api/show"), wantW: 128_000},
+	// T0.5 fixture gate: no vLLM capture exists, so max_model_len is never read.
+	{name: "vllm without capture", provider: "openai-compatible", model: belowGuessModel,
+		routes: map[string]string{"/v1/models": "synthetic_vllm_v1_models.json"}, allowLocal: true, wantW: 128_000},
+}
+
+// TestProbe_NeverProbedRegistryStands builds every never-probed broker, waits
+// the no-probe grace ONCE for all of them, then asserts each upstream stayed
+// silent and each window is the registry family value.
+func TestProbe_NeverProbedRegistryStands(t *testing.T) {
+	ups := make([]*fakeUpstream, len(neverProbedCases))
+	brokers := make([]*Broker, len(neverProbedCases))
+	for i, c := range neverProbedCases {
+		ups[i], brokers[i] = buildNeverProbed(t, c)
+		touch(brokers[i])
+	}
+	time.Sleep(noProbeGrace)
+	for i, c := range neverProbedCases {
+		t.Run(c.name, func(t *testing.T) {
+			assertSilent(t, ups[i], c.silent)
+			w, src := windowOf(t, brokers[i])
+			assertWindow(t, w, src, c.wantW, "family")
 		})
 	}
 }
 
-// T0.5 fixture gate: no Ollama capture exists, so Ollama is NOT probed —
-// POST /api/show is never sent, and neither num_ctx nor the model_info
-// context length is used.
-func TestProbe_OllamaWithoutCaptureIsNotProbed(t *testing.T) {
-	u := newUpstream(t, map[string]string{"/api/show": "synthetic_ollama_api_show.json"})
-	b := lmStudioBroker(t, u, "llama3.1:8b")
-	w, src := afterGrace(t, b)
-	if n := u.count("/api/show"); n != 0 {
-		t.Errorf("POST /api/show sent %d times; Ollama has no captured fixture and must not be probed", n)
+// buildNeverProbed starts the case's upstream (closed at once when refused)
+// and builds its broker.
+func buildNeverProbed(t *testing.T, c neverProbed) (*fakeUpstream, *Broker) {
+	t.Helper()
+	u := newUpstream(t, c.routes)
+	base := u.v1()
+	if c.refused {
+		u.srv.Close()
 	}
-	assertWindow(t, w, src, 128_000, "family")
+	return u, probeBroker(t, c.provider, base, c.model, c.allowLocal)
 }
 
-// T0.5 fixture gate: no vLLM capture exists, so max_model_len is never read.
-func TestProbe_VLLMWithoutCaptureIsNotRead(t *testing.T) {
-	u := newUpstream(t, map[string]string{"/v1/models": "synthetic_vllm_v1_models.json"})
-	b := lmStudioBroker(t, u, belowGuessModel)
-	w, src := afterGrace(t, b)
-	assertWindow(t, w, src, 128_000, "family")
+// assertSilent fails if the counted requests are not zero.
+func assertSilent(t *testing.T, u *fakeUpstream, silent requests) {
+	t.Helper()
+	if silent == nil {
+		return
+	}
+	if n := silent(u); n != 0 {
+		t.Errorf("upstream received %d requests, want 0 — it must never be probed", n)
+	}
 }
 
 // §5.1(a) order env | probe | ...: an operator override outranks a measured
@@ -264,42 +289,4 @@ func TestProbe_EnvOverrideOutranksProbe(t *testing.T) {
 	t.Setenv("VULTURE_LLM_CTX_SIZE", "50000")
 	w, src := afterGrace(t, b)
 	assertWindow(t, w, src, 50_000, "env")
-}
-
-// AC26′ pin (O2, §5.9): the probe ships with no switch and no tunable
-// timeout. Passes today; it guards against the implementation adding either.
-func TestProbe_NoEnvironmentSwitch(t *testing.T) {
-	for _, name := range []string{"VULTURE_LLM_ENDPOINT_PROBE", "VULTURE_LLM_CTX_PROBE_TIMEOUT_MS"} {
-		if f := goSourceMentioning(t, filepath.Join("..", "..", ".."), name); f != "" {
-			t.Errorf("%s introduces %s; rule 6 forbids a new environment variable", f, name)
-		}
-	}
-}
-
-// goSourceMentioning returns the first non-test Go file under root containing
-// needle, or "".
-func goSourceMentioning(t *testing.T, root, needle string) string {
-	t.Helper()
-	for _, p := range prodGoFiles(root) {
-		if b, err := os.ReadFile(p); err == nil && strings.Contains(string(b), needle) {
-			return p
-		}
-	}
-	return ""
-}
-
-// prodGoFiles lists the non-test Go files under root.
-func prodGoFiles(root string) []string {
-	var out []string
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && isProdGo(p, d) {
-			out = append(out, p)
-		}
-		return err
-	})
-	return out
-}
-
-func isProdGo(p string, d fs.DirEntry) bool {
-	return !d.IsDir() && strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go")
 }

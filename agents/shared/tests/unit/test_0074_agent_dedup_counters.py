@@ -26,14 +26,16 @@ All fixtures are synthetic.
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 
 import pytest
 
 from shared import audit_runner
-from shared.llm import provider
+from tests.support.agent_run import llm_rows, result_payload
+from tests.support.isolation import isolate
 
 SKILL_CHECK_ID = "cwe.sql_injection.string_concat"
+TITLE_ONLY_SKILL_TITLE = "Missing request timeout"
 
 
 def _skill_row(source_path: str) -> dict:
@@ -49,6 +51,14 @@ def _skill(source_path: str) -> dict:
     return {"findings": [_skill_row(source_path)]}
 
 
+def _title_only_skill(source_path: str) -> dict:
+    """A skill row WITHOUT a check_id: the agent keys it on (title, path)."""
+    row = _skill_row(source_path)
+    del row["check_id"]
+    row.update(title=TITLE_ONLY_SKILL_TITLE, file_path=f"{source_path}/a1.py")
+    return {"findings": [row]}
+
+
 def _llm_row(title: str, path: str, line: int, check_id: str = "") -> dict:
     row = {
         "severity": "high", "category": "injection", "title": title,
@@ -60,62 +70,57 @@ def _llm_row(title: str, path: str, line: int, check_id: str = "") -> dict:
     return row
 
 
-class _ScriptedBatches:
-    """Each batch answers three rows: one that collides with the skill row on
-    (check_id, path) at a DIFFERENT line (F6), one repeated in every batch
-    (cross-batch duplicate), and one unique to the batch."""
+def _check_id_rows(k: int) -> list[dict]:
+    """Three rows: one that collides with the skill row on (check_id, path) at
+    a DIFFERENT line (F6), one repeated in every batch (cross-batch
+    duplicate), and one unique to batch ``k``."""
+    return [
+        _llm_row("Query built by concatenation", "a0.py", 9, SKILL_CHECK_ID),
+        _llm_row("Hardcoded credential", "b.py", 3),
+        _llm_row(f"Unique weakness {k}", "c.py", k + 1),
+    ]
 
-    def __init__(self) -> None:
+
+def _title_rows(k: int) -> list[dict]:
+    """A row equal to the title-only skill row on (title, path), with no
+    check_id and at another line, plus one row unique to batch ``k``."""
+    return [
+        _llm_row(TITLE_ONLY_SKILL_TITLE, "a1.py", 7),
+        _llm_row(f"Unique weakness {k}", "c.py", k + 1),
+    ]
+
+
+class _ScriptedBatches:
+    """Stands in for one batch's model call; batch ``k`` answers ``rows(k)``."""
+
+    def __init__(self, rows: Callable[[int], list[dict]]) -> None:
+        self.rows = rows
         self.calls = 0
 
     async def __call__(self, *args, **kwargs):
         k = self.calls
         self.calls += 1
-        rows = [
-            _llm_row("Query built by concatenation", "a0.py", 9, SKILL_CHECK_ID),
-            _llm_row("Hardcoded credential", "b.py", 3),
-            _llm_row(f"Unique weakness {k}", "c.py", k + 1),
-        ]
-        return rows, None, 10, 10
+        return self.rows(k), None, 10, 10
 
 
-def _data_line(event: str) -> str:
-    return next(ln for ln in event.split("\n") if ln.startswith("data:"))
-
-
-def _result_payload(events: list[str]) -> dict:
-    results = [e for e in events if e.startswith("event: result\n")]
-    assert len(results) == 1, "expected exactly one result event"
-    return json.loads(_data_line(results[0])[5:])
-
-
-def _llm_rows(payload: dict) -> list[dict]:
-    return [f for f in payload["findings"]
-            if str(f.get("provenance", "")).strip().lower().startswith("llm")]
-
-
-@pytest.fixture
-def llm_env(monkeypatch, tmp_path):
+def _llm_env(monkeypatch, root, rows: Callable[[int], list[dict]]) -> _ScriptedBatches:
     """A hermetic LLM-on run over many small batches; no network."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-no-network")
     monkeypatch.setenv("VULTURE_LLM_MODEL", "gpt-4o")
     monkeypatch.setenv("VULTURE_USE_LLM", "true")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
-    monkeypatch.setattr(audit_runner, "_CUSTOM_BASE_URL", "")
     monkeypatch.setenv("VULTURE_DISABLE_VALIDATE", "true")
     monkeypatch.setenv("VULTURE_MAX_SOURCE_CHARS", "300")
     monkeypatch.setenv("VULTURE_LLM_TIER3", "on")
     monkeypatch.setattr(audit_runner, "_preflight_vetoes", lambda *a, **k: (False, ""))
     for i in range(6):
-        (tmp_path / f"a{i}.py").write_text(f"# file {i}\n" + ("q = 1\n" * 30))
-    script = _ScriptedBatches()
+        (root / f"a{i}.py").write_text(f"# file {i}\n" + ("q = 1\n" * 30))
+    script = _ScriptedBatches(rows)
     monkeypatch.setattr(audit_runner, "_collect_llm_findings_async", script)
-    return tmp_path, script
+    return script
 
 
 def _run(source_path, run_id: str, use_llm: bool, skill=_skill) -> dict:
-    return _result_payload(list(audit_runner.run_combined_audit(
+    return result_payload(list(audit_runner.run_combined_audit(
         run_id=run_id,
         source_path=str(source_path),
         categories=["injection"],
@@ -126,46 +131,62 @@ def _run(source_path, run_id: str, use_llm: bool, skill=_skill) -> dict:
     )))
 
 
-def test_counters_reach_the_result_payload(llm_env):
+@pytest.fixture(scope="module")
+def check_id_run(tmp_path_factory):
+    """ONE LLM-on pipeline run feeding the four counter assertions below.
+
+    Module-scoped, so it applies the suite's isolation itself.
+    Returns ``(payload, batches)``.
+    """
+    root = tmp_path_factory.mktemp("check_id_run")
+    with pytest.MonkeyPatch.context() as mp:
+        isolate(mp, root)
+        script = _llm_env(mp, root, _check_id_rows)
+        payload = _run(root, "0074-counters", use_llm=True)
+    return payload, script.calls
+
+
+@pytest.fixture
+def llm_env(monkeypatch, tmp_path):
+    """The same hermetic environment for a test that needs its own run."""
+    return tmp_path, _llm_env(monkeypatch, tmp_path, _check_id_rows)
+
+
+def test_counters_reach_the_result_payload(check_id_run):
     """AC19/T4.5: both counters are published on the agent's result."""
-    src, script = llm_env
-    payload = _run(src, "0074-counters", use_llm=True)
-    assert script.calls >= 2, "fixture must produce several batches"
+    payload, calls = check_id_run
+    assert calls >= 2, "fixture must produce several batches"
     assert "llm_emitted" in payload, f"result keys: {sorted(payload)}"
     assert "llm_collapsed_agent" in payload, f"result keys: {sorted(payload)}"
 
 
-def test_emitted_is_counted_before_dedup(llm_env):
+def test_emitted_is_counted_before_dedup(check_id_run):
     """AC19: every row the model produced counts, including the ones dedup drops.
 
     N batches x 3 rows = 3N emitted; survivors are the cross-batch row once
     plus one unique row per batch (1 + N); the rest (2N - 1) collapsed in the
     agent — the skill collision anywhere in the file (F6) and the repeats.
     """
-    src, script = llm_env
-    payload = _run(src, "0074-exact", use_llm=True)
-    n = script.calls
+    payload, n = check_id_run
     assert payload.get("llm_emitted") == 3 * n
     assert payload.get("llm_collapsed_agent") == 2 * n - 1
 
 
-def test_emitted_minus_collapsed_equals_llm_rows_sent(llm_env):
+def test_emitted_minus_collapsed_equals_llm_rows_sent(check_id_run):
     """AC19: the agent's half of the ledger balances, so Go's `lost` is real."""
-    src, _ = llm_env
-    payload = _run(src, "0074-ledger", use_llm=True)
-    sent = len(_llm_rows(payload))
+    payload, _ = check_id_run
+    sent = len(llm_rows(payload))
     assert sent > 0, "fixture must send LLM rows"
     assert payload.get("llm_emitted", -1) - payload.get("llm_collapsed_agent", 0) == sent
 
 
-def test_skill_collision_anywhere_in_the_file_is_counted(llm_env):
+def test_skill_collision_anywhere_in_the_file_is_counted(check_id_run):
     """§8 'agent-side collapse': a model check_id equal to a skill row's, at
     another line of the same file, is dropped — and must be counted, never silent."""
-    src, script = llm_env
-    payload = _run(src, "0074-f6", use_llm=True)
-    titles = {f["title"] for f in _llm_rows(payload)}
+    payload, calls = check_id_run
+    titles = {f["title"] for f in llm_rows(payload)}
     assert "Query built by concatenation" not in titles, "precondition: F6 collapse happens"
-    assert payload.get("llm_collapsed_agent", 0) >= script.calls
+    assert payload.get("llm_collapsed_agent", 0) >= calls
 
 
 def test_skills_only_run_reports_zero_not_absence(llm_env):
@@ -177,45 +198,13 @@ def test_skills_only_run_reports_zero_not_absence(llm_env):
     assert payload.get("llm_collapsed_agent") == 0, f"result keys: {sorted(payload)}"
 
 
-TITLE_ONLY_SKILL_TITLE = "Missing request timeout"
-
-
-def _title_only_skill(source_path: str) -> dict:
-    """A skill row WITHOUT a check_id: the agent keys it on (title, path)."""
-    row = _skill_row(source_path)
-    del row["check_id"]
-    row.update(title=TITLE_ONLY_SKILL_TITLE, file_path=f"{source_path}/a1.py")
-    return {"findings": [row]}
-
-
-class _TitleCollisionBatches(_ScriptedBatches):
-    """Each batch answers a row equal to the skill row on (title, path), with
-    no check_id and at another line, plus one row unique to the batch."""
-
-    async def __call__(self, *args, **kwargs):
-        k = self.calls
-        self.calls += 1
-        rows = [
-            _llm_row(TITLE_ONLY_SKILL_TITLE, "a1.py", 7),
-            _llm_row(f"Unique weakness {k}", "c.py", k + 1),
-        ]
-        return rows, None, 10, 10
-
-
-def test_title_and_path_collision_with_a_skill_row_is_counted(llm_env, monkeypatch):
+def test_title_and_path_collision_with_a_skill_row_is_counted(monkeypatch, tmp_path):
     """§8 'agent-side collapse', positive row: an LLM row matching a skill row
     on (title, path) with no check_id is dropped by the agent's dedup and is
     counted in llm_collapsed_agent, one per batch that produced it (AC19)."""
-    src, _ = llm_env
-    script = _TitleCollisionBatches()
-    monkeypatch.setattr(audit_runner, "_collect_llm_findings_async", script)
-    payload = _run(src, "0074-title", use_llm=True, skill=_title_only_skill)
-    _assert_title_collapse_happened(payload, script.calls)
-    assert (payload.get("llm_emitted"), payload.get("llm_collapsed_agent")) == (2 * script.calls, script.calls)
-
-
-def _assert_title_collapse_happened(payload: dict, calls: int) -> None:
-    """Precondition: several batches ran, and the (title, path) row is gone."""
-    assert calls >= 2, "fixture must produce several batches"
-    llm_titles = {f["title"] for f in _llm_rows(payload)}
+    script = _llm_env(monkeypatch, tmp_path, _title_rows)
+    payload = _run(tmp_path, "0074-title", use_llm=True, skill=_title_only_skill)
+    assert script.calls >= 2, "fixture must produce several batches"
+    llm_titles = {f["title"] for f in llm_rows(payload)}
     assert TITLE_ONLY_SKILL_TITLE not in llm_titles, "precondition: the (title, path) collapse happens"
+    assert (payload.get("llm_emitted"), payload.get("llm_collapsed_agent")) == (2 * script.calls, script.calls)

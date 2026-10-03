@@ -47,6 +47,13 @@ def _stamped_then_windowed(monkeypatch, tmp_path, line: int, category: str) -> d
     return window_stage(rows, tmp_path)[0]
 
 
+def _unstamped_windowed(tmp_path, line: int, category: str) -> dict:
+    """A row with no anchor stamp (a skill row, or an LLM row under
+    ``VULTURE_LLM_QUOTE_VERIFY=off``), straight into the window stage."""
+    path = numbered_file(tmp_path, _LINES)
+    return window_stage([llm_row(path, line, category=category, provenance="skill")], tmp_path)[0]
+
+
 def test_out_of_range_is_in_the_closed_vocabulary():
     """AC38 / T3.5 — ``record_window_reason`` drops any reason outside the
     closed set, so the reason must be a member or it can never be recorded."""
@@ -67,44 +74,26 @@ def test_out_of_range_reason_has_tooltip_text_and_zero_weight():
     assert check["weight"] == 0.0 and check["reason"]
 
 
-@pytest.mark.parametrize("category", [_NARROW, _WIDE], ids=["narrow", "wide"])
-def test_citation_past_eof_records_out_of_range(monkeypatch, tmp_path, category):
-    """AC38 — a 42-line file cited at line 60: the file was read, so the
-    reason is ``out_of_range``, never ``unreadable``."""
-    row = _stamped_then_windowed(monkeypatch, tmp_path, 60, category)
+@pytest.mark.parametrize(("line", "category", "stamped"), [
+    # a 42-line file cited at line 60: the file was read
+    (60, _NARROW, True),
+    (60, _WIDE, True),
+    # the rule is about the citation, not the tier: no anchor stamp
+    (60, _NARROW, False),
+    # cited at line 50 with context 10: the window holds lines 40-42 only
+    (50, _WIDE, True),
+    # cited at line 43 with context 2: the window would hold lines 41-42 only
+    (_LINES + 1, _NARROW, True),
+], ids=["narrow-60", "wide-60", "unstamped-60", "wide-50", "narrow-43"])
+def test_citation_past_eof_records_out_of_range(monkeypatch, tmp_path, line, category, stamped):
+    """AC38 — a citation past end of a readable file: the reason is
+    ``out_of_range`` (never ``unreadable``, and never ``present`` for a window
+    that excludes the cited line), recorded as zero-weight bookkeeping that
+    never nudges a verdict."""
+    row = (_stamped_then_windowed(monkeypatch, tmp_path, line, category) if stamped
+           else _unstamped_windowed(tmp_path, line, category))
     assert window_reason(row) == "out_of_range"
-
-
-def test_unstamped_row_past_eof_is_never_unreadable(tmp_path):
-    """AC38 — the rule is about the citation, not the tier: a row with no
-    anchor stamp (a skill row, or an LLM row under ``VULTURE_LLM_QUOTE_VERIFY=off``)
-    cited past end of a readable file is still ``out_of_range``."""
-    path = numbered_file(tmp_path, _LINES)
-    row = window_stage([llm_row(path, 60, provenance="skill")], tmp_path)[0]
-    assert window_reason(row) == "out_of_range"
-
-
-def test_wide_window_that_excludes_the_cited_line_is_never_present(monkeypatch, tmp_path):
-    """AC38 — cited at line 50 with context 10: the window holds lines 40-42 and
-    does NOT contain line 50, so it must not be recorded ``present``."""
-    row = _stamped_then_windowed(monkeypatch, tmp_path, 50, _WIDE)
-    assert window_reason(row) != "present"
-    assert window_reason(row) == "out_of_range"
-
-
-def test_narrow_window_one_past_eof_is_never_present(monkeypatch, tmp_path):
-    """AC38 — cited at line 43 with context 2: the window would hold lines
-    41-42 only, so it is not ``present``."""
-    row = _stamped_then_windowed(monkeypatch, tmp_path, _LINES + 1, _NARROW)
-    assert window_reason(row) == "out_of_range"
-
-
-def test_out_of_range_check_carries_zero_weight_on_the_row(monkeypatch, tmp_path):
-    """AC38 — recording the reason never nudges a verdict."""
-    row = _stamped_then_windowed(monkeypatch, tmp_path, 60, _NARROW)
-    check = _window_check(row)
-    assert check.get("result") == "out_of_range"
-    assert check["weight"] == 0.0
+    assert _window_check(row).get("weight") == 0.0
 
 
 @pytest.mark.parametrize("category", [_NARROW, _WIDE], ids=["narrow", "wide"])

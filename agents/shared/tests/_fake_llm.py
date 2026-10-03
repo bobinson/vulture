@@ -232,31 +232,12 @@ def patch_l5_judge(
 
     monkeypatch.setattr(llm_judge, "_call_llm", _fake_call_llm)
     # The judge's tool path (taken whenever validate() runs with a source root)
-    # builds its own client and never reaches _call_llm. Report it as failed
-    # (ok=False) so the judge takes its documented fallback onto the
-    # strict-retry path, which the fake above answers. Without this a test
-    # with a source root either gets no verdict or reaches a live endpoint.
-    monkeypatch.setattr(
-        llm_judge, "_call_llm_with_tools",
-        lambda *_a, **_k: (None, False, False),
-    )
-    _isolate_l5_cache(monkeypatch)
-
-
-def _isolate_l5_cache(monkeypatch: Any) -> None:
-    """Switch the persistent L5 verdict cache off for the test.
-
-    The cache defaults to ``~/.vulture/l5_cache.db`` and outlives the test
-    process: a verdict cached by an earlier run (or by a live judge call) is
-    replayed before the stub is asked, so the scripted verdicts above stop
-    deciding the outcome, and the stub's own verdicts would leak into the
-    developer's real cache. Feature 0074 T-1.4.
-    """
-    from shared.validate import l5_cache
-
-    monkeypatch.setattr(l5_cache, "_CONN", None)
-    monkeypatch.setattr(l5_cache, "_DB_PATH", None)
-    monkeypatch.setattr(l5_cache, "_DISABLED", True)
+    # never reaches _call_llm. With no client it returns ``ok=False`` and the
+    # judge takes its documented fallback onto the strict-retry path, which the
+    # fake above answers. Without this a test with a source root either gets
+    # no verdict or reaches a live endpoint. The L5 verdict cache is isolated
+    # per test by the suite's conftest (tests.support.isolation).
+    monkeypatch.setattr(llm_judge, "_get_client", lambda: None)
 
 
 def fake_finding(

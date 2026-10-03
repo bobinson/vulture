@@ -25,40 +25,30 @@ from __future__ import annotations
 
 import pathlib
 import re
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
 # The absent@18 / exact@15-16 collapse fixture is 0076's; reuse it, never copy it.
-from tests.unit.test_0076_enforcement import _dupe_rows
+from tests.support.dupe_rows import dupe_rows as _dupe_rows
+from tests.support.past_eof import QUOTE_AT_3, write_lines
 
-_SWITCHES = (
-    "VULTURE_LLM_QUOTE_VERIFY",
-    "VULTURE_LLM_QUOTE_REANCHOR",
-    "VULTURE_LLM_QUOTE_DEMOTE_ABSENT",
-)
+# Every test starts from the SHIPPED defaults: the suite conftest removes every
+# VULTURE_* variable, so none of the three quote switches is set.
 
 # The model claims line 12; the quoted text actually lives on line 27.
 _CLAIMED = 12
 _TRUE_LINE = 27
-_QUOTE = "const parsed = eval(userInput);"
-
-
-@pytest.fixture(autouse=True)
-def _bare_defaults(monkeypatch):
-    """Every test starts from the SHIPPED defaults: none of the switches set."""
-    for name in _SWITCHES:
-        monkeypatch.delenv(name, raising=False)
 
 
 def _mislocated(tmp_path) -> dict[str, Any]:
     """A finding whose quote is verbatim in the file, 15 lines from its claim."""
-    src = tmp_path / "app.ts"
     body = [f"const a{i} = {i};" for i in range(40)]
-    body[_TRUE_LINE - 1] = _QUOTE
-    src.write_text("\n".join(body) + "\n")
+    body[_TRUE_LINE - 1] = QUOTE_AT_3
+    src = write_lines(tmp_path, "app.ts", body)
     return {"file_path": str(src), "line_start": _CLAIMED, "line_end": _CLAIMED,
-            "title": "eval of user input", "evidence_quote": _QUOTE}
+            "title": "eval of user input", "evidence_quote": QUOTE_AT_3}
 
 
 def _verify(finding: dict[str, Any], tmp_path) -> dict[str, Any]:
@@ -215,7 +205,8 @@ _O6_DEFAULTS = {
 }
 _BOOL_TOKENS = {**dict.fromkeys(("true", "1", "yes", "on"), "true"),
                 **dict.fromkeys(("false", "0", "no", "off"), "false")}
-_FALLBACK_RE = re.compile(r"\$\{(VULTURE_LLM_QUOTE_[A-Z_]+):-([^}]*)\}")
+# A `${VAR:-fallback}` for one of the three quote switches, on one line.
+_FALLBACK_RE = re.compile(r"\$\{(" + "|".join(_O6_DEFAULTS) + r"):-([^}\n]*)\}")
 
 
 def _normalised(value: str) -> str:
@@ -223,32 +214,16 @@ def _normalised(value: str) -> str:
     return _BOOL_TOKENS.get(raw, raw)
 
 
-def _line_fallbacks(name: str, no: int, line: str) -> list[tuple[str, int, str, str]]:
-    """The quote-switch fallbacks one compose line pins."""
-    return [(name, no, m[1], m[2]) for m in _FALLBACK_RE.finditer(line)
-            if m[1] in _O6_DEFAULTS]
-
-
-def _compose_fallbacks() -> list[tuple[str, int, str, str]]:
-    """(file, line, var, fallback) for every quote switch a compose file pins."""
-    out: list[tuple[str, int, str, str]] = []
+def _compose_drift() -> Iterator[str]:
+    """A report line for every compose fallback that disagrees with its O6
+    code default, as ``file:line VAR='value' (code default 'x')``."""
     for path in sorted(_REPO.glob("docker-compose*.yml")):
-        for no, line in enumerate(path.read_text().splitlines(), 1):
-            out += _line_fallbacks(path.name, no, line)
-    return out
-
-
-def _drift(entry: tuple[str, int, str, str]) -> str:
-    """A report line when the fallback disagrees with the code default, else ""."""
-    name, no, var, val = entry
-    if _normalised(val) == _O6_DEFAULTS[var]:
-        return ""
-    return f"{name}:{no} {var}={val!r} (code default {_O6_DEFAULTS[var]!r})"
-
-
-def _all_drift() -> list[str]:
-    """Every compose fallback that disagrees with its O6 code default."""
-    return [d for d in map(_drift, _compose_fallbacks()) if d]
+        text = path.read_text()
+        for match in _FALLBACK_RE.finditer(text):
+            var, val = match[1], match[2]
+            if _normalised(val) != _O6_DEFAULTS[var]:
+                line = text.count("\n", 0, match.start()) + 1
+                yield f"{path.name}:{line} {var}={val!r} (code default {_O6_DEFAULTS[var]!r})"
 
 
 def test_compose_fallbacks_equal_the_o6_code_defaults():
@@ -260,5 +235,5 @@ def test_compose_fallbacks_equal_the_o6_code_defaults():
     deployment while every code-level test above is green. Each fallback must
     equal the code default, or the compose file must stop pinning the switch."""
     assert _REPO.joinpath("docker-compose.yml").is_file(), "repo root not found"
-    drift = _all_drift()
+    drift = list(_compose_drift())
     assert not drift, "compose overrides the O6 code default:\n" + "\n".join(drift)

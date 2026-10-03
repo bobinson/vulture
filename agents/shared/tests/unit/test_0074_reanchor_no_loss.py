@@ -13,7 +13,7 @@ backend/internal/handler/reanchor_flip_0074_test.go.
 
 The counters (`llm_emitted`, `llm_collapsed_agent` on the `result` event, which
 Go decodes as `ScanResult`) are P4's; their own unit tests and the result-parse
-helpers live in test_0074_agent_dedup_counters.py and are reused here.
+helpers live in tests/support/agent_run.py and are reused here.
 
 Invariant, with REANCHOR off and then on:
 
@@ -40,9 +40,7 @@ import pytest
 
 from shared.audit_runner import run_combined_audit
 from tests._fake_llm import FakeLLMProvider, fake_finding, install_fake_runner
-from tests.unit.test_0074_agent_dedup_counters import _llm_rows, _result_payload
-
-_DUMMY_TOOLS = ["__dummy_tool__"]
+from tests.support.agent_run import DUMMY_TOOLS, llm_rows, result_payload
 
 _HASH_LINE = 5
 _EXEC_LINE = 27
@@ -53,6 +51,7 @@ _LINES = {
     _EVAL_LINE: "result_value = eval(request.form['expression_text'])",
 }
 _EXEC_TITLE = "Command injection via os.system"
+_EXEC_CLAIM = 12  # row B's claimed line; its quote sits on _EXEC_LINE
 _EMITTED = 5
 _COLLAPSED_AGENT = 2
 
@@ -83,8 +82,8 @@ def _llm_batch() -> list[dict[str, Any]]:
         fake_finding(title="Weak hash", category="CWE-328", line_start=9,
                      line_end=9, check_id="cwe.crypto.weak_hash",
                      evidence_quote=_LINES[_HASH_LINE]),
-        fake_finding(title=_EXEC_TITLE, category="CWE-78", line_start=12,
-                     line_end=12, evidence_quote=_LINES[_EXEC_LINE]),
+        fake_finding(title=_EXEC_TITLE, category="CWE-78", line_start=_EXEC_CLAIM,
+                     line_end=_EXEC_CLAIM, evidence_quote=_LINES[_EXEC_LINE]),
         fake_finding(title=_EXEC_TITLE, category="CWE-78", line_start=30,
                      line_end=30, evidence_quote=_LINES[_EXEC_LINE]),
         fake_finding(title="Eval of form input", category="CWE-95",
@@ -104,9 +103,9 @@ def _audit(tmp_path, monkeypatch, reanchor: str) -> dict[str, Any]:
     monkeypatch.setenv("VULTURE_LLM_QUOTE_REANCHOR", reanchor)
     install_fake_runner(monkeypatch, FakeLLMProvider(scripted_per_call=[_llm_batch()]))
     src = _write_source(tmp_path)
-    return _result_payload(list(run_combined_audit(
+    return result_payload(list(run_combined_audit(
         run_id=f"t53-{reanchor}", source_path=src, categories=["x"],
-        skill_map={"x": _skill_rows(src)}, skill_tools=_DUMMY_TOOLS,
+        skill_map={"x": _skill_rows(src)}, skill_tools=DUMMY_TOOLS,
         instructions="audit", model="gpt-4o", use_llm=True,
     )))
 
@@ -122,14 +121,22 @@ def _counter(result: dict[str, Any], name: str) -> int:
 def _buckets(result: dict[str, Any]) -> tuple[int, int, int]:
     return (_counter(result, "llm_emitted"),
             _counter(result, "llm_collapsed_agent"),
-            len(_llm_rows(result)))
+            len(llm_rows(result)))
 
 
-@pytest.mark.parametrize("reanchor", ["false", "true"])
-def test_every_emitted_llm_row_is_kept_or_bucketed(tmp_path, monkeypatch, reanchor):
+@pytest.mark.parametrize(("reanchor", "exec_line"), [
+    ("false", _EXEC_CLAIM),   # off: row B keeps its claim
+    ("true", _EXEC_LINE),     # on: row B is moved onto its quote
+])
+def test_every_emitted_llm_row_is_kept_or_bucketed(tmp_path, monkeypatch, reanchor, exec_line):
     """AC19 / T5.3: count in == count out + collapsed, at the agent site, with
-    the actuator off and on. A non-zero gap would be a silent loss."""
-    emitted, collapsed, kept = _buckets(_audit(tmp_path, monkeypatch, reanchor))
+    the actuator off and on. A non-zero gap would be a silent loss.
+
+    Both settings must land on the SAME bucket counts, so the flip moves no
+    row between buckets — and the flip really did take effect (row B's line),
+    so that equality is not vacuous."""
+    result = _audit(tmp_path, monkeypatch, reanchor)
+    emitted, collapsed, kept = _buckets(result)
 
     assert emitted == kept + collapsed, (
         f"REANCHOR={reanchor}: {emitted} emitted != {kept} kept + "
@@ -137,27 +144,10 @@ def test_every_emitted_llm_row_is_kept_or_bucketed(tmp_path, monkeypatch, reanch
     )
     assert (emitted, collapsed, kept) == (_EMITTED, _COLLAPSED_AGENT,
                                           _EMITTED - _COLLAPSED_AGENT)
-
-
-def test_the_flip_moves_no_row_between_buckets(tmp_path, monkeypatch):
-    """T5.3: REANCHOR off -> on changes lines, never the bucket counts — and the
-    flip really did take effect (row B moved), so the equality is not vacuous."""
-    off = _audit(_subdir(tmp_path, "off"), monkeypatch, "false")
-    on = _audit(_subdir(tmp_path, "on"), monkeypatch, "true")
-
-    assert _buckets(off) == _buckets(on), (
-        f"the flip changed the buckets: off={_buckets(off)} on={_buckets(on)}"
-    )
-    assert _exec_line(off) == 12, "with REANCHOR off row B keeps its claim"
-    assert _exec_line(on) == _EXEC_LINE, "with REANCHOR on row B is moved"
-
-
-def _subdir(root, name: str):
-    path = root / name
-    path.mkdir()
-    return path
+    assert _exec_line(result) == exec_line, f"REANCHOR={reanchor} moved row B wrongly"
 
 
 def _exec_line(result: dict[str, Any]) -> int:
-    (row,) = [f for f in _llm_rows(result) if f["title"] == _EXEC_TITLE]
+    """Row B's final line."""
+    (row,) = [f for f in llm_rows(result) if f["title"] == _EXEC_TITLE]
     return int(row["line_start"])

@@ -33,12 +33,13 @@ package handler
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/vulture/backend/internal/model"
@@ -97,76 +98,42 @@ func getProvFiltered0074(t *testing.T, c provFilterCases0074, value string) []mo
 	return audit.Findings
 }
 
+// provFingerprints0074 returns the findings' fingerprints, sorted.
 func provFingerprints0074(findings []model.Finding) []string {
 	out := make([]string, 0, len(findings))
 	for _, f := range findings {
 		out = append(out, f.Fingerprint)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
-func sortedCopy0074(in []string) []string {
-	out := append([]string{}, in...)
-	sort.Strings(out)
-	return out
+// provValues0074 is the fixture's filter vocabulary in a stable order.
+func provValues0074(c provFilterCases0074) []string {
+	return slices.Sorted(maps.Keys(c.Expect))
 }
 
 // AC39: every filter value selects exactly the rows the shared fixture lists.
+// The exact equality also pins, through the fixture's expect values:
+//   - (P2a) llm_family is exactly llm ∪ llm_l5_verified, never more (no
+//     skill/semgrep/legacy row) and never less;
+//   - (P2b) both is derived from validation.provenance_origins, not from the
+//     surviving row's own provenance. Origins all skill-family (semgrep +
+//     skill) or all LLM-family are not "both"; a row with no validation blob
+//     (pre-0074) never is. Origins are normalised (trim, lower-case) like
+//     isLLMProvenance, so [" Skill ", "LLM"] is "both"; an empty or blank
+//     origin is not a tier, so ["", "llm"] is not;
+//   - (robustness) malformed origins (string, object, null, non-string
+//     entries) are "not both" and never fail the request.
 func TestAuditGetProvenanceFilter0074_SelectsFixtureRows(t *testing.T) {
 	c := loadProvFilterCases0074(t)
-	for value, want := range c.Expect {
+	for _, value := range provValues0074(c) {
 		t.Run(value, func(t *testing.T) {
-			got := provFingerprints0074(getProvFiltered0074(t, c, value))
-			if !reflect.DeepEqual(got, sortedCopy0074(want)) {
-				t.Fatalf("provenance=%s selected %v, want %v", value, got, sortedCopy0074(want))
+			want := slices.Sorted(slices.Values(c.Expect[value]))
+			if got := provFingerprints0074(getProvFiltered0074(t, c, value)); !reflect.DeepEqual(got, want) {
+				t.Fatalf("provenance=%s selected %v, want %v", value, got, want)
 			}
 		})
-	}
-}
-
-// AC39 (P2a): llm_family is exactly the union of the llm and llm_l5_verified
-// selections, never more (no skill/semgrep/legacy row) and never less.
-func TestAuditGetProvenanceFilter0074_LLMFamilyIsUnionOfMembers(t *testing.T) {
-	c := loadProvFilterCases0074(t)
-	union := append(provFingerprints0074(getProvFiltered0074(t, c, "llm")),
-		provFingerprints0074(getProvFiltered0074(t, c, "llm_l5_verified"))...)
-	got := provFingerprints0074(getProvFiltered0074(t, c, "llm_family"))
-	if !reflect.DeepEqual(got, sortedCopy0074(union)) {
-		t.Fatalf("llm_family selected %v, want llm ∪ llm_l5_verified = %v", got, sortedCopy0074(union))
-	}
-}
-
-// AC39 (P2b): both is derived from validation.provenance_origins, not from
-// the surviving row's own provenance. A row whose origins are all skill-family
-// (semgrep + skill) or all LLM-family is not "both"; a row with no validation
-// blob (a pre-0074 row) is never "both". Origins are normalised (trim,
-// lower-case) like isLLMProvenance, so [" Skill ", "LLM"] is "both"; an empty
-// or blank origin is not a tier, so ["", "llm"] is not.
-func TestAuditGetProvenanceFilter0074_BothFollowsOriginsNotWinner(t *testing.T) {
-	c := loadProvFilterCases0074(t)
-	got := provFingerprints0074(getProvFiltered0074(t, c, "both"))
-	want := []string{"fp-0074-both-llm-wins", "fp-0074-both-skill-wins", "fp-0074-origins-case"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("both selected %v, want %v (two merges and the normalised-case row only)", got, want)
-	}
-}
-
-// AC39 robustness: malformed, empty or same-family provenance_origins values
-// are "not both" and never fail the request. Pinned by name so a regression
-// reads as the edge case it is, not as a count mismatch.
-func TestAuditGetProvenanceFilter0074_MalformedOriginsAreNotBoth(t *testing.T) {
-	c := loadProvFilterCases0074(t)
-	both := provByFingerprint0074(getProvFiltered0074(t, c, "both"))
-	if len(both) == 0 {
-		t.Fatalf("both selected nothing; the per-row check below would be vacuous")
-	}
-	for _, fp := range []string{"fp-0074-origins-empty-tier", "fp-0074-origins-blank-tier",
-		"fp-0074-origins-llm-pair", "fp-0074-origins-string", "fp-0074-origins-null",
-		"fp-0074-origins-object", "fp-0074-origins-absent", "fp-0074-origins-nonstring", "fp-0074-legacy"} {
-		if _, ok := both[fp]; ok {
-			t.Errorf("both selected %s; its provenance_origins does not span both families", fp)
-		}
 	}
 }
 
@@ -190,13 +157,15 @@ func provAuditFields0074(t *testing.T, body []byte) map[string]json.RawMessage {
 func TestAuditGetProvenanceFilter0074_AuditFieldsUnchanged(t *testing.T) {
 	c := loadProvFilterCases0074(t)
 	base := provAuditFields0074(t, serveProv0074(t, c, ""))
-	for value, want := range c.Expect {
-		if got := provFingerprints0074(getProvFiltered0074(t, c, value)); len(got) != len(want) {
-			t.Fatalf("provenance=%s returned %v; the filter is not applied, so this check would be vacuous", value, got)
-		}
-		if got := provAuditFields0074(t, serveProv0074(t, c, value)); !reflect.DeepEqual(got, base) {
-			t.Fatalf("provenance=%s changed audit-level fields:\n got %v\nwant %v", value, got, base)
-		}
+	for _, value := range provValues0074(c) {
+		t.Run(value, func(t *testing.T) {
+			if got := provFingerprints0074(getProvFiltered0074(t, c, value)); len(got) != len(c.Expect[value]) {
+				t.Fatalf("provenance=%s returned %v; the filter is not applied, so this check would be vacuous", value, got)
+			}
+			if got := provAuditFields0074(t, serveProv0074(t, c, value)); !reflect.DeepEqual(got, base) {
+				t.Fatalf("provenance=%s changed audit-level fields:\n got %v\nwant %v", value, got, base)
+			}
+		})
 	}
 }
 
@@ -237,13 +206,15 @@ func assertValidationUnchanged0074(t *testing.T, value string, got model.Finding
 func TestAuditGetProvenanceFilter0074_NeverChangesValidationStatus(t *testing.T) {
 	c := loadProvFilterCases0074(t)
 	base := provByFingerprint0074(getProvFiltered0074(t, c, ""))
-	for value, want := range c.Expect {
-		filtered := getProvFiltered0074(t, c, value)
-		if len(filtered) != len(want) {
-			t.Fatalf("provenance=%s returned %d rows, want %d", value, len(filtered), len(want))
-		}
-		for _, f := range filtered {
-			assertValidationUnchanged0074(t, value, f, base[f.Fingerprint])
-		}
+	for _, value := range provValues0074(c) {
+		t.Run(value, func(t *testing.T) {
+			filtered := getProvFiltered0074(t, c, value)
+			if len(filtered) != len(c.Expect[value]) {
+				t.Fatalf("provenance=%s returned %d rows, want %d", value, len(filtered), len(c.Expect[value]))
+			}
+			for _, f := range filtered {
+				assertValidationUnchanged0074(t, value, f, base[f.Fingerprint])
+			}
+		})
 	}
 }

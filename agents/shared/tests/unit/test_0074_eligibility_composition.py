@@ -61,31 +61,24 @@ _EXPECTED_PROSE: frozenset[str] = frozenset({
     ".md", ".markdown", ".rst", ".adoc", ".txt", ".csv", ".tsv",
 })
 
-_ENV_TO_CLEAR = (
-    "VULTURE_LLM_INELIGIBLE_EXTENSIONS",
-    "VULTURE_LLM_FEED_PROSE",
-    "VULTURE_LLM_FEED_UNIFY",
-    "VULTURE_EXTRA_EXTENSIONS",
-    "VULTURE_DISABLE_EXTENSION_WHITELIST",
-    "VULTURE_IGNORE_GITIGNORE",
-)
-
-
 @pytest.fixture(autouse=True)
-def _defaults(monkeypatch):
-    for name in _ENV_TO_CLEAR:
-        monkeypatch.delenv(name, raising=False)
+def _fresh_scan_caches():
+    """The scanner caches per path; env isolation is the suite conftest's."""
     clear_caches()
     yield
     clear_caches()
 
 
-@pytest.fixture
-def one_file_per_extension(tmp_path: Path) -> Path:
-    """A flat synthetic tree: ``f<i><ext>`` for every hand-listed extension."""
+@pytest.fixture(scope="module")
+def one_file_per_extension(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A flat synthetic tree: ``f<i><ext>`` for every hand-listed extension.
+
+    Module-scoped: every test only reads it.
+    """
+    root = tmp_path_factory.mktemp("one_file_per_extension")
     for index, ext in enumerate(sorted(_EXPECTED_FED | _EXPECTED_PROSE)):
-        (tmp_path / f"f{index}{ext}").write_text(f"value_{index} = {index}\n")
-    return tmp_path
+        (root / f"f{index}{ext}").write_text(f"value_{index} = {index}\n")
+    return root
 
 
 def _eligible_suffixes(root: Path) -> frozenset[str]:

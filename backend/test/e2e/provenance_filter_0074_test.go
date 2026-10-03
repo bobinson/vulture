@@ -30,11 +30,12 @@ package e2e
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -136,13 +137,7 @@ func provE2EFingerprints(findings []model.Finding) []string {
 	for _, f := range findings {
 		out = append(out, f.Fingerprint)
 	}
-	sort.Strings(out)
-	return out
-}
-
-func provE2ESorted(in []string) []string {
-	out := append([]string{}, in...)
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -180,53 +175,41 @@ func assertProvE2EFilterKeepsValidation(t *testing.T, addr, value string, want i
 	}
 }
 
+// TestProvenanceFilter0074 starts ONE backend over the seeded audit and runs
+// every contract check against it; each check only reads.
+func TestProvenanceFilter0074(t *testing.T) {
+	c := loadProvE2ECases(t)
+	addr := newProvE2EServer(t, c)
+	t.Run("APISelectsTheSharedFixtureRows", func(t *testing.T) { provE2ESelectsFixtureRows(t, addr, c) })
+	t.Run("FilterNeverChangesValidationStatus", func(t *testing.T) { provE2EKeepsValidation(t, addr, c) })
+	t.Run("NoParameterServesEveryFinding", func(t *testing.T) { provE2EServesEveryFinding(t, addr, c) })
+}
+
 // AC39: over persisted findings, each filter value selects exactly the rows
-// the shared fixture lists, the same rows the UI and MCP select.
-func TestProvenanceFilter0074_APISelectsTheSharedFixtureRows(t *testing.T) {
-	c := loadProvE2ECases(t)
-	addr := newProvE2EServer(t, c)
-	for value, want := range c.Expect {
-		got := provE2EFingerprints(provE2EGet(t, addr, value))
-		if !reflect.DeepEqual(got, provE2ESorted(want)) {
-			t.Errorf("provenance=%s served %v, want %v", value, got, provE2ESorted(want))
-		}
-	}
-}
-
-// AC39 (P2a): llm_family equals llm ∪ llm_l5_verified (plan T0.0, T2.1).
-func TestProvenanceFilter0074_LLMFamilyEqualsUnionOfLLMAndL5Verified(t *testing.T) {
-	c := loadProvE2ECases(t)
-	addr := newProvE2EServer(t, c)
-	union := append(provE2EFingerprints(provE2EGet(t, addr, "llm")),
-		provE2EFingerprints(provE2EGet(t, addr, "llm_l5_verified"))...)
-	got := provE2EFingerprints(provE2EGet(t, addr, "llm_family"))
-	if len(got) == 0 || !reflect.DeepEqual(got, provE2ESorted(union)) {
-		t.Fatalf("llm_family served %v, want the non-empty union llm ∪ llm_l5_verified = %v", got, provE2ESorted(union))
-	}
-}
-
-// AC39 (P2b): both is read from the PERSISTED validation.provenance_origins,
-// so a merged row is found whichever tier won, and a row whose origins stay
-// in one family (semgrep + skill, llm + llm_l5_verified) is not. Origins are
-// normalised (trim, lower-case), so [" Skill ", "LLM"] is both; empty, blank,
-// null, string, object and non-string origins are not, and none of them may
-// turn the GET into an error (provE2EGet requires 200).
-func TestProvenanceFilter0074_BothReadsPersistedOrigins(t *testing.T) {
-	c := loadProvE2ECases(t)
-	addr := newProvE2EServer(t, c)
-	got := provE2EFingerprints(provE2EGet(t, addr, "both"))
-	want := []string{"fp-0074-both-llm-wins", "fp-0074-both-skill-wins", "fp-0074-origins-case"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("both served %v, want %v", got, want)
+// the shared fixture lists, the same rows the UI and MCP select. The exact
+// equality also pins, through the fixture's expect values:
+//   - (P2a) llm_family equals llm ∪ llm_l5_verified (plan T0.0, T2.1);
+//   - (P2b) both is read from the PERSISTED validation.provenance_origins, so
+//     a merged row is found whichever tier won, and a row whose origins stay
+//     in one family (semgrep + skill, llm + llm_l5_verified) is not. Origins
+//     are normalised (trim, lower-case), so [" Skill ", "LLM"] is both; empty,
+//     blank, null, string, object and non-string origins are not, and none of
+//     them may turn the GET into an error (provE2EGet requires 200).
+func provE2ESelectsFixtureRows(t *testing.T, addr string, c provE2ECases) {
+	for _, value := range slices.Sorted(maps.Keys(c.Expect)) {
+		t.Run(value, func(t *testing.T) {
+			want := slices.Sorted(slices.Values(c.Expect[value]))
+			if got := provE2EFingerprints(provE2EGet(t, addr, value)); !reflect.DeepEqual(got, want) {
+				t.Errorf("provenance=%s served %v, want %v", value, got, want)
+			}
+		})
 	}
 }
 
 // AC10: a filter never changes a row's validation_status, confidence or blob,
 // and never rewrites what is stored: the unfiltered GET after every filtered
 // GET still serves every row unchanged.
-func TestProvenanceFilter0074_FilterNeverChangesValidationStatus(t *testing.T) {
-	c := loadProvE2ECases(t)
-	addr := newProvE2EServer(t, c)
+func provE2EKeepsValidation(t *testing.T, addr string, c provE2ECases) {
 	before := provE2EGet(t, addr, "")
 	base := provE2EByFingerprint(before)
 	for value, want := range c.Expect {
@@ -239,9 +222,7 @@ func TestProvenanceFilter0074_FilterNeverChangesValidationStatus(t *testing.T) {
 
 // Regression pin (passes before 0074): without the parameter the API serves
 // every persisted finding, the legacy row with no provenance included.
-func TestProvenanceFilter0074_NoParameterServesEveryFinding(t *testing.T) {
-	c := loadProvE2ECases(t)
-	addr := newProvE2EServer(t, c)
+func provE2EServesEveryFinding(t *testing.T, addr string, c provE2ECases) {
 	got := provE2EFingerprints(provE2EGet(t, addr, ""))
 	want := provE2EFingerprints(c.Findings)
 	if !reflect.DeepEqual(got, want) {

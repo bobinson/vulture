@@ -37,12 +37,15 @@ from shared import audit_runner
 from shared.llm import provider
 from shared.llm.broker import set_context_window
 from shared.models.audit_request import AuditRequest
-
-MODEL = "qwen3-fixture-coder-32b"   # no table entry; `qwen3` family -> 32768
-FAMILY_WINDOW = 32_768
-GATEWAY = "https://gateway.invalid/v1"
-SOURCES = ("env", "probe", "table", "family", "default")
-
+from tests.support.window import (
+    FAMILY_WINDOW,
+    GATEWAY,
+    MODEL,
+    SOURCES,
+    no_ambient_window,
+    set_gateway,
+    set_marker,
+)
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -63,23 +66,10 @@ def _clear_profile_cache() -> None:
 
 @pytest.fixture(autouse=True)
 def _hermetic(monkeypatch: pytest.MonkeyPatch) -> Any:
-    for name in (
-        "VULTURE_LLM_CTX_SIZE", "VULTURE_LLM_ENDPOINT_KIND", "VULTURE_LLM_BROKER",
-        "VULTURE_MAX_SOURCE_CHARS", "OPENAI_BASE_URL",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("VULTURE_LLM_MODEL", MODEL)
-    _gateway(monkeypatch, "")
-    set_context_window(None)
     _clear_profile_cache()
-    yield
-    set_context_window(None)
+    with no_ambient_window(monkeypatch):
+        yield
     _clear_profile_cache()
-
-
-def _gateway(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
-    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", url)
-    monkeypatch.setattr(audit_runner, "_CUSTOM_BASE_URL", url)
 
 
 def _bind_source(source: str | None) -> None:
@@ -110,6 +100,11 @@ def _in_window_only_run(window: int, fn: Any) -> Any:
     return contextvars.copy_context().run(_body)
 
 
+def _source_budget() -> int:
+    """The per-batch source budget for MODEL."""
+    return audit_runner._get_max_source_chars(MODEL)
+
+
 def _prompt_budget() -> int:
     """The generate call's prompt budget for MODEL (render's output hint)."""
     rp = audit_runner._generate_rendered(
@@ -117,6 +112,11 @@ def _prompt_budget() -> int:
         source_context="", prior_context="", model=MODEL,
     )
     return rp.output_budget_hint
+
+
+def _both_budgets() -> tuple[int, int]:
+    """(source budget, prompt budget): the two that must share one window."""
+    return _source_budget(), _prompt_budget()
 
 
 def _authoritative(monkeypatch: pytest.MonkeyPatch, window: int, fn: Any) -> Any:
@@ -182,14 +182,14 @@ class TestModeAClampUnchanged:
 
     def test_family_guess_behind_gateway_still_clamped(self, monkeypatch, caplog) -> None:
         """AC2 (pin): 32768 guessed behind a gateway -> 32000 -> 33,600 chars."""
-        _gateway(monkeypatch, GATEWAY)
+        set_gateway(monkeypatch, GATEWAY)
         with caplog.at_level(logging.WARNING):
-            assert audit_runner._get_max_source_chars(MODEL) == 33_600
+            assert _source_budget() == 33_600
         assert any("llm_body_window_clamped" in r.getMessage() for r in caplog.records)
 
     def test_family_guess_without_gateway_not_clamped(self) -> None:
         """AC2 (pin): no custom endpoint, no clamp: 32768 * 0.5 * 3."""
-        assert audit_runner._get_max_source_chars(MODEL) == 49_152
+        assert _source_budget() == 49_152
 
 
 # --------------------------------------------------------------------------- #
@@ -203,11 +203,8 @@ class TestBrokerWindowNeverClamped:
     @pytest.mark.parametrize("marker", ["endpoint_kind", "base_url"])
     def test_source_budget_is_the_injected_windows(self, source, marker, monkeypatch) -> None:
         """AC2b + AC41: native (endpoint-kind marker) and base-URL wiring alike."""
-        if marker == "endpoint_kind":
-            monkeypatch.setenv("VULTURE_LLM_ENDPOINT_KIND", "openai-compatible")
-        else:
-            _gateway(monkeypatch, GATEWAY)
-        got = _in_run(FAMILY_WINDOW, source, lambda: audit_runner._get_max_source_chars(MODEL))
+        set_marker(monkeypatch, marker)
+        got = _in_run(FAMILY_WINDOW, source, _source_budget)
         assert got == 49_152
 
     @pytest.mark.parametrize(("window", "expected"), [
@@ -220,8 +217,8 @@ class TestBrokerWindowNeverClamped:
     def test_budget_never_lower_than_before(self, window, expected, monkeypatch) -> None:
         """AC41: for identical inputs the budget equals today's formula, with
         the family source bound and the gateway marker set."""
-        monkeypatch.setenv("VULTURE_LLM_ENDPOINT_KIND", "openai-compatible")
-        got = _in_run(window, "family", lambda: audit_runner._get_max_source_chars(MODEL))
+        set_marker(monkeypatch, "endpoint_kind")
+        got = _in_run(window, "family", _source_budget)
         assert got >= expected
 
 
@@ -236,21 +233,17 @@ class TestOneEffectiveWindow:
         """AC36: behind a gateway the guess is clamped to 32000 for the SOURCE
         budget; the prompt budget must be computed from that same 32000, not
         from the unclamped 32768."""
-        _gateway(monkeypatch, GATEWAY)
-        source_budget = audit_runner._get_max_source_chars(MODEL)
-        prompt_budget = _prompt_budget()
-        ref_source = _authoritative(monkeypatch, 32_000, lambda: audit_runner._get_max_source_chars(MODEL))
-        ref_prompt = _authoritative(monkeypatch, 32_000, _prompt_budget)
+        set_gateway(monkeypatch, GATEWAY)
+        source_budget, prompt_budget = _both_budgets()
+        ref_source, ref_prompt = _authoritative(monkeypatch, 32_000, _both_budgets)
         assert source_budget == ref_source
         assert prompt_budget == ref_prompt
 
     def test_broker_prompt_budget_follows_the_injected_window(self, monkeypatch) -> None:
         """AC36 + AC2b: an injected window is the effective window for both."""
-        monkeypatch.setenv("VULTURE_LLM_ENDPOINT_KIND", "openai-compatible")
-        got = _in_run(FAMILY_WINDOW, "family", lambda: (
-            audit_runner._get_max_source_chars(MODEL), _prompt_budget()))
-        ref = _authoritative(monkeypatch, FAMILY_WINDOW, lambda: (
-            audit_runner._get_max_source_chars(MODEL), _prompt_budget()))
+        set_marker(monkeypatch, "endpoint_kind")
+        got = _in_run(FAMILY_WINDOW, "family", _both_budgets)
+        ref = _authoritative(monkeypatch, FAMILY_WINDOW, _both_budgets)
         assert got == ref
 
     def test_two_runs_each_see_their_own_window(self) -> None:
@@ -260,9 +253,7 @@ class TestOneEffectiveWindow:
         prompt budget must move by exactly the window difference, and the source
         budget must be each run's own.
         """
-        first = _in_window_only_run(65_536, lambda: (
-            audit_runner._get_max_source_chars(MODEL), _prompt_budget()))
-        second = _in_window_only_run(131_072, lambda: (
-            audit_runner._get_max_source_chars(MODEL), _prompt_budget()))
+        first = _in_window_only_run(65_536, _both_budgets)
+        second = _in_window_only_run(131_072, _both_budgets)
         assert (first[0], second[0]) == (98_304, 196_608)
         assert second[1] - first[1] == 131_072 - 65_536

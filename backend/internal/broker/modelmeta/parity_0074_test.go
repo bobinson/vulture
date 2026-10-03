@@ -36,15 +36,18 @@ func readPythonProvider(t *testing.T) string {
 	return string(b)
 }
 
-// pyBlock returns the lines between the line starting with header and the
-// first line that is exactly closer (the literal's closing bracket).
-func pyBlock(t *testing.T, src, header, closer string) []string {
+// pyBlock returns the lines between the module-level assignment of name to a
+// literal opened by opener ("{" or "[") and the first line that is exactly
+// closer. The header is matched on the identifier and "= <opener>" only, so a
+// changed type annotation cannot break the canary.
+func pyBlock(t *testing.T, src, name, opener, closer string) []string {
 	t.Helper()
-	_, rest, ok := strings.Cut(src, "\n"+header)
-	if !ok {
-		t.Fatalf("provider.py: %q not found", header)
+	header := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\b[^=\n]*=\s*` + regexp.QuoteMeta(opener) + `[ \t]*$`)
+	loc := header.FindStringIndex(src)
+	if loc == nil {
+		t.Fatalf("provider.py: %s = %s not found", name, opener)
 	}
-	body, _, _ := strings.Cut(rest, "\n"+closer+"\n")
+	body, _, _ := strings.Cut(src[loc[1]:], "\n"+closer+"\n")
 	return strings.Split(body, "\n")
 }
 
@@ -73,11 +76,11 @@ func pyInt(t *testing.T, lit string) int {
 }
 
 func parsePyFamilies(t *testing.T, src string) []pyEntry {
-	return parsePyRows(t, pyBlock(t, src, "_MODEL_FAMILY_CTX: list[tuple[str, int]] = [", "]"), pyFamilyRow)
+	return parsePyRows(t, pyBlock(t, src, "_MODEL_FAMILY_CTX", "[", "]"), pyFamilyRow)
 }
 
 func parsePyExact(t *testing.T, src string) []pyEntry {
-	return parsePyRows(t, pyBlock(t, src, "CONTEXT_WINDOWS: dict[str, int] = {", "}"), pyExactRow)
+	return parsePyRows(t, pyBlock(t, src, "CONTEXT_WINDOWS", "{", "}"), pyExactRow)
 }
 
 // assertFamilyParity: identical length, and at every position the same

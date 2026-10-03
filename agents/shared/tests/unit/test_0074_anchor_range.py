@@ -15,7 +15,8 @@ ACs: AC15, AC28, AC37 (and the O3 = C vocabulary pin).
 
 from __future__ import annotations
 
-import sys
+import builtins
+import io
 from pathlib import Path
 
 import pytest
@@ -38,30 +39,25 @@ from tests.support.past_eof import (
     write_lines,
 )
 
-# ── an audit hook that counts real file opens (sys.addaudithook cannot be
-# removed, so it is installed once and armed only inside `_counting_opens`) ──
 
-_OPENS: list[str] = []
-_ARMED: list[bool] = [False]
+def _opens_during(monkeypatch, fn, *args) -> list[str]:
+    """Run ``fn(*args)`` and return every path opened through ``open`` while
+    it ran. The verifier's reader (``anchor._read_lines`` -> ``read_file_lines``
+    -> ``Path.read_text``) opens through ``io.open``, which is also the builtin
+    ``open``; both names are counted, and only for this one call."""
+    opened: list[str] = []
+    real = io.open
 
+    def counting(file, *a, **kw):
+        if isinstance(file, (str, Path)):
+            opened.append(str(file))
+        return real(file, *a, **kw)
 
-def _audit(event: str, args: tuple) -> None:
-    if _ARMED[0] and event == "open" and isinstance(args[0], (str, Path)):
-        _OPENS.append(str(args[0]))
-
-
-sys.addaudithook(_audit)
-
-
-def _opens_during(fn, *args) -> list[str]:
-    """Run ``fn(*args)`` and return every path opened while it ran."""
-    _OPENS.clear()
-    _ARMED[0] = True
-    try:
+    with monkeypatch.context() as scoped:
+        scoped.setattr(io, "open", counting)
+        scoped.setattr(builtins, "open", counting)
         fn(*args)
-    finally:
-        _ARMED[0] = False
-    return list(_OPENS)
+    return opened
 
 
 def _range_after(rows, root) -> list:
@@ -138,7 +134,7 @@ def test_range_adds_no_file_open(monkeypatch, tmp_path):
     clear_all_caches()
     from shared import audit_runner
 
-    opened = _opens_during(audit_runner._verify_and_strip, rows, str(tmp_path))
+    opened = _opens_during(monkeypatch, audit_runner._verify_and_strip, rows, str(tmp_path))
     ranges = [anchor_extras(c).get(RANGE_KEY) for c in l1_checks(rows, tmp_path)]
     assert ranges == ["past_eof", "in_file", "no_line", "past_eof"]
     assert opened.count(str(module)) == 1, f"opened {opened.count(str(module))}x"

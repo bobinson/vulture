@@ -119,3 +119,31 @@ describe("i18n 0091 aggregate + lineage keys", () => {
     }
   });
 });
+
+/**
+ * The 0074 surface: the tier-family provenance filter values and 0076's
+ * read-only anchor result (plan §5.6, T2.2, AC39). The en copy drawn in
+ * designs/0074-provenance-family.html is pinned in
+ * __tests__/provenanceFamilyLocaleKeys.0074.test.ts.
+ */
+const REQUIRED_0074_KEYS = [
+  "results.provenanceFamily.llm_family",
+  "results.provenanceFamily.both",
+  "results.anchor.title",
+  ...[
+    "exact", "reanchored", "ambiguous", "near_miss", "found_elsewhere",
+    "absent", "unquoted", "unreadable", "oversize",
+  ].map((s) => `results.anchor.status.${s}`),
+  ...["in_file", "past_eof", "no_line"].map((r) => `results.anchor.range.${r}`),
+] as const;
+
+describe("i18n 0074 provenance-family + anchor keys", () => {
+  it.each(Object.keys(LOCALES))("%s defines every 0074 key with a non-empty string", (name) => {
+    const json = LOCALES[name];
+    for (const key of REQUIRED_0074_KEYS) {
+      const value = key.split(".").reduce<unknown>((acc, part) => (acc as Json)?.[part], json);
+      expect(typeof value, `${name}.json is missing ${key}`).toBe("string");
+      expect((value as string).trim().length, `${name}.json has an empty ${key}`).toBeGreaterThan(0);
+    }
+  });
+});

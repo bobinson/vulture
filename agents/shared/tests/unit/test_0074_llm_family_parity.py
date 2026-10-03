@@ -17,17 +17,9 @@ make it non-deterministic is the LLM-family rule.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-_FIXTURE = _REPO_ROOT / "backend" / "internal" / "handler" / "testdata" / "llm_provenance_family_0074.json"
-
-
-def _cases() -> list[dict]:
-    return json.loads(_FIXTURE.read_text())
+from tests.support.llm_family import cases as _cases
 
 
 def test_fixture_is_shared_and_covers_the_plan_list():

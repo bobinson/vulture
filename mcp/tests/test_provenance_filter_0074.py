@@ -5,7 +5,10 @@ takes the vocabulary the UI and the findings API take:
 
 - an exact provenance ("skill", "llm", "llm_l5_verified", "semgrep") matches
   that provenance literally;
-- "llm_family" matches llm and llm_l5_verified together;
+- "llm_family" matches every finding whose provenance, trimmed and
+  lower-cased, starts with "llm" (the one family rule: Go isLLMProvenance,
+  Python _is_deterministic), so "LLM" and " llm " are members; the filter
+  value itself is exact and case-sensitive ("LLM_FAMILY" selects nothing);
 - "both" matches findings whose validation.provenance_origins spans the skill
   family and the LLM family;
 - no provenance argument returns every finding, as today.
@@ -69,41 +72,20 @@ async def test_provenance_filter_selects_the_shared_fixture_rows(value):
     assert result["total"] == len(want)
 
 
-@respx.mock
-@pytest.mark.asyncio
-async def test_llm_family_is_the_union_of_llm_and_l5_verified():
-    """AC39 (P2a): llm_family == llm ∪ llm_l5_verified, and is non-empty."""
-    _mock_audit()
-    union = _fingerprints(await _fetch(provenance="llm")) + _fingerprints(await _fetch(provenance="llm_l5_verified"))
-    got = _fingerprints(await _fetch(provenance="llm_family"))
-    assert got and got == sorted(union)
+_NOT_BOTH = sorted({f["fingerprint"] for f in _CASES["findings"]} - set(_CASES["expect"]["both"]))
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_both_reads_provenance_origins_not_the_winner():
-    """AC39 (P2b): a merge is "both" whichever tier won; origins within one
-    family (semgrep + skill) and a legacy row without validation are not."""
+async def test_malformed_or_one_family_origins_are_not_both():
+    """AC39 parity: empty/blank tiers, one-family pairs, and origins that are a
+    string, an object, null, absent or non-string entries are not "both" and
+    never fail the call, the same verdict the API and the UI reach on the
+    shared fixture. Pinned per row so a regression names the edge case."""
     _mock_audit()
-    got = _fingerprints(await _fetch(provenance="both"))
-    assert got == ["fp-0074-both-llm-wins", "fp-0074-both-skill-wins", "fp-0074-origins-case"]
-
-
-_NOT_BOTH = ("fp-0074-origins-empty-tier", "fp-0074-origins-blank-tier", "fp-0074-origins-llm-pair",
-             "fp-0074-origins-string", "fp-0074-origins-null", "fp-0074-origins-object",
-             "fp-0074-origins-absent", "fp-0074-origins-nonstring", "fp-0074-legacy")
-
-
-@respx.mock
-@pytest.mark.asyncio
-@pytest.mark.parametrize("fingerprint", _NOT_BOTH)
-async def test_malformed_or_one_family_origins_are_not_both(fingerprint):
-    """AC39 parity: empty/blank tiers, an LLM-only pair, and origins that are a
-    string, an object, null, absent or non-string entries are not "both", the
-    same verdict the API and the UI reach on the shared fixture."""
-    _mock_audit()
-    got = _fingerprints(await _fetch(provenance="both"))
-    assert got and fingerprint not in got
+    got = set(_fingerprints(await _fetch(provenance="both")))
+    assert got, "both selected nothing; the per-row check would be vacuous"
+    assert [fp for fp in _NOT_BOTH if fp in got] == []
 
 
 @respx.mock
@@ -127,8 +109,12 @@ async def test_filter_never_changes_validation(value):
 async def test_provenance_combines_with_severity():
     """AC39: provenance is one more AND-ed predicate beside the existing ones."""
     _mock_audit()
+    family = set(_CASES["expect"]["llm_family"])
+    want = sorted(f["fingerprint"] for f in _CASES["findings"]
+                  if f["fingerprint"] in family and f["severity"] == "high")
+    assert want, "the fixture has no high llm_family row; the check would be vacuous"
     result = await _fetch(provenance="llm_family", severity="high")
-    assert _fingerprints(result) == ["fp-0074-l5"]
+    assert _fingerprints(result) == want
 
 
 @respx.mock

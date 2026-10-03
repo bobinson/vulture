@@ -42,15 +42,29 @@ type sourcedWindow interface {
 	ContextWindow() (int, string)
 }
 
-// windowOf reads (window, source) from the broker, failing with the plan
-// reference while Broker.ContextWindow still returns a bare int.
-func windowOf(t *testing.T, b *Broker) (int, string) {
+// sourced asserts the §5.1(a) shape, failing with the plan reference while
+// Broker.ContextWindow still returns a bare int.
+func sourced(t *testing.T, b *Broker) sourcedWindow {
 	t.Helper()
 	sw, ok := any(b).(sourcedWindow)
 	if !ok {
 		t.Fatalf("Broker.ContextWindow must return (window int, source string) — 0074 §5.1(a)")
 	}
-	return sw.ContextWindow()
+	return sw
+}
+
+// windowOf reads (window, source) from the broker.
+func windowOf(t *testing.T, b *Broker) (int, string) {
+	t.Helper()
+	return sourced(t, b).ContextWindow()
+}
+
+// touch reads the window once if the broker has the §5.1(a) shape, without
+// failing — it starts a lazily launched probe for a test that asserts later.
+func touch(b *Broker) {
+	if sw, ok := any(b).(sourcedWindow); ok {
+		sw.ContextWindow()
+	}
 }
 
 // fakeUpstream is a stand-in LLM server: it serves fixture bodies by path and

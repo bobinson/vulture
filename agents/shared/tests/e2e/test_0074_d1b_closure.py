@@ -21,9 +21,6 @@ Fully offline: the LLM phase is the ``FakeLLMProvider`` seam and the judge is
 
 from __future__ import annotations
 
-import json
-import os
-
 import pytest
 
 from tests._fake_llm import (
@@ -32,14 +29,17 @@ from tests._fake_llm import (
     install_fake_runner,
     patch_l5_judge,
 )
+from tests.support.agent_run import DUMMY_TOOLS, result_findings
+from tests.support.llm_family import llm_family_variants
 
-# The variants a provenance string can take on the wire. "llm" was always
-# handled; the other three are the D1b surface.
-LLM_FAMILY_VARIANTS = ["llm", "llm_l5_verified", "LLM", " llm "]
+# Every spelling Go's isLLMProvenance calls LLM-authored, read from the fixture
+# both languages share. "llm" was always handled; the rest are the D1b surface.
+LLM_FAMILY_VARIANTS = llm_family_variants()
 
 _MODEL_CHECK_ID = "model.invented.sqli"
 _SKILL_CHECK_ID = "cwe.injection.sql"
 _SOURCE_LINES = "import db\n\ndef login(uid):\n    return db.execute('SELECT * FROM u WHERE id=' + uid)\n"
+_SNIPPET = "4:     return db.execute('SELECT * FROM u WHERE id=' + uid)"
 JUDGE_PATHS = (False, True)  # validate() without / with a source root
 JUDGE_PATH_IDS = ("tool_free", "source_root")
 _DEMOTING = 0.0     # exploitable probability the stub judge returns to demote
@@ -47,23 +47,16 @@ _CONFIRMING = 0.95  # ... and to confirm
 
 
 @pytest.fixture(autouse=True)
-def _isolated_env(tmp_path, monkeypatch):
-    """Documented defaults only, and no L5 verdict cache.
+def _no_l5_cache(monkeypatch):
+    """No L5 verdict cache (env and cache-path isolation are the conftest's).
 
-    Mirrors the unit suite's isolation (a developer ``.env`` must not decide
-    the outcome). The verdict cache is switched off outright rather than
-    pointed at a fresh file: one test here judges the SAME code twice with two
-    different stub verdicts, and a cached first verdict would answer the second
-    call without reaching the stub.
+    Switched off outright rather than left on its fresh per-test file: one
+    test here judges the SAME code twice with two different stub verdicts, and
+    a cached first verdict would answer the second call without reaching the
+    stub.
     """
-    for name in [n for n in os.environ if n.startswith("VULTURE_")]:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.setenv("VULTURE_L5_CACHE_PATH", str(tmp_path / "l5_cache.db"))
     from shared.validate import l5_cache
 
-    monkeypatch.setattr(l5_cache, "_CONN", None)
-    monkeypatch.setattr(l5_cache, "_DB_PATH", None)
     monkeypatch.setattr(l5_cache, "_DISABLED", True)
 
 
@@ -74,16 +67,6 @@ def _source(tmp_path) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(_SOURCE_LINES)
     return str(tmp_path)
-
-
-def _data_line(event: str) -> str:
-    return next(ln for ln in event.split("\n") if ln.startswith("data:"))
-
-
-def _result_findings(events: list[str]) -> list[dict]:
-    result = next((ev for ev in events if "event: result" in ev), None)
-    assert result is not None, "the audit emitted no result event"
-    return json.loads(_data_line(result)[5:])["findings"]
 
 
 def _llm_row_from_a_real_run(tmp_path, monkeypatch) -> dict:
@@ -100,11 +83,11 @@ def _llm_row_from_a_real_run(tmp_path, monkeypatch) -> dict:
     events = list(run_combined_audit(
         run_id="d1b", source_path=src, categories=["x"],
         skill_map={"x": lambda _p: {"findings": []}},
-        skill_tools=["__dummy_tool__"], instructions="audit",
+        skill_tools=DUMMY_TOOLS, instructions="audit",
         model="gpt-4o", use_llm=True,
         validate_use_llm=False,  # the judge runs below, stubbed, never in-run
     ))
-    rows = [f for f in _result_findings(events) if f.get("title") == "SQL injection in login"]
+    rows = [f for f in result_findings(events) if f.get("title") == "SQL injection in login"]
     assert len(rows) == 1, f"the scripted LLM row must reach the result; got {rows!r}"
     return rows[0]
 
@@ -114,13 +97,11 @@ def _judgeable(row: dict, fid: str, tmp_path) -> dict:
     a real code window (L5 skips blind rows), no prior validation blob."""
     fresh = {k: v for k, v in row.items() if not k.startswith("validation")}
     fresh.update(id=fid, file_path=str(tmp_path / "app" / "auth.py"),
-                 line_start=4, line_end=4,
-                 code_snippet="4:     return db.execute('SELECT * FROM u WHERE id=' + uid)")
+                 line_start=4, line_end=4, code_snippet=_SNIPPET)
     return fresh
 
 
-def _validate_once(finding: dict, verdict: float, tmp_path, monkeypatch,
-                   source_path: str = "") -> dict:
+def _validate_once(finding: dict, verdict: float, monkeypatch, source_path: str = "") -> dict:
     """One validate pass with the stub judge.
 
     ``source_path=""`` keeps the judge on its tool-free path; a source root
@@ -145,14 +126,12 @@ def _l5_check(finding: dict) -> dict:
 
 
 def _llm_row(provenance: str, tmp_path) -> dict:
-    return {
-        "id": "llm-row", "severity": "high", "category": "CWE-89",
-        "title": "SQL injection in login", "description": "d",
-        "recommendation": "r", "check_id": _MODEL_CHECK_ID,
-        "provenance": provenance, "file_path": str(tmp_path / "app" / "auth.py"),
-        "line_start": 4, "line_end": 4,
-        "code_snippet": "4:     return db.execute('SELECT * FROM u WHERE id=' + uid)",
-    }
+    return fake_finding(
+        title="SQL injection in login", category="CWE-89",
+        file_path=str(tmp_path / "app" / "auth.py"), line_start=4, line_end=4,
+        description="d", recommendation="r", id="llm-row",
+        check_id=_MODEL_CHECK_ID, provenance=provenance, code_snippet=_SNIPPET,
+    )
 
 
 def _verified_row(tmp_path, monkeypatch, fid: str) -> dict:
@@ -161,7 +140,7 @@ def _verified_row(tmp_path, monkeypatch, fid: str) -> dict:
     collapse working stays), and a confirming judge re-tags the row."""
     emitted = _llm_row_from_a_real_run(tmp_path, monkeypatch)
     assert (emitted.get("provenance"), emitted.get("check_id")) == ("llm", _MODEL_CHECK_ID), emitted
-    verified = _validate_once(_judgeable(emitted, fid, tmp_path), _CONFIRMING, tmp_path, monkeypatch)
+    verified = _validate_once(_judgeable(emitted, fid, tmp_path), _CONFIRMING, monkeypatch)
     assert (verified.get("provenance"), verified.get("check_id")) == (
         "llm_l5_verified", _MODEL_CHECK_ID), verified
     return verified
@@ -172,26 +151,20 @@ def _safeguard(check: dict) -> object:
 
 
 # ── the full path: model check_id → result row → L5 re-tag → still demotable ─
+#
+# The private predicates (`_is_deterministic`, `_is_l5_exempt`) are not asserted
+# here: test_0074_llm_family_parity pins `_is_deterministic` for every spelling
+# of the shared fixture, and the L5 check's weight and safeguard below are the
+# observable form of `_is_l5_exempt` (an exempt row's demotion is neutralised
+# to weight 0.0 as `deterministic_authoritative`).
 
 class TestModelCheckIdThroughTheRealPipeline:
-    def test_retagged_llm_row_with_model_check_id_is_not_deterministic(self, tmp_path, monkeypatch):
-        """AC33 / T-1.1: the D1b chain, end to end."""
-        from shared.validate.llm_judge import _is_deterministic, _is_l5_exempt
-
-        verified = _verified_row(tmp_path, monkeypatch, "llm-1")
-        assert _is_deterministic(verified) is False, (
-            "AC33: an L5-verified LLM row is still a model guess; a model-authored "
-            "check_id must not promote it to the authoritative tier"
-        )
-        assert _is_l5_exempt(verified) is False, (
-            "AC33: the row must never gain demotion immunity"
-        )
-
     def test_retagged_llm_row_stays_l5_demotable(self, tmp_path, monkeypatch):
-        """AC33 / T-1.1: a later demoting verdict on the re-tagged row is honoured."""
+        """AC33 / T-1.1: the D1b chain, end to end — a later demoting verdict
+        on the re-tagged row is honoured: no demotion immunity."""
         verified = _verified_row(tmp_path, monkeypatch, "llm-2")
         rejudged = _validate_once(_judgeable(verified, "llm-3", tmp_path),
-                                  _DEMOTING, tmp_path, monkeypatch)
+                                  _DEMOTING, monkeypatch)
         check = _l5_check(rejudged)
         assert check.get("weight", 0.0) < 0, (
             "AC33: the judge's demotion of an LLM-family row must keep its weight; "
@@ -203,36 +176,25 @@ class TestModelCheckIdThroughTheRealPipeline:
 # ── every LLM-family spelling, and the skill control ────────────────────────
 
 class TestLlmFamilyVariants:
-    @pytest.mark.parametrize("provenance", LLM_FAMILY_VARIANTS)
-    def test_llm_family_row_with_check_id_is_not_deterministic(self, provenance, tmp_path):
-        """AC33: the family rule is prefix-based, case- and whitespace-insensitive.
-        ("llm" already holds today; it is the regression pin of the set.)"""
-        from shared.validate.llm_judge import _is_deterministic, _is_l5_exempt
-
-        row = _llm_row(provenance, tmp_path)
-        assert _is_deterministic(row) is False, f"provenance={provenance!r}"
-        assert _is_l5_exempt(row) is False, f"provenance={provenance!r}"
-
     @pytest.mark.parametrize("with_root", JUDGE_PATHS, ids=JUDGE_PATH_IDS)
     @pytest.mark.parametrize("provenance", LLM_FAMILY_VARIANTS)
     def test_llm_family_row_demotion_is_honoured(self, provenance, with_root, tmp_path, monkeypatch):
-        """AC33: the demotion reaches the voter for every spelling, on both
-        judge paths (tool-free, and the source-root path a real run takes)."""
+        """AC33: the family rule is prefix-based, case- and whitespace-
+        insensitive, so the demotion reaches the voter for every spelling, on
+        both judge paths (tool-free, and the source-root path a real run takes).
+        ("llm" already holds today; it is the regression pin of the set.)"""
         root = _source(tmp_path) if with_root else ""
-        out = _validate_once(_llm_row(provenance, tmp_path), _DEMOTING, tmp_path,
+        out = _validate_once(_llm_row(provenance, tmp_path), _DEMOTING,
                              monkeypatch, source_path=root)
         check = _l5_check(out)
         assert check.get("weight", 0.0) < 0, f"provenance={provenance!r}: {check!r}"
+        assert _safeguard(check) != "deterministic_authoritative", f"provenance={provenance!r}: {check!r}"
 
     @pytest.mark.parametrize("with_root", JUDGE_PATHS, ids=JUDGE_PATH_IDS)
     def test_skill_row_with_check_id_stays_deterministic(self, with_root, tmp_path, monkeypatch):
         """AC33 control: the authoritative tier is untouched — a skill row with a
         check_id keeps its deterministic status and its exemption."""
-        from shared.validate.llm_judge import _is_deterministic, _is_l5_exempt
-
         root = _source(tmp_path) if with_root else ""
         row = {**_llm_row("skill", tmp_path), "id": "skill-row", "check_id": _SKILL_CHECK_ID}
-        assert (_is_deterministic(row), _is_l5_exempt(row)) == (True, True)
-
-        check = _l5_check(_validate_once(row, _DEMOTING, tmp_path, monkeypatch, source_path=root))
+        check = _l5_check(_validate_once(row, _DEMOTING, monkeypatch, source_path=root))
         assert (check.get("weight"), _safeguard(check)) == (0.0, "deterministic_authoritative"), check

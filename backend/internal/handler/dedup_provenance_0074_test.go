@@ -39,7 +39,6 @@ import (
 	"fmt"
 	"log"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -168,54 +167,68 @@ func assertNamesBothTiers(t *testing.T, f model.Finding, want ...string) {
 // AC17 — provenance_origins names every contributing tier
 // ---------------------------------------------------------------------------
 
-// AC17, T4.1 direction 1: the skill row wins at equal severity; the LLM row
-// that collapsed into it must still be on the record.
-func TestProvenanceOrigins_SkillWinsAtEqualSeverity_0074(t *testing.T) {
-	skill := deterministicRow("skill-1", model.SeverityHigh)
-	llm := llmRow("llm-1", model.SeverityHigh, 0)
-	for _, rows := range bothOrders(skill, llm) {
-		got := mergeOne(t, rows...)
-		if got.ID != "skill-1" {
-			t.Fatalf("precondition: skill row must win at equal severity, got %s", got.ID)
-		}
-		assertNamesBothTiers(t, got, "skill", "llm")
+func withProvenance(f model.Finding, provenance string) model.Finding {
+	f.Provenance = provenance
+	return f
+}
+
+func withCheckID(f model.Finding, checkID string) model.Finding {
+	f.CheckID = checkID
+	return f
+}
+
+// tierPair: a skill row and an LLM row for one site merge, in either input
+// order, into ONE row naming wantTiers; wantWinner ("" = unchecked) is the
+// precondition on which row survives.
+type tierPair struct {
+	name       string
+	skill, llm model.Finding
+	wantWinner string
+	wantTiers  []string
+}
+
+// tierPairCases builds fresh rows per call, since a merge may write into them.
+func tierPairCases() []tierPair {
+	return []tierPair{
+		// AC17, T4.1 direction 1: the skill row wins at equal severity; the LLM
+		// row that collapsed into it must still be on the record.
+		{"SkillWinsAtEqualSeverity", deterministicRow("skill-1", model.SeverityHigh),
+			llmRow("llm-1", model.SeverityHigh, 0), "skill-1", []string{"skill", "llm"}},
+		// AC17, T4.1 direction 2: the LLM row wins because it is strictly more
+		// severe; the skill row it displaced must still be on the record.
+		{"LLMWinsWhenStrictlyMoreSevere", deterministicRow("skill-2", model.SeverityMedium),
+			llmRow("llm-2", model.SeverityCritical, 0), "llm-2", []string{"skill", "llm"}},
+		// AC17: the whole llm* family is an LLM tier; an L5-verified LLM row that
+		// collapses into a skill row is recorded under its own provenance value.
+		{"RecordsTheVerifiedLLMValue", deterministicRow("skill-3", model.SeverityHigh),
+			withProvenance(llmRow("llm-3", model.SeverityHigh, 0), "llm_l5_verified"), "", []string{"skill", "llm_l5_verified"}},
+		// AC17, T4.2 (R23/F5): the commonest both-tier pair is ONE agent's skill
+		// row and the same agent's LLM row. Origins exclude the winner's own agent
+		// and cross-agent validation returns early, so today nothing records it.
+		{"SameAgentPairRecordsBothTiers",
+			withCheckID(provenanceRow("cwe-skill", "cwe", "skill", model.SeverityHigh), "cwe.sql_injection.string_concat"),
+			provenanceRow("cwe-llm", "cwe", "llm", model.SeverityHigh), "", []string{"skill", "llm"}},
 	}
 }
 
-// AC17, T4.1 direction 2: the LLM row wins because it is strictly more severe;
-// the skill row it displaced must still be on the record.
-func TestProvenanceOrigins_LLMWinsWhenStrictlyMoreSevere_0074(t *testing.T) {
-	skill := deterministicRow("skill-2", model.SeverityMedium)
-	llm := llmRow("llm-2", model.SeverityCritical, 0)
-	for _, rows := range bothOrders(skill, llm) {
-		got := mergeOne(t, rows...)
-		if got.ID != "llm-2" {
-			t.Fatalf("precondition: a strictly more severe LLM row must win, got %s", got.ID)
-		}
-		assertNamesBothTiers(t, got, "skill", "llm")
+// AC17: provenance_origins names every contributing tier of a skill+LLM merge.
+func TestProvenanceOrigins_TierPairs_0074(t *testing.T) {
+	for _, c := range tierPairCases() {
+		t.Run(c.name, func(t *testing.T) {
+			for _, rows := range bothOrders(c.skill, c.llm) {
+				got := mergeOne(t, rows...)
+				assertWinner(t, got, c.wantWinner)
+				assertNamesBothTiers(t, got, c.wantTiers...)
+			}
+		})
 	}
 }
 
-// AC17: the whole llm* family is an LLM tier; an L5-verified LLM row that
-// collapses into a skill row is recorded under its own provenance value.
-func TestProvenanceOrigins_RecordsTheVerifiedLLMValue_0074(t *testing.T) {
-	skill := deterministicRow("skill-3", model.SeverityHigh)
-	llm := llmRow("llm-3", model.SeverityHigh, 0)
-	llm.Provenance = "llm_l5_verified"
-	got := mergeOne(t, skill, llm)
-	assertNamesBothTiers(t, got, "skill", "llm_l5_verified")
-}
-
-// AC17, T4.2 (R23/F5): the commonest both-tier pair is ONE agent's skill row
-// and the same agent's LLM row. Origins exclude the winner's own agent and
-// cross-agent validation returns early, so today nothing records it.
-func TestProvenanceOrigins_SameAgentPairRecordsBothTiers_0074(t *testing.T) {
-	skill := provenanceRow("cwe-skill", "cwe", "skill", model.SeverityHigh)
-	skill.CheckID = "cwe.sql_injection.string_concat"
-	llm := provenanceRow("cwe-llm", "cwe", "llm", model.SeverityHigh)
-	for _, rows := range bothOrders(skill, llm) {
-		got := mergeOne(t, rows...)
-		assertNamesBothTiers(t, got, "skill", "llm")
+// assertWinner fails unless the survivor is want ("" skips the check).
+func assertWinner(t *testing.T, got model.Finding, want string) {
+	t.Helper()
+	if want != "" && got.ID != want {
+		t.Fatalf("precondition: %s must win the merge, got %s", want, got.ID)
 	}
 }
 
@@ -279,9 +292,9 @@ func assertNoProvenanceCheck(t *testing.T, f model.Finding) {
 	}
 }
 
-// votedRow is a same-agent winner that already carries an agent verdict.
-func votedRow(id, provenance string) model.Finding {
-	f := provenanceRow(id, "cwe", provenance, model.SeverityHigh)
+// withVerdict gives f an agent verdict (likely/0.7, one pattern check), so a
+// merge or the L3 cross_agent re-vote has something to move.
+func withVerdict(f model.Finding) model.Finding {
 	f.ValidationStatus = "likely"
 	f.ValidationConfidence = 0.7
 	f.Validation = map[string]interface{}{
@@ -294,9 +307,8 @@ func votedRow(id, provenance string) model.Finding {
 // AC11: for a same-agent pair (no cross_agent check is appended), recording
 // both tiers must leave the verdict and the check list exactly as they were.
 func TestProvenanceOrigins_NeverMovesTheVerdict_0074(t *testing.T) {
-	skill := votedRow("v-skill", "skill")
-	skill.CheckID = "cwe.sql_injection.string_concat"
-	llm := votedRow("v-llm", "llm")
+	skill := withCheckID(withVerdict(provenanceRow("v-skill", "cwe", "skill", model.SeverityHigh)), "cwe.sql_injection.string_concat")
+	llm := withVerdict(provenanceRow("v-llm", "cwe", "llm", model.SeverityHigh))
 	got := mergeOne(t, skill, llm)
 	assertNamesBothTiers(t, got, "skill", "llm")
 	assertVerdictUnmoved(t, got)
@@ -345,14 +357,7 @@ func TestMergedDescriptions_KeepsTheLoserReasoning_0074(t *testing.T) {
 	const reasoning = "uid flows from request.args into the concatenated query without a parameter binding"
 	skill := describedRow(deterministicRow("d-skill", model.SeverityHigh), "Pattern match: string-built SQL")
 	llm := describedRow(llmRow("d-llm", model.SeverityHigh, 0), reasoning)
-	got := mergeOne(t, skill, llm)
-	texts := mergedTexts(mergedDescriptionsOf(t, got))
-	if !containsAll(texts, reasoning) {
-		t.Fatalf("validation.merged_descriptions = %q, want it to keep the losing LLM row's description", texts)
-	}
-	if containsAll(texts, skill.Description) {
-		t.Errorf("the winner's own description must not be copied into merged_descriptions: %q", texts)
-	}
+	assertKeepsOnlyTheLoser(t, mergeOne(t, skill, llm), reasoning, skill.Description)
 }
 
 // AC18: the per-entry cap is 2,048 BYTES, truncation is marked, and a cut
@@ -515,12 +520,9 @@ func (b *lockedBuffer) String() string {
 func captureLog(t *testing.T) *lockedBuffer {
 	t.Helper()
 	buf := &lockedBuffer{}
-	flags := log.Flags()
+	prev := log.Writer()
 	log.SetOutput(buf)
-	t.Cleanup(func() {
-		log.SetOutput(os.Stderr)
-		log.SetFlags(flags)
-	})
+	t.Cleanup(func() { log.SetOutput(prev) })
 	return buf
 }
 
@@ -637,60 +639,60 @@ func assertBuckets(t *testing.T, got map[string]string, want map[string]string) 
 	}
 }
 
-// AC19, T4.7: every LLM row that reaches Go is unique on the key, so nothing
-// is lost: emitted(3) - collapsed_agent(1) - collapsed_go(0) - unique(2) = 0.
-func TestDedupBuckets_AllUniqueMeansNothingLost_0074(t *testing.T) {
-	rows := []map[string]interface{}{
+// singleAgentBucketCases: one cwe snapshot (rows + counters, nil = an older
+// agent that sends none) and the fields its dedup_buckets line must carry.
+var singleAgentBucketCases = []struct {
+	name     string
+	rows     []map[string]interface{}
+	counters map[string]int
+	want     map[string]string
+}{
+	// AC19, T4.7: every LLM row that reaches Go is unique on the key, so
+	// nothing is lost: emitted(3) - collapsed_agent(1) - collapsed_go(0) - unique(2) = 0.
+	{"AllUniqueMeansNothingLost", []map[string]interface{}{
+		snapRow("skill", "cwe.sqli", 10, "high"), snapRow("llm", "", 20, "high"), snapRow("llm", "", 30, "high"),
+	}, counters(3, 1), map[string]string{"emitted": "3", "collapsed_agent": "1", "collapsed_go": "0", "unique": "2", "lost": "0"}},
+	// AC19, T4.6: an LLM row that collapses into a skill row at the same site
+	// is counted in collapsed_go, not lost.
+	{"CollapseIntoSkillIsCountedNotLost", []map[string]interface{}{
+		snapRow("skill", "cwe.sqli", 10, "high"), snapRow("llm", "", 10, "high"), snapRow("llm", "", 20, "high"),
+	}, counters(2, 0), map[string]string{"emitted": "2", "collapsed_agent": "0", "collapsed_go": "1", "unique": "1", "lost": "0"}},
+	// AC19: a loss is reported, never hidden. The agent says it emitted 6 and
+	// collapsed 1, but only 2 LLM rows arrived: lost = 6 - 1 - 0 - 2 = 3.
+	{"NonZeroLossIsReported", []map[string]interface{}{
+		snapRow("skill", "cwe.sqli", 10, "high"), snapRow("llm", "", 20, "high"), snapRow("llm_l5_verified", "", 30, "high"),
+	}, counters(6, 1), map[string]string{"emitted": "6", "collapsed_agent": "1", "unique": "2", "lost": "3"}},
+	// Version skew (§5.5 item 3): an older agent sends no counters. Its
+	// buckets are `unavailable`, and lost is NEVER derived from zeros — a
+	// derivation would report a negative or a false 0.
+	{"OlderAgentIsUnavailableNeverZero", []map[string]interface{}{
+		snapRow("skill", "cwe.sqli", 10, "high"), snapRow("llm", "", 20, "high"),
+	}, nil, map[string]string{"emitted": "unavailable", "collapsed_agent": "unavailable", "lost": "unavailable"}},
+	// Version skew, the other side: a NEW agent that genuinely emitted zero
+	// LLM rows reports 0, which is a fact and must not be confused with absence.
+	{"ExplicitZeroIsNotUnavailable", []map[string]interface{}{
 		snapRow("skill", "cwe.sqli", 10, "high"),
-		snapRow("llm", "", 20, "high"),
-		snapRow("llm", "", 30, "high"),
-	}
-	got := drainBuckets(t, "aud-b1", snapshotEvent(t, "cwe", rows, map[string]int{"llm_emitted": 3, "llm_collapsed_agent": 1}))
-	assertBuckets(t, got, map[string]string{"emitted": "3", "collapsed_agent": "1", "collapsed_go": "0", "unique": "2", "lost": "0"})
+	}, counters(0, 0), nothingFromLLM},
+	// AC19, LLM-wins direction within ONE agent: a strictly more severe LLM
+	// row that displaces its own agent's skill row is unique.
+	{"SameAgentLLMWinIsUnique", []map[string]interface{}{
+		snapRow("skill", "cwe.sqli", 10, "medium"), snapRow("llm", "", 10, "critical"),
+	}, counters(1, 0), map[string]string{"emitted": "1", "collapsed_go": "0", "unique": "1", "lost": "0"}},
+	// AC19, plan §8 negative row: an LLM row whose line is off by 3 from the
+	// skill row does not merge, so it is unique and nothing is lost.
+	{"OffByThreeIsUniqueNotLost", []map[string]interface{}{
+		snapRow("skill", "cwe.sqli", 10, "high"), snapRow("llm", "", 13, "high"),
+	}, counters(1, 0), map[string]string{"emitted": "1", "collapsed_go": "0", "unique": "1", "lost": "0"}},
 }
 
-// AC19, T4.6: an LLM row that collapses into a skill row at the same site is
-// counted in collapsed_go, not lost.
-func TestDedupBuckets_CollapseIntoSkillIsCountedNotLost_0074(t *testing.T) {
-	rows := []map[string]interface{}{
-		snapRow("skill", "cwe.sqli", 10, "high"),
-		snapRow("llm", "", 10, "high"),
-		snapRow("llm", "", 20, "high"),
+// AC19 + version skew: one agent's dedup_buckets line.
+func TestDedupBuckets_SingleAgent_0074(t *testing.T) {
+	for _, c := range singleAgentBucketCases {
+		t.Run(c.name, func(t *testing.T) {
+			got := drainBuckets(t, "aud-"+c.name, snapshotEvent(t, "cwe", c.rows, c.counters))
+			assertBuckets(t, got, c.want)
+		})
 	}
-	got := drainBuckets(t, "aud-b2", snapshotEvent(t, "cwe", rows, map[string]int{"llm_emitted": 2, "llm_collapsed_agent": 0}))
-	assertBuckets(t, got, map[string]string{"emitted": "2", "collapsed_agent": "0", "collapsed_go": "1", "unique": "1", "lost": "0"})
-}
-
-// AC19: a loss is reported, never hidden. The agent says it emitted 6 and
-// collapsed 1, but only 2 LLM rows arrived: lost = 6 - 1 - 0 - 2 = 3.
-func TestDedupBuckets_NonZeroLossIsReported_0074(t *testing.T) {
-	rows := []map[string]interface{}{
-		snapRow("skill", "cwe.sqli", 10, "high"),
-		snapRow("llm", "", 20, "high"),
-		snapRow("llm_l5_verified", "", 30, "high"),
-	}
-	got := drainBuckets(t, "aud-b3", snapshotEvent(t, "cwe", rows, map[string]int{"llm_emitted": 6, "llm_collapsed_agent": 1}))
-	assertBuckets(t, got, map[string]string{"emitted": "6", "collapsed_agent": "1", "unique": "2", "lost": "3"})
-}
-
-// Version skew (§5.5 item 3): an older agent sends no counters. Its buckets
-// are `unavailable`, and lost is NEVER derived from zeros — a derivation
-// would report a negative or a false 0.
-func TestDedupBuckets_OlderAgentIsUnavailableNeverZero_0074(t *testing.T) {
-	rows := []map[string]interface{}{
-		snapRow("skill", "cwe.sqli", 10, "high"),
-		snapRow("llm", "", 20, "high"),
-	}
-	got := drainBuckets(t, "aud-b4", snapshotEvent(t, "cwe", rows, nil))
-	assertBuckets(t, got, map[string]string{"emitted": "unavailable", "collapsed_agent": "unavailable", "lost": "unavailable"})
-}
-
-// Version skew, the other side: a NEW agent that genuinely emitted zero LLM
-// rows reports 0, which is a fact and must not be confused with absence.
-func TestDedupBuckets_ExplicitZeroIsNotUnavailable_0074(t *testing.T) {
-	rows := []map[string]interface{}{snapRow("skill", "cwe.sqli", 10, "high")}
-	got := drainBuckets(t, "aud-b5", snapshotEvent(t, "cwe", rows, map[string]int{"llm_emitted": 0, "llm_collapsed_agent": 0}))
-	assertBuckets(t, got, map[string]string{"emitted": "0", "collapsed_agent": "0", "collapsed_go": "0", "unique": "0", "lost": "0"})
 }
 
 // ---------------------------------------------------------------------------
@@ -745,17 +747,6 @@ func TestDedupBuckets_LLMRowThatWinsIsUnique_0074(t *testing.T) {
 		agentBuckets{"asvs", map[string]string{"emitted": "1", "collapsed_go": "0", "unique": "1", "lost": "0"}})
 }
 
-// AC19, LLM-wins direction within ONE agent: the same rule holds when the
-// displaced skill row is the LLM row's own agent's.
-func TestDedupBuckets_SameAgentLLMWinIsUnique_0074(t *testing.T) {
-	rows := []map[string]interface{}{
-		snapRow("skill", "cwe.sqli", 10, "medium"),
-		snapRow("llm", "", 10, "critical"),
-	}
-	got := drainBuckets(t, "aud-x4", snapshotEvent(t, "cwe", rows, counters(1, 0)))
-	assertBuckets(t, got, map[string]string{"emitted": "1", "collapsed_go": "0", "unique": "1", "lost": "0"})
-}
-
 // AC19, T4.3: an LLM leaf swallowed by a rollup parent (another agent's) is
 // collapsed_go for the leaf's agent; the parent is not an LLM row.
 func TestDedupBuckets_LLMLeafUnderRollupParentIsCollapsed_0074(t *testing.T) {
@@ -767,33 +758,9 @@ func TestDedupBuckets_LLMLeafUnderRollupParentIsCollapsed_0074(t *testing.T) {
 		agentBuckets{"asvs", map[string]string{"emitted": "1", "collapsed_go": "1", "unique": "0", "lost": "0"}})
 }
 
-// AC19, plan §8 negative row: an LLM row whose line is off by 3 from the
-// skill row does not merge, so it is unique and nothing is lost.
-func TestDedupBuckets_OffByThreeIsUniqueNotLost_0074(t *testing.T) {
-	rows := []map[string]interface{}{
-		snapRow("skill", "cwe.sqli", 10, "high"),
-		snapRow("llm", "", 13, "high"),
-	}
-	got := drainBuckets(t, "aud-x6", snapshotEvent(t, "cwe", rows, counters(1, 0)))
-	assertBuckets(t, got, map[string]string{"emitted": "1", "collapsed_go": "0", "unique": "1", "lost": "0"})
-}
-
 // ---------------------------------------------------------------------------
 // AC11 / O4 across agents — both tiers never move the re-vote
 // ---------------------------------------------------------------------------
-
-// votedSkillWinner is the cwe skill row that wins either pair below, carrying
-// an agent verdict so the L3 cross_agent re-vote has something to move.
-func votedSkillWinner() model.Finding {
-	f := deterministicRow("o4-skill", model.SeverityHigh)
-	f.ValidationStatus = "likely"
-	f.ValidationConfidence = 0.7
-	f.Validation = map[string]interface{}{
-		"status": "likely", "confidence": 0.7,
-		"checks": []interface{}{map[string]interface{}{"id": "pattern", "result": "match", "weight": 0.4}},
-	}
-	return f
-}
 
 // verdictOf projects everything a voter decides or reads, through JSON.
 func verdictOf(t *testing.T, f model.Finding) string {
@@ -814,8 +781,10 @@ func TestProvenanceOrigins_CrossAgentVerdictEqualsSkillOnlyPair_0074(t *testing.
 	llmLoser := llmRow("o4-asvs", model.SeverityHigh, 0)
 	skillLoser := llmLoser
 	skillLoser.Provenance = "skill"
-	withLLM := mergeOne(t, votedSkillWinner(), llmLoser)
-	skillOnly := mergeOne(t, votedSkillWinner(), skillLoser)
+	// The cwe skill winner of either pair carries an agent verdict; each merge
+	// gets a fresh one, since a merge may rewrite the winner's validation map.
+	withLLM := mergeOne(t, withVerdict(deterministicRow("o4-skill", model.SeverityHigh)), llmLoser)
+	skillOnly := mergeOne(t, withVerdict(deterministicRow("o4-skill", model.SeverityHigh)), skillLoser)
 	assertNamesBothTiers(t, withLLM, "skill", "llm")
 	if a, b := verdictOf(t, withLLM), verdictOf(t, skillOnly); a != b {
 		t.Errorf("the LLM tier moved the cross-agent re-vote:\n skill+llm   %s\n skill+skill %s", a, b)

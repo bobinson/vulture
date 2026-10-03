@@ -7,16 +7,20 @@ import { fileURLToPath } from "node:url";
 //
 // Business contract pinned here:
 //   (a) "LLM (all)" (llm_family) shows exactly the llm + llm_l5_verified rows.
-//   (b) "Both tiers" (both) shows the rows whose validation.provenance_origins
-//       spans the deterministic and the LLM families.
-//   (c) AC10: a row's validation verdict renders identically whichever filter
-//       reached it, and the per-audit false-positive count does not move.
+//   (c) "Both tiers" (both) shows the rows whose validation.provenance_origins
+//       spans the deterministic and the LLM families, and (AC10) a row's
+//       validation verdict renders identically whichever filter reached it,
+//       and the per-audit false-positive count does not move. (c) also covers
+//       the old (b); the "Both tiers" chip label is checked by (e).
 //   (d) the finding detail shows 0076's anchor verdict and the claimed line
 //       range read-only (no control); a deterministic row has no anchor row.
-//   (e) the new labels exist in all six locales.
-//   (f) pixel-perfect: the filter control and the anchor row match
-//       frontend/designs/0074-provenance-family.html, rendered in the SAME
-//       browser as the reference (never a screenshot of the implementation).
+//   (e) the new labels exist in all six locales (chromium only: the strings
+//       come from the locale files, so the engine cannot change them).
+//   (f) pixel-perfect: the filter control (in each state) and the anchor row
+//       match frontend/designs/0074-provenance-family.html, rendered in the
+//       SAME browser as the reference (never a screenshot of the
+//       implementation). One test per browser opens the app and the mockup
+//       once and compares every state; soft assertions report each mismatch.
 //   (g) speed: with 10,000 findings, switching to llm_family re-renders within
 //       100 ms (measured in the page) and issues no network request.
 //
@@ -226,8 +230,10 @@ async function diffRatio(page: Page, a: Buffer, b: Buffer): Promise<number> {
 async function expectMatchesDesign(page: Page, testInfo: TestInfo, name: string, design: Buffer, actual: Buffer) {
   await testInfo.attach(`${name}-design.png`, { body: design, contentType: "image/png" });
   await testInfo.attach(`${name}-app.png`, { body: actual, contentType: "image/png" });
-  expect(pngSize(actual), `${name}: element size differs from the design`).toBe(pngSize(design));
-  expect(await diffRatio(page, design, actual), `${name}: pixel diff ratio`).toBeLessThanOrEqual(0.01);
+  const size = pngSize(actual);
+  expect.soft(size, `${name}: element size differs from the design`).toBe(pngSize(design));
+  if (size !== pngSize(design)) return; // the diff is defined for same-size images only
+  expect.soft(await diffRatio(page, design, actual), `${name}: pixel diff ratio`).toBeLessThanOrEqual(0.01);
 }
 
 // ── locale helpers ────────────────────────────────────────────────────────
@@ -253,27 +259,23 @@ test.describe("0074 tier-family provenance filter", () => {
     await expect.poll(async () => (await visibleTitles(page)).length).toBe(UI_FINDINGS.length);
   });
 
-  test("(b) Both tiers shows the rows whose provenance_origins spans both families — AC39", async ({ page }) => {
+  test("(c) llm_family and both select their rows and leave every verdict and the FP count unchanged — AC39, AC10", async ({ page }) => {
     await openAudit(page, UI_FINDINGS);
-    await expect(chip(page, "both")).toHaveText("Both tiers");
-    await selectFilter(page, "both");
-    await expect.poll(() => visibleTitles(page)).toEqual(BOTH_TITLES);
+    const fpSwitch = page.getByRole("switch", { name: /hide false positives/i });
+    const fpBefore = await fpSwitch.innerText();
+    const cases = [["llm_family", LLM_FAMILY_TITLES], ["both", BOTH_TITLES]] as const;
+    // Every row is visible unfiltered, so each verdict is read once, before any filter.
+    const before = await Promise.all(cases.map(([, kept]) => rowTexts(page, kept)));
+    for (const [i, [value, kept]] of cases.entries()) {
+      await test.step(value, async () => {
+        await selectFilter(page, value);
+        await expect.poll(() => visibleTitles(page)).toEqual(kept);
+        expect(await rowTexts(page, kept)).toEqual(before[i]);
+        expect(await fpSwitch.innerText()).toBe(fpBefore);
+        await expect(rowFor(page, "LLM won merge row")).toContainText("Suspicious");
+      });
+    }
   });
-
-  for (const value of ["llm_family", "both"] as const) {
-    test(`(c) ${value} leaves every row's validation verdict and the FP count unchanged — AC10`, async ({ page }) => {
-      await openAudit(page, UI_FINDINGS);
-      const kept = value === "both" ? BOTH_TITLES : LLM_FAMILY_TITLES;
-      const fpSwitch = page.getByRole("switch", { name: /hide false positives/i });
-      const before = await rowTexts(page, kept);
-      const fpBefore = await fpSwitch.innerText();
-      await selectFilter(page, value);
-      await expect.poll(() => visibleTitles(page)).toEqual(kept);
-      expect(await rowTexts(page, kept)).toEqual(before);
-      expect(await fpSwitch.innerText()).toBe(fpBefore);
-      await expect(rowFor(page, "LLM won merge row")).toContainText("Suspicious");
-    });
-  }
 
   test("(d) the finding detail shows the anchor result read-only — T2.2", async ({ page }) => {
     await openAudit(page, UI_FINDINGS);
@@ -290,36 +292,41 @@ test.describe("0074 tier-family provenance filter", () => {
     await expect(page.getByTestId("anchor-result")).toHaveCount(0);
   });
 
-  for (const lng of LOCALES) {
-    test(`(e) the 0074 labels are translated in ${lng} — T2.2`, async ({ page }) => {
-      await openAudit(page, UI_FINDINGS, lng);
-      await expect(chip(page, "llm_family")).toHaveText(localeValue(lng, "results.provenanceFamily.llm_family"));
-      await expect(chip(page, "both")).toHaveText(localeValue(lng, "results.provenanceFamily.both"));
-      await page.getByTitle("LLM only row", { exact: true }).click();
-      const anchor = page.getByTestId("anchor-result");
-      await expect(anchor).toContainText(localeValue(lng, "results.anchor.title"));
-      await expect(anchor.getByTestId("anchor-status")).toHaveText(localeValue(lng, "results.anchor.status.reanchored"));
-      await expect(anchor.getByTestId("anchor-range")).toHaveText(localeValue(lng, "results.anchor.range.past_eof"));
-    });
-  }
+  test.describe("(e) locale labels", () => {
+    test.skip(({ browserName }) => browserName !== "chromium", "translations are engine-independent");
+
+    for (const lng of LOCALES) {
+      test(`(e) the 0074 labels are translated in ${lng} — T2.2`, async ({ page }) => {
+        await openAudit(page, UI_FINDINGS, lng);
+        await expect(chip(page, "llm_family")).toHaveText(localeValue(lng, "results.provenanceFamily.llm_family"));
+        await expect(chip(page, "both")).toHaveText(localeValue(lng, "results.provenanceFamily.both"));
+        await page.getByTitle("LLM only row", { exact: true }).click();
+        const anchor = page.getByTestId("anchor-result");
+        await expect(anchor).toContainText(localeValue(lng, "results.anchor.title"));
+        await expect(anchor.getByTestId("anchor-status")).toHaveText(localeValue(lng, "results.anchor.status.reanchored"));
+        await expect(anchor.getByTestId("anchor-range")).toHaveText(localeValue(lng, "results.anchor.range.past_eof"));
+      });
+    }
+  });
 });
 
 test.describe("0074 pixel parity with the design mockup", () => {
-  for (const state of ["all", "llm_family", "both"] as const) {
-    test(`(f) the provenance filter (${state} selected) matches the design`, async ({ page }, testInfo) => {
-      await openAudit(page, UI_FINDINGS);
-      await selectFilter(page, state);
-      const design = await openDesign(page);
-      const reference = design.locator(`[data-testid="provenance-filter"][data-state="${state}"]`);
-      await expectElementMatchesDesign(page, testInfo, `provenance-filter-${state}`, reference, page.getByTestId("provenance-filter"));
-    });
-  }
-
-  test("(f) the anchor result row matches the design", async ({ page }, testInfo) => {
+  test("(f) the provenance filter in every state, then the anchor row, match the design", async ({ page }, testInfo) => {
     await openAudit(page, UI_FINDINGS);
-    await page.getByTitle("LLM only row", { exact: true }).click();
     const design = await openDesign(page);
-    await expectElementMatchesDesign(page, testInfo, "anchor-result", design.getByTestId("anchor-result"), page.getByTestId("anchor-result"));
+    for (const state of ["all", "llm_family", "both"] as const) {
+      await test.step(`provenance filter: ${state}`, async () => {
+        await page.bringToFront();
+        await selectFilter(page, state);
+        const reference = design.locator(`[data-testid="provenance-filter"][data-state="${state}"]`);
+        await expectElementMatchesDesign(page, testInfo, `provenance-filter-${state}`, reference, page.getByTestId("provenance-filter"));
+      });
+    }
+    await test.step("anchor result row", async () => {
+      await page.bringToFront();
+      await page.getByTitle("LLM only row", { exact: true }).click();
+      await expectElementMatchesDesign(page, testInfo, "anchor-result", design.getByTestId("anchor-result"), page.getByTestId("anchor-result"));
+    });
   });
 });
 

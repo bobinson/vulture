@@ -58,37 +58,26 @@ func TestReanchorDefaultIsOnWhenUnset_0074(t *testing.T) {
 	}
 }
 
-// O6: blank or unrecognised values take the default (ON), never a hidden off.
-func TestReanchorBlankOrTypoTakesTheDefault_0074(t *testing.T) {
-	for _, v := range []string{"", "  ", "maybe"} {
-		t.Run("value="+v, func(t *testing.T) {
-			t.Setenv(reanchorEnv, v)
-			if !reanchoredWindowMoves(t) {
-				t.Fatalf("O6: VULTURE_LLM_QUOTE_REANCHOR=%q must fall back to the ON default", v)
-			}
-		})
-	}
+// O6: Go reads every value as the agent does —
+//   - blank or unrecognised values take the default (ON), never a hidden off;
+//   - the agent's whole falsey token set disables the move (the rollback);
+//   - the agent's truthy token set arms it (not only "true").
+var reanchorTokenCases = []struct {
+	value    string
+	wantMove bool
+}{
+	{"", true}, {"  ", true}, {"maybe", true},
+	{"false", false}, {"0", false}, {"no", false}, {"off", false}, {"FALSE", false}, {" Off ", false},
+	{"true", true}, {"1", true}, {"yes", true}, {"on", true}, {"TRUE", true}, {" On ", true},
 }
 
-// O6 rollback: the agent's whole falsey token set disables the move in Go too.
-func TestReanchorFalseyTokensDisableTheMove_0074(t *testing.T) {
-	for _, v := range []string{"false", "0", "no", "off", "FALSE", " Off "} {
-		t.Run("value="+v, func(t *testing.T) {
-			t.Setenv(reanchorEnv, v)
-			if reanchoredWindowMoves(t) {
-				t.Fatalf("VULTURE_LLM_QUOTE_REANCHOR=%q must disable the window move, as it does in the agent", v)
-			}
-		})
-	}
-}
-
-// O6: the agent's truthy token set arms the move in Go too (not only "true").
-func TestReanchorTruthyTokensArmTheMove_0074(t *testing.T) {
-	for _, v := range []string{"true", "1", "yes", "on", "TRUE", " On "} {
-		t.Run("value="+v, func(t *testing.T) {
-			t.Setenv(reanchorEnv, v)
-			if !reanchoredWindowMoves(t) {
-				t.Fatalf("VULTURE_LLM_QUOTE_REANCHOR=%q must arm the window move, as it does in the agent", v)
+func TestReanchorTokensReadAsTheAgentDoes_0074(t *testing.T) {
+	for _, c := range reanchorTokenCases {
+		t.Run("value="+c.value, func(t *testing.T) {
+			t.Setenv(reanchorEnv, c.value)
+			if got := reanchoredWindowMoves(t); got != c.wantMove {
+				t.Fatalf("VULTURE_LLM_QUOTE_REANCHOR=%q: window moved=%v, want %v, as in the agent (blank/unrecognised take the ON default)",
+					c.value, got, c.wantMove)
 			}
 		})
 	}

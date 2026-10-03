@@ -79,68 +79,54 @@ var flipCases = []flipCase{
 		map[string]string{"emitted": "1", "collapsed_agent": "0", "collapsed_go": "1", "unique": "0", "lost": "0"}},
 }
 
-// assertAccounted checks the AC19 identity on one dedup_buckets line.
-func assertAccounted(t *testing.T, got map[string]string) {
+// flipPair is how the skill row and the LLM row reach Go: agent names the
+// agent whose dedup_buckets line carries the LLM row.
+type flipPair struct {
+	name, agent string
+	events      func(t *testing.T, llmLine int) []*model.AgUIEvent
+}
+
+var flipPairs = []flipPair{
+	// cross-agent: a cwe skill row and an asvs LLM row.
+	{"cross-agent", "asvs", func(t *testing.T, line int) []*model.AgUIEvent {
+		return []*model.AgUIEvent{
+			snapshotEvent(t, "cwe", []map[string]interface{}{flipSkillRow()}, counters(0, 0)),
+			snapshotEvent(t, "asvs", []map[string]interface{}{flipLLMRow(line)}, counters(1, 0)),
+		}
+	}},
+	// same agent: the commonest pair is ONE agent's skill row and its own LLM
+	// row (R23/F5), both in a single snapshot.
+	{"same-agent", "cwe", func(t *testing.T, line int) []*model.AgUIEvent {
+		rows := []map[string]interface{}{flipSkillRow(), flipLLMRow(line)}
+		return []*model.AgUIEvent{snapshotEvent(t, "cwe", rows, counters(1, 0))}
+	}},
+}
+
+// T5.3 / AC19: each side of the flip, for each pair shape, accounts for every
+// emitted row (the exact want maps pin emitted == collapsed_agent +
+// collapsed_go + unique and lost == 0).
+func TestReanchorFlip_CollisionIsCountedNotLost_0074(t *testing.T) {
+	for _, p := range flipPairs {
+		for i, c := range flipCases {
+			t.Run(p.name+"/"+c.name, func(t *testing.T) {
+				assertFlip(t, p, c, "aud-flip-"+p.agent+strconv.Itoa(i))
+			})
+		}
+	}
+}
+
+// assertFlip drains one pair at the case's line and checks the survivors,
+// that — T5.3 / AC17 under the flip — a row the move collapsed away is still
+// on the record (a reviewer can see the LLM tier found it too), and the LLM
+// row's agent's buckets.
+func assertFlip(t *testing.T, p flipPair, c flipCase, auditID string) {
 	t.Helper()
-	sum := atoiField(t, got, "collapsed_agent") + atoiField(t, got, "collapsed_go") + atoiField(t, got, "unique")
-	if emitted := atoiField(t, got, "emitted"); emitted != sum {
-		t.Errorf("AC19: emitted=%d != collapsed_agent+collapsed_go+unique=%d (fields %v)", emitted, sum, got)
+	kept, logs := drainAt(t, auditID, p.events(t, c.llmLine)...)
+	if len(kept) != c.survivors {
+		t.Fatalf("precondition: fixture must yield %d survivors at line %d, got %d", c.survivors, c.llmLine, len(kept))
 	}
-}
-
-func atoiField(t *testing.T, fields map[string]string, k string) int {
-	t.Helper()
-	n, err := strconv.Atoi(fields[k])
-	if err != nil {
-		t.Fatalf("dedup_buckets %s=%q is not an integer (fields %v)", k, fields[k], fields)
+	if c.survivors == 1 {
+		assertNamesBothTiers(t, kept[0], "skill", "llm")
 	}
-	return n
-}
-
-// T5.3 / AC19, cross-agent: a cwe skill row and an asvs LLM row.
-func TestReanchorFlip_CrossAgentCollisionIsCountedNotLost_0074(t *testing.T) {
-	for i, c := range flipCases {
-		t.Run(c.name, func(t *testing.T) {
-			auditID := "aud-flip-x" + strconv.Itoa(i)
-			cwe := snapshotEvent(t, "cwe", []map[string]interface{}{flipSkillRow()}, counters(0, 0))
-			asvs := snapshotEvent(t, "asvs", []map[string]interface{}{flipLLMRow(c.llmLine)}, counters(1, 0))
-			kept, logs := drainAt(t, auditID, cwe, asvs)
-			if len(kept) != c.survivors {
-				t.Fatalf("precondition: fixture must yield %d survivors at line %d, got %d", c.survivors, c.llmLine, len(kept))
-			}
-			got := bucketFields(t, logs, auditID, "asvs")
-			assertBuckets(t, got, c.want)
-			assertAccounted(t, got)
-		})
-	}
-}
-
-// T5.3 / AC19, same agent: the commonest pair is ONE agent's skill row and
-// its own LLM row (R23/F5), both in a single snapshot.
-func TestReanchorFlip_SameAgentCollisionIsCountedNotLost_0074(t *testing.T) {
-	for i, c := range flipCases {
-		t.Run(c.name, func(t *testing.T) {
-			auditID := "aud-flip-s" + strconv.Itoa(i)
-			rows := []map[string]interface{}{flipSkillRow(), flipLLMRow(c.llmLine)}
-			kept, logs := drainAt(t, auditID, snapshotEvent(t, "cwe", rows, counters(1, 0)))
-			if len(kept) != c.survivors {
-				t.Fatalf("precondition: fixture must yield %d survivors at line %d, got %d", c.survivors, c.llmLine, len(kept))
-			}
-			got := bucketFields(t, logs, auditID, "cwe")
-			assertBuckets(t, got, c.want)
-			assertAccounted(t, got)
-		})
-	}
-}
-
-// T5.3 / AC17 under the flip: the row the move collapsed away is still on
-// the record, so a reviewer can see that the LLM tier found it too.
-func TestReanchorFlip_CollapsedRowStaysOnTheRecord_0074(t *testing.T) {
-	cwe := snapshotEvent(t, "cwe", []map[string]interface{}{flipSkillRow()}, counters(0, 0))
-	asvs := snapshotEvent(t, "asvs", []map[string]interface{}{flipLLMRow(flipVerified)}, counters(1, 0))
-	kept, _ := drainAt(t, "aud-flip-r", cwe, asvs)
-	if len(kept) != 1 {
-		t.Fatalf("precondition: the verified line must collide, got %d survivors", len(kept))
-	}
-	assertNamesBothTiers(t, kept[0], "skill", "llm")
+	assertBuckets(t, bucketFields(t, logs, auditID, p.agent), c.want)
 }

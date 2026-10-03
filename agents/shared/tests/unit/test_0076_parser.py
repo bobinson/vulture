@@ -674,45 +674,35 @@ def test_the_stripped_identity_is_preserved_as_model_check_id(monkeypatch):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _RETIRED_SWITCH = "VULTURE_LLM_TRUST_MODEL_CHECK_ID"
-_RETIRED_SWITCH_VALUES = (None, "true", "false")
 
 
-def _with_retired_switch(monkeypatch, value: str | None) -> None:
-    """Set, or clear, the retired switch so a test can show it changes nothing."""
-    if value is None:
-        monkeypatch.delenv(_RETIRED_SWITCH, raising=False)
-        return
-    monkeypatch.setenv(_RETIRED_SWITCH, value)
-
-
-def test_carry_check_id_does_not_read_the_retired_switch(monkeypatch):
+@pytest.mark.parametrize("switch", [None, "true", "false"])
+def test_carry_check_id_does_not_read_the_retired_switch(monkeypatch, switch):
     """AC26' / T-1.5: `_carry_check_id` gives ONE answer whatever the retired
-    switch holds — the model's value, preserved privately for the restore."""
+    switch holds (unset is the suite default) — the model's value, preserved
+    privately for the restore."""
     from shared.audit_runner import _carry_check_id
 
-    outputs = []
-    for value in _RETIRED_SWITCH_VALUES:
-        _with_retired_switch(monkeypatch, value)
-        outputs.append(_carry_check_id(dict(_MODEL_ROW)))
+    if switch is not None:
+        monkeypatch.setenv(_RETIRED_SWITCH, switch)
 
-    assert outputs == [{"_model_check_id": _MODEL_ROW["check_id"]}] * len(outputs), (
-        f"{_RETIRED_SWITCH} is retired; _carry_check_id must not branch on it: {outputs!r}"
+    assert _carry_check_id(dict(_MODEL_ROW)) == {"_model_check_id": _MODEL_ROW["check_id"]}, (
+        f"{_RETIRED_SWITCH}={switch!r}: the switch is retired; _carry_check_id must not branch on it"
     )
 
 
 @pytest.mark.parametrize("quote_mode", ["off", "observe", "enforce"])
-@pytest.mark.parametrize("switch", _RETIRED_SWITCH_VALUES)
-def test_final_row_carries_the_model_check_id_publicly(monkeypatch, tmp_path, switch, quote_mode):
+def test_final_row_carries_the_model_check_id_publicly(monkeypatch, tmp_path, quote_mode):
     """AC26' / T-1.5: through the choke point (`_verify_and_strip`) the final row
     carries the model's check_id as its PUBLIC dedup identity, with no private
-    carrier left and no model-authored snippet — for every value of the retired
-    switch and every quote-verify mode. The restore is the behaviour that stays
-    (0057's LLM duplicate still collapses onto its skill twin)."""
+    carrier left and no model-authored snippet, in every quote-verify mode. The
+    restore is the behaviour that stays (0057's LLM duplicate still collapses
+    onto its skill twin). The retired switch is not varied here: that nothing
+    reads it is test_0074_env_inventory's and the test above's to prove."""
     from shared.audit_runner import _verify_and_strip
 
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "db.py").write_text("x = 1\n" * 41 + "cursor.execute(q + uid)\n")
-    _with_retired_switch(monkeypatch, switch)
     monkeypatch.setenv("VULTURE_LLM_QUOTE_VERIFY", quote_mode)
 
     row = _verify_and_strip([_parse_structured(monkeypatch, **_MODEL_ROW)], str(tmp_path))[0]
