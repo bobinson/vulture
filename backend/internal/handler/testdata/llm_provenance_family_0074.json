@@ -1,0 +1,13 @@
+[
+  {"provenance": "skill", "is_llm": false},
+  {"provenance": "llm", "is_llm": true},
+  {"provenance": "llm_l5_verified", "is_llm": true},
+  {"provenance": "LLM", "is_llm": true},
+  {"provenance": " llm ", "is_llm": true},
+  {"provenance": "semgrep", "is_llm": false},
+  {"provenance": "signature", "is_llm": false},
+  {"provenance": "", "is_llm": false},
+  {"provenance": "skill_llm", "is_llm": false},
+  {"provenance": "semgrep-llm", "is_llm": false},
+  {"provenance": "llmfoo", "is_llm": true}
+]
