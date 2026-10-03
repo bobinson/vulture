@@ -34,7 +34,7 @@ Same binaries and Docker images serve all modes. Mode selection is via env vars 
 |------|-------------|---------|-------|
 | A: Dev-local | Developer laptop | `docker compose up` | SQLite or local Postgres; `VULTURE_LOCAL_MODE=true`; no new env vars required |
 | B: Centralized server | Ops VM | `docker compose up -d` + Neon DSN + `VULTURE_API_KEYS_ENABLED=true` | See `docs/guides/central_server_deployment.md` |
-| C: Read-only viewer VM | Ops VM | `docker compose -f docker-compose.readonly.yml up -d` | Optional; set `VULTURE_READONLY=true`. See + `docs/guides/neon_deployment.md` |
+| C: Read-only viewer VM | Ops VM | `docker compose -f docker-compose.readonly.yml up -d` | Optional; set `VULTURE_READONLY=true`. See `docs/guides/neon_deployment.md` |
 | D: CI client | GitHub Actions etc. | `vulture scan <git-url> --api-key X --server Y --wait` | See `docs/guides/ci_integration.md` |
 | E: Native install | Single-user laptop, no Docker | `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh \| sh` | One-shot nuclei-style installer; SQLite + bundled python; see `docs/guides/native_installation.md` |
 
@@ -59,7 +59,7 @@ vulture/
     pkg/
       gitutil/  # Git clone utilities
       fileutil/  # File tree walking
-    internal/repository/migrations/  # SQL migrations + auto-runner (//go:embed; )
+    internal/repository/migrations/  # SQL migrations + auto-runner (`//go:embed`)
     test/e2e/  # Go E2E tests
   agents/  # Python 3.12+
     shared/  # Common library
@@ -88,8 +88,8 @@ vulture/
   cli/  # Go CLI binary (scan, login, list, watch)
   docs/
     architecture/  # system_overview, data_flow, agent_protocol, extensibility
-    features/  # 001-008 feature docs (each: plan, status, rollback)
-    guides/  # cli_usage.github/workflows/  # CI/CD (lint, build, test for all components)
+    guides/  # cli_usage
+  .github/workflows/  # CI/CD (lint, build, test for all components)
   docker-compose.yml  # Full stack orchestration
   Makefile  # Build, test, lint automation
 ```
@@ -130,8 +130,9 @@ Phase 2 (OPTIONAL): LLM analysis → deeper reasoning on file subset that fits c
 
 ## Database
 
-- **PostgreSQL** (production): pgvector extension for embedding similarity search. Schema migrations in `backend/internal/repository/migrations/` (embedded into the binary via `//go:embed`; auto-applied at startup by the in-Go runner — ).
-- **SQLite** (local dev fallback): WAL mode + busy_timeout. Embeddings stored as JSON text. SQLite schema is still managed by the inline `migrate` function in `sqlite_repo.go` — unifying it with the Postgres migration runner is tracked as a follow-up to - **Key tables**: `users`, `sources`, `audits`, `findings`, `audit_memories` (with vector column), `memory_edges` (graph relations).
+- **PostgreSQL** (production): pgvector extension for embedding similarity search. Schema migrations in `backend/internal/repository/migrations/` (embedded into the binary via `//go:embed`; auto-applied at startup by the in-Go runner).
+- **SQLite** (local dev fallback): WAL mode + busy_timeout. Embeddings stored as JSON text. SQLite schema is still managed by the inline `migrate` function in `sqlite_repo.go` — unifying it with the Postgres migration runner is tracked as a follow-up.
+- **Key tables**: `users`, `sources`, `audits`, `findings`, `audit_memories` (with vector column), `memory_edges` (graph relations).
 
 ## Development Commands
 
@@ -184,10 +185,10 @@ When a runtime error has multiple possible causes (proxy behavior, container net
 
 Post-edit verification commands (run these after modifying files of the corresponding type):
 
-- **Go** (`*.go`): `cd backend && go vet./...` and `go test./...` for the affected package
+- **Go** (`*.go`): `cd backend && go vet ./...` and `go test ./...` for the affected package
 - **Python** (`*.py`): `cd agents/<component> && python -m pytest tests/unit/ -q`
 - **TypeScript/React** (`*.ts`, `*.tsx`): `cd frontend && npx tsc --noEmit` and `npx vitest run` for affected test files
-- **SQL migrations** (`*.sql`): see `docs/guides/migration_authoring.md` for the full contract (filename grammar, idempotency, FK type-match rule). Migrations are embedded into the Go binary and auto-applied at backend startup. Verify locally with the integration test: `POSTGRES_TEST_DSN=postgres://test:test@localhost:25439/test?sslmode=disable go test -tags=integration./internal/repository/migrations/`
+- **SQL migrations** (`*.sql`): see `docs/guides/migration_authoring.md` for the full contract (filename grammar, idempotency, FK type-match rule). Migrations are embedded into the Go binary and auto-applied at backend startup. Verify locally with the integration test: `POSTGRES_TEST_DSN=postgres://test:test@localhost:25439/test?sslmode=disable go test -tags=integration ./internal/repository/migrations/`
 
 Do NOT batch multiple file edits before testing — test after each logical change so breakage is caught at the source rather than during a later audit pass.
 
@@ -366,7 +367,7 @@ VULTURE_MAX_FILES=50000  # Cap on files enumerated per scan. Truncation is logge
 VULTURE_MAX_FILE_SIZE=524288  # Per-source-file read cap (512KB). Files above it are skipped
 VULTURE_MAX_MANIFEST_SIZE=16777216  # Read cap for dependency manifests only (16MB). Separate because a lock file's size tracks its dependency count, so the source cap dropped exactly the manifests with the most to report
 VULTURE_EXTRA_EXTENSIONS=  # Comma list of extra extensions to scan, e.g. ".sol,jsonnet,.CUE" (leading dot optional, case-insensitive). Added on top of the built-in whitelist
-VULTURE_DISABLE_EXTENSION_WHITELIST=false  # Restore the narrow code-only extension set (drops templates, docs,.sql/.tf, and canonical Dockerfile/.npmrc coverage). Rollback escape hatch
+VULTURE_DISABLE_EXTENSION_WHITELIST=false  # Restore the narrow code-only extension set (drops templates, docs, .sql/.tf, and canonical Dockerfile/.npmrc coverage). Rollback escape hatch
 VULTURE_SCAN_MINIFIED=false  # Scan minified/bundled artefacts (*.min.js, *.bundle.css) as source. Off by default: one bundle produces dozens of line-1 findings for code you don't control
 VULTURE_SCAN_EDITOR_CONFIG=true  # the walker yields WELL_KNOWN_AUTORUN_FILES (.vscode/*.json,.idea/*,.claude/*,.devcontainer/*) even though those dirs are in SKIP_DIRS, so the CWE `workspace_autorun` skill can find a task that shells out on folder-open. Everything else in them stays pruned. false prunes them entirely
 VULTURE_SECRET_SCAN_ENTROPY=  # Opt-in entropy scanning for the secret skill; without it a bare key blob with no assignment context yields nothing
@@ -388,8 +389,8 @@ VULTURE_LLM_TIER3=false  # cost guard, and the LARGEST coverage lever here. Off 
 VULTURE_LLM_LINE_NUMBERS=true  # Files reach the prompt with absolute line numbers ("30: code") so the model reads a line instead of counting newlines. Measured: raw files mislocated 78% of findings vs 13% for numbered; adjudicated precision 15.7% -> 30.0%.
 VULTURE_LLM_SNIPPET_CONTEXT=10  # Lines of context each side of a finding. The default is byte-identical to pre-output. Widening buys the model the guard that would REFUTE a finding (measured as `guard_present` false positives) and costs budget — fewer files per batch
 VULTURE_LLM_WHOLE_FILE_MAX_LINES=0  # Render files at or below N lines whole instead of windowed; 0 disables. For a small file the elision markers cost nearly what the omitted lines would
-VULTURE_LLM_FEED_PROSE=false  # Send prose/data (.md.txt.csv.rst.adoc) to the prompt. Off on BUDGET grounds — doc text displaces real source inside a fixed ceiling — NOT because prose is clean. Skills still scan it; VULTURE_SECRET_SCAN_PROSE covers the gap
-VULTURE_LLM_INELIGIBLE_EXTENSIONS=  # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding.graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. Populate it (e.g.
+VULTURE_LLM_FEED_PROSE=false  # Send prose/data (.md .txt .csv .rst .adoc) to the prompt. Off on BUDGET grounds — doc text displaces real source inside a fixed ceiling — NOT because prose is clean. Skills still scan it; VULTURE_SECRET_SCAN_PROSE covers the gap
+VULTURE_LLM_INELIGIBLE_EXTENSIONS=  # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding .graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. Populate it (e.g. ".graphql,.gql") if you cannot send config dialects to a third-party provider
 VULTURE_LLM_FEED_UNIFY=true  # Both feed paths resolve ONE extension set. false restores the pre-asymmetry (narrow for single-shot, wide for the sweep) — that pair IS the defect, so this is an unblock hatch, not a supported configuration
 VULTURE_SECRET_SCAN_PROSE=true  # CWE agent: scan prose/data files for secrets. The compensating control for VULTURE_LLM_FEED_PROSE=false — without it a credential in a README loses the only tier reading it. Measured live: recovered a real `INBOUND_AUTH_TOKEN` in a README.
 # NOTE: retries on the audit path are owned by retry_llm_call (which classifies the error and
@@ -413,12 +414,12 @@ VULTURE_SECRET_SCAN_PROSE=true  # CWE agent: scan prose/data files for secrets. 
 # only LABELS, it cannot move a line, demote a finding, or change a finding count.
 # Rollback flip ORDER (never widens egress at any intermediate step): QUOTE_DEMOTE_ABSENT ->
 # QUOTE_REANCHOR -> QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
-# COERCE_LINES=false -> JSON_SCAN=false; the Go switch flips independently.
-VULTURE_LLM_JSON_SCAN=true  # Parse a bare (unfenced) JSON array by scanning for balanced arrays instead of the old `\[.*\]` regex. The regex truncates at the first `}]`, so ONE finding whose evidence quote contains `}]` (e.g.
+# COERCE_LINES=false -> JSON_SCAN=false.
+VULTURE_LLM_JSON_SCAN=true  # Parse a bare (unfenced) JSON array by scanning for balanced arrays instead of the old `\[.*\]` regex. The regex truncates at the first `}]`, so ONE finding whose evidence quote contains `}]` (e.g. `const rows = [{ id: 1 }]`) lost the WHOLE batch.
 VULTURE_LLM_JSON_SALVAGE=true  # Recover whole rows from an array the model never closed because it hit VULTURE_LLM_MAX_OUTPUT_TOKENS. Without it a response cut mid-array is a total loss of the batch. Never silent — emits `llm_json_salvaged` with the recovered row count.
 VULTURE_LLM_COERCE_LINES=true  # Coerce `line_start`/`line_end` to int and clamp `line_end >= line_start >= 0`. A model answering `"55"` is otherwise dropped in silence by Go's int unmarshal
 VULTURE_LLM_TRUST_MODEL_SNIPPET=false  # true readmits a model-AUTHORED `code_snippet` as though it were read from source. Off because that string is the model's paraphrase, not evidence. Rollback hatch, not a supported configuration
-VULTURE_LLM_TRUST_MODEL_CHECK_ID=false  # true restores a model-authored `check_id` as the dedup identity. Split from TRUST_MODEL_SNIPPET because stripping it re-keys every structured-path row and could collide one onto a skill row
+VULTURE_LLM_TRUST_MODEL_CHECK_ID=false  # Currently NO EFFECT: with either value the model-authored `check_id` ends up as the row's public, persisted `check_id`, because `_restore_dedup_identity` (agents/shared/shared/audit_runner.py) restores it after the strip so an LLM duplicate still collapses onto its skill twin. Do not rely on it to keep model identity out of the dedup key or the stored row
 VULTURE_LLM_QUOTE_REQUIRED=true  # Both prompt contracts ask for `evidence_quote` and the field whitelist admits it; without it a volunteered quote is discarded and anchor verification is undecidable. The quote never egresses in any configuration
 VULTURE_LLM_QUOTE_VERIFY=observe  # `off` / `observe` (default) / `enforce`. `observe` records an anchor status (exact/reanchored/ambiguous/near_miss/absent/...) in the validation blob and changes nothing else; `enforce` merely ARMS the two actuators below, each still individually off
 VULTURE_LLM_QUOTE_REANCHOR=false  # The LINE actuator; requires `enforce`. true rewrites `line_start`/`line_end` when the quote is found elsewhere in the cited file (status `reanchored`), retaining `claimed_line`, and only within QUOTE_MAX_DELTA.
@@ -434,8 +435,6 @@ VULTURE_LLM_QUOTE_MAX_CHARS=1200  # WHOLE-QUOTE cap (3 x MAX_LINE_CHARS). Separa
 VULTURE_LLM_QUOTE_RADIUS=25  # Lines. When a quote matches in several places, the nearest candidate re-anchors only if it is within RADIUS of the claimed line AND strictly nearer than the runner-up; otherwise `ambiguous`.
 VULTURE_LLM_QUOTE_MAX_DELTA=200  # Absolute ceiling, in lines, on how far re-anchoring may move a finding. A 200+ line correction is likelier a coincidental match than a corrected claim, so beyond it the line is left where the model put it
 VULTURE_LLM_QUOTE_NEAR_MISS_MIN=0.6  # Similarity at or above which a non-matching window is `near_miss` rather than `absent` — the model reformatted rather than invented.
-VULTURE_DEDUP_PREFER_DETERMINISTIC=true  # GO / backend, not an agent switch. On a cross-agent dedup collision a deterministic (skill) row outranks an `llm` row at equal-or-lower severity, replacing score-only "richer row wins".
-VULTURE_FINDING_PATH_CANON=enforce  # GO/backend. Canonicalises the path inside the cross-agent DEDUP KEY against the source root; the stored `file_path` is never rewritten. Without it the deterministic tier (absolute paths) and the LLM tier (relative) can never collide, so one weakness becomes two findings and two lineage rows. `off` is the rollback
 
 VULTURE_FINDING_WINDOW_PARITY=true  # Records WHY a finding has no code window, as a zero-weight `window` check inside the existing `validation` blob: inherited / rollup_parent / no_code_location / unreadable / no_line / present.
 VULTURE_AGENT_MAX_AUDIT_SECONDS=900  # whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Keep this at or below VULTURE_AGENT_PROXY_TIMEOUT_SEC - VULTURE_LLM_CALL_TIMEOUT_SEC. 0 disables
