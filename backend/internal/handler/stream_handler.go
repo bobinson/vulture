@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/service"
+	"github.com/vulture/backend/pkg/agentregistry"
 )
 
 type StreamHandler struct {
@@ -509,6 +511,8 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 	var agentError string
 	var owaspCoverage json.RawMessage
 	var degradedReason string
+	// Feature 0096: the OWASP agent's validated mapping, if it sent one.
+	var mapping *model.ComplianceMapping
 	for evt := range eventCh {
 		if evt == nil {
 			// processEvent and WriteEvent both dereference evt.Type unguarded.
@@ -518,7 +522,9 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 			snapshotAgents[evt.AgentType] = true
 			// Read the 0091 keys off the same bytes the findings parser reads,
 			// via its own envelope so neither half can cost the other.
+			prev := scanOutcomes[evt.AgentType]
 			scanOutcomes[evt.AgentType] = agui.ParseScanOutcome(evt.Snapshot)
+			mapping = noteOwaspAnswer(evt, prev, scanOutcomes, mapping)
 		}
 		if dr := extractDegradedReason(evt); dr != "" {
 			degradedReason = dr
@@ -551,13 +557,21 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 		log.Printf("[stream] rescued %d delta findings from agents that never sent a snapshot (audit=%s)",
 			rescued, auditID)
 	}
+	findings = withoutMapperFindings(findings, scanOutcomes)
 	findings, rollupShadowed := dedupCrossAgentWithShadow(findings, sourceRoot)
 	// Feature 0091 S21. The set is global to the run — the parent and the leaf
 	// it shadows are routinely different agents — so it is stamped on every
-	// agent's outcome rather than split per agent.
+	// agent's outcome rather than split per agent. The 0096 mapping likewise:
+	// the mapper sends it, every other agent's lineage sightings write it.
 	for at := range scanOutcomes {
 		scanOutcomes[at].RollupShadowed = rollupShadowed
+		scanOutcomes[at].ComplianceMapping = mapping
 	}
+	// Feature 0096 §3.1: label the FINAL set — after dedup, so a label can
+	// only land on a finding that is persisted; before identity stamping and
+	// the memory prior, so everything downstream (SaveFindings, webhook,
+	// memories, lineage) sees the labelled rows.
+	owaspCoverage = labelFinalSet(findings, mapping, owaspMappingMode(scanOutcomes), owaspCoverage)
 	// Feature 0079 A3: stamp the stable identity. No-op unless
 	// VULTURE_FINDING_IDENTITY is set; under enforce it also swaps which value
 	// `fingerprint` carries, retaining the v1 value in LegacyFingerprint so
@@ -582,9 +596,11 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 // extractOwaspCoverage returns the owasp_coverage manifest embedded in an
 // OWASP agent result StateSnapshot, or nil for any other event. Feature 0063:
 // the manifest is persisted so it survives reload/replay (the live stream is
-// not the only place a user views results).
+// not the only place a user views results). Feature 0096 M3: read only from
+// the snapshot whose BACKEND-assigned agent type is owasp — the trust rule of
+// the mapping (§3.4) — so no scan agent can write the audit's OWASP coverage.
 func extractOwaspCoverage(evt *model.AgUIEvent) json.RawMessage {
-	if evt == nil || evt.Type != model.EventStateSnapshot || len(evt.Snapshot) == 0 {
+	if !isOwaspSnapshot(evt) {
 		return nil
 	}
 	var payload struct {
@@ -595,6 +611,11 @@ func extractOwaspCoverage(evt *model.AgUIEvent) json.RawMessage {
 	}
 	return payload.OwaspCoverage
 }
+
+// owaspAgentType is the one agent whose result may be read as a compliance
+// mapping (feature 0096 §3.4). It is the backend-assigned AgentType, never a
+// payload field, so no other agent can opt its own result out of lineage.
+const owaspAgentType = "owasp"
 
 // extractDegradedReason pulls a partial-degradation note off the result
 // snapshot. Feature 0070 P5 (A.3): an audit whose LLM phase failed still
@@ -705,7 +726,9 @@ func (h *StreamHandler) replayCompletedAudit(sseWriter *agui.SSEWriter, audit *m
 
 	// Feature 0063: re-emit the persisted OWASP coverage manifest so the
 	// attach/replay path renders it just like a live stream (the synthesized
-	// per-agent snapshots above only carry findings + score).
+	// per-agent snapshots above only carry findings + score). 0096 follow-up:
+	// the same effective manifest GET /api/audits/{id} serves.
+	withEffectiveOwaspCoverage(audit, h.lineageSvc)
 	if len(audit.OwaspCoverage) > 0 {
 		snapshot, _ := json.Marshal(map[string]interface{}{
 			"findings":       []model.Finding{},
@@ -856,6 +879,7 @@ func dedupCrossAgentWithShadow(findings []model.Finding, sourceRoot string) ([]m
 	keys := make([]string, len(findings))
 	agentsByKey := make(map[string][]string, len(findings))
 	provenanceByKey := make(map[string]string, len(findings))
+	categoriesByKey := make(map[string][]string, len(findings))
 
 	for i, f := range findings {
 		key := crossAgentKeyWithRoot(f, keyRoot)
@@ -865,6 +889,7 @@ func dedupCrossAgentWithShadow(findings []model.Finding, sourceRoot string) ([]m
 		if f.Provenance != "" {
 			provenanceByKey[key] = f.Provenance
 		}
+		categoriesByKey[key] = appendLabelSource(categoriesByKey[key], f)
 		if prev, ok := seen[key]; ok {
 			if crossAgentPrefers(f, findings[prev.index], s, prev.score) {
 				seen[key] = entry{index: i, score: s}
@@ -903,6 +928,7 @@ func dedupCrossAgentWithShadow(findings []model.Finding, sourceRoot string) ([]m
 			continue
 		}
 		key := keys[i]
+		f.AbsorbedCategories = absorbedCategories(categoriesByKey[key], f)
 		agents := agentsByKey[key]
 		if len(agents) > 1 {
 			origins := make([]string, 0, len(agents)-1)
@@ -932,6 +958,34 @@ func dedupCrossAgentWithShadow(findings []model.Finding, sourceRoot string) ([]m
 			removed, len(findings), len(result), len(shadowed))
 	}
 	return result, shadowed
+}
+
+// appendLabelSource adds a row's canonical CWE category to its dedup key's
+// distinct set (feature 0096 H2). A mapper's copy row is never a label
+// source, so it contributes nothing.
+func appendLabelSource(cats []string, f model.Finding) []string {
+	if f.AgentType == owaspAgentType || !model.IsCWECategory(f.Category) {
+		return cats
+	}
+	c := model.CanonicalCWE(f.Category)
+	if slices.Contains(cats, c) {
+		return cats
+	}
+	return append(cats, c)
+}
+
+// absorbedCategories is the key's distinct CWE categories other than the
+// survivor's own: what the rows dedup folded into it were persisted for.
+// Nil when it absorbed none, so an unmerged finding carries nothing extra.
+func absorbedCategories(keyCats []string, survivor model.Finding) []string {
+	own := model.CanonicalCWE(survivor.Category)
+	var out []string
+	for _, c := range keyCats {
+		if c != own {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // applyCrossAgentValidation appends an L3 cross-agent merge check to a
@@ -1316,8 +1370,8 @@ func extractDeltaFindings(delta json.RawMessage, auditID string, agentType strin
 	for _, p := range patches {
 		switch {
 		case p.Op == "add" && p.Path == "/findings/-":
-			var f model.Finding
-			if json.Unmarshal(p.Value, &f) != nil {
+			f, ok := agui.DecodeAgentFinding(p.Value)
+			if !ok {
 				continue
 			}
 			f.AuditID = auditID
@@ -1773,22 +1827,56 @@ func agentsThatSpoke(findings []model.Finding, scanOutcomes map[string]*model.Sc
 func recordLineageOutcomes(svc service.LineageService, audit *model.Audit, source *model.Source,
 	findings []model.Finding, scanOutcomes map[string]*model.ScanResult) {
 	byAgent := agentsThatSpoke(findings, scanOutcomes)
+	mapping := runComplianceMapping(scanOutcomes)
 	for at, agentFindings := range byAgent {
 		result := scanOutcomes[at]
+		if reason := lineageSkipReason(at); reason != "" {
+			log.Printf("[lineage] agent=%s skipped: %s", at, reason)
+			continue
+		}
 		if result == nil {
 			// This agent contributed findings but never sent a result
 			// snapshot, so it was killed, cancelled or crashed and what we
 			// hold is the partial delta rescue. An agent that COMPLETED
 			// always leaves a snapshot, even a pre-0091 one — so the two are
 			// distinguishable here, and only this one must be barred from
-			// closing rows on its silence.
-			result = &model.ScanResult{NoResultSnapshot: true}
+			// closing rows on its silence. Its rescued findings were
+			// labelled with the rest, so their sightings carry the mapping.
+			result = &model.ScanResult{NoResultSnapshot: true, ComplianceMapping: mapping}
 		}
 		result.Findings = agentFindings
 		if err := svc.RecordScanOutcome(audit, source, at, result); err != nil {
 			log.Printf("process lineage agent=%s: %v", at, err)
 		}
 	}
+}
+
+// lineageSkipReason names why an agent must not reach the lineage pass at
+// all, or "" when it must (feature 0096 §5, I3, I4, M1): a MAPPER agent owns
+// no lineage, in any mode. In mapping mode it carries zero findings by
+// design, so its silence proves nothing; in legacy mode (a pre-0096 agent
+// under version skew) its copy rows are persisted as findings, in their
+// legacy shape, but they restate the CWE rows' own sightings — a lineage row
+// for a copy would be a second identity for one weakness, and a copy's
+// absence (its CWE stage failed, or dedup moved it) would close it. So no
+// mapper result creates, re-sights or closes a lineage row, whatever it
+// carries; the OWASP rows a pre-0096 backend wrote are left as they were.
+func lineageSkipReason(agentType string) string {
+	if agentregistry.IsMapper(agentType) {
+		return "mapper agents do not own lineage (0096)"
+	}
+	return ""
+}
+
+// runComplianceMapping returns the run's compliance mapping, which the drain
+// stamps on every agent's outcome, or nil.
+func runComplianceMapping(scanOutcomes map[string]*model.ScanResult) *model.ComplianceMapping {
+	for _, r := range scanOutcomes {
+		if r != nil && r.ComplianceMapping != nil {
+			return r.ComplianceMapping
+		}
+	}
+	return nil
 }
 
 // pendingLineageChecks builds the per-agent `lineage_checks_requested` block.

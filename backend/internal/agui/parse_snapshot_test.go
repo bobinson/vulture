@@ -155,3 +155,17 @@ func TestParseScanOutcomeDegradedAndTruncated(t *testing.T) {
 		t.Fatal("scan_truncated must survive the parse")
 	}
 }
+
+// A result's `error` member is the agent's business, whatever its shape: an
+// object, number or bool beside the 0091 keys must cost none of them.
+func TestParseScanOutcomeErrorShapeCostsNothing(t *testing.T) {
+	for _, errVal := range []string{`"boom"`, `{"code":"x"}`, `42`, `true`, `null`} {
+		got := ParseScanOutcome(json.RawMessage(`{"result_schema":2,"pruned_dirs":["vendor"],` +
+			`"lineage_checks":[{"lineage_id":"l-1","outcome":"gone"}],"degraded_reason":"d",` +
+			`"scan_truncated":true,"error":` + errVal + `}`))
+		if got.ResultSchema != 2 || !got.ScanTruncated || len(got.PrunedDirs) != 1 ||
+			len(got.LineageChecks) != 1 || got.DegradedReason != "d" {
+			t.Errorf("error=%s cost the scope keys: %+v", errVal, got)
+		}
+	}
+}

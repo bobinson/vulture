@@ -60,14 +60,15 @@ func (r *PostgresLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 			fixed_audit_id, fixed_at, fixed_commit,
 			severity, category, title, file_path, created_at, updated_at,
 			provenance, quote_hash, fingerprint_v2, git_branch, seen_count, last_seen_audit_id,
-			evidence_line_start, evidence_line_end, target_key
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+			evidence_line_start, evidence_line_end, target_key, compliance_labels
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32::jsonb)
 		ON CONFLICT (fingerprint, source_path, agent_type) DO UPDATE SET
 			latest_audit_id = $11, latest_found_at = $12, latest_commit = $13, updated_at = now(),
 			provenance = $23, quote_hash = $24, fingerprint_v2 = $25, git_branch = $26,
 			evidence_line_start = $29, evidence_line_end = $30,
 			target_key = COALESCE($31, finding_lineage.target_key),
-			file_path = $20
+			file_path = $20,
+			compliance_labels = `+pgMergeLabels("finding_lineage.compliance_labels", "$32")+`
 		RETURNING id, ref_number`,
 		l.ID, l.Fingerprint, l.SourcePath, l.AgentType, string(l.CurrentStatus),
 		l.Notes, l.TicketURL, l.FirstAuditID, l.FirstFoundAt, l.FirstCommit,
@@ -84,6 +85,7 @@ func (r *PostgresLineageRepo) UpsertLineage(l *model.FindingLineage) error {
 		l.Provenance, l.QuoteHash, l.FingerprintV2, l.GitBranch,
 		defaultSeenCount(l.SeenCount), nullIfEmpty(l.LastSeenAuditID),
 		l.EvidenceLineStart, l.EvidenceLineEnd, nullIfEmpty(l.TargetKey),
+		lineageLabelsColumn(l.ComplianceLabels),
 	).Scan(&l.ID, &l.RefNumber)
 	if isTargetIdentityConflict(err) {
 		// The row already exists under this target's OTHER identity key, so
@@ -120,11 +122,13 @@ func (r *PostgresLineageRepo) updateOnTargetConflict(l *model.FindingLineage, ca
 			provenance = $5, quote_hash = $6, fingerprint_v2 = $7, git_branch = $8,
 			evidence_line_start = $9, evidence_line_end = $10,
 			target_key = COALESCE($11, target_key),
-			file_path = $12
+			file_path = $12,
+			compliance_labels = `+pgMergeLabels("compliance_labels", "$13")+`
 		WHERE id = $1`,
 		id, nullIfEmpty(l.LatestAuditID), l.LatestFoundAt, l.LatestCommit,
 		l.Provenance, l.QuoteHash, l.FingerprintV2, l.GitBranch,
 		l.EvidenceLineStart, l.EvidenceLineEnd, nullIfEmpty(l.TargetKey), l.FilePath,
+		lineageLabelsColumn(l.ComplianceLabels),
 	); err != nil {
 		return fmt.Errorf("upsert lineage on target conflict: %w", err)
 	}
@@ -211,14 +215,31 @@ func (r *PostgresLineageRepo) ListBySourcePath(sourcePath, status string, limit,
 	return scanPostgresLineageRows(rows)
 }
 
+// ListByAudit returns the lineage rows behind one audit's findings: a row a
+// finding matches on the v1 fingerprint, OR on fingerprint_v2 within the
+// audit's target and agent type — the same two identities the lineage writer
+// matches on (feature 0091 §7.3). The v1 arm alone dropped every row a finding
+// reaches only through v2 (an OWASP re-mapping, a rescan under a new mount),
+// and the results page then showed no ref and no triage for it. The v2 arm is
+// target-scoped because v2 is root-canonical: another codebase with the same
+// relative path and check has the same v2 and its own triage. NULLIF keeps a
+// source with no target key from matching the un-keyed rows of every other.
 func (r *PostgresLineageRepo) ListByAudit(auditID string) ([]model.FindingLineage, error) {
 	rows, err := r.db.Query(`
 		SELECT `+pgLineageColsFL+`
 		FROM finding_lineage fl
-		INNER JOIN findings f ON f.fingerprint = fl.fingerprint
-			AND f.agent_type = fl.agent_type
-		WHERE f.audit_id = $1 AND fl.merged_into IS NULL
-		GROUP BY fl.id
+		WHERE fl.merged_into IS NULL AND fl.id IN (
+			SELECT l.id FROM findings f
+			JOIN finding_lineage l ON l.fingerprint = f.fingerprint AND l.agent_type = f.agent_type
+			WHERE f.audit_id = $1
+			UNION
+			SELECT l.id FROM finding_lineage l
+			WHERE l.merged_into IS NULL
+			  AND l.target_key = (SELECT NULLIF(s.target_key, '') FROM audits a
+			                      JOIN sources s ON s.id = a.source_id WHERE a.id::text = $1)
+			  AND (l.agent_type, l.fingerprint_v2) IN (
+			      SELECT f.agent_type, f.fingerprint_v2 FROM findings f
+			      WHERE f.audit_id = $1 AND f.fingerprint_v2 <> ''))
 		ORDER BY fl.updated_at DESC`, auditID)
 	if err != nil {
 		return nil, fmt.Errorf("list lineage by audit: %w", err)
@@ -366,6 +387,7 @@ func (r *PostgresLineageRepo) GetEvents(lineageID string) ([]model.LineageEvent,
 type pgLineageScanner struct {
 	l                      model.FindingLineage
 	latestFoundAt, fixedAt sql.NullTime
+	labels                 string
 }
 
 func (s *pgLineageScanner) targets() []interface{} {
@@ -381,11 +403,13 @@ func (s *pgLineageScanner) targets() []interface{} {
 		&l.TargetKey, &l.FingerprintV2, &l.GitBranch, &l.Provenance, &l.QuoteHash,
 		&l.EvidenceLineStart, &l.EvidenceLineEnd, &l.EvidenceFileHash,
 		&l.SeenCount, &l.LastSeenAuditID, &l.MergedInto,
+		&s.labels,
 	}
 }
 
 func (s *pgLineageScanner) finish() *model.FindingLineage {
 	l := &s.l
+	decodeLabelsColumn(s.labels, &l.ComplianceLabels)
 	if s.latestFoundAt.Valid {
 		l.LatestFoundAt = &s.latestFoundAt.Time
 	}
@@ -420,6 +444,16 @@ func scanPostgresLineageRows(rows *sql.Rows) ([]model.FindingLineage, error) {
 		result = append(result, *s.finish())
 	}
 	return result, rows.Err()
+}
+
+// pgMergeLabels renders the §4.2 upsert rule for compliance_labels (feature
+// 0096): the sighting's framework:edition keys replace the row's, every other
+// key is kept. `||` on two objects is exactly that; the COALESCE chain keeps
+// NULL meaning "no labels" — a first label on an unlabelled row is the
+// sighting's map, and a sighting that carries none leaves the row untouched.
+func pgMergeLabels(col, param string) string {
+	p := param + "::jsonb"
+	return "COALESCE(" + col + " || " + p + ", " + p + ", " + col + ")"
 }
 
 // nullIfEmpty returns nil for empty strings, allowing PostgreSQL to store NULL
@@ -497,6 +531,17 @@ func (r *PostgresLineageRepo) MarkUnconfirmed(id, auditID string) error {
 		WHERE id = $2`, nullIfEmpty(auditID), id)
 	if err != nil {
 		return fmt.Errorf("mark lineage unconfirmed: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresLineageRepo) ReopenUnconfirmed(id, auditID string) error {
+	_, err := r.db.Exec(`
+		UPDATE finding_lineage SET current_status = 'open',
+			last_seen_audit_id = $1, updated_at = now()
+		WHERE id = $2 AND current_status = 'unconfirmed'`, nullIfEmpty(auditID), id)
+	if err != nil {
+		return fmt.Errorf("reopen unconfirmed lineage: %w", err)
 	}
 	return nil
 }

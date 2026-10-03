@@ -112,6 +112,16 @@
     "tokensSaved": "tokens économisés",
     "owaspCoverage": "Couverture OWASP Top 10",
     "owaspCweStageWarning": "La couverture peut être incomplète — étape CWE :",
+    "owaspCategory": "Catégorie OWASP",
+    "owaspCategoryAll": "Toutes les catégories",
+    "owaspEdition": "Édition OWASP",
+    "owaspChipTitle": "{{id}} {{name}} — OWASP Top 10:{{edition}}",
+    "owaspChipTitleShort": "{{id}} — OWASP Top 10:{{edition}}",
+    "owaspFilterByCategory": "Afficher les résultats de {{id}} {{name}}",
+    "owaspSourceLink": "{{id}} sur owasp.org",
+    "owaspNotSelected": "non sélectionnée",
+    "owaspFalsePositiveNote_one": "{{count}} marqué comme faux positif",
+    "owaspFalsePositiveNote_other": "{{count}} marqués comme faux positifs",
     "tokens": "tokens",
     "priorFindings": "{{count}} constatation(s) antérieure(s) réutilisée(s)",
     "duplicatesRemoved": "{{count}} doublon(s) supprimé(s)",
@@ -121,6 +131,7 @@
     "verificationEvidence": "Preuve de Vérification",
     "copied": "Copié !",
     "copyAll": "Tout copier comme tickets",
+    "copyAllTitle": "Copie les {{count}} résultats affichés par les filtres actuels",
     "copyIssue": "Copier comme ticket",
     "estimated": "(estimé)",
     "findingsDeduped": "{{count}} constat(s) dédupliqué(s)"
@@ -364,7 +375,9 @@
     "fixedTab": "Corrigés",
     "changedTab": "Modifiés",
     "persistentTab": "Persistants",
-    "fixedSinceLastScan": "Corrigés depuis le dernier scan"
+    "fixedSinceLastScan": "Corrigés depuis le dernier scan",
+    "excludedLegacyCopies_one": "{{count}} ligne de copie OWASP héritée de l'analyse précédente a été exclue de cette comparaison ; cette analyse étiquette ces résultats à la place.",
+    "excludedLegacyCopies_other": "{{count}} lignes de copie OWASP héritées de l'analyse précédente ont été exclues de cette comparaison ; cette analyse étiquette ces résultats à la place."
   },
   "crossAgent": {
     "title": "Détection Multi-Agents",

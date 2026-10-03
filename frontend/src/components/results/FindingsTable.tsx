@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFindings } from "@/hooks/useFindings.ts";
 import { useLineage } from "@/hooks/useLineage.ts";
@@ -10,10 +10,12 @@ import { FindingTimeline } from "./FindingTimeline.tsx";
 import { FindingLifecycleBadge } from "./FindingLifecycleBadge.tsx";
 import { CrossAgentBadge } from "./CrossAgentBadge.tsx";
 import { ProvenanceChip } from "./ProvenanceChip.tsx";
+import { FindingOwaspChips } from "./OwaspChip.tsx";
 import { Chip } from "@/components/shared/Chip.tsx";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import { findingToMarkdown } from "@/lib/markdown.ts";
+import { owaspCategoryOptions, type OwaspCategoryOption } from "@/lib/compliance.ts";
 import { ProveStatusBadge } from "./ProveStatusBadge.tsx";
 import type { Finding, LineageStatus, ProveResult, Severity } from "@/lib/types.ts";
 import { ELLIPSIS, pageItems } from "@/lib/pagination";
@@ -22,6 +24,52 @@ interface FindingsTableProps {
   findings: Finding[];
   auditId?: string;
   proveResults?: ProveResult[];
+  /**
+   * Feature 0096: the OWASP category filter ("all" = none). Controlled when
+   * the page also sets it (the coverage card); internal otherwise.
+   */
+  owaspCategory?: string;
+  onOwaspCategoryChange?: (id: string) => void;
+  /**
+   * 0096 follow-up: called once a finding's lineage status is saved, so the
+   * page can re-read what the triage changed server side (OWASP coverage).
+   */
+  onLineageSaved?: () => void;
+}
+
+interface OwaspCategoryFilterProps {
+  options: OwaspCategoryOption[];
+  value: string;
+  onChange: (id: string) => void;
+}
+
+/**
+ * Feature 0096: filter by OWASP Top 10 category, populated from the labels
+ * the findings carry. The current value stays listed even when no finding
+ * carries it (a coverage-card click can name one), so the select never shows
+ * a value it does not offer.
+ */
+function OwaspCategoryFilter({ options, value, onChange }: OwaspCategoryFilterProps) {
+  const { t } = useTranslation();
+  const known = value === "all" || options.some((o) => o.id === value);
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] text-muted-light">{t("results.owaspCategory")}:</span>
+      <select
+        aria-label={t("results.owaspCategory")}
+        data-testid="owasp-category-filter"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="text-[11px] bg-surface border border-border rounded-md px-2 py-1 text-foreground cursor-pointer"
+      >
+        <option value="all">{t("results.owaspCategoryAll")}</option>
+        {!known && <option value={value}>{value}</option>}
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>{`${o.id} ${o.name}`}</option>
+        ))}
+      </select>
+    </div>
+  );
 }
 
 // Build the full markdown export for "Copy all findings" without
@@ -96,27 +144,28 @@ function RowCopyButton({ finding, auditId }: { finding: Finding; auditId?: strin
   );
 }
 
-export function FindingsTable({ findings: allFindings, auditId, proveResults }: FindingsTableProps) {
+export function FindingsTable({ findings: allFindings, auditId, proveResults, owaspCategory: controlledCategory, onOwaspCategoryChange, onLineageSaved }: FindingsTableProps) {
   const { t } = useTranslation();
+  const [localCategory, setLocalCategory] = useState("all");
+  const owaspCategory = controlledCategory ?? localCategory;
+  const setOwaspCategory = onOwaspCategoryChange ?? setLocalCategory;
   const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const { lineageMap, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId);
+  const { lineageFor, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId, { onStatusSaved: onLineageSaved });
 
-  // 0045/0036 follow-up — derive the set of fingerprints manually
-  // triaged as false_positive (lineage current_status). Combined with
-  // each finding's own validation_status === "likely_fp" inside
-  // useFindings, this powers the opt-in "hide false positives" toggle.
-  const falsePositiveFingerprints = useMemo(() => {
-    const s = new Set<string>();
-    for (const [fp, lin] of lineageMap) {
-      if (lin.current_status === "false_positive") s.add(fp);
-    }
-    return s;
-  }, [lineageMap]);
+  // 0045/0036 follow-up — a finding manually triaged as false_positive
+  // (its OWN lineage row, resolved v2-first like the backend). Combined with
+  // each finding's own validation_status === "likely_fp" inside useFindings,
+  // this powers the opt-in "hide false positives" toggle.
+  const isTriagedFalsePositive = useCallback(
+    (f: Finding) => lineageFor(f)?.current_status === "false_positive",
+    [lineageFor],
+  );
 
   const {
     findings,
+    filteredFindings,
     totalFiltered,
     page,
     totalPages,
@@ -137,7 +186,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
     setHideFalsePositives,
     setHideSuspicious,
     toggleSort,
-  } = useFindings(allFindings, falsePositiveFingerprints);
+  } = useFindings(allFindings, isTriagedFalsePositive, owaspCategory);
 
   const severities: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
@@ -166,6 +215,10 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
     return { provenanceTiers: sorted, showProvenanceFilter: sorted.length > 0 && groups > 1 };
   }, [allFindings]);
 
+  // Feature 0096 — OWASP categories among the findings' labels. Empty for a
+  // pre-0096 audit (its OWASP rows carry no labels), which hides the filter.
+  const owaspOptions = useMemo(() => owaspCategoryOptions(allFindings), [allFindings]);
+
   // Map finding IDs to prove results for inline badges
   const proveMap = useMemo(() => {
     if (!proveResults?.length) return new Map<string, ProveResult>();
@@ -181,7 +234,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
   }
 
   return (
-    <div className="card overflow-hidden">
+    <div className="card overflow-hidden" data-testid="findings-table">
       {/* Header with filters */}
       <div className="p-4 border-b border-border space-y-2">
         <div className="flex items-center justify-between">
@@ -191,8 +244,11 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
             <button
               type="button"
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer text-muted hover:text-foreground hover:bg-cream-dark"
+              title={t("results.copyAllTitle", { count: totalFiltered })}
               onClick={() => {
-                void buildAllFindingsMarkdown(allFindings, auditId).then(onCopyAll);
+                // The export is what the table shows: hidden false positives
+                // and every other active filter stay out of it.
+                void buildAllFindingsMarkdown(filteredFindings, auditId).then(onCopyAll);
               }}
             >
               {allCopied ? (
@@ -207,7 +263,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                   </svg>
-                  {t("results.copyAll")}
+                  {t("results.copyAll")} ({totalFiltered})
                 </>
               )}
             </button>
@@ -271,7 +327,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
         )}
         {/* Agent type filter — only show when multiple agents */}
         {agentTypes.length > 1 && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" data-testid="agent-filter">
             <span className="text-[11px] text-muted-light">{t("results.agent")}:</span>
             <div className="flex gap-1">
               <button
@@ -326,6 +382,11 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
               ))}
             </div>
           </div>
+        )}
+        {/* Shown while a category is active even when no finding carries
+            one, so the filter can never hide every row without a way back. */}
+        {(owaspOptions.length > 0 || owaspCategory !== "all") && (
+          <OwaspCategoryFilter options={owaspOptions} value={owaspCategory} onChange={setOwaspCategory} />
         )}
         {/* 0045/0036 follow-up — opt-in hide false positives. Renders
             only when there's at least one FP to hide (auto likely_fp
@@ -457,6 +518,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
               return (
                 <Fragment key={key}>
                   <tr
+                    data-testid="finding-row"
                     className="border-b border-border hover:bg-cream/30 cursor-pointer transition-colors"
                     tabIndex={0}
                     aria-expanded={isExpanded}
@@ -465,8 +527,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                   >
                     <td className="px-4 py-2.5">
                       {(() => {
-                        const lin = finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined;
-                        const rn = lin?.ref_number;
+                        const rn = lineageFor(finding)?.ref_number;
                         if (!rn || rn <= 0) {
                           return <span className="text-[11px] text-muted-light">&mdash;</span>;
                         }
@@ -477,11 +538,12 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                       <SeverityBadge severity={finding.severity} />
                     </td>
                     <td className="px-4 py-2.5">
-                      {finding.fingerprint && lineageMap.has(finding.fingerprint) ? (
-                        <LineageStatusBadge status={lineageMap.get(finding.fingerprint)!.current_status} />
-                      ) : (
-                        <span className="text-[11px] text-muted-light">&mdash;</span>
-                      )}
+                      {(() => {
+                        const lin = lineageFor(finding);
+                        return lin
+                          ? <LineageStatusBadge status={lin.current_status} />
+                          : <span className="text-[11px] text-muted-light">&mdash;</span>;
+                      })()}
                     </td>
                     <td className="px-4 py-2.5">
                       {agentType ? (
@@ -496,9 +558,12 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                       )}
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className="text-[11px] font-mono bg-cream rounded px-1.5 py-0.5 text-muted">
-                        {finding.category}
-                      </span>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <span className="text-[11px] font-mono bg-cream rounded px-1.5 py-0.5 text-muted">
+                          {finding.category}
+                        </span>
+                        <FindingOwaspChips finding={finding} />
+                      </div>
                     </td>
                     {/* max-w-md (448px) plus the other seven columns summed to
                         1191px against a 1108px wrapper, so the table scrolled
@@ -518,7 +583,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                           <ProvenanceChip provenance={finding.provenance} />
                           <ValidationBadge status={finding.validation_status} />
                           <FindingLifecycleBadge
-                            lineage={finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined}
+                            lineage={lineageFor(finding)}
                             currentAuditId={auditId}
                           />
                           {finding.id && proveMap.has(finding.id) && (
@@ -620,7 +685,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                           })()}
                           {/* Traceability section */}
                           {(() => {
-                            const lineage = finding.fingerprint ? lineageMap.get(finding.fingerprint) : undefined;
+                            const lineage = lineageFor(finding);
                             if (!lineage) {
                               return (
                                 <div className="pt-2 border-t border-border">
@@ -628,7 +693,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                                 </div>
                               );
                             }
-                            const edit = editingLineage.get(finding.fingerprint!) ?? {
+                            const edit = editingLineage.get(lineage.id) ?? {
                               status: lineage.current_status,
                               notes: lineage.notes ?? "",
                               ticketUrl: lineage.ticket_url ?? "",
@@ -674,7 +739,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                                     <select
                                       className="w-full text-[12px] bg-surface border border-border rounded-md px-2 py-1.5 text-foreground"
                                       value={edit.status}
-                                      onChange={(e) => updateEdit(finding.fingerprint!, { status: e.target.value })}
+                                      onChange={(e) => updateEdit(lineage.id, { status: e.target.value })}
                                     >
                                       {STATUSES.map((s) => (
                                         <option key={s} value={s}>{t(`lineage.status_${s}`)}</option>
@@ -688,7 +753,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                                       className="w-full text-[12px] bg-surface border border-border rounded-md px-2 py-1.5 text-foreground"
                                       placeholder={t("lineage.ticketPlaceholder")}
                                       value={edit.ticketUrl}
-                                      onChange={(e) => updateEdit(finding.fingerprint!, { ticketUrl: e.target.value })}
+                                      onChange={(e) => updateEdit(lineage.id, { ticketUrl: e.target.value })}
                                     />
                                   </div>
                                 </div>
@@ -699,16 +764,16 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults }: 
                                     rows={2}
                                     placeholder={t("lineage.notesPlaceholder")}
                                     value={edit.notes}
-                                    onChange={(e) => updateEdit(finding.fingerprint!, { notes: e.target.value })}
+                                    onChange={(e) => updateEdit(lineage.id, { notes: e.target.value })}
                                   />
                                 </div>
                                 <div className="flex items-center gap-3">
                                   <button
                                     type="button"
                                     className="px-3 py-1 text-[11px] font-medium rounded-md bg-foreground text-surface hover:bg-foreground/90 transition-colors cursor-pointer"
-                                    onClick={() => saveStatus(lineage.id, finding.fingerprint!)}
+                                    onClick={() => saveStatus(lineage.id)}
                                   >
-                                    {savedFeedback === finding.fingerprint ? t("lineage.saved") : t("lineage.save")}
+                                    {savedFeedback === lineage.id ? t("lineage.saved") : t("lineage.save")}
                                   </button>
                                   <button
                                     type="button"

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { SEVERITY_ORDER } from "@/lib/constants.ts";
+import { hasOwaspCategory } from "@/lib/compliance.ts";
 import type { Finding, Severity } from "@/lib/types.ts";
 
 type SortField = "severity" | "category" | "file" | "title" | "agent_type";
@@ -9,15 +10,24 @@ const PAGE_SIZE = 25;
 
 // useFindings filters + sorts + paginates the findings table.
 //
-// `falsePositiveFingerprints` is the set of fingerprints whose lineage
-// current_status is "false_positive" (manual triage). Combined with
+// `isTriagedFalsePositive` answers whether a finding's OWN lineage row is
+// "false_positive" (manual triage). It is a per-finding predicate, not a
+// fingerprint set, because several findings can share a v1 fingerprint while
+// resolving to different rows — a set would hide an open finding for its
+// dismissed sibling. Combined with
 // each finding's own validation_status === "likely_fp" (automatic
 // L1-L5 verdict), it drives the opt-in "hide false positives" toggle.
 // The toggle defaults OFF so nothing disappears without an explicit
 // user action (compliance-safe).
+//
+// `owaspCategory` (feature 0096) keeps only findings labelled with that OWASP
+// category ("all" = no filter). It is owned by the caller rather than kept
+// here, because the page's coverage card sets it as well as the table's own
+// select; a change resets the table to its first page.
 export function useFindings(
   allFindings: Finding[],
-  falsePositiveFingerprints?: Set<string>,
+  isTriagedFalsePositive?: (f: Finding) => boolean,
+  owaspCategory = "all",
 ) {
   const [sortField, setSortField] = useState<SortField>("severity");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
@@ -28,12 +38,19 @@ export function useFindings(
   const [hideSuspicious, setHideSuspicious] = useState(false);
   const [page, setPage] = useState(0);
 
+  // Reset paging when the caller changes the category — adjusted during
+  // render (React's pattern for state derived from a prop), not in an effect.
+  const [pagedCategory, setPagedCategory] = useState(owaspCategory);
+  if (pagedCategory !== owaspCategory) {
+    setPagedCategory(owaspCategory);
+    setPage(0);
+  }
+
   // A finding is a false positive if EITHER signal fires:
   //   - automatic: validation_status === "likely_fp"
-  //   - manual: its fingerprint is in the triaged-FP set
+  //   - manual: its own lineage row was triaged false_positive
   const isFalsePositive = (f: Finding): boolean =>
-    f.validation_status === "likely_fp" ||
-    (!!f.fingerprint && !!falsePositiveFingerprints?.has(f.fingerprint));
+    f.validation_status === "likely_fp" || !!isTriagedFalsePositive?.(f);
 
   // Suspicious is the single automatic signal (no manual-triage set) —
   // findings the validate layer could neither confirm nor dismiss. The
@@ -84,9 +101,9 @@ export function useFindings(
   // this is what the "Hide false positives (N)" label shows.
   const falsePositiveCount = useMemo(
     () => allFindings.filter(isFalsePositive).length,
-    // isFalsePositive closes over falsePositiveFingerprints.
+    // isFalsePositive closes over isTriagedFalsePositive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allFindings, falsePositiveFingerprints],
+    [allFindings, isTriagedFalsePositive],
   );
 
   // Total suspicious count across the whole audit, filter- and
@@ -123,6 +140,9 @@ export function useFindings(
     if (filterProvenance !== "all") {
       filtered = filtered.filter((f) => f.provenance === filterProvenance);
     }
+    if (owaspCategory !== "all") {
+      filtered = filtered.filter((f) => hasOwaspCategory(f, owaspCategory));
+    }
     if (hideFalsePositives) {
       filtered = filtered.filter((f) => !isFalsePositive(f));
     }
@@ -151,9 +171,9 @@ export function useFindings(
       }
       return sortDirection === "asc" ? cmp : -cmp;
     });
-    // isFalsePositive closes over falsePositiveFingerprints.
+    // isFalsePositive closes over isTriagedFalsePositive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allFindings, filterSeverity, filterAgent, filterProvenance, hideFalsePositives, hideSuspicious, falsePositiveFingerprints, sortField, sortDirection]);
+  }, [allFindings, filterSeverity, filterAgent, filterProvenance, owaspCategory, hideFalsePositives, hideSuspicious, isTriagedFalsePositive, sortField, sortDirection]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
@@ -161,6 +181,9 @@ export function useFindings(
 
   return {
     findings,
+    // Every finding the active filters keep, in table order, across all
+    // pages — what "Copy All as Issues" exports.
+    filteredFindings: sorted,
     totalFiltered: sorted.length,
     page: safePage,
     totalPages,

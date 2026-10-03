@@ -121,12 +121,14 @@ func (r *SQLiteLineageRepo) attachTierCounts(keys []string, scans []model.Target
 // AggregateByTarget answers GET /api/targets/{key}/aggregate from
 // `finding_lineage` alone, through idx_lineage_active_target.
 //
-// Four statements, none of them per row: the tiles (one aggregate pass), the
+// Five statements, none of them per row: the tiles (one aggregate pass), the
+// distinct label sets the edition list is folded from, the
 // filtered COUNT that `total` comes from, the page itself, and one lookup of
 // the last event for the ids ON THE PAGE. Loading the rows to filter or count
 // them in Go is the mistake this shape exists to rule out.
 func (r *SQLiteLineageRepo) AggregateByTarget(q model.AggregateQuery) (*model.AggregateReport, error) {
-	report := &model.AggregateReport{Page: q.Page, PageSize: q.PageSize, Rows: []model.AggregateRow{}}
+	report := &model.AggregateReport{Page: q.Page, PageSize: q.PageSize, Rows: []model.AggregateRow{},
+		LabelEditions: []model.LabelEdition{}}
 	keys := r.TargetReadKeys(q.TargetKey)
 	if len(keys) == 0 {
 		return report, nil
@@ -134,6 +136,11 @@ func (r *SQLiteLineageRepo) AggregateByTarget(q model.AggregateQuery) (*model.Ag
 	if err := r.readAggregateTiles(keys, q, report); err != nil {
 		return nil, err
 	}
+	editions, err := readLabelEditions(r.db, &sqlDialect{pg: false}, keys, q)
+	if err != nil {
+		return nil, err
+	}
+	report.LabelEditions = editions
 	if err := r.readAggregateTotal(keys, q, report); err != nil {
 		return nil, err
 	}
@@ -181,7 +188,8 @@ func (r *SQLiteLineageRepo) readAggregatePage(keys []string, q model.AggregateQu
 		var s aggregateRowScan
 		var firstFound, latestFound string
 		if err := rows.Scan(&s.id, &s.refNumber, &s.severity, &s.category, &s.title, &s.filePath, &s.sourcePath,
-			&s.lineStart, &s.provenance, &s.seenCount, &s.status, &firstFound, &latestFound); err != nil {
+			&s.lineStart, &s.provenance, &s.seenCount, &s.status, &firstFound, &latestFound,
+			&s.labels); err != nil {
 			return fmt.Errorf("scan aggregate row: %w", err)
 		}
 		s.firstFoundAt, _ = time.Parse(time.RFC3339, firstFound)

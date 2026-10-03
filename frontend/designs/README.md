@@ -6,7 +6,7 @@ a mockup is a review of what the implementation will render.
 ```
 designs/
   tokens.css        the design system — single source of truth for colour, type, shape, layout
-  components.css    primitives drawn only with tokens: what exists in the app + the 0093 report vocabulary
+  components.css    primitives drawn only with tokens: what exists in the app + the 0091 report vocabulary
   NNNN-*.html       one design per feature, linking the two files above
   inline.py         builds a single self-contained HTML file for sharing (inlines the CSS)
 ```
@@ -31,11 +31,11 @@ Change a colour in both places, or the build tells you.
 
 ## Sharing a design
 
-`python3 designs/inline.py designs/0093-unified-target-report.html > /tmp/0093.html`
+`python3 designs/inline.py designs/0091-unified-target-report.html > /tmp/0091.html`
 produces one file with the CSS inlined. Fonts still load from Google Fonts.
 
 ## Designs
 
 | file | feature | status |
 |---|---|---|
-| `0093-unified-target-report.html` | 0093 — one report per codebase; scans, filters, closures, drill-down | for review |
+| `0091-unified-target-report.html` | 0091 — one report per codebase; scans, filters, closures, drill-down | for review |

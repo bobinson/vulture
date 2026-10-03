@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventNoteText, lastEventOutcome, reasonText } from "./lineage.ts";
+import { eventNoteText, indexLineage, lastEventOutcome, reasonText, resolveLineage } from "./lineage.ts";
 
 // The global test setup stubs react-i18next's `t` to echo its key, so these
 // assertions are about WHICH key is chosen and whether anything is chosen at
@@ -99,4 +99,44 @@ describe("lastEventOutcome", () => {
       expect(lastEventOutcome(event)).toBeNull();
     },
   );
+});
+
+describe("resolveLineage", () => {
+  const row = (id: string, agent: string, fingerprint: string, fingerprint_v2?: string) =>
+    ({ id, agent_type: agent, fingerprint, fingerprint_v2, current_status: "open" }) as never;
+
+  it("prefers fingerprint_v2 within the agent type, as the lineage writer does", () => {
+    const index = indexLineage([row("by-v1", "owasp", "v1-a"), row("by-v2", "owasp", "v1-old", "v2-a")]);
+    expect(resolveLineage(index, { agent_type: "owasp", fingerprint: "v1-a", fingerprint_v2: "v2-a" })?.id).toBe("by-v2");
+  });
+
+  it("falls back to the v1 fingerprint for a row with no v2", () => {
+    const index = indexLineage([row("legacy", "cwe", "v1-legacy")]);
+    expect(resolveLineage(index, { agent_type: "cwe", fingerprint: "v1-legacy", fingerprint_v2: "v2-new" })?.id).toBe("legacy");
+  });
+
+  it("never crosses agent types", () => {
+    const index = indexLineage([row("owasp-row", "owasp", "v1-x", "v2-x")]);
+    expect(resolveLineage(index, { agent_type: "cwe", fingerprint: "v1-y", fingerprint_v2: "v2-x" })).toBeUndefined();
+    expect(resolveLineage(index, { agent_type: "cwe", fingerprint: "v1-x" })).toBeUndefined();
+  });
+
+  it("reads agent_id when agent_type is absent, case-insensitively", () => {
+    const index = indexLineage([row("r", "owasp", "v1", "v2")]);
+    expect(resolveLineage(index, { agent_id: "OWASP", fingerprint: "nope", fingerprint_v2: "v2" })?.id).toBe("r");
+  });
+
+  it("matches on v1 alone when the caller knows no agent", () => {
+    const index = indexLineage([row("r", "cwe", "v1-only")]);
+    expect(resolveLineage(index, { fingerprint: "v1-only" })?.id).toBe("r");
+  });
+
+  it("keeps the first row for a duplicated key (rows arrive newest first)", () => {
+    const index = indexLineage([row("newest", "cwe", "dup", "v2-dup"), row("older", "cwe", "dup", "v2-dup")]);
+    expect(resolveLineage(index, { agent_type: "cwe", fingerprint: "dup", fingerprint_v2: "v2-dup" })?.id).toBe("newest");
+  });
+
+  it("returns undefined for an item with no fingerprints", () => {
+    expect(resolveLineage(indexLineage([row("r", "cwe", "v1")]), { agent_type: "cwe" })).toBeUndefined();
+  });
 });

@@ -167,3 +167,57 @@ const OUTCOME_BY_EVENT: Readonly<Record<string, string>> = {
 export function lastEventOutcome(eventType: string | undefined): string | null {
   return OUTCOME_BY_EVENT[(eventType ?? "").trim()] ?? null;
 }
+
+/**
+ * Which lineage row a finding (or anything carrying its fingerprints) belongs
+ * to — resolved the way the backend lineage writer resolves it
+ * (`resolveExisting`): `fingerprint_v2` first, then the v1 `fingerprint`,
+ * always within one agent type.
+ *
+ * v1 alone is not enough. When the writer recognises a finding through v2 it
+ * keeps the row's ORIGINAL v1, so an OWASP re-mapping or a rescan under a new
+ * mount belongs to a row whose v1 is not the finding's; and several findings
+ * can share one v1 while each belongs to a different row. A v1-keyed lookup
+ * shows the wrong row's status for the second and no row at all for the
+ * first.
+ */
+export interface LineageIdentity {
+  fingerprint?: string;
+  fingerprint_v2?: string;
+  agent_type?: string;
+  agent_id?: string;
+}
+
+export interface LineageIndex {
+  byV2: Map<string, FindingLineage>;
+  byV1: Map<string, FindingLineage>;
+  /** v1 regardless of agent — only for a caller that knows no agent. */
+  byV1Any: Map<string, FindingLineage>;
+}
+
+const agentKey = (agent: string | undefined) => (agent ?? "").trim().toLowerCase();
+
+// First row wins: the endpoint returns rows newest-updated first.
+function setOnce(map: Map<string, FindingLineage>, key: string, row: FindingLineage) {
+  if (!map.has(key)) map.set(key, row);
+}
+
+export function indexLineage(rows: readonly FindingLineage[]): LineageIndex {
+  const index: LineageIndex = { byV2: new Map(), byV1: new Map(), byV1Any: new Map() };
+  for (const row of rows) {
+    const agent = agentKey(row.agent_type);
+    if (row.fingerprint_v2) setOnce(index.byV2, `${agent}|${row.fingerprint_v2}`, row);
+    if (row.fingerprint) {
+      setOnce(index.byV1, `${agent}|${row.fingerprint}`, row);
+      setOnce(index.byV1Any, row.fingerprint, row);
+    }
+  }
+  return index;
+}
+
+export function resolveLineage(index: LineageIndex, item: LineageIdentity): FindingLineage | undefined {
+  const agent = agentKey(item.agent_type ?? item.agent_id);
+  if (!agent) return item.fingerprint ? index.byV1Any.get(item.fingerprint) : undefined;
+  return (item.fingerprint_v2 ? index.byV2.get(`${agent}|${item.fingerprint_v2}`) : undefined)
+    ?? (item.fingerprint ? index.byV1.get(`${agent}|${item.fingerprint}`) : undefined);
+}

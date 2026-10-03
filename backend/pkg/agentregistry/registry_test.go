@@ -94,3 +94,13 @@ func TestNonOptionalAgents_StayInDefaultSet(t *testing.T) {
 		}
 	}
 }
+
+// Feature 0096 §5: owasp is the one mapper; every other type — registered or
+// not — is a scanner, so its lineage is untouched by the mapper rule.
+func TestIsMapper(t *testing.T) {
+	for at, want := range map[string]bool{"owasp": true, "cwe": false, "xss": false, "semgrep": false, "": false} {
+		if got := IsMapper(at); got != want {
+			t.Errorf("IsMapper(%q) = %v, want %v", at, got, want)
+		}
+	}
+}

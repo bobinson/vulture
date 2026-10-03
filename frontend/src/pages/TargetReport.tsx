@@ -1,10 +1,11 @@
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useAggregate } from "@/hooks/useAggregate.ts";
 import { useTargetScans } from "@/hooks/useTargetScans.ts";
 import { AggregateTable } from "@/components/results/AggregateTable.tsx";
 import { ROUTES } from "@/lib/constants.ts";
+import { OWASP, OWASP_CATEGORY_IDS, isOwaspEdition, owaspCategoriesOf, owaspEditionsOf } from "@/lib/compliance.ts";
 import {
   deriveTargetName,
   formatScanStamp,
@@ -13,7 +14,9 @@ import {
 } from "@/lib/targets.ts";
 import type {
   AggregateFilters,
+  AggregateResponse,
   AggregateTiles,
+  LabelEdition,
   FindingTier,
   Severity,
   TargetScan,
@@ -203,6 +206,62 @@ function ChipFilter({ legend, options, labelFor, selected, onToggle }: ChipFilte
   );
 }
 
+interface OwaspFilterProps {
+  category: string | null;
+  edition: string | null;
+  /** Editions offered, newest first; the filter is not shown without one. */
+  editions: string[];
+  /** Categories offered under `edition`, sorted. */
+  categories: string[];
+  onCategory: (category: string | null) => void;
+  onEdition: (edition: string) => void;
+}
+
+const SELECT_CLASS = "text-[11px] bg-surface border border-border rounded-md px-2 py-0.5 text-foreground cursor-pointer";
+
+/**
+ * Feature 0096: narrow the aggregate to rows labelled with one OWASP Top 10
+ * category of one EDITION. A category id means different things in different
+ * editions (A05 is Injection in 2025, Security Misconfiguration in 2021) and a
+ * lineage row keeps its labels for every edition it was mapped under, so the
+ * category is always asked for under a named edition. The filter runs
+ * server-side, so the options are the target's `label_editions` — every
+ * edition its rows are labelled under and, for the chosen edition, the
+ * categories that exist — rather than whatever the current page holds.
+ */
+function OwaspFilter({ category, edition, editions, categories, onCategory, onEdition }: OwaspFilterProps) {
+  const { t } = useTranslation();
+  if (editions.length === 0) return null;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] text-muted-light">{t("results.owaspCategory")}:</span>
+      <select
+        aria-label={t("results.owaspCategory")}
+        data-testid="aggregate-owasp-category"
+        value={category ?? "all"}
+        onChange={(e) => onCategory(e.target.value === "all" ? null : e.target.value)}
+        className={SELECT_CLASS}
+      >
+        <option value="all">{t("results.owaspCategoryAll")}</option>
+        {categories.map((id) => (
+          <option key={id} value={id}>{id}</option>
+        ))}
+      </select>
+      <select
+        aria-label={t("results.owaspEdition")}
+        data-testid="aggregate-owasp-edition"
+        value={edition ?? editions[0]}
+        onChange={(e) => onEdition(e.target.value)}
+        className={SELECT_CLASS}
+      >
+        {editions.map((e) => (
+          <option key={e} value={e}>{e}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 /** A comma-joined query parameter as a set; absent or empty means "no filter". */
 function parseListParam(raw: string | null): Set<string> {
   return new Set((raw ?? "").split(",").filter(Boolean));
@@ -230,6 +289,33 @@ function parseScansParam(raw: string | null): Set<string> | null {
 }
 
 /**
+ * The OWASP editions the filter offers, newest first: the target's
+ * `label_editions` (0096 M8 — target-wide, so a page of unlabelled rows no
+ * longer hides the filter), plus a deep link's own edition so a link naming
+ * one works before the first response lands.
+ */
+function offeredEditions(labelEditions: AggregateResponse["label_editions"], editionParam: string | null): string[] {
+  const fromTarget = owaspEditionsOf(labelEditions);
+  if (!isOwaspEdition(editionParam) || fromTarget.includes(editionParam)) return fromTarget;
+  return [...fromTarget, editionParam].sort((a, b) => b.localeCompare(a));
+}
+
+/**
+ * The categories the filter offers under `edition`: the ones the target's
+ * rows carry, plus a chosen category (a deep link may name one the edition
+ * has no rows for — it stays selected and shows none, rather than vanishing).
+ */
+function offeredCategories(
+  labelEditions: AggregateResponse["label_editions"],
+  edition: string | null,
+  chosen: string | null,
+): string[] {
+  const present = edition ? owaspCategoriesOf(labelEditions, edition) : [];
+  if (!chosen || present.includes(chosen)) return present;
+  return [...present, chosen].sort();
+}
+
+/**
  * A target's aggregate report — the DEFAULT view of a target (LLD 10.2).
  *
  * Every finding ever reported for the codebase is reachable here: the table is
@@ -240,11 +326,17 @@ function parseScansParam(raw: string | null): Set<string> | null {
  * All filtering and paging happen server-side. A filter change refetches one
  * page of the aggregate; the target list and the scan list are owned by other
  * hooks and are untouched by it.
+ *
+ * Remounted per target (as the results page is per audit), so nothing the
+ * report holds for one target is carried into another's.
  */
 export function TargetReport() {
+  const { key } = useParams<{ key: string }>();
+  return <TargetReportView key={key} targetKey={key} />;
+}
+
+function TargetReportView({ targetKey }: { targetKey: string | undefined }) {
   const { t } = useTranslation();
-  const params = useParams<{ key: string }>();
-  const targetKey = params.key;
   const [search, setSearch] = useSearchParams();
 
   const activeOnly = search.get("status") !== "all";
@@ -253,6 +345,25 @@ export function TargetReport() {
   const tiers = parseListParam(search.get("tier"));
   const severities = parseListParam(search.get("severity"));
   const minSeen = Number.parseInt(search.get("min_seen") ?? "", 10);
+  // A deep link naming anything but a Top 10 id is ignored, not forwarded.
+  const owaspParam = search.get("owasp");
+  const owaspCategory = owaspParam && OWASP_CATEGORY_IDS.includes(owaspParam) ? owaspParam : null;
+  const editionParam = search.get("owasp_edition");
+
+  // The editions come from the previous response (useAggregate keeps the last
+  // good page of this target across a refetch). A link naming a category but
+  // no edition is first answered unfiltered, and then filtered under the
+  // newest edition that response names — the server never sees a category
+  // without an edition.
+  const [labelEditions, setLabelEditions] = useState<LabelEdition[] | undefined>(undefined);
+  const owaspEditions = useMemo(() => offeredEditions(labelEditions, editionParam), [labelEditions, editionParam]);
+  const owaspEdition = isOwaspEdition(editionParam) ? editionParam : (owaspEditions[0] ?? null);
+  // Without an edition there is no category question to ask the server.
+  const owaspOn = owaspCategory !== null && owaspEdition !== null;
+  const owaspCategories = useMemo(
+    () => offeredCategories(labelEditions, owaspEdition, owaspCategory),
+    [labelEditions, owaspEdition, owaspCategory],
+  );
 
   const { scans, loading: scansLoading } = useTargetScans(targetKey);
 
@@ -269,6 +380,9 @@ export function TargetReport() {
     tier: tiers.size === 1 ? ([...tiers][0] as FindingTier) : undefined,
     severity: severities.size > 0 ? [...severities] : undefined,
     min_seen: Number.isFinite(minSeen) && minSeen > 1 ? minSeen : undefined,
+    framework: owaspOn ? OWASP : undefined,
+    category: owaspOn ? owaspCategory : undefined,
+    edition: owaspOn ? owaspEdition : undefined,
     page,
     page_size: PAGE_SIZE,
   };
@@ -284,6 +398,11 @@ export function TargetReport() {
     filters,
   );
   const busy = loading || scansPending;
+
+  // Adjusted during render (React's pattern for state derived from a
+  // response), not in an effect; it settles once the held value IS the
+  // response's. A failed request (no data) keeps the editions last seen.
+  if (data && data.label_editions !== labelEditions) setLabelEditions(data.label_editions);
 
   const patch = useCallback(
     (changes: Record<string, string | null>) => {
@@ -330,6 +449,18 @@ export function TargetReport() {
         page: null,
       }),
     [patch, search],
+  );
+
+  // A chosen category is written with its edition, so the deep link names
+  // both and never depends on which editions a later visit has seen.
+  const selectOwaspCategory = useCallback(
+    (category: string | null) =>
+      patch(category && owaspEdition ? { owasp: category, owasp_edition: owaspEdition, page: null } : { owasp: category, page: null }),
+    [patch, owaspEdition],
+  );
+  const selectOwaspEdition = useCallback(
+    (edition: string) => patch({ owasp_edition: edition, page: null }),
+    [patch],
   );
 
   const selectAllScans = useCallback(() => patch({ scans: null, page: null }), [patch]);
@@ -416,6 +547,14 @@ export function TargetReport() {
           labelFor={(severity) => t(`severity.${severity}`)}
           selected={severities}
           onToggle={toggleSeverity}
+        />
+        <OwaspFilter
+          category={owaspCategory}
+          edition={owaspEdition}
+          editions={owaspEditions}
+          categories={owaspCategories}
+          onCategory={selectOwaspCategory}
+          onEdition={selectOwaspEdition}
         />
       </div>
 

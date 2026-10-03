@@ -74,7 +74,7 @@ export function ProveResults({ results, findings, auditId }: ProveResultsProps) 
   const { t } = useTranslation();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
-  const { lineageMap, timelineMap, showTimeline, editingLineage, savedFeedback, proveHistoryMap, loadTimeline, loadProveHistory, updateEdit, saveStatus } = useLineage(auditId);
+  const { lineageFor, timelineMap, showTimeline, editingLineage, savedFeedback, proveHistoryMap, loadTimeline, loadProveHistory, updateEdit, saveStatus } = useLineage(auditId);
   const [showVerificationHistory, setShowVerificationHistory] = useState<string | null>(null);
 
   const counts = useMemo(() => {
@@ -180,7 +180,7 @@ export function ProveResults({ results, findings, auditId }: ProveResultsProps) 
           const config = STATUS_CONFIG[result.status] ?? STATUS_CONFIG.skipped;
           const isExpanded = expandedIds.has(result.id);
           const fingerprint = finding?.fingerprint;
-          const lineage = fingerprint ? lineageMap.get(fingerprint) : undefined;
+          const lineage = finding ? lineageFor(finding) : undefined;
           return (
             <div key={result.id} className={`px-4 py-3 ${config.border}`}>
               <div className="flex items-start gap-3">
@@ -314,7 +314,7 @@ export function ProveResults({ results, findings, auditId }: ProveResultsProps) 
                             </div>
                           );
                         }
-                        const edit = editingLineage.get(fingerprint!) ?? {
+                        const edit = editingLineage.get(lineage.id) ?? {
                           status: lineage.current_status,
                           notes: lineage.notes ?? "",
                           ticketUrl: lineage.ticket_url ?? "",
@@ -359,7 +359,7 @@ export function ProveResults({ results, findings, auditId }: ProveResultsProps) 
                                 <select
                                   className="w-full text-[12px] bg-surface border border-border rounded-md px-2 py-1.5 text-foreground"
                                   value={edit.status}
-                                  onChange={(e) => updateEdit(fingerprint!, { status: e.target.value })}
+                                  onChange={(e) => updateEdit(lineage.id, { status: e.target.value })}
                                 >
                                   {STATUSES.map((s) => (
                                     <option key={s} value={s}>{t(`lineage.status_${s}`)}</option>
@@ -373,7 +373,7 @@ export function ProveResults({ results, findings, auditId }: ProveResultsProps) 
                                   className="w-full text-[12px] bg-surface border border-border rounded-md px-2 py-1.5 text-foreground"
                                   placeholder={t("lineage.ticketPlaceholder")}
                                   value={edit.ticketUrl}
-                                  onChange={(e) => updateEdit(fingerprint!, { ticketUrl: e.target.value })}
+                                  onChange={(e) => updateEdit(lineage.id, { ticketUrl: e.target.value })}
                                 />
                               </div>
                             </div>
@@ -384,16 +384,16 @@ export function ProveResults({ results, findings, auditId }: ProveResultsProps) 
                                 rows={2}
                                 placeholder={t("lineage.notesPlaceholder")}
                                 value={edit.notes}
-                                onChange={(e) => updateEdit(fingerprint!, { notes: e.target.value })}
+                                onChange={(e) => updateEdit(lineage.id, { notes: e.target.value })}
                               />
                             </div>
                             <div className="flex items-center gap-3">
                               <button
                                 type="button"
                                 className="px-3 py-1 text-[11px] font-medium rounded-md bg-foreground text-surface hover:bg-foreground/90 transition-colors cursor-pointer"
-                                onClick={() => saveStatus(lineage.id, fingerprint!)}
+                                onClick={() => saveStatus(lineage.id)}
                               >
-                                {savedFeedback === fingerprint ? t("lineage.saved") : t("lineage.save")}
+                                {savedFeedback === lineage.id ? t("lineage.saved") : t("lineage.save")}
                               </button>
                               <button
                                 type="button"

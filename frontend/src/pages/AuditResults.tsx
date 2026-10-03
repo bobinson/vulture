@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { useParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useAudit } from "@/hooks/useAudit.ts";
@@ -39,6 +39,7 @@ function AuditIdCopy({ id }: { id: string }) {
 }
 import { api } from "@/lib/api.ts";
 import { auditReportToMarkdown } from "@/lib/markdown.ts";
+import { applyComplianceMapping, owaspCategoryOptions } from "@/lib/compliance.ts";
 import { ProveResults } from "@/components/results/ProveResults.tsx";
 import type { AuditStatus, AgentStep, Finding, Source, StreamLine } from "@/lib/types.ts";
 
@@ -49,10 +50,23 @@ const STATUS_STYLES: Record<AuditStatus, string> = {
   failed: "bg-[#FEE2E2] text-[#991B1B] border-[#FECACA]",
 };
 
+/**
+ * The results page, remounted per audit id. The route stays mounted while
+ * the history rail moves between scans, and everything the page holds — the
+ * OWASP category filter, the live-stream latch, the stream's own state — is
+ * about ONE audit; carried into the next it filters or labels rows it was
+ * never about.
+ */
+const NO_FINDINGS: Finding[] = [];
+
 export function AuditResults() {
   const { id } = useParams<{ id: string }>();
+  return <AuditResultsView key={id} id={id} />;
+}
+
+function AuditResultsView({ id }: { id: string | undefined }) {
   const { t } = useTranslation();
-  const { audit } = useAudit(id);
+  const { audit, fetchAudit } = useAudit(id);
 
   const status = audit?.status ?? "pending";
   const isTerminal = status === "completed" || status === "failed";
@@ -66,11 +80,25 @@ export function AuditResults() {
   const [hadLiveStream, markLiveStream] = useReducer(() => true, false);
 
   // Disable SSE when audit already terminal and we never had a live stream
-  const { lines: streamLines, steps: streamSteps, connected, done: streamDone, tokenSavings, dedupStats, validationUpdates, owaspCoverage } = useAgentStream(id, isTerminal && !hadLiveStream);
+  const { lines: streamLines, steps: streamSteps, connected, done: streamDone, tokenSavings, dedupStats, validationUpdates, owaspCoverage, owaspMapping, liveFindings = NO_FINDINGS } = useAgentStream(id, isTerminal && !hadLiveStream);
 
-  // Feature 0063: prefer the live-stream manifest; fall back to the persisted
-  // one on the audit record (terminal audits reload with the stream disabled).
-  const coverage = owaspCoverage ?? audit?.owasp_coverage ?? null;
+  // Feature 0063: while the run is live, show the streamed manifest. Feature
+  // 0096: once the audit is terminal, only the persisted one. The backend
+  // recounts it from the labels the stored findings carry (and clears it when
+  // it rejected the mapping), so the streamed counts, taken before that, can
+  // name categories no stored row backs.
+  const coverage = isTerminal
+    ? (audit?.owasp_coverage ?? null)
+    : (owaspCoverage ?? audit?.owasp_coverage ?? null);
+
+  // 0096 follow-up: the backend leaves findings triaged false positive out of
+  // the coverage it serves, computed when the audit is READ. A status saved in
+  // the findings table therefore reaches the card only through a re-read.
+  // Offered only when there is a card to update.
+  const refreshAudit = useCallback(() => {
+    if (id) void fetchAudit(id);
+  }, [id, fetchAudit]);
+  const onLineageSaved = coverage ? refreshAudit : undefined;
 
   useEffect(() => {
     if (streamLines.length > 0 && !hadLiveStream) {
@@ -124,8 +152,13 @@ export function AuditResults() {
   // Feature 0046 issue #19: merge live L5 verdict updates into the
   // findings array so cards / table show the in-progress badge update
   // before the audit's final result event arrives.
-  const findings = useMemo(() => {
-    const base = audit?.findings ?? [];
+  // Feature 0096 (R15): while the run is live the audit record holds no rows
+  // (the backend stores them, labelled, in the step that completes it), so
+  // the page shows the rows the stream delivered. At terminal status the
+  // persisted rows replace them.
+  const rowsSource = !isTerminal && liveFindings.length > 0 ? liveFindings : audit?.findings;
+  const validatedFindings = useMemo(() => {
+    const base = rowsSource ?? NO_FINDINGS;
     if (!validationUpdates || Object.keys(validationUpdates).length === 0) {
       return base;
     }
@@ -138,7 +171,36 @@ export function AuditResults() {
         validation_confidence: upd.confidence ?? f.validation_confidence,
       };
     });
-  }, [audit?.findings, validationUpdates]);
+  }, [rowsSource, validationUpdates]);
+
+  // Feature 0096 (R15): while the audit is not terminal, label the live rows
+  // with the OWASP agent's streamed mapping — the same pure rule the backend
+  // applies before it persists — so chips appear before persistence. Once the
+  // audit is terminal the persisted labels are the truth.
+  const findings = useMemo(
+    () => (!isTerminal && owaspMapping ? applyComplianceMapping(validatedFindings, owaspMapping) : validatedFindings),
+    [isTerminal, owaspMapping, validatedFindings],
+  );
+
+  // Feature 0096: the findings table's OWASP category filter, owned here so
+  // the coverage card's categories can set it too.
+  const [owaspCategory, setOwaspCategory] = useState("all");
+  const labelledCategories = useMemo(
+    () => new Set(owaspCategoryOptions(findings).map((o) => o.id)),
+    [findings],
+  );
+  const selectCoverageCategory = (category: string) => {
+    setOwaspCategory(category);
+    document.querySelector("[data-testid='findings-table']")?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  };
+  const coverageCard = coverage && (
+    <OwaspCoverage
+      manifest={coverage}
+      selectableIds={labelledCategories}
+      selectedCategory={owaspCategory}
+      onSelectCategory={selectCoverageCategory}
+    />
+  );
   const proveResults = audit?.prove_results ?? [];
   const scores = audit?.scores ?? {};
   const hasScores = Object.keys(scores).length > 0;
@@ -261,8 +323,8 @@ export function AuditResults() {
         {/* Token savings from memory optimization */}
         {(tokenSavings || dedupStats) && <TokenSavings savings={tokenSavings} dedupStats={dedupStats} />}
 
-        {/* OWASP Top 10 coverage (feature 0063) */}
-        {coverage && <OwaspCoverage manifest={coverage} />}
+        {/* OWASP Top 10 coverage (feature 0063); categories filter (0096) */}
+        {coverageCard}
 
         {/* Agent timeline - compact horizontal for completed */}
         {steps.length > 0 && (
@@ -325,7 +387,14 @@ export function AuditResults() {
 
         {/* Findings table - full width */}
         {findings.length > 0 && (
-          <FindingsTable findings={findings} auditId={id} proveResults={proveResults} />
+          <FindingsTable
+            findings={findings}
+            auditId={id}
+            proveResults={proveResults}
+            owaspCategory={owaspCategory}
+            onOwaspCategoryChange={setOwaspCategory}
+            onLineageSaved={onLineageSaved}
+          />
         )}
 
         {/* Prove verification results */}
@@ -399,14 +468,19 @@ export function AuditResults() {
       {/* Token savings */}
       {(tokenSavings || dedupStats) && <TokenSavings savings={tokenSavings} dedupStats={dedupStats} />}
 
-      {/* OWASP Top 10 coverage (feature 0063) */}
-      {coverage && <OwaspCoverage manifest={coverage} />}
+      {/* OWASP Top 10 coverage (feature 0063); categories filter (0096) */}
+      {coverageCard}
 
       {/* Findings as they arrive */}
       {findings.length > 0 && (
         <>
           <SeveritySummary findings={findings} />
-          <FindingsTable findings={findings} auditId={id} />
+          <FindingsTable
+            findings={findings}
+            auditId={id}
+            owaspCategory={owaspCategory}
+            onOwaspCategoryChange={setOwaspCategory}
+          />
         </>
       )}
     </div>

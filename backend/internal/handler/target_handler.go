@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -86,7 +87,12 @@ func (h *TargetHandler) scans(w http.ResponseWriter, key string) {
 // renders as "no findings" — which is the truth — where a 404 renders as a
 // broken page.
 func (h *TargetHandler) aggregate(w http.ResponseWriter, r *http.Request, key string) {
-	report, err := h.svc.Aggregate(parseAggregateQuery(key, r.URL.Query()))
+	q := parseAggregateQuery(key, r.URL.Query())
+	if err := parseComplianceFilter(&q, r.URL.Query()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	report, err := h.svc.Aggregate(q)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -150,6 +156,53 @@ func parseAggregateQuery(key string, values url.Values) model.AggregateQuery {
 		q.PageSize = maxAggregatePageSize
 	}
 	return q
+}
+
+// parseComplianceFilter reads `framework`, `category` and `edition` (feature
+// 0096 §7.3) into q.
+//
+// Unlike every other aggregate parameter these are REJECTED when malformed,
+// not clamped: a clamped paging value still answers the question asked, but a
+// dropped category filter answers "all findings" to a question about one
+// category — a wrong report that looks right. The patterns are the ones the
+// mapping validator applies to the agent's table (§3.4), so a category the
+// backend could never have stored is never a valid filter either.
+//
+// The edition is required with a framework. A category id means different
+// things in different editions (A03 is Injection in 2021 and Software Supply
+// Chain Failures in 2025), so a match under every edition would merge
+// unrelated categories into one report, and the backend never embeds an
+// edition (§1 I5), so it cannot supply a default. The caller names it.
+func parseComplianceFilter(q *model.AggregateQuery, values url.Values) error {
+	framework := strings.TrimSpace(values.Get("framework"))
+	category := strings.TrimSpace(values.Get("category"))
+	edition := strings.TrimSpace(values.Get("edition"))
+	if framework == "" {
+		if category != "" || edition != "" {
+			return fmt.Errorf("framework is required with category or edition (framework=%s)",
+				model.ComplianceFrameworkOWASP)
+		}
+		return nil
+	}
+	if err := validateComplianceFilter(framework, category, edition); err != nil {
+		return err
+	}
+	q.Framework, q.Category, q.Edition = framework, category, edition
+	return nil
+}
+
+func validateComplianceFilter(framework, category, edition string) error {
+	switch {
+	case framework != model.ComplianceFrameworkOWASP:
+		return fmt.Errorf("framework must be %q", model.ComplianceFrameworkOWASP)
+	case !mappingCategoryRe.MatchString(category):
+		return fmt.Errorf("category must match %s", mappingCategoryRe)
+	case edition == "":
+		return fmt.Errorf("edition is required with framework (category ids differ between editions)")
+	case !mappingEditionRe.MatchString(edition):
+		return fmt.Errorf("edition must match %s", mappingEditionRe)
+	}
+	return nil
 }
 
 // parseTier accepts only the two tiers model.TierOf can produce; anything else

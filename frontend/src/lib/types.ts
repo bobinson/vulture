@@ -96,6 +96,8 @@ export interface Finding {
   recommendation: string;
   compliance_ref?: string;
   fingerprint?: string;
+  /** Path-canonical identity; the lineage writer matches on it before `fingerprint`. */
+  fingerprint_v2?: string;
   cross_agent_origins?: string[];
   // Feature 0058 (R6) — detection tier that produced the finding
   // (e.g. "skill", "signature", "semgrep"). Optional because pre-0058
@@ -106,6 +108,21 @@ export interface Finding {
   validation_status?: string;
   validation_confidence?: number;
   validation?: Record<string, unknown>;
+  /** Feature 0096: framework categories applied from a mapping agent's table. Absent when none. */
+  compliance_labels?: ComplianceLabel[];
+}
+
+/**
+ * Feature 0096: one (framework, edition, category) label on a finding. It
+ * replaces the OWASP copy row: the finding is counted and triaged once, and
+ * `cwe` names the category the label was derived from.
+ */
+export interface ComplianceLabel {
+  framework: string;
+  edition: string;
+  category_id: string;
+  category_name: string;
+  cwe: string;
 }
 
 export interface AgentStep {
@@ -225,6 +242,20 @@ export interface OwaspCategoryCoverage {
   found_count: number;
   status: "found" | "clean-or-undetected";
   source_url: string;
+  /**
+   * Feature 0096: `false` on a category outside the audit's `categories`
+   * subset — the backend found nothing there by choice. Absent otherwise
+   * (including every manifest the agent streams live).
+   */
+  selected?: boolean;
+  /**
+   * Feature 0096 follow-up: how many distinct findings carrying a label of
+   * this category are triaged false positive (their own lineage row). The
+   * backend leaves those findings out of found_cwes / found_count when the
+   * audit is read. Present on mapping-mode manifests served by the backend;
+   * absent on a streamed or pre-0096 manifest.
+   */
+  false_positive_count?: number;
 }
 
 export interface OwaspCoverageManifest {
@@ -307,6 +338,11 @@ export interface FindingLineage {
   evidence?: LineageEvidence;
   /** Audit ids this finding was reported in, newest first. */
   seen_in?: string[];
+  /**
+   * Feature 0096: "framework:edition" (e.g. "owasp:2025") -> category ids of
+   * that edition's full table. Kept across scans that do not run the edition.
+   */
+  compliance_labels?: Record<string, string[]>;
 }
 
 /**
@@ -358,6 +394,12 @@ export interface AuditComparison {
   new_findings?: ComparisonFindingSummary[];
   fixed_findings?: ComparisonFindingSummary[];
   changed_findings?: ComparisonChangedFinding[];
+  /**
+   * Feature 0096: the previous audit's pre-0096 OWASP copy rows left out of
+   * the classification, because this audit labels those findings instead of
+   * copying them. Omitted when zero.
+   */
+  excluded_legacy_copies?: number;
 }
 
 export interface ComparisonFindingSummary {
@@ -472,6 +514,8 @@ export interface AggregateRow {
   last_seen_at: string;
   /** Free-form: a build may not know every event the backend can emit. */
   last_event: string;
+  /** Feature 0096: the lineage row's labels, "framework:edition" -> category ids. */
+  compliance_labels?: Record<string, string[]>;
 }
 
 export interface AggregateTiles {
@@ -488,6 +532,22 @@ export interface AggregateResponse {
   page_size: number;
   tiles: AggregateTiles;
   rows: AggregateRow[];
+  /**
+   * Feature 0096: every (framework, edition) the target's lineage rows carry
+   * labels for, with the categories under each — what the OWASP filter
+   * offers. Covers the selected scans and every status, and is not narrowed
+   * by the status/severity/tier/compliance filters; sorted by framework, then
+   * newest edition. Absent from an older backend; read as none.
+   */
+  label_editions?: LabelEdition[];
+}
+
+/** One (framework, edition) of `AggregateResponse.label_editions`. */
+export interface LabelEdition {
+  framework: string;
+  edition: string;
+  /** The category ids the target's rows carry under this edition, sorted. */
+  categories?: string[];
 }
 
 /**
@@ -501,6 +561,11 @@ export interface AggregateFilters {
   tier?: FindingTier;
   min_seen?: number;
   severity?: string[];
+  /** Feature 0096: rows labelled `category` under `framework` (e.g. owasp / A07). */
+  framework?: string;
+  category?: string;
+  /** Edition of `framework`; required with `category` — a category id means different things per edition. */
+  edition?: string;
   page?: number;
   page_size?: number;
 }

@@ -201,6 +201,14 @@ func migrate(db *sql.DB) error {
 	// is predicated on outstanding work so it is a no-op on every start after
 	// the first.
 	migrateLineageTargetIdentity(db)
+	// Feature 0096 §6.3: the SQLite half of migration 031, one-shot behind a
+	// data_migrations marker. After the target-identity backfill, because the
+	// twin rule matches on target_key. Unlike the steps above it FAILS the
+	// open, as a failing 031 fails a Postgres start: its only error besides
+	// I/O is a triaged OWASP row that disagrees with its twin.
+	if err := migrateRetireOwaspLineage(db); err != nil {
+		return fmt.Errorf("retire owasp lineage: %w", err)
+	}
 	// Feature 0064 §29: the LLM broker's stores now run on SQLite too.
 	if err := MigrateBrokerTables(db); err != nil {
 		return err
@@ -401,6 +409,11 @@ func migrateAddColumns(db *sql.DB) {
 	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN code_snippet TEXT`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_findings_validation_status
 		ON findings(audit_id, validation_status)`)
+	// Feature 0096, mirroring migrations/030: compliance labels on the finding
+	// (a JSON array) and per framework:edition on its lineage row (a JSON
+	// object). TEXT, nullable — NULL is "no labels" in both dialects.
+	_, _ = db.Exec(`ALTER TABLE findings ADD COLUMN compliance_labels TEXT`)
+	_, _ = db.Exec(`ALTER TABLE finding_lineage ADD COLUMN compliance_labels TEXT`)
 	// audit_memories is owned by SQLiteMemoryRepo, which creates it in
 	// migrateMemory. Its columns are added there too: this function runs first
 	// at startup, so an ALTER on that table here would silently do nothing on a
@@ -421,7 +434,8 @@ func (r *SQLiteRepo) prepareStatements() {
 		COALESCE(provenance, ''),
 		COALESCE(code_snippet, ''),
 		COALESCE(check_id, ''),
-		COALESCE(fingerprint_v2, '')
+		COALESCE(fingerprint_v2, ''),
+		COALESCE(compliance_labels, '')
 		FROM findings WHERE audit_id = ?`
 	stmt, err := r.db.Prepare(getFindingsSQL)
 	if err != nil {
@@ -614,10 +628,10 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 		return nil
 	}
 	valueStrings := make([]string, 0, len(findings))
-	valueArgs := make([]interface{}, 0, len(findings)*21)
+	valueArgs := make([]interface{}, 0, len(findings)*findingInsertColumnCount())
 	for _, f := range findings {
 		valueStrings = append(valueStrings,
-			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		refsJSON, _ := json.Marshal(f.References)
 		var validationJSON string
 		if f.Validation != nil {
@@ -645,6 +659,7 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			nullableString(clampSnippet(f.CodeSnippet)),
 			dbSafeText(f.CheckID),
 			dbSafeText(f.FingerprintV2),
+			findingLabelsColumn(f.ComplianceLabels),
 		)
 	}
 	stmt := fmt.Sprintf(
@@ -653,7 +668,7 @@ func (r *SQLiteRepo) saveFindingsChunk(auditID string, findings []model.Finding)
 			file_path, line_start, line_end, recommendation, refs, fingerprint,
 			validation_status, validation_confidence, validation,
 			is_rollup, rolled_up_into, instance_count, provenance, code_snippet,
-			check_id, fingerprint_v2
+			check_id, fingerprint_v2, compliance_labels
 		) VALUES %s ON CONFLICT DO NOTHING`,
 		strings.Join(valueStrings, ","),
 	)
@@ -830,7 +845,13 @@ func (r *SQLiteRepo) GetLatestCompletedAudit(sourceID string, types []string) (*
 	if match == nil {
 		return nil, nil
 	}
-	match.audit.Findings, _ = r.getFindings(match.audit.ID)
+	// Feature 0096 M6: the only caller is the cache probe, which decides
+	// hit/miss from these findings — a failed load must not read as "none".
+	findings, err := r.getFindings(match.audit.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get latest completed audit %s findings: %w", match.audit.ID, err)
+	}
+	match.audit.Findings = findings
 	match.audit.FindingsCount = len(match.audit.Findings)
 	return &match.audit, nil
 }
@@ -969,7 +990,8 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 			        COALESCE(provenance, ''),
 			        COALESCE(code_snippet, ''),
 			        COALESCE(check_id, ''),
-			        COALESCE(fingerprint_v2, '')
+			        COALESCE(fingerprint_v2, ''),
+			        COALESCE(compliance_labels, '')
 			 FROM findings WHERE audit_id = ?`,
 			auditID,
 		)
@@ -983,13 +1005,13 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 	findings := make([]model.Finding, 0, 64)
 	for rows.Next() {
 		var f model.Finding
-		var refsStr, validationStr string
+		var refsStr, validationStr, labelsStr string
 		err := rows.Scan(&f.ID, &f.AuditID, &f.AgentType, &f.Severity, &f.Category,
 			&f.Title, &f.Description, &f.FilePath, &f.LineStart, &f.LineEnd,
 			&f.Recommendation, &refsStr, &f.Fingerprint,
 			&f.ValidationStatus, &f.ValidationConfidence, &validationStr,
 			&f.IsRollup, &f.RolledUpInto, &f.InstanceCount, &f.Provenance,
-			&f.CodeSnippet, &f.CheckID, &f.FingerprintV2)
+			&f.CodeSnippet, &f.CheckID, &f.FingerprintV2, &labelsStr)
 		if err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}
@@ -997,6 +1019,7 @@ func (r *SQLiteRepo) getFindings(auditID string) ([]model.Finding, error) {
 		if validationStr != "" {
 			_ = json.Unmarshal([]byte(validationStr), &f.Validation)
 		}
+		decodeLabelsColumn(labelsStr, &f.ComplianceLabels)
 		findings = append(findings, f)
 	}
 	return findings, rows.Err()

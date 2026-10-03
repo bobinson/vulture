@@ -104,7 +104,7 @@ func (s *lineageService) ProcessAuditFindings(audit *model.Audit, source *model.
 		}
 	}
 
-	s.upsertFindings(audit, source, target, findings)
+	s.upsertFindings(audit, source, target, findings, nil)
 
 	// Close out what this scan did not report. The result payload is not
 	// available on this path (it is the pre-0091 entry point, and the replay
@@ -138,7 +138,7 @@ func (s *lineageService) RecordScanOutcome(audit *model.Audit, source *model.Sou
 	target := ResolveTarget(source)
 	rows := s.rowsForPass(target, source, agentType, result)
 	agentFindings, present := findingsOfAgent(result.Findings, agentType)
-	s.upsertFindings(audit, source, target, agentFindings)
+	s.upsertFindings(audit, source, target, agentFindings, result.ComplianceMapping)
 	return s.closeForAgent(audit, source, target, agentType, result, present, rows)
 }
 
@@ -359,10 +359,14 @@ func (s *lineageService) checkableRows(target TargetIdentity, source *model.Sour
 		if !checkableLLMRow(row) || !sameBranch(row, source) || userDecided(row.CurrentStatus) {
 			continue
 		}
+		relPath, inScan := agentPath(target, row.FilePath)
+		if !inScan {
+			continue
+		}
 		out = append(out, model.LineageCheckRequest{
 			LineageID:     row.ID,
 			FingerprintV2: firstNonEmpty(row.FingerprintV2, row.Fingerprint),
-			RelPath:       row.FilePath,
+			RelPath:       relPath,
 			LineStart:     row.EvidenceLineStart,
 			LineEnd:       row.EvidenceLineEnd,
 			QuoteHash:     row.QuoteHash,
@@ -375,8 +379,11 @@ func (s *lineageService) checkableRows(target TargetIdentity, source *model.Sour
 
 // upsertFindings records every finding this scan reported: a new lineage row
 // for one that has never been seen, an in-place update (and a regression, when
-// the row was closed) for one that has.
-func (s *lineageService) upsertFindings(audit *model.Audit, source *model.Source, target TargetIdentity, findings []model.Finding) {
+// the row was closed) for one that has. mapping is the run's compliance
+// mapping (feature 0096 §4.2), nil on a run without one; every sighting then
+// carries the labels it implies for that mapping's edition, and only those.
+func (s *lineageService) upsertFindings(audit *model.Audit, source *model.Source, target TargetIdentity,
+	findings []model.Finding, mapping *model.ComplianceMapping) {
 	if source == nil || len(findings) == 0 {
 		return
 	}
@@ -388,12 +395,12 @@ func (s *lineageService) upsertFindings(audit *model.Audit, source *model.Source
 			continue
 		}
 		if existing := resolveExisting(existingMap, &f); existing != nil {
-			if err := s.updateExistingLineage(existing, audit, source, target, &f, now); err != nil {
+			if err := s.updateExistingLineage(existing, audit, source, target, &f, mapping.LineagePatch(f.Category, f.AbsorbedCategories...), now); err != nil {
 				log.Printf("[lineage] update error id=%s: %v", existing.ID, err)
 			}
 			continue
 		}
-		if err := s.createNewLineage(audit, source, target, &f, now); err != nil {
+		if err := s.createNewLineage(audit, source, target, &f, mapping.LineagePatch(f.Category, f.AbsorbedCategories...), now); err != nil {
 			log.Printf("[lineage] create error: %v", err)
 		}
 	}
@@ -491,7 +498,8 @@ func resolveExisting(existingMap map[string]*model.FindingLineage, f *model.Find
 	return nil
 }
 
-func (s *lineageService) createNewLineage(audit *model.Audit, source *model.Source, target TargetIdentity, f *model.Finding, now time.Time) error {
+func (s *lineageService) createNewLineage(audit *model.Audit, source *model.Source, target TargetIdentity,
+	f *model.Finding, labels map[string][]string, now time.Time) error {
 	l := &model.FindingLineage{
 		Fingerprint:   f.Fingerprint,
 		SourcePath:    source.Path,
@@ -504,7 +512,7 @@ func (s *lineageService) createNewLineage(audit *model.Audit, source *model.Sour
 		Severity:      string(f.Severity),
 		Category:      f.Category,
 		Title:         f.Title,
-		FilePath:      f.FilePath,
+		FilePath:      targetPath(target, f.FilePath),
 		FirstCommit:   source.GitCommitShort,
 		LatestCommit:  source.GitCommitShort,
 		// Feature 0091. Provenance decides the row's tier and therefore which
@@ -524,6 +532,8 @@ func (s *lineageService) createNewLineage(audit *model.Audit, source *model.Sour
 		// which key is READ, never which is recorded, so flipping back to
 		// target mode does not need a second backfill.
 		TargetKey: target.Key,
+		// Feature 0096 §4.2: the FULL-table categories of this run's edition.
+		ComplianceLabels: labels,
 	}
 	if err := s.repo.UpsertLineage(l); err != nil {
 		return fmt.Errorf("create lineage: %w", err)
@@ -538,7 +548,8 @@ func (s *lineageService) createNewLineage(audit *model.Audit, source *model.Sour
 	})
 }
 
-func (s *lineageService) updateExistingLineage(existing *model.FindingLineage, audit *model.Audit, source *model.Source, target TargetIdentity, f *model.Finding, now time.Time) error {
+func (s *lineageService) updateExistingLineage(existing *model.FindingLineage, audit *model.Audit, source *model.Source,
+	target TargetIdentity, f *model.Finding, labels map[string][]string, now time.Time) error {
 	existing.LatestAuditID = audit.ID
 	existing.LatestFoundAt = &now
 	existing.LatestCommit = source.GitCommitShort
@@ -565,11 +576,19 @@ func (s *lineageService) updateExistingLineage(existing *model.FindingLineage, a
 	// Only on a sighting, and never to empty: a scan that did not report the
 	// finding has no path to offer, and this is the one place a path is known
 	// to be current because the agent just read that file.
-	existing.FilePath = firstNonEmpty(f.FilePath, existing.FilePath)
+	existing.FilePath = firstNonEmpty(targetPath(target, f.FilePath), existing.FilePath)
 	if f.LineStart > 0 {
 		existing.EvidenceLineStart = f.LineStart
 		existing.EvidenceLineEnd = f.LineEnd
 	}
+	// Feature 0096 §4.2: compliance_labels on an update is a MERGE PATCH, not
+	// the row's value — the repo replaces only the framework:edition keys it
+	// is handed. `existing` was read at the start of the scan, so sending its
+	// labels back would be a read-modify-write that reverts any key a
+	// concurrent mapping run wrote since. The patch is only the keys THIS
+	// run's mapping carries: none on a non-mapping scan, so the map is left
+	// untouched.
+	existing.ComplianceLabels = labels
 	if err := s.repo.UpsertLineage(existing); err != nil {
 		return fmt.Errorf("update lineage: %w", err)
 	}

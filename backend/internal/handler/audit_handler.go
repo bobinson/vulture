@@ -13,6 +13,7 @@ import (
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
+	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/pluginregistry"
 )
 
@@ -247,6 +248,9 @@ func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.enrichProveResults(audit)
+	// 0096 follow-up: serve the effective coverage (triaged false positives
+	// left out); the persisted column stays the scan-time record.
+	withEffectiveOwaspCoverage(audit, h.lineageRepo)
 	writeJSON(w, http.StatusOK, audit)
 }
 
@@ -379,16 +383,22 @@ func (h *AuditHandler) enrichComparisonRefs(sourcePath string, comp *model.Audit
 }
 
 func buildComparison(current, previous *model.Audit) model.AuditComparison {
+	// The counts are of the rows that entered the diff, AFTER legacy copies
+	// are excluded (feature 0096 M7), so they reconcile with the
+	// classification: previous = persistent + changed + fixed, current =
+	// persistent + changed + new. The excluded copies are reported on their
+	// own in ExcludedLegacyCopies and in neither count.
+	currFindings, prevFindings, excluded := withoutLegacyCopies(current, previous)
 	comp := model.AuditComparison{
 		HasPrevious:           true,
 		PreviousAuditID:       previous.ID,
 		PreviousDate:          previous.CompletedAt,
-		PreviousFindingsCount: len(previous.Findings),
-		CurrentFindingsCount:  len(current.Findings),
+		PreviousFindingsCount: len(prevFindings),
+		CurrentFindingsCount:  len(currFindings),
+		ExcludedLegacyCopies:  excluded,
 	}
-
-	prevMap := fingerprintMap(previous.Findings)
-	currMap := fingerprintMap(current.Findings)
+	prevMap := fingerprintMap(prevFindings)
+	currMap := fingerprintMap(currFindings)
 
 	for fp, cf := range currMap {
 		pf, existed := prevMap[fp]
@@ -418,6 +428,60 @@ func buildComparison(current, previous *model.Audit) model.AuditComparison {
 	}
 
 	return comp
+}
+
+// withoutLegacyCopies returns the two audits' findings with the older audit's
+// mapper-agent rows removed when the newer audit is in mapping mode, and how
+// many rows were removed.
+//
+// Feature 0096: a pre-0096 OWASP run re-emitted every scanner finding as a
+// second row with agent_type = owasp; a post-0096 run persists none and labels
+// the scanner rows instead. Diffing the two shapes would call every copy fixed
+// (or, comparing the older audit, new) although its scanner twin is compared
+// on its own. "Newer" is by creation time, because the counterpart of an older
+// audit is the newest other completed audit. Any other pairing — including a
+// newer audit that holds mapper rows again under version skew — is unchanged.
+func withoutLegacyCopies(current, previous *model.Audit) (curr, prev []model.Finding, excluded int) {
+	curr, prev = current.Findings, previous.Findings
+	newer := current
+	if previous.CreatedAt.After(current.CreatedAt) {
+		newer = previous
+	}
+	if !inMappingMode(newer) {
+		return curr, prev, 0
+	}
+	if newer == current {
+		prev, excluded = dropMapperRows(prev)
+		return curr, prev, excluded
+	}
+	curr, excluded = dropMapperRows(curr)
+	return curr, prev, excluded
+}
+
+// inMappingMode reports whether the audit ran a mapper agent and holds none of
+// its rows — the post-0096 shape, including a clean tree with no rows at all.
+func inMappingMode(a *model.Audit) bool {
+	ranMapper := false
+	for _, t := range a.Types {
+		ranMapper = ranMapper || agentregistry.IsMapper(t)
+	}
+	if !ranMapper {
+		return false
+	}
+	_, n := dropMapperRows(a.Findings)
+	return n == 0
+}
+
+// dropMapperRows returns findings without mapper-agent rows and how many were
+// dropped. The input slice is never modified.
+func dropMapperRows(findings []model.Finding) ([]model.Finding, int) {
+	kept := make([]model.Finding, 0, len(findings))
+	for i := range findings {
+		if !agentregistry.IsMapper(findings[i].AgentType) {
+			kept = append(kept, findings[i])
+		}
+	}
+	return kept, len(findings) - len(kept)
 }
 
 func fingerprintMap(findings []model.Finding) map[string]model.Finding {

@@ -24,13 +24,21 @@ Content-Type: application/json
     // agent-specific configuration
   },
   "prior_findings": [...],
-  "lineage_checks_requested": { "schema": 1, "rows": [...] }
+  "lineage_checks_requested": { "schema": 1, "rows": [...] },
+  "accepts_mapping": 1
 }
 ```
 
 `lineage_checks_requested` is optional and omitted entirely when the backend has
 nothing to ask; see [Lineage evidence checks](#lineage-evidence-checks-feature-0091-versioned)
 below.
+
+`accepts_mapping` is written by the backend's agent proxy, for the OWASP agent
+only; see [Mapping result (v1)](#mapping-result-v1-feature-0096) below. It is
+never part of `config`: the proxy strips an `accepts_mapping` key from every
+agent's `config` (escaped spellings included), and the shared transport passes
+the top-level field only to a run handler that declares an `accepts_mapping`
+parameter.
 
 ### Response (Python → Go via SSE)
 
@@ -132,6 +140,127 @@ both sides, so a rename does not error anywhere — it reads as "absent", which 
 legal and quiet wrong answer. Rename a key in one language and that language's
 suite fails against the fixture; edit the fixture to match and the other language's
 suite fails instead.
+
+### Mapping result (v1, feature 0096)
+
+A **mapping agent** (registry `Kind: "mapper"`) categorises other agents' findings
+instead of detecting its own. The OWASP agent is one: it receives the
+CWE-categorised findings of the scan phase as `prior_findings` and answers with
+its edition's CWE→category table. The backend applies that table to the run's
+final, deduplicated finding set, so every CWE-categorised finding carries its
+OWASP labels (`compliance_labels`) and nothing is persisted twice.
+
+**Negotiation.** The backend's agent proxy adds `"accepts_mapping": 1` as a
+**top-level** field of the OWASP agent's `/run` body — not inside `config`, which
+carries only the backend-owned `cwe_stage_status` and the user's `edition` /
+`categories`:
+
+```json
+{"run_id": "…", "source_path": "…", "accepts_mapping": 1,
+ "config": {"cwe_stage_status": "completed", "edition": "2025", "categories": ["A07"]},
+ "prior_findings": ["…"]}
+```
+
+It is out of band because a pre-0096 backend forwards arbitrary user `config`
+keys to agents: a capability read from `config` would let a user switch the
+agent into mapping mode against a backend that reads its zero-finding answer as
+"every OWASP issue was fixed" and closes OWASP lineage. So the agent reads the
+top-level field only and ignores `config.accepts_mapping`, and this backend
+strips that key from every agent's `config` anyway.
+
+The agent answers with a mapping **only** when the field is the JSON integer `1`;
+absent, `0`, `true`, `1.0`, `"1"` or any other version gets the legacy answer
+(one OWASP copy row per mapped CWE finding). The mode is negotiated, never
+guessed from the shape of the result:
+
+| Backend | Agent | Outcome |
+|---|---|---|
+| sends `accepts_mapping: 1` | speaks v1 | mapping mode |
+| sends `accepts_mapping: 1` | predates v1 | legacy copies (the field is ignored) |
+| does not send it | speaks v1 | legacy copies, unchanged |
+
+**The `result` event in mapping mode** carries no findings and no `finding`
+events precede it:
+
+```json
+{
+  "findings": [],
+  "findings_count": 0,
+  "score": 78.1,
+  "summary": "Mapped 2 finding(s) into 2/2 OWASP Top 10:2025 categories.",
+  "owasp_coverage": {"edition": "2025", "cwe_stage_status": "completed", "categories": ["..."]},
+  "mapping": {
+    "version": 1,
+    "framework": "owasp",
+    "edition": "2025",
+    "selected": ["A05", "A07"],
+    "table": {
+      "CWE-798": [{"id": "A07", "name": "Authentication Failures"}],
+      "CWE-89":  [{"id": "A05", "name": "Injection"}]
+    }
+  }
+}
+```
+
+* The **presence of the `mapping` member**, whatever its value (`null` and an
+  invalid object included), is the mode marker. The backend decodes it with Go
+  `encoding/json`, so the member name (and the names of the members inside it)
+  is matched case-insensitively: `"Mapping"` is the same marker. A mapping-mode result persists
+  none of the rows it carries; an invalid mapping labels nothing and never falls
+  back to persisting copies. The mode is sticky for the run: a later legacy
+  snapshot from the same agent is ignored.
+* A mapper agent never reaches lineage, in any mode: its result creates,
+  re-sights and closes no lineage row, so an empty `findings` can never be read
+  as "fixed". (Legacy copies are persisted as findings but get no lineage.)
+* `table` is the **full** edition table — every CWE the edition maps (2025: 249,
+  2021: 196) — independent of `selected`, so the backend keeps per-edition labels
+  on lineage across category subsets. Entries are `{id, name}` only.
+* `selected` echoes the effective `categories` filter (`[]` = all); labels on
+  findings are narrowed to it, lineage labels are not. The agent keeps only the
+  edition's own ids (deduplicated, in the order given) and, when nothing usable
+  is left, sends `["A00"]` — a reserved id no edition defines — meaning "select
+  nothing" rather than "all".
+* The backend accepts a mapping only from the agent it dispatched as `owasp`, and
+  validates it all-or-nothing: `version == 1`, `framework == "owasp"`, a
+  four-digit `edition`, at most 2,000 `CWE-<n>` keys, `A<nn>` category ids,
+  names of at most 120 runes (Unicode code points), valid UTF-8 and without a
+  NUL byte, at most 100 `selected` ids.
+* CWE ids are canonicalised without leading zeros (`CWE-089` is `CWE-89`) for
+  table keys (colliding keys fold), lookups, `label.cwe`, coverage and lineage.
+* Labels are applied after cross-agent dedup. A survivor that absorbed rows of
+  other CWE ids is labelled from its own category and theirs, each label's `cwe`
+  naming the id it came from.
+* `owasp_coverage` is read only from the `owasp` agent's snapshot and exists in
+  two copies. The one on the streamed event is **provisional**: the agent's own,
+  counted over the priors before dedup, every category counted, no `selected`
+  key. The one persisted on the audit is **authoritative**: `mapped_count`,
+  names and `cwe_stage_status` stay the agent's; `found_cwes` / `found_count` /
+  `status` and `unmapped_cwes` / `unmapped_count` are recounted from the labelled
+  final set; each category outside a `selected` subset gets empty found values
+  plus `"selected": false` (not checked, rather than clean). A rejected mapping,
+  or a manifest for another edition than the mapping, has its found and unmapped
+  values cleared and no `selected` key; an unreadable manifest is dropped.
+  The copy `GET /api/audits/{id}` and the replay **serve** is derived from the
+  stored one each time the audit is read: findings whose own lineage row is
+  `false_positive` are left out of the found values and of `unmapped_*`, and
+  each category gains `false_positive_count`. The stored copy is not changed;
+  an older audit's manifest, or one served when lineage or the findings
+  cannot be read, is served as stored.
+* `summary` reads `Mapped N finding(s) into k/T OWASP Top 10:<edition>
+  categories.`: `N` is the number of priors counted by `score`; `T` is the
+  number of selected categories in the edition — every category of the edition
+  when none is selected (`[]`), and 0 when the filter selects none (`["A00"]`);
+  `k` is how many of those `T` categories have at least one found CWE.
+* `score` is computed agent-side over the distinct priors that map to at least
+  one selected category, before dedup (see
+  `agents/owasp/owasp_agent/skills/SKILLS.md`).
+* No source text travels in the mapping.
+
+The OWASP agent's actual output for one request is captured in
+`agents/owasp/tests/fixtures/owasp_0096_mapping_stream.json`. The agent's suite
+fails when its output drifts from the file, and
+`backend/test/e2e/owasp_mapping_flow_test.go` replays it through the backend
+stream path, so the two sides are tested against the same bytes.
 
 ### Health Check
 

@@ -37,8 +37,8 @@ func ParseSnapshotFindings(snapshot json.RawMessage, agentType string) ([]model.
 	out := make([]model.Finding, 0, len(envelope.Findings))
 	malformed := 0
 	for _, raw := range envelope.Findings {
-		var f model.Finding
-		if json.Unmarshal(raw, &f) != nil {
+		f, ok := DecodeAgentFinding(raw)
+		if !ok {
 			malformed++
 			continue
 		}

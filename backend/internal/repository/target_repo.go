@@ -140,7 +140,107 @@ func reportFilterSQL(d *sqlDialect, keys []string, q model.AggregateQuery) strin
 	if len(q.Severities) > 0 {
 		clause += " AND LOWER(COALESCE(severity,'')) IN " + d.inList(q.Severities)
 	}
-	return clause
+	return clause + complianceFilterSQL(d, q)
+}
+
+// complianceFilterSQL renders the compliance-label half of the filter
+// (feature 0096 §7.3): the row's `compliance_labels` object — keyed
+// "framework:edition", each value a list of category ids — must list the
+// category under exactly that key. An unset framework is not a filter at all.
+//
+// The key is compared for equality, never matched across editions: a
+// category id names different categories in different editions. The handler
+// requires the edition; a query that reaches here without one binds
+// "framework:", which no stored key equals, so it matches nothing rather than
+// every edition.
+//
+// Both dialects guard the JSON functions against a non-object value: a
+// malformed column must drop the row from the filter, not fail the report.
+func complianceFilterSQL(d *sqlDialect, q model.AggregateQuery) string {
+	if q.Framework == "" {
+		return ""
+	}
+	key := d.ph(q.Framework + ":" + q.Edition)
+	category := d.ph(q.Category)
+	if d.pg {
+		return ` AND EXISTS (SELECT 1 FROM jsonb_each(CASE WHEN jsonb_typeof(compliance_labels) = 'object'
+			THEN compliance_labels END) e WHERE e.key = ` + key + ` AND e.value ? ` + category + `)`
+	}
+	return ` AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(compliance_labels)
+			THEN compliance_labels ELSE '{}' END) e,
+		json_each(CASE WHEN e.type = 'array' THEN e.value ELSE '[]' END) c
+		WHERE e.key = ` + key + ` AND c.value = ` + category + `)`
+}
+
+// labelSetsSQL selects the distinct compliance_labels values of the target
+// scope (feature 0096 M8). Distinct label SETS are few — one per combination
+// of categories the mapper produced — so the per-key split happens in Go, in
+// labelEditionsOf, once for both dialects instead of twice in two JSON
+// dialects.
+func labelSetsSQL(d *sqlDialect, keys []string, q model.AggregateQuery) string {
+	return `SELECT DISTINCT CAST(compliance_labels AS TEXT) FROM finding_lineage WHERE ` +
+		targetScopeSQL(d, keys, q) + ` AND compliance_labels IS NOT NULL`
+}
+
+// readLabelEditions runs labelSetsSQL and folds the sets into editions.
+func readLabelEditions(db *sql.DB, d *sqlDialect, keys []string, q model.AggregateQuery) ([]model.LabelEdition, error) {
+	rows, err := db.Query(labelSetsSQL(d, keys, q), d.args...)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate label editions: %w", err)
+	}
+	defer rows.Close()
+	var sets []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan label set: %w", err)
+		}
+		sets = append(sets, raw)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("aggregate label editions: %w", err)
+	}
+	return labelEditionsOf(sets), nil
+}
+
+// labelEditionsOf folds stored label objects ({"owasp:2025": ["A07"], …})
+// into one entry per framework:edition key with the union of its categories.
+// A value that is not a JSON object, or a key without a "framework:edition"
+// shape, contributes nothing: a malformed column must not fail the report.
+func labelEditionsOf(sets []string) []model.LabelEdition {
+	cats := map[string]map[string]bool{}
+	for _, raw := range sets {
+		var labels map[string][]string
+		decodeLabelsColumn(raw, &labels)
+		for key, list := range labels {
+			if fw, ed, ok := strings.Cut(key, ":"); !ok || fw == "" || ed == "" {
+				continue
+			}
+			if cats[key] == nil {
+				cats[key] = map[string]bool{}
+			}
+			for _, c := range list {
+				cats[key][c] = true
+			}
+		}
+	}
+	out := make([]model.LabelEdition, 0, len(cats))
+	for key, set := range cats {
+		fw, ed, _ := strings.Cut(key, ":")
+		e := model.LabelEdition{Framework: fw, Edition: ed, Categories: make([]string, 0, len(set))}
+		for c := range set {
+			e.Categories = append(e.Categories, c)
+		}
+		sort.Strings(e.Categories)
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Framework != out[j].Framework {
+			return out[i].Framework < out[j].Framework
+		}
+		return out[i].Edition > out[j].Edition
+	})
+	return out
 }
 
 // tierFilterSQL renders the tier half of the filter. An unset tier is not a
@@ -185,7 +285,8 @@ const aggregateRowCols = `id, COALESCE(ref_number,0), COALESCE(severity,''), COA
 		COALESCE(title,''), COALESCE(file_path,''), COALESCE(source_path,''),
 		COALESCE(evidence_line_start,0),
 		COALESCE(provenance,''), COALESCE(seen_count,1), current_status,
-		first_found_at, COALESCE(latest_found_at, first_found_at)`
+		first_found_at, COALESCE(latest_found_at, first_found_at),
+		COALESCE(CAST(compliance_labels AS TEXT),'')`
 
 // aggregateOrderSQL is a TOTAL order, and it has to be: paging without one
 // both duplicates and loses rows across pages, silently, on a store that is
@@ -215,6 +316,9 @@ type aggregateRowScan struct {
 	status        string
 	firstFoundAt  time.Time
 	latestFoundAt time.Time
+	// labels is the compliance_labels column as JSON text ("" when NULL);
+	// CAST rather than a dialect switch because JSONB and TEXT both cast.
+	labels string
 }
 
 // newAggregateRow assembles one report row from the scanned columns. The tier
@@ -230,6 +334,7 @@ func newAggregateRow(s aggregateRowScan) model.AggregateRow {
 	}
 	ref := model.FindingLineage{RefNumber: s.refNumber}
 	row.Ref = ref.FormatRef()
+	decodeLabelsColumn(s.labels, &row.ComplianceLabels)
 	return row
 }
 

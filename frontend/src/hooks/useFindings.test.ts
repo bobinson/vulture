@@ -170,7 +170,9 @@ describe("useFindings", () => {
     makeFinding({ title: "Suspicious", severity: "high", validation_status: "suspicious" }),
     makeFinding({ title: "Triaged FP", severity: "low", fingerprint: "fp-triaged", validation_status: "high_confidence" }),
   ];
-  const TRIAGED = new Set<string>(["fp-triaged"]);
+  // Stands in for FindingsTable's resolver: "is this finding's own lineage
+  // row false_positive". Module-level so its identity is stable across renders.
+  const TRIAGED = (f: Finding) => f.fingerprint === "fp-triaged";
 
   it("defaults hideFalsePositives to false (shows everything)", () => {
     const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
@@ -185,7 +187,7 @@ describe("useFindings", () => {
     expect(titles).not.toContain("Auto FP");
   });
 
-  it("hides lineage false_positive findings (by fingerprint) when toggled on", () => {
+  it("hides findings whose own lineage row is false_positive when toggled on", () => {
     const { result } = renderHook(() => useFindings(FP_FINDINGS, TRIAGED));
     act(() => result.current.setHideFalsePositives(true));
     const titles = result.current.findings.map((f) => f.title);
@@ -297,5 +299,47 @@ describe("useFindings", () => {
     act(() => result.current.setPage(1));
     act(() => result.current.setHideSuspicious(true));
     expect(result.current.page).toBe(0);
+  });
+
+  describe("OWASP category filter (0096)", () => {
+    const label = (id: string) => ({
+      framework: "owasp", edition: "2025", category_id: id, category_name: id, cwe: "CWE-1",
+    });
+    const LABELLED: Finding[] = [
+      makeFinding({ title: "Cred", severity: "high", compliance_labels: [label("A07")] }),
+      makeFinding({ title: "Env", severity: "low", compliance_labels: [label("A07")] }),
+      makeFinding({ title: "SQLi", severity: "high", compliance_labels: [label("A05")] }),
+      makeFinding({ title: "Plain", severity: "high" }),
+    ];
+
+    it("shows everything when the category is all", () => {
+      const { result } = renderHook(() => useFindings(LABELLED, undefined, "all"));
+      expect(result.current.totalFiltered).toBe(4);
+    });
+
+    it("keeps only findings labelled with the category", () => {
+      const { result } = renderHook(() => useFindings(LABELLED, undefined, "A07"));
+      expect(result.current.findings.map((f) => f.title).sort()).toEqual(["Cred", "Env"]);
+    });
+
+    it("composes with the severity filter", () => {
+      const { result } = renderHook(() => useFindings(LABELLED, undefined, "A07"));
+      act(() => result.current.setFilterSeverity("high"));
+      expect(result.current.findings.map((f) => f.title)).toEqual(["Cred"]);
+    });
+
+    it("resets to the first page when the category changes", () => {
+      const many = Array.from({ length: 30 }, (_, i) =>
+        makeFinding({ title: `L${i}`, compliance_labels: [label("A07")] }),
+      );
+      const { result, rerender } = renderHook(
+        ({ cat }) => useFindings(many, undefined, cat),
+        { initialProps: { cat: "all" } },
+      );
+      act(() => result.current.setPage(1));
+      expect(result.current.page).toBe(1);
+      rerender({ cat: "A07" });
+      expect(result.current.page).toBe(0);
+    });
   });
 });

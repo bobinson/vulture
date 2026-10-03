@@ -29,8 +29,8 @@ func ParseDeltaFindings(delta json.RawMessage, agentType string) []model.Finding
 		if p.Op != "add" || p.Path != "/findings/-" {
 			continue
 		}
-		var f model.Finding
-		if json.Unmarshal(p.Value, &f) != nil {
+		f, ok := DecodeAgentFinding(p.Value)
+		if !ok {
 			continue
 		}
 		if agentType != "" {

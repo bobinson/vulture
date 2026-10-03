@@ -23,22 +23,31 @@ func TestRunModeRootsMatchMigration027(t *testing.T) {
 	// are comparable at all.
 	t.Setenv("TMPDIR", "/tmp")
 
-	body, err := sqlFS.ReadFile("027_lineage_target_identity.sql")
-	if err != nil {
-		t.Fatalf("read 027: %v", err)
-	}
-	sql := string(body)
-
 	roots := pathutil.RunModeRoots()
 	if len(roots) == 0 {
 		t.Fatal("pathutil.RunModeRoots() is empty; the run-mode strip would be a no-op")
 	}
+	// 031 (feature 0096) recreates the same rule to derive the legacy-key
+	// bridge its twin match reads, so it carries a third copy of the table.
+	for _, file := range []string{"027_lineage_target_identity.sql", "031_retire_owasp_lineage.sql"} {
+		body, err := sqlFS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		checkRunModeRoots(t, file, string(body), roots)
+	}
+}
+
+func checkRunModeRoots(t *testing.T, file, sql string, roots []string) {
+	t.Helper()
+	if len(sqlStrippedPrefixes(sql)) == 0 {
+		t.Fatalf("%s declares no run-mode prefix table; the parity check would be vacuous", file)
+	}
 	for _, root := range roots {
 		if !strings.Contains(sql, "'"+root+"'") {
-			t.Errorf("run-mode root %q is stripped by the scanner but not by migration 027's "+
-				"step-4 backfill: every historical row under it keeps a mount-specific target "+
-				"key, so its history stays split. Add it to the ARRAY[...] in "+
-				"vlt_0091_strip_runmode()", root)
+			t.Errorf("run-mode root %q is stripped by the scanner but not by %s: every "+
+				"historical row under it keeps a mount-specific target key, so its history "+
+				"stays split. Add it to the FOREACH ARRAY[...] of its strip_runmode()", root, file)
 		}
 	}
 
@@ -46,8 +55,8 @@ func TestRunModeRootsMatchMigration027(t *testing.T) {
 	// backfill disagree with every scan that follows it.
 	for _, quoted := range sqlStrippedPrefixes(sql) {
 		if !containsRoot(roots, quoted) {
-			t.Errorf("migration 027 strips %q but pathutil.RunModeRoots() does not, so the "+
-				"backfill and every later scan would key the same tree differently", quoted)
+			t.Errorf("%s strips %q but pathutil.RunModeRoots() does not, so the "+
+				"backfill and every later scan would key the same tree differently", file, quoted)
 		}
 	}
 }

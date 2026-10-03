@@ -29,7 +29,17 @@ type AgentRegistryEntry struct {
 	// (e.g. avionics-only DO-178C) where running by default would add
 	// noise for users outside that domain.
 	Optional bool
+
+	// Kind is "" for a scanner (it reads the tree and reports findings) or
+	// KindMapper for an agent that only relabels other agents' findings
+	// (feature 0096 §5). A mapper owns no lineage: in every mode — mapping
+	// or legacy copies — the backend keeps it out of lineage entirely, so
+	// its silence (or its copies) can never create, reopen or close a row.
+	Kind string
 }
+
+// KindMapper marks a registry entry as a mapper rather than a scanner.
+const KindMapper = "mapper"
 
 // AllAgents is the central registry of all agent types.
 // Adding a new agent requires only appending one entry here.
@@ -40,7 +50,7 @@ var AllAgents = []AgentRegistryEntry{
 	// concurrently with CWE in the default scan set; the backend runs it after
 	// the scan phase, feeding it the CWE findings. It stays launched, listed
 	// (AllScanAgentTypes / /api/agents), and selectable.
-	{Type: "owasp", Name: "OWASP", DefaultPort: "28002", DirName: "owasp", Module: "owasp_agent.main:app", INIKey: "agent_owasp", Optional: true},
+	{Type: "owasp", Name: "OWASP", DefaultPort: "28002", DirName: "owasp", Module: "owasp_agent.main:app", INIKey: "agent_owasp", Optional: true, Kind: KindMapper},
 	{Type: "soc2", Name: "SOC2", DefaultPort: "28003", DirName: "soc2", Module: "soc2_agent.main:app", INIKey: "agent_soc2"},
 	{Type: "cwe", Name: "CWE", DefaultPort: "28004", DirName: "cwe", Module: "cwe_agent.main:app", INIKey: "agent_cwe"},
 	{Type: "prove", Name: "Prove", DefaultPort: "28005", DirName: "prove", Module: "prove_agent.main:app", INIKey: "agent_prove"},
@@ -88,6 +98,18 @@ func AllScanAgentTypes() []string {
 		types = append(types, a.Type)
 	}
 	return types
+}
+
+// IsMapper reports whether agentType is a registered mapper agent. An unknown
+// type — a plugin, say — is a scanner, which is the reading that keeps its
+// lineage exactly as it was.
+func IsMapper(agentType string) bool {
+	for _, a := range AllAgents {
+		if a.Type == agentType {
+			return a.Kind == KindMapper
+		}
+	}
+	return false
 }
 
 // EnvPortKey returns the env var name for the agent's port, e.g. "VULTURE_AGENT_CHAOS_PORT".

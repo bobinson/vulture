@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "@/lib/api.ts";
+import { OWASP, parseComplianceMapping, type ComplianceMapping } from "@/lib/compliance.ts";
+import {
+  EMPTY_LIVE_FINDINGS,
+  createLiveBatcher,
+  flattenLiveFindings,
+  liveFindingsBatchReducer,
+  toLiveFindings,
+  type LiveBatcher,
+  type LiveFindingsAction,
+} from "@/lib/liveFindings.ts";
 import type { AgentStep, StreamLine, TokenSavings, DedupStats, OwaspCoverageManifest } from "@/lib/types.ts";
 
 const SSE_EVENT_TYPES = [
@@ -47,6 +57,17 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
   // Feature 0063: OWASP coverage manifest, carried on the OWASP agent's
   // result StateSnapshot (owasp_coverage).
   const [owaspCoverage, setOwaspCoverage] = useState<OwaspCoverageManifest | null>(null);
+  // Feature 0096: the OWASP agent's CWE -> category table, so the page can
+  // label its in-memory rows before the backend persists the labels.
+  const [owaspMapping, setOwaspMapping] = useState<ComplianceMapping | null>(null);
+  // Feature 0096 (R15): the findings the stream has delivered, per agent, so
+  // the page has rows to show (and label) before anything is persisted.
+  // 0096 M9: actions are queued and applied once per animation frame (at
+  // most every 250 ms), so N findings in a frame cost one state update — and
+  // one pass of the page's labelling, filtering and sorting — not N.
+  const [liveByAgent, dispatchLiveBatch] = useReducer(liveFindingsBatchReducer, EMPTY_LIVE_FINDINGS);
+  const [liveBatcher] = useState<LiveBatcher>(() => createLiveBatcher(dispatchLiveBatch));
+  const liveFindings = useMemo(() => flattenLiveFindings(liveByAgent), [liveByAgent]);
   // Feature 0046 issues #12 + #18: accumulate L5 verdict patches via
   // a reducer so React batches updates instead of creating a fresh
   // top-level object per verdict. Each dispatch is O(1) on average
@@ -110,9 +131,11 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
   // addLine/updateStep use refs because they are user-defined callbacks that could change.
   // setDone/setConnected/setDedupStats/setTokenSavings are React state setters,
   // which are guaranteed stable across renders (React contract), so closing over
-  // them directly is safe.
+  // them directly is safe. The live batcher is created once (useState
+  // initialiser) and never replaced, so closing over it is equally stable.
   const handleSSEEventRef = useRef(
     (eventType: string, data: Record<string, unknown>) => {
+      const dispatchLive = (a: LiveFindingsAction) => liveBatcher.push(a);
       const addLineFn = addLineRef.current;
       const updateStepFn = updateStepRef.current;
 
@@ -144,20 +167,16 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
         }
 
         case "StateDelta":
-          handleStateDelta(data, addLineFn, setDedupStats, setTokenSavings, recordValidationUpdate);
+          handleStateDelta(data, addLineFn, setDedupStats, setTokenSavings, recordValidationUpdate, dispatchLive);
           break;
 
-        case "StateSnapshot": {
+        case "StateSnapshot":
           addLineFn("Results snapshot received", "info");
-          const snap = data.snapshot as Record<string, unknown> | undefined;
-          const cov = snap?.owasp_coverage;
-          if (cov && typeof cov === "object") {
-            setOwaspCoverage(cov as OwaspCoverageManifest);
-          }
+          handleSnapshot(data, setOwaspCoverage, setOwaspMapping, dispatchLive);
           break;
-        }
 
         case "RunFinished":
+          liveBatcher.flush();
           addLineFn("Audit completed", "step");
           setDone(true);
           if (esRef.current) {
@@ -167,6 +186,7 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
           break;
 
         case "RunError":
+          liveBatcher.flush();
           addLineFn(`Error: ${String(data.error ?? "Unknown error")}`, "error");
           setDone(true);
           if (esRef.current) {
@@ -181,7 +201,7 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
     },
   );
 
-  // Issue #10: Effect depends only on [auditId, disabled]
+  // Issue #10: Effect depends only on [auditId, disabled] (liveBatcher never changes)
   useEffect(() => {
     if (!auditId || disabled) return;
 
@@ -222,14 +242,61 @@ export function useAgentStream(auditId: string | undefined, disabled = false) {
 
     return () => {
       cancelled = true;
+      liveBatcher.cancel();
       if (esRef.current) {
         esRef.current.close();
         esRef.current = null;
       }
     };
-  }, [auditId, disabled]);
+  }, [auditId, disabled, liveBatcher]);
 
-  return { lines, steps, connected, done, tokenSavings, dedupStats, validationUpdates, owaspCoverage };
+  return {
+    lines,
+    steps,
+    connected,
+    done,
+    tokenSavings,
+    dedupStats,
+    validationUpdates,
+    owaspCoverage,
+    owaspMapping,
+    liveFindings,
+  };
+}
+
+/**
+ * Handle a result StateSnapshot: the OWASP coverage manifest (0063) and the
+ * OWASP mapping (0096). Both are taken only from a snapshot the backend
+ * attributes to the owasp agent (`agentType` is set server-side, not by the
+ * agent's payload), mirroring the backend's own trust rule; an invalid one is
+ * dropped whole. A snapshot's `findings` array is its agent's finished set,
+ * and replaces the rows that agent streamed (0096 R15).
+ */
+function handleSnapshot(
+  data: Record<string, unknown>,
+  setCoverage: (m: OwaspCoverageManifest) => void,
+  setMapping: (m: ComplianceMapping) => void,
+  dispatchLive: (a: LiveFindingsAction) => void,
+) {
+  const snap = data.snapshot as Record<string, unknown> | undefined;
+  const agent = streamAgent(data);
+  if (Array.isArray(snap?.findings)) {
+    dispatchLive({ kind: "replace", agent, findings: toLiveFindings(snap.findings, agent) });
+  }
+  // The manifest and the mapping are the owasp agent's alone (0096 M3): a
+  // snapshot any other agent sent cannot set either.
+  if (data.agentType !== OWASP) return;
+  const cov = snap?.owasp_coverage;
+  if (cov && typeof cov === "object" && !Array.isArray(cov)) {
+    setCoverage(cov as OwaspCoverageManifest);
+  }
+  const mapping = parseComplianceMapping(snap?.mapping);
+  if (mapping) setMapping(mapping);
+}
+
+/** The agent the backend attributes an event to (set server-side, not by the agent). */
+function streamAgent(data: Record<string, unknown>): string {
+  return typeof data.agentType === "string" ? data.agentType : "";
 }
 
 /** Handle StateDelta events -- extracted to keep handleSSEEvent under complexity limit. */
@@ -239,10 +306,13 @@ function handleStateDelta(
   setDedupStatsFn: React.Dispatch<React.SetStateAction<DedupStats | null>>,
   setTokenSavingsFn: React.Dispatch<React.SetStateAction<TokenSavings | null>>,
   recordValidationUpdate: (u: ValidationUpdate) => void,
+  dispatchLive: (a: LiveFindingsAction) => void,
 ) {
   const delta = data.delta;
   if (Array.isArray(delta)) {
-    handleFindingsDelta(delta, addLineFn, recordValidationUpdate);
+    const added = handleFindingsDelta(delta, addLineFn, recordValidationUpdate);
+    const agent = streamAgent(data);
+    dispatchLive({ kind: "add", agent, findings: toLiveFindings(added, agent) });
     return;
   }
   if (delta && typeof delta === "object") {
@@ -250,12 +320,13 @@ function handleStateDelta(
   }
 }
 
-/** Process array deltas (individual findings). */
+/** Process array deltas (individual findings); returns the added finding values. */
 function handleFindingsDelta(
   delta: unknown[],
   addLineFn: (text: string, type: StreamLine["type"]) => void,
   recordValidationUpdate: (u: ValidationUpdate) => void,
-) {
+): unknown[] {
+  const added: unknown[] = [];
   // L5 validation_update deltas arrive as multiple `replace` ops with
   // path `/findings/<id>/validation_status` etc. Group per finding id,
   // then emit BOTH a one-line stream entry and a structured update so
@@ -269,6 +340,7 @@ function handleFindingsDelta(
       const title = String(finding.title ?? "Finding");
       const file = String(finding.file_path ?? "");
       addLineFn(`[${severity}] ${title} \u2014 ${file}`, "finding");
+      added.push(patch.value);
       continue;
     }
     if (patch.op !== "replace" || typeof patch.path !== "string") continue;
@@ -291,6 +363,7 @@ function handleFindingsDelta(
     const confStr = u.confidence !== undefined ? ` (${(u.confidence * 100).toFixed(0)}%)` : "";
     addLineFn(`L5 verdict: ${id.slice(0, 10)} \u2192 ${u.status}${confStr}`, "info");
   }
+  return added;
 }
 
 /** Process object deltas (dedup_stats, token_savings, progress). */

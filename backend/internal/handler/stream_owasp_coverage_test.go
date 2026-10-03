@@ -35,3 +35,31 @@ func TestExtractOwaspCoverage_IgnoresNonCoverageEvents(t *testing.T) {
 		t.Fatal("expected nil for nil event")
 	}
 }
+
+// Feature 0096 §2.2 / §3.4: only the backend-assigned owasp agent can put a
+// result into mapping mode, and it does so with a `mapping` MEMBER of any
+// type or content — a non-object is an invalid mapping, never legacy. Only a
+// result with no such key is an ordinary one and keeps its lineage.
+func TestIsOwaspMappingResult(t *testing.T) {
+	for _, tc := range []struct {
+		agent, snapshot string
+		want            bool
+	}{
+		{"owasp", `{"findings":[],"mapping":{"version":1,"table":{}}}`, true},
+		{"owasp", `{"findings":[],"mapping":{}}`, true},
+		{"owasp", `{"findings":[], "mapping" :  {"version":99}}`, true},
+		{"cwe", `{"findings":[],"mapping":{"version":1,"table":{}}}`, false},
+		{"owasp", `{"findings":[],"mapping":null}`, true},
+		{"owasp", `{"findings":[],"mapping":"v1"}`, true},
+		{"owasp", `{"findings":[],"mapping":[]}`, true},
+		{"owasp", `{"findings":[]}`, false},
+		{"owasp", `not json`, false},
+		{"owasp", ``, false},
+	} {
+		evt := &model.AgUIEvent{Type: model.EventStateSnapshot, AgentType: tc.agent,
+			Snapshot: json.RawMessage(tc.snapshot)}
+		if _, got := extractOwaspMapping(evt); got != tc.want {
+			t.Errorf("agent=%s snapshot=%s: got %v, want %v", tc.agent, tc.snapshot, got, tc.want)
+		}
+	}
+}

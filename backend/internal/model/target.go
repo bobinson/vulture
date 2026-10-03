@@ -82,8 +82,17 @@ type AggregateQuery struct {
 	MinSeen int
 	// Severities is a lower-cased allow-list; empty = every severity.
 	Severities []string
-	Page       int
-	PageSize   int
+	// Framework, Category and Edition are the compliance-label filter
+	// (feature 0096): keep rows whose lineage labels put them in Category
+	// under exactly Framework:Edition. A category id means different things
+	// in different editions, so there is no any-edition match. Framework ""
+	// is no filter. The handler validates all three and requires all three
+	// together, so the repository binds them as they are.
+	Framework string
+	Category  string
+	Edition   string
+	Page      int
+	PageSize  int
 }
 
 // Offset is the SQL offset for the requested page. Page is 1-based and
@@ -120,6 +129,10 @@ type AggregateRow struct {
 	// LastEvent is the most recent lineage event type: WHY the row is where it
 	// is (`confirmed_by_evidence` reads very differently from `fixed`).
 	LastEvent string `json:"last_event"`
+	// ComplianceLabels is the lineage row's per-edition framework labels
+	// (feature 0096 §4.2), e.g. {"owasp:2025": ["A07"]}; omitted when the row
+	// carries none.
+	ComplianceLabels map[string][]string `json:"compliance_labels,omitempty"`
 }
 
 // AggregateTiles is the headline strip above the table.
@@ -149,6 +162,24 @@ type AggregateReport struct {
 	PageSize int            `json:"page_size"`
 	Tiles    AggregateTiles `json:"tiles"`
 	Rows     []AggregateRow `json:"rows"`
+	// LabelEditions is every framework:edition key the target's lineage rows
+	// carry in compliance_labels (feature 0096), with the categories listed
+	// under each — what the compliance filter can usefully be set to. Like the
+	// tiles it describes the target within the selected scans, every status,
+	// never the filtered rows: choosing a filter must not remove the option to
+	// change it. Ordered by framework, then newest edition first; always
+	// present, `[]` when nothing is labelled.
+	LabelEditions []LabelEdition `json:"label_editions"`
+}
+
+// LabelEdition is one framework:edition key present on a target, e.g.
+// {"framework":"owasp","edition":"2025","categories":["A01","A07"]}.
+// Categories is sorted and `[]` (never null) for an edition recorded with no
+// category — the mapper ran under that edition and mapped nothing.
+type LabelEdition struct {
+	Framework  string   `json:"framework"`
+	Edition    string   `json:"edition"`
+	Categories []string `json:"categories"`
 }
 
 // LineageEvidence is the block GET /api/lineage/{id} gains (§10.1). Without it

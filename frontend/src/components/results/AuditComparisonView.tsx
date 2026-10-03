@@ -45,6 +45,18 @@ export function AuditComparisonView({ comparison }: AuditComparisonViewProps) {
         </span>
       </button>
 
+      {/* Feature 0096: the previous audit's OWASP copy rows are not findings
+          this audit could have "fixed" — it labels those findings instead —
+          so the backend leaves them out of the diff and the view says so. */}
+      {(comparison.excluded_legacy_copies ?? 0) > 0 && (
+        <p
+          data-testid="comparison-excluded-legacy"
+          className="px-4 pb-2 -mt-1 text-[11px] text-muted-light"
+        >
+          {t("comparison.excludedLegacyCopies", { count: comparison.excluded_legacy_copies })}
+        </p>
+      )}
+
       {expanded && (
         <div className="border-t border-border">
           {/* Tab bar */}

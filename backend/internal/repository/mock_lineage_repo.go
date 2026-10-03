@@ -19,6 +19,7 @@ type MockLineageRepository struct {
 	// Feature 0091, following the same per-method Fn pattern.
 	GetRecentlyFixedBySourcePathFn func(string, string, int) ([]model.FindingLineage, error)
 	MarkUnconfirmedFn              func(string, string) error
+	ReopenUnconfirmedFn            func(string, string) error
 	MarkSeenFn                     func(string, string) error
 	ApplyEvidenceFn                func(string, LineageEvidenceUpdate) error
 	// Feature 0091 P3 (target identity). ActiveByTargetFn defaults to the
@@ -170,6 +171,13 @@ func (m *MockLineageRepository) RecentlyFixedByTarget(targetKey, agentType strin
 func (m *MockLineageRepository) MarkUnconfirmed(id, auditID string) error {
 	if m.MarkUnconfirmedFn != nil {
 		return m.MarkUnconfirmedFn(id, auditID)
+	}
+	return nil
+}
+
+func (m *MockLineageRepository) ReopenUnconfirmed(id, auditID string) error {
+	if m.ReopenUnconfirmedFn != nil {
+		return m.ReopenUnconfirmedFn(id, auditID)
 	}
 	return nil
 }

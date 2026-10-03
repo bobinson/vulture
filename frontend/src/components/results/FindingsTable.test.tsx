@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { FindingsTable } from "./FindingsTable";
 import type { Finding } from "@/lib/types";
@@ -222,5 +222,25 @@ describe("FindingsTable", () => {
     expect(screen.getByText("…/lib/f.go:1")).toBeInTheDocument();
     expect(screen.getByText("…/lib/f.go:2")).toBeInTheDocument();
     expect(screen.getByText("…/lib/f.go:3")).toBeInTheDocument();
+  });
+  it("keeps the OWASP category select while a category is active, even when no finding carries it", () => {
+    // Feature 0096: a filter must never hide every row without a way back.
+    const onChange = vi.fn();
+    render(
+      <FindingsTable
+        findings={[makeFinding({ title: "Unlabelled", agent_type: "cwe", category: "CWE-798" })]}
+        owaspCategory="A07"
+        onOwaspCategoryChange={onChange}
+      />,
+    );
+    const select = screen.getByLabelText("results.owaspCategory") as HTMLSelectElement;
+    expect(select.value).toBe("A07");
+    fireEvent.change(select, { target: { value: "all" } });
+    expect(onChange).toHaveBeenCalledWith("all");
+  });
+
+  it("offers no OWASP category select for unlabelled findings when no category is active", () => {
+    render(<FindingsTable findings={[makeFinding({ agent_type: "cwe", category: "CWE-798" })]} />);
+    expect(screen.queryByLabelText("results.owaspCategory")).toBeNull();
   });
 });
