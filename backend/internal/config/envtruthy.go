@@ -20,3 +20,18 @@ func EnvTruthy(name string) bool {
 		return false
 	}
 }
+
+// EnvFlag reads name with the Python agents' env_flag semantics
+// (shared.env.env_flag), so a switch both runtimes read cannot disagree:
+// on/true/1/yes enable, off/false/0/no disable (case-insensitive, surrounding
+// whitespace ignored), and unset, blank or any unrecognised value yields def.
+func EnvFlag(name string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "on", "true", "1", "yes":
+		return true
+	case "off", "false", "0", "no":
+		return false
+	default:
+		return def
+	}
+}

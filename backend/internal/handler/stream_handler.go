@@ -558,7 +558,10 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 			rescued, auditID)
 	}
 	findings = withoutMapperFindings(findings, scanOutcomes)
-	findings, rollupShadowed := dedupCrossAgentWithShadow(findings, sourceRoot)
+	merged := dedupCrossAgentDetailed(findings, sourceRoot)
+	findings, rollupShadowed := merged.kept, merged.shadowed
+	// Feature 0074 P4 (AC19): account for every LLM row, per emitting agent.
+	logDedupBuckets(auditID, merged.llm, scanOutcomes)
 	// Feature 0091 S21. The set is global to the run — the parent and the leaf
 	// it shadows are routinely different agents — so it is stamped on every
 	// agent's outcome rather than split per agent. The 0096 mapping likewise:
@@ -860,104 +863,182 @@ func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []mode
 // so re-deriving "is a parent covering this row present" would compare paths
 // that do not have to match. The eviction itself is unambiguous.
 func dedupCrossAgentWithShadow(findings []model.Finding, sourceRoot string) ([]model.Finding, map[string]bool) {
+	out := dedupCrossAgentDetailed(findings, sourceRoot)
+	return out.kept, out.shadowed
+}
+
+// dedupOutcome is everything one cross-agent merge decides: the surviving
+// rows, the S21 rollup-shadow record, and (feature 0074 P4) what happened to
+// every LLM-tier row, charged to the agent that emitted it.
+type dedupOutcome struct {
+	kept     []model.Finding
+	shadowed map[string]bool
+	llm      map[string]llmTally
+}
+
+// dedupCrossAgentDetailed is the merge itself. The dedup key is always
+// canonicalised against the source root: the deterministic tier emits the
+// absolute path it walked, the LLM tier the relative one the prompt showed, so
+// with a raw key they could never collide. An empty root is identity, which is
+// how the replay path keeps byte-identical behaviour.
+func dedupCrossAgentDetailed(findings []model.Finding, sourceRoot string) dedupOutcome {
 	if len(findings) <= 1 {
-		return findings, nil
+		return dedupOutcome{kept: findings, llm: tallyLLMRows(findings, allIndices(len(findings)))}
 	}
-	// The dedup key is always canonicalised against the source root. The two
-	// tiers emit systematically different path forms for the same file -- the
-	// deterministic tier the absolute path it walked, the LLM tier the relative
-	// one the prompt showed -- so with a raw key they can never collide, and one
-	// weakness becomes two findings and two lineage rows. An empty root is
-	// identity, which is how the replay path keeps byte-identical behaviour.
-	keyRoot := sourceRoot
-	type entry struct {
-		index int
-		score int
-	}
-	seen := make(map[string]entry, len(findings))
-	// Pre-compute cross-agent keys to avoid recomputation
-	keys := make([]string, len(findings))
-	agentsByKey := make(map[string][]string, len(findings))
-	provenanceByKey := make(map[string]string, len(findings))
-	categoriesByKey := make(map[string][]string, len(findings))
-
+	idx := buildDedupIndex(findings, sourceRoot)
+	kept := idx.keptIndices()
+	shadowed := rollupShadowed(findings, idx, kept)
+	result := make([]model.Finding, 0, len(kept))
 	for i, f := range findings {
-		key := crossAgentKeyWithRoot(f, keyRoot)
-		keys[i] = key
-		s := findingDetailScore(f)
-		agentsByKey[key] = append(agentsByKey[key], f.AgentType)
-		if f.Provenance != "" {
-			provenanceByKey[key] = f.Provenance
+		if kept[i] {
+			result = append(result, mergeSurvivor(f, idx.members[idx.keys[i]], findings))
 		}
-		categoriesByKey[key] = appendLabelSource(categoriesByKey[key], f)
-		if prev, ok := seen[key]; ok {
-			if crossAgentPrefers(f, findings[prev.index], s, prev.score) {
-				seen[key] = entry{index: i, score: s}
-			}
-			continue
-		}
-		seen[key] = entry{index: i, score: s}
 	}
+	logDedupRemoval(len(findings), len(result), len(shadowed))
+	return dedupOutcome{kept: result, shadowed: shadowed, llm: tallyLLMRows(findings, kept)}
+}
 
-	kept := make(map[int]bool, len(seen))
-	for _, e := range seen {
+func logDedupRemoval(before, after, shadowed int) {
+	if removed := before - after; removed > 0 {
+		log.Printf("[dedup] removed %d cross-agent duplicate findings (%d → %d, %d shadowed by a rollup parent)",
+			removed, before, after, shadowed)
+	}
+}
+
+// dedupEntry is the current winner of one dedup key.
+type dedupEntry struct {
+	index int
+	score int
+}
+
+// dedupIndex groups the rows by cross-agent key: each row's key, the winner
+// of each key, and every row index that contributed to it (in input order),
+// so the survivor can be told about each of them in O(1) per row.
+type dedupIndex struct {
+	keys    []string
+	winner  map[string]dedupEntry
+	members map[string][]int
+}
+
+func buildDedupIndex(findings []model.Finding, root string) dedupIndex {
+	idx := dedupIndex{
+		keys:    make([]string, len(findings)),
+		winner:  make(map[string]dedupEntry, len(findings)),
+		members: make(map[string][]int, len(findings)),
+	}
+	for i := range findings {
+		idx.add(i, findings, root)
+	}
+	return idx
+}
+
+func (x dedupIndex) add(i int, findings []model.Finding, root string) {
+	f := findings[i]
+	key := crossAgentKeyWithRoot(f, root)
+	x.keys[i] = key
+	x.members[key] = append(x.members[key], i)
+	s := findingDetailScore(f)
+	prev, ok := x.winner[key]
+	if !ok || crossAgentPrefers(f, findings[prev.index], s, prev.score) {
+		x.winner[key] = dedupEntry{index: i, score: s}
+	}
+}
+
+func (x dedupIndex) keptIndices() map[int]bool {
+	kept := make(map[int]bool, len(x.winner))
+	for _, e := range x.winner {
 		kept[e.index] = true
 	}
-	// The rollup half of the eviction record (S21): a finding removed because
-	// the row that won its key IS a rollup parent was reported by the agent
-	// and consolidated, not repaired.
+	return kept
+}
+
+func allIndices(n int) map[int]bool {
+	out := make(map[int]bool, n)
+	for i := 0; i < n; i++ {
+		out[i] = true
+	}
+	return out
+}
+
+// rollupShadowed is the rollup half of the eviction record (S21): a finding
+// removed because the row that won its key IS a rollup parent was reported by
+// the agent and consolidated, not repaired.
+func rollupShadowed(findings []model.Finding, idx dedupIndex, kept map[int]bool) map[string]bool {
 	var shadowed map[string]bool
 	for i, f := range findings {
-		if kept[i] || f.IsRollup || f.Fingerprint == "" {
-			continue
-		}
-		if w, ok := seen[keys[i]]; !ok || !findings[w.index].IsRollup {
-			continue
-		}
-		if shadowed == nil {
-			shadowed = map[string]bool{}
-		}
-		shadowed[f.Fingerprint] = true
-		if f.FingerprintV2 != "" {
-			shadowed[f.FingerprintV2] = true
+		if isShadowedByRollup(i, f, findings, idx, kept) {
+			shadowed = markShadowed(shadowed, f)
 		}
 	}
-	result := make([]model.Finding, 0, len(findings))
-	for i, f := range findings {
-		if !kept[i] {
-			continue
-		}
-		key := keys[i]
-		f.AbsorbedCategories = absorbedCategories(categoriesByKey[key], f)
-		agents := agentsByKey[key]
-		if len(agents) > 1 {
-			origins := make([]string, 0, len(agents)-1)
-			for _, at := range agents {
-				if at != f.AgentType {
-					origins = append(origins, at)
-				}
-			}
-			f.CrossAgentOrigins = deduplicateStrings(origins)
+	return shadowed
+}
 
-			// Provenance survives the merge (feature 0058 R6/T5): if
-			// the richer winner lacks one, adopt a duplicate's.
-			if f.Provenance == "" {
-				f.Provenance = provenanceByKey[key]
-			}
+func isShadowedByRollup(i int, f model.Finding, findings []model.Finding, idx dedupIndex, kept map[int]bool) bool {
+	if kept[i] || f.IsRollup || f.Fingerprint == "" {
+		return false
+	}
+	return findings[idx.winner[idx.keys[i]].index].IsRollup
+}
 
-			// L3 cross-agent merge (feature 0045): append a validation
-			// check + re-vote so this finding's confidence reflects the
-			// cross-agent corroboration. Each additional confirming
-			// agent adds +0.10 weight (capped at +0.30).
-			f = applyCrossAgentValidation(f)
+func markShadowed(shadowed map[string]bool, f model.Finding) map[string]bool {
+	if shadowed == nil {
+		shadowed = map[string]bool{}
+	}
+	shadowed[f.Fingerprint] = true
+	if f.FingerprintV2 != "" {
+		shadowed[f.FingerprintV2] = true
+	}
+	return shadowed
+}
+
+// mergeSurvivor stamps the key's winner with what the rows merged into it
+// carried: absorbed CWE categories (0096 H2), the other agents
+// (CrossAgentOrigins, which drives the L3 re-vote), an adopted provenance
+// when it lacks one (0058 R6/T5), and — feature 0074 P4 — every contributing
+// tier and the losers' descriptions, beside the verdict and never inside it.
+func mergeSurvivor(f model.Finding, members []int, findings []model.Finding) model.Finding {
+	f.AbsorbedCategories = absorbedCategories(keyLabelSources(members, findings), f)
+	if len(members) < 2 {
+		return f
+	}
+	f.CrossAgentOrigins = deduplicateStrings(otherAgents(members, findings, f.AgentType))
+	if f.Provenance == "" {
+		f.Provenance = lastProvenance(members, findings)
+	}
+	// L3 cross-agent merge (feature 0045): each additional confirming agent
+	// adds +0.10 weight (capped at +0.30) and re-votes.
+	f = applyCrossAgentValidation(f)
+	return recordMergedRows(f, members, findings)
+}
+
+// keyLabelSources is the key's distinct canonical CWE categories (0096 H2).
+func keyLabelSources(members []int, findings []model.Finding) []string {
+	var cats []string
+	for _, m := range members {
+		cats = appendLabelSource(cats, findings[m])
+	}
+	return cats
+}
+
+func otherAgents(members []int, findings []model.Finding, own string) []string {
+	origins := make([]string, 0, len(members)-1)
+	for _, m := range members {
+		if at := findings[m].AgentType; at != own {
+			origins = append(origins, at)
 		}
-		result = append(result, f)
 	}
-	if removed := len(findings) - len(result); removed > 0 {
-		log.Printf("[dedup] removed %d cross-agent duplicate findings (%d → %d, %d shadowed by a rollup parent)",
-			removed, len(findings), len(result), len(shadowed))
+	return origins
+}
+
+// lastProvenance is the provenance of the last contributing row that has one.
+func lastProvenance(members []int, findings []model.Finding) string {
+	out := ""
+	for _, m := range members {
+		if p := findings[m].Provenance; p != "" {
+			out = p
+		}
 	}
-	return result, shadowed
+	return out
 }
 
 // appendLabelSource adds a row's canonical CWE category to its dedup key's
@@ -1011,11 +1092,7 @@ func applyCrossAgentValidation(f model.Finding) model.Finding {
 	}
 	// Build/extend the validation map.
 	if f.Validation == nil {
-		f.Validation = map[string]interface{}{
-			"status":     f.ValidationStatus,
-			"confidence": f.ValidationConfidence,
-			"checks":     []interface{}{},
-		}
+		f.Validation = newValidationSeed(f)
 	}
 	checks, _ := f.Validation["checks"].([]interface{})
 	// Strip any prior cross_agent check (idempotency).
@@ -1118,11 +1195,7 @@ func applyMemoryPriorIfEnabled(findings []model.Finding) []model.Finding {
 			"extras": map[string]interface{}{"label": label},
 		}
 		if findings[i].Validation == nil {
-			findings[i].Validation = map[string]interface{}{
-				"status":     findings[i].ValidationStatus,
-				"confidence": findings[i].ValidationConfidence,
-				"checks":     []interface{}{},
-			}
+			findings[i].Validation = newValidationSeed(findings[i])
 		}
 		checks, _ := findings[i].Validation["checks"].([]interface{})
 		// Strip prior memory check (idempotency).
@@ -1301,7 +1374,7 @@ func llmSeverityVerdict(llm, deterministic model.Finding) int {
 // had travelled furthest through validation — the ones most likely to be
 // claiming a high severity against a real skill finding.
 func isLLMProvenance(f model.Finding) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.Provenance)), "llm")
+	return model.TierOf(f.Provenance) == model.TierLLM
 }
 
 // findingDetailScore ranks how rich a finding is. Higher = more detail.

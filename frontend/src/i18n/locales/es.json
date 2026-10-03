@@ -72,6 +72,29 @@
     "noFindings": "No se detectaron hallazgos. ¡Su código se ve limpio!",
     "noFindingsShort": "Limpio",
     "provenance": "Procedencia",
+    "provenanceFamily": {
+      "llm_family": "LLM (todos)",
+      "both": "Ambos niveles"
+    },
+    "anchor": {
+      "title": "Anclaje",
+      "status": {
+        "exact": "Exacto",
+        "reanchored": "Reanclado",
+        "ambiguous": "Ambiguo",
+        "near_miss": "Casi coincide",
+        "found_elsewhere": "Encontrado en otro lugar",
+        "absent": "Ausente",
+        "unquoted": "Sin cita",
+        "unreadable": "Ilegible",
+        "oversize": "Demasiado grande"
+      },
+      "range": {
+        "in_file": "En el archivo",
+        "past_eof": "Tras el final del archivo",
+        "no_line": "Sin línea"
+      }
+    },
     "semgrepTierNotice": "Nivel Semgrep no activo — esta auditoría se ejecutó solo con skills deterministas y firmas.",
     "agent": "Agente",
     "scores": "Puntuaciones de Cumplimiento",

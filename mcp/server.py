@@ -344,6 +344,48 @@ def _active(*preds):
     return [p for p in preds if p]
 
 
+# Feature 0074: the provenance filter takes the vocabulary the findings API and
+# the UI take. An exact value matches `provenance` literally; "llm_family" and
+# "both" are the two family values. ONE family rule, the same as the backend's
+# isLLMProvenance and the agents' _is_deterministic: a tier is a string,
+# trimmed and lower-cased; a blank tier is no tier; a tier starting with "llm"
+# is the LLM family, any other tier the skill family.
+def _tier(value) -> str:
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def _is_llm_tier(tier: str) -> bool:
+    return tier.startswith("llm")
+
+
+def _provenance_origins(finding: dict) -> list:
+    """validation.provenance_origins when it is a list, else nothing: a
+    malformed value (string, object, null, absent) is never an error."""
+    validation = finding.get("validation")
+    origins = validation.get("provenance_origins") if isinstance(validation, dict) else None
+    return origins if isinstance(origins, list) else []
+
+
+def _is_llm_family(finding: dict) -> bool:
+    return _is_llm_tier(_tier(finding.get("provenance")))
+
+
+def _spans_both_families(finding: dict) -> bool:
+    """True when the rows deduplicated into this one came from a skill-family
+    tier AND an LLM-family tier."""
+    families = {_is_llm_tier(t) for t in map(_tier, _provenance_origins(finding)) if t}
+    return len(families) == 2
+
+
+_PROVENANCE_FAMILY_PREDS = {"llm_family": _is_llm_family, "both": _spans_both_families}
+
+
+def _provenance_pred(provenance: str | None):
+    """The filter value is exact and case-sensitive: a family word selects its
+    family, any other value matches `provenance` literally."""
+    return _PROVENANCE_FAMILY_PREDS.get(provenance) or _field_is("provenance", provenance)
+
+
 def _filter_findings(
     findings: list[dict],
     severity: str | None,
@@ -351,13 +393,15 @@ def _filter_findings(
     agent_type: str | None,
     framework: str | None = None,
     edition: str | None = None,
+    provenance: str | None = None,
 ) -> list[dict]:
     """Filter findings by optional criteria. Extracted to keep tool CC < 5.
 
     agent_type is always literal. With a framework, category and edition
-    filter that framework's labels; without one, category is the finding's own."""
+    filter that framework's labels; without one, category is the finding's own.
+    provenance is an exact value or a family word (see _provenance_pred)."""
     preds = _active(_field_is("severity", severity), _field_is("agent_type", agent_type),
-                    _category_pred(category, framework, edition))
+                    _category_pred(category, framework, edition), _provenance_pred(provenance))
     return [f for f in findings if all(p(f) for p in preds)]
 
 
@@ -609,8 +653,18 @@ async def vulture_get_findings(
     offset: int = 0,
     framework: str | None = None,
     edition: str | None = None,
+    provenance: str | None = None,
 ) -> dict:
     """Get findings from a specific audit with filtering and pagination.
+
+    provenance filters by the tier that produced a finding, with the same
+    vocabulary as the findings API: an exact value ("skill", "llm",
+    "llm_l5_verified", "semgrep") matches a finding's provenance literally;
+    "llm_family" keeps every finding whose provenance, trimmed and
+    lower-cased, starts with "llm"; "both" keeps findings that a skill-family
+    tier and an LLM-family tier both reported (validation.provenance_origins).
+    The value is case-sensitive; an unknown value selects nothing. It combines
+    with the other filters and never changes a finding's validation.
 
     For an OWASP Top 10 category use framework="owasp" with category="A07";
     framework="owasp" alone returns every finding carrying an OWASP label.
@@ -631,7 +685,8 @@ async def vulture_get_findings(
     client = await _get_client()
     audit = await client.get_audit(audit_id)
     findings = _framework_output(
-        _filter_findings(audit.get("findings", []), severity, category, agent_type, framework, edition),
+        _filter_findings(audit.get("findings", []), severity, category, agent_type, framework, edition,
+                         provenance),
         framework)
 
     # Enrich with lineage status and ref

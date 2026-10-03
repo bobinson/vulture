@@ -167,3 +167,12 @@ changes is how much of a finding is *verifiable* after the fact.
 
 The corollary for reviewers: an audit of 0076 that looks for a new entry in
 `agents/*/…/skills/SKILLS.md` and finds none has found the intended state.
+
+## Calibration metrics (feature 0074 P7)
+
+`calibration.prestatus_recall(corpus, emitted)` is the recall guard for losses
+that happen BEFORE a finding gets a validation status (eligibility drop, dedup
+collapse, L4 removal): the share of labelled-real corpus sites, matched on
+`(file_path, line_start, check_id)`, that were emitted and not dismissed.
+`RuleStats.surviving_recall` only sees emitted rows, so it reads such a loss as
+an improvement and must not be cited as a guard for it.

@@ -72,6 +72,29 @@
     "noFindings": "No findings detected. Your code looks clean!",
     "noFindingsShort": "Clean",
     "provenance": "Provenance",
+    "provenanceFamily": {
+      "llm_family": "LLM (all)",
+      "both": "Both tiers"
+    },
+    "anchor": {
+      "title": "Anchor",
+      "status": {
+        "exact": "Exact",
+        "reanchored": "Re-anchored",
+        "ambiguous": "Ambiguous",
+        "near_miss": "Near miss",
+        "found_elsewhere": "Found elsewhere",
+        "absent": "Absent",
+        "unquoted": "Unquoted",
+        "unreadable": "Unreadable",
+        "oversize": "Oversize"
+      },
+      "range": {
+        "in_file": "In file",
+        "past_eof": "Past end of file",
+        "no_line": "No line"
+      }
+    },
     "semgrepTierNotice": "Semgrep tier not active — this audit ran deterministic skills + signatures only.",
     "agent": "Agent",
     "scores": "Compliance Scores",

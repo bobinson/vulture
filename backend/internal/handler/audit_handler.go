@@ -98,7 +98,7 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// so a client cannot inject a forged/foreign per-run credential (mirrors the
 	// DegradedReason overwrite below).
 	req.BrokerToken = ""
-	req.ContextWindow = 0 // §31: broker-injected at dispatch, never client-supplied
+	req.ContextWindow, req.ContextWindowSource = 0, "" // §31 / 0074 §5.1(c): broker-injected at dispatch, never client-supplied
 
 	// Reject a type that names no dispatchable agent BEFORE anything is
 	// persisted or probed. Dispatch silently skips an unresolvable type, so
@@ -251,6 +251,9 @@ func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// 0096 follow-up: serve the effective coverage (triaged false positives
 	// left out); the persisted column stays the scan-time record.
 	withEffectiveOwaspCoverage(audit, h.lineageRepo)
+	// 0074 P2: select rows by provenance LAST, so every audit-level field
+	// above is computed over the full finding set and stays unchanged.
+	filterFindingsByProvenance(audit, r.URL.Query().Get("provenance"))
 	writeJSON(w, http.StatusOK, audit)
 }
 

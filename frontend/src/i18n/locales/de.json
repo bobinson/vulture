@@ -72,6 +72,29 @@
     "noFindings": "Keine Befunde erkannt. Ihr Code sieht sauber aus!",
     "noFindingsShort": "Sauber",
     "provenance": "Herkunft",
+    "provenanceFamily": {
+      "llm_family": "LLM (alle)",
+      "both": "Beide Stufen"
+    },
+    "anchor": {
+      "title": "Verankerung",
+      "status": {
+        "exact": "Exakt",
+        "reanchored": "Neu verankert",
+        "ambiguous": "Mehrdeutig",
+        "near_miss": "Knapp verfehlt",
+        "found_elsewhere": "Anderswo gefunden",
+        "absent": "Nicht vorhanden",
+        "unquoted": "Ohne Zitat",
+        "unreadable": "Nicht lesbar",
+        "oversize": "Zu groß"
+      },
+      "range": {
+        "in_file": "In der Datei",
+        "past_eof": "Nach Dateiende",
+        "no_line": "Keine Zeile"
+      }
+    },
     "semgrepTierNotice": "Semgrep-Ebene nicht aktiv — dieser Audit lief nur mit deterministischen Skills und Signaturen.",
     "agent": "Agent",
     "scores": "Compliance-Bewertungen",

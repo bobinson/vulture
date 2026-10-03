@@ -68,10 +68,11 @@ WINDOW_NO_CODE_LOCATION = "no_code_location"  # the finding class has no file/li
 WINDOW_UNREADABLE = "unreadable"        # path did not resolve, or the read failed
 WINDOW_NO_LINE = "no_line"              # a file, but no usable line number
 WINDOW_PRESENT = "present"              # a window was produced (recorded for symmetry)
+WINDOW_OUT_OF_RANGE = "out_of_range"    # the file was read; the cited line is past its end
 
 WINDOW_REASONS = frozenset({
     WINDOW_INHERITED, WINDOW_ROLLUP_PARENT, WINDOW_NO_CODE_LOCATION,
-    WINDOW_UNREADABLE, WINDOW_NO_LINE, WINDOW_PRESENT,
+    WINDOW_UNREADABLE, WINDOW_NO_LINE, WINDOW_PRESENT, WINDOW_OUT_OF_RANGE,
 })
 
 _WINDOW_CHECK = "window"
@@ -104,6 +105,7 @@ _REASON_TEXT = MappingProxyType({
     WINDOW_UNREADABLE: "the referenced file could not be read",
     WINDOW_NO_LINE: "a file, but no usable line number",
     WINDOW_PRESENT: "",
+    WINDOW_OUT_OF_RANGE: "the cited line is past the end of the file",
 })
 
 
@@ -265,6 +267,95 @@ def _record_window_start(finding: dict[str, Any], source_path: str) -> None:
         finding[CODE_SNIPPET_START] = start
 
 
+def _int_field(finding: dict[str, Any], name: str) -> int:
+    """``finding[name]`` as an int; 0 when missing, empty or nonsense."""
+    try:
+        return int(finding.get(name) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _lineless_reason(finding: dict[str, Any]) -> str:
+    """The reason for a row with no usable line: a window it already carries
+    stands; otherwise whether it at least names a file."""
+    if finding.get("code_snippet"):
+        return WINDOW_PRESENT
+    return WINDOW_NO_LINE if finding.get("file_path") else WINDOW_NO_CODE_LOCATION
+
+
+def _source_lines(finding: dict[str, Any], source_path: str) -> Sequence[str] | None:
+    """The cited file's lines through the shared cached reader, or None."""
+    from shared.audit_runner import _resolve_finding_path
+    from shared.tools.file_scanner import read_file_lines
+
+    resolved = _resolve_finding_path(finding.get("file_path", ""), source_path)
+    return read_file_lines(resolved) if resolved is not None else None
+
+
+def _past_eof(lines: Sequence[str] | None, line_start: int) -> bool:
+    """Feature 0074 AC38: the file WAS read and the cited line is not in it.
+
+    Decided by ``anchor.line_range`` — the same rule the anchor stamp uses for
+    the model's claim — over the lines this stage already holds, so no second
+    reader and no second definition of "past end of file". Applied to the
+    row's FINAL line: a row 0076 re-anchored into the file windows normally.
+    """
+    from shared.anchor import RANGE_PAST_EOF, line_range
+
+    return bool(lines) and line_range(line_start, len(lines)) == RANGE_PAST_EOF
+
+
+def _attach_window(finding: dict[str, Any], lines: Sequence[str] | None,
+                   line_start: int, context: int, max_chars: int | None) -> None:
+    """Extract the window over ``lines`` and set it when one was produced."""
+    from shared.tools.snippet import extract_snippet
+
+    if not lines:
+        return
+    # Pass the declared END so a multi-line finding is windowed over its whole
+    # range, not just around its first line — see _SPAN_MAX_LINES in snippet.py.
+    snippet = extract_snippet(
+        lines, line_start,
+        context=context, max_chars=max_chars,
+        line_end=_int_field(finding, "line_end") or None,
+    )
+    if snippet:
+        finding["code_snippet"] = snippet
+
+
+def _read_window(finding: dict[str, Any], source_path: str,
+                 context: int, max_chars: int | None) -> str:
+    """Read the window for one row; return its window reason.
+
+    A citation past end of a readable file gets NO window: any window there
+    excludes the cited line, and a judge shown neighbouring code as though it
+    were the accused line is misled. It records ``out_of_range`` — never
+    ``unreadable`` (the file was read) and never ``present``.
+    """
+    line_start = _int_field(finding, "line_start")
+    if line_start < 1:
+        return _lineless_reason(finding)
+    lines = _source_lines(finding, source_path)
+    if _past_eof(lines, line_start):
+        return WINDOW_OUT_OF_RANGE
+    _attach_window(finding, lines, line_start, context, max_chars)
+    return WINDOW_PRESENT if finding.get("code_snippet") else WINDOW_UNREADABLE
+
+
+def _window_reason_for(finding: dict[str, Any], source_path: str) -> str:
+    """Window one row if it needs it; return its window reason.
+
+    A row that already carries a window keeps it, except wide-scope classes,
+    which are re-windowed to the line budget.
+    """
+    from shared.audit_runner import _snippet_params_for
+
+    context, max_chars = _snippet_params_for(finding.get("category", "") or "")
+    if max_chars is not None and finding.get("code_snippet"):
+        return WINDOW_PRESENT
+    return _read_window(finding, source_path, context, max_chars)
+
+
 def ensure_code_window(
     findings: list[dict[str, Any]],
     source_path: str,
@@ -273,63 +364,24 @@ def ensure_code_window(
 ) -> None:
     """Populate a redacted code window on every finding that lacks one.
 
-    Byte-identical to the loop it was lifted from. Mutates in place. Additive:
-    a finding that already carries a non-empty ``code_snippet`` keeps it, except
-    for wide-scope classes, which are re-windowed to the line budget because 200
-    characters cannot contain a mitigation that lives lines away.
+    Mutates in place. Additive: a finding that already carries a non-empty
+    ``code_snippet`` keeps it, except for wide-scope classes, which are
+    re-windowed to the line budget because 200 characters cannot contain a
+    mitigation that lives lines away.
 
-    A finding whose path will not resolve, or whose line is missing or zero, is
-    left with an empty window — the L5 selection layer then SKIPS it rather than
-    judging blind.
+    A finding whose path will not resolve, whose line is missing or zero, or
+    whose line is past the end of the file is left with an empty window — the
+    L5 selection layer then SKIPS it rather than judging blind.
 
     ``record_reasons`` (feature 0082 Step 5) additionally stamps WHY each empty
     window is empty. Off by default so the extraction itself is provably a pure
     refactor.
     """
-    # Deferred imports: see LEAF DISCIPLINE in the module docstring.
-    from shared.audit_runner import (
-        _redact_finding_inplace,
-        _resolve_finding_path,
-        _snippet_params_for,
-    )
-    from shared.tools.file_scanner import read_file_lines
-    from shared.tools.snippet import extract_snippet
+    # Deferred import: see LEAF DISCIPLINE in the module docstring.
+    from shared.audit_runner import _redact_finding_inplace
 
     for f in findings:
-        context, max_chars = _snippet_params_for(f.get("category", "") or "")
-        wide = max_chars is None
-        reason = WINDOW_PRESENT if f.get("code_snippet") else ""
-
-        if wide or not f.get("code_snippet"):
-            line_start = f.get("line_start", 0) or 0
-            try:
-                line_start = int(line_start)
-            except (TypeError, ValueError):
-                line_start = 0
-            if line_start >= 1:
-                resolved = _resolve_finding_path(f.get("file_path", ""), source_path)
-                if resolved is not None:
-                    lines = read_file_lines(resolved)
-                    if lines:
-                        # Pass the declared END so a multi-line finding is
-                        # windowed over its whole range, not just around its
-                        # first line — see _SPAN_MAX_LINES in snippet.py.
-                        try:
-                            line_end = int(f.get("line_end") or 0)
-                        except (TypeError, ValueError):
-                            line_end = 0
-                        snippet = extract_snippet(
-                            lines, line_start,
-                            context=context, max_chars=max_chars,
-                            line_end=line_end or None,
-                        )
-                        if snippet:
-                            f["code_snippet"] = snippet
-                            reason = WINDOW_PRESENT
-                if not f.get("code_snippet"):
-                    reason = WINDOW_UNREADABLE
-            elif not f.get("code_snippet"):
-                reason = WINDOW_NO_LINE if f.get("file_path") else WINDOW_NO_CODE_LOCATION
+        reason = _window_reason_for(f, source_path)
 
         # Feature 0089 item 4.2: the window's own coordinates, before redaction
         # can alter the bytes the confirmation compares. The L5 render numbers
@@ -341,7 +393,7 @@ def ensure_code_window(
         # so no caller can hold an unredacted window.
         _redact_finding_inplace(f)
 
-        if record_reasons and reason:
+        if record_reasons:
             record_window_reason(f, reason)
 
 

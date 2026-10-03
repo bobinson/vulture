@@ -698,41 +698,62 @@ def test_dedup_survivor_adopts_the_best_anchor_status():
     assert survivor["_anchor_candidates"] == 1
 
 
-def test_dedup_survivor_keeps_its_own_line_while_reanchor_is_off():
-    """T4.4. At ship, `reanchored` records and rewrites nothing.
+def test_dedup_survivor_keeps_its_own_line_while_reanchor_is_off(monkeypatch):
+    """T4.4, under 0074 O6. With the LINE actuator rolled back, `reanchored`
+    records and rewrites nothing.
 
     The status half of the merge is always safe — it can only ever upgrade a
-    row's evidence label. The LINE half is an actuator, and every actuator in
-    this feature is inert on ship. Asserted three ways so a default read from
-    the wrong place (unset vs literal "false" vs enforce-implies-reanchor) is
-    caught rather than averaged over.
+    row's evidence label. The LINE half is an actuator: 0074 (O6) turned it ON
+    by default, and `VULTURE_LLM_QUOTE_REANCHOR=false` is its runtime rollback.
+    The bare-default half is asserted too, so the O6 default is pinned here
+    rather than averaged over.
     """
+    _assert_exact_survivor_at(
+        (15, 16), "O6: with REANCHOR unset the survivor takes the verified line")
+
+    monkeypatch.setenv("VULTURE_LLM_QUOTE_REANCHOR", "false")
+    _assert_exact_survivor_at(
+        (18, 18),
+        "with REANCHOR=false the survivor must keep the line it was cited at")
+
+
+def _assert_exact_survivor_at(lines: tuple[int, int], why: str) -> None:
+    """The deduped survivor is `exact` and sits at ``lines`` (start, end)."""
     survivor = _dedup([], _dupe_rows())[0]
     assert survivor["_anchor_status"] == "exact"
-    assert (survivor["line_start"], survivor["line_end"]) == (18, 18), (
-        "with REANCHOR unset the survivor must keep the line it was cited at"
-    )
+    assert (survivor["line_start"], survivor["line_end"]) == lines, why
 
 
-@pytest.mark.parametrize("env", [
-    {},
-    {"VULTURE_LLM_QUOTE_REANCHOR": "false"},
-    {"VULTURE_LLM_QUOTE_VERIFY": "enforce"},
+@pytest.mark.parametrize(("env", "line"), [
+    # O6 (0074): the bare defaults are VERIFY=enforce + REANCHOR=true.
+    ({}, 15),
+    ({"VULTURE_LLM_QUOTE_REANCHOR": "false"}, 18),
+    # O6: an explicit enforce equals the default, so the actuator is on.
+    ({"VULTURE_LLM_QUOTE_VERIFY": "enforce"}, 15),
+    # `enforce` does NOT imply re-anchoring: the switch still withdraws it.
+    ({"VULTURE_LLM_QUOTE_VERIFY": "enforce",
+      "VULTURE_LLM_QUOTE_REANCHOR": "false"}, 18),
+    # REANCHOR on does not imply enforce: `observe` never actuates.
+    ({"VULTURE_LLM_QUOTE_VERIFY": "observe",
+      "VULTURE_LLM_QUOTE_REANCHOR": "true"}, 18),
 ])
-def test_reanchor_default_is_off(monkeypatch, env):
-    """T4.4. `enforce` does NOT imply re-anchoring.
+def test_reanchor_default_is_off(monkeypatch, env, line):
+    """T4.4, under 0074 O6: the actuator is the CONJUNCTION of `enforce` and
+    `VULTURE_LLM_QUOTE_REANCHOR`, both now defaulting on.
 
-    The third case is the one that earns this test: `VULTURE_LLM_QUOTE_REANCHOR`
-    is a separate switch that "requires enforce" — requiring it is not the same
-    as being implied by it, and reading the mode string where the actuator
-    switch was meant is an easy and invisible mistake.
+    The name is historical (0076 shipped the switch off). The property that
+    earns this test is unchanged: `VULTURE_LLM_QUOTE_REANCHOR` is a separate
+    switch that "requires enforce" — requiring it is not the same as being
+    implied by it, and reading the mode string where the actuator switch was
+    meant is an easy and invisible mistake.
     """
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
     survivor = _dedup([], _dupe_rows())[0]
-    assert survivor["line_start"] == 18, (
-        f"the line actuator must stay inert under {env or 'the bare defaults'}"
+    assert survivor["line_start"] == line, (
+        f"the line actuator under {env or 'the bare defaults'} must leave "
+        f"line_start at {line}"
     )
 
 

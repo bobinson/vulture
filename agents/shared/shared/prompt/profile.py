@@ -150,19 +150,37 @@ def family_for(model: str) -> str:
 
 
 @functools.lru_cache(maxsize=64)
-def profile_for(model: str | None = None) -> ModelProfile:
-    """Resolve a model string to its capability profile.
+def _family_of(resolved: str) -> str:
+    """The family of a resolved model string, logged once per string.
 
-    Cached: the model string is constant for the life of an audit, and
-    ``render`` is called once per batch.
+    Cached because the model string is constant for the life of an audit and
+    ``render`` is called once per batch. Holds NO window: that is per-run state.
     """
-    from shared.llm.provider import get_model, resolve_context_window
-
-    resolved = get_model(model)
     family = family_for(resolved)
     if family == "generic":
         log.info("[prompt] no capability profile for %r; using generic", resolved)
-    caps = MODEL_PROFILES[family]
-    window, provenance = resolve_context_window(resolved)
-    return ModelProfile(family=family, ctx_window=window,
-                        ctx_provenance=provenance, **caps)
+    return family
+
+
+def profile_for(model: str | None = None) -> ModelProfile:
+    """Resolve a model string to its capability profile.
+
+    The capabilities are cached per model string; the context window is NOT
+    (feature 0074 P1, AC36). It is per-run state — a broker injects it per
+    ``/run`` — so a process-wide cache froze the first run's window for every
+    later run of the same model. ``ctx_window`` is the EFFECTIVE window
+    (``provider.effective_context_window``), the same one the per-batch source
+    budget uses, so the prompt budget and the source budget cannot disagree.
+    """
+    from shared.llm.provider import effective_context_window, get_model
+
+    resolved = get_model(model)
+    family = _family_of(resolved)
+    window = effective_context_window(resolved)
+    return ModelProfile(family=family, ctx_window=window.effective,
+                        ctx_provenance=window.provenance, **MODEL_PROFILES[family])
+
+
+# ``profile_for.cache_clear()`` is the established reset (test suites call it);
+# it clears the only cache left, the per-model family lookup.
+profile_for.cache_clear = _family_of.cache_clear  # type: ignore[attr-defined]

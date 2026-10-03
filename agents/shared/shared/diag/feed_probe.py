@@ -31,6 +31,8 @@ from shared.audit_runner import (
     _LLM_FILES_PER_BATCH,
     _build_source_batches,
     _enforce_body_byte_cap,
+    _file_tier,
+    _finding_path_set,
     _get_max_body_bytes,
     _get_max_source_chars,
     _line_numbers_enabled,
@@ -40,8 +42,10 @@ from shared.audit_runner import (
     _prioritize_files,
     _quote_mode,
     _quote_required,
+    _reanchor_switch,
     _resolve_llm_budget_usd,
     _safe_int_env,
+    _safe_rel,
     _snippet_context_lines,
     _split_source_blocks,
     _whole_file_max_lines,
@@ -247,10 +251,11 @@ def _quote_env() -> dict[str, Any]:
     known: dict[str, Any] = {
         "VULTURE_LLM_QUOTE_VERIFY": _quote_mode(),
         "VULTURE_LLM_QUOTE_REQUIRED": _quote_required(),
-        # The raw switch, not ``_reanchor_enabled()``: that reader ANDs in the
+        # The switch alone, not ``_reanchor_enabled()``: that reader ANDs in the
         # mode, and reporting a conjunction under a variable's own name would
-        # make an operator who set it read back false.
-        "VULTURE_LLM_QUOTE_REANCHOR": env_truthy("VULTURE_LLM_QUOTE_REANCHOR"),
+        # make an operator who set it read back false. Read through the
+        # pipeline's own resolver so the probe reports the O6 default (on).
+        "VULTURE_LLM_QUOTE_REANCHOR": _reanchor_switch(),
         "VULTURE_LLM_QUOTE_KEEP_TEXT": env_truthy("VULTURE_LLM_QUOTE_KEEP_TEXT"),
         "VULTURE_LLM_QUOTE_DEMOTE_ABSENT": env_truthy(anchor._DEMOTE_ABSENT),
     }
@@ -344,11 +349,44 @@ def render_feed(
     # truncated. ``VULTURE_LLM_MAX_BODY_BYTES`` travels in ``env`` so a consumer
     # can re-derive the sweep's narrower budget from the same blob.
     batches = [_cap_batch(text, paths) for text, paths in packed]
+    stats = _stats(batches, packed, len(files), max_chars, model, llm_tier3)
+    stats["yield"] = _yield(batches, _tier_by_rel(ordered, source_path, findings))
+    return {"files": ordered, "batches": batches, "stats": stats}
+
+
+def _tier_by_rel(ordered: list, source_path: str, findings: list[dict]) -> dict[str, int]:
+    """Each fed file's prioritiser tier, keyed by the relative path a batch lists."""
+    finding_paths = _finding_path_set(findings, source_path)
     return {
-        "files": ordered,
-        "batches": batches,
-        "stats": _stats(batches, packed, len(files), max_chars, model, llm_tier3),
+        _safe_rel(f, source_path): _file_tier(f, source_path, finding_paths)
+        for f in ordered
     }
+
+
+def _extension_yield_row() -> dict[str, Any]:
+    """One extension's yield slots, zero-filled with both full vocabularies."""
+    return {
+        "files_sent": 0,
+        "findings": 0,
+        "anchor_status": dict.fromkeys(sorted(anchor.STATUSES), 0),
+        "claimed_line_range": dict.fromkeys(sorted(anchor.CLAIMED_LINE_RANGES), 0),
+    }
+
+
+def _yield(batches: list[tuple[str, list[str]]], tiers: dict[str, int]) -> dict[str, Any]:
+    """T0.3 (0074): files sent per prioritiser tier and per extension, as delivered.
+
+    The probe calls no model, so every ``findings`` / anchor / line-range slot
+    reads zero; the slots exist so a run that does call one fills the same shape.
+    """
+    per_tier = {f"tier{n}": {"files_sent": 0, "findings": 0} for n in (1, 2, 3)}
+    per_extension: dict[str, dict[str, Any]] = {}
+    for _text, paths in batches:
+        for path in paths:
+            per_tier[f"tier{tiers.get(path, 3)}"]["files_sent"] += 1
+            row = per_extension.setdefault(_suffix(path), _extension_yield_row())
+            row["files_sent"] += 1
+    return {"per_tier": per_tier, "per_extension": per_extension}
 
 
 def _stats(

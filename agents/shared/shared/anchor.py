@@ -44,13 +44,19 @@ from shared.env import env_truthy
 from shared.tools.line_format import strip_line_number
 
 __all__ = [
+    "CLAIMED_LINE_RANGES",
+    "RANGE_IN_FILE",
+    "RANGE_NO_LINE",
+    "RANGE_PAST_EOF",
     "STATUSES",
     "AnchorResult",
     "anchor_weight",
+    "claimed_line_range",
     "clear_cache",
     "collapse_ws",
     "distance",
     "key",
+    "line_range",
     "max_delta",
     "normalise",
     "tokens",
@@ -64,6 +70,15 @@ STATUSES: frozenset[str] = frozenset({
     "exact", "reanchored", "ambiguous", "near_miss", "found_elsewhere",
     "absent", "unquoted", "unreadable", "oversize",
 })
+
+# Feature 0074 (O3 = C): the range of the line the model CLAIMED, recorded BESIDE
+# the quote verdict and never in place of it — a tenth status would hide a
+# `reanchored`, `found_elsewhere` or `absent` verdict behind "the line is not
+# there". Labelling only: it carries no weight and never moves or drops a row.
+RANGE_IN_FILE = "in_file"
+RANGE_PAST_EOF = "past_eof"
+RANGE_NO_LINE = "no_line"
+CLAIMED_LINE_RANGES: frozenset[str] = frozenset({RANGE_IN_FILE, RANGE_PAST_EOF, RANGE_NO_LINE})
 
 # VULTURE_LLM_QUOTE_<name> defaults (section 5.3). MAX_LINE_CHARS is PER LINE
 # (matching tools/snippet.py and the judge's per-line cap); MAX_CHARS bounds the
@@ -381,7 +396,8 @@ def _reanchor(found: list[int], claimed: int) -> AnchorResult:
     ordered = sorted(found, key=lambda start: (abs(start - claimed), start))
     delta = ordered[0] - claimed
     if not _may_move(ordered, claimed, delta):
-        return AnchorResult("ambiguous", "not_unique", candidates=len(found))
+        return AnchorResult("ambiguous", _refusal_reason(ordered),
+                            candidates=len(found))
     return AnchorResult("reanchored", new_line=ordered[0], delta=delta,
                         candidates=len(found))
 
@@ -399,6 +415,15 @@ def _may_move(ordered: list[int], claimed: int, delta: int) -> bool:
         return True
     runner_up = abs(ordered[1] - claimed)
     return abs(delta) < runner_up and abs(delta) <= _knob_int("RADIUS")
+
+
+def _refusal_reason(ordered: list[int]) -> str:
+    """Why a located quote did not move the line (0074 §5.4 gap 2).
+
+    A LONE candidate can only have been refused by MAX_DELTA — the tie-break
+    needs two — so calling it ``not_unique`` named a tie that does not exist.
+    """
+    return "beyond_max_delta" if len(ordered) == 1 else "not_unique"
 
 
 def _fallback(needle: str, span: int, file_lines: list[str], file_path: Path | None,
@@ -496,6 +521,31 @@ def _read_lines(path: Path | None) -> list[str] | None:
 
     lines = read_file_lines(path)
     return None if lines is None else list(lines)
+
+
+def line_range(line: int, line_count: int) -> str:
+    """The ONE rule placing a 1-based line against a file of ``line_count`` lines.
+
+    Shared by the anchor stamp (the model's claim) and the window stage (the
+    row's final line), so "past end of file" cannot mean two things.
+    """
+    if line < 1:
+        return RANGE_NO_LINE
+    return RANGE_IN_FILE if line <= line_count else RANGE_PAST_EOF
+
+
+def claimed_line_range(finding: dict, file_path: Path | None) -> str | None:
+    """``in_file`` / ``past_eof`` / ``no_line`` for the CLAIMED line, or ``None``.
+
+    Read through ``_read_lines`` — the verifier's own cached reader — so the
+    fact costs no new file open (0074 AC28). An unreadable file has no range:
+    "past end of file" is a fact about a file that was read. Never raises.
+    """
+    claimed = _claimed_line(finding)
+    if claimed < 1:
+        return RANGE_NO_LINE
+    lines = _read_lines(file_path)
+    return None if lines is None else line_range(claimed, len(lines))
 
 
 def _claimed_line(finding: dict) -> int:

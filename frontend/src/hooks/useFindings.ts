@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { SEVERITY_ORDER } from "@/lib/constants.ts";
 import { hasOwaspCategory } from "@/lib/compliance.ts";
+import { provenanceMatcher } from "@/lib/provenance.ts";
 import type { Finding, Severity } from "@/lib/types.ts";
 
 type SortField = "severity" | "category" | "file" | "title" | "agent_type";
@@ -80,7 +81,8 @@ export function useFindings(
   };
 
   // Feature 0058 (R6) — filter by detection tier (finding.provenance),
-  // mirroring the agent filter mechanics.
+  // mirroring the agent filter mechanics. Feature 0074 adds the family values
+  // "llm_family" and "both" (see lib/provenance.ts); every other value is exact.
   const setFilterProvenanceAndReset = (provenance: string) => {
     setFilterProvenance(provenance);
     setPage(0);
@@ -138,7 +140,7 @@ export function useFindings(
       filtered = filtered.filter((f) => (f.agent_type ?? f.agent_id) === filterAgent);
     }
     if (filterProvenance !== "all") {
-      filtered = filtered.filter((f) => f.provenance === filterProvenance);
+      filtered = filtered.filter(provenanceMatcher(filterProvenance));
     }
     if (owaspCategory !== "all") {
       filtered = filtered.filter((f) => hasOwaspCategory(f, owaspCategory));

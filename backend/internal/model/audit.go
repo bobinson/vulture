@@ -64,6 +64,11 @@ type AuditRequest struct {
 	// broker_token so the agent sizes its LLM phase from the registry. 0 = unset
 	// (broker off / unknown → agent resolves its own). Never user-supplied.
 	ContextWindow int `json:"context_window,omitempty"`
+	// ContextWindowSource is HOW the broker obtained ContextWindow (feature
+	// 0074 §5.1(a): env | probe | table | family | default), injected beside
+	// it at dispatch so a family guess is published as such. "" = unset.
+	// Never user-supplied.
+	ContextWindowSource string `json:"context_window_source,omitempty"`
 }
 
 // AuditComparison holds the diff between the current audit and the previous one.

@@ -72,6 +72,29 @@
     "noFindings": "Aucune constatation détectée. Votre code semble propre !",
     "noFindingsShort": "Propre",
     "provenance": "Provenance",
+    "provenanceFamily": {
+      "llm_family": "LLM (tous)",
+      "both": "Les deux niveaux"
+    },
+    "anchor": {
+      "title": "Ancrage",
+      "status": {
+        "exact": "Exact",
+        "reanchored": "Réancré",
+        "ambiguous": "Ambigu",
+        "near_miss": "Quasi-correspondance",
+        "found_elsewhere": "Trouvé ailleurs",
+        "absent": "Absent",
+        "unquoted": "Sans citation",
+        "unreadable": "Illisible",
+        "oversize": "Trop volumineux"
+      },
+      "range": {
+        "in_file": "Dans le fichier",
+        "past_eof": "Après la fin du fichier",
+        "no_line": "Aucune ligne"
+      }
+    },
     "semgrepTierNotice": "Niveau Semgrep inactif — cet audit n'a exécuté que les skills déterministes et les signatures.",
     "agent": "Agent",
     "scores": "Scores de Conformité",

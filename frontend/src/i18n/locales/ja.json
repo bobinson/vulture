@@ -72,6 +72,29 @@
     "noFindings": "検出事項はありません。コードは問題なさそうです！",
     "noFindingsShort": "問題なし",
     "provenance": "検出元",
+    "provenanceFamily": {
+      "llm_family": "LLM（すべて）",
+      "both": "両方の階層"
+    },
+    "anchor": {
+      "title": "アンカー",
+      "status": {
+        "exact": "完全一致",
+        "reanchored": "再アンカー済み",
+        "ambiguous": "曖昧",
+        "near_miss": "近似一致",
+        "found_elsewhere": "別の場所で検出",
+        "absent": "該当なし",
+        "unquoted": "引用なし",
+        "unreadable": "読み取り不可",
+        "oversize": "サイズ超過"
+      },
+      "range": {
+        "in_file": "ファイル内",
+        "past_eof": "ファイル末尾以降",
+        "no_line": "行なし"
+      }
+    },
     "semgrepTierNotice": "Semgrep層は無効です。この監査はスキルとシグネチャのみで実行されました。",
     "agent": "エージェント",
     "scores": "コンプライアンススコア",

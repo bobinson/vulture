@@ -152,15 +152,14 @@ def _run_lineage_checks(requested: Any, source_path: str) -> list[dict]:
 # `shared/prompt/extract.py` with the chain that reads them (feature 0089 §11.3);
 # they are imported above so this module's public names are unchanged.
 
-# TWO fields, TWO switches — they are not the same risk (0076 §5.1, recall-3).
-# ``code_snippet`` is a fabricated-evidence risk; ``check_id`` is a DEDUP
-# IDENTITY whose naive removal deletes rows (AC26). Collapsing them into one
-# constant would make it impossible to reverse a dedup regression without also
-# re-trusting model-authored evidence.
+# TWO fields, not the same risk (0076 §5.1, recall-3). ``code_snippet`` is a
+# fabricated-evidence risk, admitted only under its switch; ``check_id`` is a
+# DEDUP IDENTITY whose naive removal deletes rows (AC26), so it is always
+# carried privately and restored by ``_restore_dedup_identity``. Its former
+# switch had no effect on the final row and was retired (0074 T-1.5, rule 6).
 _MODEL_FORBIDDEN_SNIPPET = ("code_snippet",)    # VULTURE_LLM_TRUST_MODEL_SNIPPET
-_MODEL_FORBIDDEN_CHECK_ID = ("check_id",)       # VULTURE_LLM_TRUST_MODEL_CHECK_ID
+_MODEL_FORBIDDEN_CHECK_ID = ("check_id",)
 _TRUST_MODEL_SNIPPET = "VULTURE_LLM_TRUST_MODEL_SNIPPET"
-_TRUST_MODEL_CHECK_ID = "VULTURE_LLM_TRUST_MODEL_CHECK_ID"
 
 
 class AuditFinding(BaseModel):
@@ -459,16 +458,8 @@ def _truncate_prompt_to_budget(
 
 _MAX_SOURCE_CHARS = _safe_int_env("VULTURE_MAX_SOURCE_CHARS", 400000)
 
-# Feature 0070 P5 (A.4): ceiling applied when a window is a GUESS *and* a custom
-# gateway is in play. Numerically equal to DEFAULT_CONTEXT_WINDOW (32K) today;
-# named separately and env-tunable because the two mean different things — one is
-# "what we assume when we know nothing", the other is "the most we will trust a
-# guess with when sizing a real request body". Behind a gateway only three
-# sources are authoritative: an explicit VULTURE_LLM_CTX_SIZE, the broker
-# registry (§31), or an exact CONTEXT_WINDOWS match. A family guess is not, so a
-# known family behind a gateway is deliberately clamped too — the gateway may
-# proxy a smaller window than the upstream model offers, and we cannot tell.
-_GATEWAY_GUESS_CEILING = _safe_int_env("VULTURE_LLM_GATEWAY_GUESS_CTX", 32_000)
+# Feature 0070 P5 (A.4): the gateway-guess ceiling (VULTURE_LLM_GATEWAY_GUESS_CTX)
+# is owned by ``shared.llm.provider.effective_context_window`` (feature 0074 P1).
 
 # Feature 0070 P5 (defect A): our source budget is denominated in TOKENS, but a
 # gateway rejects on BYTES ("request_too_large" / HTTP 413). The two disagree by
@@ -714,12 +705,25 @@ def _halve_source_context(source_context: str) -> str:
     return smaller
 
 
+def _llm_window(model: str | None, use_llm: bool) -> dict[str, Any] | None:
+    """This run's published window facts, or ``None`` when no LLM tier runs.
+
+    Feature 0074 P1 (AC7): logged once per run and carried on ``run_started``.
+    """
+    if not use_llm:
+        return None
+    from shared.llm.provider import publish_llm_window
+
+    return publish_llm_window(model)
+
+
 def _get_max_source_chars(model: str | None = None) -> int:
     """Compute max source chars from the active model's context window.
 
-    Uses ``get_context_window()`` (env override > model lookup > 32K default).
-    The OpenAI Agents SDK adds significant overhead (tool schemas, structured
-    output schema, system instructions) — typically 3-5K tokens.  We reserve
+    Uses ``effective_context_window()`` — the resolved window (env > broker >
+    table > family > default) after the gateway-guess clamp. The OpenAI Agents
+    SDK adds significant overhead (tool schemas, structured output schema,
+    system instructions) — typically 3-5K tokens.  We reserve
     50% of context for source code at ~3 chars per token (code is token-dense).
 
     The result is capped at ``_MAX_SOURCE_CHARS`` (default 400K, configurable
@@ -729,35 +733,16 @@ def _get_max_source_chars(model: str | None = None) -> int:
     Args:
         model: Optional model key. Defaults to VULTURE_LLM_MODEL env.
     """
-    from shared.llm.provider import (
-        WINDOW_FROM_DEFAULT,
-        WINDOW_FROM_FAMILY,
-        resolve_context_window,
-        uses_custom_endpoint,
-    )
+    from shared.llm.provider import effective_context_window
 
-    ctx_tokens, provenance = resolve_context_window(model)
     # Feature 0070 P5 (defect A.4, reworked): behind a custom gateway an
     # unknown model's window is a GUESS made from a substring of its id
-    # (`glm-5-2-260617` → the "glm" family → 131072 tokens → 196,608 chars ≈
-    # 192KB inlined, which the gateway rejected outright). §31 keeps that guess
-    # for token *budgeting* — three tests pin it, and undershooting the window
-    # would shrink max_output too — but it must not be trusted to size a
-    # REQUEST BODY. Authoritative windows (explicit env, broker registry, exact
-    # table) are used as-is; only the inferred-behind-a-gateway case undershoots.
-    # Both non-authoritative provenances qualify. A bare DEFAULT is a *stronger*
-    # guess than a family match, not a weaker one: the model id matched nothing at
-    # all. `glm-5-2-260617` resolves that way, so guarding only FAMILY left the
-    # exact model from the observed 413 unclamped.
-    _guessed = provenance in (WINDOW_FROM_FAMILY, WINDOW_FROM_DEFAULT)
-    if _guessed and uses_custom_endpoint() and ctx_tokens > _GATEWAY_GUESS_CEILING:
-        logger.warning(
-            "llm_body_window_clamped model=%s inferred=%d using=%d "
-            "hint=set VULTURE_LLM_CTX_SIZE to the gateway's real window",
-            model or os.environ.get("VULTURE_LLM_MODEL", ""),
-            ctx_tokens, _GATEWAY_GUESS_CEILING,
-        )
-        ctx_tokens = _GATEWAY_GUESS_CEILING
+    # (`glm-5-2-260617` → 131072 tokens → 196,608 chars ≈ 192KB inlined, which
+    # the gateway rejected outright), so a guess must not size a REQUEST BODY.
+    # The clamp lives in ``effective_context_window`` (feature 0074 P1, AC36),
+    # the ONE window the prompt budget is sized from too. Authoritative windows
+    # (explicit env, broker registry, exact table) are used as-is.
+    ctx_tokens = effective_context_window(model).effective
     # Scale source allocation: small models need more headroom for output + SDK overhead.
     source_fraction = 0.35 if ctx_tokens <= 32_000 else 0.5
     # Cap: read VULTURE_MAX_SOURCE_CHARS dynamically (feature 0057 P1f — tests
@@ -790,6 +775,36 @@ def _safe_rel(fpath: Path, source_path: str) -> str:
         return str(fpath)
 
 
+def _finding_path_set(skill_findings: list[dict] | None, source_path: str) -> set[str]:
+    """Every path a skill finding names, absolute and root-relative forms both."""
+    paths: set[str] = set()
+    for f in skill_findings or ():
+        paths.update(_path_forms(f.get("file_path", ""), source_path))
+    return paths
+
+
+def _path_forms(fp: str, source_path: str) -> tuple[str, ...]:
+    """A finding path as given, plus its root-relative form when under the root."""
+    if not fp:
+        return ()
+    if fp.startswith(source_path):
+        return (fp, fp[len(source_path):].lstrip("/"))
+    return (fp,)
+
+
+def _file_tier(fpath: Path, source_path: str, finding_paths: set[str]) -> int:
+    """The prioritiser tier of one file: 1 flagged, 2 entry/config, 3 the rest.
+
+    The ONE classification ``_prioritize_files`` orders by and the feed probe
+    (0074 T0.3) reports yield by, so the two cannot disagree about a tier.
+    """
+    if str(fpath) in finding_paths or _safe_rel(fpath, source_path) in finding_paths:
+        return 1
+    if is_entry_or_config(Path(fpath)):
+        return 2
+    return 3
+
+
 def _prioritize_files(
     files: list,
     source_path: str,
@@ -815,30 +830,11 @@ def _prioritize_files(
     Returns:
         Reordered list of Path objects.
     """
-    finding_paths: set[str] = set()
-    if skill_findings:
-        for f in skill_findings:
-            fp = f.get("file_path", "")
-            if fp:
-                finding_paths.add(fp)
-                # Also store relative form for matching
-                if fp.startswith(source_path):
-                    rel = fp[len(source_path):].lstrip("/")
-                    finding_paths.add(rel)
-
-    tier1: list = []
-    tier2: list = []
-    tier3: list = []
-
+    finding_paths = _finding_path_set(skill_findings, source_path)
+    tiers: tuple[list, list, list] = ([], [], [])
     for fpath in files:
-        fstr = str(fpath)
-        rel = _safe_rel(fpath, source_path)
-        if fstr in finding_paths or rel in finding_paths:
-            tier1.append(fpath)
-        elif is_entry_or_config(Path(fpath) if not isinstance(fpath, Path) else fpath):
-            tier2.append(fpath)
-        else:
-            tier3.append(fpath)
+        tiers[_file_tier(fpath, source_path, finding_paths) - 1].append(fpath)
+    tier1, tier2, tier3 = tiers
 
     if not include_tier3:
         return tier1 + tier2
@@ -1469,13 +1465,31 @@ def _strip_private_fields(
         finding.pop(name, None)
 
 
+_QUOTE_MODE_DEFAULT = "enforce"
+_REANCHOR_SWITCH = "VULTURE_LLM_QUOTE_REANCHOR"
+
+
 def _quote_mode() -> str:
-    """``VULTURE_LLM_QUOTE_VERIFY`` — ``off`` / ``observe`` (default) / ``enforce``.
+    """``VULTURE_LLM_QUOTE_VERIFY`` — ``off`` / ``observe`` / ``enforce`` (default).
 
     A mode string rather than a flag, matching ``VULTURE_OBLIGATION_MODE``. Read
     at call time (D14): a mode captured at import cannot be flipped mid-fleet.
+    Feature 0074 (O6) moved the default from ``observe`` to ``enforce``; a blank
+    value is "unset" and takes the default. ``enforce`` only ARMS the actuators —
+    each is still gated by its own switch.
     """
-    return os.getenv("VULTURE_LLM_QUOTE_VERIFY", "observe").strip().lower() or "observe"
+    raw = os.getenv("VULTURE_LLM_QUOTE_VERIFY", _QUOTE_MODE_DEFAULT)
+    return raw.strip().lower() or _QUOTE_MODE_DEFAULT
+
+
+def _reanchor_switch() -> bool:
+    """``VULTURE_LLM_QUOTE_REANCHOR`` alone — default ON since 0074 (O6).
+
+    ``env_flag`` token semantics: ``false/0/no/off`` is the runtime rollback, a
+    blank or unrecognised value takes the default. The ONE reader of the
+    switch, shared by the actuator gate and the diagnostic probe.
+    """
+    return env_flag(_REANCHOR_SWITCH, True)
 
 
 def _reanchor_enabled() -> bool:
@@ -1485,7 +1499,7 @@ def _reanchor_enabled() -> bool:
     mode string where the actuator switch was meant is an easy and invisible
     mistake, so both are demanded and both are read at call time.
     """
-    return _quote_mode() == "enforce" and env_truthy("VULTURE_LLM_QUOTE_REANCHOR")
+    return _quote_mode() == "enforce" and _reanchor_switch()
 
 
 def _batch_paths(findings: list[dict], source_path: str) -> list[Path | None]:
@@ -1562,11 +1576,20 @@ def _stamp_anchor(finding: dict, path: Path | None, mode: str,
     # rewrite stopped being auditable — the precise property this stamp exists
     # to preserve, on precisely the mislocated class the feature measures.
     claimed = finding.get("line_start", 0)
+    # 0074 O3 = C: the CLAIM's range, beside the verdict — after the quote
+    # search (so it can shadow no verdict) and before the actuator (so it
+    # describes what the model said). Same cached reader; weight 0.0.
+    # `_claimed_line_range` is deliberately NOT on `_PRIVATE_FIELDS` (that
+    # roster is pinned to 0076's §5.4(2) set): like `_code_snippet_start` it is
+    # a label, not model-copied text, and `_public_view` keeps every
+    # underscore-prefixed stamp off SSE and the result snapshot.
+    claim_range = anchor.claimed_line_range(finding, path)
     _apply_reanchor(finding, outcome)
     finding.update({
         "_anchor_status": outcome.status,
         "_anchor_reason": outcome.reason,
         "_claimed_line": claimed,
+        "_claimed_line_range": claim_range,
         "_anchor_delta": outcome.delta,
         "_anchor_candidates": outcome.candidates,
         "_anchor_other_path": outcome.other_path,
@@ -1590,8 +1613,13 @@ def _restore_dedup_identity(finding: dict) -> None:
 
     So the identity is restored, not merely remembered. What the strip removes is
     the model's authority over ``code_snippet`` and over the structured schema
-    (B3); ``check_id`` remains what it always was — a dedup key that neither
-    repository persists (C7), never a catalog id.
+    (B3). The restored ``check_id`` is the row's public identity and IS
+    persisted (both repositories store ``check_id``; 0079 A2,
+    ``backend/internal/repository/check_id_persist_test.go``), so it is a
+    dedup key, never a catalog id — and never a claim to the deterministic
+    tier: the row's provenance stays in the LLM family
+    (``shared.provenance.is_llm_provenance``), which keeps it L5-demotable
+    whatever ``check_id`` it carries (0074, D1b).
     """
     cid = finding.get("_model_check_id")
     if cid and not finding.get("check_id"):
@@ -1698,6 +1726,43 @@ def _deduplicate_findings(
         seen[key] = f
         unique.append(f)
     return unique
+
+
+@dataclass
+class _LLMDedupTally:
+    """The agent's half of the LLM-tier ledger (feature 0074 P4, AC19).
+
+    The agent's own dedup is the FIRST place an LLM row can disappear, and Go
+    only sees what survives, so the agent counts: ``collapsed`` is every LLM row
+    a ``_deduplicate_findings`` call here removed (cross-batch repeats and skill
+    collisions alike); ``emitted`` is fixed at the final dedup as the rows the
+    sweep returned plus the rows it had already collapsed — i.e. counted BEFORE
+    any agent dedup. ``_deduplicate_findings`` keeps returning a plain list; the
+    count is its input size minus its output size, O(1) per call.
+    """
+
+    emitted: int = 0
+    collapsed: int = 0
+
+    @classmethod
+    def of(cls, tally: "_LLMDedupTally | None") -> "_LLMDedupTally":
+        """``tally``, or a fresh one for a caller that publishes no counters."""
+        return tally if tally is not None else cls()
+
+    def dedup(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
+        """``_deduplicate_findings``, recording how many of ``rows`` it removed."""
+        kept = _deduplicate_findings(base, rows, source_path=source_path)
+        self.collapsed += len(rows) - len(kept)
+        return kept
+
+    def settle(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
+        """The run's FINAL dedup: fixes ``emitted`` from the sweep's output first."""
+        self.emitted = len(rows) + self.collapsed
+        return self.dedup(base, rows, source_path)
+
+    def as_result(self) -> dict[str, int]:
+        """Both counters, always — 0 on a skills-only run; absence means an older agent."""
+        return {"llm_emitted": self.emitted, "llm_collapsed_agent": self.collapsed}
 
 
 def _collapse_skill_findings(
@@ -1963,7 +2028,8 @@ def _redact_finding_inplace(finding: dict[str, Any]) -> None:
 #
 # The tags are ADDITIVE metadata: they must NOT change the
 # ``validate.llm_judge._is_deterministic`` / ``_is_l5_exempt`` determinations,
-# which key off ``check_id`` / ``signature_status`` / ``provenance == "llm"``.
+# which key off ``check_id`` / ``signature_status`` / the LLM-family rule
+# (``shared.provenance.is_llm_provenance``).
 PROVENANCE_VALUES: frozenset[str] = frozenset(
     {
         "skill",
@@ -2398,7 +2464,7 @@ def run_combined_audit(
 
     clear_caches()  # Ensure stale file contents don't leak across audit runs
     emitter = AgUiEventEmitter(run_id)
-    yield emitter.run_started()
+    yield emitter.run_started(llm_window=_llm_window(model, effective_use_llm))
     logger.info("audit_start run_id=%s source=%s categories=%s use_llm=%s",
                 run_id, source_path, categories, effective_use_llm)
 
@@ -2548,6 +2614,7 @@ def run_combined_audit(
 
     # --- Phase 2: LLM enhancement (optional) ---
     llm_new_findings: list[dict] = []
+    llm_tally = _LLMDedupTally()  # 0074 P4: published on `result` even when 0
     actual_input_tokens = 0
     actual_output_tokens = 0
     # Feature 0070 P5 (A.3): a run that WANTED an LLM phase and lost it must not
@@ -2609,6 +2676,7 @@ def run_combined_audit(
                 model=model,
                 skill_findings=skill_findings,
                 llm_tier3=llm_tier3,
+                tally=llm_tally,
             )
         except Exception as exc:  # degradation guard, not a swallow
             logger.warning(
@@ -2627,9 +2695,7 @@ def run_combined_audit(
         if llm_error:
             yield emitter.text_message(llm_error)
             degraded_reason = llm_error
-        llm_new_findings = _deduplicate_findings(
-            skill_findings, llm_findings, source_path=source_path,
-        )
+        llm_new_findings = llm_tally.settle(skill_findings, llm_findings, source_path)
 
         if llm_new_findings:
             yield emitter.text_message(
@@ -2840,6 +2906,7 @@ def run_combined_audit(
         "result_schema": RESULT_SCHEMA,
         "pruned_dirs": pruned_dirs(source_path),
         "lineage_checks": lineage_check_results,
+        **llm_tally.as_result(),
     }
     if degraded_reason:
         result_extra["degraded_reason"] = degraded_reason
@@ -2872,6 +2939,7 @@ def _collect_llm_findings(
     skill_findings: list[dict] | None = None,
     source_context: str = "",
     llm_tier3: bool | None = None,
+    tally: _LLMDedupTally | None = None,
 ) -> tuple[list[dict], str | None, int, int, str | None]:
     """Run the LLM audit (batch-looped) and collect findings (no SSE wrapping).
 
@@ -2886,6 +2954,7 @@ def _collect_llm_findings(
             instructions, domain_label, prior_context, model,
             skill_findings=skill_findings,
             llm_tier3=llm_tier3,
+            tally=tally,
         )
     )
 
@@ -2928,6 +2997,7 @@ async def _collect_llm_findings_batched_async(
     model: str | None = None,
     skill_findings: list[dict] | None = None,
     llm_tier3: bool | None = None,
+    tally: _LLMDedupTally | None = None,
 ) -> tuple[list[dict], str | None, int, int, str | None]:
     """Feature 0057 P1f + P1d: sweep the WHOLE tree in context-window-sized
     batches instead of a single shot that silently tail-drops files.
@@ -2943,6 +3013,7 @@ async def _collect_llm_findings_batched_async(
     """
     max_files = _safe_int_env("VULTURE_LLM_MAX_FILES", 10000)
     budget_usd = _resolve_llm_budget_usd()
+    tally = _LLMDedupTally.of(tally)  # 0074 P4
 
     # Feature 0057 P1d: the LLM sweep is bounded by VULTURE_LLM_MAX_FILES, the
     # operative ceiling for the whole-codebase pass. Without passing it here the
@@ -2964,11 +3035,11 @@ async def _collect_llm_findings_batched_async(
     # Deliberately NOT plain CODE_EXTENSIONS. That set also lacks .sql/.tf/.hcl/
     # .proto, and narrowing to it would drop LLM coverage of a Terraform public
     # bucket or a migration's dynamic SQL — real, findable defects with no evidence
-    # against them. Only .graphql/.gql are excluded, and only because they are
-    # MEASURED noise: 32 of 108 adjudicated findings were .graphql documents cited
-    # at line 1 and 0 of 32 were true positives, including under an adjudicator
-    # explicitly told to look for PII-selecting queries and under-privileged
-    # mutations. Subtracting the proven-noisy pair beats narrowing to a set whose
+    # against them. Nothing is excluded by default: LLM_INELIGIBLE_EXTENSIONS
+    # ships empty (.graphql/.gql included — the "0 of 32" evidence that once
+    # excluded them was confounded with unnumbered presentation; see its comment
+    # in tools/file_scanner.py for the evidence gate any future exclusion must
+    # clear). Subtracting a measured-noisy type beats narrowing to a set whose
     # omissions are untested.
     scanned = _llm_eligible_files(
         scan_code_files(
@@ -3089,9 +3160,7 @@ async def _collect_llm_findings_batched_async(
         if findings:
             # Dedup across batches AND against skill findings so one vuln seen
             # in two overlapping windows isn't double-reported (P1f).
-            new = _deduplicate_findings(
-                (skill_findings or []) + acc, findings, source_path=source_path,
-            )
+            new = tally.dedup((skill_findings or []) + acc, findings, source_path)
             acc.extend(new)
 
         # --- Caps (P1d): evaluate AFTER the batch so its tokens count ---
@@ -3988,20 +4057,16 @@ def _non_empty(name: str, value: Any) -> dict[str, Any]:
 
 
 def _carry_check_id(raw: dict) -> dict[str, Any]:
-    """The model's ``check_id``: trusted verbatim, or PRESERVED privately.
+    """The model's ``check_id``, PRESERVED privately as ``_model_check_id``.
 
     Stripping it outright re-keys the row onto ``(normalised_title, path)``
     (``_dedup_key`` prefers ``check_id``), so a skill row already carrying that
     title in that file deletes the LLM row. AC26 pins the count invariant: the
-    value survives as ``_model_check_id`` and ``_dedup_key`` falls back to it.
+    value survives as ``_model_check_id`` and ``_dedup_key`` falls back to it;
+    ``_restore_dedup_identity`` republishes it at the choke point. One answer,
+    no switch (0074 T-1.5).
     """
-    name = _MODEL_FORBIDDEN_CHECK_ID[0]
-    cid = raw.get(name) or ""
-    if not cid:
-        return {}
-    if env_truthy(_TRUST_MODEL_CHECK_ID):
-        return {name: cid}
-    return {"_model_check_id": cid}
+    return _non_empty("_model_check_id", raw.get(_MODEL_FORBIDDEN_CHECK_ID[0]))
 
 
 def _carry_evidence(raw: dict) -> dict[str, Any]:

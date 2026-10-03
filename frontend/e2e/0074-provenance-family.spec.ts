@@ -324,6 +324,8 @@ test.describe("0074 pixel parity with the design mockup", () => {
     }
     await test.step("anchor result row", async () => {
       await page.bringToFront();
+      // The loop ends on "both", which hides LLM-only rows (test (c)); reset first.
+      await selectFilter(page, "all");
       await page.getByTitle("LLM only row", { exact: true }).click();
       await expectElementMatchesDesign(page, testInfo, "anchor-result", design.getByTestId("anchor-result"), page.getByTestId("anchor-result"));
     });

@@ -30,8 +30,9 @@ type AgentProxyService interface {
 type BrokerMinter interface {
 	MintForAgent(runID, taskType string) (string, error)
 	// ContextWindow resolves the run model's context window (tokens) via the
-	// broker registry (§31); 0 when disabled/unknown (nothing injected).
-	ContextWindow() int
+	// broker (§31) and names how it was obtained (0074 §5.1(a): env | probe |
+	// table | family | default); (0, "") when disabled/unknown (nothing injected).
+	ContextWindow() (int, string)
 }
 
 type agentProxyService struct {
@@ -243,23 +244,7 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 	if lineageChecks != nil && len(lineageChecks.Rows) > 0 {
 		payload["lineage_checks_requested"] = lineageChecks
 	}
-	// Feature 0064 §25.2: when the broker is enabled, mint a per-run token
-	// scoped to this agent's task_type and inject it (+ task_type for the
-	// X-Vulture-Task-Type header the agent sends). A disabled broker returns
-	// "", so nothing changes in Mode A.
-	if s.minter != nil {
-		if tok, err := s.minter.MintForAgent(runID, agentType); err != nil {
-			log.Printf("[agent-proxy] broker mint failed for run=%s agent=%s: %v", runID, agentType, err)
-		} else if tok != "" {
-			payload["broker_token"] = tok
-			payload["task_type"] = agentType
-			// §31: inject the broker-resolved model context window so the agent
-			// sizes its LLM phase from the registry, not a timid local default.
-			if cw := s.minter.ContextWindow(); cw > 0 {
-				payload["context_window"] = cw
-			}
-		}
-	}
+	s.injectBroker(payload, runID, agentType)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -288,6 +273,42 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 	}
 
 	return s.readSSEStream(ctx, agentType, resp, eventCh)
+}
+
+// injectBroker implements feature 0064 §25.2: when the broker is enabled, mint
+// a per-run token scoped to this agent's task_type and inject it (+ task_type
+// for the X-Vulture-Task-Type header the agent sends). A disabled broker
+// returns "", so nothing changes in Mode A.
+func (s *agentProxyService) injectBroker(payload map[string]interface{}, runID, agentType string) {
+	if s.minter == nil {
+		return
+	}
+	tok, err := s.minter.MintForAgent(runID, agentType)
+	if err != nil {
+		log.Printf("[agent-proxy] broker mint failed for run=%s agent=%s: %v", runID, agentType, err)
+		return
+	}
+	if tok == "" {
+		return
+	}
+	payload["broker_token"] = tok
+	payload["task_type"] = agentType
+	injectContextWindow(payload, s.minter)
+}
+
+// injectContextWindow injects the broker-resolved model context window (§31)
+// so the agent sizes its LLM phase from the registry, not a timid local
+// default, and beside it the window's source (0074 §5.1(a)) so the agent can
+// publish HOW the broker obtained it. No window, no source.
+func injectContextWindow(payload map[string]interface{}, m BrokerMinter) {
+	cw, src := m.ContextWindow()
+	if cw <= 0 {
+		return
+	}
+	payload["context_window"] = cw
+	if src != "" {
+		payload["context_window_source"] = src
+	}
 }
 
 func (s *agentProxyService) readSSEStream(ctx context.Context, agentType string, resp *http.Response, eventCh chan<- *model.AgUIEvent) error {

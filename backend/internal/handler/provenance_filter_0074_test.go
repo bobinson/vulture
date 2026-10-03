@@ -130,7 +130,7 @@ func TestAuditGetProvenanceFilter0074_SelectsFixtureRows(t *testing.T) {
 	for _, value := range provValues0074(c) {
 		t.Run(value, func(t *testing.T) {
 			want := slices.Sorted(slices.Values(c.Expect[value]))
-			if got := provFingerprints0074(getProvFiltered0074(t, c, value)); !reflect.DeepEqual(got, want) {
+			if got := provFingerprints0074(getProvFiltered0074(t, c, value)); !slices.Equal(got, want) {
 				t.Fatalf("provenance=%s selected %v, want %v", value, got, want)
 			}
 		})

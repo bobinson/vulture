@@ -199,7 +199,7 @@ func provE2ESelectsFixtureRows(t *testing.T, addr string, c provE2ECases) {
 	for _, value := range slices.Sorted(maps.Keys(c.Expect)) {
 		t.Run(value, func(t *testing.T) {
 			want := slices.Sorted(slices.Values(c.Expect[value]))
-			if got := provE2EFingerprints(provE2EGet(t, addr, value)); !reflect.DeepEqual(got, want) {
+			if got := provE2EFingerprints(provE2EGet(t, addr, value)); !slices.Equal(got, want) {
 				t.Errorf("provenance=%s served %v, want %v", value, got, want)
 			}
 		})

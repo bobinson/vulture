@@ -390,7 +390,7 @@ VULTURE_LLM_LINE_NUMBERS=true  # Files reach the prompt with absolute line numbe
 VULTURE_LLM_SNIPPET_CONTEXT=10  # Lines of context each side of a finding. The default is byte-identical to pre-output. Widening buys the model the guard that would REFUTE a finding (measured as `guard_present` false positives) and costs budget — fewer files per batch
 VULTURE_LLM_WHOLE_FILE_MAX_LINES=0  # Render files at or below N lines whole instead of windowed; 0 disables. For a small file the elision markers cost nearly what the omitted lines would
 VULTURE_LLM_FEED_PROSE=false  # Send prose/data (.md .txt .csv .rst .adoc) to the prompt. Off on BUDGET grounds — doc text displaces real source inside a fixed ceiling — NOT because prose is clean. Skills still scan it; VULTURE_SECRET_SCAN_PROSE covers the gap
-VULTURE_LLM_INELIGIBLE_EXTENSIONS=  # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding .graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. Populate it (e.g. ".graphql,.gql") if you cannot send config dialects to a third-party provider
+VULTURE_LLM_INELIGIBLE_EXTENSIONS=  # Extensions removed from the PROMPT only, never from the scanner. SHIPS EMPTY: the evidence for excluding .graphql was confounded with the unnumbered-presentation defect, and re-adjudication found 2 of 11 real. A type enters the shipped default only past the evidence gate: >=20 cited sites across >=2 targets with zero labelled-real findings. Populate it (e.g. ".graphql,.gql") if you cannot send config dialects to a third-party provider
 VULTURE_LLM_FEED_UNIFY=true  # Both feed paths resolve ONE extension set. false restores the pre-asymmetry (narrow for single-shot, wide for the sweep) — that pair IS the defect, so this is an unblock hatch, not a supported configuration
 VULTURE_SECRET_SCAN_PROSE=true  # CWE agent: scan prose/data files for secrets. The compensating control for VULTURE_LLM_FEED_PROSE=false — without it a credential in a README loses the only tier reading it. Measured live: recovered a real `INBOUND_AUTH_TOKEN` in a README.
 # NOTE: retries on the audit path are owned by retry_llm_call (which classifies the error and
@@ -410,8 +410,8 @@ VULTURE_SECRET_SCAN_PROSE=true  # CWE agent: scan prose/data files for secrets. 
 
 # Evidence quotation and anchor verification. The LLM tier now has to QUOTE
 # the source it accuses, and the quote is checked by whitespace-normalised string search in
-# the cited file — no second model call, no network. Every actuator ships INERT: on defaults
-# only LABELS, it cannot move a line, demote a finding, or change a finding count.
+# the cited file — no second model call, no network. Since 0074 the verifier runs in `enforce` and
+# the LINE actuator is on by default; nothing demotes a finding or changes a finding count by default.
 # Rollback flip ORDER (never widens egress at any intermediate step): QUOTE_DEMOTE_ABSENT ->
 # QUOTE_REANCHOR -> QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
 # COERCE_LINES=false -> JSON_SCAN=false.
@@ -419,10 +419,9 @@ VULTURE_LLM_JSON_SCAN=true  # Parse a bare (unfenced) JSON array by scanning for
 VULTURE_LLM_JSON_SALVAGE=true  # Recover whole rows from an array the model never closed because it hit VULTURE_LLM_MAX_OUTPUT_TOKENS. Without it a response cut mid-array is a total loss of the batch. Never silent — emits `llm_json_salvaged` with the recovered row count.
 VULTURE_LLM_COERCE_LINES=true  # Coerce `line_start`/`line_end` to int and clamp `line_end >= line_start >= 0`. A model answering `"55"` is otherwise dropped in silence by Go's int unmarshal
 VULTURE_LLM_TRUST_MODEL_SNIPPET=false  # true readmits a model-AUTHORED `code_snippet` as though it were read from source. Off because that string is the model's paraphrase, not evidence. Rollback hatch, not a supported configuration
-VULTURE_LLM_TRUST_MODEL_CHECK_ID=false  # Currently NO EFFECT: with either value the model-authored `check_id` ends up as the row's public, persisted `check_id`, because `_restore_dedup_identity` (agents/shared/shared/audit_runner.py) restores it after the strip so an LLM duplicate still collapses onto its skill twin. Do not rely on it to keep model identity out of the dedup key or the stored row
 VULTURE_LLM_QUOTE_REQUIRED=true  # Both prompt contracts ask for `evidence_quote` and the field whitelist admits it; without it a volunteered quote is discarded and anchor verification is undecidable. The quote never egresses in any configuration
-VULTURE_LLM_QUOTE_VERIFY=observe  # `off` / `observe` (default) / `enforce`. `observe` records an anchor status (exact/reanchored/ambiguous/near_miss/absent/...) in the validation blob and changes nothing else; `enforce` merely ARMS the two actuators below, each still individually off
-VULTURE_LLM_QUOTE_REANCHOR=false  # The LINE actuator; requires `enforce`. true rewrites `line_start`/`line_end` when the quote is found elsewhere in the cited file (status `reanchored`), retaining `claimed_line`, and only within QUOTE_MAX_DELTA.
+VULTURE_LLM_QUOTE_VERIFY=enforce  # `off` / `observe` / `enforce` (default since 0074; blank = default). Both record an anchor status (exact/reanchored/ambiguous/near_miss/absent/...) in the validation blob; `observe` changes nothing else, `enforce` ARMS the two actuators below, each still gated by its own switch
+VULTURE_LLM_QUOTE_REANCHOR=true  # The LINE actuator; requires `enforce`. ON by default since 0074; runtime rollback `VULTURE_LLM_QUOTE_REANCHOR=false` (false/0/no/off; blank or a typo keeps the default). Rewrites `line_start`/`line_end` when the quote is found elsewhere in the cited file (status `reanchored`), retaining `claimed_line`, and only within QUOTE_MAX_DELTA.
 VULTURE_LLM_QUOTE_DEMOTE_ABSENT=false  # The ONLY demoting actuator; requires `enforce`. true gives status `absent` weight -1.0 AND puts `anchor` in AUTHORITATIVE_CHECKS.
 VULTURE_LLM_QUOTE_KEEP_TEXT=false  # true retains a REDACTED copy of the quote (the same `_redact_snippet` `code_snippet` already gets) in the validation extras, for offline debugging of the verifier.
 # signal floor and candidate selection — eight numeric knobs, all read at call time. An

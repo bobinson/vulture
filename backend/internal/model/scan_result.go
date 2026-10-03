@@ -70,6 +70,13 @@ type ScanResult struct {
 	// ScanTruncated is set when the walker hit VULTURE_MAX_FILES, so the
 	// enumerated set is partial and absence proves nothing (S20).
 	ScanTruncated bool `json:"scan_truncated,omitempty"`
+	// LLMEmitted and LLMCollapsedAgent are the agent's LLM-row counters
+	// (feature 0074 P4): rows its LLM tier produced, and rows its own dedup
+	// dropped before sending. Pointers so an explicit 0 from a new agent
+	// survives and stays distinct from an older agent that sends neither —
+	// whose dedup buckets are then reported "unavailable", never derived.
+	LLMEmitted        *int `json:"llm_emitted,omitempty"`
+	LLMCollapsedAgent *int `json:"llm_collapsed_agent,omitempty"`
 
 	// NoResultSnapshot marks a result the BACKEND synthesised for an agent
 	// that was dispatched and never sent one — killed by

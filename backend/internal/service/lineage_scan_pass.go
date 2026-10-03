@@ -2,10 +2,10 @@ package service
 
 import (
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/pathutil"
 	"github.com/vulture/backend/internal/repository"
@@ -585,7 +585,9 @@ func targetKeyed(target TargetIdentity) bool {
 	return target.Resolved()
 }
 
-// reanchorEnabled mirrors the 0076 switch that arms the line actuator.
+// reanchorEnabled mirrors the 0076 switch that arms the line actuator. It is
+// read exactly as the agent reads it (0074 O6): ON unless explicitly disabled,
+// so the agent's moved finding and the lineage row's window cannot disagree.
 func reanchorEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("VULTURE_LLM_QUOTE_REANCHOR")), "true")
+	return config.EnvFlag("VULTURE_LLM_QUOTE_REANCHOR", true)
 }

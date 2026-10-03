@@ -37,10 +37,12 @@ from shared.prompt.manifests.validate_judge import (
     VALIDATE_JUDGE_PLAIN,
 )
 from shared.prompt.slots import new_nonce, wrap
+from shared.provenance import is_llm_provenance
 from shared.tools.line_format import strip_line_number
 from shared.tools.window import CODE_SNIPPET_START
 
 from . import l5_cache
+from .context_heuristics import _ANCHOR_ID
 from .language import detect_language
 from .refutation import POLICY_CLASSES
 from .types import ValidateConfig, ValidationCheck
@@ -625,8 +627,11 @@ def _finding_category(finding: dict[str, Any]) -> str:
 def _is_deterministic(finding: dict[str, Any]) -> bool:
     """True for skill / trusted-signature (deterministic) findings — the
     authoritative tier (R2). A deterministic finding carries a ``check_id``
-    and is NOT tagged ``provenance == "llm"``. LLM findings (set by the audit
-    runner) are non-deterministic and remain L5-demotable.
+    and its provenance is NOT in the LLM family (``is_llm_provenance``: any
+    ``llm*`` spelling, case- and whitespace-insensitive, the backend's own
+    rule). LLM findings are non-deterministic and remain L5-demotable — a
+    model-authored ``check_id`` on an ``llm_l5_verified`` row buys no
+    demotion immunity (0074, D1b).
 
     Feature 0057 P4e (R13) extends the Phase-1 logic with the signature tier:
     a finding carrying ``signature_status == "candidate"`` is NOT yet
@@ -634,7 +639,7 @@ def _is_deterministic(finding: dict[str, Any]) -> bool:
     finding. A ``trusted`` signature (corpus-gated) and any plain skill
     finding (no ``signature_status``) remain deterministic-authoritative.
     """
-    if finding.get("provenance") == "llm":
+    if is_llm_provenance(finding.get("provenance")):
         return False
     if finding.get("signature_status") == "candidate":
         return False
@@ -690,7 +695,7 @@ def _is_l5_exempt(finding: dict[str, Any]) -> bool:
 
     Two exemptions:
       * Deterministic / trusted findings (skill/signature: a ``check_id`` and
-        no ``provenance == "llm"``) — the deterministic tier is authoritative
+        a provenance outside the LLM family) — the deterministic tier is authoritative
         (R2); the non-deterministic judge may not suppress it alone.
       * Crypto / policy CWEs — never auto-suppressed regardless of provenance.
     """
@@ -2050,12 +2055,67 @@ def _citation_class(
     coincidence, and counting it as `self_line` would corrupt the one
     statistic this layer is measured by.
     """
+    own = _safe_int((finding or {}).get("line_start"))
+    return _classify_citation(evidence_line, own, evidence_file, finding)
+
+
+def _classify_citation(
+    evidence_line: Optional[int], own: int, evidence_file: Optional[str],
+    finding: Optional[dict[str, Any]],
+) -> str:
+    """The ONE classification rule, against an explicit basis line ``own``.
+
+    ``_citation_class`` applies it to the CURRENT ``line_start`` (0072's
+    meaning); ``_citation_extras`` also applies it to the model's
+    ``claimed_line`` (0074 AC29), so the two bases cannot disagree on rule.
+    """
     if evidence_line is None:
         return "missing"
     if _cited_elsewhere(evidence_file, finding or {}):
         return "other_file"
-    own = _safe_int((finding or {}).get("line_start"))
+    return _line_class(evidence_line, own)
+
+
+def _line_class(evidence_line: int, own: int) -> str:
+    """``self_line`` when the citation echoes the basis line, else ``other_line``."""
     return "self_line" if own and evidence_line == own else "other_line"
+
+
+def _validation_checks(finding: Optional[dict[str, Any]]) -> list[Any]:
+    """The finding's persisted ``validation.checks`` list, or ``[]``."""
+    blob = (finding or {}).get("validation")
+    checks = blob.get("checks") if isinstance(blob, dict) else None
+    return checks if isinstance(checks, list) else []
+
+
+def _anchor_claimed_line(finding: Optional[dict[str, Any]]) -> int:
+    """The model's ``claimed_line`` from the persisted ``anchor`` check, or 0.
+
+    The private ``_claimed_line`` stamp is stripped before egress; the L1
+    ``anchor`` check's extras are the only place the claim survives to L5.
+    """
+    by_id = {c.get("id"): c for c in _validation_checks(finding) if isinstance(c, dict)}
+    extras = by_id.get(_ANCHOR_ID, {}).get("extras") or {}
+    return _safe_int(extras.get("claimed_line"))
+
+
+def _citation_extras(
+    evidence_line: Optional[int], finding: Optional[dict[str, Any]],
+    evidence_file: Optional[str],
+) -> dict[str, str]:
+    """``citation_class`` on the current line, plus ``citation_class_claimed``
+    on the model's claimed line when the verifier recorded one (0074 AC29).
+
+    O6 re-anchors by default, so for a moved row ``line_start`` is no longer
+    the line the model claimed; recording both keeps 0072's series comparable
+    across the flip. Observation-only, like ``citation_class`` itself.
+    """
+    out = {"citation_class": _citation_class(evidence_line, finding, evidence_file)}
+    claimed = _anchor_claimed_line(finding)
+    if claimed:
+        out["citation_class_claimed"] = _classify_citation(
+            evidence_line, claimed, evidence_file, finding)
+    return out
 
 
 def _verdict_to_check(
@@ -2113,8 +2173,7 @@ def _verdict_to_check(
             # file travels with it. Persisted for the same reason the line is:
             # a coordinate recorded without its file cannot be re-measured.
             "evidence_file": evidence_file,
-            "citation_class": _citation_class(
-                evidence_line, finding, evidence_file),
+            **_citation_extras(evidence_line, finding, evidence_file),
         },
     )
 

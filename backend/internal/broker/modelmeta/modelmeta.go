@@ -27,6 +27,7 @@ var contextWindows = map[string]int{
 	"gpt-4o":        128_000,
 	"claude-sonnet": 200_000,
 	"gemini-pro":    1_048_576,
+	"gemini-flash":  1_048_576,
 	"qwen3:1.7b":    32_000,
 	"qwen3:8b":      32_000,
 	"qwen3:14b":     32_000,
@@ -82,29 +83,60 @@ var modelFamilyCtx = []struct {
 	{"gpt-4", 128_000},
 }
 
+// Window sources (§5.1(a), feature 0074): HOW a window was obtained, published
+// beside the number so a family guess is never laundered into an anonymous
+// value at the process boundary. "probe" is not a modelmeta source — the
+// loaded-window probe lives in broker/serve; modelmeta is a pure lookup.
+const (
+	SourceEnv     = "env"
+	SourceProbe   = "probe"
+	SourceTable   = "table"
+	SourceFamily  = "family"
+	SourceDefault = "default"
+)
+
 // ContextWindow resolves a model to its context window (tokens): exact-map →
 // ordered family-substring inference → DefaultContextWindow.
 func ContextWindow(model string) int {
+	w, _ := contextWindowWithSource(model)
+	return w
+}
+
+// contextWindowWithSource is the registry lookup with its source: table,
+// family or default.
+func contextWindowWithSource(model string) (int, string) {
 	if w, ok := contextWindows[model]; ok {
-		return w
+		return w, SourceTable
 	}
 	lm := strings.ToLower(model)
 	for _, f := range modelFamilyCtx {
 		if strings.Contains(lm, f.sub) {
-			return f.ctx
+			return f.ctx, SourceFamily
 		}
 	}
-	return DefaultContextWindow
+	return DefaultContextWindow, SourceDefault
 }
 
 // ResolveContextWindow honors an explicit override (VULTURE_LLM_CTX_SIZE) first
 // — a positive integer wins over the registry — else falls back to
 // ContextWindow(model). Mirrors the agent's env-first resolution priority.
 func ResolveContextWindow(model, override string) int {
-	if override != "" {
-		if n, err := strconv.Atoi(strings.TrimSpace(override)); err == nil && n > 0 {
-			return n
-		}
+	w, _ := ResolveContextWindowWithSource(model, override)
+	return w
+}
+
+// ResolveContextWindowWithSource is ResolveContextWindow plus the source of
+// the number: env (a valid positive override), else table | family | default.
+func ResolveContextWindowWithSource(model, override string) (int, string) {
+	if n, ok := parseOverride(override); ok {
+		return n, SourceEnv
 	}
-	return ContextWindow(model)
+	return contextWindowWithSource(model)
+}
+
+// parseOverride reads a VULTURE_LLM_CTX_SIZE value: a positive integer (after
+// trimming) is an override; blank, invalid or non-positive is not.
+func parseOverride(override string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(override))
+	return n, err == nil && n > 0
 }

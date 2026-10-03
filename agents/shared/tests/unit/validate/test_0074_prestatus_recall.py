@@ -112,7 +112,10 @@ def test_drop_before_status_is_invisible_to_surviving_recall(status_of):
     kept = _emit(corpus, status_of=status_of)
     dropped = _emit(corpus, status_of=status_of, drop={1})
     assert _surviving(corpus, dropped) >= _surviving(corpus, kept)
-    assert prestatus_recall(corpus, dropped) < prestatus_recall(corpus, kept)
+    # prestatus_recall falls against the run in which the row is emitted AND
+    # kept (AC23). Against a run that dismisses it after status the two are
+    # equal: plan §8, a post-status dismissal is seen by both metrics.
+    assert prestatus_recall(corpus, dropped) < prestatus_recall(corpus, _emit(corpus))
 
 
 def test_dismissal_after_status_is_visible_to_both():

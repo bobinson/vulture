@@ -1,6 +1,7 @@
 package agui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -80,10 +81,25 @@ func AgentDisplayName(agentType string) string {
 	return strings.ToUpper(agentType[:1]) + agentType[1:]
 }
 
-func translateAgentStart(agentType string, _ json.RawMessage) ([]*model.AgUIEvent, error) {
+func translateAgentStart(agentType string, data json.RawMessage) ([]*model.AgUIEvent, error) {
 	return []*model.AgUIEvent{
-		{Type: model.EventStepStarted, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType},
+		{Type: model.EventStepStarted, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType,
+			LLMWindow: allowListedLLMWindow(data)},
 	}, nil
+}
+
+// allowListedLLMWindow returns the agent_start payload's llm_window when it is a JSON
+// object (0074 §5.1(e), AC7) — the ONE allow-listed key of that payload; every
+// other key stays behind. A malformed payload or a non-object value yields nil,
+// never an error: a garbled start frame must not drop the agent's step.
+func allowListedLLMWindow(data json.RawMessage) json.RawMessage {
+	var d struct {
+		LLMWindow json.RawMessage `json:"llm_window"`
+	}
+	if json.Unmarshal(data, &d) != nil || !bytes.HasPrefix(d.LLMWindow, []byte("{")) {
+		return nil
+	}
+	return d.LLMWindow
 }
 
 func translateThinking(data json.RawMessage) ([]*model.AgUIEvent, error) {

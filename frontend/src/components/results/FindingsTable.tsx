@@ -11,7 +11,9 @@ import { FindingLifecycleBadge } from "./FindingLifecycleBadge.tsx";
 import { CrossAgentBadge } from "./CrossAgentBadge.tsx";
 import { ProvenanceChip } from "./ProvenanceChip.tsx";
 import { FindingOwaspChips } from "./OwaspChip.tsx";
-import { Chip } from "@/components/shared/Chip.tsx";
+import { ChipGroup } from "@/components/shared/ChipGroup.tsx";
+import { AnchorResult } from "@/components/shared/AnchorResult.tsx";
+import { PROVENANCE_BOTH, PROVENANCE_LLM_FAMILY } from "@/lib/provenance.ts";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import { findingToMarkdown } from "@/lib/markdown.ts";
@@ -215,6 +217,14 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     return { provenanceTiers: sorted, showProvenanceFilter: sorted.length > 0 && groups > 1 };
   }, [allFindings]);
 
+  // Feature 0074 — "All", the two tier-family values, then the exact tiers.
+  const provenanceItems = useMemo(() => [
+    { value: "all", label: t("results.all") },
+    { value: PROVENANCE_LLM_FAMILY, label: t("results.provenanceFamily.llm_family") },
+    { value: PROVENANCE_BOTH, label: t("results.provenanceFamily.both") },
+    ...provenanceTiers.map((tier) => ({ value: tier, label: tier })),
+  ], [provenanceTiers, t]);
+
   // Feature 0096 — OWASP categories among the findings' labels. Empty for a
   // pre-0096 audit (its OWASP rows carry no labels), which hides the filter.
   const owaspOptions = useMemo(() => owaspCategoryOptions(allFindings), [allFindings]);
@@ -360,27 +370,17 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
         )}
         {/* 0058 (R6) — provenance filter, mirroring the agent filter.
             Only shows when findings span more than one detection tier
-            (untagged findings count as their own tier). */}
+            (untagged findings count as their own tier). 0074: the shared
+            ChipGroup, with the two tier-family values first. */}
         {showProvenanceFilter && (
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-muted-light">{t("results.provenance")}:</span>
-            <div className="flex gap-1">
-              <Chip
-                label={t("results.all")}
-                testId="provenance-filter-all"
-                active={filterProvenance === "all"}
-                onClick={() => setFilterProvenance("all")}
-              />
-              {provenanceTiers.map((tier) => (
-                <Chip
-                  key={tier}
-                  label={tier}
-                  testId={`provenance-filter-${tier}`}
-                  active={filterProvenance === tier}
-                  onClick={() => setFilterProvenance(tier)}
-                />
-              ))}
-            </div>
+          <div>
+            <ChipGroup
+              legend={t("results.provenance")}
+              items={provenanceItems}
+              value={filterProvenance}
+              onChange={setFilterProvenance}
+              testId="provenance-filter"
+            />
           </div>
         )}
         {/* Shown while a category is active even when no finding carries
@@ -630,6 +630,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
                             {finding.line_start ? `:${finding.line_start}` : ""}
                             {finding.line_end && finding.line_end !== finding.line_start ? `-${finding.line_end}` : ""}
                           </div>
+                          <AnchorResult validation={finding.validation} />
                           {(finding.check_id || finding.fingerprint) && (
                             <div className="flex items-center gap-3 text-[11px] text-muted-light">
                               {finding.check_id && (

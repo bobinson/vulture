@@ -370,6 +370,7 @@ _ANCHOR_ID = "anchor"
 # the check's `result`, like every other L1 check's outcome label.
 _ANCHOR_PROVENANCE: tuple[tuple[str, str], ...] = (
     ("_claimed_line", "claimed_line"),
+    ("_claimed_line_range", "claimed_line_range"),
     ("_anchor_delta", "delta"),
     ("_anchor_candidates", "candidates"),
     ("_anchor_other_path", "other_path"),

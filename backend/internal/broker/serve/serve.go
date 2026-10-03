@@ -56,6 +56,7 @@ type Broker struct {
 	ttl        time.Duration
 	models     []string       // primary + fallbacks — the scope covers task:model for each
 	verify     token.Verifier // used to read back a freshly-minted jti for revocation tracking
+	probe      *windowProbe   // 0074 §5.2 loaded-window measurement; nil = never probed
 
 	mu      sync.Mutex
 	runJTIs map[string][]string // run_id → minted jtis (for RevokeRun)
@@ -98,6 +99,9 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		ssrf = egress.NewSSRFValidatorAllowingLocal(allowlist, netResolver)
 	}
 
+	keys := keysFromEnv(defaultProvider)
+	baseURL := defaultBaseURL(cfg.ProviderBaseURL, defaultProvider)
+
 	budgetDB := budget.NewSQLDB(db, dia)
 	// Provision the tenant budget: the sharded CAS reserves against existing
 	// llm_budget_shard rows, so without seeded rows EVERY request fails closed
@@ -117,14 +121,14 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		SSRF:            ssrf,
 		Allowlist:       allowlist,
 		Adapters:        defaultAdapters(cfg.CallTimeoutSec, defaultProvider),
-		Keys:            keysFromEnv(defaultProvider),
+		Keys:            keys,
 		DefaultProvider: defaultProvider,
 		// §30: egress SSRF-validates + pins a CONCRETE base URL before the
 		// adapter runs, so a native cloud provider needs its canonical endpoint
 		// when no explicit base URL is configured (gemini/anthropic would
 		// otherwise hit egress with an empty URL and fail). An operator override
 		// (VULTURE_LLM_BROKER_PROVIDER_BASE_URL, e.g. a local LM Studio) wins.
-		DefaultBaseURL: defaultBaseURL(cfg.ProviderBaseURL, defaultProvider),
+		DefaultBaseURL: baseURL,
 		Breakers:       resilience.NewBreakerPool(resilience.CircuitConfig{FailureThreshold: 5, OpenTimeout: 30 * time.Second, HalfOpenMaxCalls: 1, SuccessThreshold: 1, IsFailure: breakerCountsAsFailure}),
 		Bulkheads:      resilience.NewBulkheadPool(resilience.BulkheadConfig{MaxConcurrent: 16}),
 		Retriers:       resilience.NewRetrierPool(retrierConfig()),
@@ -143,6 +147,10 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		models:     append([]string{primaryModel}, cfg.Fallbacks...),
 		verify:     verifier,
 		runJTIs:    map[string][]string{},
+		probe: startWindowProbe(probeTarget{
+			provider: defaultProvider, baseURL: baseURL, key: keys[defaultProvider],
+			model: primaryModel, ssrf: ssrf,
+		}),
 	}
 	b.startSweeper(budgetDB)
 	return b, nil
@@ -185,16 +193,28 @@ func (b *Broker) MintForAgent(runID, taskType string) (string, error) {
 	return tok, nil
 }
 
-// ContextWindow resolves the run's primary model's context window (tokens) via
-// the broker-owned registry (§31), honoring a VULTURE_LLM_CTX_SIZE override. It
-// is injected at dispatch so the agent sizes its LLM phase without its own
-// table. Returns 0 when disabled / no model — the caller then injects nothing
+// ContextWindow resolves the run's primary model's context window (tokens) and
+// HOW it was obtained (0074 §5.1(a)): a VULTURE_LLM_CTX_SIZE override (env),
+// else the loaded window the probe measured (probe), else the broker-owned
+// registry (§31: table | family | default). It is injected at dispatch so the
+// agent sizes its LLM phase without its own table and can publish the source.
+// Returns (0, "") when disabled / no model — the caller then injects nothing
 // and the agent falls back to its own resolution (Mode A unchanged).
-func (b *Broker) ContextWindow() int {
-	if b == nil || !b.Enabled || len(b.models) == 0 {
-		return 0
+func (b *Broker) ContextWindow() (int, string) {
+	model, ok := b.primaryModel()
+	if !ok {
+		return 0, ""
 	}
-	return modelmeta.ResolveContextWindow(b.models[0], os.Getenv("VULTURE_LLM_CTX_SIZE"))
+	w, src := modelmeta.ResolveContextWindowWithSource(model, os.Getenv("VULTURE_LLM_CTX_SIZE"))
+	return b.probe.apply(w, src)
+}
+
+// primaryModel is the run's primary model; false when the broker is off.
+func (b *Broker) primaryModel() (string, bool) {
+	if b == nil || !b.Enabled || len(b.models) == 0 {
+		return "", false
+	}
+	return b.models[0], true
 }
 
 // RevokeRun revokes every token minted for runID (§6/M3, run end/cancel).
