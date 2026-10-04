@@ -112,6 +112,17 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		}
 	}
 
+	// The staging root is a plugin bind-mount source. Create it as the
+	// backend user BEFORE the supervisor starts containers, or Docker creates
+	// it as root and a non-root backend can never stage into it. Local mode
+	// only: the only mode that stages into the root (see the sweep below).
+	auditsDir := staging.AuditsDirFromEnv()
+	if cfg.LocalMode {
+		if err := staging.EnsureRoot(auditsDir); err != nil {
+			log.Printf("[staging] %v", err)
+		}
+	}
+
 	var supervisor *pluginsupervisor.Supervisor
 	if reg != nil {
 		all := reg.All()
@@ -128,7 +139,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 				// Single source of truth shared with the stream dispatch
 				// staging, so the mount source and the staging destination
 				// can never drift (feature 0058 R11).
-				AuditsDir: staging.AuditsDirFromEnv(),
+				AuditsDir: auditsDir,
 				LocalMode: cfg.LocalMode,
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -152,7 +163,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		// review E6). New audits use fresh audit-id dirs, so the sweep
 		// cannot race them.
 		go func() {
-			if err := staging.Sweep(staging.AuditsDirFromEnv(), func(string) bool { return false }); err != nil {
+			if err := staging.Sweep(auditsDir, func(string) bool { return false }); err != nil {
 				log.Printf("[staging] startup sweep error (continuing): %v", err)
 			}
 		}()
