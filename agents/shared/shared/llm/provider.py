@@ -10,6 +10,7 @@ import os
 import re
 from typing import NamedTuple
 
+from shared.gospace import trim_go_space
 from shared.llm.env import resolve_call_timeout
 from shared.llm.env import safe_int_env as _safe_int_env
 
@@ -256,11 +257,12 @@ def _ctx_override() -> int | None:
 
     The same rule as Go's ``modelmeta.parseOverride`` (feature 0074 review
     item 6; both pinned by ``ctx_override_cases_0074.json``): blank, zero,
-    negative and non-numeric values all mean "no override". Python's ``int``
+    negative and non-numeric values all mean "no override". Trimming is Go's
+    ``strings.TrimSpace`` set (contract T1), not ``str.strip``. Python's ``int``
     is wider than Go's ``strconv.Atoi``, so the text is held to Atoi's grammar
     first: ASCII digits with an optional sign (no ``_`` digit groups, no
     non-ASCII digits) and a value that fits int64."""
-    raw = os.environ.get("VULTURE_LLM_CTX_SIZE", "").strip()
+    raw = trim_go_space(os.environ.get("VULTURE_LLM_CTX_SIZE", ""))
     if not _GO_ATOI.fullmatch(raw):
         return None
     value = int(raw)

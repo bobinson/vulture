@@ -47,3 +47,47 @@ func TestLLMWindow_WrongTypesYieldNothing_0074(t *testing.T) {
 		}
 	}
 }
+
+// rawLLMWindow translates an agent_start whose llm_window is the raw JSON obj
+// and returns the re-marshalled object exactly as a client receives it.
+func rawLLMWindow(t *testing.T, obj string) string {
+	t.Helper()
+	events, err := Translate("cwe", "agent_start", json.RawMessage(`{"llm_window":`+obj+`}`))
+	if err != nil || len(events) != 1 {
+		t.Fatalf("translate = %v, %v", events, err)
+	}
+	return string(events[0].LLMWindow)
+}
+
+// Re-audit R9: re-marshalling keeps the wire shape. A null source stays null
+// (agent_protocol.md: "null when none"), an absent key stays absent, and {}
+// stays {} rather than becoming a zero-filled object.
+func TestLLMWindow_NullAndAbsentKeepTheirShape_0074(t *testing.T) {
+	cases := map[string]string{
+		`{}`: `{}`,
+		`{"resolved":32768,"effective":16384,"provenance":"table","source":null,"model":"m"}`: `{"effective":16384,"model":"m","provenance":"table","resolved":32768,"source":null}`,
+		`{"resolved":32768,"source":"family"}`:                                                `{"resolved":32768,"source":"family"}`,
+	}
+	for in, want := range cases {
+		if got := rawLLMWindow(t, in); got != want {
+			t.Errorf("llm_window %s reached the client as %s, want %s", in, got, want)
+		}
+	}
+}
+
+// Re-audit R9: a window is a non-negative token count no model comes near
+// exceeding; a negative, fractional or absurd one drops the object.
+func TestLLMWindow_ImplausibleTokenCountsYieldNothing_0074(t *testing.T) {
+	for _, in := range []string{
+		`{"resolved":-1,"effective":1}`,
+		`{"resolved":1,"effective":-32768}`,
+		`{"resolved":1e12,"effective":1}`,
+		`{"resolved":99999999999999999999,"effective":1}`,
+		`{"resolved":1.5,"effective":1}`,
+		`{"resolved":1,"effective":1,"model":["m"]}`,
+	} {
+		if got := rawLLMWindow(t, in); got != "" {
+			t.Errorf("llm_window %s passed as %s, want dropped", in, got)
+		}
+	}
+}

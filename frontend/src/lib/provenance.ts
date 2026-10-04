@@ -1,13 +1,15 @@
+import { trimGoSpace } from "@/lib/goSpace.ts";
 import type { Finding } from "@/lib/types.ts";
 
 // Feature 0074 — detection-tier families for the provenance filter.
 //
 // ONE family rule, shared with the backend (Go isLLMProvenance) and the agents
-// (Python _is_deterministic): a tier, trimmed and lower-cased, that starts with
-// "llm" is the LLM family; any other non-empty tier is the deterministic
-// family. Only a string is a tier. A GROUPING provenance (catalog_rollup)
-// names the rollup that grouped the leaves, not a tier that detected anything,
-// so as an origin it is neither family (C11: Go, MCP and this file agree).
+// (Python _is_deterministic): a tier, trimmed with Go's whitespace set
+// (goSpace.ts) and lower-cased, that starts with "llm" is the LLM family; any
+// other non-empty tier is the deterministic family. Only a string is a tier.
+// A GROUPING provenance (catalog_rollup) names the rollup that grouped the
+// leaves, not a tier that detected anything, so as an origin it is neither
+// family (C11: Go, MCP and this file agree).
 //
 // The filter VALUE is exact and case-sensitive: "llm_family" and "both" are the
 // two family values; every other value matches finding.provenance literally
@@ -22,7 +24,7 @@ const LLM = 2;
 const BOTH_FAMILIES = DETERMINISTIC | LLM;
 
 function normalizeTier(tier: unknown): string {
-  return typeof tier === "string" ? tier.trim().toLowerCase() : "";
+  return typeof tier === "string" ? trimGoSpace(tier).toLowerCase() : "";
 }
 
 const GROUPING_PROVENANCES: ReadonlySet<string> = new Set(["catalog_rollup"]);

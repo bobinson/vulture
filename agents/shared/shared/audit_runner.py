@@ -9,10 +9,10 @@ import re
 import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 from pydantic import BaseModel, create_model
 
@@ -23,10 +23,12 @@ from shared.cancellation import (
     set_audit_deadline,
 )
 from shared.env import env_flag, env_mode, env_truthy
+from shared.gospace import GO_SPACE, trim_go_space
 from shared.lineage_checks import verify_lineage_checks
 from shared.lineage_context import current_lineage_checks_requested
 from shared.lines import parse_line
 from shared.llm.errors import retry_skill
+from shared.llm.mode import llm_enabled
 
 # Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
 # empty-answer, plus the reasoning strip) now lives in ONE place, shared with the
@@ -225,7 +227,7 @@ def _model_visible_output(with_quote: bool) -> type[BaseModel]:
 
 SkillFn = Callable[[str], dict]
 
-USE_LLM = os.environ.get("VULTURE_USE_LLM", "false").lower() == "true"
+USE_LLM = llm_enabled()
 
 # Severity weights for score computation (shared across all agents).
 _SEVERITY_WEIGHTS = {"critical": 10.0, "high": 4.0, "medium": 1.5, "low": 0.5, "info": 0.0}
@@ -1774,21 +1776,141 @@ def _dedup_tier(row: dict) -> str:
     return str(row.get("provenance") or "llm")
 
 
-def _record_merged_llm(survivor: dict, dropped: dict) -> None:
+# Feature 0074 contract T3 (re-audit R10): the bounds Go applies to
+# validation.merged_descriptions (handler/dedup_record.go), applied where the
+# entries are made, so the raw ``result`` snapshot is bounded too.
+_MERGED_LLM_MAX_ENTRIES = 8
+_MERGED_LLM_MAX_BYTES = 2048
+_MERGED_LLM_MARKER = "…"
+
+
+def _record_merged_llm(survivor: dict, dropped: dict, ledger: "_MergedLedger") -> None:
     """Feature 0074 contract C3: a DETERMINISTIC survivor records the LLM-family
     row the agent dropped against it, as public ``merged_llm`` entries
-    ``{provenance, description}`` (distinct, omitted when empty). Go folds them
-    into ``validation.provenance_origins`` / ``merged_descriptions`` exactly as
-    if its own cross-agent merge had collapsed the pair, and never persists the
+    ``{provenance, description}``. Go folds them into
+    ``validation.provenance_origins`` / ``merged_descriptions`` exactly as if
+    its own cross-agent merge had collapsed the pair, and never persists the
     field itself. Without it a same-agent skill/LLM pair, the commonest one,
-    was invisible to ``provenance=both`` and lost the model's description."""
+    was invisible to ``provenance=both`` and lost the model's description.
+
+    Contract T3: the field rides the raw ``result`` snapshot to live SSE
+    clients before Go persists anything, so each description is redacted HERE
+    and the list is bounded, deduplicated as Go's ``descCollector`` is (see
+    ``_MergedLedger``)."""
     tier = _dedup_tier(dropped)
     if not _is_tier_merge(survivor, tier):
         return
-    entry = {"provenance": tier, "description": str(dropped.get("description") or "")}
-    merged = survivor.setdefault("merged_llm", [])
-    if entry not in merged:
-        merged.append(entry)
+    entry = ledger.admit_description(survivor, dropped, tier) or ledger.admit_tier(tier)
+    if entry is not None:
+        ledger.store(survivor, entry)
+
+
+@dataclass(slots=True)
+class _MergedLedger:
+    """What one survivor's ``merged_llm`` holds, with O(1) membership tests.
+
+    A description takes a slot only when it is new as Go's ``descCollector``
+    judges it: non-empty after trimming Go's whitespace set, not the
+    survivor's own, and not already stored, WHATEVER its tier (``"dup "`` and
+    ``"dup"``, or one text under ``llm`` and ``llm_l5_verified``, are one
+    entry). At most ``_MERGED_LLM_MAX_ENTRIES`` descriptions, each cut to
+    ``_MERGED_LLM_MAX_BYTES``; a distinct one refused at the cap is counted in
+    the survivor's ``merged_llm_dropped`` (Go adds it to
+    ``validation.merged_descriptions_dropped``) and costs no redaction.
+
+    A tier with no description stored yet still reaches Go's
+    ``provenance_origins`` as a description-less entry (``""``, which Go's
+    collector skips), at most one per tier and replaced in place by the
+    tier's first described entry, so it never takes a description slot.
+
+    Exact within one dedup pass. A later pass rebuilds the ledger from the
+    stored entries, so a description refused at the cap in an earlier pass and
+    met again would be counted again; the pipeline never absorbs one row twice."""
+
+    keys: set[tuple[str, str]]
+    described: int = 0
+    tier_only: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def of(cls, survivor: dict) -> "_MergedLedger":
+        own = trim_go_space(str(survivor.get("description") or ""))
+        ledger = cls({("desc", ""), ("desc", own)})
+        for i, entry in enumerate(survivor.get("merged_llm", ())):
+            ledger.note(entry, i)
+        return ledger
+
+    def note(self, entry: dict, index: int) -> None:
+        """Account for ``entry``, stored at ``index`` of the list."""
+        tier, text = entry["provenance"], trim_go_space(entry["description"])
+        self.keys.update({("tier", tier), ("desc", text)})
+        if text:
+            self.described += 1
+            self.tier_only.pop(tier, None)
+        else:
+            self.tier_only[tier] = index
+
+    def admit_description(self, survivor: dict, dropped: dict, tier: str) -> dict | None:
+        """The wire entry for ``dropped``'s description, or None when it is
+        empty, already stored, or refused at the cap (and counted)."""
+        raw = str(dropped.get("description") or "")
+        key = ("desc", trim_go_space(raw))
+        if key in self.keys:
+            return None
+        self.keys.add(key)
+        if self.described >= _MERGED_LLM_MAX_ENTRIES:
+            survivor["merged_llm_dropped"] = survivor.get("merged_llm_dropped", 0) + 1
+            return None
+        entry = _merged_llm_entry(tier, _redact_merged_description(
+            raw, _is_secret_bearing_pair(survivor, dropped)))
+        return self._unless_stored(entry, key)
+
+    def _unless_stored(self, entry: dict, raw_key: tuple[str, str]) -> dict | None:
+        """``entry``, unless its STORED form (redacted, cut) is already held."""
+        key = ("desc", trim_go_space(entry["description"]))
+        return entry if key == raw_key or key not in self.keys else None
+
+    def admit_tier(self, tier: str) -> dict | None:
+        """A description-less entry for a tier not yet held, within the cap."""
+        if ("tier", tier) in self.keys or len(self.tier_only) >= _MERGED_LLM_MAX_ENTRIES:
+            return None
+        return {"provenance": tier, "description": ""}
+
+    def store(self, survivor: dict, entry: dict) -> None:
+        """Append ``entry``, or put it in place of its tier's description-less
+        entry."""
+        rows = survivor.setdefault("merged_llm", [])
+        index = self.tier_only.get(entry["provenance"], len(rows)) if entry["description"] else len(rows)
+        rows[index:index + 1] = [entry]
+        self.note(entry, index)
+
+
+def _is_secret_bearing_pair(survivor: dict, dropped: dict) -> bool:
+    """Either row's category embeds a secret value (``_SECRET_BEARING_CWES``)."""
+    return _is_secret_bearing(survivor) or _is_secret_bearing(dropped)
+
+
+def _is_secret_bearing(finding: dict) -> bool:
+    return trim_go_space(str(finding.get("category", ""))).upper() in _SECRET_BEARING_CWES
+
+
+def _redact_merged_description(description: str, secret_bearing: bool) -> str:
+    """A secret-bearing pair gets Go's full ``RedactSecretText`` (code-line
+    rules plus prose); any other row the prose pass alone, which touches only
+    credential shapes, so ordinary reasoning text stays verbatim."""
+    if secret_bearing:
+        return _redact_secret_text(description)
+    return "\n".join(_redact_prose(line) for line in description.split("\n"))
+
+
+def _merged_llm_entry(tier: str, description: str) -> dict:
+    """One wire entry, cut on a character boundary and marked twice — a
+    trailing marker and ``truncated`` — exactly as Go's ``mergedDescEntry``."""
+    entry: dict = {"provenance": tier, "description": description}
+    if len(description.encode("utf-8")) > _MERGED_LLM_MAX_BYTES:
+        budget = _MERGED_LLM_MAX_BYTES - len(_MERGED_LLM_MARKER.encode("utf-8"))
+        entry["description"] = _truncate_utf8(description, budget) + _MERGED_LLM_MARKER
+        entry["truncated"] = True
+    return entry
 
 
 def _is_tier_merge(survivor: dict, dropped_tier: str) -> bool:
@@ -1796,18 +1918,23 @@ def _is_tier_merge(survivor: dict, dropped_tier: str) -> bool:
     return is_llm_provenance(dropped_tier) and not is_llm_provenance(_dedup_tier(survivor))
 
 
-class _Survivor(NamedTuple):
-    """The row holding a dedup key, and whether it came from ``base``."""
+@dataclass(slots=True)
+class _Survivor:
+    """The row holding a dedup key, whether it came from ``base``, and (built
+    on the first merge only) the ledger of its ``merged_llm`` entries."""
 
     row: dict
     from_base: bool
+    merged: _MergedLedger | None = None
 
     def absorb(self, dropped: dict) -> None:
         """Merge what a dropped duplicate carries that the survivor keeps."""
-        if self.from_base:
-            _record_merged_llm(self.row, dropped)
-        else:
+        if not self.from_base:
             _adopt_anchor(self.row, dropped)
+            return
+        if self.merged is None:
+            self.merged = _MergedLedger.of(self.row)
+        _record_merged_llm(self.row, dropped, self.merged)
 
 
 @dataclass
@@ -1964,13 +2091,40 @@ _REDACTION_PLACEHOLDER = "***REDACTED***"
 # masking the body. Handles both single- and double-quoted literals.
 _QUOTED_LITERAL_RE = re.compile(r"""(['"])(?:\\.|(?!\1)[^\\])*\1""")
 
+# Feature 0074 contract T3: the code-line patterns below are written with
+# ``\s`` / ``\S`` / ``\w`` for legibility and compiled with those spelled out,
+# because Python's are Unicode and Go's RE2 ones ASCII. Whitespace is exactly
+# Go's ``unicode.IsSpace`` set (``GO_SPACE``: U+001C-U+001F and U+FEFF are not
+# whitespace) and a word character is ``[A-Za-z0-9_]`` or any non-ASCII
+# character that is not whitespace — the classes Go's textutil compiles with,
+# so both runtimes mask the same bytes (the non-ASCII fixture rows pin it).
+_SPACE_ESCAPED = "".join(f"\\U{ord(c):08x}" for c in GO_SPACE)
+_SPACE_CLASS = f"[{_SPACE_ESCAPED}]"
+_NON_SPACE_CLASS = f"[^{_SPACE_ESCAPED}]"
+
+# The word class's members WITHOUT brackets (``\w`` only ever appears inside
+# a bracket expression): ASCII word characters and every non-ASCII code point
+# outside ``GO_SPACE``. Go's textutil.wordChars spells the same ranges; the
+# unit test pins both against the whitespace set code point by code point.
+_WORD_CHARS = (
+    "A-Za-z0-9_\x80-\x84\x86-\x9f\xa1-\u167f\u1681-\u1fff\u200b-\u2027"
+    "\u202a-\u202e\u2030-\u205e\u2060-\u2fff\u3001-\U0010ffff"
+)
+_SPELLED = {r"\s": _SPACE_CLASS, r"\S": _NON_SPACE_CLASS, r"\w": _WORD_CHARS}
+
+
+def _spelled(pattern: str) -> re.Pattern[str]:
+    r"""Compile a code-line pattern with ``\s`` / ``\S`` / ``\w`` spelled out."""
+    return re.compile(re.sub(r"\\[sSw]", lambda m: _SPELLED[m.group()], pattern))
+
+
 # An assignment / key-value right-hand side whose value is NOT a fully quoted
 # literal (e.g. ``token = abcd1234``, ``password: hunter2``, ``export KEY=v``,
 # or a truncated ``api_key = "AKIA`` whose closing quote was cut). Captures any
 # leading indentation plus the variable/key and operator so structure is
 # preserved; masks the value. ``^\s*`` lets the branch fire on INDENTED source
 # lines; an optional ``export``/``set`` shell prefix is tolerated.
-_ASSIGN_RHS_RE = re.compile(
+_ASSIGN_RHS_RE = _spelled(
     r"""^(?P<indent>\s*(?:export\s+|set\s+)?)"""
     r"""(?P<lhs>[A-Za-z_][\w.\[\]'"-]*\s*[:=]\s*)"""
     r"""(?P<val>\S.*?)(?P<tail>\s*(?:#.*)?)$"""
@@ -1978,7 +2132,7 @@ _ASSIGN_RHS_RE = re.compile(
 
 # A trailing comment body (``# ...`` / ``// ...``). For secret-bearing findings
 # a secret can hide in a comment; mask the comment body while keeping the marker.
-_COMMENT_BODY_RE = re.compile(r"""(?P<marker>#|//)(?P<body>\s*\S.*)$""")
+_COMMENT_BODY_RE = _spelled(r"""(?P<marker>#|//)(?P<body>\s*\S.*)$""")
 
 
 def _has_unterminated_quote(text: str) -> int:
@@ -2029,7 +2183,7 @@ def _redact_secret_line(line: str) -> str:
         def _mask(m: re.Match[str]) -> str:
             q = m.group(1)
             after = body[m.end():]
-            if after.lstrip().startswith(":"):
+            if after.lstrip(GO_SPACE).startswith(":"):
                 return m.group(0)  # dict key — preserve verbatim
             return f"{q}{_REDACTION_PLACEHOLDER}{q}"
 
@@ -2061,6 +2215,37 @@ def _redact_secret_line(line: str) -> str:
         prefix = body[: cm.start()]
         return f"{prefix}{cm.group('marker')} {_REDACTION_PLACEHOLDER}{trailing_nl}"
     return line
+
+
+# The prose pass (feature 0074 contract T3): Go textutil.RedactSecretText's
+# two patterns, restated so both runtimes mask the same bytes (pinned by the
+# `prose_cases` of backend/internal/textutil/testdata/secret_line_cases_0074.json).
+# Each opens with an explicit boundary group instead of ``\b`` and uses
+# ``[ \t]`` instead of ``\s``: Python's are Unicode-aware, Go's are ASCII.
+# A secret-named key followed by ':' or '=' anywhere in a sentence.
+_PROSE_NAMED_SECRET_RE = re.compile(
+    r"(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]*(?i:password|passwd|pwd|secret|token|api[_-]?key"
+    r"|access[_-]?key|private[_-]?key)[ \t]*[:=][ \t]*)([^ \t'\"]+)"
+)
+# A token whose shape alone marks it a credential.
+_PROSE_KEY_TOKEN_RE = re.compile(
+    r"(^|[^A-Za-z0-9_-])((?:sk|pk|rk)[-_](?:live|test|proj)[-_][A-Za-z0-9_-]{8,}"
+    r"|sk-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|xox[abpr]-[A-Za-z0-9-]{10,})"
+)
+
+
+def _redact_prose(line: str) -> str:
+    """Mask a named secret's value and any key-shaped token in one line."""
+    line = _PROSE_NAMED_SECRET_RE.sub(rf"\g<1>\g<2>{_REDACTION_PLACEHOLDER}", line)
+    return _PROSE_KEY_TOKEN_RE.sub(rf"\g<1>{_REDACTION_PLACEHOLDER}", line)
+
+
+def _redact_secret_text(text: str) -> str:
+    """Go's ``textutil.RedactSecretText``: each line through the code-line
+    redactor, then the prose pass, so a secret written in a sentence is masked
+    too. Byte-for-byte parity is pinned by the shared fixture."""
+    return "\n".join(_redact_prose(_redact_secret_line(line)) for line in text.split("\n"))
 
 
 def _redact_snippet(snippet: str) -> str:
@@ -2103,7 +2288,7 @@ def _redact_finding_inplace(finding: dict[str, Any]) -> None:
     findings without a snippet. Re-redacting an already-masked snippet is safe
     (the placeholder carries no secret).
     """
-    if str(finding.get("category", "")).strip().upper() not in _SECRET_BEARING_CWES:
+    if not _is_secret_bearing(finding):
         return
     existing = finding.get("code_snippet")
     if existing:

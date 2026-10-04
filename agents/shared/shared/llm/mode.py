@@ -20,12 +20,25 @@ from __future__ import annotations
 
 import os
 
+from shared.env import env_flag
+
+_USE_LLM = "VULTURE_USE_LLM"
+
+
+def llm_enabled() -> bool:
+    """``VULTURE_USE_LLM`` by the ONE token list the Go backend also reads
+    (``config.ParseFlag``; feature 0074 contract T2): ``true/1/yes/on`` is on;
+    ``false/0/no/off``, blank, unset and any unrecognised value is off (the
+    latter logged once). Every agent reader goes through here, so the audit's
+    recorded LLM and ``doctor`` cannot claim a run the agents did not make."""
+    return env_flag(_USE_LLM, False)
+
 
 def is_skills_only() -> bool:
     """True when the operator has opted out of LLM use.
 
-    Returns True for any value of ``VULTURE_USE_LLM`` other than
-    case-insensitive ``"true"`` — so unset, empty, ``"false"``, ``"0"``,
+    Returns True unless ``VULTURE_USE_LLM`` is an on-token (``llm_enabled``:
+    ``true/1/yes/on``, any case) — so unset, empty, ``"false"``, ``"0"``,
     or any garbage string all mean skills-only.
 
     Why this default direction: prior to 0043, agents were built with
@@ -34,7 +47,7 @@ def is_skills_only() -> bool:
     silent skills-only mode without having to set anything. Operators
     who need LLM set ``VULTURE_USE_LLM=true`` explicitly.
     """
-    return os.getenv("VULTURE_USE_LLM", "").lower() != "true"
+    return not llm_enabled()
 
 
 def is_llm_required() -> bool:

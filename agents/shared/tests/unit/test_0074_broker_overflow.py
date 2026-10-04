@@ -15,6 +15,9 @@ All fixtures are synthetic.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from shared.llm.errors import LLMErrorKind, classify_llm_error
@@ -27,9 +30,21 @@ from tests.unit.test_0070_p5_llm_transport import (  # noqa: F401 — autouse fi
     _SpyRunner,
 )
 
+# The broker's error table is the one source of its static messages.
+_BROKER_ERRORS = (Path(__file__).resolve().parents[4] / "backend" / "internal" / "broker"
+                  / "server" / "errors.go")
+
+
+def _broker_static_message(code: str) -> str:
+    """The static, secret-free message the broker answers ``code`` with."""
+    m = re.search(rf'code: "{re.escape(code)}", message: "([^"]+)"', _BROKER_ERRORS.read_text())
+    assert m, f"the broker declares no static message for {code}"
+    return m.group(1)
+
+
 _OVERFLOW_CODE = (
     "Error code: 413 - {'code': 'provider_context_overflow', "
-    "'message': 'upstream rejected the request as too large for the model context', "
+    f"'message': {_broker_static_message('provider_context_overflow')!r}, "
     "'type': 'provider_context_overflow', 'x_retriable': False}"
 )
 _TOO_LARGE_CODE = (
@@ -76,3 +91,8 @@ def test_broker_overflow_is_halved_once(message, monkeypatch, tmp_path) -> None:
     )
     assert (error, len(runner.calls)) == (None, 2)
     assert len(prompts[1]) < len(prompts[0])
+
+
+def test_overflow_rendering_carries_the_broker_static_message() -> None:
+    """Re-audit C5: the fixture is the broker's REAL answer, not a paraphrase."""
+    assert _broker_static_message("provider_context_overflow") in _OVERFLOW_CODE

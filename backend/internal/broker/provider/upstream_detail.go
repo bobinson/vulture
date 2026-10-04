@@ -283,15 +283,23 @@ func truncateRunes(s string, maxBytes int) string {
 	return textutil.CutAtRune(s, maxBytes) + "…(truncated)"
 }
 
-// contextOverflowBody matches a provider body that names the context or
-// payload size limit. The same vocabulary as the agent's _CTX_OVERFLOW_RE
-// (shared/llm/errors.py), so a raw provider error and a broker-mediated one
-// classify alike. The body is only MATCHED, never surfaced (N6).
-var contextOverflowBody = regexp.MustCompile(`(?i)(context.length|token.limit|maximum.context|n_keep.*n_ctx|` +
-	`max.tokens|context.window|context.size|prompt.{0,10}too.long|maximum.length|` +
-	`request\.payload\.size\.exceeds|payload.too.large|` +
+// contextOverflowBody matches a provider body that reports the context or
+// payload size being EXCEEDED (re-audit R6). Size/overflow phrasing only: a
+// body that merely names a size-related parameter (max_tokens, context_size,
+// a field's maximum length) is a different fault, and classifying it as an
+// overflow would cost a pointless halve-and-retry and a window re-probe.
+// Pinned by testdata/ctx_overflow_messages_0074.json, the message fixture the
+// agent's _CTX_OVERFLOW_RE (shared/llm/errors.py) is held to as well, so a
+// raw provider error and a broker-mediated one classify alike. The body is
+// only MATCHED, never surfaced (N6).
+var contextOverflowBody = regexp.MustCompile(`(?i)(context.length.exceeded|maximum.context.length|` +
+	`context.(?:window|limit|size|length).(?:exceeded|overflow)|` +
+	`exceeds?.(?:the.)?(?:available.|maximum.)?(?:context|token).(?:length|window|size|limit)|` +
+	`(?:greater|longer|larger).than.the.(?:maximum.)?context.(?:length|window|size)|` +
+	`token.limit.(?:exceeded|reached)|n_keep.*n_ctx|prompt.{0,10}too.long|too.large.for.model|` +
 	`input.token.count.*exceeds|exceeds.the.maximum.number.of.tokens|` +
-	`request_too_large|request.body.too.large)`)
+	`request.payload.size.exceeds|payload.too.large|` +
+	`request_too_large|request.body.too.large|provider_context_overflow)`)
 
 // isContextOverflow: a 413 is always the size class; any other 4xx is when
 // its body names the limit. 404/409 (routing) and 5xx never are.

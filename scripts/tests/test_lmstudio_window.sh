@@ -45,8 +45,9 @@ fi
 # substitution: the background server would hold its pipe open forever.
 start_stub() {
     name="$1"; listing="$2"; root="$TMP/$name"
-    mkdir -p "$root/scripts"
+    mkdir -p "$root/scripts/lib"
     cp "$START" "$root/scripts/start.sh"
+    cp "$SCRIPT_DIR/../lib/envflag.sh" "$root/scripts/lib/"
     printf '%s' "$listing" > "$root/listing.json"
     python3 - "$root/listing.json" "$root/port" >/dev/null 2>&1 <<'PY' &
 import http.server, sys

@@ -109,7 +109,7 @@ func TestMergedLLM_DecodesFromTheAgentWire_0074(t *testing.T) {
 }
 
 // #15: a secret-bearing finding's displaced description is redacted with the
-// agent's line redactor before it is persisted; non-secret CWEs are verbatim.
+// agent's line redactor before it is persisted.
 func TestMergedDescriptions_SecretBearingRedacted_0074(t *testing.T) {
 	const secret = "AKIA1234567890SECRET"
 	leak := `The key is hard-coded: api_key = "` + secret + `"`
@@ -135,4 +135,63 @@ func validationStrings(t *testing.T, v interface{}) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+// Re-audit #15: a secret is not confined to secret-bearing CWEs. Any
+// category's displaced description has its prose secrets (a named secret's
+// value, a key-shaped token) masked on persist, while ordinary prose —
+// quoted identifiers, apostrophes — is kept verbatim outside them.
+func TestMergedDescriptions_ProseSecretsRedactedInAnyCategory_0074(t *testing.T) {
+	const desc = "SQL built from 'uid'; it's reachable. Found password: hunter2 and key sk-live-ABCDEF0123456789"
+	const want = "SQL built from 'uid'; it's reachable. Found password: ***REDACTED*** and key ***REDACTED***"
+	row := withMergedLLM(deterministicRow("r3-skill", model.SeverityHigh),
+		model.MergedLLMRow{Provenance: "llm", Description: desc})
+	row.Category = "CWE-89"
+	ds := mergedDescriptionsOf(t, mergeOne(t, row))
+	if len(ds) != 1 || ds[0].text != want {
+		t.Fatalf("merged description = %v, want %q", ds, want)
+	}
+}
+
+// Contract T3: the agent caps merged_llm itself and sends the count of the
+// distinct descriptions it refused as merged_llm_dropped; Go adds it to
+// validation.merged_descriptions_dropped, so the count does not undercount
+// when the agent's cap fired, and never persists the wire field.
+func TestMergedLLM_AgentDropCountIsAdded_0074(t *testing.T) {
+	rows := []model.MergedLLMRow{
+		{Provenance: "llm", Description: "first"},
+		{Provenance: "llm_l5_verified", Description: ""},
+	}
+	skill := withMergedLLM(deterministicRow("m5-skill", model.SeverityHigh), rows...)
+	skill.MergedLLMDropped = 5
+	got := mergeOne(t, skill)
+	if n, _ := got.Validation["merged_descriptions_dropped"].(int); n != 5 {
+		t.Errorf("merged_descriptions_dropped = %v, want the agent's 5", got.Validation["merged_descriptions_dropped"])
+	}
+	if ds := mergedDescriptionsOf(t, got); len(ds) != 1 {
+		t.Errorf("a description-less entry must not become a merged description: %v", ds)
+	}
+	assertNamesBothTiers(t, got, "skill", "llm", "llm_l5_verified")
+	assertNoMergedLLM(t, got)
+}
+
+// A row whose agent refused every description at the cap still folds.
+func TestMergedLLM_DropCountAloneFolds_0074(t *testing.T) {
+	skill := deterministicRow("m6-skill", model.SeverityHigh)
+	skill.MergedLLMDropped = 2
+	got := mergeOne(t, skill)
+	if n, _ := got.Validation["merged_descriptions_dropped"].(int); n != 2 {
+		t.Errorf("merged_descriptions_dropped = %v, want 2", got.Validation["merged_descriptions_dropped"])
+	}
+	assertNoMergedLLM(t, got)
+}
+
+func TestMergedLLM_DropCountDecodesFromTheAgentWire_0074(t *testing.T) {
+	var f model.Finding
+	if err := json.Unmarshal([]byte(`{"title":"t","merged_llm_dropped":7}`), &f); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if f.MergedLLMDropped != 7 {
+		t.Fatalf("merged_llm_dropped did not decode: %d", f.MergedLLMDropped)
+	}
 }

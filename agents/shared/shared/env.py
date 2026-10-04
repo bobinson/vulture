@@ -12,12 +12,16 @@ import functools
 import logging
 import os
 
+from shared.gospace import trim_go_space
+
 __all__ = ["env_flag", "env_mode", "env_truthy"]
 
 logger = logging.getLogger(__name__)
 
-_TRUTHY = frozenset({"true", "1", "yes"})
-_FLAG_TRUE = _TRUTHY | {"on"}
+# ONE on-list for env_truthy and env_flag, equal to Go's config.ParseFlag
+# (feature 0074 contract T2): "on" enables everywhere.
+_TRUTHY = frozenset({"true", "1", "yes", "on"})
+_FLAG_TRUE = _TRUTHY
 _FALSEY = frozenset({"false", "0", "no", "off"})
 _MODE_OFF = "off"
 _SHOWN_CHARS = 40
@@ -32,8 +36,8 @@ def _warn_unrecognised(name: str, raw: str, using: str) -> None:
 
 
 def env_truthy(name: str) -> bool:
-    """True iff env var ``name`` is set to a truthy token (true / 1 / yes)."""
-    return os.environ.get(name, "").strip().lower() in _TRUTHY
+    """True iff env var ``name`` is set to a truthy token (true / 1 / yes / on)."""
+    return trim_go_space(os.environ.get(name, "")).lower() in _TRUTHY
 
 
 def env_flag(name: str, default: bool) -> bool:
@@ -51,7 +55,7 @@ def env_flag(name: str, default: bool) -> bool:
     silently flip a rollback switch — and an unrecognised NON-BLANK value is
     logged once (feature 0074 review item 16), so the typo is not silent either.
     """
-    raw = os.environ.get(name, "").strip().lower()
+    raw = trim_go_space(os.environ.get(name, "")).lower()
     if raw in _FLAG_TRUE:
         return True
     if raw in _FALSEY:
@@ -70,7 +74,7 @@ def env_mode(name: str, modes: frozenset[str], default: str) -> str:
     other non-blank value takes ``default`` and is logged once, naming the
     variable. Go's ``config`` reader applies the same rule to the same names.
     """
-    raw = os.environ.get(name, "").strip().lower()
+    raw = trim_go_space(os.environ.get(name, "")).lower()
     if not raw:
         return default
     if raw in _FALSEY:

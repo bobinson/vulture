@@ -246,14 +246,6 @@ func (b *Broker) Close() {
 	}
 }
 
-// onContextOverflow is the server's OnContextOverflow hook: the window the
-// run was sized for overflowed, so the probe re-measures it (0074 #12).
-func (b *Broker) onContextOverflow() {
-	if b != nil {
-		b.probe.onOverflow()
-	}
-}
-
 func (b *Broker) track(runID, jti string) {
 	b.mu.Lock()
 	b.runJTIs[runID] = append(b.runJTIs[runID], jti)

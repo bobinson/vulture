@@ -37,7 +37,8 @@ var secretBearingCWEs = map[string]bool{
 // (validation.merged_descriptions). Both are TOP-LEVEL keys, never checks[]
 // entries, so neither can reach the voter (O4). The rows the AGENT already
 // collapsed (merged_llm, contract C3) are folded in as if Go had merged them,
-// and merged_llm itself is cleared so it is never persisted. One pass over
+// and merged_llm (with its merged_llm_dropped count) is cleared so it is
+// never persisted. One pass over
 // the members; the blob is cloned so the input rows are never written
 // through a shared map.
 func recordMergedRows(f model.Finding, members []int, findings []model.Finding) model.Finding {
@@ -55,13 +56,14 @@ func recordMergedRows(f model.Finding, members []int, findings []model.Finding) 
 	descs.writeTo(v)
 	f.Validation = v
 	f.MergedLLM = nil
+	f.MergedLLMDropped = 0
 	return f
 }
 
 // hasAgentMerges reports whether any member carries rows its agent collapsed.
 func hasAgentMerges(members []int, findings []model.Finding) bool {
 	for _, m := range members {
-		if len(findings[m].MergedLLM) > 0 {
+		if len(findings[m].MergedLLM) > 0 || findings[m].MergedLLMDropped > 0 {
 			return true
 		}
 	}
@@ -102,8 +104,10 @@ func newDescCollector(survivor model.Finding) *descCollector {
 	return &descCollector{seen: map[string]bool{"": true, strings.TrimSpace(survivor.Description): true}}
 }
 
-// addRow adds a member's own description and those its agent collapsed.
+// addRow adds a member's own description and those its agent collapsed, and
+// counts the ones its agent refused at its own cap.
 func (c *descCollector) addRow(f model.Finding) {
+	c.dropped += max(f.MergedLLMDropped, 0)
 	c.add(f.AgentType, f.Category, f.Provenance, f.Description)
 	for _, r := range f.MergedLLM {
 		c.add(f.AgentType, f.Category, r.Provenance, r.Description)
@@ -132,11 +136,14 @@ func (c *descCollector) writeTo(v map[string]interface{}) {
 	}
 }
 
-// redactDescription masks secret values in a secret-bearing finding's
-// description with the agent's line redactor; other categories are verbatim.
+// redactDescription masks secret values in a displaced description before it
+// is persisted: a secret-bearing finding's with the full redactor (the agent's
+// line redactor plus the prose pass), any other category's with the prose
+// pass alone (re-audit #15), which masks only credential-shaped text and so
+// leaves ordinary prose verbatim.
 func redactDescription(category, desc string) string {
 	if !secretBearingCWEs[strings.ToUpper(strings.TrimSpace(category))] {
-		return desc
+		return textutil.RedactProseSecrets(desc)
 	}
 	return textutil.RedactSecretText(desc)
 }

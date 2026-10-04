@@ -279,7 +279,7 @@ To add a new audit type (e.g., GDPR):
 | POST | `/api/sources` | Submit local path or git URL |
 | POST | `/api/audits` | Start audit (source + types + config) |
 | GET | `/api/audits` | List audits |
-| GET | `/api/audits/:id` | Get audit status and results. Optional `?provenance=` selects rows by tier: an exact provenance value, `llm_family` (provenance trimmed and lower-cased starts with `llm`), or `both` (`validation.provenance_origins` names an LLM-family AND a deterministic origin; `catalog_rollup` counts as neither). The response carries `origins_recorded` (bool) so an empty `both` on a pre-0074 audit reads as "not recorded". An older backend ignores the parameter. |
+| GET | `/api/audits/:id` | Get audit status and results. Optional `?provenance=` selects rows by tier: an exact provenance value, `llm_family` (provenance trimmed and lower-cased starts with `llm`), or `both` (`validation.provenance_origins` names an LLM-family AND a deterministic origin; `catalog_rollup` counts as neither). The response carries `origins_recorded` (bool) so an empty `both` on a pre-0074 audit reads as "not recorded". An older backend ignores the parameter. Optional `?detail=full` also serves each finding's merge record (`validation.merged_descriptions`, `merged_descriptions_dropped`); the default response leaves those two keys out. |
 | GET | `/api/audits/:id/stream` | SSE stream (live or replay) |
 | GET | `/api/audits/cache` | Check for cached audit results |
 | GET | `/api/agents` | List available agent types |
@@ -453,7 +453,7 @@ Events emitted during an audit stream:
 
 | Event | Description |
 |-------|-------------|
-| `agent_start` | Audit begins (run_id). Optional `llm_window` `{resolved, effective, provenance, source, model}` on an LLM run (absent on a skills-only run or from an older agent); the only `agent_start` key Go forwards, as `llmWindow` on `StepStarted` |
+| `agent_start` | Audit begins (run_id). Optional `llm_window` `{resolved, effective, provenance, source, model}` on an LLM run (absent on a skills-only run or from an older agent); the only `agent_start` key Go forwards, as `llmWindow` on `StepStarted`. `source` with no broker label may arrive as `null`, absent or `""`: read all three as none |
 | `thinking` | Text messages (progress, context, status) |
 | `finding` | Individual finding (severity, title, file, etc.). Optional `merged_llm` `[{provenance, description}]` when the agent's own dedup dropped an LLM row against this deterministic row; Go folds it into `validation.provenance_origins` / `validation.merged_descriptions` and never persists it |
 | `progress` | Files analyzed / total / findings count |
@@ -462,4 +462,4 @@ Events emitted during an audit stream:
 | `result` | Final result (all findings, summary, score). Carries `llm_emitted` / `llm_collapsed_agent` (always sent by a current agent, `0` on a skills-only run; absent from an older agent, which Go logs as `unavailable`, never as `0`) |
 | `agent_end` | Audit completed |
 
-Feature 0074 wire fields are all optional and omitted when empty, so either side may be older (the full table, with version-skew semantics, is in `docs/architecture/agent_protocol.md`, "LLM-tier fields"). Go → agent `/run`: top-level `context_window_source` (`env`/`probe`/`table`/`family`/`default`), sent only beside a positive broker `context_window`; it labels `llm_window.source` and never changes sizing. A finding's `validation` blob may carry `provenance_origins` (distinct contributing provenances), `merged_descriptions` (at most 8 entries of at most 2048 bytes, `truncated` when cut) and `merged_descriptions_dropped`. These are top-level keys, never `checks[]`, so no tier field is ever a voter input.
+Feature 0074 wire fields are all optional and omitted when empty, so either side may be older (the full table, with version-skew semantics, is in `docs/architecture/agent_protocol.md`, "LLM-tier fields"). Go → agent `/run`: top-level `context_window_source` (`env`/`probe`/`table`/`family`/`default`), sent only beside a positive broker `context_window`; it labels `llm_window.source` and never changes sizing. A finding's `validation` blob may carry `provenance_origins` (distinct contributing provenances), `merged_descriptions` (at most 8 entries of at most 2048 bytes, `truncated` when cut) and `merged_descriptions_dropped`; the last two are stored but served by `GET /api/audits/{id}` only with `?detail=full`. These are top-level keys, never `checks[]`, so no tier field is ever a voter input.

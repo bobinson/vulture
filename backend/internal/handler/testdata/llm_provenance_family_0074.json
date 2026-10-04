@@ -9,5 +9,11 @@
   {"provenance": "", "is_llm": false},
   {"provenance": "skill_llm", "is_llm": false},
   {"provenance": "semgrep-llm", "is_llm": false},
-  {"provenance": "llmfoo", "is_llm": true}
+  {"provenance": "llmfoo", "is_llm": true},
+  {"provenance": "\u00a0llm\u00a0", "is_llm": true},
+  {"provenance": "\u0085llm", "is_llm": true},
+  {"provenance": "\ufeffllm", "is_llm": false},
+  {"provenance": "\u001cllm", "is_llm": false},
+  {"provenance": "\u001fllm", "is_llm": false},
+  {"provenance": "llm\u001f", "is_llm": true}
 ]

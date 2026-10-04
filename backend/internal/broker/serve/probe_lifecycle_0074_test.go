@@ -134,7 +134,7 @@ func TestProbe_OverflowReprobesAStaleWindow_0074(t *testing.T) {
 		t.Fatalf("a cached window was re-probed without cause: %d requests", n)
 	}
 	s.set(listingFor(capturedLoadedModel, 16_384))
-	b.onContextOverflow()
+	b.probe.onOverflow() // the hook Build wires as OnContextOverflow
 	w, src := pollWindow(t, b, 16_384)
 	assertWindow(t, w, src, 16_384, "probe")
 }
@@ -149,7 +149,7 @@ func TestProbe_OverflowWithNoValueDropsTheStaleWindow_0074(t *testing.T) {
 	pollWindow(t, b, 65_536)
 	s.set("")
 	time.Sleep(2 * probeCooldown)
-	b.onContextOverflow()
+	b.probe.onOverflow() // the hook Build wires as OnContextOverflow
 	w, src := pollWindow(t, b, 32_768)
 	assertWindow(t, w, src, 32_768, "family")
 }
@@ -166,7 +166,7 @@ func TestProbe_OverflowBurstIsSingleFlight_0074(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	b := probeBroker(t, "openai-compatible", srv.URL+"/v1", capturedLoadedModel, true)
 	for i := 0; i < 50; i++ {
-		b.onContextOverflow()
+		b.probe.onOverflow() // the hook Build wires as OnContextOverflow
 		windowOf(t, b)
 	}
 	time.Sleep(100 * time.Millisecond)

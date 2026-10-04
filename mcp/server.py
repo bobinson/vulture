@@ -348,7 +348,7 @@ def _active(*preds):
 # the UI take. An exact value matches `provenance` literally; "llm_family" and
 # "both" are the two family values. ONE family rule, the same as the backend's
 # isLLMProvenance and the agents' _is_deterministic: a tier is a string,
-# trimmed and lower-cased; a blank tier is no tier; a tier starting with "llm"
+# trimmed (Go's whitespace set, GO_SPACE) and lower-cased; a blank tier is no tier; a tier starting with "llm"
 # is the LLM family, any other tier the skill family. A GROUPING provenance
 # (catalog_rollup) names the rollup that grouped the leaves, not a tier that
 # detected anything, so as an origin it is neither family (C11).
@@ -356,9 +356,15 @@ _SKILL_FAMILY, _LLM_FAMILY = 1, 2
 _BOTH_FAMILIES = _SKILL_FAMILY | _LLM_FAMILY
 _GROUPING_PROVENANCES = frozenset({"catalog_rollup"})
 
+# T1: the ONE whitespace set every runtime trims a tier with, exactly Go's
+# unicode.IsSpace (what strings.TrimSpace strips). Bare str.strip() also strips
+# U+001C-U+001F, which Go keeps; U+FEFF is whitespace nowhere.
+GO_SPACE = ("\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
+            "\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000")
+
 
 def _tier(value) -> str:
-    return value.strip().lower() if isinstance(value, str) else ""
+    return value.strip(GO_SPACE).lower() if isinstance(value, str) else ""
 
 
 def _is_llm_tier(tier: str) -> bool:

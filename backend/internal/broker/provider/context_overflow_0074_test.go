@@ -6,7 +6,9 @@ package provider
 // the agent can halve and retry instead of giving up on a "bad request".
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 )
 
@@ -39,4 +41,34 @@ func TestContextOverflowIsItsOwnPermanentClass_0074(t *testing.T) {
 			t.Errorf("%s: an overflow stays a permanent, breaker-neutral bad request: %v", c.name, err)
 		}
 	}
+}
+
+// Re-audit R6: the overflow vocabulary is size/overflow phrasing only, pinned
+// by the message fixture the agent's _CTX_OVERFLOW_RE also reads.
+func TestContextOverflowBodyMatchesTheSharedMessages_0074(t *testing.T) {
+	for _, m := range overflowMessages(t) {
+		if got := contextOverflowBody.MatchString(m.Text); got != m.Overflow {
+			t.Errorf("contextOverflowBody.Match(%q) = %v, want %v", m.Text, got, m.Overflow)
+		}
+	}
+}
+
+type overflowMessage struct {
+	Text     string `json:"text"`
+	Overflow bool   `json:"overflow"`
+}
+
+func overflowMessages(t *testing.T) []overflowMessage {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/ctx_overflow_messages_0074.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var doc struct {
+		Messages []overflowMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || len(doc.Messages) == 0 {
+		t.Fatalf("decode fixture: %v (%d messages)", err, len(doc.Messages))
+	}
+	return doc.Messages
 }

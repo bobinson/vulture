@@ -26,10 +26,14 @@ import (
 // smaller lowers it with a log line). It never blocks dispatch and never fails
 // a run: any error leaves the registry value in place.
 //
-// Lifecycle (review #12): the first probe starts at Build. While nothing is
-// cached a read re-probes lazily, at most once per probeCooldown; after an
-// upstream context overflow the cached window is suspect (a model reloaded at
-// a smaller context) and is re-measured, or dropped if no value comes back.
+// Lifecycle (review #12, re-audit R3/R5/R8): the first probe starts at Build.
+// While nothing is cached a read re-probes lazily, at most once per
+// probeCooldown — never "once per lifetime". After an upstream context
+// overflow the cached window is suspect (a model reloaded at a smaller
+// context) and is re-measured; if no value comes back, min(guess, stale)
+// answers: a stale window that had lowered the guess is kept, one above it is
+// dropped. A permanent verdict (the target is not local, or the egress
+// validator refused an address it resolved) stops re-probing for good.
 // Probes are single-flight, and Broker.Close cancels one in flight.
 
 // probeTimeout bounds the whole probe call, DNS included. A code constant, not
@@ -52,8 +56,9 @@ const lmStudioListingPath = "/api/v0/models"
 // window is 0 until (and unless) a loaded window was measured. A nil probe is
 // valid and measures nothing.
 type windowProbe struct {
-	window atomic.Int64
-	stale  atomic.Bool // an overflow said the cached window may be wrong
+	window    atomic.Int64
+	stale     atomic.Bool // an overflow said the cached window may be wrong
+	permanent atomic.Bool // a verdict no re-probe can change (R5)
 
 	target probeTarget
 	ctx    context.Context
@@ -131,8 +136,12 @@ func (p *windowProbe) trigger() {
 }
 
 func (p *windowProbe) due() bool {
-	idle := !p.inFlight && p.ctx.Err() == nil
-	return idle && (p.last.IsZero() || time.Since(p.last) >= probeCooldown)
+	return p.idle() && (p.last.IsZero() || time.Since(p.last) >= probeCooldown)
+}
+
+// idle: no probe in flight, not closed, and no permanent verdict (R5).
+func (p *windowProbe) idle() bool {
+	return !p.inFlight && p.ctx.Err() == nil && !p.permanent.Load()
 }
 
 // run performs one probe and records its result.
@@ -151,20 +160,35 @@ func (p *windowProbe) finish() {
 	p.mu.Unlock()
 }
 
-// record stores a measured window, logging once. A failure keeps a sound
-// cached value, but a suspect one (after an overflow) is dropped so the
-// registry answers instead of a window known to have overflowed.
+// record stores a measured window, logging once, or records a failure.
 func (p *windowProbe) record(loaded int, err error) {
 	if err != nil {
-		log.Printf("broker: llm_window_probe_no_value model=%s reason=%v", p.target.model, err)
-		if p.stale.Swap(false) {
-			p.window.Store(0)
-		}
+		p.recordFailure(err)
 		return
 	}
 	logProbeEffect(modelmeta.ContextWindow(p.target.model), loaded)
 	p.window.Store(int64(loaded))
 	p.stale.Store(false)
+}
+
+// recordFailure keeps a sound cached value. A suspect one (after an overflow)
+// yields min(guess, stale) (R3): kept when it had lowered the guess, dropped
+// so the guess answers otherwise. A permanent verdict ends probing (R5).
+func (p *windowProbe) recordFailure(err error) {
+	log.Printf("broker: llm_window_probe_no_value model=%s reason=%v", p.target.model, err)
+	if isPermanentProbeError(err) {
+		p.permanent.Store(true)
+		log.Printf("broker: llm_window_probe_disabled model=%s", p.target.model)
+	}
+	if p.stale.Swap(false) && p.window.Load() >= int64(modelmeta.ContextWindow(p.target.model)) {
+		p.window.Store(0)
+	}
+}
+
+// isPermanentProbeError reports a verdict no re-probe can change: the target
+// is not local, or the egress validator refused it without a DNS failure.
+func isPermanentProbeError(err error) bool {
+	return errors.Is(err, errProbeNotLocal) || errors.Is(err, errProbeRefused)
 }
 
 // logProbeEffect makes the one lowering exception never silent (§5.1(f)).
@@ -198,18 +222,37 @@ func fetchLoadedWindow(parent context.Context, t probeTarget) (int, error) {
 // never sent the provider key on a speculative listing request.
 var errProbeNotLocal = errors.New("target is not a local (loopback/private) address")
 
+// errProbeRefused: the egress validator refused the target for a reason a
+// retry cannot change (scheme, provider, or a forbidden address it resolved),
+// as opposed to a DNS failure, which is transient (R5).
+var errProbeRefused = errors.New("egress refused the target")
+
 // validate resolves and pins the server root under ctx, then requires a
 // local address.
 func (t probeTarget) validate(ctx context.Context) (*egress.PinnedTarget, error) {
-	v := t.newSSRF(func(host string) ([]net.IP, error) { return t.resolve(ctx, host) })
+	var dnsFailed bool
+	v := t.newSSRF(func(host string) ([]net.IP, error) {
+		ips, err := t.resolve(ctx, host)
+		dnsFailed = err != nil || len(ips) == 0
+		return ips, err
+	})
 	target, err := v.Validate(t.provider, serverRoot(t.baseURL))
 	if err != nil {
-		return nil, fmt.Errorf("egress: %w", err)
+		return nil, egressFailure(err, dnsFailed)
 	}
 	if !isLocalTarget(target.IP) {
 		return nil, errProbeNotLocal
 	}
 	return target, nil
+}
+
+// egressFailure wraps a validator error, marking it permanent unless the
+// resolver itself failed.
+func egressFailure(err error, dnsFailed bool) error {
+	if dnsFailed {
+		return fmt.Errorf("egress: %w", err)
+	}
+	return fmt.Errorf("%w: %w", errProbeRefused, err)
 }
 
 // resolve is the injected lookup, or the system resolver, bound to ctx.

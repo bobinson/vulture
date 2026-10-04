@@ -77,6 +77,12 @@ type Finding struct {
 	// merge folds it into validation.provenance_origins and
 	// validation.merged_descriptions and clears it, so it is never persisted.
 	MergedLLM []MergedLLMRow `json:"merged_llm,omitempty"`
+
+	// MergedLLMDropped (contract T3) counts the distinct descriptions the
+	// agent refused at its own merged_llm cap. Inbound wire field only, like
+	// MergedLLM: the merge adds it to validation.merged_descriptions_dropped
+	// and clears it.
+	MergedLLMDropped int `json:"merged_llm_dropped,omitempty"`
 }
 
 // MergedLLMRow is one LLM-family row an agent collapsed into a surviving row.

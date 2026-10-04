@@ -5,6 +5,7 @@ import contextvars
 import inspect
 import logging
 import os
+import sys
 from collections.abc import AsyncGenerator, Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -27,6 +28,52 @@ RunHandler = Callable[[str, str, dict, list[dict[str, Any]]], Generator[str, Non
 _AGENT_TOKEN = os.environ.get("VULTURE_AGENT_TOKEN", "")
 
 logger = logging.getLogger(__name__)
+
+# Marks the one handler ``configure_agent_logging`` attaches, so building the
+# app again (tests, reload) never stacks a second copy of every line.
+_AGENT_LOG_MARK = "_vulture_agent_log"
+
+
+class _StderrHandler(logging.StreamHandler):
+    """Writes to whatever ``sys.stderr`` is at emit time (as ``lastResort``
+    does), so a swapped or closed stream is never pinned at attach time."""
+
+    @property
+    def stream(self) -> Any:  # type: ignore[override]
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value: object) -> None:
+        return None
+
+
+def configure_agent_logging(*names: str) -> None:
+    """Route INFO+ from the named package loggers to stderr (feature 0074 AC7).
+
+    uvicorn's log config gives handlers to its own loggers only, so a
+    ``shared.*`` record found none and fell to ``logging.lastResort``, which is
+    WARNING-level: once-per-run INFO lines (``llm_window``, ``audit_start``)
+    never reached the agent log while the warnings did. The bare
+    ``%(message)s`` format keeps those visible lines byte-identical.
+    """
+    for name in dict.fromkeys(n for n in names if n):
+        _attach_agent_handler(logging.getLogger(name))
+
+
+def _attach_agent_handler(pkg_logger: logging.Logger) -> None:
+    if any(getattr(h, _AGENT_LOG_MARK, False) for h in pkg_logger.handlers):
+        return
+    handler = _StderrHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    setattr(handler, _AGENT_LOG_MARK, True)
+    pkg_logger.addHandler(handler)
+    if pkg_logger.level == logging.NOTSET:
+        pkg_logger.setLevel(logging.INFO)
+
+
+def _agent_package(run_handler: RunHandler) -> str:
+    """Top-level package of the agent's run handler (``cwe_agent``...)."""
+    return (getattr(run_handler, "__module__", None) or "").split(".")[0]
 
 
 def _int_env(name: str, default: int) -> int:
@@ -176,6 +223,7 @@ def create_sse_app(
     Returns:
         Configured FastAPI application.
     """
+    configure_agent_logging("shared", _agent_package(run_handler))
     app = FastAPI(title=f"Vulture {agent_name} Agent")
 
     @app.get("/health")

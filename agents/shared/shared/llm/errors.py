@@ -54,16 +54,28 @@ _AUTH_RE = re.compile(
     r"authentication.failed|access.denied|no.credentials)",
     re.IGNORECASE,
 )
+# Size/overflow PHRASING only (feature 0074 re-audit R6), the broker's
+# contextOverflowBody (backend/internal/broker/provider/upstream_detail.go)
+# restated; both are pinned by ONE message fixture,
+# backend/internal/broker/provider/testdata/ctx_overflow_messages_0074.json, so
+# a raw provider error and a broker-mediated one classify alike. A message that
+# merely names a size-related parameter (`max_tokens`, `context_size`, a
+# field's maximum length) is a different fault: calling it an overflow cost a
+# pointless halve-and-retry. `request_too_large` is the provider's error CODE;
+# LiteLLM surfaces the human MESSAGE instead — "OpenAIException - request body
+# too large" — so both forms are listed (`.` spans the separator).
+# Two phrasings beyond the broker's, both still size/overflow wording, pinned
+# by the pre-existing classifier tests: "maximum context window is N" and
+# "max tokens / maximum length exceeded".
 _CTX_OVERFLOW_RE = re.compile(
-    r"(context.length|token.limit|maximum.context|n_keep.*n_ctx|"
-    r"max.tokens|context.window|prompt.{0,10}too.long|maximum.length|"
-    r"request\.payload\.size\.exceeds|payload\.too\.large|"
+    r"(context.length.exceeded|maximum.context.(?:length|window)|"
+    r"max(?:imum)?.(?:tokens|length).exceeded|"
+    r"context.(?:window|limit|size|length).(?:exceeded|overflow)|"
+    r"exceeds?.(?:the.)?(?:available.|maximum.)?(?:context|token).(?:length|window|size|limit)|"
+    r"(?:greater|longer|larger).than.the.(?:maximum.)?context.(?:length|window|size)|"
+    r"token.limit.(?:exceeded|reached)|n_keep.*n_ctx|prompt.{0,10}too.long|too.large.for.model|"
     r"input.token.count.*exceeds|exceeds.the.maximum.number.of.tokens|"
-    # `request_too_large` is the provider's error CODE. LiteLLM surfaces the
-    # human MESSAGE instead — "OpenAIException - request body too large" — which
-    # the code form does not match, so a real 413 classified as `unknown` and the
-    # size-aware retry (P5 A.2) never fired. Measured end-to-end against a 413
-    # gateway. `.` spans the separator so both spellings hit.
+    r"request.payload.size.exceeds|payload.too.large|"
     r"request_too_large|request.body.too.large|provider_context_overflow)",
     re.IGNORECASE,
 )

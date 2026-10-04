@@ -86,7 +86,7 @@ def run_prove(
         if is_llm_required():
             yield emitter.text_message(
                 "ERROR: VULTURE_REQUIRE_LLM=true but VULTURE_USE_LLM is "
-                "not set to 'true'. Configuration conflict — set "
+                "not on (true, 1, yes or on). Configuration conflict — set "
                 "VULTURE_USE_LLM=true (and provide an LLM API key) "
                 "to satisfy VULTURE_REQUIRE_LLM, or unset "
                 "VULTURE_REQUIRE_LLM to allow skills-only operation."
@@ -95,7 +95,7 @@ def run_prove(
             return
         yield emitter.text_message(
             "Prove agent skipped: skills-only mode "
-            "(VULTURE_USE_LLM != true). Prove requires LLM for "
+            "(VULTURE_USE_LLM is not true, 1, yes or on). Prove requires LLM for "
             "verification logic. To enable, set VULTURE_USE_LLM=true "
             "and provide an LLM API key (OPENAI_API_KEY, "
             "ANTHROPIC_API_KEY, GEMINI_API_KEY, or run Ollama). "

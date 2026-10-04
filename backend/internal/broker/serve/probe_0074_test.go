@@ -123,13 +123,16 @@ func TestProbe_LoadedWindowBelowGuessLowersAndLogs(t *testing.T) {
 	}
 }
 
-// AC35 / R8: dispatch calls ContextWindow once per agent per audit, so the
-// probe must run at most once per (upstream, model) for the broker's lifetime
-// and every later read — sequential or concurrent — comes from the cache.
-func TestProbe_RunsAtMostOncePerUpstreamAndModel(t *testing.T) {
+// AC35 / R8: dispatch calls ContextWindow once per agent per audit. Probing
+// is lazy: once a window is measured every later read — sequential or
+// concurrent — comes from the cache, and nothing re-probes it (only an
+// upstream overflow marks it stale), however long the cooldown has run.
+func TestProbe_CachedWindowIsNotReprobed(t *testing.T) {
+	shortCooldown(t)
 	u := newUpstream(t, lmStudioRoutes("lmstudio_api_v0_models.json"))
 	b := lmStudioBroker(t, u, capturedLoadedModel)
 	eventuallySource(t, b, "probe")
+	time.Sleep(3 * probeCooldown)
 	hammerContextWindow(t, b, 50)
 	if n := u.count(lmStudioModelsPath); n != 1 {
 		t.Errorf("probe requests after many dispatches = %d, want exactly 1", n)
@@ -150,16 +153,18 @@ func hammerContextWindow(t *testing.T, b *Broker, n int) {
 	wg.Wait()
 }
 
-// AC5 + AC35: a failing upstream (HTTP 500) yields the registry value, never
-// raises, and the failure is cached too — it is not retried on every dispatch.
-func TestProbe_UpstreamErrorYieldsRegistryAndIsNotRetried(t *testing.T) {
+// AC5 + AC35: a failing upstream (HTTP 500) yields the registry value and
+// never raises. A failure is retried lazily while nothing is cached, but at
+// most once per probeCooldown (10 s), never on every dispatch: a burst of
+// reads inside one cooldown sends no second request.
+func TestProbe_UpstreamErrorYieldsRegistryAndIsNotRetriedWithinTheCooldown(t *testing.T) {
 	u := newUpstream(t, lmStudioRoutes("")) // "" → 500
 	b := lmStudioBroker(t, u, capturedLoadedModel)
 	w, src := afterRequests(t, b, u, 1)
 	assertWindow(t, w, src, 32_768, "family")
 	hammerContextWindow(t, b, 20)
 	if n := u.count(lmStudioModelsPath); n > 1 {
-		t.Errorf("failed probe retried: %d requests, want at most 1", n)
+		t.Errorf("failed probe retried within the cooldown: %d requests, want at most 1", n)
 	}
 }
 

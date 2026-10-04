@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/lib/envflag.sh
+. "$SCRIPT_DIR/lib/envflag.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 CLI_DIR="$PROJECT_ROOT/cli"
@@ -460,7 +462,7 @@ esac
 # via native adapters. It is on by default whenever LLM is on; --no-broker opts
 # out. It runs on whichever store the backend uses (SQLite default, or Postgres
 # when VULTURE_DB_DSN is set — §29). skills = no LLM = no broker.
-if [[ "$NO_BROKER" == "1" || "${VULTURE_USE_LLM:-false}" != "true" ]]; then
+if [[ "$NO_BROKER" == "1" ]] || ! env_flag_on "${VULTURE_USE_LLM:-}"; then
     USE_BROKER=0
 else
     USE_BROKER=1
@@ -570,7 +572,7 @@ if [[ -n "${VULTURE_VALIDATE_LLM_MODEL:-}" \
       && "$VULTURE_VALIDATE_LLM_MODEL" != "${VULTURE_LLM_MODEL:-$MODEL}" ]]; then
     echo "  Validate:  $VULTURE_VALIDATE_LLM_MODEL"
 fi
-echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+echo "  LLM:       $(env_flag_word "${VULTURE_USE_LLM:-}")"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
     echo "  Broker:    on"
     echo "  Broker provider:     ${VULTURE_LLM_BROKER_PROVIDER}"

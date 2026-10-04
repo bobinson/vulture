@@ -19,41 +19,51 @@ All fixtures are synthetic.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import pytest
 
 from shared import audit_runner
+from shared import env as shared_env
 from shared.env import env_flag
 
 _VERIFY = "VULTURE_LLM_QUOTE_VERIFY"
 _REANCHOR = "VULTURE_LLM_QUOTE_REANCHOR"
 
-
-@pytest.mark.parametrize(("raw", "mode"), [
-    ("", "enforce"), ("   ", "enforce"),
-    ("enforce", "enforce"), ("ENFORCE", "enforce"), (" Observe ", "observe"),
-    ("off", "off"), ("OFF", "off"), ("false", "off"), ("0", "off"), ("no", "off"),
-    ("enforced", "enforce"), ("true", "enforce"), ("verify", "enforce"),
-])
-def test_quote_mode_is_normalised(raw, mode, monkeypatch) -> None:
-    monkeypatch.setenv(_VERIFY, raw)
-    assert audit_runner._quote_mode() == mode
+# The matrix Go's config.QuoteVerifyMode / QuoteReanchorEnabled read too
+# (re-audit #2): ONE list, so the two runtimes cannot drift on a spelling.
+_MATRIX = (Path(__file__).resolve().parents[4] / "backend" / "internal" / "config"
+           / "testdata" / "quote_switch_matrix_0074.json")
+_CASES = json.loads(_MATRIX.read_text())["cases"]
 
 
-def test_unset_quote_mode_is_the_default(monkeypatch) -> None:
-    monkeypatch.delenv(_VERIFY, raising=False)
-    assert audit_runner._quote_mode() == "enforce"
+def _set_or_unset(monkeypatch, name: str, value: str | None) -> None:
+    if value is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, value)
 
 
-@pytest.mark.parametrize(("raw", "armed"), [
-    ("", True), ("enforce", True), ("observe", False), ("false", False), ("enforced", True),
-])
-def test_reanchor_gate_is_mode_and_switch(raw, armed, monkeypatch) -> None:
-    """C16: the gate is (normalised mode == enforce) AND the REANCHOR flag."""
-    monkeypatch.setenv(_VERIFY, raw)
-    monkeypatch.delenv(_REANCHOR, raising=False)
-    assert audit_runner._reanchor_enabled() is armed
+@pytest.mark.parametrize("case", _CASES, ids=lambda c: f"{c['verify']!r}/{c['reanchor']!r}")
+def test_quote_switch_matrix_matches_go(case, monkeypatch, caplog) -> None:
+    """C16: the normalised mode, the re-anchor gate ((mode == enforce) AND the
+    REANCHOR flag) and the one-time warning on an unrecognised VERIFY value."""
+    _set_or_unset(monkeypatch, _VERIFY, case["verify"])
+    _set_or_unset(monkeypatch, _REANCHOR, case["reanchor"])
+    shared_env._warn_unrecognised.cache_clear()
+    with caplog.at_level(logging.WARNING):
+        got = (audit_runner._quote_mode(), audit_runner._reanchor_enabled())
+    assert got == (case["mode"], case["reanchor_enabled"])
+    assert (_warnings_naming(caplog, _VERIFY) == 1) is case["warns"]
+
+
+@pytest.mark.parametrize("case", [c for c in _CASES if c["reanchor_enabled"]],
+                         ids=lambda c: repr(c["verify"]))
+def test_reanchor_off_disarms_every_armed_row(case, monkeypatch) -> None:
+    """The REANCHOR runtime rollback wins over every mode that arms it."""
+    _set_or_unset(monkeypatch, _VERIFY, case["verify"])
     monkeypatch.setenv(_REANCHOR, "off")
     assert audit_runner._reanchor_enabled() is False
 

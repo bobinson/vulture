@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/lib/envflag.sh
+. "$SCRIPT_DIR/lib/envflag.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
 
@@ -307,7 +309,7 @@ esac
 # default whenever LLM is on; --no-broker opts out. It listens inside the
 # backend container (0.0.0.0:8090, NOT host-published); agents reach it at
 # http://backend:8090/v1. skills = no LLM = no broker.
-if [[ "$NO_BROKER" == "1" || "${VULTURE_USE_LLM:-false}" != "true" ]]; then
+if [[ "$NO_BROKER" == "1" ]] || ! env_flag_on "${VULTURE_USE_LLM:-}"; then
     USE_BROKER=0
 else
     USE_BROKER=1
@@ -371,7 +373,7 @@ fi
 
 echo "  Provider:  $PROVIDER"
 echo "  Model:     ${VULTURE_LLM_MODEL:-$MODEL}"
-echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+echo "  LLM:       $(env_flag_word "${VULTURE_USE_LLM:-}")"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
     echo "  Broker:    on (key isolation — agents receive NO provider key)"
     echo "  Broker provider:     ${VULTURE_LLM_BROKER_PROVIDER}"
@@ -400,7 +402,7 @@ echo "  Generating .env..."
 {
     echo ""
     echo "# LLM provider (set by prod_start.sh)"
-    echo "VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}"
+    echo "VULTURE_USE_LLM=$(env_flag_word "${VULTURE_USE_LLM:-}")"
     [[ -n "${VULTURE_LLM_MODEL:-}" ]] && echo "VULTURE_LLM_MODEL=$VULTURE_LLM_MODEL"
     [[ -n "${OPENAI_API_KEY:-}" ]] && echo "OPENAI_API_KEY=$OPENAI_API_KEY"
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
