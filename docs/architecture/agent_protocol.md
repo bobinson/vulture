@@ -83,10 +83,13 @@ be older than the other (version skew) without anything breaking.
 | `llm_window` | agent → Go, on `agent_start`; Go passes it through as `llmWindow` on `StepStarted` | object `{resolved, effective, provenance, source, model}`: the window the agent resolved, the one it actually budgets with (`effective <= resolved`), where `resolved` came from (`env`, `broker`, `table`, `family`, `default`), the broker's `context_window_source` (`null` when none), and the model key | The run has no LLM phase, or the agent is older. This is the only `agent_start` key Go forwards. A non-object value is dropped and the step itself is kept. Go re-marshals the object through its five documented fields (unknown keys dropped, strings capped), so `source` with no broker label can reach a client as `null`, as an absent key, or, from an earlier 0074 backend that re-marshalled it as a plain string, as `""`. A reader treats all three alike as "no broker label" and never as a vocabulary word; it likewise treats a missing, zero or negative `resolved`/`effective` as "not known", never as a real window. |
 | `llm_emitted`, `llm_collapsed_agent` | agent → Go, top level of the `result` snapshot | ints: the LLM-family rows the agent's LLM tier produced, and how many of those the agent's own dedup dropped before sending | An older agent. Go then logs that agent's `dedup_buckets` line as `emitted=unavailable … lost=unavailable` rather than deriving a number. A current agent always sends both, `0` on a skills-only run. Go keeps them as pointers so an explicit `0` stays distinct from absent. |
 | `merged_llm` | agent → Go, on a finding (`finding` event and `result` findings) | list of `{provenance, description}` | No LLM row collapsed into this one. The agent writes it when its own skill/LLM dedup drops an LLM-family row against a deterministic row, and omits it when the list is empty. Go folds every entry into the two `validation` keys below and never persists `merged_llm` itself. An older Go ignores the field, so the record is simply missing. The agent redacts each description and deduplicates as Go's merge does: a description is recorded only when it is non-empty after trimming, is not the survivor's own and is not already recorded under any tier. At most 8 descriptions of at most 2048 bytes each are recorded (a cut is marked as in `merged_descriptions`). A tier with no recorded description is sent once with `description: ""`, which counts toward `provenance_origins` only. |
-| `merged_llm_dropped` | agent → Go, beside `merged_llm` | int: the distinct descriptions the agent refused at its cap of 8 | The agent's cap never fired. Go adds it to `validation.merged_descriptions_dropped` and never persists the field itself. |
+| `merged_llm_dropped` | agent → Go, beside `merged_llm` | int: the distinct descriptions the agent refused at its cap of 8 | The agent's cap never fired: the agent writes it only when it is positive, and Go reads it as `omitempty`. Go adds it to `validation.merged_descriptions_dropped` and never persists the field itself. An older Go ignores it, so the overflow count is simply missing from the blob. |
 | `validation.provenance_origins` | Go → storage / API, inside a finding's `validation` blob | list of distinct provenance strings, the survivor's own included | The row was never merged, or the audit predates 0074. Written by the cross-agent merge and by folding `merged_llm`. A top-level key, never a `checks[]` entry, so it can never reach the voter. |
 | `validation.merged_descriptions`, `validation.merged_descriptions_dropped` | same blob | list of `{agent_type, provenance, description, truncated?}`, at most 8 entries of at most 2048 bytes each (a cut is marked by `truncated: true` plus a trailing `…`); int count of the distinct descriptions beyond the cap | Nothing was displaced. Both are omitted when empty or zero. The survivor's own description is never repeated. Stored on every merged row, but `GET /api/audits/{id}` serves them **only with `?detail=full`**: a default response leaves both keys out of every finding's `validation` blob (a debugging record no client renders, large on merge-heavy audits). So on that endpoint "absent" also means "not asked for". |
 | `origins_recorded` | Go → client, top level of `GET /api/audits/{id}` | bool: whether this audit's findings record `provenance_origins` at all | An older backend. Clients fall back to "some row carries a `provenance_origins` list". This lets an empty `provenance=both` result read as "not recorded" on a pre-0074 audit rather than "never corroborated". |
+| `claimed_line_range` | agent → storage / API, in the `extras` of a finding's `anchor` check (`validation.checks[]`, id `anchor`), beside `claimed_line` and the quote verdict | one of `in_file` (the model's claimed `line_start` lies inside the cited file), `past_eof` (beyond its last line), `no_line` (no usable line: missing, zero, negative or non-numeric) | The finding has no `anchor` check (skill rows, `VULTURE_LLM_QUOTE_VERIFY=off`), the claim had a line but the cited file was unreadable ("past end of file" is a fact about a file that was read, so no value is invented), or the agent predates it. It describes the CLAIM, computed before the line actuator runs, so a re-anchored row still records where the model pointed. A label beside the verdict, never a verdict: the `anchor` check's `result` keeps the unchanged nine-status 0076 vocabulary and its weight; this key carries weight 0 and no voter reads it. An older reader ignores an unknown extras key. |
+| anchor reason `beyond_max_delta` | agent → storage / API, inside the `anchor` check's `reason` (`evidence quote: ambiguous (beyond_max_delta)`) | reason token | The status is unchanged (`ambiguous`); only the reason is new. It marks a LONE exact candidate that `VULTURE_LLM_QUOTE_MAX_DELTA` refused to move to: the line is not moved and `delta` is not recorded. Two or more candidates refused by the radius / tie-break keep the reason `not_unique`, which an older agent also wrote for the lone-candidate case. A reader keys on the status, never on the reason text. |
+| `citation_class_claimed` | agent → storage / API, in the `extras` of the L5 `llm_judge` check, beside `citation_class` | same vocabulary as `citation_class` (`missing`, `other_file`, `self_line`, `other_line`), recomputed by the same rule against the model's `claimed_line` (read from the `anchor` check's extras) instead of the current `line_start` | No `anchor` check recorded a claimed line (skill rows, quote verification off, a verdict cached before 0074), or the agent is older. Keeps 0072's `citation_class` series comparable once re-anchoring moves `line_start`: `citation_class` stays on the current line. Observation-only, weight 0, like `citation_class`. |
 
 **Merge detail (`?detail=full`).** `GET /api/audits/{id}?detail=full` adds
 `validation.merged_descriptions` and `validation.merged_descriptions_dropped`
@@ -116,6 +119,37 @@ field, and no tier field is a validation input (see
 `agents/shared/shared/validate/SKILLS.md`). An older backend ignores the query
 parameter and returns every row, so the MCP tool and the UI also apply the same
 predicate on the client side.
+
+**Broker error code `provider_context_overflow`.** When the upstream provider
+rejects a request for size (any HTTP 413, or a 4xx whose body names a
+context / token / payload overflow), the broker answers HTTP 413 with the
+usual error envelope `{"error": {"message", "type", "code", "x_retriable"}}`,
+`code: "provider_context_overflow"`, a static message (never the provider
+body) and `x_retriable: false`: an identical retry would fail identically. The
+agent's error classifier checks the size codes before the broker-permanent
+pattern, so it classifies this code as context overflow and the generate path
+halves the batch and retries, the same as a raw provider overflow. Version
+skew: an older broker reports the same fault as `provider_bad_request` (502,
+permanent), and an older agent reads `x_retriable: false` as permanent and
+does not retry; neither side misreads the other.
+
+**Once-per-run agent log lines.** Beside the existing `llm_window …` INFO line,
+feature 0074 adds two agent log lines, each written once per run. They are logs, not wire fields: Go never
+parses them, no event or finding carries them, and an older agent simply does
+not write them.
+
+```
+llm_sweep run_id=… batches=… files_sent=… source_budget_chars=… max_batch_chars=… body_truncations=… effective_window=…
+l5_cache run_id=… hits=… misses=… stores=…
+```
+
+`llm_sweep` summarises the LLM generate sweep: the batches sent, the files
+sent in them, the inlined-source character budget (before the body-byte clamp),
+the largest batch actually sent (a single file larger than the budget goes out
+alone, so it can exceed the budget), the request bodies cut to fit
+`VULTURE_LLM_MAX_BODY_BYTES`, and the window the run budgeted with (the
+`effective` value of `llm_window`). `l5_cache` counts the L5 judge's verdict
+cache for the run: hits, misses and stores.
 
 ### Lineage evidence checks (feature 0091, versioned)
 

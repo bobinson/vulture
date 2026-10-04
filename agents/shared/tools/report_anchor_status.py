@@ -69,7 +69,12 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 # E402 is deliberate: the import must follow the sys.path insert above, because this
 # script is runnable straight from a checkout with no editable install.
-from shared.anchor import STATUSES, anchor_weight, verify_anchor  # noqa: E402
+from shared.anchor import (  # noqa: E402
+    STATUSES,
+    anchor_weight,
+    claimed_line_range,
+    verify_anchor,
+)
 
 # All three are module globals and are read at CALL time so the tests can redirect the
 # golden into a tmp dir without ever risking the committed one.
@@ -212,14 +217,16 @@ def _relative(path_str: str | None) -> str:
 
 def observe(entry: dict) -> dict:
     """Verify one claim at the pinned default posture and flatten it into a row."""
+    finding, path = _finding(entry), _resolved(entry)
     with _pinned():
-        result = verify_anchor(
-            _finding(entry), _resolved(entry), mode="observe", batch_paths=_batch(entry)
-        )
+        result = verify_anchor(finding, path, mode="observe", batch_paths=_batch(entry))
     return {
         "id": entry["id"],
         "file": _cited(entry),
         "line": int(entry["line"]),
+        # 0074 O3 = C: the CLAIM's range, from the same function the anchor stamp
+        # calls; "-" when the file was not read (a range is a fact about a read file).
+        "claimed_range": claimed_line_range(finding, path) or "-",
         "expect": entry["expect"],
         "observed": result.status,
         "agrees": result.status == entry["expect"],
@@ -325,7 +332,8 @@ def _header(counts: dict[str, int], fragment_names: list[str]) -> list[str]:
 
 def _outcome_row(row: dict) -> str:
     return (
-        f"| `{row['id']}` | `{row['file']}` | {row['line']} | {row['quote_chars']} | "
+        f"| `{row['id']}` | `{row['file']}` | {row['line']} | {row['claimed_range']} | "
+        f"{row['quote_chars']} | "
         f"{row['quote_tokens']} | {row['expect']} | **{row['observed']}** | "
         f"{_yn(row['agrees'])} | `{row['reason'] or '-'}` | {_num(row['new_line'])} | "
         f"{_num(row['delta'])} | {row['candidates']} | `{row['other']}` |"
@@ -351,12 +359,20 @@ def _outcome_table(rows: list[dict]) -> list[str]:
         "move to under `VULTURE_LLM_QUOTE_VERIFY=enforce` and "
         "`VULTURE_LLM_QUOTE_REANCHOR=true`; at the shipped default it is "
         f"{_reanchor_at_default()}. `found in` is `found_elsewhere`'s candidate — "
-        "recorded in `other_path`, never written back to `file_path` (AC31).",
+        "recorded in `other_path`, never written back to `file_path` (AC31). "
+        "`claimed range` is the claimed line's `claimed_line_range` (0074 O3): "
+        "`in_file`, `past_eof` or `no_line`, `-` when the file was not read; it sits "
+        "beside the verdict and never changes it. `reason` refines a status — an "
+        "`ambiguous` claim is `not_unique` (several candidates, none decisively "
+        "nearest) or `beyond_max_delta` (one candidate, farther than "
+        "`VULTURE_LLM_QUOTE_MAX_DELTA` from the claim; the line stays put).",
         "",
-        "| claim | cited path | line | quote chars | quote tokens | expected | "
-        "observed | agrees | reason | re-anchor | delta | candidates | found in |",
-        "| ----- | ---------- | ---: | ----------: | -----------: | -------- | "
-        "-------- | ------ | ------ | --------: | ----: | ---------: | -------- |",
+        "| claim | cited path | line | claimed range | quote chars | quote tokens | "
+        "expected | observed | agrees | reason | re-anchor | delta | candidates | "
+        "found in |",
+        "| ----- | ---------- | ---: | ------------- | ----------: | -----------: | "
+        "-------- | -------- | ------ | ------ | --------: | ----: | ---------: | "
+        "-------- |",
         *[_outcome_row(row) for row in rows],
         "",
     ]

@@ -344,10 +344,51 @@ def _keeps_carried_window(finding: dict[str, Any], params: tuple[int, int | None
     return params[1] is not None and bool(finding.get("code_snippet"))
 
 
+def _carried_start(finding: dict[str, Any], lines: Sequence[str] | None) -> int:
+    """The carried window's first FILE line, or 0 when it has no coordinate.
+
+    The recorded 0089 stamp wins; otherwise the window's own ``"NN: "``
+    numbering, accepted only when the file confirms it (``confirmed_window_start``
+    — a window that merely LOOKS numbered carries no coordinate).
+    """
+    stamped = int_field(finding, CODE_SNIPPET_START)
+    if stamped >= 1:
+        return stamped
+    return confirmed_window_start(str(finding.get("code_snippet")), lines or ())
+
+
+def _carried_window_stands(finding: dict[str, Any], lines: Sequence[str] | None,
+                           line_start: int) -> bool:
+    """Feature 0074 AC38: may the carried window stand for the FINAL line?
+
+    Never for a re-anchored row (``_claimed_line`` differs from the final line):
+    its window was produced for the claim, not for the verified line. Otherwise
+    a window with coordinates must contain ``line_start``; one without any
+    keeps the additive pre-0074 rule (nothing demonstrates that it misses).
+    """
+    claimed = int_field(finding, "_claimed_line")
+    if claimed >= 1 and claimed != line_start:
+        return False
+    start = _carried_start(finding, lines)
+    rows = len(str(finding.get("code_snippet")).splitlines())
+    return start < 1 or start <= line_start < start + rows
+
+
+def _discard_stale_window(finding: dict[str, Any], lines: Sequence[str] | None,
+                          line_start: int) -> None:
+    """Drop a carried window (and its coordinate) that cannot stand for the
+    row's final line, so the row is re-windowed there — or, when the file
+    cannot be read, left windowless rather than recorded ``present``."""
+    if finding.get("code_snippet") and not _carried_window_stands(finding, lines, line_start):
+        finding.pop("code_snippet", None)
+        finding.pop(CODE_SNIPPET_START, None)
+
+
 def _windowed_reason(finding: dict[str, Any], lines: Sequence[str] | None,
                      line_start: int, deps: _Deps) -> str:
     """Window an in-range (or unreadable) cited row; return its reason."""
     params = deps.snippet_params(finding.get("category", "") or "")
+    _discard_stale_window(finding, lines, line_start)
     if not _keeps_carried_window(finding, params):
         _attach_window(finding, lines, line_start, *params)
     return WINDOW_PRESENT if finding.get("code_snippet") else WINDOW_UNREADABLE
@@ -393,7 +434,9 @@ def ensure_code_window(
     Mutates in place. Additive: a finding that already carries a non-empty
     ``code_snippet`` keeps it, except for wide-scope classes, which are
     re-windowed to the line budget because 200 characters cannot contain a
-    mitigation that lives lines away.
+    mitigation that lives lines away — and except a carried window that cannot
+    stand for the row's FINAL line (a re-anchored row, or recorded coordinates
+    that exclude the line; 0074 AC38), which is re-windowed at that line.
 
     A finding whose path will not resolve, whose line is missing or zero, or
     whose line is past the end of the file is left with an empty window — the

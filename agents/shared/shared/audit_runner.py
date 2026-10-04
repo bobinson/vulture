@@ -651,6 +651,50 @@ def _split_source_blocks(text: str) -> list[str]:
     return blocks
 
 
+def _over_body_cap(text: str, max_bytes: int) -> bool:
+    """Would ``_enforce_body_byte_cap`` truncate ``text`` at ``max_bytes``?
+
+    The one definition of "over the encoded-body ceiling", shared by the cap
+    itself and the sweep's ``body_truncations`` count so the two cannot drift.
+    A non-positive cap disables the ceiling.
+    """
+    return max_bytes > 0 and len(text.encode("utf-8")) > max_bytes
+
+
+@dataclass(slots=True)
+class _SweepStats:
+    """Feature 0074 T1.9: one run's LLM-sweep sizing facts, logged once.
+
+    Built per call of ``_collect_llm_findings_batched_async`` — never shared
+    between runs — and fed one ``record`` per batch actually sent (O(1) each).
+    """
+
+    source_budget: int
+    body_cap: int
+    batches: int = 0
+    files: int = 0
+    max_batch: int = 0
+    truncations: int = 0
+
+    def record(self, text: str, paths: list) -> None:
+        """Account for one batch handed to the model."""
+        self.batches += 1
+        self.files += len(paths)
+        self.max_batch = max(self.max_batch, len(text))
+        self.truncations += _over_body_cap(text, self.body_cap)
+
+    def log(self, run_id: str, model: str | None) -> None:
+        """The single ``llm_sweep`` INFO line for this run."""
+        from shared.llm.provider import effective_context_window
+
+        logger.info(
+            "llm_sweep run_id=%s batches=%d files_sent=%d source_budget_chars=%d "
+            "max_batch_chars=%d body_truncations=%d effective_window=%d",
+            run_id, self.batches, self.files, self.source_budget, self.max_batch,
+            self.truncations, effective_context_window(model).effective,
+        )
+
+
 def _enforce_body_byte_cap(
     text: str, max_bytes: int = 0, label: str = "source_context",
 ) -> str:
@@ -663,11 +707,9 @@ def _enforce_body_byte_cap(
         return text
     if max_bytes <= 0:
         max_bytes = _get_max_body_bytes()
-    if max_bytes <= 0:
+    if not _over_body_cap(text, max_bytes):
         return text
     total = len(text.encode("utf-8"))
-    if total <= max_bytes:
-        return text
 
     budget = max(0, max_bytes - _BODY_TRUNCATION_NOTICE_BYTES)
     blocks = _split_source_blocks(text)
@@ -3333,13 +3375,14 @@ async def _collect_llm_findings_batched_async(
     )
     tier3_skipped = (len(scanned) - len(ordered)) if not include_tier3 else 0
     max_chars = _get_max_source_chars(model)
+    _body_cap = _get_max_body_bytes()
+    stats = _SweepStats(source_budget=max_chars, body_cap=_body_cap)
     # Feature 0070 P5 (A.1): keep each batch inside the encoded-body ceiling by
     # BATCHING SMALLER, not by dropping a batch's tail. A char is >= 1 byte, so a
     # char budget below the byte cap keeps the batch under it; files that no
     # longer fit roll into the NEXT batch instead of going unanalyzed, so the
     # ceiling costs latency, never coverage. Multibyte content that still
     # overshoots is caught by the hard backstop in _collect_llm_findings_async.
-    _body_cap = _get_max_body_bytes()
     if _body_cap > 0:
         max_chars = min(max_chars, _body_cap)
     # Budget-aware batching: with a USD budget configured the sweep batches
@@ -3395,6 +3438,7 @@ async def _collect_llm_findings_batched_async(
             logger.warning("audit_deadline run_id=%s batches=%d/%d",
                            run_id, batch_idx, len(batches))
             break
+        stats.record(batch_text, batch_paths)
         try:
             findings, error, in_tok, out_tok = await asyncio.wait_for(
                 _collect_llm_findings_async(
@@ -3465,6 +3509,7 @@ async def _collect_llm_findings_batched_async(
             logger.warning("llm_file_cap run_id=%s %s", run_id, notice)
             break
 
+    stats.log(run_id, model)
     # Surface a per-call error only when the sweep produced nothing useful.
     err = first_error if (first_error and not acc) else None
     # Feature 0059: never silently reduce scope — report the skipped Tier-3 tail.

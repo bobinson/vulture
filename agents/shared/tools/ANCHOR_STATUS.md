@@ -8,27 +8,27 @@ Every figure above and below is COMPUTED from `manifest.d/` and the fixture tree
 
 ## Outcomes
 
-One row per hand-authored claim. `re-anchor` is the line the verifier would move to under `VULTURE_LLM_QUOTE_VERIFY=enforce` and `VULTURE_LLM_QUOTE_REANCHOR=true`; at the shipped default it is applied. `found in` is `found_elsewhere`'s candidate — recorded in `other_path`, never written back to `file_path` (AC31).
+One row per hand-authored claim. `re-anchor` is the line the verifier would move to under `VULTURE_LLM_QUOTE_VERIFY=enforce` and `VULTURE_LLM_QUOTE_REANCHOR=true`; at the shipped default it is applied. `found in` is `found_elsewhere`'s candidate — recorded in `other_path`, never written back to `file_path` (AC31). `claimed range` is the claimed line's `claimed_line_range` (0074 O3): `in_file`, `past_eof` or `no_line`, `-` when the file was not read; it sits beside the verdict and never changes it. `reason` refines a status — an `ambiguous` claim is `not_unique` (several candidates, none decisively nearest) or `beyond_max_delta` (one candidate, farther than `VULTURE_LLM_QUOTE_MAX_DELTA` from the claim; the line stays put).
 
-| claim | cited path | line | quote chars | quote tokens | expected | observed | agrees | reason | re-anchor | delta | candidates | found in |
-| ----- | ---------- | ---: | ----------: | -----------: | -------- | -------- | ------ | ------ | --------: | ----: | ---------: | -------- |
-| `exact_copy` | `exact.ts` | 3 | 39 | 5 | exact | **exact** | yes | `-` | 3 | 0 | 1 | `-` |
-| `exact_echoed_listing` | `elided.ts` | 6 | 77 | 11 | exact | **exact** | yes | `-` | 6 | 0 | 1 | `-` |
-| `reanchored_signature` | `signature.ts` | 54 | 114 | 17 | reanchored | **reanchored** | yes | `-` | 55 | 1 | 1 | `-` |
-| `reanchored_nearest_wins` | `near.ts` | 22 | 81 | 14 | reanchored | **reanchored** | yes | `-` | 20 | -2 | 2 | `-` |
-| `reanchored_dupe_first` | `dupe3.ts` | 18 | 55 | 7 | reanchored | **reanchored** | yes | `-` | 15 | -3 | 1 | `-` |
-| `reanchored_dupe_second` | `dupe3.ts` | 18 | 55 | 7 | reanchored | **reanchored** | yes | `-` | 15 | -3 | 1 | `-` |
-| `exact_dupe_third` | `dupe3.ts` | 15 | 55 | 7 | exact | **exact** | yes | `-` | 15 | 0 | 1 | `-` |
-| `ambiguous_tie` | `ambig.ts` | 70 | 78 | 12 | ambiguous | **ambiguous** | yes | `not_unique` | - | - | 2 | `-` |
-| `near_miss_retyped` | `nearmiss.ts` | 7 | 26 | 4 | near_miss | **near_miss** | yes | `similar` | - | - | 0 | `-` |
-| `found_elsewhere_sibling` | `elsewhere/cited.ts` | 5 | 57 | 9 | found_elsewhere | **found_elsewhere** | yes | `cross_file` | - | - | 0 | `elsewhere/sibling.ts` |
-| `absent_invented` | `fabricated.ts` | 5 | 51 | 4 | absent | **absent** | yes | `not_found` | - | - | 0 | `-` |
-| `unquoted_missing` | `exact.ts` | 3 | 0 | 0 | unquoted | **unquoted** | yes | `missing` | - | - | 0 | `-` |
-| `unquoted_paraphrase` | `paraphrase.ts` | 5 | 20 | 2 | unquoted | **unquoted** | yes | `below_floor` | - | - | 0 | `-` |
-| `unquoted_below_floor` | `floor.ts` | 6 | 3 | 0 | unquoted | **unquoted** | yes | `below_floor` | - | - | 0 | `-` |
-| `unquoted_line_too_long` | `longline.ts` | 4 | 900 | 182 | unquoted | **unquoted** | yes | `line_too_long` | - | - | 0 | `-` |
-| `unreadable_unresolved` | `../../../etc/passwd` | 12 | 45 | 7 | unreadable | **unreadable** | yes | `no_path` | - | - | 0 | `-` |
-| `oversize_four_lines` | `exact.ts` | 2 | 108 | 14 | oversize | **oversize** | yes | `truncated:exact` | 2 | 0 | 1 | `-` |
+| claim | cited path | line | claimed range | quote chars | quote tokens | expected | observed | agrees | reason | re-anchor | delta | candidates | found in |
+| ----- | ---------- | ---: | ------------- | ----------: | -----------: | -------- | -------- | ------ | ------ | --------: | ----: | ---------: | -------- |
+| `exact_copy` | `exact.ts` | 3 | in_file | 39 | 5 | exact | **exact** | yes | `-` | 3 | 0 | 1 | `-` |
+| `exact_echoed_listing` | `elided.ts` | 6 | in_file | 77 | 11 | exact | **exact** | yes | `-` | 6 | 0 | 1 | `-` |
+| `reanchored_signature` | `signature.ts` | 54 | in_file | 114 | 17 | reanchored | **reanchored** | yes | `-` | 55 | 1 | 1 | `-` |
+| `reanchored_nearest_wins` | `near.ts` | 22 | in_file | 81 | 14 | reanchored | **reanchored** | yes | `-` | 20 | -2 | 2 | `-` |
+| `reanchored_dupe_first` | `dupe3.ts` | 18 | in_file | 55 | 7 | reanchored | **reanchored** | yes | `-` | 15 | -3 | 1 | `-` |
+| `reanchored_dupe_second` | `dupe3.ts` | 18 | in_file | 55 | 7 | reanchored | **reanchored** | yes | `-` | 15 | -3 | 1 | `-` |
+| `exact_dupe_third` | `dupe3.ts` | 15 | in_file | 55 | 7 | exact | **exact** | yes | `-` | 15 | 0 | 1 | `-` |
+| `ambiguous_tie` | `ambig.ts` | 70 | in_file | 78 | 12 | ambiguous | **ambiguous** | yes | `not_unique` | - | - | 2 | `-` |
+| `near_miss_retyped` | `nearmiss.ts` | 7 | in_file | 26 | 4 | near_miss | **near_miss** | yes | `similar` | - | - | 0 | `-` |
+| `found_elsewhere_sibling` | `elsewhere/cited.ts` | 5 | in_file | 57 | 9 | found_elsewhere | **found_elsewhere** | yes | `cross_file` | - | - | 0 | `elsewhere/sibling.ts` |
+| `absent_invented` | `fabricated.ts` | 5 | in_file | 51 | 4 | absent | **absent** | yes | `not_found` | - | - | 0 | `-` |
+| `unquoted_missing` | `exact.ts` | 3 | in_file | 0 | 0 | unquoted | **unquoted** | yes | `missing` | - | - | 0 | `-` |
+| `unquoted_paraphrase` | `paraphrase.ts` | 5 | in_file | 20 | 2 | unquoted | **unquoted** | yes | `below_floor` | - | - | 0 | `-` |
+| `unquoted_below_floor` | `floor.ts` | 6 | in_file | 3 | 0 | unquoted | **unquoted** | yes | `below_floor` | - | - | 0 | `-` |
+| `unquoted_line_too_long` | `longline.ts` | 4 | in_file | 900 | 182 | unquoted | **unquoted** | yes | `line_too_long` | - | - | 0 | `-` |
+| `unreadable_unresolved` | `../../../etc/passwd` | 12 | - | 45 | 7 | unreadable | **unreadable** | yes | `no_path` | - | - | 0 | `-` |
+| `oversize_four_lines` | `exact.ts` | 2 | in_file | 108 | 14 | oversize | **oversize** | yes | `truncated:exact` | 2 | 0 | 1 | `-` |
 
 ## Status histogram
 

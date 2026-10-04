@@ -356,7 +356,7 @@ VULTURE_STRICT_LLM_ENDPOINT=false  # Hard-fail backend startup on an insecure LL
 OPENAI_API_KEY=sk-...  # LLM API key
 OPENAI_BASE_URL=  # Custom OpenAI-compatible endpoint (LM Studio, vLLM)
 VULTURE_LLM_MODEL=gpt-4o  # Model: gpt-4o, claude-sonnet, gemini-pro, qwen3:1.7b, etc.
-VULTURE_USE_LLM=false  # Enable LLM phase for ALL agents (true = skills + LLM, false = skills only). Default skills-only; opt-in via VULTURE_USE_LLM=true.
+VULTURE_USE_LLM=false  # Enable LLM phase for ALL agents (true = skills + LLM, false = skills only). Default skills-only; opt-in via VULTURE_USE_LLM=true. On-tokens: true, 1, yes, on (case-insensitive); anything else (false/0/no/off, blank, unset, unrecognised — the last logged once) disables. Backend `config.ParseFlag` and the agents' shared `env_flag` read the same token list
 VULTURE_CWE_DISABLE_LLM=false  # CWE agent only: escape hatch to force CWE skills-only even when VULTURE_USE_LLM=true
 VULTURE_CWE_DISABLE_DANGEROUS_FN=false  # CWE agent only: kill switch for the language-aware dangerous_function skill (CWE-676/242); one-release rollback safety
 VULTURE_LLM_CTX_SIZE=  # Override context window (tokens); auto-detected from model if unset
