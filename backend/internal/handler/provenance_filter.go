@@ -59,11 +59,42 @@ func provenanceFilterSelects(f model.Finding, value string) bool {
 // skill-family and one LLM-family tier. Any malformed shape (absent, null, a
 // string, an object, non-string entries) contributes no tier, never an error.
 func originsSpanBothTiers(origins interface{}) bool {
-	seen := make(map[string]bool, 2)
-	for _, o := range originStrings(origins) {
-		seen[originTier(o)] = true
+	var span tierSpan
+	switch o := origins.(type) {
+	case []string: // as written in memory by dedup
+		span.addAll(o)
+	case []interface{}: // as decoded from storage
+		span.addEntries(o)
 	}
-	return seen[model.TierLLM] && seen[model.TierDeterministic]
+	return span.llm && span.deterministic
+}
+
+// tierSpan records which tier families a set of origins names.
+type tierSpan struct{ llm, deterministic bool }
+
+func (t *tierSpan) add(origin string) {
+	switch originTier(origin) {
+	case model.TierLLM:
+		t.llm = true
+	case model.TierDeterministic:
+		t.deterministic = true
+	}
+}
+
+func (t *tierSpan) addAll(origins []string) {
+	for _, o := range origins {
+		t.add(o)
+	}
+}
+
+// addEntries adds the string entries of a decoded JSON array; any other
+// entry contributes no tier.
+func (t *tierSpan) addEntries(entries []interface{}) {
+	for _, e := range entries {
+		if s, ok := e.(string); ok {
+			t.add(s)
+		}
+	}
 }
 
 // originTier is an origin's family by model.TierOf; a blank origin is no tier.
@@ -72,27 +103,4 @@ func originTier(origin string) string {
 		return ""
 	}
 	return model.TierOf(origin)
-}
-
-// originStrings accepts origins as written in memory by dedup ([]string) or
-// as decoded from storage ([]interface{}); any other shape yields nothing.
-func originStrings(origins interface{}) []string {
-	switch o := origins.(type) {
-	case []string:
-		return o
-	case []interface{}:
-		return stringEntries(o)
-	}
-	return nil
-}
-
-// stringEntries keeps the string entries of a decoded JSON array.
-func stringEntries(entries []interface{}) []string {
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if s, ok := e.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
 }

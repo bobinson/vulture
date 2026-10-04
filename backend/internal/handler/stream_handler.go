@@ -883,7 +883,8 @@ type dedupOutcome struct {
 // how the replay path keeps byte-identical behaviour.
 func dedupCrossAgentDetailed(findings []model.Finding, sourceRoot string) dedupOutcome {
 	if len(findings) <= 1 {
-		return dedupOutcome{kept: findings, llm: tallyLLMRows(findings, allIndices(len(findings)))}
+		// Nothing to merge: the one row there may be (index 0) is kept.
+		return dedupOutcome{kept: findings, llm: tallyLLMRows(findings, map[int]bool{0: true})}
 	}
 	idx := buildDedupIndex(findings, sourceRoot)
 	kept := idx.keptIndices()
@@ -950,14 +951,6 @@ func (x dedupIndex) keptIndices() map[int]bool {
 		kept[e.index] = true
 	}
 	return kept
-}
-
-func allIndices(n int) map[int]bool {
-	out := make(map[int]bool, n)
-	for i := 0; i < n; i++ {
-		out[i] = true
-	}
-	return out
 }
 
 // rollupShadowed is the rollup half of the eviction record (S21): a finding

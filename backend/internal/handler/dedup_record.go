@@ -6,9 +6,9 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/textutil"
 )
 
 // Feature 0074 P4: what the cross-agent merge records beside the verdict. The
@@ -40,9 +40,9 @@ func newValidationSeed(f model.Finding) map[string]interface{} {
 // entries, so neither can reach the voter (O4). The blob is cloned so the
 // input rows are never written through a shared map.
 func recordMergedRows(f model.Finding, members []int, findings []model.Finding) model.Finding {
-	v := newValidationSeed(f)
-	if f.Validation != nil {
-		v = maps.Clone(f.Validation)
+	v := maps.Clone(f.Validation)
+	if v == nil {
+		v = newValidationSeed(f)
 	}
 	v["provenance_origins"] = provenanceOrigins(members, findings)
 	descs := newDescCollector(f)
@@ -109,19 +109,10 @@ func (c *descCollector) writeTo(v map[string]interface{}) {
 func mergedDescEntry(f model.Finding) map[string]interface{} {
 	e := map[string]interface{}{"agent_type": f.AgentType, "provenance": f.Provenance, "description": f.Description}
 	if len(f.Description) > mergedDescMaxBytes {
-		e["description"] = cutAtRune(f.Description, mergedDescMaxBytes-len(mergedDescMarker)) + mergedDescMarker
+		e["description"] = textutil.CutAtRune(f.Description, mergedDescMaxBytes-len(mergedDescMarker)) + mergedDescMarker
 		e["truncated"] = true
 	}
 	return e
-}
-
-// cutAtRune returns the longest prefix of s of at most n bytes that ends on
-// a rune boundary.
-func cutAtRune(s string, n int) string {
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n]
 }
 
 // llmTally is what the Go merge did with one agent's LLM-tier rows: kept as

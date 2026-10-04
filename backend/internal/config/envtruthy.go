@@ -13,12 +13,7 @@ import (
 // This is the single source of truth for boolean env parsing across feature
 // 0065's new variables so "on/true/1/yes" are honored consistently (§M6).
 func EnvTruthy(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "on", "true", "1", "yes":
-		return true
-	default:
-		return false
-	}
+	return EnvFlag(name, false)
 }
 
 // EnvFlag reads name with the Python agents' env_flag semantics
@@ -26,7 +21,14 @@ func EnvTruthy(name string) bool {
 // on/true/1/yes enable, off/false/0/no disable (case-insensitive, surrounding
 // whitespace ignored), and unset, blank or any unrecognised value yields def.
 func EnvFlag(name string, def bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	return ParseFlag(os.Getenv(name), def)
+}
+
+// ParseFlag is EnvFlag on a value already read: on/true/1/yes are true,
+// off/false/0/no are false (case-insensitive, surrounding whitespace ignored),
+// and anything else yields def. The one token list every Go flag reader uses.
+func ParseFlag(v string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "on", "true", "1", "yes":
 		return true
 	case "off", "false", "0", "no":

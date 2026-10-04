@@ -39,22 +39,27 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from shared.env import env_truthy
 from shared.tools.line_format import strip_line_number
 
 __all__ = [
+    "ANCHOR_CHECK_ID",
     "CLAIMED_LINE_RANGES",
     "RANGE_IN_FILE",
     "RANGE_NO_LINE",
     "RANGE_PAST_EOF",
     "STATUSES",
     "AnchorResult",
+    "anchor_extras",
     "anchor_weight",
+    "as_int",
     "claimed_line_range",
     "clear_cache",
     "collapse_ws",
     "distance",
+    "int_field",
     "key",
     "line_range",
     "max_delta",
@@ -79,6 +84,11 @@ RANGE_IN_FILE = "in_file"
 RANGE_PAST_EOF = "past_eof"
 RANGE_NO_LINE = "no_line"
 CLAIMED_LINE_RANGES: frozenset[str] = frozenset({RANGE_IN_FILE, RANGE_PAST_EOF, RANGE_NO_LINE})
+
+# The persisted ``id`` of the L1 ``validation.checks`` entry that carries this
+# verifier's verdict. Written by ``validate.context_heuristics`` and read back by
+# the L5 judge and the claim probe — one wire value, declared once.
+ANCHOR_CHECK_ID = "anchor"
 
 # VULTURE_LLM_QUOTE_<name> defaults (section 5.3). MAX_LINE_CHARS is PER LINE
 # (matching tools/snippet.py and the judge's per-line cap); MAX_CHARS bounds the
@@ -228,7 +238,7 @@ def _numbered_code_lines(file_lines: Sequence[str]) -> list[tuple[int, str]]:
     ]
 
 
-def windows(file_lines: list[str], n: int) -> Iterator[tuple[int, str]]:
+def windows(file_lines: Sequence[str], n: int) -> Iterator[tuple[int, str]]:
     """Every candidate window of ``n`` NON-BLANK lines, as (1-based start, key).
 
     Blank lines inside a window are skipped and do not count toward ``n``, matching
@@ -353,7 +363,7 @@ def _locate(finding: dict, file_path: Path | None,
     if file_lines is None:
         return AnchorResult("unreadable", _unread_reason(file_path))
     span = len(needle_lines)
-    hit = _select_hit(needle, span, file_lines, _claimed_line(finding))
+    hit = _select_hit(needle, span, file_lines, int_field(finding, "line_start"))
     if hit is not None:
         return hit
     return _fallback(needle, span, file_lines, file_path, batch_paths)
@@ -375,7 +385,7 @@ def _passes_floor(needle: str) -> bool:
             and len(tokens(needle)) >= _knob_int("MIN_TOKENS"))
 
 
-def _select_hit(needle: str, span: int, file_lines: list[str],
+def _select_hit(needle: str, span: int, file_lines: Sequence[str],
                 claimed: int) -> AnchorResult | None:
     """Exact-match selection in the cited file, or ``None`` when nothing matches."""
     found = _candidates(needle, span, file_lines)
@@ -386,7 +396,7 @@ def _select_hit(needle: str, span: int, file_lines: list[str],
     return _reanchor(found, claimed)
 
 
-def _candidates(needle: str, span: int, file_lines: list[str]) -> list[int]:
+def _candidates(needle: str, span: int, file_lines: Sequence[str]) -> list[int]:
     """Start lines of every window whose key EQUALS the needle. Never fuzzy."""
     return [start for start, text in windows(file_lines, span) if text == needle]
 
@@ -426,7 +436,7 @@ def _refusal_reason(ordered: list[int]) -> str:
     return "beyond_max_delta" if len(ordered) == 1 else "not_unique"
 
 
-def _fallback(needle: str, span: int, file_lines: list[str], file_path: Path | None,
+def _fallback(needle: str, span: int, file_lines: Sequence[str], file_path: Path | None,
               batch_paths: Sequence[Path] | None) -> AnchorResult:
     """No exact match in the cited file — narrow ``absent`` before reaching for it."""
     other = _search_batch(needle, span, file_path, batch_paths)
@@ -502,14 +512,17 @@ def _contains(path: Path, needle: str, span: int) -> bool:
     return any(text == needle for _start, text in _windows_of(path, span))
 
 
-def _best_distance(needle: str, span: int, file_lines: list[str]) -> float:
+def _best_distance(needle: str, span: int, file_lines: Sequence[str]) -> float:
     """The closest any window in the cited file gets — the ``near_miss`` evidence."""
     return max((distance(needle, text) for _start, text in windows(file_lines, span)),
                default=0.0)
 
 
-def _read_lines(path: Path | None) -> list[str] | None:
+def _read_lines(path: Path | None) -> tuple[str, ...] | None:
     """The file's lines, or ``None`` for "no path" and "cannot be read" alike.
+
+    Returns ``read_file_lines``' cached tuple as-is: every consumer here only
+    reads it, so copying it per finding bought nothing.
 
     The caller owns resolution (D17); a path that resolves but cannot be read is the
     same fact to this verifier as no path at all, and both are charged once — by
@@ -519,8 +532,7 @@ def _read_lines(path: Path | None) -> list[str] | None:
         return None
     from shared.tools.file_scanner import read_file_lines
 
-    lines = read_file_lines(path)
-    return None if lines is None else list(lines)
+    return read_file_lines(path)
 
 
 def line_range(line: int, line_count: int) -> str:
@@ -541,16 +553,50 @@ def claimed_line_range(finding: dict, file_path: Path | None) -> str | None:
     fact costs no new file open (0074 AC28). An unreadable file has no range:
     "past end of file" is a fact about a file that was read. Never raises.
     """
-    claimed = _claimed_line(finding)
+    claimed = int_field(finding, "line_start")
     if claimed < 1:
         return RANGE_NO_LINE
     lines = _read_lines(file_path)
     return None if lines is None else line_range(claimed, len(lines))
 
 
-def _claimed_line(finding: dict) -> int:
-    """The model's ``line_start``, or 0 when it gave none or gave nonsense."""
+def as_int(value: Any) -> int:
+    """A line-number-ish value as an int; 0 when missing, empty or nonsense.
+
+    The ONE lenient line parser shared by the verifier, the window stage and
+    the claim probe, so "no usable line" means the same thing in all three.
+    """
     try:
-        return int(finding.get("line_start") or 0)
+        return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def int_field(finding: dict, name: str) -> int:
+    """``finding[name]`` through ``as_int`` — e.g. the model's ``line_start``."""
+    return as_int(finding.get(name))
+
+
+def anchor_extras(finding: dict | None) -> dict:
+    """The ``extras`` of the persisted ``anchor`` check, or ``{}``.
+
+    The ONE reader of the verifier's persisted output (``validation.checks``
+    entry keyed on ``ANCHOR_CHECK_ID``). Defensive at every level, because the
+    blob arrives from replayed caches and the database, and the LAST matching
+    check wins.
+    """
+    found: Any = None
+    for check in filter(_is_anchor_check, _validation_checks(finding)):
+        found = check.get("extras")
+    return found if isinstance(found, dict) else {}
+
+
+def _is_anchor_check(check: Any) -> bool:
+    return isinstance(check, dict) and check.get("id") == ANCHOR_CHECK_ID
+
+
+def _validation_checks(finding: dict | None) -> list:
+    """The finding's persisted ``validation.checks`` list, or ``[]``."""
+    blob = (finding or {}).get("validation")
+    checks = blob.get("checks") if isinstance(blob, dict) else None
+    return checks if isinstance(checks, list) else []

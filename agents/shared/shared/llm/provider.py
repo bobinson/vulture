@@ -275,10 +275,7 @@ def _window_from_table(key: str) -> _Window | None:
 def _window_from_family(key: str) -> _Window | None:
     """4. Model-family inference."""
     family_ctx = _infer_family_ctx(key.lower())
-    if family_ctx is None:
-        return None
-    logger.info("inferred_ctx model=%s ctx=%d family_match", key, family_ctx)
-    return family_ctx, WINDOW_FROM_FAMILY
+    return None if family_ctx is None else (family_ctx, WINDOW_FROM_FAMILY)
 
 
 def _window_default(key: str) -> _Window:
@@ -305,7 +302,11 @@ def resolve_context_window(model: str | None = None) -> tuple[int, str]:
         ``(tokens, provenance)`` where provenance is one of the ``WINDOW_FROM_*``
         constants.
     """
-    key = _model_key(model)
+    return _resolve_for_key(_model_key(model))
+
+
+def _resolve_for_key(key: str) -> tuple[int, str]:
+    """``resolve_context_window`` for an already-resolved model key."""
     for resolver in _WINDOW_RESOLVERS:
         found = resolver(key)
         if found is not None:
@@ -358,9 +359,9 @@ def _gateway_guess_ceiling() -> int:
     return _safe_int_env("VULTURE_LLM_GATEWAY_GUESS_CTX", 32_000)
 
 
-def _clamps(resolved: int, provenance: str) -> bool:
-    """A guessed window above the ceiling, behind a custom endpoint."""
-    guessed_high = provenance in _GUESSED_WINDOWS and resolved > _gateway_guess_ceiling()
+def _clamps(resolved: int, provenance: str, ceiling: int) -> bool:
+    """A guessed window above ``ceiling``, behind a custom endpoint."""
+    guessed_high = provenance in _GUESSED_WINDOWS and resolved > ceiling
     return guessed_high and uses_custom_endpoint()
 
 
@@ -379,10 +380,12 @@ def effective_context_window(model: str | None = None) -> EffectiveWindow:
     clamped, whatever source the broker reports (0074 O5).
     """
     key = _model_key(model)
-    resolved, provenance = resolve_context_window(model)
-    if not _clamps(resolved, provenance):
-        return EffectiveWindow(resolved, resolved, provenance, key)
+    resolved, provenance = _resolve_for_key(key)
     ceiling = _gateway_guess_ceiling()
+    if not _clamps(resolved, provenance, ceiling):
+        return EffectiveWindow(resolved, resolved, provenance, key)
+    # Stays on this path, not in ``publish_llm_window``: the per-batch source
+    # budget is pinned to announce its own clamp (test_0074_effective_window).
     logger.warning(
         "llm_body_window_clamped model=%s inferred=%d using=%d "
         "hint=set VULTURE_LLM_CTX_SIZE to the gateway's real window",
@@ -402,6 +405,11 @@ def publish_llm_window(model: str | None = None) -> dict:
 
     window = effective_context_window(model)
     source = current_context_window_source()
+    if window.provenance == WINDOW_FROM_FAMILY:
+        # Once per run here, not per resolution: the resolver is on the hot
+        # path of every per-batch budget and logged this line each time.
+        logger.info("inferred_ctx model=%s ctx=%d family_match",
+                    window.model, window.resolved)
     logger.info(
         "llm_window resolved=%d effective=%d provenance=%s source=%s model=%s",
         window.resolved, window.effective, window.provenance, source, window.model,

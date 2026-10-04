@@ -36,10 +36,6 @@ const probeMaxBody = 1 << 20
 // loaded_context_length. It lies at the server ROOT, outside the /v1 base.
 const lmStudioListingPath = "/api/v0/models"
 
-// cloudProviders are never probed (AC35): their windows are published, and
-// a cloud API has no loaded-window endpoint — even an overridden base URL.
-var cloudProviders = map[string]bool{"openai": true, "gemini": true, "anthropic": true}
-
 // windowProbe holds the one measurement for the broker's (upstream, model).
 // window is 0 until (and unless) a loaded window was measured. A nil probe is
 // valid and measures nothing.
@@ -55,8 +51,11 @@ type probeTarget struct {
 
 // startWindowProbe launches the probe in the background for an eligible
 // provider and returns its cache; nil for a provider that is never probed.
+// A cloud provider (one with a canonical endpoint) is never probed (AC35):
+// its windows are published, and a cloud API has no loaded-window endpoint —
+// even under an overridden base URL.
 func startWindowProbe(t probeTarget) *windowProbe {
-	if cloudProviders[t.provider] || t.baseURL == "" {
+	if provider.CanonicalBaseURL(t.provider) != "" || t.baseURL == "" {
 		return nil
 	}
 	p := &windowProbe{}
@@ -64,16 +63,13 @@ func startWindowProbe(t probeTarget) *windowProbe {
 	return p
 }
 
-// apply overlays the measured window on a registry resolution. An operator
-// override (env) outranks the measurement (§5.1(a) order env | probe | ...).
-func (p *windowProbe) apply(w int, src string) (int, string) {
-	if p == nil || src == modelmeta.SourceEnv {
-		return w, src
+// loaded is the measured loaded window, 0 when nothing was (yet) measured or
+// the probe is nil.
+func (p *windowProbe) loaded() int {
+	if p == nil {
+		return 0
 	}
-	if loaded := p.window.Load(); loaded > 0 {
-		return int(loaded), modelmeta.SourceProbe
-	}
-	return w, src
+	return int(p.window.Load())
 }
 
 // run performs the single probe and records its result, logging once.

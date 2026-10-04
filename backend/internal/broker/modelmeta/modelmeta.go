@@ -128,8 +128,19 @@ func ResolveContextWindow(model, override string) int {
 // ResolveContextWindowWithSource is ResolveContextWindow plus the source of
 // the number: env (a valid positive override), else table | family | default.
 func ResolveContextWindowWithSource(model, override string) (int, string) {
+	return ResolveMeasuredContextWindow(model, override, 0)
+}
+
+// ResolveMeasuredContextWindow is the full resolution chain (0074 §5.1(a)):
+// env (a valid positive override), else probe (a positive measured loaded
+// window), else the registry (table | family | default). measured <= 0 means
+// nothing was measured.
+func ResolveMeasuredContextWindow(model, override string, measured int) (int, string) {
 	if n, ok := parseOverride(override); ok {
 		return n, SourceEnv
+	}
+	if measured > 0 {
+		return measured, SourceProbe
 	}
 	return contextWindowWithSource(model)
 }

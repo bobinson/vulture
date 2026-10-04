@@ -11,10 +11,11 @@ confounds the fix with sampling noise. This probe measures the artefact instead.
 prints the stats as JSON, so a before/after comparison is a diff of two blobs.
 
 The probe deliberately calls the SAME helpers the sweep calls
-(``_llm_eligible_files``, ``_prioritize_files``, ``_build_source_batches``, and the
-env-resolved budgets). One that re-derived its own budget or batch size would
-report a shape no real run produces — worse than no probe, because it would look
-like evidence.
+(``_llm_eligible_files``, ``_prioritize_files`` — through its two halves
+``_tier_files`` / ``_order_tiers``, so the tiers it ordered by are the tiers it
+reports — ``_build_source_batches``, and the env-resolved budgets). One that
+re-derived its own budget or batch size would report a shape no real run
+produces — worse than no probe, because it would look like evidence.
 """
 
 from __future__ import annotations
@@ -31,15 +32,13 @@ from shared.audit_runner import (
     _LLM_FILES_PER_BATCH,
     _build_source_batches,
     _enforce_body_byte_cap,
-    _file_tier,
-    _finding_path_set,
     _get_max_body_bytes,
     _get_max_source_chars,
     _line_numbers_enabled,
     _llm_eligible_files,
     _llm_feed_extensions,
     _llm_tier3_enabled,
-    _prioritize_files,
+    _order_tiers,
     _quote_mode,
     _quote_required,
     _reanchor_switch,
@@ -48,6 +47,7 @@ from shared.audit_runner import (
     _safe_rel,
     _snippet_context_lines,
     _split_source_blocks,
+    _tier_files,
     _whole_file_max_lines,
 )
 from shared.env import env_truthy
@@ -327,9 +327,10 @@ def render_feed(
     files = _llm_eligible_files(
         scan_code_files(source_path, max_files=max_files, extensions=_llm_feed_extensions())
     )
-    ordered = _prioritize_files(
-        files, source_path, findings, include_tier3=_llm_tier3_enabled(llm_tier3),
-    )
+    # ``_prioritize_files``, in its two halves, keeping the tier groups it fed.
+    include_tier3 = _llm_tier3_enabled(llm_tier3)
+    tiers = _tier_files(files, source_path, findings)
+    ordered = _order_tiers(tiers, include_tier3)
     packed = _build_source_batches(ordered, source_path, max_chars, findings)
     # T0.3c: the delivered feed, not the packed one. The probe used to copy the
     # sweep's char clamp (``min(max_chars, body_cap)``) instead of applying the
@@ -350,16 +351,22 @@ def render_feed(
     # can re-derive the sweep's narrower budget from the same blob.
     batches = [_cap_batch(text, paths) for text, paths in packed]
     stats = _stats(batches, packed, len(files), max_chars, model, llm_tier3)
-    stats["yield"] = _yield(batches, _tier_by_rel(ordered, source_path, findings))
+    stats["yield"] = _yield(batches, _tier_by_rel(tiers, include_tier3, source_path))
     return {"files": ordered, "batches": batches, "stats": stats}
 
 
-def _tier_by_rel(ordered: list, source_path: str, findings: list[dict]) -> dict[str, int]:
-    """Each fed file's prioritiser tier, keyed by the relative path a batch lists."""
-    finding_paths = _finding_path_set(findings, source_path)
+def _tier_by_rel(tiers: tuple[list, list, list], include_tier3: bool,
+                 source_path: str) -> dict[str, int]:
+    """Each fed file's prioritiser tier, keyed by the relative path a batch lists.
+
+    Read off the groups ``_tier_files`` already built, in fed order (tier 3 only
+    when it was fed), rather than re-running ``_file_tier`` over every file.
+    """
+    fed = tiers if include_tier3 else tiers[:2]
     return {
-        _safe_rel(f, source_path): _file_tier(f, source_path, finding_paths)
-        for f in ordered
+        _safe_rel(f, source_path): number
+        for number, group in enumerate(fed, start=1)
+        for f in group
     }
 
 

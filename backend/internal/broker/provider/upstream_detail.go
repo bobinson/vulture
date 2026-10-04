@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/vulture/backend/internal/textutil"
 )
 
 // §5/N6 pass-through: the provider's own words, for the ONE class where they
@@ -275,9 +276,5 @@ func truncateRunes(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
-	cut := maxBytes
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "…(truncated)"
+	return textutil.CutAtRune(s, maxBytes) + "…(truncated)"
 }

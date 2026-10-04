@@ -373,8 +373,17 @@ def _is_llm_family(finding: dict) -> bool:
 def _spans_both_families(finding: dict) -> bool:
     """True when the rows deduplicated into this one came from a skill-family
     tier AND an LLM-family tier."""
-    families = {_is_llm_tier(t) for t in map(_tier, _provenance_origins(finding)) if t}
-    return len(families) == 2
+    seen_llm = seen_skill = False
+    for tier in map(_tier, _provenance_origins(finding)):
+        if not tier:
+            continue
+        if _is_llm_tier(tier):
+            seen_llm = True
+        else:
+            seen_skill = True
+        if seen_llm and seen_skill:
+            return True
+    return False
 
 
 _PROVENANCE_FAMILY_PREDS = {"llm_family": _is_llm_family, "both": _spans_both_families}

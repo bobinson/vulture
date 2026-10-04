@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
+from shared.anchor import anchor_extras
 from shared.cancellation import current_audit_deadline, current_cancel_token
 from shared.llm.errors import broker_detail
 from shared.llm.jsonscan import iter_balanced_objects
@@ -42,7 +43,6 @@ from shared.tools.line_format import strip_line_number
 from shared.tools.window import CODE_SNIPPET_START
 
 from . import l5_cache
-from .context_heuristics import _ANCHOR_ID
 from .language import detect_language
 from .refutation import POLICY_CLASSES
 from .types import ValidateConfig, ValidationCheck
@@ -181,11 +181,9 @@ EmitFn = Callable[[list[dict[str, Any]]], None]
 # rest of the run is not using (`VULTURE_VALIDATE_LLM_MODEL` / `--validate-model`),
 # and under ADAPT the profile decides placement and the language pin — adapting
 # for one model and calling another is a silent mis-render. So every helper
-# takes the resolved model, and it is resolved to a model STRING before
-# `profile_for` sees it: that function is `lru_cache`d on its ARGUMENT, so
-# `profile_for()` pins whatever the first caller's environment resolved to
-# under the key `None` for the life of the process (item 4.4 hit the same
-# hazard at `generate.domain_instructions` and fixed it the same way).
+# takes the resolved model and hands it to `profile_for`, which resolves it
+# (an empty model = the ambient one) at call time and caches nothing keyed on
+# its argument.
 #
 # Both `.txt` files and `judge_tools._TOOL_DISCIPLINE_TEMPLATE` are still on
 # disk and are UNREAD by this module. They stay because they are the
@@ -203,10 +201,8 @@ def _judge_prompt(spec, model: str = "", **variables) -> RenderedPrompt:
     frozen. `model` is empty only for a caller that has none to offer (the
     ambient one is then resolved from the environment, at call time).
     """
-    from shared.llm.provider import get_model
-
     return render(replace(spec, variables=variables),
-                  profile_for(get_model(model)), mode=Mode.ADAPT)
+                  profile_for(model), mode=Mode.ADAPT)
 
 
 def _judge_turns(system_prompt: str, user_msg: str) -> list[dict[str, Any]]:
@@ -2081,22 +2077,13 @@ def _line_class(evidence_line: int, own: int) -> str:
     return "self_line" if own and evidence_line == own else "other_line"
 
 
-def _validation_checks(finding: Optional[dict[str, Any]]) -> list[Any]:
-    """The finding's persisted ``validation.checks`` list, or ``[]``."""
-    blob = (finding or {}).get("validation")
-    checks = blob.get("checks") if isinstance(blob, dict) else None
-    return checks if isinstance(checks, list) else []
-
-
 def _anchor_claimed_line(finding: Optional[dict[str, Any]]) -> int:
     """The model's ``claimed_line`` from the persisted ``anchor`` check, or 0.
 
     The private ``_claimed_line`` stamp is stripped before egress; the L1
     ``anchor`` check's extras are the only place the claim survives to L5.
     """
-    by_id = {c.get("id"): c for c in _validation_checks(finding) if isinstance(c, dict)}
-    extras = by_id.get(_ANCHOR_ID, {}).get("extras") or {}
-    return _safe_int(extras.get("claimed_line"))
+    return _safe_int(anchor_extras(finding).get("claimed_line"))
 
 
 def _citation_extras(
@@ -2109,13 +2096,23 @@ def _citation_extras(
     O6 re-anchors by default, so for a moved row ``line_start`` is no longer
     the line the model claimed; recording both keeps 0072's series comparable
     across the flip. Observation-only, like ``citation_class`` itself.
+
+    The rule runs once: ``missing`` and ``other_file`` do not depend on the
+    basis line, so only a line-level class is re-derived for the claim.
     """
-    out = {"citation_class": _citation_class(evidence_line, finding, evidence_file)}
+    current = _citation_class(evidence_line, finding, evidence_file)
+    out = {"citation_class": current}
     claimed = _anchor_claimed_line(finding)
     if claimed:
-        out["citation_class_claimed"] = _classify_citation(
-            evidence_line, claimed, evidence_file, finding)
+        out["citation_class_claimed"] = _reclassify_line(current, evidence_line, claimed)
     return out
+
+
+def _reclassify_line(current: str, evidence_line: int, basis: int) -> str:
+    """``current`` re-evaluated against ``basis`` — only line classes move."""
+    if current in ("missing", "other_file"):
+        return current
+    return _line_class(evidence_line, basis)
 
 
 def _verdict_to_check(

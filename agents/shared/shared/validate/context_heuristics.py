@@ -14,7 +14,7 @@ import pathlib
 import re
 from typing import Any
 
-from shared.anchor import anchor_weight
+from shared.anchor import ANCHOR_CHECK_ID, anchor_weight
 from shared.env import env_truthy
 
 from .refutation import REFUTATION_MAP, Scope, obligation_check, route_model_for
@@ -364,7 +364,7 @@ def _suppression_check(file_path: str, line_start: int) -> ValidationCheck | Non
 # on. Re-deriving the table here would be the non-DRY alternative, and gating
 # only the AUTHORITATIVE_CHECKS membership while leaving −1.0 applied is the
 # exact silent downgrade AC34 forbids.
-_ANCHOR_ID = "anchor"
+_ANCHOR_ID = ANCHOR_CHECK_ID
 
 # (private stamp, extras key). Numeric provenance only — the status itself is
 # the check's `result`, like every other L1 check's outcome label.

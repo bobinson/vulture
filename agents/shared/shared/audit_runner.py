@@ -798,11 +798,16 @@ def _file_tier(fpath: Path, source_path: str, finding_paths: set[str]) -> int:
     The ONE classification ``_prioritize_files`` orders by and the feed probe
     (0074 T0.3) reports yield by, so the two cannot disagree about a tier.
     """
-    if str(fpath) in finding_paths or _safe_rel(fpath, source_path) in finding_paths:
+    if _is_flagged(fpath, source_path, finding_paths):
         return 1
-    if is_entry_or_config(Path(fpath)):
+    if is_entry_or_config(fpath if isinstance(fpath, Path) else Path(fpath)):
         return 2
     return 3
+
+
+def _is_flagged(fpath: Path, source_path: str, finding_paths: set[str]) -> bool:
+    """Tier 1: a skill finding names this file, absolutely or root-relative."""
+    return str(fpath) in finding_paths or _safe_rel(fpath, source_path) in finding_paths
 
 
 def _prioritize_files(
@@ -830,12 +835,30 @@ def _prioritize_files(
     Returns:
         Reordered list of Path objects.
     """
+    return _order_tiers(_tier_files(files, source_path, skill_findings), include_tier3)
+
+
+def _tier_files(
+    files: list, source_path: str, skill_findings: list[dict] | None,
+) -> tuple[list, list, list]:
+    """``files`` split into the three ``_file_tier`` groups, input order kept.
+
+    The first half of ``_prioritize_files``; exposed so the feed probe can read
+    the tiers it ordered by instead of classifying every file a second time.
+    """
     finding_paths = _finding_path_set(skill_findings, source_path)
     tiers: tuple[list, list, list] = ([], [], [])
     for fpath in files:
         tiers[_file_tier(fpath, source_path, finding_paths) - 1].append(fpath)
-    tier1, tier2, tier3 = tiers
+    return tiers
 
+
+def _order_tiers(tiers: tuple[list, list, list], include_tier3: bool) -> list:
+    """The second half of ``_prioritize_files``: tier order, tier 3 by size.
+
+    Sorts tier 3 IN PLACE, so a caller holding ``tiers`` sees the fed order.
+    """
+    tier1, tier2, tier3 = tiers
     if not include_tier3:
         return tier1 + tier2
 
@@ -1743,11 +1766,6 @@ class _LLMDedupTally:
 
     emitted: int = 0
     collapsed: int = 0
-
-    @classmethod
-    def of(cls, tally: "_LLMDedupTally | None") -> "_LLMDedupTally":
-        """``tally``, or a fresh one for a caller that publishes no counters."""
-        return tally if tally is not None else cls()
 
     def dedup(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
         """``_deduplicate_findings``, recording how many of ``rows`` it removed."""
@@ -3013,7 +3031,7 @@ async def _collect_llm_findings_batched_async(
     """
     max_files = _safe_int_env("VULTURE_LLM_MAX_FILES", 10000)
     budget_usd = _resolve_llm_budget_usd()
-    tally = _LLMDedupTally.of(tally)  # 0074 P4
+    tally = tally or _LLMDedupTally()  # 0074 P4: a caller may publish no counters
 
     # Feature 0057 P1d: the LLM sweep is bounded by VULTURE_LLM_MAX_FILES, the
     # operative ceiling for the whole-codebase pass. Without passing it here the
@@ -3371,16 +3389,13 @@ def _endpoint_profile(model: str | None, fenced: bool):
     ``structured`` is forced DOWN to ``NONE`` when the call site says the shape
     cannot be enforced, and is left alone otherwise.
 
-    The model string is resolved before ``profile_for`` sees it because that
-    function is ``lru_cache``d on its argument: ``profile_for()`` would freeze
-    the first caller's ambient model under the key ``None`` for the whole
-    process, which was harmless while nothing read the profile and is not now.
+    ``profile_for`` resolves ``model`` (``None`` = the ambient one) at call time
+    and caches nothing keyed on it, so the bare argument is passed through.
     """
-    from shared.llm.provider import get_model
     from shared.prompt import profile_for
     from shared.prompt.profile import Structured
 
-    profile = profile_for(get_model(model))
+    profile = profile_for(model)
     if fenced and profile.structured is not Structured.NONE:
         return _dc_replace(profile, structured=Structured.NONE)
     return profile

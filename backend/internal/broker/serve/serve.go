@@ -205,8 +205,7 @@ func (b *Broker) ContextWindow() (int, string) {
 	if !ok {
 		return 0, ""
 	}
-	w, src := modelmeta.ResolveContextWindowWithSource(model, os.Getenv("VULTURE_LLM_CTX_SIZE"))
-	return b.probe.apply(w, src)
+	return modelmeta.ResolveMeasuredContextWindow(model, os.Getenv("VULTURE_LLM_CTX_SIZE"), b.probe.loaded())
 }
 
 // primaryModel is the run's primary model; false when the broker is off.

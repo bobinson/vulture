@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { SEVERITY_ORDER } from "@/lib/constants.ts";
 import { hasOwaspCategory } from "@/lib/compliance.ts";
 import { provenanceMatcher } from "@/lib/provenance.ts";
@@ -60,43 +60,48 @@ export function useFindings(
   const isSuspicious = (f: Finding): boolean =>
     f.validation_status === "suspicious";
 
-  const toggleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDirection("asc");
-    }
-    setPage(0);
-  };
+  const toggleSort = useCallback(
+    (field: SortField) => {
+      if (sortField === field) {
+        setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+      } else {
+        setSortField(field);
+        setSortDirection("asc");
+      }
+      setPage(0);
+    },
+    [sortField],
+  );
 
-  const setFilterSeverityAndReset = (sev: Severity | "all") => {
+  // Stable identity (useState setters are stable) so memoised children
+  // receiving this handler do not re-render on every table render.
+  const setFilterSeverityAndReset = useCallback((sev: Severity | "all") => {
     setFilterSeverity(sev);
     setPage(0);
-  };
+  }, []);
 
-  const setFilterAgentAndReset = (agent: string) => {
+  const setFilterAgentAndReset = useCallback((agent: string) => {
     setFilterAgent(agent);
     setPage(0);
-  };
+  }, []);
 
   // Feature 0058 (R6) — filter by detection tier (finding.provenance),
   // mirroring the agent filter mechanics. Feature 0074 adds the family values
   // "llm_family" and "both" (see lib/provenance.ts); every other value is exact.
-  const setFilterProvenanceAndReset = (provenance: string) => {
+  const setFilterProvenanceAndReset = useCallback((provenance: string) => {
     setFilterProvenance(provenance);
     setPage(0);
-  };
+  }, []);
 
-  const setHideFalsePositivesAndReset = (hide: boolean) => {
+  const setHideFalsePositivesAndReset = useCallback((hide: boolean) => {
     setHideFalsePositives(hide);
     setPage(0);
-  };
+  }, []);
 
-  const setHideSuspiciousAndReset = (hide: boolean) => {
+  const setHideSuspiciousAndReset = useCallback((hide: boolean) => {
     setHideSuspicious(hide);
     setPage(0);
-  };
+  }, []);
 
   // Total FP count across the whole audit (union of both signals),
   // independent of the active severity/agent filters or the toggle —
