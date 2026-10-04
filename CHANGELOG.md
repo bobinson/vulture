@@ -181,6 +181,13 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **Plugin audits no longer fail with "requested agents did not run" because the staging root is root-owned.**
+  The plugin staging root (`VULTURE_SUPERVISOR_AUDITS_DIR`, default `/tmp/vulture-audit-inputs`) is a bind-mount
+  source for plugin containers, and Docker creates a missing mount source as root. A non-root dev backend could
+  then never stage into it, so every plugin (e.g. semgrep) was skipped with `mkdir …: permission denied`. In local
+  mode the backend now creates the root itself, as its own user, before the supervisor starts any container, and
+  logs a clear startup message naming the directory and the remedy when an existing root is not writable.
+
 - **"Copy All as Issues" copies what the table shows.** The export now follows
   every active filter — hidden false positives, severity, agent, tier, OWASP
   category, hidden suspicious — across all pages and in table order, instead of
