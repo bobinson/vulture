@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -38,11 +39,16 @@ type gemPart struct {
 	FunctionCall     *gemFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *gemFunctionResponse `json:"functionResponse,omitempty"`
 }
+
+// ID pairs a functionCall with its functionResponse. Gemini may supply it on a
+// call; the broker echoes whatever id the agent holds on both parts.
 type gemFunctionCall struct {
+	ID   string          `json:"id,omitempty"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args,omitempty"`
 }
 type gemFunctionResponse struct {
+	ID       string         `json:"id,omitempty"`
 	Name     string         `json:"name"`
 	Response map[string]any `json:"response"`
 }
@@ -77,6 +83,7 @@ type gemResponse struct {
 			Parts []struct {
 				Text         string `json:"text"`
 				FunctionCall *struct {
+					ID   string          `json:"id"`
 					Name string          `json:"name"`
 					Args json.RawMessage `json:"args"`
 				} `json:"functionCall"`
@@ -88,6 +95,17 @@ type gemResponse struct {
 		PromptTokenCount     int `json:"promptTokenCount"`
 		CandidatesTokenCount int `json:"candidatesTokenCount"`
 	} `json:"usageMetadata"`
+}
+
+// geminiToolCallID returns Gemini's own id when it sent one, else a fresh
+// random id. The agent SDK rejects an id that ANY earlier turn of the run
+// completed, and each turn is a separate broker request (possibly on another
+// broker process), so an index or counter is not unique enough.
+func geminiToolCallID(supplied string) string {
+	if supplied != "" {
+		return supplied
+	}
+	return "call_" + rand.Text()
 }
 
 // Complete performs a synchronous generateContent call.
@@ -140,63 +158,92 @@ func (a *geminiAdapter) endpoint(creds Credentials, model string) (string, error
 
 // buildGeminiRequest translates the normalized request to Gemini wire.
 func buildGeminiRequest(req CompletionRequest) gemRequest {
-	out := gemRequest{}
+	b := gemContentsBuilder{toolNameByID: map[string]string{}}
+	for _, m := range req.Messages {
+		b.add(m)
+	}
+	out := gemRequest{Contents: b.contents}
+	if len(b.sys) > 0 {
+		out.SystemInstruction = &gemContent{Parts: []gemPart{{Text: strings.Join(b.sys, "\n")}}}
+	}
+	out.Tools = geminiTools(req.Tools)
+	out.GenerationConfig = geminiGenConfig(req, len(out.Tools) > 0)
+	return out
+}
+
+// gemContentsBuilder walks the messages in order into Gemini contents.
+type gemContentsBuilder struct {
+	contents []gemContent
+	sys      []string
 	// §32.1 #9: OpenAI tool-result messages carry tool_call_id, not the tool
 	// name — but Gemini requires functionResponse.name to match the prior
-	// functionCall.name. Build an id→name map from the assistant turns first.
-	toolNameByID := map[string]string{}
-	for _, m := range req.Messages {
-		if m.Role == "assistant" {
-			for _, tc := range m.ToolCalls {
-				if tc.ID != "" {
-					toolNameByID[tc.ID] = tc.Name
-				}
-			}
+	// functionCall.name. The map is filled as assistant turns are walked, so a
+	// result resolves against the latest turn that issued its id, even where an
+	// older history repeats an id across turns.
+	toolNameByID map[string]string
+}
+
+func (b *gemContentsBuilder) add(m Message) {
+	switch m.Role {
+	case "system":
+		b.addSystem(m)
+	case "tool":
+		b.addToolResult(m)
+	case "assistant":
+		b.addAssistant(m)
+	default: // user (and any other) → user turn
+		b.contents = append(b.contents, gemContent{Role: "user", Parts: []gemPart{{Text: m.Content}}})
+	}
+}
+
+func (b *gemContentsBuilder) addSystem(m Message) {
+	if m.Content != "" {
+		b.sys = append(b.sys, m.Content)
+	}
+}
+
+// addToolResult emits a functionResponse part (role "user" per Gemini). #9:
+// resolve the name from the assistant turn's tool_calls (fall back to m.Name).
+// #10: coalesce consecutive tool results into ONE user turn so parallel tool
+// calls don't emit non-alternating same-role turns.
+func (b *gemContentsBuilder) addToolResult(m Message) {
+	name := b.toolNameByID[m.ToolCallID]
+	if name == "" {
+		name = m.Name
+	}
+	part := gemPart{FunctionResponse: &gemFunctionResponse{ID: m.ToolCallID, Name: name, Response: map[string]any{"content": m.Content}}}
+	b.contents = appendToolResult(b.contents, part)
+}
+
+func (b *gemContentsBuilder) addAssistant(m Message) {
+	parts := []gemPart{}
+	if m.Content != "" {
+		parts = append(parts, gemPart{Text: m.Content})
+	}
+	for _, tc := range m.ToolCalls {
+		if tc.ID != "" { // a blank id is no key; its result keeps m.Name
+			b.toolNameByID[tc.ID] = tc.Name
 		}
+		parts = append(parts, gemPart{FunctionCall: &gemFunctionCall{ID: tc.ID, Name: tc.Name, Args: json.RawMessage(orJSONNull(tc.Arguments))}})
 	}
-	var sys []string
-	for _, m := range req.Messages {
-		switch m.Role {
-		case "system":
-			if m.Content != "" {
-				sys = append(sys, m.Content)
-			}
-		case "tool":
-			// A tool result → functionResponse part (role "user" per Gemini).
-			// #9: resolve the name from the assistant turn's tool_calls (fall back
-			// to m.Name). #10: coalesce consecutive tool results into ONE user turn
-			// so parallel tool calls don't emit non-alternating same-role turns.
-			name := toolNameByID[m.ToolCallID]
-			if name == "" {
-				name = m.Name
-			}
-			part := gemPart{FunctionResponse: &gemFunctionResponse{Name: name, Response: map[string]any{"content": m.Content}}}
-			out.Contents = appendToolResult(out.Contents, part)
-		case "assistant":
-			parts := []gemPart{}
-			if m.Content != "" {
-				parts = append(parts, gemPart{Text: m.Content})
-			}
-			for _, tc := range m.ToolCalls {
-				parts = append(parts, gemPart{FunctionCall: &gemFunctionCall{Name: tc.Name, Args: json.RawMessage(orJSONNull(tc.Arguments))}})
-			}
-			out.Contents = append(out.Contents, gemContent{Role: "model", Parts: parts})
-		default: // user (and any other) → user turn
-			out.Contents = append(out.Contents, gemContent{Role: "user", Parts: []gemPart{{Text: m.Content}}})
-		}
+	b.contents = append(b.contents, gemContent{Role: "model", Parts: parts})
+}
+
+func geminiTools(tools []ToolDef) []gemTool {
+	if len(tools) == 0 {
+		return nil
 	}
-	if len(sys) > 0 {
-		out.SystemInstruction = &gemContent{Parts: []gemPart{{Text: strings.Join(sys, "\n")}}}
+	decls := make([]gemFuncDecl, 0, len(tools))
+	for _, t := range tools {
+		decls = append(decls, gemFuncDecl{Name: t.Name, Parameters: sanitizeGeminiParams(t.Parameters)})
 	}
-	if len(req.Tools) > 0 {
-		decls := make([]gemFuncDecl, 0, len(req.Tools))
-		for _, t := range req.Tools {
-			decls = append(decls, gemFuncDecl{Name: t.Name, Parameters: sanitizeGeminiParams(t.Parameters)})
-		}
-		out.Tools = []gemTool{{FunctionDeclarations: decls}}
-	}
-	// generationConfig. §32.1 #4: send temperature only when explicitly set
-	// (Gemini accepts the full range, so no model gating — just presence).
+	return []gemTool{{FunctionDeclarations: decls}}
+}
+
+// geminiGenConfig builds generationConfig. §32.1 #4: send temperature only when
+// explicitly set (Gemini accepts the full range, so no model gating — just
+// presence).
+func geminiGenConfig(req CompletionRequest, hasTools bool) *gemGenConfig {
 	gc := &gemGenConfig{MaxOutputTokens: req.MaxTokens}
 	if req.HasTemperature {
 		temp := req.Temperature
@@ -206,12 +253,13 @@ func buildGeminiRequest(req CompletionRequest) gemRequest {
 	// calling on Gemini ("Function calling with a response mime type:
 	// 'application/json' is unsupported"). Only request JSON when no tools are
 	// attached — otherwise the tools' functionCall output carries structure.
-	if req.ResponseFormat != "" && req.ResponseFormat != "text" && len(out.Tools) == 0 {
+	if wantsJSON(req.ResponseFormat) && !hasTools {
 		gc.ResponseMimeType = "application/json"
 	}
-	out.GenerationConfig = gc
-	return out
+	return gc
 }
+
+func wantsJSON(format string) bool { return format != "" && format != "text" }
 
 func orJSONNull(s string) string {
 	if t := strings.TrimSpace(s); t == "" || t == "null" {
@@ -247,28 +295,30 @@ func (a *geminiAdapter) toResponse(wire *gemResponse, model, requestID string) (
 		Usage:     Usage{InputTokens: in, OutputTokens: outTok, CostUSD: ActualUSD(model, in, outTok)},
 	}
 	if len(wire.Candidates) > 0 {
-		c := wire.Candidates[0]
-		out.FinishReason = mapGeminiFinish(c.FinishReason)
-		var text strings.Builder
-		for i, p := range c.Content.Parts {
-			if p.Text != "" {
-				text.WriteString(p.Text)
-			}
-			if p.FunctionCall != nil {
-				out.ToolCalls = append(out.ToolCalls, ToolCall{
-					ID: fmt.Sprintf("call_%d", i), Type: "function",
-					// §32.1 #11: normalize empty/null args to a valid JSON object so
-					// the agent SDK's json.loads gets a dict, not "" / None.
-					Name: p.FunctionCall.Name, Arguments: orJSONNull(string(p.FunctionCall.Args)),
-				})
-			}
-		}
-		out.Content = text.String()
-		if len(out.ToolCalls) > 0 {
-			out.FinishReason = "tool_calls" // OpenAI-wire convention so the agent runs tools
-		}
+		out.FinishReason = mapGeminiFinish(wire.Candidates[0].FinishReason)
+		fillGeminiCandidate(out, wire)
 	}
 	return out, nil
+}
+
+// fillGeminiCandidate copies the first candidate's text and tool calls.
+func fillGeminiCandidate(out *CompletionResponse, wire *gemResponse) {
+	var text strings.Builder
+	for _, p := range wire.Candidates[0].Content.Parts {
+		text.WriteString(p.Text)
+		if p.FunctionCall != nil {
+			out.ToolCalls = append(out.ToolCalls, ToolCall{
+				ID: geminiToolCallID(p.FunctionCall.ID), Type: "function",
+				// §32.1 #11: normalize empty/null args to a valid JSON object so
+				// the agent SDK's json.loads gets a dict, not "" / None.
+				Name: p.FunctionCall.Name, Arguments: orJSONNull(string(p.FunctionCall.Args)),
+			})
+		}
+	}
+	out.Content = text.String()
+	if len(out.ToolCalls) > 0 {
+		out.FinishReason = "tool_calls" // OpenAI-wire convention so the agent runs tools
+	}
 }
 
 func mapGeminiFinish(r string) string {

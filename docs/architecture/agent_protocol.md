@@ -146,8 +146,12 @@ l5_cache run_id=… hits=… misses=… stores=…
 `llm_sweep` summarises the LLM generate sweep: the batches sent, the files
 sent in them, the inlined-source character budget (before the body-byte clamp),
 the largest batch actually sent (a single file larger than the budget goes out
-alone, so it can exceed the budget), the request bodies cut to fit
-`VULTURE_LLM_MAX_BODY_BYTES`, and the window the run budgeted with (the
+alone, so it can exceed the budget), `body_truncations` — the request bodies
+actually cut during the sweep, each counted once per cut: cut to the
+`VULTURE_LLM_MAX_BODY_BYTES` byte cap before sending, or halved after the
+provider rejected a request as too large (one `llm_body_truncated` warning
+per cut, labelled `batch` or `build_source_context` for a pre-send cut and
+`size_retry` for a halving) — and the window the run budgeted with (the
 `effective` value of `llm_window`). `l5_cache` counts the L5 judge's verdict
 cache for the run: hits, misses and stores.
 

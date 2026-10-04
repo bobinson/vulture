@@ -1,11 +1,13 @@
 """Shared audit runner with concurrent skill execution and file caching."""
 
 import asyncio
+import contextlib
 import contextvars
 import functools
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -654,11 +656,53 @@ def _split_source_blocks(text: str) -> list[str]:
 def _over_body_cap(text: str, max_bytes: int) -> bool:
     """Would ``_enforce_body_byte_cap`` truncate ``text`` at ``max_bytes``?
 
-    The one definition of "over the encoded-body ceiling", shared by the cap
-    itself and the sweep's ``body_truncations`` count so the two cannot drift.
     A non-positive cap disables the ceiling.
     """
     return max_bytes > 0 and len(text.encode("utf-8")) > max_bytes
+
+
+class BodyTruncations:
+    """One run's count of request bodies actually cut (feature 0074).
+
+    Incremented from batch tasks and pool workers concurrently, hence the lock;
+    owned by one run, never shared between runs.
+    """
+
+    __slots__ = ("count", "_lock")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._lock = threading.Lock()
+
+    def add(self) -> None:
+        """Count one cut body."""
+        with self._lock:
+            self.count += 1
+
+
+# Run-scoped, NOT a module counter — the l5_cache.counting pattern: several
+# audit generators share this interpreter, each in its own context, and a batch
+# runs in an asyncio task (a COPY of the context), so the ContextVar holds a
+# mutable holder that copies share. Outside a run it is None and nothing counts.
+_BODY_TRUNCATIONS: contextvars.ContextVar[BodyTruncations | None] = contextvars.ContextVar(
+    "body_truncations", default=None)
+
+
+@contextlib.contextmanager
+def count_body_truncations() -> Generator[BodyTruncations, None, None]:
+    """Count every body ``_enforce_body_byte_cap`` cuts inside this block."""
+    counter = BodyTruncations()
+    token = _BODY_TRUNCATIONS.set(counter)
+    try:
+        yield counter
+    finally:
+        _BODY_TRUNCATIONS.reset(token)
+
+
+def _count_body_truncation() -> None:
+    counter = _BODY_TRUNCATIONS.get()
+    if counter is not None:
+        counter.add()
 
 
 @dataclass(slots=True)
@@ -667,21 +711,21 @@ class _SweepStats:
 
     Built per call of ``_collect_llm_findings_batched_async`` — never shared
     between runs — and fed one ``record`` per batch actually sent (O(1) each).
+    ``cuts`` is the run's observed truncation count: the pre-send byte cap and
+    the halving after a provider size rejection both land there.
     """
 
     source_budget: int
-    body_cap: int
+    cuts: BodyTruncations
     batches: int = 0
     files: int = 0
     max_batch: int = 0
-    truncations: int = 0
 
     def record(self, text: str, paths: list) -> None:
         """Account for one batch handed to the model."""
         self.batches += 1
         self.files += len(paths)
         self.max_batch = max(self.max_batch, len(text))
-        self.truncations += _over_body_cap(text, self.body_cap)
 
     def log(self, run_id: str, model: str | None) -> None:
         """The single ``llm_sweep`` INFO line for this run."""
@@ -691,7 +735,7 @@ class _SweepStats:
             "llm_sweep run_id=%s batches=%d files_sent=%d source_budget_chars=%d "
             "max_batch_chars=%d body_truncations=%d effective_window=%d",
             run_id, self.batches, self.files, self.source_budget, self.max_batch,
-            self.truncations, effective_context_window(model).effective,
+            self.cuts.count, effective_context_window(model).effective,
         )
 
 
@@ -709,6 +753,7 @@ def _enforce_body_byte_cap(
         max_bytes = _get_max_body_bytes()
     if not _over_body_cap(text, max_bytes):
         return text
+    _count_body_truncation()
     total = len(text.encode("utf-8"))
 
     budget = max(0, max_bytes - _BODY_TRUNCATION_NOTICE_BYTES)
@@ -3310,6 +3355,18 @@ def _llm_tier3_enabled(config_value: bool | None = None) -> bool:
 
 
 async def _collect_llm_findings_batched_async(
+    *args: Any, **kwargs: Any,
+) -> tuple[list[dict], str | None, int, int, str | None]:
+    """Run one LLM sweep with its body-truncation count in scope (0074).
+
+    The scope wraps the whole sweep so every cut it makes — the pre-send cap and
+    the size retry inside each batch task — counts into this run's ``llm_sweep``.
+    """
+    with count_body_truncations() as cuts:
+        return await _sweep_llm_batches_async(*args, cuts=cuts, **kwargs)
+
+
+async def _sweep_llm_batches_async(
     run_id: str,
     source_path: str,
     categories: list[str],
@@ -3321,6 +3378,8 @@ async def _collect_llm_findings_batched_async(
     skill_findings: list[dict] | None = None,
     llm_tier3: bool | None = None,
     tally: _LLMDedupTally | None = None,
+    *,
+    cuts: BodyTruncations,
 ) -> tuple[list[dict], str | None, int, int, str | None]:
     """Feature 0057 P1f + P1d: sweep the WHOLE tree in context-window-sized
     batches instead of a single shot that silently tail-drops files.
@@ -3376,7 +3435,7 @@ async def _collect_llm_findings_batched_async(
     tier3_skipped = (len(scanned) - len(ordered)) if not include_tier3 else 0
     max_chars = _get_max_source_chars(model)
     _body_cap = _get_max_body_bytes()
-    stats = _SweepStats(source_budget=max_chars, body_cap=_body_cap)
+    stats = _SweepStats(source_budget=max_chars, cuts=cuts)
     # Feature 0070 P5 (A.1): keep each batch inside the encoded-body ceiling by
     # BATCHING SMALLER, not by dropping a batch's tail. A char is >= 1 byte, so a
     # char budget below the byte cap keeps the batch under it; files that no
