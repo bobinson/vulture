@@ -70,6 +70,44 @@ event: agent_end
 data: {"run_id": "uuid", "status": "completed"}
 ```
 
+### LLM-tier fields (feature 0074, all optional)
+
+Feature 0074 adds the fields below. Every one is additive and optional. A
+sender omits a field it has no value for, and a receiver treats a missing
+field as "not sent". It never invents a zero or a default, so either side can
+be older than the other (version skew) without anything breaking.
+
+| Field | Direction / where | Shape | Absent means |
+|---|---|---|---|
+| `context_window`, `context_window_source` | Go → agent, top level of the `/run` body (never `config`); broker mode only | int tokens; one of `env`, `probe`, `table`, `family`, `default` | No broker window (Mode A, broker off, unknown model) or an older backend. The agent resolves its own window. `context_window_source` is sent only beside a positive `context_window`, and it only labels the window on `llm_window`. It never changes how the run is sized. |
+| `llm_window` | agent → Go, on `agent_start`; Go passes it through as `llmWindow` on `StepStarted` | object `{resolved, effective, provenance, source, model}`: the window the agent resolved, the one it actually budgets with (`effective <= resolved`), where `resolved` came from (`env`, `broker`, `table`, `family`, `default`), the broker's `context_window_source` (`null` when none), and the model key | The run has no LLM phase, or the agent is older. This is the only `agent_start` key Go forwards. A non-object value is dropped and the step itself is kept. |
+| `llm_emitted`, `llm_collapsed_agent` | agent → Go, top level of the `result` snapshot | ints: the LLM-family rows the agent's LLM tier produced, and how many of those the agent's own dedup dropped before sending | An older agent. Go then logs that agent's `dedup_buckets` line as `emitted=unavailable … lost=unavailable` rather than deriving a number. A current agent always sends both, `0` on a skills-only run. Go keeps them as pointers so an explicit `0` stays distinct from absent. |
+| `merged_llm` | agent → Go, on a finding (`finding` event and `result` findings) | list of `{provenance, description}` | No LLM row collapsed into this one. The agent writes it when its own skill/LLM dedup drops an LLM-family row against a deterministic row, and omits it when the list is empty. Go folds every entry into the two `validation` keys below and never persists `merged_llm` itself. An older Go ignores the field, so the record is simply missing. |
+| `validation.provenance_origins` | Go → storage / API, inside a finding's `validation` blob | list of distinct provenance strings, the survivor's own included | The row was never merged, or the audit predates 0074. Written by the cross-agent merge and by folding `merged_llm`. A top-level key, never a `checks[]` entry, so it can never reach the voter. |
+| `validation.merged_descriptions`, `validation.merged_descriptions_dropped` | same blob | list of `{agent_type, provenance, description, truncated?}`, at most 8 entries of at most 2048 bytes each (a cut is marked by `truncated: true` plus a trailing `…`); int count of the distinct descriptions beyond the cap | Nothing was displaced. Both are omitted when empty or zero. The survivor's own description is never repeated. |
+| `origins_recorded` | Go → client, top level of `GET /api/audits/{id}` | bool: whether this audit's findings record `provenance_origins` at all | An older backend. Clients fall back to "some row carries a `provenance_origins` list". This lets an empty `provenance=both` result read as "not recorded" on a pre-0074 audit rather than "never corroborated". |
+
+**Provenance filter vocabulary.** `GET /api/audits/{id}?provenance=<value>`, the
+MCP `vulture_get_findings` `provenance` argument and the results-page filter all
+take the same values:
+
+* Any other value is matched exactly and case-sensitively against a finding's
+  `provenance`, e.g. `llm`, `llm_l5_verified` or `semgrep`. An unknown value,
+  or `LLM_FAMILY`, selects nothing.
+* `llm_family` selects the LLM family: rows whose provenance, trimmed and
+  lower-cased, starts with `llm` (a prefix rule, not a substring one: `llmfoo`
+  is in the family, `skill_llm` and `semgrep-llm` are not).
+* `both` selects rows whose `validation.provenance_origins` names at least one
+  LLM-family origin and at least one deterministic origin. A grouping
+  provenance (`catalog_rollup`) belongs to neither family. Malformed origins
+  contribute nothing.
+
+The filter only selects rows. It never rewrites a finding or an audit-level
+field, and no tier field is a validation input (see
+`agents/shared/shared/validate/SKILLS.md`). An older backend ignores the query
+parameter and returns every row, so the MCP tool and the UI also apply the same
+predicate on the client side.
+
 ### Lineage evidence checks (feature 0091, versioned)
 
 Absence from an LLM result is not evidence that the code was repaired: the

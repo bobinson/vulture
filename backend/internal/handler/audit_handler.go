@@ -253,7 +253,9 @@ func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
 	withEffectiveOwaspCoverage(audit, h.lineageRepo)
 	// 0074 P2: select rows by provenance LAST, so every audit-level field
 	// above is computed over the full finding set and stays unchanged.
+	markOriginsRecorded(audit)
 	filterFindingsByProvenance(audit, r.URL.Query().Get("provenance"))
+	omitMergeDetail(audit, r.URL.Query().Get("detail"))
 	writeJSON(w, http.StatusOK, audit)
 }
 

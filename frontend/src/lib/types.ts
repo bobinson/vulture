@@ -64,6 +64,10 @@ export interface Audit {
   /** Feature 0039: canonical LLMHealthStatus.message() when LLM was unreachable
    * at audit-creation time. Empty/undefined means the audit ran in normal mode. */
   degraded_reason?: string;
+  /** Feature 0074: whether this audit's findings record
+   * validation.provenance_origins. Absent on an older backend (the UI then
+   * detects it from the rows); false means a "both" filter cannot select. */
+  origins_recorded?: boolean;
   created_at: string;
   completed_at?: string;
 }

@@ -24,49 +24,70 @@ const (
 	mergedDescMarker     = "…"
 )
 
-// newValidationSeed is the validation blob a finding that has none starts
-// from: its own verdict and an empty check list.
-func newValidationSeed(f model.Finding) map[string]interface{} {
-	return map[string]interface{}{
-		"status":     f.ValidationStatus,
-		"confidence": f.ValidationConfidence,
-		"checks":     []interface{}{},
-	}
+// secretBearingCWEs mirrors the agent's _SECRET_BEARING_CWES: categories
+// whose findings embed an actual secret value, so a displaced description is
+// redacted before it is persisted (0074 #15).
+var secretBearingCWEs = map[string]bool{
+	"CWE-798": true, "CWE-319": true, "CWE-312": true, "CWE-256": true,
+	"CWE-259": true, "CWE-321": true, "CWE-522": true,
 }
 
 // recordMergedRows stamps a merge survivor with every contributing tier
 // (validation.provenance_origins) and the other rows' descriptions
 // (validation.merged_descriptions). Both are TOP-LEVEL keys, never checks[]
-// entries, so neither can reach the voter (O4). The blob is cloned so the
-// input rows are never written through a shared map.
+// entries, so neither can reach the voter (O4). The rows the AGENT already
+// collapsed (merged_llm, contract C3) are folded in as if Go had merged them,
+// and merged_llm itself is cleared so it is never persisted. One pass over
+// the members; the blob is cloned so the input rows are never written
+// through a shared map.
 func recordMergedRows(f model.Finding, members []int, findings []model.Finding) model.Finding {
 	v := maps.Clone(f.Validation)
 	if v == nil {
 		v = newValidationSeed(f)
 	}
-	v["provenance_origins"] = provenanceOrigins(members, findings)
+	origins := originSet{seen: make(map[string]bool, len(members))}
 	descs := newDescCollector(f)
 	for _, m := range members {
-		descs.add(findings[m])
+		origins.addRow(findings[m])
+		descs.addRow(findings[m])
 	}
+	v["provenance_origins"] = origins.list
 	descs.writeTo(v)
 	f.Validation = v
+	f.MergedLLM = nil
 	return f
 }
 
-// provenanceOrigins is the key's distinct non-empty provenance values, in
-// input order, the survivor's own included.
-func provenanceOrigins(members []int, findings []model.Finding) []string {
-	seen := make(map[string]bool, len(members))
-	out := make([]string, 0, len(members))
+// hasAgentMerges reports whether any member carries rows its agent collapsed.
+func hasAgentMerges(members []int, findings []model.Finding) bool {
 	for _, m := range members {
-		p := strings.TrimSpace(findings[m].Provenance)
-		if p != "" && !seen[p] {
-			seen[p] = true
-			out = append(out, p)
+		if len(findings[m].MergedLLM) > 0 {
+			return true
 		}
 	}
-	return out
+	return false
+}
+
+// originSet is the key's distinct non-empty provenance values, in input
+// order, the survivor's own and every agent-collapsed row's included.
+type originSet struct {
+	seen map[string]bool
+	list []string
+}
+
+func (o *originSet) addRow(f model.Finding) {
+	o.add(f.Provenance)
+	for _, r := range f.MergedLLM {
+		o.add(r.Provenance)
+	}
+}
+
+func (o *originSet) add(p string) {
+	p = strings.TrimSpace(p)
+	if p != "" && !o.seen[p] {
+		o.seen[p] = true
+		o.list = append(o.list, p)
+	}
 }
 
 // descCollector gathers the descriptions a merge would otherwise discard:
@@ -81,8 +102,16 @@ func newDescCollector(survivor model.Finding) *descCollector {
 	return &descCollector{seen: map[string]bool{"": true, strings.TrimSpace(survivor.Description): true}}
 }
 
-func (c *descCollector) add(f model.Finding) {
-	d := strings.TrimSpace(f.Description)
+// addRow adds a member's own description and those its agent collapsed.
+func (c *descCollector) addRow(f model.Finding) {
+	c.add(f.AgentType, f.Category, f.Provenance, f.Description)
+	for _, r := range f.MergedLLM {
+		c.add(f.AgentType, f.Category, r.Provenance, r.Description)
+	}
+}
+
+func (c *descCollector) add(agentType, category, provenance, desc string) {
+	d := strings.TrimSpace(desc)
 	if c.seen[d] {
 		return
 	}
@@ -91,7 +120,7 @@ func (c *descCollector) add(f model.Finding) {
 		c.dropped++
 		return
 	}
-	c.entries = append(c.entries, mergedDescEntry(f))
+	c.entries = append(c.entries, mergedDescEntry(agentType, provenance, redactDescription(category, desc)))
 }
 
 func (c *descCollector) writeTo(v map[string]interface{}) {
@@ -103,13 +132,22 @@ func (c *descCollector) writeTo(v map[string]interface{}) {
 	}
 }
 
+// redactDescription masks secret values in a secret-bearing finding's
+// description with the agent's line redactor; other categories are verbatim.
+func redactDescription(category, desc string) string {
+	if !secretBearingCWEs[strings.ToUpper(strings.TrimSpace(category))] {
+		return desc
+	}
+	return textutil.RedactSecretText(desc)
+}
+
 // mergedDescEntry is one displaced row's description, capped at
 // mergedDescMaxBytes without splitting a rune, a cut marked twice: a
 // `truncated` flag and a trailing marker.
-func mergedDescEntry(f model.Finding) map[string]interface{} {
-	e := map[string]interface{}{"agent_type": f.AgentType, "provenance": f.Provenance, "description": f.Description}
-	if len(f.Description) > mergedDescMaxBytes {
-		e["description"] = textutil.CutAtRune(f.Description, mergedDescMaxBytes-len(mergedDescMarker)) + mergedDescMarker
+func mergedDescEntry(agentType, provenance, desc string) map[string]interface{} {
+	e := map[string]interface{}{"agent_type": agentType, "provenance": provenance, "description": desc}
+	if len(desc) > mergedDescMaxBytes {
+		e["description"] = textutil.CutAtRune(desc, mergedDescMaxBytes-len(mergedDescMarker)) + mergedDescMarker
 		e["truncated"] = true
 	}
 	return e
@@ -178,4 +216,22 @@ func agentLLMCounters(sr *model.ScanResult) (emitted, collapsedAgent int, ok boo
 		return 0, 0, false
 	}
 	return *sr.LLMEmitted, *sr.LLMCollapsedAgent, true
+}
+
+// recordAgentMerges is a key's sole row: it is stamped only when its agent
+// collapsed LLM rows into it (C3), and is otherwise returned untouched.
+func recordAgentMerges(f model.Finding, members []int, findings []model.Finding) model.Finding {
+	if !hasAgentMerges(members, findings) {
+		return f
+	}
+	return recordMergedRows(f, members, findings)
+}
+
+// soloSurvivors is the at-most-one-row merge result, a fresh slice so the
+// caller's backing array is never written through.
+func soloSurvivors(findings []model.Finding) []model.Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+	return []model.Finding{recordAgentMerges(findings[0], []int{0}, findings)}
 }

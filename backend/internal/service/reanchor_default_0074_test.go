@@ -82,3 +82,29 @@ func TestReanchorTokensReadAsTheAgentDoes_0074(t *testing.T) {
 		})
 	}
 }
+
+// C16: the lineage gate is the agent's conjunction, so VULTURE_LLM_QUOTE_VERIFY
+// below enforce disarms the window move even with QUOTE_REANCHOR on — the O6
+// rollback reaches the backend through either switch.
+var reanchorVerifyCases = []struct {
+	verify, reanchor string
+	wantMove         bool
+}{
+	{"observe", "", false}, {"observe", "true", false}, {"OBSERVE", "", false},
+	{"off", "true", false}, {"false", "", false},
+	{"enforce", "false", false}, {"enforce", "", true}, {"", "", true},
+	{"enforced", "", true}, // unrecognised: the enforce default, plus a warning
+}
+
+func TestReanchorGateHonoursQuoteVerify_0074(t *testing.T) {
+	for _, c := range reanchorVerifyCases {
+		t.Run("verify="+c.verify+"/reanchor="+c.reanchor, func(t *testing.T) {
+			t.Setenv("VULTURE_LLM_QUOTE_VERIFY", c.verify)
+			t.Setenv(reanchorEnv, c.reanchor)
+			if got := reanchoredWindowMoves(t); got != c.wantMove {
+				t.Fatalf("VERIFY=%q REANCHOR=%q: window moved=%v, want %v (agent: mode==enforce AND reanchor)",
+					c.verify, c.reanchor, got, c.wantMove)
+			}
+		})
+	}
+}

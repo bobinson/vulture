@@ -93,3 +93,14 @@ func TestDispatch_NoWindowInjectsNoSource(t *testing.T) {
 		}
 	}
 }
+
+// #45: a broker that mints no token (disabled, or ("", nil)) injects neither
+// the token nor a context window — Mode A's payload is unchanged.
+func TestDispatch_EmptyTokenInjectsNoWindow_0074(t *testing.T) {
+	payload := dispatchPayload(t, asBrokerMinter(t, &sourcedMinter{token: "", ctxWindow: 65_536, ctxSource: "probe"}))
+	for _, k := range []string{"broker_token", "task_type", "context_window", "context_window_source"} {
+		if _, ok := payload[k]; ok {
+			t.Errorf("an empty mint injected %q: %v", k, payload[k])
+		}
+	}
+}

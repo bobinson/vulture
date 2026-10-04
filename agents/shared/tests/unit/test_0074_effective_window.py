@@ -53,15 +53,14 @@ from tests.support.window import (
 
 
 def _clear_profile_cache() -> None:
-    """Start each test from an empty prompt-profile cache, if one exists.
+    """Start each test from an empty prompt-profile cache: the per-model family
+    lookup, the only cache ``profile_for`` keeps (it holds no window).
 
     The two-runs test below deliberately does NOT call this between its runs.
     """
-    from shared.prompt import profile_for
+    from shared.prompt.profile import _family_of
 
-    clear = getattr(profile_for, "cache_clear", None)
-    if clear is not None:
-        clear()
+    _family_of.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -181,11 +180,17 @@ class TestSourceIsForPublicationOnly:
 class TestModeAClampUnchanged:
 
     def test_family_guess_behind_gateway_still_clamped(self, monkeypatch, caplog) -> None:
-        """AC2 (pin): 32768 guessed behind a gateway -> 32000 -> 33,600 chars."""
+        """AC2 (pin): 32768 guessed behind a gateway -> 32000 -> 33,600 chars.
+
+        The clamp is announced once per RUN, by the run's window publication
+        (review item 8), not by every per-batch budget computation.
+        """
         set_gateway(monkeypatch, GATEWAY)
         with caplog.at_level(logging.WARNING):
             assert _source_budget() == 33_600
-        assert any("llm_body_window_clamped" in r.getMessage() for r in caplog.records)
+            provider.publish_llm_window(MODEL)
+        clamps = [r for r in caplog.records if "llm_body_window_clamped" in r.getMessage()]
+        assert len(clamps) == 1
 
     def test_family_guess_without_gateway_not_clamped(self) -> None:
         """AC2 (pin): no custom endpoint, no clamp: 32768 * 0.5 * 3."""

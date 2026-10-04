@@ -332,13 +332,25 @@ def _outcome_row(row: dict) -> str:
     )
 
 
+def _reanchor_at_default() -> str:
+    """How the shipped default treats a re-anchor, DERIVED from the actuator gate
+    (``audit_runner._reanchor_enabled``) under the pinned default environment —
+    never a literal that outlives a default flip (0074 review item 21)."""
+    from shared import audit_runner
+
+    with _pinned():
+        applied = audit_runner._reanchor_enabled()
+    return "applied" if applied else "recorded and not applied"
+
+
 def _outcome_table(rows: list[dict]) -> list[str]:
     return [
         "## Outcomes",
         "",
         "One row per hand-authored claim. `re-anchor` is the line the verifier would "
-        "move to under `VULTURE_LLM_QUOTE_REANCHOR=true`; at the shipped default it "
-        "is recorded and not applied. `found in` is `found_elsewhere`'s candidate — "
+        "move to under `VULTURE_LLM_QUOTE_VERIFY=enforce` and "
+        "`VULTURE_LLM_QUOTE_REANCHOR=true`; at the shipped default it is "
+        f"{_reanchor_at_default()}. `found in` is `found_elsewhere`'s candidate — "
         "recorded in `other_path`, never written back to `file_path` (AC31).",
         "",
         "| claim | cited path | line | quote chars | quote tokens | expected | "

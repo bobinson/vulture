@@ -74,7 +74,8 @@
     "provenance": "Provenance",
     "provenanceFamily": {
       "llm_family": "LLM (all)",
-      "both": "Both tiers"
+      "both": "Both tiers",
+      "bothNotRecorded": "Tier origins were not recorded for this audit, so no row can show as reported by both tiers."
     },
     "anchor": {
       "title": "Anchor",

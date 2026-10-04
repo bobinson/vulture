@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, create_model
 
@@ -22,9 +22,10 @@ from shared.cancellation import (
     current_cancel_token,
     set_audit_deadline,
 )
-from shared.env import env_flag, env_truthy
+from shared.env import env_flag, env_mode, env_truthy
 from shared.lineage_checks import verify_lineage_checks
 from shared.lineage_context import current_lineage_checks_requested
+from shared.lines import parse_line
 from shared.llm.errors import retry_skill
 
 # Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
@@ -39,6 +40,7 @@ from shared.prompt.extract import (  # noqa: F401  (re-exported for 0076 tests)
     _scan_json_arrays,
     _score_array,
 )
+from shared.provenance import is_llm_provenance
 from shared.tools import line_format
 from shared.tools.category_enum import normalize_to_enum
 from shared.tools.file_scanner import (
@@ -158,7 +160,7 @@ def _run_lineage_checks(requested: Any, source_path: str) -> list[dict]:
 # carried privately and restored by ``_restore_dedup_identity``. Its former
 # switch had no effect on the final row and was retired (0074 T-1.5, rule 6).
 _MODEL_FORBIDDEN_SNIPPET = ("code_snippet",)    # VULTURE_LLM_TRUST_MODEL_SNIPPET
-_MODEL_FORBIDDEN_CHECK_ID = ("check_id",)
+_MODEL_CHECK_ID_FIELD = "check_id"  # carried as `_model_check_id`, restored by _restore_dedup_identity
 _TRUST_MODEL_SNIPPET = "VULTURE_LLM_TRUST_MODEL_SNIPPET"
 
 
@@ -344,6 +346,15 @@ def _extract_dupe_count(lines: list[str]) -> int:
     return 0
 
 
+def _request_window(model: str | None) -> int:
+    """The window a REQUEST is sized against: the effective one (feature 0074
+    review item 34), the same window the source budget and the prompt profile
+    use, so a clamped gateway guess also bounds truncation and ``max_tokens``."""
+    from shared.llm.provider import effective_context_window
+
+    return effective_context_window(model).effective
+
+
 def _check_context_budget(prompt_text: str, model: str | None = None) -> tuple[str | None, int]:
     """Check if prompt fits within model's context window.
 
@@ -351,9 +362,7 @@ def _check_context_budget(prompt_text: str, model: str | None = None) -> tuple[s
     the token count instead of re-estimating.  The 80% threshold matches
     the truncation target in ``_truncate_prompt_to_budget``.
     """
-    from shared.llm.provider import get_context_window
-
-    ctx_tokens = get_context_window(model)
+    ctx_tokens = _request_window(model)
     estimated_tokens = safe_estimate_tokens(prompt_text)
     budget_pct = estimated_tokens / ctx_tokens if ctx_tokens > 0 else 1.0
     if budget_pct > 0.8:
@@ -386,9 +395,7 @@ def _truncate_prompt_to_budget(
         estimated_tokens: Pre-computed token count from ``_check_context_budget``.
             When provided, skips a redundant whole-prompt encode.
     """
-    from shared.llm.provider import get_context_window
-
-    ctx_tokens = get_context_window(model)
+    ctx_tokens = _request_window(model)
     target_tokens = int(ctx_tokens * 0.8)
 
     # Cheap pre-check: if caller already estimated and the prompt fits,
@@ -1489,6 +1496,7 @@ def _strip_private_fields(
 
 
 _QUOTE_MODE_DEFAULT = "enforce"
+_QUOTE_MODES = frozenset({"off", "observe", "enforce"})
 _REANCHOR_SWITCH = "VULTURE_LLM_QUOTE_REANCHOR"
 
 
@@ -1500,9 +1508,12 @@ def _quote_mode() -> str:
     Feature 0074 (O6) moved the default from ``observe`` to ``enforce``; a blank
     value is "unset" and takes the default. ``enforce`` only ARMS the actuators —
     each is still gated by its own switch.
+
+    Normalised by ``shared.env.env_mode`` (contract C16): a false token is
+    ``off``, ``observe``/``enforce`` any case, and any other value is the
+    default plus one warning — never a fourth mode the gates do not test.
     """
-    raw = os.getenv("VULTURE_LLM_QUOTE_VERIFY", _QUOTE_MODE_DEFAULT)
-    return raw.strip().lower() or _QUOTE_MODE_DEFAULT
+    return env_mode("VULTURE_LLM_QUOTE_VERIFY", _QUOTE_MODES, _QUOTE_MODE_DEFAULT)
 
 
 def _reanchor_switch() -> bool:
@@ -1544,9 +1555,9 @@ def _resolved_only(paths: list[Path | None]) -> list[Path]:
 def _may_reanchor(outcome: "anchor.AnchorResult") -> bool:
     """Whether this outcome licenses moving a line: the actuator is on, the text
     was located elsewhere, and the move is inside the absolute ceiling."""
-    if not _reanchor_enabled():
-        return False
     if outcome.status != "reanchored":
+        return False
+    if not _reanchor_enabled():
         return False
     return _within_delta_ceiling(outcome)
 
@@ -1560,7 +1571,11 @@ def _within_delta_ceiling(outcome: "anchor.AnchorResult") -> bool:
 
 
 def _apply_reanchor(finding: dict, outcome: "anchor.AnchorResult") -> None:
-    """The LINE actuator for a row's OWN citation (§5.3, T4.3). Inert on ship.
+    """The LINE actuator for a row's OWN citation (§5.3, T4.3).
+
+    ON by default since 0074 (O6): it moves a line when the quote mode is
+    ``enforce`` (the default) AND ``VULTURE_LLM_QUOTE_REANCHOR`` is on (the
+    default) — ``_reanchor_enabled``. Either switch is the runtime rollback.
 
     `reanchored` means the quoted text was found, but not where the model said.
     Rewriting `line_start` here — upstream of dedup, of the SSE event and of
@@ -1577,7 +1592,7 @@ def _apply_reanchor(finding: dict, outcome: "anchor.AnchorResult") -> None:
     """
     if not _may_reanchor(outcome):
         return
-    span = max(0, int(finding.get("line_end", 0)) - int(finding.get("line_start", 0)))
+    span = max(0, anchor.int_field(finding, "line_end") - anchor.int_field(finding, "line_start"))
     finding["line_start"] = outcome.new_line
     finding["line_end"] = outcome.new_line + span
 
@@ -1705,9 +1720,9 @@ def _adopt_anchor(survivor: dict | None, other: dict) -> None:
     correctly quoted. This is a field merge among rows that already collapse
     today, so the surviving COUNT is unchanged in every case.
 
-    ``survivor is None`` marks a key that came from ``base`` (the accumulated
-    skill findings): those rows are not returned by the dedup and must not be
-    stamped with an LLM row's anchor provenance.
+    Only a survivor from ``new`` adopts: a key that came from ``base`` (the
+    accumulated skill findings) is not returned by the dedup and must not be
+    stamped with an LLM row's anchor provenance (``_Survivor.absorb``).
     """
     if survivor is None or _anchor_rank(other) <= _anchor_rank(survivor):
         return
@@ -1734,21 +1749,65 @@ def _deduplicate_findings(
     Returns:
         Subset of ``new`` that don't duplicate any entry in ``base``.
     """
-    # ``None`` marks a key contributed by ``base``; a real dict is the surviving
-    # row for that key, and is the object a later duplicate merges its anchor
-    # status into (0076 AC30).
-    seen: dict[tuple[str, str], dict | None] = {
-        _dedup_key(f, source_path): None for f in base
+    # Every key maps to its surviving row. A ``base`` row is never returned and
+    # never adopts an LLM row's anchor provenance (0076 AC30); it may record the
+    # LLM row it swallowed (0074 C3). A row from ``new`` adopts a duplicate's
+    # better anchor status.
+    seen: dict[tuple[str, str], _Survivor] = {
+        _dedup_key(f, source_path): _Survivor(f, True) for f in base
     }
     unique: list[dict] = []
     for f in new:
         key = _dedup_key(f, source_path)
         if key in seen:
-            _adopt_anchor(seen[key], f)
+            seen[key].absorb(f)
             continue
-        seen[key] = f
+        seen[key] = _Survivor(f, False)
         unique.append(f)
     return unique
+
+
+def _dedup_tier(row: dict) -> str:
+    """A row's tier for the agent's dedup. A row reaching it with no
+    ``provenance`` is an LLM row: skill rows are stamped at their emit site
+    (``_finalize_finding_inplace``), the LLM tag is set after this dedup."""
+    return str(row.get("provenance") or "llm")
+
+
+def _record_merged_llm(survivor: dict, dropped: dict) -> None:
+    """Feature 0074 contract C3: a DETERMINISTIC survivor records the LLM-family
+    row the agent dropped against it, as public ``merged_llm`` entries
+    ``{provenance, description}`` (distinct, omitted when empty). Go folds them
+    into ``validation.provenance_origins`` / ``merged_descriptions`` exactly as
+    if its own cross-agent merge had collapsed the pair, and never persists the
+    field itself. Without it a same-agent skill/LLM pair, the commonest one,
+    was invisible to ``provenance=both`` and lost the model's description."""
+    tier = _dedup_tier(dropped)
+    if not _is_tier_merge(survivor, tier):
+        return
+    entry = {"provenance": tier, "description": str(dropped.get("description") or "")}
+    merged = survivor.setdefault("merged_llm", [])
+    if entry not in merged:
+        merged.append(entry)
+
+
+def _is_tier_merge(survivor: dict, dropped_tier: str) -> bool:
+    """An LLM-family row collapsing onto a deterministic one."""
+    return is_llm_provenance(dropped_tier) and not is_llm_provenance(_dedup_tier(survivor))
+
+
+class _Survivor(NamedTuple):
+    """The row holding a dedup key, and whether it came from ``base``."""
+
+    row: dict
+    from_base: bool
+
+    def absorb(self, dropped: dict) -> None:
+        """Merge what a dropped duplicate carries that the survivor keeps."""
+        if self.from_base:
+            _record_merged_llm(self.row, dropped)
+        else:
+            _adopt_anchor(self.row, dropped)
 
 
 @dataclass
@@ -1758,28 +1817,46 @@ class _LLMDedupTally:
     The agent's own dedup is the FIRST place an LLM row can disappear, and Go
     only sees what survives, so the agent counts: ``collapsed`` is every LLM row
     a ``_deduplicate_findings`` call here removed (cross-batch repeats and skill
-    collisions alike); ``emitted`` is fixed at the final dedup as the rows the
-    sweep returned plus the rows it had already collapsed — i.e. counted BEFORE
-    any agent dedup. ``_deduplicate_findings`` keeps returning a plain list; the
-    count is its input size minus its output size, O(1) per call.
+    collisions alike); ``emitted`` is every row the model produced, counted as
+    each batch is deduplicated — i.e. BEFORE any agent dedup, and never
+    reconstructed afterwards (review item 10). ``_deduplicate_findings`` keeps
+    returning a plain list; the count is its input size minus its output size,
+    O(1) per call.
+
+    ``available`` goes False when the LLM phase degraded by EXCEPTION: rows
+    already counted were then discarded where neither counter can see them, so
+    the counters are withheld and Go reports them ``unavailable`` rather than a
+    balanced ledger that hides the loss.
     """
 
     emitted: int = 0
     collapsed: int = 0
+    available: bool = True
 
-    def dedup(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
-        """``_deduplicate_findings``, recording how many of ``rows`` it removed."""
+    @classmethod
+    def ensure(cls, tally: "_LLMDedupTally | None") -> "_LLMDedupTally":
+        """``tally``, or a private one for a caller that publishes no counters."""
+        return tally if tally is not None else cls()
+
+    def _collapse(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
         kept = _deduplicate_findings(base, rows, source_path=source_path)
         self.collapsed += len(rows) - len(kept)
         return kept
 
+    def dedup(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
+        """One batch's dedup: counts its rows as emitted, then what it removed."""
+        self.emitted += len(rows)
+        return self._collapse(base, rows, source_path)
+
     def settle(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
-        """The run's FINAL dedup: fixes ``emitted`` from the sweep's output first."""
-        self.emitted = len(rows) + self.collapsed
-        return self.dedup(base, rows, source_path)
+        """The run's FINAL dedup over the sweep's output, already counted."""
+        return self._collapse(base, rows, source_path)
 
     def as_result(self) -> dict[str, int]:
-        """Both counters, always — 0 on a skills-only run; absence means an older agent."""
+        """Both counters — 0 on a skills-only run; absent when ``available`` is
+        False (or, from an older agent, always)."""
+        if not self.available:
+            return {}
         return {"llm_emitted": self.emitted, "llm_collapsed_agent": self.collapsed}
 
 
@@ -2701,6 +2778,7 @@ def run_combined_audit(
                 "llm_phase_failed_degrading run_id=%s error=%s",
                 run_id, str(exc)[:200],
             )
+            llm_tally.available = False
             yield emitter.text_message(
                 "LLM phase unavailable — returning skill findings only."
             )
@@ -3031,7 +3109,7 @@ async def _collect_llm_findings_batched_async(
     """
     max_files = _safe_int_env("VULTURE_LLM_MAX_FILES", 10000)
     budget_usd = _resolve_llm_budget_usd()
-    tally = tally or _LLMDedupTally()  # 0074 P4: a caller may publish no counters
+    tally = _LLMDedupTally.ensure(tally)  # 0074 P4: a caller may publish no counters
 
     # Feature 0057 P1d: the LLM sweep is bounded by VULTURE_LLM_MAX_FILES, the
     # operative ceiling for the whole-codebase pass. Without passing it here the
@@ -3804,9 +3882,8 @@ async def _collect_llm_findings_async(
         logger.warning("context_guard run_id=%s: %s", run_id, budget_warn)
         prompt_text = _truncate_prompt_to_budget(prompt_text, model, estimated_tokens=precomputed_tokens)
 
-    from shared.llm.provider import get_context_window
     env_max_output = _safe_int_env("VULTURE_LLM_MAX_OUTPUT_TOKENS", 16384)
-    ctx_window = get_context_window(model)
+    ctx_window = _request_window(model)
     prompt_tokens = safe_estimate_tokens(prompt_text)
     # SDK overhead: tool definitions (~150 tokens each) + AuditOutput schema (~600 tokens).
     sdk_overhead = max(512, 150 * len(all_tools) + 600)
@@ -4028,24 +4105,9 @@ def _coerce_path(value: Any) -> str:
     return value if isinstance(value, str) else ("" if value is None else str(value))
 
 
-def _coerce_line(value: Any, default: int = 0) -> int:
-    """B2: a model that returns ``"55"`` must not be silently dropped by Go's
-    ``LineStart int`` unmarshal (``agui/finding_parse.go:33``). Junk costs the
-    LINE, never the FINDING — the caller's default is returned instead."""
-    if isinstance(value, bool):
-        return default
-    try:
-        if isinstance(value, int | float):
-            return int(value)
-        return int(str(value).strip())
-    except (TypeError, ValueError, OverflowError):
-        # NaN and +/-Infinity reach here: `json.loads` accepts all three by
-        # default, so a model emitting `"line_start": NaN` produced a float that
-        # `int()` refuses — ValueError for NaN, OverflowError for Infinity —
-        # and the exception escaped the parser and lost the entire batch. The
-        # docstring's promise (junk costs the LINE, never the FINDING) was not
-        # kept for exactly the inputs a malformed model response supplies.
-        return default
+# B2: the generate parser's line coercion IS the shared lenient parser
+# (0074 review item 9); the name stays for its existing callers and tests.
+_coerce_line = parse_line
 
 
 def _coerce_lines_enabled() -> bool:
@@ -4081,7 +4143,7 @@ def _carry_check_id(raw: dict) -> dict[str, Any]:
     ``_restore_dedup_identity`` republishes it at the choke point. One answer,
     no switch (0074 T-1.5).
     """
-    return _non_empty("_model_check_id", raw.get(_MODEL_FORBIDDEN_CHECK_ID[0]))
+    return _non_empty("_model_check_id", raw.get(_MODEL_CHECK_ID_FIELD))
 
 
 def _carry_evidence(raw: dict) -> dict[str, Any]:

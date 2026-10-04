@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/textutil"
 	"github.com/vulture/backend/pkg/agentregistry"
 )
 
@@ -88,10 +89,13 @@ func translateAgentStart(agentType string, data json.RawMessage) ([]*model.AgUIE
 	}, nil
 }
 
-// allowListedLLMWindow returns the agent_start payload's llm_window when it is a JSON
-// object (0074 §5.1(e), AC7) — the ONE allow-listed key of that payload; every
-// other key stays behind. A malformed payload or a non-object value yields nil,
-// never an error: a garbled start frame must not drop the agent's step.
+// allowListedLLMWindow returns the agent_start payload's llm_window (0074
+// §5.1(e), AC7) — the ONE allow-listed key of that payload; every other key
+// stays behind. The object reaches every SSE client, so it is decoded into
+// its five documented fields, strings capped, and re-marshalled (review #36):
+// unknown keys and oversized values never pass through. A malformed payload
+// or a non-object / mistyped value yields nil, never an error: a garbled start
+// frame must not drop the agent's step.
 func allowListedLLMWindow(data json.RawMessage) json.RawMessage {
 	var d struct {
 		LLMWindow json.RawMessage `json:"llm_window"`
@@ -99,7 +103,35 @@ func allowListedLLMWindow(data json.RawMessage) json.RawMessage {
 	if json.Unmarshal(data, &d) != nil || !bytes.HasPrefix(d.LLMWindow, []byte("{")) {
 		return nil
 	}
-	return d.LLMWindow
+	var w llmWindow
+	if json.Unmarshal(d.LLMWindow, &w) != nil {
+		return nil
+	}
+	out, _ := json.Marshal(w.capped())
+	return out
+}
+
+// llmWindow is the published window: the five fields the agent sends.
+type llmWindow struct {
+	Resolved   int    `json:"resolved"`
+	Effective  int    `json:"effective"`
+	Provenance string `json:"provenance"`
+	Source     string `json:"source"`
+	Model      string `json:"model"`
+}
+
+// llmWindowVocabMax bounds provenance/source (short vocabulary words);
+// llmWindowModelMax bounds a model id.
+const (
+	llmWindowVocabMax = 32
+	llmWindowModelMax = 256
+)
+
+func (w llmWindow) capped() llmWindow {
+	w.Provenance = textutil.CutAtRune(w.Provenance, llmWindowVocabMax)
+	w.Source = textutil.CutAtRune(w.Source, llmWindowVocabMax)
+	w.Model = textutil.CutAtRune(w.Model, llmWindowModelMax)
+	return w
 }
 
 func translateThinking(data json.RawMessage) ([]*model.AgUIEvent, error) {

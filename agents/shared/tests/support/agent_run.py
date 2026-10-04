@@ -38,9 +38,12 @@ def result_findings(events: list[str]) -> list[dict[str, Any]]:
 
 
 def llm_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """The LLM-family rows of a result payload (Go's ``isLLMProvenance``)."""
-    return [f for f in payload["findings"]
-            if str(f.get("provenance", "")).strip().lower().startswith("llm")]
+    """The LLM-family rows of a result payload, by THE rule
+    (``shared.provenance.is_llm_provenance``, pinned to Go's
+    ``isLLMProvenance`` by ``llm_provenance_family_0074.json``)."""
+    from shared.provenance import is_llm_provenance
+
+    return [f for f in payload["findings"] if is_llm_provenance(f.get("provenance"))]
 
 
 def noop_skill(_source_path: str) -> dict[str, Any]:

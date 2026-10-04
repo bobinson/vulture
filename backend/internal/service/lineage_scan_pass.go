@@ -203,7 +203,7 @@ func (p *scanPass) applyEvidencePresent(row *model.FindingLineage, check model.L
 	}
 	// `ambiguous` does NOT raise seen_count: several equally plausible matches
 	// means the scan could not say it observed THIS finding.
-	// The window moves only under VULTURE_LLM_QUOTE_REANCHOR, because moving a
+	// The window moves only under the re-anchor gate (reanchorEnabled), because moving a
 	// correct line to a wrong one is the one way evidence checking could lose
 	// a finding rather than save one.
 	if err := p.svc.repo.ApplyEvidence(row.ID, repository.LineageEvidenceUpdate{
@@ -585,9 +585,11 @@ func targetKeyed(target TargetIdentity) bool {
 	return target.Resolved()
 }
 
-// reanchorEnabled mirrors the 0076 switch that arms the line actuator. It is
-// read exactly as the agent reads it (0074 O6): ON unless explicitly disabled,
-// so the agent's moved finding and the lineage row's window cannot disagree.
+// reanchorEnabled is the agent's line-actuator gate (0074 C16): the verifier
+// mode is enforce AND VULTURE_LLM_QUOTE_REANCHOR is on (default on). Both
+// switches are read from THIS process's environment, so the window moves in
+// step with the agent only when the backend is given the same values as the
+// agents (compose passes both to the backend service).
 func reanchorEnabled() bool {
-	return config.EnvFlag("VULTURE_LLM_QUOTE_REANCHOR", true)
+	return config.QuoteReanchorEnabled()
 }

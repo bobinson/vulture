@@ -113,3 +113,29 @@ def test_claimed_basis_is_observation_only():
     still = _check(_CLAIMED, _finding(reanchored=False))
     assert _claimed_class(_extras(moved)) == "self_line"
     assert (moved.result, moved.weight) == (still.result, still.weight)
+
+
+# --------------------------------------------------------------------------- #
+# Review item 24 — the claimed basis goes through the ONE classification rule
+# --------------------------------------------------------------------------- #
+
+
+def test_claimed_basis_uses_the_one_rule(monkeypatch) -> None:
+    """``citation_class_claimed`` is ``_classify_citation`` against the claimed
+    line — no second encoding of the class rule that a new class could miss."""
+    from shared.validate import llm_judge
+
+    bases: list[int] = []
+    real = llm_judge._classify_citation
+
+    def spy(evidence_line, own, evidence_file, finding):
+        bases.append(own)
+        return real(evidence_line, own, evidence_file, finding)
+
+    monkeypatch.setattr(llm_judge, "_classify_citation", spy)
+    finding = {"line_start": 40, "file_path": "a.py",
+               "validation": {"checks": [{"id": "anchor", "extras": {"claimed_line": 12}}]}}
+    out = llm_judge._citation_extras(12, finding, None)
+    assert (bases, out) == ([40, 12], {"citation_class": "other_line",
+                                      "citation_class_claimed": "self_line"})
+    assert not hasattr(llm_judge, "_reclassify_line")

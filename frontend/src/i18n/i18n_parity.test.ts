@@ -5,6 +5,7 @@ import es from "./locales/es.json";
 import fr from "./locales/fr.json";
 import ja from "./locales/ja.json";
 import pt from "./locales/pt.json";
+import { ANCHOR_VOCABULARY } from "@/test/anchorVocabulary";
 
 /**
  * Feature 0091 P5 (RED) — locale parity.
@@ -129,13 +130,13 @@ describe("i18n 0091 aggregate + lineage keys", () => {
 const REQUIRED_0074_KEYS = [
   "results.provenanceFamily.llm_family",
   "results.provenanceFamily.both",
+  "results.provenanceFamily.bothNotRecorded",
   "results.anchor.title",
-  ...[
-    "exact", "reanchored", "ambiguous", "near_miss", "found_elsewhere",
-    "absent", "unquoted", "unreadable", "oversize",
-  ].map((s) => `results.anchor.status.${s}`),
-  ...["in_file", "past_eof", "no_line"].map((r) => `results.anchor.range.${r}`),
-] as const;
+  // The status and range vocabularies come from the agent's export, so a
+  // status added in anchor.py fails here until every locale names it (#20).
+  ...ANCHOR_VOCABULARY.statuses.map((s) => `results.anchor.status.${s}`),
+  ...ANCHOR_VOCABULARY.claimed_line_ranges.map((r) => `results.anchor.range.${r}`),
+];
 
 describe("i18n 0074 provenance-family + anchor keys", () => {
   it.each(Object.keys(LOCALES))("%s defines every 0074 key with a non-empty string", (name) => {

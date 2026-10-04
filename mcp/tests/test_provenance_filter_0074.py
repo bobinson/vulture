@@ -24,13 +24,9 @@ Malformed provenance_origins values in the fixture (a string, an object, null,
 non-string or blank entries) are "not both" and must not raise. An unknown
 value, or a different casing of a vocabulary word, selects nothing.
 
-HOW TO RUN. mcp/tests needs `mcp` (1.x; 2.x renames FastMCP and breaks the
-server.py import), `respx` and `pytest-asyncio`, none of which the agents venv
-carries, and CI does not run this directory yet. From the repo root:
-
-    uv venv /tmp/mcpvenv && uv pip install -p /tmp/mcpvenv/bin/python \
-        'mcp>=1.20,<2' httpx pytest pytest-asyncio respx
-    cd mcp && /tmp/mcpvenv/bin/python -m pytest tests/test_provenance_filter_0074.py -q
+HOW TO RUN. `make test-mcp` (the CI test-mcp job runs the same target).
+mcp/tests needs `mcp` (1.x; 2.x renames FastMCP and breaks the server.py
+import), `respx` and `pytest-asyncio`, none of which the agents venv carries.
 """
 import json
 import pathlib
@@ -42,13 +38,16 @@ import respx
 _FIXTURE = (pathlib.Path(__file__).resolve().parents[2]
             / "backend/internal/handler/testdata/provenance_filter_cases_0074.json")
 _CASES = json.loads(_FIXTURE.read_text())
+_FAMILY = json.loads((_FIXTURE.parent / "llm_provenance_family_0074.json").read_text())
 _BASE = "http://localhost:28080/api/audits/a0074"
 
 
-def _mock_audit() -> None:
-    audit = {"id": "a0074", "status": "completed", "findings": _CASES["findings"]}
-    respx.get(_BASE).mock(return_value=httpx.Response(200, json=audit))
+def _mock_audit(findings: list | None = None, **audit_fields):
+    audit = {"id": "a0074", "status": "completed",
+             "findings": _CASES["findings"] if findings is None else findings, **audit_fields}
+    route = respx.get(_BASE).mock(return_value=httpx.Response(200, json=audit))
     respx.get(_BASE + "/lineage").mock(return_value=httpx.Response(200, json=[]))
+    return route
 
 
 async def _fetch(**kwargs) -> dict:
@@ -136,3 +135,82 @@ def test_get_findings_advertises_the_provenance_vocabulary():
     # Quoted tokens: "both" is an ordinary English word, so bare prose would
     # satisfy an unquoted check.
     assert '"llm_family"' in tool.description and '"both"' in tool.description
+
+
+# --- 0074 fix round -------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", _FAMILY, ids=lambda c: repr(c["provenance"]))
+def test_llm_family_rule_matches_the_shared_family_fixture(case):
+    """#7: the MCP copy of the ONE family rule agrees with Go and Python on the
+    prefix-vs-substring rows (skill_llm, semgrep-llm, llmfoo), as a provenance
+    and as an origin beside a deterministic one."""
+    import server
+    assert server._is_llm_family({"provenance": case["provenance"]}) is case["is_llm"]
+    beside = {"validation": {"provenance_origins": ["signature", case["provenance"]]}}
+    assert server._spans_both_families(beside) is case["is_llm"]
+
+
+@pytest.mark.parametrize("origins,both", [
+    (["llm", "catalog_rollup"], False),
+    ([" CATALOG_ROLLUP ", "llm_l5_verified"], False),
+    (["catalog_rollup", "skill"], False),
+    (["catalog_rollup", "skill", "llm"], True),
+])
+def test_grouping_provenance_is_not_a_tier(origins, both):
+    """#11 (C11): catalog_rollup is neither family in the both computation."""
+    import server
+    assert server._spans_both_families({"validation": {"provenance_origins": origins}}) is both
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["llm_family", "both", "skill"])
+async def test_provenance_is_forwarded_to_the_api(value):
+    """#39: the filter is sent as ?provenance= so a current backend filters
+    server side; the local predicate still runs for an older backend that
+    ignores it (the mock answers every row, and the result is still exact)."""
+    route = _mock_audit()
+    result = await _fetch(provenance=value)
+    assert route.calls.last.request.url.params.get("provenance") == value
+    assert _fingerprints(result) == sorted(_CASES["expect"][value])
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_no_provenance_sends_no_query_parameter():
+    """#39: without a filter the request is unchanged."""
+    route = _mock_audit()
+    await _fetch()
+    assert "provenance" not in route.calls.last.request.url.params
+
+
+_LEGACY_ROWS = [{k: v for k, v in f.items() if k != "validation"} for f in _CASES["findings"][:3]]
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audit_fields,rows,recorded", [
+    ({}, _LEGACY_ROWS, False),
+    ({"origins_recorded": False}, [], False),
+    ({"origins_recorded": True}, [], True),
+    ({}, None, True),
+    ({}, [{"fingerprint": "fp-null", "validation": {"provenance_origins": None}}], True),
+])
+async def test_both_says_whether_origins_were_recorded(audit_fields, rows, recorded):
+    """#35: an empty "both" on an audit whose findings carry no
+    provenance_origins means "not recorded", not "never corroborated". The
+    API's origins_recorded flag wins; without it the rows decide."""
+    _mock_audit(rows, **audit_fields)
+    result = await _fetch(provenance="both")
+    assert result["origins_recorded"] is recorded
+    assert ("note" in result) is (not recorded)
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [None, "llm_family"])
+async def test_only_both_carries_the_origins_marker(value):
+    """#35: the marker qualifies "both" only; other calls keep their shape."""
+    _mock_audit()
+    assert "origins_recorded" not in await _fetch(**({"provenance": value} if value else {}))

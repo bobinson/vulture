@@ -120,6 +120,13 @@ detect_lmstudio_model() {
 # `/api/v0/models` is LM Studio's native endpoint and reports
 # `loaded_context_length`; it does not exist on other OpenAI-compatible
 # servers, so a failure here is silent and the normal resolution applies.
+#
+# Only the LOADED window counts (W3): `max_context_length` is the advertised
+# maximum, and pinning it would overstate the window the server actually runs.
+# This is the --no-broker detector only. With the broker on, the backend probes
+# the same listing itself (backend/internal/broker/serve/probe.go), and an
+# exported VULTURE_LLM_CTX_SIZE would outrank that probe, so lmstudio_window
+# below never calls this then.
 detect_lmstudio_ctx() {
     local base="${1:-$LMSTUDIO_DEFAULT_URL}" want="$2" root ctx
     root="${base%/v1}"; root="${root%/}"
@@ -138,7 +145,7 @@ try:
 except Exception:
     raise SystemExit(0)
 def ctx_of(m):
-    return m.get('loaded_context_length') or m.get('max_context_length') or 0
+    return m.get('loaded_context_length') or 0
 def is_embed(m):
     return 'embed' in (m.get('id') or '').lower() or m.get('type') == 'embeddings'
 # 1. the requested model, exact id
@@ -151,8 +158,26 @@ for m in models:
 for m in models:
     if not is_embed(m) and m.get('state') == 'loaded' and ctx_of(m):
         print(ctx_of(m)); raise SystemExit(0)
-" "$want" 2>/dev/null)
-    [[ "$ctx" =~ ^[0-9]+$ ]] && echo "$ctx"
+" "$want" 2>/dev/null) || true
+    if [[ "$ctx" =~ ^[0-9]+$ ]]; then echo "$ctx"; fi
+}
+
+# lmstudio_window: ONE loaded-window detector per run (review item 38). An
+# operator's explicit VULTURE_LLM_CTX_SIZE always wins. With the broker on, the
+# backend probe measures the loaded window and the shell exports nothing that
+# could outrank it. Only with --no-broker, where no probe runs, does the shell
+# detector export the loaded window for the agents.
+lmstudio_window() {
+    [[ -n "${VULTURE_LLM_CTX_SIZE:-}" ]] && return 0
+    if [[ "$USE_BROKER" == "1" ]]; then
+        echo "  Context:   measured by the backend broker probe (LM Studio loaded window)"
+        return 0
+    fi
+    local ctx
+    ctx="$(detect_lmstudio_ctx "$OPENAI_BASE_URL" "$VULTURE_LLM_MODEL")"
+    [[ -n "$ctx" ]] || return 0
+    export VULTURE_LLM_CTX_SIZE="$ctx"
+    echo "  Context:   $ctx tokens (reported by LM Studio)"
 }
 
 # stale_against <binary> <source-dir> -- true when any .go file is newer than
@@ -413,15 +438,8 @@ case "$PROVIDER" in
         MODEL="$(normalize_model lmstudio "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
-        # Trust the server's own loaded window over the family table, unless the
-        # operator pinned one explicitly.
-        if [[ -z "${VULTURE_LLM_CTX_SIZE:-}" ]]; then
-            _LM_CTX="$(detect_lmstudio_ctx "$OPENAI_BASE_URL" "$MODEL")"
-            if [[ -n "$_LM_CTX" ]]; then
-                export VULTURE_LLM_CTX_SIZE="$_LM_CTX"
-                echo "  Context:   $_LM_CTX tokens (reported by LM Studio)"
-            fi
-        fi
+        # The loaded window is resolved after the broker decision below
+        # (lmstudio_window), because which detector runs depends on it.
         ;;
 
     skills|none)
@@ -485,6 +503,10 @@ if [[ "$USE_BROKER" == "1" ]]; then
         echo "  Note: brokering a cloud provider with a real key. The ES256 + budget-CAS"
         echo "        human sign-off is still pending (§25.3/§27) — pass --no-broker to opt out."
     fi
+fi
+# Trust the server's own loaded window over the family table (LM Studio only).
+if [[ "$PROVIDER" == "lmstudio" ]]; then
+    lmstudio_window
 fi
 
 # Embedding endpoint override. Decouples the pgvector embedding client

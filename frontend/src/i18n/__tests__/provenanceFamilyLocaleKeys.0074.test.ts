@@ -10,6 +10,10 @@ describe("i18n tier-family and anchor keys (0074)", () => {
   it("en carries the designed copy", () => {
     expect(en).toHaveProperty("results.provenanceFamily.llm_family", "LLM (all)");
     expect(en).toHaveProperty("results.provenanceFamily.both", "Both tiers");
+    expect(en).toHaveProperty(
+      "results.provenanceFamily.bothNotRecorded",
+      "Tier origins were not recorded for this audit, so no row can show as reported by both tiers.",
+    );
     expect(en).toHaveProperty("results.anchor.title", "Anchor");
     expect(en).toHaveProperty("results.anchor.status.reanchored", "Re-anchored");
     expect(en).toHaveProperty("results.anchor.range.past_eof", "Past end of file");

@@ -1,7 +1,21 @@
 # Loaded-window probe fixtures (feature 0074, T0.5)
 
-The broker's loaded-window probe is gated per runtime on a captured response:
-a runtime with no capture here is **not probed** (plan §5.2, "Fixture gate").
+These files are TEST fixtures only: no runtime code reads them, so removing
+one does not disable anything. What the probe actually does is fixed in code
+(`probe.go`):
+
+- it sends exactly one request shape, LM Studio's `GET /api/v0/models` at the
+  server root, and reads only `loaded_context_length`. Ollama (`POST
+  /api/show`) and vLLM (`max_model_len`) are never asked, because the probe
+  has no code for them; the synthetic bodies below pin that;
+- a cloud provider (one with a canonical endpoint) is never probed;
+- only a target that resolves to a loopback or private (RFC1918 / ULA)
+  address is probed, so a remote gateway never receives the key on a
+  speculative listing request;
+- a redirect is never followed, and a window above the largest registry
+  window is no value.
+
+There is no runtime switch: the off-switch is a code revert.
 
 | file | origin | what it pins |
 |---|---|---|
@@ -13,5 +27,6 @@ a runtime with no capture here is **not probed** (plan §5.2, "Fixture gate").
 
 Scrubbing (R51): the captures were checked for hostnames, local paths and model
 file paths before commit; none were present, so the bodies are verbatim. Model
-ids are public model names. When a capture for Ollama or vLLM is added, replace
-the synthetic body and flip the "not probed" test for that runtime.
+ids are public model names. Supporting Ollama or vLLM means adding code for its
+request shape, a real capture to replace the synthetic body, and flipping the
+"not probed" test for that runtime.

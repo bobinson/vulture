@@ -92,12 +92,8 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		defaultProvider = "openai"
 	}
 	allowlist := egress.NewAllowlist(allowlistOrDefault(cfg.ProviderAllowlist, defaultProvider)...)
-	ssrf := egress.NewSSRFValidator(allowlist, netResolver)
-	if cfg.AllowLocalEgress {
-		// Dev/self-host: permit loopback/RFC1918 + http for the configured local
-		// provider (link-local/IMDS/multicast stay blocked, §11).
-		ssrf = egress.NewSSRFValidatorAllowingLocal(allowlist, netResolver)
-	}
+	newSSRF := ssrfFactory(allowlist, cfg.AllowLocalEgress)
+	ssrf := newSSRF(netResolver)
 
 	keys := keysFromEnv(defaultProvider)
 	baseURL := defaultBaseURL(cfg.ProviderBaseURL, defaultProvider)
@@ -112,6 +108,12 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 	if err := seedTenantBudget(db, dia, "local", cfg.BudgetShards, cfg.BudgetUSD); err != nil {
 		return nil, fmt.Errorf("seed budget: %w", err)
 	}
+	// 0074 §5.2: the loaded-window probe goes through the same egress rules,
+	// resolving under its own deadline.
+	probe := startWindowProbe(probeTarget{
+		provider: defaultProvider, baseURL: baseURL, key: keys[defaultProvider],
+		model: primaryModel, newSSRF: newSSRF,
+	})
 	deps := server.Dependencies{
 		Verifier:        verifier,
 		Denylist:        denylist,
@@ -135,6 +137,8 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		CallTimeoutSec: cfg.CallTimeoutSec,
 		AuditLog:       sqlstore.NewAuditLog(db, dia),
 		DBHealth:       db.PingContext,
+		// 0074 #12: an upstream overflow re-measures the loaded window.
+		OnContextOverflow: probe.onOverflow,
 	}
 
 	b := &Broker{
@@ -147,10 +151,7 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		models:     append([]string{primaryModel}, cfg.Fallbacks...),
 		verify:     verifier,
 		runJTIs:    map[string][]string{},
-		probe: startWindowProbe(probeTarget{
-			provider: defaultProvider, baseURL: baseURL, key: keys[defaultProvider],
-			model: primaryModel, ssrf: ssrf,
-		}),
+		probe:      probe,
 	}
 	b.startSweeper(budgetDB)
 	return b, nil
@@ -234,10 +235,22 @@ func (b *Broker) RevokeRun(runID string) {
 	}
 }
 
-// Close stops the lease sweeper.
+// Close stops the lease sweeper and cancels a loaded-window probe in flight.
 func (b *Broker) Close() {
-	if b != nil && b.stopSweep != nil {
+	if b == nil {
+		return
+	}
+	b.probe.close()
+	if b.stopSweep != nil {
 		b.stopSweep()
+	}
+}
+
+// onContextOverflow is the server's OnContextOverflow hook: the window the
+// run was sized for overflowed, so the probe re-measures it (0074 #12).
+func (b *Broker) onContextOverflow() {
+	if b != nil {
+		b.probe.onOverflow()
 	}
 }
 
@@ -313,6 +326,19 @@ func parsePriv(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 		return nil, errors.New("mint key is not an EC private key")
 	}
 	return key, nil
+}
+
+// ssrfFactory builds the broker's egress validator over a resolver: the
+// standard one, or — dev/self-host, AllowLocalEgress — one that permits
+// loopback/RFC1918 + http for the configured local provider
+// (link-local/IMDS/multicast stay blocked, §11).
+func ssrfFactory(allowlist egress.Allowlist, allowLocal bool) func(egress.Resolver) egress.SSRFValidator {
+	if allowLocal {
+		return func(r egress.Resolver) egress.SSRFValidator {
+			return egress.NewSSRFValidatorAllowingLocal(allowlist, r)
+		}
+	}
+	return func(r egress.Resolver) egress.SSRFValidator { return egress.NewSSRFValidator(allowlist, r) }
 }
 
 // netResolver is the production SSRF resolver (real DNS).

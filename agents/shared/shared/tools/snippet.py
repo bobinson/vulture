@@ -3,6 +3,7 @@
 import re
 from collections.abc import Sequence
 
+from shared.lines import parse_line
 from shared.tools.line_context import strip_strings_and_comments
 
 # Standard ports that shouldn't trigger "hardcoded port" findings.
@@ -77,10 +78,7 @@ def extract_snippet(
         return ""
     start = window_first_line(line_num, context) - 1
     end = min(len(lines), line_num + context)
-    try:
-        span_end = int(line_end) if line_end is not None else 0
-    except (TypeError, ValueError):
-        span_end = 0
+    span_end = parse_line(line_end)
     if span_end > line_num:
         end = min(len(lines), span_end + context, start + _SPAN_MAX_LINES)
         # A character cut would truncate the span it was just widened to hold.

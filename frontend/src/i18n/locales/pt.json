@@ -74,7 +74,8 @@
     "provenance": "Proveniência",
     "provenanceFamily": {
       "llm_family": "LLM (todos)",
-      "both": "Ambos os níveis"
+      "both": "Ambos os níveis",
+      "bothNotRecorded": "Esta auditoria não registrou os níveis de origem, então nenhuma linha pode aparecer como relatada por ambos os níveis."
     },
     "anchor": {
       "title": "Ancoragem",

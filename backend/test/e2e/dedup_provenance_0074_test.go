@@ -134,7 +134,9 @@ func TestSkillAndLLMRowForOneSitePersistAsOneRowNamingBothTiers_0074(t *testing.
 	}
 	survivor := a.Findings[0]
 	assertProvenanceOriginsBothTiers(t, survivor)
-	assertReasoningKept(t, survivor)
+	// #15: the merge record is served under ?detail=full only.
+	assertNoMergeDetail(t, survivor)
+	assertReasoningKept(t, detailFullFindings(t, h.addr, a.ID)[0])
 
 	assertBucketTokens(t, sink.String(), a.ID, "cwe",
 		"emitted=2", "collapsed_agent=1", "collapsed_go=1", "unique=0", "lost=0")
@@ -153,5 +155,78 @@ func assertBucketTokens(t *testing.T, logs, auditID, agent string, want ...strin
 		if !containsString(tokens, w) {
 			t.Errorf("dedup_buckets line lacks %q: %s", w, line)
 		}
+	}
+}
+
+// detailFullFindings GETs the audit with ?detail=full, which serves the merge
+// record (validation.merged_descriptions) the default response leaves out.
+func detailFullFindings(t *testing.T, addr, auditID string) []model.Finding {
+	t.Helper()
+	resp, err := httpGet(addr, "/api/audits/"+auditID+"?detail=full")
+	if err != nil {
+		t.Fatalf("GET audit ?detail=full: %v", err)
+	}
+	var a labelsAudit
+	readJSON(t, resp, &a)
+	if len(a.Findings) == 0 {
+		t.Fatalf("GET ?detail=full served no findings")
+	}
+	return a.Findings
+}
+
+// assertNoMergeDetail: the default GET leaves the merge record out (#15).
+func assertNoMergeDetail(t *testing.T, f model.Finding) {
+	t.Helper()
+	if _, ok := f.Validation["merged_descriptions"]; ok {
+		t.Errorf("default GET served validation.merged_descriptions; it belongs to ?detail=full only: %v", f.Validation)
+	}
+}
+
+// agentCollapsedResult is the same weakness as bothTierResult AFTER the
+// agent's own skill/LLM dedup (contract C3): ONE skill row that carries the
+// dropped LLM row in merged_llm.
+func agentCollapsedResult(t *testing.T) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]interface{}{
+		"findings": []interface{}{map[string]interface{}{
+			"severity": "high", "category": "CWE-89", "title": "SQL injection (string-built query)",
+			"description": "Pattern match: string-built SQL", "file_path": "src/db.py", "line_start": 42, "line_end": 42,
+			"recommendation": "use a parameterised query", "provenance": "skill", "check_id": "cwe.sql_injection.string_concat",
+			"merged_llm": []interface{}{map[string]interface{}{"provenance": "llm", "description": llmReasoning0074}},
+		}},
+		"summary": "cwe", "score": 60, "result_schema": 2,
+		"llm_emitted": 1, "llm_collapsed_agent": 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	return string(b)
+}
+
+// C3 end to end: a pair the AGENT collapsed reaches the backend as one row
+// carrying merged_llm, and the persisted row still names both tiers and keeps
+// the LLM reasoning; merged_llm itself is never persisted or served.
+func TestAgentCollapsedPairPersistsBothTiers_0074(t *testing.T) {
+	cwe := newScriptedAgent(t, agentCollapsedResult(t))
+	h := newLabelsHarness(t, map[string]*scriptedAgent{"cwe": cwe})
+	a := h.run(t, []string{"cwe"}, nil)
+	if len(a.Findings) != 1 {
+		t.Fatalf("persisted %d findings, want 1; findings=%+v", len(a.Findings), a.Findings)
+	}
+	assertProvenanceOriginsBothTiers(t, a.Findings[0])
+	full := detailFullFindings(t, h.addr, a.ID)[0]
+	assertReasoningKept(t, full)
+	if len(full.MergedLLM) != 0 || len(a.Findings[0].MergedLLM) != 0 {
+		t.Errorf("merged_llm was persisted/served: %+v", full.MergedLLM)
+	}
+	resp, err := httpGet(h.addr, "/api/audits/"+a.ID+"?provenance=both")
+	if err != nil {
+		t.Fatalf("GET ?provenance=both: %v", err)
+	}
+	var both map[string]interface{}
+	readJSON(t, resp, &both)
+	if fs, _ := both["findings"].([]interface{}); len(fs) != 1 || both["origins_recorded"] != true {
+		t.Errorf("provenance=both must select the agent-collapsed row with origins_recorded=true; got %d rows, origins_recorded=%v",
+			len(fs), both["origins_recorded"])
 	}
 }

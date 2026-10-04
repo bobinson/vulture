@@ -8,7 +8,7 @@ Every figure above and below is COMPUTED from `manifest.d/` and the fixture tree
 
 ## Outcomes
 
-One row per hand-authored claim. `re-anchor` is the line the verifier would move to under `VULTURE_LLM_QUOTE_REANCHOR=true`; at the shipped default it is recorded and not applied. `found in` is `found_elsewhere`'s candidate — recorded in `other_path`, never written back to `file_path` (AC31).
+One row per hand-authored claim. `re-anchor` is the line the verifier would move to under `VULTURE_LLM_QUOTE_VERIFY=enforce` and `VULTURE_LLM_QUOTE_REANCHOR=true`; at the shipped default it is applied. `found in` is `found_elsewhere`'s candidate — recorded in `other_path`, never written back to `file_path` (AC31).
 
 | claim | cited path | line | quote chars | quote tokens | expected | observed | agrees | reason | re-anchor | delta | candidates | found in |
 | ----- | ---------- | ---: | ----------: | -----------: | -------- | -------- | ------ | ------ | --------: | ----: | ---------: | -------- |

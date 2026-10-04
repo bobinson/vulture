@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -143,6 +144,9 @@ func statusErrorWithBody(providerName string, status int, body []byte) error {
 	if base == nil {
 		return nil
 	}
+	if isContextOverflow(status, body) {
+		base = fmt.Errorf("%w: upstream status %d", ErrContextOverflow, status)
+	}
 	return &UpstreamError{
 		Err:      base,
 		Provider: providerName,
@@ -277,4 +281,23 @@ func truncateRunes(s string, maxBytes int) string {
 		return s
 	}
 	return textutil.CutAtRune(s, maxBytes) + "…(truncated)"
+}
+
+// contextOverflowBody matches a provider body that names the context or
+// payload size limit. The same vocabulary as the agent's _CTX_OVERFLOW_RE
+// (shared/llm/errors.py), so a raw provider error and a broker-mediated one
+// classify alike. The body is only MATCHED, never surfaced (N6).
+var contextOverflowBody = regexp.MustCompile(`(?i)(context.length|token.limit|maximum.context|n_keep.*n_ctx|` +
+	`max.tokens|context.window|context.size|prompt.{0,10}too.long|maximum.length|` +
+	`request\.payload\.size\.exceeds|payload.too.large|` +
+	`input.token.count.*exceeds|exceeds.the.maximum.number.of.tokens|` +
+	`request_too_large|request.body.too.large)`)
+
+// isContextOverflow: a 413 is always the size class; any other 4xx is when
+// its body names the limit. 404/409 (routing) and 5xx never are.
+func isContextOverflow(status int, body []byte) bool {
+	if status == http.StatusRequestEntityTooLarge {
+		return true
+	}
+	return errors.Is(statusError(status), ErrProviderBadRequest) && contextOverflowBody.Match(body)
 }

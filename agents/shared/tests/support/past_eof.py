@@ -130,8 +130,11 @@ def l1_checks(rows: list[dict[str, Any]], root: Path) -> list[list[Any]]:
 
 
 def anchor_of(checks: list[Any]) -> Any:
-    """The `anchor` check in one row's check list, or None."""
-    return next((check for check in checks if check.id == "anchor"), None)
+    """The `anchor` check in one row's check list, or None (last match wins,
+    the rule every production reader uses)."""
+    from shared.anchor import ANCHOR_CHECK_ID
+
+    return next((check for check in reversed(checks) if check.id == ANCHOR_CHECK_ID), None)
 
 
 def anchor_extras(checks: list[Any]) -> dict[str, Any]:

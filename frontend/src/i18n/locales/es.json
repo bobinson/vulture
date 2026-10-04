@@ -74,7 +74,8 @@
     "provenance": "Procedencia",
     "provenanceFamily": {
       "llm_family": "LLM (todos)",
-      "both": "Ambos niveles"
+      "both": "Ambos niveles",
+      "bothNotRecorded": "Esta auditoría no registró los niveles de origen, así que ninguna fila puede figurar como detectada por ambos niveles."
     },
     "anchor": {
       "title": "Anclaje",

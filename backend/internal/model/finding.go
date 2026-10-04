@@ -70,6 +70,19 @@ type Finding struct {
 	// drain, read by the label pass, the coverage recount and the lineage
 	// sighting of the same run, never persisted or sent.
 	AbsorbedCategories []string `json:"-"`
+
+	// MergedLLM (feature 0074, contract C3) lists the LLM-family rows the
+	// AGENT dropped against this row in its own skill/LLM dedup: each one's
+	// provenance and description. Inbound wire field only — the cross-agent
+	// merge folds it into validation.provenance_origins and
+	// validation.merged_descriptions and clears it, so it is never persisted.
+	MergedLLM []MergedLLMRow `json:"merged_llm,omitempty"`
+}
+
+// MergedLLMRow is one LLM-family row an agent collapsed into a surviving row.
+type MergedLLMRow struct {
+	Provenance  string `json:"provenance"`
+	Description string `json:"description"`
 }
 
 // PriorFinding is a lightweight summary of a previous finding passed to agents

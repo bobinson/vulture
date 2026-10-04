@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 from shared.anchor import anchor_extras
 from shared.cancellation import current_audit_deadline, current_cancel_token
+from shared.lines import parse_line
 from shared.llm.errors import broker_detail
 from shared.llm.jsonscan import iter_balanced_objects
 from shared.prompt import Mode, RenderedPrompt, Slot, profile_for, render
@@ -54,20 +55,10 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
     Findings reach L5 from many sources (skills, LLM phase, replayed
     cache, MCP plugins) and not all of them guarantee int line numbers.
-    A single bad value used to ValueError out of an entire L5 batch.
+    A single bad value used to ValueError out of an entire L5 batch. The
+    shared lenient parser (0074 review item 9), so NaN/Infinity cannot raise.
     """
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except (ValueError, AttributeError):
-            return default
-    return default
+    return parse_line(value, default)
 
 log = logging.getLogger(__name__)
 # Surface INFO-level traces to the parent process by default — these
@@ -2097,22 +2088,15 @@ def _citation_extras(
     the line the model claimed; recording both keeps 0072's series comparable
     across the flip. Observation-only, like ``citation_class`` itself.
 
-    The rule runs once: ``missing`` and ``other_file`` do not depend on the
-    basis line, so only a line-level class is re-derived for the claim.
+    Both bases go through ``_classify_citation``, the one rule, so a class
+    added there reaches both keys (0074 review item 24).
     """
-    current = _citation_class(evidence_line, finding, evidence_file)
-    out = {"citation_class": current}
+    out = {"citation_class": _citation_class(evidence_line, finding, evidence_file)}
     claimed = _anchor_claimed_line(finding)
     if claimed:
-        out["citation_class_claimed"] = _reclassify_line(current, evidence_line, claimed)
+        out["citation_class_claimed"] = _classify_citation(
+            evidence_line, claimed, evidence_file, finding)
     return out
-
-
-def _reclassify_line(current: str, evidence_line: int, basis: int) -> str:
-    """``current`` re-evaluated against ``basis`` — only line classes move."""
-    if current in ("missing", "other_file"):
-        return current
-    return _line_class(evidence_line, basis)
 
 
 def _verdict_to_check(

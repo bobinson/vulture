@@ -7,6 +7,7 @@ For Ollama, install and run: ``ollama pull qwen3:1.7b && ollama serve``
 
 import logging
 import os
+import re
 from typing import NamedTuple
 
 from shared.llm.env import resolve_call_timeout
@@ -244,13 +245,33 @@ def _model_key(model: str | None) -> str:
 _Window = tuple[int, str]
 
 
-def _window_from_env(_key: str) -> _Window | None:
-    """1. Explicit operator override always wins (an unparseable value defers)."""
-    env_val = os.environ.get("VULTURE_LLM_CTX_SIZE", "")
-    try:
-        return (int(env_val), WINDOW_FROM_ENV) if env_val else None
-    except ValueError:
+# strconv.Atoi's grammar on a 64-bit build, so both runtimes accept the same
+# VULTURE_LLM_CTX_SIZE text (contract C6).
+_GO_ATOI = re.compile(r"[+-]?[0-9]+", re.ASCII)
+_INT64_MAX = (1 << 63) - 1
+
+
+def _ctx_override() -> int | None:
+    """``VULTURE_LLM_CTX_SIZE`` when it trims to a POSITIVE integer, else None.
+
+    The same rule as Go's ``modelmeta.parseOverride`` (feature 0074 review
+    item 6; both pinned by ``ctx_override_cases_0074.json``): blank, zero,
+    negative and non-numeric values all mean "no override". Python's ``int``
+    is wider than Go's ``strconv.Atoi``, so the text is held to Atoi's grammar
+    first: ASCII digits with an optional sign (no ``_`` digit groups, no
+    non-ASCII digits) and a value that fits int64."""
+    raw = os.environ.get("VULTURE_LLM_CTX_SIZE", "").strip()
+    if not _GO_ATOI.fullmatch(raw):
         return None
+    value = int(raw)
+    return value if 0 < value <= _INT64_MAX else None
+
+
+def _window_from_env(_key: str) -> _Window | None:
+    """1. Explicit operator override always wins (a non-positive or
+    unparseable value defers)."""
+    value = _ctx_override()
+    return None if value is None else (value, WINDOW_FROM_ENV)
 
 
 def _window_from_broker(_key: str) -> _Window | None:
@@ -278,14 +299,12 @@ def _window_from_family(key: str) -> _Window | None:
     return None if family_ctx is None else (family_ctx, WINDOW_FROM_FAMILY)
 
 
-def _window_default(key: str) -> _Window:
+def _window_default(_key: str) -> _Window:
     """5. Unknown model → the shared default (§31: raised from the old timid
-    8192 to DEFAULT_CONTEXT_WINDOW, matching Go's modelmeta.DefaultContextWindow)."""
-    if _CUSTOM_BASE_URL:
-        logger.warning(
-            "custom_endpoint_default_ctx model=%s ctx=%d hint=set_VULTURE_LLM_CTX_SIZE",
-            key, DEFAULT_CONTEXT_WINDOW,
-        )
+    8192 to DEFAULT_CONTEXT_WINDOW, matching Go's modelmeta.DefaultContextWindow).
+
+    Silent: this sits on the hot path of every per-call budget. The operator
+    warning is a per-run fact, logged once by ``publish_llm_window``."""
     return DEFAULT_CONTEXT_WINDOW, WINDOW_FROM_DEFAULT
 
 
@@ -378,20 +397,30 @@ def effective_context_window(model: str | None = None) -> EffectiveWindow:
     Only an agent-side GUESS behind a custom endpoint is lowered (Mode A, the
     0070-P5 413). A broker-injected window is labelled ``broker`` and is never
     clamped, whatever source the broker reports (0074 O5).
+
+    Silent: called per batch and per judge prompt. The clamp is announced once
+    per run by ``publish_llm_window``.
     """
     key = _model_key(model)
     resolved, provenance = _resolve_for_key(key)
     ceiling = _gateway_guess_ceiling()
-    if not _clamps(resolved, provenance, ceiling):
-        return EffectiveWindow(resolved, resolved, provenance, key)
-    # Stays on this path, not in ``publish_llm_window``: the per-batch source
-    # budget is pinned to announce its own clamp (test_0074_effective_window).
-    logger.warning(
-        "llm_body_window_clamped model=%s inferred=%d using=%d "
-        "hint=set VULTURE_LLM_CTX_SIZE to the gateway's real window",
-        key, resolved, ceiling,
-    )
-    return EffectiveWindow(resolved, ceiling, provenance, key)
+    effective = ceiling if _clamps(resolved, provenance, ceiling) else resolved
+    return EffectiveWindow(resolved, effective, provenance, key)
+
+
+def _warn_window(window: EffectiveWindow) -> None:
+    """The run's operator warnings about its window, logged once per run."""
+    if window.effective < window.resolved:
+        logger.warning(
+            "llm_body_window_clamped model=%s inferred=%d using=%d "
+            "hint=set VULTURE_LLM_CTX_SIZE to the gateway's real window",
+            window.model, window.resolved, window.effective,
+        )
+    if window.provenance == WINDOW_FROM_DEFAULT and _CUSTOM_BASE_URL:
+        logger.warning(
+            "custom_endpoint_default_ctx model=%s ctx=%d hint=set_VULTURE_LLM_CTX_SIZE",
+            window.model, window.resolved,
+        )
 
 
 def publish_llm_window(model: str | None = None) -> dict:
@@ -405,6 +434,7 @@ def publish_llm_window(model: str | None = None) -> dict:
 
     window = effective_context_window(model)
     source = current_context_window_source()
+    _warn_window(window)
     if window.provenance == WINDOW_FROM_FAMILY:
         # Once per run here, not per resolution: the resolver is on the hot
         # path of every per-batch budget and logged this line each time.

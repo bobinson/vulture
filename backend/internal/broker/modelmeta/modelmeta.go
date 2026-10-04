@@ -133,16 +133,33 @@ func ResolveContextWindowWithSource(model, override string) (int, string) {
 
 // ResolveMeasuredContextWindow is the full resolution chain (0074 §5.1(a)):
 // env (a valid positive override), else probe (a positive measured loaded
-// window), else the registry (table | family | default). measured <= 0 means
-// nothing was measured.
+// window no larger than MaxRegistryWindow), else the registry (table | family
+// | default). measured <= 0, or above the registry maximum, means nothing
+// usable was measured.
 func ResolveMeasuredContextWindow(model, override string, measured int) (int, string) {
 	if n, ok := parseOverride(override); ok {
 		return n, SourceEnv
 	}
-	if measured > 0 {
+	if measured > 0 && measured <= MaxRegistryWindow {
 		return measured, SourceProbe
 	}
 	return contextWindowWithSource(model)
+}
+
+// MaxRegistryWindow is the largest window the registry knows (table or
+// family). A measured window above it is not a value (0074 #13): a probe may
+// correct the registry, never raise the window without bound.
+var MaxRegistryWindow = registryMax()
+
+func registryMax() int {
+	m := DefaultContextWindow
+	for _, w := range contextWindows {
+		m = max(m, w)
+	}
+	for _, f := range modelFamilyCtx {
+		m = max(m, f.ctx)
+	}
+	return m
 }
 
 // parseOverride reads a VULTURE_LLM_CTX_SIZE value: a positive integer (after

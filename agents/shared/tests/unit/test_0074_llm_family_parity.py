@@ -43,3 +43,41 @@ def test_python_llm_family_rule_agrees_with_go(case):
         f"provenance={case['provenance']!r}: Go isLLMProvenance says is_llm={case['is_llm']}, "
         "so the Python deterministic predicate must say the opposite"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Review item 7 — every Python reader of the rule iterates the shared fixture
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("case", _cases(), ids=lambda c: repr(c["provenance"]))
+def test_is_llm_provenance_agrees_with_go(case):
+    """The rule itself, not only its deterministic complement."""
+    from shared.provenance import is_llm_provenance
+
+    assert is_llm_provenance(case["provenance"]) is case["is_llm"]
+
+
+@pytest.mark.parametrize("case", _cases(), ids=lambda c: repr(c["provenance"]))
+def test_result_helper_uses_the_one_rule(case):
+    """``tests.support.agent_run.llm_rows`` — the helper every 0074 counter test
+    reads the result through — classifies exactly as Go does."""
+    from tests.support.agent_run import llm_rows
+
+    payload = {"findings": [{"provenance": case["provenance"]}]}
+    assert bool(llm_rows(payload)) is case["is_llm"]
+
+
+@pytest.mark.parametrize("case", [c for c in _cases() if c["provenance"]],
+                         ids=lambda c: repr(c["provenance"]))
+def test_agent_dedup_records_merged_llm_by_the_one_rule(case):
+    """C3 + O1: a dropped row is recorded on a skill survivor iff its
+    provenance is LLM-family. (A row with NO provenance reaching the agent's
+    dedup is an LLM row by construction — the tag is set after it — so the
+    empty spelling is not a dedup case.)"""
+    from shared.audit_runner import _deduplicate_findings
+
+    base = [{"check_id": "c", "file_path": "a.py", "provenance": "skill"}]
+    _deduplicate_findings(base, [{"check_id": "c", "file_path": "a.py",
+                                  "provenance": case["provenance"]}])
+    assert ("merged_llm" in base[0]) is case["is_llm"]

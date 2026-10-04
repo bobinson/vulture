@@ -74,7 +74,8 @@
     "provenance": "Herkunft",
     "provenanceFamily": {
       "llm_family": "LLM (alle)",
-      "both": "Beide Stufen"
+      "both": "Beide Stufen",
+      "bothNotRecorded": "Für dieses Audit wurden keine Herkunftsstufen erfasst, daher kann keine Zeile als von beiden Stufen gemeldet erscheinen."
     },
     "anchor": {
       "title": "Verankerung",

@@ -73,6 +73,8 @@ jobs:
         run: sh scripts/tests/test_check_ssh_version.sh
       - name: db DSN host/internal port wiring tests
         run: sh scripts/tests/test_db_dsn_wiring.sh
+      - name: LM Studio loaded-window detector tests (0074)
+        run: sh scripts/tests/test_lmstudio_window.sh
 
   build-backend:
     runs-on: ubuntu-latest
@@ -319,7 +321,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
-    needs: [test-backend, test-agents, test-frontend]
+    needs: [test-backend, test-agents, test-mcp, test-frontend]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # NOTE: deliberately NOT using docker/setup-buildx-action. It creates an

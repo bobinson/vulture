@@ -74,7 +74,8 @@
     "provenance": "検出元",
     "provenanceFamily": {
       "llm_family": "LLM（すべて）",
-      "both": "両方の階層"
+      "both": "両方の階層",
+      "bothNotRecorded": "この監査では検出元の階層が記録されていないため、両方の階層が報告した行は表示できません。"
     },
     "anchor": {
       "title": "アンカー",

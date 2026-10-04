@@ -26,7 +26,12 @@ func EnvFlag(name string, def bool) bool {
 
 // ParseFlag is EnvFlag on a value already read: on/true/1/yes are true,
 // off/false/0/no are false (case-insensitive, surrounding whitespace ignored),
-// and anything else yields def. The one token list every Go flag reader uses.
+// and anything else yields def. The token list for every Go reader of a
+// switch the Python agents also read (they use shared.env.env_flag), so the
+// two runtimes cannot disagree about it. Backend-only, security-gating
+// switches (VULTURE_LOCAL_MODE, VULTURE_READONLY, VULTURE_API_KEYS_ENABLED,
+// VULTURE_REQUIRE_LLM, …) deliberately keep their strict `== "true"` reads:
+// widening what turns them on would loosen a security boundary.
 func ParseFlag(v string, def bool) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "on", "true", "1", "yes":

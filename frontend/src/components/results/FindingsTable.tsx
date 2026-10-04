@@ -13,7 +13,7 @@ import { ProvenanceChip } from "./ProvenanceChip.tsx";
 import { FindingOwaspChips } from "./OwaspChip.tsx";
 import { ChipGroup } from "@/components/shared/ChipGroup.tsx";
 import { AnchorResult } from "@/components/shared/AnchorResult.tsx";
-import { PROVENANCE_BOTH, PROVENANCE_LLM_FAMILY } from "@/lib/provenance.ts";
+import { PROVENANCE_BOTH, PROVENANCE_LLM_FAMILY, originsRecorded } from "@/lib/provenance.ts";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import { findingToMarkdown } from "@/lib/markdown.ts";
@@ -37,6 +37,11 @@ interface FindingsTableProps {
    * page can re-read what the triage changed server side (OWASP coverage).
    */
   onLineageSaved?: () => void;
+  /**
+   * Feature 0074: the audit's `origins_recorded` flag (GET /api/audits/{id}).
+   * Absent (an older backend, or a live stream) => detected from the rows.
+   */
+  originsRecorded?: boolean;
 }
 
 interface OwaspCategoryFilterProps {
@@ -146,7 +151,7 @@ function RowCopyButton({ finding, auditId }: { finding: Finding; auditId?: strin
   );
 }
 
-export function FindingsTable({ findings: allFindings, auditId, proveResults, owaspCategory: controlledCategory, onOwaspCategoryChange, onLineageSaved }: FindingsTableProps) {
+export function FindingsTable({ findings: allFindings, auditId, proveResults, owaspCategory: controlledCategory, onOwaspCategoryChange, onLineageSaved, originsRecorded: originsFlag }: FindingsTableProps) {
   const { t } = useTranslation();
   const [localCategory, setLocalCategory] = useState("all");
   const owaspCategory = controlledCategory ?? localCategory;
@@ -202,6 +207,12 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     return Array.from(set).sort();
   }, [allFindings]);
 
+  // 0074 — the agent filter on the shared ChipGroup, "All" first.
+  const agentItems = useMemo(() => [
+    { value: "all", label: t("results.all") },
+    ...agentTypes.map((at) => ({ value: at, label: agentLabel(at, t) })),
+  ], [agentTypes, t]);
+
   // Feature 0058 (R6) — distinct detection tiers among findings.
   // Untagged findings form their own group, so the filter row only
   // renders when it can actually narrow (>1 group).
@@ -224,6 +235,14 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     { value: PROVENANCE_BOTH, label: t("results.provenanceFamily.both") },
     ...provenanceTiers.map((tier) => ({ value: tier, label: tier })),
   ], [provenanceTiers, t]);
+
+  // 0074 (#35) — "Both tiers" is decided by validation.provenance_origins; an
+  // audit whose findings never recorded them selects nothing, which must read
+  // as "not recorded", not as "never corroborated".
+  const bothNotRecorded = useMemo(
+    () => filterProvenance === PROVENANCE_BOTH && !originsRecorded(allFindings, originsFlag),
+    [filterProvenance, allFindings, originsFlag],
+  );
 
   // Feature 0096 — OWASP categories among the findings' labels. Empty for a
   // pre-0096 audit (its OWASP rows carry no labels), which hides the filter.
@@ -337,35 +356,14 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
         )}
         {/* Agent type filter — only show when multiple agents */}
         {agentTypes.length > 1 && (
-          <div className="flex items-center gap-2" data-testid="agent-filter">
-            <span className="text-[11px] text-muted-light">{t("results.agent")}:</span>
-            <div className="flex gap-1">
-              <button
-                type="button"
-                className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
-                  filterAgent === "all"
-                    ? "bg-foreground text-surface"
-                    : "text-muted hover:text-foreground hover:bg-cream-dark"
-                }`}
-                onClick={() => setFilterAgent("all")}
-              >
-                {t("results.all")}
-              </button>
-              {agentTypes.map((at) => (
-                <button
-                  key={at}
-                  type="button"
-                  className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
-                    filterAgent === at
-                      ? "bg-foreground text-surface"
-                      : "text-muted hover:text-foreground hover:bg-cream-dark"
-                  }`}
-                  onClick={() => setFilterAgent(at)}
-                >
-                  {agentLabel(at, t)}
-                </button>
-              ))}
-            </div>
+          <div>
+            <ChipGroup
+              legend={t("results.agent")}
+              items={agentItems}
+              value={filterAgent}
+              onChange={setFilterAgent}
+              testId="agent-filter"
+            />
           </div>
         )}
         {/* 0058 (R6) — provenance filter, mirroring the agent filter.
@@ -381,6 +379,11 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
               onChange={setFilterProvenance}
               testId="provenance-filter"
             />
+            {bothNotRecorded && (
+              <p className="mt-1 text-[11px] text-muted-light italic" role="status" data-testid="provenance-both-not-recorded">
+                {t("results.provenanceFamily.bothNotRecorded")}
+              </p>
+            )}
           </div>
         )}
         {/* Shown while a category is active even when no finding carries
@@ -630,7 +633,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
                             {finding.line_start ? `:${finding.line_start}` : ""}
                             {finding.line_end && finding.line_end !== finding.line_start ? `-${finding.line_end}` : ""}
                           </div>
-                          <AnchorResult validation={finding.validation} />
+                          <AnchorResult validation={finding.validation} lineStart={finding.line_start} />
                           {(finding.check_id || finding.fingerprint) && (
                             <div className="flex items-center gap-3 text-[11px] text-muted-light">
                               {finding.check_id && (

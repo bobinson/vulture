@@ -45,6 +45,11 @@ type Audit struct {
 	CancelReason string     `json:"cancel_reason,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	// OriginsRecorded (feature 0074) is set only on GET /api/audits/{id}: true
+	// when any finding records validation.provenance_origins, so a client can
+	// tell "provenance=both selected nothing" from "this audit (pre-0074)
+	// cannot answer both". Computed over the full set, before any filter.
+	OriginsRecorded *bool `json:"origins_recorded,omitempty"`
 }
 
 type AuditRequest struct {

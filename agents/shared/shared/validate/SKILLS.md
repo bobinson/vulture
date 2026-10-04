@@ -176,3 +176,27 @@ collapse, L4 removal): the share of labelled-real corpus sites, matched on
 `(file_path, line_start, check_id)`, that were emitted and not dismissed.
 `RuleStats.surviving_recall` only sees emitted rows, so it reads such a loss as
 an improvement and must not be cited as a guard for it.
+
+## Tier family is orthogonal to validation (feature 0074 O4)
+
+Feature 0074 adds ways to SELECT rows by which tier produced them: the
+finding's `provenance`, the `llm_family` predicate over it (the provenance,
+trimmed and lower-cased, starts with `llm`: `llm`, `llm_l5_verified`; not
+`skill_llm` or `semgrep-llm`), the `both` predicate, and `validation.provenance_origins` (every
+provenance a cross-agent or same-agent merge absorbed; grouping provenances
+such as `catalog_rollup` count as neither family). None of these is a
+validation input:
+
+- No check in L1–L5 reads `provenance`, `llm_family`, `both` or
+  `provenance_origins`, and the voter never weighs them. A row's
+  `validation_status` and `validation_confidence` are exactly what they would
+  be without 0074.
+- Being found by both tiers confers **no** confidence. Corroboration across
+  tiers is a reporting fact for triage and filtering, not evidence; a
+  `both` row can still be `likely_false_positive`, and an LLM-only row can
+  still be `confirmed`.
+- `merged_descriptions` and `merged_llm` (the absorbed rows' text) are
+  recorded for audit only; no layer re-reads them.
+
+These fields filter rows (`?provenance=llm_family|both`, the MCP and UI
+filters); they never move a verdict.

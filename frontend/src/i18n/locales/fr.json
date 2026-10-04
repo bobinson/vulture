@@ -74,7 +74,8 @@
     "provenance": "Provenance",
     "provenanceFamily": {
       "llm_family": "LLM (tous)",
-      "both": "Les deux niveaux"
+      "both": "Les deux niveaux",
+      "bothNotRecorded": "Les niveaux d'origine n'ont pas été enregistrés pour cet audit : aucune ligne ne peut apparaître comme signalée par les deux niveaux."
     },
     "anchor": {
       "title": "Ancrage",

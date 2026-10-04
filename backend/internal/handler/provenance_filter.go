@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/vulture/backend/internal/model"
@@ -32,9 +34,10 @@ func filterFindingsByProvenance(audit *model.Audit, value string) {
 	audit.Findings = selectFindings(audit.Findings, value)
 }
 
-// selectFindings returns the rows of findings the filter value selects.
+// selectFindings returns the rows of findings the filter value selects. It
+// appends from nil, so a filter that selects little allocates little (#41).
 func selectFindings(findings []model.Finding, value string) []model.Finding {
-	kept := make([]model.Finding, 0, len(findings))
+	var kept []model.Finding
 	for _, f := range findings {
 		if provenanceFilterSelects(f, value) {
 			kept = append(kept, f)
@@ -97,10 +100,82 @@ func (t *tierSpan) addEntries(entries []interface{}) {
 	}
 }
 
-// originTier is an origin's family by model.TierOf; a blank origin is no tier.
+// groupingProvenances name a row that GROUPED others (the rollup parent), not
+// a tier that detected anything (0074 C11). As an origin such a value is
+// neither family, so a rollup spans both tiers only when its leaves do. The
+// UI (lib/provenance.ts) and the MCP tool keep the same one-entry set, pinned
+// by testdata/provenance_filter_cases_0074.json.
+var groupingProvenances = map[string]bool{"catalog_rollup": true}
+
+// originTier is an origin's family by model.TierOf; a blank origin or a
+// grouping provenance is no tier.
 func originTier(origin string) string {
-	if strings.TrimSpace(origin) == "" {
+	norm := strings.ToLower(strings.TrimSpace(origin))
+	if norm == "" || groupingProvenances[norm] {
 		return ""
 	}
-	return model.TierOf(origin)
+	return model.TierOf(norm)
+}
+
+// markOriginsRecorded stamps whether any finding records its contributing
+// tiers (0074 #35). Without it an empty provenance=both answer on a pre-0074
+// audit reads as "never corroborated" when the audit simply cannot say.
+func markOriginsRecorded(audit *model.Audit) {
+	if audit == nil {
+		return
+	}
+	recorded := slices.ContainsFunc(audit.Findings, hasProvenanceOrigins)
+	audit.OriginsRecorded = &recorded
+}
+
+func hasProvenanceOrigins(f model.Finding) bool {
+	_, ok := f.Validation["provenance_origins"]
+	return ok
+}
+
+// detailFull is the GET /api/audits/{id}?detail= value that serves the merge
+// record (validation.merged_descriptions) a default response leaves out.
+const detailFull = "full"
+
+// mergeDetailKeys are the validation keys only ?detail=full serves (0074 #15):
+// a debugging record no client renders, large on merged-heavy audits.
+var mergeDetailKeys = []string{"merged_descriptions", "merged_descriptions_dropped"}
+
+// omitMergeDetail drops the merge record from each finding's validation blob
+// unless detail is "full". A fresh slice and cloned blobs are built, so the
+// service's findings are never written through.
+func omitMergeDetail(audit *model.Audit, detail string) {
+	if !servesMergeDetailToOmit(audit, detail) {
+		return
+	}
+	out := make([]model.Finding, len(audit.Findings))
+	for i, f := range audit.Findings {
+		f.Validation = withoutMergeDetail(f.Validation)
+		out[i] = f
+	}
+	audit.Findings = out
+}
+
+// servesMergeDetailToOmit: a default (not detail=full) response holding at
+// least one finding that carries the merge record.
+func servesMergeDetailToOmit(audit *model.Audit, detail string) bool {
+	return detail != detailFull && audit != nil && slices.ContainsFunc(audit.Findings, hasMergeDetail)
+}
+
+func hasMergeDetail(f model.Finding) bool {
+	return slices.ContainsFunc(mergeDetailKeys, func(k string) bool {
+		_, ok := f.Validation[k]
+		return ok
+	})
+}
+
+func withoutMergeDetail(v map[string]interface{}) map[string]interface{} {
+	if !hasMergeDetail(model.Finding{Validation: v}) {
+		return v
+	}
+	out := maps.Clone(v)
+	for _, k := range mergeDetailKeys {
+		delete(out, k)
+	}
+	return out
 }

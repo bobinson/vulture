@@ -163,7 +163,8 @@ type LineageEvidenceUpdate struct {
 	// observed the code — never for `ambiguous`, and never on an error path.
 	IncrementSeen bool
 	// LineStart/LineEnd is the re-anchored window, applied only when
-	// UpdateWindow is set (VULTURE_LLM_QUOTE_REANCHOR).
+	// UpdateWindow is set (the re-anchor gate: VULTURE_LLM_QUOTE_VERIFY=enforce
+	// AND VULTURE_LLM_QUOTE_REANCHOR, config.QuoteReanchorEnabled).
 	LineStart    int
 	LineEnd      int
 	UpdateWindow bool

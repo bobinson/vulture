@@ -394,6 +394,7 @@ function AuditResultsView({ id }: { id: string | undefined }) {
             owaspCategory={owaspCategory}
             onOwaspCategoryChange={setOwaspCategory}
             onLineageSaved={onLineageSaved}
+            originsRecorded={audit?.origins_recorded}
           />
         )}
 

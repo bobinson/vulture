@@ -571,7 +571,8 @@ def test_the_two_forbidden_field_sets_are_disjoint():
     it impossible for an operator to reverse the dedup regression without also
     re-trusting model-authored evidence.
     """
-    from shared.audit_runner import _MODEL_FORBIDDEN_CHECK_ID, _MODEL_FORBIDDEN_SNIPPET
+    from shared.audit_runner import _MODEL_CHECK_ID_FIELD as _MODEL_FORBIDDEN_CHECK_ID
+    from shared.audit_runner import _MODEL_FORBIDDEN_SNIPPET
 
     assert "code_snippet" in _MODEL_FORBIDDEN_SNIPPET
     assert "check_id" in _MODEL_FORBIDDEN_CHECK_ID

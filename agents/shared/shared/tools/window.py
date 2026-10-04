@@ -51,7 +51,7 @@ from collections.abc import Callable, Sequence
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
-from shared.anchor import RANGE_PAST_EOF, int_field, line_range
+from shared.anchor import RANGE_PAST_EOF, int_field, line_range, validation_checks
 from shared.tools.line_format import read_line_number, strip_line_number
 from shared.tools.snippet import extract_snippet
 
@@ -159,17 +159,19 @@ def record_window_reason(finding: dict[str, Any], reason: str) -> None:
 
 
 def window_reason_of(finding: dict[str, Any]) -> str:
-    """Read back the recorded window reason, or "" if none was recorded."""
-    blob = finding.get("validation")
-    if not isinstance(blob, dict):
-        return ""
-    checks = blob.get("checks")
-    if not isinstance(checks, list):
-        return ""
-    for check in checks:
-        if isinstance(check, dict) and check.get("id") == _WINDOW_CHECK:
-            return str(check.get("result", ""))
-    return ""
+    """Read back the recorded window reason, or "" if none was recorded.
+
+    The LAST matching check wins — the one duplicate rule every reader of a
+    ``validation.checks`` list uses (``anchor.anchor_extras``; 0074 review
+    item 20)."""
+    found = ""
+    for check in filter(_is_window_check, validation_checks(finding)):
+        found = str(check.get("result", ""))
+    return found
+
+
+def _is_window_check(check: Any) -> bool:
+    return isinstance(check, dict) and check.get("id") == _WINDOW_CHECK
 
 
 def _row_matches(row: str, expected: str) -> bool:
@@ -272,8 +274,7 @@ def _source_lines(finding: dict[str, Any], source_path: str,
     return deps.read_lines(resolved) if resolved is not None else None
 
 
-def _record_window_start(finding: dict[str, Any], source_path: str,
-                         deps: _Deps) -> None:
+def _record_window_start(finding: dict[str, Any], lines: Sequence[str] | None) -> None:
     """Stamp the window's true first FILE line, decided by reading the file.
 
     One path for both cases, because ``extract_snippet`` is the only producer
@@ -288,14 +289,14 @@ def _record_window_start(finding: dict[str, Any], source_path: str,
     literal reading of the 0089 LLD spec — would have left almost every judged
     finding with no line numbers at all.
 
-    ``read_file_lines`` is ``lru_cache``d and the skill phase has just read
-    these same files, so the confirming read is a cache hit in the ordinary
-    case.
+    ``lines`` are the ones the window stage already read for this row
+    (``_window_reason_for``), so the confirmation costs no second path
+    resolution or read.
     """
     snippet = finding.get("code_snippet")
     if not snippet:
         return
-    start = confirmed_window_start(snippet, _source_lines(finding, source_path, deps) or ())
+    start = confirmed_window_start(snippet, lines or ())
     if start >= 1:
         finding[CODE_SNIPPET_START] = start
 
@@ -315,8 +316,10 @@ def _past_eof(lines: Sequence[str] | None, line_start: int) -> bool:
     the model's claim — over the lines this stage already holds, so no second
     reader and no second definition of "past end of file". Applied to the
     row's FINAL line: a row 0076 re-anchored into the file windows normally.
+    ``lines is not None`` is "readable": an EMPTY readable file has every
+    line past its end, exactly as the anchor stamp says (review item 18).
     """
-    return bool(lines) and line_range(line_start, len(lines)) == RANGE_PAST_EOF
+    return lines is not None and line_range(line_start, len(lines)) == RANGE_PAST_EOF
 
 
 def _attach_window(finding: dict[str, Any], lines: Sequence[str] | None,
@@ -335,35 +338,48 @@ def _attach_window(finding: dict[str, Any], lines: Sequence[str] | None,
         finding["code_snippet"] = snippet
 
 
-def _read_window(finding: dict[str, Any], source_path: str, deps: _Deps,
-                 params: tuple[int, int | None]) -> str:
-    """Read the window for one row; return its window reason.
+def _keeps_carried_window(finding: dict[str, Any], params: tuple[int, int | None]) -> bool:
+    """A row that already carries a window keeps it, except wide-scope classes
+    (``max_chars`` None), which are re-windowed to the line budget."""
+    return params[1] is not None and bool(finding.get("code_snippet"))
 
-    A citation past end of a readable file gets NO window: any window there
-    excludes the cited line, and a judge shown neighbouring code as though it
-    were the accused line is misled. It records ``out_of_range`` — never
-    ``unreadable`` (the file was read) and never ``present``.
-    """
-    line_start = int_field(finding, "line_start")
-    if line_start < 1:
-        return _lineless_reason(finding)
-    lines = _source_lines(finding, source_path, deps)
-    if _past_eof(lines, line_start):
-        return WINDOW_OUT_OF_RANGE
-    _attach_window(finding, lines, line_start, *params)
+
+def _windowed_reason(finding: dict[str, Any], lines: Sequence[str] | None,
+                     line_start: int, deps: _Deps) -> str:
+    """Window an in-range (or unreadable) cited row; return its reason."""
+    params = deps.snippet_params(finding.get("category", "") or "")
+    if not _keeps_carried_window(finding, params):
+        _attach_window(finding, lines, line_start, *params)
     return WINDOW_PRESENT if finding.get("code_snippet") else WINDOW_UNREADABLE
 
 
-def _window_reason_for(finding: dict[str, Any], source_path: str, deps: _Deps) -> str:
-    """Window one row if it needs it; return its window reason.
+class _Windowed(NamedTuple):
+    """One row's window reason and the file lines read to decide it."""
 
-    A row that already carries a window keeps it, except wide-scope classes,
-    which are re-windowed to the line budget.
+    reason: str
+    lines: Sequence[str] | None
+
+
+def _window_reason_for(finding: dict[str, Any], source_path: str, deps: _Deps) -> _Windowed:
+    """Window one row if it needs it; return its reason and the lines read.
+
+    The past-end-of-file test runs BEFORE the carried-window short-circuit
+    (review item 4): a citation past the end of a readable file gets NO window
+    — any window there excludes the cited line, and a judge shown other code as
+    though it were the accused line is misled — so a carried snippet is
+    cleared and the reason is ``out_of_range``, never ``present`` and never
+    ``unreadable`` (the file was read). A row with no cited line has nothing to
+    be past; its carried window stands.
     """
-    params = deps.snippet_params(finding.get("category", "") or "")
-    if params[1] is not None and finding.get("code_snippet"):
-        return WINDOW_PRESENT
-    return _read_window(finding, source_path, deps, params)
+    line_start = int_field(finding, "line_start")
+    if line_start < 1:
+        lines = _source_lines(finding, source_path, deps) if finding.get("code_snippet") else None
+        return _Windowed(_lineless_reason(finding), lines)
+    lines = _source_lines(finding, source_path, deps)
+    if _past_eof(lines, line_start):
+        finding.pop("code_snippet", None)
+        return _Windowed(WINDOW_OUT_OF_RANGE, lines)
+    return _Windowed(_windowed_reason(finding, lines, line_start, deps), lines)
 
 
 def ensure_code_window(
@@ -389,12 +405,12 @@ def ensure_code_window(
     """
     deps = _load_deps()
     for f in findings:
-        reason = _window_reason_for(f, source_path, deps)
+        reason, lines = _window_reason_for(f, source_path, deps)
 
         # Feature 0089 item 4.2: the window's own coordinates, before redaction
         # can alter the bytes the confirmation compares. The L5 render numbers
         # from this instead of re-deriving a start from `line_start`.
-        _record_window_start(f, source_path, deps)
+        _record_window_start(f, lines)
 
         # Mask secret VALUES for secret-bearing CWEs, whether the window was
         # back-filled above OR pre-set by a skill. In the same pass as the read,

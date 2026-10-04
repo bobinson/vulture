@@ -111,8 +111,8 @@ class VultureClient:
             params["status"] = status
         return await self._request("GET", "/api/audits", params=params)
 
-    async def get_audit(self, audit_id: str, wait: bool = False) -> dict:
-        return await self._request("GET", f"/api/audits/{audit_id}", wait=wait)
+    async def get_audit(self, audit_id: str, wait: bool = False, params: dict | None = None) -> dict:
+        return await self._request("GET", f"/api/audits/{audit_id}", wait=wait, params=params)
 
     async def get_comparison(self, audit_id: str) -> dict:
         return await self._request("GET", f"/api/audits/{audit_id}/comparison")
@@ -349,13 +349,28 @@ def _active(*preds):
 # "both" are the two family values. ONE family rule, the same as the backend's
 # isLLMProvenance and the agents' _is_deterministic: a tier is a string,
 # trimmed and lower-cased; a blank tier is no tier; a tier starting with "llm"
-# is the LLM family, any other tier the skill family.
+# is the LLM family, any other tier the skill family. A GROUPING provenance
+# (catalog_rollup) names the rollup that grouped the leaves, not a tier that
+# detected anything, so as an origin it is neither family (C11).
+_SKILL_FAMILY, _LLM_FAMILY = 1, 2
+_BOTH_FAMILIES = _SKILL_FAMILY | _LLM_FAMILY
+_GROUPING_PROVENANCES = frozenset({"catalog_rollup"})
+
+
 def _tier(value) -> str:
     return value.strip().lower() if isinstance(value, str) else ""
 
 
 def _is_llm_tier(tier: str) -> bool:
     return tier.startswith("llm")
+
+
+def _tier_family(value) -> int:
+    """The family bit of one origin: 0 for no tier or a grouping provenance."""
+    tier = _tier(value)
+    if not tier or tier in _GROUPING_PROVENANCES:
+        return 0
+    return _LLM_FAMILY if _is_llm_tier(tier) else _SKILL_FAMILY
 
 
 def _provenance_origins(finding: dict) -> list:
@@ -373,17 +388,41 @@ def _is_llm_family(finding: dict) -> bool:
 def _spans_both_families(finding: dict) -> bool:
     """True when the rows deduplicated into this one came from a skill-family
     tier AND an LLM-family tier."""
-    seen_llm = seen_skill = False
-    for tier in map(_tier, _provenance_origins(finding)):
-        if not tier:
-            continue
-        if _is_llm_tier(tier):
-            seen_llm = True
-        else:
-            seen_skill = True
-        if seen_llm and seen_skill:
-            return True
-    return False
+    seen = 0
+    for origin in _provenance_origins(finding):
+        seen |= _tier_family(origin)
+    return seen == _BOTH_FAMILIES
+
+
+def _origins_recorded(audit: dict, findings: list[dict]) -> bool:
+    """Whether the audit's findings record provenance_origins at all. The API's
+    origins_recorded flag wins; an older backend sends none, so any row whose
+    validation carries the provenance_origins key proves the record exists."""
+    flag = audit.get("origins_recorded")
+    if isinstance(flag, bool):
+        return flag
+    return any(_records_origins(f) for f in findings)
+
+
+def _records_origins(finding: dict) -> bool:
+    """The key's presence, whatever its value: the backend's markOriginsRecorded rule."""
+    validation = finding.get("validation")
+    return isinstance(validation, dict) and "provenance_origins" in validation
+
+
+_ORIGINS_NOT_RECORDED_NOTE = (
+    "This audit's findings record no provenance_origins (the audit predates "
+    "tier-origin recording), so an empty \"both\" result means not recorded, "
+    "not never corroborated.")
+
+
+def _both_marker(provenance: str | None, audit: dict) -> dict:
+    """#35: qualify a "both" result with whether origins were recorded."""
+    if provenance != "both":
+        return {}
+    recorded = _origins_recorded(audit, audit.get("findings") or [])
+    return {"origins_recorded": True} if recorded else {
+        "origins_recorded": False, "note": _ORIGINS_NOT_RECORDED_NOTE}
 
 
 _PROVENANCE_FAMILY_PREDS = {"llm_family": _is_llm_family, "both": _spans_both_families}
@@ -671,7 +710,11 @@ async def vulture_get_findings(
     "llm_l5_verified", "semgrep") matches a finding's provenance literally;
     "llm_family" keeps every finding whose provenance, trimmed and
     lower-cased, starts with "llm"; "both" keeps findings that a skill-family
-    tier and an LLM-family tier both reported (validation.provenance_origins).
+    tier and an LLM-family tier both reported (validation.provenance_origins;
+    a catalog_rollup origin is a grouping, not a tier). A "both" result also
+    carries `origins_recorded`: false (with a `note`) when the audit's findings
+    record no origins, so an empty result there means "not recorded", not
+    "never corroborated".
     The value is case-sensitive; an unknown value selects nothing. It combines
     with the other filters and never changes a finding's validation.
 
@@ -692,7 +735,10 @@ async def vulture_get_findings(
     finding's own category literally (e.g. "CWE-89")."""
     framework, category, edition = _normalize_framework_filter(framework, category, edition)
     client = await _get_client()
-    audit = await client.get_audit(audit_id)
+    # Forward the provenance filter so a current backend selects server side;
+    # the local predicate below still runs, so an older backend that ignores
+    # the parameter yields the same rows.
+    audit = await client.get_audit(audit_id, params={"provenance": provenance} if provenance else None)
     findings = _framework_output(
         _filter_findings(audit.get("findings", []), severity, category, agent_type, framework, edition,
                          provenance),
@@ -710,6 +756,7 @@ async def vulture_get_findings(
         "total": total,
         "has_more": has_more,
         "next_offset": offset + limit if has_more else None,
+        **_both_marker(provenance, audit),
     }
 
 

@@ -279,7 +279,7 @@ To add a new audit type (e.g., GDPR):
 | POST | `/api/sources` | Submit local path or git URL |
 | POST | `/api/audits` | Start audit (source + types + config) |
 | GET | `/api/audits` | List audits |
-| GET | `/api/audits/:id` | Get audit status and results |
+| GET | `/api/audits/:id` | Get audit status and results. Optional `?provenance=` selects rows by tier: an exact provenance value, `llm_family` (provenance trimmed and lower-cased starts with `llm`), or `both` (`validation.provenance_origins` names an LLM-family AND a deterministic origin; `catalog_rollup` counts as neither). The response carries `origins_recorded` (bool) so an empty `both` on a pre-0074 audit reads as "not recorded". An older backend ignores the parameter. |
 | GET | `/api/audits/:id/stream` | SSE stream (live or replay) |
 | GET | `/api/audits/cache` | Check for cached audit results |
 | GET | `/api/agents` | List available agent types |
@@ -420,7 +420,7 @@ VULTURE_LLM_JSON_SALVAGE=true  # Recover whole rows from an array the model neve
 VULTURE_LLM_COERCE_LINES=true  # Coerce `line_start`/`line_end` to int and clamp `line_end >= line_start >= 0`. A model answering `"55"` is otherwise dropped in silence by Go's int unmarshal
 VULTURE_LLM_TRUST_MODEL_SNIPPET=false  # true readmits a model-AUTHORED `code_snippet` as though it were read from source. Off because that string is the model's paraphrase, not evidence. Rollback hatch, not a supported configuration
 VULTURE_LLM_QUOTE_REQUIRED=true  # Both prompt contracts ask for `evidence_quote` and the field whitelist admits it; without it a volunteered quote is discarded and anchor verification is undecidable. The quote never egresses in any configuration
-VULTURE_LLM_QUOTE_VERIFY=enforce  # `off` / `observe` / `enforce` (default since 0074; blank = default). Both record an anchor status (exact/reanchored/ambiguous/near_miss/absent/...) in the validation blob; `observe` changes nothing else, `enforce` ARMS the two actuators below, each still gated by its own switch
+VULTURE_LLM_QUOTE_VERIFY=enforce  # `off` / `observe` / `enforce` (default since 0074), case-insensitive; blank = default, false/0/no/off = `off`, any other value = default plus a one-time warning. Read by the agents AND the backend lineage scan (its window move = `enforce` AND QUOTE_REANCHOR, the agent's own conjunction); compose forwards it to both, passed through empty. Both record an anchor status (exact/reanchored/ambiguous/near_miss/absent/...) in the validation blob; `observe` changes nothing else, `enforce` ARMS the two actuators below, each still gated by its own switch
 VULTURE_LLM_QUOTE_REANCHOR=true  # The LINE actuator; requires `enforce`. ON by default since 0074; runtime rollback `VULTURE_LLM_QUOTE_REANCHOR=false` (false/0/no/off; blank or a typo keeps the default). Rewrites `line_start`/`line_end` when the quote is found elsewhere in the cited file (status `reanchored`), retaining `claimed_line`, and only within QUOTE_MAX_DELTA.
 VULTURE_LLM_QUOTE_DEMOTE_ABSENT=false  # The ONLY demoting actuator; requires `enforce`. true gives status `absent` weight -1.0 AND puts `anchor` in AUTHORITATIVE_CHECKS.
 VULTURE_LLM_QUOTE_KEEP_TEXT=false  # true retains a REDACTED copy of the quote (the same `_redact_snippet` `code_snippet` already gets) in the validation extras, for offline debugging of the verifier.
@@ -435,7 +435,7 @@ VULTURE_LLM_QUOTE_RADIUS=25  # Lines. When a quote matches in several places, th
 VULTURE_LLM_QUOTE_MAX_DELTA=200  # Absolute ceiling, in lines, on how far re-anchoring may move a finding. A 200+ line correction is likelier a coincidental match than a corrected claim, so beyond it the line is left where the model put it
 VULTURE_LLM_QUOTE_NEAR_MISS_MIN=0.6  # Similarity at or above which a non-matching window is `near_miss` rather than `absent` — the model reformatted rather than invented.
 
-VULTURE_FINDING_WINDOW_PARITY=true  # Records WHY a finding has no code window, as a zero-weight `window` check inside the existing `validation` blob: inherited / rollup_parent / no_code_location / unreadable / no_line / present.
+VULTURE_FINDING_WINDOW_PARITY=true  # Records WHY a finding has no code window, as a zero-weight `window` check inside the existing `validation` blob: inherited / rollup_parent / no_code_location / unreadable / no_line / present / out_of_range (= the anchor stamp's `past_eof`: the file was read but the cited line is past its end, so the row gets no window and keeps no snippet).
 VULTURE_AGENT_MAX_AUDIT_SECONDS=900  # whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Keep this at or below VULTURE_AGENT_PROXY_TIMEOUT_SEC - VULTURE_LLM_CALL_TIMEOUT_SEC. 0 disables
 VULTURE_LLM_CALL_TIMEOUT_SEC=  # per-LLM-call/per-batch timeout so a hung model can't starve the between-batch cancel/deadline checks.
 VULTURE_AUDIT_EXECUTOR_WORKERS=8  # dedicated audit-producer thread pool size = per-agent concurrent-audit cap
@@ -453,11 +453,13 @@ Events emitted during an audit stream:
 
 | Event | Description |
 |-------|-------------|
-| `agent_start` | Audit begins (run_id) |
+| `agent_start` | Audit begins (run_id). Optional `llm_window` `{resolved, effective, provenance, source, model}` on an LLM run (absent on a skills-only run or from an older agent); the only `agent_start` key Go forwards, as `llmWindow` on `StepStarted` |
 | `thinking` | Text messages (progress, context, status) |
-| `finding` | Individual finding (severity, title, file, etc.) |
+| `finding` | Individual finding (severity, title, file, etc.). Optional `merged_llm` `[{provenance, description}]` when the agent's own dedup dropped an LLM row against this deterministic row; Go folds it into `validation.provenance_origins` / `validation.merged_descriptions` and never persists it |
 | `progress` | Files analyzed / total / findings count |
 | `dedup_stats` | Deduplication metrics (findings_deduped, prior_findings_used) |
 | `token_savings` | Token savings from memory context |
-| `result` | Final result (all findings, summary, score) |
+| `result` | Final result (all findings, summary, score). Carries `llm_emitted` / `llm_collapsed_agent` (always sent by a current agent, `0` on a skills-only run; absent from an older agent, which Go logs as `unavailable`, never as `0`) |
 | `agent_end` | Audit completed |
+
+Feature 0074 wire fields are all optional and omitted when empty, so either side may be older (the full table, with version-skew semantics, is in `docs/architecture/agent_protocol.md`, "LLM-tier fields"). Go → agent `/run`: top-level `context_window_source` (`env`/`probe`/`table`/`family`/`default`), sent only beside a positive broker `context_window`; it labels `llm_window.source` and never changes sizing. A finding's `validation` blob may carry `provenance_origins` (distinct contributing provenances), `merged_descriptions` (at most 8 entries of at most 2048 bytes, `truncated` when cut) and `merged_descriptions_dropped`. These are top-level keys, never `checks[]`, so no tier field is ever a voter input.

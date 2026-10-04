@@ -19,6 +19,7 @@ import (
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/service"
+	"github.com/vulture/backend/internal/textutil"
 	"github.com/vulture/backend/pkg/agentregistry"
 )
 
@@ -795,11 +796,12 @@ func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, f
 	}
 }
 
+// truncate caps s at maxLen bytes without splitting a rune, marking a cut.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return textutil.CutAtRune(s, maxLen) + "..."
 }
 
 func generateFindingID(auditID, title, filePath string, index int) string {
@@ -883,8 +885,9 @@ type dedupOutcome struct {
 // how the replay path keeps byte-identical behaviour.
 func dedupCrossAgentDetailed(findings []model.Finding, sourceRoot string) dedupOutcome {
 	if len(findings) <= 1 {
-		// Nothing to merge: the one row there may be (index 0) is kept.
-		return dedupOutcome{kept: findings, llm: tallyLLMRows(findings, map[int]bool{0: true})}
+		// Nothing to merge across agents: the one row there may be (index 0)
+		// is kept, with what its own agent merged folded in (C3).
+		return dedupOutcome{kept: soloSurvivors(findings), llm: tallyLLMRows(findings, map[int]bool{0: true})}
 	}
 	idx := buildDedupIndex(findings, sourceRoot)
 	kept := idx.keptIndices()
@@ -992,7 +995,7 @@ func markShadowed(shadowed map[string]bool, f model.Finding) map[string]bool {
 func mergeSurvivor(f model.Finding, members []int, findings []model.Finding) model.Finding {
 	f.AbsorbedCategories = absorbedCategories(keyLabelSources(members, findings), f)
 	if len(members) < 2 {
-		return f
+		return recordAgentMerges(f, members, findings)
 	}
 	f.CrossAgentOrigins = deduplicateStrings(otherAgents(members, findings, f.AgentType))
 	if f.Provenance == "" {
@@ -1060,6 +1063,16 @@ func absorbedCategories(keyCats []string, survivor model.Finding) []string {
 		}
 	}
 	return out
+}
+
+// newValidationSeed is the validation blob a finding that has none starts
+// from: its own verdict and an empty check list.
+func newValidationSeed(f model.Finding) map[string]interface{} {
+	return map[string]interface{}{
+		"status":     f.ValidationStatus,
+		"confidence": f.ValidationConfidence,
+		"checks":     []interface{}{},
+	}
 }
 
 // applyCrossAgentValidation appends an L3 cross-agent merge check to a
@@ -1328,7 +1341,7 @@ func tieBreakKey(f model.Finding) string {
 //
 // 0076 D5: a deterministic row outranks an `llm` row at equal-or-lower
 // severity. Re-anchoring newly creates these collisions, so the guard ships
-// with it. VULTURE_DEDUP_PREFER_DETERMINISTIC=false restores 0075 behaviour.
+// with it. The preference is hard-wired; no switch restores 0075 behaviour.
 // Scope is exactly llm-vs-deterministic: det-vs-det (feature 0058 R6) and
 // llm-vs-llm merges are left to the detail score, as is any collision
 // involving a rollup parent (feature 0045 keeps parents ahead of members).

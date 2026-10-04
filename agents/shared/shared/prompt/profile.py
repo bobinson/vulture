@@ -171,16 +171,15 @@ def profile_for(model: str | None = None) -> ModelProfile:
     later run of the same model. ``ctx_window`` is the EFFECTIVE window
     (``provider.effective_context_window``), the same one the per-batch source
     budget uses, so the prompt budget and the source budget cannot disagree.
+
+    The window is resolved for the caller's RAW key, exactly as the source
+    budget and ``publish_llm_window`` resolve it; ``get_model``'s route-wrapped
+    string (``litellm/openai/...`` behind a custom endpoint) is used for the
+    family lookup only, so a table key never falls through to a guess here.
     """
     from shared.llm.provider import effective_context_window, get_model
 
-    resolved = get_model(model)
-    family = _family_of(resolved)
-    window = effective_context_window(resolved)
+    family = _family_of(get_model(model))
+    window = effective_context_window(model)
     return ModelProfile(family=family, ctx_window=window.effective,
                         ctx_provenance=window.provenance, **MODEL_PROFILES[family])
-
-
-# ``profile_for.cache_clear()`` is the established reset (test suites call it);
-# it clears the only cache left, the per-model family lookup.
-profile_for.cache_clear = _family_of.cache_clear  # type: ignore[attr-defined]

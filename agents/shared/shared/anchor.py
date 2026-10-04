@@ -33,6 +33,7 @@ Every numeric knob is read at CALL time (D14), never captured at import.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Iterator, Sequence
@@ -42,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.env import env_truthy
+from shared.lines import parse_line
 from shared.tools.line_format import strip_line_number
 
 __all__ = [
@@ -65,6 +67,7 @@ __all__ = [
     "max_delta",
     "normalise",
     "tokens",
+    "validation_checks",
     "verify_anchor",
     "windows",
 ]
@@ -141,12 +144,19 @@ def _knob(name: str) -> float:
 
     A knob captured at import cannot be flipped by an operator mid-fleet, and cannot
     be exercised by a test that does not reload the module.
+
+    Only a finite, non-negative number is a knob value (0074 review item 17):
+    ``nan``, ``inf`` (or ``1e400``) and negatives fall back to the default — one
+    of them otherwise turned every anchor into ``unreadable/verifier_error`` or
+    silently disabled re-anchoring. Zero is kept: it is a deliberate setting
+    (``MAX_DELTA=0`` records a candidate but never moves a line).
     """
     raw = os.getenv(f"VULTURE_LLM_QUOTE_{name}", "").strip()
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         return _KNOB_DEFAULTS[name]
+    return value if math.isfinite(value) and value >= 0 else _KNOB_DEFAULTS[name]
 
 
 def _knob_int(name: str) -> int:
@@ -565,11 +575,10 @@ def as_int(value: Any) -> int:
 
     The ONE lenient line parser shared by the verifier, the window stage and
     the claim probe, so "no usable line" means the same thing in all three.
+    Delegates to ``shared.lines.parse_line`` (0074 review item 9): ``bool``,
+    NaN and Infinity are no line, and nothing here raises.
     """
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+    return parse_line(value)
 
 
 def int_field(finding: dict, name: str) -> int:
@@ -586,7 +595,7 @@ def anchor_extras(finding: dict | None) -> dict:
     check wins.
     """
     found: Any = None
-    for check in filter(_is_anchor_check, _validation_checks(finding)):
+    for check in filter(_is_anchor_check, validation_checks(finding)):
         found = check.get("extras")
     return found if isinstance(found, dict) else {}
 
@@ -595,7 +604,7 @@ def _is_anchor_check(check: Any) -> bool:
     return isinstance(check, dict) and check.get("id") == ANCHOR_CHECK_ID
 
 
-def _validation_checks(finding: dict | None) -> list:
+def validation_checks(finding: dict | None) -> list:
     """The finding's persisted ``validation.checks`` list, or ``[]``."""
     blob = (finding or {}).get("validation")
     checks = blob.get("checks") if isinstance(blob, dict) else None

@@ -24,11 +24,11 @@ Every fixture is synthetic. No model, no network.
 from __future__ import annotations
 
 import pathlib
-import re
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import yaml
 
 # The absent@18 / exact@15-16 collapse fixture is 0076's; reuse it, never copy it.
 from tests.support.dupe_rows import dupe_rows as _dupe_rows
@@ -196,44 +196,79 @@ def test_explicit_observe_still_moves_nothing(monkeypatch, tmp_path):
 
 _REPO = pathlib.Path(__file__).resolve().parents[4]
 
-# The O6 code defaults, normalised. The tests above pin the CODE to this table;
-# the test below pins every compose fallback to it, so the two cannot drift.
-_O6_DEFAULTS = {
-    "VULTURE_LLM_QUOTE_VERIFY": "enforce",
-    "VULTURE_LLM_QUOTE_REANCHOR": "true",
-    "VULTURE_LLM_QUOTE_DEMOTE_ABSENT": "false",
+_VERIFY = "VULTURE_LLM_QUOTE_VERIFY"
+_REANCHOR = "VULTURE_LLM_QUOTE_REANCHOR"
+_DEMOTE = "VULTURE_LLM_QUOTE_DEMOTE_ABSENT"
+
+# Which quote switches each runtime's CODE reads, keyed by the compose build
+# context that ships that code. The agents read all three. The Go backend reads
+# VERIFY and REANCHOR: its lineage re-anchor gate is the agent's own conjunction
+# (VERIFY == enforce AND REANCHOR), so a rollback set in `.env` must reach it
+# too, or the backend keeps moving lineage windows the agents no longer move.
+_READERS = {
+    "./agents": (_VERIFY, _REANCHOR, _DEMOTE),
+    "./backend": (_VERIFY, _REANCHOR),
 }
-_BOOL_TOKENS = {**dict.fromkeys(("true", "1", "yes", "on"), "true"),
-                **dict.fromkeys(("false", "0", "no", "off"), "false")}
-# A `${VAR:-fallback}` for one of the three quote switches, on one line.
-_FALLBACK_RE = re.compile(r"\$\{(" + "|".join(_O6_DEFAULTS) + r"):-([^}\n]*)\}")
 
 
-def _normalised(value: str) -> str:
-    raw = value.strip().lower()
-    return _BOOL_TOKENS.get(raw, raw)
+def _compose_files() -> list[pathlib.Path]:
+    files = sorted(_REPO.glob("docker-compose*.yml"))
+    assert _REPO.joinpath("docker-compose.yml") in files, "repo root not found"
+    return files
 
 
-def _compose_drift() -> Iterator[str]:
-    """A report line for every compose fallback that disagrees with its O6
-    code default, as ``file:line VAR='value' (code default 'x')``."""
-    for path in sorted(_REPO.glob("docker-compose*.yml")):
-        text = path.read_text()
-        for match in _FALLBACK_RE.finditer(text):
-            var, val = match[1], match[2]
-            if _normalised(val) != _O6_DEFAULTS[var]:
-                line = text.count("\n", 0, match.start()) + 1
-                yield f"{path.name}:{line} {var}={val!r} (code default {_O6_DEFAULTS[var]!r})"
+def _split_entry(item: str) -> tuple[str, str]:
+    """One list-form `NAME=value` entry as (name, value)."""
+    name, _, value = item.partition("=")
+    return name, value
 
 
-def test_compose_fallbacks_equal_the_o6_code_defaults():
+def _env_pairs(env: list[str] | dict[str, Any]) -> Iterator[tuple[str, Any]]:
+    """`environment` entries, list or mapping form, as (name, value) pairs."""
+    return iter(env.items()) if isinstance(env, dict) else map(_split_entry, env)
+
+
+def _env_of(service: dict[str, Any]) -> dict[str, str]:
+    """A service's `environment` as {name: raw value}."""
+    return {k: str(v) for k, v in _env_pairs(service.get("environment", []))}
+
+
+def _build_context(service: dict[str, Any]) -> str:
+    return service.get("build", {}).get("context", "")
+
+
+def _pinned(env: dict[str, str]) -> Iterator[str]:
+    """Each quote switch `env` forwards with anything but an empty fallback."""
+    for var in (_VERIFY, _REANCHOR, _DEMOTE):
+        if env.get(var, f"${{{var}:-}}") != f"${{{var}:-}}":
+            yield f"{var}={env[var]!r}"
+
+
+def _services() -> Iterator[tuple[str, tuple[str, ...], dict[str, str]]]:
+    """(``file:service``, the quote switches its code reads, its environment)."""
+    for path in _compose_files():
+        doc = yaml.safe_load(path.read_text())
+        for name, svc in doc["services"].items():
+            yield f"{path.name}:{name}", _READERS.get(_build_context(svc), ()), _env_of(svc)
+
+
+def test_compose_forwards_each_quote_switch_to_every_service_that_reads_it():
+    """O6 rollback reach (#2, #26). A switch the code reads but compose never
+    forwards cannot be set from `.env`: the container never sees it, so the
+    runtime rollback (`VULTURE_LLM_QUOTE_REANCHOR=false`) silently stops at the
+    services that lack the entry. Every reader must receive every switch."""
+    missing = [f"{where} lacks {var}"
+               for where, reads, env in _services() for var in set(reads) - env.keys()]
+    assert not missing, "a quote-switch reader is never sent the switch:\n" + "\n".join(missing)
+
+
+def test_compose_passes_the_quote_switches_through_empty():
     """O6 in the shipped deployment (Mode A/B, `docker compose up`).
 
-    A `${VAR:-x}` fallback is not a default the code can override: compose
-    always sets the variable, so every agent receives `x`. A fallback still
-    reading `observe` / `false` would leave the actuator off in the default
-    deployment while every code-level test above is green. Each fallback must
-    equal the code default, or the compose file must stop pinning the switch."""
-    assert _REPO.joinpath("docker-compose.yml").is_file(), "repo root not found"
-    drift = list(_compose_drift())
-    assert not drift, "compose overrides the O6 code default:\n" + "\n".join(drift)
+    A `${VAR:-x}` fallback is a second copy of the default: compose always sets
+    the variable, so every container receives `x` and the code default is never
+    consulted. Both runtimes already resolve a BLANK value to their own default,
+    exactly as for the eight numeric QUOTE_* knobs, so each switch is passed
+    through empty (`${VAR:-}`) and the code stays the single source of truth."""
+    pinned = [f"{where} {entry}" for where, _reads, env in _services() for entry in _pinned(env)]
+    assert not pinned, "compose pins a copy of a quote-switch default:\n" + "\n".join(pinned)

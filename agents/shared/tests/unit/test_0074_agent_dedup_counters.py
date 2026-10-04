@@ -208,3 +208,102 @@ def test_title_and_path_collision_with_a_skill_row_is_counted(monkeypatch, tmp_p
     llm_titles = {f["title"] for f in llm_rows(payload)}
     assert TITLE_ONLY_SKILL_TITLE not in llm_titles, "precondition: the (title, path) collapse happens"
     assert (payload.get("llm_emitted"), payload.get("llm_collapsed_agent")) == (2 * script.calls, script.calls)
+
+
+# --------------------------------------------------------------------------- #
+# Review item 3 (contract C3) — what the agent's skill/LLM collapse swallowed
+# --------------------------------------------------------------------------- #
+
+
+def _skill_survivor(payload: dict) -> dict:
+    return next(f for f in payload["findings"] if f.get("check_id") == SKILL_CHECK_ID
+                and f.get("provenance") == "skill")
+
+
+def test_skill_survivor_records_the_collapsed_llm_row(check_id_run):
+    """C3: the skill row an LLM row collapsed onto carries `merged_llm`, one
+    entry per DISTINCT dropped (provenance, description), so Go can fold the
+    LLM tier into provenance_origins and merged_descriptions."""
+    payload, _ = check_id_run
+    assert _skill_survivor(payload).get("merged_llm") == [
+        {"provenance": "llm", "description": "model reasoning"},
+    ]
+
+
+def test_llm_survivors_never_carry_merged_llm(check_id_run):
+    """C3: an LLM row collapsing onto an LLM row (the cross-batch repeat) is
+    not a tier merge; only a deterministic survivor records one."""
+    payload, _ = check_id_run
+    assert not [f for f in llm_rows(payload) if "merged_llm" in f]
+
+
+def test_merged_llm_absent_when_nothing_collapsed(llm_env):
+    """C3: omitted when empty — a skills-only run never carries the field."""
+    src, _ = llm_env
+    payload = _run(src, "0074-no-merge", use_llm=False)
+    assert not [f for f in payload["findings"] if "merged_llm" in f]
+
+
+@pytest.mark.parametrize(("survivor_prov", "dropped_prov", "recorded"), [
+    ("skill", None, True),           # an unstamped row in `new` is an LLM row
+    ("skill", "llm", True),
+    ("signature_trusted", "llm_l5_verified", True),
+    ("llm", "llm", False),           # LLM onto LLM: no tier merge
+    ("skill", "skill", False),       # deterministic onto deterministic
+])
+def test_deduplicate_records_only_llm_onto_deterministic(survivor_prov, dropped_prov, recorded):
+    """C3 at the unit: `_deduplicate_findings` decides by the LLM-family rule."""
+    base = [{"check_id": "x.y", "file_path": "a.py", "provenance": survivor_prov,
+             "description": "skill text"}]
+    dropped = {"check_id": "x.y", "file_path": "a.py", "description": "llm text"}
+    dropped.update({"provenance": dropped_prov} if dropped_prov else {})
+    assert audit_runner._deduplicate_findings(base, [dropped]) == []
+    assert ("merged_llm" in base[0]) is recorded
+
+
+# --------------------------------------------------------------------------- #
+# Review item 10 — the counters never understate a loss
+# --------------------------------------------------------------------------- #
+
+
+class _RaisesAfter(_ScriptedBatches):
+    """Batches below ``ok`` answer normally; the next one raises out of the sweep."""
+
+    def __init__(self, rows: Callable[[int], list[dict]], ok: int) -> None:
+        super().__init__(rows)
+        self.ok = ok
+
+    async def __call__(self, *args, **kwargs):
+        if self.calls >= self.ok:
+            raise RuntimeError("synthetic sweep failure")
+        return await super().__call__(*args, **kwargs)
+
+
+def test_emitted_counts_every_row_as_it_is_deduplicated() -> None:
+    """Item 10: `emitted` grows at each batch dedup, before any settle."""
+    tally = audit_runner._LLMDedupTally()
+    rows = [{"title": f"t{i}", "file_path": "a.py"} for i in range(3)]
+    tally.dedup([], rows, "")
+    tally.dedup(rows, [dict(r) for r in rows], "")
+    assert (tally.emitted, tally.collapsed) == (6, 3)
+
+
+def test_settle_does_not_recount_the_sweep_output() -> None:
+    """Item 10: the final dedup only collapses; its rows were counted already."""
+    tally = audit_runner._LLMDedupTally()
+    rows = [{"title": f"t{i}", "file_path": "a.py"} for i in range(3)]
+    kept = tally.dedup([], rows, "")
+    tally.settle([rows[0]], kept, "")
+    assert tally.as_result() == {"llm_emitted": 3, "llm_collapsed_agent": 1}
+
+
+def test_counters_unavailable_when_the_phase_degraded_by_exception(monkeypatch, tmp_path):
+    """Item 10: a sweep that raised after some batches discarded rows Go cannot
+    see; the counters are published as unavailable (absent), never as a
+    balanced ledger that hides the loss."""
+    _llm_env(monkeypatch, tmp_path, _check_id_rows)
+    monkeypatch.setattr(audit_runner, "_collect_llm_findings_async",
+                        _RaisesAfter(_check_id_rows, ok=2))
+    payload = _run(tmp_path, "0074-degraded", use_llm=True)
+    assert payload.get("degraded_reason"), "precondition: the phase degraded"
+    assert "llm_emitted" not in payload and "llm_collapsed_agent" not in payload
