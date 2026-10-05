@@ -40,7 +40,7 @@ BUDGETS (§5, warm ≤ 1.5× and cold ≤ 1.25× of the plan's measured baseline
     |-------------|---------------|-------------|---------------|-------------|
     | juice-shop  | 0.036 s       | 0.054 s     | 0.122 s       | 0.153 s     |
     | vulture     | 0.134 s       | 0.201 s     | 0.266 s       | 0.333 s     |
-    | togetherapp | 0.154 s       | 0.231 s     | 0.500 s       | 0.625 s     |
+    | reference-app | 0.154 s       | 0.231 s     | 0.500 s       | 0.625 s     |
 
 NON-VACUITY
 
@@ -59,7 +59,7 @@ CALIBRATION — the budgets above are reachable on this hardware
         repo          findings    cold     warm
         juice-shop          31   0.121    0.035
         vulture            246   0.268    0.135
-        togetherapp         67   0.489    0.150
+        reference-app         67   0.489    0.150
 
     That reproduces §1's baseline (31/246/67 findings; 0.122/0.036,
     0.266/0.134, 0.500/0.154 s) to within 3%, so the budgets in the table above
@@ -74,7 +74,7 @@ CURRENT NUMBERS — this harness, 2026-09-02, run against the 0087 working tree
         repo          findings    cold   budget          warm   budget
         juice-shop          36   0.236    0.153  OVER   0.149    0.054  OVER
         vulture            388   0.651    0.333  OVER   0.515    0.201  OVER
-        togetherapp         75   1.461    0.625  OVER   1.143    0.231  OVER
+        reference-app         75   1.461    0.625  OVER   1.143    0.231  OVER
 
     All six over budget: warm is 2.8-5.0× the §1 baseline and cold 2.0-3.0×,
     against volumes that have grown (31→36, 246→388, 67→75) rather than fallen
@@ -99,7 +99,7 @@ from pathlib import Path
 N_PROCESSES = 5
 CALLS_PER_PROCESS = 5
 
-# Vacuity floor. Today: juice-shop 31, vulture ~269, togetherapp 67. Set an
+# Vacuity floor. Today: juice-shop 31, vulture ~269, reference-app 67. Set an
 # order of magnitude below the smallest so that §6.4(a)'s ≥40% volume cut cannot
 # trip it, while "the scanner stopped reaching the tree" still does.
 MIN_FINDINGS = 5
@@ -108,7 +108,7 @@ MIN_FINDINGS = 5
 BUDGETS: dict[str, dict[str, float]] = {
     "juice-shop": {"warm": 0.054, "cold": 0.153},
     "vulture": {"warm": 0.201, "cold": 0.333},
-    "togetherapp": {"warm": 0.231, "cold": 0.625},
+    "reference-app": {"warm": 0.231, "cold": 0.625},
 }
 
 # Default locations. Override the parent directory with VULTURE_BENCH_REPO_ROOT,
@@ -266,7 +266,7 @@ def measure_repo(name: str, path: Path) -> RepoResult:
     # gate. Step 9 then widens that gate by nine extensions and says its perf
     # delta must be "measured alone ... attributable to this step only". The two
     # requirements cannot both hold on a repo dominated by the newly-admitted
-    # extensions: on togetherapp the wide gate roughly doubles warm time and
+    # extensions: on reference-app the wide gate roughly doubles warm time and
     # buys +23 findings, and the budget was never restated for it.
     #
     # So the gate is judged on the LIKE-FOR-LIKE population -- the same

@@ -7,7 +7,7 @@ product: cross-agent dedup had simply been awarding those lines to the xss
 agent's specialist row. With xss silenced, CWE's row wins dedup and the same
 two `critical`/`high` rows reappear under a different label.
 
-Measured on togetherapp before this fix: CWE emitted CWE-79 for
+Measured on reference-app before this fix: CWE emitted CWE-79 for
 `frontend/app/AntdRegistry.tsx:22` and `frontend/pages/_document.tsx:86`, the
 exact two lines the other two agents had already been taught to ignore.
 

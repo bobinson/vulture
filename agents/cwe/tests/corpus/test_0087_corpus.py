@@ -9,11 +9,21 @@ Three things the plan asks this file to pin, none of which any other test does:
 Each reference repository is OPTIONAL: absent ones skip with a stated reason
 rather than passing silently, because a green suite that scanned nothing is the
 failure mode this file exists to prevent.
+
+Every repository is scanned at a PINNED COMMIT (``commit`` in
+cwe778_counts.json), exported with ``git archive`` — never its working copy.
+The counts describe one fixed tree, so they move only when detection moves:
+scanning the live checkout made the pins drift with every commit (and every
+untracked file) in the scanned repo, including this one.
 """
 
 from __future__ import annotations
 
+import io
 import json
+import subprocess
+import tarfile
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -26,7 +36,13 @@ from cwe_agent.skills.insufficient_logging_check import (
 )
 
 REPO_PARENT = Path("/home/user/src")
-COUNTS = json.loads((Path(__file__).parent / "cwe778_counts.json").read_text())
+_HERE = Path(__file__).parent
+COUNTS = json.loads((_HERE / "cwe778_counts.json").read_text())
+# Private reference repos are pinned in an UNTRACKED sibling file, merged when
+# present: neither their names nor their commits may enter this public repo.
+_LOCAL = _HERE / "cwe778_counts.local.json"
+if _LOCAL.is_file():
+    COUNTS |= json.loads(_LOCAL.read_text())
 
 # Counts move whenever detection legitimately changes, so the pin is a BAND, not
 # an equality: wide enough that an intentional arm addition does not fail it,
@@ -37,16 +53,48 @@ TOLERANCE = 0.25
 
 
 def _repo(name: str) -> Path:
+    """The pinned snapshot of reference repo ``name``, or a stated skip."""
     path = REPO_PARENT / name
     if not path.is_dir():
         pytest.skip(f"reference repo {name} is not present at {path}")
-    return path
+    snapshot = _export(str(path), COUNTS[name]["commit"])
+    if snapshot is None:
+        pytest.skip(f"pinned commit {COUNTS[name]['commit']} is not in {path}")
+    return snapshot
+
+
+@cache
+def _export(repo: str, commit: str) -> Path | None:
+    """Extract ``commit`` of ``repo`` once per session; None if it is absent."""
+    tar = subprocess.run(["git", "-C", repo, "archive", commit],
+                         capture_output=True, check=False)
+    if tar.returncode != 0:
+        return None
+    dest = _SNAPSHOTS / f"{Path(repo).name}-{commit}"
+    with tarfile.open(fileobj=io.BytesIO(tar.stdout)) as archive:
+        archive.extractall(dest, filter="data")
+    return dest
+
+
+@cache
+def _findings(path: Path) -> tuple[dict, ...]:
+    """The skill's findings on one snapshot path, scanned once per session."""
+    return tuple(check_insufficient_logging(str(path)).get("findings", []))
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _snapshot_root(tmp_path_factory: pytest.TempPathFactory) -> None:
+    global _SNAPSHOTS
+    _SNAPSHOTS = tmp_path_factory.mktemp("corpus_snapshots")
+
+
+_SNAPSHOTS = Path()
 
 
 @pytest.mark.parametrize("name", sorted(COUNTS))
 def test_total_within_band(name: str) -> None:
     expected = COUNTS[name]["total"]
-    found = len(check_insufficient_logging(str(_repo(name))).get("findings", []))
+    found = len(_findings(_repo(name)))
     assert found > 0, f"{name}: scanned to zero findings; the pin is vacuous"
     lo, hi = expected * (1 - TOLERANCE), expected * (1 + TOLERANCE)
     assert lo <= found <= hi, (
@@ -61,7 +109,7 @@ def test_every_pinned_arm_still_fires(name: str) -> None:
     """An arm going to zero is the regression a total cannot show."""
     expected = COUNTS[name]["by_check"]
     assert expected, f"{name}: no arms pinned; the test is vacuous"
-    findings = check_insufficient_logging(str(_repo(name))).get("findings", [])
+    findings = _findings(_repo(name))
     actual: dict[str, int] = {}
     for f in findings:
         key = f.get("check_id") or "rollup"
@@ -77,7 +125,7 @@ def test_go_band_on_backend() -> None:
         pytest.skip("vulture/backend not present")
     rows = [
         f
-        for f in check_insufficient_logging(str(backend)).get("findings", [])
+        for f in _findings(backend)
         if (f.get("check_id") or "").endswith("go_swallow")
     ]
     assert len(rows) <= 250, (

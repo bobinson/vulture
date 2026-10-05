@@ -352,7 +352,7 @@ def _size_status(outcome: AnchorResult, truncated: bool) -> AnchorResult:
         return AnchorResult("unquoted", "oversize_truncated")
     # The status is terminal, but the VERDICT the truncated quote earned is real
     # evidence and must not be thrown away with it. Measured while dogfooding on
-    # togetherapp: 5 of 19 LLM rows were `oversize` and THREE carried delta=0 —
+    # reference-app: 5 of 19 LLM rows were `oversize` and THREE carried delta=0 —
     # their truncated prefix matched exactly at the cited line. Collapsing those
     # into the same bucket as a quote that located nowhere makes a quarter of the
     # tier read as failure when most of it succeeded, and leaves the operator no

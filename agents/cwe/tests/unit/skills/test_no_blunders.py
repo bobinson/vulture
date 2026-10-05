@@ -137,7 +137,7 @@ class TestCWE434Negatives:
     """The full _check_file_upload skill (extension-aware) must NOT
     flag bare-identifier mentions in JSX, GraphQL actions, DB column
     listings, or .d.ts files — the FP class that produced 110 hits on
-    togetherapp."""
+    reference-app."""
 
     @pytest.mark.parametrize("filename, line", [
         ("AvatarInput.tsx", 'import { UploadIcon } from "ui";'),

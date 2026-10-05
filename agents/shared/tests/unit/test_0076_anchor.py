@@ -1132,7 +1132,7 @@ def test_the_fixture_tree_is_complete():
 
 # ── the truncated outcome must survive as evidence, even though the STATUS does not ──
 #
-# Found by dogfooding 0076 on togetherapp: 5 of 19 LLM rows (26%) came back
+# Found by dogfooding 0076 on reference-app: 5 of 19 LLM rows (26%) came back
 # `oversize`, and THREE of them carried `delta=0` — i.e. the truncated 3-line
 # prefix matched EXACTLY at the cited line. They verified. But `_size_status`
 # does `replace(outcome, status="oversize")`, so the histogram cannot tell a

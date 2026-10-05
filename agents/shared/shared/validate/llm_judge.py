@@ -2115,7 +2115,7 @@ def _verdict_to_check(
     # is the only promoter. This is the one falsifiable condition of §5.3 (the
     # citation-grounding conditions 2-4 stay deferred); its exit criterion —
     # window_sufficient plumbed observation-only, distribution published on
-    # real L5-ON runs — is met, and the togetherapp dogfood confirmed a lone
+    # real L5-ON runs — is met, and the reference-app dogfood confirmed a lone
     # no-closure judge was confirming a QA-only FP (VLT-2888). Fails closed on
     # None/False. Weight is unchanged — only the admissibility LABEL differs, so
     # nothing is re-scored and no obligation is manufactured (the two hazards

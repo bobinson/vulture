@@ -1,7 +1,7 @@
 """CWE-89: the template-literal clause must require SQL EVIDENCE, not just a
 DML-looking word.
 
-Measured on a real audit of ~/src/togetherapp (773 findings): of 27 CWE-89 rows,
+Measured on a real audit of ~/src/reference-app (773 findings): of 27 CWE-89 rows,
 19 had no SQL sink anywhere in the file, and 17 of the 25 CRITICAL rows were
 false. Every one of those false rows is an ordinary English log message, a JSX
 prop, or CSS:
