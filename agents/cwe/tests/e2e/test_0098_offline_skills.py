@@ -126,3 +126,80 @@ def test_severity_gate_ignores_below_threshold(tmp_path: Path) -> None:
     )
     # But a `critical` gate does not block a `high` finding:
     assert main(["--root", str(tmp_path), "--severity", "critical", f]) == 0
+
+
+# --- Additional contract coverage: output format, path modes, robustness ------
+
+
+def test_json_format_emits_findings_and_blocking(tmp_path, capsys) -> None:
+    """--format json prints a parseable object with findings + blocking lists."""
+    import json as _json
+
+    f = _write(tmp_path, "frontend/proxy.ts", VULNERABLE_PROXY)
+    main(["--root", str(tmp_path), "--severity", "high", "--format", "json", f])
+
+    out = _json.loads(capsys.readouterr().out)
+    assert "findings" in out and "blocking" in out
+    assert any(
+        x.get("check_id") == "cwe.next_middleware_matcher.bypass"
+        for x in out["blocking"]
+    )
+
+
+def test_root_none_falls_back_to_basename(tmp_path) -> None:
+    """With no root, the file is still scanned (copied under its basename)."""
+    f = _write(tmp_path, "frontend/proxy.ts", VULNERABLE_PROXY)
+
+    findings = scan_files([f], root=None)
+
+    assert any(
+        x.get("check_id") == "cwe.next_middleware_matcher.bypass" for x in findings
+    )
+
+
+def test_missing_file_is_skipped_not_fatal(tmp_path) -> None:
+    """A path that does not exist is ignored rather than crashing the gate."""
+    assert scan_files([str(tmp_path / "does_not_exist.ts")], root=str(tmp_path)) == []
+
+
+def test_one_failing_skill_does_not_sink_the_gate(tmp_path, monkeypatch) -> None:
+    """If a single skill raises, the rest still run and the gate still reports."""
+    from cwe_agent import offline
+
+    def _boom(_root):
+        raise RuntimeError("skill blew up")
+
+    patched = dict(offline.SKILL_MAP)
+    patched["_boom"] = _boom
+    monkeypatch.setattr(offline, "SKILL_MAP", patched)
+
+    f = _write(tmp_path, "frontend/proxy.ts", VULNERABLE_PROXY)
+    findings = offline.scan_files([f], root=str(tmp_path))
+
+    assert any(
+        x.get("check_id") == "cwe.next_middleware_matcher.bypass" for x in findings
+    )
+
+
+def test_extract_normalises_list_and_unknown() -> None:
+    """A skill may return {'findings': [...]}, a bare list, or neither."""
+    from cwe_agent.offline import _extract
+
+    assert _extract({"findings": [{"a": 1}]}) == [{"a": 1}]
+    assert _extract([{"b": 2}]) == [{"b": 2}]
+    assert _extract(None) == []
+
+
+def test_file_outside_root_uses_basename(tmp_path) -> None:
+    """A staged file that is not under --root still scans (basename fallback)."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    f = _write(outside, "proxy.ts", VULNERABLE_PROXY)
+    other_root = tmp_path / "repo"
+    other_root.mkdir()
+
+    findings = scan_files([f], root=str(other_root))
+
+    assert any(
+        x.get("check_id") == "cwe.next_middleware_matcher.bypass" for x in findings
+    )
