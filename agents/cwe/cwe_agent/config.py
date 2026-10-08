@@ -35,6 +35,10 @@ ALL_CATEGORIES: list[str] = [
     # then only from the LLM tier — which put it straight into the next scan's
     # suppression block and let its silence be read as repair.
     "workspace_autorun",
+    # Feature 0097: Next.js middleware config.matcher missing/has auth bypass
+    # (CWE-288 / CVE-2025-29927 class). Deterministic, so it fires in the stop
+    # hook and CI without the LLM tier.
+    "next_middleware_matcher",
 ]
 
 CONFIG_SCHEMA: dict = {
@@ -91,5 +95,6 @@ AGENT_INFO: dict = {
         "secret_scan",
         "plaintext_transmission_check",
         "workspace_autorun_check",
+        "next_middleware_matcher_check",
     ],
 }

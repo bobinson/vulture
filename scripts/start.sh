@@ -29,6 +29,8 @@ Providers:
 Options:
   --embed-url <url>      Embedding endpoint (overrides OPENAI_BASE_URL fallback)
   --embed-model <name>   Embedding model id at that endpoint
+  --tier3, --deep        Widen the LLM sweep to all files, not just skill-flagged
+                         + entry/config (closes the LLM coverage gap; slower)
 
 Examples:
   scripts/vulture.sh dev openai
@@ -241,6 +243,7 @@ VALIDATE_MODEL=""
 USE_BROKER=0
 NO_BROKER=0
 BROKER_BUDGET=""
+WANT_TIER3=0
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -273,6 +276,8 @@ while [[ $# -gt 0 ]]; do
             BROKER_BUDGET="$2"; shift 2 ;;
         --budget=*)
             BROKER_BUDGET="${1#*=}"; shift ;;
+        --tier3|--deep)
+            WANT_TIER3=1; shift ;;
         *)
             POSITIONAL+=("$1"); shift ;;
     esac
@@ -288,6 +293,18 @@ MODEL="${2:-}"
 MODEL="${SCAN_MODEL:-$MODEL}"
 
 load_env
+
+# --tier3/--deep widens the LLM sweep to the long tail of files (not just
+# skill-flagged + entry/config), closing the coverage gap where an unflagged
+# file (e.g. a Next.js middleware the deterministic skills missed) never
+# reaches the model. Applied AFTER load_env so the flag wins over a
+# VULTURE_LLM_TIER3 in .env; absent the flag, the env/.env value is left
+# untouched. Deterministic skills run with full coverage regardless — this only
+# affects what the LLM tier SEES.
+if [[ "$WANT_TIER3" -eq 1 ]]; then
+    export VULTURE_LLM_TIER3=true
+    echo "  LLM tier-3: ON (full-file-coverage sweep)"
+fi
 export PATH="${GOPATH:-${HOME}/go}/bin:$PATH"
 
 # Read defaults from config.ini

@@ -32,6 +32,10 @@ from cwe_agent.skills.insufficient_logging_check import (
     check_insufficient_logging_tool,
 )
 from cwe_agent.skills.memory_safety_check import check_memory_safety, check_memory_safety_tool
+from cwe_agent.skills.next_middleware_matcher_check import (
+    check_next_middleware_matcher,
+    check_next_middleware_matcher_tool,
+)
 from cwe_agent.skills.path_equivalence_check import (
     check_path_equivalence,
     check_path_equivalence_tool,
@@ -72,6 +76,7 @@ SKILL_TOOLS = [
     check_dependency_security_tool,
     check_data_handling_tool,
     check_memory_safety_tool,
+    check_next_middleware_matcher_tool,
     check_path_equivalence_tool,
     check_divide_by_zero_tool,
     check_dangerous_function_tool,
@@ -100,6 +105,7 @@ SKILL_MAP = {
     "dependency_security": check_dependency_security,
     "data_handling": check_data_handling,
     "memory_safety": check_memory_safety,
+    "next_middleware_matcher": check_next_middleware_matcher,
     "path_equivalence": check_path_equivalence,
     "divide_by_zero": check_divide_by_zero,
     "dangerous_function": check_dangerous_function,
@@ -149,6 +155,8 @@ __all__ = [
     "check_insufficient_logging_tool",
     "check_memory_safety",
     "check_memory_safety_tool",
+    "check_next_middleware_matcher",
+    "check_next_middleware_matcher_tool",
     "check_path_equivalence",
     "check_path_equivalence_tool",
     "check_plaintext_transmission",
