@@ -84,18 +84,51 @@ func (t TargetIdentity) Resolved() bool {
 // Order matters and is the design's: a git remote beats everything (it is the
 // only identity that survives a machine change), then a git working tree with
 // no remote, then a scan-root marker, then the bare path.
+//
+// Every climb is bounded by the home ceiling (see climbCeiling): a home
+// directory or its ancestors are never a project root.
 func ResolveTarget(src *model.Source) TargetIdentity {
+	return resolveTarget(src, climbCeiling)
+}
+
+// resolveTarget is ResolveTarget with the ceiling rule passed in, so the
+// pre-boundary answer (retiredHomeTarget) is the same code with no ceiling
+// rather than a second copy of the resolver.
+func resolveTarget(src *model.Source, ceilingOf func(string) string) TargetIdentity {
 	if src == nil {
 		return TargetIdentity{}
 	}
 	root := canonicalScanPath(src.Path)
-	if remote := NormalizeGitRemote(gitRemoteOf(src)); remote != "" {
-		return remoteIdentity(targetKindGit+remote, root)
+	ceiling := ceilingOf(root)
+	if remote := remoteOf(src, root, ceiling); remote != "" {
+		return remoteIdentity(targetKindGit+remote, root, ceiling)
 	}
 	if root == "" {
 		return TargetIdentity{}
 	}
-	return resolveFromDisk(root)
+	return resolveFromDisk(root, ceiling)
+}
+
+// remoteOf returns the normalised remote that identifies src, or "" when it
+// has none — or when the only checkout containing the scan root is at or
+// above the home directory. git answers `remote get-url origin` from ANY
+// directory inside a working tree, so a dotfiles repository at $HOME hands its
+// own remote to every unversioned project below it, and keying on that remote
+// would pool all of them into one target. A git-ingested source keeps its
+// remote unconditionally: its clone directory is its own checkout.
+func remoteOf(src *model.Source, root, ceiling string) string {
+	remote := NormalizeGitRemote(gitRemoteOf(src))
+	if src.Type == model.SourceTypeGit || !homeOwnedCheckout(root, ceiling) {
+		return remote
+	}
+	return ""
+}
+
+// homeOwnedCheckout reports whether root sits in a git working tree whose top
+// is at or above the ceiling, with no checkout of its own below it.
+func homeOwnedCheckout(root, ceiling string) bool {
+	return ceiling != "" && nearestAncestorWith(root, ceiling, ".git") == "" &&
+		nearestAncestorWith(root, "", ".git") != ""
 }
 
 // remoteIdentity pairs a remote-derived key with the ROOT that key belongs to,
@@ -118,14 +151,14 @@ func ResolveTarget(src *model.Source) TargetIdentity {
 // checkout. Falling back to the scanned path keeps a fabricated or vanished
 // path (a git ingest whose clone dir is gone, a test fixture) working exactly
 // as before rather than resolving to an empty Root.
-func remoteIdentity(key, root string) TargetIdentity {
+func remoteIdentity(key, root, ceiling string) TargetIdentity {
 	if root == "" {
 		return TargetIdentity{Key: key}
 	}
-	if top := nearestAncestorWith(root, ".git"); top != "" {
+	if top := nearestAncestorWith(root, ceiling, ".git"); top != "" {
 		return identityAt(key, top, root)
 	}
-	if marker := nearestAncestorWith(root, scanRootMarkers...); marker != "" {
+	if marker := nearestAncestorWith(root, ceiling, scanRootMarkers...); marker != "" {
 		return identityAt(key, marker, root)
 	}
 	return TargetIdentity{Key: key, Root: root}
@@ -133,16 +166,16 @@ func remoteIdentity(key, root string) TargetIdentity {
 
 // resolveFromDisk is steps 2-3 of §7.1: no remote, so the identity has to come
 // from the tree itself.
-func resolveFromDisk(root string) TargetIdentity {
+func resolveFromDisk(root, ceiling string) TargetIdentity {
 	if isRunModeRoot(root) {
 		// The container mount point itself. The path names no project, and
 		// there is nothing on disk to go and look at.
 		return TargetIdentity{Key: targetKindUnresolved + root, Root: root}
 	}
-	if top := nearestAncestorWith(root, ".git"); top != "" {
+	if top := nearestAncestorWith(root, ceiling, ".git"); top != "" {
 		return identityAt(targetKindGit+hashedRoot(top), top, root)
 	}
-	if marker := nearestAncestorWith(root, scanRootMarkers...); marker != "" {
+	if marker := nearestAncestorWith(root, ceiling, scanRootMarkers...); marker != "" {
 		return identityAt(targetKindMarker+hashedRoot(marker), marker, root)
 	}
 	return TargetIdentity{Key: targetKindPath + root, Root: root}
@@ -209,11 +242,12 @@ func gitRemoteOf(src *model.Source) string {
 // nearestAncestorWith walks from dir upward and returns the first directory
 // holding any of the named entries, or "" when none does.
 //
-// It stops at the filesystem root, and it stops at a run-mode root: climbing
-// out of /mnt/source would read the container's own filesystem, where whatever
-// it found would say nothing about the mounted tree.
-func nearestAncestorWith(dir string, names ...string) string {
-	for cur := dir; cur != "" && cur != "/"; cur = parentDir(cur) {
+// It stops at the filesystem root, at the ceiling (never examined itself; ""
+// for none), and at a run-mode root: climbing out of /mnt/source would read
+// the container's own filesystem, where whatever it found would say nothing
+// about the mounted tree.
+func nearestAncestorWith(dir, ceiling string, names ...string) string {
+	for cur := dir; climbable(cur, ceiling); cur = parentDir(cur) {
 		if hasAny(cur, names) {
 			return cur
 		}
@@ -222,6 +256,65 @@ func nearestAncestorWith(dir string, names ...string) string {
 		}
 	}
 	return ""
+}
+
+// climbable reports whether the upward walk may examine cur.
+func climbable(cur, ceiling string) bool {
+	return cur != "" && cur != "/" && cur != ceiling
+}
+
+// userHomeDir is the backend process's home directory lookup, a variable so
+// tests can stand a fake home up without touching the environment.
+var userHomeDir = os.UserHomeDir
+
+// climbCeiling returns the directory an identity climb from root must never
+// reach: the user's home directory, when root is strictly below it.
+//
+// THE DEFECT. A stray package.json (or a dotfiles .git) in $HOME made the climb
+// from an unmarked project run past the scan root and stop at $HOME, so every
+// unmarked project under the home directory resolved to ONE key and shared
+// one lineage history — closures, regressions and triage crossing between
+// unrelated codebases. A home directory or its ancestors are never a project
+// root, so the climb stops below it.
+//
+// Scanning $HOME itself (or anything outside it) is unbounded, exactly as
+// before, and so is every scan when the home directory cannot be determined.
+// In the container the home directory (/home/vulture) is not an ancestor of
+// /mnt/source, so the run-mode climbs are unaffected.
+func climbCeiling(root string) string {
+	home, err := userHomeDir()
+	if err != nil {
+		return ""
+	}
+	if h := canonicalScanPath(home); strictlyBelow(root, h) {
+		return h
+	}
+	return ""
+}
+
+// noCeiling is the pre-boundary climb rule.
+func noCeiling(string) string { return "" }
+
+// strictlyBelow reports whether dir is a proper descendant of ancestor,
+// comparing whole segments.
+func strictlyBelow(dir, ancestor string) bool {
+	return ancestor != "" && strings.HasPrefix(dir, strings.TrimSuffix(ancestor, "/")+"/")
+}
+
+// retiredHomeTarget returns the identity the pre-boundary resolver gave src,
+// and true only when that differs from current because the climb reached the
+// home directory or above. That key is where an earlier scan of this source
+// filed its lineage rows; lineage_home_bridge.go carries them across.
+func retiredHomeTarget(src *model.Source, current TargetIdentity) (TargetIdentity, bool) {
+	if src == nil {
+		return TargetIdentity{}, false
+	}
+	ceiling := climbCeiling(canonicalScanPath(src.Path))
+	if ceiling == "" {
+		return TargetIdentity{}, false
+	}
+	old := resolveTarget(src, noCeiling)
+	return old, old.Key != current.Key && !strictlyBelow(old.Root, ceiling)
 }
 
 // isRunModeRoot reports whether dir IS a run-mode root (nothing left after the
