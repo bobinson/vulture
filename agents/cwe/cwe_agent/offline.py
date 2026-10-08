@@ -33,36 +33,73 @@ from cwe_agent.skills import SKILL_MAP
 # never blocks on its own.
 _SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _DEFAULT_GATE = "high"
+# Temp-tree prefix for staged files that are not under the root.
+_EXTERNAL = "_external"
 
 
 def _materialize(files: list[str], root: str | None) -> tuple[Path, dict[str, str]]:
-    """Copy ``files`` into a temp tree preserving paths relative to ``root``.
+    """Copy ``files`` into a temp tree preserving each file's directories.
 
-    Returns the temp root and a mapping of copied-path -> original-path.
+    Returns the temp root and a mapping of copied-path -> original-path. Every
+    file keeps a distinct path, so two staged files that share a basename are
+    both scanned and directory-aware skills (``.claude/``, ``tests/``) still
+    see their directories.
     """
-    tmp = Path(tempfile.mkdtemp(prefix="vulture-offline-"))
-    root_p = Path(root).resolve() if root else None
+    tmp = Path(tempfile.mkdtemp(prefix="vulture-offline-")).resolve()
+    root_p = _resolve_root(root)
+    slots: dict[Path, int] = {}
     mapping: dict[str, str] = {}
-    for raw in files:
-        src = Path(raw).resolve()
-        if not src.is_file():
-            continue
-        rel = _relative_to(src, root_p)
-        dst = tmp / rel
+    for src in _existing_files(files):
+        dst = tmp / _tree_path(src, root_p, slots)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         mapping[str(dst)] = str(src)
     return tmp, mapping
 
 
-def _relative_to(src: Path, root: Path | None) -> Path:
-    """Path of ``src`` under ``root``; its basename when ``root`` doesn't apply."""
-    if root is None:
-        return Path(src.name)
-    try:
+def _resolve_root(root: str | None) -> Path:
+    """``root`` when given, else the repository holding the cwd, else the cwd.
+
+    A hook runs ``vulture-offline-skills {staged_files}`` from inside the
+    repository (lefthook's ``root:`` puts it in a subdirectory), so the
+    repository is the root that keeps each staged file's path intact. Found by
+    its ``.git`` entry (a directory, or a file in a worktree or submodule)
+    rather than by running git, which a hook environment need not have.
+    """
+    if root:
+        return Path(root).resolve()
+    cwd = Path.cwd().resolve()
+    return next((d for d in (cwd, *cwd.parents) if (d / ".git").exists()), cwd)
+
+
+def _existing_files(files: list[str]) -> list[Path]:
+    """The given paths that are files, made absolute and de-duplicated in order.
+
+    Only the directories are resolved: a staged symlink keeps the path it was
+    staged at (``.claude/settings.json``), and is scanned for its target's
+    content.
+    """
+    return list(dict.fromkeys(p for p in map(_staged_path, files) if p.is_file()))
+
+
+def _staged_path(file: str) -> Path:
+    """``file`` made absolute with its directories resolved and its name kept."""
+    absolute = Path(file).absolute()
+    return absolute.parent.resolve() / absolute.name
+
+
+def _tree_path(src: Path, root: Path, slots: dict[Path, int]) -> Path:
+    """Path of ``src`` in the temp tree.
+
+    Under ``root`` it is the root-relative path. Outside it, the file goes in a
+    numbered slot per directory: distinct from every other file, and free of
+    the directory names above it, which the scanner would prune (``data/``,
+    ``build/``, ``bin/``) and which mean nothing to this repository's rules.
+    """
+    if src.is_relative_to(root):
         return src.relative_to(root)
-    except ValueError:
-        return Path(src.name)
+    slot = slots.setdefault(src.parent, len(slots))
+    return Path(_EXTERNAL, str(slot), src.name)
 
 
 def _extract(result: object) -> list[dict]:
