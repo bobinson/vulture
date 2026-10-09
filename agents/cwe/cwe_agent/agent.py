@@ -74,9 +74,9 @@ INSTRUCTIONS = """You are a CWE (Common Weakness Enumeration) Security Auditor u
 The CWE v4.19.1 catalog has 846 entries — that figure is CONTEXT/metadata
 (names, consequences, rollup parents), NOT a detection-coverage claim. What the
 deterministic skill phase actually DETECTS:
-- 21 dedicated regex skills emitting ~73 distinct CWE-ID `category` literals,
+- 24 dedicated regex skills emitting 171 distinct CWE-ID `category` literals,
   plus 7 corpus-trusted signature CWE-IDs.
-- Of those, N=10 CWE types are CORPUS-VERIFIED (recall 1.0 / fp 0.0 on the
+- Of those, N=81 CWE types are CORPUS-VERIFIED (recall 1.0 / fp 0.0 on the
   labeled corpus) — see tests/corpus/VERIFIED_CWES.md; N is computed by the
   gate, not asserted.
 - 1 catalog-driven generic detector keyword-matches against the 846-entry
@@ -294,7 +294,7 @@ def run_audit(
         # 0089 Phase 2.3 — stated, not defaulted (see run_combined_audit's
         # `category_enum` docs). `None`, deliberately: CWE's declared keys are
         # skill GROUPS (`injection`, `memory_safety`, ...) while its skills emit
-        # ~73 distinct `CWE-nnn` literals, so conforming would rewrite or
+        # the `CWE-nnn` literals counted by report_coverage, so conforming would rewrite or
         # orphan every one of them.
         category_enum=None,
     )

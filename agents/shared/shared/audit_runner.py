@@ -25,7 +25,7 @@ from shared.cancellation import (
 from shared.env import env_flag, env_truthy
 from shared.lineage_checks import verify_lineage_checks
 from shared.lineage_context import current_lineage_checks_requested
-from shared.llm.errors import retry_skill
+from shared.llm.errors import mask_secret_values, retry_skill
 
 # Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
 # empty-answer, plus the reasoning strip) now lives in ONE place, shared with the
@@ -1796,6 +1796,11 @@ _SECRET_BEARING_CWES: frozenset[str] = frozenset({
     "CWE-259",  # use of a hard-coded password
     "CWE-321",  # use of a hard-coded cryptographic key (crypto_check embeds key)
     "CWE-522",  # insufficiently protected credentials
+    # Feature 0098: the finding's own line carries the credential by definition
+    # (a token in a query string, a password sent over plain HTTP), and its
+    # window would otherwise print it.
+    "CWE-523",  # unprotected transport of credentials
+    "CWE-598",  # sensitive query strings in a GET request
 })
 
 _REDACTION_PLACEHOLDER = "***REDACTED***"
@@ -1903,6 +1908,37 @@ def _redact_secret_line(line: str) -> str:
     return line
 
 
+_TRIPLE_QUOTE_RE = re.compile(r"\"\"\"|\'\'\'")
+_NON_BLANK_RE = re.compile(r"\S")
+# A row whose code ends in one of these before a triple quote OPENS a value.
+_OPENS_VALUE = ("=", ":", "(", ",", "[", "{")
+
+
+def _redact_triple_quoted(body: str, pos: int, quote: re.Match[str]) -> tuple[str, int]:
+    """Mask one triple-quoted literal of ``body``; return the redacted text of
+    ``body[pos:end]`` and ``end``.
+
+    An OPENING delimiter masks what follows it (to its closer on this row, else
+    to EOL); a row that only CLOSES the literal masks what precedes it. Read as
+    ordinary literals, the delimiter was an empty string plus a dangling quote,
+    which garbled the row to KEY = "***REDACTED***""***REDACTED***. The code
+    before an opener still goes through the assignment redactor, so a secret
+    next to a triple quote is masked like any other."""
+    head = body[pos: quote.start()]
+    if _NON_BLANK_RE.search(body, quote.end()) or head.rstrip().endswith(_OPENS_VALUE):
+        return _redact_opened(body, head, quote)
+    indent = head[: len(head) - len(head.lstrip())]
+    return f"{indent}{_REDACTION_PLACEHOLDER}{quote.group(0)}{body[quote.end():]}", len(body)
+
+
+def _redact_opened(body: str, head: str, quote: re.Match[str]) -> tuple[str, int]:
+    """``head`` redacted, then the literal masked up to its closer (or EOL)."""
+    q = quote.group(0)
+    close = body.find(q, quote.end())
+    shown = f"{_redact_secret_line(head)}{q}{_REDACTION_PLACEHOLDER}"
+    return (shown, len(body)) if close == -1 else (shown + q, close + len(q))
+
+
 def _redact_snippet(snippet: str) -> str:
     """Redact secret values in a numbered code-window snippet (P2a).
 
@@ -1926,7 +1962,23 @@ def _redact_numbered_line(raw: str) -> str:
     """
     body = line_format.strip_line_number(raw)
     prefix = raw[: len(raw) - len(body)]
-    return f"{prefix}{_redact_secret_line(body)}"
+    return f"{prefix}{_redact_code(body)}"
+
+
+def _redact_code(body: str) -> str:
+    """One row's code: each triple-quoted literal masked as one value (it would
+    read as ``""`` + ``"``), and the code between them through the assignment
+    redactor. Iterative and position-based, so a row of many delimiters stays
+    linear."""
+    out: list[str] = []
+    pos = 0
+    quote = _TRIPLE_QUOTE_RE.search(body)
+    while quote:
+        shown, pos = _redact_triple_quoted(body, pos, quote)
+        out.append(shown)
+        quote = _TRIPLE_QUOTE_RE.search(body, pos)
+    out.append(_redact_secret_line(body[pos:]))
+    return "".join(out)
 
 
 def _redact_finding_inplace(finding: dict[str, Any]) -> None:
@@ -1942,12 +1994,145 @@ def _redact_finding_inplace(finding: dict[str, Any]) -> None:
     the persisted ``code_snippet`` column. No-op for non-secret CWEs and for
     findings without a snippet. Re-redacting an already-masked snippet is safe
     (the placeholder carries no secret).
+
+    Every finding, whatever its category, also has secret-SHAPED values masked
+    in its ``code_snippet`` and ``description`` (feature 0098): a window is
+    several lines wide, so a token on the line next to an unrelated finding,
+    or a credential in a dependency URL quoted by a dependency row, would
+    otherwise reach every egress point verbatim. Those shapes are the precise,
+    high-confidence set (``mask_secret_values``): provider tokens, JWTs,
+    credential schemes with a credential-looking value, URL userinfo,
+    private-key bodies and hex after a credential-named key. Commit SHAs,
+    digests, UUIDs, hashes and prose are evidence and stay readable.
     """
-    if str(finding.get("category", "")).strip().upper() not in _SECRET_BEARING_CWES:
+    _mask_secret_shapes_inplace(finding)
+    if not _is_secret_bearing(finding):
         return
     existing = finding.get("code_snippet")
     if existing:
         finding["code_snippet"] = _redact_snippet(existing)
+
+
+def _is_secret_bearing(finding: dict[str, Any]) -> bool:
+    """True when the finding's category says its own line holds a secret."""
+    return str(finding.get("category", "")).strip().upper() in _SECRET_BEARING_CWES
+
+
+# A finding from a secret-detecting skill cites a line that holds a secret,
+# whatever CWE that skill assigned (CWE-260 a password in a config file, CWE-526
+# an environment variable, CWE-200 a wallet key): its ORIGIN says so.
+_SECRET_SKILL_PREFIXES = ("cwe.secret_scan.",)
+
+
+def _cites_a_secret(finding: dict[str, Any]) -> bool:
+    """True when the line a finding cites holds a secret, by category or origin."""
+    check_id = str(finding.get("check_id") or "")
+    return _is_secret_bearing(finding) or check_id.startswith(_SECRET_SKILL_PREFIXES)
+
+
+def _secret_span(finding: dict[str, Any]) -> range:
+    """The lines a secret-citing finding cites; empty for any other finding."""
+    start = _int_or_zero(finding.get("line_start"))
+    if start < 1 or not finding.get("file_path") or not _cites_a_secret(finding):
+        return range(0)
+    return range(start, max(start, _int_or_zero(finding.get("line_end"))) + 1)
+
+
+def _secret_line_index(findings: list[dict[str, Any]]) -> dict[str, frozenset[int]]:
+    """``{file_path: lines}`` cited by the batch's secret-citing findings."""
+    index: dict[str, set[int]] = {}
+    for f in findings:
+        span = _secret_span(f)
+        if span:
+            index.setdefault(str(f["file_path"]), set()).update(span)
+    return {path: frozenset(lines) for path, lines in index.items()}
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _redact_secret_lines_inplace(
+    finding: dict[str, Any], secret_lines: dict[str, frozenset[int]],
+) -> None:
+    """Mask, in ANY finding's window, every row a secret-bearing finding cites.
+
+    The secret row masks its own line; a neighbouring finding's window spans
+    that line too and must not print what the secret row hid (feature 0098).
+    """
+    lines = secret_lines.get(str(finding.get("file_path") or ""))
+    snippet = finding.get("code_snippet")
+    if not lines or not isinstance(snippet, str):
+        return
+    finding["code_snippet"] = _redact_rows(snippet, lines)
+
+
+def _redact_rows(snippet: str, lines: frozenset[int]) -> str:
+    """``snippet`` with each numbered row in ``lines`` passed through the redactor."""
+    return "\n".join(
+        _mask_cited_row(row) if line_format.read_line_number(row) in lines else row
+        for row in snippet.split("\n")
+    )
+
+
+def _mask_cited_row(raw: str) -> str:
+    """A row a secret-bearing finding cites, as any window may print it.
+
+    The structured redactor keeps the row's shape (key name, quotes) when it
+    can mask something. A row it cannot mask (a bare key-body or value row: no
+    quote, no ``=``) is replaced whole, so nothing it holds egresses.
+    """
+    redacted = _redact_numbered_line(raw)
+    masked = redacted != raw or _REDACTION_PLACEHOLDER in raw
+    return redacted if masked else _mask_whole_row(raw)
+
+
+def _mask_whole_row(raw: str) -> str:
+    """One presented row with its whole body replaced, ``"<n>: "`` prefix kept."""
+    body = line_format.strip_line_number(raw)
+    return f"{raw[: len(raw) - len(body)]}{_REDACTION_PLACEHOLDER}"
+
+
+def _cited_rows(snippet: str, finding: dict[str, Any]) -> str:
+    """The numbered rows of ``snippet`` inside the finding's own cited span.
+
+    ``snippet`` unchanged when it carries no row of that span (unnumbered, or no
+    line), so a finding never loses the only evidence it has."""
+    start = _int_or_zero(finding.get("line_start"))
+    end = max(start, _int_or_zero(finding.get("line_end")))
+    rows = [r for r in snippet.split("\n") if _row_in(r, start, end)]
+    return "\n".join(rows) if rows else snippet
+
+
+def _row_in(row: str, start: int, end: int) -> bool:
+    return 0 < start <= (line_format.read_line_number(row) or 0) <= end
+
+
+def _live_view(finding: dict[str, Any]) -> dict[str, Any]:
+    """What a per-finding ``finding`` event may carry before the batch is known.
+
+    A neighbour's secret row is only masked once every row of the batch is in
+    (``_secret_line_index``), which is after the live events left. So a live
+    window is cut to the finding's own cited rows; the ``result`` snapshot
+    carries the full, batch-masked window."""
+    view = _public_view(finding)
+    if isinstance(view.get("code_snippet"), str):
+        view["code_snippet"] = _cited_rows(view["code_snippet"], finding)
+    return view
+
+
+_SHAPE_MASKED_FIELDS = ("code_snippet", "description")
+
+
+def _mask_secret_shapes_inplace(finding: dict[str, Any]) -> None:
+    """Mask secret-shaped values in a finding's free-text evidence fields."""
+    for key in _SHAPE_MASKED_FIELDS:
+        text = finding.get(key)
+        if isinstance(text, str) and text:
+            finding[key] = mask_secret_values(text, _REDACTION_PLACEHOLDER)
 
 
 # --- Feature 0057 P6b: provenance vocabulary -----------------------------
@@ -2209,6 +2394,92 @@ def _finalize_finding_inplace(
     _conform_category(finding)
     _assign_finding_id(finding, run_id, index)
     _redact_finding_inplace(finding)
+
+
+def _attach_code_snippet_safely(
+    findings: list[dict[str, Any]], source_path: str, run_id: str,
+) -> None:
+    """``_attach_code_snippet``, best-effort: a read failure is logged, not raised."""
+    try:
+        _attach_code_snippet(findings, source_path)
+    except Exception as exc:  # grounding is best-effort
+        logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
+
+
+def _validate_enabled() -> bool:
+    """The validate stage runs unless ``VULTURE_DISABLE_VALIDATE=true``."""
+    return os.environ.get("VULTURE_DISABLE_VALIDATE", "").lower() != "true"
+
+
+def _validate_config(
+    validate_use_llm: bool | None,
+    l5_enabled: bool,
+    l5_top_n: int | None = None,
+    l5_batch_size: int | None = None,
+) -> Any:
+    """The ``ValidateConfig`` every audit path uses (L1 and L2 always on).
+
+    Feature 0083: ``enable_l5_override`` carries the per-request decision PAST
+    ``_resolve_l5_enabled``, which otherwise lets the env defeat it. ``None``
+    when the request was silent, so the env keeps deciding exactly as before.
+    """
+    from shared.validate import ValidateConfig
+
+    return ValidateConfig(
+        compliance_mode=(
+            os.environ.get("VULTURE_COMPLIANCE_MODE", "").lower() == "true"
+        ),
+        enable_l1=True,
+        enable_l2=True,
+        enable_l5=l5_enabled,
+        enable_l5_override=(
+            bool(validate_use_llm) if validate_use_llm is not None else None
+        ),
+        l5_top_n_override=l5_top_n,
+        l5_batch_size_override=l5_batch_size,
+    )
+
+
+def _validate_without_llm(
+    findings: list[dict[str, Any]], source_path: str, run_id: str,
+) -> list[dict[str, Any]]:
+    """The deterministic validate stage (L1 + L2, never the L5 judge).
+
+    Returns the validated findings followed by the L2 rollup parents, which is
+    the order ``run_combined_audit`` reports them in. Raises when validation
+    fails, so a caller that gates on the verdict can say so.
+    """
+    if not _validate_enabled():
+        return findings
+    from shared.validate import validate
+
+    result = validate(
+        findings, source_path=source_path, audit_id=run_id,
+        config=_validate_config(False, False),
+    )
+    return result.findings + result.rollups
+
+
+def finalize_skill_findings(
+    findings: list[dict[str, Any]], source_path: str, run_id: str,
+) -> list[dict[str, Any]]:
+    """What ``run_combined_audit`` does to skill rows when the LLM phase is off.
+
+    For a caller that runs the skills itself (the offline gate, feature 0098)
+    and must report exactly what the full audit would: every row passes the
+    pre-egress choke point (category conformance, deterministic id, secret
+    redaction), then the skill-vs-skill line collapse, the code window, and the
+    deterministic validate stage. Each step is the same function the audit
+    calls, in the audit's order, so the two paths cannot drift.
+
+    ``findings`` are mutated in place and must cite paths under ``source_path``
+    for the window and the validate stage to read them.
+    """
+    for index, finding in enumerate(findings):
+        _finalize_finding_inplace(finding, run_id, index)
+    kept, _collapsed = _collapse_skill_findings(findings, run_id)
+    _attach_code_snippet_safely(kept, source_path, run_id)
+    return [_public_view(f) for f in _validate_without_llm(kept, source_path, run_id)]
 
 
 def _bind_category_enum(
@@ -2493,7 +2764,7 @@ def run_combined_audit(
                         finding, run_id, len(skill_findings),
                     )
                     skill_findings.append(finding)
-                    yield emitter.finding_event(**_public_view(finding))
+                    yield emitter.finding_event(**_live_view(finding))
 
                 completed += 1
                 yield emitter.progress_event(
@@ -2648,7 +2919,7 @@ def run_combined_audit(
                 # before the per-finding SSE event (the LLM is the realistic
                 # source of unquoted / env-style / comment-embedded secrets).
                 _finalize_finding_inplace(finding, run_id, base_idx + offset)
-                yield emitter.finding_event(**_public_view(finding))
+                yield emitter.finding_event(**_live_view(finding))
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
     else:
@@ -2664,24 +2935,17 @@ def run_combined_audit(
     # Populate a real code window on every finding lacking one (read from
     # source) so the L5 judge is never blind (R4). Additive / no-op when a
     # finding already carries a snippet. Skipped if the source is gone.
-    try:
-        _attach_code_snippet(all_findings, source_path)
-    except Exception as exc:  # grounding is best-effort
-        logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
+    _attach_code_snippet_safely(all_findings, source_path, run_id)
 
     # --- Validate stage (feature 0045) ---------------------------
     # Annotates each finding with validation_status + validation_confidence
     # + per-layer check trail. V6: never deletes findings (length-preserving).
     # Disabled via VULTURE_DISABLE_VALIDATE=true env var.
-    _validate_enabled = (
-        os.environ.get("VULTURE_DISABLE_VALIDATE", "").lower() != "true"
-    )
-    if _validate_enabled:
+    if _validate_enabled():
         try:
             import queue as _queue
             import threading as _threading
 
-            from shared.validate import ValidateConfig as _ValidateConfig
             from shared.validate import validate as _validate
 
             # L5 streaming (feature 0046 D6): use a thread-safe queue
@@ -2714,22 +2978,8 @@ def run_combined_audit(
             # still annotate the partial findings cheaply.
             if _cancelled_or_expired():
                 _l5_enabled = False
-            _vcfg = _ValidateConfig(
-                compliance_mode=(
-                    os.environ.get("VULTURE_COMPLIANCE_MODE", "").lower() == "true"
-                ),
-                enable_l1=True,
-                enable_l2=True,
-                enable_l5=_l5_enabled,
-                # Feature 0083. `enable_l5_override` carries the per-request
-                # decision PAST _resolve_l5_enabled, which otherwise lets the
-                # env defeat it. None when the request was silent, so the env
-                # keeps deciding exactly as before.
-                enable_l5_override=(
-                    bool(validate_use_llm) if validate_use_llm is not None else None
-                ),
-                l5_top_n_override=l5_top_n,
-                l5_batch_size_override=l5_batch_size,
+            _vcfg = _validate_config(
+                validate_use_llm, _l5_enabled, l5_top_n, l5_batch_size,
             )
 
             _v_result_box: list = [None]

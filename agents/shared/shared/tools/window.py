@@ -289,12 +289,15 @@ def ensure_code_window(
     # Deferred imports: see LEAF DISCIPLINE in the module docstring.
     from shared.audit_runner import (
         _redact_finding_inplace,
+        _redact_secret_lines_inplace,
         _resolve_finding_path,
+        _secret_line_index,
         _snippet_params_for,
     )
     from shared.tools.file_scanner import read_file_lines
     from shared.tools.snippet import extract_snippet
 
+    secret_lines = _secret_line_index(findings)
     for f in findings:
         context, max_chars = _snippet_params_for(f.get("category", "") or "")
         wide = max_chars is None
@@ -340,6 +343,8 @@ def ensure_code_window(
         # back-filled above OR pre-set by a skill. In the same pass as the read,
         # so no caller can hold an unredacted window.
         _redact_finding_inplace(f)
+        # ...and every row another finding in the batch marked as a secret.
+        _redact_secret_lines_inplace(f, secret_lines)
 
         if record_reasons and reason:
             record_window_reason(f, reason)

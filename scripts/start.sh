@@ -8,6 +8,8 @@ CLI_DIR="$PROJECT_ROOT/cli"
 # Overridable so tests (and CI) can isolate from a developer's local .env, which
 # load_env sources with `set -a` and would otherwise clobber exported vars.
 ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
+# shellcheck disable=SC1091  # lib/tier3.sh is linted on its own
+. "$SCRIPT_DIR/lib/tier3.sh"
 
 # Ensure pyenv shims are on PATH when running non-interactively.
 if [[ -d "$HOME/.pyenv/shims" ]] && [[ ":$PATH:" != *":$HOME/.pyenv/shims:"* ]]; then
@@ -29,8 +31,9 @@ Providers:
 Options:
   --embed-url <url>      Embedding endpoint (overrides OPENAI_BASE_URL fallback)
   --embed-model <name>   Embedding model id at that endpoint
-  --tier3, --deep        Widen the LLM sweep to all files, not just skill-flagged
-                         + entry/config (closes the LLM coverage gap; slower)
+  --tier3, --deep        Widen the LLM sweep past skill-flagged + entry/config files
+                         to the long tail (slower; still capped by VULTURE_LLM_MAX_FILES
+                         and the budget; no effect with 'skills')
 
 Examples:
   scripts/vulture.sh dev openai
@@ -295,15 +298,14 @@ MODEL="${SCAN_MODEL:-$MODEL}"
 load_env
 
 # --tier3/--deep widens the LLM sweep to the long tail of files (not just
-# skill-flagged + entry/config), closing the coverage gap where an unflagged
-# file (e.g. a Next.js middleware the deterministic skills missed) never
-# reaches the model. Applied AFTER load_env so the flag wins over a
-# VULTURE_LLM_TIER3 in .env; absent the flag, the env/.env value is left
-# untouched. Deterministic skills run with full coverage regardless — this only
-# affects what the LLM tier SEES.
+# skill-flagged + entry/config), so an unflagged file (e.g. a Next.js middleware
+# the deterministic skills missed) can reach the model. Applied AFTER load_env
+# so the flag wins over a VULTURE_LLM_TIER3 in .env; absent the flag, the
+# env/.env value is left untouched. Deterministic skills run with full coverage
+# regardless -- this only affects what the LLM tier SEES. Its state is reported
+# in the summary below, once the provider says whether the LLM phase runs.
 if [[ "$WANT_TIER3" -eq 1 ]]; then
     export VULTURE_LLM_TIER3=true
-    echo "  LLM tier-3: ON (full-file-coverage sweep)"
 fi
 export PATH="${GOPATH:-${HOME}/go}/bin:$PATH"
 
@@ -566,6 +568,7 @@ if [[ -n "${VULTURE_VALIDATE_LLM_MODEL:-}" \
     echo "  Validate:  $VULTURE_VALIDATE_LLM_MODEL"
 fi
 echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+print_tier3_state "$WANT_TIER3"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
     echo "  Broker:    on"
     echo "  Broker provider:     ${VULTURE_LLM_BROKER_PROVIDER}"

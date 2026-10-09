@@ -41,9 +41,113 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 - **CWE detector simplifications:** PATH_TRAVERSAL_PATTERNS collapsed
   from 9 regexes to 2 (hot-path win); 104 dual-contract lock-in tests
   added to guard against false-negative blunders.
+- **Feature 0098 — Offline skills gate (`vulture-offline-skills`).** Runs the
+  CWE agent's deterministic skills over a list of files with no backend, no
+  database and no LLM, for a pre-commit hook or a CI job, and gives the verdict
+  the full audit would give with the LLM off (same skill set, redaction,
+  skill-vs-skill collapse and L1/L2 validate stage). Exit codes: `0` no blocking
+  finding, `1` blocking findings at or above `--severity` (default `high`), `2`
+  tool or usage error (the verdict is withheld), and `128 + signal` when stopped
+  by SIGTERM/SIGHUP. `--format json` prints a schema `1` report (`findings`,
+  `blocking`, `errors`, `scanned`, `not_scanned`, `outside_root`). It runs
+  without installing anything first-party:
+  `PYTHONPATH=vulture/agents/cwe:vulture/agents/shared python -m cwe_agent.offline FILE...`
+  after installing the hashed lockfile into a dedicated virtualenv. See
+  [docs/guides/offline_skills_gate.md](docs/guides/offline_skills_gate.md).
+- **Feature 0097 — access-control guard-application checks (CWE-807 /
+  CWE-290).** Three `access_control` checks report an authentication or
+  authorisation guard that a client-controlled request attribute can skip:
+  - `cwe.access_control.guard_skip_by_request_attr` (CWE-807): a branch on a
+    header, cookie, query or body value that skips the guard (returns early or
+    calls through) or grants access, ahead of the guard's deny;
+  - `cwe.access_control.spoofable_identity_guard` (CWE-290): the same, keyed on
+    a spoofable identity attribute (`X-Forwarded-For`, `Host`, `User-Agent`,
+    `Referer`);
+  - `cwe.access_control.guard_excluded_by_request_attr` (CWE-807): a framework
+    hook or route matcher that excludes requests by a request attribute (for
+    example a Next.js middleware `matcher` with a `missing` header condition, or
+    a Rails `before_action ... unless:`).
+
+  They do not fire when the attribute is compared with a value the client
+  cannot know (a server-held secret, also one whose same-file literal is only a
+  default overridden elsewhere, or a CSRF double-submit token), when a verifying
+  call (not a CSRF validator) is conjoined with the read, on a feature or
+  challenge gate answering 403, or on a route handler returning a DTO early. They reach Rails `before_action` `if:`/`unless:`, Spring
+  `preHandle`, ASP.NET `_next`, Auth.js middleware re-exports, Go and Express
+  identity accessors, Echo `ErrUnauthorized`, Koa cookies, Flask
+  `"X" in request.headers`, principal providers (a FastAPI dependency, a
+  Passport `validate()`) that return a principal, a comparison of one request
+  read with another, and the
+  `export const config = { matcher }` shorthand. The access_control section of
+  the CWE agent's SKILLS.md lists what they do not reach.
 
 ### Changed
 
+- **The CWE agent's GENERATE prompt states the computed coverage counts**
+  (171 CWE-ID `category` literals across 24 dedicated skills, N=81
+  corpus-verified) instead of the stale ~73 / N=10. These are prompt bytes for
+  every model family: the `generate/cwe` manifest is at version 6, and a unit
+  test pins the stated counts to the values the code computes.
+
+- **Finding-text masking is precise, for every agent (feature 0098).** Every
+  finding's `code_snippet` and `description` are masked for secret SHAPES
+  before any egress. The shapes are now a high-confidence set: provider tokens
+  (OpenAI/Anthropic `sk-` keys, whatever their random body holds, a hyphen
+  among its first characters included, GitHub classic and
+  fine-grained, Slack tokens and webhook URLs, AWS key ids and secret keys,
+  Stripe, npm, GitLab, SendGrid, Hugging Face, Google), JWTs, `Bearer`/`Basic`
+  followed by a credential-looking value on the same line (a header value
+  after `Authorization` or in quotes included), URL userinfo in any scheme case
+  (an empty user too, `redis://:<password>@`), a connection-string `Password=`
+  or `AccountKey=`, private-key BODIES (not just the header, in a numbered
+  window, below the BEGIN row, as a one-line escaped key or a concatenation,
+  with LF or CRLF line ends), and a hex value only on a line that names a
+  credential (`SECRET_KEY_BASE=<hex>`, `headers["X-Api-Key"] = "<hex>"`,
+  `define("SECRET_KEY", "<hex>")`, `apiKey := ...`, `ENV API_KEY <hex>`).
+  Commit SHAs, image digests, UUIDs, MD5/SHA constants, hashes named as such
+  (`cache_key`, `password_hash`, `commit`), CSS class names, CamelCase
+  identifiers and prose that mentions Bearer or basic authentication are no
+  longer masked, and masking never joins two lines. Logs keep the broader set:
+  everything the previous log pattern masked is still masked there. A row that
+  a secret finding cites is masked in every other finding's window, whatever
+  CWE the secret skill gave it (a password in a config file is CWE-260); a row
+  the structured redactor cannot mask (a bare key-body or value row) is
+  replaced whole; and a triple-quoted literal is masked as one value, with the
+  code around it redacted as before, instead of garbling to
+  `"***REDACTED***""***REDACTED***`. Live `finding` events carry only the
+  finding's own cited rows, since a neighbour's secret row is masked only once
+  the whole batch is known. The `result` snapshot, and the rows persisted from
+  it, carry the full, masked window; a finding the backend keeps from the live
+  events because its agent sent no snapshot (a stalled or timed-out agent)
+  carries only its cited rows. Masking is linear in the input size.
+- **Offline gate CLI contract (feature 0098), refined before release.**
+  Compared with the gate as first merged:
+  - a working directory inside a directory that an audit of the discovered root
+    prunes (`<repo>/build/proj`), with every file passed under it, exits `2`
+    with `errors[].stage == "root"` instead of passing with "Nothing to gate";
+    `--root` gates such a project as its own root;
+  - an empty directory argument is a usage error (exit `2`) unless it holds a
+    `.git` entry or the enclosing repository's `.gitmodules` declares it in a
+    `[submodule "..."]` section (read as git reads it: any key case, quoted
+    values, trailing comments);
+  - an empty `--root ""` (an unset variable) is a usage error (exit `2`), not
+    root discovery;
+  - a file over its read cap is staged as a stand-in of the cap plus one byte
+    and never copied, so a name-only check still sees it: a served database
+    over 16MB now blocks, as in the full audit;
+  - the `not_scanned` reason names the scanner's own cause (`extension outside
+    the scan set`, `minified or bundled artefact`, `ignored or pruned path
+    (<dir>/)`, `exceeds the scanner's read size cap (not copied)`); a file a
+    skill reads by name (`.env.*`, a key file) over the cap gives only the cap;
+  - text output, the stderr notes and argparse's usage errors escape control
+    and format characters (every bidi control, zero-width marks), line
+    separators and undecodable characters;
+  - a stdout closed at startup exits `2` before anything is scanned; stderr is
+    advisory, so a stderr that cannot be written changes neither the exit code
+    nor the stdout report;
+  - once a signal has started the cleanup, a second SIGTERM, SIGHUP or Ctrl-C
+    no longer interrupts the removal of the temporary copy, and a signal the
+    caller ignores (`nohup`) stays ignored.
 - **Feature 0096 — OWASP Top 10 categories are labels, not duplicate
   findings.** The OWASP agent no longer re-emits each CWE finding as a second
   `agent_type = owasp` row with its own lineage and `VLT-` ref. It returns its
@@ -178,6 +282,15 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   agent/LLM scanning needs a local Python ≥ 3.12 or Docker, while the CLI and
   web UI are installed and work. The post-install summary and quickstart adapt
   to whether agents were actually installed.
+
+### Removed
+
+- **The `next_middleware_matcher` CWE skill and category (feature 0097).** Its
+  Next.js matcher-bypass detection is one instance of the access_control
+  route-matcher arm and is reported as
+  `check_id: cwe.access_control.guard_excluded_by_request_attr` (CWE-807). A
+  consumer filtering on the `next_middleware_matcher` category or on
+  `cwe.next_middleware_matcher.bypass` must filter on that check id instead.
 
 ### Fixed
 

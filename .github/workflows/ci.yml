@@ -73,6 +73,8 @@ jobs:
         run: sh scripts/tests/test_check_ssh_version.sh
       - name: db DSN host/internal port wiring tests
         run: sh scripts/tests/test_db_dsn_wiring.sh
+      - name: launcher --tier3 flag tests
+        run: sh scripts/tests/test_tier3_flags.sh
 
   build-backend:
     runs-on: ubuntu-latest

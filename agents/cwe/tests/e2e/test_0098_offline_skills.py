@@ -4,9 +4,9 @@ The offline runner is what a developer's pre-commit hook (lefthook) and a CI job
 call to scan a set of changed files with the CWE skills WITHOUT a running backend
 or any LLM. It must:
 
-  1. Flag a security issue introduced in a changed file (the Next.js middleware
-     matcher bypass class, CVE-2025-29927) and exit non-zero so the commit is
-     blocked.
+  1. Flag a security issue introduced in a changed file (an auth guard excluded
+     by a client-controlled request attribute, CWE-807) and exit non-zero so the
+     commit is blocked.
   2. Pass cleanly (exit 0) when the changed files carry no issue at or above the
      gate severity.
   3. Report the ORIGINAL file path the developer staged, never an internal temp
@@ -23,9 +23,11 @@ from pathlib import Path
 
 # Contract: a standalone module, importable without starting any agent/server.
 from cwe_agent.offline import main, scan_files
+from tests._neutral import neutral_dir
 
 # A Next.js middleware whose config.matcher carries a `missing` prefetch
-# condition — the CVE-2025-29927 matcher-bypass shape.
+# condition: a client-controlled header excludes requests from the guard
+# (CWE-807). Not CVE-2025-29927, a framework bug fixed by upgrading Next.js.
 VULNERABLE_PROXY = """\
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
@@ -67,7 +69,7 @@ def test_flags_introduced_matcher_bypass(tmp_path: Path) -> None:
 
     findings = scan_files([f], root=str(tmp_path))
 
-    hits = [x for x in findings if x.get("check_id") == "cwe.next_middleware_matcher.bypass"]
+    hits = [x for x in findings if x.get("check_id") == "cwe.access_control.guard_excluded_by_request_attr"]
     assert hits, "offline runner must flag the matcher bypass"
     assert hits[0]["severity"] == "high"
 
@@ -77,7 +79,7 @@ def test_reports_original_path_not_temp(tmp_path: Path) -> None:
     f = _write(tmp_path, "frontend/proxy.ts", VULNERABLE_PROXY)
 
     findings = scan_files([f], root=str(tmp_path))
-    hits = [x for x in findings if x.get("check_id") == "cwe.next_middleware_matcher.bypass"]
+    hits = [x for x in findings if x.get("check_id") == "cwe.access_control.guard_excluded_by_request_attr"]
 
     assert hits[0]["file_path"] == f
 
@@ -121,7 +123,7 @@ def test_severity_gate_ignores_below_threshold(tmp_path: Path) -> None:
 
     # Detected regardless of gate:
     assert any(
-        x.get("check_id") == "cwe.next_middleware_matcher.bypass"
+        x.get("check_id") == "cwe.access_control.guard_excluded_by_request_attr"
         for x in scan_files([f], root=str(tmp_path))
     )
     # But a `critical` gate does not block a `high` finding:
@@ -141,19 +143,24 @@ def test_json_format_emits_findings_and_blocking(tmp_path, capsys) -> None:
     out = _json.loads(capsys.readouterr().out)
     assert "findings" in out and "blocking" in out
     assert any(
-        x.get("check_id") == "cwe.next_middleware_matcher.bypass"
+        x.get("check_id") == "cwe.access_control.guard_excluded_by_request_attr"
         for x in out["blocking"]
     )
 
 
-def test_root_none_falls_back_to_basename(tmp_path) -> None:
-    """With no root, the file is still scanned (copied under its basename)."""
-    f = _write(tmp_path, "frontend/proxy.ts", VULNERABLE_PROXY)
+def test_root_none_still_scans_a_file_outside_the_discovered_root(request, monkeypatch) -> None:
+    """With no root, the root is the repository holding the cwd (else the cwd).
+
+    A file outside that root is still scanned: it is copied into the separate
+    outside-the-root tree, one numbered directory per source directory.
+    """
+    f = _write(neutral_dir(request), "frontend/proxy.ts", VULNERABLE_PROXY)
+    monkeypatch.chdir(neutral_dir(request))
 
     findings = scan_files([f], root=None)
 
     assert any(
-        x.get("check_id") == "cwe.next_middleware_matcher.bypass" for x in findings
+        x.get("check_id") == "cwe.access_control.guard_excluded_by_request_attr" for x in findings
     )
 
 
@@ -177,21 +184,20 @@ def test_one_failing_skill_does_not_sink_the_gate(tmp_path, monkeypatch) -> None
     findings = offline.scan_files([f], root=str(tmp_path))
 
     assert any(
-        x.get("check_id") == "cwe.next_middleware_matcher.bypass" for x in findings
+        x.get("check_id") == "cwe.access_control.guard_excluded_by_request_attr" for x in findings
     )
 
 
-def test_extract_normalises_list_and_unknown() -> None:
-    """A skill may return {'findings': [...]}, a bare list, or neither."""
-    from cwe_agent.offline import _extract
-
-    assert _extract({"findings": [{"a": 1}]}) == [{"a": 1}]
-    assert _extract([{"b": 2}]) == [{"b": 2}]
-    assert _extract(None) == []
+# test_extract_normalises_list_and_unknown moved to tests/unit/test_0098_offline_runner.py:
+# it pins a private helper, not the business contract.
 
 
-def test_file_outside_root_uses_basename(tmp_path) -> None:
-    """A staged file that is not under --root still scans (basename fallback)."""
+def test_file_outside_root_is_scanned_in_its_own_tree(tmp_path) -> None:
+    """A staged file that is not under --root still scans.
+
+    It is copied into the outside-the-root tree, never into the root's
+    namespace, so it cannot collide with a repository path.
+    """
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     f = _write(outside, "proxy.ts", VULNERABLE_PROXY)
@@ -201,5 +207,5 @@ def test_file_outside_root_uses_basename(tmp_path) -> None:
     findings = scan_files([f], root=str(other_root))
 
     assert any(
-        x.get("check_id") == "cwe.next_middleware_matcher.bypass" for x in findings
+        x.get("check_id") == "cwe.access_control.guard_excluded_by_request_attr" for x in findings
     )
