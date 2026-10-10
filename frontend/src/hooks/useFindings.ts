@@ -185,6 +185,12 @@ export function useFindings(
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
   const findings = sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  // The page a finding sits on under the active filters, or null when they
+  // leave it out; a `?finding=` link opens that page.
+  const pageOf = (id: string): number | null => {
+    const index = sorted.findIndex((f) => f.id === id);
+    return index < 0 ? null : Math.floor(index / PAGE_SIZE);
+  };
 
   return {
     findings,
@@ -195,6 +201,7 @@ export function useFindings(
     page: safePage,
     totalPages,
     setPage,
+    pageOf,
     sortField,
     sortDirection,
     filterSeverity,

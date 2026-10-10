@@ -186,9 +186,11 @@ func (p *windowProbe) recordFailure(err error) {
 }
 
 // isPermanentProbeError reports a verdict no re-probe can change: the target
-// is not local, or the egress validator refused it without a DNS failure.
+// is not local, the egress validator refused it without a DNS failure, or the
+// server has no listing endpoint at all.
 func isPermanentProbeError(err error) bool {
-	return errors.Is(err, errProbeNotLocal) || errors.Is(err, errProbeRefused)
+	return errors.Is(err, errProbeNotLocal) || errors.Is(err, errProbeRefused) ||
+		errors.Is(err, errProbeNoListing)
 }
 
 // logProbeEffect makes the one lowering exception never silent (§5.1(f)).
@@ -305,9 +307,22 @@ func getModels(ctx context.Context, target *egress.PinnedTarget, key string) ([]
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return nil, listingStatusError(resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, probeMaxBody))
+}
+
+// errProbeNoListing: the server has no LM Studio listing (Ollama, vLLM, a plain
+// OpenAI-shaped server answer 404/405/501). Asking again cannot change that,
+// so the verdict is permanent (verification item 9); a 5xx stays transient.
+var errProbeNoListing = errors.New("no loaded-window listing on this server")
+
+func listingStatusError(status int) error {
+	switch status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return fmt.Errorf("%w: status %d", errProbeNoListing, status)
+	}
+	return fmt.Errorf("status %d", status)
 }
 
 // noRedirect returns the 3xx itself, which the status check then rejects.

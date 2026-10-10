@@ -158,7 +158,18 @@
     "copyAllTitle": "Kopiert die {{count}} Befunde, die die aktuellen Filter anzeigen",
     "copyIssue": "Als Issue kopieren",
     "estimated": "(geschätzt)",
-    "findingsDeduped": "{{count}} Befund(e) dedupliziert"
+    "findingsDeduped": "{{count}} Befund(e) dedupliziert",
+    "reveal": {
+      "toggle": "Unmaskiert anzeigen",
+      "hint": "Wird auf Anfrage aus der gescannten Datei gelesen; nie gespeichert, nie an ein Modell gesendet.",
+      "loading": "Gescannte Datei wird gelesen…",
+      "changed": "Die Datei hat sich seit dem Scan geändert, daher werden die Werte nicht angezeigt.",
+      "unavailable": "Der gescannte Quellcode ist nicht mehr verfügbar.",
+      "ambiguous": "Die maskierte Zeile lässt sich der Datei nicht eindeutig zuordnen.",
+      "unverifiable": "Dieser Befund lässt sich nicht gegen die gescannte Datei prüfen.",
+      "notPermitted": "Werte werden nur Administratoren angezeigt, lokal der angemeldeten Sitzung.",
+      "error": "Die Werte konnten nicht geladen werden."
+    }
   },
   "settings": {
     "title": "Einstellungen",

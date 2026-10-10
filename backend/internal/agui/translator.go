@@ -245,7 +245,9 @@ func translateProgress(data json.RawMessage) ([]*model.AgUIEvent, error) {
 }
 
 func translateResult(agentType string, data json.RawMessage) ([]*model.AgUIEvent, error) {
-	log.Printf("[translate] result agent=%s dataLen=%d data=%.200s", agentType, len(data), string(data))
+	// The payload is never logged: it carries finding text (0074 verification item 1).
+	log.Printf("[translate] result agent=%s dataLen=%d", agentType, len(data))
+	data = maskUnmarkedMergedLLM(agentType, data)
 	events := make([]*model.AgUIEvent, 0, 2)
 	// A result payload carrying a non-empty `error` (e.g. a plugin whose scan
 	// process failed — bad flag, timeout, unparseable output) must SURFACE as

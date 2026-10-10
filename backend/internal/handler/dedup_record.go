@@ -143,9 +143,9 @@ func (c *descCollector) writeTo(v map[string]interface{}) {
 // leaves ordinary prose verbatim.
 func redactDescription(category, desc string) string {
 	if !secretBearingCWEs[strings.ToUpper(strings.TrimSpace(category))] {
-		return textutil.RedactProseSecrets(desc)
+		return textutil.MaskTokenShapes(textutil.RedactProseSecrets(desc))
 	}
-	return textutil.RedactSecretText(desc)
+	return textutil.MaskTokenShapes(textutil.RedactSecretText(desc))
 }
 
 // mergedDescEntry is one displaced row's description, capped at

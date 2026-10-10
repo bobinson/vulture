@@ -494,6 +494,27 @@ _FILE_BLOCK_HEADER_RE = re.compile(r"(?m)^--- .+ ---$")
 _LOOP_GUARD_WARNED = False
 
 
+def _generate_run_config(run_model_provider: Any) -> Any:
+    """The generate run's ``RunConfig``: the request-size filter on EVERY run
+    (0074 verification item 15: each tool turn grew the request past the cap),
+    plus the broker's model provider when one is set."""
+    try:
+        from agents import RunConfig  # type: ignore[import-untyped]
+    except ImportError as exc:
+        if run_model_provider is not None:
+            # §26/M11: broker required but RunConfig missing → FAIL CLOSED
+            # (never fall back to the env-key global client, which would leak
+            # the keys the broker isolates); raise → skills-only (N2).
+            raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
+        return None
+    from shared.llm.request_cap import bounded_model_input
+
+    if run_model_provider is None:
+        return RunConfig(call_model_input_filter=bounded_model_input)  # type: ignore[call-arg]
+    return RunConfig(model_provider=run_model_provider,  # type: ignore[call-arg]
+                     call_model_input_filter=bounded_model_input)
+
+
 def _get_max_body_bytes() -> int:
     """Encoded-payload ceiling for the LLM request body, in bytes.
 
@@ -806,11 +827,9 @@ def _llm_window(model: str | None, use_llm: bool) -> dict[str, Any] | None:
 
     Feature 0074 P1 (AC7): logged once per run and carried on ``run_started``.
     """
-    if not use_llm:
-        return None
-    from shared.llm.provider import publish_llm_window
+    from shared.llm.provider import run_llm_window
 
-    return publish_llm_window(model)
+    return run_llm_window(model, use_llm)
 
 
 def _get_max_source_chars(model: str | None = None) -> int:
@@ -1983,10 +2002,15 @@ def _is_secret_bearing(finding: dict) -> bool:
 def _redact_merged_description(description: str, secret_bearing: bool) -> str:
     """A secret-bearing pair gets Go's full ``RedactSecretText`` (code-line
     rules plus prose); any other row the prose pass alone, which touches only
-    credential shapes, so ordinary reasoning text stays verbatim."""
+    credential shapes, so ordinary reasoning text stays verbatim. Either way the
+    result then gets the secret-shape masking every finding's own description
+    gets (0098, ``_mask_secret_shapes_inplace``): this text reaches the same
+    egress points (live SSE, the persisted merge record, the API)."""
     if secret_bearing:
-        return _redact_secret_text(description)
-    return "\n".join(_redact_prose(line) for line in description.split("\n"))
+        redacted = _redact_secret_text(description)
+    else:
+        redacted = "\n".join(_redact_prose(line) for line in description.split("\n"))
+    return mask_secret_values(redacted, _REDACTION_PLACEHOLDER)
 
 
 def _merged_llm_entry(tier: str, description: str) -> dict:
@@ -3525,6 +3549,10 @@ def run_combined_audit(
         "pruned_dirs": pruned_dirs(source_path),
         "lineage_checks": lineage_check_results,
         **llm_tally.as_result(),
+        # Every merged_llm description above went through _redact_merged_description's
+        # secret-shape masking; a backend uses this to tell a masking agent from an
+        # older one (0074 verification item 1).
+        "merged_llm_masked": True,
     }
     if degraded_reason:
         result_extra["degraded_reason"] = degraded_reason
@@ -4499,15 +4527,9 @@ async def _collect_llm_findings_async(
         kwargs: dict[str, Any] = {}
         if hooks is not None:
             kwargs["hooks"] = hooks
-        if run_model_provider is not None:
-            try:
-                from agents import RunConfig  # type: ignore[import-untyped]
-            except ImportError as exc:
-                # §26/M11: broker required but RunConfig missing → FAIL CLOSED
-                # (never fall back to the env-key global client, which would leak
-                # the keys the broker isolates); raise → skills-only (N2).
-                raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
-            kwargs["run_config"] = RunConfig(model_provider=run_model_provider)  # type: ignore[call-arg]
+        run_config = _generate_run_config(run_model_provider)
+        if run_config is not None:
+            kwargs["run_config"] = run_config
         # D.3: bound the SDK's agent loop. Without it one attempt can issue an
         # unbounded number of model calls (~16 measured), invisible to
         # retry_llm_call's budget and uncounted by the tool-loop guard.

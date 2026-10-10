@@ -193,6 +193,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	healthH := handler.NewHealthHandler()
 	sourceH := handler.NewSourceHandler(sourceSvc)
 	auditH := handler.NewAuditHandler(auditSvc)
+	auditH.SetLocalMode(cfg.LocalMode) // who may receive masked values (0074 item 1b)
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
 	streamH.SetBrokerRevoker(broker) // 0064 §6/M3: revoke run tokens at terminal state (no-op when off)
 	agentH := handler.NewAgentHandler(cfg.Agents)
@@ -302,7 +303,14 @@ func isCancelPath(p string) bool {
 }
 
 func auditDetailRouter(auditH *handler.AuditHandler, streamH *handler.StreamHandler) http.HandlerFunc {
+	// 0074 item 1b: masked-value verification re-reads source files, so it is
+	// rate-limited per principal on top of the route's auth.
+	maskedValuesH := RateLimitByKey(30, handler.MaskedValuesRateKey, auditH.MaskedValues)
 	return func(w http.ResponseWriter, r *http.Request) {
+		if handler.IsMaskedValuesPath(r.URL.Path) && r.Method == http.MethodGet {
+			maskedValuesH(w, r)
+			return
+		}
 		if isStreamTokenPath(r.URL.Path) {
 			streamH.CreateStreamToken(w, r)
 			return
@@ -425,7 +433,7 @@ func registerAPIRoutes(
 	mux.HandleFunc("/api/sources/", ReadOnlyGuard(readOnly, sourceH.Get))
 	mux.HandleFunc("/api/stats", auditH.Stats)
 	mux.HandleFunc("/api/audits", ReadOnlyGuard(readOnly, auditsH))
-	mux.HandleFunc("/api/audits/", ReadOnlyGuard(readOnly, auditDetailH))
+	mux.HandleFunc("/api/audits/", handler.MaskedValuesNoStore(ReadOnlyGuard(readOnly, auditDetailH)))
 	mux.HandleFunc("/api/audits/cache", auditH.CachedAudit)
 	mux.HandleFunc("/api/agents", agentH.List)
 	mux.Handle("/api/llm/health", llmHealthH)
@@ -635,7 +643,7 @@ func registerAuthRoutes(
 	// 0065 §H1: method-gated RequireWrite lets viewers GET/list while POST
 	// (create) requires member/admin. Sits inside Require, outside ReadOnlyGuard.
 	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, auditsH)))))
-	mux.HandleFunc("/api/audits/", authMW.Require(ReadOnlyGuard(readOnly, auditDetailH)))
+	mux.HandleFunc("/api/audits/", handler.MaskedValuesNoStore(authMW.Require(ReadOnlyGuard(readOnly, auditDetailH))))
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
 	mux.HandleFunc("/api/llm/health", authMW.Require(llmHealthH.ServeHTTP))

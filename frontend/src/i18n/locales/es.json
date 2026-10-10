@@ -158,7 +158,18 @@
     "exportReport": "Exportar Informe",
     "reportGenerated": "Informe descargado",
     "evidence": "Evidencia",
-    "verificationEvidence": "Evidencia de Verificación"
+    "verificationEvidence": "Evidencia de Verificación",
+    "reveal": {
+      "toggle": "Mostrar sin enmascarar",
+      "hint": "Se vuelve a leer del archivo analizado a petición; nunca se guarda ni se envía a un modelo.",
+      "loading": "Leyendo el archivo analizado…",
+      "changed": "El archivo cambió desde el análisis, por lo que no se muestran los valores.",
+      "unavailable": "El código fuente analizado ya no está disponible.",
+      "ambiguous": "La fila enmascarada no se puede asociar al archivo sin ambigüedad.",
+      "unverifiable": "Este hallazgo no se puede verificar contra el archivo analizado.",
+      "notPermitted": "Los valores solo se muestran a un administrador o, en local, a la sesión iniciada.",
+      "error": "No se pudieron cargar los valores."
+    }
   },
   "settings": {
     "title": "Configuración",

@@ -62,10 +62,11 @@ func TestOneWeaknessSurvivesTheTierPathSplitByDefault(t *testing.T) {
 			"shipping defaults, got %d: %v. The two rows differ only in the path form each tier "+
 			"emits, and the cross-agent key compares that string raw.", len(kept), paths)
 	}
-	// VULTURE_DEDUP_PREFER_DETERMINISTIC is documented as 0076 re-anchoring's
-	// hard prerequisite; it can only arbitrate a collision that occurs.
+	// The deterministic preference (deterministicPreference, hard-wired since its
+	// switch was removed) is 0076 re-anchoring's prerequisite; it can only
+	// arbitrate a collision that occurs.
 	if kept[0].Provenance != "skill" {
-		t.Errorf("the deterministic row must win the collision (VULTURE_DEDUP_PREFER_DETERMINISTIC), got %q",
+		t.Errorf("the deterministic row must win the collision (deterministicPreference), got %q",
 			kept[0].Provenance)
 	}
 }
@@ -115,8 +116,9 @@ func TestTierPathSplitDedupWithoutARootIsUnchanged(t *testing.T) {
 
 // THE ARBITRATION THIS FLIP MAKES LIVE.
 //
-// VULTURE_DEDUP_PREFER_DETERMINISTIC is documented as 0076 re-anchoring's hard
-// prerequisite, but 0079 A1 found it VACUOUS: with the key uncanonicalised a
+// The deterministic preference (then a switch, now hard-wired as
+// deterministicPreference) is 0076 re-anchoring's hard prerequisite, but 0079 A1
+// found it VACUOUS: with the key uncanonicalised a
 // det row and an llm row can never share one, so the branch that arbitrates
 // between them was unreachable. Enforcing canonicalisation is what reaches it.
 // 0079 D1 saw this coming — its stable tie-break comment says the total order

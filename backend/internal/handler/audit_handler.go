@@ -45,7 +45,13 @@ type AuditHandler struct {
 	// Recomputing it via pluginregistry.Default() would build a second
 	// registry and reintroduce exactly that drift.
 	pluginReg pluginregistry.Registry
+	// localMode decides who may receive masked values (MaskedValues).
+	localMode bool
 }
+
+// SetLocalMode tells the handler the server runs in local mode (cfg.LocalMode),
+// where a masked value is shown only to an explicit token on a loopback Host.
+func (h *AuditHandler) SetLocalMode(enabled bool) { h.localMode = enabled }
 
 // SetPluginRegistry wires the plugin registry consulted when validating
 // requested audit types. Mirrors AgentHandler.SetPluginRegistry. nil-safe:
@@ -225,6 +231,8 @@ func (h *AuditHandler) CachedAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.enrichProveResults(audit)
+	// Served like GET /api/audits/{id}: the merge record only under ?detail=full.
+	omitMergeDetail(audit, r.URL.Query().Get("detail"))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"cached": true,
 		"audit":  audit,

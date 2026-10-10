@@ -126,6 +126,13 @@ class VultureClient:
     async def get_audit_lineage(self, audit_id: str) -> list:
         return await self._request("GET", f"/api/audits/{audit_id}/lineage")
 
+    async def get_masked_values(self, audit_id: str, finding_id: str) -> dict:
+        return await self._request("GET", f"/api/audits/{audit_id}/findings/{finding_id}/masked")
+
+    @property
+    def base_url(self) -> str:
+        return self._base
+
     async def close(self) -> None:
         await self._client.aclose()
 
@@ -782,6 +789,43 @@ async def vulture_get_finding_detail(audit_id: str, fingerprint: str) -> dict:
             result["lineage"] = _redact_record(lineage)
     except Exception as exc:
         result["lineage_error"] = f"Failed to fetch lineage: {type(exc).__name__}"
+    return result
+
+
+# 0074 verification item 1b. What an MCP client may learn about a masked value:
+# where it sits, what kind it is, the length of a fixed-format token, and
+# whether the scanned file still reproduces the masked rows. Never the value:
+# this output enters the calling model's context.
+_SPAN_FIELDS = ("line", "ordinal", "column", "kind", "length")
+_MASKED_FIELDS = ("source_available", "matches_scan", "file", "rows_checked", "reason")
+
+
+def _ui_url(base: str, ui_path: str) -> str:
+    """The finding in the UI: VULTURE_FRONTEND_URL when set (the CLI's rule),
+    else the server this client talks to (an install or remote server serves
+    its own UI)."""
+    origin = os.environ.get("VULTURE_FRONTEND_URL", "").strip() or base
+    return origin.rstrip("/") + ui_path
+
+
+@mcp.tool()
+async def vulture_verify_masked_values(audit_id: str, fingerprint: str) -> dict:
+    """Verify the masked values (secrets) in one finding's code snippet WITHOUT
+    receiving them. Returns, per masked value: line, column, kind (jwt,
+    url_userinfo, private_key, aws_key_id, ...) and, for fixed-format tokens,
+    the length; whether the scanned file still reproduces the masked rows
+    (matches_scan); and ui_url, where a human can switch the value on. With
+    local file access, read file:line:column yourself. Values are never
+    returned by this tool."""
+    client = await _get_client()
+    audit = await client.get_audit(audit_id)
+    finding = next((f for f in audit.get("findings", []) if f.get("fingerprint") == fingerprint), None)
+    if not finding or not finding.get("id"):
+        raise ValueError(f"Finding with fingerprint {fingerprint} not found in audit {audit_id}")
+    masked = await client.get_masked_values(audit_id, finding["id"])
+    result = {k: masked[k] for k in _MASKED_FIELDS if k in masked}
+    result["spans"] = [{k: span[k] for k in _SPAN_FIELDS if k in span} for span in masked.get("spans") or []]
+    result["ui_url"] = _ui_url(client.base_url, masked.get("ui_path") or f"/audit/{audit_id}")
     return result
 
 

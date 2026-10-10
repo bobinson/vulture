@@ -83,6 +83,7 @@ be older than the other (version skew) without anything breaking.
 | `llm_window` | agent → Go, on `agent_start`; Go passes it through as `llmWindow` on `StepStarted` | object `{resolved, effective, provenance, source, model}`: the window the agent resolved, the one it actually budgets with (`effective <= resolved`), where `resolved` came from (`env`, `broker`, `table`, `family`, `default`), the broker's `context_window_source` (`null` when none), and the model key | The run has no LLM phase, or the agent is older. This is the only `agent_start` key Go forwards. A non-object value is dropped and the step itself is kept. Go re-marshals the object through its five documented fields (unknown keys dropped, strings capped), so `source` with no broker label can reach a client as `null`, as an absent key, or, from an earlier 0074 backend that re-marshalled it as a plain string, as `""`. A reader treats all three alike as "no broker label" and never as a vocabulary word; it likewise treats a missing, zero or negative `resolved`/`effective` as "not known", never as a real window. |
 | `llm_emitted`, `llm_collapsed_agent` | agent → Go, top level of the `result` snapshot | ints: the LLM-family rows the agent's LLM tier produced, and how many of those the agent's own dedup dropped before sending | An older agent. Go then logs that agent's `dedup_buckets` line as `emitted=unavailable … lost=unavailable` rather than deriving a number. A current agent always sends both, `0` on a skills-only run. Go keeps them as pointers so an explicit `0` stays distinct from absent. |
 | `merged_llm` | agent → Go, on a finding (`finding` event and `result` findings) | list of `{provenance, description}` | No LLM row collapsed into this one. The agent writes it when its own skill/LLM dedup drops an LLM-family row against a deterministic row, and omits it when the list is empty. Go folds every entry into the two `validation` keys below and never persists `merged_llm` itself. An older Go ignores the field, so the record is simply missing. The agent redacts each description and deduplicates as Go's merge does: a description is recorded only when it is non-empty after trimming, is not the survivor's own and is not already recorded under any tier. At most 8 descriptions of at most 2048 bytes each are recorded (a cut is marked as in `merged_descriptions`). A tier with no recorded description is sent once with `description: ""`, which counts toward `provenance_origins` only. |
+| `merged_llm_masked` | agent → Go, top level of the `result` snapshot | `true`: every `merged_llm` description went through the agent's secret-shape masking (the same `mask_secret_values` every finding's own description gets) | An older agent. Go then masks the distinctive token shapes (JWTs, URL userinfo, private-key bodies, provider tokens; `textutil.MaskTokenShapes`) in that snapshot's `merged_llm` descriptions before it is forwarded to live clients or parsed for persistence. Go masks every persisted merge description that way too, as defence in depth. |
 | `merged_llm_dropped` | agent → Go, beside `merged_llm` | int: the distinct descriptions the agent refused at its cap of 8 | The agent's cap never fired: the agent writes it only when it is positive, and Go reads it as `omitempty`. Go adds it to `validation.merged_descriptions_dropped` and never persists the field itself. An older Go ignores it, so the overflow count is simply missing from the blob. |
 | `validation.provenance_origins` | Go → storage / API, inside a finding's `validation` blob | list of distinct provenance strings, the survivor's own included | The row was never merged, or the audit predates 0074. Written by the cross-agent merge and by folding `merged_llm`. A top-level key, never a `checks[]` entry, so it can never reach the voter. |
 | `validation.merged_descriptions`, `validation.merged_descriptions_dropped` | same blob | list of `{agent_type, provenance, description, truncated?}`, at most 8 entries of at most 2048 bytes each (a cut is marked by `truncated: true` plus a trailing `…`); int count of the distinct descriptions beyond the cap | Nothing was displaced. Both are omitted when empty or zero. The survivor's own description is never repeated. Stored on every merged row, but `GET /api/audits/{id}` serves them **only with `?detail=full`**: a default response leaves both keys out of every finding's `validation` blob (a debugging record no client renders, large on merge-heavy audits). So on that endpoint "absent" also means "not asked for". |
@@ -95,7 +96,10 @@ be older than the other (version skew) without anything breaking.
 `validation.merged_descriptions` and `validation.merged_descriptions_dropped`
 back to each finding that has them. Any other `detail` value, or none, serves
 the default response without them; `provenance_origins` and `origins_recorded`
-are served either way. The parameter combines with `provenance=`, never
+are served either way. `GET /api/audits/cache` follows the same rule. The
+stream replay of a finished audit is the audit's event stream, not a read of
+the record, and carries the merge record as the live stream did; its
+descriptions are masked like every finding text. The parameter combines with `provenance=`, never
 changes which rows are returned, and is ignored by an older backend (which
 serves the keys by default, or never wrote them).
 
@@ -445,3 +449,41 @@ The `agui/translator.go` component maps between the two layers:
 - The frontend gracefully handles partial results (some agents succeeded, some failed)
 - Agent HTTP timeouts: 5 minutes per agent (configurable)
 - SSE reconnection: disabled — stream tokens are single-use, so the frontend closes the EventSource on error rather than auto-reconnecting
+
+## Window reasons
+
+Every finding's `validation.checks[]` may carry a zero-weight `window` check
+whose `result` says why the finding has the code window it has: `present` (a
+window that contains the cited line), `inherited` (carried from another
+agent's finding, not re-read), `rollup_parent` (stands for several sites),
+`no_code_location` (the class has no file or line), `no_line` (a file but no
+usable line), `unreadable` (the path did not resolve or the read failed) and,
+since 0074, `out_of_range` (the file was read and the cited line lies past its
+end, so no window is shown). A model-written window that does not show the
+cited line is replaced by one read from the file, never recorded `present`.
+
+## Masked values (feature 0074, verification item 1b)
+
+`GET /api/audits/{id}/findings/{finding_id}/masked` verifies the masked values
+in one finding's `code_snippet` against the file the audit scanned. Nothing raw
+is stored: the backend aligns each stored row (`N: text`, every placeholder
+`***REDACTED***` / `[redacted]` a wildcard) against the source on request.
+
+| Field | Meaning |
+|---|---|
+| `source_available` | the scanned file could be opened (inside the audit's source root, through `os.Root`: no `..`, no symlink escape) |
+| `matches_scan` | every stored row matches the file outside its placeholders; `false` means the file changed since the scan, or the alignment was ambiguous |
+| `values_included` | `value` is present on the spans |
+| `file`, `rows_checked` | the root-relative file and the rows compared |
+| `spans[]` | `{line, ordinal, column, kind, length?, value?}`: the placeholder's position within its row (`ordinal`, 0-based), a 1-based code-point `column`, a `kind` label (`jwt`, `url_userinfo`, `private_key`, `aws_key_id`, `google_api_key`, `openai_style_key`, `github_token`, `slack_token`, `stripe_key`, `npm_token`, `gitlab_token`, `sendgrid_key`, `huggingface_token`, `bearer`, `basic`, `connection_secret`, `hex_credential`, `secret`), and `length` except for password-like kinds (`secret`, `basic`, `connection_secret`, `url_userinfo`) |
+| `reason` | `source_unavailable`, `outside_source_root`, `not_a_regular_file`, `too_large`, `binary`, `no_location`, `changed_since_scan`, `ambiguous`; absent when every row aligned |
+| `ui_path` | `/audit/{id}?finding={finding_id}`: the UI opens that finding's detail |
+
+`value` is sent only when every row aligned AND the request is from an
+authorised human: outside local mode an `admin`; in local mode a request that
+presented a credential (not the implicit local admin) with a loopback `Host`.
+API keys and viewers never receive values, so the MCP server, which uses an API
+key, cannot. Every response carries `Cache-Control: no-store`, and each request
+is logged as `finding_reveal` (identifiers and outcome, never content). A git
+clone deleted after its run (`VULTURE_CLEANUP_RUN_DIRS=true`) reports
+`source_unavailable`.

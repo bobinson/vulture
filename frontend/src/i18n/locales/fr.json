@@ -158,7 +158,18 @@
     "copyAllTitle": "Copie les {{count}} résultats affichés par les filtres actuels",
     "copyIssue": "Copier comme ticket",
     "estimated": "(estimé)",
-    "findingsDeduped": "{{count}} constat(s) dédupliqué(s)"
+    "findingsDeduped": "{{count}} constat(s) dédupliqué(s)",
+    "reveal": {
+      "toggle": "Afficher sans masque",
+      "hint": "Relu à la demande depuis le fichier analysé ; jamais stocké, jamais envoyé à un modèle.",
+      "loading": "Lecture du fichier analysé…",
+      "changed": "Le fichier a changé depuis l’analyse ; les valeurs ne sont donc pas affichées.",
+      "unavailable": "La source analysée n’est plus disponible.",
+      "ambiguous": "La ligne masquée ne peut pas être associée au fichier sans ambiguïté.",
+      "unverifiable": "Ce résultat ne peut pas être vérifié par rapport au fichier analysé.",
+      "notPermitted": "Les valeurs ne sont affichées qu’à un administrateur ou, en local, à la session connectée.",
+      "error": "Impossible de charger les valeurs."
+    }
   },
   "settings": {
     "title": "Paramètres",

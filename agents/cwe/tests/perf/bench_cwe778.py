@@ -113,7 +113,9 @@ BUDGETS: dict[str, dict[str, float]] = {
 
 # Default locations. Override the parent directory with VULTURE_BENCH_REPO_ROOT,
 # or an individual repo with a `name=path` argument.
-DEFAULT_REPO_ROOT = Path(os.environ.get("VULTURE_BENCH_REPO_ROOT", "/home/user/src"))
+DEFAULT_REPO_ROOT = Path(
+    os.environ.get("VULTURE_BENCH_REPO_ROOT") or Path(__file__).resolve().parents[4].parent
+)
 
 # A child process must never wait forever on a pathological tree.
 CHILD_TIMEOUT_SEC = 600.0

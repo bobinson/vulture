@@ -425,6 +425,13 @@ def _warn_window(window: EffectiveWindow) -> None:
         )
 
 
+def run_llm_window(model: str | None, use_llm: bool) -> dict | None:
+    """This run's window for ``run_started``: ``publish_llm_window`` when the
+    run has an LLM tier, ``None`` for a skills-only run (no window to publish).
+    The one helper every agent's ``run_started`` uses (feature 0074 AC7)."""
+    return publish_llm_window(model) if use_llm else None
+
+
 def publish_llm_window(model: str | None = None) -> dict:
     """Log this run's window once and return it for ``run_started`` (AC7).
 

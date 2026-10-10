@@ -42,6 +42,8 @@ from shared.discovery.plugin_base import DiscoveryContext
 from shared.discovery.runner import run_discovery
 from shared.discovery.sitemap import SiteMap
 from shared.env import env_flag
+from shared.llm.mode import llm_enabled
+from shared.llm.provider import run_llm_window
 from shared.tools.window import WINDOW_NO_CODE_LOCATION, record_window_reason
 from shared.transport.event_emitter import AgUiEventEmitter
 
@@ -130,7 +132,8 @@ def run_discover(
 ) -> Generator[str, None, None]:
     """Execute the discover pipeline and yield SSE events."""
     emitter = AgUiEventEmitter(run_id)
-    yield emitter.run_started()
+    # The LLM suggestion plugin runs when the LLM tier is on (feature 0074 AC7).
+    yield emitter.run_started(llm_window=run_llm_window(None, llm_enabled()))
 
     target_url = config.get("target_url", "")
     no_cache = config.get("no_cache", False)

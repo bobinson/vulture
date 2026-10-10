@@ -71,7 +71,7 @@ class TestCWE22Negatives:
         '  "@chromatic-com/storybook",',
         '  "@storybook/addon-a11y",',
         # TypeScript relative imports
-        'import { resolveAddressToIds } from "../resolvers/resolveAddressToIds";',
+        'import { resolveRegionToIds } from "../resolvers/resolveRegionToIds";',
         'import { mapData } from "../usa/federal/mapper";',
         # URL string literals
         'const URL = "https://geocoding.geo.census.gov/geocoder/path";',
@@ -143,8 +143,8 @@ class TestCWE434Negatives:
         ("AvatarInput.tsx", 'import { UploadIcon } from "ui";'),
         ("AvatarInput.tsx", 'const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);'),
         ("AvatarInput.tsx", '  handleAvatarUploadComplete,'),
-        ("actions.yaml", '  - name: finalizeAssetUpload'),
-        ("actions.yaml", '  - name: prepareAssetUpload'),
+        ("actions.yaml", '  - name: completeMediaUpload'),
+        ("actions.yaml", '  - name: beginMediaUpload'),
         ("public_userAnimationFlags.yaml", '        - uploadProfilePictureAnimationSeen'),
         ("public_userAnimationFlags.yaml", '        - lastUploadProfilePictureAnimationDate'),
         ("api.d.ts", 'export interface UploadConfig { maxSize: number; }'),

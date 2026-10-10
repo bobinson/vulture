@@ -31,7 +31,8 @@ from prove_agent.runner import prove_finding_with_timeout, validate_staging_url
 from prove_agent.strategies import STRATEGY_MAP
 from shared.discovery.cache import load_cached_discovery
 from shared.discovery.sitemap import SiteMap
-from shared.llm.mode import is_llm_required, is_skills_only
+from shared.llm.mode import is_llm_required, is_skills_only, llm_enabled
+from shared.llm.provider import run_llm_window
 from shared.transport.event_emitter import AgUiEventEmitter
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def run_prove(
 ) -> Generator[str, None, None]:
     """Execute the prove verification pipeline and yield SSE events."""
     emitter = AgUiEventEmitter(run_id)
-    yield emitter.run_started()
+    yield emitter.run_started(llm_window=run_llm_window(None, llm_enabled()))
     yield emitter.text_message("Starting prove agent verification pipeline")
 
     staging_url = config.get("staging_url", "")

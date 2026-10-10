@@ -13,6 +13,11 @@ type contextKey string
 
 const userContextKey contextKey = "user"
 
+// tokenAuthKey marks a request whose principal came from a presented
+// credential, not from local mode's implicit local admin (0074 item 1b: a
+// masked value is never shown to a request that presented nothing).
+const tokenAuthKey contextKey = "token_auth"
+
 type AuthMiddleware struct {
 	authSvc          service.AuthService
 	streamTokenStore *service.StreamTokenStore
@@ -46,6 +51,7 @@ func (m *AuthMiddleware) SetLocalMode(enabled bool) {
 func (m *AuthMiddleware) Require(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user := m.extractUser(r)
+		ctx := context.WithValue(r.Context(), tokenAuthKey, user != nil)
 		if user == nil && m.localUser != nil {
 			user = m.localUser
 		}
@@ -53,7 +59,7 @@ func (m *AuthMiddleware) Require(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		ctx := context.WithValue(r.Context(), userContextKey, user)
+		ctx = context.WithValue(ctx, userContextKey, user)
 		next(w, r.WithContext(ctx))
 	}
 }

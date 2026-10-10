@@ -138,6 +138,22 @@ const REQUIRED_0074_KEYS = [
   ...ANCHOR_VOCABULARY.claimed_line_ranges.map((r) => `results.anchor.range.${r}`),
 ];
 
+// 0074 verification item 1b: the masked-value switch and its explanations.
+const REQUIRED_0074_REVEAL_KEYS = [
+  "toggle", "hint", "loading", "changed", "unavailable", "ambiguous", "unverifiable", "notPermitted", "error",
+].map((k) => `results.reveal.${k}`);
+
+describe("i18n 0074 masked-value reveal keys", () => {
+  it.each(Object.keys(LOCALES))("%s defines every reveal key with a non-empty string", (name) => {
+    const json = LOCALES[name as keyof typeof LOCALES] as Json;
+    for (const key of REQUIRED_0074_REVEAL_KEYS) {
+      const value = key.split(".").reduce<unknown>((acc, part) => (acc as Json)?.[part], json);
+      expect(typeof value, `${name}.json is missing ${key}`).toBe("string");
+      expect((value as string).trim().length, `${name}.json has an empty ${key}`).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("i18n 0074 provenance-family + anchor keys", () => {
   it.each(Object.keys(LOCALES))("%s defines every 0074 key with a non-empty string", (name) => {
     const json = LOCALES[name];

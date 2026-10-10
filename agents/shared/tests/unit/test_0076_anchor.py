@@ -325,7 +325,7 @@ def test_distance_is_token_jaccard_and_is_used_only_to_classify():
 def test_a_paraphrase_of_a_real_defect_is_unquoted_never_absent(mode):
     """AC7, RECALL. The defect on paraphrase.ts:5 is REAL; the quote is a paraphrase.
 
-    Real line   ``if(!issues_by_pk?.creatorId === userId) {``
+    Real line   ``if(!record_by_pk?.ownerId === userId) {``
     Model quote ``!property === userId``
 
     The model did not copy — it summarised the shape of the bug. A verifier that

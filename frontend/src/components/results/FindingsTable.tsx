@@ -13,6 +13,7 @@ import { ProvenanceChip } from "./ProvenanceChip.tsx";
 import { FindingOwaspChips } from "./OwaspChip.tsx";
 import { ChipGroup } from "@/components/shared/ChipGroup.tsx";
 import { AnchorResult } from "@/components/shared/AnchorResult.tsx";
+import { MaskedSnippet } from "./MaskedSnippet.tsx";
 import { PROVENANCE_BOTH, PROVENANCE_LLM_FAMILY, originsRecorded } from "@/lib/provenance.ts";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
@@ -158,7 +159,11 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
   const setOwaspCategory = onOwaspCategoryChange ?? setLocalCategory;
   const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
 
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // A `?finding=<id>` link (the masked-values endpoint's ui_path, 0074 item 1b)
+  // opens that finding's detail; the reveal switch inside it stays off.
+  const [expandedId, setExpandedId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get("finding"),
+  );
   const { lineageFor, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId, { onStatusSaved: onLineageSaved });
 
   // 0045/0036 follow-up — a finding manually triaged as false_positive
@@ -177,6 +182,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     page,
     totalPages,
     setPage,
+    pageOf,
     sortField,
     sortDirection,
     filterSeverity,
@@ -194,6 +200,18 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     setHideSuspicious,
     toggleSort,
   } = useFindings(allFindings, isTriagedFalsePositive, owaspCategory);
+
+  // The linked finding may sit past page one, and the findings may arrive after
+  // the first render: once it is in the table, open its page (one time only, so
+  // paging away afterwards is not undone). Adjusted during render, not in an effect.
+  const [deepLink, setDeepLink] = useState(expandedId);
+  if (deepLink) {
+    const linkedPage = pageOf(deepLink);
+    if (linkedPage !== null) {
+      setDeepLink(null);
+      if (linkedPage !== page) setPage(linkedPage);
+    }
+  }
 
   const severities: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
@@ -650,11 +668,13 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
                               )}
                             </div>
                           )}
-                          {finding.code_snippet && (
+                          {finding.code_snippet && (auditId && finding.id ? (
+                            <MaskedSnippet auditId={auditId} findingId={finding.id} snippet={finding.code_snippet} />
+                          ) : (
                             <pre className="text-[12px] font-mono bg-terminal text-terminal-text rounded-lg px-4 py-3 overflow-x-auto">
                               {finding.code_snippet}
                             </pre>
-                          )}
+                          ))}
                           {finding.recommendation && (
                             <div className="flex gap-2 p-3 bg-success/5 rounded-lg border border-success/20">
                               <svg className="w-4 h-4 text-success shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

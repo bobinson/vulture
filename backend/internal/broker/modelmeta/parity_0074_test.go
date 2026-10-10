@@ -1,6 +1,7 @@
 package modelmeta
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -54,25 +55,40 @@ func pyBlock(t *testing.T, src, name, opener, closer string) []string {
 // parsePyRows extracts (key, value) rows from a block, in source order.
 func parsePyRows(t *testing.T, lines []string, row *regexp.Regexp) []pyEntry {
 	t.Helper()
-	var out []pyEntry
-	for _, ln := range lines {
-		if m := row.FindStringSubmatch(ln); m != nil {
-			out = append(out, pyEntry{m[1], pyInt(t, m[2])})
-		}
-	}
-	if len(out) == 0 {
-		t.Fatal("provider.py: parsed zero rows — the canary would pass vacuously")
+	out, err := scanPyRows(lines, row)
+	if err != nil {
+		t.Fatalf("provider.py: %v", err)
 	}
 	return out
 }
 
-func pyInt(t *testing.T, lit string) int {
-	t.Helper()
-	n, err := strconv.Atoi(strings.ReplaceAll(lit, "_", ""))
-	if err != nil {
-		t.Fatalf("provider.py: bad int literal %q", lit)
+// pyIgnorable is a blank line or a comment-only line inside a registry block.
+var pyIgnorable = regexp.MustCompile(`^\s*(#.*)?$`)
+
+// scanPyRows parses every row of a block. A line that is neither a row nor
+// ignorable is an error, never skipped: a row the canary cannot read (a value
+// spelled as a name, single quotes, a row split over lines) is exactly the
+// drift it exists to catch.
+func scanPyRows(lines []string, row *regexp.Regexp) ([]pyEntry, error) {
+	var out []pyEntry
+	for _, ln := range lines {
+		m := row.FindStringSubmatch(ln)
+		if m == nil {
+			if pyIgnorable.MatchString(ln) {
+				continue
+			}
+			return nil, fmt.Errorf("unparseable registry row %q", ln)
+		}
+		n, err := strconv.Atoi(strings.ReplaceAll(m[2], "_", ""))
+		if err != nil {
+			return nil, fmt.Errorf("bad int literal %q", m[2])
+		}
+		out = append(out, pyEntry{m[1], n})
 	}
-	return n
+	if len(out) == 0 {
+		return nil, fmt.Errorf("parsed zero rows — the canary would pass vacuously")
+	}
+	return out, nil
 }
 
 func parsePyFamilies(t *testing.T, src string) []pyEntry {

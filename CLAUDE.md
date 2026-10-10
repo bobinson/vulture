@@ -123,7 +123,7 @@ Phase 2 (OPTIONAL): LLM analysis → deeper reasoning on file subset that fits c
 ```
 
 - **Skills always run first** across the entire codebase using `ThreadPoolExecutor`.
-- **LLM runs second** only when `VULTURE_USE_LLM=true`, analyzing the subset of files that fits the model's context window.
+- **LLM runs second** only when `VULTURE_USE_LLM` is on (`true`, `1`, `yes` or `on`), analyzing the subset of files that fits the model's context window.
 - **Deduplication** (`_deduplicate_findings`) matches by normalized title + file_path, so only genuinely new LLM findings are added.
 - **Context window sizing** (`get_context_window`) resolves via: `VULTURE_LLM_CTX_SIZE` env > model lookup in `CONTEXT_WINDOWS` dict > 32K default.
 - **Prior findings** from the memory system are passed as context to avoid redundant analysis. Dedup stats are emitted for observability.
@@ -281,7 +281,8 @@ To add a new audit type (e.g., GDPR):
 | GET | `/api/audits` | List audits |
 | GET | `/api/audits/:id` | Get audit status and results. Optional `?provenance=` selects rows by tier: an exact provenance value, `llm_family` (provenance trimmed and lower-cased starts with `llm`), or `both` (`validation.provenance_origins` names an LLM-family AND a deterministic origin; `catalog_rollup` counts as neither). The response carries `origins_recorded` (bool) so an empty `both` on a pre-0074 audit reads as "not recorded". An older backend ignores the parameter. Optional `?detail=full` also serves each finding's merge record (`validation.merged_descriptions`, `merged_descriptions_dropped`); the default response leaves those two keys out. |
 | GET | `/api/audits/:id/stream` | SSE stream (live or replay) |
-| GET | `/api/audits/cache` | Check for cached audit results |
+| GET | `/api/audits/cache` | Check for cached audit results (merge record only with `?detail=full`, as on `GET /api/audits/:id`) |
+| GET | `/api/audits/:id/findings/:fid/masked` | Locate the masked values in a finding's snippet against the scanned file; the values themselves only to an authorised human (admin; locally, the signed-in session). See `docs/architecture/agent_protocol.md` "Masked values" |
 | GET | `/api/agents` | List available agent types |
 | GET | `/api/agents/:type/info` | Get agent config schema & skills |
 | POST | `/api/auth/register` | Register new user |

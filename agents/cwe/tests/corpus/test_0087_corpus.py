@@ -35,7 +35,8 @@ from cwe_agent.skills.insufficient_logging_check import (
     check_insufficient_logging,
 )
 
-REPO_PARENT = Path("/home/user/src")
+# The corpus repos are siblings of this checkout (agents/cwe/tests/corpus/ -> repo -> its parent).
+REPO_PARENT = Path(__file__).resolve().parents[4].parent
 _HERE = Path(__file__).parent
 COUNTS = json.loads((_HERE / "cwe778_counts.json").read_text())
 # Private reference repos are pinned in an UNTRACKED sibling file, merged when

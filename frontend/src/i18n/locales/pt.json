@@ -158,7 +158,18 @@
     "copyAllTitle": "Copia as {{count}} descobertas exibidas pelos filtros atuais",
     "copyIssue": "Copiar como issue",
     "estimated": "(estimado)",
-    "findingsDeduped": "{{count}} constatação(ões) desduplicada(s)"
+    "findingsDeduped": "{{count}} constatação(ões) desduplicada(s)",
+    "reveal": {
+      "toggle": "Mostrar sem máscara",
+      "hint": "Relido do arquivo analisado sob demanda; nunca armazenado, nunca enviado a um modelo.",
+      "loading": "Lendo o arquivo analisado…",
+      "changed": "O arquivo mudou desde a análise, então os valores não são exibidos.",
+      "unavailable": "O código-fonte analisado não está mais disponível.",
+      "ambiguous": "A linha mascarada não pode ser associada ao arquivo sem ambiguidade.",
+      "unverifiable": "Esta descoberta não pode ser verificada no arquivo analisado.",
+      "notPermitted": "Os valores são exibidos apenas a um administrador ou, localmente, à sessão conectada.",
+      "error": "Não foi possível carregar os valores."
+    }
   },
   "settings": {
     "title": "Configurações",

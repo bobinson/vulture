@@ -47,11 +47,13 @@ before.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from shared.anchor import RANGE_PAST_EOF, int_field, line_range, validation_checks
+from shared.provenance import is_llm_provenance
 from shared.tools.line_format import read_line_number, strip_line_number
 from shared.tools.snippet import extract_snippet
 
@@ -375,8 +377,47 @@ def _carried_window_stands(finding: dict[str, Any], lines: Sequence[str] | None,
     if claimed >= 1 and claimed != line_start:
         return False
     start = _carried_start(finding, lines)
+    if start < 1:
+        return not _unproven_model_window(finding, lines, line_start)
     rows = len(str(finding.get("code_snippet")).splitlines())
-    return start < 1 or start <= line_start < start + rows
+    return start <= line_start < start + rows
+
+
+# A model-authored row shorter than this proves nothing about the line it sits on.
+_MIN_SHOWN_CHARS = 8
+# A cited line longer than this (minified) is not compared: the additive rule stands.
+_MAX_COMPARED_CHARS = 4000
+_PLACEHOLDER_SPLIT = re.compile(r"\*\*\*REDACTED\*\*\*|\[redacted\]")
+
+
+def _unproven_model_window(finding: dict[str, Any], lines: Sequence[str] | None,
+                           line_start: int) -> bool:
+    """An LLM row's carried window with no coordinate the file confirms, none of
+    whose rows shows the cited line. Only a model writes such a window (under
+    ``VULTURE_LLM_TRUST_MODEL_SNIPPET``); a skill's carried window keeps the
+    additive rule."""
+    if not lines or not is_llm_provenance(finding.get("provenance")):
+        return False
+    cited = lines[line_start - 1].strip()
+    if not cited or len(cited) > _MAX_COMPARED_CHARS:
+        return False
+    rows = str(finding.get("code_snippet")).splitlines()
+    return not any(_shows(strip_line_number(row).strip(), cited) for row in rows)
+
+
+def _shows(row: str, cited: str) -> bool:
+    """``row`` is ``cited`` or a run of it, each placeholder standing for the
+    masked text. Literal pieces in order, so no pattern is built from text."""
+    pieces = [piece for piece in _PLACEHOLDER_SPLIT.split(row) if piece]
+    if sum(map(len, pieces)) < _MIN_SHOWN_CHARS:
+        return False
+    at = 0
+    for piece in pieces:
+        found = cited.find(piece, at)
+        if found < 0:
+            return False
+        at = found + len(piece)
+    return True
 
 
 def _discard_stale_window(finding: dict[str, Any], lines: Sequence[str] | None,
@@ -424,6 +465,7 @@ def _window_reason_for(finding: dict[str, Any], source_path: str, deps: _Deps) -
     lines = _source_lines(finding, source_path, deps)
     if _past_eof(lines, line_start):
         finding.pop("code_snippet", None)
+        finding.pop(CODE_SNIPPET_START, None)
         return _Windowed(WINDOW_OUT_OF_RANGE, lines)
     return _Windowed(_windowed_reason(finding, lines, line_start, deps), lines)
 
