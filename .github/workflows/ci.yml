@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26"
+  GO_VERSION: "1.26.9"
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "22"
 
@@ -445,6 +445,8 @@ jobs:
         # govulncheck reports only vulns reachable from actual call paths (low
         # false-positive). It also flags Go STDLIB CVEs, so a PR built on an
         # unpatched toolchain fails until GO_VERSION picks up the fixed patch.
+        # GO_VERSION names the exact patch: a minor-only "1.26" resolves to the
+        # runner's cached toolchain, which can lag the fixed release.
         run: cd backend && "$(go env GOPATH)/bin/govulncheck" ./...
       - name: Go vulnerability scan (cli)
         run: cd cli && "$(go env GOPATH)/bin/govulncheck" ./...

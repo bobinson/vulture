@@ -325,7 +325,15 @@ func isRunModeRoot(dir string) bool {
 }
 
 // hasAny reports whether dir holds any of the named entries.
+//
+// Only an absolute canonical directory is examined. dir comes from a
+// user-submitted scan path, and a relative one would be resolved against the
+// backend's working directory, which names no project and would make the
+// identity depend on where the backend was started.
 func hasAny(dir string, names []string) bool {
+	if !strings.HasPrefix(dir, "/") {
+		return false
+	}
 	for _, name := range names {
 		if _, err := os.Lstat(filepath.Join(filepath.FromSlash(dir), name)); err == nil {
 			return true
