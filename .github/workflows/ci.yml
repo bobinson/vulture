@@ -75,6 +75,8 @@ jobs:
         run: sh scripts/tests/test_db_dsn_wiring.sh
       - name: LM Studio loaded-window detector tests (0074)
         run: sh scripts/tests/test_lmstudio_window.sh
+      - name: launcher --tier3 flag tests
+        run: sh scripts/tests/test_tier3_flags.sh
 
   build-backend:
     runs-on: ubuntu-latest

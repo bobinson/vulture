@@ -12,6 +12,7 @@ import logging
 import random
 import re
 import time
+import unicodedata
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import Any
@@ -227,24 +228,180 @@ async def retry_llm_call(
 # carry no separator meaning, and substituting one would split an identifier.
 _BIDI_AND_ZERO_WIDTH = frozenset(
     list(range(0x202A, 0x202F)) + list(range(0x2066, 0x206A))
-    + list(range(0x200B, 0x200E)) + [0xFEFF]
+    + list(range(0x200B, 0x2010)) + [0xFEFF]
 )
 
-_SECRETISH = re.compile(
-    r"(?i)("
-    r"[a-z][a-z0-9+.\-]*://[^\s/@:]+:[^\s/@]+@"       # URL userinfo — the host is not a secret
-    r"|\bAIza[0-9A-Za-z_\-]{10,}"                       # Google API key
-    r"|\bsk-[0-9A-Za-z_\-]{12,}"                        # OpenAI-style
-    r"|\beyJ[0-9A-Za-z._\-]{16,}"                       # JWT
-    r"|\bgh[pousr]_[0-9A-Za-z]{16,}"                     # GitHub
-    r"|\bxox[baprse]-[0-9A-Za-z\-]{10,}"                # Slack
-    r"|\b(?:AKIA|ASIA|AROA|AIDA|ANPA|AIPA)[0-9A-Z]{12,}"  # AWS key id
-    r"|\bBearer\s+[0-9A-Za-z._\-]{12,}"
-    r"|\bBasic\s+[0-9A-Za-z+/=]{16,}"
-    r"|-----BEGIN[ A-Z]{0,40}PRIVATE KEY-----"
-    r"|\b[0-9a-f]{32,}\b"                               # Azure 32-hex / sha-shaped
-    r")"
+# Secret SHAPES. One source of truth, compiled twice:
+#
+# * ``_SECRET_SHAPE_RE`` masks FINDING text (code windows and descriptions of
+#   every agent's findings). It must be precise: prose after "Bearer"/"Basic",
+#   commit SHAs, image digests, hashes, UUIDs and CSS class names are evidence,
+#   not secrets. Case-sensitive unless a shape opts in with ``(?i:...)``, and no
+#   shape crosses a newline (``[ \t]``, never ``\s``), so a window keeps its rows.
+# * ``_SECRETISH`` masks one sanitised LOG line, where over-masking costs
+#   nothing: every finding shape, case-insensitive, plus the broad legacy shapes
+#   (bare 32+ hex, loose ``sk-`` / Bearer / Basic). A strict superset of the log
+#   pattern this set replaced.
+#
+# A ``keep_*`` group is context that stays readable (the key name before a
+# value); a ``*_letters`` group is a letters-only value that is left alone when
+# it reads as CamelCase words (``HTTPAuthenticationScheme``), not a token.
+#
+# Every shape is linear: a run is possessive, bounded, or starts only where its
+# lookbehind allows, so a 100k-character minified line cannot stall a finding's
+# post-processing.
+_SECRET_SHAPES: tuple[str, ...] = (
+    # URL userinfo, any scheme case, the user possibly empty (redis://:pw@);
+    # the host is not a secret. Starts only at the first character of a scheme
+    # run, so a long run is scanned once.
+    r"(?<![A-Za-z0-9+.\-])[A-Za-z0-9+.\-]++://[^\s/@:]*+:[^\s/@]++@",
+    r"\bAIza[0-9A-Za-z_\-]{10,}",                              # Google API key
+    # OpenAI / Anthropic style: optional short segments (proj-, ant-api03-),
+    # then either a hyphen-free 16+ run holding a digit or a capital, or a 40+
+    # body over the key alphabet holding BOTH (a random body puts a hyphen
+    # anywhere, also inside its first 16 characters). Not a CSS class or a
+    # lowercase hyphenated name. The lookaheads are bounded: linear.
+    r"\bsk-(?:[a-z0-9]{1,16}+-){0,3}+(?:(?=[a-z_]*+[0-9A-Z])[0-9A-Za-z_]{16,}+[0-9A-Za-z_\-]*+"
+    r"|(?=[a-z0-9_\-]{0,200}+[A-Z])(?=[A-Za-z_\-]{0,200}+[0-9])[0-9A-Za-z_\-]{40,}+)",
+    r"\beyJ[0-9A-Za-z._\-]{16,}",                              # JWT
+    r"\bgh[pousr]_[0-9A-Za-z]{16,}",                           # GitHub
+    r"\bgithub_pat_[0-9A-Za-z_]{40,}",                         # GitHub fine-grained
+    r"\bxox[baprse]-[0-9A-Za-z\-]{10,}",                       # Slack
+    r"(?<=hooks\.slack\.com/services/)[A-Za-z0-9/]{20,}+",     # Slack webhook path
+    r"\b(?:AKIA|ASIA|AROA|AIDA|ANPA|AIPA)[0-9A-Z]{12,}",       # AWS key id
+    r"(?P<keep_aws>(?i:aws_?secret_?access_?key)[\"']?[ \t]*[:=][ \t]*[\"']?)"
+    r"[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])",                     # AWS secret key
+    r"\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}",                 # Stripe
+    r"\bnpm_[0-9A-Za-z]{36}\b",                                # npm
+    r"\bglpat-[0-9A-Za-z_\-]{20,}",                            # GitLab
+    r"\bSG\.[\w\-]{16,}+\.[\w\-]{16,}+",                       # SendGrid
+    r"\bhf_[A-Za-z]{30,}",                                     # Hugging Face
+    # A connection-string secret (ADO.NET, Azure storage), not a keyword argument.
+    r"(?P<keep_conn>[;\"'](?i:AccountKey|SharedAccessKey|Password|Pwd)=)[^;\s\"']++",
+    # Bearer <token> as a header value (after Authorization, or quoted): a 12+
+    # run with a digit, or 16+ mixed-case letters. In that position even a
+    # word-like run is the credential, so it is not judged as words.
+    r"(?P<keep_auth>(?i:authorization)[\"']?[ \t]*[:=,][ \t]*[\"']?|[\"'])(?i:bearer)[ \t]+"
+    r"(?:(?=[A-Za-z._~+/\-]*+\d)[0-9A-Za-z._~+/\-]{12,}"
+    r"|(?=[a-z]*+[A-Z])(?=[A-Z]*+[a-z])[A-Za-z]{16,})=*",
+    # Bearer <token> anywhere else, not "<Word>/..." prose: a run with a digit
+    # (16+), or a 24+ letter run with 5+ capitals.
+    r"\b(?i:bearer)[ \t]+(?![A-Za-z][a-z]{3,}/)"
+    r"(?:(?=[A-Za-z._~+/\-]*\d)[0-9A-Za-z._~+/\-]{16,}"
+    r"|(?=(?:[a-z]*[A-Z]){5})(?P<bearer_letters>[A-Za-z]{24,}))=*",
+    # Basic <base64> on the same line, not "<Word>/..." prose: base64 with a
+    # digit, + or /; a padded letters-only value; or 16+ letters with 5+ capitals.
+    r"\b(?i:basic)[ \t]+(?![A-Za-z][a-z]{3,}/)"
+    r"(?:(?=[A-Za-z]*[0-9+/])[0-9A-Za-z+/]{12,}={0,2}|[A-Za-z]{11,}={1,2}"
+    r"|(?=(?:[a-z]*[A-Z]){5})(?P<basic_letters>[A-Za-z]{16,}))",
+    r"-----BEGIN[ A-Z]{0,40}PRIVATE KEY(?: BLOCK)?-----",
 )
+_LOG_ONLY_SHAPES: tuple[str, ...] = (
+    r"\bsk-[0-9A-Za-z_\-]{12,}",
+    r"\bBearer\s+[0-9A-Za-z._\-]{12,}",
+    r"\bBasic\s+[0-9A-Za-z+/=]{16,}",
+    r"\b[0-9a-f]{32,}+\b",                                     # Azure 32-hex / sha-shaped
+)
+_SECRET_SHAPE_RE = re.compile("|".join(_SECRET_SHAPES))
+_SECRETISH = re.compile("(?i)" + "|".join((*_SECRET_SHAPES, *_LOG_ONLY_SHAPES)))
+_KEEP_GROUPS = ("keep_aws", "keep_conn", "keep_auth")
+_LETTER_GROUPS = ("bearer_letters", "basic_letters")
+# CamelCase / acronym words of a letters-only run: HTTP|Authentication|Scheme
+_CAMEL_PART = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+")
+
+
+def _reads_as_words(run: str) -> bool:
+    """A letters-only run made of word-length CamelCase parts (an identifier
+    such as ``AuthenticationSchemeHandlerForAPIs``), where a random token's
+    case changes leave parts of one or two letters."""
+    parts = _CAMEL_PART.findall(run)
+    return bool(parts) and max(map(len, parts)) <= 16 and len(run) >= 4 * len(parts)
+
+
+def _first_group(m: re.Match[str], names: tuple[str, ...]) -> str:
+    return next((m.group(g) for g in names if m.group(g)), "")
+
+
+def _shape_replacement(m: re.Match[str], placeholder: str, judge_words: bool) -> str:
+    """``placeholder`` for the value, keeping its context; an identifier made of
+    words is left alone when ``judge_words`` (finding text, not logs)."""
+    if judge_words and _reads_as_words(_first_group(m, _LETTER_GROUPS)):
+        return m.group(0)
+    return _first_group(m, _KEEP_GROUPS) + placeholder
+
+
+# A bare hex value is a secret only on a line that NAMES a credential: an
+# identifier to its left on the same line (``SECRET_KEY_BASE=``,
+# ``headers["X-Api-Key"] = ``, ``define("SECRET_KEY", ``, ``ENV API_KEY``)
+# with a credential word among its parts and no part naming a non-secret key
+# (``cache_key``, ``commit``, ``password_hash``). Judged in Python over a
+# bounded left reach, which is linear and readable where a lookbehind
+# alternation is neither.
+_HEX_RUN = re.compile(r"\b[0-9A-Fa-f]{32,}+\b")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]{0,63}+")
+_LEFT_REACH = 160
+# snake, kebab and camelCase parts of a name
+_NAME_PART = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+_CRED_WORDS = frozenset({
+    "key", "secret", "token", "password", "passwd", "pwd", "credential", "credentials",
+    "auth", "apikey", "apitoken", "secretkey", "privatekey", "accesskey", "accesstoken",
+    "authtoken", "clientsecret", "appsecret", "appkey", "passphrase", "signingkey",
+    "masterkey", "encryptionkey", "sessionkey",
+})
+_NOT_CRED = frozenset({
+    "cache", "primary", "foreign", "idempotency", "sort", "partition", "checksum",
+    "hash", "commit", "etag", "digest", "integrity", "public", "lookup", "dedup",
+    "sha", "sha1", "sha256", "sha512", "md5", "fingerprint", "uuid", "guid",
+})
+
+
+def _credential_name(name: str) -> bool:
+    """A part of the name is a credential word, and no part names a non-secret key."""
+    parts = {p.lower() for p in _NAME_PART.findall(name)}
+    return not parts.isdisjoint(_CRED_WORDS) and parts.isdisjoint(_NOT_CRED)
+
+
+def _credential_line(text: str, start: int) -> bool:
+    """An identifier on ``text``'s line, left of ``start``, names a credential."""
+    lo = max(text.rfind("\n", max(0, start - _LEFT_REACH), start) + 1, start - _LEFT_REACH)
+    return any(map(_credential_name, _IDENT.findall(text, lo, start)))
+
+
+def _keyed_hex(m: re.Match[str], placeholder: str) -> str:
+    return placeholder if _credential_line(m.string, m.start()) else m.group(0)
+
+
+# A private-key region: BEGIN..END (or the end of the text), or the start of
+# the text..END (a window that begins below the BEGIN row).
+_PEM_REGION = re.compile(
+    r"-----BEGIN[ A-Z]{0,40}PRIVATE KEY(?: BLOCK)?-----.*?"
+    r"(?:-----END[ A-Z]{0,40}PRIVATE KEY(?: BLOCK)?-----|\Z)"
+    r"|\A(?:(?!-----BEGIN).)*?-----END[ A-Z]{0,40}PRIVATE KEY(?: BLOCK)?-----",
+    re.DOTALL,
+)
+# Inside a region, mask only what IS key material, never part of a code row: a
+# whole base64 row (optionally numbered, quoted, "\n"-escaped, concatenated,
+# CRLF-terminated), or a run right after the header or a "\n" escape (a
+# one-line JSON key).
+_KEY_BODY_ROW = re.compile(
+    r"(?m)^(?P<pre>(?:\d+: )?[ \t]*[\"']?)[A-Za-z0-9+/]{16,}={0,2}"
+    r"(?P<post>(?:\\n)?[\"']?[ \t]*[+,]?[ \t]*\r?)$"
+)
+_ESCAPED_KEY_RUN = re.compile(r"(?:(?<=-----)|(?<=\\n))[A-Za-z0-9+/]{16,}={0,2}")
+
+
+def _mask_key_region(region: str, placeholder: str) -> str:
+    region = _KEY_BODY_ROW.sub(lambda m: m.group("pre") + placeholder + m.group("post"), region)
+    return _ESCAPED_KEY_RUN.sub(placeholder, region)
+
+
+def _mask_shapes(
+    text: str, placeholder: str, shapes: re.Pattern[str], judge_words: bool,
+) -> str:
+    """Private-key bodies, then credential-named hex, then the token shapes."""
+    text = _PEM_REGION.sub(lambda m: _mask_key_region(m.group(0), placeholder), text)
+    text = _HEX_RUN.sub(lambda m: _keyed_hex(m, placeholder), text)
+    return shapes.sub(lambda m: _shape_replacement(m, placeholder, judge_words), text)
 
 
 def _sanitise(text: str) -> str:
@@ -262,10 +419,44 @@ def _sanitise(text: str) -> str:
     return " ".join("".join(cleaned).split())
 
 
+def mask_secret_values(text: str, placeholder: str = "[redacted]") -> str:
+    """Replace every secret-SHAPED value in ``text`` with ``placeholder``.
+
+    Keys on the value's shape (a provider token, URL userinfo, a private-key
+    header), not on what the surrounding text is about, so it masks a token
+    wherever it sits: a code window around an unrelated finding, or a
+    dependency spec quoted in a description. Line structure is preserved; use
+    :func:`redact_for_log` for text that must also be collapsed to one line.
+    """
+    return _mask_shapes(text, placeholder, _SECRET_SHAPE_RE, judge_words=True)
+
+
 def redact_for_log(text: str) -> str:
     """Sanitise then redact, in that order. One function because the order is a
     correctness property and callers kept getting it wrong."""
-    return _SECRETISH.sub("[redacted]", _sanitise(text))
+    return _mask_shapes(_sanitise(text), "[redacted]", _SECRETISH, judge_words=False)
+
+
+def _escaped(ch: str) -> str:
+    return ch.encode("unicode_escape", "backslashreplace").decode("ascii")
+
+
+# Controls (C0, DEL, C1), format characters (every Bidi_Control character,
+# zero-width and joiner marks, the soft hyphen), lone surrogates, and the line
+# and paragraph separators: none prints as itself, and each can rewrite or hide
+# what a terminal shows.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _unprintable(ch: str) -> bool:
+    return unicodedata.category(ch) in _INVISIBLE_CATEGORIES
+
+
+def escape_unprintable(text: str) -> str:
+    """``text`` with every control, format (bidi, zero-width), line-separator
+    and lone-surrogate character written as its Python escape, so it cannot
+    steer a terminal or fail to encode."""
+    return "".join(_escaped(c) if _unprintable(c) else c for c in text)
 
 
 _MAX_CAUSE_LINKS = 3

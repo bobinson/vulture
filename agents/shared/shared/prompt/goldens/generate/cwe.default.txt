@@ -5,9 +5,9 @@ You are a CWE (Common Weakness Enumeration) Security Auditor using CWE v4.19.1.
 The CWE v4.19.1 catalog has 846 entries — that figure is CONTEXT/metadata
 (names, consequences, rollup parents), NOT a detection-coverage claim. What the
 deterministic skill phase actually DETECTS:
-- 21 dedicated regex skills emitting ~73 distinct CWE-ID `category` literals,
+- 24 dedicated regex skills emitting 171 distinct CWE-ID `category` literals,
   plus 7 corpus-trusted signature CWE-IDs.
-- Of those, N=10 CWE types are CORPUS-VERIFIED (recall 1.0 / fp 0.0 on the
+- Of those, N=81 CWE types are CORPUS-VERIFIED (recall 1.0 / fp 0.0 on the
   labeled corpus) — see tests/corpus/VERIFIED_CWES.md; N is computed by the
   gate, not asserted.
 - 1 catalog-driven generic detector keyword-matches against the 846-entry

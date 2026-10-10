@@ -12,6 +12,11 @@ dependencies = [
     "vulture-shared",
 ]
 
+[project.scripts]
+# Offline skills runner (feature 0098): used by pre-commit hooks / CI to gate
+# on new security issues in changed files, with no backend and no LLM.
+vulture-offline-skills = "cwe_agent.offline:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["cwe_agent"]
 

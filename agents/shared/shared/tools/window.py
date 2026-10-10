@@ -252,19 +252,24 @@ class _Deps(NamedTuple):
     read_lines: Callable[[Any], Sequence[str] | None]
     snippet_params: Callable[[str], tuple[int, int | None]]
     redact: Callable[[dict[str, Any]], None]
+    secret_line_index: Callable[[list[dict[str, Any]]], dict[str, frozenset[int]]]
+    redact_secret_lines: Callable[[dict[str, Any], dict[str, frozenset[int]]], None]
 
 
 def _load_deps() -> _Deps:
     """The deferred imports, performed once. See LEAF DISCIPLINE."""
     from shared.audit_runner import (
         _redact_finding_inplace,
+        _redact_secret_lines_inplace,
         _resolve_finding_path,
+        _secret_line_index,
         _snippet_params_for,
     )
     from shared.tools.file_scanner import read_file_lines
 
     return _Deps(_resolve_finding_path, read_file_lines, _snippet_params_for,
-                 _redact_finding_inplace)
+                 _redact_finding_inplace, _secret_line_index,
+                 _redact_secret_lines_inplace)
 
 
 def _source_lines(finding: dict[str, Any], source_path: str,
@@ -447,6 +452,7 @@ def ensure_code_window(
     refactor.
     """
     deps = _load_deps()
+    secret_lines = deps.secret_line_index(findings)
     for f in findings:
         reason, lines = _window_reason_for(f, source_path, deps)
 
@@ -459,6 +465,8 @@ def ensure_code_window(
         # back-filled above OR pre-set by a skill. In the same pass as the read,
         # so no caller can hold an unredacted window.
         deps.redact(f)
+        # ...and every row another finding in the batch marked as a secret.
+        deps.redact_secret_lines(f, secret_lines)
 
         if record_reasons:
             record_window_reason(f, reason)

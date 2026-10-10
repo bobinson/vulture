@@ -10,6 +10,8 @@ CLI_DIR="$PROJECT_ROOT/cli"
 # Overridable so tests (and CI) can isolate from a developer's local .env, which
 # load_env sources with `set -a` and would otherwise clobber exported vars.
 ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
+# shellcheck disable=SC1091  # lib/tier3.sh is linted on its own
+. "$SCRIPT_DIR/lib/tier3.sh"
 
 # Ensure pyenv shims are on PATH when running non-interactively.
 if [[ -d "$HOME/.pyenv/shims" ]] && [[ ":$PATH:" != *":$HOME/.pyenv/shims:"* ]]; then
@@ -31,6 +33,9 @@ Providers:
 Options:
   --embed-url <url>      Embedding endpoint (overrides OPENAI_BASE_URL fallback)
   --embed-model <name>   Embedding model id at that endpoint
+  --tier3, --deep        Widen the LLM sweep past skill-flagged + entry/config files
+                         to the long tail (slower; still capped by VULTURE_LLM_MAX_FILES
+                         and the budget; no effect with 'skills')
 
 Examples:
   scripts/vulture.sh dev openai
@@ -161,6 +166,8 @@ for m in models:
     if not is_embed(m) and m.get('state') == 'loaded' and ctx_of(m):
         print(ctx_of(m)); raise SystemExit(0)
 " "$want" 2>/dev/null) || true
+    # Never fail: under `set -euo pipefail` a non-zero status here (a server
+    # without /api/v0/models, an unreachable one) ended the launcher silently.
     if [[ "$ctx" =~ ^[0-9]+$ ]]; then echo "$ctx"; fi
 }
 
@@ -268,6 +275,7 @@ VALIDATE_MODEL=""
 USE_BROKER=0
 NO_BROKER=0
 BROKER_BUDGET=""
+WANT_TIER3=0
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -300,6 +308,8 @@ while [[ $# -gt 0 ]]; do
             BROKER_BUDGET="$2"; shift 2 ;;
         --budget=*)
             BROKER_BUDGET="${1#*=}"; shift ;;
+        --tier3|--deep)
+            WANT_TIER3=1; shift ;;
         *)
             POSITIONAL+=("$1"); shift ;;
     esac
@@ -315,6 +325,17 @@ MODEL="${2:-}"
 MODEL="${SCAN_MODEL:-$MODEL}"
 
 load_env
+
+# --tier3/--deep widens the LLM sweep to the long tail of files (not just
+# skill-flagged + entry/config), so an unflagged file (e.g. a Next.js middleware
+# the deterministic skills missed) can reach the model. Applied AFTER load_env
+# so the flag wins over a VULTURE_LLM_TIER3 in .env; absent the flag, the
+# env/.env value is left untouched. Deterministic skills run with full coverage
+# regardless -- this only affects what the LLM tier SEES. Its state is reported
+# in the summary below, once the provider says whether the LLM phase runs.
+if [[ "$WANT_TIER3" -eq 1 ]]; then
+    export VULTURE_LLM_TIER3=true
+fi
 export PATH="${GOPATH:-${HOME}/go}/bin:$PATH"
 
 # Read defaults from config.ini
@@ -573,6 +594,7 @@ if [[ -n "${VULTURE_VALIDATE_LLM_MODEL:-}" \
     echo "  Validate:  $VULTURE_VALIDATE_LLM_MODEL"
 fi
 echo "  LLM:       $(env_flag_word "${VULTURE_USE_LLM:-}")"
+print_tier3_state "$WANT_TIER3"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
     echo "  Broker:    on"
     echo "  Broker provider:     ${VULTURE_LLM_BROKER_PROVIDER}"

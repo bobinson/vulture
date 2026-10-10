@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/envflag.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
+# shellcheck disable=SC1091  # lib/tier3.sh is linted on its own
+. "$SCRIPT_DIR/lib/tier3.sh"
 
 usage() {
     cat <<'EOF'
@@ -23,6 +25,11 @@ Options:
   --embed-url <url>      Embedding endpoint (overrides OPENAI_BASE_URL fallback).
                          In Docker, reach a host server via host.docker.internal.
   --embed-model <name>   Embedding model id at that endpoint
+  --tier3, --deep        Widen the LLM sweep past skill-flagged + entry/config files
+                         to the long tail (slower; still capped by VULTURE_LLM_MAX_FILES
+                         and the budget; no effect with 'skills'). Per launch: a
+                         later launch without it runs without tier 3
+  --broker | --no-broker | --budget <usd>   LLM broker controls (broker on by default)
 
 Examples:
   scripts/vulture.sh server openai
@@ -169,6 +176,7 @@ EMBED_MODEL=""
 USE_BROKER=0
 NO_BROKER=0
 BROKER_BUDGET=""
+WANT_TIER3=0
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -191,6 +199,11 @@ while [[ $# -gt 0 ]]; do
             BROKER_BUDGET="$2"; shift 2 ;;
         --budget=*)
             BROKER_BUDGET="${1#*=}"; shift ;;
+        --tier3|--deep)
+            WANT_TIER3=1; shift ;;
+        -*)
+            # Never let an option fall through as the provider or model name.
+            echo "Error: unknown option '$1'"; echo; usage ;;
         *)
             POSITIONAL+=("$1"); shift ;;
     esac
@@ -201,7 +214,21 @@ set -- "${POSITIONAL[@]:-}"
 PROVIDER="$1"
 MODEL="${2:-}"
 
+# The .env load_env sources is the one this script GENERATED last time, so a
+# VULTURE_LLM_TIER3 found there is a previous launch's --tier3, not a setting.
+# Only the flag or the real process environment decides it for this launch.
+TIER3_FROM_PROCESS="${VULTURE_LLM_TIER3:-}"
 load_env
+
+# --tier3/--deep: see start.sh. It reaches the agent containers through the
+# generated .env and docker-compose.
+if [[ "$WANT_TIER3" -eq 1 ]]; then
+    export VULTURE_LLM_TIER3=true
+elif [[ -n "$TIER3_FROM_PROCESS" ]]; then
+    export VULTURE_LLM_TIER3="$TIER3_FROM_PROCESS"
+else
+    unset VULTURE_LLM_TIER3
+fi
 
 # Read defaults from config.ini
 OLLAMA_DEFAULT_URL=$(ini_get ollama url "http://localhost:11434")
@@ -374,6 +401,7 @@ fi
 echo "  Provider:  $PROVIDER"
 echo "  Model:     ${VULTURE_LLM_MODEL:-$MODEL}"
 echo "  LLM:       $(env_flag_word "${VULTURE_USE_LLM:-}")"
+print_tier3_state "$WANT_TIER3"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
     echo "  Broker:    on (key isolation — agents receive NO provider key)"
     echo "  Broker provider:     ${VULTURE_LLM_BROKER_PROVIDER}"
@@ -411,6 +439,7 @@ echo "  Generating .env..."
     [[ -n "${OLLAMA_API_BASE:-}" ]] && echo "OLLAMA_API_BASE=$OLLAMA_API_BASE"
     [[ -n "${VULTURE_EMBEDDING_URL:-}" ]] && echo "VULTURE_EMBEDDING_URL=$VULTURE_EMBEDDING_URL"
     [[ -n "${VULTURE_EMBEDDING_MODEL:-}" ]] && echo "VULTURE_EMBEDDING_MODEL=$VULTURE_EMBEDDING_MODEL"
+    [[ -n "${VULTURE_LLM_TIER3:-}" ]] && echo "VULTURE_LLM_TIER3=${VULTURE_LLM_TIER3}"
     # Feature 0064: LLM broker (only written when --broker was passed)
     if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
         echo "VULTURE_LLM_BROKER=on"

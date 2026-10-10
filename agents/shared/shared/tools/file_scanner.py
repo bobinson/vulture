@@ -1,11 +1,13 @@
 """Smart file scanner that handles large repositories efficiently."""
 
+import contextvars
 import fnmatch
 import logging
 import os
 import re
 import threading
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -546,12 +548,40 @@ def _include_file(
     heuristic costs a (cached) read, so it is only paid for files that would
     otherwise be scanned.
     """
+    return not _exclusion(path, exts, extras, scan_minified)
+
+
+def _exclusion(
+    path: Path, exts: frozenset[str], extras: frozenset[str], scan_minified: bool,
+) -> str:
+    """Why ``path`` is outside the scan set, or ``""`` when it is in it."""
     eff_name = effective_name(path.name)
     if not _wanted_by_name(path.name, effective_suffix(path.name), eff_name, exts, extras):
-        return False
-    if scan_minified:
-        return True
-    return not (is_minified_name(eff_name) or is_minified_content(path))
+        return "extension outside the scan set"
+    return _minified_exclusion(path, eff_name, scan_minified)
+
+
+def _minified_exclusion(path: Path, eff_name: str, scan_minified: bool) -> str:
+    if scan_minified or not (is_minified_name(eff_name) or is_minified_content(path)):
+        return ""
+    return "minified or bundled artefact"
+
+
+def scan_set_exclusion(
+    path: Path, readers: tuple[tuple[frozenset[str], frozenset[str]], ...] = (),
+) -> str:
+    """Why the walker's default scan set leaves ``path`` out, or ``""`` when it
+    takes it: the same predicate the walker applies, so a caller reporting a
+    file as not scanned names the scanner's own reason rather than a guess.
+
+    ``readers`` are the ``(extensions, extra_filenames)`` of skills that walk
+    with sets of their own (the secret scan reads ``.env.*`` and key files by
+    name): ``path`` is in the scan set when ANY of them takes it.
+    """
+    scan_minified = _scan_minified()
+    sets = ((default_extensions(), WELL_KNOWN_FILENAMES), *readers)
+    reasons = [_exclusion(path, exts, extras, scan_minified) for exts, extras in sets]
+    return "" if "" in reasons else reasons[0]
 
 
 @lru_cache(maxsize=16)
@@ -997,7 +1027,9 @@ def read_file_safe(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
     Returns:
         File content as string, or None if unreadable/too large.
     """
-    return _read_file_cached(str(path), max_size)
+    content = _read_file_cached(str(path), max_size)
+    _note_read(path, content is not None)
+    return content
 
 
 @lru_cache(maxsize=1024)
@@ -1040,7 +1072,42 @@ def read_file_lines(path: Path, max_size: int = MAX_FILE_SIZE) -> tuple[str, ...
     result = _splitlines_cached(str(path), max_size)
     if not result and _read_file_cached(str(path), max_size) is None:
         return None
+    _note_read(path, True)
     return result
+
+
+# Feature 0098: which files did the skills actually READ? A caller that scans a
+# chosen set of files (the offline gate) must say which of them were never
+# looked at, and the scanner's own reads are the only answer that cannot drift
+# from its rules -- extension set, size cap, minified and pruned/ignored paths
+# all end in "never read". `None` outside a `record_reads()` block, so the
+# ordinary audit path pays one ContextVar lookup per read and records nothing.
+_READ_RECORDER: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
+    "vulture_read_recorder", default=None,
+)
+
+
+def _note_read(path: Path, ok: bool) -> None:
+    """Record ``path`` in the active ``record_reads()`` set when it was read."""
+    reads = _READ_RECORDER.get()
+    if ok and reads is not None:
+        reads.add(str(path))
+
+
+@contextmanager
+def record_reads() -> Iterator[set[str]]:
+    """Collect the path of every file whose content is read inside the block.
+
+    Only successful reads count: a file over the size cap, or one that cannot
+    be read, is not "scanned". Scoped to the current context, so a block in one
+    thread does not see another thread's reads.
+    """
+    reads: set[str] = set()
+    token = _READ_RECORDER.set(reads)
+    try:
+        yield reads
+    finally:
+        _READ_RECORDER.reset(token)
 
 
 _TEST_SUFFIXES = frozenset({
