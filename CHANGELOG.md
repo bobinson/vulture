@@ -23,6 +23,16 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Added
 
+- **Feature 0099 — Anonymous, caller-addressed message sends (CWE-799).** A new
+  `resource_check` rule, `cwe.resource.anonymous_message_send`, reports a handler
+  that lets a caller with no authenticated principal make the server send an
+  e-mail / SMS / OTP / magic link to an address the caller chose, with no
+  human-verification step gating it. Language- and framework-independent: it
+  reads identifier meaning, the recipient's data flow inside the handler (and
+  one same-file helper), and whether a principal or CAPTCHA actually gates the
+  send. High, or medium when a quota is in scope. No new environment flag; the
+  CWE literal set and skill count are unchanged.
+
 - **Feature 0044 — Native installer (Mode E):** `curl … install.sh | sh`
   produces a Docker-less single-user install under `~/.vulture/`. Ships
   a bundled python-build-standalone, SQLite-backed daemon, and the SPA

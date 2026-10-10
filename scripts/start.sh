@@ -156,8 +156,10 @@ for m in models:
 for m in models:
     if not is_embed(m) and m.get('state') == 'loaded' and ctx_of(m):
         print(ctx_of(m)); raise SystemExit(0)
-" "$want" 2>/dev/null)
-    [[ "$ctx" =~ ^[0-9]+$ ]] && echo "$ctx"
+" "$want" 2>/dev/null) || true
+    # Never fail: under `set -euo pipefail` a non-zero status here (a server
+    # without /api/v0/models, an unreachable one) ended the launcher silently.
+    if [[ "$ctx" =~ ^[0-9]+$ ]]; then echo "$ctx"; fi
 }
 
 # stale_against <binary> <source-dir> -- true when any .go file is newer than
