@@ -279,3 +279,53 @@ def test_guard_application_patterns_are_linear_on_long_lines() -> None:
         raise AssertionError("a guard-application pattern hung on a 40k blank run") from None
     assert done.returncode == 0, done.stderr[-500:]
     assert done.stdout.strip() == "slow []", done.stdout
+
+
+# Feature 0099: the anonymous-message-send module. Same adversarial payloads,
+# same 40k blank runs, every compiled pattern, `match` and `search`.
+_MESSAGE_PAYLOADS = (
+    *_LONG_PAYLOADS,
+    '"sendEmail(" * 4000',
+    '"a." * 10000 + "sendMail("',
+    '"x = " * 8000',
+    '"function " * 6000',
+    '"public " * 6000 + "("',
+    '"body." * 8000',
+    '"send" + "email" * 8000',
+    '"mail" * 10000',
+    '"rate" * 10000',
+    '"max" * 13000 + ":"',
+    '"a" * 40000',
+    '"a " * 20000 + "x"',
+    '"send" + "email" * 800 + " " * 40000 + "x"',
+)
+
+
+def test_message_send_patterns_are_linear() -> None:
+    """Every compiled pattern of the 0099 module stays well under a quadratic
+    pattern's time on long adversarial lines."""
+    payloads = ", ".join(_MESSAGE_PAYLOADS)
+    probe = textwrap.dedent(f"""
+        import re, sys, time
+        sys.path.insert(0, ".")
+        import cwe_agent.skills._message_send as m
+        pats = [(n, p) for n, p in vars(m).items() if isinstance(p, re.Pattern)]
+        slow = []
+        for name, p in pats:
+            for s in ({payloads}):
+                for op in (p.match, p.search):
+                    t = time.perf_counter()
+                    op(s)
+                    if time.perf_counter() - t > 0.15:
+                        slow.append(name)
+        print("slow", sorted(set(slow)), len(pats))
+    """)
+    try:
+        done = subprocess.run([sys.executable, "-c", probe],
+                              capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("a message-send pattern hung on a long adversarial line") from None
+    assert done.returncode == 0, done.stderr[-500:]
+    out = done.stdout.split()
+    assert done.stdout.startswith("slow []"), done.stdout
+    assert int(out[-1]) >= 15

@@ -7,6 +7,7 @@ from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._guard_application import CLIENT_IP_HEADER
+from cwe_agent.skills._message_send import check_message_sends
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -422,6 +423,7 @@ def _check_rate_limiting(
     _check_def_rate_limiting(file_path, lines, findings)
     _check_express_rate_limiting(file_path, lines, findings)
     _check_spoofable_limiter_key(file_path, lines, findings)
+    check_message_sends(file_path, lines, findings)
 
 
 def _limiter_protected_paths(lines: list[str]) -> set[str]:
