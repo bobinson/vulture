@@ -315,6 +315,13 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **Host-network plugins are reachable on macOS.** Docker on macOS runs in a Linux VM, so a plugin on
+  `--network host` (the bundled semgrep plugin) listened on the VM's localhost while the backend dialled the
+  Mac's, and `vulture.sh dev` started a plugin it could never reach. When the backend runs on darwin, a
+  host-network plugin now runs on the default bridge with its port published on loopback only
+  (`-p 127.0.0.1:<port>:<port>`), which keeps it off every other interface. Derived from the backend's OS, so
+  there is no new setting; Linux keeps host networking unchanged, and the `host-network` trust ack is still
+  required.
 - **CWE-799 (`anonymous_message_send`): two false-positive classes (feature 0074).** A handler that
   verifies a shared secret against the REQUEST (an event trigger's or webhook's secret or hook token, e.g.
   `if (!requireValidHookSecret(req, res)) return;`, or a verification bound to a name a later branch exits on)

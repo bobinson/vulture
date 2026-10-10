@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -141,6 +142,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 				// can never drift (feature 0058 R11).
 				AuditsDir: auditsDir,
 				LocalMode: cfg.LocalMode,
+				// On macOS docker's host network is its VM's, so a
+				// host-network plugin is bridged and published on loopback.
+				HostNetworkIsVM: pluginsupervisor.HostNetworkIsVM(runtime.GOOS),
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
