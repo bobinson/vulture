@@ -7,8 +7,12 @@ For Ollama, install and run: ``ollama pull qwen3:1.7b && ollama serve``
 
 import logging
 import os
+import re
+from typing import NamedTuple
 
+from shared.gospace import trim_go_space
 from shared.llm.env import resolve_call_timeout
+from shared.llm.env import safe_int_env as _safe_int_env
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +237,82 @@ WINDOW_FROM_FAMILY = "family"
 WINDOW_FROM_DEFAULT = "default"
 
 
+def _model_key(model: str | None) -> str:
+    """The model key a window is resolved for: the argument, else the env's."""
+    return model or os.environ.get("VULTURE_LLM_MODEL", DEFAULT_MODEL)
+
+
+# Each resolver answers ``(tokens, provenance)`` or ``None`` to defer to the next.
+_Window = tuple[int, str]
+
+
+# strconv.Atoi's grammar on a 64-bit build, so both runtimes accept the same
+# VULTURE_LLM_CTX_SIZE text (contract C6).
+_GO_ATOI = re.compile(r"[+-]?[0-9]+", re.ASCII)
+_INT64_MAX = (1 << 63) - 1
+
+
+def _ctx_override() -> int | None:
+    """``VULTURE_LLM_CTX_SIZE`` when it trims to a POSITIVE integer, else None.
+
+    The same rule as Go's ``modelmeta.parseOverride`` (feature 0074 review
+    item 6; both pinned by ``ctx_override_cases_0074.json``): blank, zero,
+    negative and non-numeric values all mean "no override". Trimming is Go's
+    ``strings.TrimSpace`` set (contract T1), not ``str.strip``. Python's ``int``
+    is wider than Go's ``strconv.Atoi``, so the text is held to Atoi's grammar
+    first: ASCII digits with an optional sign (no ``_`` digit groups, no
+    non-ASCII digits) and a value that fits int64."""
+    raw = trim_go_space(os.environ.get("VULTURE_LLM_CTX_SIZE", ""))
+    if not _GO_ATOI.fullmatch(raw):
+        return None
+    value = int(raw)
+    return value if 0 < value <= _INT64_MAX else None
+
+
+def _window_from_env(_key: str) -> _Window | None:
+    """1. Explicit operator override always wins (a non-positive or
+    unparseable value defers)."""
+    value = _ctx_override()
+    return None if value is None else (value, WINDOW_FROM_ENV)
+
+
+def _window_from_broker(_key: str) -> _Window | None:
+    """2. §31: the broker-injected window (the broker-owned registry knows
+    custom-gateway models the local table does not). Lazy import avoids any
+    import cycle with broker.py."""
+    try:
+        from shared.llm.broker import current_context_window
+
+        injected = current_context_window()
+    except Exception:  # pragma: no cover - defensive; never block sizing on this
+        return None
+    return (injected, WINDOW_FROM_BROKER) if injected and injected > 0 else None
+
+
+def _window_from_table(key: str) -> _Window | None:
+    """3. Exact-match table."""
+    known = CONTEXT_WINDOWS.get(key)
+    return None if known is None else (known, WINDOW_FROM_TABLE)
+
+
+def _window_from_family(key: str) -> _Window | None:
+    """4. Model-family inference."""
+    family_ctx = _infer_family_ctx(key.lower())
+    return None if family_ctx is None else (family_ctx, WINDOW_FROM_FAMILY)
+
+
+def _window_default(_key: str) -> _Window:
+    """5. Unknown model → the shared default (§31: raised from the old timid
+    8192 to DEFAULT_CONTEXT_WINDOW, matching Go's modelmeta.DefaultContextWindow).
+
+    Silent: this sits on the hot path of every per-call budget. The operator
+    warning is a per-run fact, logged once by ``publish_llm_window``."""
+    return DEFAULT_CONTEXT_WINDOW, WINDOW_FROM_DEFAULT
+
+
+_WINDOW_RESOLVERS = (_window_from_env, _window_from_broker, _window_from_table, _window_from_family)
+
+
 def resolve_context_window(model: str | None = None) -> tuple[int, str]:
     """Resolve the context window AND where the number came from.
 
@@ -243,41 +323,16 @@ def resolve_context_window(model: str | None = None) -> tuple[int, str]:
         ``(tokens, provenance)`` where provenance is one of the ``WINDOW_FROM_*``
         constants.
     """
-    # 1. Explicit operator override always wins.
-    env_val = os.environ.get("VULTURE_LLM_CTX_SIZE", "")
-    if env_val:
-        try:
-            return int(env_val), WINDOW_FROM_ENV
-        except ValueError:
-            pass
-    # 2. §31: broker-injected window (from the broker-owned registry, which knows
-    # custom-gateway models the local table below does not). Lazy import avoids
-    # any import cycle with broker.py.
-    try:
-        from shared.llm.broker import current_context_window
+    return _resolve_for_key(_model_key(model))
 
-        injected = current_context_window()
-        if injected and injected > 0:
-            return injected, WINDOW_FROM_BROKER
-    except Exception:  # pragma: no cover - defensive; never block sizing on this
-        pass
-    key = model or os.environ.get("VULTURE_LLM_MODEL", DEFAULT_MODEL)
-    # 3. Exact-match table, then 4. model-family inference.
-    known = CONTEXT_WINDOWS.get(key)
-    if known is not None:
-        return known, WINDOW_FROM_TABLE
-    family_ctx = _infer_family_ctx(key.lower())
-    if family_ctx is not None:
-        logger.info("inferred_ctx model=%s ctx=%d family_match", key, family_ctx)
-        return family_ctx, WINDOW_FROM_FAMILY
-    # 5. Unknown model → the shared default (§31: raised from the old timid 8192
-    # to DEFAULT_CONTEXT_WINDOW, matching the Go modelmeta.DefaultContextWindow).
-    if _CUSTOM_BASE_URL:
-        logger.warning(
-            "custom_endpoint_default_ctx model=%s ctx=%d hint=set_VULTURE_LLM_CTX_SIZE",
-            key, DEFAULT_CONTEXT_WINDOW,
-        )
-    return DEFAULT_CONTEXT_WINDOW, WINDOW_FROM_DEFAULT
+
+def _resolve_for_key(key: str) -> tuple[int, str]:
+    """``resolve_context_window`` for an already-resolved model key."""
+    for resolver in _WINDOW_RESOLVERS:
+        found = resolver(key)
+        if found is not None:
+            return found
+    return _window_default(key)
 
 
 def get_context_window(model: str | None = None) -> int:
@@ -293,6 +348,115 @@ def get_context_window(model: str | None = None) -> int:
         Context window size in tokens.
     """
     return resolve_context_window(model)[0]
+
+
+# Feature 0070 P5 (A.4): the most a GUESS is trusted with behind a custom
+# gateway when sizing a real request body. Numerically equal to
+# DEFAULT_CONTEXT_WINDOW (32K) today; named separately because the two mean
+# different things — "what we assume when we know nothing" versus "the most we
+# trust a guess with". Behind a gateway only three sources are authoritative:
+# an explicit VULTURE_LLM_CTX_SIZE, the broker registry (§31) or an exact
+# CONTEXT_WINDOWS match. A family guess is not (the gateway may proxy a smaller
+# window than the upstream model offers), and a bare default is a stronger
+# guess still. Read at call time, so a run sees the environment it runs in.
+_GUESSED_WINDOWS = frozenset({WINDOW_FROM_FAMILY, WINDOW_FROM_DEFAULT})
+
+
+class EffectiveWindow(NamedTuple):
+    """The resolved window and the one every budget actually uses.
+
+    ``resolved`` is what ``resolve_context_window`` returned; ``effective`` is
+    that number after the gateway-guess clamp. ``provenance`` says who decided
+    (``WINDOW_FROM_*``); ``model`` is the key the window was resolved for.
+    """
+
+    resolved: int
+    effective: int
+    provenance: str
+    model: str
+
+
+def _gateway_guess_ceiling() -> int:
+    return _safe_int_env("VULTURE_LLM_GATEWAY_GUESS_CTX", 32_000)
+
+
+def _clamps(resolved: int, provenance: str, ceiling: int) -> bool:
+    """A guessed window above ``ceiling``, behind a custom endpoint."""
+    guessed_high = provenance in _GUESSED_WINDOWS and resolved > ceiling
+    return guessed_high and uses_custom_endpoint()
+
+
+def effective_context_window(model: str | None = None) -> EffectiveWindow:
+    """THE window every per-call budget is sized from (feature 0074 P1, AC36).
+
+    One answer for the per-batch source budget
+    (``audit_runner._get_max_source_chars``) and the prompt budget
+    (``prompt.profile_for`` → ``render._budget`` / ``budget.budget_for``), so
+    the two can never disagree about the window. Deliberately separate from
+    ``resolve_context_window`` / ``get_context_window``, which keep returning the
+    unclamped number for §31 token budgeting.
+
+    Only an agent-side GUESS behind a custom endpoint is lowered (Mode A, the
+    0070-P5 413). A broker-injected window is labelled ``broker`` and is never
+    clamped, whatever source the broker reports (0074 O5).
+
+    Silent: called per batch and per judge prompt. The clamp is announced once
+    per run by ``publish_llm_window``.
+    """
+    key = _model_key(model)
+    resolved, provenance = _resolve_for_key(key)
+    ceiling = _gateway_guess_ceiling()
+    effective = ceiling if _clamps(resolved, provenance, ceiling) else resolved
+    return EffectiveWindow(resolved, effective, provenance, key)
+
+
+def _warn_window(window: EffectiveWindow) -> None:
+    """The run's operator warnings about its window, logged once per run."""
+    if window.effective < window.resolved:
+        logger.warning(
+            "llm_body_window_clamped model=%s inferred=%d using=%d "
+            "hint=set VULTURE_LLM_CTX_SIZE to the gateway's real window",
+            window.model, window.resolved, window.effective,
+        )
+    if window.provenance == WINDOW_FROM_DEFAULT and _CUSTOM_BASE_URL:
+        logger.warning(
+            "custom_endpoint_default_ctx model=%s ctx=%d hint=set_VULTURE_LLM_CTX_SIZE",
+            window.model, window.resolved,
+        )
+
+
+def run_llm_window(model: str | None, use_llm: bool) -> dict | None:
+    """This run's window for ``run_started``: ``publish_llm_window`` when the
+    run has an LLM tier, ``None`` for a skills-only run (no window to publish).
+    The one helper every agent's ``run_started`` uses (feature 0074 AC7)."""
+    return publish_llm_window(model) if use_llm else None
+
+
+def publish_llm_window(model: str | None = None) -> dict:
+    """Log this run's window once and return it for ``run_started`` (AC7).
+
+    ``source`` is the broker's own label for HOW it obtained an injected
+    window, bound per run by the transport; ``None`` in Mode A or from an
+    older backend — published as absent, never invented.
+    """
+    from shared.llm.broker import current_context_window_source
+
+    window = effective_context_window(model)
+    source = current_context_window_source()
+    _warn_window(window)
+    if window.provenance == WINDOW_FROM_FAMILY:
+        # Once per run here, not per resolution: the resolver is on the hot
+        # path of every per-batch budget and logged this line each time.
+        logger.info("inferred_ctx model=%s ctx=%d family_match",
+                    window.model, window.resolved)
+    logger.info(
+        "llm_window resolved=%d effective=%d provenance=%s source=%s model=%s",
+        window.resolved, window.effective, window.provenance, source, window.model,
+    )
+    return {
+        "resolved": window.resolved, "effective": window.effective,
+        "provenance": window.provenance, "source": source, "model": window.model,
+    }
 
 
 def get_fallback_models(model: str | None = None) -> list[str]:

@@ -36,6 +36,7 @@ from agents import function_tool
 from cwe_agent.catalog import enrich_finding
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
+    MAX_FILE_SIZE,
     MAX_MANIFEST_SIZE,
     SCANNER_DEF_LINE,
     effective_name,
@@ -441,13 +442,20 @@ def check_dependency_security(source_path: str) -> dict:
     return {"findings": findings}
 
 
+def read_cap_for(path: Path) -> int:
+    """How many bytes a reader takes of ``path``: manifests are read under the
+    larger MAX_MANIFEST_SIZE ceiling (a lock file's size tracks its dependency
+    count, so the general source-file cap dropped exactly the manifests with the
+    most to report); every other file under MAX_FILE_SIZE. The one statement of
+    that rule: the offline gate stages files by it too."""
+    manifest = effective_name(path.name) in DEPENDENCY_FILE_NAMES
+    return MAX_MANIFEST_SIZE if manifest else MAX_FILE_SIZE
+
+
 def _analyze_dependency_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze dependency manifest files for CWE-1104 (unpinned, rolled up
     per manifest) and CWE-1395 (known-vulnerable component)."""
-    # Manifests are read under the larger MAX_MANIFEST_SIZE ceiling: a lock
-    # file's size tracks its dependency count, so the general source-file cap
-    # dropped exactly the manifests with the most to report.
-    content = read_file_safe(file_path, max_size=MAX_MANIFEST_SIZE)
+    content = read_file_safe(file_path, max_size=read_cap_for(file_path))
     if content is None:
         return
 

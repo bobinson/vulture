@@ -231,6 +231,13 @@ def patch_l5_judge(
         return json.dumps({"verdicts": out})
 
     monkeypatch.setattr(llm_judge, "_call_llm", _fake_call_llm)
+    # The judge's tool path (taken whenever validate() runs with a source root)
+    # never reaches _call_llm. With no client it returns ``ok=False`` and the
+    # judge takes its documented fallback onto the strict-retry path, which the
+    # fake above answers. Without this a test with a source root either gets
+    # no verdict or reaches a live endpoint. The L5 verdict cache is isolated
+    # per test by the suite's conftest (tests.support.isolation).
+    monkeypatch.setattr(llm_judge, "_get_client", lambda: None)
 
 
 def fake_finding(

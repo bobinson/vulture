@@ -64,6 +64,10 @@ export interface Audit {
   /** Feature 0039: canonical LLMHealthStatus.message() when LLM was unreachable
    * at audit-creation time. Empty/undefined means the audit ran in normal mode. */
   degraded_reason?: string;
+  /** Feature 0074: whether this audit's findings record
+   * validation.provenance_origins. Absent on an older backend (the UI then
+   * detects it from the rows); false means a "both" filter cannot select. */
+  origins_recorded?: boolean;
   created_at: string;
   completed_at?: string;
 }
@@ -77,6 +81,29 @@ export interface LLMHealth {
   error?: string;
   detail?: Record<string, unknown>;
   message: string;
+}
+
+// Feature 0074 (verification item 1b): GET /api/audits/{id}/findings/{fid}/masked.
+// Where each masked value of a finding sits; `value` only for an authorised
+// human and only when the scanned file still reproduces the masked rows.
+export interface MaskedSpan {
+  line: number;
+  ordinal: number; // the placeholder's 0-based position within its row
+  column: number;
+  length?: number;
+  kind: string;
+  value?: string;
+}
+
+export interface MaskedValues {
+  source_available: boolean;
+  matches_scan: boolean;
+  values_included: boolean;
+  file?: string;
+  rows_checked: number;
+  spans: MaskedSpan[];
+  reason?: string;
+  ui_path: string;
 }
 
 export interface Finding {

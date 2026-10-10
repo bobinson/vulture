@@ -247,12 +247,13 @@ func TestAmbiguousDoesNotCountAsSeen(t *testing.T) {
 	}
 }
 
-// TestReanchorDoesNotMoveTheLineUnlessArmed pins the 0076 prerequisite: moving
-// a correct line to a wrong one is the one way evidence checking could LOSE a
-// finding, so the actuator ships inert.
+// TestReanchorDoesNotMoveTheLineUnlessArmed pins the actuator switch: an
+// explicit off keeps re-anchoring inert, and arming it moves the window. Since
+// 0074 O6 the unset default is ON (covered by reanchor_default_0074_test.go),
+// so the disarmed case sets the rollback value explicitly.
 func TestReanchorDoesNotMoveTheLineUnlessArmed(t *testing.T) {
 	h := newPassHarness(t, []model.FindingLineage{llmRow("l-1", "fp-1")})
-	t.Setenv("VULTURE_LLM_QUOTE_REANCHOR", "")
+	t.Setenv("VULTURE_LLM_QUOTE_REANCHOR", "false")
 
 	if err := h.svc.RecordScanOutcome(passAudit(), passSource(), "cwe", &model.ScanResult{
 		ResultSchema: model.ScanResultSchemaEvidence,
@@ -263,7 +264,7 @@ func TestReanchorDoesNotMoveTheLineUnlessArmed(t *testing.T) {
 		t.Fatalf("record scan outcome: %v", err)
 	}
 	if h.evidence["l-1"].UpdateWindow {
-		t.Fatal("re-anchoring must be inert unless VULTURE_LLM_QUOTE_REANCHOR is on")
+		t.Fatal("re-anchoring must be inert when VULTURE_LLM_QUOTE_REANCHOR is off")
 	}
 	if !h.evidence["l-1"].IncrementSeen {
 		t.Fatal("a reanchored quote WAS observed, so seen_count still rises")

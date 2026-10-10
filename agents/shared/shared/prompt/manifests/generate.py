@@ -308,7 +308,7 @@ ASVS = PromptSpec(
 # states the contract three times. Not merged — the duplication is the finding.
 CWE = PromptSpec(
     id="generate/cwe", tier="generate",
-    version=5,                       # item 4.8: core/language (4.7 -> 4)
+    version=6,                       # 0098: domains/cwe coverage counts (4.8 -> 5)
     fragments=("domains/cwe", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
@@ -534,21 +534,15 @@ def domain_instructions(*fragments: str, model: str | None = None) -> str:
     not fixable here — `instructions` is a runner parameter, so folding it into
     the user turn is a `run_combined_audit` signature question, not a render.
 
-    `model` resolves the profile, defaulting to the ambient one. It is resolved
-    to a model STRING before `profile_for` sees it: that function is
-    `lru_cache`d on its argument, so `profile_for()` caches whatever the first
-    caller's environment resolved to under the key `None` for the life of the
-    process. Harmless while the mode was TRANSCRIBE (the profile reached
-    nothing but a discarded budget hint); under ADAPT the profile decides
-    placement, and a stale one decides it wrongly.
+    `model` resolves the profile, defaulting to the ambient one; `profile_for`
+    resolves it at call time and caches nothing keyed on it, so under ADAPT —
+    where the profile decides placement — it is never a stale one.
     """
     if not fragments:
         raise ValueError("domain_instructions() needs at least one fragment id")
-    from shared.llm.provider import get_model
-
     spec = PromptSpec(
         id="generate/domain", tier="generate", fragments=fragments,
         schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
     )
-    rp = render(spec, profile_for(get_model(model)), mode=Mode.ADAPT)
+    rp = render(spec, profile_for(model), mode=Mode.ADAPT)
     return rp.instructions or rp.user

@@ -6,6 +6,8 @@ from pathlib import Path
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._guard_application import CLIENT_IP_HEADER
+from cwe_agent.skills._message_send import check_message_sends
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -341,10 +343,9 @@ QUOTED_ROUTE_PATH = re.compile(r"['\"`](/[^'\"`]*)['\"`]")
 # CWE-807: reliance on an untrusted input for a security decision — a rate
 # limiter keyed on a client-controlled header can be bypassed by spoofing it.
 KEY_GENERATOR = re.compile(r"\bkeyGenerator\b")
+# The header vocabulary is single-sourced with access_control's CWE-290 rule.
 SPOOFABLE_CLIENT_HEADER = re.compile(
-    r"headers\s*(?:\[\s*['\"`]\s*|\.\s*get\s*\(\s*['\"`]\s*|\.\s*)"
-    r"(?:x-)?(?:forwarded-for|forwarded|real-ip|client-ip|true-client-ip|"
-    r"cf-connecting-ip)",
+    r"headers\s*(?:\[\s*['\"`]\s*|\.\s*get\s*\(\s*['\"`]\s*|\.\s*)" + CLIENT_IP_HEADER,
     re.IGNORECASE,
 )
 
@@ -422,6 +423,7 @@ def _check_rate_limiting(
     _check_def_rate_limiting(file_path, lines, findings)
     _check_express_rate_limiting(file_path, lines, findings)
     _check_spoofable_limiter_key(file_path, lines, findings)
+    check_message_sends(file_path, lines, findings)
 
 
 def _limiter_protected_paths(lines: list[str]) -> set[str]:

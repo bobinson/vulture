@@ -8,7 +8,7 @@ verbatim when an agent is cut off before its snapshot) and once inside the
 ``result`` snapshot. Those two renderings of the same row must not disagree
 about provenance, or the persisted value depends on whether the agent was
 truncated — and an empty provenance silently disables the cross-agent dedup
-guard (``VULTURE_DEDUP_PREFER_DETERMINISTIC``), which arbitrates on it.
+guard (the backend's deterministic preference), which arbitrates on it.
 """
 
 from __future__ import annotations

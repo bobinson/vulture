@@ -42,6 +42,8 @@ from shared.discovery.plugin_base import DiscoveryContext
 from shared.discovery.runner import run_discovery
 from shared.discovery.sitemap import SiteMap
 from shared.env import env_flag
+from shared.llm.mode import llm_enabled
+from shared.llm.provider import run_llm_window
 from shared.tools.window import WINDOW_NO_CODE_LOCATION, record_window_reason
 from shared.transport.event_emitter import AgUiEventEmitter
 
@@ -130,7 +132,8 @@ def run_discover(
 ) -> Generator[str, None, None]:
     """Execute the discover pipeline and yield SSE events."""
     emitter = AgUiEventEmitter(run_id)
-    yield emitter.run_started()
+    # The LLM suggestion plugin runs when the LLM tier is on (feature 0074 AC7).
+    yield emitter.run_started(llm_window=run_llm_window(None, llm_enabled()))
 
     target_url = config.get("target_url", "")
     no_cache = config.get("no_cache", False)
@@ -287,7 +290,8 @@ def run_discover(
     # 0078 track C: the per-finding event must carry provenance. The backend
     # rescues these deltas verbatim when an agent is cut off before its result
     # snapshot, and an empty provenance silently disables the cross-agent dedup
-    # guard (VULTURE_DEDUP_PREFER_DETERMINISTIC), which arbitrates on it.
+    # guard (a deterministic row outranks an LLM row on a collision; always on
+    # since 0074), which arbitrates on it.
     # Deliberately an EXISTING declared value, not a new one. A
     # `discover_probe` tag would read more truthfully -- these come from probing
     # a live target, not from matching patterns -- but the whole point of this

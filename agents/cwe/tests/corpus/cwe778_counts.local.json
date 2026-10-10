@@ -1,0 +1,11 @@
+{
+ "togetherapp": {
+  "commit": "b0172619449966309d3eaba616f6a190521cbfc0",
+  "total": 82,
+  "by_check": {
+   "cwe.insufficient_logging.auth_decision": 1,
+   "cwe.insufficient_logging.cwe_778": 78,
+   "cwe.insufficient_logging.promise_swallow": 3
+  }
+ }
+}

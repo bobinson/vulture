@@ -178,6 +178,7 @@ vulture-mcp
 | `vulture_list_audits` | Recent audit summaries | No |
 | `vulture_get_findings` | Paginated findings with filters (severity, category, agent, framework, edition) | No |
 | `vulture_get_finding_detail` | Single finding + lineage history | No |
+| `vulture_verify_masked_values` | Where each masked value in a finding sits (file, line, column, kind), whether the file still matches the scan, and a UI link to reveal it. Never returns the values | No |
 | `vulture_get_comparison` | Diff vs previous audit (new/fixed/changed) | No |
 | `vulture_search_findings` | Semantic search via pgvector, optional framework/category/edition filter | No |
 | `vulture_list_lineage` | Lineage records with status filter | No |

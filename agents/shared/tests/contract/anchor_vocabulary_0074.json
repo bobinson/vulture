@@ -1,0 +1,7 @@
+{
+  "_comment": "Feature 0074 review item 20: the anchor verifier's wire vocabulary, declared once in agents/shared/shared/anchor.py and exported here. Python asserts this file equals anchor.py (tests/unit/test_0074_anchor_vocabulary.py); the frontend tests import it instead of redeclaring the literals. duplicate_rule: when a validation.checks list carries the same check id twice, every reader takes the LAST match.",
+  "check_id": "anchor",
+  "statuses": ["absent", "ambiguous", "exact", "found_elsewhere", "near_miss", "oversize", "reanchored", "unquoted", "unreadable"],
+  "claimed_line_ranges": ["in_file", "no_line", "past_eof"],
+  "duplicate_rule": "last"
+}

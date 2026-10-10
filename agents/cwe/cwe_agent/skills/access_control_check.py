@@ -1,4 +1,20 @@
-"""Access control vulnerability detection skill."""
+"""Access control vulnerability detection skill.
+
+Rules (each documented in SKILLS.md, section ``access_control_check``):
+
+* CWE-862 missing authorization, per route (mount inheritance, rollup at 3+);
+* CWE-425 forced browsing to an unguarded administrative route;
+* CWE-863 role decided by a privileged string literal;
+* CWE-639 IDOR, specialised to CWE-566 for an unscoped primary-key lookup;
+* CWE-269 improper privilege management;
+* CWE-807 / CWE-290 (feature 0097): a guard whose application is decided by a
+  client-controlled request attribute -- skipped or satisfied by a branch on a
+  header / query / body field / cookie, or excluded by a framework hook (route
+  matcher ``has`` / ``missing``, ``skip_before_action ... if:``, header request
+  matcher + ``permitAll()``, ``.unless({ custom })``, ``Skipper``). CWE-290
+  replaces the 807 row when the attribute is a client-asserted source identity.
+  Predicates live in ``_guard_application``.
+"""
 
 import re
 from pathlib import Path
@@ -6,6 +22,13 @@ from pathlib import Path
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._guard_application import (
+    GUARD_BYPASS_HINT,
+    FileView,
+    GuardSite,
+    code_lines,
+    guard_sites,
+)
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -297,6 +320,7 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
         _check_idor(file_path, line, line_num, has_ownership, lines, findings)
         _check_privilege(file_path, line, line_num, lines, findings)
     _emit_missing_authz(file_path, lines, content, unprotected, findings)
+    _check_guard_application(file_path, lines, content, findings)
 
 
 # --- CWE-862 helpers -------------------------------------------------------
@@ -675,6 +699,83 @@ def _check_privilege(
         finding["code_snippet"] = extract_snippet(lines, line_num)
         findings.append(enrich_finding(finding, "269"))
         return
+
+
+# --- CWE-807 / CWE-290: guard application decided by a client attribute -----
+
+_GUARD_RECOMMENDATION = (
+    "Apply the guard unconditionally. Exempt a request only by server-side route "
+    "metadata or by an authenticated caller (HMAC, signed token, mTLS), never by a "
+    "header, query parameter, body field or cookie the client sets. Strip internal "
+    "marker headers (for example x-middleware-subrequest) at the edge; derive the "
+    "client IP from the socket or a bounded trust-proxy hop count; match guarded "
+    "routes by path only."
+)
+_GUARD_SKIP_SPEC = {
+    "check_id": "cwe.access_control.guard_skip_by_request_attr",
+    "category": "CWE-807",
+    "title": "Auth guard skipped by a client-controlled request attribute",
+    "description": (
+        "At line {line} the guard is {effect} when the client-controlled {attr} "
+        "takes the tested value, before the guard's own check runs; any client "
+        "can set it"
+    ),
+    "recommendation": _GUARD_RECOMMENDATION,
+}
+_SPOOFED_IDENTITY_SPEC = {
+    "check_id": "cwe.access_control.spoofable_identity_guard",
+    "category": "CWE-290",
+    "title": "Auth guard trusts a spoofable client identity",
+    "description": (
+        "At line {line} the guard is {effect} by comparing the client-asserted "
+        "{attr}; the client sets that value, so it can claim a trusted source"
+    ),
+    "recommendation": _GUARD_RECOMMENDATION,
+}
+_GUARD_EXCLUDED_SPEC = {
+    "check_id": "cwe.access_control.guard_excluded_by_request_attr",
+    "category": "CWE-807",
+    "title": "Auth guard excluded by a client-controlled request attribute",
+    "description": (
+        "At line {line} the guard's own exclusion rule is keyed on the "
+        "client-controlled {attr}; a request carrying (or omitting) it is "
+        "{effect} from the guard"
+    ),
+    "recommendation": _GUARD_RECOMMENDATION,
+}
+_GUARD_SPECS = {
+    "807": _GUARD_SKIP_SPEC,
+    "290": _SPOOFED_IDENTITY_SPEC,
+    "excluded": _GUARD_EXCLUDED_SPEC,
+}
+
+
+def _guard_finding(file_path: Path, lines: list[str], site: GuardSite) -> dict:
+    """One CWE-807 / CWE-290 row in the file's finding shape."""
+    spec = _GUARD_SPECS[site.key]
+    line_num = site.idx + 1
+    finding = {
+        **spec,
+        "severity": "high",
+        "description": spec["description"].format(
+            line=line_num, attr=site.attr, effect=site.effect,
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "code_snippet": extract_snippet(lines, line_num),
+    }
+    return enrich_finding(finding, spec["category"].removeprefix("CWE-"))
+
+
+def _check_guard_application(
+    file_path: Path, lines: list[str], content: str, findings: list[dict],
+) -> None:
+    """Guard skipped / satisfied / excluded by a client attribute (CWE-807, 290)."""
+    if not GUARD_BYPASS_HINT.search(content):
+        return
+    view = FileView(lines, code_lines(lines), _has_authz, ROLE_STRING_CMP)
+    findings.extend(_guard_finding(file_path, lines, s) for s in guard_sites(view))
 
 
 check_access_control_tool = function_tool(check_access_control)

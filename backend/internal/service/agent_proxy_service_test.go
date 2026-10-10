@@ -274,6 +274,7 @@ type stubMinter struct {
 	gotRun, gotTask string
 	token           string
 	ctxWindow       int
+	ctxSource       string
 }
 
 func (m *stubMinter) MintForAgent(runID, taskType string) (string, error) {
@@ -281,7 +282,7 @@ func (m *stubMinter) MintForAgent(runID, taskType string) (string, error) {
 	return m.token, nil
 }
 
-func (m *stubMinter) ContextWindow() int { return m.ctxWindow }
+func (m *stubMinter) ContextWindow() (int, string) { return m.ctxWindow, m.ctxSource }
 
 // Feature 0064 §25.2: when a broker minter is set, the dispatch payload must
 // carry broker_token + task_type (so the agent authenticates to the broker).

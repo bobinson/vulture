@@ -1,0 +1,23 @@
+{
+  "_comment": "Shared by the Go modelmeta resolver tests and the Python provider resolver tests (0074 review #6). An override is honoured only when it parses to a positive integer after trimming EXACTLY Go's unicode.IsSpace set (NBSP U+00A0 and NEL U+0085 are trimmed; U+FEFF and U+001C-U+001F are not whitespace, so they make the value unparseable), written in ASCII digits (optional sign) and within int64; anything else (digit-group underscores, non-ASCII digits, overflow, hex, decimals) means 'no override' and resolution falls through to probe/table/family/default.",
+  "cases": [
+    {"override": "",        "honoured": false},
+    {"override": "   ",     "honoured": false},
+    {"override": "0",       "honoured": false},
+    {"override": "-1",      "honoured": false},
+    {"override": "abc",     "honoured": false},
+    {"override": "64000",   "honoured": true, "window": 64000},
+    {"override": " 64000 ", "honoured": true, "window": 64000},
+    {"override": "+64000",  "honoured": true, "window": 64000},
+    {"override": "1_000",   "honoured": false},
+    {"override": "\u0666\u0664", "honoured": false},
+    {"override": "99999999999999999999", "honoured": false},
+    {"override": "0x10",    "honoured": false},
+    {"override": "64000.0", "honoured": false},
+    {"override": "\u00a064000\u00a0", "honoured": true, "window": 64000},
+    {"override": "\u008564000", "honoured": true, "window": 64000},
+    {"override": "\ufeff64000", "honoured": false},
+    {"override": "\u001c64000", "honoured": false},
+    {"override": "64000\u001f", "honoured": false}
+  ]
+}

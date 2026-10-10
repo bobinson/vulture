@@ -373,6 +373,11 @@ vulture status                                 # recent audit statuses
 vulture results <audit-id>                     # detailed results for one audit
 ```
 
+To gate a commit or a CI job on the CWE skills without a server, run
+`vulture-offline-skills <files...>`: it needs no backend and no LLM, and exits
+0 (pass), 1 (blocking findings) or 2 (tool or usage error). See
+[docs/guides/offline_skills_gate.md](docs/guides/offline_skills_gate.md).
+
 ## Contributing
 
 Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development workflow, coding standards, and pull request requirements.

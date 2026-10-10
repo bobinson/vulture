@@ -44,6 +44,27 @@ type Options struct {
 	Logger             interface{ Printf(string, ...any) }
 	DaemonPingInterval time.Duration
 	Tunables           *Tunables
+	// HostNetworkIsVM is true when docker's "host" network is a VM's rather
+	// than the backend host's (see HostNetworkIsVM). A host-network plugin is
+	// then run on the default bridge with its port published on loopback, so
+	// it is reachable at the localhost:<port> the backend dials.
+	HostNetworkIsVM bool
+}
+
+// HostNetworkIsVM reports whether docker's "host" network on a backend
+// running on goos is a virtual machine's network. On macOS docker always runs
+// in a Linux VM (Docker Desktop, Colima, OrbStack), so a container on the host
+// network shares the VM's localhost, never the Mac's. Derived from the OS the
+// backend itself runs on, because that is where it dials localhost: a backend
+// in a compose container is linux and keeps host networking.
+func HostNetworkIsVM(goos string) bool {
+	return goos == "darwin"
+}
+
+// bridgedHostNetwork reports whether a host-network plugin is moved onto the
+// default bridge because the host network is a VM's.
+func bridgedHostNetwork(plug pluginregistry.Plugin, opts Options) bool {
+	return plug.Manifest.Runtime.Network == "host" && opts.HostNetworkIsVM
 }
 
 // BuildDockerRunArgv generates the docker run argv (sans the leading
@@ -77,9 +98,7 @@ func BuildDockerRunArgv(plug pluginregistry.Plugin, opts Options) ([]string, err
 		}
 		argv = append(argv, fragment...)
 	}
-	if r.Port > 0 {
-		argv = append(argv, "-p", fmt.Sprintf("%d", r.Port))
-	}
+	argv = append(argv, buildPublishArgs(plug, opts)...)
 	argv = append(argv, r.Image)
 	return argv, nil
 }
@@ -93,8 +112,23 @@ func argvBuilders(plug pluginregistry.Plugin, opts Options, alias string) []func
 		func() ([]string, error) { return buildRestartArgs(plug), nil },
 		func() ([]string, error) { return buildResourceArgs(plug), nil },
 		func() ([]string, error) { return buildFSArgs(plug, opts) },
-		func() ([]string, error) { return buildEnvArgs(plug) },
+		func() ([]string, error) { return buildEnvArgs(plug, opts) },
 	}
+}
+
+// buildPublishArgs publishes the plugin port. A bridged host-network plugin is
+// published on loopback at the same port number: that keeps it off every other
+// interface (the reason it asked for host networking) and puts it where the
+// backend dials it.
+func buildPublishArgs(plug pluginregistry.Plugin, opts Options) []string {
+	port := plug.Manifest.Runtime.Port
+	if port <= 0 {
+		return nil
+	}
+	if bridgedHostNetwork(plug, opts) {
+		return []string{"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, port)}
+	}
+	return []string{"-p", fmt.Sprintf("%d", port)}
 }
 
 func buildRestartArgs(plug pluginregistry.Plugin) []string {
@@ -136,6 +170,11 @@ func buildNetworkArgs(plug pluginregistry.Plugin, opts Options, alias string) ([
 	case "host":
 		if !hasAck(plug, "host-network") {
 			return nil, fmt.Errorf("plugin %s: runtime.network=host requires host-network ack", plug.Name())
+		}
+		if bridgedHostNetwork(plug, opts) {
+			// The default bridge always exists; it takes no alias, and none
+			// is needed because the plugin is reached through its publish.
+			return []string{"--network", "bridge"}, nil
 		}
 		return []string{"--network", "host"}, nil
 	case "none":
@@ -244,7 +283,7 @@ func volumeNameForWritePath(pluginName, p string) string {
 // buildEnvArgs emits `-e VAR` flags only for declared envs (required +
 // optional) present in the host environment. Required envs missing
 // from the host cause a hard error.
-func buildEnvArgs(plug pluginregistry.Plugin) ([]string, error) {
+func buildEnvArgs(plug pluginregistry.Plugin, opts Options) ([]string, error) {
 	r := plug.Manifest.Runtime
 	required := toStringSlice(r.Env, "required")
 	optional := toStringSlice(r.Env, "optional")
@@ -262,8 +301,10 @@ func buildEnvArgs(plug pluginregistry.Plugin) ([]string, error) {
 	// (see buildProbeURL). Non-host (bridge/compose) plugins keep the default
 	// 0.0.0.0 so cross-container traffic works. The plugin image must honor
 	// VULTURE_BIND_HOST (see plugins/semgrep/Dockerfile); images that ignore it
-	// are unaffected.
-	if r.Network == "host" {
+	// are unaffected. A bridged host-network plugin is the exception: it must
+	// listen on its own interface for the loopback publish to reach it, and the
+	// publish address is what keeps it off the LAN (see buildPublishArgs).
+	if r.Network == "host" && !bridgedHostNetwork(plug, opts) {
 		out = append(out, "-e", "VULTURE_BIND_HOST=127.0.0.1")
 	}
 	for _, name := range required {

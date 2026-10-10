@@ -173,9 +173,7 @@ func checkLLMConfig(mode localdev.Mode) (c struct {
 
 // llmStatus is the pure core of checkLLMConfig (getenv injected for testing).
 func llmStatus(getenv func(string) string) (name string, ok, warn bool, fix string) {
-	switch getenv("VULTURE_USE_LLM") {
-	case "true", "1":
-	default:
+	if !config.ParseFlag(getenv("VULTURE_USE_LLM"), false) {
 		return "LLM analysis disabled (skills-only)", true, false, ""
 	}
 	model := getenv("VULTURE_LLM_MODEL")

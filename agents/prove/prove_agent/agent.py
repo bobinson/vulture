@@ -31,7 +31,8 @@ from prove_agent.runner import prove_finding_with_timeout, validate_staging_url
 from prove_agent.strategies import STRATEGY_MAP
 from shared.discovery.cache import load_cached_discovery
 from shared.discovery.sitemap import SiteMap
-from shared.llm.mode import is_llm_required, is_skills_only
+from shared.llm.mode import is_llm_required, is_skills_only, llm_enabled
+from shared.llm.provider import run_llm_window
 from shared.transport.event_emitter import AgUiEventEmitter
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def run_prove(
 ) -> Generator[str, None, None]:
     """Execute the prove verification pipeline and yield SSE events."""
     emitter = AgUiEventEmitter(run_id)
-    yield emitter.run_started()
+    yield emitter.run_started(llm_window=run_llm_window(None, llm_enabled()))
     yield emitter.text_message("Starting prove agent verification pipeline")
 
     staging_url = config.get("staging_url", "")
@@ -86,7 +87,7 @@ def run_prove(
         if is_llm_required():
             yield emitter.text_message(
                 "ERROR: VULTURE_REQUIRE_LLM=true but VULTURE_USE_LLM is "
-                "not set to 'true'. Configuration conflict — set "
+                "not on (true, 1, yes or on). Configuration conflict — set "
                 "VULTURE_USE_LLM=true (and provide an LLM API key) "
                 "to satisfy VULTURE_REQUIRE_LLM, or unset "
                 "VULTURE_REQUIRE_LLM to allow skills-only operation."
@@ -95,7 +96,7 @@ def run_prove(
             return
         yield emitter.text_message(
             "Prove agent skipped: skills-only mode "
-            "(VULTURE_USE_LLM != true). Prove requires LLM for "
+            "(VULTURE_USE_LLM is not true, 1, yes or on). Prove requires LLM for "
             "verification logic. To enable, set VULTURE_USE_LLM=true "
             "and provide an LLM API key (OPENAI_API_KEY, "
             "ANTHROPIC_API_KEY, GEMINI_API_KEY, or run Ollama). "

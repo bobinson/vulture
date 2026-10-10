@@ -1,7 +1,7 @@
 """ASVS V5.1.1 must require a filesystem SINK, and registry findings must not
 fire once per LINE.
 
-Measured through the real agent path (`vulture scan ~/src/togetherapp --types asvs`):
+Measured through the real agent path (`vulture scan ~/src/reference-app --types asvs`):
 504 of 517 ASVS findings — 97.5%, all HIGH — were V5.1.1. Sampling them showed
 the same shape every time: an ordinary relative import.
 
@@ -61,7 +61,7 @@ RELATIVE_IMPORTS = {
     "esm_import.ts": "import { loadEnv } from '../env';\nexport const a = loadEnv();\n",
     "esm_reexport.ts": "export { x } from '../../shared/types';\n",
     "cjs_require.js": "const m = require('../lib/util');\nmodule.exports = m;\n",
-    "dynamic_import.ts": "const mod = await import('../frontend/lib/qa/seed-runner');\n",
+    "dynamic_import.ts": "const mod = await import('../frontend/lib/tools/seed-tool');\n",
     "css_import.css": "@import '../styles/base.css';\n",
 }
 

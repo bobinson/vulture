@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +113,17 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		}
 	}
 
+	// The staging root is a plugin bind-mount source. Create it as the
+	// backend user BEFORE the supervisor starts containers, or Docker creates
+	// it as root and a non-root backend can never stage into it. Local mode
+	// only: the only mode that stages into the root (see the sweep below).
+	auditsDir := staging.AuditsDirFromEnv()
+	if cfg.LocalMode {
+		if err := staging.EnsureRoot(auditsDir); err != nil {
+			log.Printf("[staging] %v", err)
+		}
+	}
+
 	var supervisor *pluginsupervisor.Supervisor
 	if reg != nil {
 		all := reg.All()
@@ -128,8 +140,11 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 				// Single source of truth shared with the stream dispatch
 				// staging, so the mount source and the staging destination
 				// can never drift (feature 0058 R11).
-				AuditsDir: staging.AuditsDirFromEnv(),
+				AuditsDir: auditsDir,
 				LocalMode: cfg.LocalMode,
+				// On macOS docker's host network is its VM's, so a
+				// host-network plugin is bridged and published on loopback.
+				HostNetworkIsVM: pluginsupervisor.HostNetworkIsVM(runtime.GOOS),
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
@@ -152,7 +167,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		// review E6). New audits use fresh audit-id dirs, so the sweep
 		// cannot race them.
 		go func() {
-			if err := staging.Sweep(staging.AuditsDirFromEnv(), func(string) bool { return false }); err != nil {
+			if err := staging.Sweep(auditsDir, func(string) bool { return false }); err != nil {
 				log.Printf("[staging] startup sweep error (continuing): %v", err)
 			}
 		}()
@@ -182,6 +197,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	healthH := handler.NewHealthHandler()
 	sourceH := handler.NewSourceHandler(sourceSvc)
 	auditH := handler.NewAuditHandler(auditSvc)
+	auditH.SetLocalMode(cfg.LocalMode) // who may receive masked values (0074 item 1b)
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
 	streamH.SetBrokerRevoker(broker) // 0064 §6/M3: revoke run tokens at terminal state (no-op when off)
 	agentH := handler.NewAgentHandler(cfg.Agents)
@@ -291,7 +307,14 @@ func isCancelPath(p string) bool {
 }
 
 func auditDetailRouter(auditH *handler.AuditHandler, streamH *handler.StreamHandler) http.HandlerFunc {
+	// 0074 item 1b: masked-value verification re-reads source files, so it is
+	// rate-limited per principal on top of the route's auth.
+	maskedValuesH := RateLimitByKey(30, handler.MaskedValuesRateKey, auditH.MaskedValues)
 	return func(w http.ResponseWriter, r *http.Request) {
+		if handler.IsMaskedValuesPath(r.URL.Path) && r.Method == http.MethodGet {
+			maskedValuesH(w, r)
+			return
+		}
 		if isStreamTokenPath(r.URL.Path) {
 			streamH.CreateStreamToken(w, r)
 			return
@@ -414,7 +437,7 @@ func registerAPIRoutes(
 	mux.HandleFunc("/api/sources/", ReadOnlyGuard(readOnly, sourceH.Get))
 	mux.HandleFunc("/api/stats", auditH.Stats)
 	mux.HandleFunc("/api/audits", ReadOnlyGuard(readOnly, auditsH))
-	mux.HandleFunc("/api/audits/", ReadOnlyGuard(readOnly, auditDetailH))
+	mux.HandleFunc("/api/audits/", handler.MaskedValuesNoStore(ReadOnlyGuard(readOnly, auditDetailH)))
 	mux.HandleFunc("/api/audits/cache", auditH.CachedAudit)
 	mux.HandleFunc("/api/agents", agentH.List)
 	mux.Handle("/api/llm/health", llmHealthH)
@@ -624,7 +647,7 @@ func registerAuthRoutes(
 	// 0065 §H1: method-gated RequireWrite lets viewers GET/list while POST
 	// (create) requires member/admin. Sits inside Require, outside ReadOnlyGuard.
 	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, auditsH)))))
-	mux.HandleFunc("/api/audits/", authMW.Require(ReadOnlyGuard(readOnly, auditDetailH)))
+	mux.HandleFunc("/api/audits/", handler.MaskedValuesNoStore(authMW.Require(ReadOnlyGuard(readOnly, auditDetailH))))
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
 	mux.HandleFunc("/api/llm/health", authMW.Require(llmHealthH.ServeHTTP))

@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 
+from shared.anchor import ANCHOR_CHECK_ID
+
 from .types import ValidationCheck
 
 __all__ = [
@@ -60,7 +62,7 @@ __all__ = [
 # (AUTHORITATIVE_POSITIVE) is deliberately NOT taken — on the adjudicated
 # population a located quote is not a true claim, so no anchor status
 # promotes (0076 AC27).
-AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression", "anchor"})
+AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression", ANCHOR_CHECK_ID})
 
 # Secret-presence check (see context_heuristics._secret_value_check). `absent`
 # means the cited line was read and assigns no value at all.

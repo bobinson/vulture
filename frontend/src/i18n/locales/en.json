@@ -72,6 +72,30 @@
     "noFindings": "No findings detected. Your code looks clean!",
     "noFindingsShort": "Clean",
     "provenance": "Provenance",
+    "provenanceFamily": {
+      "llm_family": "LLM (all)",
+      "both": "Both tiers",
+      "bothNotRecorded": "Tier origins were not recorded for this audit, so no row can show as reported by both tiers."
+    },
+    "anchor": {
+      "title": "Anchor",
+      "status": {
+        "exact": "Exact",
+        "reanchored": "Re-anchored",
+        "ambiguous": "Ambiguous",
+        "near_miss": "Near miss",
+        "found_elsewhere": "Found elsewhere",
+        "absent": "Absent",
+        "unquoted": "Unquoted",
+        "unreadable": "Unreadable",
+        "oversize": "Oversize"
+      },
+      "range": {
+        "in_file": "In file",
+        "past_eof": "Past end of file",
+        "no_line": "No line"
+      }
+    },
     "semgrepTierNotice": "Semgrep tier not active — this audit ran deterministic skills + signatures only.",
     "agent": "Agent",
     "scores": "Compliance Scores",
@@ -134,7 +158,18 @@
     "exportReport": "Export Report",
     "reportGenerated": "Report downloaded",
     "evidence": "Evidence",
-    "verificationEvidence": "Verification Evidence"
+    "verificationEvidence": "Verification Evidence",
+    "reveal": {
+      "toggle": "Show unmasked",
+      "hint": "Re-read from the scanned file on request; never stored, never sent to a model.",
+      "loading": "Reading the scanned file…",
+      "changed": "The file changed since the scan, so the values are not shown.",
+      "unavailable": "The scanned source is not available any more.",
+      "ambiguous": "The masked row cannot be matched to the file unambiguously.",
+      "unverifiable": "This finding cannot be verified against the scanned file.",
+      "notPermitted": "Values are shown only to an administrator, or locally to the signed-in session.",
+      "error": "The values could not be loaded."
+    }
   },
   "settings": {
     "title": "Settings",

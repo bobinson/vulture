@@ -1,7 +1,7 @@
 """CWE-89: the template-literal clause must require SQL EVIDENCE, not just a
 DML-looking word.
 
-Measured on a real audit of ~/src/togetherapp (773 findings): of 27 CWE-89 rows,
+Measured on a real audit of ~/src/reference-app (773 findings): of 27 CWE-89 rows,
 19 had no SQL sink anywhere in the file, and 17 of the 25 CRITICAL rows were
 false. Every one of those false rows is an ordinary English log message, a JSX
 prop, or CSS:
@@ -79,7 +79,7 @@ FALSE_POSITIVES = {
         "    await chain.mark(id);\n"
         "  } catch (error) {\n"
         "    console.error(\n"
-        "      `Failed to update blockchain status for letterContent ${id}:`,\n"
+        "      `Failed to update blockchain status for recordContent ${id}:`,\n"
         "      error instanceof Error ? error.message : String(error),\n"
         "    );\n"
         "  }\n"
@@ -176,7 +176,7 @@ def test_project_helper_sink_with_bigram_still_detected():
         "  (values) => `INSERT INTO letters (id, state) VALUES ${values} ON CONFLICT DO NOTHING;`,\n"
         ");\n"
     )
-    assert _sqli(_run({"lsgb-seed-helpers.ts": body})), "bigram + project sink must still be flagged"
+    assert _sqli(_run({"batch-seed-helpers.ts": body})), "bigram + project sink must still be flagged"
 
 
 def test_update_set_bigram_still_detected():
@@ -185,7 +185,7 @@ def test_update_set_bigram_still_detected():
         "  `UPDATE letters SET is_match = true WHERE \"issueId\" = ${issueId};`\n"
         ");\n"
     )
-    assert _sqli(_run({"seed-runner.ts": body})), "UPDATE..SET bigram with sink must still be flagged"
+    assert _sqli(_run({"seed-tool.ts": body})), "UPDATE..SET bigram with sink must still be flagged"
 
 
 def test_parameterised_query_still_not_flagged():

@@ -11,7 +11,10 @@ import { FindingLifecycleBadge } from "./FindingLifecycleBadge.tsx";
 import { CrossAgentBadge } from "./CrossAgentBadge.tsx";
 import { ProvenanceChip } from "./ProvenanceChip.tsx";
 import { FindingOwaspChips } from "./OwaspChip.tsx";
-import { Chip } from "@/components/shared/Chip.tsx";
+import { ChipGroup } from "@/components/shared/ChipGroup.tsx";
+import { AnchorResult } from "@/components/shared/AnchorResult.tsx";
+import { MaskedSnippet } from "./MaskedSnippet.tsx";
+import { PROVENANCE_BOTH, PROVENANCE_LLM_FAMILY, originsRecorded } from "@/lib/provenance.ts";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 import { findingToMarkdown } from "@/lib/markdown.ts";
@@ -35,6 +38,11 @@ interface FindingsTableProps {
    * page can re-read what the triage changed server side (OWASP coverage).
    */
   onLineageSaved?: () => void;
+  /**
+   * Feature 0074: the audit's `origins_recorded` flag (GET /api/audits/{id}).
+   * Absent (an older backend, or a live stream) => detected from the rows.
+   */
+  originsRecorded?: boolean;
 }
 
 interface OwaspCategoryFilterProps {
@@ -144,14 +152,18 @@ function RowCopyButton({ finding, auditId }: { finding: Finding; auditId?: strin
   );
 }
 
-export function FindingsTable({ findings: allFindings, auditId, proveResults, owaspCategory: controlledCategory, onOwaspCategoryChange, onLineageSaved }: FindingsTableProps) {
+export function FindingsTable({ findings: allFindings, auditId, proveResults, owaspCategory: controlledCategory, onOwaspCategoryChange, onLineageSaved, originsRecorded: originsFlag }: FindingsTableProps) {
   const { t } = useTranslation();
   const [localCategory, setLocalCategory] = useState("all");
   const owaspCategory = controlledCategory ?? localCategory;
   const setOwaspCategory = onOwaspCategoryChange ?? setLocalCategory;
   const { copied: allCopied, onCopy: onCopyAll } = useCopyFeedback();
 
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // A `?finding=<id>` link (the masked-values endpoint's ui_path, 0074 item 1b)
+  // opens that finding's detail; the reveal switch inside it stays off.
+  const [expandedId, setExpandedId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get("finding"),
+  );
   const { lineageFor, timelineMap, showTimeline, editingLineage, savedFeedback, loadTimeline, updateEdit, saveStatus } = useLineage(auditId, { onStatusSaved: onLineageSaved });
 
   // 0045/0036 follow-up — a finding manually triaged as false_positive
@@ -170,6 +182,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     page,
     totalPages,
     setPage,
+    pageOf,
     sortField,
     sortDirection,
     filterSeverity,
@@ -188,6 +201,18 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     toggleSort,
   } = useFindings(allFindings, isTriagedFalsePositive, owaspCategory);
 
+  // The linked finding may sit past page one, and the findings may arrive after
+  // the first render: once it is in the table, open its page (one time only, so
+  // paging away afterwards is not undone). Adjusted during render, not in an effect.
+  const [deepLink, setDeepLink] = useState(expandedId);
+  if (deepLink) {
+    const linkedPage = pageOf(deepLink);
+    if (linkedPage !== null) {
+      setDeepLink(null);
+      if (linkedPage !== page) setPage(linkedPage);
+    }
+  }
+
   const severities: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
   // Derive unique agent types from findings
@@ -199,6 +224,12 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     }
     return Array.from(set).sort();
   }, [allFindings]);
+
+  // 0074 — the agent filter on the shared ChipGroup, "All" first.
+  const agentItems = useMemo(() => [
+    { value: "all", label: t("results.all") },
+    ...agentTypes.map((at) => ({ value: at, label: agentLabel(at, t) })),
+  ], [agentTypes, t]);
 
   // Feature 0058 (R6) — distinct detection tiers among findings.
   // Untagged findings form their own group, so the filter row only
@@ -214,6 +245,22 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
     const groups = sorted.length + (hasUntagged ? 1 : 0);
     return { provenanceTiers: sorted, showProvenanceFilter: sorted.length > 0 && groups > 1 };
   }, [allFindings]);
+
+  // Feature 0074 — "All", the two tier-family values, then the exact tiers.
+  const provenanceItems = useMemo(() => [
+    { value: "all", label: t("results.all") },
+    { value: PROVENANCE_LLM_FAMILY, label: t("results.provenanceFamily.llm_family") },
+    { value: PROVENANCE_BOTH, label: t("results.provenanceFamily.both") },
+    ...provenanceTiers.map((tier) => ({ value: tier, label: tier })),
+  ], [provenanceTiers, t]);
+
+  // 0074 (#35) — "Both tiers" is decided by validation.provenance_origins; an
+  // audit whose findings never recorded them selects nothing, which must read
+  // as "not recorded", not as "never corroborated".
+  const bothNotRecorded = useMemo(
+    () => filterProvenance === PROVENANCE_BOTH && !originsRecorded(allFindings, originsFlag),
+    [filterProvenance, allFindings, originsFlag],
+  );
 
   // Feature 0096 — OWASP categories among the findings' labels. Empty for a
   // pre-0096 audit (its OWASP rows carry no labels), which hides the filter.
@@ -327,60 +374,34 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
         )}
         {/* Agent type filter — only show when multiple agents */}
         {agentTypes.length > 1 && (
-          <div className="flex items-center gap-2" data-testid="agent-filter">
-            <span className="text-[11px] text-muted-light">{t("results.agent")}:</span>
-            <div className="flex gap-1">
-              <button
-                type="button"
-                className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
-                  filterAgent === "all"
-                    ? "bg-foreground text-surface"
-                    : "text-muted hover:text-foreground hover:bg-cream-dark"
-                }`}
-                onClick={() => setFilterAgent("all")}
-              >
-                {t("results.all")}
-              </button>
-              {agentTypes.map((at) => (
-                <button
-                  key={at}
-                  type="button"
-                  className={`px-2.5 py-1 text-[11px] rounded-md transition-colors cursor-pointer font-medium ${
-                    filterAgent === at
-                      ? "bg-foreground text-surface"
-                      : "text-muted hover:text-foreground hover:bg-cream-dark"
-                  }`}
-                  onClick={() => setFilterAgent(at)}
-                >
-                  {agentLabel(at, t)}
-                </button>
-              ))}
-            </div>
+          <div>
+            <ChipGroup
+              legend={t("results.agent")}
+              items={agentItems}
+              value={filterAgent}
+              onChange={setFilterAgent}
+              testId="agent-filter"
+            />
           </div>
         )}
         {/* 0058 (R6) — provenance filter, mirroring the agent filter.
             Only shows when findings span more than one detection tier
-            (untagged findings count as their own tier). */}
+            (untagged findings count as their own tier). 0074: the shared
+            ChipGroup, with the two tier-family values first. */}
         {showProvenanceFilter && (
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-muted-light">{t("results.provenance")}:</span>
-            <div className="flex gap-1">
-              <Chip
-                label={t("results.all")}
-                testId="provenance-filter-all"
-                active={filterProvenance === "all"}
-                onClick={() => setFilterProvenance("all")}
-              />
-              {provenanceTiers.map((tier) => (
-                <Chip
-                  key={tier}
-                  label={tier}
-                  testId={`provenance-filter-${tier}`}
-                  active={filterProvenance === tier}
-                  onClick={() => setFilterProvenance(tier)}
-                />
-              ))}
-            </div>
+          <div>
+            <ChipGroup
+              legend={t("results.provenance")}
+              items={provenanceItems}
+              value={filterProvenance}
+              onChange={setFilterProvenance}
+              testId="provenance-filter"
+            />
+            {bothNotRecorded && (
+              <p className="mt-1 text-[11px] text-muted-light italic" role="status" data-testid="provenance-both-not-recorded">
+                {t("results.provenanceFamily.bothNotRecorded")}
+              </p>
+            )}
           </div>
         )}
         {/* Shown while a category is active even when no finding carries
@@ -630,6 +651,7 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
                             {finding.line_start ? `:${finding.line_start}` : ""}
                             {finding.line_end && finding.line_end !== finding.line_start ? `-${finding.line_end}` : ""}
                           </div>
+                          <AnchorResult validation={finding.validation} lineStart={finding.line_start} />
                           {(finding.check_id || finding.fingerprint) && (
                             <div className="flex items-center gap-3 text-[11px] text-muted-light">
                               {finding.check_id && (
@@ -646,11 +668,13 @@ export function FindingsTable({ findings: allFindings, auditId, proveResults, ow
                               )}
                             </div>
                           )}
-                          {finding.code_snippet && (
+                          {finding.code_snippet && (auditId && finding.id ? (
+                            <MaskedSnippet auditId={auditId} findingId={finding.id} snippet={finding.code_snippet} />
+                          ) : (
                             <pre className="text-[12px] font-mono bg-terminal text-terminal-text rounded-lg px-4 py-3 overflow-x-auto">
                               {finding.code_snippet}
                             </pre>
-                          )}
+                          ))}
                           {finding.recommendation && (
                             <div className="flex gap-2 p-3 bg-success/5 rounded-lg border border-success/20">
                               <svg className="w-4 h-4 text-success shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

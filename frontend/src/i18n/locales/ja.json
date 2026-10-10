@@ -72,6 +72,30 @@
     "noFindings": "検出事項はありません。コードは問題なさそうです！",
     "noFindingsShort": "問題なし",
     "provenance": "検出元",
+    "provenanceFamily": {
+      "llm_family": "LLM（すべて）",
+      "both": "両方の階層",
+      "bothNotRecorded": "この監査では検出元の階層が記録されていないため、両方の階層が報告した行は表示できません。"
+    },
+    "anchor": {
+      "title": "アンカー",
+      "status": {
+        "exact": "完全一致",
+        "reanchored": "再アンカー済み",
+        "ambiguous": "曖昧",
+        "near_miss": "近似一致",
+        "found_elsewhere": "別の場所で検出",
+        "absent": "該当なし",
+        "unquoted": "引用なし",
+        "unreadable": "読み取り不可",
+        "oversize": "サイズ超過"
+      },
+      "range": {
+        "in_file": "ファイル内",
+        "past_eof": "ファイル末尾以降",
+        "no_line": "行なし"
+      }
+    },
     "semgrepTierNotice": "Semgrep層は無効です。この監査はスキルとシグネチャのみで実行されました。",
     "agent": "エージェント",
     "scores": "コンプライアンススコア",
@@ -134,7 +158,18 @@
     "copyAllTitle": "現在のフィルターで表示されている {{count}} 件の検出結果をコピーします",
     "copyIssue": "Issue としてコピー",
     "estimated": "(推定)",
-    "findingsDeduped": "{{count}} 件の指摘を重複除去しました"
+    "findingsDeduped": "{{count}} 件の指摘を重複除去しました",
+    "reveal": {
+      "toggle": "マスクを外して表示",
+      "hint": "要求時にスキャンしたファイルから再読み込みします。保存もモデルへの送信もしません。",
+      "loading": "スキャンしたファイルを読み込んでいます…",
+      "changed": "スキャン後にファイルが変更されたため、値は表示されません。",
+      "unavailable": "スキャンしたソースはもう利用できません。",
+      "ambiguous": "マスクされた行をファイルに一意に対応付けられません。",
+      "unverifiable": "この検出結果はスキャンしたファイルと照合できません。",
+      "notPermitted": "値は管理者、またはローカルではサインイン中のセッションにのみ表示されます。",
+      "error": "値を読み込めませんでした。"
+    }
   },
   "settings": {
     "title": "設定",
