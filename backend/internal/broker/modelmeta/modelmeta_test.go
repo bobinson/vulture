@@ -65,26 +65,19 @@ func TestContextWindow_UnknownDefault(t *testing.T) {
 }
 
 // TestFamilyOrder_MirrorsPython is a canary: the family substrings are matched
-// first-match-wins, so their ORDER (not just values) must stay identical to the
-// Python _MODEL_FAMILY_CTX (agents/shared/shared/llm/provider.py), else a broker
-// run (Go-resolved) and a non-broker run (Python-resolved) can diverge on a
-// multi-family id (§31 review finding). A reorder here trips this test as a
-// reminder to update the Python list to match.
+// first-match-wins, so their ORDER and VALUES must stay identical to the Python
+// _MODEL_FAMILY_CTX, and the exact-match map must equal Python CONTEXT_WINDOWS
+// (agents/shared/shared/llm/provider.py), else a broker run (Go-resolved) and a
+// non-broker run (Python-resolved) size the same model differently (§31 review
+// finding). 0074 AC6 / T1.7 (extension signed off, T0.7): the tables are read
+// from the Python source itself rather than a hand-copied list, so ANY drift —
+// a key, a value, a position — fails here. Before 0074 the canary compared
+// family order only and missed that Python's exact map carries "gemini-flash"
+// with no Go twin.
 func TestFamilyOrder_MirrorsPython(t *testing.T) {
-	want := []string{
-		"gemma-3", "glm", "gemini", "qwen3", "qwen2.5", "qwen",
-		"llama-3", "llama3", "llama", "mistral", "mixtral", "gemma",
-		"phi-3", "phi-4", "deepseek", "codestral", "command-r", "claude",
-		"gpt-4.1", "gpt-3.5", "gpt-4",
-	}
-	if len(modelFamilyCtx) != len(want) {
-		t.Fatalf("family list length = %d, want %d (sync with Python)", len(modelFamilyCtx), len(want))
-	}
-	for i, w := range want {
-		if modelFamilyCtx[i].sub != w {
-			t.Errorf("family[%d] = %q, want %q (order must mirror Python _MODEL_FAMILY_CTX)", i, modelFamilyCtx[i].sub, w)
-		}
-	}
+	py := readPythonProvider(t)
+	assertFamilyParity(t, parsePyFamilies(t, py))
+	assertExactParity(t, parsePyExact(t, py))
 }
 
 func TestResolveContextWindow_OverrideWins(t *testing.T) {

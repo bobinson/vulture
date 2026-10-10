@@ -399,6 +399,9 @@ def test_inferred_window_behind_gateway_clamps_the_body(monkeypatch, caplog):
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "https://gateway.example/v1")
     with caplog.at_level("WARNING"):
         chars = audit_runner._get_max_source_chars("glm-5-2-260617")
+        # Feature 0074 review item 8: the clamp is announced once per RUN, by
+        # the run's window publication, not by every per-batch budget.
+        provider.publish_llm_window("glm-5-2-260617")
     # 32000 tokens * 0.35 (the <=32K small-model fraction) * 3 chars/token
     # = 33,600 chars — not the 196,608 the inferred window produced.
     assert chars == 33_600

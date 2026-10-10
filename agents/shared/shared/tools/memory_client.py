@@ -677,8 +677,10 @@ def _resolve_context_limits(max_findings: int, max_chars: int) -> tuple[int, int
         from shared.llm.provider import get_max_findings
         max_findings = get_max_findings()
     if max_chars <= 0:
-        from shared.llm.provider import get_context_window
-        ctx = get_context_window()
+        # The EFFECTIVE window (gateway clamp applied), the one the source and
+        # prompt budgets use (feature 0074 AC36), never the unclamped guess.
+        from shared.llm.provider import effective_context_window
+        ctx = effective_context_window().effective
         base = 128_000
         if ctx <= base:
             max_chars = int(ctx * 0.15 * 4)

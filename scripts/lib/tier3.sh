@@ -7,20 +7,19 @@
 # VULTURE_LLM_BUDGET_USD and the prose limits, a per-audit `llm_tier3` setting
 # still overrides it, and the deterministic skills scan every file regardless.
 
-# True when VULTURE_LLM_TIER3 is on. Same tokens as the agent's reader
-# (audit_runner._llm_tier3_enabled): on / true / 1 / yes, any case.
+# Requires scripts/lib/envflag.sh (env_flag_on), sourced first by both launchers:
+# every switch here takes its one token list (on / true / 1 / yes, any case).
+
+# True when VULTURE_LLM_TIER3 is on (the agent's _llm_tier3_enabled reads the same).
 tier3_enabled() {
-    case "$(printf '%s' "${VULTURE_LLM_TIER3:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
-        on|true|1|yes) return 0 ;;
-    esac
-    return 1
+    env_flag_on "${VULTURE_LLM_TIER3:-}"
 }
 
 # The tier-3 line of the launch summary. Call it AFTER provider resolution:
 # the state is only meaningful when the LLM phase is enabled.
 # $1 = 1 when --tier3/--deep was passed on the command line.
 print_tier3_state() {
-    if [[ "${VULTURE_USE_LLM:-false}" == "true" ]]; then
+    if env_flag_on "${VULTURE_USE_LLM:-}"; then
         if tier3_enabled; then
             echo "  Tier-3:    on (LLM sweep past skill-flagged + entry/config files; capped by VULTURE_LLM_MAX_FILES and the budget)"
         else

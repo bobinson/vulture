@@ -22,6 +22,11 @@ inside the handler, and statement order:
    when it guards (a branch that exits, a bare assertion call) or wraps the
    handler (a decorator, annotation, enclosing container, or a registration
    line naming the handler). A mention that is only read never silences.
+   A shared secret VERIFIED AGAINST THE REQUEST is such a gate (0074): a
+   check OF a secret or hook token, given the request itself (its root
+   argument is the request, its context or its headers), as an event trigger
+   or webhook handler does. A check of a submitted VALUE (a body field, a
+   local holding one, a body-bound parameter) is content validation.
 
 A quota anywhere in scope lowers the severity to medium; it never silences.
 """
@@ -30,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from itertools import islice
@@ -94,6 +100,22 @@ _MAX_HOPS = 6
 # are ordinary option-object names and stay out.
 _ROLE = frozenset({"body", "form", "query"})
 _ROLE_PAIRS = (("request", "param"), ("query", "param"))
+# A compound TYPE name ending in `Query` names a query RESULT (a stored row), not
+# the HTTP query string, when it is indexed into (`GetOrderByIdQuery["order"]`,
+# a generated GraphQL result) or declares a parameter of a helper the same file
+# calls and never passes request input (its argument comes from that caller,
+# not a framework binding). A query
+# followed by a result word (`ListOrdersQueryResult`) always is. An entry
+# point's `InviteQuery`, `FromQuery`/`ReqQuery` bindings and every parameter
+# NAME (lower-case: `searchQuery`) keep declaring request input (0074).
+_BINDING_PREFIX = frozenset({"from", "request", "req"})
+_RESULT_WORDS = frozenset({"result", "results", "row", "rows"})
+# A request DTO can be named `...QueryData` / `...QueryResponse` too: these only
+# mark a result where a bare `...Query` would (indexed, or a helper's parameter).
+_SOFT_RESULT_WORDS = frozenset({"data", "response"})
+# A value assigned from a LOOKUP (`await loadOrders(req.body.id)`) is the stored
+# row it returns, not the request; a conversion (`String(req.query.email)`) is a copy.
+_LOOKUP_VERBS = frozenset({"load", "fetch", "query", "find", "get", "select", "lookup", "read", "retrieve"})
 
 # ── principal / human check / quota ──────────────────────────────────────────
 _PRINCIPAL = frozenset({"session", "principal", "bearer", "jwt", "auth", "authenticate",
@@ -108,6 +130,20 @@ _QUOTA = frozenset({"rate", "limit", "limiter", "ratelimit", "throttle", "thrott
 _ASSERT_VERBS = frozenset({"require", "ensure", "assert", "authenticate", "authorize",
                            "verify", "check", "validate", "must"})
 _ASSERTED_SUBJECT = frozenset({"user", "login", "signin", "account", "member"})
+# A shared secret (or a hook / webhook / shared token or key) and a verification
+# of it, named in one identifier (`requireValidHookSecret`, `verify_webhook_secret`).
+# `must` is left out (a config idiom: `mustGetSecret`), and an anti-forgery
+# secret is vetoed: any anonymous caller can obtain one.
+_SECRET_PAIRS = (("hook", "token"), ("webhook", "token"), ("shared", "key"), ("hook", "key"))
+_SECRET_VERIFY = (_ASSERT_VERBS - {"must"}) | {"verified", "verification", "validated", "validation",
+                                               "valid", "checked", "match", "matches"}
+_SECRET_VETO = _VETO | {"csrf", "xsrf"}
+# The secret must be what is verified: only verification words (or `header`) may
+# follow it (`isSecretValid`), never a content noun (`validateSecretMessage`).
+_SECRET_TAIL = _SECRET_VERIFY | {"header", "headers"}
+# What the caller presents: an argument naming the request, its context or its
+# headers (or a parameter the handler declares as one), never a body/form/query value.
+_PRESENTED = frozenset({"req", "request", "ctx", "context", "header", "headers"})
 _BRANCH = re.compile(r"(?<![\w$])(?:if|unless|guard|when)\b")
 _EXIT = re.compile(r"(?<![\w$])(?:return|throw|raise|abort|halt|exit|die)\b|\b40[13]\b")
 _EXIT_SEGMENTS = frozenset({"unauthorized", "forbidden"})
@@ -175,6 +211,22 @@ def is_principal(ident: str) -> bool:
     if _VETO.intersection(segs):
         return False
     return bool(_PRINCIPAL.intersection(segs)) or any(_has_pair(segs, p) for p in _PRINCIPAL_PAIRS)
+
+
+def _secret_end(segs: list[str]) -> int | None:
+    """Index of the last word of the last secret noun in ``segs``, or None."""
+    ends = [i for i, s in enumerate(segs) if s == "secret"]
+    ends += [i + 1 for i in range(len(segs) - 1) if (segs[i], segs[i + 1]) in _SECRET_PAIRS]
+    return max(ends, default=None)
+
+
+def verifies_secret(ident: str) -> bool:
+    """An identifier that names a verification OF a shared secret."""
+    segs = segments(ident)
+    if _SECRET_VETO.intersection(segs) or not _SECRET_VERIFY.intersection(segs):
+        return False
+    end = _secret_end(segs)
+    return end is not None and all(s in _SECRET_TAIL for s in segs[end + 1:])
 
 
 def is_human_check(ident: str) -> bool:
@@ -413,6 +465,81 @@ def gated(codes: Sequence[str], lo: int, hi: int, pred: Callable[[str], bool]) -
                for k in range(lo, hi))
 
 
+# Any call, a method call included (`this.hooks.verifyHookSecret(req)`).
+_ANY_CALL = re.compile(r"(?<![\w$])(?P<name>[$A-Za-z_][\w$]{0,80}+)\s*+\(")
+
+
+def _submits_value(args: str, values: set[str]) -> bool:
+    """An argument is a submitted value: request input, a body/form/query-named
+    identifier, or a parameter the handler declares as request input."""
+    idents = set(_idents(args)) - {m.group("name") for m in _ANY_CALL.finditer(args)}  # a callee is no value
+    return (bool(INPUT_READ.search(args)) or bool(values.intersection(idents))
+            or any(_ROLE.intersection(segments(i)) for i in idents))
+
+
+def _is_request(arg: str, handles: set[str]) -> bool:
+    """The argument IS the request (or its context / headers): its root
+    identifier, not a compound that merely contains `request` (`requestId`)."""
+    root = next(iter(_idents(arg)), "")
+    return root in handles or root.lower() in _PRESENTED
+
+
+def _presented(args: str, handles: set[str], values: set[str]) -> bool:
+    """The call is given the request, not a submitted value."""
+    if _submits_value(args, values):
+        return False
+    return any(_is_request(arg, handles) for arg in _split_top(args))
+
+
+def _verifies_presented(codes: Sequence[str], k: int, scope: tuple[set[str], set[str]]) -> bool:
+    return any(verifies_secret(m.group("name")) and _presented(_call_args(codes, k, m.end() - 1), *scope)
+               for m in _ANY_CALL.finditer(codes[k]))
+
+
+def _branch_exit(codes: Sequence[str], k: int, hi: int) -> bool:
+    return bool(_BRANCH.search(codes[k])) and _exits(codes, k, hi)
+
+
+def _verifier_statement(code: str) -> bool:
+    """A bare call statement whose CALLEE is the verification (an assertion)."""
+    return bool(_BARE_CALL.match(code)) and any(verifies_secret(i) for i in _idents(code.split("(")[0]))
+
+
+def _bound_names(code: str) -> set[str]:
+    m = _ASSIGN.match(code.strip())
+    return set(_idents(m.group("lhs"))) if m else set()
+
+
+def _secret_step(codes: Sequence[str], k: int, hi: int, scope: tuple[set[str], set[str]],
+                 bound: set[str]) -> bool:
+    """Line ``k`` gates: the verification branches-and-exits or asserts, or a
+    branch on a name bound to it exits. A verification that does neither binds
+    its name into ``bound``."""
+    if not _verifies_presented(codes, k, scope):
+        return bool(bound.intersection(_idents(codes[k]))) and _branch_exit(codes, k, hi)
+    if _branch_exit(codes, k, hi) or _verifier_statement(codes[k]):
+        return True
+    bound |= _bound_names(codes[k])
+    return False
+
+
+def secret_gated(codes: Sequence[str], lo: int, hi: int, handles: set[str],
+                 values: set[str] | None = None) -> bool:
+    """A shared secret verified against the request guards lines ``lo..hi``.
+    ``handles``: parameters holding the request; ``values``: parameters
+    declared as request input (a submitted value, never the request)."""
+    bound: set[str] = set()
+    scope = (handles, values or set())
+    return any(_secret_step(codes, k, hi, scope, bound) for k in range(lo, hi))
+
+
+def request_handles(codes: Sequence[str], h: int) -> set[str]:
+    """Parameters of the function at ``h`` that hold the request itself
+    (`r *http.Request`, `HttpServletRequest request`), not a body-bound one."""
+    return _param_names(codes, h, lambda _, chunk: not _is_role(chunk, False) and any(
+        _PRESENTED.intersection(segments(i)) for i in _idents(chunk)))
+
+
 def _own_decorators(f: _File, h: int) -> list[str]:
     """Decorator / annotation / attribute lines directly above the header
     (blank lines between them allowed)."""
@@ -482,19 +609,47 @@ def _signature(codes: Sequence[str], h: int) -> str:
     return " ".join(out)
 
 
-def _is_role(chunk: str) -> bool:
-    segs = [s for i in _idents(chunk) for s in segments(i)]
+def _query_type(ident: str, segs: list[str]) -> bool:
+    """A capitalised compound TYPE name with `query` after its first word."""
+    return ident[:1].isupper() and "query" in segs[1:] and segs[0] not in _BINDING_PREFIX
+
+
+def _query_result(ident: str, chunk: str, internal: bool) -> bool:
+    """A query-result TYPE name; see _BINDING_PREFIX."""
+    segs = segments(ident)
+    if not _query_type(ident, segs):
+        return False
+    after = segs[segs.index("query", 1) + 1:][:1]
+    if after and after[0] not in _SOFT_RESULT_WORDS:
+        return after[0] in _RESULT_WORDS
+    return internal or re.search(re.escape(ident) + r"\s*+\[", chunk) is not None
+
+
+def _role_segments(chunk: str, internal: bool) -> list[str]:
+    return [s for i in _idents(chunk) if not _query_result(i, chunk, internal) for s in segments(i)]
+
+
+def _is_role(chunk: str, internal: bool) -> bool:
+    segs = _role_segments(chunk, internal)
     return bool(_ROLE.intersection(segs)) or any(_has_pair(segs, p) for p in _ROLE_PAIRS)
 
 
-def role_params(codes: Sequence[str], h: int) -> set[str]:
-    """Parameters of the function at ``h`` declared as request input."""
+def _param_names(codes: Sequence[str], h: int, keep: Callable[[int, str], bool]) -> set[str]:
+    """Identifiers of the parameters (by position, declaration text) ``keep`` accepts."""
     sig = _signature(codes, h) if h >= 0 else ""
     start = sig.find("(")
     if start < 0:
         return set()
     chunks = _split_top(_call_args([sig], 0, start))
-    return {i for chunk in chunks if _is_role(chunk) for i in _idents(chunk)}
+    return {i for n, chunk in enumerate(chunks) if keep(n, chunk) for i in _idents(chunk)}
+
+
+def role_params(codes: Sequence[str], h: int, internal: bool = False,
+                fed: frozenset[int] = frozenset()) -> set[str]:
+    """Parameters of the function at ``h`` declared as request input.
+    ``internal``: it is a helper its own file calls; ``fed``: the argument
+    positions some call passes request input in (those keep their role)."""
+    return _param_names(codes, h, lambda n, chunk: _is_role(chunk, internal and n not in fed))
 
 
 def _reads_input(text: str, roles: set[str]) -> bool:
@@ -536,7 +691,7 @@ def _step(w: _Walk, k: int, lhs: set[str], rhs: str) -> bool:
 
 def _walk(f: _File, expr: str, lo: int, send: int, index: dict[str, int]) -> _Chain:
     """Assignments feeding ``expr`` within ``lo..send``; input reads found."""
-    roles = role_params(f.codes, lo - 1)
+    roles = _helper_roles(f, lo - 1)
     chain = _Chain(evidence=[send] if _reads_input(expr, roles) else [], helpers=[])
     _follow_calls(f, expr, send, index, chain)
     w = _Walk(f, lo, send, index, roles, set(_idents(expr)), chain)
@@ -547,6 +702,68 @@ def _walk(f: _File, expr: str, lo: int, send: int, index: dict[str, int]) -> _Ch
             break
     chain.names = w.names
     return chain
+
+
+def _call_sites(f: _File) -> dict[str, list[tuple[int, int]]]:
+    """Name -> (line, open-paren column) of every call in the file; once per
+    file. A declaration is not a call."""
+    if "sites" not in f.memo:
+        sites: dict[str, list[tuple[int, int]]] = {}
+        for k, code in enumerate(f.codes):
+            for m in _CALLED.finditer(code):
+                if not _declares(code, m.group("name")):
+                    sites.setdefault(m.group("name"), []).append((k, m.end() - 1))
+        f.memo["sites"] = sites
+    return f.memo["sites"]
+
+
+def _declared_once(f: _File, name: str) -> bool:
+    if "declared" not in f.memo:
+        f.memo["declared"] = Counter(_header_name(c) for c in f.codes if _is_header(c))
+    return f.memo["declared"][name] == 1
+
+
+def _passes_input(f: _File, k: int, arg: str) -> bool:
+    """``arg``, passed at line ``k``, is the request's input as the caller holds
+    it: a read, a body/form/query-named value, one of the caller's own
+    request-input parameters, or a local copied from one without a call. A value
+    LOOKED UP by it (a row loaded by an id from the request) is the lookup's
+    result, not the request."""
+    h = function_header(f.codes, k)
+    roles = role_params(f.codes, h)
+    if _submits_value(arg, roles):
+        return True
+    names = set(_idents(arg))
+    return any(names.intersection(lhs) and not _looks_up(rhs) and _submits_value(rhs, roles)
+               for _, lhs, rhs in _assignments(f, max(h + 1, k - _MAX_UP, 0), k))
+
+
+def _looks_up(rhs: str) -> bool:
+    """A lookup-verb call GIVEN request input (`loadOrders(req.body.id)`); an
+    accessor called on the request (`r.URL.Query().Get("email")`) is not one."""
+    return any(segments(m.group("name"))[0] in _LOOKUP_VERBS
+               and _submits_value(_call_args([rhs], 0, m.end() - 1), set())
+               for m in _ANY_CALL.finditer(rhs))
+
+
+def _fed_positions(f: _File, name: str) -> frozenset[int]:
+    """Argument positions in which some call of ``name`` passes request input."""
+    key = ("fed", name)
+    if key not in f.memo:
+        f.memo[key] = frozenset(n for k, col in _call_sites(f).get(name, ())
+                                for n, arg in enumerate(_split_top(_call_args(f.codes, k, col)))
+                                if _passes_input(f, k, arg))
+    return f.memo[key]
+
+
+def _helper_roles(f: _File, h: int) -> set[str]:
+    """Request-input parameters of the function at ``h``. A helper its own file
+    calls (declared once, so no overload shares its name) reads a query-result
+    type as a stored row, except in a position some call passes request input."""
+    name = _header_name(f.codes[h]) if h >= 0 else None
+    if not name or name not in _call_sites(f) or not _declared_once(f, name):
+        return role_params(f.codes, h)
+    return role_params(f.codes, h, True, _fed_positions(f, name))
 
 
 def _helper_end(codes: Sequence[str], h: int) -> int:
@@ -573,12 +790,23 @@ def _controlled_by(f: _File, lo: int, send: int, chain: _Chain, wrappers: list[s
     return any(gated(f.codes, hh + 1, _helper_end(f.codes, hh), pred) for hh in chain.helpers)
 
 
+def _secret_scope_gated(f: _File, h: int, lo: int, hi: int) -> bool:
+    return secret_gated(f.codes, lo, hi, request_handles(f.codes, h), role_params(f.codes, h))
+
+
+def _secret_controlled(f: _File, h: int, lo: int, send: int, chain: _Chain) -> bool:
+    if _secret_scope_gated(f, h, lo, send):
+        return True
+    return any(_secret_scope_gated(f, hh, hh + 1, _helper_end(f.codes, hh)) for hh in chain.helpers)
+
+
 def _controlled(f: _File, h: int, send: int, chain: _Chain, wrappers: list[str]) -> bool:
     key = ("controlled", h, send, tuple(chain.helpers))
     if key not in f.memo:
         lo = max(h + 1, send - _MAX_UP, 0)
-        f.memo[key] = any(_controlled_by(f, lo, send, chain, wrappers, p)
-                          for p in (is_principal, is_human_check))
+        f.memo[key] = (any(_controlled_by(f, lo, send, chain, wrappers, p)
+                           for p in (is_principal, is_human_check))
+                       or _secret_controlled(f, h, lo, send, chain))
     return f.memo[key]
 
 

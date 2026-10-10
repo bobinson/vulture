@@ -1,0 +1,22 @@
+{
+  "_comment": "Feature 0074 C16: the quote-switch matrix both runtimes read. `verify`/`reanchor` null means the variable is unset. `mode` is the normalised VULTURE_LLM_QUOTE_VERIFY; `reanchor_enabled` is (mode == enforce) AND env_flag(VULTURE_LLM_QUOTE_REANCHOR, true); `warns` says the VERIFY value is unrecognised and draws the one-time warning.",
+  "cases": [
+    {"verify": null,        "reanchor": null,    "mode": "enforce", "reanchor_enabled": true,  "warns": false},
+    {"verify": "",          "reanchor": "",      "mode": "enforce", "reanchor_enabled": true,  "warns": false},
+    {"verify": "  ",        "reanchor": null,    "mode": "enforce", "reanchor_enabled": true,  "warns": false},
+    {"verify": "enforce",   "reanchor": null,    "mode": "enforce", "reanchor_enabled": true,  "warns": false},
+    {"verify": " ENFORCE ", "reanchor": "true",  "mode": "enforce", "reanchor_enabled": true,  "warns": false},
+    {"verify": "enforce",   "reanchor": "false", "mode": "enforce", "reanchor_enabled": false, "warns": false},
+    {"verify": "enforce",   "reanchor": "0",     "mode": "enforce", "reanchor_enabled": false, "warns": false},
+    {"verify": "enforce",   "reanchor": "flase", "mode": "enforce", "reanchor_enabled": true,  "warns": false},
+    {"verify": "observe",   "reanchor": null,    "mode": "observe", "reanchor_enabled": false, "warns": false},
+    {"verify": "Observe",   "reanchor": "true",  "mode": "observe", "reanchor_enabled": false, "warns": false},
+    {"verify": "off",       "reanchor": null,    "mode": "off",     "reanchor_enabled": false, "warns": false},
+    {"verify": "false",     "reanchor": "true",  "mode": "off",     "reanchor_enabled": false, "warns": false},
+    {"verify": "0",         "reanchor": null,    "mode": "off",     "reanchor_enabled": false, "warns": false},
+    {"verify": "NO",        "reanchor": null,    "mode": "off",     "reanchor_enabled": false, "warns": false},
+    {"verify": "enforced",  "reanchor": null,    "mode": "enforce", "reanchor_enabled": true,  "warns": true},
+    {"verify": "true",      "reanchor": null,    "mode": "enforce", "reanchor_enabled": true,  "warns": true},
+    {"verify": "maybe",     "reanchor": "false", "mode": "enforce", "reanchor_enabled": false, "warns": true}
+  ]
+}

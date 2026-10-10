@@ -190,22 +190,12 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 	out := []Action{}
 
 	entry.sm.Force(StatePulling)
-	image := plug.Manifest.Runtime.Image
-	if err := s.docker.Pull(ctx, image); err != nil {
-		// Pull is best-effort: it refreshes the image, but a registry
-		// failure (auth "denied", offline, rate limit) must NOT block a
-		// plugin whose image is already present locally. Fall back to the
-		// cached image; fail only when it is genuinely absent (0055).
-		present, ierr := s.docker.Inspect(ctx, image)
-		if ierr != nil || !present {
-			s.markFailed(name, fmt.Sprintf("pull: %v", err))
-			return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
-		}
-		s.logger.Printf("[supervisor] pull failed for %s (%v); using local image %s", name, err, image)
-		out = append(out, Action{Plugin: name, Kind: "pull", Detail: "local image (pull failed: " + err.Error() + ")"})
-	} else {
-		out = append(out, Action{Plugin: name, Kind: "pull", Detail: image})
+	act, err := s.ensureImage(ctx, plug)
+	if err != nil {
+		s.markFailed(name, err.Error())
+		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
 	}
+	out = append(out, act)
 
 	argv, err := BuildDockerRunArgv(plug, s.opts)
 	if err != nil {
@@ -217,7 +207,7 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 	// container holding this name (StopAll stops but does not remove), and
 	// `docker run --name` would then fail with a name conflict. Remove any
 	// existing container first; "no such container" is benign and ignored.
-	_ = s.docker.Remove(ctx, "vulture-agent-"+pluginregistry.SanitiseDNSName(name))
+	_ = s.docker.Remove(ctx, containerName(name))
 	if _, err := s.docker.Run(ctx, argv); err != nil {
 		s.markFailed(name, fmt.Sprintf("run: %v", err))
 		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
@@ -249,13 +239,17 @@ func (s *Supervisor) markFailed(name, msg string) {
 }
 
 // handleProbeState is invoked by the prober on each Healthy<->Unhealthy
-// transition. Starts the daemon-liveness goroutine when needed.
+// transition. On Unhealthy it starts the daemon-liveness goroutine (daemon
+// outage) and, in the background, the stopped-container recovery (daemon
+// up, container gone). A Failed plugin stays Failed: a late probe report
+// must not revive a plugin the restart-storm guard gave up on.
 func (s *Supervisor) handleProbeState(name string, st PluginState) {
-	if e, ok := s.state.get(name); ok {
-		e.sm.Force(st)
+	if e, ok := s.state.get(name); ok && !e.sm.forceUnless(st, StateFailed) {
+		return
 	}
 	if st == StateUnhealthy {
 		s.startDaemonLiveness()
+		go s.recoverStopped(name)
 	}
 }
 
@@ -279,8 +273,7 @@ func (s *Supervisor) StopAll(ctx context.Context) error {
 		case "always", "unless-stopped":
 			continue
 		}
-		alias := pluginregistry.SanitiseDNSName(p.Name())
-		name := "vulture-agent-" + alias
+		name := containerName(p.Name())
 		if err := s.docker.Stop(ctx, name, s.tunables.StopTimeout()); err != nil {
 			s.logger.Printf("[supervisor] stop %s: %v", name, err)
 		}
@@ -306,8 +299,7 @@ func (s *Supervisor) HandleEvent(ev Event) error {
 		}
 		return nil
 	case EventDisable, EventRemove:
-		alias := pluginregistry.SanitiseDNSName(ev.Plugin.Name())
-		name := "vulture-agent-" + alias
+		name := containerName(ev.Plugin.Name())
 		s.prober.Stop(ev.Plugin.Name())
 		return s.docker.Stop(context.Background(), name, s.tunables.StopTimeout())
 	}

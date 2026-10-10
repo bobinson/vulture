@@ -302,6 +302,10 @@ LLM_PROSE_EXTENSIONS: frozenset[str] = frozenset({
 # privateKey selection and an unbounded full-table fetch — so excluding them would have
 # deleted both. The mechanism stays for operators who cannot send config dialects to a
 # third-party provider.
+#
+# EVIDENCE GATE (0074 P6): no extension enters this default set without >= 20 cited
+# sites across >= 2 targets showing zero labelled-real findings, adjudicated under the
+# numbered presentation. Below that bar an exclusion deletes findings nobody measured.
 LLM_INELIGIBLE_EXTENSIONS: frozenset[str] = frozenset()
 
 

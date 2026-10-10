@@ -3,6 +3,7 @@
 import re
 from collections.abc import Sequence
 
+from shared.lines import parse_line
 from shared.tools.line_context import strip_strings_and_comments
 
 # Standard ports that shouldn't trigger "hardcoded port" findings.
@@ -77,10 +78,7 @@ def extract_snippet(
         return ""
     start = window_first_line(line_num, context) - 1
     end = min(len(lines), line_num + context)
-    try:
-        span_end = int(line_end) if line_end is not None else 0
-    except (TypeError, ValueError):
-        span_end = 0
+    span_end = parse_line(line_end)
     if span_end > line_num:
         end = min(len(lines), span_end + context, start + _SPAN_MAX_LINES)
         # A character cut would truncate the span it was just widened to hold.
@@ -92,7 +90,8 @@ def extract_snippet(
             for i in range(start, end)
         )
     else:
-        snippet = "\n".join(f"{i + 1}: {lines[i]}" for i in range(start, end))[:max_chars]
+        rows = [f"{i + 1}: {lines[i]}" for i in range(start, end)]
+        snippet = "\n".join(_keep_cited_row(rows, line_num - 1 - start, max_chars))[:max_chars]
     # Strip NUL at the origin: a snippet sampled from a binary the scanner
     # reached (a checked-in *.pyc, a stray blob) carries 0x00, which Postgres
     # TEXT rejects — and one such row aborts the whole findings INSERT batch
@@ -101,6 +100,35 @@ def extract_snippet(
     if "\x00" in snippet:
         snippet = snippet.replace("\x00", "")
     return snippet
+
+
+def _keep_cited_row(rows: list[str], cited: int, max_chars: int) -> list[str]:
+    """Shorten the rows before the cited one so the character cut keeps it.
+
+    Feature 0074 AC38: a window that excludes its cited line is never evidence.
+    The legacy whole-snippet cut is kept wherever the cited row's number already
+    fits; otherwise each earlier row keeps its ``"NN: "`` prefix and an equal
+    share of the first half of the budget. The start and the absolute numbering
+    do not move (0089 pins both), and every row stays a prefix of its line.
+    """
+    if _cited_number_fits(rows, cited, max_chars):
+        return rows
+    share = (max_chars // 2 - cited) // cited
+    return [_row_prefix(r, share) for r in rows[:cited]] + rows[cited:]
+
+
+def _cited_number_fits(rows: list[str], cited: int, max_chars: int) -> bool:
+    """True when the legacy cut already reaches the cited row's number."""
+    if not 0 < cited < len(rows):  # nothing before it, or no such row to keep
+        return True
+    offset = sum(len(r) + 1 for r in rows[:cited])
+    return offset + rows[cited].index(": ") + 2 < max_chars
+
+
+def _row_prefix(row: str, share: int) -> str:
+    """``row`` cut to its ``"NN: "`` number plus at most ``share`` characters."""
+    number = row.index(": ") + 2
+    return row[:number + max(0, share - number)]
 
 
 def collect_handler_body(

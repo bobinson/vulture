@@ -152,6 +152,7 @@ func (s *Server) tryCandidates(ctx context.Context, claims *token.Claims, req *c
 		if err == nil {
 			return resp, nil
 		}
+		s.noteOverflow(err)
 		if apiErr := classifyEgressErr(t.Provider, c.Model, err); apiErr != nil {
 			return nil, apiErr
 		}
@@ -490,5 +491,13 @@ func buildCompletionRequest(req *completeRequest, model string) provider.Complet
 		HasTemperature: req.HasTemperature,
 		Stream:         false,
 		RequestID:      req.RequestID,
+	}
+}
+
+// noteOverflow tells the broker an upstream call overflowed the model's
+// context (0074 #12): the window it was sized for may be stale.
+func (s *Server) noteOverflow(err error) {
+	if s.deps.OnContextOverflow != nil && errors.Is(err, provider.ErrContextOverflow) {
+		s.deps.OnContextOverflow()
 	}
 }

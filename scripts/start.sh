@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/lib/envflag.sh
+. "$SCRIPT_DIR/lib/envflag.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 CLI_DIR="$PROJECT_ROOT/cli"
@@ -125,6 +127,13 @@ detect_lmstudio_model() {
 # `/api/v0/models` is LM Studio's native endpoint and reports
 # `loaded_context_length`; it does not exist on other OpenAI-compatible
 # servers, so a failure here is silent and the normal resolution applies.
+#
+# Only the LOADED window counts (W3): `max_context_length` is the advertised
+# maximum, and pinning it would overstate the window the server actually runs.
+# This is the --no-broker detector only. With the broker on, the backend probes
+# the same listing itself (backend/internal/broker/serve/probe.go), and an
+# exported VULTURE_LLM_CTX_SIZE would outrank that probe, so lmstudio_window
+# below never calls this then.
 detect_lmstudio_ctx() {
     local base="${1:-$LMSTUDIO_DEFAULT_URL}" want="$2" root ctx
     root="${base%/v1}"; root="${root%/}"
@@ -143,7 +152,7 @@ try:
 except Exception:
     raise SystemExit(0)
 def ctx_of(m):
-    return m.get('loaded_context_length') or m.get('max_context_length') or 0
+    return m.get('loaded_context_length') or 0
 def is_embed(m):
     return 'embed' in (m.get('id') or '').lower() or m.get('type') == 'embeddings'
 # 1. the requested model, exact id
@@ -160,6 +169,24 @@ for m in models:
     # Never fail: under `set -euo pipefail` a non-zero status here (a server
     # without /api/v0/models, an unreachable one) ended the launcher silently.
     if [[ "$ctx" =~ ^[0-9]+$ ]]; then echo "$ctx"; fi
+}
+
+# lmstudio_window: ONE loaded-window detector per run (review item 38). An
+# operator's explicit VULTURE_LLM_CTX_SIZE always wins. With the broker on, the
+# backend probe measures the loaded window and the shell exports nothing that
+# could outrank it. Only with --no-broker, where no probe runs, does the shell
+# detector export the loaded window for the agents.
+lmstudio_window() {
+    [[ -n "${VULTURE_LLM_CTX_SIZE:-}" ]] && return 0
+    if [[ "$USE_BROKER" == "1" ]]; then
+        echo "  Context:   measured by the backend broker probe (LM Studio loaded window)"
+        return 0
+    fi
+    local ctx
+    ctx="$(detect_lmstudio_ctx "$OPENAI_BASE_URL" "$VULTURE_LLM_MODEL")"
+    [[ -n "$ctx" ]] || return 0
+    export VULTURE_LLM_CTX_SIZE="$ctx"
+    echo "  Context:   $ctx tokens (reported by LM Studio)"
 }
 
 # stale_against <binary> <source-dir> -- true when any .go file is newer than
@@ -434,15 +461,8 @@ case "$PROVIDER" in
         MODEL="$(normalize_model lmstudio "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
-        # Trust the server's own loaded window over the family table, unless the
-        # operator pinned one explicitly.
-        if [[ -z "${VULTURE_LLM_CTX_SIZE:-}" ]]; then
-            _LM_CTX="$(detect_lmstudio_ctx "$OPENAI_BASE_URL" "$MODEL")"
-            if [[ -n "$_LM_CTX" ]]; then
-                export VULTURE_LLM_CTX_SIZE="$_LM_CTX"
-                echo "  Context:   $_LM_CTX tokens (reported by LM Studio)"
-            fi
-        fi
+        # The loaded window is resolved after the broker decision below
+        # (lmstudio_window), because which detector runs depends on it.
         ;;
 
     skills|none)
@@ -463,7 +483,7 @@ esac
 # via native adapters. It is on by default whenever LLM is on; --no-broker opts
 # out. It runs on whichever store the backend uses (SQLite default, or Postgres
 # when VULTURE_DB_DSN is set — §29). skills = no LLM = no broker.
-if [[ "$NO_BROKER" == "1" || "${VULTURE_USE_LLM:-false}" != "true" ]]; then
+if [[ "$NO_BROKER" == "1" ]] || ! env_flag_on "${VULTURE_USE_LLM:-}"; then
     USE_BROKER=0
 else
     USE_BROKER=1
@@ -506,6 +526,10 @@ if [[ "$USE_BROKER" == "1" ]]; then
         echo "  Note: brokering a cloud provider with a real key. The ES256 + budget-CAS"
         echo "        human sign-off is still pending (§25.3/§27) — pass --no-broker to opt out."
     fi
+fi
+# Trust the server's own loaded window over the family table (LM Studio only).
+if [[ "$PROVIDER" == "lmstudio" ]]; then
+    lmstudio_window
 fi
 
 # Embedding endpoint override. Decouples the pgvector embedding client
@@ -569,7 +593,7 @@ if [[ -n "${VULTURE_VALIDATE_LLM_MODEL:-}" \
       && "$VULTURE_VALIDATE_LLM_MODEL" != "${VULTURE_LLM_MODEL:-$MODEL}" ]]; then
     echo "  Validate:  $VULTURE_VALIDATE_LLM_MODEL"
 fi
-echo "  LLM:       ${VULTURE_USE_LLM:-false}"
+echo "  LLM:       $(env_flag_word "${VULTURE_USE_LLM:-}")"
 print_tier3_state "$WANT_TIER3"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then
     echo "  Broker:    on"

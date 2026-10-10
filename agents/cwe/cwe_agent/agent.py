@@ -48,6 +48,7 @@ from shared.audit_kwargs import shared_audit_kwargs
 from shared.audit_runner import run_combined_audit
 from shared.env import env_truthy
 from shared.llm import health as _health
+from shared.llm.mode import llm_enabled
 from shared.llm.provider import (
     get_max_findings,  # noqa: F401  (module attribute: the fleet tests monkeypatch it)
 )
@@ -146,7 +147,7 @@ def _probe_llm_health() -> Any:
     ``use_llm=true``). At that point the probe must key on *provider/model
     availability*, NOT re-read the global ``VULTURE_USE_LLM`` flag.
     ``check_llm_health`` short-circuits to ``provider=disabled /
-    reachable=False`` whenever ``VULTURE_USE_LLM != "true"`` (health.py); if a
+    reachable=False`` whenever ``VULTURE_USE_LLM`` is not an on-token (health.py); if a
     per-request ``use_llm=true`` enabled the phase while the env flag is unset,
     that short-circuit would falsely report "no model" even with a usable model
     configured.
@@ -199,9 +200,9 @@ def _resolve_cwe_llm(config: dict) -> tuple[bool, str | None]:
     if isinstance(requested, bool):
         want_llm = requested
     else:
-        # Mirror audit_runner's USE_LLM expression, read at runtime so the
-        # default tracks VULTURE_USE_LLM uniformly with the rest of the fleet.
-        want_llm = os.environ.get("VULTURE_USE_LLM", "false").lower() == "true"
+        # The fleet's ONE VULTURE_USE_LLM reader (audit_runner's USE_LLM uses
+        # it too), read at runtime so the default tracks the switch.
+        want_llm = llm_enabled()
     if not want_llm:
         return False, None
 

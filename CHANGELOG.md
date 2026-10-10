@@ -23,6 +23,17 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Added
 
+- **Feature 0074 — verify masked values; merge records masked.** A finding's
+  masked snippet can be verified against the scanned file: `GET
+  /api/audits/{id}/findings/{fid}/masked` locates every masked value (line,
+  column, kind) and returns the values only to an authorised human (an admin;
+  locally, the signed-in session) and only while the file still matches the
+  scan. The UI shows a "Show unmasked" switch in the finding detail; the MCP
+  tool `vulture_verify_masked_values` returns locations and a UI link, never
+  values. Nothing raw is stored. The descriptions of LLM rows merged into
+  another row now get the same secret masking as every finding's description,
+  in the agent and again in the backend.
+
 - **Feature 0099 — Anonymous, caller-addressed message sends (CWE-799).** A new
   `resource_check` rule, `cwe.resource.anonymous_message_send`, reports a handler
   that lets a caller with no authenticated principal make the server send an
@@ -303,6 +314,26 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   `cwe.next_middleware_matcher.bypass` must filter on that check id instead.
 
 ### Fixed
+
+- **CWE-799 (`anonymous_message_send`): two false-positive classes (feature 0074).** A handler that
+  verifies a shared secret against the REQUEST (an event trigger's or webhook's secret or hook token, e.g.
+  `if (!requireValidHookSecret(req, res)) return;`, or a verification bound to a name a later branch exits on)
+  is now treated as authenticated, as a signature check already was. Only a check OF the secret, given the
+  request itself, counts: validating a submitted value (a secret-sharing or password-policy check, a body-bound
+  DTO, `validateSecretMessage(req)`), a logged result, a verification after the send and an anti-forgery
+  secret still gate nothing. A parameter whose type is a query RESULT — a compound `...Query` type that is
+  indexed into (a generated GraphQL result), followed by `Result` / `Row`, or declared by a helper its own file
+  calls without passing request input in that argument position — is no longer read as HTTP query input; an
+  entry point's `...Query` parameter, query bindings and every parameter name still are. Measured on one
+  evaluation target: 13 rows to 6, the 7 removed all false positives; no change on 20 other local trees, and
+  no row lost on the 51 true-positive probe rows two adversarial review passes wrote.
+
+- **Plugin audits no longer fail with "requested agents did not run" because the staging root is root-owned.**
+  The plugin staging root (`VULTURE_SUPERVISOR_AUDITS_DIR`, default `/tmp/vulture-audit-inputs`) is a bind-mount
+  source for plugin containers, and Docker creates a missing mount source as root. A non-root dev backend could
+  then never stage into it, so every plugin (e.g. semgrep) was skipped with `mkdir …: permission denied`. In local
+  mode the backend now creates the root itself, as its own user, before the supervisor starts any container, and
+  logs a clear startup message naming the directory and the remedy when an existing root is not writable.
 
 - **"Copy All as Issues" copies what the table shows.** The export now follows
   every active filter — hidden false positives, severity, agent, tier, OWASP

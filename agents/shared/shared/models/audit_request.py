@@ -41,6 +41,16 @@ class AuditRequest(BaseModel):
             "default). Additive/optional; never client-supplied."
         ),
     )
+    context_window_source: str | None = Field(
+        default=None,
+        description=(
+            "Feature 0074 P1: HOW the broker obtained `context_window` (`env`, "
+            "`probe`, `table`, `family` or `default`), injected beside it at "
+            "dispatch. Published on the run's `llm_window` facts only; it never "
+            "changes sizing (the injected window stays labelled `broker`). None "
+            "=> no broker window, or an older backend. Never client-supplied."
+        ),
+    )
     lineage_checks_requested: dict[str, Any] | None = Field(
         default=None,
         description=(

@@ -37,8 +37,8 @@ from shared.tools.snippet import (
 # 0087 B7/step 9. Six of the languages the LLD called "structurally blind" were
 # excluded HERE, before any pattern ran — .cpp and .kt already match the existing
 # catch shape, so widening this frozenset adds them with no new patterns. The
-# .tsx/.jsx/.cjs/.mjs omission mattered most: 212 catch sites in togetherapp were
-# never scanned, and togetherapp is the repo every ground-truth true positive came
+# .tsx/.jsx/.cjs/.mjs omission mattered most: 212 catch sites in reference-app were
+# never scanned, and reference-app is the repo every ground-truth true positive came
 # from, so the TP search space itself was incomplete.
 #
 # `.c`/`.h` are deliberately ABSENT: the errno arm was dropped as non-viable
@@ -101,7 +101,7 @@ _PY_SUPPRESS = re.compile(
 
 # Java/JS/C#/Go/PHP catch clause — may be single-line or open a block.
 # 0087 B5: the ES2019 optional-binding form `} catch {` was unmatchable —
-# 56 such sites in togetherapp .ts/.tsx alone. Quantifiers bounded per B2.
+# 56 such sites in reference-app .ts/.tsx alone. Quantifiers bounded per B2.
 # 0087 step 7. Three forms the single `catch ... {` pattern could not express:
 #
 #   catch (X ex) when (ex.Number == 1205)   C# exception filter

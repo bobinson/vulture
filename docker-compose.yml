@@ -144,12 +144,15 @@ services:
       - VULTURE_LLM_PROVIDER_ALLOWLIST=${VULTURE_LLM_PROVIDER_ALLOWLIST:-}
       - VULTURE_LLM_FALLBACKS=${VULTURE_LLM_FALLBACKS:-}
       - VULTURE_LLM_BUDGET_USD=${VULTURE_LLM_BUDGET_USD:-}
-      # Feature 0076 (Go side, backend only). On a cross-agent dedup collision a
-      # deterministic (skill) row outranks an `llm` row at equal-or-lower severity,
-      # replacing 0075's score-only "richer row wins". Hard prerequisite of
-      # VULTURE_LLM_QUOTE_REANCHOR: re-anchoring CREATES collisions that did not
-      # exist before. false restores 0075 winner selection.
-      - VULTURE_DEDUP_PREFER_DETERMINISTIC=${VULTURE_DEDUP_PREFER_DETERMINISTIC:-true}
+      # Feature 0074 (O6). The backend's lineage scan moves a finding's evidence
+      # window under the SAME conjunction the agents use for the line actuator:
+      # QUOTE_VERIFY == enforce AND QUOTE_REANCHOR. Both are forwarded so a
+      # rollback set in `.env` (QUOTE_REANCHOR=false, or QUOTE_VERIFY=observe/off)
+      # reaches the backend as well as the agents. Passed through EMPTY: a blank
+      # value takes the code default (enforce / true) in both runtimes, so compose
+      # never pins a copy of it.
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_BACKEND_PORT:-28080}/health || exit 1"]
       interval: 30s
@@ -244,22 +247,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -350,22 +355,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -456,22 +463,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -562,22 +571,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -669,22 +680,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -778,22 +791,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -884,22 +899,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -990,22 +1007,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -1096,22 +1115,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}
@@ -1202,22 +1223,24 @@ services:
       - VULTURE_L5_PROMOTION_CLOSURE=${VULTURE_L5_PROMOTION_CLOSURE:-}
       # Feature 0076 evidence quotation + anchor verification — forwarded so a
       # plain `docker compose up` can tune or roll the feature back without an
-      # override file. Every actuator is INERT on these defaults: 0076 only
-      # LABELS findings unless QUOTE_VERIFY=enforce AND the matching actuator is
-      # turned on. The eight numeric knobs pass through EMPTY on purpose so the
-      # agent's own default is the single source of truth (compose must not pin
-      # a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
+      # override file. Since 0074 (O6) QUOTE_VERIFY defaults to enforce and the
+      # LINE actuator QUOTE_REANCHOR to true, so a row whose quote sits on another
+      # line of its own file is moved there (claimed_line retained); the demoting
+      # actuator QUOTE_DEMOTE_ABSENT stays off. Runtime rollback of the move:
+      # VULTURE_LLM_QUOTE_REANCHOR=false (the backend receives it too). The three
+      # quote switches and the eight numeric knobs pass through EMPTY on purpose
+      # so the agent's own default is the single source of truth (compose must
+      # not pin a copy of it). Rollback order: QUOTE_DEMOTE_ABSENT -> QUOTE_REANCHOR ->
       # QUOTE_VERIFY=off -> QUOTE_REQUIRED=false -> TRUST_MODEL_SNIPPET=true ->
       # COERCE_LINES=false -> JSON_SCAN=false.
       - VULTURE_LLM_JSON_SCAN=${VULTURE_LLM_JSON_SCAN:-true}
       - VULTURE_LLM_JSON_SALVAGE=${VULTURE_LLM_JSON_SALVAGE:-true}
       - VULTURE_LLM_COERCE_LINES=${VULTURE_LLM_COERCE_LINES:-true}
       - VULTURE_LLM_TRUST_MODEL_SNIPPET=${VULTURE_LLM_TRUST_MODEL_SNIPPET:-false}
-      - VULTURE_LLM_TRUST_MODEL_CHECK_ID=${VULTURE_LLM_TRUST_MODEL_CHECK_ID:-false}
       - VULTURE_LLM_QUOTE_REQUIRED=${VULTURE_LLM_QUOTE_REQUIRED:-true}
-      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-observe}
-      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-false}
-      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-false}
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
+      - VULTURE_LLM_QUOTE_DEMOTE_ABSENT=${VULTURE_LLM_QUOTE_DEMOTE_ABSENT:-}
       - VULTURE_LLM_QUOTE_KEEP_TEXT=${VULTURE_LLM_QUOTE_KEEP_TEXT:-false}
       - VULTURE_LLM_QUOTE_MIN_CHARS=${VULTURE_LLM_QUOTE_MIN_CHARS:-}
       - VULTURE_LLM_QUOTE_MIN_TOKENS=${VULTURE_LLM_QUOTE_MIN_TOKENS:-}

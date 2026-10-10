@@ -211,12 +211,7 @@ func loadBrokerConfig(ini iniValues) BrokerConfig {
 // (on/true/1/yes) MUST match the Python agent's broker.py `_TRUTHY` so the two
 // runtimes never disagree about whether VULTURE_LLM_BROKER is on.
 func isTruthy(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "on", "true", "1", "yes":
-		return true
-	default:
-		return false
-	}
+	return ParseFlag(s, false)
 }
 
 // atoiOr parses s as an int, returning fallback when empty or invalid.

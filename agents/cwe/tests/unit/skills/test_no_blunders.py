@@ -71,7 +71,7 @@ class TestCWE22Negatives:
         '  "@chromatic-com/storybook",',
         '  "@storybook/addon-a11y",',
         # TypeScript relative imports
-        'import { resolveAddressToIds } from "../resolvers/resolveAddressToIds";',
+        'import { resolveRegionToIds } from "../resolvers/resolveRegionToIds";',
         'import { mapData } from "../usa/federal/mapper";',
         # URL string literals
         'const URL = "https://geocoding.geo.census.gov/geocoder/path";',
@@ -137,14 +137,14 @@ class TestCWE434Negatives:
     """The full _check_file_upload skill (extension-aware) must NOT
     flag bare-identifier mentions in JSX, GraphQL actions, DB column
     listings, or .d.ts files — the FP class that produced 110 hits on
-    togetherapp."""
+    reference-app."""
 
     @pytest.mark.parametrize("filename, line", [
         ("AvatarInput.tsx", 'import { UploadIcon } from "ui";'),
         ("AvatarInput.tsx", 'const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);'),
         ("AvatarInput.tsx", '  handleAvatarUploadComplete,'),
-        ("actions.yaml", '  - name: finalizeAssetUpload'),
-        ("actions.yaml", '  - name: prepareAssetUpload'),
+        ("actions.yaml", '  - name: completeMediaUpload'),
+        ("actions.yaml", '  - name: beginMediaUpload'),
         ("public_userAnimationFlags.yaml", '        - uploadProfilePictureAnimationSeen'),
         ("public_userAnimationFlags.yaml", '        - lastUploadProfilePictureAnimationDate'),
         ("api.d.ts", 'export interface UploadConfig { maxSize: number; }'),

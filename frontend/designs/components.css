@@ -24,6 +24,17 @@
   color: var(--color-foreground);
   background-color: var(--color-cream);
   -webkit-font-smoothing: antialiased;
+  /* src/index.css @layer base `html` — glyph shapes differ without these */
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+/* Tailwind preflight for controls, at zero specificity like the original, so a
+   <button> drawn here renders like one in the app and a class still wins. */
+:where(.v-body button) {
+  font: inherit; letter-spacing: inherit; line-height: inherit; color: inherit;
+  margin: 0; padding: 0; border: 0; background-color: transparent; border-radius: 0;
+  -webkit-appearance: none; appearance: none;
 }
 
 .card {
@@ -71,6 +82,16 @@
 .severity-medium   { background-color: var(--color-severity-medium-bg);   color: var(--color-severity-medium); }
 .severity-low      { background-color: var(--color-severity-low-bg);      color: var(--color-severity-low); }
 .severity-info     { background-color: var(--color-severity-info-bg);     color: var(--color-severity-info); }
+
+/* Shared Chip (src/components/shared/Chip.tsx) — `badge` + one tone class.
+   `.chip-on` is the selected filter state (bg-foreground text-surface). The
+   success tone has no token yet, so it is not drawn here. */
+.chip-neutral { background-color: var(--color-cream); color: var(--color-muted); }
+.chip-info    { background-color: var(--color-severity-low-bg); color: var(--color-severity-low); }
+.chip-warning { background-color: var(--color-severity-medium-bg); color: var(--color-severity-medium); }
+.chip-danger  { background-color: var(--color-severity-critical-bg); color: var(--color-severity-critical); }
+.chip-on      { background-color: var(--color-foreground); color: var(--color-surface); }
+button.badge  { cursor: pointer; }
 
 .terminal {
   background-color: var(--color-terminal); border-radius: var(--radius-card);
@@ -244,3 +265,16 @@
 /* Empty states */
 .v-empty { padding: 28px 16px; text-align: center; font-size: var(--text-xs); color: var(--color-secondary); }
 .v-empty b { display: block; color: var(--color-foreground); margin-bottom: 4px; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   4. Chip group — feature 0074 (shared ChipGroup: provenance filter, anchor)
+   A legend followed by shared Chips. Content-sized (inline-flex), so the
+   group is the same box wherever it sits. Interactive when it filters,
+   read-only spans when it reports.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.v-chipgroup { display: inline-flex; align-items: center; gap: 8px; vertical-align: middle; }
+.v-chipgroup > .legend { font-size: var(--text-2xs); color: var(--color-muted-light); }
+.v-chipgroup > .chips { display: flex; gap: 4px; }
+/* The expanded finding row (FindingsTable: tr.bg-cream/50 on the card). */
+.v-detail { background-color: color-mix(in oklab, var(--color-cream) 50%, transparent); }

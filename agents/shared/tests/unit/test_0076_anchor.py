@@ -325,7 +325,7 @@ def test_distance_is_token_jaccard_and_is_used_only_to_classify():
 def test_a_paraphrase_of_a_real_defect_is_unquoted_never_absent(mode):
     """AC7, RECALL. The defect on paraphrase.ts:5 is REAL; the quote is a paraphrase.
 
-    Real line   ``if(!issues_by_pk?.creatorId === userId) {``
+    Real line   ``if(!record_by_pk?.ownerId === userId) {``
     Model quote ``!property === userId``
 
     The model did not copy — it summarised the shape of the bug. A verifier that
@@ -1132,7 +1132,7 @@ def test_the_fixture_tree_is_complete():
 
 # ── the truncated outcome must survive as evidence, even though the STATUS does not ──
 #
-# Found by dogfooding 0076 on togetherapp: 5 of 19 LLM rows (26%) came back
+# Found by dogfooding 0076 on reference-app: 5 of 19 LLM rows (26%) came back
 # `oversize`, and THREE of them carried `delta=0` — i.e. the truncated 3-line
 # prefix matched EXACTLY at the cited line. They verified. But `_size_status`
 # does `replace(outcome, status="oversize")`, so the histogram cannot tell a

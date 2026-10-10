@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from .broker import broker_enabled
+from .mode import llm_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,13 @@ class LLMHealthStatus:
             LLM unavailable: {provider} ({model_or_no_model}) at {endpoint_or_default} — {error}. Audit will run skills-only.
 
           Disabled:
-            LLM disabled (VULTURE_USE_LLM != true). Audit will run skills-only.
+            LLM disabled (VULTURE_USE_LLM is not true, 1, yes or on). Audit will run skills-only.
         """
         if self.provider == "disabled":
-            return "LLM disabled (VULTURE_USE_LLM != true). Audit will run skills-only."
+            return (
+                "LLM disabled (VULTURE_USE_LLM is not true, 1, yes or on). "
+                "Audit will run skills-only."
+            )
         if self.reachable:
             return f"LLM ready: {self.provider} ({self.model}) at {self.endpoint}"
         model = self.model if self.model else "no model"
@@ -95,7 +99,7 @@ async def check_llm_health(timeout: float = DEFAULT_TIMEOUT) -> LLMHealthStatus:
     """Probe whichever provider VULTURE_USE_LLM/VULTURE_LLM_MODEL/* points at.
 
     Detection precedence (mirrors provider.py routing exactly):
-      1. VULTURE_USE_LLM != "true"             → disabled
+      1. VULTURE_USE_LLM not an on-token       → disabled (mode.llm_enabled)
       1b. broker on + VULTURE_LLM_BROKER_URL   → broker (0073 P2: the agent
           holds no provider credential in broker mode, so the broker is the
           provider from its point of view)
@@ -106,7 +110,7 @@ async def check_llm_health(timeout: float = DEFAULT_TIMEOUT) -> LLMHealthStatus:
       6. OPENAI_API_KEY set                     → openai
       7. otherwise                              → unknown
     """
-    if os.environ.get("VULTURE_USE_LLM", "false").lower() != "true":
+    if not llm_enabled():
         return LLMHealthStatus(
             provider="disabled", endpoint="", model="", reachable=False,
             error="LLM disabled by config", detail={},

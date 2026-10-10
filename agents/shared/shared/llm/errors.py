@@ -55,17 +55,29 @@ _AUTH_RE = re.compile(
     r"authentication.failed|access.denied|no.credentials)",
     re.IGNORECASE,
 )
+# Size/overflow PHRASING only (feature 0074 re-audit R6), the broker's
+# contextOverflowBody (backend/internal/broker/provider/upstream_detail.go)
+# restated; both are pinned by ONE message fixture,
+# backend/internal/broker/provider/testdata/ctx_overflow_messages_0074.json, so
+# a raw provider error and a broker-mediated one classify alike. A message that
+# merely names a size-related parameter (`max_tokens`, `context_size`, a
+# field's maximum length) is a different fault: calling it an overflow cost a
+# pointless halve-and-retry. `request_too_large` is the provider's error CODE;
+# LiteLLM surfaces the human MESSAGE instead — "OpenAIException - request body
+# too large" — so both forms are listed (`.` spans the separator).
+# Two phrasings beyond the broker's, both still size/overflow wording, pinned
+# by the pre-existing classifier tests: "maximum context window is N" and
+# "max tokens / maximum length exceeded".
 _CTX_OVERFLOW_RE = re.compile(
-    r"(context.length|token.limit|maximum.context|n_keep.*n_ctx|"
-    r"max.tokens|context.window|prompt.{0,10}too.long|maximum.length|"
-    r"request\.payload\.size\.exceeds|payload\.too\.large|"
+    r"(context.length.exceeded|maximum.context.(?:length|window)|"
+    r"max(?:imum)?.(?:tokens|length).exceeded|"
+    r"context.(?:window|limit|size|length).(?:exceeded|overflow)|"
+    r"exceeds?.(?:the.)?(?:available.|maximum.)?(?:context|token).(?:length|window|size|limit)|"
+    r"(?:greater|longer|larger).than.the.(?:maximum.)?context.(?:length|window|size)|"
+    r"token.limit.(?:exceeded|reached)|n_keep.*n_ctx|prompt.{0,10}too.long|too.large.for.model|"
     r"input.token.count.*exceeds|exceeds.the.maximum.number.of.tokens|"
-    # `request_too_large` is the provider's error CODE. LiteLLM surfaces the
-    # human MESSAGE instead — "OpenAIException - request body too large" — which
-    # the code form does not match, so a real 413 classified as `unknown` and the
-    # size-aware retry (P5 A.2) never fired. Measured end-to-end against a 413
-    # gateway. `.` spans the separator so both spellings hit.
-    r"request_too_large|request.body.too.large)",
+    r"request.payload.size.exceeds|payload.too.large|"
+    r"request_too_large|request.body.too.large|provider_context_overflow)",
     re.IGNORECASE,
 )
 _TIMEOUT_RE = re.compile(
@@ -87,6 +99,19 @@ _CONN_RE = re.compile(r"(connect|dns|resolve|refused|unreachable|ECONNREFUSED)",
 # matched, and every permanent failure was retried three times before being
 # reported. Measured: `Error code: 400 - {'error': {... 'x_retriable': False}}`
 # classified `unknown`. Accept both renderings, and both cases.
+# Feature 0074 review item 5: the size/overflow CODES, checked before the
+# broker-permanent pattern. The broker marks an upstream context overflow or
+# 413 `x_retriable: false` (an identical retry fails identically) and answers
+# it as `provider_context_overflow` (HTTP 413, static secret-free message).
+# That is exactly the class whose SMALLER retry is a different request, so the
+# permanent signal must not hide it from the generate path's halve-and-retry.
+# Codes only: free-text overflow phrasing stays below the auth/rate-limit
+# checks, where it always was.
+_OVERFLOW_CODE_RE = re.compile(
+    r"(provider_context_overflow|request_too_large|context_length_exceeded|"
+    r"payload_too_large|string_above_max_length)",
+    re.IGNORECASE,
+)
 _BROKER_PERMANENT_RE = re.compile(
     r'(["\']?x_retriable["\']?\s*:\s*false|'
     r'provider_bad_request|provider_auth_error|model_not_found)',
@@ -104,23 +129,25 @@ def classify_llm_error(exc: Exception) -> LLMErrorKind:
         Categorized error kind for retry/fallback decisions.
     """
     msg = str(exc)
-    # Honor the broker's authoritative retryability BEFORE any status-string
-    # heuristic — a permanent 502 must not be retried (§32.1 #6).
-    if _BROKER_PERMANENT_RE.search(msg):
-        return LLMErrorKind.PROVIDER_BAD_REQUEST
-    if _RATE_LIMIT_RE.search(msg):
-        return LLMErrorKind.RATE_LIMITED
-    if _AUTH_RE.search(msg):
-        return LLMErrorKind.AUTH_ERROR
-    if _CTX_OVERFLOW_RE.search(msg):
-        return LLMErrorKind.CONTEXT_OVERFLOW
-    if _TIMEOUT_RE.search(msg):
-        return LLMErrorKind.TIMEOUT
-    if _SERVER_RE.search(msg):
-        return LLMErrorKind.SERVER_ERROR
-    if _CONN_RE.search(msg):
-        return LLMErrorKind.CONNECTION_ERROR
+    for pattern, kind in _CLASSIFIERS:
+        if pattern.search(msg):
+            return kind
     return LLMErrorKind.UNKNOWN
+
+
+# First match wins. The size/overflow codes come first (0074 review item 5),
+# then the broker's authoritative retryability BEFORE any status-string
+# heuristic — a permanent 502 must not be retried (§32.1 #6).
+_CLASSIFIERS: tuple[tuple[re.Pattern[str], LLMErrorKind], ...] = (
+    (_OVERFLOW_CODE_RE, LLMErrorKind.CONTEXT_OVERFLOW),
+    (_BROKER_PERMANENT_RE, LLMErrorKind.PROVIDER_BAD_REQUEST),
+    (_RATE_LIMIT_RE, LLMErrorKind.RATE_LIMITED),
+    (_AUTH_RE, LLMErrorKind.AUTH_ERROR),
+    (_CTX_OVERFLOW_RE, LLMErrorKind.CONTEXT_OVERFLOW),
+    (_TIMEOUT_RE, LLMErrorKind.TIMEOUT),
+    (_SERVER_RE, LLMErrorKind.SERVER_ERROR),
+    (_CONN_RE, LLMErrorKind.CONNECTION_ERROR),
+)
 
 
 async def retry_llm_call(
