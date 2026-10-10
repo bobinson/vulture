@@ -601,18 +601,20 @@ def _checked(w: _Where) -> str:
     return text + (f" and wrapper L{w.wrapper}" if w.wrapper else "")
 
 
-def _description(w: _Where) -> str:
-    """Within the judge's 300 characters; the wrapper is dropped first."""
-    for where in (w, _Where(w.read, w.send, w.span, None)):
-        text = (
-            f"Caller sets the recipient (L{where.read}) of a message sent at L{where.send}. "
-            f"{_checked(where)}: no auth or human check gates the send; a per-sender/recipient "
-            "quota does not bound it. Refuted by: auth on every route here, a server-verified "
-            "CAPTCHA before the send, or a non-caller recipient."
-        )
-        if len(text) <= 300:
-            return text
-    return text[:300]
+def _description(w: _Where, quota: bool) -> str:
+    """Within the judge's 300 characters; the wrapper is dropped first.
+
+    States the quota as found: a judge that sees the rate limit must not read
+    the claim as "there is none" and refute it on that."""
+    limit = "Rate-limited, but a" if quota else "No rate limit; a"
+    texts = [
+        f"Caller sets the recipient (L{where.read}) of a message sent at L{where.send}. "
+        f"{_checked(where)}: no auth or human check gates it. {limit} quota does not bound "
+        "it (caps volume, not targets). Refuted by: auth on this route, a server-verified "
+        "CAPTCHA, or a non-caller recipient."
+        for where in (w, _Where(w.read, w.send, w.span, None))
+    ]
+    return next((t for t in texts if len(t) <= 300), texts[-1][:300])
 
 
 def _finding(file_path: Path, f: _File, where: _Where, quota: bool) -> dict:
@@ -622,7 +624,7 @@ def _finding(file_path: Path, f: _File, where: _Where, quota: bool) -> dict:
         "check_id": CHECK_ID,
         "category": "CWE-799",
         "title": _TITLE,
-        "description": _description(where),
+        "description": _description(where, quota),
         "file_path": str(file_path),
         "line_start": read,
         "line_end": send,
@@ -703,8 +705,10 @@ def _one_per_origin(rows: Iterator[dict | None]) -> Iterator[dict]:
     address several messages is one weakness, judged once."""
     seen: set[tuple[str, int]] = set()
     for row in rows:
-        key = (row["file_path"], row["line_start"]) if row else None
-        if key is not None and key not in seen:
+        if row is None:
+            continue
+        key = (row["file_path"], row["line_start"])
+        if key not in seen:
             seen.add(key)
             yield row
 
