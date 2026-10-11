@@ -334,6 +334,55 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   entry point's `...Query` parameter, query bindings and every parameter name still are. Measured on one
   evaluation target: 13 rows to 6, the 7 removed all false positives; no change on 20 other local trees, and
   no row lost on the 51 true-positive probe rows two adversarial review passes wrote.
+- **CWE-778 (`cwe.insufficient_logging.*`) reports security-relevant failures, not every quiet handler
+  (feature 0101).** The rule reported any `catch`/`except` that did not log. A non-empty handler is now excused
+  when it hands the error on (returns it, stores it in a field or a name that outlives the try, collects or
+  reports it, or passes it to a callback parameter of its routine) AND the operation it guards is not
+  security-relevant. The guarded text runs from the try body up to the routine declaration and includes the
+  exception type; it is matched against one security vocabulary of word roots (auth, session, token, crypt,
+  signature, permission, …), which the opt-in `SECURITY_SCOPE` arm now shares. An unresolved try, an empty body,
+  a conversion to a value without the error, a failure flag and a negating verb (`ignoreFailures()`) are never
+  excused. `auth_decision` no longer fires on a keyword that NAMES an outcome (`export const UNAUTHORIZED = 401`,
+  enum members, a literal `when` mapping, a regex alternation, a bare `case` label); `promise_swallow` excuses a
+  teardown as the last call of a non-security chain, or a null-guarded fallback. Measured on the two
+  adjudicated real targets at their adjudicated commits: 246 to 152 rows (false positives 211 to 117) and 82 to
+  56 (70 to 45), with every adjudicated true positive kept; the self-scan 485 to 466. The aggregate row's
+  `metric_version` is `0101.1`.
+- **CWE-770 (`cwe.resource.unbounded_alloc`) reports input-driven, uncapped accumulation (feature 0101).** The
+  rule reported a Python `.append` inside any loop; 86% of its self-scan rows were appends inside a loop over a
+  finite in-memory collection. A row now needs a growing receiver (any language: growth verbs, self-growth
+  operators, writes to an in-memory buffer), a lifetime beyond one iteration, a driver (a loop fed by a socket,
+  stream, request, queue, stdin or a child process's output, or an input-event callback such as
+  `req.on('data', …)`), and no cap on that receiver (a size comparison that exits or trims, a bounding guard, a
+  bounded container, or a cap wrapper such as `islice`/`io.LimitReader` on the source). An unbound iteration
+  source is classified by the last word of its name, a stated heuristic. `SIZE_LIMIT` now applies to the Go
+  `make([]T, 0)` arm only, over code with comments stripped. Scope and known gaps are listed in the CWE agent's
+  `SKILLS.md`. Measured: self-scan 343 rows to 5 (all 18 adjudicated false positives removed; 3 of the 5 are the
+  unchanged Go arm); a large public multi-language codebase 9 to 25, every row reviewed (the 9 removed iterate
+  in-memory data; the 25 accumulate a network stream, a partial line from a peer, a child process's output or
+  stdin, with no cap).
+- **CWE-209 (`cwe.info_exposure.error_disclosure`) reports the error value reaching a peer (feature 0101).**
+  The Node pattern matched any identifier whose NAME started with `err`/`error`/`ex`, so a catalogue helper
+  (`errorEnvelope(Catalog.X)`) or an `{ error: err.code }` field was reported. The rule now resolves which value
+  reaches a response write: a caught error's message, stack, string form or raw object (through any call that
+  does not project it, and back through assignments, destructuring and parameters in the routine) is reported;
+  a code/status/name projection, a catalogue constant or a projection helper is not. Non-peer writes (stderr,
+  files, loggers, builders, mail, queues), sinks inside comments or strings, and prose files are skipped. CWE-550
+  still replaces 209 on its line. Measured on one adjudicated real target at its adjudicated commit: 100 rows to
+  13, false positives 86 to 1. Seven of its file-level true-positive rows are no longer reported on the carrier
+  line they were filed against; in five of the six files the leak line their verdict cites is itself reported,
+  and the sixth cites a result-object `.error` field, which is deliberately not treated as raw error text. On
+  the second adjudicated target (2 rows to 5) its one true-positive row is likewise not reported on its filed
+  line, while the leak lines its verdict cites are. A public reference application goes from 9 rows to 13; the
+  4 new rows are genuine.
+- **Consequences of the three CWE rule changes above (feature 0101).** No `check_id`, category, severity, finding
+  field or environment variable changed. Under `VULTURE_LINEAGE_FIX_MODE=evidence` (the default) a deterministic
+  row closes as FIXED when a scan no longer reports it, so the first scan of an existing target after upgrading
+  marks the removed rows fixed; rows triaged `false_positive` keep that status. With `VULTURE_LLM_TIER3` off
+  (the default) the LLM sweep covers files a skill finding flags, so files flagged only by these rules leave
+  the sweep: on the latest archived scans, 96 of 307 CWE-flagged files of the self-scan and 56 of 179 of one
+  real target. The CWE GENERATE prompt's CWE-778/770/209 definitions now state the same concepts, so the model
+  does not re-emit the removed class (`generate/cwe` manifest version 7).
 
 - **Plugin audits no longer fail with "requested agents did not run" because the staging root is root-owned.**
   The plugin staging root (`VULTURE_SUPERVISOR_AUDITS_DIR`, default `/tmp/vulture-audit-inputs`) is a bind-mount

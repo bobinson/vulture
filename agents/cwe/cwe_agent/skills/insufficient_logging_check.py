@@ -10,16 +10,35 @@ Flags two patterns:
      that don't log the event. CWE-778 specifically calls out auth
      decisions as critical events that must be logged for forensics
      and intrusion detection.
+
+Feature 0101 narrows both to what CWE-778 means -- a SECURITY-RELEVANT event that
+is not recorded: a handler that hands its failure on is excused outside the
+security surface (Concept A), a keyword that names an outcome is not a decision
+(Concept B), and a best-effort promise swallow is excused when its chain head is
+not a security operation (Concept C). Each fails toward the pre-0101 verdict.
 """
 import os
 import re
-from functools import lru_cache
+from functools import cached_property, lru_cache
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._lexical import (
+    MAX_SCAN_CHARS,
+    call_argument_text,
+    catch_binding,
+    identifier_words,
+    indent_width,
+    opening_bracket,
+    param_name,
+    paren_lists,
+    routine_header,
+    stripped_code,
+)
 from shared.tools.file_scanner import (
     is_generated_file,
     is_test_file,
@@ -186,14 +205,38 @@ _AUTH_DECISION = re.compile(
 )
 
 
+# A strict necessary condition of `_AUTH_DECISION`, tested on the lower-cased line:
+# every alternative contains one of these roots. The case-insensitive alternation
+# was a third of the skill's cold time on a 120k-line tree (93 ms) because it runs
+# on every line; the hint plus `lower()` costs about a third of that and the full
+# pattern then runs on ~2% of lines. It cannot change what is reported: a non-ASCII
+# line (where IGNORECASE folds characters `lower()` does not, such as `ſ`) skips
+# the hint and goes straight to the full pattern.
+_AUTH_HINT = re.compile(r"auth|login|denied|mfa|token|forbidden|credential")
+
+
+def _auth_candidate(line: str) -> bool:
+    hinted = not line.isascii() or _AUTH_HINT.search(line.lower()) is not None
+    return hinted and _AUTH_DECISION.search(line) is not None
+
+
 def _has_log_within(lines: tuple[str, ...], lineno: int, radius: int = 4) -> bool:
     """True when a log call appears within ``radius`` lines of ``lineno``."""
     start = max(0, lineno - radius - 1)
     end = min(len(lines), lineno + radius)
-    for i in range(start, end):
-        if _LOG_CALL.search(lines[i]):
-            return True
-    return False
+    return any(map(_line_logs, lines[start:end]))
+
+
+# Per-line verdicts of the window predicates, cached by line text: an auth line's
+# 9-line log window and 5-line propagation window overlap its neighbours', so an
+# auth-dense file re-read every line up to 14 times. The answer is a
+# pure function of the line, so caching cannot change what is reported.
+_LINE_MEMO = 2048
+
+
+@lru_cache(maxsize=_LINE_MEMO)
+def _line_logs(line: str) -> bool:
+    return _LOG_CALL.search(line) is not None
 
 
 def _body_has_logging(body_lines: list[str]) -> bool:
@@ -257,10 +300,12 @@ _ERROR_DELEGATE = re.compile(
 
 def _body_delegates(body_lines: list[str]) -> bool:
     """True if the body hands the error to a named error-handling routine."""
-    return any(
-        _ERROR_DELEGATE.search(strip_strings_and_comments(line))
-        for line in body_lines
-    )
+    return any(map(_line_delegates, body_lines))
+
+
+@lru_cache(maxsize=_LINE_MEMO)
+def _line_delegates(line: str) -> bool:
+    return _ERROR_DELEGATE.search(strip_strings_and_comments(line)) is not None
 
 
 # Quantifiers are held to the {0,8} convention used elsewhere in this module:
@@ -325,23 +370,22 @@ def _body_propagates(body_lines: list[str]) -> bool:
     propagates nothing and is deliberately not covered here — empty
     handlers are reported by their own early-return paths.
     """
-    for line in body_lines:
-        # Strip comments and string literals FIRST. The statement-start anchor
-        # below includes ``:``, so prose such as ``// note: throw is avoided
-        # here`` would otherwise match and SUPPRESS a real finding. Stripping
-        # fails safe in this direction: if it misses a comment the finding is
-        # still reported, never silently dropped (see line_context's docstring
-        # on not using it as a hard skip -- suppression here is the only use
-        # that could lose a row, and a missed strip cannot cause that).
-        cleaned = strip_strings_and_comments(line)
-        if _PROPAGATES.search(cleaned):
-            return True
-        if any(
-            _opens_statement(cleaned, m.start())
-            for m in _RAISE_THROW.finditer(cleaned)
-        ):
-            return True
-    return False
+    return any(map(_line_propagates, body_lines))
+
+
+@lru_cache(maxsize=_LINE_MEMO)
+def _line_propagates(line: str) -> bool:
+    # Strip comments and string literals FIRST. The statement-start anchor
+    # below includes ``:``, so prose such as ``// note: throw is avoided
+    # here`` would otherwise match and SUPPRESS a real finding. Stripping
+    # fails safe in this direction: if it misses a comment the finding is
+    # still reported, never silently dropped (see line_context's docstring
+    # on not using it as a hard skip -- suppression here is the only use
+    # that could lose a row, and a missed strip cannot cause that).
+    cleaned = strip_strings_and_comments(line)
+    if _PROPAGATES.search(cleaned):
+        return True
+    return any(_opens_statement(cleaned, m.start()) for m in _RAISE_THROW.finditer(cleaned))
 
 
 def _scoped_body_enabled() -> bool:
@@ -382,6 +426,726 @@ def _handler_is_excused(body: list[str], inline: str = "") -> bool:
         or _body_propagates(lines)
         or _body_delegates(lines)
     )
+
+
+# ---------------------------------------------------------------------------
+# 0101 Concept A -- a handler that HANDS THE FAILURE ON, outside the security surface.
+#
+# CWE-778 is "a security-relevant event is not recorded"; the rule implemented "any
+# handler that does not log". Measured on one real target: 250 matched false
+# positives, and every handler SHAPE that had them also had true positives (an empty
+# catch, a conversion to a value, answering the client, forwarding the error --
+# `return toOpaqueFault(err)` was real in two byte-identical handlers and false in
+# three). The separating signal is where the failure GOES together with WHAT was
+# guarded. So a non-empty handler that neither logs nor propagates is excused only
+# when (1) its try opener resolves, (2) it hands the failure on, with the error
+# itself as evidence, and (3) the guarded operation is not security-relevant. Fails
+# toward the pre-0101 verdict: an unresolved try is reported.
+#
+# Every looked-at line, joined statement and argument span is capped at
+# `MAX_SCAN_CHARS` before a predicate runs, independent of the site-line guard,
+# and the per-routine analysis is memoised per file: handlers that
+# share a routine share its opener chain, prior names and security verdict.
+# ---------------------------------------------------------------------------
+_FAILURE_WORDS = frozenset({
+    "err", "error", "errors", "errored", "fail", "failed", "failure", "failures",
+    "exception", "exc", "fault",
+})
+# A handler that hands the error to one of these verbs keeps it: collected for a
+# batch report, or sent to a reporting sink. `set` is deliberately absent: it made
+# `res.set('X-Error', ...)` and `setTimeout(...)` excuse handlers.
+_COLLECT_VERBS = frozenset({"push", "append", "add", "insert", "put", "unshift", "enqueue", "extend", "store"})
+_REPORT_VERBS = frozenset({"report", "capture", "notify", "record", "track"})
+_HANDOFF_VERBS = _COLLECT_VERBS | _REPORT_VERBS
+# A routine whose name asks a question, or NEGATES the failure, never hands it on:
+# `isError(e)`, `swallowError(e)`, `ignoreFailures()`, `clearFailures()`,
+# `resetErrorState()`.
+_NOT_A_SINK_FIRST_WORDS = frozenset({
+    "is", "has", "can", "should", "was",
+    "swallow", "ignore", "suppress", "clear", "reset", "silence", "mute", "discard", "cleanup", "drop",
+})
+_STMT_END_TOKENS = ("{", "}", ";", ")", "=>")
+_STMT_END_WORDS = frozenset({"await", "void", "else", "then", "do"})
+_LOOK_BEHIND = 64            # characters `_statement_position` reads
+_TYPE_LOOK_BEHIND = 16       # characters the type-introspection test reads
+_ARG_SPAN = 400              # characters of a call's argument text
+_TRY_LOOKBACK = 80           # lines to the try opener before the handler is unresolved
+_ROUTINE_LOOKBACK = 300      # lines to the routine declaration
+_MEMO_MAX = 4096
+
+_WORD_ONLY = re.compile(r"[A-Z]?[a-z]{1,64}|[A-Z]{1,64}(?![a-z])")
+_TYPE_INTROSPECTION_BEFORE = re.compile(r"(?:\btype\s{0,2}\(|\btypeof\s{1,4})$")
+_TYPE_INTROSPECTION_AFTER = re.compile(
+    r"\s{0,2}(?:\.\s{0,2}(?:__class__|constructor|GetType|getClass|javaClass|__name__)\b|::\s{0,2}class\b)"
+)
+# The left-hand side also admits a `->` member chain: PHP `$this->x = $e` is a
+# field store. An element write through it
+# (`$this->errors[] = $e`) is not admitted: it is a pinned residual (`residual/residual.php`).
+_ASSIGN = re.compile(
+    r"^\s{0,80}(?P<decl>(?:const|let|var|val|my|local|final|auto)\s{1,4})?"
+    r"(?P<lhs>[@\w$][\w$.@]{0,120}(?:\[[^\]=]{0,60}\])?|[@\w$][\w$.@]{0,60}(?:->[\w$]{1,60}){1,6})"
+    r"\s{0,4}(?:\+|-|\|\||\?\?)?=(?![=>])\s{0,4}"
+    r"(?P<rhs>.{0,2000})$"
+)
+_CALLEE = re.compile(
+    r"(?<![\w$.])(new\s{1,4})?([A-Za-z_$][\w$]{0,60}(?:\s{0,2}\.\s{0,2}[A-Za-z_$][\w$]{0,60}){0,6})\s{0,4}\("
+)
+_DOT_SPLIT = re.compile(r"\s{0,2}\.\s{0,2}")
+_APPEND_OP = re.compile(r"[\w$\])]\s{0,4}<<\s{0,4}")
+_RETURN_KW = re.compile(r"(?:^|[\s{;:])return\b")
+_OBJECT_KEY = re.compile(r"(?<![\w$])[\w$]{1,60}\s{0,4}:(?!:)")
+_SEVERITY_ARG = re.compile(r"(?<![\w$])[A-Za-z_$][\w$]{0,60}\s{0,2}\.\s{0,2}([A-Za-z_]{1,30})(?![\w$(.])")
+_BRACKET = re.compile(r"[()\[\]{}]")
+_BRACKET_DELTA = {"(": 1, "[": 1, "{": 1, ")": -1, "]": -1, "}": -1}
+_NEXT_NONSPACE = re.compile(r"\S")
+# A field target, an element write, or a member write: the value outlives the handler.
+_FIELD_LHS = re.compile(r"[.@]|->|\[")
+# `try`/`begin`/`do` followed by a block, a colon or the end of the line; or a
+# try-with-resources header `try (Reader r = open(id)) {` (one level of nested
+# parentheses; each repetition takes one character or one group, so no
+# backtracking ambiguity), with its `{` on the line or the next.
+_TRY_OPEN = re.compile(
+    r"(?:^|[\s};])(?:(?:try|begin|do)\b\s{0,4}(?:\{|:|$)"
+    r"|try\s{0,4}\((?:[^()]|\([^()]{0,200}\)){0,300}\)\s{0,4}(?:\{|$))"
+)
+_RUBY_DEF = re.compile(r"^\s{0,80}def\b")
+_PRIOR_ASSIGN = re.compile(
+    r"(?:^|[\s,(;])(?:(?:const|let|var|val|my|local|final|auto)\s{1,4})?([A-Za-z_$@][\w$]{0,60})"
+    r"\s{0,4}(?::[^=]{0,80})?=(?![=>])"
+)
+_IDENT_ANY = re.compile(r"[A-Za-z_$][\w$]{0,60}")
+_SIGNATURE_CONTINUATION = (")", "})")
+
+
+@lru_cache(maxsize=4096)
+def _verb_words(ident: str) -> tuple[str, ...]:
+    """Letter-only words of a callee name, for the verb and failure lexicons."""
+    return tuple(w.lower() for w in _WORD_ONLY.findall(ident[:MAX_SCAN_CHARS]))
+
+
+def _tail_verb_words(dotted: str) -> tuple[str, ...]:
+    """Letter-only words of the LAST segment of a (possibly dotted) callee name."""
+    return _verb_words(_DOT_SPLIT.split(dotted)[-1])
+
+
+def _evidence_names(binding: frozenset[str]) -> frozenset[str]:
+    """The binding plus its `$` spelling: PHP writes the bound `e` as `$e`."""
+    return binding | frozenset("$" + n for n in binding)
+
+
+@lru_cache(maxsize=256)
+def _name_re(name: str) -> re.Pattern[str]:
+    return re.compile(r"(?<![\w$])" + re.escape(name) + r"(?![\w$])")
+
+
+@lru_cache(maxsize=256)
+def _interp_re(name: str) -> re.Pattern[str]:
+    return re.compile(r"\{\s{0,2}" + re.escape(name) + r"(?![\w$])")
+
+
+def _type_only(text: str, m: re.Match[str]) -> bool:
+    """`type(e)`, `typeof e`, `e.constructor`: only the error's TYPE escapes."""
+    before = text[max(0, m.start() - _TYPE_LOOK_BEHIND):m.start()]
+    return bool(_TYPE_INTROSPECTION_BEFORE.search(before) or _TYPE_INTROSPECTION_AFTER.match(text, m.end()))
+
+
+def _mentions_evidence(text: str, names: frozenset[str] | set[str]) -> bool:
+    """True when ``text`` carries the error itself, not merely its type."""
+    text = text[:MAX_SCAN_CHARS]
+    return any(not _type_only(text, m) for name in names for m in _name_re(name).finditer(text))
+
+
+def _interpolates(raw: str, names: frozenset[str] | set[str]) -> bool:
+    """`f"...{exc}"` / `${err}`: the error sits in a template hole the stripper blanked."""
+    return any(_interp_re(n).search(raw) for n in names)
+
+
+def _statement_position(code: str, at: int) -> bool:
+    """The call's value is not consumed by an enclosing expression."""
+    prefix = code[max(0, at - _LOOK_BEHIND):at].rstrip()
+    if not prefix or prefix.endswith(_STMT_END_TOKENS):
+        return True
+    return prefix.rsplit(None, 1)[-1] in _STMT_END_WORDS
+
+
+def _depth_delta(code: str) -> int:
+    return sum(_BRACKET_DELTA[b] for b in _BRACKET.findall(code))
+
+
+def _join_statements(lines: list[str]) -> list[tuple[str, str]]:
+    """Physical lines joined into (code, raw) statements by bracket depth: O(body)."""
+    out: list[tuple[str, str]] = []
+    code_acc, raw_acc, depth = "", "", 0
+    for raw in lines:
+        code = stripped_code(raw)  # lines arrive capped
+        code_acc, raw_acc = f"{code_acc} {code.strip()}", f"{raw_acc} {raw.strip()}"
+        depth += _depth_delta(code)
+        if depth <= 0:
+            out.append((code_acc.strip(), raw_acc))
+            code_acc, raw_acc, depth = "", "", 0
+    if code_acc.strip():
+        out.append((code_acc.strip(), raw_acc))
+    return out
+
+
+def _is_braced_block(code: str) -> bool:
+    return code.startswith("{") and ";" in code
+
+
+def _split_braced(code: str, raw: str) -> list[tuple[str, str]]:
+    """Allman: a joined statement that STARTS with `{` holds several statements."""
+    if not _is_braced_block(code):
+        return [(code, raw)]
+    return [(part, raw) for part in filter(None, (p.strip(" {}") for p in code.split(";")))]
+
+
+def _statements(header_tail: str, body: list[str]) -> list[tuple[str, str]]:
+    """The handler's statements, each body line and each statement capped first.
+
+    A lone `{` line (Allman) opens nothing to join, so it is dropped before joining
+    (the Allman and K&R twins of one handler must agree).
+    """
+    lines = [header_tail[:MAX_SCAN_CHARS], *_body_lines(body)]
+    return [_capped(pair) for code, raw in _join_statements(lines) for pair in _split_braced(code, raw)]
+
+
+def _body_lines(body: list[str]) -> list[str]:
+    return [b[:MAX_SCAN_CHARS] for b in body if stripped_code(b).strip() != "{"]
+
+
+def _capped(pair: tuple[str, str]) -> tuple[str, str]:
+    return pair[0][:MAX_SCAN_CHARS], pair[1][:MAX_SCAN_CHARS]
+
+
+def _chain_follows(expr: str, m: re.Match[str]) -> bool:
+    if m.group(0) != ")":
+        return False
+    nxt = _NEXT_NONSPACE.search(expr, m.end())
+    return nxt is not None and nxt.group(0) == "."
+
+
+def _is_call_chain(expr: str) -> bool:
+    """`a.b(..).c(..)`: a call's RESULT is itself called, at bracket depth 0."""
+    expr, depth = expr[:MAX_SCAN_CHARS], 0
+    for m in _BRACKET.finditer(expr):
+        depth += _BRACKET_DELTA[m.group(0)]
+        if depth == 0 and _chain_follows(expr, m):
+            return True
+    return False
+
+
+def _args_flag_failure(args: str) -> bool:
+    """An argument is a failure SEVERITY constant: `Kind.ERROR`, `Status.FAILED`.
+
+    Only the constant's own (final) name counts. `Catalog.BAD_REQUEST` names a
+    catalog that merely contains errors, and passing it is how a response is
+    written, which is not a hand-off.
+    """
+    return any(
+        _FAILURE_WORDS.intersection(_verb_words(m.group(1)))
+        for m in _SEVERITY_ARG.finditer(_OBJECT_KEY.sub(" ", args))
+    )
+
+
+def _names_failure(words: tuple[str, ...], args: str) -> bool:
+    """A failure-named routine (`onReloadFailure`), or a failure severity argument."""
+    return bool(_FAILURE_WORDS.intersection(words)) or _args_flag_failure(args)
+
+
+def _callee_excluded(words: tuple[str, ...]) -> bool:
+    return not words or words[0] in _NOT_A_SINK_FIRST_WORDS
+
+
+def _callee_is_sink(words: tuple[str, ...], args: str, names: frozenset[str]) -> bool:
+    """The callee keeps the failure: failure-named, or a collect/report verb given the error."""
+    if _callee_excluded(words):
+        return False
+    if _names_failure(words, args):
+        return True
+    return words[0] in _HANDOFF_VERBS and _mentions_evidence(args, names)
+
+
+def _is_statement_call(code: str, m: re.Match[str]) -> bool:
+    return not m.group(1) and _statement_position(code, m.start())
+
+
+def _callee_hands_on(code: str, m: re.Match[str], names: frozenset[str], ctx: "_HandlerContext") -> bool:
+    """One statement-position call keeps the failure.
+
+    Callback forwarding is decided by DATA FLOW: the error passed to a call whose
+    callee is a PARAMETER of the enclosing routine (`cb(err)`, `done(err)`,
+    `reject(e)`), never by a list of callback names.
+    """
+    args = call_argument_text(code, m.end() - 1, _ARG_SPAN)
+    if _mentions_evidence(args, names) and m.group(2).lstrip("$") in ctx.params:
+        return True
+    return _callee_is_sink(_tail_verb_words(m.group(2)), args, names)
+
+
+def _call_hands_on(code: str, names: frozenset[str], ctx: "_HandlerContext") -> bool:
+    """``ctx.params`` is read only when the error reaches a call's arguments (lazy)."""
+    return any(
+        _callee_hands_on(code, m, names, ctx)
+        for m in _CALLEE.finditer(code) if _is_statement_call(code, m)
+    )
+
+
+def _return_rhs(code: str) -> str | None:
+    """The text after the FIRST `return`, by search plus slice."""
+    m = _RETURN_KW.search(code[:MAX_SCAN_CHARS])
+    return None if m is None else code[m.end():MAX_SCAN_CHARS]
+
+
+class _HandlerContext:
+    """The handler's window. Each part is computed on first use: most handlers hand
+    nothing on and never need the prior names or parameters (cold-start cost).
+
+    ``openers``: enclosing opener lines, innermost first, capped. ``prior``: names
+    assigned (or parameters) before the try. ``params``: parameters of the routine.
+    Tests may pass any part ready-made.
+    """
+
+    def __init__(self, lines: tuple[str, ...] = (), start: int = 0, *, openers=None, prior=None, params=None):
+        self._lines, self.start = lines, start
+        self._given = {"openers": openers, "prior": prior, "params": params}
+
+    def _part(self, name: str, compute):
+        given = self._given[name]
+        return given if given is not None else compute()
+
+    @cached_property
+    def _indices(self) -> tuple[int, ...]:
+        return _opener_indices(self._lines, self.start)
+
+    @cached_property
+    def _routine(self) -> int:
+        return _routine_line(self._lines, self._indices)
+
+    @cached_property
+    def openers(self) -> tuple[str, ...]:
+        return self._part("openers", lambda: tuple(self._lines[i][:MAX_SCAN_CHARS] for i in self._indices))
+
+    @cached_property
+    def prior(self) -> frozenset[str]:
+        return self._part("prior", lambda: _names_before_try(self._lines, self._routine, self.start))
+
+    @cached_property
+    def params(self) -> frozenset[str]:
+        return self._part("params", lambda: _routine_params(self._lines, self._routine))
+
+
+def _return_hands_on(rhs: str, raw: str, names: frozenset[str], ctx: _HandlerContext) -> bool:
+    rhs = rhs.strip()
+    if _is_call_chain(rhs):
+        # `return res.status(500).json(err)`: a fluent write whose value is returned
+        # only to end the routine. Judged as the call it is.
+        return _call_hands_on(rhs, names, ctx)
+    return _mentions_evidence(rhs, names) or _interpolates(raw, names)
+
+
+def _plain_assignment(code: str) -> re.Match[str] | None:
+    asg = _ASSIGN.match(code)
+    return asg if asg and not asg.group("decl") else None
+
+
+def _assign_hands_on(asg: re.Match[str], raw: str, names: frozenset[str], prior: frozenset[str]) -> bool:
+    """Store by data flow: a field target, or a name that existed before the try.
+
+    A fresh local that nothing reads is not a hand-off, in any language, so the
+    Python `detail = str(exc)` and the TS `const detail = String(exc)` twins agree.
+    """
+    lhs = asg.group("lhs")
+    if not (_FIELD_LHS.search(lhs) or lhs in prior):
+        return False
+    return _mentions_evidence(asg.group("rhs"), names) or _interpolates(raw, names)
+
+
+def _append_hands_on(code: str, names: frozenset[str]) -> bool:
+    """`errors << e`: appended to a collection."""
+    app = _APPEND_OP.search(code)
+    return app is not None and _mentions_evidence(code[app.end():], names)
+
+
+def _line_hands_on(code: str, raw: str, names: frozenset[str], ctx: _HandlerContext) -> bool:
+    """One statement hands the failure on: returned, stored, appended, or sent to a sink."""
+    rhs = _return_rhs(code)
+    if rhs is not None:
+        return _return_hands_on(rhs, raw, names, ctx)
+    asg = _plain_assignment(code)
+    if asg is not None:
+        return _assign_hands_on(asg, raw, names, ctx.prior)
+    return _append_hands_on(code, names) or _call_hands_on(code, names, ctx)
+
+
+def _alias(code: str, names: frozenset[str]) -> str | None:
+    """`const msg = err.message`: a declared local that now carries the error."""
+    asg = _ASSIGN.match(code)
+    if asg and asg.group("decl") and _mentions_evidence(asg.group("rhs"), names):
+        return asg.group("lhs")
+    return None
+
+
+def _handler_hands_on(header_tail: str, body: list[str], names: frozenset[str], ctx: _HandlerContext) -> bool:
+    for code, raw in _statements(header_tail, body):
+        alias = _alias(code, names)
+        if alias is not None:
+            names = names | {alias}
+        elif _line_hands_on(code, raw, names, ctx):
+            return True
+    return False
+
+
+# ---- the window: try opener, enclosing openers, prior names, parameters ----
+_TRY_CACHE: dict = {}
+_CONTEXT_CACHE: dict = {}
+
+
+def _memo(cache: dict, lines: tuple[str, ...], key: int, compute):
+    """Per-file memo keyed by (id(lines), key), with an identity check on ``lines``."""
+    hit = cache.get((id(lines), key))
+    if hit is None or hit[0] is not lines:
+        if len(cache) > _MEMO_MAX:
+            cache.clear()
+        hit = (lines, compute())
+        cache[(id(lines), key)] = hit
+    return hit[1]
+
+
+def _opens_try(s: str, rescue: bool) -> bool:
+    code = stripped_code(s)
+    return bool(_TRY_OPEN.search(code)) or (rescue and bool(_RUBY_DEF.match(code)))
+
+
+def _try_step(s: str, base: int, rescue: bool) -> bool | None:
+    """None: this line opens the try. True: keep walking. False: the walk left the block."""
+    ind = indent_width(s) if s.strip() else base + 1
+    if ind != base:
+        return ind > base
+    return None if _opens_try(s, rescue) else True
+
+
+def _scan_try_start(lines: tuple[str, ...], i0: int) -> int:
+    base, rescue = indent_width(lines[i0]), lines[i0].lstrip().startswith("rescue")
+    for i in range(i0 - 1, max(-1, i0 - _TRY_LOOKBACK), -1):
+        step = _try_step(lines[i], base, rescue)
+        if step is None:
+            return i
+        if not step:
+            return -1
+    return -1
+
+
+def _try_start(lines: tuple[str, ...], i0: int) -> int:
+    """Index of the handler's try opener, or -1 when unresolved within 80 lines.
+
+    `try`/`begin`/`do` at the handler's indent; for a Ruby method-level `rescue`,
+    the `def` at its indent. Unresolved is reported, never excused (a
+    security call 86 lines above its catch was once read as non-security).
+    """
+    return _memo(_TRY_CACHE, lines, i0, lambda: _scan_try_start(lines, i0))
+
+
+# A call statement whose arguments open an anonymous callback
+# (`await withLock(id, async () => {`, `queue.run(function () {`, Java
+# `submit(() -> {`) has the shape of a member signature but declares nothing
+# (declaration syntax only). It is an enclosing opener, and the walk
+# continues to the routine above. The arrow must END the line (a block or
+# an expression body follows): an arrow inside a parameter TYPE,
+# `render(onDone: (r: Row) => void) {`, is followed by more of the signature, so
+# that method stays a declaration. The callee may be a PHP member or
+# static chain (`$this->db->transaction(function () {`, `Db::transaction(`).
+_CALLBACK_CALL = re.compile(
+    r"^\s{0,80}(?:await\s{1,4}|return\s{1,4})?(?:[\w$.]|->|::){1,120}\s{0,4}\([^\n]{0,300}?"
+    r"(?:(?:=>|->)\s{0,4}[{(]?\s{0,4}$|\bfunction\b[^(]{0,60}\()"
+)
+# `name(...) {` with nothing before the name -- no routine keyword, modifier or
+# return type -- is either a block statement inside a routine (`synchronized (lock) {`,
+# `lock (_sync)`, `using (...)`, `withContext(...) {`, Ruby `with_lock(id) {`) or a
+# method of a class or object literal whose language writes none (`repaint(cb) {`).
+# The walk keeps going: a keyword, modifier or typed declaration above it is the
+# routine; a type or object-literal opener above it makes it the routine.
+_BARE_CALL_OPENER = re.compile(r"^\s{0,80}[A-Za-z_$][\w$]{0,60}\s{0,4}\(")
+_TYPE_CONTAINER = re.compile(
+    r"\b(?:class|struct|object|interface|trait|impl|enum|record|module|namespace|extension"
+    r"|protocol|actor)\b|[=:(,]\s{0,4}\{?\s{0,4}$|^\s{0,80}(?:export\s{1,4})?default\s{0,4}\{"
+)
+
+
+@lru_cache(maxsize=16384)
+def _is_decl_line(line: str) -> bool:
+    """A routine declaration line, never a call that takes a callback."""
+    return routine_header(line) and not _CALLBACK_CALL.match(stripped_code(line))
+
+
+def _is_opener(s: str, floor: int, in_sig: bool) -> bool:
+    ind = indent_width(s)
+    return bool(s.strip()) and (ind < floor or (in_sig and ind <= floor))
+
+
+def _opener_and_header(lines: tuple[str, ...], i: int) -> tuple[int, ...]:
+    """An Allman `{` alone on its line (a comment may follow) was opened by the code
+    line above it, which may sit at the same indent: both are openers."""
+    if stripped_code(lines[i]).strip() != "{":
+        return (i,)
+    above = _prev_code_index(lines, i + 1)
+    return (i,) if above < 0 else (i, above)
+
+
+def _opener_steps(lines: tuple[str, ...], start: int):
+    """Enclosing opener lines, nearest first: strictly decreasing indent, following
+    a multi-line `})` signature and an Allman brace's header, within 300 lines."""
+    floor, in_sig, below = indent_width(lines[start]), False, start
+    for i in range(start - 1, max(-1, start - _ROUTINE_LOOKBACK), -1):
+        if i >= below or not _is_opener(lines[i], floor, in_sig):
+            continue
+        found = _opener_and_header(lines, i)
+        yield from found
+        below = found[-1]
+        floor, in_sig = indent_width(lines[below]), lines[below].lstrip().startswith(_SIGNATURE_CONTINUATION)
+
+
+def _opener_kind(line: str, bare_pending: bool) -> str:
+    if _is_decl_line(line):
+        return "bare" if _BARE_CALL_OPENER.match(stripped_code(line)) else "decl"
+    return "container" if _ends_bare_walk(line, bare_pending) else "other"
+
+
+def _ends_bare_walk(line: str, bare_pending: bool) -> bool:
+    return bare_pending and _TYPE_CONTAINER.search(stripped_code(line)) is not None
+
+
+class _RoutineWalk:
+    """Collects openers up to the routine. A keyword, modifier or typed declaration
+    ends the walk. A bare `name(...) {` is remembered; if a type or object-literal
+    opener, or the bound, comes before any such declaration, the walk ends at the
+    first bare opener, which is the reading the shipped walk always gave it."""
+
+    def __init__(self):
+        self.out: list[int] = []
+        self.bare, self.decl = -1, False
+
+    def stops_at(self, i: int, line: str) -> bool:
+        kind = _opener_kind(line, self.bare >= 0)
+        if kind == "container":
+            return True
+        self.out.append(i)
+        if kind == "bare" and self.bare < 0:
+            self.bare = len(self.out) - 1
+        self.decl = kind == "decl"
+        return self.decl
+
+    def result(self) -> tuple[int, ...]:
+        if self.decl or self.bare < 0:
+            return tuple(self.out)
+        return tuple(self.out[:self.bare + 1])
+
+
+def _opener_indices(lines: tuple[str, ...], start: int) -> tuple[int, ...]:
+    """Enclosing opener lines, up to and including the routine declaration or 300 lines."""
+    walk = _RoutineWalk()
+    any(walk.stops_at(i, lines[i]) for i in _opener_steps(lines, start))
+    return walk.result()
+
+
+def _enclosing_openers(lines: tuple[str, ...], start: int) -> tuple[str, ...]:
+    """Test oracle: the opener lines ``_opener_indices`` finds, as text."""
+    return tuple(lines[i][:MAX_SCAN_CHARS] for i in _opener_indices(lines, start))
+
+
+def _routine_line(lines: tuple[str, ...], openers: tuple[int, ...]) -> int:
+    """Index of the routine declaration among the openers, or -1."""
+    return openers[-1] if openers and _is_decl_line(lines[openers[-1]]) else -1
+
+
+def _names_before_try(lines: tuple[str, ...], routine: int, start: int) -> frozenset[str]:
+    """Names assigned from the routine start to the try, plus every identifier of
+    the declaration line (its parameters)."""
+    if routine < 0:
+        return frozenset()
+    out = set(_IDENT_ANY.findall(stripped_code(lines[routine])))
+    out.update(*map(_assigned_names, lines[routine:start + 1]))
+    return frozenset(out)
+
+
+@lru_cache(maxsize=16384)
+def _assigned_names(line: str) -> frozenset[str]:
+    return frozenset(m.group(1) for m in _PRIOR_ASSIGN.finditer(stripped_code(line)))
+
+
+def _routine_params(lines: tuple[str, ...], routine: int) -> frozenset[str]:
+    if routine < 0:
+        return frozenset()
+    parts = (p for group in paren_lists(stripped_code(lines[routine])) for p in group.split(","))
+    return frozenset(filter(None, map(param_name, parts)))
+
+
+class _LazyContext:
+    """Resolves the try opener only when a strategy first reads the window: most
+    handlers hand nothing on, so they never pay for the walk (cold-start cost).
+    An unresolved window reads as no prior names and no parameters, and the
+    handler is reported regardless."""
+
+    def __init__(self, lines: tuple[str, ...], lineno: int):
+        self._lines, self._lineno = lines, lineno
+
+    @cached_property
+    def window(self) -> "_HandlerContext | None":
+        return _handler_context(self._lines, self._lineno)
+
+    @property
+    def prior(self) -> frozenset[str]:
+        return self.window.prior if self.window is not None else frozenset()
+
+    @property
+    def params(self) -> frozenset[str]:
+        return self.window.params if self.window is not None else frozenset()
+
+
+def _handler_context(lines: tuple[str, ...], lineno: int) -> _HandlerContext | None:
+    """The memoised window of the handler at 1-based ``lineno``; None when unresolved."""
+    start = _try_start(lines, lineno - 1)
+    if start < 0:
+        return None
+    return _memo(_CONTEXT_CACHE, lines, start, lambda: _HandlerContext(lines, start))
+
+
+# ---- the security gate: concept roots over identifier words ----
+# Prefix roots (a word STARTING with one), the infix `crypt` (bcrypt, decrypt,
+# crypto), exact words, and key compounds (`findByApiKey` -> api+key). Measured:
+# `hash` as a prefix matched content hashes (`blobHash`, `recordHash`), so it is
+# exact-only; `publicKey` is not a key compound. Over-matching is a precision cost,
+# never a recall loss (`tokenizer` matches by design).
+_SECURITY_PREFIXES = (
+    "auth", "login", "logout", "signin", "signup", "passw", "credential", "secret", "token",
+    "apikey", "session", "cookie", "jwt", "jws", "jwk", "jwe", "oauth", "oidc", "saml",
+    "permission", "privilege", "role", "grant", "revok", "cipher", "decipher", "hmac",
+    "signature", "sign", "verif", "validat", "sanitiz", "escape", "admin", "sudo", "chmod",
+    "chown", "umask", "cert", "x509", "keystore", "truststore", "trust", "csrf", "xsrf",
+    "audit", "firewall", "allowlist", "denylist", "blocklist", "polic", "enforc", "entitl",
+    "access", "allow", "totp", "nonce", "digest", "protect", "pbkdf", "scrypt", "argon",
+    "impersonat", "consent", "captcha", "hashpass", "passwordhash",
+    # Credential and directory/keystore roots: a PIN check, an LDAP bind,
+    # a keychain read, a biometric unlock, a Kerberos ticket, a bearer header.
+    "passphrase", "ldap", "bearer", "keychain", "biometric", "kerberos",
+    # Privilege change, credential stores, remote login, secret release,
+    # sandboxing, device attestation, lockout and rate limiting.
+    # Measured one root at a time: zero row change on the reference trees.
+    "setuid", "setgid", "seteuid", "setegid", "setresuid", "setresgid", "setreuid", "setregid",
+    "setgroups", "initgroups", "keyring", "userauth", "unseal", "seccomp", "sandbox",
+    "webauthn", "fido", "pkcs", "lockout", "ratelimit",
+)
+_SECURITY_EXACT = frozenset({
+    "acl", "sso", "otp", "mfa", "2fa", "kms", "mac", "tls", "ssl", "root", "cors", "origin",
+    "referer", "scope", "scopes", "seal", "authn", "authz", "hash", "hashed", "hashing", "rehash",
+    # Symmetric cipher primitives (`AES.GCM.open(box, using: key)` names no other root).
+    # Measured: zero row change on the reference trees.
+    "aes", "gcm", "chacha20",
+    # Credential abbreviations, exact words only: `pin` as a prefix would match
+    # `pinned`/`pinch`, `sig` would match `sigma`.
+    "pin", "pw", "pwd", "sig",
+    # Exact only: `ssh` as a prefix would match `sshare`, `unlock` would match
+    # `unlocked` counters; `pinning` (certificate pinning) is not `pinned`.
+    "ssh", "unlock", "pinning", "limiter",
+})
+# Adjacent identifier-word pairs naming a constant-time comparison, a primitive
+# that exists only to compare secrets (`timingSafeEqual`, `constantTimeCompare`).
+_SECURITY_PAIRS = frozenset({
+    ("timing", "safe"), ("constant", "time"),
+    # The keychain primitive (`SecItemCopyMatching`), a secure credential store, a rate limit.
+    ("sec", "item"), ("secure", "store"), ("rate", "limit"),
+})
+_SECURITY_INFIXES = ("crypt",)
+_KEY_QUALIFIERS = frozenset({
+    "api", "signing", "private", "secret", "master", "encryption", "sign", "access", "session",
+    "hmac", "jwt",
+})
+# An ARGUMENT or receiver counts only through the narrower credential roots: a
+# `user` or `doc` argument says nothing about the operation.
+_CREDENTIAL_PREFIXES = (
+    "token", "passw", "credential", "secret", "signature", "jwt", "jws", "otp", "totp", "mfa",
+    "cert", "apikey", "session", "nonce", "csrf", "cookie",
+)
+_CREDENTIAL_EXACT = frozenset({"otp", "mfa", "2fa", "pin", "pw", "pwd", "passphrase", "bearer"})
+_OBJECT_KEY_ANY = re.compile(r"(?<![\w$])[\w$]{1,60}\s{0,4}\??:(?!:)")
+_CALLEE_PATH = re.compile(
+    r"(?<![\w$])((?:[A-Za-z_$][\w$]{0,60}\s{0,2}(?:\?\.|\.|::|->)\s{0,2}){0,8}[A-Za-z_$][\w$]{0,60})"
+    r"\s{0,4}(?:<[^<>()]{0,80}>)?\s{0,2}\("
+)
+
+
+def _word_is_security(w: str) -> bool:
+    return w in _SECURITY_EXACT or w.startswith(_SECURITY_PREFIXES) or any(x in w for x in _SECURITY_INFIXES)
+
+
+def _has_key_compound(words: tuple[str, ...]) -> bool:
+    return any(a in _KEY_QUALIFIERS and b in ("key", "keys") for a, b in zip(words, words[1:]))
+
+
+def _has_security_pair(words: tuple[str, ...]) -> bool:
+    return any(pair in _SECURITY_PAIRS for pair in zip(words, words[1:]))
+
+
+def guards_security_operation(words: tuple[str, ...]) -> bool:
+    """True when identifier ``words`` name a security operation (one vocabulary,
+    shared by the hand-off gate, the promise gate and the SECURITY_SCOPE arm)."""
+    return any(map(_word_is_security, words)) or _has_key_compound(words) or _has_security_pair(words)
+
+
+def _word_is_credential(w: str) -> bool:
+    return w.startswith(_CREDENTIAL_PREFIXES) or w in _CREDENTIAL_EXACT
+
+
+def _names_credential(ident: str) -> bool:
+    words = identifier_words(ident)
+    return any(map(_word_is_credential, words)) or _has_key_compound(words)
+
+
+def _callee_is_security(m: re.Match[str]) -> bool:
+    return any(guards_security_operation(identifier_words(i)) for i in _IDENT_ANY.findall(m.group(1)))
+
+
+@lru_cache(maxsize=16384)
+def _text_is_security(code: str) -> bool:
+    """Every segment of every callee path, plus non-key argument/receiver identifiers
+    through the credential roots (object keys excluded: `{ addressVerified: true }`)."""
+    code = code[:MAX_SCAN_CHARS]
+    if any(map(_callee_is_security, _CALLEE_PATH.finditer(code))):
+        return True
+    return any(map(_names_credential, _IDENT_ANY.findall(_OBJECT_KEY_ANY.sub(" ", code))))
+
+
+@lru_cache(maxsize=16384)
+def _line_is_security(line: str) -> bool:
+    code = stripped_code(line)
+    return _text_is_security(code) or bool(_SECURITY_SIGNAL_RE.search(code))
+
+
+def _window_is_security(lines: tuple[str, ...], lineno: int, header: str,
+                        ctx: _HandlerContext | None) -> bool:
+    """The guarded text -- try body, every enclosing opener, and the handler header
+    (its exception TYPE: `BadSignature`, `JWT::DecodeError`) -- names a security
+    operation. True when the window is unresolved (report)."""
+    if ctx is None or _text_is_security(stripped_code(header)):
+        return True
+    guarded = (*lines[ctx.start:lineno], *ctx.openers)
+    return any(_line_is_security(s[:MAX_SCAN_CHARS]) for s in guarded)
+
+
+def _handler_excused(header: str, header_tail: str, body: list[str],
+                     lines: tuple[str, ...], lineno: int, suffix: str) -> bool:
+    """The shipped excusals (log, propagate, delegate), then 0101 Concept A."""
+    return _handler_is_excused(body, inline=header_tail) or _excused_as_handed_on(
+        header, header_tail, body, lines, lineno, suffix)
+
+
+def _excused_as_handed_on(header: str, header_tail: str, body: list[str],
+                          lines: tuple[str, ...], lineno: int, suffix: str = "") -> bool:
+    """0101 Concept A: the handler hands its failure on, outside the security surface."""
+    lazy = _LazyContext(lines, lineno)
+    if not _handler_hands_on(header_tail, body, _evidence_names(catch_binding(header, suffix)), lazy):
+        return False
+    ctx = lazy.window
+    return ctx is not None and not _window_is_security(lines, lineno, header, ctx)
 
 
 def _build_finding(
@@ -452,7 +1216,7 @@ def _scan_py_except(
     if not _PY_EXCEPT.search(line):
         return
     body = _body_for(lines, lineno, brace_family=False)  # lineno is 1-based → start at index lineno
-    if _handler_is_excused(body):
+    if _handler_excused(line, "", body, lines, lineno, ".py"):
         return
     findings.append(_build_finding(file_path, lineno, lines))
 
@@ -507,7 +1271,7 @@ def _scan_catch(
     # A single-line `catch (err) { next(err) }` keeps its whole body on
     # the header line, which collect_handler_body never returns — so the
     # text after the opening brace is part of the body for propagation.
-    if _handler_is_excused(body, inline=line[match.end():]):
+    if _handler_excused(line, line[match.end():], body, lines, lineno, Path(file_path).suffix.lower()):
         return
     findings.append(_build_finding(file_path, lineno, lines))
 
@@ -892,12 +1656,14 @@ def _scan_promise_rejection(
         return
     if inline_empty:
         # Body is empty and closed on this line: nothing further to read.
-        if _body_has_logging([line]) or _body_delegates([line]):
+        if _body_has_logging([line]) or _delegates_or_best_effort([line], line, lines, lineno, is_proc):
             return
     else:
         body = collect_scoped_body(lines, lineno, brace_family=True)
         scope = [line, *body]
-        if _body_has_logging(scope) or _body_propagates(scope) or _body_delegates(scope):
+        if _body_has_logging(scope) or _body_propagates(scope) or _delegates_or_best_effort(
+            scope, line, lines, lineno, is_proc
+        ):
             return
         if not is_proc and [b.strip() for b in body if b.strip() not in ("", "}", "});", ")", "},")]:
             return
@@ -927,6 +1693,153 @@ def _scan_promise_rejection(
     }
     finding["code_snippet"] = extract_snippet(lines, anchor)
     findings.append(enrich_finding(finding, "778"))
+
+
+# ---------------------------------------------------------------------------
+# 0101 Concept C -- a promise swallow that is best effort by design.
+#
+# `.catch(() => <nothing>)` after a TEARDOWN call (`stale.disconnect()`), or whose
+# fallback the code null-checks (`const p = await r.json().catch(() => null)` then
+# `p?.code`), records nothing because nothing needs recording. Excused only when
+# the chain head is not a security operation: `verifyJwt(t).catch(() => null)`
+# followed by a 401, and `session.destroy().catch(() => {})` on logout, stay
+# reported. The teardown must be the LAST call before `.catch`:
+# `revokeToken(t).then(() => session.destroy()).catch(...)` and
+# `....finally(() => db.close()).catch(...)` stay reported.
+# ---------------------------------------------------------------------------
+_TEARDOWN_VERBS = frozenset({
+    "close", "disconnect", "destroy", "dispose", "cleanup", "release", "unsubscribe",
+    "abort", "cancel", "stop", "terminate", "shutdown", "quit", "unref", "detach",
+})
+_ASSIGNED_CATCH = re.compile(r"(?:^|[^=!<>])=\s{0,4}(?:await\s{1,4})?[^=;]{0,200}\.catch\s{0,4}\(")
+_ASSIGNED_NAME = re.compile(
+    r"^\s{0,80}(?:(?:const|let|var|val)\s{1,4})?([A-Za-z_$][\w$]{0,60})\s{0,4}(?::[^=]{0,120})?=(?![=>])"
+)
+# `(await x.catch(() => null)) ?? DEFAULTS`: the fallback is replaced on the same line.
+_SAME_LINE_FALLBACK = re.compile(r"\)\s{0,4}(?:\)\s{0,4})?(?:\?\?|\|\|)")
+_NULL_GUARD_LINES = 3
+_CHAIN_LOOKBACK = 6
+
+
+def _chain_head(code: str) -> str:
+    return code[:MAX_SCAN_CHARS].split(".catch", 1)[0]
+
+
+def _last_callee_words(head: str) -> tuple[str, ...]:
+    last = None
+    for last in _CALLEE.finditer(head):
+        pass
+    return _tail_verb_words(last.group(2)) if last else ()
+
+
+def _chain_prefix(lines: tuple[str, ...], lineno: int) -> list[str]:
+    """The earlier lines of a chain the site line continues, at most 6: a `.then(...)`
+    on its own line, and the lines of a call whose arguments break over
+    lines, `revokeAllTokens(` / `userId,` / `).catch(...)`. The walk
+    goes back while the text read so far closes more brackets than it opens, or
+    starts with `.`."""
+    out, cur = [], stripped_code(lines[lineno - 1]).lstrip()
+    depth = _depth_delta(_chain_head(cur))
+    for i in range(lineno - 2, max(-1, lineno - 2 - _CHAIN_LOOKBACK), -1):
+        if depth >= 0 and not cur.startswith("."):
+            break
+        cur = stripped_code(lines[i]).lstrip()
+        depth += _depth_delta(cur)
+        out.append(cur)
+    return out[::-1]
+
+
+def _chain_head_text(code: str, lines: tuple[str, ...], lineno: int) -> str:
+    """The text before `.catch`, read across `.`-continuation line breaks."""
+    return " ".join((*_chain_prefix(lines, lineno), _chain_head(code)))
+
+
+def _chain_is_security(code: str, lines: tuple[str, ...], lineno: int) -> bool:
+    return _text_is_security(_chain_head_text(code, lines, lineno)[-MAX_SCAN_CHARS:])
+
+
+# Read on the REVERSED text before a `(`, so the match is anchored at its start:
+# a `...$`-anchored search would retry 61 characters at every position. `\A`
+# keeps an unanchored search (the 0087 ReDoS gate) from trying the leading
+# whitespace run at every position of a 512 KB line.
+_REVERSED_NAME = re.compile(r"\A\s{0,4}([\w$]{1,61})")
+
+
+def _last_call(head: str) -> tuple[str, str] | None:
+    """(callee name, argument text) of the call that ENDS the chain head: the last
+    depth-0 segment, `.then(() => db.close())` in `load().then(() => db.close())`."""
+    head = head.rstrip()
+    open_at = opening_bracket(head) if head.endswith(")") else -1
+    name = _name_before(head, open_at) if open_at > 0 else ""
+    if not name:
+        return None
+    return name, call_argument_text(head, open_at, _ARG_SPAN)
+
+
+def _name_before(text: str, at: int) -> str:
+    """The identifier that ends just before ``text[at]`` (spaces allowed), or ""."""
+    m = _REVERSED_NAME.match(text[max(0, at - 80):at][::-1])
+    name = m.group(1)[::-1] if m else ""
+    return "" if name[:1].isdigit() else name
+
+
+def _ends_in_teardown(head: str) -> bool:
+    """The last call is a teardown verb, or a `.then(...)` whose callback's last call
+    is one (`x.then(l => l.close())`). `.finally(() => db.close())`, or a teardown
+    followed by `.then(render)`, does not count."""
+    call = _last_call(head)
+    if call is None:
+        return False
+    words = _last_callee_words(call[1]) if call[0] == "then" else _verb_words(call[0])
+    return bool(words) and words[0] in _TEARDOWN_VERBS
+
+
+def _chain_tears_down(code: str) -> bool:
+    """The LAST call before `.catch` is a teardown verb, on a non-security chain."""
+    head = _chain_head(code)
+    return not _text_is_security(head) and _ends_in_teardown(head)
+
+
+@lru_cache(maxsize=256)
+def _null_guard_re(name: str) -> re.Pattern[str]:
+    name = re.escape(name)
+    return re.compile(
+        r"(?<![\w$])" + name + r"\s{0,2}(?:\?\.|\?\?|[!=]==?\s{0,2}(?:null|undefined))"
+        r"|(?:\bif\s{0,4}\(\s{0,4}!?\s{0,2}|\btypeof\s{1,4})" + name + r"(?![\w$])"
+    )
+
+
+def _assigned_and_guarded(code: str, lines: tuple[str, ...], lineno: int) -> bool:
+    """The `.catch` result is assigned and null-guarded within the next 3 lines."""
+    m = _ASSIGNED_NAME.search(code) if _ASSIGNED_CATCH.search(code) else None
+    if m is None:
+        return False
+    guard = _null_guard_re(m.group(1))
+    return any(guard.search(stripped_code(s)) for s in lines[lineno:lineno + _NULL_GUARD_LINES])
+
+
+def _fallback_is_null_checked(code: str, lines: tuple[str, ...], lineno: int) -> bool:
+    """The swallowed rejection's fallback value is checked, on this line or the next 3."""
+    head = _chain_head(code)
+    if _text_is_security(head):
+        return False
+    if _SAME_LINE_FALLBACK.search(code[:MAX_SCAN_CHARS], len(head)):
+        return True
+    return _assigned_and_guarded(code[:MAX_SCAN_CHARS], lines, lineno)
+
+
+def _delegates_or_best_effort(scope: list[str], line: str, lines: tuple[str, ...], lineno: int,
+                              is_proc: bool) -> bool:
+    """The shipped delegation excusal, then 0101 Concept C."""
+    return _body_delegates(scope) or _promise_swallow_excused(line, lines, lineno, is_proc)
+
+
+def _promise_swallow_excused(line: str, lines: tuple[str, ...], lineno: int, is_proc: bool) -> bool:
+    """0101 Concept C, never on a security chain. The last-resort `process.on(...)`
+    handler is never excused."""
+    if is_proc or _chain_is_security(line, lines, lineno):
+        return False
+    return _chain_tears_down(line) or _fallback_is_null_checked(line, lines, lineno)
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +2026,18 @@ def _shapes_for(suffix: str) -> tuple:
     return tuple(sh for sh in _EXTRA_SHAPES if suffix in sh[0])
 
 
+def _logs_or_forwards(scope: list[str]) -> bool:
+    return _body_has_logging(scope) or _body_propagates(scope) or _body_delegates(scope)
+
+
+def _shape_excused(check: str, line: str, scope: list[str], lines: tuple[str, ...], lineno: int,
+                   suffix: str) -> bool:
+    """The shipped excusals, then 0101 Concept A for shapes that have a block body."""
+    if _logs_or_forwards(scope):
+        return True
+    return check not in _EXPRESSION_SHAPES and _excused_as_handed_on(line, "", scope[1:], lines, lineno, suffix)
+
+
 def _scan_extra_language_shapes(
     line: str,
     lineno: int,
@@ -1152,7 +2077,7 @@ def _scan_extra_language_shapes(
             # unreportable, the same way the Go arm's `if not stripped: return`
             # made `if err != nil { }` unreportable.
             scope = [line, *_body_for(lines, lineno, brace_family)]
-        if _body_has_logging(scope) or _body_propagates(scope) or _body_delegates(scope):
+        if _shape_excused(check, line, scope, lines, lineno, suffix):
             continue
         seen_lines.add(lineno)
         finding = {
@@ -1197,7 +2122,7 @@ def _scan_auth_decision(
     # ~99% of lines that were never candidates. Measured: this scanner was half
     # the skill's total runtime, with 184k strip calls and 184k os.environ reads
     # for 62 findings.
-    if not _AUTH_DECISION.search(line):
+    if not _auth_candidate(line):
         return
     if strip is None:
         strip = _auth_strip_enabled()
@@ -1210,7 +2135,7 @@ def _scan_auth_decision(
         code = strip_strings_and_comments(line)
         if not code.strip() or not _AUTH_DECISION.search(code):
             return
-    if _has_log_within(lines, lineno, radius=4):
+    if _auth_line_excused(line, lines, lineno):
         return
     # 0087 B3: an auth decision that propagates or delegates the error is no more
     # a logging defect than a handler that does. The excusals the handler path has
@@ -1247,6 +2172,314 @@ def _scan_auth_decision(
 
 
 # ---------------------------------------------------------------------------
+# 0101 Concept B -- a keyword that NAMES an outcome is not an authorization decision.
+#
+# Measured on one real target: 45 auth_decision rows were error-code enums, i18n
+# key maps, error catalogs and regexes classifying failure reasons -- lines where
+# "unauthorized"/"forbidden" is the name being DEFINED. A matched line is skipped
+# only when its keyword is that name (a declaration's left-hand side, an enum
+# member, a `when` mapping, a pattern branch, a type query, a declaration's
+# parameter, a bare case label, an element of an open list); a value being decided
+# or answered is still reported. Runs OUTSIDE the AUTH_STRIP branch, so
+# `VULTURE_CWE778_AUTH_STRIP=false` keeps its 0087 meaning exactly.
+# ---------------------------------------------------------------------------
+_DECL_PREFIX = re.compile(
+    r"^\s{0,80}(?:(?:export|const|val|var|let|static|readonly|final|public|private|protected"
+    r"|internal|declare|def|lazy|override)\s{1,4}){1,5}$"
+)
+_CASE_ARM = re.compile(r"^\s{0,80}case\b[^:=]{0,200}?(?::(?!:)|=>)(?P<rest>.{0,2000})$")
+_BOOLISH = re.compile(r"[!<>]|&&|\|\||===?|!==?")
+_BOOL_VALUE = re.compile(
+    r"^\s{0,8}(?:!(?!=)|not\b)|&&|\|\||[=!]==?|[<>]=|\s[<>]\s|\b(?:and|or|not|instanceof|is)\b"
+)
+# A `when` mapping has a LITERAL left-hand side (a number or a string literal,
+# optionally a comma list): `401 -> Reason.UNAUTHORIZED`. `user.banned ->`,
+# `Role.GUEST ->`, `else ->` and `default ->` decide the outcome.
+# Literals arrive blanked by the stripper (`"denied"` reads as `""`).
+_WHEN_LITERAL = r"(?:-?\d[\w.]{0,20}|\"\"|'')"
+_WHEN_BRANCH = re.compile(r"^\s{0,80}" + _WHEN_LITERAL + r"(?:\s{0,4},\s{0,4}" + _WHEN_LITERAL + r"){0,10}\s{0,4}->")
+_COLLECTION_ELEMENT = re.compile(
+    r"^\s{0,80}(?:\.\.\.)?[A-Za-z_$][\w$]{0,60}(?:\.[A-Za-z_$][\w$]{0,60}){0,6}\s{0,4},?\s{0,4}$"
+)
+_KEY_VALUE = re.compile(r"\s{0,4}\??:(?!:)(?P<v>.{0,2000})")
+_CONST_ASSIGN = re.compile(r"\s{0,4}=(?![=>])")
+_ENUM_ARGS = re.compile(r"\s{0,4}\([^()]{0,120}\)\s{0,4},?\s{0,4}$")
+_INLINE_ENUM = re.compile(r"\benum\b[^{]{0,120}\{")
+_ENUM_WORD = re.compile(r"\benum\b")
+_TYPE_QUERY = re.compile(r"\btypeof\s{1,4}[\w.]{0,120}$")
+_CONTROL_IN_OPENER = re.compile(r"\b(?:if|while|return|throw)\b")
+_BRANCH_ENDS = ("else", "=>", "=", "->", "?", ":")
+_BRACKET_SCAN_LINES = 40
+_BRACKET_SCAN_RAW = 4 * _BRACKET_SCAN_LINES
+# A whole-line comment: `//`, `#` (not a `#[` attribute), `/*`, `*/`, or a
+# block-comment body line (`* text`, `*` alone). `*p = 0;` is code and is not matched.
+_COMMENT_ONLY = re.compile(r"^\s{0,80}(?://|#(?!\[)|/\*|\*/|\*(?:\s|$))")
+
+
+def _is_alternation_branch(before: str, after: str) -> bool:
+    """`|unauthorized|` in a pattern; `||` is an OPERATOR (`expired||forbidden` decides)."""
+    return (before.endswith("|") and not before.endswith("||")) or (
+        after.startswith("|") and not after.startswith("||"))
+
+
+def _typed_non_decision(after: str) -> bool:
+    """`forbidden?: boolean` / `UNAUTHORIZED: { code: 401 }`: a key whose value decides nothing."""
+    km = _KEY_VALUE.match(after)
+    return km is not None and not _BOOLISH.search(km.group("v").split("//")[0])
+
+
+def _boolean_value(value: str) -> bool:
+    """The assigned value decides something: `!x`, `not x`, `&&`, `||`, `and`, `or`,
+    or a comparison. A generic `<T>` and an arrow `=>` are not comparisons."""
+    return bool(_BOOL_VALUE.search(value.split("//")[0]))
+
+
+def _assigned_constant(after: str, keyword: str, before: str) -> bool:
+    """`FORBIDDEN = 403` / `const unauthorized = ERRORS.x`: a name bound to a value that
+    is not a boolean expression (`const forbidden = !user.isAdmin`
+    is the decision itself)."""
+    m = _CONST_ASSIGN.match(after)
+    if m is None or _boolean_value(after[m.end():]):
+        return False
+    return keyword.isupper() or bool(_DECL_PREFIX.match(before))
+
+
+def _declares(after: str, keyword: str, before: str) -> bool:
+    return _typed_non_decision(after) or _assigned_constant(after, keyword, before) or bool(_ENUM_ARGS.match(after))
+
+
+def _is_declaration_lhs(before: str, after: str, keyword: str) -> bool:
+    """The keyword follows only declaration prefixes and is the name being defined."""
+    at_lhs = before.strip() == "" or bool(_DECL_PREFIX.match(before))
+    return at_lhs and _declares(after, keyword, before)
+
+
+@lru_cache(maxsize=_LINE_MEMO)
+def _auth_matches(code: str) -> tuple[tuple[int, int, str], ...]:
+    """(start, end, keyword) of every auth keyword on a stripped line, computed once:
+    Concept B reads them three times per candidate line."""
+    return tuple((m.start(), m.end(), m.group(0)) for m in _AUTH_DECISION.finditer(code))
+
+
+def _auth_match_is_declaration(code: str, match: tuple[int, int, str]) -> bool:
+    start, end, keyword = match
+    before, after = code[:start], code[end:]
+    return (_is_alternation_branch(before, after) or _is_declaration_lhs(before, after, keyword)
+            or (bool(_WHEN_BRANCH.match(code)) and "->" in before))
+
+
+# Runs of one bracket character; kinds match independently. The group that
+# matched names the run: (kind, opens).
+_BRACKET_RUN = re.compile(r"(\(+)|(\)+)|(\[+)|(\]+)|(\{+)|(\}+)")
+_RUN_KIND = (None, ("(", True), ("(", False), ("[", True), ("[", False), ("{", True), ("{", False))
+
+
+class _BracketTrack:
+    """Forward bracket stacks, one per opener kind, over a run of lines of one file.
+
+    The innermost bracket still open above a line is the most recent unmatched
+    opener: per kind, brackets match the same way read forwards (a stack) as read
+    backwards (a carried depth), so the top of each stack is what the backward
+    walk would stop at. The run advances with the scan, so each line is read once
+    per file instead of once per auth-candidate line below it (a file
+    of auth-candidate lines re-read 40 lines of up to 2000 characters each).
+    Stack entries are runs ``[line, first column, count]``, so a line of 2000
+    identical brackets costs one entry, not 2000."""
+
+    def __init__(self, lines: tuple[str, ...], start: int):
+        self.lines, self.start, self.next = lines, start, start
+        self.stacks: dict[str, list[list[int]]] = {"(": [], "[": [], "{": []}
+        self.rank = [0]   # rank[k]: code lines in lines[start:start + k]
+
+    def advance(self, upto: int) -> None:
+        for i in range(self.next, upto):
+            self._feed(i)
+        self.next = max(self.next, upto)
+
+    def _feed(self, i: int) -> None:
+        is_code = _is_code_line(self.lines[i])
+        self.rank.append(self.rank[-1] + is_code)
+        if is_code and _may_leave_open(stripped_code(self.lines[i])):
+            self._match(i, stripped_code(self.lines[i]))
+
+    def _match(self, i: int, code: str) -> None:
+        for m in _BRACKET_RUN.finditer(code):
+            kind, opens = _RUN_KIND[m.lastindex]
+            start, end = m.span()
+            if opens:
+                self.stacks[kind].append([i, start, end - start])
+            else:
+                _pop_runs(self.stacks[kind], end - start)
+
+    def innermost(self, i: int) -> tuple[int, int, str] | None:
+        """The unmatched opener nearest line ``i`` (state after ``lines[:i]``) as
+        (line, column, bracket), within the window the backward walk reads."""
+        top = max(self._tops(), default=None)
+        return top if top is not None and self._in_window(top[0], i) else None
+
+    def _tops(self):
+        """(line, column, bracket) of each kind's innermost unmatched opener."""
+        return ((s[-1][0], s[-1][1] + s[-1][2] - 1, kind) for kind, s in self.stacks.items() if s)
+
+    def _in_window(self, at: int, i: int) -> bool:
+        """At most 40 code lines above ``i``, within 160 raw lines."""
+        code_lines = self.rank[i - self.start] - self.rank[at - self.start]
+        return at >= i - _BRACKET_SCAN_RAW and code_lines <= _BRACKET_SCAN_LINES
+
+
+_NOT_BRACKET = re.compile(r"[^()\[\]{}]+")
+_NEST_PASSES = 4
+
+
+def _may_leave_open(code: str) -> bool:
+    """False when the line's brackets nest completely, so it leaves every stack as
+    it found it: adjacent pairs are removed (C string operations, at most four
+    passes) until nothing is left. A properly nested word is balanced per kind.
+    Anything else, or deeper nesting, is read bracket by bracket."""
+    rest = _NOT_BRACKET.sub("", code)
+    for _ in range(_NEST_PASSES):
+        if not rest:
+            return False
+        rest = rest.replace("()", "").replace("[]", "").replace("{}", "")
+    return bool(rest)
+
+
+def _pop_runs(stack: list[list[int]], n: int) -> None:
+    """Close ``n`` openers, innermost first; closers beyond the stack match nothing."""
+    while n and stack:
+        take = min(n, stack[-1][2])
+        stack[-1][2] -= take
+        n -= take
+        if not stack[-1][2]:
+            stack.pop()
+
+
+_TRACKS: dict = {}
+
+
+def _bracket_track(lines: tuple[str, ...], i: int) -> _BracketTrack:
+    """The file's track advanced to line ``i``. A query behind the run, or past a
+    gap wider than the window, starts a new run at the window start, so a file
+    with few candidates never pays for the lines between them."""
+    lo = max(0, i - _BRACKET_SCAN_RAW)
+    track = _TRACKS.get(id(lines))
+    if not _track_reaches(track, lines, lo, i):
+        if len(_TRACKS) > 64:
+            _TRACKS.clear()
+        track = _TRACKS[id(lines)] = _BracketTrack(lines, lo)
+    track.advance(i)
+    return track
+
+
+def _track_reaches(track: _BracketTrack | None, lines: tuple[str, ...], lo: int, i: int) -> bool:
+    """The run is this file's and can be advanced to ``i`` without a window-wide gap."""
+    return track is not None and track.lines is lines and lo <= track.next <= i
+
+
+def _code_lines_above(lines: tuple[str, ...], lineno: int):
+    """Test oracle for ``_BracketTrack``: (index, code) of the non-blank,
+    non-comment lines above 1-based ``lineno``, nearest first: at most 40 of them, within 160 raw lines. This is the window
+    ``_BracketTrack._in_window`` answers for; a documented enum spends three
+    comment lines per member, so comments must not spend the budget."""
+    raw = range(lineno - 2, max(-1, lineno - 2 - _BRACKET_SCAN_RAW), -1)
+    return islice(((i, stripped_code(lines[i])) for i in raw if _is_code_line(lines[i])), _BRACKET_SCAN_LINES)
+
+
+def _is_code_line(line: str) -> bool:
+    return not _COMMENT_ONLY.match(line) and bool(stripped_code(line).strip())
+
+
+def _open_bracket_above(lines: tuple[str, ...], lineno: int) -> tuple[str | None, int, str]:
+    """Innermost bracket still open just above 1-based ``lineno``, read within 40
+    code lines (comment-only and blank lines skipped, 160 raw lines at most): the
+    bracket, the index of its line, that line's code. A documented enum spends
+    three comment lines per member, so comments do not spend the budget."""
+    top = _bracket_track(lines, lineno - 1).innermost(lineno - 1)
+    if top is None:
+        return None, -1, ""
+    return top[2], top[0], stripped_code(lines[top[0]])
+
+
+def _prev_code_index(lines: tuple[str, ...], lineno: int) -> int:
+    """Index of the nearest non-blank code line above 1-based ``lineno`` (bounded), or -1."""
+    for i in range(lineno - 2, max(-1, lineno - 12), -1):
+        if stripped_code(lines[i]).strip():
+            return i
+    return -1
+
+
+def _prev_code(lines: tuple[str, ...], lineno: int) -> str:
+    """The nearest non-blank code line above 1-based ``lineno`` (bounded)."""
+    i = _prev_code_index(lines, lineno)
+    return stripped_code(lines[i]).strip() if i >= 0 else ""
+
+
+def _bracket_context(lines: tuple[str, ...], lineno: int) -> tuple[str | None, str]:
+    """The open bracket above and the line that opened it. An Allman `{` alone on its
+    line was opened by the line above it (`public enum Reason` / `{`)."""
+    ch, at, opener = _open_bracket_above(lines, lineno)
+    if ch == "{" and opener.strip() == "{":
+        opener = _prev_code(lines, at + 1)
+    return ch, opener
+
+
+def _bracket_names_declaration(ch: str | None, opener: str) -> bool:
+    """Inside an enum body, or inside the parameter list of a declaration."""
+    if ch == "{":
+        return bool(_ENUM_WORD.search(opener))
+    return ch == "(" and _is_decl_line(opener) and not _CONTROL_IN_OPENER.search(opener)
+
+
+def _auth_line_by_bracket(code: str, lines: tuple[str, ...], lineno: int) -> bool:
+    ch, opener = _bracket_context(lines, lineno)
+    if _COLLECTION_ELEMENT.match(code):
+        return ch in ("[", "{")       # a lone `a.b,` is an element of an open list, not a call argument
+    if _bracket_names_declaration(ch, opener):
+        return True
+    return all(_auth_match_is_declaration(code, m) for m in _auth_matches(code))
+
+
+def _auth_line_by_structure(code: str, lines: tuple[str, ...], lineno: int) -> bool:
+    if not code.strip() or not _auth_matches(code):
+        return False
+    arm = _CASE_ARM.match(code)
+    if arm:
+        return not arm.group("rest").strip()      # a bare label; an arm with a body is judged
+    return _auth_line_by_bracket(code, lines, lineno)
+
+
+def _is_branch_value(code: str, lines: tuple[str, ...], lineno: int) -> bool:
+    """Scala's lone `Forbidden` returned from an `else`: a value a branch decides."""
+    return bool(_COLLECTION_ELEMENT.match(code)) and _prev_code(lines, lineno).endswith(_BRANCH_ENDS)
+
+
+def _is_inline_enum_or_type_query(code: str) -> bool:
+    # Each pattern starts with a literal word: a substring test first keeps the
+    # regex off the lines that cannot match (case-sensitive, like the patterns).
+    return ("enum" in code and _INLINE_ENUM.search(code) is not None) or _is_type_query(code)
+
+
+def _is_type_query(code: str) -> bool:
+    found = _auth_matches(code) if "typeof" in code else ()
+    return bool(found) and _TYPE_QUERY.search(code[:found[0][0]]) is not None
+
+
+def _auth_line_excused(line: str, lines: tuple[str, ...], lineno: int) -> bool:
+    """0101 Concept B, then the shipped log-within-4-lines excusal."""
+    return _auth_line_is_declaration(stripped_code(line), lines, lineno) or _has_log_within(lines, lineno, radius=4)
+
+
+def _auth_line_is_declaration(code: str, lines: tuple[str, ...], lineno: int) -> bool:
+    """True when every auth keyword on the (stripped) line NAMES an outcome."""
+    code = code[:MAX_SCAN_CHARS]
+    if _is_branch_value(code, lines, lineno):
+        return False
+    if _is_inline_enum_or_type_query(code):
+        return True
+    return _auth_line_by_structure(code, lines, lineno)
+
+
+# ---------------------------------------------------------------------------
 # 0087 step 14 (D1b) — security scoping.
 #
 # Sink-FIRST: what matters is what the guarded operation DID, not what the
@@ -1258,24 +2491,12 @@ def _scan_auth_decision(
 # reviewable in a single place: substring matching turned `auth` into a match
 # on `uniqueAuthorIds`, which is how a flagship true positive was contaminated
 # during the method comparison that preceded this feature.
-_SECURITY_TERMS: tuple[str, ...] = (
-    "auth", "authn", "authz", "login", "logout", "signin", "signup",
-    "password", "passwd", "credential", "secret", "token", "apikey",
-    "session", "cookie", "jwt", "oauth", "saml", "sso",
-    "permission", "privilege", "role", "acl", "grant", "revoke",
-    "crypt", "encrypt", "decrypt", "cipher", "hash", "hmac", "signature",
-    "sign", "verify", "validate", "sanitize", "escape",
-    "admin", "root", "sudo", "chmod", "chown", "umask",
-    "cert", "tls", "ssl", "x509", "keystore", "truststore",
-    "csrf", "xsrf", "cors", "origin", "referer",
-    "audit", "firewall", "allowlist", "denylist", "blocklist",
-)
-# Tokenise-then-test rather than a 59-way alternation with two lookarounds
-# evaluated at every position: same identifier-boundary semantics, linear cost.
-# Splitting on non-alphanumerics is what makes `auth_token` match both `auth`
-# and `token`, which a plain `\b` alternation would not do (`_` is a word char).
-_SECURITY_SET = frozenset(_SECURITY_TERMS)
-_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+#
+# 0101: the vocabulary is the hand-off gate's (`guards_security_operation`, roots
+# over identifier words), so the two security tests cannot drift. Splitting on
+# identifier words is what makes `auth_token` match both `auth` and `token`, and
+# `uniqueAuthorIds` still splits to (unique, author, ids): `author` matches the
+# `auth` root, an over-match that costs precision, never recall.
 # Section 3.2 rule 1 also counts a rejection RESPONSE as security-relevant, and
 # that is not a word: `[A-Za-z]{2,}` cannot see `401`. Status codes and explicit
 # deny/reject returns are matched separately, or the whole first bullet of the
@@ -1307,13 +2528,13 @@ def _security_scope_enabled() -> bool:
 def _in_security_scope(lines: tuple[str, ...], lineno: int) -> bool:
     """True when the operation the handler guards looks security-relevant."""
     lo = max(0, lineno - 1 - _SECURITY_LOOKBACK)
-    for src in lines[lo:lineno]:
-        for word in _WORD_RE.findall(src):
-            if word.lower() in _SECURITY_SET:
-                return True
-        if _SECURITY_SIGNAL_RE.search(src):
-            return True
-    return False
+    return any(_scope_line_is_security(src[:MAX_SCAN_CHARS]) for src in lines[lo:lineno])
+
+
+@lru_cache(maxsize=16384)
+def _scope_line_is_security(src: str) -> bool:
+    words = (identifier_words(ident) for ident in _IDENT_ANY.findall(src))
+    return any(map(guards_security_operation, words)) or bool(_SECURITY_SIGNAL_RE.search(src))
 
 
 _SECURITY_LOOKBACK = 6
@@ -1331,7 +2552,9 @@ _SECURITY_LOOKBACK = 6
 # The row text carries no cross-repo baseline. A number from another codebase
 # is not a target for this one, and stating it invites the reader to treat it
 # as a threshold it was never measured to be.
-_METRIC_VERSION = "0087.1"
+# 0101: Concept A/B/C remove rows from the numerator, so the ratio is not
+# comparable with an 0087.1 row of the same codebase.
+_METRIC_VERSION = "0101.1"
 
 
 def _aggregate_enabled() -> bool:

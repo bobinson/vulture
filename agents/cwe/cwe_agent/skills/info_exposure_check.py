@@ -1,14 +1,28 @@
 """Information exposure vulnerability detection skill."""
 
 import re
-from collections.abc import Sequence
+from bisect import bisect_left
+from collections import defaultdict
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._args import mask_literals
+from cwe_agent.skills._lexical import (
+    MAX_SCAN_CHARS,
+    call_argument_text,
+    catch_binding,
+    identifier_words,
+    param_name,
+    paren_lists,
+    routine_header,
+    stripped_code,
+)
 from cwe_agent.skills._var_reference import line_value_is_variable_ref
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
@@ -29,32 +43,34 @@ from shared.tools.suppression import INFO_EXPOSURE_SUPPRESSIONS, should_suppress
 
 # CWE-209: Error message information disclosure
 #
-# The first five patterns are Python/Java/Go. That left Node entirely uncovered,
-# so a TypeScript target which mounts `errorhandler()` — a package whose whole
-# purpose is to return the stack trace and surrounding source to the client —
-# reported nothing. The Node additions follow.
-ERROR_DISCLOSURE_PATTERNS = [
+# The first five patterns are Python/Java/Go stack shapes. Node is covered by the
+# `.stack` arm below and, since feature 0101, by the value resolver at the end of
+# the CWE-209 section (`_response_discloses_error`): the Node bare-NAME regex that
+# stood here matched any identifier starting err/error/ex/exception inside a
+# response write, whatever it held (measured on one real target: 7 true of 84).
+_FIXED_STACK_SHAPES = [
     re.compile(r"traceback\.print_exc\s*\("),
     re.compile(r"traceback\.format_exc\s*\("),
     re.compile(r"\.printStackTrace\s*\("),  # Java
     re.compile(r"debug\.PrintStack\s*\("),  # Go
     re.compile(r"return\s+.*(?:traceback|stacktrace|stack_trace)", re.IGNORECASE),
-    # Node/Express: an error VALUE echoed into the response body.
-    #
-    # Two exclusions carry the precision. The character class stops at a quote,
-    # so `res.send('failed')` cannot match. The `(?!\s*:)` lookahead rejects the
-    # token when it is an object KEY — `res.json({ error: 'Try again' })` names
-    # a field "error" and returns a literal, which is the correct behaviour.
-    # `res.json({ error: err.message })` still matches, on the value.
-    re.compile(
-        r"\.(?:send|json|end|write)\s*\(\s*[^'\"`)]*"
-        r"\b((?:err|error|ex|exception)\w*)\b(?!\s*:)",
-        re.IGNORECASE,
-    ),
-    # A `.stack` property reaching the response, in any wrapping:
-    #   res.status(500).json({ stack: err.stack })
-    re.compile(r"\.(?:send|json|end|write)\s*\([^)]*\.stack\b"),
 ]
+# A `.stack` property reaching the response, in any wrapping:
+#   res.status(500).json({ stack: err.stack })
+# Judged only when the write goes to the PEER (`_sink_is_peer`): measured on a
+# review probe, `process.stderr.write(err.stack)` was reported through this arm alone.
+_STACK_IN_WRITE = re.compile(r"\.(?:send|json|end|write)\s*\([^)]*\.stack\b")
+ERROR_DISCLOSURE_PATTERNS = [*_FIXED_STACK_SHAPES, _STACK_IN_WRITE]
+
+
+def _any_of(patterns: list[re.Pattern[str]]) -> re.Pattern[str]:
+    """One alternation matching wherever any of ``patterns`` matches (flags kept per arm)."""
+    return re.compile("|".join(f"(?{'i' if p.flags & re.IGNORECASE else ''}:{p.pattern})" for p in patterns))
+
+
+# Per-line prefilters: one C search instead of a Python loop of five or six.
+_FIXED_STACK_ANY = _any_of(_FIXED_STACK_SHAPES)
+_DISCLOSURE_ANY = _any_of(ERROR_DISCLOSURE_PATTERNS)
 
 # Middleware that returns diagnostic detail to the client by design. Reporting
 # the mount site is the point: the leak is the mount, not a line inside the
@@ -169,7 +185,10 @@ def _strip_literals(line: str) -> str:
         kept = " ".join(g for m in _INTERPOLATION.finditer(body) for g in m.groups() if g)
         return f'""{" " + kept if kept else ""}'
 
-    return _TOKEN_COUNT_NOISE.sub("count", _STRING_LITERAL.sub(_repl, line))
+    text = _STRING_LITERAL.sub(_repl, line)
+    # Every alternative of the noise pattern spells "token" (case-insensitively):
+    # without it the pattern cannot match, and its scan is most of this function's cost.
+    return _TOKEN_COUNT_NOISE.sub("count", text) if "token" in text.lower() else text
 
 # CWE-200: Exposure of sensitive info
 SENSITIVE_RESPONSE_PATTERNS = [
@@ -855,23 +874,24 @@ def _check_error_disclosure(
     """Check for error detail reaching a client (CWE-209, CWE-550)."""
     # Diagnostic middleware: the mount site IS the vulnerability, so it is
     # checked separately from the "error value in a response" patterns.
-    if LEAKY_ERROR_MIDDLEWARE.search(line):
+    if "use" in line and LEAKY_ERROR_MIDDLEWARE.search(line):   # the pattern spells `use`
         _report_leaky_middleware(file_path, line_num, lines, findings)
         return
 
-    # Server-side logging of an error is CWE-532's concern; without this a
-    # `logger.error(err.stack)` line would match the `.stack` pattern.
-    if _LOG_SINK.search(line):
-        return
+    # Server-side logging of an error is CWE-532's concern, so the error inside a
+    # log call never counts -- but only the log call's own SPAN is blanked, not
+    # the line: `console.error(err); res.json({ error: err.message })` still
+    # writes the error to the peer.
+    code = _mask_log_calls(line)
 
     # CWE-550 is the precise id where the sink is unambiguously an HTTP
     # response and the value unambiguously server-generated. It REPLACES the
     # 209 row on that line — skill findings are not deduplicated against each
     # other, so a child that does not suppress its parent ships two rows.
-    if _check_server_error_response(file_path, line, line_num, lines, findings):
+    if _check_server_error_response(file_path, code, line_num, lines, findings):
         return
 
-    _check_error_value_in_response(file_path, line, line_num, lines, findings)
+    _check_error_value_in_response(file_path, code, line_num, lines, findings)
 
 
 def _report_leaky_middleware(
@@ -898,39 +918,33 @@ def _report_leaky_middleware(
     )
 
 
-def _matched_a_literal_identifier(
-    match: re.Match[str], lines: list[str], line_num: int,
-) -> bool:
-    """True when the matched identifier holds a literal, so nothing leaks.
-
-    An error-SHAPED name is not an error: `const errMsg = { err: 'not
-    supported' }` returned to the client discloses nothing.
-    """
-    return bool(
-        match.groups()
-        and match.group(1)
-        and _holds_literal(lines, line_num, match.group(1))
-    )
-
-
 def _check_error_value_in_response(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check the loose error-value shapes, which stay on CWE-209."""
-    for pattern in ERROR_DISCLOSURE_PATTERNS:
-        m = pattern.search(line)
-        if not m:
-            continue
-        if _matched_a_literal_identifier(m, lines, line_num):
-            return
-        _add_disclosure(
-            file_path, line_num, lines, findings,
-            title="Error message information disclosure",
-            description=f"Stack trace or error details exposed at line {line_num}",
-            recommendation="Return generic error messages; log detailed errors server-side only",
-        )
+    """Report error detail reaching the peer (CWE-209)."""
+    if not _discloses_error(file_path, line, line_num, lines):
         return
+    _add_disclosure(
+        file_path, line_num, lines, findings,
+        title="Error message information disclosure",
+        description=f"Stack trace or error details exposed at line {line_num}",
+        recommendation="Return generic error messages; log detailed errors server-side only",
+    )
+
+
+# Every _SERVER_ERROR_PATTERNS entry spells one of these words (the `sendError`
+# one case-insensitively), so a line with none of them skips all five scans.
+_SERVER_ERROR_WORDS = ("error", "write", "response", "jsonify")
+
+
+_SERVER_ERROR_WORD = re.compile("|".join(_SERVER_ERROR_WORDS))   # one C scan, not four
+
+
+def _may_be_server_error(line: str) -> bool:
+    if not _SERVER_ERROR_WORD.search(line.lower()):
+        return False
+    return any(p.search(line) for p in _SERVER_ERROR_PATTERNS)
 
 
 def _check_server_error_response(
@@ -942,9 +956,9 @@ def _check_server_error_response(
     Returns True when a row was emitted, which suppresses the CWE-209 row for
     the same line (P5 — skill findings do not cross-deduplicate).
     """
-    if is_prose_file(file_path):
-        return False
-    if not any(p.search(line) for p in _SERVER_ERROR_PATTERNS):
+    # The pattern test first and the path parse memoised: it runs on every line, and
+    # the per-line parse was 15% of a dense file's time.
+    if not _may_be_server_error(line) or _is_prose(file_path):
         return False
     finding = {
         "severity": "high",
@@ -969,34 +983,6 @@ def _check_server_error_response(
     finding["code_snippet"] = extract_snippet(lines, line_num)
     findings.append(enrich_finding(finding, "550"))
     return True
-
-
-def _holds_literal(lines: list[str], line_num: int, ident: str, radius: int = 6) -> bool:
-    """True when ``ident`` is assigned a literal within ``radius`` lines above.
-
-    Conservative on purpose: only a right-hand side that STARTS with a quote or
-    an object brace counts, and an object brace only when it contains no
-    identifier-valued field. Anything derived from a caught error
-    (``e.message``, ``getErrorMessage(err)``) therefore still reports.
-    """
-    pat = re.compile(
-        rf"(?:const|let|var)?\s*\b{re.escape(ident)}\b\s*=\s*(['\"`{{].*)$"
-    )
-    start = max(0, line_num - 1 - radius)
-    for ln in lines[start:line_num - 1]:
-        m = pat.search(ln)
-        if not m:
-            continue
-        rhs = m.group(1).strip()
-        if rhs[0] in "'\"`":
-            return True
-        # Object literal: every value must itself be a literal.
-        if rhs.startswith("{"):
-            values = re.findall(r":\s*([^,}]+)", rhs)
-            if values and all(v.strip()[:1] in "'\"`" or v.strip().isdigit()
-                              for v in values):
-                return True
-    return False
 
 
 def _add_disclosure(
@@ -1029,6 +1015,1415 @@ def _has_env_guard(lines: list[str], line_num: int, radius: int = 8) -> bool:
     start = max(0, line_num - 1 - radius)
     end = min(len(lines), line_num + radius)
     return any(_ENV_GUARD.search(ln) for ln in lines[start:end])
+
+
+# ---------------------------------------------------------------------------
+# CWE-209 VALUE SECTION (feature 0101): WHAT VALUE reaches a peer write.
+#
+# The replaced shape matched any identifier whose NAME began err/error/ex/
+# exception inside a `.send/.json/.end/.write(` call. Measured on one real
+# target: 8.3% precision (7 true of 84 adjudicated). About 60 false rows were a
+# catalogue helper whose own name starts with "error" returning a fixed entry,
+# and about 8 were a code or enum FIELD (`{ error: err.code }`). The name of
+# what is written says nothing; what is written does. Disclosure is the error's
+# MESSAGE, STACK, string form or raw object reaching the PEER, so the rule
+# resolves the value: within the sink call's arguments first, then back to its
+# binding in the routine (a catch binding, an error parameter, a local assigned
+# from either). A raw error flows through any call unless that call projects or
+# sanitises it, so `Object.assign({}, err)` and `serializeFault(err)` still
+# report while `catalogEnvelope(FaultCatalog.X)` carries no error at all.
+#
+# Every role is a word lexicon over identifier words, never a library table, so
+# a new language whose idioms map onto the roles needs no change here. Every
+# line a helper reads is capped at MAX_SCAN_CHARS and every quantifier is
+# bounded (gated by tests/unit/test_0101_cwe209_redos.py); per-line binding
+# facts, per-row binding verdicts and per-sink resolutions are memoised, so a
+# file's cost is linear in its size (tests/unit/test_0101_cwe209_density.py:
+# 25.8 s -> ~0.03 s on a review's worst file of 40 near-cap sinks). A sink that no
+# error marker can reach is not analysed at all (`_MARKER`, `_may_feed`), and
+# everything cached per file lives in that file's `_FileState`, of which at
+# most _STATE_FILES are kept (tests/unit/test_0101_cwe209_sinks_per_line.py,
+# test_0101_cwe209_memo_bounded.py).
+# ---------------------------------------------------------------------------
+
+# The sink: a member write or send to the peer, operator neutral (`.` or `->`).
+# A verb suffix is accepted only when it is RESPONSE-shaped (camel or snake, up
+# to three words: `writeHead`, `sendStatus`, `WriteAsJsonAsync`, `write_all`,
+# `send_error`). Measured on one multi-language target, accepting any short
+# suffix made an enum case constructor (`Fault.writeFailed(...)` x4) and an
+# outbound `session.sendMessage(...)` x2 into sinks.
+_SINK_SUFFIX = r"(?:_?(?i:as|async|json|text|html|status|head|header|headers|body|all|error|string|bytes))"
+_RESPONSE_WRITE = re.compile(
+    r"(?:\.|->)\s{0,4}(?:(?i:json|end)|(?i:send|write|respond|reply)" + _SINK_SUFFIX + r"{0,3})\s{0,4}\("
+)
+_ID = r"\$?[A-Za-z_][\w$]{0,63}"
+_ACC = r"\s{0,2}(?:\?\.|\.|->)\s{0,2}"
+# A member chain ending in a detail accessor; removed before bare tokens are read,
+# so `err` in `err.message` is not ALSO judged as a raw value.
+_DETAIL_ACCESSOR = (
+    r"(?:message|Message|msg|getMessage|getLocalizedMessage|toString|ToString|Error|what"
+    r"|details?|full_message|stack|StackTrace|stackTrace|stack_trace|backtrace|getStackTrace)\b"
+)
+_DETAIL_CHAIN = re.compile(rf"(?<![\w$])({_ID}(?:{_ACC}{_ID}){{0,4}}?){_ACC}{_DETAIL_ACCESSOR}")
+# The access operator plus the accessor: implied by every match of the chain
+# pattern, and accessor-led, so a text with none skips the chain-led scan
+# (measured ~12x cheaper on a 2000-character argument text).
+_ACCESS_OP = r"(?:\?\.|\.|->)\s{0,2}"
+_DETAIL_TAIL = re.compile(_ACCESS_OP + _DETAIL_ACCESSOR)
+# Possessive identifiers (`{0,63}+`): every identifier here is followed by an
+# access operator or ends the match, and neither can start inside one, so
+# backtracking into it never matches. Same matches, ~2.5x faster on a sink's arguments.
+_ID_POSSESSIVE = r"\$?[A-Za-z_][\w$]{0,63}+"
+_MEMBER_CHAIN = re.compile(rf"(?<![\w$.])({_ID_POSSESSIVE})((?:{_ACC}{_ID_POSSESSIVE}){{1,5}})")
+_SEGMENT_SPLIT = re.compile(r"\?\.|\.|->")
+# An identifier that names an error: the conventional bindings, an err/error/
+# exception prefix followed by a further word, or an *Error / *Exception suffix.
+_ERROR_NAME = re.compile(   # fullmatch only; `^` keeps a stray search linear
+    r"^\$?(?:e|ex|exc|err|error|exception|throwable|cause"
+    r"|(?:err|error|exception)[A-Z_0-9][\w$]{0,60}"
+    r"|[\w$]{0,60}(?:Error|Exception|Err|Exc))"
+)
+# A necessary condition for a MEMBER segment matching `_ERROR_NAME`: one of these
+# words in the lower-cased text, or a bare `e`/`ex` token (literal-led, so the
+# search skips ahead; ~50x cheaper than a case-insensitive alternation).
+_ERROR_WORDS = ("err", "exc", "throwable", "cause")
+_BARE_E = re.compile(r"ex?(?![\w$])(?<![\w$]e)(?<![\w$]ex)")
+# The unresolved fallback. Bare `e` and `ex` are not in it: they reported
+# WebSocket relays (`(e) => client.send(e)`) and row streams.
+_EXACT_ERROR_NAME = re.compile(r"\$?(?:exc|err|error|exception)")
+# Innermost call, bounded so a long line cannot drive backtracking.
+_INNER_CALL = re.compile(r"(?<![\w$])([$A-Za-z_][\w$.]{0,80})\s{0,2}\(([^()]{0,400})\)")
+# Every `_INNER_CALL` match ends in an innermost group and starts at most
+# _CALLEE_REACH characters before it (an 81-character callee and 2 spaces), so
+# the callee-led search starts there, not at every identifier of the text.
+_INNER_GROUP = re.compile(r"\([^()]{0,400}\)")
+_CALLEE_REACH = 83
+_STRINGIFIER = re.compile(
+    r"(?i)(?:str|string|repr|inspect|stringify|dumps?|to_?json|to_?string|serialize|sprint\w{0,3}|format)"
+)
+# A value token: not a member, not a callee, not an object key (`key:` but not
+# `::`), not itself followed by an access.
+_VALUE_TOKEN = re.compile(rf"(?<![\w$.>])({_ID})(?![\w$])(?!\s{{0,2}}(?:\(|\??:(?!:)|\?\.|\.|->))")
+_PREDICATE_METHODS = (
+    r"\.\s{0,2}(?:includes|startsWith|endsWith|match|matches|test|indexOf|contains|startswith"
+    r"|endswith|search)\s{0,2}\("
+)
+_PREDICATE_CALL = re.compile(_PREDICATE_METHODS)   # trigger for `_PM_PRED`, which ends in one
+# Methods that keep a string a string: `String(err).slice(0, 500)` still carries the error.
+_STRING_TRANSFORM = re.compile(
+    r"\.\s{0,2}(?:slice|substring|substr|encode|trim\w{0,6}|as_bytes|replace\w{0,4}|to\w{0,8}Case|strip"
+    r"|rstrip|lstrip|padEnd|padStart|getBytes)\s{0,2}\([^()]{0,80}\)"
+)
+# A zero-argument method that renders its receiver: replaced by the receiver.
+_RENDER_METHOD = (
+    r"(?:toJSON|to_json|to_string|toString|ToString|to_s|inspect"
+    r"|__str__|__repr__|getMessage|getLocalizedMessage|localizedMessage|stackTraceToString"
+    r"|getTraceAsString|getStackTrace|Error)\s{0,2}\(\s{0,2}\)"
+)
+_METHOD_STRINGIFIER = re.compile(rf"(?<![\w$])({_ID}(?:{_ACC}{_ID}){{0,4}}){_ACC}{_RENDER_METHOD}")
+_RENDER_TAIL = re.compile(_ACCESS_OP + _RENDER_METHOD)   # as _DETAIL_TAIL
+# Members of a CAUGHT error that project it to a safe value. Any other member is
+# detail (`err.response.data`, `err.sqlMessage`, `e.args`, `e.localizedMessage`),
+# so no per-language accessor list is needed.
+_SAFE_MEMBERS = frozenset({
+    "code", "status", "statuscode", "status_code", "name", "type", "kind", "errno", "getcode",
+    "getstatuscode", "expose", "gettype", "getclass", "javaclass", "constructor", "__class__",
+    "__name__", "id", "httpstatus", "statustext", "payload", "publicmessage", "public_message",
+})
+# Detail roles of the LAST member of an error-NAMED chain whose root is unresolved.
+_DETAIL_WORDS = frozenset({
+    "message", "msg", "stack", "trace", "traceback", "backtrace", "description", "inspect", "cause",
+    "inner", "original", "args", "details", "detail", "what", "s", "str", "repr", "json", "string",
+    "localized",
+})
+_DETAIL_MEMBERS = frozenset({"Error", "getMessage", "getLocalizedMessage"})
+# A callee whose words carry one of these PROJECTS or sanitises what it is given.
+_PROJECTION_WORDS = frozenset({
+    "code", "codes", "status", "catalog", "catalogue", "public", "safe", "sanitize", "sanitise",
+    "redact", "mask", "map", "mapper", "translate", "i18n", "t", "id", "count", "length", "len",
+    "size", "bool", "boolean", "number", "int", "is", "has", "can", "should", "kind", "type", "name",
+    "hash", "classify", "category", "user", "friendly", "generic", "body", "payload", "build",
+    "envelope", "problem", "format", "dto", "view",
+})
+# Extractor by words, with explicit precedence: a stack verb + stack noun pair
+# (`format_exception`, `print_exc`, `dumpStack`), else a detail word whose callee
+# does not END in a projection word (`getErrorMessage` yes, `getTraceId` no).
+_DETAIL_CALL_WORDS = frozenset({
+    "message", "msg", "messages", "stack", "trace", "traceback", "backtrace", "stacktrace",
+})
+# A callee with one of these words VALIDATES the peer's input; its result's error
+# names the refused field (fixtures f10 / rp14).
+_VALIDATION_WORDS = frozenset({"validate", "validation", "validator", "schema"})
+_STACK_VERBS = frozenset({"format", "print", "dump"})
+_STACK_NOUNS = frozenset({"exception", "exc", "tb", "traceback", "stack", "trace"})
+_BASE_ERROR_TYPES = frozenset({
+    "error", "exception", "throwable", "unknown", "any", "object", "standarderror", "baseexception",
+})
+_SCALAR_TYPES = frozenset({
+    "string", "str", "number", "int", "integer", "bool", "boolean", "float", "double", "long",
+})
+# A write is a PEER write unless its receiver chain carries a local role.
+_NONPEER_WORDS = frozenset({
+    "stderr", "stdout", "console", "fs", "file", "files", "log", "logger", "logs", "mail", "mailer",
+    "smtp", "builder", "sb", "buf", "buffer", "queue", "producer", "beacon", "navigator", "ipc",
+    "process", "sys", "os", "crash", "disk", "cache", "metrics", "telemetry", "debug", "trace",
+})
+_STDIO_WORDS = frozenset({"stderr", "stdout", "os"})
+# A PascalCase chain ROOT names a type, enum or static, not a peer, unless its
+# own words carry a peer role (`Response.Write(` in classic server pages).
+_PEER_ROOT_WORDS = frozenset({
+    "response", "request", "http", "context", "client", "socket", "writer", "output", "reply", "res",
+    "resp", "conn", "connection", "stream", "channel",
+})
+_RECEIVER_IDS = re.compile(r"[A-Za-z_$][\w$]{0,60}")
+_RECEIVER_ROOT = re.compile(
+    r"(?<![\w$])([A-Za-z_$][\w$]{0,60})((?:\s{0,2}(?:\?\.|\.|->)\s{0,2}[A-Za-z_$][\w$]{0,60}){0,5})\s{0,2}$"
+)
+_FIRST_ARGUMENT_CHAIN = re.compile(r"^\s{0,4}([\w$.]{1,60})")
+_TYPED_PARAM = re.compile(   # match only
+    r"^(?:(\$?[A-Za-z_][\w$]{0,60})\s{0,2}\??:\s{0,2}([\w$.:&*<>\[\]|]{1,60})"
+    r"|([\w$.<>\[\]]{1,60})\s{1,4}\$?([A-Za-z_][\w$]{0,60})\s{0,2}$)"
+)
+# A callback literal declares parameters without being a NAMED declaration,
+# which is all `_lexical.routine_header` accepts (by design).
+_ARROW = re.compile(r"=>")
+# `clean` only for a literal, a constant / catalogue member, or a constructor
+# with literal arguments; anything else is `unknown`, never assumed safe.
+_LITERALISH = re.compile(
+    r"^\s{0,4}(?:[\"'`]|-?\d|true\b|false\b|null\b|None\b|nil\b|undefined\b|\{\s{0,2}\}|\[\s{0,2}\]"
+    r"|[A-Z][\w$]{0,60}(?:\.[A-Z_][\w$]{0,60}){1,3}\s{0,4}[;,)]?\s{0,4}$|new\s{1,4}\w{1,60}\(\s{0,4}[\"'`])"
+)
+_CAST = re.compile(r"\(\s{0,2}([\w$.]{1,80})\s{1,4}as\s{1,4}[\w$.<>]{1,60}\s{0,2}\)")
+_NON_NULL = re.compile(r"(?<![\w$])([\w$]{1,60})!(?=[.\s;,)])")
+_LEAD_KEYWORD = re.compile(r"^(?:await|yield|try)\s{1,4}")
+_SINGLE_CALL = re.compile(r"^([$A-Za-z_][\w$.]{0,80})\s{0,2}\((.{0,400})\)")
+_ASSIGN_TARGET = re.compile(
+    r"(?<![\w$.])(\$?[A-Za-z_][\w$]{0,60})\s{0,4}(?::\s{0,4}[\w$.<>\[\]|]{1,60}\s{0,2})?(?::=|=(?![=>]))"
+)
+# `{a, b} = [await|yield|try] source[(`: the lead keyword is never the source (a
+# review measured `await` captured as one), and a trailing `(` marks a call result.
+_DESTRUCTURE = re.compile(
+    r"\{([^{}]{0,200})\}\s{0,4}=(?![=>])\s{0,4}(?:(?:await|yield|try)\s{1,4})?([\w$.]{1,80})(\s{0,2}\()?"
+)
+_NAMES = re.compile(r"[\w$]{1,64}")
+# 209-local literal strip (the shared `_strip_literals` serves CWE-532): a
+# `{...}` hole survives only when it is an identifier or member chain, so JSON
+# text inside a raw string (`{"error":"disabled"}`) is not read as a value.
+_INTERPOLATION_209 = re.compile(r"\$\{([^{}]{1,200})\}|\{([A-Za-z_$][\w$.\[\]()]{0,80})\}")
+# `_premask`: tokens that are READ, not WRITTEN -- index keys (`x[...]`, not an
+# array literal), negations, comparison and `instanceof` / `&&` left operands,
+# predicate-method chains, ternary conditions (`x ?`, but not Kotlin's elvis
+# default `x ?: y`, which writes `x`) and `key =` initialisers.
+_PM_INDEX = re.compile(r"(?<=[\w$\])])\s{0,2}\[[^\[\]]{0,120}\]")
+_PM_NEG = re.compile(rf"!\s{{0,2}}{_ID}(?:{_ACC}{_ID}){{0,4}}")
+_PM_CMP = re.compile(rf"(?<![\w$]){_ID}(?:{_ACC}{_ID}){{0,4}}\s{{0,2}}(?:===?|!==?|<=?|>=?|instanceof\b|&&)")
+_PM_PRED = re.compile(rf"(?<![\w$]){_ID}(?:{_ACC}{_ID}){{0,4}}(?:{_PREDICATE_METHODS}[^()]{{0,80}}\))")
+_PM_TERN = re.compile(rf"(?<![\w$]){_ID}(?:{_ACC}{_ID}){{0,4}}\s{{0,2}}\?(?![.?:])")
+_PM_INIT = re.compile(r"(?<![\w$])[A-Za-z_$][\w$]{0,60}\s{0,2}=(?![=>])")
+# What `_PM_CMP` can end in; a bare assignment `=` is not one of them.
+_COMPARISON_MARKS = ("==", "!=", "<", ">", "&&", "instanceof")
+
+# A comment start on the literal-masked line: a block opener anywhere, a line
+# comment (`//`, `#`) at the line start or after whitespace, so `this.#field`,
+# `t[#t+1]` and `$#list` are code. Before this, `res.send('ok'); // never
+# res.send(err.message)` reported, because sinks were found on a copy with only
+# the literals masked (predicates read the comment-stripped line).
+_COMMENT_START = re.compile(r"/\*|(?<![^\s])(?://|#)")
+# An error-VARIANT pattern binds its payload, as a catch clause does: `Err(problem)
+# =>`, `if let Err(problem) =`, `Error(reason) ->`. Only the
+# bare variant words of _EXACT_ERROR_NAME: a domain variant's field
+# (`QuotaError(limit) =>`) is clean, as a domain-typed parameter is.
+_VARIANT_BINDING = re.compile(
+    r"(?<![\w$.])([A-Z][a-z]{0,8})\s{0,2}\(\s{0,2}(?:(?:let|ref|mut)\s{1,4})?([a-z_][\w$]{0,60})\s{0,2}\)"
+    r"\s{0,2}(?:=>|->|=(?![=>]))"
+)
+# Python `with ... as fh`, Go `var b T`: declarations that bind a receiver
+# without `=`; indexed so the receiver's declaration is found.
+_DECLARES = re.compile(r"(?<![\w$.])(?:as|var)\s{1,4}([A-Za-z_][\w$]{0,60})")
+# A receiver whose declaration in the routine carries one of these words (and no
+# peer word) is local: an opened file, a buffer, a builder
+# (`with open(...) as fh: fh.write(str(e))`, `var b bytes.Buffer; b.WriteString(...)`).
+_LOCAL_DECL_WORDS = frozenset({"open", "bytes", "tempfile", "tmp", "temp"})
+
+_HANDLER_WORDS = ("catch", "except", "rescue", "case", "pcall")
+_BINDING_RADIUS = 30
+_MAX_CALL_PASSES = 8
+_CONTINUATION_LINES = 12
+_MAX_DEPTH = 2
+_MAX_TOKENS = 32
+_REACH = (_MAX_DEPTH + 1) * _BINDING_RADIUS   # every window walked at depth 0..2
+# Sinks judged one by one per line. Measured over four multi-language trees:
+# 7,469 lines hold one response write, 35 hold two, one minified line holds four.
+_MAX_SINKS_PER_LINE = 4
+_CHAIN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$.?->")
+_PREFIX_CHARS = 400
+# Placeholder for an opaque call's result: NOT an identifier, so it can never
+# resolve to a binding. Measured on one multi-language target, the previous `_`
+# resolved through a Kotlin `catch (_: Throwable)` 25 lines up.
+_OPAQUE = " 0 "
+# `field`: a name destructured from a source that is not an error and not known
+# clean (a call result, a member, an unresolved name). Its bare value is a result
+# FIELD, clean as fixture n04 pins; a detail chain on it is judged by name,
+# exactly as the member form `accountRes.error.message` is.
+_UNTAINTED = ("clean", "unknown", "field")
+_BY_NAME = ("unknown", "field")
+# Per-file resolver state (binding index, marker counts, resolution memo) for at
+# most _STATE_FILES files, oldest dropped first. Before this, a module-global
+# memo capped by ENTRY count kept a reference to every file's lines, so 1500
+# scanned files of ~200 KB grew RSS by 394 MB and stayed held across audits.
+_STATE_FILES = 8
+_MEMO_LIMIT = 4096
+_FILE_STATES: dict[tuple, "_FileState"] = {}
+# A line can only feed an error into a sink when it holds one of these (lower-
+# cased): an error word, a handler keyword, or a bare `e` / `ex` / `$e`. Every
+# caught or tainted verdict and every by-name judgement starts from such a line
+# (catch bindings are only read on handler-keyword lines, error-named
+# parameters and the exact-name fallback spell an error word, by-name chains
+# need an error-named segment), and resolution reaches at most _REACH lines
+# above the sink. So a sink with no marker from _REACH lines above it to the
+# end of its continuation cannot disclose, and is not analysed. Without the gate
+# the per-sink resolver cost 1.1-2.2 ms/KB on short closed sink lines (HEAD
+# 0.12-0.24), against the 0.5 ms/KB density budget.
+_MARKER = re.compile(r"err|exc|throwable|cause|catch|rescue|case|pcall|ex?(?![\w$])(?<![\w]e)(?<![\w]ex)")
+
+
+class _Scope(NamedTuple):
+    """Where a value is read: the file's lines, the line, the text before the sink.
+
+    A NamedTuple, not a frozen dataclass: one is built per sink and per binding
+    row, and the frozen dataclass's ``__init__`` was ~2% of a dense file's time."""
+
+    lines: Sequence[str]
+    line_num: int
+    prefix: str
+    depth: int = 0
+    suffix: str = ""
+
+    def at(self, line_num: int, depth: int) -> "_Scope":
+        return _Scope(self.lines, line_num, "", depth, self.suffix)
+
+
+class _LineCtx(NamedTuple):
+    """The line a sink sits on, and where it sits."""
+
+    lines: Sequence[str]
+    line_num: int
+    line: str
+    suffix: str
+    masked: str        # the capped line with literal bodies masked, offsets unchanged
+
+
+class _Facts(NamedTuple):
+    """What one raw line binds: computed once per distinct line text."""
+
+    code: str
+    caught: frozenset[str]
+    assigns: dict[str, str]
+    params: tuple[str, ...]
+    destructure: tuple[frozenset[str], str] | None
+    names: frozenset[str]
+
+
+def _discloses_error(file_path: Path, line: str, line_num: int, lines: Sequence[str]) -> bool:
+    """Executable code whose line matches a fixed shape or writes error detail to a peer.
+
+    The prose test is a path parse; it runs only on the ~1% of lines that hold a
+    stack shape or a response write (measured: per-line, it was the single
+    largest cost the port added on one real tree).
+    """
+    if not _may_disclose(line) or _is_prose(file_path):
+        return False
+    if _fixed_shape_discloses(line):
+        return True
+    return _response_discloses_error(lines, line_num, line, _suffix(file_path))
+
+
+@lru_cache(maxsize=256)
+def _suffix(file_path: Path) -> str:
+    """The lower-cased suffix once per path, not once per sink line."""
+    return file_path.suffix.lower()
+
+
+@lru_cache(maxsize=256)
+def _is_prose(file_path: Path) -> bool:
+    """`is_prose_file` once per path, not once per sink line (a path parse)."""
+    return is_prose_file(file_path)
+
+
+def _may_disclose(line: str) -> bool:
+    if _RESPONSE_WRITE.search(line[:MAX_SCAN_CHARS]):
+        return True
+    return _DISCLOSURE_ANY.search(line) is not None
+
+
+def _fixed_shape_discloses(line: str) -> bool:
+    """The five shipped stack shapes, and `.stack` reaching a PEER write."""
+    if _FIXED_STACK_ANY.search(line):
+        return True
+    m = _STACK_IN_WRITE.search(line) if ".stack" in line else None   # the pattern spells it
+    return bool(m) and _sink_is_peer(line, m.start(), line.index("(", m.start()) + 1)
+
+
+# Every _LOG_SINK alternative spells one of these (case-insensitively; `logger`
+# contains `log`), so a line with none of them is not searched.
+_LOG_SINK_WORDS = ("log", "console", "winston", "pino", "bunyan")
+
+
+_LOG_SINK_WORD = re.compile("|".join(_LOG_SINK_WORDS))   # one C scan, not five
+
+
+def _may_log(text: str) -> bool:
+    return _LOG_SINK_WORD.search(text.lower()) is not None
+
+
+def _mask_log_calls(line: str) -> str:
+    """Blank the span of every log call: the error inside it is CWE-532's concern.
+
+    Only the call's own span, not the line: `console.error(err); res.json({ error:
+    err.message })` still writes the error to the peer after the log call.
+    """
+    capped = line[:MAX_SCAN_CHARS]
+    if not _may_log(capped) or not _LOG_SINK.search(capped):
+        return line
+    masked = line
+    for m in _LOG_SINK.finditer(line[:MAX_SCAN_CHARS]):
+        end = m.end() + len(call_argument_text(line, m.end() - 1, MAX_SCAN_CHARS)) + 1
+        masked = masked[: m.start()] + " " * (end - m.start()) + masked[end:]
+    return masked[: len(line)]
+
+
+def _response_discloses_error(
+    lines: Sequence[str], line_num: int, line: str, suffix: str = "",
+) -> bool:
+    """True when a peer write on ``line`` carries an error's detail.
+
+    Bounded per line: each sink reads only its OWN span, up to the
+    next sink, and past _MAX_SINKS_PER_LINE the remaining sinks are judged once,
+    together. Sinks are found on the literal-masked line, so text inside a string
+    that merely spells a sink is neither judged nor a cut point.
+    """
+    state = _file_state(lines, suffix)
+    if not state.marked(line_num - 1 - _REACH, line_num + _CONTINUATION_LINES):
+        return False
+    code, masked = _uncomment(line)
+    spans = _sink_spans(masked)
+    if not spans or not _may_feed(state, line_num, code, spans):
+        return False
+    return _spans_disclose(_LineCtx(lines, line_num, code, suffix, masked), spans)
+
+
+def _spans_disclose(ctx: "_LineCtx", spans: list[tuple[re.Match[str], int | None]]) -> bool:
+    if len(spans) == 1:
+        return _sink_discloses(ctx, spans)   # the usual line: one write
+    return _several_spans_disclose(ctx, spans)
+
+
+def _several_spans_disclose(ctx: "_LineCtx", spans: list[tuple[re.Match[str], int | None]]) -> bool:
+    if any(_sink_discloses(ctx, [span]) for span in spans[:_MAX_SINKS_PER_LINE]):
+        return True
+    return len(spans) > _MAX_SINKS_PER_LINE and _sink_discloses(ctx, spans[_MAX_SINKS_PER_LINE:])
+
+
+def _read_rows(code: str, last: re.Match[str]) -> int:
+    """How many lines the sinks read: the line's last call continues onto the next
+    lines exactly when `_sink_tail` finds it open (its first `_read_enough`)."""
+    return 1 + (0 if _read_enough(_strip_literals_209(code[last.end():][:MAX_SCAN_CHARS])) else _CONTINUATION_LINES)
+
+
+def _may_feed(state: "_FileState", line_num: int, code: str, spans: list) -> bool:
+    """A marker can reach the sink: on the lines it reads, or through a name it can
+    resolve that some window row mentions with a marker within the two deeper
+    windows (see _MARKER). A row that binds a name mentions it, so mentions are
+    a superset of bindings, and need no binding facts."""
+    rows = _read_rows(code, spans[-1][0])
+    if state.marked(line_num - 1, line_num - 1 + rows):
+        return True
+    names = _resolvable_names(state, line_num, code, spans[0][0], rows)
+    return _marker_above_mentions(state, line_num, names) or _mentioned_near_marker(state, line_num, names)
+
+
+def _marker_above_mentions(state: "_FileState", line_num: int, names: set[str]) -> bool:
+    """`_mentioned_near_marker` for the row just above alone, read without the
+    file's mention index: the nearest row is the usual binding (`catch (e) {` or
+    `const r = await load()` over the write), and when it qualifies the index is
+    never built (it was ~8% of a dense file's time)."""
+    above = line_num - 2
+    if above < 0 or not state.marked(above - 2 * _BINDING_RADIUS, above + 1):
+        return False
+    return not names.isdisjoint(_NAMES.findall(state.lines[above][:MAX_SCAN_CHARS]))
+
+
+def _mentioned_near_marker(state: "_FileState", line_num: int, names: set[str]) -> bool:
+    """Some window row mentioning a name has a marker within 2 * _BINDING_RADIUS above it.
+
+    A name's window rows all lie in the _BINDING_RADIUS-row window, so their spans
+    [r - 2R, r] overlap into ONE span from its first row's start to its last row:
+    one marker lookup per name, not one per row."""
+    end = line_num - 1
+    words, start = state.mentions(end), max(0, end - _BINDING_RADIUS)
+    return any(_marked_span(state, rows, start, end) for rows in filter(None, map(words.get, names)))
+
+
+def _marked_span(state: "_FileState", rows: list[int], start: int, end: int) -> bool:
+    i, j = bisect_left(rows, start), bisect_left(rows, end)
+    return i < j and state.marked(rows[i] - 2 * _BINDING_RADIUS, rows[j - 1] + 1)
+
+
+def _resolvable_names(state: "_FileState", line_num: int, code: str, first: re.Match[str], rows: int) -> set[str]:
+    """What the sinks can resolve: the text from the first sink's `(` on, its
+    continuation, and the prefix only when the prefix binds a name. The receiver
+    and the verb are never resolved (`r.send(q)`: only `q`)."""
+    text = _resolvable_text(state, line_num, code, first, rows)
+    words = set(_NAMES.findall(text))
+    return words.union([w.lstrip("$") for w in words]) if "$" in text else words
+
+
+def _resolvable_text(state: "_FileState", line_num: int, code: str, first: re.Match[str], rows: int) -> str:
+    prefix = code[: first.start()][-_PREFIX_CHARS:]
+    binds = bool(_line_names(prefix, state.suffix))
+    if rows == 1 and not binds:
+        return code[first.end():]   # the usual write: no join to build
+    tail = state.lines[line_num: line_num - 1 + rows]
+    return " ".join([prefix if binds else "", code[first.end():], *tail])
+
+
+def _uncomment(line: str) -> tuple[str, str]:
+    """(code, masked): the line with every comment blanked, and that line with its
+    literal bodies masked too; offsets unchanged. Text past the cap is kept only
+    when no comment runs to the cap (the shipped read of a long last argument)."""
+    capped = line[:MAX_SCAN_CHARS]
+    masked = mask_literals(capped)
+    spans = _comment_spans(masked)
+    if not spans:
+        return line, masked
+    tail = "" if spans[-1][1] >= len(capped) else line[MAX_SCAN_CHARS:]
+    return _blank(capped, spans) + tail, _blank(masked, spans)
+
+
+def _comment_spans(masked: str) -> list[tuple[int, int]]:
+    if "/" not in masked and "#" not in masked:
+        return []   # every comment start spells one of them
+    spans: list[tuple[int, int]] = []
+    m = _COMMENT_START.search(masked)
+    while m:
+        spans.append((m.start(), _comment_end(masked, m)))
+        m = _COMMENT_START.search(masked, spans[-1][1])
+    return spans
+
+
+def _comment_end(masked: str, start: re.Match[str]) -> int:
+    if start.group() != "/*":
+        return len(masked)
+    close = masked.find("*/", start.end())
+    return len(masked) if close < 0 else close + 2
+
+
+def _blank(text: str, spans: list[tuple[int, int]]) -> str:
+    parts, prev = [], 0
+    for a, b in spans:
+        parts += [text[prev:a], " " * (b - a)]
+        prev = b
+    return "".join(parts) + text[prev:]
+
+
+@lru_cache(maxsize=4096)
+def _uncommented(line: str) -> str:
+    """A continuation line with its comments blanked (it is capped already)."""
+    return _uncomment(line)[0]
+
+
+def _sink_spans(masked: str) -> list[tuple[re.Match[str], int | None]]:
+    """Every sink outside a literal, with where its span ends (None: the line's end)."""
+    sinks = list(_RESPONSE_WRITE.finditer(masked))
+    if len(sinks) < 2:
+        return [(s, None) for s in sinks]
+    ends: list[int | None] = [_receiver_start(masked, s.start()) for s in sinks[1:]]
+    return list(zip(sinks, [*ends, None]))
+
+
+def _receiver_start(masked: str, pos: int) -> int:
+    """Where the receiver chain ending at ``pos`` begins: the next write's receiver
+    is not an argument of the call before it (at most 160 characters back)."""
+    i, floor = pos, max(0, pos - 160)
+    while i > floor and masked[i - 1] in _CHAIN_CHARS:
+        i -= 1
+    return i
+
+
+def _sink_discloses(ctx: "_LineCtx", spans: list[tuple[re.Match[str], int | None]]) -> bool:
+    """The first sink's receiver and prefix stand for every span judged with it."""
+    first = spans[0][0]
+    if not _sink_is_peer(ctx.line, first.start(), first.end()):
+        return False
+    scope = _Scope(ctx.lines, ctx.line_num, ctx.line[: first.start()], suffix=ctx.suffix)
+    args = _joined_arguments(ctx, spans)
+    return _args_disclose(_strip_literals_209(args[:MAX_SCAN_CHARS]), scope) and not _declared_local(scope)
+
+
+def _joined_arguments(ctx: "_LineCtx", spans: list[tuple[re.Match[str], int | None]]) -> str:
+    if len(spans) == 1:
+        return _span_arguments(ctx, spans[0][0].end(), spans[0][1])
+    return " , ".join(_span_arguments(ctx, sink.end(), end) for sink, end in spans)
+
+
+def _declared_local(scope: _Scope) -> bool:
+    """The receiver's nearest declaration in the window names a local role and no
+    peer role. Read only for a sink that would report, so it costs nothing elsewhere."""
+    root = _chain_root(stripped_code(scope.prefix)[-160:])
+    if not root:
+        return False
+    rows = _candidate_rows(_file_state(scope.lines, scope.suffix).index(scope.line_num - 1), root,
+                           scope.line_num - 1)
+    return bool(rows) and _local_role(_declaration(scope.lines[rows[0]], root, scope.suffix))
+
+
+def _declaration(raw: str, root: str, suffix: str) -> str:
+    """The text declaring ``root``: on a routine header only its own parameter, so
+    another parameter's type (`raw: string`) cannot lend it a role."""
+    facts = _line_facts(raw[:MAX_SCAN_CHARS], suffix)
+    if root not in facts.params:
+        return facts.code
+    return next((p for p in _param_list(facts.code) if param_name(p) == root), "")
+
+
+def _local_role(text: str) -> bool:
+    words = {w for r in _RECEIVER_IDS.findall(text) for w in identifier_words(r)}
+    return bool(words & (_LOCAL_DECL_WORDS | _NONPEER_WORDS)) and not words & _PEER_ROOT_WORDS
+
+
+def _span_arguments(ctx: "_LineCtx", start: int, end: int | None) -> str:
+    """The call's raw arguments within its span; only the line's last sink
+    continues onto the following lines while its call stays open."""
+    if end is None:
+        return call_argument_text("(" + _sink_tail(ctx.lines, ctx.line_num, ctx.line[start:]), 0, MAX_SCAN_CHARS)
+    seg = ctx.masked[start:end]
+    if "(" in seg:
+        return call_argument_text("(" + ctx.line[start:end], 0, MAX_SCAN_CHARS)
+    close = seg.find(")")
+    return ctx.line[start:end] if close < 0 else ctx.line[start:start + close]
+
+
+def _sink_is_peer(line: str, start: int, end: int) -> bool:
+    """A write whose receiver (or first argument) is in a local role is not to the peer."""
+    before = stripped_code(line[:start])[-160:]
+    return not (_receiver_is_local(before) or _first_argument_is_stdio(line[end:]))
+
+
+@lru_cache(maxsize=1024)
+def _receiver_is_local(before: str) -> bool:
+    """The receiver chain ending ``before`` is a type or names a local role. Cached:
+    a file writes through a handful of receivers (`res`, `w`, `ctx`) on every sink."""
+    return _type_root(before) or bool(_receiver_words(before) & _NONPEER_WORDS)
+
+
+def _receiver_words(before: str) -> set[str]:
+    """Words of the last four identifiers of the receiver chain."""
+    if before.count("(") > before.count(")"):
+        before = before.split("(")[-1]
+    return {w for r in _RECEIVER_IDS.findall(before)[-4:] for w in identifier_words(r)}
+
+
+def _type_root(before: str) -> bool:
+    """`Fault.writeFailed(` / `Pipeline.send(`: a PascalCase root with no peer role."""
+    root = _chain_root(before)
+    return bool(root) and _names_a_type(root) and not set(identifier_words(root)) & _PEER_ROOT_WORDS
+
+
+@lru_cache(maxsize=1024)
+def _chain_root(before: str) -> str | None:
+    """The root of the receiver chain, or None when the chain is longer than we read."""
+    m = _RECEIVER_ROOT.search(before)
+    if not m or before[: m.start()].rstrip().endswith((".", "->", "?")):
+        return None
+    return m.group(1)
+
+
+def _names_a_type(root: str) -> bool:
+    return root[:1].isupper() and not root.isupper()
+
+
+def _first_argument_is_stdio(after: str) -> bool:
+    """`io.WriteString(os.Stderr, ...)`: the target is the first argument."""
+    m = _FIRST_ARGUMENT_CHAIN.match(after)
+    return bool(m) and "." in m.group(1) and bool(set(identifier_words(m.group(1))) & _STDIO_WORDS)
+
+
+def _sink_tail(lines: Sequence[str], line_num: int, tail: str) -> str:
+    """The text after the sink's `(`, continued while the call stays open.
+
+    `res.status(s).json({` with the leaking key many lines down is the same
+    disclosure; bounded so an unbalanced call costs at most _CONTINUATION_LINES
+    more (capped) lines, never the rest of the file. A following line's own sink
+    ends the read there: that line judges what it writes, and reading on made a
+    short open line carry ~MAX_SCAN_CHARS of analysis.
+    """
+    joined = _strip_literals_209(tail[:MAX_SCAN_CHARS])
+    for nxt in lines[line_num: line_num + _CONTINUATION_LINES]:
+        if _read_enough(joined):
+            break
+        head, sink = _before_sink(_uncommented(nxt[:MAX_SCAN_CHARS]))
+        joined = f"{joined} {_strip_literals_209(head)}"
+        if sink:
+            break
+    return joined[:MAX_SCAN_CHARS]
+
+
+def _read_enough(joined: str) -> bool:
+    """The call closed, or the cap is reached (nothing past it is read, so nothing is stripped)."""
+    return len(joined) >= MAX_SCAN_CHARS or joined.count("(") < joined.count(")")
+
+
+def _before_sink(line: str) -> tuple[str, bool]:
+    """``line`` up to its first sink outside a literal, and whether it has one."""
+    sink = _RESPONSE_WRITE.search(mask_literals(line)) if _RESPONSE_WRITE.search(line) else None
+    return (line[: sink.start()], True) if sink else (line, False)
+
+
+@lru_cache(maxsize=4096)
+def _strip_literals_209(line: str) -> str:
+    """Literal text out, interpolated identifiers kept."""
+    return _STRING_LITERAL.sub(_literal_holes, line)
+
+
+def _literal_holes(match: re.Match[str]) -> str:
+    kept = " ".join(_holes(match.group(0).strip("`'\"")))
+    return f'"" {kept}' if kept else '""'
+
+
+def _holes(body: str) -> list[str]:
+    return [g for m in _INTERPOLATION_209.finditer(body) for g in m.groups() if g]
+
+
+def _args_disclose(args: str, scope: _Scope) -> bool:
+    """Detail on an error chain, or an error value surviving every call around it."""
+    if not args.strip():
+        return False
+    if _detail_reaches(args, scope):
+        return True
+    text = _neutralise_calls(args, scope)
+    return text is None or _bare_error_reaches(text, scope)
+
+
+def _detail_reaches(text: str, scope: _Scope) -> bool:
+    return _member_chain_discloses(_premask(text), scope)
+
+
+def _carries_error(text: str, scope: _Scope) -> bool:
+    return _detail_reaches(text, scope) or _bare_error_reaches(text, scope)
+
+
+def _has_access(text: str) -> bool:
+    """Every chain pattern needs an access operator; most argument texts have none."""
+    return "." in text or "->" in text
+
+
+def _member_chain_discloses(text: str, scope: _Scope) -> bool:
+    """Chains grouped by root, so each root is resolved once."""
+    by_root = _chains_by_root(text) if _has_access(text) else {}
+    if not by_root:
+        return False
+    may_bind = _binder(scope)   # one window read for every root
+    return any(_root_discloses(root, chains, scope, text, may_bind) for root, chains in by_root.items())
+
+
+def _chains_by_root(text: str) -> dict[str, list[str]]:
+    by_root: dict[str, list[str]] = defaultdict(list)
+    for root, chain in _MEMBER_CHAIN.findall(text):
+        by_root[root].append(chain)
+    return by_root
+
+
+def _root_discloses(root: str, chains: list[str], scope: _Scope, text: str, may_bind: Callable[[str], bool]) -> bool:
+    """Caught-root inversion first; else an error-NAMED chain ending in detail.
+    ``may_bind`` is `_binder(scope)`: `_resolve`, with the window read once per text."""
+    verdict = _resolve_with(root, scope, may_bind)
+    if verdict not in _UNTAINTED:
+        return _any_unsafe_member(chains)
+    return _judged_by_name(verdict, root, text) and any(_named_chain_discloses(root, _members(c)) for c in chains)
+
+
+def _any_unsafe_member(chains: list[str]) -> bool:
+    """A caught or tainted root: any first member but a safe projection is detail.
+
+    A chain's first member is its first identifier run: `_members(c)[0]` without
+    building the whole member list."""
+    return any(_IDENT_RUN.search(c).group().lower() not in _SAFE_MEMBERS for c in chains)
+
+
+_IDENT_RUN = re.compile(r"[\w$]+")
+
+
+def _judged_by_name(verdict: str, root: str, text: str) -> bool:
+    """A by-name verdict on an error-named root, or in a ``text`` holding some
+    error-named segment at all (read only here: a caught root never needs it)."""
+    return verdict in _BY_NAME and (_ERROR_NAME.fullmatch(root) is not None or _names_some_error(text))
+
+
+_ERROR_WORD = re.compile("|".join(_ERROR_WORDS))   # one C scan, not four
+
+
+@lru_cache(maxsize=1024)
+def _names_some_error(text: str) -> bool:
+    return _ERROR_WORD.search(text.lower()) is not None or _BARE_E.search(text) is not None
+
+
+def _members(chain: str) -> list[str]:
+    return [s for s in _SEGMENT_SPLIT.split("".join(chain.split())) if s]
+
+
+def _named_chain_discloses(root: str, members: list[str]) -> bool:
+    """`uploadError.message`; never `Type.CONST.message` (a constant)."""
+    if not _chain_names_error(root, members) or _is_type_constant(root, members):
+        return False
+    return _is_detail_member(members[-1])
+
+
+def _chain_names_error(root: str, members: list[str]) -> bool:
+    return any(_ERROR_NAME.fullmatch(s) for s in (root, *members[:-1]))
+
+
+def _is_type_constant(root: str, members: list[str]) -> bool:
+    return root[:1].isupper() and members[0].isupper()
+
+
+def _is_detail_member(member: str) -> bool:
+    return bool(set(identifier_words(member)) & _DETAIL_WORDS) or member in _DETAIL_MEMBERS
+
+
+def _neutralise_calls(text: str, scope: _Scope) -> str | None:
+    """Collapse calls innermost first; None as soon as one yields error detail."""
+    text = _render_receivers(text)
+    for _ in range(_MAX_CALL_PASSES):
+        text = _drop_transforms(text)
+        m = _innermost_call(text)
+        if not m:
+            return text
+        replacement = _call_replacement(m.group(1), m.group(2), scope)
+        if replacement is None:
+            return None
+        text = text[: m.start()] + replacement + text[m.end():]
+    return text
+
+
+def _drop_transforms(text: str) -> str:
+    return _STRING_TRANSFORM.sub(" ", text) if "(" in text and "." in text else text   # both in every match
+
+
+def _innermost_call(text: str) -> re.Match[str] | None:
+    """`_INNER_CALL.search(text)`, started where its leftmost match can first begin:
+    at most _CALLEE_REACH before the first innermost group, and never before the
+    paren preceding that group -- a callee and its spacing hold no paren, and every
+    match's group starts at or after the first one. On nested calls the reach alone
+    re-tried every enclosing callee, ~2 us per pass."""
+    group = _INNER_GROUP.search(text)
+    if not group:
+        return None
+    start = group.start()
+    floor = max(text.rfind("(", 0, start), text.rfind(")", 0, start)) + 1
+    return _INNER_CALL.search(text, max(floor, start - _CALLEE_REACH))
+
+
+def _render_receivers(text: str) -> str:
+    """`err.toJSON()` -> ` err `: a zero-argument renderer is its receiver."""
+    return _METHOD_STRINGIFIER.sub(_receiver_of, text) if _RENDER_TAIL.search(text) else text
+
+
+def _receiver_of(match: re.Match[str]) -> str:
+    return f" {match.group(1)} "
+
+
+def _call_replacement(callee: str, inner: str, scope: _Scope) -> str | None:
+    """A stringifier or extractor of an error discloses; a projection is opaque;
+    any other call passes its arguments through (containers, encoders, wrappers)."""
+    last = _last_segment(callee)
+    if _renders_detail(last):
+        return None if _carries_error(inner, scope) else _OPAQUE
+    return _OPAQUE if _is_opaque_call(callee, last, inner) else f" {inner} "
+
+
+@lru_cache(maxsize=4096)
+def _renders_detail(name: str) -> bool:
+    """A stringifier (`String`, `str`, `toJson`) or a detail extractor."""
+    return bool(_STRINGIFIER.fullmatch(name)) or _is_extractor(name)
+
+
+def _is_opaque_call(callee: str, last: str, inner: str) -> bool:
+    """A projection-role callee, or a PascalCase constructor with no arguments."""
+    if not _PROJECTION_WORDS.isdisjoint(_callee_words(callee)):
+        return True
+    return last[:1].isupper() and not inner.strip()
+
+
+def _last_segment(callee: str) -> str:
+    return _SEGMENT_SPLIT.split(callee)[-1]
+
+
+@lru_cache(maxsize=4096)
+def _callee_words(callee: str) -> tuple[str, ...]:
+    """`identifier_words` of a callee: each collapse pass reads them twice (as the
+    last segment and as the callee), and an undotted callee is both."""
+    return identifier_words(callee)
+
+
+def _is_extractor(name: str) -> bool:
+    words = _callee_words(name)
+    return _is_stack_pair(words) or _is_detail_getter(words)
+
+
+def _is_stack_pair(words: tuple[str, ...]) -> bool:
+    """`format_exception`, `print_exc`, `dumpStack`: a stack verb then a stack noun."""
+    return len(words) == 2 and words[0] in _STACK_VERBS and words[1] in _STACK_NOUNS
+
+
+def _is_detail_getter(words: tuple[str, ...]) -> bool:
+    """A detail word, and the callee does not END in a projection word (`getTraceId`)."""
+    return bool(set(words) & _DETAIL_CALL_WORDS) and words[-1] not in _PROJECTION_WORDS
+
+
+def _bare_error_reaches(text: str, scope: _Scope) -> bool:
+    """A value token resolving to an error. Past _MAX_TOKENS distinct tokens only
+    the conventional names count, so one sink cannot cost more than 32 resolutions.
+
+    A token nothing in reach binds resolves `unknown`, which counts exactly when it
+    is a conventional error name; that is decided here with one membership test,
+    so only a token some window row (or the prefix) binds pays for resolution."""
+    tokens = _distinct_tokens(_premask(_without_detail_chains(text)))
+    if not tokens:
+        return False
+    may_bind = _binder(scope)
+    return any(_token_counts(ident, k, scope) if may_bind(ident) else _is_conventional_error(ident)
+               for k, ident in enumerate(tokens))
+
+
+def _is_conventional_error(ident: str) -> bool:
+    return _EXACT_ERROR_NAME.fullmatch(ident) is not None
+
+
+def _binder(scope: _Scope) -> Callable[[str], bool]:
+    """``may_bind(ident)`` for one scope: the window index and the prefix's names are
+    read once, then each token is a few membership tests (see `_may_bind`)."""
+    if scope.depth > _MAX_DEPTH:
+        return _binds_nothing
+    state = _file_state(scope.lines, scope.suffix)
+    end = scope.line_num - 1
+    rows, start = state.index(end), max(0, end - _BINDING_RADIUS)
+    names = _line_names(scope.prefix[-_PREFIX_CHARS:], scope.suffix) if scope.prefix else frozenset()
+
+    def may_bind(ident: str) -> bool:
+        bare = ident.lstrip("$")
+        return _named_in(names, ident, bare) or _row_in(rows, ident, start, end) or (
+            bare != ident and _row_in(rows, bare, start, end))
+    return may_bind
+
+
+def _binds_nothing(ident: str) -> bool:
+    return False
+
+
+def _named_in(names: frozenset[str], ident: str, bare: str) -> bool:
+    return ident in names or bare in names
+
+
+def _row_in(rows: dict[str, list[int]], name: str, start: int, end: int) -> bool:
+    """Some row in [start, end) binds ``name``: one bisect, then the row it lands on."""
+    found = rows.get(name)
+    if not found:
+        return False
+    i = bisect_left(found, start)
+    return i < len(found) and found[i] < end
+
+
+def _without_detail_chains(text: str) -> str:
+    return _DETAIL_CHAIN.sub(" ", text) if _DETAIL_TAIL.search(text) else text
+
+
+def _distinct_tokens(text: str) -> list[str]:
+    return list(dict.fromkeys(m.group(1) for m in _VALUE_TOKEN.finditer(text)))
+
+
+def _token_counts(ident: str, index: int, scope: _Scope) -> bool:
+    if index >= _MAX_TOKENS:
+        return bool(_EXACT_ERROR_NAME.fullmatch(ident))
+    return _token_is_error(ident, scope)
+
+
+def _token_is_error(ident: str, scope: _Scope) -> bool:
+    verdict = _resolve_bound(ident, scope)   # only reached once `may_bind(ident)` held
+    if verdict == "unknown":
+        return bool(_EXACT_ERROR_NAME.fullmatch(ident))
+    return verdict not in _UNTAINTED
+
+
+def _resolve(ident: str, scope: _Scope) -> str:
+    """Where ``ident`` came from, nearest first: caught / tainted / clean / unknown.
+
+    Memoised per (sink line, prefix, identifier, depth) in the file's own state,
+    so the sinks of one routine share their window and the memo goes with the file.
+    """
+    return _resolve_with(ident, scope, _binder(scope))
+
+
+def _resolve_with(ident: str, scope: _Scope, may_bind: Callable[[str], bool]) -> str:
+    """`_resolve`, given ``may_bind = _binder(scope)`` already built for the text."""
+    if not may_bind(ident):
+        return "unknown"   # nothing in reach binds it: no walk, no memo entry
+    return _resolve_bound(ident, scope)
+
+
+def _resolve_bound(ident: str, scope: _Scope) -> str:
+    """`_resolve` for a name some row in reach (or the prefix) binds."""
+    state = _file_state(scope.lines, scope.suffix)
+    key = (scope.line_num, scope.prefix, ident, scope.depth)
+    verdict = state.memo.get(key)
+    if verdict is None:
+        if len(state.memo) >= _MEMO_LIMIT:
+            state.memo.clear()
+        verdict = state.memo[key] = _walk_window(ident, scope)
+    return verdict
+
+
+def _walk_window(ident: str, scope: _Scope) -> str:
+    """The nearest binding of ``ident`` within _BINDING_RADIUS lines above the sink.
+
+    Only the window lines that bind the name are visited (`_file_index`), so a
+    resolution costs a few lookups, not a 30-line scan per identifier.
+    """
+    if scope.depth > _MAX_DEPTH:
+        return "unknown"
+    return _prefix_binding(ident, scope) or _rows_binding(ident, scope) or "unknown"
+
+
+def _prefix_binding(ident: str, scope: _Scope) -> str | None:
+    """The sink line's own text before the sink, read back _PREFIX_CHARS at most:
+    a same-line binding is statement-scale, and an uncapped prefix cost a parse of
+    the whole line per sink."""
+    if not scope.prefix:
+        return None   # an empty prefix binds nothing
+    prefix = scope.prefix[-_PREFIX_CHARS:]
+    names = _line_names(prefix, scope.suffix)
+    if ident not in names and ident.lstrip("$") not in names:
+        return None
+    return _line_binding(prefix, ident, scope, scope.line_num)
+
+
+def _rows_binding(ident: str, scope: _Scope) -> str | None:
+    """The window lines above the sink that bind ``ident``, nearest first."""
+    state = _file_state(scope.lines, scope.suffix)
+    for i in _candidate_rows(state.index(scope.line_num - 1), ident, scope.line_num - 1):
+        verdict = _row_binding(state, i, ident, scope)
+        if verdict:
+            return verdict
+    return None
+
+
+def _row_binding(state: "_FileState", row: int, ident: str, scope: _Scope) -> str | None:
+    """What row ``row`` binds ``ident`` to, seen from depth ``scope.depth``: it depends
+    on nothing else, so the sinks below the row share it."""
+    key = (row, ident, scope.depth)
+    if key not in state.rows:
+        state.rows[key] = _line_binding(state.lines[row], ident, scope, row + 1)
+    return state.rows[key]
+
+
+class _FileState:
+    """What the resolver keeps for one file; dropped with the file.
+
+    ``names``: bound name -> ascending 0-based indices of the lines binding it,
+    extended as resolution reaches further down, so every line is indexed once
+    per file (the per-sink-line window map it replaced re-read 30 rows for every
+    sink line). ``marks``: running count of marker lines,
+    so "any marker in rows [a, b)" is two lookups. ``memo``: per-sink resolutions.
+    """
+
+    __slots__ = ("lines", "suffix", "names", "upto", "marks", "memo", "rows", "words", "words_upto", "row_names")
+
+    def __init__(self, lines: Sequence[str], suffix: str) -> None:
+        self.lines, self.suffix, self.names, self.upto = lines, suffix, defaultdict(list), 0
+        self.marks: list[int] = [0]
+        self.memo: dict[tuple, str] = {}
+        self.rows: dict[tuple, str | None] = {}
+        self.words: dict[str, list[int]] = defaultdict(list)
+        self.words_upto = 0
+        self.row_names: list[frozenset[str]] = []
+
+    def index(self, upto: int) -> dict[str, list[int]]:
+        if upto > self.upto:   # most calls ask for rows already indexed
+            self._index_to(upto)
+        return self.names
+
+    def _index_to(self, upto: int) -> None:
+        names, row_names, suffix = self.names, self.row_names, self.suffix
+        for i in range(self.upto, upto):
+            row_names.append(_line_names(self.lines[i], suffix))
+            for name in row_names[i]:
+                names[name].append(i)
+        self.upto = upto
+
+    def mentions(self, upto: int) -> dict[str, list[int]]:
+        """Every name -> ascending rows that spell it (bare and `$` forms as written)."""
+        words, lines = self.words, self.lines
+        for i in range(self.words_upto, upto):
+            for w in set(_NAMES.findall(lines[i][:MAX_SCAN_CHARS])):
+                words[w].append(i)
+        self.words_upto = max(self.words_upto, upto)
+        return self.words
+
+    def marked(self, start: int, end: int) -> bool:
+        """Any marker line in rows [start, end)."""
+        marks, size = self.marks, len(self.lines)
+        if end > size:
+            end = size
+        if end >= len(marks):
+            self._mark_to(end)
+        return marks[end] > marks[start if start > 0 else 0]
+
+    def _mark_to(self, end: int) -> None:
+        marks, lines = self.marks, self.lines
+        for i in range(len(marks) - 1, end):
+            marks.append(marks[-1] + (_MARKER.search(lines[i].lower()) is not None))
+
+
+def _file_state(lines: Sequence[str], suffix: str) -> _FileState:
+    key = (id(lines), suffix)
+    state = _FILE_STATES.get(key)
+    if state is None or state.lines is not lines:
+        state = _new_state(key, lines, suffix)
+    return state
+
+
+def _new_state(key: tuple, lines: Sequence[str], suffix: str) -> _FileState:
+    """Oldest file out first: a long scan never keeps an early file alive."""
+    _FILE_STATES.pop(key, None)
+    while len(_FILE_STATES) >= _STATE_FILES:
+        _FILE_STATES.pop(next(iter(_FILE_STATES)))
+    state = _FILE_STATES[key] = _FileState(lines, suffix)
+    return state
+
+
+def _line_names(raw: str, suffix: str) -> frozenset[str]:
+    """Every name a window line binds; an over-long line binds none (never read)."""
+    return frozenset() if len(raw) > MAX_SCAN_CHARS else _line_facts(raw, suffix).names
+
+
+def _candidate_rows(names: dict[str, list[int]], ident: str, end: int) -> list[int]:
+    """Indices in [end - _BINDING_RADIUS, end) binding ``ident`` or its bare form, nearest first."""
+    start = max(0, end - _BINDING_RADIUS)
+    rows = _within(names.get(ident, ()), start, end)
+    bare = ident.lstrip("$")
+    if bare != ident:
+        rows = sorted({*rows, *_within(names.get(bare, ()), start, end)})
+    return rows[::-1]
+
+
+def _within(rows: Sequence[int], start: int, end: int) -> Sequence[int]:
+    return rows[bisect_left(rows, start): bisect_left(rows, end)]
+
+
+def _line_binding(raw: str, ident: str, scope: _Scope, line_no: int) -> str | None:
+    """The binding one window line gives ``ident``, or None when it gives none."""
+    facts = _line_facts(raw, scope.suffix)
+    rhs = facts.assigns.get(ident)
+    if not _binds_here(facts, ident, rhs):
+        return None
+    if ident.lstrip("$") in facts.caught:
+        return "caught"   # needs no deeper scope
+    deeper = scope.at(line_no, scope.depth + 1)   # destructuring too, so _REACH bounds every chain
+    return _binding_from_facts(facts, ident, rhs, deeper) or _destructured(facts, ident, deeper)
+
+
+def _binds_here(facts: _Facts, ident: str, rhs: str | None) -> bool:
+    """The line binds ``ident``, and not as `err = coerceFault(err)` (there the older binding wins)."""
+    return _mentions_binding(facts, ident, rhs) and not _self_wrap(ident, rhs)
+
+
+def _mentions_binding(facts: _Facts, ident: str, rhs: str | None) -> bool:
+    """Cheap pre-check (dict and set lookups) before any scope is built."""
+    bare = ident.lstrip("$")
+    if rhs is not None or bare in facts.caught or bare in facts.params:
+        return True
+    return _destructures(facts, ident)
+
+
+def _destructures(facts: _Facts, ident: str) -> bool:
+    return facts.destructure is not None and ident in facts.destructure[0]
+
+
+def _self_wrap(ident: str, rhs: str | None) -> bool:
+    """`err = coerceFault(err)`. The substring test first: compiling a name pattern
+    for every bound name cost a fifth of a dense file's time."""
+    return rhs is not None and ident in rhs and bool(_name_pattern(ident).search(_rhs_text(rhs)))
+
+
+@lru_cache(maxsize=1024)
+def _rhs_text(rhs: str) -> str:
+    """`_strip_literals(rhs)`, once per right-hand side: four readers of one binding row use it."""
+    return _strip_literals(rhs)
+
+
+@lru_cache(maxsize=4096)
+def _name_pattern(ident: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![\w$.]){re.escape(ident)}(?![\w$])")
+
+
+def _binding_from_facts(facts: _Facts, ident: str, rhs: str | None, scope: _Scope) -> str | None:
+    """A name `_line_binding` found bound here but not caught: assigned or a parameter."""
+    if rhs is not None:
+        return _rhs_verdict(rhs, scope)
+    if ident.lstrip("$") in facts.params:
+        return _param_binding(facts.code, ident)
+    return None
+
+
+def _destructured(facts: _Facts, ident: str, scope: _Scope) -> str | None:
+    """`const { message, stack } = e`: the source's verdict."""
+    if not _destructures(facts, ident):
+        return None
+    return _destructure_verdict(facts.destructure[1], ident, scope)
+
+
+def _destructure_verdict(source: str, ident: str, scope: _Scope) -> str:
+    """tainted from an error, clean from a clean name or a validation result; any
+    other source -- a call result, a member, ``ident`` itself, an unresolved
+    name -- is a `field`. A call source is recorded as `callee(`."""
+    if source.endswith("("):
+        return _call_result_verdict(source[:-1])
+    if "." in source or source == ident:
+        return "field"
+    return _source_verdict(_resolve(source, scope))
+
+
+def _call_result_verdict(callee: str) -> str:
+    return "clean" if _is_validation_callee(callee) else "field"
+
+
+def _source_verdict(verdict: str) -> str:
+    """A bare source's own verdict, as seen through destructuring."""
+    if verdict not in _UNTAINTED:
+        return "tainted"
+    return "clean" if verdict == "clean" else "field"
+
+
+@lru_cache(maxsize=8192)
+def _line_facts(raw: str, suffix: str = "") -> _Facts:
+    """Every binding one raw line makes, read once per distinct line text."""
+    code = stripped_code(raw)
+    assigns: dict[str, str] = {}
+    for m in _ASSIGN_TARGET.finditer(raw) if "=" in raw else ():   # every target form spells `=`
+        assigns.setdefault(m.group(1), raw[m.end(): m.end() + 400].lstrip())
+    caught, params = _caught_names(raw, suffix), tuple(_header_params(code))
+    destructure = _destructure_of(code)
+    names = caught.union(assigns, params, _declared(code), destructure[0] if destructure else ())
+    return _Facts(code, caught, assigns, params, destructure, names)
+
+
+_HANDLER_WORD = re.compile("|".join(_HANDLER_WORDS))   # literal alternation: one C scan, not five
+
+
+def _declared(code: str) -> list[str]:
+    return _DECLARES.findall(code) if "as" in code or "var" in code else []
+
+
+def _caught_names(raw: str, suffix: str) -> frozenset[str]:
+    """`_lexical.catch_binding`, skipped on a line without any handler keyword.
+
+    Every binding form it knows spells one of _HANDLER_WORDS, so a line with none
+    binds nothing; the substring test costs ~1% of the form search, which was a
+    third of a review's worst-file time (pinned by a unit test over every form).
+    """
+    handler = catch_binding(raw, suffix) if _HANDLER_WORD.search(raw) else frozenset()
+    return handler | _variant_names(raw)
+
+
+def _variant_names(raw: str) -> frozenset[str]:
+    """`Err(problem) =>` binds ``problem``; every bare error variant spells Err or Exc."""
+    if "Err" not in raw and "Exc" not in raw:
+        return frozenset()
+    return frozenset(filter(None, map(_bare_variant_payload, _VARIANT_BINDING.finditer(raw))))
+
+
+def _bare_variant_payload(match: re.Match[str]) -> str:
+    return match.group(2) if _EXACT_ERROR_NAME.fullmatch(match.group(1).lower()) else ""
+
+
+def _destructure_of(code: str) -> tuple[frozenset[str], str] | None:
+    if "=" not in code:
+        return None   # every destructuring spells `=`
+    m = _DESTRUCTURE.search(code)
+    if not m:
+        return None
+    names = m.group(1).split(":")[0]
+    return frozenset(_NAMES.findall(names)), m.group(2) + ("(" if m.group(3) else "")
+
+
+def _rhs_verdict(rhs: str, scope: _Scope) -> str:
+    """tainted when the right-hand side discloses at depth <= 2; clean for a
+    literal, a constant, or a projection OF an error; otherwise unknown."""
+    if _rhs_discloses(_uncast(_rhs_text(rhs)), scope):
+        return "tainted"
+    if _is_literalish(rhs) or _is_projection_of_error(rhs, scope):
+        return "clean"
+    return "unknown"
+
+
+def _rhs_discloses(text: str, scope: _Scope) -> bool:
+    """`_args_disclose`, skipped when it cannot hold (see `_may_carry_error`)."""
+    return _may_carry_error(text, scope) and _args_disclose(text, scope)
+
+
+def _may_carry_error(text: str, scope: _Scope) -> bool:
+    """False only when `_args_disclose(text, scope)` is False for certain.
+
+    Every token, root and segment it judges is a substring of ``text`` (each
+    rewrite blanks a span or keeps a substring between spaces). A token resolves
+    past `unknown` only when ``may_bind`` holds, i.e. a name bound in reach -- by
+    the prefix or a window row -- is that token or its bare form, so that name is
+    a substring of ``text``. With every token `unknown`, only an error-NAMED
+    segment or a conventional error name counts, and each of those spells a
+    _MARKER word. So: no marker and no bound name inside ``text`` -> no disclosure.
+    Most binding rows are service calls with neither; the walk cost ~11 us each.
+    """
+    return _MARKER.search(text.lower()) is not None or _bound_name_in(text, scope)
+
+
+def _bound_name_in(text: str, scope: _Scope) -> bool:
+    """Some name `_binder(scope)` would accept occurs in ``text``."""
+    if scope.depth > _MAX_DEPTH:
+        return False
+    return any(name in text for names in filter(None, _names_in_reach(scope)) for name in names)
+
+
+def _names_in_reach(scope: _Scope) -> list[frozenset[str]]:
+    """What each window row binds, and the prefix: the names `_binder(scope)` accepts."""
+    state = _file_state(scope.lines, scope.suffix)
+    end = scope.line_num - 1
+    state.index(end)
+    rows = state.row_names[max(0, end - _BINDING_RADIUS): end]
+    if scope.prefix:
+        rows.append(_line_names(scope.prefix[-_PREFIX_CHARS:], scope.suffix))
+    return rows
+
+
+def _single_call(rhs: str) -> re.Match[str] | None:
+    """The right-hand side as ONE call, after a lead await/yield/try."""
+    return _SINGLE_CALL.fullmatch(_LEAD_KEYWORD.sub("", _rhs_text(rhs).strip().rstrip(";")))
+
+
+def _is_validation_callee(callee: str) -> bool:
+    """`schema.validate(body)`: its error describes the PEER'S OWN input (a field
+    and why it was refused), which is the answer to give, not internal detail."""
+    return bool(set(identifier_words(callee)) & _VALIDATION_WORDS)
+
+
+def _is_literalish(rhs: str) -> bool:
+    return bool(_LITERALISH.match(_rhs_text(rhs)) or _LITERALISH.match(rhs))
+
+
+def _uncast(text: str) -> str:
+    """`(err as Error)` -> `err`, `err!` -> `err`."""
+    return _NON_NULL.sub(r"\1", _CAST.sub(r" \1 ", text))
+
+
+def _is_projection_of_error(rhs: str, scope: _Scope) -> bool:
+    """`quotaFault = formatQuotaError(err)`: one projection-named call given the error.
+
+    A projection-named call WITHOUT an error argument stays unknown: measured on
+    one real target, treating any opaque call result as clean dropped five cited
+    leak lines (`accountRes = await loadAccountById(uid)` -> `accountRes.error.message`).
+    """
+    m = _single_call(rhs)
+    if not m or _renders_detail(_last_segment(m.group(1))):
+        return False
+    return bool(set(identifier_words(m.group(1))) & _PROJECTION_WORDS) and _carries_error(m.group(2), scope)
+
+
+def _header_params(code: str) -> list[str]:
+    if not _declares_parameters(code):
+        return []
+    return [name for name in map(param_name, _param_list(code)) if name]
+
+
+def _declares_parameters(code: str) -> bool:
+    """No `(`, no parameter list for `_param_list` to read, so no header parse."""
+    return "(" in code and (routine_header(code) or bool(_ARROW.search(code)))
+
+
+def _param_list(code: str) -> list[str]:
+    """The first parenthesised list of ``code``, split on commas."""
+    lists = paren_lists(code, limit=1)
+    return lists[0].split(",") if lists else []
+
+
+def _param_binding(code: str, ident: str) -> str | None:
+    """Error-first -> caught; an error-named parameter, untyped or base-error-typed
+    -> caught; scalar- or domain-typed, or not error-named -> clean."""
+    names = _header_params(code)
+    if ident.lstrip("$") not in names:
+        return None
+    if not _is_error_named(ident):
+        return "clean"
+    if names[0] == ident.lstrip("$"):
+        return "caught"
+    return _typed_param_verdict(_param_type(code, ident))
+
+
+def _is_error_named(ident: str) -> bool:
+    return len(ident.lstrip("$")) > 2 and bool(_ERROR_NAME.fullmatch(ident))
+
+
+def _typed_param_verdict(typ: str | None) -> str:
+    if typ is None:
+        return "caught"
+    if set(identifier_words(typ)) & _SCALAR_TYPES:
+        return "clean"
+    return "caught" if _type_name(typ).lower() in _BASE_ERROR_TYPES else "clean"
+
+
+def _type_name(typ: str) -> str:
+    """The last path segment: `std::io::Error` and `java.lang.Exception` name the base
+    type (the Rust form was measured read as the domain type `std`)."""
+    return _SEGMENT_SPLIT.split(typ.replace("::", "."))[-1].strip("[]<>&*")
+
+
+def _param_type(code: str, ident: str) -> str | None:
+    for param in _param_list(code):
+        name, typ = _typed_param(param.strip().split("=")[0].strip())
+        if name and name.lstrip("$") == ident.lstrip("$"):
+            return typ
+    return None
+
+
+def _typed_param(param: str) -> tuple[str | None, str | None]:
+    m = _TYPED_PARAM.match(param)
+    if not m:
+        return None, None
+    return (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
+
+
+# (trigger, pattern, replacement), in order; a pattern runs only when its trigger
+# is found. Each trigger is one C search: the substring tests they replace ran as
+# five Python predicates per text, one a six-way generator.
+_PREMASK_STEPS = (
+    (re.compile("!"), _PM_NEG, " "),
+    (re.compile("|".join(map(re.escape, _COMPARISON_MARKS))), _PM_CMP, " "),
+    (_PREDICATE_CALL, _PM_PRED, " "),
+    (re.compile(r"\?"), _PM_TERN, " ? "),
+    (re.compile("="), _PM_INIT, " "),
+)
+
+
+@lru_cache(maxsize=4096)
+def _premask(text: str) -> str:
+    """Remove tokens that are READ, not WRITTEN; a spread becomes the bare value."""
+    t = text.replace("...", " ").replace("**", " ")
+    t = _PM_INDEX.sub(" ", t) if "[" in t else t
+    for trigger, pattern, replacement in _PREMASK_STEPS:
+        if trigger.search(t):
+            t = pattern.sub(replacement, t)
+    return t
+
+
+# END OF THE CWE-209 VALUE SECTION
+# ---------------------------------------------------------------------------
 
 
 def _check_log_sensitive(

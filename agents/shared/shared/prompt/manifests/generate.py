@@ -308,7 +308,7 @@ ASVS = PromptSpec(
 # states the contract three times. Not merged — the duplication is the finding.
 CWE = PromptSpec(
     id="generate/cwe", tier="generate",
-    version=6,                       # 0098: domains/cwe coverage counts (4.8 -> 5)
+    version=7,                       # 0101: CWE-778/770/209 definitions (0098 -> 6)
     fragments=("domains/cwe", *_SYSTEM_SUFFIX),
     user_fragments=_USER_TURN,
     schema_fields=_SCHEMA_FIELDS, vocabulary=_VOCABULARY, tools=_TOOLS,
