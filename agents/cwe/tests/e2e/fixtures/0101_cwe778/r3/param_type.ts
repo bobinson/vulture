@@ -2,7 +2,7 @@
 // parameter's TYPE (`onDone: (r: Row) => void`) does not make the method line a
 // call that takes a callback: the method is the routine, and the class name
 // above it is not part of its window. Every identifier is invented.
-export class SessionPanel {
+export class SessionTray {
   render(onDone: (r: Row) => void) {
     try {
       this.table.paint(this.rows);

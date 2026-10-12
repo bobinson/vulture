@@ -806,12 +806,37 @@ _ACC_DECL = re.compile(
 )
 
 
-def _declared_in_line(code: str) -> set[str]:
+# A statically typed local (`List<String> parts = ...`, `std::vector<char> f = ...`,
+# `char *buf = ...`, `final a.b.T x = ...`) declares its name exactly as `var` does:
+# a row that STARTS with a type (a word, optionally qualified, with generic
+# arguments and array brackets) followed by a name and `=`. A control word is not
+# a type (`else buf = ...`, `return x = ...`), so the row must not start with one.
+_ACC_DECL_NOT_TYPE = (
+    "if|else|elif|elsif|return|yield|await|throw|raise|case|new|delete|print|echo|puts|while|for"
+    "|foreach|do|not|and|or|in|is|goto|defer|go|unless|until|when|then|typeof|sizeof|assert|lambda"
+    "|with|import|from|export|using|package|del|pass|break|continue|default|static_assert"
+)
+_ACC_TYPED_DECL = re.compile(
+    r"^\s{0,80}(?:(?:final|readonly|static|const|auto|mut|volatile|register|unsigned|signed)\s{1,8}){0,3}"
+    r"(?!(?:" + _ACC_DECL_NOT_TYPE + r")\b)"
+    r"[A-Za-z_][\w.]{0,80}(?:::[\w.]{1,40}){0,4}"
+    r"(?:<(?:[^<>=;\n]|<(?:[^<>=;\n]|<[^<>=;\n]{0,60}>){0,80}>){0,120}>)?"
+    r"(?:\s{0,4}\[\s{0,4}\])*[\s*&]{1,8}([A-Za-z_$][\w$]{0,63})\s{0,4}=(?![=>])"
+)
+
+
+def _keyword_declared(code: str) -> set[str]:
     return {g for m in _ACC_DECL.finditer(code) for g in m.groups() if g}
 
 
-# Every `_ACC_DECL` form holds one of these words: a row without one declares nothing.
-_ACC_DECL_HINT = re.compile(r"const|let|var|val|:=")
+def _declared_in_line(code: str) -> set[str]:
+    names = _keyword_declared(code)
+    typed = _ACC_TYPED_DECL.match(code)
+    return names | {typed.group(1)} if typed else names
+
+
+# Every declaration form holds one of these: a row without one declares nothing.
+_ACC_DECL_HINT = re.compile(r"const|let|var|val|=")
 
 
 def _collect_declared(body: list[str]) -> frozenset[str]:
@@ -1146,8 +1171,13 @@ _ACC_PULL = re.compile(
     r"(?:" + _ACC_CAMEL_SUFFIX.replace("|All", "").replace("Bytes|", "") + "|" + _ACC_SNAKE_READ
     + r"){0,2}\s{0,8}\(\s{0,4}"
     r"(?:\)|\d|[^()]{0,80}?\b(?:buf|buffer|size|chunk|len|length|count|bytes|n)\b|\w{0,30}\[|&\s{0,2}mut\b"
+    r"|[^()]{0,80}?,\s{0,4}\d"   # a numeric size argument: `os.read(fd, 4096)`
     r"|(?:[^()]|\([^()]{0,40}\)){1,80}\)\s{0,4}\)?\s{0,4}(?:!==?|>=?|==|<=?)\s{0,4}(?:-\s{0,2}1|0|EOF)\b)"
     r"|(?:\.|\b)(?:nextLine|hasNextLine|hasNext|nextBytes)\s{0,8}\("
+    # A read/receive routine named with a word prefix (`socket_read($s, 2048)`,
+    # `stream_socket_recvfrom($s, 1500)`) when a later argument is a numeric size;
+    # a bare `_read()` helper or an unsized `file_read(path)` is not a pull.
+    r"|(?<=[A-Za-z0-9])_(?:read|recv(?:from)?|receive)\s{0,8}\([^()]{0,80}?,\s{0,4}\d"
     r"|\.\s{0,4}a?iter_\w{1,12}\s{0,4}\("
     r"|\.\s{0,4}(?:gets|readline|readpartial|each_line)\b|(?<![\w.])gets\b"
     r"|\.\s{0,4}get(?:_nowait)?\s{0,4}\(\s{0,4}(?:\)|timeout|block)"

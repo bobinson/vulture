@@ -203,12 +203,12 @@ def test_bare_traversal_not_reported_by_default():
 
 def test_identifier_ending_in_path_is_not_traversal():
     """`Path\\(` without a left boundary matched the TAIL of any identifier
-    ending in "Path", so `resolveCompletionPath(user, url)` was reported as
+    ending in "Path", so `resolveFollowupPath(user, url)` was reported as
     path traversal — the single V5.1.1 row that survived the sink gate on the
     measured target, and a false positive too. Same defect as DROP matching
     inside "backdrop-filter" in CWE-89."""
     for line in [
-        "  return resolveCompletionPath(user, resolvedUrl);",
+        "  return resolveFollowupPath(user, resolvedUrl);",
         "  const p = getPath(user);",
         "  const out = buildPath(req.query.x);",
     ]:

@@ -362,7 +362,7 @@ _PATH_TRAVERSAL_UNION = _union(PATH_TRAVERSAL_PATTERNS)
 
 # Obvious non-secrets. Without this, V13.3.1 reported CRITICAL for a Storybook
 # mock whose value literally says "storybook":
-#     const VERIFICATION_TOKEN = "verification-token-2102-storybook";
+#     const VERIFICATION_TOKEN = "verification-token-7350-storybook";
 # Kept to markers that appear IN THE VALUE or on the line, so a real secret in
 # a file that merely happens to sit near tests is still reported.
 _CRED_PLACEHOLDER = re.compile(

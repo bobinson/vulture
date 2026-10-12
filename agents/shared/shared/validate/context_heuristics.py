@@ -641,7 +641,7 @@ def _secret_value_check(
 #
 # An interpolated value that is provably validated cannot carry an injection,
 # and nothing in the pipeline could see that. Measured on one run:
-# `seed-poll-verifications.qa.ts:423` interpolates `pollId` into a SQL string
+# `seed-roster-checks.qa.ts:423` interpolates `pollId` into a SQL string
 # and scored 0.99 `high_confidence`, while the identifier is validated at the
 # handler entry ~100 lines above by an anchored regex
 # (`UUID_RE.test(pollId)`, `UUID_RE = /^[0-9a-f]{8}-...$/i`) — so no quote or
@@ -691,7 +691,7 @@ _INPUT_VALIDATION_ID = "input_validation"
 
 # A value that can only ever be one of a few constants cannot carry a quote
 # or a semicolon, so the sink is unreachable however it is concatenated.
-# Measured: `seed-poll-verifications.qa.ts:367` interpolates `pollId` AND
+# Measured: `seed-roster-checks.qa.ts:367` interpolates `pollId` AND
 # `label`, where `label` is a local assigned only `"UNVERIFIED"` /
 # `"PLATINUM"` / `"GOLD"`. With only the pattern and membership shapes that
 # row came out `partial` and kept its 0.99.

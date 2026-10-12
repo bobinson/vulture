@@ -93,11 +93,11 @@ FALSE_POSITIVES = {
         "`;\n"
     ),
     "ModeStep.tsx": (
-        "export function ModeStep({ copy, cardTabIndex }) {\n"
+        "export function ModeStep({ copy, tileTabIndex }) {\n"
         "  return (\n"
         "    <Card\n"
         "      ariaLabel={`Select ${copy.title}`}\n"
-        "      tabIndex={cardTabIndex}\n"
+        "      tabIndex={tileTabIndex}\n"
         "    />\n"
         "  );\n"
         "}\n"

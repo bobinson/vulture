@@ -141,12 +141,12 @@ class TestCWE434Negatives:
 
     @pytest.mark.parametrize("filename, line", [
         ("AvatarInput.tsx", 'import { UploadIcon } from "ui";'),
-        ("AvatarInput.tsx", 'const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);'),
-        ("AvatarInput.tsx", '  handleAvatarUploadComplete,'),
+        ("AvatarInput.tsx", 'const [isUploadingPortrait, setIsUploadingPortrait] = useState(false);'),
+        ("AvatarInput.tsx", '  handlePortraitUploadDone,'),
         ("actions.yaml", '  - name: completeMediaUpload'),
         ("actions.yaml", '  - name: beginMediaUpload'),
-        ("public_userAnimationFlags.yaml", '        - uploadProfilePictureAnimationSeen'),
-        ("public_userAnimationFlags.yaml", '        - lastUploadProfilePictureAnimationDate'),
+        ("public_userWidgetFlags.yaml", '        - uploadWidgetGlowSeen'),
+        ("public_userWidgetFlags.yaml", '        - lastUploadWidgetGlowDate'),
         ("api.d.ts", 'export interface UploadConfig { maxSize: number; }'),
     ])
     def test_must_not_fire(self, filename: str, line: str, tmp_path: Path) -> None:

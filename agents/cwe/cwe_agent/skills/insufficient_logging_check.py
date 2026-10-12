@@ -2489,13 +2489,13 @@ def _auth_line_is_declaration(code: str, lines: tuple[str, ...], lineno: int) ->
 #
 # Word-anchored and pinned in one module-level constant so the vocabulary is
 # reviewable in a single place: substring matching turned `auth` into a match
-# on `uniqueAuthorIds`, which is how a flagship true positive was contaminated
+# on `sortedAuthorIds`, which is how a flagship true positive was contaminated
 # during the method comparison that preceded this feature.
 #
 # 0101: the vocabulary is the hand-off gate's (`guards_security_operation`, roots
 # over identifier words), so the two security tests cannot drift. Splitting on
 # identifier words is what makes `auth_token` match both `auth` and `token`, and
-# `uniqueAuthorIds` still splits to (unique, author, ids): `author` matches the
+# `sortedAuthorIds` still splits to (sorted, author, ids): `author` matches the
 # `auth` root, an over-match that costs precision, never recall.
 # Section 3.2 rule 1 also counts a rejection RESPONSE as security-relevant, and
 # that is not a word: `[A-Za-z]{2,}` cannot see `401`. Status codes and explicit

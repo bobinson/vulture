@@ -1,6 +1,6 @@
 """An interpolated value that is provably validated must not be CONFIRMED.
 
-Measured on one run: ``seed-poll-verifications.qa.ts:423`` interpolates
+Measured on one run: ``seed-roster-checks.qa.ts:423`` interpolates
 ``pollId`` into a SQL string and scored 0.99 ``high_confidence``. The
 identifier is validated 100 lines above at the handler entry by an anchored
 regex (``UUID_RE.test(pollId)`` where ``UUID_RE`` is
@@ -228,12 +228,12 @@ class TestTheGuardWithholdsConfirmationNotTruth:
 class TestLiteralOnlyValues:
     """A value that can only ever be one of a few string literals is safe.
 
-    Measured: `seed-poll-verifications.qa.ts:367` interpolates BOTH `pollId`
+    Measured: `seed-roster-checks.qa.ts:367` interpolates BOTH `pollId`
     and `label`. `pollId` is UUID-guarded, but `label` is a local whose every
     assignment is a string constant:
 
         let label = "UNVERIFIED";
-        if (vr >= minVerificationRate) {
+        if (vr >= minReviewRate) {
           if (cr >= platinumRate) label = "PLATINUM";
           else if (cr >= goldRate) label = "GOLD";
         }
@@ -253,10 +253,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export default async function handler(request, response) {
   const { pollId } = request.body;
   if (!UUID_RE.test(pollId)) return;
-  await updateQualityLabel(pollId);
+  await updateTierLabel(pollId);
 }
 
-async function updateQualityLabel(pollId) {
+async function updateTierLabel(pollId) {
   let label = "UNVERIFIED";
   if (eligible > 0) {
     if (cr >= platinumRate) label = "PLATINUM";
@@ -385,7 +385,7 @@ function isNoise(file) {
   return false;
 }
 
-function readStagedBlob(file) {
+function readBlobStaged(file) {
   return execSync(`git show :${file}`);
 }
 """

@@ -8,7 +8,7 @@ namespace App\Records;
 
 class RecordStore
 {
-    public function revokeAllSessions($userId)
+    public function revokeAllKioskLogins($userId)
     {
         try {
             $this->store->deleteAll($userId);

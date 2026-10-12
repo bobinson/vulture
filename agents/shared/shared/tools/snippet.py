@@ -22,7 +22,7 @@ _LINE_BUDGET_LINE_CHARS = 400
 
 
 # A finding that declares a RANGE must be windowed over that range. Measured:
-# `prepaidLetterCheckout.action.ts` declared line_start=120, line_end=131 and
+# `preorderNoteCheckout.action.ts` declared line_start=120, line_end=131 and
 # got a 5-line window at 118-122, because only `line_num` was ever consulted.
 # The `} catch { ... }` at line 129 — the evidence that REFUTED the finding —
 # sat outside it, so the L5 judge answered "the catch block is not visible,

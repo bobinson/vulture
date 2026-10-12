@@ -6,7 +6,7 @@ public class RecordStore
 {
     private Exception lastError;
 
-    public void revokeAllSessions(String userId)
+    public void revokeAllKioskLogins(String userId)
     {
         try
         {

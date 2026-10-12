@@ -245,7 +245,7 @@ func TestCheck_FifoIsRefusedWithoutBlocking(t *testing.T) {
 	}
 }
 
-// Live verification (togetherapp): secret_scan config findings carry ONE
+// Live verification (dogfood target): secret_scan config findings carry ONE
 // unnumbered row, the cited line without its indentation. Those rows map to
 // line_start onwards, and the line's leading whitespace is tolerated.
 func TestCheck_UnnumberedRowsMapToTheFindingLine(t *testing.T) {
@@ -268,7 +268,7 @@ func TestCheck_UnnumberedRowAtTheWrongLineIsChanged(t *testing.T) {
 	}
 }
 
-// Live verification (togetherapp): window cuts leave rows that are PREFIXES of
+// Live verification (dogfood target): window cuts leave rows that are PREFIXES of
 // their file lines at any length (the window stage's own rule), and a cut
 // masked row still reveals a value anchored by literal text after it.
 func TestCheck_TruncatedRowsArePrefixes(t *testing.T) {

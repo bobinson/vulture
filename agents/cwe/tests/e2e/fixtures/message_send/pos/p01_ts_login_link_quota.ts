@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   }
   const allowed = await store.allowStart({
     email,
-    perEmailLimit: 3,
+    emailLimitPerHour: 3,
     windowSeconds: 60,
   });
   if (!allowed) {

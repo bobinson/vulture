@@ -8,7 +8,7 @@ public class RecordStore
 {
     private Exception _lastError;
 
-    public void RevokeAllSessions(string userId)
+    public void RevokeAllKioskLogins(string userId)
     {
         try
         {
@@ -20,7 +20,7 @@ public class RecordStore
         }
     }
 
-    public void RevokeAllSessionsKr(string userId) {
+    public void RevokeAllKioskLoginsKr(string userId) {
         try {
             _store.DeleteAll(userId);
         } catch (Exception ex) { // EXPECT: finding

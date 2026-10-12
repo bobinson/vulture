@@ -33,7 +33,7 @@ class TestAllmanDeclaration:
     CS = (
         "public class RecordStore",                       # 0
         "{",                                              # 1
-        "    public void RevokeAllSessions(string id)",   # 2
+        "    public void RevokeAllKioskLogins(string id)",   # 2
         "    {",                                          # 3
         "        try",                                    # 4
         "        {",
@@ -46,7 +46,7 @@ class TestAllmanDeclaration:
         assert routine_of(self.CS, 4) == 2
 
     def test_window_holds_the_routine_name(self):
-        assert any("RevokeAllSessions" in s for s in m._enclosing_openers(self.CS, 4))
+        assert any("RevokeAllKioskLogins" in s for s in m._enclosing_openers(self.CS, 4))
 
     def test_class_line_is_not_in_the_window(self):
         assert not any("RecordStore" in s for s in m._enclosing_openers(self.CS, 4))
@@ -59,7 +59,7 @@ class TestAllmanDeclaration:
         lines = (
             "class RecordStore",
             "{",
-            "    public function revokeAllSessions($userId)",
+            "    public function revokeAllKioskLogins($userId)",
             "    {",
             "        try {",
         )
@@ -95,12 +95,12 @@ class TestBlockStatementIsNotTheRoutine:
 
     def test_bare_method_in_a_class_is_the_routine(self):
         lines = (
-            "export class SessionPanel {",
+            "export class SessionTray {",
             "  repaint(onDone: OnDone) {",
             "    try {",
         )
         assert routine_of(lines, 2) == 1
-        assert not any("SessionPanel" in s for s in m._enclosing_openers(lines, 2))
+        assert not any("SessionTray" in s for s in m._enclosing_openers(lines, 2))
 
     def test_bare_method_in_an_object_literal_is_the_routine(self):
         lines = (
