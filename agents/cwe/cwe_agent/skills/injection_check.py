@@ -68,10 +68,14 @@ _JS_TEMPLATE_BIGRAM = re.compile(
 # NEVER add `sql` to the tagged-template veto below: postgres.js exposes a real
 # sink as sql`...`, and vetoing it would blind the detector to that whole
 # library.
+#
+# Project wrappers are matched by what their name says they do, not by a list of
+# names: any callee ending in `runSql` / `batchInsert` (`gatewayRunSql(`,
+# `storeBatchInsert(`) executes the string it is handed.
 _SQL_SINK = re.compile(
     r"\.\s*(?:query|execute|executemany|raw|unsafe|queryRaw|executeRaw"
     r"|QueryRow(?:Context)?|QueryContext|ExecContext|Query|Exec)\s*\("
-    r"|\b(?:hasuraRunSql|runSql|rawQuery|runBatchInsert|knex\.raw"
+    r"|\b\w*(?:runSql|batchInsert)\s*\(|\b(?:rawQuery|knex\.raw"
     r"|sequelize\.query|cursor\.execute)\s*\("
     r"|\$(?:queryRaw|executeRaw)\b",
     re.IGNORECASE,
@@ -92,7 +96,7 @@ _NON_SQL_CONSUMER = re.compile(
 )
 
 # How far back to look for the sink. The audited true positives put the sink on
-# the line ABOVE the SQL (`await hasuraRunSql(` then the template literal), so a
+# the line ABOVE the SQL (`await gatewayRunSql(` then the template literal), so a
 # match-line-only check would drop them.
 _SQL_EVIDENCE_LOOKBACK = 3
 

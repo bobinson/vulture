@@ -57,7 +57,7 @@ class TestLeakyErrorMiddleware:
         assert hits[0]["line_start"] == 4, f"must point at the mount line, got {hits[0]['line_start']}"
 
     def test_other_leaky_middleware(self):
-        for mw in ("errorhandler()", "expressErrorHandler()", "errorHandler({ debug: true })"):
+        for mw in ("errorhandler()", "lib.errorHandler()", "errorHandler({ debug: true })"):
             body = f"app.use({mw})\n"
             assert _disclosure(_run({"a.js": body})), f"{mw} not reported"
 

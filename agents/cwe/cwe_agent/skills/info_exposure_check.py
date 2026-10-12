@@ -80,7 +80,7 @@ _DISCLOSURE_ANY = _any_of(ERROR_DISCLOSURE_PATTERNS)
 # the mount site is the point: the leak is the mount, not a line inside the
 # package.
 LEAKY_ERROR_MIDDLEWARE = re.compile(
-    r"\buse\s*\(\s*(?:\w+\.)?(?:errorhandler|errorHandler|expressErrorHandler)\s*\(",
+    r"\buse\s*\(\s*(?:\w+\.)?(?:errorhandler|errorHandler)\s*\(",
 )
 
 # Gating the above on the environment is its documented safe usage, so a guard
