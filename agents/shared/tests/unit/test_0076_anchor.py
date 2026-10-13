@@ -393,7 +393,7 @@ def test_status_exact_when_the_quote_matches_at_the_cited_line():
 
 
 def test_status_reanchored_for_a_single_candidate_elsewhere_in_the_file():
-    """signature.ts — the measured signupCompletionChecker.ts case.
+    """signature.ts — the measured signinFollowupChecker.ts case.
 
     The model cites the function SIGNATURE (54) and quotes the BODY (55-56). One
     candidate anywhere in the file re-anchors regardless of RADIUS; RADIUS only

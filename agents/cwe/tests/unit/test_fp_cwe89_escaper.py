@@ -19,20 +19,20 @@ new measurement.
 from cwe_agent.skills.injection_check import _sql_escaper_nearby
 
 ESCAPED_DIRECT = [
-    "  await hasuraRunSql(",
+    "  await gatewayRunSql(",
     '    `UPDATE letters SET x = true WHERE "issueId" = ${sqlStr(focusId)};`',
     "  );",
 ]
 
 ESCAPED_ONE_HOP = [
     "  const likePattern = sqlStr(`${safePrefix}%@${safeDomain}`);",
-    "  const result = await hasuraRunSql(",
+    "  const result = await gatewayRunSql(",
     '    `SELECT "passwordHash" FROM users WHERE email LIKE ${likePattern} LIMIT 1;`',
     "  );",
 ]
 
 ESCAPED_ROW_BUILDER = [
-    "  await runBatchInsert(",
+    "  await storeBatchInsert(",
     "    records,",
     "    (values) => `INSERT INTO t (a, b) VALUES ${values} ON CONFLICT DO NOTHING;`,",
     "    (r) => `(${sqlStr(r.id)}, ${sqlStr(r.name)})`",
@@ -40,7 +40,7 @@ ESCAPED_ROW_BUILDER = [
 ]
 
 RAW = [
-    "  await hasuraRunSql(",
+    "  await gatewayRunSql(",
     "    `UPDATE focus_polls SET quality_label = '${label}' WHERE id = '${pollId}';`",
     "  );",
 ]

@@ -25,7 +25,7 @@ OPEN_REDIRECT_PATTERNS = [
     re.compile(r"(?:res|response)\.redirect\s*\(\s*(?:req|request)\.", re.IGNORECASE),
     re.compile(r"http\.Redirect\([^,]+,\s*[^,]+,\s*r\.", re.IGNORECASE),
     # Anchored at both ends. Unanchored, this matched
-    # `const hasProfileLocation = Boolean(userAddressData)` -- "Location"
+    # `const hasVenueLocation = Boolean(userKioskData)` -- "Location"
     # inside the identifier, "user" inside the value. Shared with the xss
     # agent, which carried a byte-identical copy of the same defect.
     header_taint_pattern("Location"),

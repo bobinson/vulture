@@ -35,8 +35,8 @@ When prior findings are provided:
 - Authentication: CWE-287/306/521/798
 - Cryptography: CWE-326/327/328/330
 - Input validation: CWE-20/22/352/434/502/611
-- Resource management: CWE-400/404/467/476/770
-- Information exposure: CWE-200/209/312/532
+- Resource management: CWE-400/404/467/476/770 (CWE-770: input-driven, uncapped accumulation — a collection or buffer grown inside repetition fed by a peer, stream, child process or input event, with no size cap)
+- Information exposure: CWE-200/209/312/532 (CWE-209: the error value — its message, stack, string form or raw object — reaches a peer response)
 - Access control: CWE-269/639/862/863
 - Error handling: CWE-252/390/754/755
 - Concurrency: CWE-362/367/662/833
@@ -48,7 +48,7 @@ When prior findings are provided:
 - Path equivalence: CWE-42/43/46/48/49/50/51/52/54/55/56/57 (filename string-equivalence tricks)
 - Divide by zero: CWE-369 (C/C++/Go/Rust)
 - Dangerous function: CWE-242/676 (gets/strcpy/system/eval family)
-- Insufficient logging: CWE-778 (except/catch without log)
+- Insufficient logging: CWE-778 (a security-relevant failure or authorization decision is not recorded; a non-security handler that hands the error on is not CWE-778)
 - Uncaught exception: CWE-248 (Java throws Exception / Python except Exception: pass)
 - Weak entropy: CWE-331/332 (random.random/Math.random flowing into token|key|nonce...)
 - Catalog generic: keyword-matches against the 846-entry catalog + rollup for Class/Pillar parents — metadata/context path that fires ~0 findings on real code (not a coverage claim)

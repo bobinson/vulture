@@ -125,7 +125,7 @@ def test_the_finding_tells_the_judge_what_would_refute_it(tmp_path: Path) -> Non
     # absence with one read instead of searching for it
     assert "handler L5-L21" in desc
     assert "quota does not bound it" in desc and "CAPTCHA" in desc
-    assert "perEmailLimit" not in desc and "email" not in desc.lower().replace("recipient", "")
+    assert "emailLimitPerHour" not in desc and "email" not in desc.lower().replace("recipient", "")
     # the window the judge reads spans the recipient read through the send
     assert "7: " in row["code_snippet"] and "19: " in row["code_snippet"]
 

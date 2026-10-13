@@ -22,13 +22,13 @@ from cwe_agent.skills._message_send import (
 
 
 def test_segments_split_camel_and_snake() -> None:
-    assert segments("sendPasswordlessEmail") == ["send", "passwordless", "email"]
+    assert segments("send_passwordless_email") == ["send", "passwordless", "email"]
     assert segments("deliver_reset_link") == ["deliver", "reset", "link"]
     assert segments("SendConfirmationEmailAsync") == ["send", "confirmation", "email", "async"]
 
 
 @pytest.mark.parametrize("recv, name", [
-    (None, "sendPasswordlessEmail"), (None, "send_sms_code"), (None, "deliver_reset_link"),
+    (None, "send_passwordless_email"), (None, "send_sms_code"), (None, "deliver_reset_link"),
     ("mailer", "send"), ("smtp", "sendmail"), ("_notifier", "SendConfirmationEmailAsync"),
     (None, "sendInvitation"), (None, "dispatchVerificationCode"),
 ])
@@ -38,7 +38,7 @@ def test_a_delivery_verb_naming_a_message_is_a_send(recv: str | None, name: str)
 
 @pytest.mark.parametrize("recv, name", [
     ("res", "send"), (None, "sendStatus"), ("socket", "send"), (None, "sendFile"),
-    (None, "sendRateLimitExceeded"), (None, "notifyOwner"), (None, "senderName"),
+    (None, "sendRateLimitTripped"), (None, "notifyOwner"), (None, "senderName"),
 ])
 def test_a_send_that_names_no_message_is_not_one(recv: str | None, name: str) -> None:
     assert not is_send_call(recv, name)
@@ -83,7 +83,7 @@ def test_ordinary_parameter_names_are_not_request_input(text: str) -> None:
 
 
 @pytest.mark.parametrize("ident", [
-    "getServerSession", "authenticateAndAuthorize", "requireAuth", "currentUser",
+    "getServerSession", "authorizeKioskAndAuthenticate", "requireAuth", "currentUser",
     "login_required", "verifySignature", "isAuthenticated", "bearerToken",
 ])
 def test_principal_identifiers(ident: str) -> None:
@@ -92,7 +92,7 @@ def test_principal_identifiers(ident: str) -> None:
 
 @pytest.mark.parametrize("ident", [
     "optionalAuth", "skipAuth", "allowAnonymous", "unauthenticated", "authorizationUrl",
-    "identityProvider", "getIdentifierWithUid", "author", "oauthState",
+    "identityProvider", "getIdentifierWithSlug", "author", "oauthState",
 ])
 def test_negated_or_unrelated_identifiers_are_not_principals(ident: str) -> None:
     assert not is_principal(ident)

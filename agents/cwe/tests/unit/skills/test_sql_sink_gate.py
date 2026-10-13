@@ -93,11 +93,11 @@ FALSE_POSITIVES = {
         "`;\n"
     ),
     "ModeStep.tsx": (
-        "export function ModeStep({ copy, cardTabIndex }) {\n"
+        "export function ModeStep({ copy, tileTabIndex }) {\n"
         "  return (\n"
         "    <Card\n"
         "      ariaLabel={`Select ${copy.title}`}\n"
-        "      tabIndex={cardTabIndex}\n"
+        "      tabIndex={tileTabIndex}\n"
         "    />\n"
         "  );\n"
         "}\n"
@@ -158,7 +158,7 @@ def test_sink_on_a_preceding_line_still_detected():
     is why the evidence window must look backwards, not just at the match."""
     body = (
         "export async function lookup(prefix: string) {\n"
-        "  const result = await hasuraRunSql(\n"
+        "  const result = await gatewayRunSql(\n"
         "    `SELECT \"passwordHash\" FROM users WHERE email LIKE ${prefix} LIMIT 1;`\n"
         "  );\n"
         "  return result;\n"
@@ -168,10 +168,10 @@ def test_sink_on_a_preceding_line_still_detected():
 
 
 def test_project_helper_sink_with_bigram_still_detected():
-    """`runBatchInsert` is a project-specific wrapper: the SQL forms a real
+    """`storeBatchInsert` is a project-specific wrapper: the SQL forms a real
     verb+clause bigram (INSERT INTO ... VALUES), which is evidence on its own."""
     body = (
-        "await runBatchInsert(\n"
+        "await storeBatchInsert(\n"
         "  records,\n"
         "  (values) => `INSERT INTO letters (id, state) VALUES ${values} ON CONFLICT DO NOTHING;`,\n"
         ");\n"
@@ -181,7 +181,7 @@ def test_project_helper_sink_with_bigram_still_detected():
 
 def test_update_set_bigram_still_detected():
     body = (
-        "await hasuraRunSql(\n"
+        "await gatewayRunSql(\n"
         "  `UPDATE letters SET is_match = true WHERE \"issueId\" = ${issueId};`\n"
         ");\n"
     )

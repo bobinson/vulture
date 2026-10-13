@@ -232,7 +232,7 @@ def _may_confirm(checks: list[ValidationCheck]) -> bool:
     # source — the identifier is guarded by an anchored pattern or a
     # membership test in the cited file — so a model verdict formed on a
     # +/-2-line window must not outrank it. Measured: the judge scored
-    # `seed-poll-verifications.qa.ts:423` a real bug at exploitable=0.85
+    # `seed-roster-checks.qa.ts:423` a real bug at exploitable=0.85
     # while `pollId` was UUID-validated at the handler entry 100 lines above.
     #
     # The additive weight alone does not settle it: 0.5 base + 0.525 judge -

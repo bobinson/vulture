@@ -70,7 +70,7 @@ func TestPGAggregatePlanAtScale(t *testing.T) {
 		rows int
 	}{
 		{"blu-simulator", 4200}, {"openclaw", 2600}, {"vulture", 1600},
-		{"idattestor", 1150}, {"magicrouter", 700},
+		{"authportal", 1150}, {"magicrouter", 700},
 	}
 	ref := 1
 	var biggest string

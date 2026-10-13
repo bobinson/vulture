@@ -7,8 +7,8 @@ THEN guard) fell outside it:
 
     const { zipCode } = request.body.input ?? {};   <- flagged here
     const userId = request.body.session_variables?.[...];
-    if (!zipCode) throw new UserAuthenticationError("ZIPCODE_MISSING");
-    if (!POSTAL_CODE_REGEX.test(zipCode)) throw ...
+    if (!zipCode) throw new UserVettingError("ZIPCODE_MISSING");
+    if (!PARCEL_CODE_REGEX.test(zipCode)) throw ...
 
 The lookahead is deliberately NOT "any guard nearby": it must reference a
 name BOUND ON THE FLAGGED LINE, so an unrelated guard for a different
@@ -33,18 +33,18 @@ export default async function handler(request, response) {
   const { zipCode } = request.body.input ?? {};
   const userId = request.body.session_variables?.["x-hasura-user-id"];
   if (!userId) {
-    throw new UserAuthenticationError("USERID_MISSING");
+    throw new UserVettingError("USERID_MISSING");
   }
-  const adminClient = getHasuraAdminClient({ request });
+  const adminClient = getTenantAdminClient({ request });
   const extra = buildExtra();
   const more = buildMore();
   const other = buildOther();
   const another = buildAnother();
   if (!zipCode) {
-    throw new UserAuthenticationError("ZIPCODE_MISSING");
+    throw new UserVettingError("ZIPCODE_MISSING");
   }
-  if (!POSTAL_CODE_REGEX.test(zipCode)) {
-    throw new UserAuthenticationError("INVALID_ZIPCODE");
+  if (!PARCEL_CODE_REGEX.test(zipCode)) {
+    throw new UserVettingError("INVALID_ZIPCODE");
   }
 }
 """
@@ -60,7 +60,7 @@ OTHER_VAR_GUARDED = """\
 export default async function handler(request, response) {
   const { zipCode } = request.body.input ?? {};
   if (!somethingElse) {
-    throw new UserAuthenticationError("NOPE");
+    throw new UserVettingError("NOPE");
   }
   await db.save(zipCode);
 }

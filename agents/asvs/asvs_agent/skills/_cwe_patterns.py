@@ -126,7 +126,7 @@ PATH_TRAVERSAL_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'open\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
     # Left boundary required, same defect as DROP-inside-backdrop: without it
     # `Path\(` matches the TAIL of any identifier ending in Path, so
-    # `resolveCompletionPath(user, url)` was reported as path traversal.
+    # `resolveFollowupPath(user, url)` was reported as path traversal.
     # pathlib's `Path(` and `pathlib.Path(` still match ('.' is outside the class).
     re.compile(r'(?<![A-Za-z0-9_])Path\([^)]*(?:request|req|params|input|user|body|query)', re.IGNORECASE),
     re.compile(r'(?:readFile|readFileSync)\([^)]*(?:req|params|query)', re.IGNORECASE),

@@ -125,7 +125,7 @@ def test_still_fires_after_comment_in_real_code(tmp_path):
 # boundary that excludes method calls like RegExp.exec()/pipeline.exec().
 
 def test_js_regex_exec_not_flagged(tmp_path):
-    """RegExp.prototype.exec() is not a dangerous function (idattestor VLT-1038)."""
+    """RegExp.prototype.exec() is not a dangerous function (dogfood target VLT-1038)."""
     f = tmp_path / "a.ts"
     f.write_text("const re = /x/;\nexport function f(s: string) { return re.exec(s); }\n")
     from cwe_agent.skills.dangerous_function_check import check_dangerous_function
