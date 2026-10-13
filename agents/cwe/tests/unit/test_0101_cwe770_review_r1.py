@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from cwe_agent.skills import resource_check as rc
+from shared.testing.timing import budget
 
 
 def _alloc(name: str, src: str) -> list[int]:
@@ -207,13 +208,13 @@ def _best_ms(fn, *args) -> float:
 
 def test_self_growth_read_is_cheap_on_a_long_chain() -> None:
     line = "    " + ".".join(["a" * 60] * 31) + " += q"
-    assert _best_ms(rc._accumulator, line) < 1.0
+    assert _best_ms(rc._accumulator, line) < budget(1.0)
 
 
 def test_running_totals_scan_each_body_once() -> None:
     body = [f"acc{i}.append(d); {'a' * 1900} = 1" for i in range(80)]
     rc._running_totals("acc0", body)
-    assert _best_ms(lambda: [rc._running_totals(f"acc{i}", body) for i in range(77)]) < 20.0
+    assert _best_ms(lambda: [rc._running_totals(f"acc{i}", body) for i in range(77)]) < budget(20.0)
 
 
 def test_receiver_bound_to_a_pull_is_data_already_read() -> None:

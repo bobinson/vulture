@@ -27,6 +27,7 @@ from prove_agent.evidence_scrub import (
 from prove_agent.public_error import describe_failure
 from prove_agent.runner import _synthesize_timeout_evidence
 from prove_agent.strategies.base import AttemptRecord
+from shared.testing.timing import budget
 from shared.transport.event_emitter import AgUiEventEmitter
 
 ROOT = "/srv/fake-repo"
@@ -107,11 +108,11 @@ class TestRunWideMarkers:
         start = time.perf_counter()
         for _ in range(20):
             em.scrub(text)
-        assert (time.perf_counter() - start) / 20 < 0.004
+        assert (time.perf_counter() - start) / 20 < budget(0.004)
         start = time.perf_counter()
         for f in findings[:50]:
             assert scrubbing(em, f) is em
-        assert time.perf_counter() - start < 0.05
+        assert time.perf_counter() - start < budget(0.05)
 
 
 class TestEvasions:

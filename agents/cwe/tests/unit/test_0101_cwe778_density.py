@@ -26,9 +26,11 @@ from pathlib import Path
 
 import pytest
 
+from shared.testing.timing import budget
+
 AGENT_ROOT = Path(__file__).resolve().parents[2]
 SIZES_KB = (120, 240, 480)  # 480 KB: under the 512 KB per-file read cap
-MAX_MS_PER_KB = 0.5
+MAX_MS_PER_KB = budget(0.5)
 MAX_DOUBLING_RATIO = 2.6
 CHILD_TIMEOUT_SEC = 120.0
 ROUNDS = 5

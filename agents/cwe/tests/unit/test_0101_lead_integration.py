@@ -28,6 +28,7 @@ from cwe_agent.skills import _lexical as lx
 from cwe_agent.skills import info_exposure_check as iec
 from cwe_agent.skills import insufficient_logging_check as ilc
 from cwe_agent.skills import resource_check as rc
+from shared.testing.timing import budget
 
 AGENT_ROOT = Path(__file__).resolve().parents[2]
 RULES = (iec, ilc, rc)
@@ -73,9 +74,9 @@ def test_reversed_name_read_is_anchored() -> None:
 
 @pytest.mark.parametrize("fill", [" ", "\t", "("])
 def test_reversed_name_is_far_inside_the_0087_budget(fill: str) -> None:
-    budget = _GATE_MS_PER_KB * _GATE_KB
+    gate = budget(_GATE_MS_PER_KB * _GATE_KB)
     ms = _best_search_ms(ilc._REVERSED_NAME, fill * (_GATE_KB * 1024))
-    assert ms < 0.5 * budget, f"{ms:.2f} ms against a {budget:.1f} ms gate"
+    assert ms < 0.5 * gate, f"{ms:.2f} ms against a {gate:.1f} ms gate"
 
 
 @pytest.mark.parametrize(("text", "at", "name"), [

@@ -28,10 +28,11 @@ from pathlib import Path
 
 import pytest
 
+from shared.testing.timing import budget
 from tests.unit.test_0087_redos import PROC_TIMEOUT_SEC
 
 AGENT_ROOT = Path(__file__).resolve().parents[2]
-BUDGET_MS_PER_KB = 0.5
+BUDGET_MS_PER_KB = budget(0.5)
 MAX_DOUBLING_RATIO = 2.6
 ROUNDS = 3
 

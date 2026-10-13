@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from shared.testing.timing import budget
 from tests.unit import test_0087_redos as gate0087
 from tests.unit.test_0087_redos import BUDGET_MS, INPUT_BYTES, PROC_TIMEOUT_SEC
 
@@ -51,7 +52,7 @@ INPUT_NAMES: tuple[str, ...] = (*gate0087.INPUT_NAMES, *KEYWORD_UNITS, "kw_membe
 
 DOUBLING_SIZES = (250, 500, 1000, 2000)
 MAX_DOUBLING_RATIO = 2.6
-HELPER_BUDGET_MS_PER_KB = 0.5
+HELPER_BUDGET_MS_PER_KB = budget(0.5)
 # A 512 KB input must cost about what an input at the cap costs (slicing the
 # subject is the only extra work). 3x leaves room for timer noise; an uncapped
 # linear helper reads ~256x here, a quadratic one far more.

@@ -25,6 +25,7 @@ from prove_agent.evidence_scrub import (
     scrubbing,
 )
 from prove_agent.public_error import describe_failure, failure_category, log_failure
+from shared.testing.timing import budget
 from shared.transport.event_emitter import AgUiEventEmitter
 
 MSG = (
@@ -209,4 +210,4 @@ class TestScrubbingEmitter:
         hostile = "/" + "/".join("seg" for _ in range(4000)) + "/ledger.py"
         started = time.perf_counter()
         em.scrub(hostile)
-        assert time.perf_counter() - started < 0.5
+        assert time.perf_counter() - started < budget(0.5)

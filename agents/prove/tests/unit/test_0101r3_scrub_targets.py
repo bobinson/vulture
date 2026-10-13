@@ -27,6 +27,7 @@ from prove_agent.evidence_scrub import (
     scrubbing,
     scrubbing_all,
 )
+from shared.testing.timing import budget
 from shared.transport.event_emitter import AgUiEventEmitter
 
 ROOT = "/tmp/sources/4f1c2a"
@@ -169,7 +170,7 @@ class TestCodeFragments:
         start = time.perf_counter()
         for _ in range(20):
             em.scrub(text)
-        assert (time.perf_counter() - start) / 20 < 0.01
+        assert (time.perf_counter() - start) / 20 < budget(0.01)
 
 
 class TestPathForms:

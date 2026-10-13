@@ -28,6 +28,7 @@ import pytest
 
 from cwe_agent.skills import resource_check as rc
 from cwe_agent.skills._lexical import MAX_SCAN_CHARS
+from shared.testing.timing import budget
 
 
 def _alloc(name: str, src: str) -> list[int]:
@@ -86,13 +87,13 @@ def test_not_self_growth(code: str) -> None:
 @pytest.mark.parametrize("segment", ["a.", "ab.", "a_."])
 def test_short_segment_chain_is_cheap(segment: str, tail: str) -> None:
     line = (segment * MAX_SCAN_CHARS)[:MAX_SCAN_CHARS - 20] + tail
-    assert _best_ms(rc._accumulator, line) < 0.5
+    assert _best_ms(rc._accumulator, line) < budget(0.5)
 
 
 def test_many_operators_on_one_line_are_cheap() -> None:
     for unit in ("a.b += ", "a << ", "a[] = ", "a = a + ", "= append(a, ", "a .= "):
         line = (unit * MAX_SCAN_CHARS)[:MAX_SCAN_CHARS]
-        assert _best_ms(rc._accumulator, line) < 0.5, unit
+        assert _best_ms(rc._accumulator, line) < budget(0.5), unit
 
 
 # --- R770-R2-2: per-identifier lookups without a per-name compile ---------------
@@ -147,7 +148,7 @@ def test_form_lookup_compiles_nothing_per_name() -> None:
 def test_form_lookup_is_bounded_on_a_repetitive_text() -> None:
     text = ("a" + " a" * 60 + "\n") * 120
     for template in (rc._ACC_BIND_TEMPLATE, rc._ACC_SCALAR_BIND_TEMPLATE, rc._ACC_AS_TEMPLATE):
-        assert _best_ms(lambda t=template: list(rc._form_finditer(t, "a", text))) < 2.0
+        assert _best_ms(lambda t=template: list(rc._form_finditer(t, "a", text))) < budget(2.0)
 
 
 # --- R770-R2-4: numeric add on a collection -----------------------------------

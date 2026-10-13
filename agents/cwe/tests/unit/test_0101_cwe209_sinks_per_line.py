@@ -46,10 +46,12 @@ from pathlib import Path
 
 import pytest
 
+from shared.testing.timing import budget
+
 AGENT_ROOT = Path(__file__).resolve().parents[2]
 LINES = (20, 40)
 WIDTH = 1990             # just under MAX_SCAN_CHARS (2000): the per-line guard never fires
-BUDGET_MS_PER_KB = 0.5
+BUDGET_MS_PER_KB = budget(0.5)
 MAX_DOUBLING_RATIO = 2.6
 ROUNDS = 3
 PROC_TIMEOUT_SEC = 240.0
