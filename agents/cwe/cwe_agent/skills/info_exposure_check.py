@@ -933,12 +933,38 @@ def _check_error_value_in_response(
     """Report error detail reaching the peer (CWE-209): the value rule, then the additive
     revision-3 arms (W, C1/C2/H, S) on a line it leaves clean. One row per line, once."""
     ctx = _active_scan()
-    _begin_line(ctx, file_path, lines, findings)
+    _enter_file(ctx, file_path, lines)
+    if not _may_act(ctx, line, line_num):
+        return
+    _begin_line(ctx, findings)
     try:
-        if _discloses_error(file_path, line, line_num, lines) or _arm_reports(ctx, line, line_num):
+        if _line_reports(ctx, file_path, line, line_num, lines):
             _emit_209(line_num)
     finally:
         ctx.active, ctx.findings = False, None
+
+
+def _may_act(ctx: "_ScanCtx", line: str, line_num: int) -> bool:
+    """The value rule's own entry test, or an arm row: on any other line both answer False
+    before reading anything. Measured on one large real tree, ~1% of the 715k lines that reach
+    the value check pass; the per-line set-up the rest skip was 0.08 s of the rule's 2.7 s."""
+    return not ctx.prose and (_may_disclose(line) or line_num - 1 in (
+        ctx.rows if getattr(_LOCAL, "rf", None) is ctx.rows_rf else _remember_rows(ctx)))
+
+
+def _remember_rows(ctx: "_ScanCtx") -> frozenset[int]:
+    """`_arm_rows`, and the arm file it read them from. While that file is still the thread's
+    last one, `_arm_rows` would return its rows without touching any cache, so the next lines
+    read them from here: one attribute test per line instead of two calls (measured 0.05 s of
+    one real tree's 2.9 s CWE-209 path)."""
+    ctx.rows_rf = _r3_file(ctx.lines)     # the lookup `_arm_rows` makes first; it repeats as a no-op
+    ctx.rows = _arm_rows(ctx.lines, ctx.suffix)
+    return ctx.rows
+
+
+def _line_reports(ctx: "_ScanCtx", file_path: Path, line: str, line_num: int, lines: list[str]) -> bool:
+    return (_discloses_error(file_path, line, line_num, lines) or _arm_reports(ctx, line, line_num)) \
+        and not _type_guarded(lines, line_num)
 
 
 # Every _SERVER_ERROR_PATTERNS entry spells one of these words (the `sendError`
@@ -946,13 +972,16 @@ def _check_error_value_in_response(
 _SERVER_ERROR_WORDS = ("error", "write", "response", "jsonify")
 
 
-_SERVER_ERROR_WORD = re.compile("|".join(_SERVER_ERROR_WORDS))   # one C scan, not four
-
-
 def _may_be_server_error(line: str) -> bool:
-    if not _SERVER_ERROR_WORD.search(line.lower()):
+    if not _spells_server_error_word(line.lower()):
         return False
     return any(p.search(line) for p in _SERVER_ERROR_PATTERNS)
+
+
+def _spells_server_error_word(low: str) -> bool:
+    """Any of _SERVER_ERROR_WORDS in ``low``, as four literal tests: measured over 754k lines of one
+    real tree, 99 ms against the alternation's 153 ms (a literal alternation has no prefix to skip on)."""
+    return "error" in low or "write" in low or "response" in low or "jsonify" in low
 
 
 def _check_server_error_response(
@@ -1153,6 +1182,40 @@ _PROJECTION_WORDS = frozenset({
     "hash", "classify", "category", "user", "friendly", "generic", "body", "payload", "build",
     "envelope", "problem", "format", "dto", "view",
 })
+# A detail-named callee QUALIFIED by one of these sanitises what it reads, so it is a
+# projection, not an extractor, wherever the qualifier sits (`toPublicMessage`,
+# `get_redacted_message`). Measured on one real target: `toPublicMessage(e)` read as a
+# raw-message getter because only the LAST word was asked. Surveyed over seven trees
+# (detail-word callees carrying a qualifier): public/sanitize/scrub/friendly/generic
+# name projections; `user`, `client` and `display` name WHOSE message (a chat user's
+# message, a protocol's client message), and `format` renders, so those stay extractors.
+# `safe` is out: it also means null-safe / non-throwing (`safeGetMessage(err)` returns the raw
+# message without throwing on a non-Error), and an imported helper has no definition for arm X
+# to follow. The qualifier is evidence only while no definition can be read: a DEFINED
+# qualifier-only getter reports unless its definition provably returns literals only (see
+# `_definition_discloses`), and arm X still follows any projection-named definition.
+_SANITISING_WORDS = frozenset({
+    "public", "sanitize", "sanitise", "sanitized", "sanitised", "sanitizer", "sanitiser",
+    "redact", "redacted", "mask", "masked", "scrub", "scrubbed", "generic", "friendly",
+})
+# The qualifiers read CALLEES only (`_projection_callee`): the field arms keep `_PROJECTION_WORDS`
+# (via `_FIELD_NOT_TEXT`), so a field named `publicId` or `maskedValue` keeps its verdict.
+# A qualifier right after one of these is negated: `getNonPublicMessage`, `rawPublicMessage`.
+_QUALIFIER_NEGATORS = frozenset({"non", "un", "not", "no", "raw", "unsafe", "without"})
+
+
+@lru_cache(maxsize=4096)
+def _sanitised(words: tuple[str, ...]) -> bool:
+    """Some sanitising qualifier in ``words`` that no negator word immediately precedes."""
+    return any(w in _SANITISING_WORDS and (i == 0 or words[i - 1] not in _QUALIFIER_NEGATORS)
+               for i, w in enumerate(words))
+
+
+def _projection_callee(words: tuple[str, ...]) -> bool:
+    """A callee in a projection role: a projection word, or an un-negated sanitising qualifier."""
+    return not _PROJECTION_WORDS.isdisjoint(words) or _sanitised(words)
+
+
 # Extractor by words, with explicit precedence: a stack verb + stack noun pair
 # (`format_exception`, `print_exc`, `dumpStack`), else a detail word whose callee
 # does not END in a projection word (`getErrorMessage` yes, `getTraceId` no).
@@ -1175,6 +1238,9 @@ _NONPEER_WORDS = frozenset({
     "stderr", "stdout", "console", "fs", "file", "files", "log", "logger", "logs", "mail", "mailer",
     "smtp", "builder", "sb", "buf", "buffer", "queue", "producer", "beacon", "navigator", "ipc",
     "process", "sys", "os", "crash", "disk", "cache", "metrics", "telemetry", "debug", "trace",
+    # A child process's standard input: measured on one public target, `stdin.write(data, (err) =>`
+    # feeding a spawned shell reported as a peer write.
+    "stdin",
 })
 _STDIO_WORDS = frozenset({"stderr", "stdout", "os"})
 # A PascalCase chain ROOT names a type, enum or static, not a peer, unless its
@@ -1371,7 +1437,15 @@ def _is_prose(file_path: Path) -> bool:
 def _may_disclose(line: str) -> bool:
     if _RESPONSE_WRITE.search(line[:MAX_SCAN_CHARS]):
         return True
-    return _DISCLOSURE_ANY.search(line) is not None
+    return _spells_stack_word(line) and _DISCLOSURE_ANY.search(line) is not None
+
+
+def _spells_stack_word(line: str) -> bool:
+    """Every `_DISCLOSURE_ANY` alternative spells `trace` or `stack` (its IGNORECASE branch
+    case-folded), so a line with neither cannot match. The alternation has no literal prefix
+    to skip on: measured over 754k lines of one real tree, 237 ms against 65 ms for this test."""
+    low = line.lower()
+    return "trace" in low or "stack" in low
 
 
 def _fixed_shape_discloses(line: str) -> bool:
@@ -1885,7 +1959,7 @@ def _renders_detail(name: str) -> bool:
 
 def _is_opaque_call(callee: str, last: str, inner: str) -> bool:
     """A projection-role callee, or a PascalCase constructor with no arguments."""
-    if not _PROJECTION_WORDS.isdisjoint(_callee_words(callee)):
+    if _projection_callee(_callee_words(callee)):
         return True
     return last[:1].isupper() and not inner.strip()
 
@@ -1912,8 +1986,9 @@ def _is_stack_pair(words: tuple[str, ...]) -> bool:
 
 
 def _is_detail_getter(words: tuple[str, ...]) -> bool:
-    """A detail word, and the callee does not END in a projection word (`getTraceId`)."""
-    return bool(set(words) & _DETAIL_CALL_WORDS) and words[-1] not in _PROJECTION_WORDS
+    """A detail word, the callee does not END in a projection word (`getTraceId`), and no
+    word sanitises (`toPublicMessage`)."""
+    return bool(set(words) & _DETAIL_CALL_WORDS) and words[-1] not in _PROJECTION_WORDS and not _sanitised(words)
 
 
 def _bare_error_reaches(text: str, scope: _Scope) -> bool:
@@ -2317,9 +2392,32 @@ def _rhs_verdict(rhs: str, scope: _Scope) -> str:
     literal, a constant, or a projection OF an error; otherwise unknown."""
     if _rhs_discloses(_uncast(_rhs_text(rhs)), scope):
         return "tainted"
-    if _is_literalish(rhs) or _is_projection_of_error(rhs, scope):
-        return "clean"
-    return "unknown"
+    return "clean" if _is_clean_rhs(rhs, scope) else "unknown"
+
+
+def _is_clean_rhs(rhs: str, scope: _Scope) -> bool:
+    """A literal, a constant, a projection OF an error, or a read of the request's parameters."""
+    return _is_literalish(rhs) or _is_projection_of_error(rhs, scope) or _reads_request_parameter(rhs)
+
+
+# A read of the request's OWN query / form parameters holds the peer's input, whatever the
+# binding is called. Measured on one public target: `const error = url.searchParams.get(
+# "error")` (an OAuth redirect's error code) echoed back to the browser reported as an error's
+# detail. Both a request role and a parameter role must appear in the chain, so `db.query(sql)`
+# and `upstream.res.query` stay unresolved.
+_REQUEST_ROOT_WORDS = frozenset({"request", "req", "url", "uri"})
+_REQUEST_PARAM_WORDS = frozenset({"params", "param", "parameter", "parameters", "query", "args", "form", "search"})
+_CHAIN_ONLY = re.compile(r"[A-Za-z_$][\w$.]{0,120}")
+
+
+@lru_cache(maxsize=4096)
+def _reads_request_parameter(rhs: str) -> bool:
+    """Called for every right-hand side left unresolved, so memoised by its text."""
+    text = _rhs_text(rhs).strip().rstrip(";").strip()
+    m = _single_call(rhs)
+    read = m.group(1) if m else (text if _CHAIN_ONLY.fullmatch(text) else "")
+    words = set(identifier_words(read))
+    return bool(words & _REQUEST_ROOT_WORDS) and bool(words & _REQUEST_PARAM_WORDS)
 
 
 def _rhs_discloses(text: str, scope: _Scope) -> bool:
@@ -2390,7 +2488,7 @@ def _is_projection_of_error(rhs: str, scope: _Scope) -> bool:
     m = _single_call(rhs)
     if not m or _renders_detail(_last_segment(m.group(1))):
         return False
-    return bool(set(identifier_words(m.group(1))) & _PROJECTION_WORDS) and _carries_error(m.group(2), scope)
+    return _projection_callee(identifier_words(m.group(1))) and _carries_error(m.group(2), scope)
 
 
 def _header_params(code: str) -> list[str]:
@@ -2748,12 +2846,15 @@ class _Frame(NamedTuple):
     memos: dict
 
 
+_NO_RF = object()    # never an arm file: a fresh context has remembered no rows
+
+
 class _ScanCtx:
     """Everything one scan of the CWE-209 arms keeps; never shared between scans."""
 
     __slots__ = ("emitted", "path", "file_path", "lines", "findings", "owner", "active", "prose", "suffix",
                  "frames", "seen_params", "in_prov", "x2_off", "x_guard", "defs", "indexed", "deferred",
-                 "complete", "other", "templates", "detached")
+                 "complete", "other", "templates", "detached", "rows", "rows_rf")
 
     def __init__(self, complete: bool, detached: bool = False) -> None:
         self.emitted: set[tuple[str, int]] = set()
@@ -2771,6 +2872,8 @@ class _ScanCtx:
         self.complete = complete
         self.other: dict[str, tuple[str, ...]] = {}
         self.templates: dict[tuple, re.Pattern[str]] = {}
+        self.rows: frozenset[int] = frozenset()    # `_arm_rows` of the current file, while
+        self.rows_rf: object = _NO_RF               # the thread's arm file is this object
 
 
 _SCAN: ContextVar[_ScanCtx | None] = ContextVar("_cwe209_scan", default=None)
@@ -3030,7 +3133,9 @@ def _call_index(rf: _R3File) -> dict[str, list[int]]:
 
 
 def _called_names(raw: str):
-    return set(_NAME_CALL.findall(raw)) if len(raw) <= MAX_SCAN_CHARS else ()
+    # `_NAME_CALL` ends in `(` or `{`: a line with neither is not searched (measured over one
+    # real tree's 755k lines, 465 ms against 826 ms; most rows of an index hold no call).
+    return set(_NAME_CALL.findall(raw)) if len(raw) <= MAX_SCAN_CHARS and ("(" in raw or "{" in raw) else ()
 
 
 def _decl_index(rf: _R3File) -> dict[str, list[int]]:
@@ -3082,9 +3187,20 @@ def _plain_name(name: str | None) -> bool:
 
 def _could_declare(raw: str) -> bool:
     """Exactly when `_DECL_NAME` can match: its line-start form, an arrow or `function`
-    (the assigned form), or a routine keyword (the keyword form)."""
-    return _LEADING_DECL.match(raw) is not None or "=>" in raw or "function" in raw or \
-        _ROUTINE_KEYWORD.search(raw) is not None
+    (the assigned form), or a routine keyword (the keyword form). The literal tests go first
+    and the keyword search only where a keyword is spelled: measured over the 195k lines of one
+    real tree that reach it, 108 ms of its 168 ms was that search, mostly on keyword-free lines."""
+    return "=>" in raw or "function" in raw or _LEADING_DECL.match(raw) is not None or _keyword_led(raw)
+
+
+def _keyword_led(raw: str) -> bool:
+    return _spells_routine_keyword(raw) and _ROUTINE_KEYWORD.search(raw) is not None
+
+
+def _spells_routine_keyword(raw: str) -> bool:
+    """Every `_ROUTINE_KEYWORD` match spells one of these (`function` is tested before, `func`
+    holds `fun`)."""
+    return "def" in raw or "fn" in raw or "fun" in raw or "sub" in raw
 
 
 def _is_declaration_row(rf: _R3File, row: int) -> bool:
@@ -3678,20 +3794,22 @@ def _line_stop(rf: _R3File, r: int, text: str, col: int | None, depth: int) -> i
     return len(text) if depth == 0 and _ends_statement(rf, r, text, col) else None
 
 
+# The depth below which a cut character ends the expression, after its delta: a bracket
+# closing outside it (below 0), or a `;` at the top level (below 1: `;` moves no depth, and a
+# depth already below 0 ends it at any character, as it did when this was a per-character call).
+_STOP_BELOW = {";": 1}
+
+
 def _scan_expression(text: str, start: int, depth: int) -> tuple[int, int | None]:
+    """A top-level `;` ends the expression; so does a bracket closing outside it. Two table
+    lookups per cut character: the per-character call it replaced was the costliest routine
+    of the return-binding arm (measured 13 us per scanned row on its density probe)."""
     for m in _CUT_CHARS.finditer(text, start):
-        depth, stopped = _expression_step(m.group(), depth)
-        if stopped:
+        ch = m.group()
+        depth += _DEPTH_DELTA.get(ch, 0)
+        if depth < _STOP_BELOW.get(ch, 0):
             return depth, m.start()
     return depth, None
-
-
-def _expression_step(ch: str, depth: int) -> tuple[int, bool]:
-    """A top-level `;` ends the expression; so does a bracket closing outside it."""
-    if ch == ";" and depth == 0:
-        return depth, True
-    depth += _DEPTH_DELTA.get(ch, 0)
-    return depth, depth < 0
 
 
 def _ends_statement(rf: _R3File, r: int, text: str, col: int | None) -> bool:
@@ -4668,6 +4786,502 @@ def _is_content_branch(header: str) -> bool:
         and _QUOTE.search(header) is not None
 
 
+# ---- revision 4: a sink entered only for a caller-facing error CLASS ----
+# Measured on one public target: a gateway answered `getErrorMessage(err)` only after
+# `resolveXErrorStatus(err) !== null`, a same-file classifier recognising its own input
+# and authorization error classes (every construction of them in the tree is caller-facing
+# text) and refusing (`null`) everything else, which took a fixed 500. A class whose words name
+# a caller-facing role -- the peer's INPUT, its VALIDATION, its AUTHORIZATION -- carries the
+# answer to give. Deliberately narrow: `permission` (Python's PermissionError is an OS error
+# naming a path), `argument` (runtimes throw IllegalArgumentException from deep inside),
+# `invalid` (InvalidKeyException) and `authentication` (an outbound credential failure) stay
+# out, and a class also naming an internal resource (`InputOutputError`, `InputStreamException`)
+# or an access / path TARGET (the .NET runtime's `UnauthorizedAccessException`, whose message
+# is "Access to the path '...' is denied") is internal. A stack is never the caller-facing
+# contract, so a stack word excuses nothing; Go's `errors.Is/As` never guard, because
+# `err.Error()` is the whole wrapped chain. The excuse covers the caught error's OWN text only
+# (see `_own_text_only`). Judged only for a line that would report, and only in a file that
+# spells a caller-facing word at all.
+# A bare HTTP status word (`forbidden`, `unauthorized`) is not a role: as a class name it
+# overwhelmingly names an OUTBOUND call's status (measured on probes: an HTTP client's nested
+# `Forbidden` / `Unauthorized` class, an API client's `ForbiddenException`, a storage SDK's
+# `Forbidden`), and those messages carry the upstream response, the resource path or the
+# account. And a class is internal when ANY segment of its qualified name carries an internal
+# or outbound role (`HttpClientErrorException.X`, `BillingClient.ValidationException`), not
+# only its last one.
+_CALLER_FACING_WORDS = frozenset({"input", "validation", "authorization", "authorisation"})
+_FACING_HINTS = ("input", "validation", "authoris", "authoriz")
+_INTERNAL_TYPE_WORDS = frozenset({
+    "output", "io", "stream", "file", "sql", "database", "db", "connection", "socket", "access", "path",
+    "client", "http", "remote", "upstream", "api",
+})
+_TYPE_TEST = re.compile(
+    r"(?<![\w$.])([A-Za-z_$][\w$]{0,63})\s{1,4}(?:instanceof|is)\s{1,4}(?!not\b|None\b|null\b)([A-Za-z_$][\w$.]{0,80})")
+_ISINSTANCE = re.compile(r"isinstance\s{0,2}\(\s{0,2}([A-Za-z_]\w{0,63})\s{0,2},\s{0,2}\(?([\w.,\s]{1,200}?)\)?\s{0,2}\)")
+_NAME_TEST = re.compile(
+    r"(?<![\w$.])([A-Za-z_$][\w$]{0,63})\s{0,2}\.\s{0,2}name\s{0,2}===?\s{0,2}[\"'`]([A-Za-z_$][\w$]{0,80})[\"'`]")
+_BRANCH_COND = re.compile(r"\A\s{0,40}(?:\}\s{0,4})?(?:else\s{1,4})?(?:if|elif)\b(.{0,400})")
+_GUARD_BREAKER = re.compile(r"\|\||(?<![\w$])(?:or|not)(?![\w$])|!(?!=)")
+_ANSWER_TEST = re.compile(   # fullmatch of the STRIPPED condition: `v`, `v !== null`, `(v is not None)`
+    r"\(?\s?([A-Za-z_$][\w$]{0,63})\s?(?:!==?\s?(?:null|undefined|nil|None)|is\s{1,4}not\s{1,4}None)?"
+    r"\s?\)?\s?(?:\{|:|then)?")
+_ANSWER_BINDING = re.compile(
+    r"(?<![\w$.])([A-Za-z_$][\w$]{0,63})\s{0,2}(?::\s{0,2}[\w$<>|\[\]. ]{1,60})?:?=\s{0,2}(?:await\s{1,4})?"
+    r"([A-Za-z_$][\w$.]{0,80})\s{0,2}\(\s{0,2}([A-Za-z_$][\w$]{0,63})\s{0,2}\)")
+_REFUSAL = re.compile(r"(?<![\w$.])return\s{0,4}(?:null|None|nil|undefined|false|False)(?![\w$])")
+_RETURN = re.compile(r"(?<![\w$.])return(?![\w$])")
+_CLAUSE_TYPES = re.compile(r"catch\s{0,8}\(([^()]{0,200})\)|except\b([^:\n]{0,200}?)\bas\b|rescue\b([^\n]{0,120}?)=>")
+_DOTTED = re.compile(r"[A-Za-z_$][\w$.]{0,80}")
+_CLAUSE_SKIP = frozenset({"final", "const", "var", "val", "let", "as"})
+_STACK_WORD = re.compile(r"stack|trace", re.IGNORECASE)
+_GUARD_SINK_ROWS = 4
+
+
+def _caller_facing_type(name: str) -> bool:
+    """A caller-facing role word in the class's own name, and no internal role anywhere in it."""
+    own = identifier_words(_last_segment(name))
+    return not _CALLER_FACING_WORDS.isdisjoint(own) and _INTERNAL_TYPE_WORDS.isdisjoint(identifier_words(name))
+
+
+def _all_caller_facing(names: list[str]) -> bool:
+    return bool(names) and all(map(_caller_facing_type, names))
+
+
+def _type_guarded(lines: Sequence[str], line_num: int) -> bool:
+    """The sink runs only for a caught error of a caller-facing class (its handler is typed with
+    such classes, or an enclosing branch inside that handler admits only them), and what it
+    discloses is that error's own text."""
+    if not _may_be_type_guarded(lines, line_num):
+        return False
+    handler = _admitting_handler(lines, line_num - 1)
+    return handler is not None and _own_text_only(lines, line_num - 1, handler)
+
+
+def _may_be_type_guarded(lines: Sequence[str], line_num: int) -> bool:
+    """No stack word at the sink, and the file spells a caller-facing word (memoised per file):
+    every guard, typed handler and same-file classifier names such a class."""
+    if not _memo(_r3_file(lines), ("facing",), lambda: _spells_facing(lines)):
+        return False
+    return not _STACK_WORD.search(" ".join(lines[line_num - 1: line_num - 1 + _GUARD_SINK_ROWS]))
+
+
+def _spells_facing(lines: Sequence[str]) -> bool:
+    """Substring tests over the lower-cased file. Measured on a 78 KB file where every sink
+    reports: a case-insensitive alternation per line cost 1.75 ms (~3% of the scan), this 0.14 ms."""
+    text = "\n".join(lines).lower()
+    return any(hint in text for hint in _FACING_HINTS)
+
+
+def _admitting_handler(lines: Sequence[str], row: int) -> tuple[int, frozenset[str]] | None:
+    """(row, caught names) of the innermost handler enclosing ``row``, when it admits only
+    caller-facing classes to ``row``; else None."""
+    guards: list[tuple[int, str]] = []
+    for r, raw in _guard_blocks(lines, row):
+        caught = catch_binding(raw)
+        if caught:
+            return (r, caught) if _handler_admits(lines, (r, raw), caught, guards) else None
+        guards.append((r, raw))
+    return None
+
+
+def _handler_admits(lines: Sequence[str], handler: tuple[int, str], caught: frozenset[str],
+                    guards: list[tuple[int, str]]) -> bool:
+    return _typed_handler(handler[1], caught) or any(_guard_admits(lines, g, caught, handler[0]) for g in guards)
+
+
+# ---- the excuse covers the caught error's OWN text ----
+# A caller-facing class says nothing about what it WRAPS or CARRIES: `ValidationError(cause=
+# dbError)` is a common shape, and a validation error of an ORM keeps the driver error and the
+# query on members (`e.parent`, `exc.orig`, `e.sql`). So the excuse is an ALLOWLIST over the
+# caught binding: its own message (`message`, `getMessage()`, `Message`, `str(e)`, Go's
+# `Error()`, `args`, `name`, string transforms after them), or the bare binding inside a string
+# conversion, an interpolation or a concatenation. Any other member read, and the whole object
+# handed to a serialiser (`res.json(err)`, `{ e: err }`), is not its own text (measured: eight
+# probes over TS, Java, Python and PHP reported at HEAD and went clean under a deny-list). A
+# status or code member is neutral: a number is not detail. Every other value on the sink is
+# judged as before: a wrapped-error accessor (role words: cause, previous, inner, original,
+# parent, ...), another error-named binding or member, or a detail read of another value is
+# "other"; a name bound in the handler is followed one step (`const detail = err.message`).
+_WRAPPED_WORDS = frozenset({
+    "cause", "causes", "previous", "prev", "inner", "wrapped", "unwrap", "underlying", "original",
+    "orig", "parent", "context", "suppressed", "nested", "chained",
+})
+_OWN_TEXT_MEMBERS = frozenset({
+    "message", "msg", "name", "args", "localizedmessage", "localizeddescription", "getmessage",
+    "getlocalizedmessage", "tostring", "to_s", "what",
+})
+_OWN_TEXT_CALLS = frozenset({"error"})   # Go's `err.Error()`; a FIELD named `error` is another value
+_METADATA_MEMBERS = frozenset({"status", "statuscode", "status_code", "httpstatus", "code"})
+_MEMBER_SEGMENT = re.compile(r"(?:\?\.|!!\.|\.|->)\s{0,2}\$?([A-Za-z_][\w$]{0,63})(\(\s{0,2}\))?")
+_STRING_JOINERS = ('""', "+", "%")
+_VALUE_CHAIN = re.compile(
+    r"(?<![\w$.])(?<!->)(\$?[A-Za-z_][\w$]{0,63})"
+    r"((?:\s{0,2}(?:\?\.|!!\.|\.|->)\s{0,2}\$?[A-Za-z_][\w$]{0,63}(?:\(\s{0,2}\))?){0,8})")
+_KEY_OR_CALLEE = re.compile(r"\s{0,2}(?:\((?!\s{0,2}\))|:(?!:)|=(?![=>]))")
+
+
+def _own_text_only(lines: Sequence[str], row: int, handler: tuple[int, frozenset[str]]) -> bool:
+    verdicts = _text_verdicts(_sink_text(lines, row), lines, (handler[0], row), handler[1])
+    return "own" in verdicts and "other" not in verdicts
+
+
+def _sink_text(lines: Sequence[str], row: int) -> str:
+    """The sink row and, while its brackets stay open, its continuation (literal text out,
+    interpolations kept), at most `_GUARD_SINK_ROWS` rows."""
+    parts: list[str] = []
+    depth = 0
+    for raw in lines[row: row + _GUARD_SINK_ROWS]:
+        parts.append(_strip_literals_209(_uncommented(raw[:MAX_SCAN_CHARS])))
+        depth += _bracket_balance(parts[-1])
+        if depth <= 0:
+            break
+    return " ".join(parts)
+
+
+def _bracket_balance(text: str) -> int:
+    return sum(map(text.count, "([{")) - sum(map(text.count, ")]}"))
+
+
+def _text_verdicts(text: str, lines: Sequence[str], span: tuple[int, int], caught: frozenset[str],
+                   top: str = "other") -> set[str]:
+    """"own" / "other" / "neutral" for each value chain in ``text`` (keys and bare callees skipped).
+    ``top`` is the verdict of the bare caught binding as a top-level argument: the sink's
+    serialiser ("other"), or, in a bound right-hand side, a call whose result is bound ("neutral")."""
+    ctx = (text, lines, span, caught, top)
+    return {_chain_verdict(m, ctx) for m in _VALUE_CHAIN.finditer(text) if _is_value(m, text)}
+
+
+def _is_value(m: re.Match[str], text: str) -> bool:
+    return bool(m.group(2)) or not _KEY_OR_CALLEE.match(text, m.end())
+
+
+_ChainCtx = tuple[str, Sequence[str], tuple[int, int], frozenset[str], str]
+
+
+def _chain_verdict(m: re.Match[str], ctx: _ChainCtx) -> str:
+    text, lines, span, caught, top = ctx
+    if m.group(1) in caught:
+        return _caught_verdict(m, text, top)
+    members = identifier_words(m.group(2))
+    if _WRAPPED_WORDS.intersection(members):
+        return "other"
+    bound = _bound_verdict(lines, m.group(1), span, caught)
+    return bound if bound != "neutral" else _foreign_verdict(m.group(1), m.group(2), members)
+
+
+def _caught_verdict(m: re.Match[str], text: str, top: str) -> str:
+    """The caught binding: its own text, a metadata member, or anything else."""
+    if not m.group(2):
+        return _bare_verdict(text, m.start(), m.end(), top)
+    if _own_member_chain(m.group(2)):
+        return "own"
+    return "neutral" if _metadata_chain(m.group(2)) else "other"
+
+
+def _first_member(chain: str) -> tuple[str, bool]:
+    seg = _MEMBER_SEGMENT.match(chain.lstrip())
+    return (seg.group(1).lower(), bool(seg.group(2))) if seg else ("", False)
+
+
+def _own_member_chain(chain: str) -> bool:
+    """`.message`, `.getMessage()`, `.Error()`, `.message.trim()`: the first member read is the
+    error's own text (what follows transforms that string)."""
+    name, called = _first_member(chain)
+    return name in _OWN_TEXT_MEMBERS or (called and name in _OWN_TEXT_CALLS)
+
+
+def _metadata_chain(chain: str) -> bool:
+    name, _ = _first_member(chain)
+    return name in _METADATA_MEMBERS and len(_MEMBER_SEGMENT.findall(chain)) == 1
+
+
+def _bare_verdict(text: str, start: int, end: int, top: str) -> str:
+    """The bare caught binding: stringified (an interpolation hole, a concatenation, a stringifier
+    or detail-extractor call) is its own text; serialised whole (a container, a top-level argument)
+    is not; inside any other call it is that call's business."""
+    if text[:start].rstrip().endswith(_STRING_JOINERS) or text[end:].lstrip().startswith(_STRING_JOINERS[1:]):
+        return "own"
+    openers = _open_brackets(text[:start])
+    if not openers:
+        return top
+    return _enclosing_verdict(text, openers, top)
+
+
+def _open_brackets(text: str) -> list[int]:
+    """Offsets of the brackets still open at the end of ``text``, outermost first."""
+    stack: list[int] = []
+    for b in _BRACKET.finditer(text):
+        stack.append(b.start()) if b.group() in "([{" else stack and stack.pop()
+    return stack
+
+
+def _enclosing_verdict(text: str, openers: list[int], top: str) -> str:
+    at = openers[-1]
+    if text[at] != "(":
+        return "other"
+    if _stringifier_before(text[:at]):
+        return "own"
+    return top if len(openers) == 1 else "neutral"
+
+
+def _stringifier_before(text: str) -> bool:
+    """The identifier right before an opening parenthesis is a stringifier or extractor. Read
+    from a bounded tail with the gated `_IDENT_RUN`: an end-anchored search is quadratic."""
+    tail = text[-80:].rstrip()
+    runs = _IDENT_RUN.findall(tail)
+    return bool(runs) and tail.endswith(runs[-1]) and _renders_detail(runs[-1])
+
+
+def _foreign_verdict(root: str, chain: str, members: tuple[str, ...]) -> str:
+    """Another value: an error by its name, or a detail read of it, is not the caught error's text."""
+    errorish = _is_error_named(root) or any(map(_is_error_named, _SEGMENT_SPLIT.split(chain)))
+    return "other" if errorish or _DETAIL_CALL_WORDS.intersection(members) else "neutral"
+
+
+def _nearest_binding(lines: Sequence[str], name: str, span: tuple[int, int]) -> str | None:
+    for r in range(span[1] - 1, span[0], -1):
+        rhs = _line_facts(lines[r]).assigns.get(name)
+        if rhs is not None:
+            return rhs
+    return None
+
+
+def _bound_verdict(lines: Sequence[str], name: str, span: tuple[int, int], caught: frozenset[str]) -> str:
+    """The verdict of the nearest binding of ``name`` inside the handler, read one step deep
+    (the binding's own chains are judged with an empty span, so by name only)."""
+    rhs = _nearest_binding(lines, name, span)
+    if rhs is None:
+        return "neutral"
+    found = _text_verdicts(_strip_literals_209(rhs.split(";")[0]), lines, (-1, -1), caught, "neutral")
+    return next((v for v in ("other", "own") if v in found), "neutral")
+
+
+# ---- the guard ----
+
+def _guard_blocks(lines: Sequence[str], row: int) -> Iterator[tuple[int, str]]:
+    """(row, text) of each block header enclosing ``row``, innermost first, counting a
+    continuation header (`} catch (e) {`, `} else {`) as the header of the block it opens."""
+    rf = _r3_file(lines)
+    rows = range(row - 1, max(-1, row - _EXCUSE_SPAN), -1)
+    if not _braces_near(rf, row):
+        return ((r, raw) for r, raw, _ in _indent_blocks(lines, row, rows))
+    return _brace_headers(rf, rows)
+
+
+def _brace_headers(rf: _R3File, rows: range) -> Iterator[tuple[int, str]]:
+    """`_brace_blocks`, except that a net-zero `} ... {` row at the block's own level opens the
+    block (its `}` closes a SIBLING, whose opener is then skipped): read as plain balance, the
+    sink in an `else` / `catch` arm took the `if` / `try` above it as its header."""
+    depth = 0
+    for r in rows:
+        depth += _row_balance(rf, r)
+        if _opens_here(rf, r, depth):
+            yield r, rf.lines[r][:MAX_SCAN_CHARS]
+            depth = int(depth == 0)
+
+
+def _opens_here(rf: _R3File, r: int, depth: int) -> bool:
+    return depth < 0 or (depth == 0 and _continues_block(rf.lines[r]))
+
+
+def _continues_block(raw: str) -> bool:
+    code = stripped_code(raw[:MAX_SCAN_CHARS]).strip()
+    return code.startswith("}") and code.endswith("{")
+
+
+def _typed_handler(raw: str, caught: frozenset[str]) -> bool:
+    """`catch (InputValidationException e)`, `except (ValidationError, AuthorizationError) as e:`."""
+    skip = caught | _CLAUSE_SKIP
+    return _all_caller_facing([t for t in _DOTTED.findall(_handler_clause(raw)) if t not in skip])
+
+
+def _handler_clause(raw: str) -> str:
+    m = _CLAUSE_TYPES.search(_uncomment(raw)[0])
+    return next(filter(None, m.groups()), "") if m else ""
+
+
+def _guard_admits(lines: Sequence[str], guard: tuple[int, str], caught: frozenset[str], handler: int) -> bool:
+    """A positive branch on the caught error's class, or on a same-file classifier's answer."""
+    m = _BRANCH_COND.match(_uncomment(guard[1])[0])
+    if not m:
+        return False
+    tests = _type_tests(m.group(1))
+    if tests:
+        return not _GUARD_BREAKER.search(m.group(1)) and _all_facing(tests, caught)
+    return _classifier_admits(lines, m.group(1).strip(), caught, (handler, guard[0]))
+
+
+def _type_tests(text: str) -> list[tuple[str, str]]:
+    """(subject, class) of every `instanceof` / `is` / `isinstance` / `.name ===` test."""
+    tests = [m.group(1, 2) for m in _TYPE_TEST.finditer(text)]
+    tests += [m.group(1, 2) for m in _NAME_TEST.finditer(text)]
+    return tests + _isinstance_tests(text)
+
+
+def _isinstance_tests(text: str) -> list[tuple[str, str]]:
+    return [(m.group(1), t.strip()) for m in _ISINSTANCE.finditer(text) for t in m.group(2).split(",") if t.strip()]
+
+
+def _all_facing(tests: list[tuple[str, str]], caught: frozenset[str]) -> bool:
+    return all(subject in caught and _caller_facing_type(cls) for subject, cls in tests)
+
+
+def _classifier_admits(lines: Sequence[str], cond: str, caught: frozenset[str], span: tuple[int, int]) -> bool:
+    """`if (status !== null)` where `status = classify(err)` in the handler, and `classify`'s
+    same-file definition answers only for caller-facing classes."""
+    m = _ANSWER_TEST.fullmatch(cond)
+    callee = _answer_callee(lines, m.group(1), caught, span) if m else None
+    return callee is not None and _recognises_only_facing(lines, _last_segment(callee))
+
+
+def _answer_callee(lines: Sequence[str], name: str, caught: frozenset[str], span: tuple[int, int]) -> str | None:
+    """The callee ``name`` is bound from, given the caught error, between handler and guard."""
+    for r in range(span[1] - 1, span[0], -1):
+        m = _binding_of(lines[r], name)
+        if m:
+            return m.group(2) if m.group(3) in caught else None
+    return None
+
+
+def _binding_of(raw: str, name: str) -> re.Match[str] | None:
+    code = _uncomment(raw[:MAX_SCAN_CHARS])[0]
+    return next((m for m in _ANSWER_BINDING.finditer(code) if m.group(1) == name), None)
+
+
+def _recognises_only_facing(lines: Sequence[str], name: str) -> bool:
+    rows = _def_rows(lines, name)
+    return len(rows) == 1 and _classifier_body_facing(lines, rows[0], _routine_end(lines, rows[0]))
+
+
+# ---- the classifier's contract: every ANSWER is reached through a caller-facing class ----
+# Some `return null` in the body is not enough: `if (!err) return null; if (err instanceof
+# ValidationError) return 400; return 500` answers for every real error, and a branch on
+# `err.code === "ENOENT"` answers for a filesystem error naming its path. A non-refusal return
+# qualifies only under a positive caller-facing type test (an enclosing or same-row `if`), or
+# after a SCREEN at the routine's top level: an `if` whose condition is only a conjunction of
+# NEGATED caller-facing tests (`!(e instanceof A) && !(e instanceof B)`, `name !== "AError"`,
+# `not isinstance(e, (A, B))`) and whose body refuses. Any other condition leading to an answer
+# (a code or string compare, truthiness, an `else` arm) disqualifies the classifier.
+# Applied by fullmatch to the `if` row before its `return`: `\A`-anchored, possessive, and the
+# terms are separated by a literal `&&` / `and`, so it is linear (the 512 KB ReDoS gate). The
+# class names are then read by a literal-led pattern.
+_NEG_TERM = (
+    r"(?:!\s{0,2}\(\s{0,2}[\w$]{1,64}+\s{1,4}instanceof\s{1,4}[\w$.]{1,80}+\s{0,2}\)"
+    r"|not\s{1,4}isinstance\s{0,2}\(\s{0,2}\w{1,64}+\s{0,2},\s{0,2}(?:\([\w.,\s]{1,200}+\)|[\w.]{1,80}+)\s{0,2}\)"
+    r"|[\w$]{1,64}+(?:\.name)?\s{0,2}(?:!==?\s{0,2}[\"'`][\w$]{1,80}+[\"'`]|!is\s{1,4}[\w$.]{1,80}+))")
+_SCREEN_COND = re.compile(
+    rf"\A\s{{0,40}}if\s{{0,4}}\(?\s{{0,4}}{_NEG_TERM}(?:\s{{0,4}}(?:&&|and)\s{{0,4}}{_NEG_TERM}){{0,7}}"
+    r"\s{0,4}\)?\s{0,4}(?:\{|:|then)?\s{0,8}")
+_NEG_CLASS = re.compile(
+    r"instanceof\s{1,4}([\w$.]{1,80})|!is\s{1,4}([\w$.]{1,80})"
+    r"|isinstance\s{0,2}\([^,()]{1,64},\s{0,2}\(?([\w.,\s]{1,200}+)|!==?\s{0,2}[\"'`]([\w$]{1,80})[\"'`]")
+
+
+# Every test must be of the classifier's FIRST parameter (the caught error is passed first), or
+# of a name the body binds from it (`const name = err.name`): a probe measured `statusFor(err,
+# first)` screening `first` accepted as a classifier for `err`.
+_NEG_SUBJECT = re.compile(
+    r"(?<![\w$.])([A-Za-z_$][\w$]{0,63})(?:\s{0,2}\.\s{0,2}name)?\s{0,4}(?:instanceof\s|!==?\s{0,2}[\"'`]|!is\s)")
+
+
+def _classifier_body_facing(lines: Sequence[str], start: int, end: int) -> bool:
+    subjects = _classifier_subjects(lines, start, end)
+    rows = set(filter(lambda r: _RETURN.search(_code_row(lines, r)), range(start + 1, end)))
+    refusals = set(filter(lambda r: _is_refusal_row(lines, r), rows))
+    screen = next(filter(lambda r: _is_screen(lines, r, (start, subjects)), range(start + 1, end)), end)
+    return bool(refusals) and all(_answer_admitted(lines, r, (start, subjects), screen) for r in rows - refusals)
+
+
+def _classifier_subjects(lines: Sequence[str], start: int, end: int) -> frozenset[str]:
+    """The first parameter, and every name the body binds from an expression mentioning it."""
+    params = _routine_params(_header_text(lines, start))[:1]
+    if not params:
+        return frozenset()
+    first = params[0].lstrip("$")
+    return frozenset((first, *_bound_from(lines, range(start + 1, end), _name_pattern(first))))
+
+
+def _bound_from(lines: Sequence[str], rows: range, mention: re.Pattern[str]) -> Iterator[str]:
+    """Names bound in ``rows`` from an expression ``mention`` matches."""
+    return (n for r in rows for n, rhs in _line_facts(lines[r]).assigns.items() if mention.search(rhs))
+
+
+def _tests_subjects(subjects: frozenset[str], found: list[str]) -> bool:
+    return bool(found) and all(map(subjects.__contains__, found))
+
+
+def _code_row(lines: Sequence[str], r: int) -> str:
+    return _uncomment(lines[r][:MAX_SCAN_CHARS])[0]
+
+
+def _is_refusal_row(lines: Sequence[str], r: int) -> bool:
+    code = _code_row(lines, r)
+    return len(_RETURN.findall(code)) == len(_REFUSAL.findall(code))
+
+
+def _answer_admitted(lines: Sequence[str], r: int, routine: tuple[int, frozenset[str]], screen: int) -> bool:
+    """A non-refusal return: past the screen, or under a positive caller-facing test."""
+    if r > screen:
+        return True
+    return any(_positive_facing(raw, routine[1]) for raw in (lines[r], *_inner_headers(lines, r, routine[0])))
+
+
+def _inner_headers(lines: Sequence[str], r: int, start: int) -> list[str]:
+    return [raw for h, raw in _guard_blocks(lines, r) if h > start]
+
+
+def _positive_facing(raw: str, subjects: frozenset[str]) -> bool:
+    cond = _branch_cond(raw)
+    return not _GUARD_BREAKER.search(cond) and _facing_tests(_type_tests(cond), subjects)
+
+
+def _branch_cond(raw: str) -> str:
+    m = _BRANCH_COND.match(_uncomment(raw)[0])
+    return m.group(1) if m else ""
+
+
+def _facing_tests(tests: list[tuple[str, str]], subjects: frozenset[str]) -> bool:
+    """Every test is of a subject, and every class it names is caller-facing; at least one."""
+    return _tests_subjects(subjects, [t for t, _ in tests]) and _all_caller_facing([c for _, c in tests])
+
+
+def _is_screen(lines: Sequence[str], r: int, routine: tuple[int, frozenset[str]]) -> bool:
+    """A top-level `if` refusing every class but caller-facing ones (see the section comment)."""
+    code = _code_row(lines, r)
+    if not code.lstrip().startswith("if") or not _refuses_next(lines, r):
+        return False
+    cond = _RETURN.split(code)[0]
+    return _at_top(lines, r, routine[0]) and _screens_subjects(cond, routine[1])
+
+
+def _at_top(lines: Sequence[str], r: int, start: int) -> bool:
+    return next(_guard_blocks(lines, r), (start,))[0] == start
+
+
+def _screens_subjects(cond: str, subjects: frozenset[str]) -> bool:
+    return _negated_facing_only(cond) and _tests_subjects(subjects, _screen_subjects(cond))
+
+
+def _screen_subjects(cond: str) -> list[str]:
+    return [m.group(1) for m in _NEG_SUBJECT.finditer(cond)] + [m.group(1) for m in _ISINSTANCE.finditer(cond)]
+
+
+def _refuses_next(lines: Sequence[str], r: int) -> bool:
+    """The branch body refuses: on the `if` row itself, or on the next non-blank row."""
+    if not _RETURN.search(_code_row(lines, r)):
+        r = next(filter(lambda x: _code_row(lines, x).strip(), range(r + 1, min(len(lines), r + 3))), r)
+    return _RETURN.search(_code_row(lines, r)) is not None and _is_refusal_row(lines, r)
+
+
+def _negated_facing_only(cond: str) -> bool:
+    """Only negated caller-facing tests, joined by `&&` / `and`; at least one."""
+    if not _SCREEN_COND.fullmatch(cond):
+        return False
+    named = ",".join(filter(None, (g for m in _NEG_CLASS.finditer(cond) for g in m.groups())))
+    return _all_caller_facing(list(filter(None, map(str.strip, named.split(",")))))
+
+
+
 def _responder_param_pattern(name: str) -> str:
     return rf"[({{,]\s{{0,4}}{name}\s{{0,2}}[,:)}}]"
 
@@ -5211,10 +5825,9 @@ def _index_declarations(ctx: _ScanCtx, path: str, lines: Sequence[str]) -> None:
 
 
 def _tree_names(lines: Sequence[str]) -> set[str]:
-    names: set = set()
-    for raw in lines:
-        names.update(_tree_row_names(raw))
-    return names - _SKIP_NAMES - {None}
+    # One comprehension, not a `set.update` per line: measured over one real tree's 755k lines,
+    # 310 ms against 349 ms (the update ran for every line, though fewer than 1 in 3 holds `(`).
+    return {n for raw in lines if "(" in raw for n in _tree_row_names(raw)} - _SKIP_NAMES - {None}
 
 
 def _tree_row_names(raw: str):
@@ -5271,10 +5884,46 @@ def _definition_of(lines: Sequence[str], name: str) -> tuple[Sequence[str] | Non
 
 def _renders_through_definition(callee: str, inner: str, scope: _Scope) -> bool:
     """X: an opaque projection-named call whose arguments carry an error discloses when the
-    callee's definition renders its parameter's detail."""
-    if _active_scan().x_guard or _PROJECTION_WORDS.isdisjoint(_callee_words(callee)):
+    callee's definition renders its parameter's detail, or when a detail getter excused only
+    by its sanitising qualifier has a definition that does not provably return literals."""
+    if _active_scan().x_guard or not _projection_callee(_callee_words(callee)):
         return False
-    return _carries_error(inner, scope) and _renders_param(scope.lines, _last_segment(callee))
+    return _carries_error(inner, scope) and _definition_discloses(scope.lines, callee)
+
+
+def _definition_discloses(lines: Sequence[str], callee: str) -> bool:
+    name = _last_segment(callee)
+    return _renders_param(lines, name) or (_qualifier_only(_callee_words(callee)) and _unproven(lines, name))
+
+
+# ---- a sanitiser-NAMED getter is judged by its definition when it has one ----
+# The qualifier is evidence only while no definition can be read. Measured on probes: with a
+# definition in the same file, `publicMessage(err)` returning `err.Error()` (Go), `$e->getMessage()`
+# (PHP), an implicit `e.message` (Ruby) or a Kotlin expression body all went clean, because arm X's
+# parameter and result readers do not parse those forms. So a defined qualifier-only getter keeps the
+# extractor verdict unless every result its definition gives is a literal (`return "Try again."`).
+
+def _qualifier_only(words: tuple[str, ...]) -> bool:
+    """A detail getter by its words, excused only by a sanitising qualifier."""
+    return bool(_DETAIL_CALL_WORDS.intersection(words)) and _sanitised(words)
+
+
+def _unproven(lines: Sequence[str], name: str) -> bool:
+    """``name`` has a definition (same file, else the tree's only one) that does not provably
+    return only literals (memoised per file and name)."""
+    return bool(_memo(_r3_file(lines), ("unproven", name), lambda: _unproven_uncached(lines, name)))
+
+
+def _unproven_uncached(lines: Sequence[str], name: str) -> bool:
+    src, rows = _definition_of(lines, name)
+    return src is not None and not all(_returns_only_literals(src, r) for r in rows)
+
+
+def _returns_only_literals(lines: Sequence[str], start: int) -> bool:
+    """Some `return`, and every one of them returns a literal or constant. An implicit result
+    (Ruby's last expression, an expression body) has no `return`, so it is not proven."""
+    codes = [c for c in _routine_codes(lines, start, _routine_end(lines, start)) if _RETURN_WORD.search(mask_literals(c))]
+    return bool(codes) and not any(map(_returns_non_literal, codes))
 
 
 def _renders_param(lines: Sequence[str], name: str) -> bool:
@@ -5343,9 +5992,13 @@ def _param_detail_read(lines: Sequence[str], r: int, code: str, param: str) -> b
 
 # ---- the line check, the emitted set and the deferred files ----
 
-def _begin_line(ctx: _ScanCtx, file_path: Path, lines: Sequence[str], findings: list[dict]) -> None:
+def _enter_file(ctx: _ScanCtx, file_path: Path, lines: Sequence[str]) -> None:
+    """Every line, before any gate: a file is indexed for the tree whether or not it reports."""
     if _file_changed(ctx, file_path, lines):
         _begin_file(ctx, file_path, lines)
+
+
+def _begin_line(ctx: _ScanCtx, findings: list[dict]) -> None:
     if ctx.owner is not findings:     # a detached caller's next run: its rows start afresh
         ctx.emitted, ctx.owner = set(), findings
     ctx.findings = findings
@@ -5358,7 +6011,7 @@ def _file_changed(ctx: _ScanCtx, file_path: Path, lines: Sequence[str]) -> bool:
 
 def _begin_file(ctx: _ScanCtx, file_path: Path, lines: Sequence[str]) -> None:
     ctx.path, ctx.file_path, ctx.lines = str(file_path), file_path, lines
-    ctx.prose, ctx.suffix = _is_prose(file_path), _suffix(file_path)
+    ctx.prose, ctx.suffix, ctx.rows_rf = _is_prose(file_path), _suffix(file_path), _NO_RF
     if not ctx.complete and ctx.path not in ctx.indexed:
         _index_declarations(ctx, ctx.path, lines)
 

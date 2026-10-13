@@ -22,11 +22,13 @@ from prove_agent.api_prober import probe_api_endpoints
 from prove_agent.config import ALL_TYPES
 from prove_agent.discover_client import call_discover
 from prove_agent.discovery import discover_incremental
+from prove_agent.evidence_scrub import is_scrubbed, scrubbing, scrubbing_all
 from prove_agent.protocols.detection import TargetCapabilities, detect_capabilities
 from prove_agent.prove_learnings import (
     ProveSessionLearnings,
     record_successful_probe,
 )
+from prove_agent.public_error import describe_failure, log_failure
 from prove_agent.runner import prove_finding_with_timeout, validate_staging_url
 from prove_agent.strategies import STRATEGY_MAP
 from shared.discovery.cache import load_cached_discovery
@@ -48,7 +50,10 @@ def run_prove(
     prior_findings: list[dict[str, Any]] | None = None,
 ) -> Generator[str, None, None]:
     """Execute the prove verification pipeline and yield SSE events."""
-    emitter = AgUiEventEmitter(run_id)
+    # Feature 0101: every event this run emits is scrubbed of the scan root
+    # and secret-shaped values; prove_finding_with_timeout adds each finding's
+    # own path and code excerpt. See evidence_scrub.
+    emitter = scrubbing(AgUiEventEmitter(run_id), source_root=source_path)
     yield emitter.run_started(llm_window=run_llm_window(None, llm_enabled()))
     yield emitter.text_message("Starting prove agent verification pipeline")
 
@@ -117,8 +122,9 @@ def run_prove(
         model = get_model(model_preference)
         yield emitter.text_message(f"Using LLM model: {model}")
     except Exception as exc:
+        log_failure(logger, "get_model", exc)
         yield emitter.text_message(
-            f"ERROR: Prove agent requires LLM but none configured: {exc}. "
+            f"ERROR: Prove agent requires LLM but none configured: {describe_failure(exc)}. "
             "Set VULTURE_LLM_MODEL, OPENAI_API_KEY, or ensure Ollama is running."
         )
         yield emitter.run_finished("failed")
@@ -131,8 +137,9 @@ def run_prove(
             detect_capabilities(staging_url)
         )
     except Exception as exc:
+        log_failure(logger, "detect_capabilities", exc)
         yield emitter.text_message(
-            f"ERROR: Staging URL unreachable: {exc}. "
+            f"ERROR: Staging URL unreachable: {describe_failure(exc)}. "
             "Verify the server is running and accessible from this machine."
         )
         yield emitter.run_finished("failed")
@@ -157,6 +164,10 @@ def run_prove(
 
     # Get findings to verify
     findings = _get_findings(config, prior_findings, source_path, types)
+    # Feature 0101: cross-finding learnings reach every later plan prompt, so
+    # any finding's events may repeat what the model was shown about another;
+    # from here on the run's emitter scrubs every finding's markers.
+    emitter = scrubbing_all(emitter, findings, source_root=source_path, target_url=staging_url)
     if not findings:
         yield emitter.text_message(
             "No scan findings available — skipping verification, "
@@ -249,7 +260,8 @@ def _run_prove_pipeline(
             )
         elif bg_discovery.error:
             yield emitter.text_message(
-                f"Discovery failed ({bg_discovery.error}), proceeding without site map"
+                f"Discovery failed ({describe_failure(bg_discovery.error)}), "
+                "proceeding without site map"
             )
 
     # Cross-finding learning: insights accumulated across all findings
@@ -354,8 +366,8 @@ def _run_prove_pipeline(
 
                 for bi, br in enumerate(batch_results):
                     if isinstance(br, Exception):
-                        logger.warning("Verification failed for finding: %s", br)
-                        yield emitter.text_message(f"Verification error: {br}")
+                        log_failure(logger, "verify_finding", br)
+                        yield emitter.text_message(f"Verification error: {describe_failure(br)}")
                         counts["inconclusive"] += 1
                         continue
 
@@ -384,8 +396,8 @@ def _run_prove_pipeline(
                         global_abort = True
                         break
             except Exception as exc:
-                logger.warning("Batch verification failed: %s", exc)
-                yield emitter.text_message(f"Batch verification error: {exc}")
+                log_failure(logger, "verify_batch", exc)
+                yield emitter.text_message(f"Batch verification error: {describe_failure(exc)}")
                 counts["inconclusive"] += len(batch)
 
     # Wait for background discovery if still running
@@ -415,8 +427,8 @@ def _run_prove_pipeline(
             else:
                 yield emitter.text_message("API probing: no additional issues found")
     except Exception as exc:
-        logger.warning("API probing failed: %s", exc)
-        yield emitter.text_message(f"API probing skipped: {exc}")
+        log_failure(logger, "api_probe", exc)
+        yield emitter.text_message(f"API probing skipped: {describe_failure(exc)}")
 
     # Update session learnings (no longer persisted — discover owns persistence)
     learnings.insights = list(set(cross_learnings))
@@ -538,8 +550,8 @@ def _probe_discovered_endpoints(
         else:
             yield emitter.text_message("API probing: no issues found")
     except Exception as exc:
-        logger.warning("API probing failed: %s", exc)
-        yield emitter.text_message(f"API probing skipped: {exc}")
+        log_failure(logger, "api_probe", exc)
+        yield emitter.text_message(f"API probing skipped: {describe_failure(exc)}")
 
 
 def _run_probe_only(
@@ -630,16 +642,31 @@ def _update_learnings_from_result(
         pass
 
 
-def _collect_discovered_urls(event_str: str, urls: list[str]) -> None:
-    """Extract URL paths from proof_attempt events for incremental discovery."""
+def _data_line(event_str: str) -> str:
+    return next((line[6:] for line in event_str.split("\n") if line.startswith("data: ")), "")
+
+
+def _event_data(event_str: str) -> dict:
+    """The JSON payload of one SSE event string, or {} when it has none."""
     try:
-        for line in event_str.split("\n"):
-            if line.startswith("data: "):
-                data = json.loads(line[6:])
-                evidence = data.get("evidence", "")
-                for word in evidence.split():
-                    if word.startswith("/") and len(word) > 1 and word not in urls:
-                        urls.append(word)
-                return
-    except (json.JSONDecodeError, Exception):
-        pass
+        data = json.loads(_data_line(event_str))
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _is_crawl_candidate(word: str, seen: list[str]) -> bool:
+    # A scrubbed path ("/[source file]") is not a route on the target:
+    # crawling it would spend a request on a 404.
+    return word.startswith("/") and len(word) > 1 and word not in seen and not is_scrubbed(word)
+
+
+def _collect_discovered_urls(event_str: str, urls: list[str]) -> None:
+    """Extract URL paths from proof_attempt events for incremental discovery.
+
+    Reads the emitted (already scrubbed) event, so no repository path or
+    exception text can reach the target through this harvest.
+    """
+    for word in str(_event_data(event_str).get("evidence", "")).split():
+        if _is_crawl_candidate(word, urls):
+            urls.append(word)

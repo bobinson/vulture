@@ -50,7 +50,7 @@ export default async function handler(req: any, res: any) {
   const a = await loadQ("x");
   if (!a.ok) return res.status(500).json({ error: a.error }); // probe fp-Q-code-with-cause
   const b = await loadSan("x");
-  if (!b.ok) return res.status(500).json({ error: b.error }); // EXPECT: finding fp-sanitiser
+  if (!b.ok) return res.status(500).json({ error: b.error }); // EXPECT: clean sanitiser-named getter with no definition (rev4)
   const c = await loadSafe("x");
   if (!c.ok) return res.status(500).json({ error: c.error }); // probe fp-sanitiser2
   const d = await loadClass("x");
