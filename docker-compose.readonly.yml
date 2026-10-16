@@ -31,6 +31,12 @@ services:
       - VULTURE_EMBEDDING_MODEL=${VULTURE_EMBEDDING_MODEL:-text-embedding-3-small}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      # Feature 0074 (O6): the backend's lineage re-anchor gate reads the same
+      # two switches as the agents (QUOTE_VERIFY == enforce AND QUOTE_REANCHOR).
+      # Forwarded so a rollback set in `.env` reaches every backend binary;
+      # blank takes the code default, so compose pins no copy of it.
+      - VULTURE_LLM_QUOTE_VERIFY=${VULTURE_LLM_QUOTE_VERIFY:-}
+      - VULTURE_LLM_QUOTE_REANCHOR=${VULTURE_LLM_QUOTE_REANCHOR:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:${VULTURE_BACKEND_PORT:-28080}/health || exit 1"]
       interval: 10s

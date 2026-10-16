@@ -140,7 +140,11 @@ must weigh: (1) `config.rule_packs` is allowlisted to pinned `p/<name>` registry
 packs only (URLs / local paths / `auto` are rejected) so it cannot be turned
 into an SSRF or arbitrary-file sink; (2) host networking means `/run` is
 reachable on the host interface — run the plugin only on trusted hosts, or put
-it behind the supervisor's network controls. Rulesets are **not** currently
+it behind the supervisor's network controls. On macOS, where docker's host network
+is its VM's rather than the Mac's, the supervisor runs the plugin on the default
+bridge instead and publishes its port on the Mac's loopback only
+(`-p 127.0.0.1:28011:28011`), so it is reachable at `localhost:28011` and on no
+other interface. Rulesets are **not** currently
 version-pinned (feature 0058 R8 tracks pinning), so findings can drift with the
 upstream registry.
 

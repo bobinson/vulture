@@ -13,8 +13,8 @@ import (
 // either direction, on both SQLite and Postgres. crossAgentKey interpolates
 // f.FilePath raw, so an LLM row can never collide with a deterministic one.
 // Measured: 0 llm-vs-det collisions today, 24 once the path is normalised.
-// VULTURE_DEDUP_PREFER_DETERMINISTIC is therefore VACUOUS — the collision it
-// exists to arbitrate cannot occur.
+// The deterministic preference (deterministicPreference) was therefore VACUOUS —
+// the collision it exists to arbitrate could not occur.
 //
 // The key is canonicalised, NOT the stored value. file_path does two
 // incompatible jobs: display/resolution (llm_judge does a bare os.stat and

@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { SEVERITY_ORDER } from "@/lib/constants.ts";
 import { hasOwaspCategory } from "@/lib/compliance.ts";
+import { provenanceMatcher } from "@/lib/provenance.ts";
 import type { Finding, Severity } from "@/lib/types.ts";
 
 type SortField = "severity" | "category" | "file" | "title" | "agent_type";
@@ -59,42 +60,48 @@ export function useFindings(
   const isSuspicious = (f: Finding): boolean =>
     f.validation_status === "suspicious";
 
-  const toggleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDirection("asc");
-    }
-    setPage(0);
-  };
+  const toggleSort = useCallback(
+    (field: SortField) => {
+      if (sortField === field) {
+        setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+      } else {
+        setSortField(field);
+        setSortDirection("asc");
+      }
+      setPage(0);
+    },
+    [sortField],
+  );
 
-  const setFilterSeverityAndReset = (sev: Severity | "all") => {
+  // Stable identity (useState setters are stable) so memoised children
+  // receiving this handler do not re-render on every table render.
+  const setFilterSeverityAndReset = useCallback((sev: Severity | "all") => {
     setFilterSeverity(sev);
     setPage(0);
-  };
+  }, []);
 
-  const setFilterAgentAndReset = (agent: string) => {
+  const setFilterAgentAndReset = useCallback((agent: string) => {
     setFilterAgent(agent);
     setPage(0);
-  };
+  }, []);
 
   // Feature 0058 (R6) — filter by detection tier (finding.provenance),
-  // mirroring the agent filter mechanics.
-  const setFilterProvenanceAndReset = (provenance: string) => {
+  // mirroring the agent filter mechanics. Feature 0074 adds the family values
+  // "llm_family" and "both" (see lib/provenance.ts); every other value is exact.
+  const setFilterProvenanceAndReset = useCallback((provenance: string) => {
     setFilterProvenance(provenance);
     setPage(0);
-  };
+  }, []);
 
-  const setHideFalsePositivesAndReset = (hide: boolean) => {
+  const setHideFalsePositivesAndReset = useCallback((hide: boolean) => {
     setHideFalsePositives(hide);
     setPage(0);
-  };
+  }, []);
 
-  const setHideSuspiciousAndReset = (hide: boolean) => {
+  const setHideSuspiciousAndReset = useCallback((hide: boolean) => {
     setHideSuspicious(hide);
     setPage(0);
-  };
+  }, []);
 
   // Total FP count across the whole audit (union of both signals),
   // independent of the active severity/agent filters or the toggle —
@@ -138,7 +145,7 @@ export function useFindings(
       filtered = filtered.filter((f) => (f.agent_type ?? f.agent_id) === filterAgent);
     }
     if (filterProvenance !== "all") {
-      filtered = filtered.filter((f) => f.provenance === filterProvenance);
+      filtered = filtered.filter(provenanceMatcher(filterProvenance));
     }
     if (owaspCategory !== "all") {
       filtered = filtered.filter((f) => hasOwaspCategory(f, owaspCategory));
@@ -178,6 +185,12 @@ export function useFindings(
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
   const findings = sorted.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  // The page a finding sits on under the active filters, or null when they
+  // leave it out; a `?finding=` link opens that page.
+  const pageOf = (id: string): number | null => {
+    const index = sorted.findIndex((f) => f.id === id);
+    return index < 0 ? null : Math.floor(index / PAGE_SIZE);
+  };
 
   return {
     findings,
@@ -188,6 +201,7 @@ export function useFindings(
     page: safePage,
     totalPages,
     setPage,
+    pageOf,
     sortField,
     sortDirection,
     filterSeverity,

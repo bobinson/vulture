@@ -97,7 +97,7 @@ def is_declaration_context(line: str, match_start: int) -> bool:
 
     Covers the shape that made CWE-94 fire on a Redis client interface::
 
-        export interface AiRateLimitClient {
+        export interface LaneRateLimitClient {
           eval(script: string, options: { keys: string[] }): Promise<unknown>;
         }
 

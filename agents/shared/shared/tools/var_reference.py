@@ -4,7 +4,7 @@ Many CI YAML files, shell scripts, and Helm/Jinja templates assign
 secrets via env-var or template-variable indirection:
 
     STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"
-    --build-arg API_KEY="$CONGRESS_API_KEY"
+    --build-arg API_KEY="$WIDGET_API_KEY"
     PGPASSWORD="${POSTGRES_PASSWORD}"
     api_key: '%(SECRET_KEY)s'
     token: {{ .Values.apiKey }}

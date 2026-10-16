@@ -85,6 +85,26 @@ def current_context_window() -> int | None:
     return _current_context_window.get()
 
 
+# Ambient per-run window SOURCE (feature 0074 P1): HOW the broker obtained the
+# injected window (``env`` / ``probe`` / ``table`` / ``family`` / ``default``).
+# For PUBLICATION only — it never changes sizing: ``resolve_context_window``
+# still labels an injected window ``broker`` (who decided), whatever the source
+# says (how). ``None`` when no broker injected one (Mode A, older backend).
+_current_context_window_source: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "vulture_ctx_window_source", default=None
+)
+
+
+def set_context_window_source(source: str | None) -> contextvars.Token:
+    """Bind *source* as the ambient per-run broker window source."""
+    return _current_context_window_source.set(source)
+
+
+def current_context_window_source() -> str | None:
+    """The ambient per-run broker window source, or ``None``."""
+    return _current_context_window_source.get()
+
+
 async def aclose_broker_client() -> None:
     """Close this run's broker client if one was built (§26 M7). Idempotent and
     safe for injected test clients that have no ``aclose``."""

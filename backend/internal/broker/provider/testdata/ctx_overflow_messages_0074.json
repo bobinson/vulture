@@ -1,0 +1,121 @@
+{
+ "_comment": "Feature 0074 re-audit R6: ONE message fixture for the context-overflow classifier in both runtimes. The broker's contextOverflowBody (backend/internal/broker/provider/upstream_detail.go) and the agent's _CTX_OVERFLOW_RE (agents/shared/shared/llm/errors.py) must each match every `overflow: true` text and none of the `overflow: false` ones. Only SIZE/OVERFLOW phrasing counts: a 4xx that merely names a size-related parameter (max_tokens, context_size, a field's maximum length) is a different fault, and classifying it as an overflow costs a pointless halve-and-retry and a window re-probe. `provider_context_overflow` is the broker's own error code, matched so an agent behind the broker classifies it alike. Synthetic or provider-published messages only.",
+ "messages": [
+  {
+   "text": "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.",
+   "overflow": true
+  },
+  {
+   "text": "{\"error\":{\"code\":\"context_length_exceeded\"}}",
+   "overflow": true
+  },
+  {
+   "text": "prompt is too long: 210000 tokens > 200000 maximum",
+   "overflow": true
+  },
+  {
+   "text": "input length and max_tokens exceed context limit: 190000 + 21333 > 200000, decrease input length or max_tokens and try again",
+   "overflow": true
+  },
+  {
+   "text": "The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",
+   "overflow": true
+  },
+  {
+   "text": "Request payload size exceeds the limit: 20971520 bytes.",
+   "overflow": true
+  },
+  {
+   "text": "the request exceeds the available context size, try increasing it",
+   "overflow": true
+  },
+  {
+   "text": "n_keep: 5000 >= n_ctx: 4096",
+   "overflow": true
+  },
+  {
+   "text": "The number of tokens to keep from the initial prompt is greater than the context length.",
+   "overflow": true
+  },
+  {
+   "text": "Prompt contains 40000 tokens and 0 draft tokens, too large for model with 32768 maximum context length",
+   "overflow": true
+  },
+  {
+   "text": "'max_tokens' or 'max_completion_tokens' is too large: 5000. This model's maximum context length is 4096 tokens and your request has 100 input tokens",
+   "overflow": true
+  },
+  {
+   "text": "Tokens in prompt exceed the token limit",
+   "overflow": true
+  },
+  {
+   "text": "context window exceeded",
+   "overflow": true
+  },
+  {
+   "text": "input exceeds the context window",
+   "overflow": true
+  },
+  {
+   "text": "OpenAIException - request body too large",
+   "overflow": true
+  },
+  {
+   "text": "413 Payload Too Large",
+   "overflow": true
+  },
+  {
+   "text": "{\"error\":{\"type\":\"request_too_large\"}}",
+   "overflow": true
+  },
+  {
+   "text": "provider_context_overflow",
+   "overflow": true
+  },
+  {
+   "text": "Invalid value for 'max_tokens': must be a positive integer.",
+   "overflow": false
+  },
+  {
+   "text": "max_tokens is not supported with this model. Use 'max_completion_tokens' instead.",
+   "overflow": false
+  },
+  {
+   "text": "Unsupported parameter: 'max_tokens'",
+   "overflow": false
+  },
+  {
+   "text": "context_size must be an integer",
+   "overflow": false
+  },
+  {
+   "text": "Invalid 'tools[0].function.name': string does not match pattern. Expected a string with maximum length 64.",
+   "overflow": false
+  },
+  {
+   "text": "The model `gpt-5` does not exist or you do not have access to it.",
+   "overflow": false
+  },
+  {
+   "text": "temperature must be between 0 and 2",
+   "overflow": false
+  },
+  {
+   "text": "unknown field: context_window",
+   "overflow": false
+  },
+  {
+   "text": "The token limit parameter is invalid",
+   "overflow": false
+  },
+  {
+   "text": "Invalid schema for function 'f'",
+   "overflow": false
+  },
+  {
+   "text": "",
+   "overflow": false
+  }
+ ]
+}

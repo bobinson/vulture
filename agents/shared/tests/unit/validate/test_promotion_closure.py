@@ -1,7 +1,7 @@
 """Feature 0072 §5.3 condition 1 / T4.3 — a promoting judge verdict may confirm
 ALONE only if it asserted closure (window_sufficient is True).
 
-Found by the togetherapp MCP dogfood: a lone judge verdict with
+Found by the reference-app MCP dogfood: a lone judge verdict with
 window_sufficient=None (the judge itself said "the window is insufficient")
 was marked JUDGE_CITED purely because exploitable>0.5, and confirmed a QA-only
 SQL-string-interpolation FP where both interpolated values are provably safe.

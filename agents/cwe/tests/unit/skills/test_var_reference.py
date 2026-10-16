@@ -46,7 +46,7 @@ class TestIsVariableReference:
 class TestLineValueIsVariableRef:
     @pytest.mark.parametrize("line", [
         'STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"',
-        '--build-arg CONGRESS_API_KEY="$CONGRESS_API_KEY"',
+        '--build-arg WIDGET_API_KEY="$WIDGET_API_KEY"',
         'PGPASSWORD="${POSTGRES_PASSWORD}"',
         "api_key: '${SECRET}'",
         "token: $TOKEN",

@@ -10,6 +10,7 @@ from collections import defaultdict
 from typing import Any
 
 from shared.env import env_flag
+from shared.lines import parse_line
 from shared.tools.window import WINDOW_ROLLUP_PARENT, window_check
 
 from .refutation import obligation_check
@@ -77,7 +78,7 @@ _MAX_EXTRA_CHARS = 200
 
 def _sorted_member_lines(members: list[dict[str, Any]]) -> list[int]:
     """Distinct, ordered member line numbers (0/absent treated as unknown)."""
-    return sorted({int(m.get("line_start") or 0) for m in members} - {0})
+    return sorted({parse_line(m.get("line_start")) for m in members} - {0})
 
 
 def _member_lines(members: list[dict[str, Any]]) -> str:

@@ -1,6 +1,6 @@
 """An interpolated value that is provably validated must not be CONFIRMED.
 
-Measured on one run: ``seed-poll-verifications.qa.ts:423`` interpolates
+Measured on one run: ``seed-roster-checks.qa.ts:423`` interpolates
 ``pollId`` into a SQL string and scored 0.99 ``high_confidence``. The
 identifier is validated 100 lines above at the handler entry by an anchored
 regex (``UUID_RE.test(pollId)`` where ``UUID_RE`` is
@@ -86,7 +86,7 @@ export default async function handler(request, response) {
 }
 
 async function update(pollId) {
-  await hasuraRunSql(
+  await gatewayRunSql(
     `UPDATE focus_polls SET quality_label = 'X' WHERE id = '${pollId}';`
   );
 }
@@ -110,7 +110,7 @@ export default async function handler(request, response) {
     response.status(400).json({ error: "bad label" });
     return;
   }
-  await hasuraRunSql(`UPDATE p SET label = '${targetLabel}';`);
+  await gatewayRunSql(`UPDATE p SET label = '${targetLabel}';`);
 }
 """
         c = _require(tmp_path, body, 9)
@@ -125,7 +125,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}$/i;
 export default async function handler(request, response) {
   const { pollId, label } = request.body;
   if (!UUID_RE.test(pollId)) return;
-  await hasuraRunSql(`UPDATE p SET l = '${label}' WHERE id = '${pollId}';`);
+  await gatewayRunSql(`UPDATE p SET l = '${label}' WHERE id = '${pollId}';`);
 }
 """
         c = _require(tmp_path, body, 6)
@@ -151,7 +151,7 @@ class TestAnUnprovenGuardMustNotDemote:
         body = """\
 export default async function handler(request, response) {
   const { name } = request.body;
-  await hasuraRunSql(`SELECT * FROM t WHERE n = '${name}';`);
+  await gatewayRunSql(`SELECT * FROM t WHERE n = '${name}';`);
 }
 """
         c = _require(tmp_path, body, 3)
@@ -165,7 +165,7 @@ const UUID_RE = /^[0-9a-f]{8}$/i;
 export default async function handler(request, response) {
   const { other, name } = request.body;
   if (!UUID_RE.test(other)) return;
-  await hasuraRunSql(`SELECT * FROM t WHERE n = '${name}';`);
+  await gatewayRunSql(`SELECT * FROM t WHERE n = '${name}';`);
 }
 """
         c = _require(tmp_path, body, 6)
@@ -174,7 +174,7 @@ export default async function handler(request, response) {
     def test_a_sink_with_no_interpolation_is_not_scored(self, tmp_path):
         body = """\
 export default async function handler(request, response) {
-  await hasuraRunSql("SELECT 1");
+  await gatewayRunSql("SELECT 1");
 }
 """
         c = _require(tmp_path, body, 2)
@@ -228,12 +228,12 @@ class TestTheGuardWithholdsConfirmationNotTruth:
 class TestLiteralOnlyValues:
     """A value that can only ever be one of a few string literals is safe.
 
-    Measured: `seed-poll-verifications.qa.ts:367` interpolates BOTH `pollId`
+    Measured: `seed-roster-checks.qa.ts:367` interpolates BOTH `pollId`
     and `label`. `pollId` is UUID-guarded, but `label` is a local whose every
     assignment is a string constant:
 
         let label = "UNVERIFIED";
-        if (vr >= minVerificationRate) {
+        if (vr >= minReviewRate) {
           if (cr >= platinumRate) label = "PLATINUM";
           else if (cr >= goldRate) label = "GOLD";
         }
@@ -253,16 +253,16 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export default async function handler(request, response) {
   const { pollId } = request.body;
   if (!UUID_RE.test(pollId)) return;
-  await updateQualityLabel(pollId);
+  await updateTierLabel(pollId);
 }
 
-async function updateQualityLabel(pollId) {
+async function updateTierLabel(pollId) {
   let label = "UNVERIFIED";
   if (eligible > 0) {
     if (cr >= platinumRate) label = "PLATINUM";
     else if (cr >= goldRate) label = "GOLD";
   }
-  await hasuraRunSql(`UPDATE p SET quality_label = '${label}' WHERE id = '${pollId}';`);
+  await gatewayRunSql(`UPDATE p SET quality_label = '${label}' WHERE id = '${pollId}';`);
 }
 """
 
@@ -280,7 +280,7 @@ async function updateQualityLabel(pollId) {
 function f() {
   let n = 0;
   if (x) n = 25;
-  return hasuraRunSql(`SELECT * FROM t LIMIT ${n};`);
+  return gatewayRunSql(`SELECT * FROM t LIMIT ${n};`);
 }
 """
         c = _require(tmp_path, body, 4)
@@ -294,7 +294,7 @@ class TestLiteralOnlyRefusesWhatItCannotProve:
 function f(request) {
   let label = "UNVERIFIED";
   if (x) label = request.body.label;
-  return hasuraRunSql(`UPDATE p SET l = '${label}';`);
+  return gatewayRunSql(`UPDATE p SET l = '${label}';`);
 }
 """
         c = _require(tmp_path, body, 4)
@@ -305,7 +305,7 @@ function f(request) {
         """The 212 shape: no declaration, so nothing constrains the input."""
         body = """\
 async function sync(pollId) {
-  await hasuraRunSql(`UPDATE p SET x = 1 WHERE id = '${pollId}';`);
+  await gatewayRunSql(`UPDATE p SET x = 1 WHERE id = '${pollId}';`);
 }
 """
         c = _require(tmp_path, body, 2)
@@ -320,7 +320,7 @@ function other() {
 }
 
 function f(label) {
-  return hasuraRunSql(`UPDATE p SET l = '${label}';`);
+  return gatewayRunSql(`UPDATE p SET l = '${label}';`);
 }
 """
         c = _require(tmp_path, body, 7)
@@ -330,7 +330,7 @@ function f(label) {
         body = """\
 function f(request) {
   let label = `x${request.body.q}`;
-  return hasuraRunSql(`UPDATE p SET l = '${label}';`);
+  return gatewayRunSql(`UPDATE p SET l = '${label}';`);
 }
 """
         c = _require(tmp_path, body, 3)
@@ -340,7 +340,7 @@ function f(request) {
         body = """\
 function f(request) {
   let label = "a" + request.body.q;
-  return hasuraRunSql(`UPDATE p SET l = '${label}';`);
+  return gatewayRunSql(`UPDATE p SET l = '${label}';`);
 }
 """
         c = _require(tmp_path, body, 3)
@@ -351,7 +351,7 @@ function f(request) {
 function f(request) {
   let label = "a";
   label += request.body.q;
-  return hasuraRunSql(`UPDATE p SET l = '${label}';`);
+  return gatewayRunSql(`UPDATE p SET l = '${label}';`);
 }
 """
         c = _require(tmp_path, body, 4)
@@ -385,7 +385,7 @@ function isNoise(file) {
   return false;
 }
 
-function readStagedBlob(file) {
+function readBlobStaged(file) {
   return execSync(`git show :${file}`);
 }
 """
@@ -418,7 +418,7 @@ function looksLikeId(v) {
 }
 
 function run(v) {
-  return hasuraRunSql(`SELECT * FROM t WHERE id = '${v}';`);
+  return gatewayRunSql(`SELECT * FROM t WHERE id = '${v}';`);
 }
 """
         c = _require(tmp_path, body, 9)

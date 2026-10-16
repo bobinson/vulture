@@ -52,6 +52,12 @@ cli/bin/
 # code authored to TEST the detectors — it must never be self-audited.
 agents/cwe/tests/corpus/fixtures/
 
+# Feature 0101: synthetic CWE-778/770/209 rule fixtures (true positives,
+# clean twins, known gaps, held-out languages) authored to TEST the CWE
+# agent. The CWE rules already skip test paths; other agents do not.
+agents/cwe/tests/e2e/fixtures/0101_cwe*/
+agents/cwe/tests/e2e/fixtures/0101_heldout/
+
 # Feature 0058: Semgrep plugin test fixtures are deliberately vulnerable
 # code (taint source->sink flows) authored to TEST the detectors — they
 # must never be flagged by self-audits.
