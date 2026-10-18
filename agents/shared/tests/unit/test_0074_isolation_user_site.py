@@ -1,7 +1,7 @@
 """Feature 0074 test hygiene — the isolation fixture must not hide user-site
 packages from SUBPROCESS tests.
 
-``tests.support.isolation.isolate`` moves ``HOME`` under the test's tmp dir so
+``shared.testing.isolation.isolate`` moves ``HOME`` under the test's tmp dir so
 the L5 cache's ``~/.vulture`` default lands there. Python derives the user site
 (``~/.local/lib/pythonX.Y/site-packages``) from ``HOME`` too, so a subprocess
 started by a test lost every package installed with ``pip install --user`` —

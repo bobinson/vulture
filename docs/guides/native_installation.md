@@ -41,6 +41,14 @@ to. In local mode the UI logs you in automatically — no password needed.
 | Ubuntu 22.04+ / Debian 12+ | amd64, arm64 |
 | Fedora 38+ / RHEL 9 | best effort (community smoke-tested) |
 
+The table lists tested platforms; the hard floor on Linux is **glibc 2.28**.
+The agents' Linux wheels (`tiktoken`, `hf-xet`, the tree-sitter grammars) are
+published only as `manylinux_2_28`, so a native Linux install needs Ubuntu
+20.04+, Debian 10+, RHEL/Alma/Rocky 8+ or Amazon Linux 2023+ (check with
+`ldd --version`). The installer stops with an error on an older glibc; on a
+non-glibc system such as Alpine (musl) it cannot check, so it warns and
+continues.
+
 Windows is not supported.
 
 ## Agent runtime — auto-detected

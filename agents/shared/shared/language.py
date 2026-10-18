@@ -1,16 +1,22 @@
 """Source-language detection from file path.
 
-A pure-Python, extension-based detector used by L5 (LLM judge) to
-parameterise the prompt with a language hint. The model still reads
-the code; the hint just disambiguates between similar-looking syntaxes
-(e.g. TS vs JS, Kotlin vs Java).
+A pure-Python, extension-based detector. L5 (LLM judge) uses it to
+parameterise the prompt with a language hint — the model still reads the
+code; the hint just disambiguates between similar-looking syntaxes (e.g. TS
+vs JS, Kotlin vs Java) — and the AST layer keys its language profiles by the
+names it returns.
 
 No AST, no tree-sitter, no content sniffing. Feature 0046 §B.
+
+This is a LEAF module (feature 0102): it imports nothing from ``shared``, so
+a parse layer can depend on it without loading the validation phase.
 """
 
 from __future__ import annotations
 
 import os
+
+__all__ = ["detect_language"]
 
 # Extension → canonical language name.
 _LANGUAGE_BY_EXT: dict[str, str] = {
@@ -55,6 +61,21 @@ _LANGUAGE_BY_BASENAME: dict[str, str] = {
 }
 
 
+def _language_by_name(base: str) -> str | None:
+    """Fixed-name rule: the exact basename, else its stem.
+
+    The stem covers compose-style names like ``Dockerfile.dev``.
+    """
+    stem = base.partition(".")[0]
+    return _LANGUAGE_BY_BASENAME.get(base) or _LANGUAGE_BY_BASENAME.get(stem)
+
+
+def _language_by_ext(base: str) -> str:
+    """Extension rule, case-insensitive; no extension is ``"unknown"``."""
+    _, ext = os.path.splitext(base)
+    return _LANGUAGE_BY_EXT.get(ext.lower(), "unknown")
+
+
 def detect_language(file_path: str) -> str:
     """Return the canonical language name for `file_path`.
 
@@ -65,14 +86,4 @@ def detect_language(file_path: str) -> str:
     if not file_path:
         return "unknown"
     base = os.path.basename(file_path)
-    if base in _LANGUAGE_BY_BASENAME:
-        return _LANGUAGE_BY_BASENAME[base]
-    # Compose-style names like Dockerfile.dev — strip suffix.
-    if "." in base:
-        stem, _, _ = base.partition(".")
-        if stem in _LANGUAGE_BY_BASENAME:
-            return _LANGUAGE_BY_BASENAME[stem]
-    _, ext = os.path.splitext(base)
-    if not ext:
-        return "unknown"
-    return _LANGUAGE_BY_EXT.get(ext.lower(), "unknown")
+    return _language_by_name(base) or _language_by_ext(base)

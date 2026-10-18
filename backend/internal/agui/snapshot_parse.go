@@ -65,7 +65,8 @@ func ParseSnapshotScore(snapshot json.RawMessage) (float64, bool) {
 
 // ParseScanOutcome reads the feature-0091 scope and evidence keys off a
 // `result` StateSnapshot: `result_schema`, `pruned_dirs`, `lineage_checks`,
-// plus `degraded_reason` and `scan_truncated`.
+// plus `degraded_reason`, `scan_truncated` and (feature 0102) the raw
+// `ast_coverage` the lineage guard reads.
 //
 // It deliberately does NOT re-parse findings. Findings keep their own per-row
 // tolerant path (ParseSnapshotFindings) because ONE malformed finding must
@@ -99,6 +100,9 @@ func ParseScanOutcome(snapshot json.RawMessage) *model.ScanResult {
 		// Feature 0074 P4: the agent's LLM-row counters; nil when absent.
 		LLMEmitted        *int `json:"llm_emitted"`
 		LLMCollapsedAgent *int `json:"llm_collapsed_agent"`
+		// Feature 0102 D24: opaque, so any JSON value parses and only the
+		// lineage guard decides what a malformed one means.
+		ASTCoverage json.RawMessage `json:"ast_coverage"`
 	}
 	if json.Unmarshal(snapshot, &envelope) != nil {
 		return out
@@ -110,5 +114,6 @@ func ParseScanOutcome(snapshot json.RawMessage) *model.ScanResult {
 	out.ScanTruncated = envelope.ScanTruncated
 	out.LLMEmitted = envelope.LLMEmitted
 	out.LLMCollapsedAgent = envelope.LLMCollapsedAgent
+	out.ASTCoverage = envelope.ASTCoverage
 	return out
 }

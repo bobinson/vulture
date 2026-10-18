@@ -1,0 +1,95 @@
+# Group: ast_v1_heldout - the held-out set of the shared AST layer (feature 0102,
+# LLD §13.6, A37). Paths are relative to ../fixtures/.
+#
+# Thirty sink sites of the three families the AST tier owns - CWE-22 path
+# traversal, CWE-918 SSRF, CWE-78 OS command injection, ten each - sampled
+# from three public web applications (JavaScript/TypeScript and Python) at
+# recorded commits, after the lexicon freeze, with a recorded seed. Each
+# fixture reproduces one site: the target's identifiers renamed, the language
+# and the sink/source/guard shape kept, so both tiers decide the fixture as
+# they decided the original site. The first line of each fixture states the
+# shape; `HELD-OUT-TOKENS:` lists the public API names it keeps that no
+# lexicon and no ast_v1 fixture may hold (tests/unit/test_0102_held_out.py).
+#
+# `expectation` is the HAND ADJUDICATION of the original site, read from its
+# code (positive: attacker-controlled data reaches the sink unguarded); the
+# reason is the comment above each row. `line` is the site's line on EVERY row,
+# positives and negatives alike: the score is per site (the sink call at that
+# line), not per file, and is recorded once in the feature's status record.
+# A39 (3) accepts `line` on the negative rows: the held-out score is per site.
+# Most sites are negatives, by design of the sample: it is stratified over the
+# two tiers' agreements and disagreements, not drawn at the population's rate.
+#
+# LEADING UNDERSCORE, deliberately and permanently: `load_manifest()` with no
+# fragments skips every `_`-prefixed fragment, so this group is in no corpus
+# gate - not the production N, not `make cwe-corpus` (an explicit fragment
+# list), not `make cwe-corpus-full` or the nightly, not the ast_v1 group test
+# (which loads its own fragment by name). It keeps the underscore when
+# `_ast_v1` becomes `ast_v1`. A held-out result never changes a lexicon or a
+# rule; an AST miss or false positive here is a SKILLS.md known-gap candidate.
+
+# ── CWE-22 path traversal (skill `input_validation`) ──
+# heldout_01 clean: the path's variable parts are the signed-in user's numeric id and an extension the type sniffer picks from its fixed table
+- {file: ast_v1_heldout/heldout_01.ts, language: TypeScript, cwe: "22", expectation: negative, line: 37}
+# heldout_06 clean: a URL route declaration (route string, view), not a file access
+- {file: ast_v1_heldout/heldout_06.py, language: Python, cwe: "22", expectation: negative, line: 9}
+# heldout_08 clean: the path is an entry of a directory walk over a folder the install flow supplies, never request text
+- {file: ast_v1_heldout/heldout_08.ts, language: TypeScript, cwe: "22", expectation: negative, line: 18}
+# heldout_10 clean: a constant template path
+- {file: ast_v1_heldout/heldout_10.ts, language: TypeScript, cwe: "22", expectation: negative, line: 9}
+# heldout_15 clean: a path joined from two constants
+- {file: ast_v1_heldout/heldout_15.py, language: Python, cwe: "22", expectation: negative, line: 15}
+# heldout_17 clean: the path parameter's default is the app's own state file, and every caller takes the default
+- {file: ast_v1_heldout/heldout_17.ts, language: TypeScript, cwe: "22", expectation: negative, line: 16}
+# heldout_19 clean: the file name comes from readdir of the same constant directory, never from the request
+- {file: ast_v1_heldout/heldout_19.ts, language: TypeScript, cwe: "22", expectation: negative, line: 13}
+# heldout_24 clean: a constant path beside the module (writing the POSTed text into a source file is code injection, CWE-94, not traversal)
+- {file: ast_v1_heldout/heldout_24.py, language: Python, cwe: "22", expectation: negative, line: 17}
+# heldout_26 clean: a method definition, not a call; no file is opened on this line
+- {file: ast_v1_heldout/heldout_26.ts, language: TypeScript, cwe: "22", expectation: negative, line: 8}
+# heldout_28 clean: the request path is normalised as an absolute path (no `..` survives), stripped of leading slashes, resolved under the root and prefix-checked before the read
+- {file: ast_v1_heldout/heldout_28.ts, language: TypeScript, cwe: "22", expectation: negative, line: 13}
+
+# ── CWE-918 SSRF (skill `injection`) ──
+# heldout_02 clean: the URL is a module constant plus a fixed path; "User" in it is a word, not a value
+- {file: ast_v1_heldout/heldout_02.ts, language: TypeScript, cwe: "918", expectation: negative, line: 14}
+# heldout_04 clean: a translation-table lookup by a UI key, not an outbound request
+- {file: ast_v1_heldout/heldout_04.ts, language: TypeScript, cwe: "918", expectation: negative, line: 8}
+# heldout_09 clean: the host is fixed and the one caller passes a constant list of pins
+- {file: ast_v1_heldout/heldout_09.py, language: Python, cwe: "918", expectation: negative, line: 10}
+# heldout_11 clean: Set.prototype.delete on an in-memory set, not a request
+- {file: ast_v1_heldout/heldout_11.ts, language: TypeScript, cwe: "918", expectation: negative, line: 14}
+# heldout_13 clean: put() on an in-memory token map, not a request
+- {file: ast_v1_heldout/heldout_13.ts, language: TypeScript, cwe: "918", expectation: negative, line: 28}
+# heldout_18 TP: a POST field is the URL of a server-side GET, unchecked
+- {file: ast_v1_heldout/heldout_18.py, language: Python, cwe: "918", expectation: positive, line: 14}
+# heldout_20 clean: Map.prototype.delete on an in-memory rate table, not a request
+- {file: ast_v1_heldout/heldout_20.ts, language: TypeScript, cwe: "918", expectation: negative, line: 40}
+# heldout_22 TP: the request body's image URL is fetched server-side with no host check
+- {file: ast_v1_heldout/heldout_22.ts, language: TypeScript, cwe: "918", expectation: positive, line: 14}
+# heldout_27 clean: a reference copy of heldout_09's lookup that nothing calls; the host is fixed
+- {file: ast_v1_heldout/heldout_27.py, language: Python, cwe: "918", expectation: negative, line: 10}
+# heldout_29 clean: Map.prototype.get on an in-memory history map, not a request
+- {file: ast_v1_heldout/heldout_29.ts, language: TypeScript, cwe: "918", expectation: negative, line: 24}
+
+# ── CWE-78 OS command injection (skill `injection`) ──
+# heldout_03 clean: an in-process admin dispatcher, not an OS command, and its argv is the operator's own command line
+- {file: ast_v1_heldout/heldout_03.py, language: Python, cwe: "78", expectation: negative, line: 13}
+# heldout_05 clean: RegExp.prototype.exec is a pattern match, not process execution
+- {file: ast_v1_heldout/heldout_05.ts, language: TypeScript, cwe: "78", expectation: negative, line: 8}
+# heldout_07 clean: RxJS forkJoin combines observables; no process is started
+- {file: ast_v1_heldout/heldout_07.ts, language: TypeScript, cwe: "78", expectation: negative, line: 22}
+# heldout_12 TP: an unauthenticated POST field is concatenated into a shell=True command line
+- {file: ast_v1_heldout/heldout_12.py, language: Python, cwe: "78", expectation: positive, line: 10}
+# heldout_14 clean: spawn without a shell; the binary and the extra arguments come from the operator's config
+- {file: ast_v1_heldout/heldout_14.ts, language: TypeScript, cwe: "78", expectation: negative, line: 24}
+# heldout_16 clean: RegExp.prototype.exec is a pattern match, not process execution
+- {file: ast_v1_heldout/heldout_16.ts, language: TypeScript, cwe: "78", expectation: negative, line: 19}
+# heldout_21 clean: an in-process admin dispatcher, not an OS command, and its argv is the operator's own command line
+- {file: ast_v1_heldout/heldout_21.py, language: Python, cwe: "78", expectation: negative, line: 14}
+# heldout_23 clean: RegExp.prototype.exec is a pattern match, not process execution
+- {file: ast_v1_heldout/heldout_23.ts, language: TypeScript, cwe: "78", expectation: negative, line: 10}
+# heldout_25 clean: RxJS forkJoin combines observables; no process is started
+- {file: ast_v1_heldout/heldout_25.ts, language: TypeScript, cwe: "78", expectation: negative, line: 37}
+# heldout_30 clean: an argv list run without a shell; the container id is the one the server stored when it started the container
+- {file: ast_v1_heldout/heldout_30.py, language: Python, cwe: "78", expectation: negative, line: 25}

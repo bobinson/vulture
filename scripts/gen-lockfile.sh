@@ -93,6 +93,15 @@ LOCK_DATE=$(cat "$LOCK_DATE_FILE")
 UV_ARGS=(pip compile "$IN" --generate-hashes --no-header --quiet --python-version 3.12)
 UV_ARGS+=(--constraint "$CONSTRAINTS")
 UV_ARGS+=(--exclude-newer "$LOCK_DATE")
+# Per-package snapshot exceptions (comments and blank lines ignored): a new
+# dependency newer than LOCK_DATE is admitted without moving any existing pin.
+LOCK_DATE_PACKAGES="scripts/lock-date-packages.txt"
+if [ -f "$LOCK_DATE_PACKAGES" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"; line="${line//[[:space:]]/}"
+        [ -n "$line" ] && UV_ARGS+=(--exclude-newer-package "$line")
+    done < "$LOCK_DATE_PACKAGES"
+fi
 case "${1:-}" in
     --upgrade)     UV_ARGS+=(--upgrade) ;;
     --upgrade-pkg) UV_ARGS+=(--upgrade-package "${2:?--upgrade-pkg needs a name}") ;;

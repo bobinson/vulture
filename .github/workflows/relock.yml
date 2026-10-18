@@ -41,6 +41,10 @@ jobs:
       # C1 deterministic between relocks.
       - name: Advance the lock-date cutoff to now (UTC)
         run: date -u +%Y-%m-%dT%H:%M:%SZ > scripts/lock-date.txt
+      # Per-package exceptions predate the new cutoff; left in place they would
+      # CAP those packages at their old date. Clear them (comments stay).
+      - name: Clear per-package lock-date exceptions
+        run: sed -i '/^[[:space:]]*[^#[:space:]]/d' scripts/lock-date-packages.txt
       - name: Relock agent dependencies (upgrade)
         run: make freeze-deps UPGRADE=1
       # R5: a PR opened with the default GITHUB_TOKEN does NOT trigger other

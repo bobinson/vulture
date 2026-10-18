@@ -191,6 +191,19 @@ Direct dependencies of note:
 - `fastapi`, `pydantic`, `openai-agents`, `litellm`, `tiktoken` — MIT
 - `uvicorn`, `httpx`, `sse-starlette` — BSD-3-Clause
 
+**Python agents — AST layer, feature 0102 (via `agents/shared/pyproject.toml`;
+version as locked in `agents/requirements-frozen.txt`):**
+- `tree-sitter` 0.26.0 — MIT — AST layer, feature 0102
+- `tree-sitter-javascript` 0.25.0 — MIT — AST layer, feature 0102
+- `tree-sitter-typescript` 0.23.2 — MIT — AST layer, feature 0102
+- `tree-sitter-python` 0.25.0 — MIT — AST layer, feature 0102
+- `tree-sitter-go` 0.25.0 — MIT — AST layer, feature 0102
+- `tree-sitter-java` 0.23.5 — MIT — AST layer, feature 0102
+- `tree-sitter-rust` 0.24.2 — MIT — AST layer, feature 0102
+- `tree-sitter-php` 0.25.1 — MIT — AST layer, feature 0102
+- `tree-sitter-c` 0.24.2 — MIT — AST layer, feature 0102
+- `tree-sitter-cpp` 0.23.4 — MIT — AST layer, feature 0102
+
 **Frontend:**
 - `react`, `react-dom`, `react-router-dom`, `i18next` — MIT
 - `vite`, `vitest`, `@playwright/test` — MIT

@@ -1,0 +1,254 @@
+# Group: ast_v1 - the corpus of the shared AST layer (feature 0102).
+# Paths are relative to ../fixtures/. `line` is the expected sink line
+# (diagnostic only, positives) per the design schema.
+#
+# Three families, the three check ids the AST tier owns: CWE-22 path traversal
+# (skill `input_validation`), CWE-918 SSRF and CWE-78 OS command injection
+# (skill `injection`). Every fixture is a single file, so it survives the
+# runner's flattening (each fixture is copied alone to a temp dir as
+# `f.<suffix>` - suffix preserved, filename and layout destroyed). The first
+# line of every fixture states the shape it pins; identifiers are synthetic.
+#
+# Most positives are flows a line-local pattern cannot follow: a request value
+# bound, then carried through assignments, helpers, closures, destructuring or
+# a callback before it reaches the sink. Most negatives are where a line-local
+# pattern over-reports: a sanitiser, a guard, a shadowing local definition, a
+# constant, or an operator-controlled (environment) value.
+#
+# Every clean twin (`<id>_clean` beside `<id>`) differs from its positive by
+# the SMALLEST possible edit that removes the flaw: the source, the sink and
+# the surrounding code are all still present; only the sanitiser, the guard,
+# the argv form or the operator-controlled source appears (cwe_22_1 ->
+# cwe_22_1_clean wraps the request value in `path.basename` and changes nothing
+# else). A predicate keyed on "source word and sink word in one file" would
+# score every twin dirty. A negative with no positive of the same id
+# (cwe_22_5_clean, the `nb` rows, cwe_22_48, cwe_22_19_bomb) pins a shape that
+# must report nothing on its own.
+#
+# LEADING UNDERSCORE, deliberately: `load_manifest()` with no fragments globs
+# every fragment EXCEPT those whose name starts with `_`. The regex tier cannot
+# see most of these positives, so until the AST tier owns the three check ids
+# this group stays out of the production N and the global corpus gates, and is
+# scored only by name (tests/_ast_v1.py `load_group` loads
+# `fragments=["_ast_v1"]` for tests/e2e/test_0102_ast_corpus.py). It is renamed
+# `ast_v1.yaml` when the AST tier takes ownership.
+#
+# Not a row, deliberately: known false negatives (`known_fn`). The runner
+# scores any non-positive as a clean twin, so a known gap listed here would
+# read as a passing negative. cwe_78_c_macro.c (a system() behind a #define)
+# and cwe_78_c_stdin.c (a stdin line read into a buffer by fgets reaching
+# system()) are pinned in tests/unit/test_0102_known_fn.py instead.
+
+# ── CWE-22 path traversal, core shapes (skill `input_validation`) ──
+# cwe_22_17 has a trailing syntax error (whole-file fallback) and is scored
+# like any positive: whichever tier owns the file must still report it.
+# cwe_22_19_bomb nests 200000 deep: the audit completes and reports nothing.
+# cwe_22_18.rb is Ruby, a language with no v1 AST profile: the regex tier owns
+# it (the `unsupported` tally) and it is scored like any positive.
+- {file: ast_v1/cwe_22_1.js, language: JavaScript, cwe: "22", expectation: positive, line: 2}
+- {file: ast_v1/cwe_22_1_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_2.js, language: JavaScript, cwe: "22", expectation: positive, line: 6}
+- {file: ast_v1/cwe_22_3.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_4.js, language: JavaScript, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_5_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_6.js, language: JavaScript, cwe: "22", expectation: positive, line: 6}
+- {file: ast_v1/cwe_22_7.ts, language: TypeScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_8_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_9.js, language: JavaScript, cwe: "22", expectation: positive, line: 7}
+- {file: ast_v1/cwe_22_10.js, language: JavaScript, cwe: "22", expectation: positive, line: 6}
+- {file: ast_v1/cwe_22_11.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_12.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_12_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_13_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_14.py, language: Python, cwe: "22", expectation: positive, line: 7}
+- {file: ast_v1/cwe_22_14_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_15.py, language: Python, cwe: "22", expectation: positive, line: 11}
+- {file: ast_v1/cwe_22_16.js, language: JavaScript, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_17.js, language: JavaScript, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_18.rb, language: Ruby, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_19_bomb.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_20.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+
+# ── CWE-22 negatives, one TestCWE22Negatives line each ──
+# Each file's line 2 is one line of tests/unit/skills/test_no_blunders.py
+# (TestCWE22Negatives); the header comment names the source line.
+- {file: ast_v1/cwe_22_nb_1_clean.php, language: PHP, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_2_clean.php, language: PHP, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_3_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_4_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_5_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_6_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_7_clean.php, language: PHP, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_8_clean.go, language: Go, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_9_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_nb_10_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+
+# ── CWE-22 scenario rows: one fixture per source/sink/sanitiser/guard idiom ──
+- {file: ast_v1/cwe_22_21.ts, language: TypeScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_22.py, language: Python, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_23.py, language: Python, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_24.py, language: Python, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_25.js, language: JavaScript, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_26.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_27.js, language: JavaScript, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_28.py, language: Python, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_29.py, language: Python, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_30.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_31.js, language: JavaScript, cwe: "22", expectation: positive, line: 2}
+- {file: ast_v1/cwe_22_32.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_33.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_34.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_35.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_36.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_37.js, language: JavaScript, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_38_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_39.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_40.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_41.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_42.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_42_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_43_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_44_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_45_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_46_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_47_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_48.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_49.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_50.py, language: Python, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_51.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_52.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_53.js, language: JavaScript, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_54.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_55.js, language: JavaScript, cwe: "22", expectation: positive, line: 4}
+
+# ── CWE-918 SSRF, core shapes (skill `injection`) ──
+- {file: ast_v1/cwe_918_1.js, language: JavaScript, cwe: "918", expectation: positive, line: 6}
+- {file: ast_v1/cwe_918_1_clean.js, language: JavaScript, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_2.ts, language: TypeScript, cwe: "918", expectation: positive, line: 10}
+- {file: ast_v1/cwe_918_3.js, language: JavaScript, cwe: "918", expectation: positive, line: 5}
+- {file: ast_v1/cwe_918_4_clean.py, language: Python, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_5.ts, language: TypeScript, cwe: "918", expectation: positive, line: 5}
+- {file: ast_v1/cwe_918_6.py, language: Python, cwe: "918", expectation: positive, line: 7}
+- {file: ast_v1/cwe_918_7_clean.js, language: JavaScript, cwe: "918", expectation: negative}
+
+# ── CWE-918 scenario rows ──
+- {file: ast_v1/cwe_918_8.js, language: JavaScript, cwe: "918", expectation: positive, line: 4}
+- {file: ast_v1/cwe_918_9.py, language: Python, cwe: "918", expectation: positive, line: 5}
+- {file: ast_v1/cwe_918_10_clean.py, language: Python, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_11_clean.py, language: Python, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_12_clean.ts, language: TypeScript, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_13.js, language: JavaScript, cwe: "918", expectation: positive, line: 5}
+- {file: ast_v1/cwe_918_14.py, language: Python, cwe: "918", expectation: positive, line: 4}
+- {file: ast_v1/cwe_918_15.js, language: JavaScript, cwe: "918", expectation: positive, line: 4}
+- {file: ast_v1/cwe_918_16.js, language: JavaScript, cwe: "918", expectation: positive, line: 5}
+- {file: ast_v1/cwe_918_17.py, language: Python, cwe: "918", expectation: positive, line: 9}
+
+# ── CWE-78 OS command injection, core shapes (skill `injection`) ──
+- {file: ast_v1/cwe_78_1.js, language: JavaScript, cwe: "78", expectation: positive, line: 6}
+- {file: ast_v1/cwe_78_1_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_2_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_3.py, language: Python, cwe: "78", expectation: positive, line: 9}
+- {file: ast_v1/cwe_78_4.py, language: Python, cwe: "78", expectation: positive, line: 6}
+- {file: ast_v1/cwe_78_5_clean.py, language: Python, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_6.ts, language: TypeScript, cwe: "78", expectation: positive, line: 5}
+
+# ── CWE-78 scenario rows ──
+- {file: ast_v1/cwe_78_7.js, language: JavaScript, cwe: "78", expectation: positive, line: 6}
+- {file: ast_v1/cwe_78_8.ts, language: TypeScript, cwe: "78", expectation: positive, line: 5}
+- {file: ast_v1/cwe_78_9.js, language: JavaScript, cwe: "78", expectation: positive, line: 4}
+- {file: ast_v1/cwe_78_10_clean.py, language: Python, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_11_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_12_clean.py, language: Python, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_13.py, language: Python, cwe: "78", expectation: positive, line: 7}
+- {file: ast_v1/cwe_78_14.js, language: JavaScript, cwe: "78", expectation: positive, line: 5}
+- {file: ast_v1/cwe_78_15_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_16_clean.py, language: Python, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_17_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_18.py, language: Python, cwe: "78", expectation: positive, line: 6}
+
+# ── Go: two positives + two clean twins per family ──
+# Plus cwe_22_go_3 (a one-line accessor-as-path positive, no twin) and
+# cwe_918_go_3_clean (os.Open of a request value: a path sink, never SSRF,
+# outside the browser-capable profiles; scored only as a CWE-918 clean).
+- {file: ast_v1/cwe_22_go_1.go, language: Go, cwe: "22", expectation: positive, line: 7}
+- {file: ast_v1/cwe_22_go_1_clean.go, language: Go, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_go_2.go, language: Go, cwe: "22", expectation: positive, line: 8}
+- {file: ast_v1/cwe_22_go_2_clean.go, language: Go, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_go_3.go, language: Go, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_918_go_1.go, language: Go, cwe: "918", expectation: positive, line: 6}
+- {file: ast_v1/cwe_918_go_1_clean.go, language: Go, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_go_2.go, language: Go, cwe: "918", expectation: positive, line: 10}
+- {file: ast_v1/cwe_918_go_2_clean.go, language: Go, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_go_3_clean.go, language: Go, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_78_go_1.go, language: Go, cwe: "78", expectation: positive, line: 7}
+- {file: ast_v1/cwe_78_go_1_clean.go, language: Go, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_go_2.go, language: Go, cwe: "78", expectation: positive, line: 6}
+- {file: ast_v1/cwe_78_go_2_clean.go, language: Go, cwe: "78", expectation: negative}
+
+# ── Java: two positives + two clean twins per family ──
+- {file: ast_v1/cwe_22_java_1.java, language: Java, cwe: "22", expectation: positive, line: 8}
+- {file: ast_v1/cwe_22_java_1_clean.java, language: Java, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_java_2.java, language: Java, cwe: "22", expectation: positive, line: 7}
+- {file: ast_v1/cwe_22_java_2_clean.java, language: Java, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_918_java_1.java, language: Java, cwe: "918", expectation: positive, line: 7}
+- {file: ast_v1/cwe_918_java_1_clean.java, language: Java, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_java_2.java, language: Java, cwe: "918", expectation: positive, line: 8}
+- {file: ast_v1/cwe_918_java_2_clean.java, language: Java, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_78_java_1.java, language: Java, cwe: "78", expectation: positive, line: 7}
+- {file: ast_v1/cwe_78_java_1_clean.java, language: Java, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_java_2.java, language: Java, cwe: "78", expectation: positive, line: 5}
+- {file: ast_v1/cwe_78_java_2_clean.java, language: Java, cwe: "78", expectation: negative}
+
+# ── Rust: two positives + two clean twins per family ──
+- {file: ast_v1/cwe_22_rs_1.rs, language: Rust, cwe: "22", expectation: positive, line: 11}
+- {file: ast_v1/cwe_22_rs_1_clean.rs, language: Rust, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_rs_2.rs, language: Rust, cwe: "22", expectation: positive, line: 12}
+- {file: ast_v1/cwe_22_rs_2_clean.rs, language: Rust, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_918_rs_1.rs, language: Rust, cwe: "918", expectation: positive, line: 8}
+- {file: ast_v1/cwe_918_rs_1_clean.rs, language: Rust, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_rs_2.rs, language: Rust, cwe: "918", expectation: positive, line: 8}
+- {file: ast_v1/cwe_918_rs_2_clean.rs, language: Rust, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_78_rs_1.rs, language: Rust, cwe: "78", expectation: positive, line: 8}
+- {file: ast_v1/cwe_78_rs_1_clean.rs, language: Rust, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_rs_2.rs, language: Rust, cwe: "78", expectation: positive, line: 8}
+- {file: ast_v1/cwe_78_rs_2_clean.rs, language: Rust, cwe: "78", expectation: negative}
+
+# ── PHP: two positives + two clean twins per family ──
+# Plus cwe_22_php_3 and its twin: a Laravel-shaped $request->input accessor.
+- {file: ast_v1/cwe_22_php_1.php, language: PHP, cwe: "22", expectation: positive, line: 2}
+- {file: ast_v1/cwe_22_php_1_clean.php, language: PHP, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_php_2.php, language: PHP, cwe: "22", expectation: positive, line: 4}
+- {file: ast_v1/cwe_22_php_2_clean.php, language: PHP, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_php_3.php, language: PHP, cwe: "22", expectation: positive, line: 6}
+- {file: ast_v1/cwe_22_php_3_clean.php, language: PHP, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_918_php_1.php, language: PHP, cwe: "918", expectation: positive, line: 3}
+- {file: ast_v1/cwe_918_php_1_clean.php, language: PHP, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_php_2.php, language: PHP, cwe: "918", expectation: positive, line: 5}
+- {file: ast_v1/cwe_918_php_2_clean.php, language: PHP, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_78_php_1.php, language: PHP, cwe: "78", expectation: positive, line: 2}
+- {file: ast_v1/cwe_78_php_1_clean.php, language: PHP, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_php_2.php, language: PHP, cwe: "78", expectation: positive, line: 3}
+- {file: ast_v1/cwe_78_php_2_clean.php, language: PHP, cwe: "78", expectation: negative}
+
+# ── C / C++: CWE-22 and CWE-78 only ──
+# No CWE-918 fixture: SSRF stays regex-owned on C and C++.
+# cwe_22_cpp_3 and its twin pin the vexing parse: `std::ifstream in(docPath);`
+# with a bare identifier argument parses as a function declaration.
+- {file: ast_v1/cwe_22_c_1.c, language: C, cwe: "22", expectation: positive, line: 6}
+- {file: ast_v1/cwe_22_c_1_clean.c, language: C, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_c_2.c, language: C, cwe: "22", expectation: positive, line: 7}
+- {file: ast_v1/cwe_22_c_2_clean.c, language: C, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_cpp_1.cpp, language: C++, cwe: "22", expectation: positive, line: 8}
+- {file: ast_v1/cwe_22_cpp_1_clean.cpp, language: C++, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_cpp_2.cpp, language: C++, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_cpp_2_clean.cpp, language: C++, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_cpp_3.cpp, language: C++, cwe: "22", expectation: positive, line: 8}
+- {file: ast_v1/cwe_22_cpp_3_clean.cpp, language: C++, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_78_c_1.c, language: C, cwe: "78", expectation: positive, line: 5}
+- {file: ast_v1/cwe_78_c_1_clean.c, language: C, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_c_2.c, language: C, cwe: "78", expectation: positive, line: 8}
+- {file: ast_v1/cwe_78_c_2_clean.c, language: C, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_cpp_1.cpp, language: C++, cwe: "78", expectation: positive, line: 7}
+- {file: ast_v1/cwe_78_cpp_1_clean.cpp, language: C++, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_cpp_2.cpp, language: C++, cwe: "78", expectation: positive, line: 6}
+- {file: ast_v1/cwe_78_cpp_2_clean.cpp, language: C++, cwe: "78", expectation: negative}

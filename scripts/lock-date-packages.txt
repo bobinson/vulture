@@ -1,0 +1,5 @@
+# Per-package exceptions to scripts/lock-date.txt, one `name=ISO-8601` per line
+# (passed to uv as --exclude-newer-package). Use one only when a NEW dependency's
+# required version postdates the frozen snapshot; bumping lock-date.txt instead
+# would move every existing pin. Drop the line at the next intentional relock.
+tree-sitter-php=2026-10-07T00:00:00Z
