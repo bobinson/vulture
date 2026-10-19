@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ADDRESS_CLASS_WORDS",
     "ALLOWLIST_WORDS",
+    "CHECKED_ROLE_WORDS",
     "CONTAINMENT_KEYS",
     "CONTAINMENT_ROLES",
     "COVERING_GUARDS",
@@ -52,11 +53,13 @@ __all__ = [
     "NO_ROLES",
     "TRUST_WORDS",
     "VALIDATE_WORDS",
+    "VALIDATION_VERBS",
     "RoleIndex",
     "SymbolOf",
     "call_host_allow",
     "callee_identifier",
     "callee_text",
+    "checked_roles",
     "guard_roles",
     "held",
     "host_allow",
@@ -126,6 +129,18 @@ NEGATION_OPERATORS = frozenset({"!", "not"})
 # CATCH exits, is a `path_contain` guard (Python `p.relative_to(base)`).
 CONTAINMENT_KEYS = frozenset({"relativeto"})
 CONTAINMENT_ROLES = frozenset({"path_contain"})
+# A44 (1) (d) (i): a CALL statement dominating the sink whose callee words carry one of these
+# validation verbs AND a role concept word of CHECKED_ROLE_WORDS, and which takes the flow's
+# variable, guards that role (``_guards``): `assertSandboxPath(p)`, `ensure_within_directory`.
+VALIDATION_VERBS = frozenset({"assert", "ensure", "validate", "verify", "check", "require", "guard"})
+# Each concept's guard role: the one role of COVERING_GUARDS that covers its family alone
+# (path -> path_contain; request -> host_allow; command -> shell_quote, as allowlist and
+# validate also cover path), so a check of one role never declines another family's flow.
+CHECKED_ROLE_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
+    "path_contain": frozenset({"path", "dir", "root", "within", "inside", "sandbox", "contain"}),
+    "host_allow": frozenset({"host", "url", "domain", "allow"}),
+    "shell_quote": frozenset({"command", "arg", "shell"}),
+})
 
 # ── coverage (§8.3; defined here, once, A27 (5)) ─────────────────────────────
 
@@ -447,6 +462,16 @@ def _operator_roles(operators: Iterable[str]) -> frozenset[str]:
 def _flag_roles(parts: _Parts, roles: frozenset[str]) -> frozenset[str]:
     """(iii) ``validate`` for a regex literal; (iv) the composed ``host_allow``."""
     return held((("validate", parts.regex), ("host_allow", _host_composes(parts, roles))))
+
+
+def checked_roles(ident: str) -> frozenset[str]:
+    """A44 (1) (d) (i): the roles a validation CALL's callee identifier ``ident`` checks — none
+    without a ``VALIDATION_VERBS`` word, else each role a ``CHECKED_ROLE_WORDS`` word names
+    (``assertInsideRoot`` -> ``path_contain``; a bare ``verify`` -> none)."""
+    found = words(ident)
+    if VALIDATION_VERBS.isdisjoint(found):
+        return NO_ROLES
+    return held((role, not concept.isdisjoint(found)) for role, concept in CHECKED_ROLE_WORDS.items())
 
 
 def guard_roles(model: FileModel, test: int, *, symbol_of: SymbolOf = None) -> frozenset[str]:

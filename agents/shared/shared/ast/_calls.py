@@ -14,7 +14,11 @@ needs — never an origin, so every answer is the same in every summary context:
   a local def wins over every lexicon (§8.4);
 * the sink arguments of each family (§8.5): the builtin positions (L9, P4, W5 ``when``), the
   path defaults (R10's two-path keys, W14's one-argument writes), the request union (W10, L8,
-  R-V) and the command program position with R-M's interpreter + flag (L3, W15 (a), L7).
+  R-V) and the command program position with R-M's interpreter + flag (L3, W15 (a), L7);
+* the command parameter heuristic's three facts of a command sink argument (D25, A42 (1),
+  A43 (1)), read off the same command row: whether the sink shells it (``shell_arg``), whether
+  it is built (``built``) and whether it is the whole command of a profile builtin
+  (``builtin_program``).
 
 The source half of L6 (R-U, ``SOURCE_CALL_KEYS``, the accessor shape) is ``_params`` and
 ``_origins``'s: a sink here is a sink unless a source read pre-empts it there. ``call_writes``
@@ -26,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from itertools import chain, filterfalse
+from itertools import chain, filterfalse, islice
 from operator import attrgetter
 from types import MappingProxyType
 from typing import TYPE_CHECKING, NamedTuple
@@ -40,6 +44,7 @@ from shared.ast._nodes import (
     member_object,
     named,
     of_kind,
+    parsed_buffer,
 )
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import MAX_ARG_NAMES, MAX_CHAIN
@@ -49,15 +54,21 @@ from shared.ast.roles import (
     BROWSER_REQUEST_KEYS,
     BUILDER_ARG_KEYS,
     BUILTIN_KEYS,
+    COLLECTION_WORDS,
     COMMAND_BUILDER_WORDS,
     COMMAND_RECEIVER_WORDS,
     COMMAND_STRONG,
     COMMAND_WEAK,
+    DATA_STORE_WORDS,
     EXACT_NON_STRONG,
     FLAG_LITERALS,
+    GENERIC_REQUEST_VERBS,
     MERGE_WORDS,
     OUTPUT_PARAM_WORDS,
     PATH_KWARGS,
+    PROCESS_WORDS,
+    REGEX_WORDS,
+    REQUEST_API_WORDS,
     REQUEST_CARRIER_WORDS,
     REQUEST_SINK_NO_POSITIONAL,
     REQUEST_TERMINAL_WORDS,
@@ -66,17 +77,24 @@ from shared.ast.roles import (
     SHELL_PREFIXES,
     SINK_KEYS,
     SINK_WORDS,
+    SYNC_SUFFIX,
     TWO_PATH_SINKS,
     URL_KWARGS,
+    URL_SHAPE_WORDS,
     WRITE_SINKS,
     callee_identifier,
     chain_names,
+    command_lead,
     glue,
+    hits,
     identifier_text,
     last_identifier,
+    path_sink_key,
     receiver,
     word_set,
+    words,
 )
+from shared.ast.scope import IMPORT_CALLS
 
 if TYPE_CHECKING:
     from shared.ast.model import FileModel
@@ -96,6 +114,21 @@ _REFERENCES = frozenset({"&", "*"})
 # R-L: the template-shell callee (`$\`...\``), tested on the raw NAME: gluing would erase it.
 _TEMPLATE_SHELL = "$"
 _STRONG_PREFIXES = tuple(sorted(COMMAND_STRONG))
+# R3's literal class of a regex literal (A44 (1) (c): a regex receiver runs no command).
+_REGEX_LITERAL = "other"
+# A44 (1) (a): a URL-shaped argument. A LITERAL or TEMPLATE carrying a scheme separator in its
+# head (a scheme is short: `https://`, `${proto}://`), or the last identifier of a
+# NAME / MEMBER (else of its first operand: `&q.url`, `BASE_URL + p`) with a URL word.
+_SCHEME = "://"
+# The head of a literal read for it (and, A44 (1) (c), for an import call's module path).
+_LITERAL_HEAD = 64
+_TEXTUAL = frozenset({Kind.LITERAL, Kind.TEMPLATE})
+_NAMED_VALUES = frozenset({Kind.NAME, Kind.MEMBER})
+# A44 (1) (a): the literal collections a receiver's Def may bind (an object / dict, an array).
+_LITERAL_COLLECTIONS = frozenset({Kind.OBJECT, Kind.ARRAY})
+# D25 (b): the kinds of a BUILT command argument — string construction by syntax (a BINOP,
+# a TEMPLATE), never a key table.
+_BUILT = frozenset({Kind.BINOP, Kind.TEMPLATE})
 # The ``_of_function`` group of the local calls (no family is named so).
 _LOCAL_CALLS = "local calls"
 _LITERAL_TRUE = "true"
@@ -111,6 +144,7 @@ _SINK_SIDE = frozenset().union(
     REQUEST_TERMINAL_WORDS,
     ("",),
     (key[i:] for key in BUILTIN_KEYS for i in range(1, len(key))),
+    (key + SYNC_SUFFIX for key in SINK_WORDS["path"]),  # A44 (1) (e): ``path_sink_key``'s twins
 )
 
 
@@ -122,6 +156,18 @@ def _reference_name(model: FileModel, arg: int) -> int:
     if model.kind(arg) is not Kind.UNARY or model.ident(arg) not in _REFERENCES:
         return -1
     return _leading_name(model, model.children(arg))
+
+
+def _first_child(model: FileModel, node: int) -> int:
+    """``node``'s first child, ``-1`` for a leaf."""
+    kids = model.children(node)
+    return kids[0] if kids else -1
+
+
+def _regex_name(name: str) -> bool:
+    """A44 (1) (c): an identifier carrying a ``REGEX_WORDS`` concept, by a word or glued
+    (``RegExp`` -> ``regexp``)."""
+    return glue(name) in REGEX_WORDS or hits((name,), REGEX_WORDS)
 
 
 def _leading_name(model: FileModel, nodes: Sequence[int]) -> int:
@@ -197,6 +243,10 @@ class _Facts:
     local: dict[int, int] = field(default_factory=dict)
     methods: dict[int, Mapping[str, int]] = field(default_factory=dict)
     sinks: dict[int, Mapping[str, tuple[int, ...]]] = field(default_factory=dict)
+    # The profile builtin a site names, None for none (``Calls.builtin``).
+    builtins: dict[int, Builtin | None] = field(default_factory=dict)
+    # A command site's arguments after an R-M interpreter + flag (``Calls._shelled``).
+    shelled: dict[int, Sequence[int]] = field(default_factory=dict)
     # A site list's sites by nearest FUNCTION, keyed by family (``_LOCAL_CALLS``: the local
     # calls), made when a summary first asks for one function's (the base reads the whole list).
     grouped: dict[str, dict[int, list[int]]] = field(default_factory=dict)
@@ -222,6 +272,7 @@ class Calls:
         calls = filterfalse(scope.prototypes.__contains__, model.calls())  # A36
         self.sites: tuple[int, ...] = tuple(sorted(chain(calls, self.constructors)))
         self._reaching: frozenset[int] | None = None  # built on first use
+        self._parsed: str | bytes | None = None  # the parsed buffer, built on first use
         self._sinks_by_family: dict[str, list[int]] | None = None  # built on first use
         self._locals: tuple[int, ...] | None = None  # built on first use
 
@@ -405,7 +456,11 @@ class Calls:
         return glue(qualifier) + self.key(site) if qualifier else ""
 
     def builtin(self, site: int) -> Builtin | None:
-        """The profile builtin the site names: its PAIR key first, then its single key."""
+        """The profile builtin the site names: its PAIR key first, then its single key.
+        Memoised per site: ``_sinks``, ``_program`` and ``builtin_program`` read the one answer."""
+        return cached(self._facts.builtins, site, self._named_builtin)
+
+    def _named_builtin(self, site: int) -> Builtin | None:
         return self._builtins.get(self._pair(site)) or self._builtins.get(self.key(site))
 
     def chain_words(self, node: int) -> frozenset[str]:
@@ -528,7 +583,7 @@ class Calls:
         """The command row's program position with what R-M and ``shell=True`` add (§8.5),
         else the family's positions (L9)."""
         if family == "command":
-            return self._command_args(site, builtin.program)
+            return self._command_args(site)
         return _select(self.args(site), builtin.args_for(family))
 
     def _when(self, site: int, when: tuple[int, str] | None) -> bool:
@@ -546,8 +601,9 @@ class Calls:
     # ── path (§8.5; L9, W14, R10) ──
 
     def _path_args(self, site: int) -> tuple[int, ...]:
-        key = self.key(site)
-        if key not in SINK_WORDS["path"]:
+        """A path sink key, a synchronous twin's by its stem (A44 (1) (e)): its arguments."""
+        key = path_sink_key(self.key(site))
+        if not key:
             return _NONE
         args = self.args(site)
         if key in TWO_PATH_SINKS:
@@ -569,11 +625,105 @@ class Calls:
     def _request_args(self, site: int) -> tuple[int, ...]:
         key = self.key(site)
         carrier = self._carrier(site, key)
-        if not (carrier or self._request_word(key)):
+        if not self._request_sink(site, key, carrier):
             return _NONE
-        named = chain(self._named(site, URL_KWARGS), self._url_pairs(site))
         carried = self._carried(site, key) if carrier else ()
-        return _unique(chain(self._url_positional(site, key), named, carried))
+        return _unique(chain(self._url_positional(site, key), self._url_named(site), carried))
+
+    def _request_sink(self, site: int, key: str, carrier: bool) -> bool:
+        """A request word or an R-V carrier (§8.5), on a receiver like an HTTP client
+        (``_client_like``, A44 (1) (a))."""
+        return (carrier or self._request_word(key)) and self._client_like(site, key)
+
+    def _url_named(self, site: int) -> Iterator[int]:
+        """W10: the values of the KWARGs and OBJECT-literal PAIRs named like a URL."""
+        return chain(self._named(site, URL_KWARGS), self._url_pairs(site))
+
+    # ── HTTP-client evidence (A44 (1) (a)) ──
+
+    def _client_like(self, site: int, key: str) -> bool:
+        """A receiver that is no collection construction, and for a generic verb HTTP-client
+        evidence (``_client_evidence``)."""
+        if self._collection(site):
+            return False
+        return key not in GENERIC_REQUEST_VERBS or self._client_evidence(site, key)
+
+    def _client_evidence(self, site: int, key: str) -> bool:
+        """No receiver (a module's own function counts as none), a request API concept in the
+        receiver chain, or a URL-shaped argument."""
+        return self._free_call(site) or self._api_chain(site) or self._url_shaped(site, key)
+
+    def _free_call(self, site: int) -> bool:
+        """A bare call, or one on a NAME a whole-module import binds (``import requests``)."""
+        holder = self.receiver(site)
+        return holder < 0 or any(map(self._whole_module, self._arg_defs(holder)))
+
+    def _whole_module(self, d: Def) -> bool:
+        """An import Def whose bound name sits under its IMPORT's SOURCE (Python ``import
+        m`` / ``import m as n``), not a member it names (``from m import x``, a JS
+        specifier)."""
+        if d.kind != "import":
+            return False
+        return any(self._m.field(n) is Field.SOURCE for n in self._up_to(d.node, d.value))
+
+    def _up_to(self, node: int, top: int | None) -> Iterator[int]:
+        """``node`` and its ancestors below ``top`` (at most ``MAX_CHAIN``)."""
+        for current in islice(chain((node,), ancestors(self._m, node)), MAX_CHAIN):
+            if current == top:
+                return
+            yield current
+
+    def _api_chain(self, site: int) -> bool:
+        holder = self.receiver(site)
+        return holder >= 0 and not self.chain_words(holder).isdisjoint(REQUEST_API_WORDS)
+
+    def _url_shaped(self, site: int, key: str) -> bool:
+        """A KWARG or PAIR named like a URL, or a positional URL argument that is URL-shaped
+        (``_url_value``: a scheme, or URL words)."""
+        named = next(self._url_named(site), -1) >= 0
+        return named or any(map(self._url_value, self._url_positional(site, key)))
+
+    def _url_value(self, node: int) -> bool:
+        """A LITERAL or TEMPLATE carrying ``://`` (``_scheme``); else the last identifier of
+        ``node`` — or of its first operand (``&q.url``, ``BASE_URL + p``) — has a
+        ``URL_SHAPE_WORDS`` word."""
+        if self._m.kind(node) in _TEXTUAL:
+            return self._scheme(node)
+        operand = node if self._m.kind(node) in _NAMED_VALUES else _first_child(self._m, node)
+        return hits((identifier_text(self._m, last_identifier(self._m, operand)),), URL_SHAPE_WORDS)
+
+    def _scheme(self, node: int) -> bool:
+        """The literal's head (``_literal_head``) holds ``://``."""
+        return _SCHEME in self._literal_head(node)
+
+    def _literal_head(self, node: int) -> str:
+        """The first ``_LITERAL_HEAD`` bytes of a literal's source, read from the parsed buffer:
+        a string's value never ships in the model (D16), so its few leading bytes are read
+        where it stands and kept nowhere (a scheme, a module path)."""
+        start, end = self._m.span(node)
+        head = self._buffer()[start : min(end, start + _LITERAL_HEAD)]
+        return head if isinstance(head, str) else head.decode("utf-8", "replace")
+
+    def _buffer(self) -> str | bytes:
+        """The parsed buffer (``parsed_buffer``), made on the first ask."""
+        if self._parsed is None:
+            self._parsed = parsed_buffer(self._m.nl_lines.text)
+        return self._parsed
+
+    def _collection(self, site: int) -> bool:
+        """The receiver, or a reaching Def of a NAME receiver, is a collection construction
+        (``_collection_value``): an in-memory map, set or literal is no HTTP client."""
+        holder = self.receiver(site)
+        return holder >= 0 and self._one_hop(holder, self._collection_value)
+
+    def _collection_value(self, node: int) -> bool:
+        """An OBJECT or ARRAY literal, or a CALL whose callee's last word is a
+        ``COLLECTION_WORDS`` concept (``new Map()``, ``new WeakSet()``, ``dict()``)."""
+        kind = self._m.kind(node)
+        if kind is not Kind.CALL:
+            return kind in _LITERAL_COLLECTIONS
+        found = words(identifier_text(self._m, callee_identifier(self._m, node)))
+        return bool(found) and found[-1] in COLLECTION_WORDS
 
     def _url_positional(self, site: int, key: str) -> tuple[int, ...]:
         """A request sink's argument 0, none for a key that takes no positional URL."""
@@ -596,9 +746,12 @@ class Calls:
 
     def _carries(self, arg: int) -> bool:
         """W10: a carrier chain itself, or a NAME whose reaching Defs' RHS chains are."""
-        if self._carrier_chain(arg):
-            return True
-        return any(self._carrier_chain(d.value) for d in self._arg_defs(arg) if d.value is not None)
+        return self._one_hop(arg, self._carrier_chain)
+
+    def _one_hop(self, arg: int, test: Callable[[int], bool]) -> bool:
+        """``test`` holds of the argument itself, or of a reaching Def's value of a NAME
+        argument (``_arg_defs``): one hop, never deeper (W10; D25 (b)'s ``built``)."""
+        return test(arg) or any(test(d.value) for d in self._arg_defs(arg) if d.value is not None)
 
     def _arg_defs(self, arg: int) -> Sequence[Def]:
         """W10: the Defs reaching a NAME argument (at most ``MAX_ARG_NAMES``); none for any
@@ -620,16 +773,83 @@ class Calls:
     # ── command (§8.5; L2, L3, L7, R-L, R-M, R-N, W15 (a)) ──
 
     def _command_sink(self, site: int) -> bool:
-        """R-L (``$`` with a TEMPLATE), R-N (a strong prefix unless an exact weak or
-        non-command key, L2), or a weak key with a strengthener."""
-        key = self.key(site)
-        if self._template_shell(site) or self._strong(key):
+        """R-L (``$`` with a TEMPLATE); else, on a receiver that is no regex and no data store
+        (A44 (1) (c)), R-N (``_strong_sink``) or a weak key with a strengthener."""
+        if self._template_shell(site):
             return True
-        return key in COMMAND_WEAK and self._strengthened(site)
+        return not self._not_a_process(site) and self._keyed_command(site)
+
+    def _keyed_command(self, site: int) -> bool:
+        return self._strong_sink(site) or (self.key(site) in COMMAND_WEAK and self._strengthened(site))
+
+    def _strong_sink(self, site: int) -> bool:
+        """R-N under L2 (``_strong``), narrowed by A44 (1) (c): an exact ``COMMAND_STRONG``
+        key or a single-word identifier, else leading words gluing to a strong key exactly
+        with process evidence (``_process_evidence``)."""
+        if not Calls._strong(self.key(site)):
+            return False
+        return self._single_word(site) or (command_lead(self.ident(site)) and self._process_evidence(site))
+
+    def _single_word(self, site: int) -> bool:
+        """An exact ``COMMAND_STRONG`` key (``checkoutput``) or its synchronous twin (``execsync``,
+        (e)'s suffix reading), or an identifier of one word (``execa``)."""
+        exact = self.key(site).removesuffix(SYNC_SUFFIX) in COMMAND_STRONG
+        return exact or len(words(self.ident(site))) <= 1
+
+    def _process_evidence(self, site: int) -> bool:
+        """A44 (1) (c): a ``PROCESS_WORDS`` concept in the callee's own words, its receiver
+        chain or the module its import binding names (``import { execSync } from
+        "child_process"``)."""
+        holder = self.receiver(site)
+        chained = self.chain_words(holder) if holder >= 0 else ()
+        found = chain(words(self.ident(site)), chained, self._module_words(self.callee(site)))
+        return not PROCESS_WORDS.isdisjoint(found)
+
+    def _module_words(self, node: int) -> Iterator[str]:
+        """The words of the module text of each import Def ``node`` resolves to (a MEMBER by its
+        base, as ``ScopeTable.resolve`` reads a chain): at most ``MAX_ARG_NAMES`` Defs."""
+        defs = self._resolve(node)[:MAX_ARG_NAMES] if node >= 0 else ()
+        return chain.from_iterable(map(self._import_words, defs))
+
+    def _import_words(self, d: Def) -> tuple[str, ...]:
+        """The words of the module a Def binds from: an IMPORT's text (W3: the last segment of
+        a string module path), or an import call's module literal (``require("node:x")``)."""
+        if d.value is None:
+            return ()
+        if d.kind == "import":
+            return words(self._m.ident(d.value) or "")
+        return self._required_words(d.value)
+
+    def _required_words(self, value: int) -> tuple[str, ...]:
+        """W6's import call (``scope.IMPORT_CALLS``): the words of its module literal's head
+        (``_literal_head``); none for any other value."""
+        callee = self._m.callee(value) if is_kind(self._m, value, Kind.CALL) else -1
+        if callee < 0 or self._m.ident(callee) not in IMPORT_CALLS:
+            return ()
+        module = _first_child(self._m, first(self._m, value, Field.ARGS))
+        return words(self._literal_head(module)) if is_kind(self._m, module, Kind.LITERAL) else ()
+
+    def _not_a_process(self, site: int) -> bool:
+        """A44 (1) (c): the receiver is a regex — a regex literal, or a NAME one of whose
+        reaching Defs binds one or a regex construction — or its chain words carry a
+        data-store concept (``db.exec(sql)``)."""
+        holder = self.receiver(site)
+        if holder < 0:
+            return False
+        return not self.chain_words(holder).isdisjoint(DATA_STORE_WORDS) or self._one_hop(holder, self._regex)
+
+    def _regex(self, node: int) -> bool:
+        """A regex literal (R3's literal class ``other``), or a CALL whose callee chain carries
+        a ``REGEX_WORDS`` concept, by a word or glued (``new RegExp(...)``, ``re.compile``)."""
+        kind = self._m.kind(node)
+        if kind is Kind.LITERAL:
+            return self._m.literal(node).kind == _REGEX_LITERAL
+        return kind is Kind.CALL and any(map(_regex_name, chain_names(self._m, node)))
 
     def _command_word_args(self, site: int) -> tuple[int, ...]:
-        """A word-classified command sink's arguments (§8.5): from the program at position 0."""
-        return self._command_args(site, 0) if self._command_sink(site) else _NONE
+        """A word-classified command sink's arguments (§8.5): from the program at position 0
+        (``_program``: the site names no builtin)."""
+        return self._command_args(site) if self._command_sink(site) else _NONE
 
     def _template_shell(self, site: int) -> bool:
         """R-L: the callee NAME ``$`` with a TEMPLATE argument — a tagged template ships its
@@ -654,19 +874,67 @@ class Calls:
         value = self.kwargs(site).get(SHELL_KWARG, -1)
         return value >= 0 and self._m.literal(value).value == _LITERAL_TRUE
 
-    def _command_args(self, site: int, program: int) -> tuple[int, ...]:
-        """The program position (unless an ARRAY literal) and every element after an R-M
-        interpreter + flag of the argument sequence (L3, L7) — the interpreter literal itself
-        then carries nothing and is left out; every positional argument with a literal
+    def _command_args(self, site: int) -> tuple[int, ...]:
+        """The program position (``_program``; unless an ARRAY literal) and every element after
+        an R-M interpreter + flag of the argument sequence (L3, L7) — the interpreter literal
+        itself then carries nothing and is left out; every positional argument with a literal
         ``shell=True`` or a ``shell``/``system`` key."""
-        args = self.args(site)
-        if program >= len(args):
+        head = self._program_arg(site)
+        if head < 0:
             return _NONE
-        head = args[program]
-        sequence = [*self._flat((head,)), *self._flat(args[program + 1 :]), *self._builder_args(site)]
-        shelled = self._after_flag(sequence)
+        shelled = self._shelled(site)
         positioned = () if shelled or self._m.kind(head) is Kind.ARRAY else (head,)
         return _unique(chain(positioned, shelled, self._everything(site)))
+
+    def _shelled(self, site: int) -> Sequence[int]:
+        """L3, L7 (R-M): the elements after an interpreter + flag of the argument sequence from
+        the program position (``_program``) on — the positional arguments, then the builder
+        chain's, each ARRAY literal flattened once (W15 (a)) — else none. Memoised per site:
+        the sink arguments and ``shell_arg`` read the one answer."""
+        return cached(self._facts.shelled, site, self._after_program)
+
+    def _after_program(self, site: int) -> Sequence[int]:
+        sequence = [*self._flat(self.args(site)[self._program(site) :]), *self._builder_args(site)]
+        return self._after_flag(sequence)
+
+    def _program(self, site: int) -> int:
+        """The command row's program position: a builtin's (W5), else argument 0 — the row
+        ``_sinks`` dispatches to (``_builtin_args``, ``_command_word_args``)."""
+        builtin = self.builtin(site)
+        return builtin.program if builtin else 0
+
+    def _program_arg(self, site: int) -> int:
+        """The argument at the command row's program position (``_program``), ``-1`` when the
+        call has none there."""
+        args = self.args(site)
+        program = self._program(site)
+        return args[program] if program < len(args) else -1
+
+    # ── the command parameter heuristic's facts (D25, A42 (1); §8.5) ──
+
+    def shell_arg(self, site: int, arg: int) -> bool:
+        """D25 (b)'s shell half: the command sink ``site`` interprets ``arg`` through a shell
+        by the command row's existing tables — every positional argument under a literal
+        ``shell=True``, a ``shell``/``system`` key or an R-L template, or ``arg`` after an R-M
+        interpreter + flag (L3)."""
+        return self._shell_all(site) or arg in self._shelled(site)
+
+    def built(self, arg: int) -> bool:
+        """D25 (b)'s built half: ``arg`` is a BINOP or TEMPLATE, or a NAME one of whose reaching
+        Defs' value is — one hop, never deeper (``_one_hop``)."""
+        return self._one_hop(arg, self._built_node)
+
+    def _built_node(self, node: int) -> bool:
+        return self._m.kind(node) in _BUILT
+
+    def builtin_program(self, site: int, arg: int) -> bool:
+        """D25 (b)'s builtin half (A43 (1)): ``arg`` is the whole command of a profile builtin
+        process API — the site names a command ``Builtin`` of the profile's own table (§6.3:
+        Java ``new ProcessBuilder(cmd)``, Rust ``Command::new(cmd)``, C ``posix_spawn``) and
+        ``arg`` sits at its program position (``_program_arg``). The table decides; no key is
+        named here."""
+        builtin = self.builtin(site)
+        return builtin is not None and "command" in builtin.families and self._program_arg(site) == arg
 
     def _flat(self, nodes: Sequence[int]) -> Iterator[int]:
         """W15 (a): ``nodes`` with each ARRAY literal flattened once."""
@@ -721,8 +989,13 @@ class Calls:
     def _everything(self, site: int) -> Sequence[int]:
         """§8.5: every positional argument under ``shell=True`` or a shell/system key, and
         every substitution of an R-L template."""
+        return self.args(site) if self._shell_all(site) else _NONE
+
+    def _shell_all(self, site: int) -> bool:
+        """§8.5: the site interprets every positional argument through a shell — a literal
+        ``shell=True``, a ``shell``/``system`` key, or an R-L template."""
         every = self._shell_true(site) or self.key(site).startswith(SHELL_PREFIXES)
-        return self.args(site) if every or self._template_shell(site) else _NONE
+        return every or self._template_shell(site)
 
 
 # A family's word-classified sink row (§8.5): the rows ``_word_sinks`` reads, one per family.

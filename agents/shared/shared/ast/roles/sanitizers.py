@@ -36,10 +36,12 @@ if TYPE_CHECKING:
     from shared.ast.model import FileModel
 
 __all__ = [
+    "CONTAINED_WORDS",
     "COVERED_BY",
     "FILE_NAME_WORDS",
     "KEY_ROLES",
     "PATH_RESULT_WORDS",
+    "PLACE_WORDS",
     "QUOTE_WORDS",
     "SANITIZER_INDEX",
     "SANITIZER_KEYS",
@@ -82,6 +84,12 @@ SHELL_CONTEXT_WORDS = frozenset({"shell", "shlex", "cmd", "command", "arg", "arg
 # whose chain words hold one of PATH_RESULT_WORDS, adds `path_normalize` to `via`.
 FILE_NAME_WORDS = frozenset({"name", "stem"})
 PATH_RESULT_WORDS = frozenset({"path"})
+# A44 (1) (d) (ii): a CALL returning a containment-checked path is a `path_normalize` sanitiser
+# by COMPOSITION - a CONTAINED_WORDS word AND a PLACE_WORDS word in its callee's last identifier
+# (`resolveWithinRoot`, `resolveSafeInstallDir`), never one word alone (`safe_name`,
+# `rootPath`).
+CONTAINED_WORDS = frozenset({"within", "inside", "safe", "sandbox"})
+PLACE_WORDS = frozenset({"path", "dir", "root"})
 
 # ── coverage (§8.3; defined here, once, A27 (5)) ─────────────────────────────
 
@@ -118,16 +126,24 @@ def _shell_quote(model: FileModel, call: int, ident: str) -> bool:
     return hits(chain((ident,), chain_names(model, call)), SHELL_CONTEXT_WORDS)
 
 
+def _contained(ident: str) -> bool:
+    """A44 (1) (d) (ii): a containment word AND a place word in one identifier."""
+    found = words(ident)
+    return not CONTAINED_WORDS.isdisjoint(found) and not PLACE_WORDS.isdisjoint(found)
+
+
 def sanitizer_roles(model: FileModel, call: int, *, symbol_of: SymbolOf = None) -> frozenset[str]:
     """The sanitiser roles of a CALL whose callee is no local FUNCTION (§8.5, A21): (1) the
     ``SANITIZER_WORDS`` roles its callee's last identifier reaches by a word or its glued key,
-    (2) the ``SANITIZER_KEYS`` roles of its EXACT glued key, (3) ``shell_quote`` by composition
-    and (4) ``host_allow`` when ``host_allow(model, call)`` holds. Empty for a URL parse (L5).
+    (2) the ``SANITIZER_KEYS`` roles of its EXACT glued key, (3) ``shell_quote`` by composition,
+    (4) ``host_allow`` when ``host_allow(model, call)`` holds and (5) ``path_normalize`` for a
+    containment-checked path (A44 (1) (d) (ii)). Empty for a URL parse (L5).
     The callee identifier is resolved and glued once, for every test."""
     ident = callee_text(model, call, symbol_of)
     key = glue(ident)
     composed = held((
         ("shell_quote", _shell_quote(model, call, ident)),
         ("host_allow", call_host_allow(model, call, ident, key)),
+        ("path_normalize", _contained(ident)),
     ))
     return union((SANITIZER_INDEX.of_glued(ident, key), composed), NO_ROLES)

@@ -1,23 +1,31 @@
 """CWE input validation vulnerability detection skill."""
 
+from __future__ import annotations
+
 import re
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._ast_head import AstAnswer, ast_spans, claim, regex_row
+from shared.ast.consume import FamilyRule, rule_row
 from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
-    COMMENT_INDICATORS,
-    SCANNER_DEF_LINE,
     is_generated_file,
+    is_non_code_line,
     is_prose_file,
     is_test_file,
     read_file_lines,
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
+
+if TYPE_CHECKING:
+    from shared.ast.flow import Flow
 
 # CWE-22: Path traversal.
 #
@@ -60,6 +68,19 @@ SAFE_PATH_PATTERNS = re.compile(
     r"secure_filename|sanitize|validate|whitelist|allowed_paths|"
     r"__file__|__dir__|BASE_DIR|ROOT_DIR)",
     re.IGNORECASE,
+)
+
+# CWE-22's identity, defined once (feature 0102, LLD §9.2, D19): the regex body and the AST
+# head both emit these strings, so the two tiers cannot drift. The AST tier owns the check on
+# every file it parses cleanly; the regex body on every other file (D10).
+_RULE_22 = FamilyRule(
+    family="path",
+    check_id="cwe.input_validation.path_traversal",
+    category="CWE-22",
+    severity="high",
+    title="Potential path traversal",
+    recommendation="Use os.path.realpath and validate against allowed base directory",
+    cwe_id="22",
 )
 
 # CWE-20: Improper input validation.
@@ -593,7 +614,8 @@ _ABS_TRAVERSAL_RULE = _Rule(
 # Feature 0070 P8 — two reviewed additions (CWE-23, CWE-73).
 #
 # Both are path rows, so both join the single-claim chain in `_claim_path_row`:
-# CWE-36 > CWE-23 > CWE-73 > CWE-22, at most one row per line. None of those
+# CWE-36 > CWE-23 > CWE-73 > CWE-22, at most one row per line (feature 0102 puts
+# the AST tier's CWE-22 spans after CWE-23; see `_PATH_CLAIMS`). None of those
 # four is an ancestor of another except CWE-22 (parent of 23 and 36), so the
 # generic line-stack collapse cannot be relied on to remove the duplicates —
 # the chain has to.
@@ -716,7 +738,8 @@ _EXTERNAL_PATH_RULE = _Rule(
 
 
 class _FileCtx(NamedTuple):
-    """Per-file facts the P7/P8 rules gate on, computed once."""
+    """Per-file facts the P7/P8 rules gate on, computed once; and the AST tier's CWE-22 answer
+    for the file (feature 0102, LLD §9.2)."""
 
     file_path: Path
     lines: tuple[str, ...]
@@ -725,6 +748,14 @@ class _FileCtx(NamedTuple):
     sniffing: bool
     archive: bool
     entry_names: re.Pattern | None
+    # The AST tier's CWE-22 answer for the file (``_ast_head.ast_spans``): each line of every
+    # sink span it reports -> its flow, None when the regex body owns the file; and the lines
+    # its rows are numbered and quoted from.
+    ast_answer: AstAnswer
+    # Every line of each span above whose AST row a more specific child replaces (A42 (4),
+    # ``_consumed_lines``): still the AST's lines, so CWE-73 and the regex CWE-22 stay silent
+    # on them, but no CWE-22 row is appended for the span.
+    ast_consumed: frozenset[int] = frozenset()
 
 
 def _archive_entry_names(text: str) -> re.Pattern | None:
@@ -736,10 +767,12 @@ def _archive_entry_names(text: str) -> re.Pattern | None:
 
 
 def _build_context(file_path: Path, lines: tuple[str, ...]) -> _FileCtx:
-    """Collect the file-level gates for the P7/P8 rules."""
+    """Collect the file-level gates for the P7/P8 rules, and the CWE-22 spans: decided once
+    per file, so each decline is recorded once (A30). The spans a child replaces are read off
+    the finished context, whose gates the children's hit tests read (A42 (4))."""
     text = "\n".join(lines)
     archive = bool(_ARCHIVE_LIB.search(text))
-    return _FileCtx(
+    ctx = _FileCtx(
         file_path=file_path,
         lines=lines,
         text=text,
@@ -747,10 +780,12 @@ def _build_context(file_path: Path, lines: tuple[str, ...]) -> _FileCtx:
         sniffing=bool(_SNIFF_IMPORT.search(text)),
         archive=archive,
         entry_names=_archive_entry_names(text) if archive else None,
+        ast_answer=ast_spans(file_path, text, _RULE_22),
     )
+    return ctx._replace(ast_consumed=_consumed_lines(ctx))
 
 
-def _matches(patterns: tuple[re.Pattern, ...], line: str) -> bool:
+def _matches(patterns: Sequence[re.Pattern], line: str) -> bool:
     """True when any pattern matches the line."""
     return any(p.search(line) for p in patterns)
 
@@ -768,20 +803,10 @@ def _emit_rule(
     rule: _Rule, ctx_path: Path, line_num: int, lines: tuple[str, ...],
     findings: list[dict],
 ) -> None:
-    """Append one enriched finding for ``rule``."""
-    finding = {
-        "severity": rule.severity,
-        "check_id": rule.check_id,
-        "category": rule.category,
-        "title": rule.title,
-        "description": f"{rule.description} at line {line_num}",
-        "file_path": str(ctx_path),
-        "line_start": line_num,
-        "line_end": line_num,
-        "recommendation": rule.recommendation,
-        "code_snippet": extract_snippet(lines, line_num),
-    }
-    findings.append(enrich_finding(finding, rule.cwe))
+    """Append one enriched finding for ``rule``: its identity row (``rule_row``, D19)."""
+    description = f"{rule.description} at line {line_num}"
+    row = rule_row(rule, description, file_path=ctx_path, line=line_num, lines=lines)
+    findings.append(enrich_finding(row, rule.cwe))
 
 
 def check_input_validation(source_path: str) -> dict:
@@ -825,13 +850,14 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     ctx = _build_context(file_path, lines)
     _check_struts_validate(ctx, findings)
     for line_num, line in enumerate(lines, start=1):
-        if COMMENT_INDICATORS.match(line):
-            continue
-        if IMPORT_LINE.match(line):
-            continue
-        if SCANNER_DEF_LINE.search(line):
-            continue
-        _analyze_line(ctx, line, line_num, findings)
+        if _scanned(line):
+            _analyze_line(ctx, line, line_num, findings)
+
+
+def _scanned(line: str) -> bool:
+    """True for a line the per-line checks read: ``is_non_code_line`` with this skill's import
+    shape. One predicate, so the line loop and ``_child_claims`` read the same lines."""
+    return not is_non_code_line(line, IMPORT_LINE)
 
 
 def _analyze_line(
@@ -971,16 +997,6 @@ def _sink_near(lines: tuple[str, ...], line_num: int) -> bool:
     return bool(_ABS_SINKS.search(_window_text(lines, line_num, 0, 3)))
 
 
-def _check_absolute_traversal(
-    ctx: _FileCtx, line: str, line_num: int, findings: list[dict]
-) -> bool:
-    """Check for CWE-36 absolute path traversal. True when it claimed the line."""
-    if not _abs_traversal_hit(ctx, line, line_num):
-        return False
-    _emit_rule(_ABS_TRAVERSAL_RULE, ctx.file_path, line_num, ctx.lines, findings)
-    return True
-
-
 def _path_frame_ok(ctx: _FileCtx, line: str, line_num: int, span: int) -> bool:
     """Shared tail for both P8 path rules.
 
@@ -1007,16 +1023,6 @@ def _entry_name_on(ctx: _FileCtx, line: str) -> bool:
     return bool(ctx.entry_names and ctx.entry_names.search(line))
 
 
-def _check_relative_traversal(
-    ctx: _FileCtx, line: str, line_num: int, findings: list[dict]
-) -> bool:
-    """Check for CWE-23 zip-slip. True when it claimed the line."""
-    if not _rel_traversal_hit(ctx, line, line_num):
-        return False
-    _emit_rule(_REL_TRAVERSAL_RULE, ctx.file_path, line_num, ctx.lines, findings)
-    return True
-
-
 def _external_path_hit(ctx: _FileCtx, line: str, line_num: int) -> bool:
     """True for a path builder fed a direct request accessor, no I/O in sight."""
     if _IO_SINK.search(line) or not _PATH_BUILDER.search(line):
@@ -1026,13 +1032,19 @@ def _external_path_hit(ctx: _FileCtx, line: str, line_num: int) -> bool:
     return _path_frame_ok(ctx, line, line_num, 2)
 
 
-def _check_external_path(
-    ctx: _FileCtx, line: str, line_num: int, findings: list[dict]
+# A regex path rule's hit test (CWE-36, CWE-23, CWE-73): ``(ctx, line, line_num) -> hit?``.
+type _HitTest = Callable[[_FileCtx, str, int], bool]
+
+
+def _claim_hit(
+    rule: _Rule, hit: _HitTest, ctx: _FileCtx, line: str, line_num: int, findings: list[dict]
 ) -> bool:
-    """Check for CWE-73 external path control. True when it claimed the line."""
-    if not _external_path_hit(ctx, line, line_num):
+    """A regex path rule's claim: ``rule``'s row when ``hit`` holds on the line (CWE-36
+    absolute traversal, CWE-23 zip-slip, CWE-73 external path control). True when it claimed
+    the line."""
+    if not hit(ctx, line, line_num):
         return False
-    _emit_rule(_EXTERNAL_PATH_RULE, ctx.file_path, line_num, ctx.lines, findings)
+    _emit_rule(rule, ctx.file_path, line_num, ctx.lines, findings)
     return True
 
 
@@ -1041,8 +1053,9 @@ def _claim_path_row(
 ) -> str:
     """Emit at most one path row per line; return its cwe id, or ``""``.
 
-    Order is most-specific-first: CWE-36 (absolute) > CWE-23 (archive-relative)
-    > CWE-73 (externally controlled, no sink) > CWE-22 (traversal to a sink).
+    Order (``_PATH_CLAIMS``), most-specific-first: CWE-36 (absolute) > CWE-23
+    (archive-relative) > the AST tier's CWE-22 spans > CWE-73 (externally controlled,
+    no sink) > the regex CWE-22 (traversal to a sink).
     """
     for cwe, check in _PATH_CLAIMS:
         if check(ctx, line, line_num, findings):
@@ -1050,41 +1063,89 @@ def _claim_path_row(
     return ""
 
 
+def _ast_claims(
+    ctx: _FileCtx, line: str, line_num: int, findings: list[dict]
+) -> bool:
+    """The AST tier's CWE-22 claim (feature 0102, LLD §9.2): True when ``line_num`` lies in a
+    sink span it reports, whose row is appended once, at the sink line (A41 (5)) — unless a
+    child replaces the span (A42 (4)): its lines are still claimed, and no row is appended."""
+    if line_num in ctx.ast_consumed:
+        return True
+    return claim(ctx.ast_answer, _RULE_22, ctx.file_path, line_num, findings)
+
+
+def _consumed_lines(ctx: _FileCtx) -> frozenset[int]:
+    """Every line of each AST span a child claims on some line (A42 (4)): one path row per
+    span, the child's. A span is named by its sink line, the line its row would be appended
+    at; the whole span stays claimed. Run once per file, over the span lines only."""
+    spans = ctx.ast_answer.spans or {}
+    replaced = _replaced_sinks(ctx, spans)
+    return frozenset(line_num for line_num, flow in spans.items() if flow.sink_line in replaced)
+
+
+def _replaced_sinks(ctx: _FileCtx, spans: Mapping[int, Flow]) -> set[int]:
+    """The sink lines of the spans in which a child claims a line: a span already replaced is
+    not read again."""
+    replaced: set[int] = set()
+    for line_num, flow in spans.items():
+        if flow.sink_line not in replaced and _child_claims(ctx, line_num):
+            replaced.add(flow.sink_line)
+    return replaced
+
+
+def _child_claims(ctx: _FileCtx, line_num: int) -> bool:
+    """True when a child (``_SPAN_CHILDREN``) claims line ``line_num`` in the line loop: a line
+    the loop reads (``_scanned``) on which a child's hit test holds. A span line past
+    ``ctx.lines`` reads as ``""``, which the loop never reaches and no child claims."""
+    line = _window_text(ctx.lines, line_num, 0, 0)
+    return _scanned(line) and any(hit(ctx, line, line_num) for hit in _SPAN_CHILDREN)
+
+
 def _check_path_traversal(
     ctx: _FileCtx, line: str, line_num: int, findings: list[dict]
 ) -> bool:
-    """Check for CWE-22 path traversal. True when it claimed the line."""
-    file_path, lines = ctx.file_path, ctx.lines
-    if SAFE_PATH_PATTERNS.search(line):
+    """The CWE-22 leaf of the claim chain. On a file the AST tier owns, a line outside its
+    spans has no CWE-22; any other file is the regex body's (D10: the parse outcome alone)."""
+    if ctx.ast_answer.spans is not None:
         return False
-    for pattern in PATH_TRAVERSAL_PATTERNS:
-        if pattern.search(line):
-            finding = {
-                "severity": "high",
-                "check_id": "cwe.input_validation.path_traversal",
-                "category": "CWE-22",
-                "title": "Potential path traversal",
-                "description": f"User-controlled path input at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Use os.path.realpath and validate against allowed base directory",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "22"))
-            return True
-    return False
+    return _check_path_traversal_regex(ctx, line, line_num, findings)
 
 
-# Most-specific-first. Declared after the members so the table holds the real
-# functions, and so adding a path rule costs one row rather than another branch
-# in `_claim_path_row`.
+def _check_path_traversal_regex(
+    ctx: _FileCtx, line: str, line_num: int, findings: list[dict]
+) -> bool:
+    """Check for CWE-22 path traversal. True when it claimed the line."""
+    if SAFE_PATH_PATTERNS.search(line) or not _matches(PATH_TRAVERSAL_PATTERNS, line):
+        return False
+    description = f"User-controlled path input at line {line_num}"
+    findings.append(regex_row(_RULE_22, description, ctx.file_path, line_num, ctx.lines))
+    return True
+
+
+# The CHILDREN, the path rules more specific than CWE-22, most specific first, each a rule and
+# its hit test: CWE-36 (absolute) and CWE-23 (archive-relative).
+_CHILDREN = ((_ABS_TRAVERSAL_RULE, _abs_traversal_hit), (_REL_TRAVERSAL_RULE, _rel_traversal_hit))
+
+# CWE-73 (externally controlled, no sink): a regex claim after the AST tier's (A41 (10)).
+_check_external_path = partial(_claim_hit, _EXTERNAL_PATH_RULE, _external_path_hit)
+
+# Most-specific-first (P5 row-stacking, A42 (4)): the children claim a line before the AST
+# tier's CWE-22 claim (feature 0102, LLD §9.2), which claims every other line of a CWE-22 sink
+# span it reports — one row, at the sink line, or none when a child claims any line of the
+# span — so neither CWE-73 nor the regex CWE-22 runs on a span line. Declared after the members
+# so the table holds the real functions, and so adding a path rule costs one row rather than
+# another branch in `_claim_path_row`.
 _PATH_CLAIMS = (
-    ("36", _check_absolute_traversal),
-    ("23", _check_relative_traversal),
-    ("73", _check_external_path),
-    ("22", _check_path_traversal),
+    *((rule.cwe, partial(_claim_hit, rule, hit)) for rule, hit in _CHILDREN),
+    (_RULE_22.cwe_id, _ast_claims),
+    (_EXTERNAL_PATH_RULE.cwe, _check_external_path),
+    (_RULE_22.cwe_id, _check_path_traversal),
 )
+
+# The children's hit tests, in claim order: ``_child_claims`` reads them ahead of the line
+# loop, so a span whose row a child replaces is known at its sink line. Derived from
+# ``_CHILDREN``, as ``_PATH_CLAIMS`` is, so the span replacement cannot fall out of step with it.
+_SPAN_CHILDREN = tuple(hit for _, hit in _CHILDREN)
 
 
 # Names BOUND on a line: `const { a, b } = ...`, `const x = ...`, `let y = ...`,

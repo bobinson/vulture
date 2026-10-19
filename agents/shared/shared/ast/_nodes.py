@@ -40,6 +40,7 @@ __all__ = [
     "of_kind",
     "open_links",
     "params_in",
+    "parsed_buffer",
     "preorder",
     "segment",
     "union",
@@ -62,6 +63,13 @@ _SEGMENTS: Mapping[Kind, tuple[Field, Kind]] = MappingProxyType({
     Kind.MEMBER: (Field.PROPERTY, Kind.NAME),
     Kind.SUBSCRIPT: (Field.INDEX, Kind.LITERAL),
 })
+
+
+def parsed_buffer(text: str) -> str | bytes:
+    """The buffer the worker parsed, as a node's byte span indexes it: ``text`` itself when it
+    is ASCII (its UTF-8 bytes are its characters, so a byte offset is a character offset;
+    ``str.isascii`` is O(1)), else its UTF-8 bytes, encoded once."""
+    return text if text.isascii() else text.encode("utf-8")
 
 
 def first(model: FileModel, node: int, fld: Field) -> int:

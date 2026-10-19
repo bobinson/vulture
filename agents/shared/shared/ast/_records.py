@@ -29,6 +29,7 @@ __all__ = [
     "EMPTY",
     "EXTERNAL",
     "OVERFLOW",
+    "PARAM",
     "TOP",
     "Flow",
     "Guard",
@@ -82,6 +83,9 @@ def only(role: str) -> Origins:
 
 ANY = external("any")
 OVERFLOW = unknown("overflow")
+# A read of a parameter no caller in the file binds (§8.1): what the command parameter
+# heuristic keys on (D25, A42 (1)).
+PARAM = unknown("param")
 # §8.1: what an origin set past MAX_ORIGINS collapses to.
 TOP: Origins = frozenset({ANY, OVERFLOW})
 
@@ -127,7 +131,17 @@ class Flow:
     ``arg`` the argument node (A28 (4)), ``origins`` what reaches it after R-P — never
     ``constant`` (W15 (c)) — ``hops`` at most ``MAX_HOPS`` from the source side (``truncated``
     when more were cut), ``guards`` in ``guards_for`` order (A29), ``filtered_roles`` the roles
-    R-P removed (A28 (3))."""
+    R-P removed (A28 (3)), ``sink_key`` the sink's GLUED callee key, the flow pass's
+    ``Calls.key`` (L1 (a)): what a rule's gate reads (A40 (3), A41 (2)).
+
+    The command parameter heuristic's per-flow facts (D25, A42 (1), A43 (1); §8.5), set for a
+    ``command`` flow only (False elsewhere) and read only by a rule's hook: ``shell_sink`` —
+    the sink interprets ``arg`` through a shell by the command row's existing tables;
+    ``built_arg`` — ``arg`` is a BINOP or TEMPLATE, or a NAME one of whose reaching Defs' value
+    is (one hop); ``param_bound`` — set only on a flow holding ``unknown(param)``: another
+    candidate at the same ``(sink, arg)`` holds none, so a same-file caller bound the
+    parameter, and that flow decides; ``builtin_program`` — ``arg`` is the program position of
+    a command builtin of the profile's own table (the whole command)."""
 
     family: str
     sink: int
@@ -139,3 +153,8 @@ class Flow:
     guards: tuple[Guard, ...]
     truncated: bool
     filtered_roles: frozenset[str] = frozenset()
+    sink_key: str = ""
+    shell_sink: bool = False
+    built_arg: bool = False
+    param_bound: bool = False
+    builtin_program: bool = False

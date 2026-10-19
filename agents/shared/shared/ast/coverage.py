@@ -10,7 +10,8 @@ behind it (one per ``AuditContext``, D20); ``snapshot(root)`` is the wire.
   lexically normalised path, whose root-relative form is the wire's ``fallback_keys`` entry
   (``_render.relative``) — and each fact about it counts ONCE per audit, however many
   ``get_model``/``owns`` calls the skills make: a ``fallback`` bucket, ``parsed`` (an owned
-  file), and a model's ``unmapped`` kinds and cap tallies. Event counters (the model cache's
+  file), a model's ``unmapped`` kinds and cap tallies, and its flow analysis' fact counts
+  (A28 (3), recorded by the consumer). Event counters (the model cache's
   ``hits``/``misses``/``evictions``, ``decide``'s tallies) count every event.
 * **Two path lists (D24, §10.3).** ``fallback_keys`` is for the lineage guard: every file that
   fell back, uncapped, lossless, canonical, root-relative. ``fallback_paths`` is for people:
@@ -135,6 +136,14 @@ def _key(path: _PathLike) -> str:
     return os.path.abspath(path)
 
 
+def _first(seen: set[str], key: str) -> bool:
+    """Whether ``key`` is new to ``seen``, which then holds it: a once-per-path fact (A8)."""
+    if key in seen:
+        return False
+    seen.add(key)
+    return True
+
+
 def _key_sorted(value: Any) -> Any:
     """``value`` with every dict in it key-sorted, at every level (D14)."""
     if isinstance(value, dict):
@@ -161,6 +170,7 @@ class Coverage:
         self._fallback: dict[str, set[str]] = {reason: set() for reason in FALLBACK_REASONS}
         self._parsed: set[str] = set()
         self._modelled: set[str] = set()
+        self._analysed: set[str] = set()
         self._grammars: dict[str, set[str]] = {}
         self._unmapped: dict[str, Counter[str]] = {}
         self._tallies: Counter[str] = Counter(dict.fromkeys(_TALLIES, 0))
@@ -180,12 +190,20 @@ class Coverage:
         its cap tallies, once per path (A31 (8))."""
         key = _key(path)
         with self._lock:
-            if key in self._modelled:
+            if not _first(self._modelled, key):
                 return
-            self._modelled.add(key)
             self._grammars.setdefault(model.language, set()).add(model.grammar)
             self._unmapped.setdefault(model.language, Counter()).update(model.unmapped)
             self._tallies.update(model.tallies)
+
+    def record_analysis(self, path: _PathLike, tallies: Mapping[str, int]) -> None:
+        """A consumer read ``path``'s flow analysis: its per-file fact counts
+        (``FlowAnalysis.tallies``: ``origin_overflow``, ``summary_cap``, ``branch_depth``),
+        once per path, however many families read it (A28 (3))."""
+        key = _key(path)
+        with self._lock:
+            if _first(self._analysed, key):
+                self._tallies.update(tallies)
 
     def record_parsed(self, path: _PathLike) -> None:
         """The AST tier owns ``path`` (``owns``): ``files.parsed``, once per path (A8)."""
@@ -199,7 +217,8 @@ class Coverage:
             self._cache[event] += count
 
     def record_recycled(self) -> None:
-        """A worker of this audit's requests was replaced after ``RECYCLE_AFTER`` files (D2)."""
+        """A worker of this audit's requests was replaced after ``RECYCLE_AFTER`` files (D2) or
+        once its resident high-water passed ``MAX_WORKER_RSS_MB`` (A43 (5))."""
         with self._lock:
             self._recycled += 1
 

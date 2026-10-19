@@ -68,7 +68,8 @@ WHOLE-CGROUP PEAK
 GATES (``shared.testing.timing.budget`` scales each TIME reference figure to this machine)
     median cold parse+model             <= budget(2.0) s                 (LLD §13.5)
     worst peak - baseline               <= model_cache_budget + W x MAX_WORKER_RSS_MB + 16 MB
-                                                                         (LLD §13.5, A5)
+                                           (128 + W x 48 + 16 MB at the cache cap)
+                                                                         (LLD §13.5, A5, A44 (4))
     median scope+flow                   <= budget(3.0) s                 (LLD §13.5)
                                         <= 0.6 x median cold parse+model (A34; the same runs)
     footprint / bytes_estimate          in [0.8, 1.25]                   (A17; a band, gated
@@ -379,15 +380,20 @@ def _footprint(root: Path) -> dict[str, Any]:
     return _last_json(done.stdout)
 
 
-def _measure(root: Path) -> dict[str, Any]:
-    """One fresh child: its own numbers, plus its process-tree peaks sampled from outside."""
-    command = _child_command("--child", root)
+def _sampled(command: list[str], label: str) -> tuple[dict[str, Any], _Peaks]:
+    """One fresh child running ``command``: the JSON of its last stdout line, and its process
+    tree's peaks sampled from outside; a SystemExit naming ``label`` when it fails."""
     with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as child:
         peaks = _sample(child)
         out, _ = child.communicate()
     if child.returncode != 0:
-        raise SystemExit(f"bench child exited {child.returncode}")
-    run = _last_json(out)
+        raise SystemExit(f"{label} exited {child.returncode}")
+    return _last_json(out), peaks
+
+
+def _measure(root: Path) -> dict[str, Any]:
+    """One fresh child: its own numbers, plus its process-tree peaks sampled from outside."""
+    run, peaks = _sampled(_child_command("--child", root), "bench child")
     run.update(_peak_fields(run, peaks))
     run["delta_mb"] = run["peak_mb"] - run["baseline_mb"]
     return run
@@ -539,6 +545,8 @@ def _shown(value: float | None) -> str:
 
 
 def _report(summary: dict[str, Any], gates: Sequence[tuple[str, float, float]]) -> None:
+    from shared.ast.limits import MAX_WORKER_RSS_MB
+
     print(
         f"0102 AST bench: {summary['files']} files, {summary['bytes']} bytes, seed "
         f"{summary['seed']}, sha256 {summary['digest'][:16]}; {summary['nodes']} nodes "
@@ -555,7 +563,7 @@ def _report(summary: dict[str, Any], gates: Sequence[tuple[str, float, float]]) 
     )
     print(
         f"  memory bound = model cache {summary['cache_budget_mb']:.0f} MB + W x "
-        f"MAX_WORKER_RSS_MB + {MEMORY_SLACK_MB:g} MB (A5)"
+        f"MAX_WORKER_RSS_MB {MAX_WORKER_RSS_MB} MB + {MEMORY_SLACK_MB:g} MB (A5, A44 (4))"
     )
     print(
         f"  footprint / bytes_estimate = {summary['footprint_ratio']:.3f} over "

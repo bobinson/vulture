@@ -50,10 +50,12 @@ from shared.ast._nodes import (
     cached,
     chain_links,
     first,
+    is_kind,
     is_read,
     kids_of,
     preorder,
     segment,
+    union,
 )
 from shared.ast._records import Guard, role_set
 from shared.ast.kinds import Field, Kind
@@ -63,6 +65,8 @@ from shared.ast.roles import (
     CONTAINMENT_ROLES,
     EXIT_WORDS,
     NEGATION_OPERATORS,
+    NO_ROLES,
+    checked_roles,
     guard_roles,
 )
 
@@ -77,6 +81,7 @@ type _Read = tuple[int, _Path]  # (the Def's position, member path)
 type _Roots = Mapping[int, list[_Path]]  # a sink argument's reads, by the Def's position
 
 _EXITS = frozenset({Kind.RETURN, Kind.THROW, Kind.JUMP})
+_BLOCKS = frozenset({Kind.BLOCK, Kind.MODULE})  # W2's block_of kinds
 _NO_DEFS: frozenset[int] = frozenset()  # a TRY that checks no Def (memoised per TRY)
 _WINDOWED = frozenset({Kind.IF, Kind.TRY})
 
@@ -92,6 +97,12 @@ class _Facts:
     checked: dict[int, frozenset[int]] = field(default_factory=dict)  # a TRY's Defs (R-R)
     exits: dict[int, bool] = field(default_factory=dict)  # W2's exits(S)
     roles: dict[int, frozenset[str]] = field(default_factory=dict)  # a guard's
+    # A44 (1) (d): a block's check statements and CALLs; a check CALL's callee roles and its
+    # arguments' reads; a same-file function's checked parameter slots.
+    checks: dict[int, tuple[list[int], list[int]]] = field(default_factory=dict)
+    callee_roles: dict[int, frozenset[str]] = field(default_factory=dict)
+    arg_reads: dict[int, tuple[tuple[_Read, ...], ...]] = field(default_factory=dict)
+    helpers: dict[int, tuple[tuple[int, frozenset[str]], ...]] = field(default_factory=dict)
 
 
 class Guards:
@@ -111,7 +122,7 @@ class Guards:
         roots = _by_def(self._reads_of(islice(self._sites(arg, self._m.node_count), MAX_ARG_NAMES)))
         if not roots:
             return ()
-        return (*self._ancestors(sink, roots), *self._window(sink, roots))
+        return (*self._ancestors(sink, roots), *self._window(sink, roots), *self._checks_of(sink, roots))
 
     # ── reads (A29 (3), W8) ──
 
@@ -218,9 +229,12 @@ class Guards:
 
     def _early_exit(self, branch_if: int, roots: _Roots) -> bool:
         """Clause (a): a TEST, a CONSEQ that exits, and reads that meet the roots."""
-        test = self._test(branch_if)
+        return self._exits_early(branch_if) and self._meets(self._test(branch_if), roots)
+
+    def _exits_early(self, branch_if: int) -> bool:
+        """Clause (a)'s shape: a TEST, and a CONSEQ that exits."""
         conseq = first(self._m, branch_if, Field.CONSEQ)
-        return test >= 0 and conseq >= 0 and self._exits(conseq) and self._meets(test, roots)
+        return self._test(branch_if) >= 0 and conseq >= 0 and self._exits(conseq)
 
     def _contained(self, attempt: int, roots: _Roots) -> bool:
         """R-R: a body ``relativeto`` call on a root's Def, and every CATCH exits."""
@@ -270,6 +284,107 @@ class Guards:
     def _test(self, branch_if: int) -> int:
         return first(self._m, branch_if, Field.TEST)
 
+    # ── statement-level checks (A44 (1) (d) (i), (iii)) ──
+
+    def _checks_of(self, sink: int, roots: _Roots) -> Iterator[Guard]:
+        """The check CALL statements that dominate the sink: in each block enclosing it (at
+        most ``MAX_DEPTH`` up), the ``GUARD_WINDOW`` nearest before the sink's statement there,
+        nearest block first, each a guard when it checks a root (``_check_roles``)."""
+        for statement, block in self._enclosing(sink):
+            for call in self._preceding(block, statement):
+                roles = self._check_roles(call, roots)
+                if roles:
+                    yield Guard(call, roles)
+
+    def _enclosing(self, sink: int) -> Iterator[tuple[int, int]]:
+        """``(stmt, block)`` for each BLOCK or MODULE above the sink, ``stmt`` its child on the
+        way down to the sink."""
+        pairs = pairwise(chain((sink,), ancestors(self._m, sink)))
+        return ((child, node) for child, node in pairs if self._m.kind(node) in _BLOCKS)
+
+    def _preceding(self, block: int, statement: int) -> Sequence[int]:
+        """The check CALLs of ``block``'s statements before ``statement``, the
+        ``GUARD_WINDOW`` nearest, nearest first (``_block_checks``, bisected)."""
+        statements, calls = cached(self._facts.checks, block, self._block_checks)
+        end = bisect_left(statements, statement)
+        return calls[max(0, end - GUARD_WINDOW) : end][::-1]
+
+    def _block_checks(self, block: int) -> tuple[list[int], list[int]]:
+        """``block``'s check statements in document order, and their CALLs: a CALL statement
+        (awaited or not) whose callee is a same-file function or carries a validation verb."""
+        statements: list[int] = []
+        calls: list[int] = []
+        for statement in self._m.children(block):
+            call = self._statement_call(statement)
+            if call >= 0 and self._check_shaped(call):
+                statements.append(statement)
+                calls.append(call)
+        return statements, calls
+
+    def _statement_call(self, statement: int) -> int:
+        """The CALL a statement is (an AWAIT's own CALL), else ``-1``."""
+        awaited = self._m.kind(statement) is Kind.AWAIT
+        node = first(self._m, statement, Field.NONE) if awaited else statement
+        return node if is_kind(self._m, node, Kind.CALL) else -1
+
+    def _check_shaped(self, call: int) -> bool:
+        return self._e.calls.local(call) >= 0 or bool(self._callee_roles(call))
+
+    def _callee_roles(self, call: int) -> frozenset[str]:
+        """(i): the roles the callee's words check (``roles.checked_roles``), memoised."""
+        return cached(self._facts.callee_roles, call, self._checked_by_words)
+
+    def _checked_by_words(self, call: int) -> frozenset[str]:
+        return role_set(checked_roles(self._e.calls.ident(call)))
+
+    def _check_roles(self, call: int, roots: _Roots) -> frozenset[str]:
+        """(iii) for a same-file callee — the roles of the parameters it checks whose argument
+        reads a root — else (i): the callee's roles when an argument reads a root."""
+        reads = cached(self._facts.arg_reads, call, self._arg_reads)
+        fn = self._e.calls.local(call)
+        if fn >= 0:
+            return self._helper_roles(fn, reads, roots)
+        return self._callee_roles(call) if any(_meets_reads(r, roots) for r in reads) else NO_ROLES
+
+    def _helper_roles(self, fn: int, reads: Sequence[tuple[_Read, ...]], roots: _Roots) -> frozenset[str]:
+        checked = cached(self._facts.helpers, fn, self._param_checks)
+        return union((roles for i, roles in checked if i < len(reads) and _meets_reads(reads[i], roots)), NO_ROLES)
+
+    def _arg_reads(self, call: int) -> tuple[tuple[_Read, ...], ...]:
+        """Each positional argument's reads (``MAX_TEST_NODES`` nodes each), in order."""
+        return tuple(tuple(self._reads_of(self._sites(a, MAX_TEST_NODES))) for a in self._e.calls.args(call))
+
+    def _param_checks(self, fn: int) -> tuple[tuple[int, frozenset[str]], ...]:
+        """(iii): ``fn``'s parameter slots an early-exit IF among the first ``GUARD_WINDOW`` IF
+        or TRY statements of its body tests with a guard role — ``(slot, roles)`` pairs."""
+        body = first(self._m, fn, Field.BODY)
+        if not is_kind(self._m, body, Kind.BLOCK):
+            return ()
+        slots = self._e.params.slots(fn)
+        return tuple(chain.from_iterable(self._tested_slots(n, fn, slots) for n in self._exiting_ifs(body)))
+
+    def _exiting_ifs(self, body: int) -> list[int]:
+        """The first ``GUARD_WINDOW`` IF / TRY statements of ``body`` that are early-exit IFs
+        with a guard role."""
+        return list(filter(self._exiting, cached(self._facts.windowed, body, self._windowed)[:GUARD_WINDOW]))
+
+    def _exiting(self, node: int) -> bool:
+        """An IF of clause (a)'s shape (``_exits_early``) with a guard role."""
+        return self._m.kind(node) is Kind.IF and self._exits_early(node) and bool(self._guard(node).roles)
+
+    def _tested_slots(self, branch_if: int, fn: int, slots: Sequence[int]) -> Iterator[tuple[int, frozenset[str]]]:
+        """The slots of ``fn`` whose parameter Def the IF's TEST reads, with the IF's roles."""
+        roles = self._guard(branch_if).roles
+        tested = {self._e.scope.defs[position] for position, _ in self._test_reads_of(branch_if)}
+        return ((slots.index(d.value), roles) for d in tested if self._slot_def(d, fn, slots))
+
+    def _test_reads_of(self, branch_if: int) -> tuple[_Read, ...]:
+        return cached(self._facts.reads, self._test(branch_if), self._test_reads)
+
+    @staticmethod
+    def _slot_def(d: Def, fn: int, slots: Sequence[int]) -> bool:
+        return d.kind == "param" and d.scope == fn and d.value in slots
+
     # ── the record ──
 
     def _guard(self, node: int) -> Guard:
@@ -288,6 +403,11 @@ def _by_def(reads: Iterator[_Read]) -> dict[int, list[_Path]]:
     for position, path in reads:
         roots.setdefault(position, []).append(path)
     return roots
+
+
+def _meets_reads(reads: Sequence[_Read], roots: _Roots) -> bool:
+    """A29 (3) over a call argument's reads: one shares a root's Def and a related path."""
+    return any(_related(path, roots.get(position, ())) for position, path in reads)
 
 
 def _related(path: _Path, paths: Sequence[_Path]) -> bool:

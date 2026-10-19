@@ -2,8 +2,9 @@
 
 ``FileModel.bytes_estimate`` (A17) and ``FlowAnalysis.bytes_estimate`` (A35) each sum
 ``sys.getsizeof`` over what their object holds of its own. An int is one only above the range
-CPython shares, and an object held twice is one object: both estimates read those two facts
-here, so they count by one rule. This module imports only ``sys``.
+CPython shares, a string only when it is longer than the one character CPython shares, and an
+object held twice is one object: both estimates read those three facts here, so they count by
+one rule. This module imports only ``sys``.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterable, Iterator
 
-__all__ = ["INT_SIZE", "SHARED_INTS", "own_int_count", "own_ints", "sized_once"]
+__all__ = ["INT_SIZE", "SHARED_INTS", "own_int_count", "own_ints", "own_strs", "sized_once"]
 
 # CPython shares the small ints (-5..256): a node index, line or offset above them is an int
 # object of its own, held by the record that names it.
@@ -27,6 +28,12 @@ def own_ints(values: Iterable[int]) -> Iterator[int]:
 def own_int_count(values: Iterable[int]) -> int:
     """How many ints of ``values`` are objects of their own."""
     return sum(map(SHARED_INTS.__lt__, values))
+
+
+def own_strs(values: Iterable[str]) -> Iterator[str]:
+    """The strings of ``values`` that are objects of their own: longer than one character
+    (CPython shares the empty and the one-character strings)."""
+    return (value for value in values if len(value) > 1)
 
 
 def sized_once(objects: Iterable[object]) -> int:

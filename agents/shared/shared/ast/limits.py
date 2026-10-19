@@ -62,10 +62,13 @@ WORKER_CPU_S = 30  # risk 14: cumulative RLIMIT_CPU (soft) of a worker (runaway 
 # end the worker with SIGKILL; one second above the soft limit, SIGXCPU (the lifecycle exit
 # the breaker does not count) arrives first. The worker may raise its soft limit by 1 s.
 WORKER_CPU_HARD_S = WORKER_CPU_S + 1
-# A5: measured 24.8 MB VmHWM (JS + Python grammars). It bounds no operation: it is the
-# per-worker term of the bench's derived memory gate (§13.5),
-# peak <= baseline + model_cache_budget + W x MAX_WORKER_RSS_MB + 16 MB.
-MAX_WORKER_RSS_MB = 32  # a worker's resident bound, in MB
+# A5, A44 (4): a healthy worker holding all nine grammars measures 34.4 MB VmHWM. The
+# per-worker term of the bench's derived memory gate (§13.5), peak <= baseline +
+# model_cache_budget + W x MAX_WORKER_RSS_MB + 16 MB (128 + W x 48 + 16 at the cache cap);
+# and (A43 (5)) a worker whose VmHWM passes it after a request is recycled (Linux /proc;
+# skipped elsewhere). Only a worker grown past a healthy one's size is recycled, so
+# ``workers.recycled`` does not depend on which grammars a worker happened to load.
+MAX_WORKER_RSS_MB = 48  # a worker's resident bound, in MB
 
 # ── §4 worker count, D5 model cache ──────────────────────────────────────────
 WORKER_RESERVE = 192 * _MIB  # memory reserved per worker

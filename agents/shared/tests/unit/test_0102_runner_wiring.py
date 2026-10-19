@@ -39,7 +39,7 @@ def _record_one_decline() -> None:
         origins=frozenset({Origin(cls="external", role="request")}),
         hops=(), guards=(), truncated=False,
     )
-    current().decline(flow, rule, "guarded:validate")
+    current().decline(Path("a.js"), flow, rule, "guarded:validate")
 
 
 def _audit(source_path: str, off_caller_thread: list[bool]) -> list[str]:

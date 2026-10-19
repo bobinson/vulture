@@ -35,8 +35,14 @@ passes count into the analysis' tallies only after the replay, so a query adds w
 never met (A28 (3)), never a fact the build counted.
 
 ``decide`` (§8.5, A29, A30) turns a candidate into ``report``, ``decline`` (recorded on the
-consumer's file through ``ctx.decline``) or ``none``; ``covered`` reads ``COVERED_BY``. Every
-§9.1 table, ``COVERED_BY`` and ``COVERING_GUARDS`` included, is imported from ``roles``, never
+consumer's file through ``ctx.decline``) or ``none``; ``covered`` reads ``COVERED_BY``. A
+rule's named heuristic (``FamilyRule.heuristic``, D25, A42 (1)) is asked there, for a flow
+with no external origin, and ``named_heuristic`` is that one question, which the finding asks
+again to name what ``decide`` acted on. A ``command`` flow carries the heuristic's per-flow
+facts (``Flow.shell_sink``, ``built_arg``, ``builtin_program``, ``param_bound``; A43 (1)), set
+here as each flow is built (the shared ``True``/``False``, so they add nothing to a footprint
+but the record's slots).
+Every §9.1 table, ``COVERED_BY`` and ``COVERING_GUARDS`` included, is imported from ``roles``, never
 copied (A27 (5)). A model is shared across audit threads: the candidates never change once
 built, and every diagnostic query runs under one module lock (they are rare, so no analysis
 keeps a lock of its own). Nothing here imports
@@ -50,6 +56,7 @@ import sys
 import weakref
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 from itertools import chain
 from operator import attrgetter
 from threading import RLock
@@ -61,6 +68,7 @@ from shared.ast._origins import BASE, CONSTANTS, RULES, Context, Engine
 from shared.ast._records import (
     ANY,
     EXTERNAL,
+    PARAM,
     Flow,
     Guard,
     Hop,
@@ -68,13 +76,14 @@ from shared.ast._records import (
     Origins,
     external,
     externals,
+    has_external,
     role_set,
     unknown,
 )
-from shared.ast._sizing import own_ints, sized_once
+from shared.ast._sizing import own_ints, own_strs, sized_once
 from shared.ast.coverage import ENV_ONLY_SINKS, ROLE_FILTERED_SINKS, UNKNOWN_ONLY_SINKS
 from shared.ast.profile import PROFILES
-from shared.ast.profiles import FAMILIES
+from shared.ast.profiles import COMMAND, FAMILIES
 from shared.ast.roles import COVERED_BY, COVERING_GUARDS, NO_ROLES, SOURCE_ROLES_BY_FAMILY
 
 if TYPE_CHECKING:
@@ -90,6 +99,7 @@ __all__ = [
     "covered",
     "decide",
     "external",
+    "named_heuristic",
     "unknown",
 ]
 
@@ -104,6 +114,9 @@ class _Rule(Protocol):
 
     @property
     def gate(self) -> Callable[[Flow, bool], bool] | None: ...
+
+    @property
+    def heuristic(self) -> Callable[[Flow], str | None] | None: ...
 
 
 class _Context(Protocol):
@@ -126,10 +139,11 @@ def decide(
     flow: Flow, rule: _Rule, ctx: _Context, *, path: str | os.PathLike[str], server_ctx: bool = True
 ) -> Verdict:
     """§8.5 ``decide`` (A29 (7), A30 (1)): R-P's tally; ``none`` with no origin or a failed
-    gate; ``none`` (tallied) with no external origin; ``decline`` when every external origin
-    is covered (``sanitized:``), or on the FIRST guard whose roles cover the family
-    (``guarded:`` + its smallest covering role); else ``report``. Each step is §8.5's
-    statement, split into helpers only to keep each function's branches few."""
+    gate; ``none`` (tallied) with no external origin, unless the rule's named heuristic names
+    the flow (D25, A42 (1)); ``decline`` when every external origin is covered
+    (``sanitized:``), or on the FIRST guard whose roles cover the family (``guarded:`` + its
+    smallest covering role); else ``report``. Each step is §8.5's statement, split into
+    helpers only to keep each function's branches few."""
     _tally_policy(flow, ctx)
     ext = externals(flow.origins)
     return _unreportable(flow, ext, rule, ctx, server_ctx) or _judged(flow, ext, rule, ctx, path)
@@ -139,19 +153,38 @@ def _unreportable(
     flow: Flow, ext: Origins, rule: _Rule, ctx: _Context, server_ctx: bool
 ) -> Verdict | None:
     """``none`` with no origin (constant-only, W15 (c)) or a failed gate; ``none``, tallied
-    ``unknown_only_sinks``, with no external origin ``ext`` (v1: tallied, not reported)."""
+    ``unknown_only_sinks``, with no external origin ``ext`` that the rule's named heuristic
+    does not name (v1: tallied, not reported)."""
     if not flow.origins or not _gated(flow, rule, server_ctx):
         return "none"
-    if not ext:
+    if _unknown_only(flow, ext, rule):
         ctx.tally(UNKNOWN_ONLY_SINKS)
         return "none"
     return None
 
 
+def _unknown_only(flow: Flow, ext: Origins, rule: _Rule) -> bool:
+    """No external origin ``ext``, and no named heuristic of the rule's names the flow."""
+    return not ext and named_heuristic(flow, rule) is None
+
+
+def named_heuristic(flow: Flow, rule: _Rule) -> str | None:
+    """D25 (§8.5, A42 (1)): the token of the rule's named heuristic (``FamilyRule.heuristic``)
+    when ``decide`` acts on it — for a flow with no external origin, which the hook names —
+    else None. Both callers ask only about a flow with origins: ``decide`` has returned
+    ``none`` for one with none before it asks, and a row is a reported flow. The one question
+    both ``decide`` and the finding ask (§10.1), so a row names exactly what ``decide``
+    reported it on."""
+    if rule.heuristic is None or has_external(flow.origins):
+        return None
+    return rule.heuristic(flow)
+
+
 def _judged(
     flow: Flow, ext: Origins, rule: _Rule, ctx: _Context, path: str | os.PathLike[str]
 ) -> Verdict:
-    """``decline`` on a full sanitiser cover, else on the first covering guard; ``report``."""
+    """``decline`` on a full sanitiser cover, else on the first covering guard; ``report``.
+    A flow the named heuristic reports has no external origin, so no sanitiser cover (D8)."""
     label = _sanitized(ext, rule) or _guarded(flow, rule)
     if label is None:
         return "report"
@@ -190,9 +223,15 @@ def _gated(flow: Flow, rule: _Rule, server_ctx: bool) -> bool:
 
 def _sanitized(ext: Origins, rule: _Rule) -> str | None:
     """``sanitized:`` + the sorted ``via`` roles when no external origin is uncovered."""
-    if any(not covered(o, rule.family) for o in ext):
+    if not _all_covered(ext, rule.family):
         return None
     return "sanitized:" + "+".join(sorted(chain.from_iterable(o.via for o in ext)))
+
+
+def _all_covered(ext: Origins, family: str) -> bool:
+    """There are external origins ``ext``, and every one is covered (§8.3): a flow with none —
+    one the named heuristic reports — is never ``sanitized``."""
+    return bool(ext) and all(covered(o, family) for o in ext)
 
 
 def _guarded(flow: Flow, rule: _Rule) -> str | None:
@@ -300,7 +339,8 @@ class _Passes:
         for ctx, context in enumerate(self.engine.contexts):
             for site, arg in self._sink_args(context, ctx, family):
                 self._add(flows, ctx, site, arg, family)
-        return tuple(sorted(flows.values(), key=attrgetter("sink_line")))
+        found = tuple(sorted(flows.values(), key=attrgetter("sink_line")))
+        return _params_bound(found) if family in COMMAND else found
 
     def _expand(self) -> None:
         """Run every local call of every context whose callee reaches a sink, so each summary
@@ -350,6 +390,7 @@ class _Passes:
     def _flow(self, ctx: int, family: str, key: tuple[int, int, Origins, frozenset[str]]) -> Flow:
         site, arg, origins, filtered_roles = key
         hops, truncated = self.hops.of(ctx, arg, site)
+        shell_sink, built_arg, builtin_program = self._command_facts(family, site, arg)
         return Flow(
             family=family,
             sink=site,
@@ -361,7 +402,37 @@ class _Passes:
             guards=self.guards.of(site, arg),
             truncated=truncated,
             filtered_roles=filtered_roles,
+            sink_key=self.engine.calls.key(site),
+            shell_sink=shell_sink,
+            built_arg=built_arg,
+            builtin_program=builtin_program,
         )
+
+    def _command_facts(self, family: str, site: int, arg: int) -> tuple[bool, bool, bool]:
+        """D25 (b) (A42 (1), A43 (1)): whether the sink shells the argument, whether it is
+        built and whether it is a profile builtin's whole command — a ``command`` flow's three
+        per-argument facts (``Calls.shell_arg``, ``built``, ``builtin_program``); False for any
+        other family."""
+        if family not in COMMAND:
+            return False, False, False
+        calls = self.engine.calls
+        return calls.shell_arg(site, arg), calls.built(arg), calls.builtin_program(site, arg)
+
+
+def _params_bound(flows: tuple[Flow, ...]) -> tuple[Flow, ...]:
+    """D25 (c) (A42 (1)): ``flows`` (one family's, sorted), each that holds ``unknown(param)``
+    marked ``param_bound`` when another of them at its ``(sink, arg)`` holds none — a same-file
+    caller's summary context bound the parameter there, and that flow decides. O(flows)."""
+    free = _param_free(flows)
+    return tuple(
+        replace(f, param_bound=True) if PARAM in f.origins and (f.sink, f.arg) in free else f
+        for f in flows
+    )
+
+
+def _param_free(flows: tuple[Flow, ...]) -> set[tuple[int, int]]:
+    """The ``(sink, arg)`` of each of ``flows`` that holds no ``unknown(param)``."""
+    return {(f.sink, f.arg) for f in flows if PARAM not in f.origins}
 
 
 def _analysed_by(context: Context) -> int | None:
@@ -376,8 +447,8 @@ def _analysed_by(context: Context) -> int | None:
 def _footprint(analysis: FlowAnalysis) -> int:
     """A35: ``bytes_estimate`` is what the built analysis keeps — the analysis, its weak
     reference to its model, its candidates and tallies, and per flow its record, span, origin set, hops and guards with the
-    ints and joined hop names they hold of their own — by ``sys.getsizeof``, each object once
-    (``_sizing.sized_once``: a flow's hops, guards and node indices may be another flow's too),
+    ints, joined hop names and sink key they hold of their own — by ``sys.getsizeof``, each object once
+    (``_sizing.sized_once``: a flow's hops, guards, sink key and node indices may be another flow's too),
     computed once at build in O(flows x MAX_HOPS). Origins and role sets are shared
     (``_records``); a one-segment hop name is the model's own text or a placeholder; the model
     is charged on its own (A17)."""
@@ -397,13 +468,14 @@ def _kept(analysis: FlowAnalysis) -> Iterator[object]:
 
 def _flow_parts(flow: Flow) -> Iterator[object]:
     """One flow's own objects: the record, its span, origin set and hops, its guards (a flow
-    with none holds the shared ``()``), each hop and guard, each ``.``-joined hop name — the
-    flow pass minted it; a one-segment name is the model's text (D16: no segment holds a
-    ``.``) or a placeholder — and its own ints (``_flow_ints``)."""
+    with none holds the shared ``()``), each hop and guard, the strings it holds of its own
+    (``_sizing.own_strs``) — each ``.``-joined hop name, which the flow pass minted (a
+    one-segment name is the model's text, D16: no segment holds a ``.``, or a placeholder),
+    and its sink key, which ``glue`` made (A41 (2)) — and its own ints (``_flow_ints``)."""
     held = (flow, flow.span, flow.origins, flow.hops, *flow.hops, *flow.guards)
     guards = (flow.guards,) if flow.guards else ()
     names = (hop.name for hop in flow.hops if "." in hop.name)
-    return chain(held, guards, names, _flow_ints(flow))
+    return chain(held, guards, own_strs(chain(names, (flow.sink_key,))), _flow_ints(flow))
 
 
 def _flow_ints(flow: Flow) -> Iterator[int]:

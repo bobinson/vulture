@@ -1,4 +1,4 @@
-"""The per-audit ``AuditContext`` (feature 0102, LLD D10, D12, D20, §4, §5; A18, A20, A31).
+"""The per-audit ``AuditContext`` (feature 0102, LLD D10, D12, D20, §4, §5; A18, A20, A31, A41).
 
 Every concurrent audit of an agent process owns one ``AuditContext``: its source ``root``, its
 ``coverage`` (the §10.2 record), its bounded decline ``ledger`` (§10.3), its circuit
@@ -6,9 +6,13 @@ Every concurrent audit of an agent process owns one ``AuditContext``: its source
 ``engine`` field: no flag selects a tier (D12).
 
 The current audit lives in a ``ContextVar`` (D20). ``enter(root)`` makes a new audit current in
-the caller's context and returns the ``Token``; there is no ``exit`` — the next audit's
-``enter`` (or ``clear_caches()``) starts over. A skill thread reaches its audit because the
-runner submits each skill through ``contextvars.copy_context().run`` (one line, plan 3.4).
+the caller's context and returns the ``Token``; ``leave(token)`` gives that context back what
+it held before, so a direct caller of it is on the process default again (A41 (6): the runner
+calls it right after its ``ast_coverage`` snapshot). ``leave`` never raises: a token from
+another context, or one already used, makes the process default current instead. There is no
+``exit``, and ``clear_caches()`` cannot detach an entered audit: it resets only the default
+(below). A skill thread reaches its audit because the runner submits each skill through
+``contextvars.copy_context().run`` (one line, plan 3.4).
 
 Outside any audit, ``current()`` is the PROCESS DEFAULT, one object on every thread (the corpus
 runner and unit tests are such callers). ``reset_default()`` replaces it with a fresh one:
@@ -33,7 +37,7 @@ from shared.ast.limits import CIRCUIT_BREAK_AFTER
 if TYPE_CHECKING:
     from shared.ast.flow import Flow, _Rule
 
-__all__ = ["AuditContext", "Breaker", "current", "enter", "reset_default"]
+__all__ = ["AuditContext", "Breaker", "current", "enter", "leave", "reset_default"]
 
 
 class Breaker:
@@ -100,6 +104,16 @@ def current() -> AuditContext:
 def enter(root: str | os.PathLike[str]) -> Token[AuditContext | None]:
     """Make a new audit of ``root`` current in the caller's context; its ``Token``."""
     return _AUDIT.set(AuditContext.new(root))
+
+
+def leave(token: Token[AuditContext | None]) -> None:
+    """Leave the audit ``enter`` returned ``token`` for: the caller's context holds what it
+    held before (A41 (6)). Never raises into the runner: a token already used, or one from
+    another context, makes the process default current instead."""
+    try:
+        _AUDIT.reset(token)
+    except (RuntimeError, ValueError):  # used / set in another context
+        _AUDIT.set(None)
 
 
 def reset_default() -> None:

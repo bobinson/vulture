@@ -227,12 +227,14 @@ def test_a_fixture_without_a_profile_still_reads() -> None:
 def test_stub_rule_has_the_family_rule_fields() -> None:
     assert [f.name for f in dataclasses.fields(StubRule)] == [
         "family", "check_id", "category", "title", "severity", "recommendation", "cwe_id",
-        "gate",
+        "gate", "heuristic",
     ]
-    assert [(r.family, r.category, r.cwe_id, r.gate) for r in map(stub_rule, FAMILIES)] == [
-        ("path", "CWE-22", "22", None),
-        ("request", "CWE-918", "918", None),
-        ("command", "CWE-78", "78", None),
+    assert [
+        (r.family, r.category, r.cwe_id, r.gate, r.heuristic) for r in map(stub_rule, FAMILIES)
+    ] == [
+        ("path", "CWE-22", "22", None, None),
+        ("request", "CWE-918", "918", None, None),
+        ("command", "CWE-78", "78", None, None),
     ]
 
 

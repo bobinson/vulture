@@ -252,7 +252,10 @@ class LanguageProfile:
     ``glue(qualifier) + glue(callee)`` probed before the single key (W5). ``builtin_sources``
     maps the language's own superglobals to their role. ``synthetic_calls`` maps a grammar
     type that is a call in disguise to its glued synthetic callee key (``""``: the callee is
-    the node's own CALLEE field). ``arm_types`` are the switch/match arm types (L10).
+    the node's own CALLEE field); the worker ships a keyed type as a CALL whose CALLEE is a
+    NAME carrying the key and whose ARGS container is the node, its children the positional
+    arguments (A42 (2)), so the type also needs its ``node_map`` row for D19's grammar check.
+    ``arm_types`` are the switch/match arm types (L10).
     ``owned_families`` limits what the AST tier owns on the language (D-H: no SSRF on C/C++).
     ``disabled_until`` is the grammar version §6.4 holds the profile back until: while it is
     set, ``profile_for`` answers no profile, so every file of the language is regex-owned.

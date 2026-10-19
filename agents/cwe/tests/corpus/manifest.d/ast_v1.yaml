@@ -25,13 +25,14 @@
 # (cwe_22_5_clean, the `nb` rows, cwe_22_48, cwe_22_19_bomb) pins a shape that
 # must report nothing on its own.
 #
-# LEADING UNDERSCORE, deliberately: `load_manifest()` with no fragments globs
+# PRODUCTION, no leading underscore: `load_manifest()` with no fragments globs
 # every fragment EXCEPT those whose name starts with `_`. The regex tier cannot
-# see most of these positives, so until the AST tier owns the three check ids
-# this group stays out of the production N and the global corpus gates, and is
-# scored only by name (tests/_ast_v1.py `load_group` loads
-# `fragments=["_ast_v1"]` for tests/e2e/test_0102_ast_corpus.py). It is renamed
-# `ast_v1.yaml` when the AST tier takes ownership.
+# see most of these positives, so while the AST tier did not own the three
+# check ids this group was `_ast_v1.yaml`, out of the production N and the
+# global corpus gates and scored only by name. The AST tier owns them, so the
+# group counts in N (`report_coverage.py`, `make cwe-corpus-full`, the nightly)
+# and tests/_ast_v1.py `load_group` still loads it by name, under either name,
+# for tests/e2e/test_0102_ast_corpus.py.
 #
 # Not a row, deliberately: known false negatives (`known_fn`). The runner
 # scores any non-positive as a clean twin, so a known gap listed here would
@@ -252,3 +253,41 @@
 - {file: ast_v1/cwe_78_cpp_1_clean.cpp, language: C++, cwe: "78", expectation: negative}
 - {file: ast_v1/cwe_78_cpp_2.cpp, language: C++, cwe: "78", expectation: positive, line: 6}
 - {file: ast_v1/cwe_78_cpp_2_clean.cpp, language: C++, cwe: "78", expectation: negative}
+
+# ── Real-code precision rows (A44 (1)) ──
+# Synthetic reproductions (identifiers renamed) of shapes a skills-only run
+# measured on real public code: a negative is a false positive the AST tier
+# reported there, a positive one it missed or must keep. The rules (a)-(e),
+# each a generic concept word or a structural rule, are stated once, in the
+# shared suite's tests/unit/ast/test_0102_precision_a44.py.
+# (a) CWE-918: collection verbs are no request sinks; client verbs stay sinks
+- {file: ast_v1/cwe_918_18_clean.js, language: JavaScript, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_19_clean.js, language: JavaScript, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_20_clean.ts, language: TypeScript, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_21_clean.py, language: Python, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_918_22.js, language: JavaScript, cwe: "918", expectation: positive, line: 9}
+- {file: ast_v1/cwe_918_23.ts, language: TypeScript, cwe: "918", expectation: positive, line: 9}
+# (b) a params parameter outside handler context; params inside it
+- {file: ast_v1/cwe_22_56_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_918_24_clean.js, language: JavaScript, cwe: "918", expectation: negative}
+- {file: ast_v1/cwe_78_19_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_22_57.ts, language: TypeScript, cwe: "22", expectation: positive, line: 9}
+- {file: ast_v1/cwe_22_58.js, language: JavaScript, cwe: "22", expectation: positive, line: 10}
+# (c) CWE-78: regex, data-store and multi-word exec look-alikes
+- {file: ast_v1/cwe_78_20_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_21_clean.ts, language: TypeScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_22_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_23_clean.js, language: JavaScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_24_clean.ts, language: TypeScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_25_clean.ts, language: TypeScript, cwe: "78", expectation: negative}
+- {file: ast_v1/cwe_78_go_3_clean.go, language: Go, cwe: "78", expectation: negative}
+# (d) CWE-22: statement-level validation calls, a containment result, a same-file helper
+- {file: ast_v1/cwe_22_59_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_60_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_61_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_62_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+# (e) CWE-22: synchronous file APIs
+- {file: ast_v1/cwe_22_63.js, language: JavaScript, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_64.js, language: JavaScript, cwe: "22", expectation: positive, line: 11}
+- {file: ast_v1/cwe_22_65.ts, language: TypeScript, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_66.js, language: JavaScript, cwe: "22", expectation: positive, line: 10}

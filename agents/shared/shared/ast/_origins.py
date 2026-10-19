@@ -61,6 +61,7 @@ from shared.ast._records import (
     EMPTY,
     EXTERNAL,
     OVERFLOW,
+    PARAM,
     TOP,
     Origins,
     external,
@@ -81,6 +82,7 @@ from shared.ast.profile import PROFILES
 from shared.ast.profiles import EMPTY_MAP
 from shared.ast.roles import (
     CONDITIONAL_SOURCE_ROOTS,
+    CONTAINER_WORDS,
     FILE_NAME_WORDS,
     NO_ROLES,
     PATH_RESULT_WORDS,
@@ -113,7 +115,7 @@ CONSTANTS: Origins = frozenset({CONSTANT})
 # store, never calling ``Origin.__hash__`` (a dataclass's, in Python) once per value.
 _OVERFLOWED: Origins = frozenset({OVERFLOW})
 _UNRESOLVED: Origins = frozenset({unknown("unresolved")})
-_PARAM: Origins = frozenset({unknown("param")})
+_PARAM: Origins = frozenset({PARAM})
 _ERROR = only("error")
 _NETWORK = only("network")
 _REQUEST = only("request")
@@ -801,12 +803,21 @@ def _sanitised(args: Origins, roles: frozenset[str]) -> Origins:
     return _via(args, roles)
 
 
+# A44 (1) (b): the source words an unbound name, a chain's root or an import's symbol is read
+# by - the request words minus the generic container words, which name a request only as a
+# member of a request-rooted chain or as a parameter in handler context (``_params``).
+_FREE_SOURCES: Mapping[str, frozenset[str]] = MappingProxyType({
+    role: lexicon - CONTAINER_WORDS if role == "request" else lexicon
+    for role, lexicon in SOURCE_WORDS.items()
+})
+
+
 @lru_cache(maxsize=WORDS_MEMO)
 def _source_roles(text: str) -> Origins:
-    """``external(role)`` for each ``SOURCE_WORDS`` role a word of ``text`` hits (W9 (b));
+    """``external(role)`` for each ``_FREE_SOURCES`` role a word of ``text`` hits (W9 (b));
     memoised like ``words()``, under the same bound."""
     found = words(text)
-    return _union(only(role) for role, lexicon in SOURCE_WORDS.items() if not lexicon.isdisjoint(found))
+    return _union(only(role) for role, lexicon in _FREE_SOURCES.items() if not lexicon.isdisjoint(found))
 
 
 def _conditional_source(root: str, following: str) -> Origins:

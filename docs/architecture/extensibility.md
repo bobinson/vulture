@@ -232,6 +232,8 @@ The shared library provides common functionality to all agents:
 
 When building a new agent, import these shared components rather than reimplementing them.
 
+**Structural analysis (`shared.ast`, feature 0102).** A skill that needs data flow rather than line patterns uses the shared AST layer instead of a parser of its own ([ast_layer.md](ast_layer.md)). Adding a language is one profile file under `agents/shared/shared/ast/profiles/` (the grammar import, the table mapping its node types onto the layer's node kinds, its scope rules and the language's own builtins, never a library), registered in `PROFILES` in `shared/ast/profile.py`, with its grammar wheel declared in `agents/shared/pyproject.toml`; the kind, scope and golden-hash tests are parametrised over the profiles, and the language is admitted when its corpus fixtures pass on the files that parse. Adding a check over an existing family (`path`, `request`, `command`) is one `FamilyRule` constant shared by the skill's regex body (its rows built with `rule_row`) and its AST head: the skill asks the layer once per file (the prefilter, the profile's `owned_families`, `owns(path)`, then `family_spans`; the steps are in [ast_layer.md](ast_layer.md#using-the-layer-from-an-agent)), calls `emit_for_line` at the head of its line loop, and keeps the regex body as the per-file fallback. A new family adds its sink words and its entries in `SOURCE_ROLES_BY_FAMILY`, `COVERED_BY` and `COVERING_GUARDS`. Every new sink, source, sanitiser or guard word goes to `shared/ast/roles/` as a generic concept word, never to the agent; the skill's `SKILLS.md` gains an `AST usage` bullet with its known gaps; no environment flag is involved.
+
 ## Testing Requirements
 
 New agents must include:

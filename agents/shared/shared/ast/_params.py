@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from itertools import chain
 from typing import TYPE_CHECKING
 
 from shared.ast._nodes import cached, chain_root, is_kind, named, params_in, preorder
@@ -35,12 +36,14 @@ from shared.ast.roles import (
     ACCESSOR_WORDS,
     ACCUMULATOR_KEYS,
     CALLBACK_PAYLOAD_WORDS,
+    CONTAINER_WORDS,
     HANDLER_REGISTRATION_WORDS,
     ITERATION_WORDS,
     NO_WORDS,
     PARAM_ANNOTATION_WORDS,
     PARAM_HINTS,
     RECEIVER_PARAM_WORDS,
+    RESPONSE_OBJECT_WORDS,
     RESPONSE_WORDS,
     ROUTE_WORDS,
     SOURCE_CALL_KEYS,
@@ -48,6 +51,7 @@ from shared.ast.roles import (
     TYPE_ANNOTATION_WORDS,
     UPLOAD_WORDS,
     chain_names,
+    glue,
     hits,
     word_set,
 )
@@ -62,6 +66,9 @@ if TYPE_CHECKING:
 __all__ = ["Params"]
 
 _REQUEST = SOURCE_WORDS["request"]
+# A44 (1) (b): the request words that name a request on their own; a CONTAINER_WORDS word does
+# so only in handler context (``Params.request_named``).
+_NAMED_REQUEST = _REQUEST - CONTAINER_WORDS
 # R-T: each word's PARAM_HINTS combinations, so a name's words probe only the hints they could
 # complete (no combination is empty: each holds a word of any name it is a subset of).
 _HINTS_OF_WORD = invert({hint: hint for hint in PARAM_HINTS})
@@ -91,6 +98,7 @@ class _Facts:
     positional: dict[int, tuple[int, ...]] = field(default_factory=dict)
     slots: dict[int, tuple[int, ...]] = field(default_factory=dict)
     handler: dict[int, _Handler] = field(default_factory=dict)
+    context: dict[int, bool] = field(default_factory=dict)  # A44 (1) (b): handler context
     annotations: dict[int, tuple[frozenset[str], frozenset[str]]] = field(default_factory=dict)
 
 
@@ -167,9 +175,10 @@ class Params:
         return call if fn in self._calls.args(call) else -1
 
     def _routed(self, fn: int) -> bool:
-        """R-C: a route-word decorator, or a request-named first non-receiver parameter."""
+        """R-C: a route-word decorator, or a first non-receiver parameter named a request by a
+        word that is no container word (A44 (1) (b): a leading ``params`` routes nothing)."""
         decorated = (n for d in decorators(self._m, fn) for n in self._decorator_names(d))
-        return hits(decorated, ROUTE_WORDS) or hits(self._leading_names(self.slots(fn)), _REQUEST)
+        return hits(decorated, ROUTE_WORDS) or any(map(_names_request, self._leading_names(self.slots(fn))))
 
     def _decorator_names(self, decorator: int) -> list[str]:
         return [n for kid in self._m.children(decorator) for n in chain_names(self._m, kid)]
@@ -186,11 +195,32 @@ class Params:
         return frozenset(external(role) for role in roles)
 
     def _named(self, d: Def, handler: _Handler) -> Iterator[str]:
-        """A request word in the name (R-E for a pattern leaf); R-C's route parameters."""
-        if hits((d.name,), _REQUEST):
+        """A request-named parameter (R-E for a pattern leaf; ``request_named``); R-C's route
+        parameters."""
+        if self.request_named(d):
             yield "request"
         if handler.route and not hits((d.name,), RESPONSE_WORDS):
             yield "request"
+
+    def request_named(self, d: Def) -> bool:
+        """A44 (1) (b): ``d``'s name names a request — by a word that is no container word (or
+        its glued form: ``searchParams``), or by a ``CONTAINER_WORDS`` word in a function in
+        handler context (``_in_handler``)."""
+        if _names_request(d.name):
+            return True
+        return hits((d.name,), CONTAINER_WORDS) and cached(self._facts.context, d.scope, self._in_handler)
+
+    def _in_handler(self, fn: int) -> bool:
+        """A44 (1) (b): R-A's registration or R-C's route (``handler``), a function named by a
+        ``ROUTE_WORDS`` word whole (``export function GET``), or a response-object parameter
+        beside it (``({ params }, res, next) => ...``)."""
+        if self.handler(fn).route or glue(named(self._m, fn)) in ROUTE_WORDS:
+            return True
+        return hits(self._param_names(fn), RESPONSE_OBJECT_WORDS)
+
+    def _param_names(self, fn: int) -> Iterator[str]:
+        """The names ``fn``'s parameters bind (W7, A26), in order."""
+        return chain.from_iterable(map(self._scope.param_names, self.positional(fn)))
 
     def _annotated(self, d: Def) -> Iterator[str]:
         """R-D (W4): decorator / default-call words, then type words."""
@@ -281,4 +311,10 @@ class Params:
     def _accessor_param(self, d: Def) -> bool:
         marks, types = self.annotation_words(d.value)
         receiving = not (marks | types).isdisjoint(ACCESSOR_RECEIVER_WORDS)
-        return receiving or hits((d.name,), _REQUEST) or self.handler(d.scope).route
+        return receiving or self.request_named(d) or self.handler(d.scope).route
+
+
+def _names_request(name: str) -> bool:
+    """A44 (1) (b): ``name`` names a request on its own — a word, or its glued form, of the
+    request words that are no container word (``req``, ``request``, ``searchParams``)."""
+    return hits((name,), _NAMED_REQUEST) or glue(name) in _NAMED_REQUEST

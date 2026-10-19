@@ -10,8 +10,12 @@ columns plus every index the scope and flow passes read, each built in ONE linea
 * ``function_of[]`` / ``block_of[]``: the nearest FUNCTION, and the nearest BLOCK or MODULE
   (W2), each node's answer read off its parent's because a parent precedes its children;
 * ``nl_lines``, the sequence ``text.split("\\n")``: AST rows number lines and slice windows
-  by ``\\n`` only, as tree-sitter counts them (D21), never by ``str.splitlines``. It holds
-  the text once plus one offset per line, and slices a line out when it is read.
+  by ``\\n`` only, as tree-sitter counts them (D21), never by ``str.splitlines``. It holds the
+  text once plus one offset per line, and slices a line out when it is read.
+
+``grammar_stamp(path)`` answers the stamp a file's models carry without the model: each
+``from_doc`` records its document's stamp under the stamp's prefix (its grammar entry point),
+which a path selects as the cache does (A41 (4)).
 
 Every query is O(1), or O(degree) where it returns or filters one node's children
 (``args``, ``kwargs``); ``chain_words`` is O(1) amortised through a per-model memo of at most
@@ -50,8 +54,8 @@ from threading import Lock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, overload
 
-from shared.ast._sizing import INT_SIZE, own_int_count
-from shared.ast._validate import COLUMNS, IDENTIFIER_KINDS, LITERAL_CLASSES
+from shared.ast._sizing import INT_SIZE, own_int_count, own_strs
+from shared.ast._validate import COLUMNS, IDENTIFIER_KINDS, LITERAL_CLASSES, prefix_of, stamp_prefix
 from shared.ast.coverage import ARGS_CAPPED, CHAIN_TRUNCATED, WORDS_CAPPED
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import MAX_ARGS, MAX_CHAIN, MAX_WORDS, WORDS_MEMO
@@ -69,6 +73,7 @@ __all__ = [
     "FileModel",
     "Literal_",
     "glue",
+    "grammar_stamp",
     "owns_lang",
     "words",
 ]
@@ -84,6 +89,34 @@ def owns_lang(path: str | Path) -> bool:
     """True iff ``path``'s language has a v1 profile: the §9.2 prefilter's cheap test of
     "owned, no sink" against "unsupported", decided by extension alone — never a parse."""
     return profile_for(path) is not None
+
+
+# ── the grammar stamp a file's models carry (A41 (4)) ─────────────────────────
+
+# Stamp prefix (``_validate.stamp_prefix``: ``<module>.<entry point>@``) -> the stamp the
+# latest model of that grammar entry point was built with. The worker mints a stamp from its
+# grammar's own version, which the parent cannot read (D1: no ``tree_sitter`` here, and a
+# grammar's version is not its package's); ``from_doc`` records each model's here
+# (``_stamped``). Bounded by the entry points: ``validate_reply`` binds a stamp's prefix to
+# the request it answers.
+_STAMP_OF: dict[str, str] = {}
+
+
+def _stamped(stamp: str) -> str:
+    """``stamp``, recorded under its prefix as the stamp of its grammar entry point."""
+    _STAMP_OF[prefix_of(stamp)] = stamp
+    return stamp
+
+
+def grammar_stamp(path: str | Path) -> str:
+    """The grammar stamp of ``path``'s models (``FileModel.grammar``, §10.1): its profile's
+    module and the entry point the cache parses the file with (``grammar_for``: a ``.tsx`` file
+    reads the TSX stamp), as ``from_doc`` recorded it; ``""`` for a file with no profile, or
+    whose grammar no model of this process was built with."""
+    profile = profile_for(path)
+    if profile is None:
+        return ""
+    return _STAMP_OF.get(stamp_prefix(profile.grammar_module, profile.grammar_for(path)), "")
 
 
 # ── the literal record (§6.2, R3, W15 b, D16) ────────────────────────────────
@@ -204,7 +237,8 @@ def _literal(entry: Sequence[Any]) -> Literal_:
 class _Lines(Sequence[str]):
     """``text.split("\\n")`` as a sequence (D21), holding the text once plus each line's start
     offset: a line is sliced out when it is read, instead of every line being its own string
-    for as long as the model is cached."""
+    for as long as the model is cached. ``text`` is the text whole, the one decode whose UTF-8
+    encoding every span indexes (§4)."""
 
     __slots__ = ("_starts", "_text")
 
@@ -212,6 +246,10 @@ class _Lines(Sequence[str]):
         self._text = text
         lengths = (len(line) + 1 for line in text.split("\n"))
         self._starts = array("i", accumulate(lengths, initial=0))
+
+    @property
+    def text(self) -> str:
+        return self._text
 
     def __len__(self) -> int:
         return len(self._starts) - 1
@@ -297,7 +335,7 @@ class FileModel:
     size: int
     error_nodes: int
     unmapped: Mapping[str, int]
-    nl_lines: Sequence[str]
+    nl_lines: _Lines
     tallies: Mapping[str, int]
     bytes_estimate: int
     _cols: _Columns
@@ -334,7 +372,7 @@ class FileModel:
         unmapped = dict(doc["unmapped"])
         model = cls(
             language=doc["language"],
-            grammar=doc["grammar"],
+            grammar=_stamped(doc["grammar"]),
             size=doc["size"],
             error_nodes=doc["error_nodes"],
             unmapped=MappingProxyType(unmapped),
@@ -627,12 +665,10 @@ def _containers(model: FileModel) -> tuple[object, ...]:
 def _strings(
     model: FileModel, distinct: Iterable[str], lits: Mapping[int, Literal_]
 ) -> Iterator[str]:
-    """Every string the model holds of its own: the text, its stamps, each distinct shipped
-    text, each literal value and each ``unmapped`` type name (a shared one-character string
-    excepted)."""
-    own = (model.nl_lines._text, model.language, model.grammar)
-    held = (*own, *distinct, *_literal_values(lits), *model.unmapped)
-    return (value for value in held if len(value) > 1)
+    """Every string the model holds of its own (``_sizing.own_strs``): the text, its stamps,
+    each distinct shipped text, each literal value and each ``unmapped`` type name."""
+    own = (model.nl_lines.text, model.language, model.grammar)
+    return own_strs((*own, *distinct, *_literal_values(lits), *model.unmapped))
 
 
 def _literal_values(lits: Mapping[int, Literal_]) -> Iterator[str]:

@@ -52,10 +52,9 @@ BROKEN = _ast_heads.unparsed(SNAPSHOT_FIXTURE)
 # CWE-73, the sibling claim that fires on cwe_22_16.js line 4 (a path.join of req.query.f with
 # no I/O on that line) while the regex tier owns the file.
 EXTERNAL_PATH_ID = input_validation_check._EXTERNAL_PATH_RULE.check_id
-# Plan 3.2's lines 2-4, as the plan states them. The call itself spans lines 3-6 (the shared
-# ``test_0102_finding._FOUR_LINE_CALL``): line 2 lies outside it, and lines 5-6 are not
-# checked here.
-SIBLING_SILENT_LINES = range(2, 5)
+# Every line of the call's span, which ``emit_for_line`` claims (LLD §9.2, A41 (10)): the call
+# spans lines 3-6 (the shared ``test_0102_finding._FOUR_LINE_CALL``).
+SIBLING_SILENT_LINES = range(3, 7)
 
 
 @pytest.fixture(scope="module")

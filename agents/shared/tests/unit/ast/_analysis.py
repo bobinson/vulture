@@ -400,6 +400,11 @@ def flow_at_call(model: FileModel, family: str, head: str, *, nth: int = 0) -> F
     return flow_at(model, family, call_line(model, head), nth=nth)
 
 
+def flows_at_call(model: FileModel, family: str, head: str) -> list[Flow]:
+    """Every ``family`` candidate on the line of the sink CALL ``head``, in candidate order."""
+    return flows_on(model, family, call_line(model, head))
+
+
 def external(role: str, *via: str) -> Origin:
     """``external(role, via)`` (§8.1)."""
     return flow_mod().Origin(cls="external", role=role, via=frozenset(via))
@@ -462,13 +467,19 @@ class StubRule:
     recommendation: str
     cwe_id: str
     gate: Callable[[Any, bool], bool] | None = None
+    heuristic: Callable[[Any], str | None] | None = None
 
 
-def stub_rule(family: str, gate: Callable[[Any, bool], bool] | None = None) -> StubRule:
+def stub_rule(
+    family: str,
+    gate: Callable[[Any, bool], bool] | None = None,
+    heuristic: Callable[[Any], str | None] | None = None,
+) -> StubRule:
     """The stand-in rule of ``family``; ``gate`` as ``FamilyRule.gate`` (the SSRF
-    ``server_ctx`` gate, §9.3)."""
+    ``server_ctx`` gate, §9.3), ``heuristic`` as ``FamilyRule.heuristic`` (D25's command hook)."""
     check_id, cwe = _RULE_IDS[family]
-    return StubRule(family, check_id, f"CWE-{cwe}", f"Stub {family} rule", "high", "Stub", cwe, gate)
+    title = f"Stub {family} rule"
+    return StubRule(family, check_id, f"CWE-{cwe}", title, "high", "Stub", cwe, gate, heuristic)
 
 
 class Decline(NamedTuple):
@@ -516,12 +527,13 @@ def decided(
     path: Path = DECIDED_PATH,
     gate: Callable[[Any, bool], bool] | None = None,
     server_ctx: bool = True,
+    heuristic: Callable[[Any], str | None] | None = None,
 ) -> tuple[str, Any]:
-    """``decide(flow, stub_rule(family, gate), ctx, path=path, server_ctx=...)`` (§8.5,
-    A30 (1)) and the context it wrote to: ``ctx`` (a real ``AuditContext``), else a new
+    """``decide(flow, stub_rule(family, gate, heuristic), ctx, path=path, server_ctx=...)``
+    (§8.5, A30 (1)) and the context it wrote to: ``ctx`` (a real ``AuditContext``), else a new
     ``RecordingContext``."""
     ctx = RecordingContext() if ctx is None else ctx
-    rule = stub_rule(family, gate)
+    rule = stub_rule(family, gate, heuristic)
     return flow_mod().decide(flow, rule, ctx, path=path, server_ctx=server_ctx), ctx
 
 
@@ -611,8 +623,7 @@ def verdicts_at(model: FileModel, family: str, head: str) -> str:
 def guard_role_sets(model: FileModel, family: str, head: str) -> list[frozenset[str]]:
     """The role sets of the guards ``guards_for`` found for the sink ``head``, over the flows
     on its line, each flow's in ``guards_for``'s order."""
-    flows = flows_on(model, family, call_line(model, head))
-    return [frozenset(g.roles) for flow in flows for g in flow.guards]
+    return [frozenset(g.roles) for flow in flows_at_call(model, family, head) for g in flow.guards]
 
 
 def guard_verdict(model: FileModel, family: str, head: str) -> str:

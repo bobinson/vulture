@@ -17,6 +17,7 @@ __all__ = [
     "GRAMMAR_PACK_VERSION",
     "MODEL_SCHEMA",
     "OWNED_CHECK_IDS",
+    "VALIDATION_KEYS",
     "DeclineRecord",
     "FamilyRule",
     "FileModel",
@@ -34,6 +35,12 @@ __all__ = [
 # The worker document's schema (§6.2): part of the model-cache key with the grammar stamp (D5).
 # 2 (A28 (9)): the worker ships the C++ stack constructor as a synthetic CALL (C3).
 MODEL_SCHEMA = 2
+
+# The two top-level ``validation`` keys an AST-owned row carries (§10.1): written by
+# ``consume.flow_to_finding``, kept by the validate stage wherever it rebuilds the blob (A42 (3)).
+# Defined here, in the package's light ``__init__`` (D1), so ``shared.validate`` reads it
+# without loading the layer.
+VALIDATION_KEYS = ("ast", "flow")
 
 # Public name -> the module of this package that defines it (LLD §5).
 _HOMES: dict[str, str] = {

@@ -45,6 +45,7 @@ __all__ = [
     "UNMAPPED_TYPE",
     "ModelError",
     "admissible",
+    "prefix_of",
     "shell_word",
     "stamp_prefix",
     "validate_model",
@@ -143,6 +144,12 @@ def stamp_prefix(module: str, entry: str) -> str:
     """The head of the ``grammar`` stamp of a document parsed with ``module.entry`` (the
     worker appends the grammar's version)."""
     return f"{module}.{entry}@"
+
+
+def prefix_of(stamp: str) -> str:
+    """``stamp_prefix`` read back off a ``grammar`` stamp: what precedes its version."""
+    head, at, _version = stamp.partition("@")
+    return head + at
 
 
 def validate_reply(doc: Mapping[str, Any], profile: LanguageProfile, grammar: str, data: bytes) -> _Doc:

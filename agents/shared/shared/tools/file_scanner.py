@@ -18,6 +18,15 @@ SCANNER_DEF_LINE = re.compile(r"re\.compile\(|=\s*\[?\s*re\.", re.IGNORECASE)
 SAFE_IMPORT_LINE = re.compile(r"^\s*(?:from|import)\s")
 COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
 
+
+def is_non_code_line(line: str, imports: re.Pattern[str]) -> bool:
+    """A line a skill's per-line checks skip: a comment, an import by the skill's own
+    ``imports`` shape, or a scanner's own pattern definition."""
+    return bool(
+        COMMENT_INDICATORS.match(line) or imports.match(line) or SCANNER_DEF_LINE.search(line)
+    )
+
+
 logger = logging.getLogger(__name__)
 
 

@@ -1,4 +1,5 @@
-"""The isolated parse worker (feature 0102, D2, D3, LLD §6.2, W1, W3, W11, W15 b, C3, A36).
+"""The isolated parse worker (feature 0102, D2, D3, LLD §6.2, W1, W3, W11, W15 b, C3, A36,
+A42 (2)).
 
 The pool starts this module as ``[sys.executable, "-I", "-c", BOOTSTRAP]`` with a private
 cwd and env ``{PATH, LANG}`` (D2); ``main()`` sets its rlimits, then answers each request —
@@ -48,7 +49,11 @@ does not carry, so the walk, not the capture list, builds the document:
 * a ``callee_from`` row with a ``subscript`` shape (A36, C2: the vexing parse ``std::ifstream
   in(argv[1]);``) is that CALL only when its node holds ONE parameter of the shape, which then
   ships as its one argument, a SUBSCRIPT: the parameter's type name a NAME under OBJECT, its
-  array declarator transparent under INDEX. Any other node ships by the row's own kind.
+  array declarator transparent under INDEX. Any other node ships by the row's own kind;
+* a type the profile's ``synthetic_calls`` gives a glued key (§6.3, A42 (2): PHP
+  ``include``/``require``, backticks) is a call in disguise: the same synthetic CALL, its
+  CALLEE a NAME carrying the key and its ARGS container the node itself, so the operand the
+  node holds is its positional argument.
 
 A NAME is a leaf: its identifier is its ``text``. Rows count ``\\n`` only (D21) and spans are
 byte offsets into the shipped bytes. A row is read as ``start_point[0]``, never as
@@ -336,17 +341,22 @@ class _Row:
     """A Capture as the walk reads it: its kind as an int (None: transparent), its field map
     keyed by the grammar's field ID, its positional map, the Field a synthetic CALL borrows
     its callee from (``callee``, C3; None for every other row), the parameter shape that
-    narrows it (``subscript``, A36; None for every other row), and ``place``, the
-    ``_Skeleton`` method that places a node under it (``_row_placement``)."""
+    narrows it (``subscript``, A36; None for every other row), the glued callee key of a call
+    in disguise (``key``, the profile's ``synthetic_calls``, A42 (2); ``""`` for every other
+    row), and ``place``, the ``_Skeleton`` method that places a node under it
+    (``_row_placement``)."""
 
-    __slots__ = ("callee", "fields", "kind", "place", "positional", "subscript")
+    __slots__ = ("callee", "fields", "key", "kind", "place", "positional", "subscript")
 
-    def __init__(self, cap: Capture, field_ids: dict[str, int | None] = _NO_FIELD_IDS) -> None:
+    def __init__(
+        self, cap: Capture, field_ids: dict[str, int | None] = _NO_FIELD_IDS, key: str = ""
+    ) -> None:
         self.kind = _optional_int(cap.kind)
         self.fields = {field_ids[name]: int(fld) for name, fld in cap.fields.items()}
         self.positional = {index: int(fld) for index, fld in cap.positional.items()}
         self.callee = _optional_int(cap.callee_from)
         self.subscript = cap.subscript
+        self.key = key
         self.place = _row_placement(self)
 
 
@@ -372,7 +382,7 @@ class _Table:
         self.error = count
         self.classes = list(map(_literal_class, self.names))
         self.paired_under = _paired_under(self.names, paired, field_ids)
-        self.dispositions = _dispositions(self.names, plain, paired, profile.pruned, field_ids)
+        self.dispositions = _dispositions(self.names, plain, paired, profile, field_ids)
 
     def slot(self, kid: int) -> int:
         """A node's kind id as its slot in the lists: ERROR's id lands on the last one."""
@@ -404,21 +414,23 @@ def _dispositions(
     names: list[str],
     plain: dict[str, Capture],
     paired: dict[tuple[str, str], Capture],
-    pruned: frozenset[str],
+    profile: LanguageProfile,
     field_ids: dict[str, int | None],
 ) -> list[tuple[_Placement, _Row]]:
-    """Each kind id's ``(placement, plain row)``."""
+    """Each kind id's ``(placement, plain row)``; a type the profile's ``synthetic_calls``
+    keys carries its glued callee key on its row (A42 (2))."""
     paired_types = frozenset(key[1] for key in paired)
-    rows = (_plain_row(plain.get(name), field_ids) for name in names)
+    keys = profile.synthetic_calls
+    rows = (_plain_row(plain.get(name), field_ids, keys.get(name, "")) for name in names)
     return [
-        _disposition(name, row, pruned, paired_types)
+        _disposition(name, row, profile.pruned, paired_types)
         for name, row in zip(names, rows, strict=True)
     ]
 
 
-def _plain_row(cap: Capture | None, field_ids: dict[str, int | None]) -> _Row:
+def _plain_row(cap: Capture | None, field_ids: dict[str, int | None], key: str) -> _Row:
     """A type's plain row; an unlisted type's is ``_UNLISTED`` (W1 rules 3-5)."""
-    return _UNLISTED if cap is None else _Row(cap, field_ids)
+    return _UNLISTED if cap is None else _Row(cap, field_ids, key)
 
 
 def _paired_under(
@@ -464,8 +476,11 @@ def _disposition(
 
 
 def _row_placement(row: _Row) -> _Placement:
-    """A row's placement: a synthetic CALL (C3; A36 when a parameter shape narrows it), else
-    by its kind (``_plain_placement``)."""
+    """A row's placement: a call in disguise (A42 (2)), a synthetic CALL (C3; A36 when a
+    parameter shape narrows it), else by its kind (``_plain_placement``). An empty key is no
+    disguise: Rust's ``macro_invocation`` names its callee in its own CALLEE field."""
+    if row.key:
+        return _Skeleton.disguised
     if row.callee is None:
         return _plain_placement(row.kind)
     return _Skeleton.construct if row.subscript is None else _Skeleton.subscripted
@@ -858,9 +873,22 @@ class _Skeleton:
         callee = self._borrowed_callee(frame.parent, row.callee)
         if callee < 0:
             return self.transparent(node, kid, frame, field, _TRANSPARENT)
-        args = self._synthetic_call(node, frame.parent, field, callee)
-        # An argument list always has children (its parentheses): it is always entered.
-        return self._open_children(node, kid, _ARGS, _CONTAINER, _ARGS_FIELD, frame, args)
+        call = self._synthetic_call(node, frame.parent, field)
+        self._copy(callee, call, _CALLEE)
+        return self._entered_args(node, kid, frame, call)
+
+    def disguised(
+        self, node: tree_sitter.Node, kid: int, frame: _Frame, field: int, row: _Row
+    ) -> bool:
+        """§6.3, A42 (2): a call in disguise (a type the profile's ``synthetic_calls`` keys:
+        PHP ``include``/``require`` and their ``_once`` forms, backticks) is a synthetic CALL
+        under ``field`` whose CALLEE is a NAME carrying the glued key (``row.key``) and whose
+        ARGS container is ``node``, entered for its arguments: each child it ships is a
+        positional argument — the operand, or a backtick's interpolations (its
+        ``string_content`` is an unmapped leaf)."""
+        call = self._synthetic_call(node, frame.parent, field)
+        self._set_text(self._append(node, _NAME, call, _CALLEE), row.key)
+        return self._entered_args(node, kid, frame, call)
 
     def subscripted(
         self, node: tree_sitter.Node, kid: int, frame: _Frame, field: int, row: _Row
@@ -874,20 +902,32 @@ class _Skeleton:
         if parts is None:
             return self.ship(node, kid, frame, field, row)
         param, name, array = parts
-        args = self._synthetic_call(node, frame.parent, field, callee)
-        subscript = self._append(param, _SUBSCRIPT, args, _NONE)
+        call = self._synthetic_call(node, frame.parent, field)
+        self._copy(callee, call, _CALLEE)
+        subscript = self._append(param, _SUBSCRIPT, self._args_of(node, call), _NONE)
         self._place_under(subscript, name, _OBJECT, True)  # W3: the type name ships here
         self._place_under(subscript, array, _INDEX, False)  # transparent: its index ships
         return False
 
     # ── placement helpers ──
 
-    def _synthetic_call(self, node: tree_sitter.Node, owner: int, field: int, callee: int) -> int:
-        """C3: a CALL spanning ``node`` under ``owner`` with ``field``, its CALLEE a copy of the
-        name chain ``callee`` and its ARGS container ``node`` too: the container's index."""
-        call = self._append(node, _CALL, owner, field)
-        self._copy(callee, call, _CALLEE)
+    def _synthetic_call(self, node: tree_sitter.Node, owner: int, field: int) -> int:
+        """A CALL spanning ``node`` under ``owner`` with ``field``: its index. The placement
+        that ships it appends its CALLEE next — a copy of a name chain (C3), or a NAME carrying
+        a glued key (A42 (2)) — then its ARGS (``_args_of``), so the order is CALL, CALLEE,
+        ARGS."""
+        return self._append(node, _CALL, owner, field)
+
+    def _args_of(self, node: tree_sitter.Node, call: int) -> int:
+        """The synthetic ``call``'s ARGS container, ``node`` itself: its index."""
         return self._append(node, _ARGS, call, _ARGS_FIELD)
+
+    def _entered_args(self, node: tree_sitter.Node, kid: int, frame: _Frame, call: int) -> bool:
+        """The synthetic ``call``'s ARGS container ``node``, entered for the arguments. ``node``
+        always has children (an argument list's parentheses, a disguised call's keyword or
+        backticks), so it is always entered."""
+        args = self._args_of(node, call)
+        return self._open_children(node, kid, _ARGS, _CONTAINER, _ARGS_FIELD, frame, args)
 
     def _place_under(self, parent: int, node: tree_sitter.Node, field: int, types: bool) -> None:
         """Walk ``node`` as a child of shipped node ``parent`` under ``field`` (A36: a part of

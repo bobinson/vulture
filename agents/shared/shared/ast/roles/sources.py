@@ -32,6 +32,7 @@ __all__ = [
     "ACCUMULATOR_KEYS",
     "CALLBACK_PAYLOAD_WORDS",
     "CONDITIONAL_SOURCE_ROOTS",
+    "CONTAINER_WORDS",
     "DEMOTED_WORDS",
     "EXACT_NON_STRONG",
     "HANDLER_REGISTRATION_WORDS",
@@ -41,6 +42,7 @@ __all__ = [
     "PARAM_ANNOTATION_WORDS",
     "PARAM_HINTS",
     "RECEIVER_PARAM_WORDS",
+    "RESPONSE_OBJECT_WORDS",
     "RESPONSE_WORDS",
     "ROUTE_WORDS",
     "SINK_SIDE_KEYS",
@@ -66,6 +68,12 @@ SOURCE_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
     # recognised so it can be tallied; reports nowhere (D22)
     "env": frozenset({"environ", "getenv"}),
 })
+# A44 (1) (b): the request words that are generic container names - a helper's options bag
+# (`params`), a message (`payload`, `body`), a function's `input`, a search `query` - and so
+# name a request only in request context: a member of a request-rooted chain (`req.params`,
+# W9 (b)) or a parameter of a function in handler context (``_params``). Anywhere else a
+# parameter named so is `unknown(param)`, and an unbound name or chain root so named no source.
+CONTAINER_WORDS = frozenset({"params", "param", "payload", "input", "body", "query", "files"})
 # W9 (b): a chain matches iff its root's word is the key and the next segment's word is a member
 # key, whose value names the role (`process.env` -> env, `event.records` -> request). A root
 # bound by an IMPORT (a module) is skipped by the flat SOURCE_WORDS test: `flask.request.args`.
@@ -139,6 +147,11 @@ RESPONSE_WORDS = frozenset({
     "res", "response", "resp", "reply", "next", "cb", "callback", "done", "self", "cls",
     "socket", "ws", "writer", "w",
 })
+# A44 (1) (b): the response objects of a (request, response) handler signature. A function
+# with a parameter so named is in handler context (`({ params }, res, next) => ...` returned by
+# a handler factory and registered elsewhere): the request half of the signature is no helper's
+# options bag.
+RESPONSE_OBJECT_WORDS = frozenset({"res", "response", "resp", "reply"})
 
 # ── structural callee keys (§8.2, §8.4: R-A, R-B, R-J, R-U, R-W; mode (a), glued) ──
 

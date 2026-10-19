@@ -42,7 +42,9 @@ _PARAMETER = cap(K.PARAM, name=F.NAME, type=F.ANNOTATION, default_value=F.VALUE)
 _METHOD_CALL = cap(K.CALL, object=F.OBJECT, name=F.CALLEE, arguments=F.ARGS)
 _MEMBER = cap(K.MEMBER, object=F.OBJECT, name=F.PROPERTY)
 
-# §6.3: grammar nodes that are calls in disguise -> their glued synthetic callee key.
+# §6.3: grammar nodes that are calls in disguise -> their glued synthetic callee key. The
+# worker ships each as a CALL whose CALLEE is a NAME carrying the key and whose ARGS container
+# is the node itself, so the operand (`include $full;`) is its positional argument (A42 (2)).
 _SYNTHETIC_CALLS = {
     "include_expression": "include",
     "include_once_expression": "include",

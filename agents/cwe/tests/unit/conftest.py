@@ -18,3 +18,22 @@ def reset_catalog_caches():
     _build_keyword_index.cache_clear()
     _parent_children_index.cache_clear()
     yield
+
+
+@pytest.fixture
+def regex_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Feature 0102 (A43 (2)): the AST head answers every rule on every file as for a file the
+    AST tier falls back on (``_ast_head._answer``, the one point ``ast_answers`` and
+    ``ast_spans`` reach), so each dispatcher runs its renamed regex body
+    (``_check_command_regex``, ``_check_ssrf_regex``, ``_check_path_traversal_regex``) on every
+    line - the tier that still owns each file the AST tier does not parse (D10). A pre-0102
+    test whose pinned behaviour the AST tier replaced on parsed files keeps pinning the regex
+    tier through this fixture, its inputs and assertions unchanged; what the AST tier does on
+    the same input is pinned in ``test_0102_regex_pinned_counterparts.py``. A test seam, not a
+    flag."""
+    from cwe_agent.skills import _ast_head
+
+    def fallback(*_args: object) -> _ast_head.AstAnswer:
+        return _ast_head.FALLBACK
+
+    monkeypatch.setattr(_ast_head, "_answer", fallback)

@@ -351,6 +351,73 @@ fails when its output drifts from the file, and
 `backend/test/e2e/owasp_mapping_flow_test.go` replays it through the backend
 stream path, so the two sides are tested against the same bytes.
 
+### AST-tier fields (feature 0102, all optional)
+
+Feature 0102 adds the fields below for the shared AST layer
+([ast_layer.md](ast_layer.md)), which owns the CWE agent's
+`cwe.input_validation.path_traversal` (CWE-22), `cwe.injection.ssrf` (CWE-918)
+and `cwe.injection.command` (CWE-78) on every file it parses cleanly. As with
+the 0074 fields, every one is additive and optional. A sender omits a field it
+has no value for, and a receiver treats a missing field as "not sent". It never
+invents a zero or a default, so either side can be older than the other.
+
+| Field | Direction / where | Shape | Absent means |
+|---|---|---|---|
+| `validation.ast` | agent → Go → storage / API, a top-level key of a finding's `validation` blob | object `{engine, grammar, model_schema}`: `"ast"`; the grammar stamp of the file's model, `<module>.<entry point>@<version>` (`tree_sitter_typescript.language_typescript@0.23.2`); the file-model schema, an int (`2`) | The row is not an AST-tier row: a regex-tier row (a check id the layer does not own, or a file it fell back on), another agent's row, or an older agent. This key is how a reader tells the two tiers apart. A top-level key, never a `checks[]` entry, so no voter reads it. The agent's validate stage keeps it when it rebuilds the blob, and Go stores and serves the blob whole, so it persists with no backend change. |
+| `validation.flow` | same blob, beside `validation.ast` | object `{family, origins, via, guards, hops, truncated, heuristic?}`: `family` is `path`, `request` or `command`; `origins` the flow's origins rendered and sorted (`external:request`, `external:param_hint`, `unknown:param`); `via` the sanitiser roles the value passed, sorted; `guards` the roles of the guards examined, sorted; `hops` at most 8 `{line, kind, name}` from the source side, `kind` one of `param`, `member`, `assign`, `call`, `return`, `loop`, `catch`, `sink`; `truncated` true when hops were cut; `heuristic` a named heuristic's token | As for `validation.ast`. `heuristic` is present only on a row a named heuristic reported (`"command_param"`, the CWE-78 command parameter heuristic, see the CWE agent's `SKILLS.md`); absent, the row is a data-flow report. A hop `name` is an identifier of at most three `.`-joined segments; a literal subscript key or command flag is shown as `<index>` / `<flag>`, anything else as `<expr>`, so no source literal value reaches the wire. |
+| `ast_coverage` | agent → Go, top level of the `result` snapshot | object, keys sorted at every level: `files` `{parsed, fallback, fallback_keys, fallback_paths, fallback_paths_truncated, breaker_tripped}`; `grammars` (language → grammar stamp); `declines` `{count, by_rule, capped_rules}`; `tallies` (`unknown_only_sinks`, `origin_overflow`, `summary_cap`, `args_capped`, `chain_truncated`, `words_capped`, and when non-zero `env_only_sinks`, `role_filtered_sinks`, `branch_depth`; `cache` `{hits, misses, evictions}`; `unmapped_kinds` per language); `workers` `{count, recycled, breaker_tripped}` | An older agent. Go then applies no AST lineage guard (the pre-0102 behaviour). Every agent on a 0102 runner sends it; one that does not use the layer sends zero counts. An older backend ignores it. Go keeps it raw and reads only `files.fallback_keys` and `files.breaker_tripped`, in the lineage pass; it is not stored on the audit row. |
+
+**`ast_coverage.files`.** `parsed` counts the files the layer owned.
+`fallback` counts, once per file, why a file was scanned by the regex tier
+instead: `unsupported` (no language profile; the regex tier's own coverage,
+not a loss), `parse_error` (any ERROR node), `too_large`, `too_deep`,
+`ir_too_large`, `bad_model` (a worker reply the parent's validator refused),
+`timeout`, `worker_crashed`, `worker_error`, `spawn_failed`, and
+`circuit_open` (the audit's breaker tripped after 20 worker timeouts or
+crashes; every later file falls back). `fallback_keys` lists every fallback
+file except `unsupported` ones, uncapped and lossless: the POSIX-normalised
+path relative to the `source_path` the agent walked, `/`-separated, no leading
+`./`. `fallback_paths` is the human-facing copy: at most 200 entries, each
+rendered root-relative in printable ASCII and cut at 200 characters, with
+`fallback_paths_truncated` past the cap. `breaker_tripped` is the one breaker
+signal; `workers.breaker_tripped` mirrors it.
+
+**What the lineage guard reads.** A CWE-22/918/78 finding the AST tier
+produced is deterministic-tier, so a scan that no longer reports it would close
+it as fixed. When its file falls back to the regex tier, that silence proves
+nothing, so the lineage pass holds such rows `unconfirmed`, never `fixed`: every
+deterministic row in those three categories when `files.breaker_tripped` is
+true, else each one whose root-relative file is in `files.fallback_keys` (never
+the lossy `fallback_paths`). A lineage row carries no check id, so a regex-tier
+row in those categories on a fallback file is held too, which never
+false-closes and settles on the next scan that parses the file. Both members are always present on a current agent, as `[]`
+and `false` when empty. A present `ast_coverage` whose `files` lacks either,
+or carries `null`, a wrong type, or an absolute, empty, `.` or `..`-escaping
+key, is unreadable and holds every such row; so does a result with
+`ast_coverage` but no `result_schema >= 2`, which leaves no scan offset to
+place keys by. An absent `ast_coverage` is no guard. The backend carrying this
+guard must be deployed before agents that carry the AST layer.
+
+**Decline lines.** The layer suppresses a finding only by its own decline: a
+flow whose external origins all passed a covering sanitiser, or that a guard
+covering the family protects. Each decline is streamed as a `thinking` event
+after the skill phase, and every audit then streams exactly one summary line,
+0 declines included:
+
+```
+ast_decline family=path file=src/files.py line=7 rule=sanitized:path_normalize origins=external:request
+ast_decline_summary declines=<count> shown=<lines shown> capped=<comma-joined capped rules, or ->
+```
+
+`rule` is the decline label, `sanitized:<roles>` or `guarded:<role>`; `file`
+is rendered like `fallback_paths`. At most 50 lines are kept per label (the
+lexicographically smallest, so the set does not depend on thread order);
+`declines` counts every decline, kept or not, and a label past the cap is named
+in `capped`. They are progress text: Go forwards them as
+`TextMessageContent` and never parses them, nothing is persisted, and a decline
+is never a `false_positive` label or a `checks[]` entry. An older agent does
+not write them.
+
 ### Health Check
 
 ```

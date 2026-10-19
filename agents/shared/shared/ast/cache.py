@@ -37,8 +37,12 @@ the agent process (§4):
   this cache. A parse refused for a reason of the file's bytes (``MEMOISED_REASONS``, derived
   from ``coverage.REASONS``) is recorded in the current audit's ``declined`` map under the key,
   as the bare reason: the same key again in that audit is None with no pool call, no second
-  breaker fault and no second tally, and the next audit asks again. ``spawn_failed`` (a fault of the pool, not of the file) is not
+  breaker fault and no second fallback tally, and the next audit asks again. ``spawn_failed`` (a fault of the pool, not of the file) is not
   memoised; ``circuit_open`` needs no memo (the breaker stays open for the audit).
+* **Cache events (§10.2 ``tallies.cache``, D14, A41 (8)).** A request that leads a parse is a
+  ``miss``; every later request of its key is a ``hit`` — whether it joins the parse in flight,
+  reads the stored model or reads the audit's ``declined`` memo — so an audit's counts do not
+  depend on how its skill threads interleave. ``evictions`` counts the models evicted.
 * **Never emptied per audit (D5).** ``file_scanner.clear_caches()`` starts the default
   audit over (``context.reset_default()``, A20) and leaves every model here: the models are
   shared by the audits still running, and the key already carries the mtime. ``clear()``
@@ -329,15 +333,19 @@ def _keyed(
     audit: AuditContext,
 ) -> Outcome:
     """``too_large`` from the stat, before any read or worker; a key this audit declined
-    earlier (A18) without asking the pool; else the cache's outcome, a refusal memoised."""
+    earlier (A18) without asking the pool; else the cache's outcome, a refusal memoised (by
+    the leader's ``_build`` before its flight lands; here for a request that joined the flight
+    of another audit's leader)."""
     if info.st_size > _SIZE_CAP:
         return "too_large"
     grammar = profile.grammar_for(path)
     key = _model_key(resolved, info, profile, grammar)
     declined = audit.declined.get(key)
     if declined is not None:
+        audit.coverage.record_cache(CACHE_HITS)  # A41 (8): a later request of the key
         return declined
-    return _remembered(audit, key, _CACHE.get(key, _build, path, profile, grammar, info))
+    outcome = _CACHE.get(key, _build, audit, key, path, profile, grammar, info)
+    return _remembered(audit, key, outcome)
 
 
 def _model_key(resolved: str, info: os.stat_result, profile: LanguageProfile, grammar: str) -> Key:
@@ -367,13 +375,26 @@ def _regular_file(path: str | Path) -> tuple[str, os.stat_result] | None:
     return (resolved, info) if stat.S_ISREG(info.st_mode) else None
 
 
-def _build(path: str | Path, profile: LanguageProfile, grammar: str, before: os.stat_result) -> Built:
-    """A miss: the parse, made safe — an unexpected fault is ``worker_error``, never a raise."""
+def _build(
+    audit: AuditContext,
+    key: Key,
+    path: str | Path,
+    profile: LanguageProfile,
+    grammar: str,
+    before: os.stat_result,
+) -> Built:
+    """A miss, led by a request of ``audit``: the parse, made safe — an unexpected fault is
+    ``worker_error``, never a raise — its refusal memoised in ``audit`` BEFORE its flight
+    lands (A18, A41 (8)). A later request of the key in this audit reads the memo — a hit,
+    with no second pool call and no second breaker fault — and never finds the key with
+    neither a flight nor a memo, which would lead a second parse."""
     try:
-        return _parse(Path(path), profile, grammar, before)
+        built = _parse(Path(path), profile, grammar, before)
     except Exception as exc:  # get_model never raises (§5)
         logger.warning("ast model build: unexpected %s; file falls back", type(exc).__name__)
-        return "worker_error", True
+        built = "worker_error", True
+    _remembered(audit, key, built[0])
+    return built
 
 
 def _parse(path: Path, profile: LanguageProfile, grammar: str, before: os.stat_result) -> Built:

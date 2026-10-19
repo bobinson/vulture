@@ -23,6 +23,27 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Added
 
+- **Feature 0102 — Shared AST layer (`shared.ast`).** A structural layer in the
+  shared agent library: tree-sitter parse tree → normalised file model → scopes
+  and def-use → data flow inside one file, for JavaScript, TypeScript, Python,
+  Go, Java, Rust, PHP, C and C++. It knows roles (generic concept words and
+  structural positions), never libraries or frameworks. Parsing runs in
+  isolated, spawned worker processes (no keys in their environment, resource
+  limits, length-prefixed JSON validated at the boundary, killed and replaced on
+  a timeout or crash); a file the layer cannot parse is scanned by the regex
+  tier exactly as before. The CWE agent is the first consumer, for CWE-22,
+  CWE-918 and CWE-78. New wire fields, all optional, so either side may be
+  older: `validation.ast` and `validation.flow` on an AST-tier finding (top-level
+  keys, never `checks[]`; persisted with no backend change), `ast_coverage` on
+  the `result` snapshot (files parsed and fallen back with the reason, the
+  declines, the tallies), and the `ast_decline` / `ast_decline_summary`
+  thinking lines. The backend's lineage pass reads `ast_coverage` and holds a
+  CWE-22/918/78 row `unconfirmed`, never `fixed`, when its file fell back to the
+  regex tier in that scan. Ten new dependencies: the tree-sitter core and nine
+  grammars (MIT). See
+  [docs/architecture/ast_layer.md](docs/architecture/ast_layer.md) and
+  [docs/architecture/agent_protocol.md](docs/architecture/agent_protocol.md).
+
 - **Feature 0074 — verify masked values; merge records masked.** A finding's
   masked snippet can be verified against the scanned file: `GET
   /api/audits/{id}/findings/{fid}/masked` locates every masked value (line,
@@ -103,6 +124,53 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   the CWE agent's SKILLS.md lists what they do not reach.
 
 ### Changed
+
+- **CWE-22, CWE-918 and CWE-78 rows come from the AST layer on parsed files
+  (feature 0102).** On a JavaScript, TypeScript, Go, Java, Rust, PHP or Python
+  file that parses with no error, `cwe.input_validation.path_traversal`,
+  `cwe.injection.ssrf` and `cwe.injection.command` are decided by data flow
+  inside the file instead of line patterns; on C and C++ files only CWE-22 and
+  CWE-78 are (CWE-918 stays regex there). What changes for consumers:
+  - **Rows anchor at the sink line** (`line_start == line_end`), where the
+    regex tier anchored at the line its pattern matched, so a row both tiers
+    produce may move line on the first scan after the upgrade and whenever its
+    file moves between tiers. The check id, category, title, severity and
+    recommendation are unchanged, and lineage identity carries no line.
+  - **Declines are visible.** A flow the layer does not report because a
+    sanitiser or a guard covers it is streamed as an `ast_decline` thinking
+    line, and every audit's skill phase ends with one `ast_decline_summary`
+    line. A sink reached only by values of unknown origin is counted, not
+    reported, except the CWE-78 command parameter heuristic (rows marked
+    `validation.flow.heuristic = "command_param"`). That heuristic also reports
+    a parameter that is the whole command of a command builtin of the
+    language's own table (`new ProcessBuilder(cmd)`, Rust `Command::new(cmd)`,
+    C `posix_spawn`).
+  - **Shapes the regex tier flagged by pattern alone change on a parsed file.**
+    A command sink reached only by a parameter no caller in the file binds
+    (`Runtime.getRuntime().exec(cmd)`, PHP `passthru($cmd)`, `proc_open($cmd,
+    …)`) is counted, not reported, unless the heuristic above names it; a
+    command with a constant argument (`shell_exec("ls -la")`) is not reported,
+    and no other check flags its presence (CWE-676 has not covered execution
+    calls since feature 0060); a request value in a later argument after a
+    literal program (`new ProcessBuilder("tar", "-C" + v)`) is no command
+    injection. For SSRF a source is followed through the whole file, not a
+    25-line window; a map read keyed by a request value in server code
+    (`users.get(req.cookies.token)`) reports; and words near the sink (a
+    `validate_url` call on another variable, an `allowed_hosts` list) no
+    longer suppress a row — only a check of the sink's own argument does.
+    Files that do not parse keep every regex behaviour.
+  - **Row sets change.** Multi-statement flows, call results and same-file
+    helpers are now reported; regex rows the flow does not support are not.
+    Under `VULTURE_LINEAGE_FIX_MODE=evidence` (the default) a deterministic row
+    a scan no longer reports closes as FIXED, so the first scan of an existing
+    target after upgrading marks such rows fixed; rows on files that fell back
+    to the regex tier are held `unconfirmed`. On a parsed file CWE-36 and CWE-23
+    still take a path line before CWE-22. The known gaps, including path APIs
+    the layer has no sink key for, are listed in the CWE agent's `SKILLS.md`.
+  - **No flag.** Ownership is decided per file by the parse outcome alone;
+    rollback is a code revert of the CWE consumer heads and a redeploy. Deploy
+    the backend before the agents, so its lineage guard is in place when an
+    agent with the layer reports.
 
 - **The CWE agent's GENERATE prompt states the computed coverage counts**
   (171 CWE-ID `category` literals across 24 dedicated skills, N=81

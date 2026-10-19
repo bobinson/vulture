@@ -18,24 +18,33 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from itertools import accumulate
 from types import MappingProxyType
 
 from shared.ast._validate import SHELL_INTERPRETERS
 from shared.ast.profile import PROFILES
+from shared.ast.roles._words import words
 
 __all__ = [
     "BROWSER_REQUEST_KEYS",
     "BUILDER_ARG_KEYS",
     "BUILTIN_KEYS",
+    "CLIENT_WORDS",
+    "COLLECTION_WORDS",
     "COMMAND_BUILDER_WORDS",
     "COMMAND_CARRIER_WORDS",
     "COMMAND_RECEIVER_WORDS",
     "COMMAND_STRONG",
     "COMMAND_WEAK",
+    "DATA_STORE_WORDS",
     "EXIT_WORDS",
     "FLAG_LITERALS",
+    "GENERIC_REQUEST_VERBS",
     "PATH_KWARGS",
     "PREFILTER",
+    "PROCESS_WORDS",
+    "REGEX_WORDS",
+    "REQUEST_API_WORDS",
     "REQUEST_CARRIER_WORDS",
     "REQUEST_SINK_NO_POSITIONAL",
     "REQUEST_TERMINAL_WORDS",
@@ -45,11 +54,15 @@ __all__ = [
     "SHELL_PREFIXES",
     "SINK_KEYS",
     "SINK_WORDS",
+    "SYNC_SUFFIX",
     "TWO_PATH_SINKS",
     "URL_KWARGS",
+    "URL_SHAPE_WORDS",
     "WRITE_SINKS",
+    "command_lead",
     "model_needed",
     "needed_families",
+    "path_sink_key",
 ]
 
 # ── sink words (§9.1, revision 3 + revision 9) ───────────────────────────────
@@ -85,6 +98,47 @@ SINK_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
     family: words | REV9_GLUED_ADDITIONS.get(("SINK_WORDS", family), frozenset())
     for family, words in (("path", _PATH_SINKS), ("request", _REQUEST_SINKS))
 })
+# A44 (1) (e): a synchronous twin is the file operation its stem names (`mkdirSync`, `rmSync`):
+# a glued key `<stem>sync` is a path sink when `<stem>` is one - a structural suffix rule of
+# the sink lookup (``path_sink_key``), never a per-name entry; `readfilesync`, the one entry
+# that predates the rule, stays.
+SYNC_SUFFIX = "sync"
+
+# ── request: generic verbs and HTTP-client evidence (A44 (1) (a)) ────────────
+
+# The request sink keys that are generic verbs: a collection, a cache, a cookie store or a
+# router answers them as often as an HTTP client does, so each is a request sink only with
+# HTTP-client evidence (``_calls``): a client concept in the receiver chain, a URL-shaped
+# argument, or no receiver (a module's own function counts as none).
+GENERIC_REQUEST_VERBS = frozenset({
+    "get", "post", "put", "patch", "delete", "head", "options", "request", "open", "connect",
+    "do",
+})
+# The client / transport concept words a receiver chain shows an HTTP client by.
+CLIENT_WORDS = frozenset({"client", "transport", "http", "https", "http2"})
+# A URL-shaped NAME argument: its words carry one of these.
+URL_SHAPE_WORDS = frozenset({"url", "uri", "endpoint", "href", "host", "link"})
+# The last word of a collection construction's callee (`new Map()`, `new WeakSet()`, Java
+# `new HashMap<>()`, Python `dict()`): a receiver bound to one is no client.
+COLLECTION_WORDS = frozenset({"map", "set", "dict", "list", "array"})
+
+# ── command: regex and data-store receivers, process evidence (A44 (1) (c)) ──
+
+# A receiver whose words carry a data-store concept runs a statement, not a process
+# (`db.exec(sql)`, Go `db.Exec`, `conn.exec_driver_sql`): no command key makes it a sink.
+DATA_STORE_WORDS = frozenset({
+    "db", "database", "sql", "statement", "stmt", "query", "cursor", "conn", "connection",
+})
+# A regex construction's callee chain carries one of these, by a word or glued (`new
+# RegExp(...)` -> regexp, `re.compile`, `Pattern.compile`, Go `regexp.MustCompile`): a
+# receiver bound to one, or to a regex literal, matches text and runs no command.
+REGEX_WORDS = frozenset({"regexp", "regex", "pattern", "re"})
+# R-N's prefix reaches a single-word identifier only (`execa`, `execvp`). A multi-word one
+# (`execSync`, `runCommandWithTimeout`) reaches a command key only through leading words that
+# glue to a COMMAND_STRONG key exactly AND one of these process concepts in its own words, its
+# receiver chain or the module it is imported from (`child_process`): `executePollAction`,
+# `ExecApprovalContainer` and `forkJoin` are no process.
+PROCESS_WORDS = frozenset({"process", "subprocess", "child", "proc", "shell", "pty"})
 
 # ── command (§8.5; R-L, R-M, R-N, R-V) ───────────────────────────────────────
 
@@ -160,6 +214,12 @@ EXIT_WORDS = frozenset({"exit", "abort", "die", "fail", "panic", "halt", "termin
 
 # ── derived once (A27 (2)) ───────────────────────────────────────────────────
 
+# A44 (1) (a): a receiver chain shows an HTTP client by a client concept or by a request sink
+# key that names a request API rather than a verb (`axios`, `http`, `fetch`): derived from the
+# request table, so no API name is entered twice.
+REQUEST_API_WORDS = CLIENT_WORDS | (
+    SINK_WORDS["request"] - GENERIC_REQUEST_VERBS - REQUEST_SINK_NO_POSITIONAL
+)
 # Every profile's builtin sink keys, an EMPTY family set included (C `read`, P4/R5).
 BUILTIN_KEYS = frozenset(key for p in PROFILES.values() for key in p.builtin_sinks)
 # The keys that make a CALL a sink - NOT every sink-side structural lexicon: SOURCE_CALL_KEYS is
@@ -212,6 +272,23 @@ def _glued_view(text: str) -> str:
     substring wherever its identifier is (``check_output(`` -> ``checkoutput(``). ``$`` stays:
     the R-L term needs it, and no other term holds one."""
     return text.lower().replace("_", "")
+
+
+def path_sink_key(key: str) -> str:
+    """The ``path`` sink key the glued callee ``key`` names (A44 (1) (e)): ``key`` itself, or
+    the stem of a synchronous twin when that stem is a path sink key (``mkdirsync`` ->
+    ``mkdir``); ``""`` for none (``closesync``: ``close`` is no path sink)."""
+    if key in SINK_WORDS["path"]:
+        return key
+    stem = key.removesuffix(SYNC_SUFFIX)
+    return stem if stem != key and stem in SINK_WORDS["path"] else ""
+
+
+def command_lead(ident: str) -> bool:
+    """A44 (1) (c): some leading run of ``ident``'s words glues to a ``COMMAND_STRONG`` key
+    exactly (``execSync`` -> ``exec``, ``runCommandWithTimeout`` -> ``runcommand``), at most
+    ``MAX_WORDS`` probes."""
+    return any(lead in COMMAND_STRONG for lead in accumulate(words(ident)))
 
 
 def needed_families(text: str, families: Iterable[str]) -> frozenset[str]:

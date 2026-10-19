@@ -109,6 +109,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BRANCH_DEPTH",
+    "IMPORT_CALLS",
     "STATEMENTS",
     "CallWrites",
     "Def",
@@ -205,7 +206,7 @@ _PARAM_HOLDERS = frozenset({Kind.ARGS, Kind.PARAM})
 _STATEMENT_PARENTS = frozenset({Kind.MODULE, Kind.BLOCK, Kind.CLASS, Kind.EXPORT, Kind.OTHER})
 _IMPORTED = frozenset({Kind.NAME, Kind.PAIR, Kind.MEMBER})
 # R-H (W6, every language): a DESTRUCT of a call to one of these builtins is an import binding.
-_IMPORT_CALLS = frozenset({"require", "import"})
+IMPORT_CALLS = frozenset({"require", "import"})
 # C2 (R-X): a bare ``parameter_declaration`` ships as a PARAM whose one child is this.
 _BARE_TYPE = (Field.ANNOTATION, Kind.NAME)
 # The kinds whose node opens a delta, and the CATCH whose handler delta opens over its TRY's
@@ -857,7 +858,7 @@ class _Pass:
     def _imports_from(self, value: int | None) -> bool:
         call = self._unawaited(value)
         callee = self._m.callee(call) if is_kind(self._m, call, Kind.CALL) else -1
-        return callee >= 0 and self._m.ident(callee) in _IMPORT_CALLS
+        return callee >= 0 and self._m.ident(callee) in IMPORT_CALLS
 
     def _unawaited(self, value: int | None) -> int:
         if value is None:

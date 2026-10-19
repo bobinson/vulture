@@ -1,20 +1,24 @@
 """CWE injection vulnerability detection skill."""
 
+from __future__ import annotations
+
 import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._ast_head import AstAnswer, ast_answers, ast_owns, regex_row
+from shared.ast.consume import FamilyRule, command_param
 from shared.language import detect_language
 from shared.tools.file_scanner import (
-    COMMENT_INDICATORS,
     SAFE_IMPORT_LINE,
-    SCANNER_DEF_LINE,
     is_generated_file,
+    is_non_code_line,
     is_prose_file,
     is_test_file,
     read_file_lines,
@@ -24,6 +28,9 @@ from shared.tools.file_scanner import (
 from shared.tools.framework_html import is_framework_style_injection
 from shared.tools.obfuscation import check_obfuscation
 from shared.tools.snippet import extract_snippet
+
+if TYPE_CHECKING:
+    from shared.ast.flow import Flow
 
 # CWE-89: SQL Injection.
 #
@@ -267,6 +274,22 @@ COMMAND_INJECTION_PATTERNS = [
     re.compile(r"(?<![\w.>])(?:shell_exec|passthru|proc_open)\s*\("),  # PHP
 ]
 
+# CWE-78's identity, defined once (feature 0102, LLD §9.3, D19): the regex body and the AST
+# head both emit these strings. The AST tier owns the check on every file it parses cleanly;
+# the regex body on every other file (D10). No gate; its one named heuristic is D25's
+# ``command_param`` (A42 (1)): a parameter reaching a sink that shells it, or a built
+# argument, with no caller in the file, reports.
+_RULE_78 = FamilyRule(
+    family="command",
+    check_id="cwe.injection.command",
+    category="CWE-78",
+    severity="critical",
+    title="OS command injection",
+    recommendation="Use subprocess with shell=False and list arguments",
+    cwe_id="78",
+    heuristic=command_param,
+)
+
 # Validation-guard patterns. If any of these match within the radius of
 # an injection-pattern hit, the detector treats the call as guarded and
 # does NOT emit a finding. Mirrors the `_has_safe_context` approach used
@@ -456,6 +479,34 @@ SAFE_SSRF_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Feature 0102, the AST tier's ``server_ctx`` gate (LLD §8.5, A40 (3), A41 (3)): the glued
+# callee keys of the request sinks that exist in the browser too, which are SSRF only in a
+# file with server context — the AST twin of ``_SSRF_CLIENT_CAPABLE_PATTERNS``. The key is the
+# callee's GLUED last identifier (``Flow.sink_key``), never its last word: ``this.http.get(u)``,
+# ``fetch(u)`` and ``map.get(k)`` are gated; ``urlOpen(u)`` (key ``urlopen``) is not.
+_BROWSER_SINK_KEYS = frozenset({"fetch", "get", "open", "do"})
+
+
+def _server_gate(flow: Flow, server_ctx: bool) -> bool:
+    """``_RULE_918``'s gate, a pure key predicate (A41 (3)): a sink keyed as a browser one is
+    SSRF only with server context. ``family_spans`` hands it ``server_ctx`` or True in a profile
+    that is never browser code, so only a browser-capable file is ever gated."""
+    return server_ctx or flow.sink_key not in _BROWSER_SINK_KEYS
+
+
+# CWE-918's identity, defined once (feature 0102, LLD §9.3, D19), as ``_RULE_78`` above, with
+# the ``server_ctx`` gate.
+_RULE_918 = FamilyRule(
+    family="request",
+    check_id="cwe.injection.ssrf",
+    category="CWE-918",
+    severity="high",
+    title="Server-side request forgery (SSRF)",
+    recommendation="Validate URLs against an allowlist of permitted hosts/schemes",
+    cwe_id="918",
+    gate=_server_gate,
+)
+
 # Audit #2: anchor to BARE exec/eval (code-injection, CWE-94) so it does not
 # substring-match the command sinks `shell_exec("x")` / `Runtime….exec("x")` and
 # silently suppress a real static-string shell invocation.
@@ -573,36 +624,76 @@ def _is_excluded_file(file_path: Path) -> bool:
     )
 
 
+class _FileCtx(NamedTuple):
+    """Per-file facts the line checks read, computed once; and the AST tier's CWE-918 and
+    CWE-78 answers for the file (feature 0102, LLD §9.3)."""
+
+    file_path: Path
+    lines: list[str]
+    lang: str
+    ext: str
+    # Whether this is server-side request-handling code: gates the browser-capable SSRF sinks
+    # (feature 0070), in both tiers (``_server_gate``).
+    server_ctx: bool
+    ssrf: AstAnswer
+    command: AstAnswer
+
+
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     """Analyze a file for injection patterns."""
     lines = read_file_lines(file_path)
     if lines is None:
         return
-    lang = detect_language(str(file_path))
-    ext = file_path.suffix.lower()
-    # Resolved once per file: whether this is server-side request-handling code.
-    # Gates the browser-capable SSRF sinks (feature 0070).
-    server_ctx = bool(_SERVER_CONTEXT.search("\n".join(lines)))
+    ctx = _file_context(file_path, lines)
     for line_num, line in enumerate(lines, start=1):
-        if COMMENT_INDICATORS.match(line):
-            continue
-        if SAFE_IMPORT_LINE.match(line):
-            continue
-        if SCANNER_DEF_LINE.search(line):
-            continue
-        _check_sql(file_path, line, line_num, lines, findings)
-        _check_command(file_path, line, line_num, lines, findings, lang)
-        _check_xss(file_path, line, line_num, lines, findings)
-        _check_code_injection(file_path, line, line_num, lines, findings)
-        _check_ssrf(file_path, line, line_num, lines, findings, server_ctx)
-        _check_a05_specialisations(
-            _LineCtx(file_path, ext, line, line_num, lines), findings
-        )
+        if _scanned(line):
+            _check_line(ctx, line, line_num, findings)
+    _check_obfuscation(file_path, lines, findings)
 
-    # Obfuscation detection across all lines
+
+def _check_obfuscation(file_path: Path, lines: list[str], findings: list[dict]) -> None:
+    """Obfuscation detection across all lines."""
     content = read_file_safe(file_path) or ""
     obfuscation_findings = check_obfuscation(file_path, lines, content)
     findings.extend(obfuscation_findings)
+
+
+def _file_context(file_path: Path, lines: list[str]) -> _FileCtx:
+    """The file's facts, each resolved once: its language and extension, ``server_ctx``, and
+    the AST tier's spans of each family it owns here — decided once per file, so each decline
+    is recorded once (A30), the prefilter reading the text once for both families. Passing
+    ``server_ctx`` for CWE-78 changes nothing: ``_RULE_78`` has no gate."""
+    text = "\n".join(lines)
+    server_ctx = bool(_SERVER_CONTEXT.search(text))
+    ssrf, command = ast_answers(file_path, text, (_RULE_918, _RULE_78), server_ctx)
+    return _FileCtx(
+        file_path=file_path,
+        lines=lines,
+        lang=detect_language(str(file_path)),
+        ext=file_path.suffix.lower(),
+        server_ctx=server_ctx,
+        ssrf=ssrf,
+        command=command,
+    )
+
+
+def _scanned(line: str) -> bool:
+    """True for a line the per-line checks read: ``is_non_code_line`` with this skill's import
+    shape (a safe import)."""
+    return not is_non_code_line(line, SAFE_IMPORT_LINE)
+
+
+def _check_line(ctx: _FileCtx, line: str, line_num: int, findings: list[dict]) -> None:
+    """Every per-line check, in the order their rows are emitted."""
+    file_path, lines = ctx.file_path, ctx.lines
+    _check_sql(file_path, line, line_num, lines, findings)
+    _check_command(ctx, line, line_num, findings)
+    _check_xss(file_path, line, line_num, lines, findings)
+    _check_code_injection(file_path, line, line_num, lines, findings)
+    _check_ssrf(ctx, line, line_num, findings)
+    _check_a05_specialisations(
+        _LineCtx(file_path, ctx.ext, line, line_num, lines), findings
+    )
 
 
 def _check_sql(
@@ -664,46 +755,54 @@ def _has_validation_context(lines: list[str], line_num: int, radius: int = 10) -
     return bool(SAFE_VALIDATION_PATTERNS.search("\n".join(lines[start:end])))
 
 
-def _check_command(
+def _check_command(ctx: _FileCtx, line: str, line_num: int, findings: list[dict]) -> None:
+    """CWE-78 OS command injection: the AST tier's rows on a file it owns (feature 0102, LLD
+    §9.3), else the regex body."""
+    if not ast_owns(ctx.command, _RULE_78, ctx.file_path, line_num, findings):
+        _check_command_regex(ctx.file_path, line, line_num, ctx.lines, findings, ctx.lang)
+
+
+def _check_command_regex(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict], lang: str,
 ) -> None:
-    """Check for CWE-78 OS command injection. ``lang`` is the file's language
+    """Check for CWE-78 OS command injection by pattern. ``lang`` is the file's language
     (resolved once per file by the caller) — used to language-scope the bare
     PHP/Ruby ``system(`` sink."""
+    if _command_sink_line(line, lang) and not _command_mitigated(line, line_num, lines):
+        findings.append(regex_row(
+            _RULE_78, f"Unsafe command execution at line {line_num}", file_path, line_num, lines,
+            verification_hints=["Test with payload: ; id", "Check if command output is reflected"],
+            requires_context=True,
+        ))
+
+
+def _command_sink_line(line: str, lang: str) -> bool:
+    """The line is no shell function definition (``name() {``) and a command pattern of the
+    file's language matches it, not as the definition of a same-named function. A plain loop:
+    it runs on every line of every file the AST tier does not own."""
     if SHELL_FUNC_DEF.match(line):
-        return
-    patterns = (
-        _PHP_RUBY_COMMAND_PATTERNS
-        if lang in ("php", "ruby")
-        else COMMAND_INJECTION_PATTERNS
-    )
-    for pattern in patterns:
-        m = pattern.search(line)
-        if m is not None:
-            # Skip a same-named function DEFINITION (audit #1).
-            if _CMD_DEF_BEFORE.search(line[:m.start()]):
-                continue
-            if SAFE_STATIC_CALL.search(line):
-                return
-            if _has_validation_context(lines, line_num):
-                return
-            finding = {
-                "severity": "critical",
-                "check_id": "cwe.injection.command",
-                "category": "CWE-78",
-                "title": "OS command injection",
-                "description": f"Unsafe command execution at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Use subprocess with shell=False and list arguments",
-                "verification_hints": ["Test with payload: ; id", "Check if command output is reflected"],
-                "requires_context": True,
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "78"))
-            return
+        return False
+    for pattern in _command_patterns(lang):
+        if _called(pattern.search(line), line):
+            return True
+    return False
+
+
+def _command_patterns(lang: str) -> list[re.Pattern]:
+    """The command patterns of ``lang``: bare ``system(`` only in PHP and Ruby."""
+    return _PHP_RUBY_COMMAND_PATTERNS if lang in ("php", "ruby") else COMMAND_INJECTION_PATTERNS
+
+
+def _called(match: re.Match | None, line: str) -> bool:
+    """A pattern's first match on the line, unless a def keyword precedes it: a same-named
+    function DEFINITION (audit #1)."""
+    return match is not None and not _CMD_DEF_BEFORE.search(line[:match.start()])
+
+
+def _command_mitigated(line: str, line_num: int, lines: list[str]) -> bool:
+    """A static-string call on the line, or a validation guard within the radius."""
+    return bool(SAFE_STATIC_CALL.search(line)) or _has_validation_context(lines, line_num)
 
 
 def _check_xss(
@@ -870,11 +969,18 @@ def _ssrf_taint_hop(line: str, line_num: int, lines: list[str]) -> str | None:
     return None
 
 
-def _check_ssrf(
+def _check_ssrf(ctx: _FileCtx, line: str, line_num: int, findings: list[dict]) -> None:
+    """CWE-918 server-side request forgery: the AST tier's rows on a file it owns, behind the
+    same ``server_ctx`` gate (feature 0102, LLD §9.3), else the regex body."""
+    if not ast_owns(ctx.ssrf, _RULE_918, ctx.file_path, line_num, findings):
+        _check_ssrf_regex(ctx.file_path, line, line_num, ctx.lines, findings, ctx.server_ctx)
+
+
+def _check_ssrf_regex(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict], server_ctx: bool = True,
 ) -> None:
-    """Check for CWE-918 server-side request forgery.
+    """Check for CWE-918 server-side request forgery by pattern.
 
     ``server_ctx`` says whether the file looks like server-side
     request-handling code (resolved once per file by the caller). Sinks that
@@ -891,19 +997,7 @@ def _check_ssrf(
     reason = _ssrf_reason(line, line_num, lines, server_ctx)
     if reason is None:
         return
-    finding = {
-        "severity": "high",
-        "check_id": "cwe.injection.ssrf",
-        "category": "CWE-918",
-        "title": "Server-side request forgery (SSRF)",
-        "description": f"{reason} at line {line_num}",
-        "file_path": str(file_path),
-        "line_start": line_num,
-        "line_end": line_num,
-        "recommendation": "Validate URLs against an allowlist of permitted hosts/schemes",
-    }
-    finding["code_snippet"] = extract_snippet(lines, line_num)
-    findings.append(enrich_finding(finding, "918"))
+    findings.append(regex_row(_RULE_918, f"{reason} at line {line_num}", file_path, line_num, lines))
 
 
 def _ssrf_reason(

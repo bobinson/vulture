@@ -27,7 +27,9 @@ bucket; ``unsupported``, ``parse_error`` and ``too_large`` are decided before th
 The pool and its workers live for the PROCESS (§4): ``get_pool()`` is one pool, and the
 per-audit reset (``file_scanner.clear_caches()``) never ends or respawns a worker. Requests
 queue FIFO for ``worker_count()`` slots; a slot starts its worker on first use and replaces
-it after ``RECYCLE_AFTER`` files or any fault that leaves it untrusted.
+it after ``RECYCLE_AFTER`` files, after a request that left its resident high-water above
+``MAX_WORKER_RSS_MB`` (A5, A43 (5): read from ``/proc`` on Linux, skipped elsewhere), or after
+any fault that leaves it untrusted.
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ from shared.ast.context import Breaker, current
 from shared.ast.coverage import BREAKER_FAULTS, FallbackReason
 from shared.ast.limits import (
     FRAME_CAP,
+    MAX_WORKER_RSS_MB,
     MAX_WORKERS,
     MODEL_CACHE_CAP,
     MODEL_CACHE_SHARE,
@@ -192,6 +195,31 @@ def _answer(doc: dict[str, Any]) -> ParseResult:
     return reason if reason in _ANSWERED else "bad_model"  # type: ignore[return-value]
 
 
+# A5, A43 (5): a worker's resident high-water, bounded by ``MAX_WORKER_RSS_MB``. Linux reports
+# it as the ``VmHWM`` row of ``/proc/<pid>/status``, in kB; elsewhere nothing is read.
+_HIGH_WATER_ROW = b"VmHWM:"
+_RSS_BOUND_KB = MAX_WORKER_RSS_MB * 1024
+
+
+def _proc_high_water_kb(pid: int) -> int:
+    """``pid``'s resident high-water in kB: one open and one read of its ``status``; 0 when
+    the process is gone or the row is missing."""
+    try:
+        with open(f"/proc/{pid}/status", "rb", buffering=0) as status:
+            _, _, row = status.read().partition(_HIGH_WATER_ROW)
+        return int(row.partition(b"kB")[0] or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _no_high_water_kb(_pid: int) -> int:
+    """Off Linux there is no ``/proc`` high-water: the RSS check is skipped (never spent)."""
+    return 0
+
+
+_high_water_kb = _proc_high_water_kb if sys.platform.startswith("linux") else _no_high_water_kb
+
+
 # Every worker not yet ended. A worker ends when its slot retires it, never because its pool
 # was dropped; whatever is still here when the interpreter exits is ended then (finalize).
 _LIVE: set[_Worker] = set()
@@ -248,8 +276,13 @@ class _Worker:
 
     @property
     def spent(self) -> bool:
-        """Dead, ended, or done with its ``RECYCLE_AFTER`` files (D2)."""
-        return not self.alive or self.served >= RECYCLE_AFTER
+        """Dead, ended, done with its ``RECYCLE_AFTER`` files (D2), or grown past A5's bound."""
+        return not self.alive or self.served >= RECYCLE_AFTER or self._past_rss_bound()
+
+    def _past_rss_bound(self) -> bool:
+        """A43 (5): its resident high-water passed ``MAX_WORKER_RSS_MB`` (a depth bomb takes a
+        worker to about 65 MB); read only of a live worker, after its request."""
+        return _high_water_kb(self.proc.pid) > _RSS_BOUND_KB
 
     def breaker_fault(self, result: ParseResult) -> bool:
         """D10: a timeout or a crash counts; a SIGXCPU exit is a lifecycle exit (risk 14:
@@ -295,7 +328,8 @@ class _Worker:
 
 
 def _note_recycled(worker: _Worker) -> None:
-    """A worker still alive when it is spent served its ``RECYCLE_AFTER`` files (D2)."""
+    """A worker still alive when it is spent served its ``RECYCLE_AFTER`` files (D2) or grew
+    past ``MAX_WORKER_RSS_MB`` (A43 (5))."""
     if worker.alive:
         current().coverage.record_recycled()
 

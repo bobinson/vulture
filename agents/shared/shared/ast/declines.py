@@ -1,5 +1,5 @@
 """The decline record and the audit's bounded decline ledger (feature 0102, LLD D9, D14, §8.5,
-§8.7, §10.3; §11 T6, T15; A30, A31).
+§8.7, §10.3; §11 T6, T15; A30, A31, A41 (7)).
 
 ``decide`` (§8.5) is the only suppression the AST tier has, and every decline it makes is
 recorded on the audit (D9) as one ``DeclineRecord`` — the family, the consumer's file, the
@@ -8,6 +8,10 @@ flow's origins rendered and sorted (``external:request``, A30 (1)). Each kept re
 one ``thinking`` line (§10.3)::
 
     ast_decline family=path file=<safe_path> line=<n> rule=<label> origins=<origins>
+
+and after them the audit streams exactly one summary line (``lines``, A41 (7))::
+
+    ast_decline_summary declines=<count> shown=<lines kept> capped=<capped rules, or ->
 
 An adversarial repository can make thousands of declines (T6), so the ledger keeps at most
 ``MAX_SUPPRESSIONS_PER_RULE`` per rule — "per rule" is per decline label (A31 (1)) — in a
@@ -112,6 +116,16 @@ class DeclineLedger:
         with self._lock:
             kept = [entry.record for heap in self._kept.values() for entry in heap]
         return sorted(_line(record, safe_path(root, record.file)) for record in kept)
+
+    def lines(self, root: str | os.PathLike[str]) -> list[str]:
+        """The audit's §10.3 thinking lines: ``render(root)``, then exactly one
+        ``ast_decline_summary`` line, 0 declines included (A41 (7)) — ``declines`` every record
+        added (``count``), ``shown`` the lines rendered, ``capped`` the ``capped_rules``
+        comma-joined (``-`` for none)."""
+        shown = self.render(root)
+        capped = ",".join(self.capped_rules) or "-"
+        summary = f"ast_decline_summary declines={self.count} shown={len(shown)} capped={capped}"
+        return [*shown, summary]
 
     @property
     def count(self) -> int:
