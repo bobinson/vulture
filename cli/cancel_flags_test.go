@@ -9,7 +9,7 @@ import (
 
 // Feature 0080 CLI contract. Two defects from one real report:
 //
-//   vulture scan ~/src/togetherapp/ --staging-url http://... \
+//   vulture scan ~/src/reference-app/ --staging-url http://... \
 //     --max-iterations 1233000000 --no-cache --allow-local \
 //     --types ...,semgrep --plugins semgrep
 //

@@ -1,0 +1,97 @@
+// Feature 0101, CWE-778 fail direction (LLD 4.5): a try body longer than the 80-line
+// look-back leaves the try opener unresolved, so the guarded operation is unknown and
+// the handler keeps its pre-0101 verdict (reported), even though it hands the error on.
+export async function acceptUpload(req: Req, res: Res) {
+  let failure: unknown = null;
+  try {
+    const claims = jwt.verify(req.token, PUBLIC_KEY);
+    stage1(claims);
+    stage2(claims);
+    stage3(claims);
+    stage4(claims);
+    stage5(claims);
+    stage6(claims);
+    stage7(claims);
+    stage8(claims);
+    stage9(claims);
+    stage10(claims);
+    stage11(claims);
+    stage12(claims);
+    stage13(claims);
+    stage14(claims);
+    stage15(claims);
+    stage16(claims);
+    stage17(claims);
+    stage18(claims);
+    stage19(claims);
+    stage20(claims);
+    stage21(claims);
+    stage22(claims);
+    stage23(claims);
+    stage24(claims);
+    stage25(claims);
+    stage26(claims);
+    stage27(claims);
+    stage28(claims);
+    stage29(claims);
+    stage30(claims);
+    stage31(claims);
+    stage32(claims);
+    stage33(claims);
+    stage34(claims);
+    stage35(claims);
+    stage36(claims);
+    stage37(claims);
+    stage38(claims);
+    stage39(claims);
+    stage40(claims);
+    stage41(claims);
+    stage42(claims);
+    stage43(claims);
+    stage44(claims);
+    stage45(claims);
+    stage46(claims);
+    stage47(claims);
+    stage48(claims);
+    stage49(claims);
+    stage50(claims);
+    stage51(claims);
+    stage52(claims);
+    stage53(claims);
+    stage54(claims);
+    stage55(claims);
+    stage56(claims);
+    stage57(claims);
+    stage58(claims);
+    stage59(claims);
+    stage60(claims);
+    stage61(claims);
+    stage62(claims);
+    stage63(claims);
+    stage64(claims);
+    stage65(claims);
+    stage66(claims);
+    stage67(claims);
+    stage68(claims);
+    stage69(claims);
+    stage70(claims);
+    stage71(claims);
+    stage72(claims);
+    stage73(claims);
+    stage74(claims);
+    stage75(claims);
+    stage76(claims);
+    stage77(claims);
+    stage78(claims);
+    stage79(claims);
+    stage80(claims);
+    stage81(claims);
+    stage82(claims);
+    stage83(claims);
+    stage84(claims);
+    stage85(claims);
+  } catch (e) { // EXPECT: finding
+    failure = e;
+  }
+  return failure;
+}

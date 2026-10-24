@@ -9,7 +9,7 @@
 
 2. V13.3.1 (hardcoded credentials, CRITICAL) passed None for its
    safe-context slot, so an obvious Storybook mock was reported critical:
-       const VERIFICATION_TOKEN = "verification-token-2102-storybook";
+       const VERIFICATION_TOKEN = "verification-token-7350-storybook";
 """
 
 import re
@@ -42,7 +42,7 @@ class TestPlaceholderSafeContext:
 
     def test_storybook_mock_is_a_placeholder(self):
         _, _, safe, _ = _CHECKS["V13.3.1"]
-        assert safe.search('const VERIFICATION_TOKEN = "verification-token-2102-storybook";')
+        assert safe.search('const VERIFICATION_TOKEN = "verification-token-7350-storybook";')
 
     def test_real_secret_is_not_a_placeholder(self):
         _, _, safe, _ = _CHECKS["V13.3.1"]

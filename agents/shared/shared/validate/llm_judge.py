@@ -28,7 +28,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
+from shared.anchor import anchor_extras
 from shared.cancellation import current_audit_deadline, current_cancel_token
+from shared.lines import parse_line
 from shared.llm.errors import broker_detail
 from shared.llm.jsonscan import iter_balanced_objects
 from shared.prompt import Mode, RenderedPrompt, Slot, profile_for, render
@@ -37,6 +39,7 @@ from shared.prompt.manifests.validate_judge import (
     VALIDATE_JUDGE_PLAIN,
 )
 from shared.prompt.slots import new_nonce, wrap
+from shared.provenance import is_llm_provenance
 from shared.tools.line_format import strip_line_number
 from shared.tools.window import CODE_SNIPPET_START
 
@@ -52,20 +55,10 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
     Findings reach L5 from many sources (skills, LLM phase, replayed
     cache, MCP plugins) and not all of them guarantee int line numbers.
-    A single bad value used to ValueError out of an entire L5 batch.
+    A single bad value used to ValueError out of an entire L5 batch. The
+    shared lenient parser (0074 review item 9), so NaN/Infinity cannot raise.
     """
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except (ValueError, AttributeError):
-            return default
-    return default
+    return parse_line(value, default)
 
 log = logging.getLogger(__name__)
 # Surface INFO-level traces to the parent process by default — these
@@ -179,11 +172,9 @@ EmitFn = Callable[[list[dict[str, Any]]], None]
 # rest of the run is not using (`VULTURE_VALIDATE_LLM_MODEL` / `--validate-model`),
 # and under ADAPT the profile decides placement and the language pin — adapting
 # for one model and calling another is a silent mis-render. So every helper
-# takes the resolved model, and it is resolved to a model STRING before
-# `profile_for` sees it: that function is `lru_cache`d on its ARGUMENT, so
-# `profile_for()` pins whatever the first caller's environment resolved to
-# under the key `None` for the life of the process (item 4.4 hit the same
-# hazard at `generate.domain_instructions` and fixed it the same way).
+# takes the resolved model and hands it to `profile_for`, which resolves it
+# (an empty model = the ambient one) at call time and caches nothing keyed on
+# its argument.
 #
 # Both `.txt` files and `judge_tools._TOOL_DISCIPLINE_TEMPLATE` are still on
 # disk and are UNREAD by this module. They stay because they are the
@@ -201,10 +192,8 @@ def _judge_prompt(spec, model: str = "", **variables) -> RenderedPrompt:
     frozen. `model` is empty only for a caller that has none to offer (the
     ambient one is then resolved from the environment, at call time).
     """
-    from shared.llm.provider import get_model
-
     return render(replace(spec, variables=variables),
-                  profile_for(get_model(model)), mode=Mode.ADAPT)
+                  profile_for(model), mode=Mode.ADAPT)
 
 
 def _judge_turns(system_prompt: str, user_msg: str) -> list[dict[str, Any]]:
@@ -625,8 +614,11 @@ def _finding_category(finding: dict[str, Any]) -> str:
 def _is_deterministic(finding: dict[str, Any]) -> bool:
     """True for skill / trusted-signature (deterministic) findings — the
     authoritative tier (R2). A deterministic finding carries a ``check_id``
-    and is NOT tagged ``provenance == "llm"``. LLM findings (set by the audit
-    runner) are non-deterministic and remain L5-demotable.
+    and its provenance is NOT in the LLM family (``is_llm_provenance``: any
+    ``llm*`` spelling, case- and whitespace-insensitive, the backend's own
+    rule). LLM findings are non-deterministic and remain L5-demotable — a
+    model-authored ``check_id`` on an ``llm_l5_verified`` row buys no
+    demotion immunity (0074, D1b).
 
     Feature 0057 P4e (R13) extends the Phase-1 logic with the signature tier:
     a finding carrying ``signature_status == "candidate"`` is NOT yet
@@ -634,7 +626,7 @@ def _is_deterministic(finding: dict[str, Any]) -> bool:
     finding. A ``trusted`` signature (corpus-gated) and any plain skill
     finding (no ``signature_status``) remain deterministic-authoritative.
     """
-    if finding.get("provenance") == "llm":
+    if is_llm_provenance(finding.get("provenance")):
         return False
     if finding.get("signature_status") == "candidate":
         return False
@@ -690,7 +682,7 @@ def _is_l5_exempt(finding: dict[str, Any]) -> bool:
 
     Two exemptions:
       * Deterministic / trusted findings (skill/signature: a ``check_id`` and
-        no ``provenance == "llm"``) — the deterministic tier is authoritative
+        a provenance outside the LLM family) — the deterministic tier is authoritative
         (R2); the non-deterministic judge may not suppress it alone.
       * Crypto / policy CWEs — never auto-suppressed regardless of provenance.
     """
@@ -2050,12 +2042,61 @@ def _citation_class(
     coincidence, and counting it as `self_line` would corrupt the one
     statistic this layer is measured by.
     """
+    own = _safe_int((finding or {}).get("line_start"))
+    return _classify_citation(evidence_line, own, evidence_file, finding)
+
+
+def _classify_citation(
+    evidence_line: Optional[int], own: int, evidence_file: Optional[str],
+    finding: Optional[dict[str, Any]],
+) -> str:
+    """The ONE classification rule, against an explicit basis line ``own``.
+
+    ``_citation_class`` applies it to the CURRENT ``line_start`` (0072's
+    meaning); ``_citation_extras`` also applies it to the model's
+    ``claimed_line`` (0074 AC29), so the two bases cannot disagree on rule.
+    """
     if evidence_line is None:
         return "missing"
     if _cited_elsewhere(evidence_file, finding or {}):
         return "other_file"
-    own = _safe_int((finding or {}).get("line_start"))
+    return _line_class(evidence_line, own)
+
+
+def _line_class(evidence_line: int, own: int) -> str:
+    """``self_line`` when the citation echoes the basis line, else ``other_line``."""
     return "self_line" if own and evidence_line == own else "other_line"
+
+
+def _anchor_claimed_line(finding: Optional[dict[str, Any]]) -> int:
+    """The model's ``claimed_line`` from the persisted ``anchor`` check, or 0.
+
+    The private ``_claimed_line`` stamp is stripped before egress; the L1
+    ``anchor`` check's extras are the only place the claim survives to L5.
+    """
+    return _safe_int(anchor_extras(finding).get("claimed_line"))
+
+
+def _citation_extras(
+    evidence_line: Optional[int], finding: Optional[dict[str, Any]],
+    evidence_file: Optional[str],
+) -> dict[str, str]:
+    """``citation_class`` on the current line, plus ``citation_class_claimed``
+    on the model's claimed line when the verifier recorded one (0074 AC29).
+
+    O6 re-anchors by default, so for a moved row ``line_start`` is no longer
+    the line the model claimed; recording both keeps 0072's series comparable
+    across the flip. Observation-only, like ``citation_class`` itself.
+
+    Both bases go through ``_classify_citation``, the one rule, so a class
+    added there reaches both keys (0074 review item 24).
+    """
+    out = {"citation_class": _citation_class(evidence_line, finding, evidence_file)}
+    claimed = _anchor_claimed_line(finding)
+    if claimed:
+        out["citation_class_claimed"] = _classify_citation(
+            evidence_line, claimed, evidence_file, finding)
+    return out
 
 
 def _verdict_to_check(
@@ -2074,7 +2115,7 @@ def _verdict_to_check(
     # is the only promoter. This is the one falsifiable condition of §5.3 (the
     # citation-grounding conditions 2-4 stay deferred); its exit criterion —
     # window_sufficient plumbed observation-only, distribution published on
-    # real L5-ON runs — is met, and the togetherapp dogfood confirmed a lone
+    # real L5-ON runs — is met, and the reference-app dogfood confirmed a lone
     # no-closure judge was confirming a QA-only FP (VLT-2888). Fails closed on
     # None/False. Weight is unchanged — only the admissibility LABEL differs, so
     # nothing is re-scored and no obligation is manufactured (the two hazards
@@ -2113,8 +2154,7 @@ def _verdict_to_check(
             # file travels with it. Persisted for the same reason the line is:
             # a coordinate recorded without its file cannot be re-measured.
             "evidence_file": evidence_file,
-            "citation_class": _citation_class(
-                evidence_line, finding, evidence_file),
+            **_citation_extras(evidence_line, finding, evidence_file),
         },
     )
 

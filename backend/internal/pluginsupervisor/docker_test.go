@@ -194,3 +194,20 @@ func TestDockerClient_EnvVarOverridesBinary(t *testing.T) {
 		t.Fatalf("Pull via env-overridden binary: %v", err)
 	}
 }
+
+func TestDockerClient_Build_TagsAndUsesPluginDirContext(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	bin := writeMockDocker(t, dir, "built", "", "", 0)
+	t.Setenv("VULTURE_DOCKER_BINARY", bin)
+
+	dc := pluginsupervisor.NewDockerClient(pluginsupervisor.DockerOptions{})
+	if err := dc.Build(context.Background(), "ghcr.io/x/y:1", "/plugins/y"); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	logBytes, _ := os.ReadFile(filepath.Join(dir, "argv.log"))
+	want := "---\nbuild\n-t\nghcr.io/x/y:1\n-f\n/plugins/y/Dockerfile\n/plugins/y\n"
+	if string(logBytes) != want {
+		t.Errorf("argv.log=\n%s\nwant\n%s", logBytes, want)
+	}
+}

@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "id": "meta-llama/llama-3.1-8b-instruct",
+      "object": "model",
+      "type": "llm",
+      "publisher": "meta-llama",
+      "arch": "llama",
+      "compatibility_type": "gguf",
+      "quantization": "Q4_K_M",
+      "state": "loaded",
+      "max_context_length": 131072,
+      "loaded_context_length": 8192
+    }
+  ],
+  "object": "list"
+}

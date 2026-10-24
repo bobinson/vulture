@@ -1,0 +1,7 @@
+{
+  "parameters": "num_ctx 8192",
+  "model_info": {
+    "general.architecture": "llama",
+    "llama.context_length": 131072
+  }
+}

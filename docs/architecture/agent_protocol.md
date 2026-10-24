@@ -70,6 +70,95 @@ event: agent_end
 data: {"run_id": "uuid", "status": "completed"}
 ```
 
+### LLM-tier fields (feature 0074, all optional)
+
+Feature 0074 adds the fields below. Every one is additive and optional. A
+sender omits a field it has no value for, and a receiver treats a missing
+field as "not sent". It never invents a zero or a default, so either side can
+be older than the other (version skew) without anything breaking.
+
+| Field | Direction / where | Shape | Absent means |
+|---|---|---|---|
+| `context_window`, `context_window_source` | Go → agent, top level of the `/run` body (never `config`); broker mode only | int tokens; one of `env`, `probe`, `table`, `family`, `default` | No broker window (Mode A, broker off, unknown model) or an older backend. The agent resolves its own window. `context_window_source` is sent only beside a positive `context_window`, and it only labels the window on `llm_window`. It never changes how the run is sized. |
+| `llm_window` | agent → Go, on `agent_start`; Go passes it through as `llmWindow` on `StepStarted` | object `{resolved, effective, provenance, source, model}`: the window the agent resolved, the one it actually budgets with (`effective <= resolved`), where `resolved` came from (`env`, `broker`, `table`, `family`, `default`), the broker's `context_window_source` (`null` when none), and the model key | The run has no LLM phase, or the agent is older. This is the only `agent_start` key Go forwards. A non-object value is dropped and the step itself is kept. Go re-marshals the object through its five documented fields (unknown keys dropped, strings capped), so `source` with no broker label can reach a client as `null`, as an absent key, or, from an earlier 0074 backend that re-marshalled it as a plain string, as `""`. A reader treats all three alike as "no broker label" and never as a vocabulary word; it likewise treats a missing, zero or negative `resolved`/`effective` as "not known", never as a real window. |
+| `llm_emitted`, `llm_collapsed_agent` | agent → Go, top level of the `result` snapshot | ints: the LLM-family rows the agent's LLM tier produced, and how many of those the agent's own dedup dropped before sending | An older agent. Go then logs that agent's `dedup_buckets` line as `emitted=unavailable … lost=unavailable` rather than deriving a number. A current agent always sends both, `0` on a skills-only run. Go keeps them as pointers so an explicit `0` stays distinct from absent. |
+| `merged_llm` | agent → Go, on a finding (`finding` event and `result` findings) | list of `{provenance, description}` | No LLM row collapsed into this one. The agent writes it when its own skill/LLM dedup drops an LLM-family row against a deterministic row, and omits it when the list is empty. Go folds every entry into the two `validation` keys below and never persists `merged_llm` itself. An older Go ignores the field, so the record is simply missing. The agent redacts each description and deduplicates as Go's merge does: a description is recorded only when it is non-empty after trimming, is not the survivor's own and is not already recorded under any tier. At most 8 descriptions of at most 2048 bytes each are recorded (a cut is marked as in `merged_descriptions`). A tier with no recorded description is sent once with `description: ""`, which counts toward `provenance_origins` only. |
+| `merged_llm_masked` | agent → Go, top level of the `result` snapshot | `true`: every `merged_llm` description went through the agent's secret-shape masking (the same `mask_secret_values` every finding's own description gets) | An older agent. Go then masks the distinctive token shapes (JWTs, URL userinfo, private-key bodies, provider tokens; `textutil.MaskTokenShapes`) in that snapshot's `merged_llm` descriptions before it is forwarded to live clients or parsed for persistence. Go masks every persisted merge description that way too, as defence in depth. |
+| `merged_llm_dropped` | agent → Go, beside `merged_llm` | int: the distinct descriptions the agent refused at its cap of 8 | The agent's cap never fired: the agent writes it only when it is positive, and Go reads it as `omitempty`. Go adds it to `validation.merged_descriptions_dropped` and never persists the field itself. An older Go ignores it, so the overflow count is simply missing from the blob. |
+| `validation.provenance_origins` | Go → storage / API, inside a finding's `validation` blob | list of distinct provenance strings, the survivor's own included | The row was never merged, or the audit predates 0074. Written by the cross-agent merge and by folding `merged_llm`. A top-level key, never a `checks[]` entry, so it can never reach the voter. |
+| `validation.merged_descriptions`, `validation.merged_descriptions_dropped` | same blob | list of `{agent_type, provenance, description, truncated?}`, at most 8 entries of at most 2048 bytes each (a cut is marked by `truncated: true` plus a trailing `…`); int count of the distinct descriptions beyond the cap | Nothing was displaced. Both are omitted when empty or zero. The survivor's own description is never repeated. Stored on every merged row, but `GET /api/audits/{id}` serves them **only with `?detail=full`**: a default response leaves both keys out of every finding's `validation` blob (a debugging record no client renders, large on merge-heavy audits). So on that endpoint "absent" also means "not asked for". |
+| `origins_recorded` | Go → client, top level of `GET /api/audits/{id}` | bool: whether this audit's findings record `provenance_origins` at all | An older backend. Clients fall back to "some row carries a `provenance_origins` list". This lets an empty `provenance=both` result read as "not recorded" on a pre-0074 audit rather than "never corroborated". |
+| `claimed_line_range` | agent → storage / API, in the `extras` of a finding's `anchor` check (`validation.checks[]`, id `anchor`), beside `claimed_line` and the quote verdict | one of `in_file` (the model's claimed `line_start` lies inside the cited file), `past_eof` (beyond its last line), `no_line` (no usable line: missing, zero, negative or non-numeric) | The finding has no `anchor` check (skill rows, `VULTURE_LLM_QUOTE_VERIFY=off`), the claim had a line but the cited file was unreadable ("past end of file" is a fact about a file that was read, so no value is invented), or the agent predates it. It describes the CLAIM, computed before the line actuator runs, so a re-anchored row still records where the model pointed. A label beside the verdict, never a verdict: the `anchor` check's `result` keeps the unchanged nine-status 0076 vocabulary and its weight; this key carries weight 0 and no voter reads it. An older reader ignores an unknown extras key. |
+| anchor reason `beyond_max_delta` | agent → storage / API, inside the `anchor` check's `reason` (`evidence quote: ambiguous (beyond_max_delta)`) | reason token | The status is unchanged (`ambiguous`); only the reason is new. It marks a LONE exact candidate that `VULTURE_LLM_QUOTE_MAX_DELTA` refused to move to: the line is not moved and `delta` is not recorded. Two or more candidates refused by the radius / tie-break keep the reason `not_unique`, which an older agent also wrote for the lone-candidate case. A reader keys on the status, never on the reason text. |
+| `citation_class_claimed` | agent → storage / API, in the `extras` of the L5 `llm_judge` check, beside `citation_class` | same vocabulary as `citation_class` (`missing`, `other_file`, `self_line`, `other_line`), recomputed by the same rule against the model's `claimed_line` (read from the `anchor` check's extras) instead of the current `line_start` | No `anchor` check recorded a claimed line (skill rows, quote verification off, a verdict cached before 0074), or the agent is older. Keeps 0072's `citation_class` series comparable once re-anchoring moves `line_start`: `citation_class` stays on the current line. Observation-only, weight 0, like `citation_class`. |
+
+**Merge detail (`?detail=full`).** `GET /api/audits/{id}?detail=full` adds
+`validation.merged_descriptions` and `validation.merged_descriptions_dropped`
+back to each finding that has them. Any other `detail` value, or none, serves
+the default response without them; `provenance_origins` and `origins_recorded`
+are served either way. `GET /api/audits/cache` follows the same rule. The
+stream replay of a finished audit is the audit's event stream, not a read of
+the record, and carries the merge record as the live stream did; its
+descriptions are masked like every finding text. The parameter combines with `provenance=`, never
+changes which rows are returned, and is ignored by an older backend (which
+serves the keys by default, or never wrote them).
+
+**Provenance filter vocabulary.** `GET /api/audits/{id}?provenance=<value>`, the
+MCP `vulture_get_findings` `provenance` argument and the results-page filter all
+take the same values:
+
+* Any other value is matched exactly and case-sensitively against a finding's
+  `provenance`, e.g. `llm`, `llm_l5_verified` or `semgrep`. An unknown value,
+  or `LLM_FAMILY`, selects nothing.
+* `llm_family` selects the LLM family: rows whose provenance, trimmed and
+  lower-cased, starts with `llm` (a prefix rule, not a substring one: `llmfoo`
+  is in the family, `skill_llm` and `semgrep-llm` are not).
+* `both` selects rows whose `validation.provenance_origins` names at least one
+  LLM-family origin and at least one deterministic origin. A grouping
+  provenance (`catalog_rollup`) belongs to neither family. Malformed origins
+  contribute nothing.
+
+The filter only selects rows. It never rewrites a finding or an audit-level
+field, and no tier field is a validation input (see
+`agents/shared/shared/validate/SKILLS.md`). An older backend ignores the query
+parameter and returns every row, so the MCP tool and the UI also apply the same
+predicate on the client side.
+
+**Broker error code `provider_context_overflow`.** When the upstream provider
+rejects a request for size (any HTTP 413, or a 4xx whose body names a
+context / token / payload overflow), the broker answers HTTP 413 with the
+usual error envelope `{"error": {"message", "type", "code", "x_retriable"}}`,
+`code: "provider_context_overflow"`, a static message (never the provider
+body) and `x_retriable: false`: an identical retry would fail identically. The
+agent's error classifier checks the size codes before the broker-permanent
+pattern, so it classifies this code as context overflow and the generate path
+halves the batch and retries, the same as a raw provider overflow. Version
+skew: an older broker reports the same fault as `provider_bad_request` (502,
+permanent), and an older agent reads `x_retriable: false` as permanent and
+does not retry; neither side misreads the other.
+
+**Once-per-run agent log lines.** Beside the existing `llm_window …` INFO line,
+feature 0074 adds two agent log lines, each written once per run. They are logs, not wire fields: Go never
+parses them, no event or finding carries them, and an older agent simply does
+not write them.
+
+```
+llm_sweep run_id=… batches=… files_sent=… source_budget_chars=… max_batch_chars=… body_truncations=… effective_window=…
+l5_cache run_id=… hits=… misses=… stores=…
+```
+
+`llm_sweep` summarises the LLM generate sweep: the batches sent, the files
+sent in them, the inlined-source character budget (before the body-byte clamp),
+the largest batch actually sent (a single file larger than the budget goes out
+alone, so it can exceed the budget), `body_truncations` — the request bodies
+actually cut during the sweep, each counted once per cut: cut to the
+`VULTURE_LLM_MAX_BODY_BYTES` byte cap before sending, or halved after the
+provider rejected a request as too large (one `llm_body_truncated` warning
+per cut, labelled `batch` or `build_source_context` for a pre-send cut and
+`size_retry` for a halving) — and the window the run budgeted with (the
+`effective` value of `llm_window`). `l5_cache` counts the L5 judge's verdict
+cache for the run: hits, misses and stores.
+
 ### Lineage evidence checks (feature 0091, versioned)
 
 Absence from an LLM result is not evidence that the code was repaired: the
@@ -360,3 +449,41 @@ The `agui/translator.go` component maps between the two layers:
 - The frontend gracefully handles partial results (some agents succeeded, some failed)
 - Agent HTTP timeouts: 5 minutes per agent (configurable)
 - SSE reconnection: disabled — stream tokens are single-use, so the frontend closes the EventSource on error rather than auto-reconnecting
+
+## Window reasons
+
+Every finding's `validation.checks[]` may carry a zero-weight `window` check
+whose `result` says why the finding has the code window it has: `present` (a
+window that contains the cited line), `inherited` (carried from another
+agent's finding, not re-read), `rollup_parent` (stands for several sites),
+`no_code_location` (the class has no file or line), `no_line` (a file but no
+usable line), `unreadable` (the path did not resolve or the read failed) and,
+since 0074, `out_of_range` (the file was read and the cited line lies past its
+end, so no window is shown). A model-written window that does not show the
+cited line is replaced by one read from the file, never recorded `present`.
+
+## Masked values (feature 0074, verification item 1b)
+
+`GET /api/audits/{id}/findings/{finding_id}/masked` verifies the masked values
+in one finding's `code_snippet` against the file the audit scanned. Nothing raw
+is stored: the backend aligns each stored row (`N: text`, every placeholder
+`***REDACTED***` / `[redacted]` a wildcard) against the source on request.
+
+| Field | Meaning |
+|---|---|
+| `source_available` | the scanned file could be opened (inside the audit's source root, through `os.Root`: no `..`, no symlink escape) |
+| `matches_scan` | every stored row matches the file outside its placeholders; `false` means the file changed since the scan, or the alignment was ambiguous |
+| `values_included` | `value` is present on the spans |
+| `file`, `rows_checked` | the root-relative file and the rows compared |
+| `spans[]` | `{line, ordinal, column, kind, length?, value?}`: the placeholder's position within its row (`ordinal`, 0-based), a 1-based code-point `column`, a `kind` label (`jwt`, `url_userinfo`, `private_key`, `aws_key_id`, `google_api_key`, `openai_style_key`, `github_token`, `slack_token`, `stripe_key`, `npm_token`, `gitlab_token`, `sendgrid_key`, `huggingface_token`, `bearer`, `basic`, `connection_secret`, `hex_credential`, `secret`), and `length` except for password-like kinds (`secret`, `basic`, `connection_secret`, `url_userinfo`) |
+| `reason` | `source_unavailable`, `outside_source_root`, `not_a_regular_file`, `too_large`, `binary`, `no_location`, `changed_since_scan`, `ambiguous`; absent when every row aligned |
+| `ui_path` | `/audit/{id}?finding={finding_id}`: the UI opens that finding's detail |
+
+`value` is sent only when every row aligned AND the request is from an
+authorised human: outside local mode an `admin`; in local mode a request that
+presented a credential (not the implicit local admin) with a loopback `Host`.
+API keys and viewers never receive values, so the MCP server, which uses an API
+key, cannot. Every response carries `Cache-Control: no-store`, and each request
+is logged as `finding_reveal` (identifiers and outcome, never content). A git
+clone deleted after its run (`VULTURE_CLEANUP_RUN_DIRS=true`) reports
+`source_unavailable`.

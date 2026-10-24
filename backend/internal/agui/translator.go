@@ -1,12 +1,14 @@
 package agui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/textutil"
 	"github.com/vulture/backend/pkg/agentregistry"
 )
 
@@ -80,10 +82,112 @@ func AgentDisplayName(agentType string) string {
 	return strings.ToUpper(agentType[:1]) + agentType[1:]
 }
 
-func translateAgentStart(agentType string, _ json.RawMessage) ([]*model.AgUIEvent, error) {
+func translateAgentStart(agentType string, data json.RawMessage) ([]*model.AgUIEvent, error) {
 	return []*model.AgUIEvent{
-		{Type: model.EventStepStarted, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType},
+		{Type: model.EventStepStarted, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType,
+			LLMWindow: allowListedLLMWindow(data)},
 	}, nil
+}
+
+// allowListedLLMWindow returns the agent_start payload's llm_window (0074
+// §5.1(e), AC7) — the ONE allow-listed key of that payload; every other key
+// stays behind. The object reaches every SSE client, so only its five
+// documented fields pass, each validated and re-marshalled (review #36):
+// unknown keys and oversized values never pass through. The wire shape is
+// kept (re-audit R9): a null value stays null, an absent key stays absent, and
+// {} stays {}. A malformed payload, a non-object, or any mistyped or
+// implausible field yields nil, never an error: a garbled start frame must not
+// drop the agent's step.
+func allowListedLLMWindow(data json.RawMessage) json.RawMessage {
+	in, ok := llmWindowObject(data)
+	if !ok {
+		return nil
+	}
+	out, ok := cleanLLMWindow(in)
+	if !ok {
+		return nil
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+// llmWindowObject decodes the payload's llm_window when it is a JSON object.
+func llmWindowObject(data json.RawMessage) (map[string]json.RawMessage, bool) {
+	var d struct {
+		LLMWindow json.RawMessage `json:"llm_window"`
+	}
+	if json.Unmarshal(data, &d) != nil || !bytes.HasPrefix(d.LLMWindow, []byte("{")) {
+		return nil, false
+	}
+	var in map[string]json.RawMessage
+	return in, json.Unmarshal(d.LLMWindow, &in) == nil
+}
+
+// llmWindowVocabMax bounds provenance/source (short vocabulary words);
+// llmWindowModelMax bounds a model id. llmWindowMaxTokens bounds a window: no
+// model comes within an order of magnitude of it, so anything above is a
+// garbled value, not a window.
+const (
+	llmWindowVocabMax  = 32
+	llmWindowModelMax  = 256
+	llmWindowMaxTokens = 100_000_000
+)
+
+// llmWindowFields are the five published fields, each with its validator.
+var llmWindowFields = map[string]func(json.RawMessage) (json.RawMessage, bool){
+	"resolved":   windowTokens,
+	"effective":  windowTokens,
+	"provenance": cappedString(llmWindowVocabMax),
+	"source":     cappedString(llmWindowVocabMax),
+	"model":      cappedString(llmWindowModelMax),
+}
+
+// cleanLLMWindow keeps each present documented field once it validates; one
+// invalid field rejects the object.
+func cleanLLMWindow(in map[string]json.RawMessage) (map[string]json.RawMessage, bool) {
+	out := make(map[string]json.RawMessage, len(llmWindowFields))
+	for key, clean := range llmWindowFields {
+		raw, present := in[key]
+		if !present {
+			continue
+		}
+		v, ok := clean(raw)
+		if !ok {
+			return nil, false
+		}
+		out[key] = v
+	}
+	return out, true
+}
+
+var jsonNull = json.RawMessage("null")
+
+// windowTokens accepts null or an integer token count in [0, llmWindowMaxTokens].
+func windowTokens(raw json.RawMessage) (json.RawMessage, bool) {
+	if bytes.Equal(raw, jsonNull) {
+		return jsonNull, true
+	}
+	var n int64
+	if json.Unmarshal(raw, &n) != nil {
+		return nil, false
+	}
+	out, _ := json.Marshal(n)
+	return out, n >= 0 && n <= llmWindowMaxTokens
+}
+
+// cappedString accepts null or a string, cut on a rune boundary at maxBytes.
+func cappedString(maxBytes int) func(json.RawMessage) (json.RawMessage, bool) {
+	return func(raw json.RawMessage) (json.RawMessage, bool) {
+		if bytes.Equal(raw, jsonNull) {
+			return jsonNull, true
+		}
+		var v string
+		if json.Unmarshal(raw, &v) != nil {
+			return nil, false
+		}
+		out, _ := json.Marshal(textutil.CutAtRune(v, maxBytes))
+		return out, true
+	}
 }
 
 func translateThinking(data json.RawMessage) ([]*model.AgUIEvent, error) {
@@ -141,7 +245,9 @@ func translateProgress(data json.RawMessage) ([]*model.AgUIEvent, error) {
 }
 
 func translateResult(agentType string, data json.RawMessage) ([]*model.AgUIEvent, error) {
-	log.Printf("[translate] result agent=%s dataLen=%d data=%.200s", agentType, len(data), string(data))
+	// The payload is never logged: it carries finding text (0074 verification item 1).
+	log.Printf("[translate] result agent=%s dataLen=%d", agentType, len(data))
+	data = maskUnmarkedMergedLLM(agentType, data)
 	events := make([]*model.AgUIEvent, 0, 2)
 	// A result payload carrying a non-empty `error` (e.g. a plugin whose scan
 	// process failed — bad flag, timeout, unparseable output) must SURFACE as

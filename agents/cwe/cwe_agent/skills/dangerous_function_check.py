@@ -8,7 +8,7 @@ independent of dataflow. Execution sinks (``eval``/``exec``/``os.system``/
 (CWE-78 command injection / CWE-94 code injection), which already matches them
 with a receiver-boundary that excludes benign method calls like
 ``RegExp.exec()`` and ioredis ``pipeline.exec()``. This removed a class of
-false positives (idattestor VLT-1037/1038/1039/1043) and the historical
+false positives (a dogfood target, VLT-1037/1038/1039/1043) and the historical
 CWE-676↔CWE-78 double-report.
 
 Detection is **language-aware**: the file's language (via

@@ -1,0 +1,113 @@
+{
+  "data": [
+    {
+      "id": "qwen/qwen3.8-27b",
+      "object": "model",
+      "type": "vlm",
+      "publisher": "qwen",
+      "arch": "qwen35",
+      "compatibility_type": "gguf",
+      "quantization": "Q4_K_M",
+      "state": "loaded",
+      "max_context_length": 262144,
+      "loaded_context_length": 262144,
+      "capabilities": [
+        "tool_use"
+      ]
+    },
+    {
+      "id": "text-embedding-nomic-embed-text-v1.5",
+      "object": "model",
+      "type": "embeddings",
+      "publisher": "nomic-ai",
+      "arch": "nomic-bert",
+      "compatibility_type": "gguf",
+      "quantization": "Q4_K_M",
+      "state": "loaded",
+      "max_context_length": 2048,
+      "loaded_context_length": 2048
+    },
+    {
+      "id": "google/gemma-4-31b",
+      "object": "model",
+      "type": "vlm",
+      "publisher": "google",
+      "arch": "gemma4",
+      "compatibility_type": "gguf",
+      "quantization": "Q4_K_M",
+      "state": "not-loaded",
+      "max_context_length": 262144,
+      "capabilities": [
+        "tool_use"
+      ]
+    },
+    {
+      "id": "qwen/qwen3.6-35b-a3b",
+      "object": "model",
+      "type": "vlm",
+      "publisher": "qwen",
+      "arch": "qwen35moe",
+      "compatibility_type": "gguf",
+      "quantization": "Q4_K_M",
+      "state": "not-loaded",
+      "max_context_length": 262144,
+      "capabilities": [
+        "tool_use"
+      ]
+    },
+    {
+      "id": "qwen/qwen3.6-27b",
+      "object": "model",
+      "type": "vlm",
+      "publisher": "qwen",
+      "arch": "qwen35",
+      "compatibility_type": "gguf",
+      "quantization": "Q4_K_M",
+      "state": "not-loaded",
+      "max_context_length": 262144,
+      "capabilities": [
+        "tool_use"
+      ]
+    },
+    {
+      "id": "openai/gpt-oss-120b",
+      "object": "model",
+      "type": "llm",
+      "publisher": "openai",
+      "arch": "gpt-oss",
+      "compatibility_type": "gguf",
+      "quantization": "MXFP4",
+      "state": "not-loaded",
+      "max_context_length": 131072,
+      "capabilities": [
+        "tool_use"
+      ]
+    },
+    {
+      "id": "text-embedding-msmarco-bert-base-dot-v5-i1",
+      "object": "model",
+      "type": "embeddings",
+      "publisher": "mradermacher",
+      "arch": "bert",
+      "compatibility_type": "gguf",
+      "quantization": "Q6_K",
+      "state": "not-loaded",
+      "max_context_length": 512
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "object": "model",
+      "type": "llm",
+      "publisher": "openai",
+      "arch": "gpt-oss",
+      "compatibility_type": "gguf",
+      "quantization": "MXFP4",
+      "state": "not-loaded",
+      "max_context_length": 131072,
+      "capabilities": [
+        "tool_use"
+      ]
+    }
+  ],
+  "object": "list"
+}

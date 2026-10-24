@@ -1,15 +1,17 @@
 """Shared audit runner with concurrent skill execution and file caching."""
 
 import asyncio
+import contextlib
 import contextvars
 import functools
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Any
@@ -22,10 +24,13 @@ from shared.cancellation import (
     current_cancel_token,
     set_audit_deadline,
 )
-from shared.env import env_flag, env_truthy
+from shared.env import env_flag, env_mode, env_truthy
+from shared.gospace import GO_SPACE, trim_go_space
 from shared.lineage_checks import verify_lineage_checks
 from shared.lineage_context import current_lineage_checks_requested
-from shared.llm.errors import retry_skill
+from shared.lines import parse_line
+from shared.llm.errors import mask_secret_values, retry_skill
+from shared.llm.mode import llm_enabled
 
 # Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
 # empty-answer, plus the reasoning strip) now lives in ONE place, shared with the
@@ -39,6 +44,7 @@ from shared.prompt.extract import (  # noqa: F401  (re-exported for 0076 tests)
     _scan_json_arrays,
     _score_array,
 )
+from shared.provenance import is_llm_provenance
 from shared.tools import line_format
 from shared.tools.category_enum import normalize_to_enum
 from shared.tools.file_scanner import (
@@ -152,15 +158,14 @@ def _run_lineage_checks(requested: Any, source_path: str) -> list[dict]:
 # `shared/prompt/extract.py` with the chain that reads them (feature 0089 §11.3);
 # they are imported above so this module's public names are unchanged.
 
-# TWO fields, TWO switches — they are not the same risk (0076 §5.1, recall-3).
-# ``code_snippet`` is a fabricated-evidence risk; ``check_id`` is a DEDUP
-# IDENTITY whose naive removal deletes rows (AC26). Collapsing them into one
-# constant would make it impossible to reverse a dedup regression without also
-# re-trusting model-authored evidence.
+# TWO fields, not the same risk (0076 §5.1, recall-3). ``code_snippet`` is a
+# fabricated-evidence risk, admitted only under its switch; ``check_id`` is a
+# DEDUP IDENTITY whose naive removal deletes rows (AC26), so it is always
+# carried privately and restored by ``_restore_dedup_identity``. Its former
+# switch had no effect on the final row and was retired (0074 T-1.5, rule 6).
 _MODEL_FORBIDDEN_SNIPPET = ("code_snippet",)    # VULTURE_LLM_TRUST_MODEL_SNIPPET
-_MODEL_FORBIDDEN_CHECK_ID = ("check_id",)       # VULTURE_LLM_TRUST_MODEL_CHECK_ID
+_MODEL_CHECK_ID_FIELD = "check_id"  # carried as `_model_check_id`, restored by _restore_dedup_identity
 _TRUST_MODEL_SNIPPET = "VULTURE_LLM_TRUST_MODEL_SNIPPET"
-_TRUST_MODEL_CHECK_ID = "VULTURE_LLM_TRUST_MODEL_CHECK_ID"
 
 
 class AuditFinding(BaseModel):
@@ -224,7 +229,7 @@ def _model_visible_output(with_quote: bool) -> type[BaseModel]:
 
 SkillFn = Callable[[str], dict]
 
-USE_LLM = os.environ.get("VULTURE_USE_LLM", "false").lower() == "true"
+USE_LLM = llm_enabled()
 
 # Severity weights for score computation (shared across all agents).
 _SEVERITY_WEIGHTS = {"critical": 10.0, "high": 4.0, "medium": 1.5, "low": 0.5, "info": 0.0}
@@ -345,6 +350,15 @@ def _extract_dupe_count(lines: list[str]) -> int:
     return 0
 
 
+def _request_window(model: str | None) -> int:
+    """The window a REQUEST is sized against: the effective one (feature 0074
+    review item 34), the same window the source budget and the prompt profile
+    use, so a clamped gateway guess also bounds truncation and ``max_tokens``."""
+    from shared.llm.provider import effective_context_window
+
+    return effective_context_window(model).effective
+
+
 def _check_context_budget(prompt_text: str, model: str | None = None) -> tuple[str | None, int]:
     """Check if prompt fits within model's context window.
 
@@ -352,9 +366,7 @@ def _check_context_budget(prompt_text: str, model: str | None = None) -> tuple[s
     the token count instead of re-estimating.  The 80% threshold matches
     the truncation target in ``_truncate_prompt_to_budget``.
     """
-    from shared.llm.provider import get_context_window
-
-    ctx_tokens = get_context_window(model)
+    ctx_tokens = _request_window(model)
     estimated_tokens = safe_estimate_tokens(prompt_text)
     budget_pct = estimated_tokens / ctx_tokens if ctx_tokens > 0 else 1.0
     if budget_pct > 0.8:
@@ -387,9 +399,7 @@ def _truncate_prompt_to_budget(
         estimated_tokens: Pre-computed token count from ``_check_context_budget``.
             When provided, skips a redundant whole-prompt encode.
     """
-    from shared.llm.provider import get_context_window
-
-    ctx_tokens = get_context_window(model)
+    ctx_tokens = _request_window(model)
     target_tokens = int(ctx_tokens * 0.8)
 
     # Cheap pre-check: if caller already estimated and the prompt fits,
@@ -459,16 +469,8 @@ def _truncate_prompt_to_budget(
 
 _MAX_SOURCE_CHARS = _safe_int_env("VULTURE_MAX_SOURCE_CHARS", 400000)
 
-# Feature 0070 P5 (A.4): ceiling applied when a window is a GUESS *and* a custom
-# gateway is in play. Numerically equal to DEFAULT_CONTEXT_WINDOW (32K) today;
-# named separately and env-tunable because the two mean different things — one is
-# "what we assume when we know nothing", the other is "the most we will trust a
-# guess with when sizing a real request body". Behind a gateway only three
-# sources are authoritative: an explicit VULTURE_LLM_CTX_SIZE, the broker
-# registry (§31), or an exact CONTEXT_WINDOWS match. A family guess is not, so a
-# known family behind a gateway is deliberately clamped too — the gateway may
-# proxy a smaller window than the upstream model offers, and we cannot tell.
-_GATEWAY_GUESS_CEILING = _safe_int_env("VULTURE_LLM_GATEWAY_GUESS_CTX", 32_000)
+# Feature 0070 P5 (A.4): the gateway-guess ceiling (VULTURE_LLM_GATEWAY_GUESS_CTX)
+# is owned by ``shared.llm.provider.effective_context_window`` (feature 0074 P1).
 
 # Feature 0070 P5 (defect A): our source budget is denominated in TOKENS, but a
 # gateway rejects on BYTES ("request_too_large" / HTTP 413). The two disagree by
@@ -490,6 +492,27 @@ _FILE_BLOCK_HEADER_RE = re.compile(r"(?m)^--- .+ ---$")
 
 # Warn once per process (not per run) when the loop guard cannot be attached.
 _LOOP_GUARD_WARNED = False
+
+
+def _generate_run_config(run_model_provider: Any) -> Any:
+    """The generate run's ``RunConfig``: the request-size filter on EVERY run
+    (0074 verification item 15: each tool turn grew the request past the cap),
+    plus the broker's model provider when one is set."""
+    try:
+        from agents import RunConfig  # type: ignore[import-untyped]
+    except ImportError as exc:
+        if run_model_provider is not None:
+            # §26/M11: broker required but RunConfig missing → FAIL CLOSED
+            # (never fall back to the env-key global client, which would leak
+            # the keys the broker isolates); raise → skills-only (N2).
+            raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
+        return None
+    from shared.llm.request_cap import bounded_model_input
+
+    if run_model_provider is None:
+        return RunConfig(call_model_input_filter=bounded_model_input)  # type: ignore[call-arg]
+    return RunConfig(model_provider=run_model_provider,  # type: ignore[call-arg]
+                     call_model_input_filter=bounded_model_input)
 
 
 def _get_max_body_bytes() -> int:
@@ -651,6 +674,92 @@ def _split_source_blocks(text: str) -> list[str]:
     return blocks
 
 
+def _over_body_cap(text: str, max_bytes: int) -> bool:
+    """Would ``_enforce_body_byte_cap`` truncate ``text`` at ``max_bytes``?
+
+    A non-positive cap disables the ceiling.
+    """
+    return max_bytes > 0 and len(text.encode("utf-8")) > max_bytes
+
+
+class BodyTruncations:
+    """One run's count of request bodies actually cut (feature 0074).
+
+    Incremented from batch tasks and pool workers concurrently, hence the lock;
+    owned by one run, never shared between runs.
+    """
+
+    __slots__ = ("count", "_lock")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._lock = threading.Lock()
+
+    def add(self) -> None:
+        """Count one cut body."""
+        with self._lock:
+            self.count += 1
+
+
+# Run-scoped, NOT a module counter — the l5_cache.counting pattern: several
+# audit generators share this interpreter, each in its own context, and a batch
+# runs in an asyncio task (a COPY of the context), so the ContextVar holds a
+# mutable holder that copies share. Outside a run it is None and nothing counts.
+_BODY_TRUNCATIONS: contextvars.ContextVar[BodyTruncations | None] = contextvars.ContextVar(
+    "body_truncations", default=None)
+
+
+@contextlib.contextmanager
+def count_body_truncations() -> Generator[BodyTruncations, None, None]:
+    """Count every body ``_enforce_body_byte_cap`` cuts inside this block."""
+    counter = BodyTruncations()
+    token = _BODY_TRUNCATIONS.set(counter)
+    try:
+        yield counter
+    finally:
+        _BODY_TRUNCATIONS.reset(token)
+
+
+def _count_body_truncation() -> None:
+    counter = _BODY_TRUNCATIONS.get()
+    if counter is not None:
+        counter.add()
+
+
+@dataclass(slots=True)
+class _SweepStats:
+    """Feature 0074 T1.9: one run's LLM-sweep sizing facts, logged once.
+
+    Built per call of ``_collect_llm_findings_batched_async`` — never shared
+    between runs — and fed one ``record`` per batch actually sent (O(1) each).
+    ``cuts`` is the run's observed truncation count: the pre-send byte cap and
+    the halving after a provider size rejection both land there.
+    """
+
+    source_budget: int
+    cuts: BodyTruncations
+    batches: int = 0
+    files: int = 0
+    max_batch: int = 0
+
+    def record(self, text: str, paths: list) -> None:
+        """Account for one batch handed to the model."""
+        self.batches += 1
+        self.files += len(paths)
+        self.max_batch = max(self.max_batch, len(text))
+
+    def log(self, run_id: str, model: str | None) -> None:
+        """The single ``llm_sweep`` INFO line for this run."""
+        from shared.llm.provider import effective_context_window
+
+        logger.info(
+            "llm_sweep run_id=%s batches=%d files_sent=%d source_budget_chars=%d "
+            "max_batch_chars=%d body_truncations=%d effective_window=%d",
+            run_id, self.batches, self.files, self.source_budget, self.max_batch,
+            self.cuts.count, effective_context_window(model).effective,
+        )
+
+
 def _enforce_body_byte_cap(
     text: str, max_bytes: int = 0, label: str = "source_context",
 ) -> str:
@@ -663,11 +772,10 @@ def _enforce_body_byte_cap(
         return text
     if max_bytes <= 0:
         max_bytes = _get_max_body_bytes()
-    if max_bytes <= 0:
+    if not _over_body_cap(text, max_bytes):
         return text
+    _count_body_truncation()
     total = len(text.encode("utf-8"))
-    if total <= max_bytes:
-        return text
 
     budget = max(0, max_bytes - _BODY_TRUNCATION_NOTICE_BYTES)
     blocks = _split_source_blocks(text)
@@ -714,12 +822,23 @@ def _halve_source_context(source_context: str) -> str:
     return smaller
 
 
+def _llm_window(model: str | None, use_llm: bool) -> dict[str, Any] | None:
+    """This run's published window facts, or ``None`` when no LLM tier runs.
+
+    Feature 0074 P1 (AC7): logged once per run and carried on ``run_started``.
+    """
+    from shared.llm.provider import run_llm_window
+
+    return run_llm_window(model, use_llm)
+
+
 def _get_max_source_chars(model: str | None = None) -> int:
     """Compute max source chars from the active model's context window.
 
-    Uses ``get_context_window()`` (env override > model lookup > 32K default).
-    The OpenAI Agents SDK adds significant overhead (tool schemas, structured
-    output schema, system instructions) — typically 3-5K tokens.  We reserve
+    Uses ``effective_context_window()`` — the resolved window (env > broker >
+    table > family > default) after the gateway-guess clamp. The OpenAI Agents
+    SDK adds significant overhead (tool schemas, structured output schema,
+    system instructions) — typically 3-5K tokens.  We reserve
     50% of context for source code at ~3 chars per token (code is token-dense).
 
     The result is capped at ``_MAX_SOURCE_CHARS`` (default 400K, configurable
@@ -729,35 +848,16 @@ def _get_max_source_chars(model: str | None = None) -> int:
     Args:
         model: Optional model key. Defaults to VULTURE_LLM_MODEL env.
     """
-    from shared.llm.provider import (
-        WINDOW_FROM_DEFAULT,
-        WINDOW_FROM_FAMILY,
-        resolve_context_window,
-        uses_custom_endpoint,
-    )
+    from shared.llm.provider import effective_context_window
 
-    ctx_tokens, provenance = resolve_context_window(model)
     # Feature 0070 P5 (defect A.4, reworked): behind a custom gateway an
     # unknown model's window is a GUESS made from a substring of its id
-    # (`glm-5-2-260617` → the "glm" family → 131072 tokens → 196,608 chars ≈
-    # 192KB inlined, which the gateway rejected outright). §31 keeps that guess
-    # for token *budgeting* — three tests pin it, and undershooting the window
-    # would shrink max_output too — but it must not be trusted to size a
-    # REQUEST BODY. Authoritative windows (explicit env, broker registry, exact
-    # table) are used as-is; only the inferred-behind-a-gateway case undershoots.
-    # Both non-authoritative provenances qualify. A bare DEFAULT is a *stronger*
-    # guess than a family match, not a weaker one: the model id matched nothing at
-    # all. `glm-5-2-260617` resolves that way, so guarding only FAMILY left the
-    # exact model from the observed 413 unclamped.
-    _guessed = provenance in (WINDOW_FROM_FAMILY, WINDOW_FROM_DEFAULT)
-    if _guessed and uses_custom_endpoint() and ctx_tokens > _GATEWAY_GUESS_CEILING:
-        logger.warning(
-            "llm_body_window_clamped model=%s inferred=%d using=%d "
-            "hint=set VULTURE_LLM_CTX_SIZE to the gateway's real window",
-            model or os.environ.get("VULTURE_LLM_MODEL", ""),
-            ctx_tokens, _GATEWAY_GUESS_CEILING,
-        )
-        ctx_tokens = _GATEWAY_GUESS_CEILING
+    # (`glm-5-2-260617` → 131072 tokens → 196,608 chars ≈ 192KB inlined, which
+    # the gateway rejected outright), so a guess must not size a REQUEST BODY.
+    # The clamp lives in ``effective_context_window`` (feature 0074 P1, AC36),
+    # the ONE window the prompt budget is sized from too. Authoritative windows
+    # (explicit env, broker registry, exact table) are used as-is.
+    ctx_tokens = effective_context_window(model).effective
     # Scale source allocation: small models need more headroom for output + SDK overhead.
     source_fraction = 0.35 if ctx_tokens <= 32_000 else 0.5
     # Cap: read VULTURE_MAX_SOURCE_CHARS dynamically (feature 0057 P1f — tests
@@ -790,6 +890,41 @@ def _safe_rel(fpath: Path, source_path: str) -> str:
         return str(fpath)
 
 
+def _finding_path_set(skill_findings: list[dict] | None, source_path: str) -> set[str]:
+    """Every path a skill finding names, absolute and root-relative forms both."""
+    paths: set[str] = set()
+    for f in skill_findings or ():
+        paths.update(_path_forms(f.get("file_path", ""), source_path))
+    return paths
+
+
+def _path_forms(fp: str, source_path: str) -> tuple[str, ...]:
+    """A finding path as given, plus its root-relative form when under the root."""
+    if not fp:
+        return ()
+    if fp.startswith(source_path):
+        return (fp, fp[len(source_path):].lstrip("/"))
+    return (fp,)
+
+
+def _file_tier(fpath: Path, source_path: str, finding_paths: set[str]) -> int:
+    """The prioritiser tier of one file: 1 flagged, 2 entry/config, 3 the rest.
+
+    The ONE classification ``_prioritize_files`` orders by and the feed probe
+    (0074 T0.3) reports yield by, so the two cannot disagree about a tier.
+    """
+    if _is_flagged(fpath, source_path, finding_paths):
+        return 1
+    if is_entry_or_config(fpath if isinstance(fpath, Path) else Path(fpath)):
+        return 2
+    return 3
+
+
+def _is_flagged(fpath: Path, source_path: str, finding_paths: set[str]) -> bool:
+    """Tier 1: a skill finding names this file, absolutely or root-relative."""
+    return str(fpath) in finding_paths or _safe_rel(fpath, source_path) in finding_paths
+
+
 def _prioritize_files(
     files: list,
     source_path: str,
@@ -815,31 +950,30 @@ def _prioritize_files(
     Returns:
         Reordered list of Path objects.
     """
-    finding_paths: set[str] = set()
-    if skill_findings:
-        for f in skill_findings:
-            fp = f.get("file_path", "")
-            if fp:
-                finding_paths.add(fp)
-                # Also store relative form for matching
-                if fp.startswith(source_path):
-                    rel = fp[len(source_path):].lstrip("/")
-                    finding_paths.add(rel)
+    return _order_tiers(_tier_files(files, source_path, skill_findings), include_tier3)
 
-    tier1: list = []
-    tier2: list = []
-    tier3: list = []
 
+def _tier_files(
+    files: list, source_path: str, skill_findings: list[dict] | None,
+) -> tuple[list, list, list]:
+    """``files`` split into the three ``_file_tier`` groups, input order kept.
+
+    The first half of ``_prioritize_files``; exposed so the feed probe can read
+    the tiers it ordered by instead of classifying every file a second time.
+    """
+    finding_paths = _finding_path_set(skill_findings, source_path)
+    tiers: tuple[list, list, list] = ([], [], [])
     for fpath in files:
-        fstr = str(fpath)
-        rel = _safe_rel(fpath, source_path)
-        if fstr in finding_paths or rel in finding_paths:
-            tier1.append(fpath)
-        elif is_entry_or_config(Path(fpath) if not isinstance(fpath, Path) else fpath):
-            tier2.append(fpath)
-        else:
-            tier3.append(fpath)
+        tiers[_file_tier(fpath, source_path, finding_paths) - 1].append(fpath)
+    return tiers
 
+
+def _order_tiers(tiers: tuple[list, list, list], include_tier3: bool) -> list:
+    """The second half of ``_prioritize_files``: tier order, tier 3 by size.
+
+    Sorts tier 3 IN PLACE, so a caller holding ``tiers`` sees the fed order.
+    """
+    tier1, tier2, tier3 = tiers
     if not include_tier3:
         return tier1 + tier2
 
@@ -1469,13 +1603,35 @@ def _strip_private_fields(
         finding.pop(name, None)
 
 
+_QUOTE_MODE_DEFAULT = "enforce"
+_QUOTE_MODES = frozenset({"off", "observe", "enforce"})
+_REANCHOR_SWITCH = "VULTURE_LLM_QUOTE_REANCHOR"
+
+
 def _quote_mode() -> str:
-    """``VULTURE_LLM_QUOTE_VERIFY`` — ``off`` / ``observe`` (default) / ``enforce``.
+    """``VULTURE_LLM_QUOTE_VERIFY`` — ``off`` / ``observe`` / ``enforce`` (default).
 
     A mode string rather than a flag, matching ``VULTURE_OBLIGATION_MODE``. Read
     at call time (D14): a mode captured at import cannot be flipped mid-fleet.
+    Feature 0074 (O6) moved the default from ``observe`` to ``enforce``; a blank
+    value is "unset" and takes the default. ``enforce`` only ARMS the actuators —
+    each is still gated by its own switch.
+
+    Normalised by ``shared.env.env_mode`` (contract C16): a false token is
+    ``off``, ``observe``/``enforce`` any case, and any other value is the
+    default plus one warning — never a fourth mode the gates do not test.
     """
-    return os.getenv("VULTURE_LLM_QUOTE_VERIFY", "observe").strip().lower() or "observe"
+    return env_mode("VULTURE_LLM_QUOTE_VERIFY", _QUOTE_MODES, _QUOTE_MODE_DEFAULT)
+
+
+def _reanchor_switch() -> bool:
+    """``VULTURE_LLM_QUOTE_REANCHOR`` alone — default ON since 0074 (O6).
+
+    ``env_flag`` token semantics: ``false/0/no/off`` is the runtime rollback, a
+    blank or unrecognised value takes the default. The ONE reader of the
+    switch, shared by the actuator gate and the diagnostic probe.
+    """
+    return env_flag(_REANCHOR_SWITCH, True)
 
 
 def _reanchor_enabled() -> bool:
@@ -1485,7 +1641,7 @@ def _reanchor_enabled() -> bool:
     mode string where the actuator switch was meant is an easy and invisible
     mistake, so both are demanded and both are read at call time.
     """
-    return _quote_mode() == "enforce" and env_truthy("VULTURE_LLM_QUOTE_REANCHOR")
+    return _quote_mode() == "enforce" and _reanchor_switch()
 
 
 def _batch_paths(findings: list[dict], source_path: str) -> list[Path | None]:
@@ -1507,9 +1663,9 @@ def _resolved_only(paths: list[Path | None]) -> list[Path]:
 def _may_reanchor(outcome: "anchor.AnchorResult") -> bool:
     """Whether this outcome licenses moving a line: the actuator is on, the text
     was located elsewhere, and the move is inside the absolute ceiling."""
-    if not _reanchor_enabled():
-        return False
     if outcome.status != "reanchored":
+        return False
+    if not _reanchor_enabled():
         return False
     return _within_delta_ceiling(outcome)
 
@@ -1523,7 +1679,11 @@ def _within_delta_ceiling(outcome: "anchor.AnchorResult") -> bool:
 
 
 def _apply_reanchor(finding: dict, outcome: "anchor.AnchorResult") -> None:
-    """The LINE actuator for a row's OWN citation (§5.3, T4.3). Inert on ship.
+    """The LINE actuator for a row's OWN citation (§5.3, T4.3).
+
+    ON by default since 0074 (O6): it moves a line when the quote mode is
+    ``enforce`` (the default) AND ``VULTURE_LLM_QUOTE_REANCHOR`` is on (the
+    default) — ``_reanchor_enabled``. Either switch is the runtime rollback.
 
     `reanchored` means the quoted text was found, but not where the model said.
     Rewriting `line_start` here — upstream of dedup, of the SSE event and of
@@ -1540,7 +1700,7 @@ def _apply_reanchor(finding: dict, outcome: "anchor.AnchorResult") -> None:
     """
     if not _may_reanchor(outcome):
         return
-    span = max(0, int(finding.get("line_end", 0)) - int(finding.get("line_start", 0)))
+    span = max(0, anchor.int_field(finding, "line_end") - anchor.int_field(finding, "line_start"))
     finding["line_start"] = outcome.new_line
     finding["line_end"] = outcome.new_line + span
 
@@ -1562,11 +1722,20 @@ def _stamp_anchor(finding: dict, path: Path | None, mode: str,
     # rewrite stopped being auditable — the precise property this stamp exists
     # to preserve, on precisely the mislocated class the feature measures.
     claimed = finding.get("line_start", 0)
+    # 0074 O3 = C: the CLAIM's range, beside the verdict — after the quote
+    # search (so it can shadow no verdict) and before the actuator (so it
+    # describes what the model said). Same cached reader; weight 0.0.
+    # `_claimed_line_range` is deliberately NOT on `_PRIVATE_FIELDS` (that
+    # roster is pinned to 0076's §5.4(2) set): like `_code_snippet_start` it is
+    # a label, not model-copied text, and `_public_view` keeps every
+    # underscore-prefixed stamp off SSE and the result snapshot.
+    claim_range = anchor.claimed_line_range(finding, path)
     _apply_reanchor(finding, outcome)
     finding.update({
         "_anchor_status": outcome.status,
         "_anchor_reason": outcome.reason,
         "_claimed_line": claimed,
+        "_claimed_line_range": claim_range,
         "_anchor_delta": outcome.delta,
         "_anchor_candidates": outcome.candidates,
         "_anchor_other_path": outcome.other_path,
@@ -1590,8 +1759,13 @@ def _restore_dedup_identity(finding: dict) -> None:
 
     So the identity is restored, not merely remembered. What the strip removes is
     the model's authority over ``code_snippet`` and over the structured schema
-    (B3); ``check_id`` remains what it always was — a dedup key that neither
-    repository persists (C7), never a catalog id.
+    (B3). The restored ``check_id`` is the row's public identity and IS
+    persisted (both repositories store ``check_id``; 0079 A2,
+    ``backend/internal/repository/check_id_persist_test.go``), so it is a
+    dedup key, never a catalog id — and never a claim to the deterministic
+    tier: the row's provenance stays in the LLM family
+    (``shared.provenance.is_llm_provenance``), which keeps it L5-demotable
+    whatever ``check_id`` it carries (0074, D1b).
     """
     cid = finding.get("_model_check_id")
     if cid and not finding.get("check_id"):
@@ -1654,9 +1828,9 @@ def _adopt_anchor(survivor: dict | None, other: dict) -> None:
     correctly quoted. This is a field merge among rows that already collapse
     today, so the surviving COUNT is unchanged in every case.
 
-    ``survivor is None`` marks a key that came from ``base`` (the accumulated
-    skill findings): those rows are not returned by the dedup and must not be
-    stamped with an LLM row's anchor provenance.
+    Only a survivor from ``new`` adopts: a key that came from ``base`` (the
+    accumulated skill findings) is not returned by the dedup and must not be
+    stamped with an LLM row's anchor provenance (``_Survivor.absorb``).
     """
     if survivor is None or _anchor_rank(other) <= _anchor_rank(survivor):
         return
@@ -1683,21 +1857,245 @@ def _deduplicate_findings(
     Returns:
         Subset of ``new`` that don't duplicate any entry in ``base``.
     """
-    # ``None`` marks a key contributed by ``base``; a real dict is the surviving
-    # row for that key, and is the object a later duplicate merges its anchor
-    # status into (0076 AC30).
-    seen: dict[tuple[str, str], dict | None] = {
-        _dedup_key(f, source_path): None for f in base
+    # Every key maps to its surviving row. A ``base`` row is never returned and
+    # never adopts an LLM row's anchor provenance (0076 AC30); it may record the
+    # LLM row it swallowed (0074 C3). A row from ``new`` adopts a duplicate's
+    # better anchor status.
+    seen: dict[tuple[str, str], _Survivor] = {
+        _dedup_key(f, source_path): _Survivor(f, True) for f in base
     }
     unique: list[dict] = []
     for f in new:
         key = _dedup_key(f, source_path)
         if key in seen:
-            _adopt_anchor(seen[key], f)
+            seen[key].absorb(f)
             continue
-        seen[key] = f
+        seen[key] = _Survivor(f, False)
         unique.append(f)
     return unique
+
+
+def _dedup_tier(row: dict) -> str:
+    """A row's tier for the agent's dedup. A row reaching it with no
+    ``provenance`` is an LLM row: skill rows are stamped at their emit site
+    (``_finalize_finding_inplace``), the LLM tag is set after this dedup."""
+    return str(row.get("provenance") or "llm")
+
+
+# Feature 0074 contract T3 (re-audit R10): the bounds Go applies to
+# validation.merged_descriptions (handler/dedup_record.go), applied where the
+# entries are made, so the raw ``result`` snapshot is bounded too.
+_MERGED_LLM_MAX_ENTRIES = 8
+_MERGED_LLM_MAX_BYTES = 2048
+_MERGED_LLM_MARKER = "…"
+
+
+def _record_merged_llm(survivor: dict, dropped: dict, ledger: "_MergedLedger") -> None:
+    """Feature 0074 contract C3: a DETERMINISTIC survivor records the LLM-family
+    row the agent dropped against it, as public ``merged_llm`` entries
+    ``{provenance, description}``. Go folds them into
+    ``validation.provenance_origins`` / ``merged_descriptions`` exactly as if
+    its own cross-agent merge had collapsed the pair, and never persists the
+    field itself. Without it a same-agent skill/LLM pair, the commonest one,
+    was invisible to ``provenance=both`` and lost the model's description.
+
+    Contract T3: the field rides the raw ``result`` snapshot to live SSE
+    clients before Go persists anything, so each description is redacted HERE
+    and the list is bounded, deduplicated as Go's ``descCollector`` is (see
+    ``_MergedLedger``)."""
+    tier = _dedup_tier(dropped)
+    if not _is_tier_merge(survivor, tier):
+        return
+    entry = ledger.admit_description(survivor, dropped, tier) or ledger.admit_tier(tier)
+    if entry is not None:
+        ledger.store(survivor, entry)
+
+
+@dataclass(slots=True)
+class _MergedLedger:
+    """What one survivor's ``merged_llm`` holds, with O(1) membership tests.
+
+    A description takes a slot only when it is new as Go's ``descCollector``
+    judges it: non-empty after trimming Go's whitespace set, not the
+    survivor's own, and not already stored, WHATEVER its tier (``"dup "`` and
+    ``"dup"``, or one text under ``llm`` and ``llm_l5_verified``, are one
+    entry). At most ``_MERGED_LLM_MAX_ENTRIES`` descriptions, each cut to
+    ``_MERGED_LLM_MAX_BYTES``; a distinct one refused at the cap is counted in
+    the survivor's ``merged_llm_dropped`` (Go adds it to
+    ``validation.merged_descriptions_dropped``) and costs no redaction.
+
+    A tier with no description stored yet still reaches Go's
+    ``provenance_origins`` as a description-less entry (``""``, which Go's
+    collector skips), at most one per tier and replaced in place by the
+    tier's first described entry, so it never takes a description slot.
+
+    Exact within one dedup pass. A later pass rebuilds the ledger from the
+    stored entries, so a description refused at the cap in an earlier pass and
+    met again would be counted again; the pipeline never absorbs one row twice."""
+
+    keys: set[tuple[str, str]]
+    described: int = 0
+    tier_only: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def of(cls, survivor: dict) -> "_MergedLedger":
+        own = trim_go_space(str(survivor.get("description") or ""))
+        ledger = cls({("desc", ""), ("desc", own)})
+        for i, entry in enumerate(survivor.get("merged_llm", ())):
+            ledger.note(entry, i)
+        return ledger
+
+    def note(self, entry: dict, index: int) -> None:
+        """Account for ``entry``, stored at ``index`` of the list."""
+        tier, text = entry["provenance"], trim_go_space(entry["description"])
+        self.keys.update({("tier", tier), ("desc", text)})
+        if text:
+            self.described += 1
+            self.tier_only.pop(tier, None)
+        else:
+            self.tier_only[tier] = index
+
+    def admit_description(self, survivor: dict, dropped: dict, tier: str) -> dict | None:
+        """The wire entry for ``dropped``'s description, or None when it is
+        empty, already stored, or refused at the cap (and counted)."""
+        raw = str(dropped.get("description") or "")
+        key = ("desc", trim_go_space(raw))
+        if key in self.keys:
+            return None
+        self.keys.add(key)
+        if self.described >= _MERGED_LLM_MAX_ENTRIES:
+            survivor["merged_llm_dropped"] = survivor.get("merged_llm_dropped", 0) + 1
+            return None
+        entry = _merged_llm_entry(tier, _redact_merged_description(
+            raw, _is_secret_bearing_pair(survivor, dropped)))
+        return self._unless_stored(entry, key)
+
+    def _unless_stored(self, entry: dict, raw_key: tuple[str, str]) -> dict | None:
+        """``entry``, unless its STORED form (redacted, cut) is already held."""
+        key = ("desc", trim_go_space(entry["description"]))
+        return entry if key == raw_key or key not in self.keys else None
+
+    def admit_tier(self, tier: str) -> dict | None:
+        """A description-less entry for a tier not yet held, within the cap."""
+        if ("tier", tier) in self.keys or len(self.tier_only) >= _MERGED_LLM_MAX_ENTRIES:
+            return None
+        return {"provenance": tier, "description": ""}
+
+    def store(self, survivor: dict, entry: dict) -> None:
+        """Append ``entry``, or put it in place of its tier's description-less
+        entry."""
+        rows = survivor.setdefault("merged_llm", [])
+        index = self.tier_only.get(entry["provenance"], len(rows)) if entry["description"] else len(rows)
+        rows[index:index + 1] = [entry]
+        self.note(entry, index)
+
+
+def _is_secret_bearing_pair(survivor: dict, dropped: dict) -> bool:
+    """Either row's category embeds a secret value (``_SECRET_BEARING_CWES``)."""
+    return _is_secret_bearing(survivor) or _is_secret_bearing(dropped)
+
+
+def _is_secret_bearing(finding: dict) -> bool:
+    return trim_go_space(str(finding.get("category", ""))).upper() in _SECRET_BEARING_CWES
+
+
+def _redact_merged_description(description: str, secret_bearing: bool) -> str:
+    """A secret-bearing pair gets Go's full ``RedactSecretText`` (code-line
+    rules plus prose); any other row the prose pass alone, which touches only
+    credential shapes, so ordinary reasoning text stays verbatim. Either way the
+    result then gets the secret-shape masking every finding's own description
+    gets (0098, ``_mask_secret_shapes_inplace``): this text reaches the same
+    egress points (live SSE, the persisted merge record, the API)."""
+    if secret_bearing:
+        redacted = _redact_secret_text(description)
+    else:
+        redacted = "\n".join(_redact_prose(line) for line in description.split("\n"))
+    return mask_secret_values(redacted, _REDACTION_PLACEHOLDER)
+
+
+def _merged_llm_entry(tier: str, description: str) -> dict:
+    """One wire entry, cut on a character boundary and marked twice — a
+    trailing marker and ``truncated`` — exactly as Go's ``mergedDescEntry``."""
+    entry: dict = {"provenance": tier, "description": description}
+    if len(description.encode("utf-8")) > _MERGED_LLM_MAX_BYTES:
+        budget = _MERGED_LLM_MAX_BYTES - len(_MERGED_LLM_MARKER.encode("utf-8"))
+        entry["description"] = _truncate_utf8(description, budget) + _MERGED_LLM_MARKER
+        entry["truncated"] = True
+    return entry
+
+
+def _is_tier_merge(survivor: dict, dropped_tier: str) -> bool:
+    """An LLM-family row collapsing onto a deterministic one."""
+    return is_llm_provenance(dropped_tier) and not is_llm_provenance(_dedup_tier(survivor))
+
+
+@dataclass(slots=True)
+class _Survivor:
+    """The row holding a dedup key, whether it came from ``base``, and (built
+    on the first merge only) the ledger of its ``merged_llm`` entries."""
+
+    row: dict
+    from_base: bool
+    merged: _MergedLedger | None = None
+
+    def absorb(self, dropped: dict) -> None:
+        """Merge what a dropped duplicate carries that the survivor keeps."""
+        if not self.from_base:
+            _adopt_anchor(self.row, dropped)
+            return
+        if self.merged is None:
+            self.merged = _MergedLedger.of(self.row)
+        _record_merged_llm(self.row, dropped, self.merged)
+
+
+@dataclass
+class _LLMDedupTally:
+    """The agent's half of the LLM-tier ledger (feature 0074 P4, AC19).
+
+    The agent's own dedup is the FIRST place an LLM row can disappear, and Go
+    only sees what survives, so the agent counts: ``collapsed`` is every LLM row
+    a ``_deduplicate_findings`` call here removed (cross-batch repeats and skill
+    collisions alike); ``emitted`` is every row the model produced, counted as
+    each batch is deduplicated — i.e. BEFORE any agent dedup, and never
+    reconstructed afterwards (review item 10). ``_deduplicate_findings`` keeps
+    returning a plain list; the count is its input size minus its output size,
+    O(1) per call.
+
+    ``available`` goes False when the LLM phase degraded by EXCEPTION: rows
+    already counted were then discarded where neither counter can see them, so
+    the counters are withheld and Go reports them ``unavailable`` rather than a
+    balanced ledger that hides the loss.
+    """
+
+    emitted: int = 0
+    collapsed: int = 0
+    available: bool = True
+
+    @classmethod
+    def ensure(cls, tally: "_LLMDedupTally | None") -> "_LLMDedupTally":
+        """``tally``, or a private one for a caller that publishes no counters."""
+        return tally if tally is not None else cls()
+
+    def _collapse(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
+        kept = _deduplicate_findings(base, rows, source_path=source_path)
+        self.collapsed += len(rows) - len(kept)
+        return kept
+
+    def dedup(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
+        """One batch's dedup: counts its rows as emitted, then what it removed."""
+        self.emitted += len(rows)
+        return self._collapse(base, rows, source_path)
+
+    def settle(self, base: list[dict], rows: list[dict], source_path: str) -> list[dict]:
+        """The run's FINAL dedup over the sweep's output, already counted."""
+        return self._collapse(base, rows, source_path)
+
+    def as_result(self) -> dict[str, int]:
+        """Both counters — 0 on a skills-only run; absent when ``available`` is
+        False (or, from an older agent, always)."""
+        if not self.available:
+            return {}
+        return {"llm_emitted": self.emitted, "llm_collapsed_agent": self.collapsed}
 
 
 def _collapse_skill_findings(
@@ -1796,6 +2194,11 @@ _SECRET_BEARING_CWES: frozenset[str] = frozenset({
     "CWE-259",  # use of a hard-coded password
     "CWE-321",  # use of a hard-coded cryptographic key (crypto_check embeds key)
     "CWE-522",  # insufficiently protected credentials
+    # Feature 0098: the finding's own line carries the credential by definition
+    # (a token in a query string, a password sent over plain HTTP), and its
+    # window would otherwise print it.
+    "CWE-523",  # unprotected transport of credentials
+    "CWE-598",  # sensitive query strings in a GET request
 })
 
 _REDACTION_PLACEHOLDER = "***REDACTED***"
@@ -1804,13 +2207,40 @@ _REDACTION_PLACEHOLDER = "***REDACTED***"
 # masking the body. Handles both single- and double-quoted literals.
 _QUOTED_LITERAL_RE = re.compile(r"""(['"])(?:\\.|(?!\1)[^\\])*\1""")
 
+# Feature 0074 contract T3: the code-line patterns below are written with
+# ``\s`` / ``\S`` / ``\w`` for legibility and compiled with those spelled out,
+# because Python's are Unicode and Go's RE2 ones ASCII. Whitespace is exactly
+# Go's ``unicode.IsSpace`` set (``GO_SPACE``: U+001C-U+001F and U+FEFF are not
+# whitespace) and a word character is ``[A-Za-z0-9_]`` or any non-ASCII
+# character that is not whitespace — the classes Go's textutil compiles with,
+# so both runtimes mask the same bytes (the non-ASCII fixture rows pin it).
+_SPACE_ESCAPED = "".join(f"\\U{ord(c):08x}" for c in GO_SPACE)
+_SPACE_CLASS = f"[{_SPACE_ESCAPED}]"
+_NON_SPACE_CLASS = f"[^{_SPACE_ESCAPED}]"
+
+# The word class's members WITHOUT brackets (``\w`` only ever appears inside
+# a bracket expression): ASCII word characters and every non-ASCII code point
+# outside ``GO_SPACE``. Go's textutil.wordChars spells the same ranges; the
+# unit test pins both against the whitespace set code point by code point.
+_WORD_CHARS = (
+    "A-Za-z0-9_\x80-\x84\x86-\x9f\xa1-\u167f\u1681-\u1fff\u200b-\u2027"
+    "\u202a-\u202e\u2030-\u205e\u2060-\u2fff\u3001-\U0010ffff"
+)
+_SPELLED = {r"\s": _SPACE_CLASS, r"\S": _NON_SPACE_CLASS, r"\w": _WORD_CHARS}
+
+
+def _spelled(pattern: str) -> re.Pattern[str]:
+    r"""Compile a code-line pattern with ``\s`` / ``\S`` / ``\w`` spelled out."""
+    return re.compile(re.sub(r"\\[sSw]", lambda m: _SPELLED[m.group()], pattern))
+
+
 # An assignment / key-value right-hand side whose value is NOT a fully quoted
 # literal (e.g. ``token = abcd1234``, ``password: hunter2``, ``export KEY=v``,
 # or a truncated ``api_key = "AKIA`` whose closing quote was cut). Captures any
 # leading indentation plus the variable/key and operator so structure is
 # preserved; masks the value. ``^\s*`` lets the branch fire on INDENTED source
 # lines; an optional ``export``/``set`` shell prefix is tolerated.
-_ASSIGN_RHS_RE = re.compile(
+_ASSIGN_RHS_RE = _spelled(
     r"""^(?P<indent>\s*(?:export\s+|set\s+)?)"""
     r"""(?P<lhs>[A-Za-z_][\w.\[\]'"-]*\s*[:=]\s*)"""
     r"""(?P<val>\S.*?)(?P<tail>\s*(?:#.*)?)$"""
@@ -1818,7 +2248,7 @@ _ASSIGN_RHS_RE = re.compile(
 
 # A trailing comment body (``# ...`` / ``// ...``). For secret-bearing findings
 # a secret can hide in a comment; mask the comment body while keeping the marker.
-_COMMENT_BODY_RE = re.compile(r"""(?P<marker>#|//)(?P<body>\s*\S.*)$""")
+_COMMENT_BODY_RE = _spelled(r"""(?P<marker>#|//)(?P<body>\s*\S.*)$""")
 
 
 def _has_unterminated_quote(text: str) -> int:
@@ -1869,7 +2299,7 @@ def _redact_secret_line(line: str) -> str:
         def _mask(m: re.Match[str]) -> str:
             q = m.group(1)
             after = body[m.end():]
-            if after.lstrip().startswith(":"):
+            if after.lstrip(GO_SPACE).startswith(":"):
                 return m.group(0)  # dict key — preserve verbatim
             return f"{q}{_REDACTION_PLACEHOLDER}{q}"
 
@@ -1903,6 +2333,68 @@ def _redact_secret_line(line: str) -> str:
     return line
 
 
+# The prose pass (feature 0074 contract T3): Go textutil.RedactSecretText's
+# two patterns, restated so both runtimes mask the same bytes (pinned by the
+# `prose_cases` of backend/internal/textutil/testdata/secret_line_cases_0074.json).
+# Each opens with an explicit boundary group instead of ``\b`` and uses
+# ``[ \t]`` instead of ``\s``: Python's are Unicode-aware, Go's are ASCII.
+# A secret-named key followed by ':' or '=' anywhere in a sentence.
+_PROSE_NAMED_SECRET_RE = re.compile(
+    r"(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]*(?i:password|passwd|pwd|secret|token|api[_-]?key"
+    r"|access[_-]?key|private[_-]?key)[ \t]*[:=][ \t]*)([^ \t'\"]+)"
+)
+# A token whose shape alone marks it a credential.
+_PROSE_KEY_TOKEN_RE = re.compile(
+    r"(^|[^A-Za-z0-9_-])((?:sk|pk|rk)[-_](?:live|test|proj)[-_][A-Za-z0-9_-]{8,}"
+    r"|sk-[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|xox[abpr]-[A-Za-z0-9-]{10,})"
+)
+
+
+def _redact_prose(line: str) -> str:
+    """Mask a named secret's value and any key-shaped token in one line."""
+    line = _PROSE_NAMED_SECRET_RE.sub(rf"\g<1>\g<2>{_REDACTION_PLACEHOLDER}", line)
+    return _PROSE_KEY_TOKEN_RE.sub(rf"\g<1>{_REDACTION_PLACEHOLDER}", line)
+
+
+def _redact_secret_text(text: str) -> str:
+    """Go's ``textutil.RedactSecretText``: each line through the code-line
+    redactor, then the prose pass, so a secret written in a sentence is masked
+    too. Byte-for-byte parity is pinned by the shared fixture."""
+    return "\n".join(_redact_prose(_redact_secret_line(line)) for line in text.split("\n"))
+
+
+_TRIPLE_QUOTE_RE = re.compile(r"\"\"\"|\'\'\'")
+_NON_BLANK_RE = re.compile(r"\S")
+# A row whose code ends in one of these before a triple quote OPENS a value.
+_OPENS_VALUE = ("=", ":", "(", ",", "[", "{")
+
+
+def _redact_triple_quoted(body: str, pos: int, quote: re.Match[str]) -> tuple[str, int]:
+    """Mask one triple-quoted literal of ``body``; return the redacted text of
+    ``body[pos:end]`` and ``end``.
+
+    An OPENING delimiter masks what follows it (to its closer on this row, else
+    to EOL); a row that only CLOSES the literal masks what precedes it. Read as
+    ordinary literals, the delimiter was an empty string plus a dangling quote,
+    which garbled the row to KEY = "***REDACTED***""***REDACTED***. The code
+    before an opener still goes through the assignment redactor, so a secret
+    next to a triple quote is masked like any other."""
+    head = body[pos: quote.start()]
+    if _NON_BLANK_RE.search(body, quote.end()) or head.rstrip().endswith(_OPENS_VALUE):
+        return _redact_opened(body, head, quote)
+    indent = head[: len(head) - len(head.lstrip())]
+    return f"{indent}{_REDACTION_PLACEHOLDER}{quote.group(0)}{body[quote.end():]}", len(body)
+
+
+def _redact_opened(body: str, head: str, quote: re.Match[str]) -> tuple[str, int]:
+    """``head`` redacted, then the literal masked up to its closer (or EOL)."""
+    q = quote.group(0)
+    close = body.find(q, quote.end())
+    shown = f"{_redact_secret_line(head)}{q}{_REDACTION_PLACEHOLDER}"
+    return (shown, len(body)) if close == -1 else (shown + q, close + len(q))
+
+
 def _redact_snippet(snippet: str) -> str:
     """Redact secret values in a numbered code-window snippet (P2a).
 
@@ -1926,7 +2418,23 @@ def _redact_numbered_line(raw: str) -> str:
     """
     body = line_format.strip_line_number(raw)
     prefix = raw[: len(raw) - len(body)]
-    return f"{prefix}{_redact_secret_line(body)}"
+    return f"{prefix}{_redact_code(body)}"
+
+
+def _redact_code(body: str) -> str:
+    """One row's code: each triple-quoted literal masked as one value (it would
+    read as ``""`` + ``"``), and the code between them through the assignment
+    redactor. Iterative and position-based, so a row of many delimiters stays
+    linear."""
+    out: list[str] = []
+    pos = 0
+    quote = _TRIPLE_QUOTE_RE.search(body)
+    while quote:
+        shown, pos = _redact_triple_quoted(body, pos, quote)
+        out.append(shown)
+        quote = _TRIPLE_QUOTE_RE.search(body, pos)
+    out.append(_redact_secret_line(body[pos:]))
+    return "".join(out)
 
 
 def _redact_finding_inplace(finding: dict[str, Any]) -> None:
@@ -1942,12 +2450,145 @@ def _redact_finding_inplace(finding: dict[str, Any]) -> None:
     the persisted ``code_snippet`` column. No-op for non-secret CWEs and for
     findings without a snippet. Re-redacting an already-masked snippet is safe
     (the placeholder carries no secret).
+
+    Every finding, whatever its category, also has secret-SHAPED values masked
+    in its ``code_snippet`` and ``description`` (feature 0098): a window is
+    several lines wide, so a token on the line next to an unrelated finding,
+    or a credential in a dependency URL quoted by a dependency row, would
+    otherwise reach every egress point verbatim. Those shapes are the precise,
+    high-confidence set (``mask_secret_values``): provider tokens, JWTs,
+    credential schemes with a credential-looking value, URL userinfo,
+    private-key bodies and hex after a credential-named key. Commit SHAs,
+    digests, UUIDs, hashes and prose are evidence and stay readable.
     """
-    if str(finding.get("category", "")).strip().upper() not in _SECRET_BEARING_CWES:
+    _mask_secret_shapes_inplace(finding)
+    if not _is_secret_bearing(finding):
         return
     existing = finding.get("code_snippet")
     if existing:
         finding["code_snippet"] = _redact_snippet(existing)
+
+
+def _is_secret_bearing(finding: dict[str, Any]) -> bool:
+    """True when the finding's category says its own line holds a secret."""
+    return str(finding.get("category", "")).strip().upper() in _SECRET_BEARING_CWES
+
+
+# A finding from a secret-detecting skill cites a line that holds a secret,
+# whatever CWE that skill assigned (CWE-260 a password in a config file, CWE-526
+# an environment variable, CWE-200 a wallet key): its ORIGIN says so.
+_SECRET_SKILL_PREFIXES = ("cwe.secret_scan.",)
+
+
+def _cites_a_secret(finding: dict[str, Any]) -> bool:
+    """True when the line a finding cites holds a secret, by category or origin."""
+    check_id = str(finding.get("check_id") or "")
+    return _is_secret_bearing(finding) or check_id.startswith(_SECRET_SKILL_PREFIXES)
+
+
+def _secret_span(finding: dict[str, Any]) -> range:
+    """The lines a secret-citing finding cites; empty for any other finding."""
+    start = _int_or_zero(finding.get("line_start"))
+    if start < 1 or not finding.get("file_path") or not _cites_a_secret(finding):
+        return range(0)
+    return range(start, max(start, _int_or_zero(finding.get("line_end"))) + 1)
+
+
+def _secret_line_index(findings: list[dict[str, Any]]) -> dict[str, frozenset[int]]:
+    """``{file_path: lines}`` cited by the batch's secret-citing findings."""
+    index: dict[str, set[int]] = {}
+    for f in findings:
+        span = _secret_span(f)
+        if span:
+            index.setdefault(str(f["file_path"]), set()).update(span)
+    return {path: frozenset(lines) for path, lines in index.items()}
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _redact_secret_lines_inplace(
+    finding: dict[str, Any], secret_lines: dict[str, frozenset[int]],
+) -> None:
+    """Mask, in ANY finding's window, every row a secret-bearing finding cites.
+
+    The secret row masks its own line; a neighbouring finding's window spans
+    that line too and must not print what the secret row hid (feature 0098).
+    """
+    lines = secret_lines.get(str(finding.get("file_path") or ""))
+    snippet = finding.get("code_snippet")
+    if not lines or not isinstance(snippet, str):
+        return
+    finding["code_snippet"] = _redact_rows(snippet, lines)
+
+
+def _redact_rows(snippet: str, lines: frozenset[int]) -> str:
+    """``snippet`` with each numbered row in ``lines`` passed through the redactor."""
+    return "\n".join(
+        _mask_cited_row(row) if line_format.read_line_number(row) in lines else row
+        for row in snippet.split("\n")
+    )
+
+
+def _mask_cited_row(raw: str) -> str:
+    """A row a secret-bearing finding cites, as any window may print it.
+
+    The structured redactor keeps the row's shape (key name, quotes) when it
+    can mask something. A row it cannot mask (a bare key-body or value row: no
+    quote, no ``=``) is replaced whole, so nothing it holds egresses.
+    """
+    redacted = _redact_numbered_line(raw)
+    masked = redacted != raw or _REDACTION_PLACEHOLDER in raw
+    return redacted if masked else _mask_whole_row(raw)
+
+
+def _mask_whole_row(raw: str) -> str:
+    """One presented row with its whole body replaced, ``"<n>: "`` prefix kept."""
+    body = line_format.strip_line_number(raw)
+    return f"{raw[: len(raw) - len(body)]}{_REDACTION_PLACEHOLDER}"
+
+
+def _cited_rows(snippet: str, finding: dict[str, Any]) -> str:
+    """The numbered rows of ``snippet`` inside the finding's own cited span.
+
+    ``snippet`` unchanged when it carries no row of that span (unnumbered, or no
+    line), so a finding never loses the only evidence it has."""
+    start = _int_or_zero(finding.get("line_start"))
+    end = max(start, _int_or_zero(finding.get("line_end")))
+    rows = [r for r in snippet.split("\n") if _row_in(r, start, end)]
+    return "\n".join(rows) if rows else snippet
+
+
+def _row_in(row: str, start: int, end: int) -> bool:
+    return 0 < start <= (line_format.read_line_number(row) or 0) <= end
+
+
+def _live_view(finding: dict[str, Any]) -> dict[str, Any]:
+    """What a per-finding ``finding`` event may carry before the batch is known.
+
+    A neighbour's secret row is only masked once every row of the batch is in
+    (``_secret_line_index``), which is after the live events left. So a live
+    window is cut to the finding's own cited rows; the ``result`` snapshot
+    carries the full, batch-masked window."""
+    view = _public_view(finding)
+    if isinstance(view.get("code_snippet"), str):
+        view["code_snippet"] = _cited_rows(view["code_snippet"], finding)
+    return view
+
+
+_SHAPE_MASKED_FIELDS = ("code_snippet", "description")
+
+
+def _mask_secret_shapes_inplace(finding: dict[str, Any]) -> None:
+    """Mask secret-shaped values in a finding's free-text evidence fields."""
+    for key in _SHAPE_MASKED_FIELDS:
+        text = finding.get(key)
+        if isinstance(text, str) and text:
+            finding[key] = mask_secret_values(text, _REDACTION_PLACEHOLDER)
 
 
 # --- Feature 0057 P6b: provenance vocabulary -----------------------------
@@ -1963,7 +2604,8 @@ def _redact_finding_inplace(finding: dict[str, Any]) -> None:
 #
 # The tags are ADDITIVE metadata: they must NOT change the
 # ``validate.llm_judge._is_deterministic`` / ``_is_l5_exempt`` determinations,
-# which key off ``check_id`` / ``signature_status`` / ``provenance == "llm"``.
+# which key off ``check_id`` / ``signature_status`` / the LLM-family rule
+# (``shared.provenance.is_llm_provenance``).
 PROVENANCE_VALUES: frozenset[str] = frozenset(
     {
         "skill",
@@ -2211,6 +2853,92 @@ def _finalize_finding_inplace(
     _redact_finding_inplace(finding)
 
 
+def _attach_code_snippet_safely(
+    findings: list[dict[str, Any]], source_path: str, run_id: str,
+) -> None:
+    """``_attach_code_snippet``, best-effort: a read failure is logged, not raised."""
+    try:
+        _attach_code_snippet(findings, source_path)
+    except Exception as exc:  # grounding is best-effort
+        logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
+
+
+def _validate_enabled() -> bool:
+    """The validate stage runs unless ``VULTURE_DISABLE_VALIDATE=true``."""
+    return os.environ.get("VULTURE_DISABLE_VALIDATE", "").lower() != "true"
+
+
+def _validate_config(
+    validate_use_llm: bool | None,
+    l5_enabled: bool,
+    l5_top_n: int | None = None,
+    l5_batch_size: int | None = None,
+) -> Any:
+    """The ``ValidateConfig`` every audit path uses (L1 and L2 always on).
+
+    Feature 0083: ``enable_l5_override`` carries the per-request decision PAST
+    ``_resolve_l5_enabled``, which otherwise lets the env defeat it. ``None``
+    when the request was silent, so the env keeps deciding exactly as before.
+    """
+    from shared.validate import ValidateConfig
+
+    return ValidateConfig(
+        compliance_mode=(
+            os.environ.get("VULTURE_COMPLIANCE_MODE", "").lower() == "true"
+        ),
+        enable_l1=True,
+        enable_l2=True,
+        enable_l5=l5_enabled,
+        enable_l5_override=(
+            bool(validate_use_llm) if validate_use_llm is not None else None
+        ),
+        l5_top_n_override=l5_top_n,
+        l5_batch_size_override=l5_batch_size,
+    )
+
+
+def _validate_without_llm(
+    findings: list[dict[str, Any]], source_path: str, run_id: str,
+) -> list[dict[str, Any]]:
+    """The deterministic validate stage (L1 + L2, never the L5 judge).
+
+    Returns the validated findings followed by the L2 rollup parents, which is
+    the order ``run_combined_audit`` reports them in. Raises when validation
+    fails, so a caller that gates on the verdict can say so.
+    """
+    if not _validate_enabled():
+        return findings
+    from shared.validate import validate
+
+    result = validate(
+        findings, source_path=source_path, audit_id=run_id,
+        config=_validate_config(False, False),
+    )
+    return result.findings + result.rollups
+
+
+def finalize_skill_findings(
+    findings: list[dict[str, Any]], source_path: str, run_id: str,
+) -> list[dict[str, Any]]:
+    """What ``run_combined_audit`` does to skill rows when the LLM phase is off.
+
+    For a caller that runs the skills itself (the offline gate, feature 0098)
+    and must report exactly what the full audit would: every row passes the
+    pre-egress choke point (category conformance, deterministic id, secret
+    redaction), then the skill-vs-skill line collapse, the code window, and the
+    deterministic validate stage. Each step is the same function the audit
+    calls, in the audit's order, so the two paths cannot drift.
+
+    ``findings`` are mutated in place and must cite paths under ``source_path``
+    for the window and the validate stage to read them.
+    """
+    for index, finding in enumerate(findings):
+        _finalize_finding_inplace(finding, run_id, index)
+    kept, _collapsed = _collapse_skill_findings(findings, run_id)
+    _attach_code_snippet_safely(kept, source_path, run_id)
+    return [_public_view(f) for f in _validate_without_llm(kept, source_path, run_id)]
+
+
 def _bind_category_enum(
     fn: Callable[..., Generator[str, None, None]],
 ) -> Callable[..., Generator[str, None, None]]:
@@ -2398,7 +3126,7 @@ def run_combined_audit(
 
     clear_caches()  # Ensure stale file contents don't leak across audit runs
     emitter = AgUiEventEmitter(run_id)
-    yield emitter.run_started()
+    yield emitter.run_started(llm_window=_llm_window(model, effective_use_llm))
     logger.info("audit_start run_id=%s source=%s categories=%s use_llm=%s",
                 run_id, source_path, categories, effective_use_llm)
 
@@ -2493,7 +3221,7 @@ def run_combined_audit(
                         finding, run_id, len(skill_findings),
                     )
                     skill_findings.append(finding)
-                    yield emitter.finding_event(**_public_view(finding))
+                    yield emitter.finding_event(**_live_view(finding))
 
                 completed += 1
                 yield emitter.progress_event(
@@ -2548,6 +3276,7 @@ def run_combined_audit(
 
     # --- Phase 2: LLM enhancement (optional) ---
     llm_new_findings: list[dict] = []
+    llm_tally = _LLMDedupTally()  # 0074 P4: published on `result` even when 0
     actual_input_tokens = 0
     actual_output_tokens = 0
     # Feature 0070 P5 (A.3): a run that WANTED an LLM phase and lost it must not
@@ -2609,12 +3338,14 @@ def run_combined_audit(
                 model=model,
                 skill_findings=skill_findings,
                 llm_tier3=llm_tier3,
+                tally=llm_tally,
             )
         except Exception as exc:  # degradation guard, not a swallow
             logger.warning(
                 "llm_phase_failed_degrading run_id=%s error=%s",
                 run_id, str(exc)[:200],
             )
+            llm_tally.available = False
             yield emitter.text_message(
                 "LLM phase unavailable — returning skill findings only."
             )
@@ -2627,9 +3358,7 @@ def run_combined_audit(
         if llm_error:
             yield emitter.text_message(llm_error)
             degraded_reason = llm_error
-        llm_new_findings = _deduplicate_findings(
-            skill_findings, llm_findings, source_path=source_path,
-        )
+        llm_new_findings = llm_tally.settle(skill_findings, llm_findings, source_path)
 
         if llm_new_findings:
             yield emitter.text_message(
@@ -2648,7 +3377,7 @@ def run_combined_audit(
                 # before the per-finding SSE event (the LLM is the realistic
                 # source of unquoted / env-style / comment-embedded secrets).
                 _finalize_finding_inplace(finding, run_id, base_idx + offset)
-                yield emitter.finding_event(**_public_view(finding))
+                yield emitter.finding_event(**_live_view(finding))
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
     else:
@@ -2664,24 +3393,17 @@ def run_combined_audit(
     # Populate a real code window on every finding lacking one (read from
     # source) so the L5 judge is never blind (R4). Additive / no-op when a
     # finding already carries a snippet. Skipped if the source is gone.
-    try:
-        _attach_code_snippet(all_findings, source_path)
-    except Exception as exc:  # grounding is best-effort
-        logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
+    _attach_code_snippet_safely(all_findings, source_path, run_id)
 
     # --- Validate stage (feature 0045) ---------------------------
     # Annotates each finding with validation_status + validation_confidence
     # + per-layer check trail. V6: never deletes findings (length-preserving).
     # Disabled via VULTURE_DISABLE_VALIDATE=true env var.
-    _validate_enabled = (
-        os.environ.get("VULTURE_DISABLE_VALIDATE", "").lower() != "true"
-    )
-    if _validate_enabled:
+    if _validate_enabled():
         try:
             import queue as _queue
             import threading as _threading
 
-            from shared.validate import ValidateConfig as _ValidateConfig
             from shared.validate import validate as _validate
 
             # L5 streaming (feature 0046 D6): use a thread-safe queue
@@ -2714,22 +3436,8 @@ def run_combined_audit(
             # still annotate the partial findings cheaply.
             if _cancelled_or_expired():
                 _l5_enabled = False
-            _vcfg = _ValidateConfig(
-                compliance_mode=(
-                    os.environ.get("VULTURE_COMPLIANCE_MODE", "").lower() == "true"
-                ),
-                enable_l1=True,
-                enable_l2=True,
-                enable_l5=_l5_enabled,
-                # Feature 0083. `enable_l5_override` carries the per-request
-                # decision PAST _resolve_l5_enabled, which otherwise lets the
-                # env defeat it. None when the request was silent, so the env
-                # keeps deciding exactly as before.
-                enable_l5_override=(
-                    bool(validate_use_llm) if validate_use_llm is not None else None
-                ),
-                l5_top_n_override=l5_top_n,
-                l5_batch_size_override=l5_batch_size,
+            _vcfg = _validate_config(
+                validate_use_llm, _l5_enabled, l5_top_n, l5_batch_size,
             )
 
             _v_result_box: list = [None]
@@ -2840,6 +3548,11 @@ def run_combined_audit(
         "result_schema": RESULT_SCHEMA,
         "pruned_dirs": pruned_dirs(source_path),
         "lineage_checks": lineage_check_results,
+        **llm_tally.as_result(),
+        # Every merged_llm description above went through _redact_merged_description's
+        # secret-shape masking; a backend uses this to tell a masking agent from an
+        # older one (0074 verification item 1).
+        "merged_llm_masked": True,
     }
     if degraded_reason:
         result_extra["degraded_reason"] = degraded_reason
@@ -2872,6 +3585,7 @@ def _collect_llm_findings(
     skill_findings: list[dict] | None = None,
     source_context: str = "",
     llm_tier3: bool | None = None,
+    tally: _LLMDedupTally | None = None,
 ) -> tuple[list[dict], str | None, int, int, str | None]:
     """Run the LLM audit (batch-looped) and collect findings (no SSE wrapping).
 
@@ -2886,6 +3600,7 @@ def _collect_llm_findings(
             instructions, domain_label, prior_context, model,
             skill_findings=skill_findings,
             llm_tier3=llm_tier3,
+            tally=tally,
         )
     )
 
@@ -2918,6 +3633,18 @@ def _llm_tier3_enabled(config_value: bool | None = None) -> bool:
 
 
 async def _collect_llm_findings_batched_async(
+    *args: Any, **kwargs: Any,
+) -> tuple[list[dict], str | None, int, int, str | None]:
+    """Run one LLM sweep with its body-truncation count in scope (0074).
+
+    The scope wraps the whole sweep so every cut it makes — the pre-send cap and
+    the size retry inside each batch task — counts into this run's ``llm_sweep``.
+    """
+    with count_body_truncations() as cuts:
+        return await _sweep_llm_batches_async(*args, cuts=cuts, **kwargs)
+
+
+async def _sweep_llm_batches_async(
     run_id: str,
     source_path: str,
     categories: list[str],
@@ -2928,6 +3655,9 @@ async def _collect_llm_findings_batched_async(
     model: str | None = None,
     skill_findings: list[dict] | None = None,
     llm_tier3: bool | None = None,
+    tally: _LLMDedupTally | None = None,
+    *,
+    cuts: BodyTruncations,
 ) -> tuple[list[dict], str | None, int, int, str | None]:
     """Feature 0057 P1f + P1d: sweep the WHOLE tree in context-window-sized
     batches instead of a single shot that silently tail-drops files.
@@ -2943,6 +3673,7 @@ async def _collect_llm_findings_batched_async(
     """
     max_files = _safe_int_env("VULTURE_LLM_MAX_FILES", 10000)
     budget_usd = _resolve_llm_budget_usd()
+    tally = _LLMDedupTally.ensure(tally)  # 0074 P4: a caller may publish no counters
 
     # Feature 0057 P1d: the LLM sweep is bounded by VULTURE_LLM_MAX_FILES, the
     # operative ceiling for the whole-codebase pass. Without passing it here the
@@ -2964,11 +3695,11 @@ async def _collect_llm_findings_batched_async(
     # Deliberately NOT plain CODE_EXTENSIONS. That set also lacks .sql/.tf/.hcl/
     # .proto, and narrowing to it would drop LLM coverage of a Terraform public
     # bucket or a migration's dynamic SQL — real, findable defects with no evidence
-    # against them. Only .graphql/.gql are excluded, and only because they are
-    # MEASURED noise: 32 of 108 adjudicated findings were .graphql documents cited
-    # at line 1 and 0 of 32 were true positives, including under an adjudicator
-    # explicitly told to look for PII-selecting queries and under-privileged
-    # mutations. Subtracting the proven-noisy pair beats narrowing to a set whose
+    # against them. Nothing is excluded by default: LLM_INELIGIBLE_EXTENSIONS
+    # ships empty (.graphql/.gql included — the "0 of 32" evidence that once
+    # excluded them was confounded with unnumbered presentation; see its comment
+    # in tools/file_scanner.py for the evidence gate any future exclusion must
+    # clear). Subtracting a measured-noisy type beats narrowing to a set whose
     # omissions are untested.
     scanned = _llm_eligible_files(
         scan_code_files(
@@ -2981,13 +3712,14 @@ async def _collect_llm_findings_batched_async(
     )
     tier3_skipped = (len(scanned) - len(ordered)) if not include_tier3 else 0
     max_chars = _get_max_source_chars(model)
+    _body_cap = _get_max_body_bytes()
+    stats = _SweepStats(source_budget=max_chars, cuts=cuts)
     # Feature 0070 P5 (A.1): keep each batch inside the encoded-body ceiling by
     # BATCHING SMALLER, not by dropping a batch's tail. A char is >= 1 byte, so a
     # char budget below the byte cap keeps the batch under it; files that no
     # longer fit roll into the NEXT batch instead of going unanalyzed, so the
     # ceiling costs latency, never coverage. Multibyte content that still
     # overshoots is caught by the hard backstop in _collect_llm_findings_async.
-    _body_cap = _get_max_body_bytes()
     if _body_cap > 0:
         max_chars = min(max_chars, _body_cap)
     # Budget-aware batching: with a USD budget configured the sweep batches
@@ -3043,6 +3775,7 @@ async def _collect_llm_findings_batched_async(
             logger.warning("audit_deadline run_id=%s batches=%d/%d",
                            run_id, batch_idx, len(batches))
             break
+        stats.record(batch_text, batch_paths)
         try:
             findings, error, in_tok, out_tok = await asyncio.wait_for(
                 _collect_llm_findings_async(
@@ -3089,9 +3822,7 @@ async def _collect_llm_findings_batched_async(
         if findings:
             # Dedup across batches AND against skill findings so one vuln seen
             # in two overlapping windows isn't double-reported (P1f).
-            new = _deduplicate_findings(
-                (skill_findings or []) + acc, findings, source_path=source_path,
-            )
+            new = tally.dedup((skill_findings or []) + acc, findings, source_path)
             acc.extend(new)
 
         # --- Caps (P1d): evaluate AFTER the batch so its tokens count ---
@@ -3115,6 +3846,7 @@ async def _collect_llm_findings_batched_async(
             logger.warning("llm_file_cap run_id=%s %s", run_id, notice)
             break
 
+    stats.log(run_id, model)
     # Surface a per-call error only when the sweep produced nothing useful.
     err = first_error if (first_error and not acc) else None
     # Feature 0059: never silently reduce scope — report the skipped Tier-3 tail.
@@ -3302,16 +4034,13 @@ def _endpoint_profile(model: str | None, fenced: bool):
     ``structured`` is forced DOWN to ``NONE`` when the call site says the shape
     cannot be enforced, and is left alone otherwise.
 
-    The model string is resolved before ``profile_for`` sees it because that
-    function is ``lru_cache``d on its argument: ``profile_for()`` would freeze
-    the first caller's ambient model under the key ``None`` for the whole
-    process, which was harmless while nothing read the profile and is not now.
+    ``profile_for`` resolves ``model`` (``None`` = the ambient one) at call time
+    and caches nothing keyed on it, so the bare argument is passed through.
     """
-    from shared.llm.provider import get_model
     from shared.prompt import profile_for
     from shared.prompt.profile import Structured
 
-    profile = profile_for(get_model(model))
+    profile = profile_for(model)
     if fenced and profile.structured is not Structured.NONE:
         return _dc_replace(profile, structured=Structured.NONE)
     return profile
@@ -3720,9 +4449,8 @@ async def _collect_llm_findings_async(
         logger.warning("context_guard run_id=%s: %s", run_id, budget_warn)
         prompt_text = _truncate_prompt_to_budget(prompt_text, model, estimated_tokens=precomputed_tokens)
 
-    from shared.llm.provider import get_context_window
     env_max_output = _safe_int_env("VULTURE_LLM_MAX_OUTPUT_TOKENS", 16384)
-    ctx_window = get_context_window(model)
+    ctx_window = _request_window(model)
     prompt_tokens = safe_estimate_tokens(prompt_text)
     # SDK overhead: tool definitions (~150 tokens each) + AuditOutput schema (~600 tokens).
     sdk_overhead = max(512, 150 * len(all_tools) + 600)
@@ -3799,15 +4527,9 @@ async def _collect_llm_findings_async(
         kwargs: dict[str, Any] = {}
         if hooks is not None:
             kwargs["hooks"] = hooks
-        if run_model_provider is not None:
-            try:
-                from agents import RunConfig  # type: ignore[import-untyped]
-            except ImportError as exc:
-                # §26/M11: broker required but RunConfig missing → FAIL CLOSED
-                # (never fall back to the env-key global client, which would leak
-                # the keys the broker isolates); raise → skills-only (N2).
-                raise RuntimeError("broker required but agents.RunConfig unavailable") from exc
-            kwargs["run_config"] = RunConfig(model_provider=run_model_provider)  # type: ignore[call-arg]
+        run_config = _generate_run_config(run_model_provider)
+        if run_config is not None:
+            kwargs["run_config"] = run_config
         # D.3: bound the SDK's agent loop. Without it one attempt can issue an
         # unbounded number of model calls (~16 measured), invisible to
         # retry_llm_call's budget and uncounted by the tool-loop guard.
@@ -3944,24 +4666,9 @@ def _coerce_path(value: Any) -> str:
     return value if isinstance(value, str) else ("" if value is None else str(value))
 
 
-def _coerce_line(value: Any, default: int = 0) -> int:
-    """B2: a model that returns ``"55"`` must not be silently dropped by Go's
-    ``LineStart int`` unmarshal (``agui/finding_parse.go:33``). Junk costs the
-    LINE, never the FINDING — the caller's default is returned instead."""
-    if isinstance(value, bool):
-        return default
-    try:
-        if isinstance(value, int | float):
-            return int(value)
-        return int(str(value).strip())
-    except (TypeError, ValueError, OverflowError):
-        # NaN and +/-Infinity reach here: `json.loads` accepts all three by
-        # default, so a model emitting `"line_start": NaN` produced a float that
-        # `int()` refuses — ValueError for NaN, OverflowError for Infinity —
-        # and the exception escaped the parser and lost the entire batch. The
-        # docstring's promise (junk costs the LINE, never the FINDING) was not
-        # kept for exactly the inputs a malformed model response supplies.
-        return default
+# B2: the generate parser's line coercion IS the shared lenient parser
+# (0074 review item 9); the name stays for its existing callers and tests.
+_coerce_line = parse_line
 
 
 def _coerce_lines_enabled() -> bool:
@@ -3988,20 +4695,16 @@ def _non_empty(name: str, value: Any) -> dict[str, Any]:
 
 
 def _carry_check_id(raw: dict) -> dict[str, Any]:
-    """The model's ``check_id``: trusted verbatim, or PRESERVED privately.
+    """The model's ``check_id``, PRESERVED privately as ``_model_check_id``.
 
     Stripping it outright re-keys the row onto ``(normalised_title, path)``
     (``_dedup_key`` prefers ``check_id``), so a skill row already carrying that
     title in that file deletes the LLM row. AC26 pins the count invariant: the
-    value survives as ``_model_check_id`` and ``_dedup_key`` falls back to it.
+    value survives as ``_model_check_id`` and ``_dedup_key`` falls back to it;
+    ``_restore_dedup_identity`` republishes it at the choke point. One answer,
+    no switch (0074 T-1.5).
     """
-    name = _MODEL_FORBIDDEN_CHECK_ID[0]
-    cid = raw.get(name) or ""
-    if not cid:
-        return {}
-    if env_truthy(_TRUST_MODEL_CHECK_ID):
-        return {name: cid}
-    return {"_model_check_id": cid}
+    return _non_empty("_model_check_id", raw.get(_MODEL_CHECK_ID_FIELD))
 
 
 def _carry_evidence(raw: dict) -> dict[str, Any]:

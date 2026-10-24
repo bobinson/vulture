@@ -65,6 +65,10 @@ type Dependencies struct {
 	// Retriers hands out the per-provider retrier (§9/§26 M3) — one provider's
 	// 429 storm drains only its own retry budget, never starving another's.
 	Retriers resilience.RetrierPool
+	// OnContextOverflow is told when an upstream call fails as a context
+	// overflow (0074 #12), so the loaded-window probe can re-measure a model
+	// reloaded at a smaller context. It must not block. Nil = no hook.
+	OnContextOverflow func()
 }
 
 // AuditLogger records one metering row per completion (§14 P0 slice): run,

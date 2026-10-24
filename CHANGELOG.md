@@ -23,6 +23,27 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Added
 
+- **Feature 0074 — verify masked values; merge records masked.** A finding's
+  masked snippet can be verified against the scanned file: `GET
+  /api/audits/{id}/findings/{fid}/masked` locates every masked value (line,
+  column, kind) and returns the values only to an authorised human (an admin;
+  locally, the signed-in session) and only while the file still matches the
+  scan. The UI shows a "Show unmasked" switch in the finding detail; the MCP
+  tool `vulture_verify_masked_values` returns locations and a UI link, never
+  values. Nothing raw is stored. The descriptions of LLM rows merged into
+  another row now get the same secret masking as every finding's description,
+  in the agent and again in the backend.
+
+- **Feature 0099 — Anonymous, caller-addressed message sends (CWE-799).** A new
+  `resource_check` rule, `cwe.resource.anonymous_message_send`, reports a handler
+  that lets a caller with no authenticated principal make the server send an
+  e-mail / SMS / OTP / magic link to an address the caller chose, with no
+  human-verification step gating it. Language- and framework-independent: it
+  reads identifier meaning, the recipient's data flow inside the handler (and
+  one same-file helper), and whether a principal or CAPTCHA actually gates the
+  send. High, or medium when a quota is in scope. No new environment flag; the
+  CWE literal set and skill count are unchanged.
+
 - **Feature 0044 — Native installer (Mode E):** `curl … install.sh | sh`
   produces a Docker-less single-user install under `~/.vulture/`. Ships
   a bundled python-build-standalone, SQLite-backed daemon, and the SPA
@@ -41,9 +62,113 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 - **CWE detector simplifications:** PATH_TRAVERSAL_PATTERNS collapsed
   from 9 regexes to 2 (hot-path win); 104 dual-contract lock-in tests
   added to guard against false-negative blunders.
+- **Feature 0098 — Offline skills gate (`vulture-offline-skills`).** Runs the
+  CWE agent's deterministic skills over a list of files with no backend, no
+  database and no LLM, for a pre-commit hook or a CI job, and gives the verdict
+  the full audit would give with the LLM off (same skill set, redaction,
+  skill-vs-skill collapse and L1/L2 validate stage). Exit codes: `0` no blocking
+  finding, `1` blocking findings at or above `--severity` (default `high`), `2`
+  tool or usage error (the verdict is withheld), and `128 + signal` when stopped
+  by SIGTERM/SIGHUP. `--format json` prints a schema `1` report (`findings`,
+  `blocking`, `errors`, `scanned`, `not_scanned`, `outside_root`). It runs
+  without installing anything first-party:
+  `PYTHONPATH=vulture/agents/cwe:vulture/agents/shared python -m cwe_agent.offline FILE...`
+  after installing the hashed lockfile into a dedicated virtualenv. See
+  [docs/guides/offline_skills_gate.md](docs/guides/offline_skills_gate.md).
+- **Feature 0097 — access-control guard-application checks (CWE-807 /
+  CWE-290).** Three `access_control` checks report an authentication or
+  authorisation guard that a client-controlled request attribute can skip:
+  - `cwe.access_control.guard_skip_by_request_attr` (CWE-807): a branch on a
+    header, cookie, query or body value that skips the guard (returns early or
+    calls through) or grants access, ahead of the guard's deny;
+  - `cwe.access_control.spoofable_identity_guard` (CWE-290): the same, keyed on
+    a spoofable identity attribute (`X-Forwarded-For`, `Host`, `User-Agent`,
+    `Referer`);
+  - `cwe.access_control.guard_excluded_by_request_attr` (CWE-807): a framework
+    hook or route matcher that excludes requests by a request attribute (for
+    example a Next.js middleware `matcher` with a `missing` header condition, or
+    a Rails `before_action ... unless:`).
+
+  They do not fire when the attribute is compared with a value the client
+  cannot know (a server-held secret, also one whose same-file literal is only a
+  default overridden elsewhere, or a CSRF double-submit token), when a verifying
+  call (not a CSRF validator) is conjoined with the read, on a feature or
+  challenge gate answering 403, or on a route handler returning a DTO early. They reach Rails `before_action` `if:`/`unless:`, Spring
+  `preHandle`, ASP.NET `_next`, Auth.js middleware re-exports, Go and Express
+  identity accessors, Echo `ErrUnauthorized`, Koa cookies, Flask
+  `"X" in request.headers`, principal providers (a FastAPI dependency, a
+  Passport `validate()`) that return a principal, a comparison of one request
+  read with another, and the
+  `export const config = { matcher }` shorthand. The access_control section of
+  the CWE agent's SKILLS.md lists what they do not reach.
 
 ### Changed
 
+- **The CWE agent's GENERATE prompt states the computed coverage counts**
+  (171 CWE-ID `category` literals across 24 dedicated skills, N=81
+  corpus-verified) instead of the stale ~73 / N=10. These are prompt bytes for
+  every model family: the `generate/cwe` manifest is at version 6, and a unit
+  test pins the stated counts to the values the code computes.
+
+- **Finding-text masking is precise, for every agent (feature 0098).** Every
+  finding's `code_snippet` and `description` are masked for secret SHAPES
+  before any egress. The shapes are now a high-confidence set: provider tokens
+  (OpenAI/Anthropic `sk-` keys, whatever their random body holds, a hyphen
+  among its first characters included, GitHub classic and
+  fine-grained, Slack tokens and webhook URLs, AWS key ids and secret keys,
+  Stripe, npm, GitLab, SendGrid, Hugging Face, Google), JWTs, `Bearer`/`Basic`
+  followed by a credential-looking value on the same line (a header value
+  after `Authorization` or in quotes included), URL userinfo in any scheme case
+  (an empty user too, `redis://:<password>@`), a connection-string `Password=`
+  or `AccountKey=`, private-key BODIES (not just the header, in a numbered
+  window, below the BEGIN row, as a one-line escaped key or a concatenation,
+  with LF or CRLF line ends), and a hex value only on a line that names a
+  credential (`SECRET_KEY_BASE=<hex>`, `headers["X-Api-Key"] = "<hex>"`,
+  `define("SECRET_KEY", "<hex>")`, `apiKey := ...`, `ENV API_KEY <hex>`).
+  Commit SHAs, image digests, UUIDs, MD5/SHA constants, hashes named as such
+  (`cache_key`, `password_hash`, `commit`), CSS class names, CamelCase
+  identifiers and prose that mentions Bearer or basic authentication are no
+  longer masked, and masking never joins two lines. Logs keep the broader set:
+  everything the previous log pattern masked is still masked there. A row that
+  a secret finding cites is masked in every other finding's window, whatever
+  CWE the secret skill gave it (a password in a config file is CWE-260); a row
+  the structured redactor cannot mask (a bare key-body or value row) is
+  replaced whole; and a triple-quoted literal is masked as one value, with the
+  code around it redacted as before, instead of garbling to
+  `"***REDACTED***""***REDACTED***`. Live `finding` events carry only the
+  finding's own cited rows, since a neighbour's secret row is masked only once
+  the whole batch is known. The `result` snapshot, and the rows persisted from
+  it, carry the full, masked window; a finding the backend keeps from the live
+  events because its agent sent no snapshot (a stalled or timed-out agent)
+  carries only its cited rows. Masking is linear in the input size.
+- **Offline gate CLI contract (feature 0098), refined before release.**
+  Compared with the gate as first merged:
+  - a working directory inside a directory that an audit of the discovered root
+    prunes (`<repo>/build/proj`), with every file passed under it, exits `2`
+    with `errors[].stage == "root"` instead of passing with "Nothing to gate";
+    `--root` gates such a project as its own root;
+  - an empty directory argument is a usage error (exit `2`) unless it holds a
+    `.git` entry or the enclosing repository's `.gitmodules` declares it in a
+    `[submodule "..."]` section (read as git reads it: any key case, quoted
+    values, trailing comments);
+  - an empty `--root ""` (an unset variable) is a usage error (exit `2`), not
+    root discovery;
+  - a file over its read cap is staged as a stand-in of the cap plus one byte
+    and never copied, so a name-only check still sees it: a served database
+    over 16MB now blocks, as in the full audit;
+  - the `not_scanned` reason names the scanner's own cause (`extension outside
+    the scan set`, `minified or bundled artefact`, `ignored or pruned path
+    (<dir>/)`, `exceeds the scanner's read size cap (not copied)`); a file a
+    skill reads by name (`.env.*`, a key file) over the cap gives only the cap;
+  - text output, the stderr notes and argparse's usage errors escape control
+    and format characters (every bidi control, zero-width marks), line
+    separators and undecodable characters;
+  - a stdout closed at startup exits `2` before anything is scanned; stderr is
+    advisory, so a stderr that cannot be written changes neither the exit code
+    nor the stdout report;
+  - once a signal has started the cleanup, a second SIGTERM, SIGHUP or Ctrl-C
+    no longer interrupts the removal of the temporary copy, and a signal the
+    caller ignores (`nohup`) stays ignored.
 - **Feature 0096 — OWASP Top 10 categories are labels, not duplicate
   findings.** The OWASP agent no longer re-emits each CWE finding as a second
   `agent_type = owasp` row with its own lineage and `VLT-` ref. It returns its
@@ -179,7 +304,92 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   web UI are installed and work. The post-install summary and quickstart adapt
   to whether agents were actually installed.
 
+### Removed
+
+- **The `next_middleware_matcher` CWE skill and category (feature 0097).** Its
+  Next.js matcher-bypass detection is one instance of the access_control
+  route-matcher arm and is reported as
+  `check_id: cwe.access_control.guard_excluded_by_request_attr` (CWE-807). A
+  consumer filtering on the `next_middleware_matcher` category or on
+  `cwe.next_middleware_matcher.bypass` must filter on that check id instead.
+
 ### Fixed
+
+- **Host-network plugins are reachable on macOS.** Docker on macOS runs in a Linux VM, so a plugin on
+  `--network host` (the bundled semgrep plugin) listened on the VM's localhost while the backend dialled the
+  Mac's, and `vulture.sh dev` started a plugin it could never reach. When the backend runs on darwin, a
+  host-network plugin now runs on the default bridge with its port published on loopback only
+  (`-p 127.0.0.1:<port>:<port>`), which keeps it off every other interface. Derived from the backend's OS, so
+  there is no new setting; Linux keeps host networking unchanged, and the `host-network` trust ack is still
+  required.
+- **CWE-799 (`anonymous_message_send`): two false-positive classes (feature 0074).** A handler that
+  verifies a shared secret against the REQUEST (an event trigger's or webhook's secret or hook token, e.g.
+  `if (!requireValidHookSecret(req, res)) return;`, or a verification bound to a name a later branch exits on)
+  is now treated as authenticated, as a signature check already was. Only a check OF the secret, given the
+  request itself, counts: validating a submitted value (a secret-sharing or password-policy check, a body-bound
+  DTO, `validateSecretMessage(req)`), a logged result, a verification after the send and an anti-forgery
+  secret still gate nothing. A parameter whose type is a query RESULT — a compound `...Query` type that is
+  indexed into (a generated GraphQL result), followed by `Result` / `Row`, or declared by a helper its own file
+  calls without passing request input in that argument position — is no longer read as HTTP query input; an
+  entry point's `...Query` parameter, query bindings and every parameter name still are. Measured on one
+  evaluation target: 13 rows to 6, the 7 removed all false positives; no change on 20 other local trees, and
+  no row lost on the 51 true-positive probe rows two adversarial review passes wrote.
+- **CWE-778 (`cwe.insufficient_logging.*`) reports security-relevant failures, not every quiet handler
+  (feature 0101).** The rule reported any `catch`/`except` that did not log. A non-empty handler is now excused
+  when it hands the error on (returns it, stores it in a field or a name that outlives the try, collects or
+  reports it, or passes it to a callback parameter of its routine) AND the operation it guards is not
+  security-relevant. The guarded text runs from the try body up to the routine declaration and includes the
+  exception type; it is matched against one security vocabulary of word roots (auth, session, token, crypt,
+  signature, permission, …), which the opt-in `SECURITY_SCOPE` arm now shares. An unresolved try, an empty body,
+  a conversion to a value without the error, a failure flag and a negating verb (`ignoreFailures()`) are never
+  excused. `auth_decision` no longer fires on a keyword that NAMES an outcome (`export const UNAUTHORIZED = 401`,
+  enum members, a literal `when` mapping, a regex alternation, a bare `case` label); `promise_swallow` excuses a
+  teardown as the last call of a non-security chain, or a null-guarded fallback. Measured on the two
+  adjudicated real targets at their adjudicated commits: 246 to 152 rows (false positives 211 to 117) and 82 to
+  56 (70 to 45), with every adjudicated true positive kept; the self-scan 485 to 466. The aggregate row's
+  `metric_version` is `0101.1`.
+- **CWE-770 (`cwe.resource.unbounded_alloc`) reports input-driven, uncapped accumulation (feature 0101).** The
+  rule reported a Python `.append` inside any loop; 86% of its self-scan rows were appends inside a loop over a
+  finite in-memory collection. A row now needs a growing receiver (any language: growth verbs, self-growth
+  operators, writes to an in-memory buffer), a lifetime beyond one iteration, a driver (a loop fed by a socket,
+  stream, request, queue, stdin or a child process's output, or an input-event callback such as
+  `req.on('data', …)`), and no cap on that receiver (a size comparison that exits or trims, a bounding guard, a
+  bounded container, or a cap wrapper such as `islice`/`io.LimitReader` on the source). An unbound iteration
+  source is classified by the last word of its name, a stated heuristic. `SIZE_LIMIT` now applies to the Go
+  `make([]T, 0)` arm only, over code with comments stripped. Scope and known gaps are listed in the CWE agent's
+  `SKILLS.md`. Measured: self-scan 343 rows to 5 (all 18 adjudicated false positives removed; 3 of the 5 are the
+  unchanged Go arm); a large public multi-language codebase 9 to 25, every row reviewed (the 9 removed iterate
+  in-memory data; the 25 accumulate a network stream, a partial line from a peer, a child process's output or
+  stdin, with no cap).
+- **CWE-209 (`cwe.info_exposure.error_disclosure`) reports the error value reaching a peer (feature 0101).**
+  The Node pattern matched any identifier whose NAME started with `err`/`error`/`ex`, so a catalogue helper
+  (`errorEnvelope(Catalog.X)`) or an `{ error: err.code }` field was reported. The rule now resolves which value
+  reaches a response write: a caught error's message, stack, string form or raw object (through any call that
+  does not project it, and back through assignments, destructuring and parameters in the routine) is reported;
+  a code/status/name projection, a catalogue constant or a projection helper is not. Non-peer writes (stderr,
+  files, loggers, builders, mail, queues), sinks inside comments or strings, and prose files are skipped. CWE-550
+  still replaces 209 on its line. Measured on one adjudicated real target at its adjudicated commit: 100 rows to
+  13, false positives 86 to 1. Seven of its file-level true-positive rows are no longer reported on the carrier
+  line they were filed against; in five of the six files the leak line their verdict cites is itself reported,
+  and the sixth cites a result-object `.error` field, which is deliberately not treated as raw error text. On
+  the second adjudicated target (2 rows to 5) its one true-positive row is likewise not reported on its filed
+  line, while the leak lines its verdict cites are. A public reference application goes from 9 rows to 13; the
+  4 new rows are genuine.
+- **Consequences of the three CWE rule changes above (feature 0101).** No `check_id`, category, severity, finding
+  field or environment variable changed. Under `VULTURE_LINEAGE_FIX_MODE=evidence` (the default) a deterministic
+  row closes as FIXED when a scan no longer reports it, so the first scan of an existing target after upgrading
+  marks the removed rows fixed; rows triaged `false_positive` keep that status. With `VULTURE_LLM_TIER3` off
+  (the default) the LLM sweep covers files a skill finding flags, so files flagged only by these rules leave
+  the sweep: on the latest archived scans, 96 of 307 CWE-flagged files of the self-scan and 56 of 179 of one
+  real target. The CWE GENERATE prompt's CWE-778/770/209 definitions now state the same concepts, so the model
+  does not re-emit the removed class (`generate/cwe` manifest version 7).
+
+- **Plugin audits no longer fail with "requested agents did not run" because the staging root is root-owned.**
+  The plugin staging root (`VULTURE_SUPERVISOR_AUDITS_DIR`, default `/tmp/vulture-audit-inputs`) is a bind-mount
+  source for plugin containers, and Docker creates a missing mount source as root. A non-root dev backend could
+  then never stage into it, so every plugin (e.g. semgrep) was skipped with `mkdir …: permission denied`. In local
+  mode the backend now creates the root itself, as its own user, before the supervisor starts any container, and
+  logs a clear startup message naming the directory and the remedy when an existing root is not writable.
 
 - **"Copy All as Issues" copies what the table shows.** The export now follows
   every active filter — hidden false positives, severity, agent, tier, OWASP

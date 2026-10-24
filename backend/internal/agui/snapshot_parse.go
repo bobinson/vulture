@@ -96,6 +96,9 @@ func ParseScanOutcome(snapshot json.RawMessage) *model.ScanResult {
 		LineageChecks  []model.LineageCheck `json:"lineage_checks"`
 		DegradedReason string               `json:"degraded_reason"`
 		ScanTruncated  bool                 `json:"scan_truncated"`
+		// Feature 0074 P4: the agent's LLM-row counters; nil when absent.
+		LLMEmitted        *int `json:"llm_emitted"`
+		LLMCollapsedAgent *int `json:"llm_collapsed_agent"`
 	}
 	if json.Unmarshal(snapshot, &envelope) != nil {
 		return out
@@ -105,5 +108,7 @@ func ParseScanOutcome(snapshot json.RawMessage) *model.ScanResult {
 	out.LineageChecks = envelope.LineageChecks
 	out.DegradedReason = envelope.DegradedReason
 	out.ScanTruncated = envelope.ScanTruncated
+	out.LLMEmitted = envelope.LLMEmitted
+	out.LLMCollapsedAgent = envelope.LLMCollapsedAgent
 	return out
 }

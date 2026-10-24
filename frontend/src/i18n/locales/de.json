@@ -72,6 +72,30 @@
     "noFindings": "Keine Befunde erkannt. Ihr Code sieht sauber aus!",
     "noFindingsShort": "Sauber",
     "provenance": "Herkunft",
+    "provenanceFamily": {
+      "llm_family": "LLM (alle)",
+      "both": "Beide Stufen",
+      "bothNotRecorded": "Für dieses Audit wurden keine Herkunftsstufen erfasst, daher kann keine Zeile als von beiden Stufen gemeldet erscheinen."
+    },
+    "anchor": {
+      "title": "Verankerung",
+      "status": {
+        "exact": "Exakt",
+        "reanchored": "Neu verankert",
+        "ambiguous": "Mehrdeutig",
+        "near_miss": "Knapp verfehlt",
+        "found_elsewhere": "Anderswo gefunden",
+        "absent": "Nicht vorhanden",
+        "unquoted": "Ohne Zitat",
+        "unreadable": "Nicht lesbar",
+        "oversize": "Zu groß"
+      },
+      "range": {
+        "in_file": "In der Datei",
+        "past_eof": "Nach Dateiende",
+        "no_line": "Keine Zeile"
+      }
+    },
     "semgrepTierNotice": "Semgrep-Ebene nicht aktiv — dieser Audit lief nur mit deterministischen Skills und Signaturen.",
     "agent": "Agent",
     "scores": "Compliance-Bewertungen",
@@ -134,7 +158,18 @@
     "copyAllTitle": "Kopiert die {{count}} Befunde, die die aktuellen Filter anzeigen",
     "copyIssue": "Als Issue kopieren",
     "estimated": "(geschätzt)",
-    "findingsDeduped": "{{count}} Befund(e) dedupliziert"
+    "findingsDeduped": "{{count}} Befund(e) dedupliziert",
+    "reveal": {
+      "toggle": "Unmaskiert anzeigen",
+      "hint": "Wird auf Anfrage aus der gescannten Datei gelesen; nie gespeichert, nie an ein Modell gesendet.",
+      "loading": "Gescannte Datei wird gelesen…",
+      "changed": "Die Datei hat sich seit dem Scan geändert, daher werden die Werte nicht angezeigt.",
+      "unavailable": "Der gescannte Quellcode ist nicht mehr verfügbar.",
+      "ambiguous": "Die maskierte Zeile lässt sich der Datei nicht eindeutig zuordnen.",
+      "unverifiable": "Dieser Befund lässt sich nicht gegen die gescannte Datei prüfen.",
+      "notPermitted": "Werte werden nur Administratoren angezeigt, lokal der angemeldeten Sitzung.",
+      "error": "Die Werte konnten nicht geladen werden."
+    }
   },
   "settings": {
     "title": "Einstellungen",

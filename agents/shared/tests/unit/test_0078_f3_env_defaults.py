@@ -403,6 +403,11 @@ def _explicit_resolvers() -> dict[str, Resolver]:
             audit_runner._preflight_mode,
             "agents/shared/shared/audit_runner.py _preflight_mode() [called]",
         ),
+        # Mode string normalised by shared.env.env_mode (0074 contract C16).
+        "VULTURE_LLM_QUOTE_VERIFY": (
+            audit_runner._quote_mode,
+            "agents/shared/shared/audit_runner.py _quote_mode() [called]",
+        ),
     }
     resolvers.update(_quote_knob_resolvers())
     resolvers.update(_judge_resolvers())
