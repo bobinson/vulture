@@ -65,6 +65,8 @@ jobs:
         run: sh scripts/tests/test_pbs_multiplatform.sh
       - name: pbs vendor wiring tests
         run: sh scripts/tests/test_pbs_vendor_wiring.sh
+      - name: active pbs pin consistency tests
+        run: sh scripts/tests/test_pbs_pin_active.sh
       - name: release preflight tests
         run: sh scripts/tests/test_release_preflight.sh
       - name: smoke-scan contract tests

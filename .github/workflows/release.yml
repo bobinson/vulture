@@ -83,8 +83,8 @@ jobs:
       # VULTURE_PBS_TAG/PYVER drive both the cosign-verified download of the
       # vendored asset (fetch-vendored-pbs.sh) and build-release.sh's pin
       # lookup, so the fetched tarball always matches the committed SHA pin.
-      VULTURE_PBS_TAG: '20260610'
-      VULTURE_PBS_PYVER: '3.12.13'
+      VULTURE_PBS_TAG: '20261021'
+      VULTURE_PBS_PYVER: '3.12.15'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

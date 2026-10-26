@@ -13,11 +13,11 @@ on:
       pbs_version:
         description: "python-build-standalone tag (e.g. 20240814)"
         required: true
-        default: "20260610"
+        default: "20261021"
       python_version:
-        description: "Python version (e.g. 3.12.13)"
+        description: "Python version (e.g. 3.12.15)"
         required: true
-        default: "3.12.13"
+        default: "3.12.15"
 
 permissions:
   contents: write     # release upload
