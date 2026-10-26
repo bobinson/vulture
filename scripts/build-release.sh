@@ -228,8 +228,8 @@ if [ "$_bundle_pbs" = 1 ]; then
     # (scripts/pbs-shas-<tag>.txt), reviewed at commit time — NOT the release's
     # own self-published SHA256SUMS (which an upstream-release compromise could
     # rewrite alongside the asset). Bump both the pin file and these on upgrade.
-    PBS_TAG=${VULTURE_PBS_TAG:-20260610}
-    PBS_PYVER=${VULTURE_PBS_PYVER:-3.12.13}
+    PBS_TAG=${VULTURE_PBS_TAG:-20261021}
+    PBS_PYVER=${VULTURE_PBS_PYVER:-3.12.15}
     PBS_ASSET="cpython-${PBS_PYVER}+${PBS_TAG}-${PBS_TRIPLE}-install_only.tar.gz"
 
     PBS_PIN="$REPO_ROOT/scripts/pbs-shas-${PBS_TAG}.txt"

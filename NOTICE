@@ -59,7 +59,7 @@ This product redistributes the following third-party content:
 
     - Bundled CPython runtime (native-install tarballs, feature 0055)
       Each release tarball bundles a python-build-standalone CPython
-      3.12.13 runtime (runtime/python/) and the third-party C libraries it
+      3.12.15 runtime (runtime/python/) and the third-party C libraries it
       statically links — all permissive: CPython itself (PSF License
       Agreement), OpenSSL (Apache-2.0), SQLite (public domain), zlib,
       xz/liblzma, bzip2, libffi (MIT), expat (MIT), libmpdec (BSD-2),
