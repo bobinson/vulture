@@ -507,6 +507,13 @@ ALLOWLIST: dict[str, str] = {
         "read by compose, not by any Python or Go fallback, so there is no code "
         "default to agree with."
     ),
+    "VULTURE_LLM_BROKER": (
+        "No single constant default: config.BrokerEnabled / loadBrokerConfig "
+        "DERIVE it from VULTURE_USE_LLM (rule 6 — the broker is on whenever an "
+        "LLM is used, so 'LLM in use' and 'key withheld from agents' cannot "
+        "drift). The env.example line is the explicit-override example "
+        "(set it off to run the LLM tier without the broker), not a default."
+    ),
 }
 
 
