@@ -33,6 +33,7 @@ from shared.cancellation import current_audit_deadline, current_cancel_token
 from shared.lines import parse_line
 from shared.llm.errors import broker_detail
 from shared.llm.jsonscan import iter_balanced_objects
+from shared.llm.provider import bare_model_name
 from shared.prompt import Mode, RenderedPrompt, Slot, profile_for, render
 from shared.prompt.manifests.validate_judge import (
     VALIDATE_JUDGE,
@@ -1348,19 +1349,11 @@ def _resolve_client_config() -> tuple[str, str, dict[str, str]]:
     reach). Otherwise fall back to OPENAI_BASE_URL / OPENAI_API_KEY.
     """
     try:
-        from shared.llm.broker import (
-            current_broker_task_type,
-            current_broker_token,
-            resolve_broker_config,
-        )
+        from shared.llm.broker import broker_headers, current_broker_token, resolve_broker_config
 
         cfg = resolve_broker_config(current_broker_token())
         if cfg is not None:
-            headers: dict[str, str] = {}
-            task_type = current_broker_task_type()
-            if task_type:
-                headers["X-Vulture-Task-Type"] = task_type
-            return cfg.base_url, cfg.api_key, headers
+            return cfg.base_url, cfg.api_key, broker_headers()
     except Exception:  # pragma: no cover - defensive; never block L5 on this
         pass
     return os.getenv("OPENAI_BASE_URL", ""), os.getenv("OPENAI_API_KEY", "lm-studio"), {}
@@ -1411,30 +1404,9 @@ def reset_client_cache() -> None:
 
 # Litellm-style model-prefix stripping (issues #4 + #6). When the audit's
 # main LLM is configured as e.g. `litellm/ollama/qwen3:8b`, the L5
-# path needs to call the bare provider with `qwen3:8b`. Order matters:
-# match longer prefixes first so `litellm/anthropic/` doesn't half-strip
-# to `anthropic/claude-...`.
-_MODEL_PREFIX_STRIPS = (
-    "litellm/openai/",
-    "litellm/anthropic/",
-    "litellm/gemini/",
-    "litellm/azure/",
-    "litellm/bedrock/",
-    "litellm/ollama/",
-    "litellm/",
-    "openai/",
-    "anthropic/",
-    "gemini/",
-    "azure/",
-    "ollama/",
-)
-
-
-def _strip_model_prefix(model: str) -> str:
-    for p in _MODEL_PREFIX_STRIPS:
-        if model.startswith(p):
-            return model[len(p):]
-    return model
+# path needs to call the bare provider with `qwen3:8b`. Shared with prove's
+# broker route, which asks the broker for the same name.
+_strip_model_prefix = bare_model_name
 
 
 _DEFAULT_JUDGE_BODY_BYTES = 131072

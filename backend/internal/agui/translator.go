@@ -29,7 +29,7 @@ var translators = map[string]translatorFunc{
 	"result":        func(at string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateResult(at, d) },
 	"token_savings": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateTokenSavings(d) },
 	"dedup_stats":   func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateDedupStats(d) },
-	"agent_end":     func(at string, _ json.RawMessage) ([]*model.AgUIEvent, error) { return translateAgentEnd(at) },
+	"agent_end":     func(at string, d json.RawMessage) ([]*model.AgUIEvent, error) { return translateAgentEnd(at, d) },
 	"proof_phase": func(_ string, d json.RawMessage) ([]*model.AgUIEvent, error) {
 		return translateProofEvent("proof_phase", d)
 	},
@@ -309,10 +309,18 @@ func translateDiscoverResult(data json.RawMessage) ([]*model.AgUIEvent, error) {
 	}, nil
 }
 
-func translateAgentEnd(agentType string) ([]*model.AgUIEvent, error) {
-	return []*model.AgUIEvent{
-		{Type: model.EventStepFinished, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType},
-	}, nil
+// translateAgentEnd keeps which agent ended and the status it ended with: an
+// agent that finished its run says so only here (see missingRequestedAgents).
+// An absent or unreadable status is no status, never "completed".
+func translateAgentEnd(agentType string, data json.RawMessage) ([]*model.AgUIEvent, error) {
+	var payload struct {
+		Status string `json:"status"`
+	}
+	_ = json.Unmarshal(data, &payload)
+	return []*model.AgUIEvent{{
+		Type: model.EventStepFinished, StepName: AgentDisplayName(agentType), StepID: "step-" + agentType,
+		AgentType: agentType, RunStatus: payload.Status,
+	}}, nil
 }
 
 // translateValidationUpdate converts a Python-side `validation_update`
