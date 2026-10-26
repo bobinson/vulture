@@ -75,3 +75,12 @@ WORKER_RESERVE = 192 * _MIB  # memory reserved per worker
 MAX_WORKERS = 4  # upper clamp
 MODEL_CACHE_CAP = 128 * _MIB  # model-cache byte budget ceiling
 MODEL_CACHE_SHARE = 4  # the budget is at most 1/4 (25 %) of the deployment limit
+
+# ── §4.1 parse prefetch (A44 (2)) ────────────────────────────────────────────
+# The positions of a consumer's walk one advance may consider past the file it asks for: two
+# per worker slot, so every free slot has a file to take (measured: issuing 3-6 files ahead
+# left 8-13 ms of collect wait per cold gating run).
+PREFETCH_AHEAD = 2 * MAX_WORKERS
+# The pool slots an issue never takes: one is always left to a synchronous request, which a
+# ticket holder may wait on, so W = 1 never issues and no ticket can starve a parse.
+PREFETCH_RESERVE = 1

@@ -10,9 +10,10 @@ renamed ``_check_ssrf_regex`` and unchanged.
 The gate is ``_RULE_918.gate`` (``FamilyRule.gate``, §5): with no server marker in a
 browser-capable file, a sink whose GLUED callee key — the flow pass's ``Calls.key``, carried
 as ``Flow.sink_key`` — is one of ``fetch``, ``get``, ``open``, ``do`` is no sink. The key is
-never the callee's last word (A40 (3)): ``this.http.get(u)``, ``fetch(u)`` and ``map.get(k)``
-are gated; ``httpGet(u)`` (key ``httpget``) and ``urlOpen(u)`` (key ``urlopen``, last word
-``open``) are not. ``httpGet`` is no request sink under the frozen lexicons (``httpget`` is
+never the callee's last word (A40 (3)): ``this.http.get(u)`` and ``fetch(u)`` are gated;
+``httpGet(u)`` (key ``httpget``) and ``urlOpen(u)`` (key ``urlopen``, last word ``open``) are
+not. ``map.get(k)`` never reaches the gate: a generic verb on a receiver with no HTTP-client
+evidence is no request sink (A44 (1) (a)). ``httpGet`` is no request sink under the frozen lexicons (``httpget`` is
 in no sink set), so the gate's reading of it is pinned on the rule itself; ``urlOpen`` is a
 request sink and pins the same reading end to end.
 
@@ -64,7 +65,9 @@ CALLS = {
     "map_get": ("map.get(req.query.u)", "get"),
     "url_open": ("urlOpen(req.query.u)", "urlopen"),
 }
-GATED = ("fetch", "http_get", "map_get")
+GATED = ("fetch", "http_get")
+# A44 (1) (a): ``map.get(req.query.u)`` is no request sink, so it carries no flow to gate.
+FLOWING = (*GATED, "url_open")
 SERVER_SINKS = ("fetch", "http_get")  # map.get in server code is no shape this file pins
 
 
@@ -157,7 +160,7 @@ def test_glued_key_outside_the_gate_reports_without_server_context(root: Path) -
     assert _rows(root, _browser("url_open")) == [(SINK_LINE, "ast")]
 
 
-@pytest.mark.parametrize("stem", list(CALLS), ids=list(map(_browser, CALLS)))
+@pytest.mark.parametrize("stem", FLOWING, ids=list(map(_browser, FLOWING)))
 def test_flow_carries_the_glued_callee_key(root: Path, stem: str) -> None:
     """``Flow.sink_key`` is ``Calls.key``: the callee's last identifier glued (L1 (a)). The
     shared suite's
@@ -165,6 +168,12 @@ def test_flow_carries_the_glued_callee_key(root: Path, stem: str) -> None:
     is the key's primary pin; this one reads it off the snippets the gate tests here stand on."""
     keys = {flow.sink_key for flow in _flows(root / _browser(stem)) if flow.sink_line == SINK_LINE}
     assert keys == {CALLS[stem][1]}
+
+
+def test_a_map_read_is_no_request_sink(root: Path) -> None:
+    """A44 (1) (a): ``map.get(req.query.u)`` — a generic verb, a receiver with no HTTP-client
+    concept, an argument that is no URL — is no request sink: no flow, no row."""
+    assert (list(_flows(root / _browser("map_get"))), _rows(root, _browser("map_get"))) == ([], [])
 
 
 @pytest.mark.parametrize(

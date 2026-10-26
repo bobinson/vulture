@@ -27,10 +27,17 @@ __all__ = [
     "ANY",
     "CONSTANT",
     "EMPTY",
+    "EXPR",
     "EXTERNAL",
+    "EXTERNAL_ROLES",
+    "FLAG",
+    "HOP_KINDS",
+    "INDEX",
     "OVERFLOW",
     "PARAM",
     "TOP",
+    "UNKNOWN",
+    "UNKNOWN_REASONS",
     "Flow",
     "Guard",
     "Hop",
@@ -59,8 +66,19 @@ class Origin:
 type Origins = frozenset[Origin]
 
 EXTERNAL = "external"
+UNKNOWN = "unknown"
 CONSTANT = Origin("constant")
 EMPTY: Origins = frozenset()
+# §8.1's closed vocabularies: an external origin's role (``any`` is the overflow collapse's) and
+# an unknown origin's reason. The flow pass mints no other; D3' admits a worker-built answer's
+# origins against them (§4.1 item 2).
+EXTERNAL_ROLES = frozenset({
+    "request", "network", "upload", "argv", "stdin", "env", "error", "param_hint", "any",
+})
+UNKNOWN_REASONS = frozenset({
+    "unresolved", "param", "depth", "dynamic", "recursion", "arity", "external_call",
+    "summary_cap", "overflow",
+})
 
 
 @lru_cache(maxsize=None)  # bounded by the role vocabulary and its via subsets, not the input
@@ -72,7 +90,7 @@ def external(role: str, via: frozenset[str] = frozenset()) -> Origin:
 @lru_cache(maxsize=None)  # bounded by the §8.1 reasons
 def unknown(reason: str) -> Origin:
     """``unknown(reason)`` (§8.1): the reason is the origin's ``role``; one shared object."""
-    return Origin("unknown", reason)
+    return Origin(UNKNOWN, reason)
 
 
 @lru_cache(maxsize=None)  # one per role: bounded by the role vocabulary, not by the input
@@ -104,6 +122,13 @@ def externals(origins: Origins) -> Origins:
 def has_external(origins: Origins) -> bool:
     """Whether a set holds an ``external`` origin (``externals`` without building it)."""
     return any(o.cls == EXTERNAL for o in origins)
+
+
+# §8.6: a hop's kinds, and the placeholders of a hop's name (A30 (2)): a segment is a D16
+# identifier, ``INDEX`` (an M1 subscript key) or ``FLAG`` (an M4 literal); a name that cannot be
+# so spelled is ``EXPR`` whole.
+HOP_KINDS = frozenset({"param", "member", "assign", "call", "return", "loop", "catch", "sink"})
+EXPR, INDEX, FLAG = "<expr>", "<index>", "<flag>"
 
 
 class Hop(NamedTuple):

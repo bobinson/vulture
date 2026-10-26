@@ -15,11 +15,11 @@ Each of these CWE types passed the per-CWE promotion gate on the labeled corpus:
 | CWE-5 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-11 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-15 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
-| CWE-22 | VERIFIED | 59 | 39 | 1.000 | 0.000 |
+| CWE-22 | VERIFIED | 67 | 46 | 1.000 | 0.000 |
 | CWE-23 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-36 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-73 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
-| CWE-78 | VERIFIED | 28 | 27 | 1.000 | 0.000 |
+| CWE-78 | VERIFIED | 28 | 35 | 1.000 | 0.000 |
 | CWE-80 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-83 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-88 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
@@ -88,7 +88,7 @@ Each of these CWE types passed the per-CWE promotion gate on the labeled corpus:
 | CWE-807 | VERIFIED | 4 | 4 | 1.000 | 0.000 |
 | CWE-830 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-917 | VERIFIED | 6 | 6 | 1.000 | 0.000 |
-| CWE-918 | VERIFIED | 20 | 15 | 1.000 | 0.000 |
+| CWE-918 | VERIFIED | 22 | 21 | 1.000 | 0.000 |
 | CWE-926 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-940 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-943 | VERIFIED | 6 | 6 | 1.000 | 0.000 |

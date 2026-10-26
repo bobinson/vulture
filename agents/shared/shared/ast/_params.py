@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from itertools import chain
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,8 @@ from shared.ast.roles import (
     CONTAINER_WORDS,
     HANDLER_REGISTRATION_WORDS,
     ITERATION_WORDS,
+    NAMED_REQUEST_WORDS,
+    NAMED_TYPE_WORDS,
     NO_WORDS,
     PARAM_ANNOTATION_WORDS,
     PARAM_HINTS,
@@ -47,12 +50,11 @@ from shared.ast.roles import (
     RESPONSE_WORDS,
     ROUTE_WORDS,
     SOURCE_CALL_KEYS,
-    SOURCE_WORDS,
-    TYPE_ANNOTATION_WORDS,
     UPLOAD_WORDS,
     chain_names,
     glue,
     hits,
+    named_by,
     word_set,
 )
 from shared.ast.roles._words import invert
@@ -65,10 +67,11 @@ if TYPE_CHECKING:
 
 __all__ = ["Params"]
 
-_REQUEST = SOURCE_WORDS["request"]
-# A44 (1) (b): the request words that name a request on their own; a CONTAINER_WORDS word does
-# so only in handler context (``Params.request_named``).
-_NAMED_REQUEST = _REQUEST - CONTAINER_WORDS
+# A44 (1) (b): ``name`` names a request on its own - a word, or its glued form, of the request
+# words that are no container word (``req``, ``request``, ``searchParams``); a CONTAINER_WORDS
+# word does so only in handler context (``Params.request_named``), and a container TYPE word
+# from a qualified type path (``Params._qualified_container``) or in handler context.
+_names_request = partial(named_by, lexicon=NAMED_REQUEST_WORDS)
 # R-T: each word's PARAM_HINTS combinations, so a name's words probe only the hints they could
 # complete (no combination is empty: each holds a word of any name it is a subset of).
 _HINTS_OF_WORD = invert({hint: hint for hint in PARAM_HINTS})
@@ -208,7 +211,11 @@ class Params:
         handler context (``_in_handler``)."""
         if _names_request(d.name):
             return True
-        return hits((d.name,), CONTAINER_WORDS) and cached(self._facts.context, d.scope, self._in_handler)
+        return hits((d.name,), CONTAINER_WORDS) and self._in_context(d.scope)
+
+    def _in_context(self, fn: int) -> bool:
+        """``_in_handler`` of ``fn``, memoised per function."""
+        return cached(self._facts.context, fn, self._in_handler)
 
     def _in_handler(self, fn: int) -> bool:
         """A44 (1) (b): R-A's registration or R-C's route (``handler``), a function named by a
@@ -223,10 +230,31 @@ class Params:
         return chain.from_iterable(map(self._scope.param_names, self.positional(fn)))
 
     def _annotated(self, d: Def) -> Iterator[str]:
-        """R-D (W4): decorator / default-call words, then type words."""
+        """R-D (W4): decorator / default-call words, then type words (``_typed_request``)."""
         marks, types = self.annotation_words(d.value)
-        if marks & PARAM_ANNOTATION_WORDS or types & TYPE_ANNOTATION_WORDS:
+        if marks & PARAM_ANNOTATION_WORDS or self._typed_request(d, types):
             yield "upload" if (marks | types) & UPLOAD_WORDS else "request"
+
+    def _typed_request(self, d: Def, types: frozenset[str]) -> bool:
+        """W4's type words name a request (A44 (1) (b)): a ``TYPE_ANNOTATION_WORDS`` word that is
+        no container word; a container word of a qualified type path, an extractor type
+        (``web::Query<T>``); a container word of a bare name — an unqualified type, or in
+        TypeScript an inline object type's member name (``opts: { payload: string }``) — only
+        in handler context. A decorator or default-call mark needs no context."""
+        if types & NAMED_TYPE_WORDS:
+            return True
+        if types.isdisjoint(CONTAINER_WORDS):
+            return False
+        return self._qualified_container(d.value) or self._in_context(d.scope)
+
+    def _qualified_container(self, param: int | None) -> bool:
+        """A MEMBER type annotation of ``param`` (a qualified type path) holds a container word."""
+        kids = self._m.children(param) if param is not None else ()
+        paths = filter(self._is_type_path, kids)
+        return hits(chain.from_iterable(map(self._names_under, paths)), CONTAINER_WORDS)
+
+    def _is_type_path(self, node: int) -> bool:
+        return self._m.kind(node) is Kind.MEMBER and self._is_type(node)
 
     def _hinted(self, d: Def) -> Iterator[str]:
         """R-T (D23): a PARAM_HINTS combination of the name's words."""
@@ -313,8 +341,3 @@ class Params:
         receiving = not (marks | types).isdisjoint(ACCESSOR_RECEIVER_WORDS)
         return receiving or self.request_named(d) or self.handler(d.scope).route
 
-
-def _names_request(name: str) -> bool:
-    """A44 (1) (b): ``name`` names a request on its own — a word, or its glued form, of the
-    request words that are no container word (``req``, ``request``, ``searchParams``)."""
-    return hits((name,), _NAMED_REQUEST) or glue(name) in _NAMED_REQUEST

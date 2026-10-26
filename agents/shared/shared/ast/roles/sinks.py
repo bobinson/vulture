@@ -41,6 +41,7 @@ __all__ = [
     "FLAG_LITERALS",
     "GENERIC_REQUEST_VERBS",
     "PATH_KWARGS",
+    "PATH_SYNC_TWINS",
     "PREFILTER",
     "PROCESS_WORDS",
     "REGEX_WORDS",
@@ -63,6 +64,7 @@ __all__ = [
     "model_needed",
     "needed_families",
     "path_sink_key",
+    "sync_twin",
 ]
 
 # ── sink words (§9.1, revision 3 + revision 9) ───────────────────────────────
@@ -98,10 +100,10 @@ SINK_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
     family: words | REV9_GLUED_ADDITIONS.get(("SINK_WORDS", family), frozenset())
     for family, words in (("path", _PATH_SINKS), ("request", _REQUEST_SINKS))
 })
-# A44 (1) (e): a synchronous twin is the file operation its stem names (`mkdirSync`, `rmSync`):
-# a glued key `<stem>sync` is a path sink when `<stem>` is one - a structural suffix rule of
-# the sink lookup (``path_sink_key``), never a per-name entry; `readfilesync`, the one entry
-# that predates the rule, stays.
+# A44 (1) (e): a synchronous twin is the operation its stem names (`mkdirSync`, `rmSync`,
+# `execSync`): a glued key `<stem>sync` reads as `<stem>` in a table that holds the stem - a
+# structural suffix rule of the sink lookup (``sync_twin``), never a per-name entry;
+# `readfilesync`, the one entry that predates the rule, stays.
 SYNC_SUFFIX = "sync"
 
 # ── request: generic verbs and HTTP-client evidence (A44 (1) (a)) ────────────
@@ -136,8 +138,8 @@ REGEX_WORDS = frozenset({"regexp", "regex", "pattern", "re"})
 # R-N's prefix reaches a single-word identifier only (`execa`, `execvp`). A multi-word one
 # (`execSync`, `runCommandWithTimeout`) reaches a command key only through leading words that
 # glue to a COMMAND_STRONG key exactly AND one of these process concepts in its own words, its
-# receiver chain or the module it is imported from (`child_process`): `executePollAction`,
-# `ExecApprovalContainer` and `forkJoin` are no process.
+# receiver chain or the module it is imported from (`child_process`): `executeTallyAction`,
+# `ExecReviewPanel` and `forkMerge` are no process.
 PROCESS_WORDS = frozenset({"process", "subprocess", "child", "proc", "shell", "pty"})
 
 # ── command (§8.5; R-L, R-M, R-N, R-V) ───────────────────────────────────────
@@ -220,6 +222,8 @@ EXIT_WORDS = frozenset({"exit", "abort", "die", "fail", "panic", "halt", "termin
 REQUEST_API_WORDS = CLIENT_WORDS | (
     SINK_WORDS["request"] - GENERIC_REQUEST_VERBS - REQUEST_SINK_NO_POSITIONAL
 )
+# (e): every path sink key's synchronous twin (``path_sink_key`` reads each as its stem).
+PATH_SYNC_TWINS = frozenset(key + SYNC_SUFFIX for key in SINK_WORDS["path"])
 # Every profile's builtin sink keys, an EMPTY family set included (C `read`, P4/R5).
 BUILTIN_KEYS = frozenset(key for p in PROFILES.values() for key in p.builtin_sinks)
 # The keys that make a CALL a sink - NOT every sink-side structural lexicon: SOURCE_CALL_KEYS is
@@ -274,14 +278,18 @@ def _glued_view(text: str) -> str:
     return text.lower().replace("_", "")
 
 
+def sync_twin(key: str, table: frozenset[str]) -> str:
+    """The entry of ``table`` the glued callee ``key`` names (A44 (1) (e)): ``key`` itself, or
+    the stem of a synchronous twin when ``table`` holds that stem (``mkdirsync`` -> ``mkdir``);
+    ``""`` for none (``closesync``: ``close`` is no path sink)."""
+    stem = key if key in table else key.removesuffix(SYNC_SUFFIX)
+    return stem if stem in table else ""
+
+
 def path_sink_key(key: str) -> str:
-    """The ``path`` sink key the glued callee ``key`` names (A44 (1) (e)): ``key`` itself, or
-    the stem of a synchronous twin when that stem is a path sink key (``mkdirsync`` ->
-    ``mkdir``); ``""`` for none (``closesync``: ``close`` is no path sink)."""
-    if key in SINK_WORDS["path"]:
-        return key
-    stem = key.removesuffix(SYNC_SUFFIX)
-    return stem if stem != key and stem in SINK_WORDS["path"] else ""
+    """The ``path`` sink key the glued callee ``key`` names (``sync_twin`` of the path
+    table)."""
+    return sync_twin(key, SINK_WORDS["path"])
 
 
 def command_lead(ident: str) -> bool:

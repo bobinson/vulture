@@ -14,12 +14,14 @@ from __future__ import annotations
 import importlib
 
 __all__ = [
+    "ANSWER_SCHEMA",
     "GRAMMAR_PACK_VERSION",
     "MODEL_SCHEMA",
     "OWNED_CHECK_IDS",
     "VALIDATION_KEYS",
     "DeclineRecord",
     "FamilyRule",
+    "FileAnswer",
     "FileModel",
     "Flow",
     "FlowAnalysis",
@@ -29,12 +31,16 @@ __all__ = [
     "get_model",
     "model_needed",
     "owns",
+    "owns_answer",
     "owns_lang",
 ]
 
 # The worker document's schema (§6.2): part of the model-cache key with the grammar stamp (D5).
 # 2 (A28 (9)): the worker ships the C++ stack constructor as a synthetic CALL (C3).
 MODEL_SCHEMA = 2
+# The answer wire's version (§4.1 item 1, D3'): appended to D5's key for a worker-built answer,
+# so an answer and a model of one file are two entries. A version, not a knob.
+ANSWER_SCHEMA = 1
 
 # The two top-level ``validation`` keys an AST-owned row carries (§10.1): written by
 # ``consume.flow_to_finding``, kept by the validate stage wherever it rebuilds the blob (A42 (3)).
@@ -49,6 +55,8 @@ _HOMES: dict[str, str] = {
     "owns_lang": "model",
     "get_model": "cache",
     "owns": "cache",
+    "owns_answer": "cache",
+    "FileAnswer": "answer",
     "FlowAnalysis": "flow",
     "Origin": "flow",
     "Flow": "flow",

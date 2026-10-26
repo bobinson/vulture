@@ -30,6 +30,7 @@ __all__ = [
     "ACCESSOR_RECEIVER_WORDS",
     "ACCESSOR_WORDS",
     "ACCUMULATOR_KEYS",
+    "BOUND_SOURCE_WORDS",
     "CALLBACK_PAYLOAD_WORDS",
     "CONDITIONAL_SOURCE_ROOTS",
     "CONTAINER_WORDS",
@@ -38,6 +39,8 @@ __all__ = [
     "HANDLER_REGISTRATION_WORDS",
     "ITERATION_WORDS",
     "MERGE_WORDS",
+    "NAMED_REQUEST_WORDS",
+    "NAMED_TYPE_WORDS",
     "OUTPUT_PARAM_WORDS",
     "PARAM_ANNOTATION_WORDS",
     "PARAM_HINTS",
@@ -69,11 +72,15 @@ SOURCE_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
     "env": frozenset({"environ", "getenv"}),
 })
 # A44 (1) (b): the request words that are generic container names - a helper's options bag
-# (`params`), a message (`payload`, `body`), a function's `input`, a search `query` - and so
-# name a request only in request context: a member of a request-rooted chain (`req.params`,
-# W9 (b)) or a parameter of a function in handler context (``_params``). Anywhere else a
-# parameter named so is `unknown(param)`, and an unbound name or chain root so named no source.
-CONTAINER_WORDS = frozenset({"params", "param", "payload", "input", "body", "query", "files"})
+# (`params`), a message (`payload`, `body`), a function's `input`, a search `query`, a cookie
+# jar or a header map (`cookieName`, `headers`) - and so name a request only in request
+# context: a member of a request-rooted chain (`req.params`, W9 (b)) or a parameter of a
+# function in handler context (``_params``). Anywhere else a parameter named or typed so is
+# `unknown(param)`, and a bound chain root so named no source.
+CONTAINER_WORDS = frozenset({
+    "params", "param", "payload", "input", "body", "query", "files", "cookie", "cookies",
+    "header", "headers",
+})
 # W9 (b): a chain matches iff its root's word is the key and the next segment's word is a member
 # key, whose value names the role (`process.env` -> env, `event.records` -> request). A root
 # bound by an IMPORT (a module) is skipped by the flat SOURCE_WORDS test: `flask.request.args`.
@@ -141,17 +148,17 @@ CALLBACK_PAYLOAD_WORDS = frozenset({
     "data", "payload", "message", "msg", "event", "evt", "body", "packet", "frame", "job",
     "task", "record",
 })
-# R-C: a handler PARAM hitting these is no source. "w" (Go http.ResponseWriter) is the ONE
-# documented exception to the ^[a-z0-9]{2,32}$ entry shape (A27 (1)).
-RESPONSE_WORDS = frozenset({
-    "res", "response", "resp", "reply", "next", "cb", "callback", "done", "self", "cls",
-    "socket", "ws", "writer", "w",
-})
 # A44 (1) (b): the response objects of a (request, response) handler signature. A function
 # with a parameter so named is in handler context (`({ params }, res, next) => ...` returned by
 # a handler factory and registered elsewhere): the request half of the signature is no helper's
 # options bag.
 RESPONSE_OBJECT_WORDS = frozenset({"res", "response", "resp", "reply"})
+# R-C: a handler PARAM hitting these is no source - the response objects and the rest of a
+# handler's non-request parameters. "w" (Go http.ResponseWriter) is the ONE documented
+# exception to the ^[a-z0-9]{2,32}$ entry shape (A27 (1)).
+RESPONSE_WORDS = RESPONSE_OBJECT_WORDS | {
+    "next", "cb", "callback", "done", "self", "cls", "socket", "ws", "writer", "w",
+}
 
 # ── structural callee keys (§8.2, §8.4: R-A, R-B, R-J, R-U, R-W; mode (a), glued) ──
 
@@ -199,6 +206,16 @@ SOURCE_CALL_KEYS: Mapping[str, str] = MappingProxyType({
     for key in sorted(SOURCE_WORDS[role])
     if key not in SINK_KEYS
 })
+# A44 (1) (b): the request words that name a request on their own - every one but the
+# CONTAINER_WORDS, which do so only in request context - and the source table a BOUND name (a
+# chain root a Def binds, an import's symbol) is read by: the request role by these words, every
+# other role by its own. W4's type words likewise.
+NAMED_REQUEST_WORDS = SOURCE_WORDS["request"] - CONTAINER_WORDS
+BOUND_SOURCE_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
+    role: NAMED_REQUEST_WORDS if role == "request" else lexicon
+    for role, lexicon in SOURCE_WORDS.items()
+})
+NAMED_TYPE_WORDS = TYPE_ANNOTATION_WORDS - CONTAINER_WORDS
 # The structural mode-(a) callee lexicons: sink-side, glued, yet none makes a CALL a sink.
 _STRUCTURAL = (
     REQUEST_TERMINAL_WORDS, OUTPUT_PARAM_WORDS, EXIT_WORDS, REQUEST_SINK_NO_POSITIONAL,

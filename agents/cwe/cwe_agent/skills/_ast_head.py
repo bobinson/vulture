@@ -11,8 +11,14 @@ differently (``test_0102_owner_disjoint``).
 
 CONTRACT
 --------
-``ast_answers(file_path, text, rules, server_ctx)`` is the tier's answer for one file and each
-rule (``AstAnswer``), asked once per file; ``ast_spans`` is its one-rule form. ``claim`` is
+``ast_walk(files, skip, rules)`` is a skill's file loop under parse prefetch (LLD §4.1 item 6):
+the files its ``skip`` predicate keeps, in order, as ``shared.ast.prefetch.walk`` over the
+families of its ``rules``. ``ast_answers(file_path, text, rules, server_ctx)`` is the tier's
+answer for one file and each rule (``AstAnswer``), asked once per file; ``ast_spans`` is its
+one-rule form. The real head asks ``prefetch.advance``, then ``owns_answer`` (§4.1: the file's
+worker-built answer, a ticket issued ahead collected in place of a request), then
+``prefetch.refill`` (the collected ticket's slot freed), with ``profile.owns_family`` the one
+ownership predicate of the head and the prefetch. ``claim`` is
 ``shared.ast.consume.emit_for_line`` over an answer, with the catalog's ``enrich_finding``,
 which ``shared.ast`` cannot import (A41 (5)). ``ast_owns`` is the head of a check the tier owns
 line by line (LLD §9.3: CWE-918, CWE-78): the row of a reported sink at its line, and whether
@@ -25,20 +31,34 @@ The model, the cache and the lexicons are imported where ``ast_answers`` first n
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Callable, Iterable, Mapping, Sequence, Set
+from itertools import filterfalse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from cwe_agent.catalog import enrich_finding
-from shared.ast.consume import emit_for_line, family_spans, rule_row
+from shared.ast import prefetch
+from shared.ast.consume import RuleIdentity, emit_for_line, family_spans, rule_row
 from shared.ast.context import current
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+    from shared.ast.answer import FileFacts
     from shared.ast.consume import FamilyRule
     from shared.ast.flow import Flow
-    from shared.ast.model import FileModel
 
-__all__ = ["FALLBACK", "AstAnswer", "ast_answers", "ast_owns", "ast_spans", "claim", "regex_row"]
+__all__ = [
+    "FALLBACK",
+    "AstAnswer",
+    "CatalogRule",
+    "ast_answers",
+    "ast_owns",
+    "ast_spans",
+    "ast_walk",
+    "claim",
+    "regex_row",
+]
 
 
 class AstAnswer(NamedTuple):
@@ -52,6 +72,23 @@ class AstAnswer(NamedTuple):
 
 # The answer for a file the AST tier falls back on: the regex body owns it (D10).
 FALLBACK = AstAnswer(None, ())
+
+
+class CatalogRule(RuleIdentity, Protocol):
+    """A rule a regex body's row is built for (``regex_row``): its identity strings (D19) and
+    the catalog id the row is enriched by — a ``FamilyRule``, or a skill's own rule entry."""
+
+    @property
+    def cwe_id(self) -> str: ...
+
+
+def ast_walk(
+    files: Iterable[Path], skip: Callable[[Path], bool], rules: Sequence[FamilyRule]
+) -> AbstractContextManager[list[Path]]:
+    """A skill's file loop: ``files`` less those ``skip`` drops, in order — the files its loop
+    analyses — walked by ``prefetch.walk`` over the families ``rules`` ask about, so the head's
+    ``advance`` sends the next ones ahead (LLD §4.1 item 6). A skipped file is never sent."""
+    return prefetch.walk(filterfalse(skip, files), {rule.family for rule in rules})
 
 
 def ast_answers(
@@ -97,20 +134,27 @@ def _answer(file_path: Path, rule: FamilyRule, needed: Set[str], server_ctx: boo
 
 def _owned(file_path: Path, family: str) -> bool | None:
     """D10 by extension alone, never a parse: whether the file's profile owns ``family``
-    (§6.3 ``owned_families``); None when its language has no profile."""
-    from shared.ast.profile import profile_for
+    (``profile.owns_family``, §6.3 ``owned_families``); None when its language has no
+    profile."""
+    from shared.ast.profile import owns_family
 
-    profile = profile_for(file_path)
-    return None if profile is None else family in profile.owned_families
+    return owns_family(file_path, family)
 
 
-def _family_model(file_path: Path, family: str) -> FileModel | None:
-    """``owns`` (D10: a model, no ERROR node, the breaker closed), unless the file's profile
-    owns no ``family`` — then None, and no parse. A file with no profile still asks ``owns``,
-    which tallies it ``unsupported`` (§10.2)."""
-    from shared.ast.cache import owns
+def _family_model(file_path: Path, family: str) -> FileFacts | None:
+    """``owns_answer`` (D10: the file's worker-built answer, no ERROR node, the breaker
+    closed), unless the file's profile owns no ``family`` — then None, and no parse. First
+    ``prefetch.advance``, so the walk sends its next files ahead (LLD §4.1 item 6); after it
+    ``prefetch.refill``, so the slot the file's collected ticket freed is used at once. A file
+    with no profile still asks, and is tallied ``unsupported`` (§10.2)."""
+    from shared.ast.cache import owns_answer
 
-    return None if _owned(file_path, family) is False else owns(file_path)
+    if _owned(file_path, family) is False:
+        return None
+    prefetch.advance(file_path)
+    answer = owns_answer(file_path)
+    prefetch.refill()
+    return answer
 
 
 def claim(
@@ -143,7 +187,7 @@ def ast_owns(
 
 
 def regex_row(
-    rule: FamilyRule, description: str, file_path: Path, line_num: int, lines: Sequence[str],
+    rule: CatalogRule, description: str, file_path: Path, line_num: int, lines: Sequence[str],
     **extra: Any,
 ) -> dict[str, Any]:
     """A regex body's row at ``line_num``: ``rule``'s identity row (``consume.rule_row``, D19)

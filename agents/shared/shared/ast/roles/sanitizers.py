@@ -23,6 +23,7 @@ from shared.ast.roles.guards import (
     ALLOWLIST_WORDS,
     GUARD_INDEX,
     NO_ROLES,
+    PLACE_WORDS,
     VALIDATE_WORDS,
     RoleIndex,
     SymbolOf,
@@ -41,7 +42,6 @@ __all__ = [
     "FILE_NAME_WORDS",
     "KEY_ROLES",
     "PATH_RESULT_WORDS",
-    "PLACE_WORDS",
     "QUOTE_WORDS",
     "SANITIZER_INDEX",
     "SANITIZER_KEYS",
@@ -85,11 +85,10 @@ SHELL_CONTEXT_WORDS = frozenset({"shell", "shlex", "cmd", "command", "arg", "arg
 FILE_NAME_WORDS = frozenset({"name", "stem"})
 PATH_RESULT_WORDS = frozenset({"path"})
 # A44 (1) (d) (ii): a CALL returning a containment-checked path is a `path_normalize` sanitiser
-# by COMPOSITION - a CONTAINED_WORDS word AND a PLACE_WORDS word in its callee's last identifier
-# (`resolveWithinRoot`, `resolveSafeInstallDir`), never one word alone (`safe_name`,
+# by COMPOSITION - a CONTAINED_WORDS word AND a PLACE_WORDS word (``guards``) in its callee's
+# last identifier (`resolveWithinRoot`, `safeUploadDir`), never one word alone (`safe_name`,
 # `rootPath`).
 CONTAINED_WORDS = frozenset({"within", "inside", "safe", "sandbox"})
-PLACE_WORDS = frozenset({"path", "dir", "root"})
 
 # ── coverage (§8.3; defined here, once, A27 (5)) ─────────────────────────────
 

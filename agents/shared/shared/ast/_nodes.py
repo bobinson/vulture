@@ -11,6 +11,7 @@ tolerates the ``-1`` a missing child reads as, so a caller never branches on it 
 from __future__ import annotations
 
 from collections.abc import Callable, Container, Hashable, Iterable, Iterator, Mapping, Sequence
+from itertools import chain, pairwise
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -24,9 +25,11 @@ __all__ = [
     "CHAINS",
     "NOT_READ",
     "ancestors",
+    "and_ancestors",
     "cached",
     "chain_links",
     "chain_root",
+    "edges_up",
     "first",
     "first_segment",
     "is_kind",
@@ -43,6 +46,7 @@ __all__ = [
     "parsed_buffer",
     "preorder",
     "segment",
+    "unawaited",
     "union",
 ]
 
@@ -86,6 +90,12 @@ def object_of(model: FileModel, node: int) -> int:
 def is_kind(model: FileModel, node: int, kind: Kind) -> bool:
     """``node`` exists and is of ``kind``."""
     return node >= 0 and model.kind(node) is kind
+
+
+def unawaited(model: FileModel, node: int) -> int:
+    """``node``, or what an AWAIT ``node`` awaits (``await f(x)`` -> ``f(x)``): the one AWAIT
+    unwrap of the scope pass and the guards; ``-1`` passes through."""
+    return first(model, node, Field.NONE) if is_kind(model, node, Kind.AWAIT) else node
 
 
 def member_object(model: FileModel, node: int) -> int:
@@ -148,6 +158,17 @@ def ancestors(model: FileModel, node: int) -> Iterator[int]:
         if node < 0:
             return
         yield node
+
+
+def and_ancestors(model: FileModel, node: int) -> Iterator[int]:
+    """``node`` itself, then its ``ancestors`` (nearest first, at most ``MAX_DEPTH``)."""
+    return chain((node,), ancestors(model, node))
+
+
+def edges_up(model: FileModel, node: int) -> Iterator[tuple[int, int]]:
+    """Each ``(child, parent)`` edge on the way up from ``node`` (``and_ancestors``, pairwise):
+    the child is the branch of its parent that holds ``node``."""
+    return pairwise(and_ancestors(model, node))
 
 
 def chain_links(model: FileModel, node: int) -> tuple[list[int], int]:

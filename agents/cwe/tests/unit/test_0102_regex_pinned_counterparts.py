@@ -282,17 +282,14 @@ def test_a_request_value_in_a_later_argv_element_is_no_command(tmp_path: Path) -
 # ── SSRF: the server-context gate's scope, a whole-file flow ─────────────────
 
 
-def test_a_map_read_in_server_code_is_a_request_sink(tmp_path: Path) -> None:
+def test_a_map_read_in_server_code_is_no_request_sink(tmp_path: Path) -> None:
     """``security.authenticatedUsers.get(req.cookies.token)`` (line 7) beside the real
     ``fetch(url)`` (line 10, through ``const url = req.body.imageUrl``): the glued key ``get``
-    is a request sink, and §8.5's server-context gate holds it back only in a file that is not
-    server code; this file imports ``express``, so a map read keyed by a request value reports
-    as SSRF — an FP direction recorded in SKILLS.md. The regex tier's one-hop rule saw only
-    line 10."""
-    assert _rows(_audit(tmp_path, IMAGE_URL_UPLOAD), SSRF) == [
-        (7, "ast", [REQUEST], None),
-        (10, "ast", [REQUEST], None),
-    ]
+    is a generic verb, a request sink only with HTTP-client evidence (A44 (1) (a)) — and this
+    receiver carries no client concept, the key ``req.cookies.token`` is no URL — so even in
+    server code (the file imports ``express``) the map read reports nothing; only line 10 does,
+    as the regex tier's one-hop rule saw it."""
+    assert _rows(_audit(tmp_path, IMAGE_URL_UPLOAD), SSRF) == [(10, "ast", [REQUEST], None)]
 
 
 def test_a_flow_is_followed_through_the_whole_file(tmp_path: Path) -> None:

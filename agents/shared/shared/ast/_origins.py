@@ -81,8 +81,8 @@ from shared.ast.limits import (
 from shared.ast.profile import PROFILES
 from shared.ast.profiles import EMPTY_MAP
 from shared.ast.roles import (
+    BOUND_SOURCE_WORDS,
     CONDITIONAL_SOURCE_ROOTS,
-    CONTAINER_WORDS,
     FILE_NAME_WORDS,
     NO_ROLES,
     PATH_RESULT_WORDS,
@@ -448,7 +448,7 @@ class Engine:
         role = self._builtin_sources.get(name)
         if role is not None:
             return only(role)
-        return _source_roles(name) or _UNRESOLVED
+        return _source_roles(name, bound=False) or _UNRESOLVED
 
     def _chain(self, ctx: int, node: int) -> Answer:
         """MEMBER / SUBSCRIPT: ``read("o.f")`` if bound; else the object's (and a subscript's
@@ -463,18 +463,20 @@ class Engine:
         return _via(found, _PATH_NORMALIZE) if cached(self._facts.named, node, self._file_name) else found
 
     def _chain_source(self, node: int) -> Origins:
-        """W9 (b): the chain's ROOT identifier's words against ``SOURCE_WORDS`` — a root bound
-        by an import (a module) is skipped for the next segment — and ``CONDITIONAL_SOURCE_ROOTS``
-        on the root and the next segment."""
+        """W9 (b): the chain's ROOT identifier's words against ``SOURCE_WORDS``
+        (``_root_source``) and ``CONDITIONAL_SOURCE_ROOTS`` on the root and the next segment."""
         root, following = self._root(node)
         if root < 0:
             return EMPTY
         ident = self.m.ident(root) or ""
-        word = following if self._import_bound(root) else ident
-        return _union((_source_roles(word), _conditional_source(ident, following)))
+        return _union((self._root_source(root, ident, following), _conditional_source(ident, following)))
 
-    def _import_bound(self, name: int) -> bool:
-        return any(d.kind == "import" for d in self.scope.resolve(name))
+    def _root_source(self, root: int, ident: str, following: str) -> Origins:
+        """The root's words, read as a bound name when a Def binds it (``_source_roles``); a
+        root bound by an import (a module) is skipped for the next segment."""
+        defs = self.scope.resolve(root)
+        word = following if any(d.kind == "import" for d in defs) else ident
+        return _source_roles(word, bound=bool(defs))
 
     def _root(self, node: int) -> tuple[int, str]:
         """The chain's root NAME (through MEMBER / SUBSCRIPT objects only) and the segment
@@ -803,21 +805,20 @@ def _sanitised(args: Origins, roles: frozenset[str]) -> Origins:
     return _via(args, roles)
 
 
-# A44 (1) (b): the source words an unbound name, a chain's root or an import's symbol is read
-# by - the request words minus the generic container words, which name a request only as a
-# member of a request-rooted chain or as a parameter in handler context (``_params``).
-_FREE_SOURCES: Mapping[str, frozenset[str]] = MappingProxyType({
-    role: lexicon - CONTAINER_WORDS if role == "request" else lexicon
-    for role, lexicon in SOURCE_WORDS.items()
-})
+# A44 (1) (b): a generic container word names a request only as a member of a request-rooted
+# chain or as a parameter in handler context (``_params``), so a BOUND name - a chain root a Def
+# binds, an import's symbol - is read by ``BOUND_SOURCE_WORDS``. An unbound name, or a chain
+# rooted at one, binds no parameter and keeps every source word (`requests.get(user_input)`).
+# Indexed by ``bound``.
+_SOURCE_TABLES: tuple[Mapping[str, frozenset[str]], ...] = (SOURCE_WORDS, BOUND_SOURCE_WORDS)
 
 
 @lru_cache(maxsize=WORDS_MEMO)
-def _source_roles(text: str) -> Origins:
-    """``external(role)`` for each ``_FREE_SOURCES`` role a word of ``text`` hits (W9 (b));
-    memoised like ``words()``, under the same bound."""
+def _source_roles(text: str, *, bound: bool) -> Origins:
+    """``external(role)`` for each source role a word of ``text`` hits (W9 (b)), read as a
+    bound name or not (``_SOURCE_TABLES``); memoised like ``words()``, under the same bound."""
     found = words(text)
-    return _union(only(role) for role, lexicon in _FREE_SOURCES.items() if not lexicon.isdisjoint(found))
+    return _union(only(role) for role, lexicon in _SOURCE_TABLES[bound].items() if not lexicon.isdisjoint(found))
 
 
 def _conditional_source(root: str, following: str) -> Origins:
@@ -830,7 +831,7 @@ def _conditional_source(root: str, following: str) -> Origins:
 def _imported(symbol: str) -> Origins:
     """R-H: an import binding answers with its symbol — a source word's role, else
     unresolved (``from flask import request`` is ``external(request)``)."""
-    return _source_roles(symbol) or _UNRESOLVED
+    return _source_roles(symbol, bound=True) or _UNRESOLVED
 
 
 # §8.2: each node kind's row.

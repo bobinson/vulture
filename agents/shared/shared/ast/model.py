@@ -55,7 +55,14 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, overload
 
 from shared.ast._sizing import INT_SIZE, own_int_count, own_strs
-from shared.ast._validate import COLUMNS, IDENTIFIER_KINDS, LITERAL_CLASSES, prefix_of, stamp_prefix
+from shared.ast._validate import (
+    COLUMNS,
+    IDENTIFIER_KINDS,
+    LITERAL_CLASSES,
+    prefix_of,
+    spelled,
+    stamp_prefix,
+)
 from shared.ast.coverage import ARGS_CAPPED, CHAIN_TRUNCATED, WORDS_CAPPED
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import MAX_ARGS, MAX_CHAIN, MAX_WORDS, WORDS_MEMO
@@ -67,14 +74,17 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ARGS_CAPPED",
+    "BLOCK_KINDS",
     "CHAIN_TRUNCATED",
     "NO_LITERAL",
     "WORDS_CAPPED",
     "FileModel",
+    "Lines",
     "Literal_",
     "glue",
     "grammar_stamp",
     "owns_lang",
+    "stamped",
     "words",
 ]
 
@@ -96,13 +106,13 @@ def owns_lang(path: str | Path) -> bool:
 # Stamp prefix (``_validate.stamp_prefix``: ``<module>.<entry point>@``) -> the stamp the
 # latest model of that grammar entry point was built with. The worker mints a stamp from its
 # grammar's own version, which the parent cannot read (D1: no ``tree_sitter`` here, and a
-# grammar's version is not its package's); ``from_doc`` records each model's here
-# (``_stamped``). Bounded by the entry points: ``validate_reply`` binds a stamp's prefix to
-# the request it answers.
+# grammar's version is not its package's); ``from_doc`` records each model's here, and D3'
+# each answer's (``stamped``, §4.1 item 2). Bounded by the entry points: ``validate_reply`` and
+# ``validate_answer`` bind a stamp's prefix to the request it answers.
 _STAMP_OF: dict[str, str] = {}
 
 
-def _stamped(stamp: str) -> str:
+def stamped(stamp: str) -> str:
     """``stamp``, recorded under its prefix as the stamp of its grammar entry point."""
     _STAMP_OF[prefix_of(stamp)] = stamp
     return stamp
@@ -145,10 +155,13 @@ _LINK_FIELDS = frozenset({Field.OBJECT, Field.PROPERTY, Field.CALLEE})
 _SEGMENT_KINDS = frozenset({Kind.NAME, Kind.LITERAL})
 _KINDS = tuple(Kind)
 _FIELDS = tuple(Field)
+# W2: the kinds ``block_of`` answers with — a node's nearest BLOCK or MODULE, named once for
+# the guards that walk the same blocks.
+BLOCK_KINDS = frozenset({Kind.BLOCK, Kind.MODULE})
 # R3's literal classes (``_validate.LITERAL_CLASSES``, what the validator admits), each held
 # once: a record names its class by this shared string, not by the string the decoder made
 # for it (one per literal).
-_LITERAL_CLASSES: Mapping[str, str] = MappingProxyType({name: name for name in LITERAL_CLASSES})
+_LITERAL_CLASSES = spelled(LITERAL_CLASSES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,7 +247,7 @@ def _literal(entry: Sequence[Any]) -> Literal_:
     return Literal_(_LITERAL_CLASSES[entry[0]], *entry[1:])
 
 
-class _Lines(Sequence[str]):
+class Lines(Sequence[str]):
     """``text.split("\\n")`` as a sequence (D21), holding the text once plus each line's start
     offset: a line is sliced out when it is read, instead of every line being its own string
     for as long as the model is cached. ``text`` is the text whole, the one decode whose UTF-8
@@ -250,6 +263,12 @@ class _Lines(Sequence[str]):
     @property
     def text(self) -> str:
         return self._text
+
+    @property
+    def parts(self) -> tuple[object, ...]:
+        """What the lines hold of their own, for a footprint (A17): the index, its offsets
+        array and the text."""
+        return self, self._starts, self._text
 
     def __len__(self) -> int:
         return len(self._starts) - 1
@@ -335,7 +354,7 @@ class FileModel:
     size: int
     error_nodes: int
     unmapped: Mapping[str, int]
-    nl_lines: _Lines
+    nl_lines: Lines
     tallies: Mapping[str, int]
     bytes_estimate: int
     _cols: _Columns
@@ -372,11 +391,11 @@ class FileModel:
         unmapped = dict(doc["unmapped"])
         model = cls(
             language=doc["language"],
-            grammar=_stamped(doc["grammar"]),
+            grammar=stamped(doc["grammar"]),
             size=doc["size"],
             error_nodes=doc["error_nodes"],
             unmapped=MappingProxyType(unmapped),
-            nl_lines=_Lines(text),
+            nl_lines=Lines(text),
             tallies=MappingProxyType({}),
             bytes_estimate=0,
             _cols=cols,
@@ -389,7 +408,7 @@ class FileModel:
             _child_fields=array("i", map(fields.__getitem__, by_field)),
             _by_field=memoryview(by_field),
             _function_of=_nearest(kinds, parents, frozenset({Kind.FUNCTION})),
-            _block_of=_nearest(kinds, parents, frozenset({Kind.BLOCK, Kind.MODULE})),
+            _block_of=_nearest(kinds, parents, BLOCK_KINDS),
             _kind_ids=memoryview(cols.kind).toreadonly(),
             _field_ids=memoryview(cols.field).toreadonly(),
         )

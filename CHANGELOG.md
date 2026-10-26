@@ -39,8 +39,13 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   declines, the tallies), and the `ast_decline` / `ast_decline_summary`
   thinking lines. The backend's lineage pass reads `ast_coverage` and holds a
   CWE-22/918/78 row `unconfirmed`, never `fixed`, when its file fell back to the
-  regex tier in that scan. Ten new dependencies: the tree-sitter core and nine
-  grammars (MIT). See
+  regex tier in that scan. Parsing runs ahead of the consuming skill: while a
+  skill decides one file, the workers already analyse its next owned files, so
+  in the common case each file is parsed once per audit, with rows, declines
+  and `ast_coverage` equal to a synchronous run's. A worker whose resident
+  memory high-water exceeds 48 MB after a request is replaced
+  (`ast_coverage.workers.recycled`). Ten new dependencies: the tree-sitter core
+  and nine grammars (MIT). See
   [docs/architecture/ast_layer.md](docs/architecture/ast_layer.md) and
   [docs/architecture/agent_protocol.md](docs/architecture/agent_protocol.md).
 
@@ -154,11 +159,33 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     calls since feature 0060); a request value in a later argument after a
     literal program (`new ProcessBuilder("tar", "-C" + v)`) is no command
     injection. For SSRF a source is followed through the whole file, not a
-    25-line window; a map read keyed by a request value in server code
-    (`users.get(req.cookies.token)`) reports; and words near the sink (a
-    `validate_url` call on another variable, an `allowed_hosts` list) no
-    longer suppress a row — only a check of the sink's own argument does.
-    Files that do not parse keep every regex behaviour.
+    25-line window, and words near the sink (a `validate_url` call on another
+    variable, an `allowed_hosts` list) no longer suppress a row — only a check
+    of the sink's own argument does. Files that do not parse keep every regex
+    behaviour.
+  - **Precision rules.** The layer reads generic concept words structurally,
+    never library names. A generic HTTP verb (`get`, `put`, `delete`,
+    `request`, …) is an SSRF sink only with HTTP-client evidence (no receiver,
+    a client or transport word on the receiver, or a URL-shaped argument), and
+    never on a receiver bound to a collection, so a map read keyed by a request
+    value (`users.get(req.cookies.token)`) does not report. A command key on a
+    regex or data-store receiver (`re.exec(s)`, `db.exec(sql)`) runs no
+    process, and a multi-word callee reaches a command key only through an
+    exact leading key plus a process word. A container word (`params`,
+    `payload`, `body`, `query`, `headers`, …) names a request source only on
+    a request-rooted chain, in a function in handler context or through a
+    framework's extractor type. A dominating call statement such as
+    `assertInsideRoot(p)` (a validation verb plus a role word, taking the
+    flowing value) guards its role, a call returning a containment-checked
+    path is a sanitiser, and a same-file function that tests its parameter
+    and exits early guards its callers. A synchronous twin of a path API
+    (`fs.mkdirSync`, `fs.existsSync`) is a CWE-22 sink. Measured skills-only
+    against the previous release on two public codebases, rows on the
+    three ids go from 9 to 16 on one (4 true positives added, 4 false
+    positives removed, 7 false positives added) and from 149 to 188 on the
+    other (89 false positives removed; no true positive among the previous
+    release's rows or in a sample of 40 of the 128 added rows). The gaps that
+    remain are listed in the CWE agent's `SKILLS.md`.
   - **Row sets change.** Multi-statement flows, call results and same-file
     helpers are now reported; regex rows the flow does not support are not.
     Under `VULTURE_LINEAGE_FIX_MODE=evidence` (the default) a deterministic row
@@ -177,6 +204,11 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   corpus-verified) instead of the stale ~73 / N=10. These are prompt bytes for
   every model family: the `generate/cwe` manifest is at version 6, and a unit
   test pins the stated counts to the values the code computes.
+
+- **The CWE agent's GENERATE prompt states N=83 corpus-verified CWE types
+  (feature 0102).** The AST tier's corpus group makes CWE-22 and CWE-918
+  VERIFIED (CWE-78 stays VERIFIED on more fixtures), and the prompt's computed
+  count follows: `generate/cwe` manifest version 8, goldens re-captured.
 
 - **Finding-text masking is precise, for every agent (feature 0098).** Every
   finding's `code_snippet` and `description` are masked for secret SHAPES

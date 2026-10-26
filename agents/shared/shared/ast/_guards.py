@@ -40,7 +40,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from itertools import chain, islice, pairwise
+from itertools import chain, islice
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -49,17 +49,20 @@ from shared.ast._nodes import (
     ancestors,
     cached,
     chain_links,
+    edges_up,
     first,
     is_kind,
     is_read,
     kids_of,
     preorder,
     segment,
+    unawaited,
     union,
 )
 from shared.ast._records import Guard, role_set
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import GUARD_WINDOW, MAX_ARG_NAMES, MAX_TEST_NODES
+from shared.ast.model import BLOCK_KINDS
 from shared.ast.roles import (
     CONTAINMENT_KEYS,
     CONTAINMENT_ROLES,
@@ -81,7 +84,6 @@ type _Read = tuple[int, _Path]  # (the Def's position, member path)
 type _Roots = Mapping[int, list[_Path]]  # a sink argument's reads, by the Def's position
 
 _EXITS = frozenset({Kind.RETURN, Kind.THROW, Kind.JUMP})
-_BLOCKS = frozenset({Kind.BLOCK, Kind.MODULE})  # W2's block_of kinds
 _NO_DEFS: frozenset[int] = frozenset()  # a TRY that checks no Def (memoised per TRY)
 _WINDOWED = frozenset({Kind.IF, Kind.TRY})
 
@@ -168,8 +170,7 @@ class Guards:
     def _meets(self, test: int, roots: _Roots) -> bool:
         """A29 (3): a TEST read and a root share the Def (one probe of the roots' bucket) and
         one member path is a prefix of the other — O(reads + matches), not reads x roots."""
-        reads = cached(self._facts.reads, test, self._test_reads)
-        return any(_related(path, roots.get(position, ())) for position, path in reads)
+        return _meets_reads(cached(self._facts.reads, test, self._test_reads), roots)
 
     def _test_reads(self, test: int) -> tuple[_Read, ...]:
         """A TEST's reads, over at most ``MAX_TEST_NODES`` nodes, its root counted (A32)."""
@@ -180,7 +181,7 @@ class Guards:
     def _ancestors(self, sink: int, roots: _Roots) -> Iterator[Guard]:
         """Clause (b): every IF ancestor (at most ``MAX_DEPTH``) whose chosen branch holds the
         sink."""
-        for child, node in pairwise(chain((sink,), ancestors(self._m, sink))):
+        for child, node in edges_up(self._m, sink):
             if self._m.kind(node) is Kind.IF and self._inside(node, self._m.field(child), roots):
                 yield self._guard(node)
 
@@ -210,8 +211,7 @@ class Guards:
         if block < 0:
             return ()
         windowed = cached(self._facts.windowed, block, self._windowed)
-        end = bisect_left(windowed, self._statement(sink, block))
-        return windowed[max(0, end - GUARD_WINDOW) : end][::-1]
+        return _nearest_before(windowed, windowed, self._statement(sink, block))
 
     def _windowed(self, block: int) -> list[int]:
         """``block``'s IF and TRY children, in document order."""
@@ -299,15 +299,14 @@ class Guards:
     def _enclosing(self, sink: int) -> Iterator[tuple[int, int]]:
         """``(stmt, block)`` for each BLOCK or MODULE above the sink, ``stmt`` its child on the
         way down to the sink."""
-        pairs = pairwise(chain((sink,), ancestors(self._m, sink)))
-        return ((child, node) for child, node in pairs if self._m.kind(node) in _BLOCKS)
+        edges = edges_up(self._m, sink)
+        return ((child, node) for child, node in edges if self._m.kind(node) in BLOCK_KINDS)
 
     def _preceding(self, block: int, statement: int) -> Sequence[int]:
         """The check CALLs of ``block``'s statements before ``statement``, the
         ``GUARD_WINDOW`` nearest, nearest first (``_block_checks``, bisected)."""
         statements, calls = cached(self._facts.checks, block, self._block_checks)
-        end = bisect_left(statements, statement)
-        return calls[max(0, end - GUARD_WINDOW) : end][::-1]
+        return _nearest_before(statements, calls, statement)
 
     def _block_checks(self, block: int) -> tuple[list[int], list[int]]:
         """``block``'s check statements in document order, and their CALLs: a CALL statement
@@ -322,10 +321,9 @@ class Guards:
         return statements, calls
 
     def _statement_call(self, statement: int) -> int:
-        """The CALL a statement is (an AWAIT's own CALL), else ``-1``."""
-        awaited = self._m.kind(statement) is Kind.AWAIT
-        node = first(self._m, statement, Field.NONE) if awaited else statement
-        return node if is_kind(self._m, node, Kind.CALL) else -1
+        """The CALL a statement is (an AWAIT's own CALL, ``unawaited``), else ``-1``."""
+        call = unawaited(self._m, statement)
+        return call if is_kind(self._m, call, Kind.CALL) else -1
 
     def _check_shaped(self, call: int) -> bool:
         return self._e.calls.local(call) >= 0 or bool(self._callee_roles(call))
@@ -403,6 +401,13 @@ def _by_def(reads: Iterator[_Read]) -> dict[int, list[_Path]]:
     for position, path in reads:
         roots.setdefault(position, []).append(path)
     return roots
+
+
+def _nearest_before(ordered: Sequence[int], values: Sequence[int], statement: int) -> Sequence[int]:
+    """The ``GUARD_WINDOW`` entries of ``values`` — parallel to ``ordered``, a block's
+    statements in document order — nearest before ``statement``, nearest first (bisected)."""
+    end = bisect_left(ordered, statement)
+    return values[max(0, end - GUARD_WINDOW) : end][::-1]
 
 
 def _meets_reads(reads: Sequence[_Read], roots: _Roots) -> bool:

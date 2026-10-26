@@ -29,16 +29,18 @@ decides, the named heuristics, and every known gap.
 
 ```
 agent process (8 audit generators; each skill thread runs in a copy of its audit's context)
-  skill thread ──► owns(path) ──► get_model(path)
+  skill thread ──► prefetch.advance(path) ──► issue the next files of its walk ahead (tickets)
+               ──► owns_answer(path)  ──► prefetch.refill() (the collected ticket's slot reused)
                      ├─ declined earlier in this audit → None (no second parse, no second tally)
-                     ├─ cache hit → FileModel (immutable, shared across audits)
-                     └─ miss → single-flight → WorkerPool.parse(language, bytes)   JSON frames over pipes
+                     ├─ cache hit → FileAnswer (immutable, shared across audits)
+                     └─ miss → single-flight → collect the key's ticket, or
+                                               WorkerPool.parse(language, bytes, answer)   JSON frames over pipes
                      ┌───────────────────────────────────────────────────────────────────┐
                      │ worker: python -I -c BOOTSTRAP   cwd = private temp dir             │
                      │         env = {PATH, LANG}       rlimits (AS, CPU, NPROC, FSIZE)    │
-                     │  parse → skeleton of the profile's node kinds | {"error": reason}   │
+                     │  parse → skeleton → model → analysis → ANSWER | {"error": reason}   │
                      └───────────────────────────────────────────────────────────────────┘
-  skill thread ──► model.analysis().candidates(family)   pure, built once per model
+  skill thread ──► answer.analysis().candidates(family)   validated at the boundary
              ──► decide(flow, rule, audit context) → report | decline | none
              ──► finding (unchanged schema + validation.ast / validation.flow)
                  declines → `thinking` lines; tallies → result.ast_coverage
@@ -46,15 +48,53 @@ agent process (8 audit generators; each skill thread runs in a copy of its audit
 
 Only the spawned worker imports `tree_sitter`. The parent reads the file
 through the scanner (its size cap, decode and path confinement apply
-unchanged), ships the bytes, validates the reply at the boundary and builds a
-columnar `FileModel`; scopes and flow run in pure Python in the parent.
-`import shared.ast` is light: it loads neither `tree_sitter`, the validate
-stage, the audit runner nor the LLM client.
+unchanged) and ships the bytes. The worker answers with the file's ANSWER:
+its coverage facts and every owned family's candidate flows, built by the
+same code the library path runs in the parent (`get_model`, which ships the
+columnar skeleton and builds the `FileModel` and its analysis in the parent;
+the bench, the goldens and the tests use it). The parent validates every
+reply at the boundary, an answer field by field. `import shared.ast` is light:
+it loads neither `tree_sitter`, the validate stage, the audit runner nor the
+LLM client.
+
+### Parse prefetch
+
+A skill's file loop runs under a walk (`prefetch.walk`, through the CWE
+agent's `ast_walk`): the files it analyses, in order, and the families its
+rules ask about. Right before the head asks for a file's answer it calls
+`prefetch.advance(path)`, which sends the walk's next files to idle workers
+(`PREFETCH_AHEAD` positions ahead) when the consumer would ask for them and
+nothing holds them yet. Each such request is a **ticket**: a request already
+sent, its reply waiting in the worker's pipe. The key's flight leader (any
+skill thread of the audit) claims it and reads the reply instead of sending
+the request again, so a file reaches a worker once per audit in the common
+case, and the second skill to ask finds the answer stored. Right after the
+answer is in, `prefetch.refill()` lets the walk issue what its advance left
+for want of a slot, into the slot that ticket freed.
+
+* No thread and no future: everything runs on the consumer's own thread.
+* Tickets sit below the cache. They read only whether a key is stored or in
+  flight, store nothing and record nothing; what a ticket's request meets is
+  recorded when it is collected, on the collecting audit. So the cache
+  tallies, declines and coverage equal a synchronous run's, and prefetch
+  never evicts anything.
+* Tickets never take the last `PREFETCH_RESERVE` worker slot: a synchronous
+  request always finds one, and a pool of one worker never issues.
+* One request per key: a key is reserved in the audit's ticket index in the
+  same step that finds nothing holds it, before the file is read, so two
+  skills' walks never issue it twice; a flight leader that finds the key
+  reserved waits for the ticket (the issue does not wait on the worker) and
+  claims it.
+* A walk discards the tickets it issued and nobody claimed when it ends; the
+  audit's ticket index is closed (every ticket discarded, later issues
+  refused) when the audit is left and in the runner's skill-phase `finally`,
+  the cancel and deadline paths included.
 
 ## Ownership
 
-`owns(path)` returns a model, and the layer owns its families' check ids on
-that file, when:
+`owns_answer(path)` returns the file's answer (`owns(path)`, on the library
+path, its model), and the layer owns its families' check ids on that file,
+when:
 
 1. the file's language has a profile, and that profile owns the family;
 2. the worker parsed it within the caps with **zero ERROR nodes**;
@@ -109,7 +149,13 @@ next audit retries the file.
   or a profile builtin. Sanitiser and guard roles are matched on the generic
   concept words of an identifier; a few short ambiguous words reach a role
   only as an exact builtin key or inside a composition (`shell_quote`,
-  `host_allow`). The lexicons live in `shared/ast/roles/`, one home each.
+  `host_allow`). A few readings are structural: a generic HTTP verb is a
+  request sink only with HTTP-client evidence and never on a collection
+  receiver; a regex or data-store receiver runs no command; a container word
+  (`params`, `body`, …) is a request source only in request context; a
+  dominating validation call statement is a guard; and `<stem>sync` is a path
+  sink when `<stem>` is. The lexicons live in `shared/ast/roles/`, one home
+  each.
 * **The decision.** `decide(flow, rule, ctx)` is the only place a flow is
   judged:
   * `report` when an external origin of a role the family accepts reaches the
@@ -199,15 +245,18 @@ tallies and degrades in the conservative direction, never loops.
 | worker faults per audit | `CIRCUIT_BREAK_AFTER` 20 | `circuit_open` for the rest of the audit |
 | files a worker serves | `RECYCLE_AFTER` 2,000 | the worker is recycled, tallied `workers.recycled` |
 | worker resident high-water (Linux `/proc`) | `MAX_WORKER_RSS_MB` 48 MB | the worker is recycled after the request, tallied `workers.recycled` |
+| files a walk considers ahead of its cursor | `PREFETCH_AHEAD` 8 (2 × `MAX_WORKERS`) | the rest wait for the next advance |
+| worker slots tickets never take | `PREFETCH_RESERVE` 1 | an issue past `W − 1` outstanding tickets is refused; the file goes synchronous |
 
 Workers: `W = clamp(1, min(cpu_quota, (memory_limit − rss − caches) / 192 MB), 4)`,
 so the compose shape (one CPU per agent) runs one worker, shared FIFO by the
 agent's concurrent audits. The model cache is byte-budgeted (at most 128 MB
 and a quarter of the deployment memory limit, an analysis charged to its
 model), keyed by the file's real path, size, mtime, grammar pack, model
-schema, language and grammar entry point, single-flight, and shared across
-audits: the key
-makes a stale entry unreachable, so it is not cleared per audit.
+schema, language and grammar entry point (an answer's key adds the answer
+schema), single-flight, and shared across audits: the key makes a stale
+entry unreachable, so it is not cleared per audit. In production it holds
+answers, which weigh about a fourteenth of their models.
 
 ## Determinism
 
@@ -256,7 +305,12 @@ The consumer surface (`shared.ast`, `shared.ast.consume`,
 `shared.ast.context`):
 
 ```python
-owns(path) -> FileModel | None              # None: the regex body owns the file
+owns_answer(path) -> FileAnswer | None      # None: the regex body owns the file
+owns(path) -> FileModel | None              # the same decision on the library path (parent-built model)
+prefetch.walk(files, families)              # a skill's file loop: `with walk(...) as files:`
+prefetch.advance(path)                      # right before owns_answer(path): send the next files ahead
+prefetch.refill()                            # right after it: reuse the slot the collected ticket freed
+profile.owns_family(path, family) -> bool | None   # by extension, no parse: the one ownership predicate
 owns_lang(path) -> bool                      # a profile exists (no parse)
 model_needed(text, family) -> bool           # the prefilter: False = no sink of the family can exist
 roles.needed_families(text, families) -> frozenset[str]   # several families' prefilters, one glued view
@@ -276,12 +330,14 @@ A migrated check follows one shape:
    `flow_to_finding` extends, so both tiers emit one row shape.
 2. Per file: if `model_needed(text, family)` is false (`needed_families` when
    one skill asks several families of one text) the file is owned with no rows
-   when its profile owns the family (`owned_families`, by extension, no parse)
+   when its profile owns the family (`owns_family`, by extension, no parse)
    and regex-owned otherwise; else, when the profile owns the family,
-   `owns(path)` decides, and an owned file's `family_spans` maps every line of
-   each reported sink's span to its flow, recording the declines against that
-   file. The cwe agent keeps this decision in one head
-   (`cwe_agent/skills/_ast_head.py`), which every migrated check calls.
+   `prefetch.advance(path)`, `owns_answer(path)` and `prefetch.refill()` decide, and an owned
+   file's `family_spans` maps every line of each reported sink's span to its
+   flow, recording the declines against that file. The skill's file loop runs
+   under `prefetch.walk`. The cwe agent keeps this decision in one head
+   (`cwe_agent/skills/_ast_head.py`: `ast_walk`, `ast_answers`), which every
+   migrated check calls.
 3. In the line loop, call `emit_for_line` first: True on a span line (the AST
    owns it, the regex siblings stay silent there), and the row appended once,
    at the sink line. When `spans` is `None`, run the regex body unchanged.

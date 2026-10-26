@@ -56,8 +56,8 @@ from shared.tools.snippet import extract_snippet
 
 if TYPE_CHECKING:
     from shared.ast._records import Flow
+    from shared.ast.answer import FileFacts
     from shared.ast.context import AuditContext
-    from shared.ast.model import FileModel
 
 __all__ = [
     "COMMAND_PARAM",
@@ -274,14 +274,15 @@ def emit_for_line(
 
 
 def family_spans(
-    model: FileModel,
+    model: FileFacts,
     rule: FamilyRule,
     ctx: AuditContext,
     path: str | Path,
     *,
     server_ctx: bool = True,
 ) -> dict[int, Flow]:
-    """Every line of each reported ``rule.family`` sink's span in ``model`` -> its flow.
+    """Every line of each reported ``rule.family`` sink's span in ``model`` — a model, or a
+    worker-built answer (§4.1 item 3) — -> its flow.
     ``decide`` records each decline on ``ctx`` against ``path``, the consumer's file; the
     gate is handed the file's ``server_ctx``, or True in a profile that is never browser code
     (§8.5). The analysis' fact counts reach ``ctx``'s coverage once per file."""
@@ -303,7 +304,7 @@ def _reported(
     return [f for f in flows if decide(f, rule, ctx, path=path, server_ctx=server_ctx) == "report"]
 
 
-def _by_line(model: FileModel, flows: Sequence[Flow]) -> dict[int, Flow]:
+def _by_line(model: FileFacts, flows: Sequence[Flow]) -> dict[int, Flow]:
     """Each line of each flow's sink span -> the flow. A span is a byte span of the buffer the
     worker parsed (§4), so its lines are counted there, by ``\\n`` only (D21): the buffer is
     read once (``_parsed_buffer``), and only when a flow was reported. The flows come sorted by

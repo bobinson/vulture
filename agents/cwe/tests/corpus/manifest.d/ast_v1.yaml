@@ -291,3 +291,11 @@
 - {file: ast_v1/cwe_22_64.js, language: JavaScript, cwe: "22", expectation: positive, line: 11}
 - {file: ast_v1/cwe_22_65.ts, language: TypeScript, cwe: "22", expectation: positive, line: 10}
 - {file: ast_v1/cwe_22_66.js, language: JavaScript, cwe: "22", expectation: positive, line: 10}
+# (b) refined (A44 (1) (b), after the first acceptance measurement): a container
+# word among a parameter's inline type members, and cookie/headers parameters,
+# outside handler context; the same shapes inside it
+- {file: ast_v1/cwe_22_67_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_68.ts, language: TypeScript, cwe: "22", expectation: positive, line: 6}
+- {file: ast_v1/cwe_22_69_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_70.js, language: JavaScript, cwe: "22", expectation: positive, line: 9}
+- {file: ast_v1/cwe_918_25_clean.js, language: JavaScript, cwe: "918", expectation: negative}

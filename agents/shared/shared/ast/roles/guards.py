@@ -27,6 +27,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from shared.ast._nodes import is_kind, last_segment, member_object, object_of, preorder, union
+from shared.ast._validate import OTHER_LITERAL_CLASS
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import MAX_CHAIN
 from shared.ast.roles._words import NO_WORDS, glue, hits, invert, words
@@ -51,6 +52,7 @@ __all__ = [
     "MEMBERSHIP_KEYS",
     "NEGATION_OPERATORS",
     "NO_ROLES",
+    "PLACE_WORDS",
     "TRUST_WORDS",
     "VALIDATE_WORDS",
     "VALIDATION_VERBS",
@@ -131,13 +133,17 @@ CONTAINMENT_KEYS = frozenset({"relativeto"})
 CONTAINMENT_ROLES = frozenset({"path_contain"})
 # A44 (1) (d) (i): a CALL statement dominating the sink whose callee words carry one of these
 # validation verbs AND a role concept word of CHECKED_ROLE_WORDS, and which takes the flow's
-# variable, guards that role (``_guards``): `assertSandboxPath(p)`, `ensure_within_directory`.
+# variable, guards that role (``_guards``): `assertInsideRoot(p)`, `ensure_within_directory`.
 VALIDATION_VERBS = frozenset({"assert", "ensure", "validate", "verify", "check", "require", "guard"})
+# A44 (1) (d): the place words a path containment is about - of a containment check (i, below)
+# and, composed with a CONTAINED_WORDS word, of a containment-checked result (ii,
+# ``sanitizers``).
+PLACE_WORDS = frozenset({"path", "dir", "root"})
 # Each concept's guard role: the one role of COVERING_GUARDS that covers its family alone
 # (path -> path_contain; request -> host_allow; command -> shell_quote, as allowlist and
 # validate also cover path), so a check of one role never declines another family's flow.
 CHECKED_ROLE_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
-    "path_contain": frozenset({"path", "dir", "root", "within", "inside", "sandbox", "contain"}),
+    "path_contain": PLACE_WORDS | {"within", "inside", "sandbox", "contain"},
     "host_allow": frozenset({"host", "url", "domain", "allow"}),
     "shell_quote": frozenset({"command", "arg", "shell"}),
 })
@@ -183,6 +189,8 @@ class RoleIndex:
 
 
 GUARD_INDEX = RoleIndex(invert(GUARD_WORDS), invert(GUARD_KEYS))
+# A44 (1) (d) (i): each role concept word -> the roles it names (``checked_roles``).
+_CHECKED_INDEX = invert(CHECKED_ROLE_WORDS)
 # (a)'s operator form: the M2 tokens that carry the allowlist role (`in`, `not in`).
 _MEMBERSHIP_OPERATORS = frozenset(
     op for op, found in GUARD_OPERATORS.items() if "allowlist" in found
@@ -338,8 +346,8 @@ def _read_unary(model: FileModel, unary: int, parts: _Parts, _symbol_of: SymbolO
 
 
 def _read_literal(model: FileModel, literal: int, parts: _Parts, _symbol_of: SymbolOf) -> None:
-    # R3's literal class `other` is what a regex ships as (§6.2).
-    parts.regex |= model.literal(literal).kind == "other"
+    # R3's catch-all literal class is what a regex ships as (§6.2).
+    parts.regex |= model.literal(literal).kind == OTHER_LITERAL_CLASS
 
 
 # A TEST node's kind -> what it adds to the parts.
@@ -471,7 +479,7 @@ def checked_roles(ident: str) -> frozenset[str]:
     found = words(ident)
     if VALIDATION_VERBS.isdisjoint(found):
         return NO_ROLES
-    return held((role, not concept.isdisjoint(found)) for role, concept in CHECKED_ROLE_WORDS.items())
+    return union((_CHECKED_INDEX.get(word, NO_ROLES) for word in found), NO_ROLES)
 
 
 def guard_roles(model: FileModel, test: int, *, symbol_of: SymbolOf = None) -> frozenset[str]:

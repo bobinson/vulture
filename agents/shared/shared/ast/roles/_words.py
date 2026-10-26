@@ -11,8 +11,9 @@ identifier splits lands in the regex rules and the AST tier's word lexicons at o
   word-set lexicon are matched by (``isTrustedHost`` -> ``is``, ``trusted``, ``host``), at
   most ``MAX_WORDS`` of them: the cap bounds the probes a role test makes (§8.5).
 * ``hits`` and ``word_set``: the two mode-(c) operations over several identifiers — whether
-  any of their words is in a lexicon, and all their words as one set — so the role predicates
-  and the flow modules spell each once.
+  any of their words is in a lexicon, and all their words as one set — and ``named_by``, one
+  identifier named by a lexicon's word or by its glued form: the role predicates and the flow
+  modules spell each once.
 
 This module imports only ``limits`` (and the standard library): ``model`` loads it, and
 importing ``shared.ast`` must stay a leaf (D1).
@@ -28,7 +29,7 @@ from types import MappingProxyType
 
 from shared.ast.limits import MAX_WORDS, WORDS_MEMO
 
-__all__ = ["NO_WORDS", "glue", "hits", "invert", "word_count", "word_set", "words"]
+__all__ = ["NO_WORDS", "glue", "hits", "invert", "named_by", "word_count", "word_set", "words"]
 
 # 0101's identifier splitter: a capitalised or lower-case run, or an ACRONYM run that stops
 # before the capital starting the next word (`HTTPServer` -> HTTP, Server); digits stay with
@@ -58,6 +59,12 @@ def words(ident: str) -> tuple[str, ...]:
 def hits(names: Iterable[str], lexicon: frozenset[str]) -> bool:
     """Mode (c): some word of some identifier of ``names`` is in ``lexicon``."""
     return any(not lexicon.isdisjoint(words(name)) for name in names)
+
+
+def named_by(name: str, lexicon: frozenset[str]) -> bool:
+    """``name`` carries a ``lexicon`` concept: one of its words, or its glued form
+    (``searchParams`` -> ``searchparams``, ``RegExp`` -> ``regexp``)."""
+    return hits((name,), lexicon) or glue(name) in lexicon
 
 
 def word_set(names: Iterable[str]) -> frozenset[str]:

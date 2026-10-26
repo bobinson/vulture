@@ -391,15 +391,16 @@ def test_family_spans_hands_the_gate_server_ctx_and_each_flows_glued_key(
 ) -> None:
     """Each flow carries its sink's glued callee key (``Flow.sink_key``) and ``family_spans``
     hands the gate the file's ``server_ctx``: in server code every request sink is a span;
-    outside it the gate double refuses ``fetch``, ``this.http.get``, ``map.get``,
-    ``window.open`` and ``client.do`` (``decide`` returns ``none``: no span, no decline),
-    while ``urlOpen`` (``urlopen``) and ``axios`` stay. ``httpGet`` (line 9) is no request
-    sink at all (the frozen lexicons)."""
+    outside it the gate double refuses ``fetch``, ``this.http.get`` and ``client.do``
+    (``decide`` returns ``none``: no span, no decline), while ``urlOpen`` (``urlopen``) and
+    ``axios`` stay. ``httpGet`` (line 9) is no request sink at all (the frozen lexicons), nor
+    are ``map.get`` and ``window.open`` (lines 5, 6): a generic verb on a receiver with no
+    HTTP-client evidence and no URL-shaped argument (A44 (1) (a))."""
     sink = _written_sink(tmp_path, _BROWSER_SINKS, "request", "fetch")
     rule = _rule("request", gate=_glued_key_gate)
     observed = {server_ctx: _gated(sink, rule, server_ctx) for server_ctx in (True, False)}
     assert observed == {
-        True: ({3: "fetch", 4: "get", 5: "get", 6: "open", 7: "do", 8: "urlopen", 10: "axios"}, 0),
+        True: ({3: "fetch", 4: "get", 7: "do", 8: "urlopen", 10: "axios"}, 0),
         False: ({8: "urlopen", 10: "axios"}, 0),
     }
 

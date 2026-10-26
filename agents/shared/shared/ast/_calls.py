@@ -30,7 +30,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from itertools import chain, filterfalse, islice
+from functools import partial
+from itertools import chain, filterfalse
 from operator import attrgetter
 from types import MappingProxyType
 from typing import TYPE_CHECKING, NamedTuple
@@ -46,6 +47,7 @@ from shared.ast._nodes import (
     of_kind,
     parsed_buffer,
 )
+from shared.ast._validate import OTHER_LITERAL_CLASS
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import MAX_ARG_NAMES, MAX_CHAIN
 from shared.ast.profile import PROFILES
@@ -64,8 +66,10 @@ from shared.ast.roles import (
     FLAG_LITERALS,
     GENERIC_REQUEST_VERBS,
     MERGE_WORDS,
+    NO_WORDS,
     OUTPUT_PARAM_WORDS,
     PATH_KWARGS,
+    PATH_SYNC_TWINS,
     PROCESS_WORDS,
     REGEX_WORDS,
     REQUEST_API_WORDS,
@@ -77,24 +81,25 @@ from shared.ast.roles import (
     SHELL_PREFIXES,
     SINK_KEYS,
     SINK_WORDS,
-    SYNC_SUFFIX,
     TWO_PATH_SINKS,
     URL_KWARGS,
     URL_SHAPE_WORDS,
     WRITE_SINKS,
-    callee_identifier,
+    callee_text,
     chain_names,
     command_lead,
     glue,
     hits,
     identifier_text,
     last_identifier,
+    named_by,
     path_sink_key,
     receiver,
+    sync_twin,
     word_set,
     words,
 )
-from shared.ast.scope import IMPORT_CALLS
+from shared.ast.scope import binds_whole_module, import_call
 
 if TYPE_CHECKING:
     from shared.ast.model import FileModel
@@ -114,8 +119,6 @@ _REFERENCES = frozenset({"&", "*"})
 # R-L: the template-shell callee (`$\`...\``), tested on the raw NAME: gluing would erase it.
 _TEMPLATE_SHELL = "$"
 _STRONG_PREFIXES = tuple(sorted(COMMAND_STRONG))
-# R3's literal class of a regex literal (A44 (1) (c): a regex receiver runs no command).
-_REGEX_LITERAL = "other"
 # A44 (1) (a): a URL-shaped argument. A LITERAL or TEMPLATE carrying a scheme separator in its
 # head (a scheme is short: `https://`, `${proto}://`), or the last identifier of a
 # NAME / MEMBER (else of its first operand: `&q.url`, `BASE_URL + p`) with a URL word.
@@ -144,7 +147,7 @@ _SINK_SIDE = frozenset().union(
     REQUEST_TERMINAL_WORDS,
     ("",),
     (key[i:] for key in BUILTIN_KEYS for i in range(1, len(key))),
-    (key + SYNC_SUFFIX for key in SINK_WORDS["path"]),  # A44 (1) (e): ``path_sink_key``'s twins
+    PATH_SYNC_TWINS,  # A44 (1) (e): ``path_sink_key``'s twins
 )
 
 
@@ -164,10 +167,9 @@ def _first_child(model: FileModel, node: int) -> int:
     return kids[0] if kids else -1
 
 
-def _regex_name(name: str) -> bool:
-    """A44 (1) (c): an identifier carrying a ``REGEX_WORDS`` concept, by a word or glued
-    (``RegExp`` -> ``regexp``)."""
-    return glue(name) in REGEX_WORDS or hits((name,), REGEX_WORDS)
+# A44 (1) (c): an identifier carrying a ``REGEX_WORDS`` concept, by a word or glued (``RegExp``
+# -> ``regexp``).
+_regex_name = partial(named_by, lexicon=REGEX_WORDS)
 
 
 def _leading_name(model: FileModel, nodes: Sequence[int]) -> int:
@@ -191,7 +193,7 @@ def call_writes(model: FileModel, call: int) -> list[int]:
     output parameters (A28 (7): only in a profile with ``reference_args``, Go and Rust). The
     scope pass is still building when it asks, so the callee is read by the identifier the
     model ships (no R-H symbol)."""
-    key = glue(identifier_text(model, callee_identifier(model, call)))
+    key = glue(callee_text(model, call))
     if key in MERGE_WORDS:
         return _merged(model, call)
     if key in OUTPUT_PARAM_WORDS and PROFILES[model.language].reference_args:
@@ -642,40 +644,24 @@ class Calls:
     # ── HTTP-client evidence (A44 (1) (a)) ──
 
     def _client_like(self, site: int, key: str) -> bool:
-        """A receiver that is no collection construction, and for a generic verb HTTP-client
-        evidence (``_client_evidence``)."""
-        if self._collection(site):
+        """A receiver that is no collection construction (one hop: ``_collection_value``), and
+        for a generic verb HTTP-client evidence (``_client_evidence``): an in-memory map, set
+        or literal is no HTTP client."""
+        if self._receiver_is(site, self._collection_value):
             return False
         return key not in GENERIC_REQUEST_VERBS or self._client_evidence(site, key)
 
     def _client_evidence(self, site: int, key: str) -> bool:
         """No receiver (a module's own function counts as none), a request API concept in the
         receiver chain, or a URL-shaped argument."""
-        return self._free_call(site) or self._api_chain(site) or self._url_shaped(site, key)
+        api = self._receiver_meets
+        return self._free_call(site) or api(site, REQUEST_API_WORDS) or self._url_shaped(site, key)
 
     def _free_call(self, site: int) -> bool:
-        """A bare call, or one on a NAME a whole-module import binds (``import requests``)."""
+        """A bare call, or one on a NAME a whole-module import binds (``import requests``:
+        ``scope.binds_whole_module``)."""
         holder = self.receiver(site)
-        return holder < 0 or any(map(self._whole_module, self._arg_defs(holder)))
-
-    def _whole_module(self, d: Def) -> bool:
-        """An import Def whose bound name sits under its IMPORT's SOURCE (Python ``import
-        m`` / ``import m as n``), not a member it names (``from m import x``, a JS
-        specifier)."""
-        if d.kind != "import":
-            return False
-        return any(self._m.field(n) is Field.SOURCE for n in self._up_to(d.node, d.value))
-
-    def _up_to(self, node: int, top: int | None) -> Iterator[int]:
-        """``node`` and its ancestors below ``top`` (at most ``MAX_CHAIN``)."""
-        for current in islice(chain((node,), ancestors(self._m, node)), MAX_CHAIN):
-            if current == top:
-                return
-            yield current
-
-    def _api_chain(self, site: int) -> bool:
-        holder = self.receiver(site)
-        return holder >= 0 and not self.chain_words(holder).isdisjoint(REQUEST_API_WORDS)
+        return holder < 0 or any(binds_whole_module(self._m, d) for d in self._arg_defs(holder))
 
     def _url_shaped(self, site: int, key: str) -> bool:
         """A KWARG or PAIR named like a URL, or a positional URL argument that is URL-shaped
@@ -710,19 +696,13 @@ class Calls:
             self._parsed = parsed_buffer(self._m.nl_lines.text)
         return self._parsed
 
-    def _collection(self, site: int) -> bool:
-        """The receiver, or a reaching Def of a NAME receiver, is a collection construction
-        (``_collection_value``): an in-memory map, set or literal is no HTTP client."""
-        holder = self.receiver(site)
-        return holder >= 0 and self._one_hop(holder, self._collection_value)
-
     def _collection_value(self, node: int) -> bool:
         """An OBJECT or ARRAY literal, or a CALL whose callee's last word is a
         ``COLLECTION_WORDS`` concept (``new Map()``, ``new WeakSet()``, ``dict()``)."""
         kind = self._m.kind(node)
         if kind is not Kind.CALL:
             return kind in _LITERAL_COLLECTIONS
-        found = words(identifier_text(self._m, callee_identifier(self._m, node)))
+        found = words(callee_text(self._m, node))
         return bool(found) and found[-1] in COLLECTION_WORDS
 
     def _url_positional(self, site: int, key: str) -> tuple[int, ...]:
@@ -735,8 +715,7 @@ class Calls:
 
     def _carrier(self, site: int, key: str) -> bool:
         """R-V: a request terminal on a receiver whose chain words meet the carriers."""
-        holder = self.receiver(site)
-        return key in REQUEST_TERMINAL_WORDS and holder >= 0 and self._carrier_chain(holder)
+        return key in REQUEST_TERMINAL_WORDS and self._receiver_meets(site, REQUEST_CARRIER_WORDS)
 
     def _carried(self, site: int, key: str) -> tuple[int, ...]:
         """R-V's receiver, and for a no-positional key every positional argument that is a
@@ -761,6 +740,23 @@ class Calls:
     def _carrier_chain(self, node: int) -> bool:
         return not self.chain_words(node).isdisjoint(REQUEST_CARRIER_WORDS)
 
+    # ── the receiver's evidence (R-V, A44 (1) (a), (c)) ──
+
+    def _receiver_words(self, site: int) -> frozenset[str]:
+        """The receiver's chain words (``chain_words``, memoised); none for a bare call."""
+        holder = self.receiver(site)
+        return self.chain_words(holder) if holder >= 0 else NO_WORDS
+
+    def _receiver_meets(self, site: int, lexicon: frozenset[str]) -> bool:
+        """The receiver's chain words meet ``lexicon``: never for a bare call."""
+        return not self._receiver_words(site).isdisjoint(lexicon)
+
+    def _receiver_is(self, site: int, test: Callable[[int], bool]) -> bool:
+        """``test`` holds of the receiver, or of a reaching Def's value of a NAME receiver
+        (``_one_hop``): never for a bare call."""
+        holder = self.receiver(site)
+        return holder >= 0 and self._one_hop(holder, test)
+
     def _url_pairs(self, site: int) -> Iterator[int]:
         """W10: the values of the OBJECT-literal PAIRs named like a URL, in any argument."""
         objects = of_kind(self._m, self.args(site), Kind.OBJECT)
@@ -777,7 +773,7 @@ class Calls:
         (A44 (1) (c)), R-N (``_strong_sink``) or a weak key with a strengthener."""
         if self._template_shell(site):
             return True
-        return not self._not_a_process(site) and self._keyed_command(site)
+        return self._keyed_command(site) and not self._not_a_process(site)
 
     def _keyed_command(self, site: int) -> bool:
         return self._strong_sink(site) or (self.key(site) in COMMAND_WEAK and self._strengthened(site))
@@ -793,17 +789,15 @@ class Calls:
     def _single_word(self, site: int) -> bool:
         """An exact ``COMMAND_STRONG`` key (``checkoutput``) or its synchronous twin (``execsync``,
         (e)'s suffix reading), or an identifier of one word (``execa``)."""
-        exact = self.key(site).removesuffix(SYNC_SUFFIX) in COMMAND_STRONG
+        exact = bool(sync_twin(self.key(site), COMMAND_STRONG))
         return exact or len(words(self.ident(site))) <= 1
 
     def _process_evidence(self, site: int) -> bool:
         """A44 (1) (c): a ``PROCESS_WORDS`` concept in the callee's own words, its receiver
         chain or the module its import binding names (``import { execSync } from
         "child_process"``)."""
-        holder = self.receiver(site)
-        chained = self.chain_words(holder) if holder >= 0 else ()
-        found = chain(words(self.ident(site)), chained, self._module_words(self.callee(site)))
-        return not PROCESS_WORDS.isdisjoint(found)
+        own, module = words(self.ident(site)), self._module_words(self.callee(site))
+        return not PROCESS_WORDS.isdisjoint(chain(own, self._receiver_words(site), module))
 
     def _module_words(self, node: int) -> Iterator[str]:
         """The words of the module text of each import Def ``node`` resolves to (a MEMBER by its
@@ -821,29 +815,26 @@ class Calls:
         return self._required_words(d.value)
 
     def _required_words(self, value: int) -> tuple[str, ...]:
-        """W6's import call (``scope.IMPORT_CALLS``): the words of its module literal's head
+        """W6's import call (``scope.import_call``): the words of its module literal's head
         (``_literal_head``); none for any other value."""
-        callee = self._m.callee(value) if is_kind(self._m, value, Kind.CALL) else -1
-        if callee < 0 or self._m.ident(callee) not in IMPORT_CALLS:
+        if not import_call(self._m, value):
             return ()
-        module = _first_child(self._m, first(self._m, value, Field.ARGS))
+        module = next(iter(self._m.args(value)), -1)
         return words(self._literal_head(module)) if is_kind(self._m, module, Kind.LITERAL) else ()
 
     def _not_a_process(self, site: int) -> bool:
         """A44 (1) (c): the receiver is a regex — a regex literal, or a NAME one of whose
         reaching Defs binds one or a regex construction — or its chain words carry a
         data-store concept (``db.exec(sql)``)."""
-        holder = self.receiver(site)
-        if holder < 0:
-            return False
-        return not self.chain_words(holder).isdisjoint(DATA_STORE_WORDS) or self._one_hop(holder, self._regex)
+        return self._receiver_meets(site, DATA_STORE_WORDS) or self._receiver_is(site, self._regex)
 
     def _regex(self, node: int) -> bool:
-        """A regex literal (R3's literal class ``other``), or a CALL whose callee chain carries
-        a ``REGEX_WORDS`` concept, by a word or glued (``new RegExp(...)``, ``re.compile``)."""
+        """A regex literal (R3's catch-all literal class, ``OTHER_LITERAL_CLASS``), or a CALL
+        whose callee chain carries a ``REGEX_WORDS`` concept, by a word or glued (``new
+        RegExp(...)``, ``re.compile``)."""
         kind = self._m.kind(node)
         if kind is Kind.LITERAL:
-            return self._m.literal(node).kind == _REGEX_LITERAL
+            return self._m.literal(node).kind == OTHER_LITERAL_CLASS
         return kind is Kind.CALL and any(map(_regex_name, chain_names(self._m, node)))
 
     def _command_word_args(self, site: int) -> tuple[int, ...]:
@@ -866,9 +857,7 @@ class Calls:
 
     def _strengthened(self, site: int) -> bool:
         """A KWARG ``shell`` literally true, or a receiver chain naming a command receiver."""
-        holder = self.receiver(site)
-        named = holder >= 0 and not self.chain_words(holder).isdisjoint(COMMAND_RECEIVER_WORDS)
-        return named or self._shell_true(site)
+        return self._receiver_meets(site, COMMAND_RECEIVER_WORDS) or self._shell_true(site)
 
     def _shell_true(self, site: int) -> bool:
         value = self.kwargs(site).get(SHELL_KWARG, -1)

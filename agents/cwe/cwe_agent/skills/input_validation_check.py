@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, NamedTuple
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
-from cwe_agent.skills._ast_head import AstAnswer, ast_spans, claim, regex_row
-from shared.ast.consume import FamilyRule, rule_row
+from cwe_agent.skills._ast_head import AstAnswer, ast_spans, ast_walk, claim, regex_row
+from shared.ast.consume import FamilyRule
 from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
     is_generated_file,
@@ -347,6 +347,11 @@ class _Rule(NamedTuple):
     title: str
     description: str
     recommendation: str
+
+    @property
+    def cwe_id(self) -> str:
+        """The catalog id ``regex_row`` enriches the row by (``_ast_head.CatalogRule``)."""
+        return self.cwe
 
 
 # ── CWE-776: recursive entity references (XML entity expansion) ──
@@ -803,10 +808,8 @@ def _emit_rule(
     rule: _Rule, ctx_path: Path, line_num: int, lines: tuple[str, ...],
     findings: list[dict],
 ) -> None:
-    """Append one enriched finding for ``rule``: its identity row (``rule_row``, D19)."""
-    description = f"{rule.description} at line {line_num}"
-    row = rule_row(rule, description, file_path=ctx_path, line=line_num, lines=lines)
-    findings.append(enrich_finding(row, rule.cwe))
+    """Append one enriched finding for ``rule``: a regex body's row (``regex_row``, D19)."""
+    findings.append(regex_row(rule, f"{rule.description} at line {line_num}", ctx_path, line_num, lines))
 
 
 def check_input_validation(source_path: str) -> dict:
@@ -820,8 +823,8 @@ def check_input_validation(source_path: str) -> dict:
     """
     findings: list[dict] = []
 
-    for file_path in scan_code_files(source_path):
-        if not _skip_file(file_path):
+    with ast_walk(scan_code_files(source_path), _skip_file, (_RULE_22,)) as files:
+        for file_path in files:
             _analyze_file(file_path, findings)
 
     return {"findings": findings}

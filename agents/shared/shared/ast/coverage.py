@@ -42,9 +42,9 @@ from shared.ast._render import relative, safe_relative
 from shared.ast.limits import MAX_FALLBACK_PATHS
 
 if TYPE_CHECKING:
+    from shared.ast.answer import FileFacts
     from shared.ast.context import Breaker
     from shared.ast.declines import DeclineLedger
-    from shared.ast.model import FileModel
 
 __all__ = [
     "ARGS_CAPPED",
@@ -185,8 +185,8 @@ class Coverage:
         with self._lock:
             self._fallback.setdefault(reason, set()).add(key)
 
-    def record_model(self, path: _PathLike, model: FileModel) -> None:
-        """The audit was served ``path``'s model: its grammar stamp, its ``unmapped`` kinds and
+    def record_model(self, path: _PathLike, model: FileFacts) -> None:
+        """The audit was served ``path``'s model or answer: its grammar stamp, its ``unmapped`` kinds and
         its cap tallies, once per path (A31 (8))."""
         key = _key(path)
         with self._lock:
@@ -195,6 +195,13 @@ class Coverage:
             self._grammars.setdefault(model.language, set()).add(model.grammar)
             self._unmapped.setdefault(model.language, Counter()).update(model.unmapped)
             self._tallies.update(model.tallies)
+
+    def served(self, path: _PathLike) -> bool:
+        """Whether the audit was served ``path``'s model or answer (``record_model``): the
+        prefetch issues nothing for such a path (``cache.issue_ahead``)."""
+        key = _key(path)
+        with self._lock:
+            return key in self._modelled
 
     def record_analysis(self, path: _PathLike, tallies: Mapping[str, int]) -> None:
         """A consumer read ``path``'s flow analysis: its per-file fact counts

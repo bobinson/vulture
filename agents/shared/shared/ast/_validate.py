@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import operator
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from functools import partial
 from itertools import compress, repeat
+from types import MappingProxyType
 from typing import Any, TypeGuard
 
 from shared.ast import MODEL_SCHEMA
@@ -41,13 +43,22 @@ __all__ = [
     "LIT_VALUE",
     "MODULE_PATH_SEPARATORS",
     "OPERATOR_TOKENS",
+    "OTHER_LITERAL_CLASS",
     "SHELL_INTERPRETERS",
     "UNMAPPED_TYPE",
     "ModelError",
     "admissible",
+    "counts_ok",
+    "exact_int",
+    "frame_head",
     "prefix_of",
+    "request_binding",
+    "require",
+    "require_all",
     "shell_word",
+    "spelled",
     "stamp_prefix",
+    "unmapped_ok",
     "validate_model",
     "validate_reply",
 ]
@@ -79,7 +90,7 @@ OPERATOR_TOKENS = frozenset({
 # W1: the keyword an OTHER declaration carries, the input of the scope rules.
 DECLARATION_KEYWORDS = frozenset({"let", "const", "var"})
 # R3: a literal's class, read from the words of its grammar type (first match wins);
-# a type that meets none is `other` (a regex, Go `iota`).
+# a type that meets none is ``OTHER_LITERAL_CLASS``.
 LITERAL_CLASS_WORDS: tuple[tuple[str, frozenset[str]], ...] = (
     ("null", frozenset({"null", "none", "nil", "undefined"})),
     ("bool", frozenset({"true", "false", "boolean"})),
@@ -87,8 +98,12 @@ LITERAL_CLASS_WORDS: tuple[tuple[str, frozenset[str]], ...] = (
     ("char", frozenset({"char", "character", "rune"})),
     ("number", frozenset({"number", "integer", "int", "float", "floating", "imaginary"})),
 )
+# R3's catch-all class: a regex literal (what §8.5 (iii) and A44 (1) (c) read a regex by) or
+# any other type that meets no class word (Go `iota`). A `regex` class of its own changes the
+# skeleton, so it waits for the next MODEL_SCHEMA bump.
+OTHER_LITERAL_CLASS = "other"
 # R3's class vocabulary: what a ``lit`` entry may name (and ``model`` interns).
-LITERAL_CLASSES = frozenset({cls for cls, _ in LITERAL_CLASS_WORDS} | {"other"})
+LITERAL_CLASSES = frozenset({cls for cls, _ in LITERAL_CLASS_WORDS} | {OTHER_LITERAL_CLASS})
 # M4: the containers whose string LITERAL children may carry a flag or interpreter text.
 LIST_KINDS = frozenset({Kind.ARGS, Kind.ARRAY})
 
@@ -96,6 +111,13 @@ LIST_KINDS = frozenset({Kind.ARGS, Kind.ARRAY})
 def admissible(pattern: re.Pattern[str], value: object) -> bool:
     """``value`` is a string ``pattern`` matches whole (a trailing newline never matches)."""
     return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def spelled(names: Iterable[str]) -> Mapping[str, str]:
+    """A closed vocabulary as name -> its one string object: a lookup both admits a wire value
+    and hands back the shared spelling, so what is built from a document keeps no copy of a
+    vocabulary word (``model``'s literal classes, ``answer``'s vocabularies)."""
+    return MappingProxyType({name: name for name in names})
 
 
 def shell_word(value: str) -> str | None:
@@ -134,8 +156,8 @@ def validate_model(doc: bytes | str | Mapping[str, Any]) -> _Doc:
     """
     raw = _decoded(doc)
     n = _columns(raw)
-    _require_all(_head_checks(raw, n), "document head")
-    _require_all(_tree_checks(raw, n), "tree columns")
+    require_all(_head_checks(raw, n), "document head")
+    require_all(_tree_checks(raw, n), "tree columns")
     texts = _keyed(raw, "text", n, _texts_ok, _text_ok)
     return {**raw, "text": texts, "lit": _keyed(raw, "lit", n, _lits_ok, _lit_ok)}
 
@@ -157,32 +179,44 @@ def validate_reply(doc: Mapping[str, Any], profile: LanguageProfile, grammar: st
     language parsed with its entry point ``grammar``, over exactly the shipped ``data`` — its
     ``size`` is ``len(data)`` and no row lies past the last ``\\n`` of ``data``."""
     valid = validate_model(doc)
-    _require_all({
-        "language": valid["language"] == profile.language,
-        "grammar": valid["grammar"].startswith(stamp_prefix(profile.grammar_module, grammar)),
-        "size": valid["size"] == len(data),
-        "rows": max(valid["sl"]) <= data.count(b"\n"),
-    }, "reply binding")
+    rows = max(valid["sl"]) <= data.count(b"\n")
+    require_all({**request_binding(valid, profile, grammar, data), "rows": rows}, "reply binding")
     return valid
 
 
-def _require(ok: bool, reason: str) -> None:
+def request_binding(
+    doc: Mapping[str, Any], profile: LanguageProfile, grammar: str, data: bytes
+) -> dict[str, bool]:
+    """The checks that bind a worker's reply — a skeleton (D3) or an answer (D3', §4.1) — to
+    the request it answers (§11 T10): ``profile``'s language, a stamp of its entry point
+    ``grammar``, and exactly the shipped ``data``'s size."""
+    stamp, prefix = doc["grammar"], stamp_prefix(profile.grammar_module, grammar)
+    return {
+        "language": doc["language"] == profile.language,
+        "grammar": admissible(_GRAMMAR, stamp) and stamp.startswith(prefix),
+        "size": exact_int(doc["size"], len(data), len(data)),
+    }
+
+
+def require(ok: bool, reason: str) -> None:
+    """D3's one refusal: ``ModelError(reason)`` unless ``ok``."""
     if not ok:
         raise ModelError(reason)
 
 
-def _require_all(checks: dict[str, bool], what: str) -> None:
+def require_all(checks: dict[str, bool], what: str) -> None:
+    """``require`` over named ``checks``: the refusal names every check of ``what`` that failed."""
     failed = [name for name, ok in checks.items() if not ok]
-    _require(not failed, f"{what}: {failed}")
+    require(not failed, f"{what}: {failed}")
 
 
 def _decoded(doc: bytes | str | Mapping[str, Any]) -> _Doc:
     raw = dict(doc) if isinstance(doc, Mapping) else decode_json(doc)
-    _require(isinstance(raw, dict) and _REQUIRED <= raw.keys() <= _KEYS, "not a model document")
+    require(isinstance(raw, dict) and _REQUIRED <= raw.keys() <= _KEYS, "not a model document")
     return raw
 
 
-def _int_in(value: object, low: int, high: int) -> bool:
+def exact_int(value: object, low: int, high: int) -> bool:
     """An exact ``int`` (never a ``bool``) within ``[low, high]``."""
     return type(value) is int and low <= value <= high
 
@@ -194,24 +228,32 @@ def _is_int_list(value: object) -> bool:
 def _columns(raw: _Doc) -> int:
     """The node count: six int arrays of one length ``n``, ``1 <= n <= MAX_NODES``."""
     columns = [raw[name] for name in COLUMNS]
-    _require(all(map(_is_int_list, columns)), "a column is not a list of ints")
+    require(all(map(_is_int_list, columns)), "a column is not a list of ints")
     n = len(columns[0])
-    _require(1 <= n <= MAX_NODES and {len(c) for c in columns} == {n}, "bad column lengths")
+    require(1 <= n <= MAX_NODES and {len(c) for c in columns} == {n}, "bad column lengths")
     return n
 
 
 def _head_checks(raw: _Doc, n: int) -> dict[str, bool]:
     return {
-        "schema": _int_in(raw["schema"], MODEL_SCHEMA, MODEL_SCHEMA),
+        **frame_head(raw, MODEL_SCHEMA),
         "language": isinstance(raw["language"], str) and raw["language"] in PROFILES,
         "grammar": admissible(_GRAMMAR, raw["grammar"]),
         # The shipped bytes arrived in one frame; the UTF-8 encoding of a capped file's text may
         # exceed MAX_FILE_SIZE (each undecodable byte became a 3-byte U+FFFD).
-        "size": _int_in(raw["size"], 0, FRAME_CAP),
-        "error_nodes": _int_in(raw["error_nodes"], 0, MAX_NODES),
-        "node_count": _int_in(raw["node_count"], n, n),
-        "id": type(raw.get("id", 0)) is int,
-        "unmapped": _unmapped_ok(raw["unmapped"]),
+        "size": exact_int(raw["size"], 0, FRAME_CAP),
+        "node_count": exact_int(raw["node_count"], n, n),
+    }
+
+
+def frame_head(doc: Mapping[str, Any], schema: int) -> dict[str, bool]:
+    """The head checks every worker document shares, a skeleton (D3) or an answer (D3',
+    §4.1): its frame ``id``, its ``schema``, its ERROR-node count and its ``unmapped`` counts."""
+    return {
+        "id": type(doc.get("id", 0)) is int,
+        "schema": exact_int(doc["schema"], schema, schema),
+        "error_nodes": exact_int(doc["error_nodes"], 0, MAX_NODES),
+        "unmapped": unmapped_ok(doc["unmapped"]),
     }
 
 
@@ -241,23 +283,26 @@ def _tree_checks(raw: _Doc, n: int) -> dict[str, bool]:
     }
 
 
-def _unmapped_ok(unmapped: object) -> bool:
+def counts_ok(counts: object, name_ok: Callable[[Any], bool], low: int, high: int) -> bool:
+    """A name -> count map: each name ``name_ok``, each count an exact int in ``[low, high]``."""
+    return isinstance(counts, dict) and all(name_ok(k) and exact_int(v, low, high) for k, v in counts.items())
+
+
+def unmapped_ok(unmapped: object) -> bool:
     """Grammar type name -> a positive count."""
-    if not isinstance(unmapped, dict):
-        return False
-    return all(admissible(UNMAPPED_TYPE, k) and _int_in(v, 1, MAX_NODES) for k, v in unmapped.items())
+    return counts_ok(unmapped, partial(admissible, UNMAPPED_TYPE), 1, MAX_NODES)
 
 
 def _index(key: object, n: int) -> int:
     """A ``text``/``lit`` key (JSON's decimal string, or an int) as a node index."""
     index = int(key) if admissible(_INDEX, key) else key
-    _require(_int_in(index, 0, n - 1), f"bad node index {key!r}")
+    require(exact_int(index, 0, n - 1), f"bad node index {key!r}")
     return int(index)
 
 
 def _entries(raw: _Doc, name: str) -> dict[object, Any]:
     entries = raw.get(name, {})
-    _require(isinstance(entries, dict), f"{name} is not an object")
+    require(isinstance(entries, dict), f"{name} is not an object")
     return entries
 
 
@@ -338,7 +383,7 @@ def _checked(raw: _Doc, entries: dict[object, Any], n: int, name: str, entry_ok:
     out: dict[int, Any] = {}
     for key, value in entries.items():
         i = _index(key, n)
-        _require(entry_ok(raw, i, value), f"{name} of node {i} breaks its rule")
+        require(entry_ok(raw, i, value), f"{name} of node {i} breaks its rule")
         out[i] = value
     return out
 
@@ -383,7 +428,7 @@ def _lit_entry_ok(entry: object, size: int) -> bool:
     if not _lit_shaped(entry):
         return False
     cls, length, *value = entry
-    return _lit_class_ok(cls) and _int_in(length, 0, size) and _lit_value_ok(value)
+    return _lit_class_ok(cls) and exact_int(length, 0, size) and _lit_value_ok(value)
 
 
 def _lit_shaped(entry: object) -> TypeGuard[list[object]]:

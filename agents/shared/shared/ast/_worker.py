@@ -4,8 +4,10 @@ A42 (2)).
 The pool starts this module as ``[sys.executable, "-I", "-c", BOOTSTRAP]`` with a private
 cwd and env ``{PATH, LANG}`` (D2); ``main()`` sets its rlimits, then answers each request —
 a JSON header frame and a file-bytes frame — with ONE JSON frame: the capture skeleton of
-§6.2, or ``{"id", "error"}``. A per-file failure is an answer, never an exit; end of input
-ends the loop. Importing the module starts nothing.
+§6.2, the file's answer when the header carries ``"answer": true`` (§4.1 item 1, built by
+``shared.ast.answer``, which only that branch imports), or ``{"id", "error"}``. A per-file
+failure is an answer, never an exit; end of input ends the loop. Importing the module starts
+nothing.
 
 It imports, outside ``shared.ast``, exactly ``sys``, ``json``, ``resource``, ``importlib``,
 ``tree_sitter`` and the grammar modules (by name, through ``importlib``), plus ``ctypes``
@@ -82,6 +84,7 @@ from shared.ast._validate import (
     LITERAL_CLASS_WORDS,
     MODULE_PATH_SEPARATORS,
     OPERATOR_TOKENS,
+    OTHER_LITERAL_CLASS,
     UNMAPPED_TYPE,
     admissible,
     shell_word,
@@ -205,7 +208,22 @@ def _answer(request: dict[str, object], body: bytes) -> dict[str, object]:
         return {probe: _PROBES[probe]()}
     profile = _profile(request)
     grammar = _grammar(profile)
-    return skeleton(grammar.parser.parse(body), body, profile, grammar.table)
+    doc = skeleton(grammar.parser.parse(body), body, profile, grammar.table)
+    return _answered(doc, body, profile) if request.get("answer") is True else doc
+
+
+def _answered(doc: dict[str, object], body: bytes, profile: LanguageProfile) -> dict[str, object]:
+    """§4.1 item 1: a request whose header carries ``"answer": true`` gets the file's ANSWER —
+    its facts as the parent's library path builds them (``shared.ast.answer``) — in place of
+    the skeleton. The analysis modules are imported here, on the first answer, so importing
+    this module loads none of them (A16). A skeleton D3 would refuse is ``bad_model``, as the
+    parent's check of it would say."""
+    from shared.ast.answer import answer_of
+
+    try:
+        return answer_of(doc, body, profile)
+    except ModelError as exc:
+        raise _Refused("bad_model") from exc
 
 
 def _profile(request: dict[str, object]) -> LanguageProfile:
@@ -613,7 +631,7 @@ def _indexed(array: tree_sitter.Node | None, spec: Subscript) -> bool:
 def _literal_class(node_type: str) -> str:
     """R3: the literal class of a grammar type (derived once per kind id, by ``_Table``)."""
     words = frozenset(node_type.split("_"))
-    return next((cls for cls, keys in LITERAL_CLASS_WORDS if words & keys), "other")
+    return next((cls for cls, keys in LITERAL_CLASS_WORDS if words & keys), OTHER_LITERAL_CLASS)
 
 
 def _lit_value(cls: str, token: bytes) -> list[str]:

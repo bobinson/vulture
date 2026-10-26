@@ -30,6 +30,14 @@ queue FIFO for ``worker_count()`` slots; a slot starts its worker on first use a
 it after ``RECYCLE_AFTER`` files, after a request that left its resident high-water above
 ``MAX_WORKER_RSS_MB`` (A5, A43 (5): read from ``/proc`` on Linux, skipped elsewhere), or after
 any fault that leaves it untrusted.
+
+**Tickets (§4.1 item 5, A44 (2)).** A round trip is a ``send`` and a ``receive`` under one
+deadline; ``parse`` runs both on a slot it waits for. ``issue`` runs the send alone, on a slot
+taken without waiting, and returns its ``Ticket``: ``collect`` runs the receive later — its
+deadline armed then, its breaker fault and recycle recorded on the collecting audit, exactly as
+``parse`` records them — and ``discard`` drops the request, recording nothing and never waiting
+on a silent worker. Tickets never take the last ``PREFETCH_RESERVE`` slots (an exact count
+under a lock), so W = 1 never issues and a synchronous request always finds a slot.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ import json
 import logging
 import os
 import queue
+import select
 import shutil
 import signal
 import subprocess
@@ -46,6 +55,7 @@ import tempfile
 import threading
 import time
 import weakref
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +71,7 @@ from shared.ast.limits import (
     MAX_WORKERS,
     MODEL_CACHE_CAP,
     MODEL_CACHE_SHARE,
+    PREFETCH_RESERVE,
     RECYCLE_AFTER,
     WALL_TIMEOUT_S,
     WORKER_RESERVE,
@@ -73,6 +84,7 @@ __all__ = [
     "FallbackReason",
     "Limits",
     "ParseResult",
+    "Ticket",
     "WorkerPool",
     "get_pool",
     "model_cache_budget",
@@ -170,6 +182,15 @@ def _end_process(proc: subprocess.Popen[bytes], home: str) -> None:
         with suppress(OSError, AttributeError):
             stream.close()  # type: ignore[union-attr]
     shutil.rmtree(home, ignore_errors=True)
+
+
+def _header(request_id: int, language: str, grammar: str | None, answer: bool) -> bytes:
+    """A request's header frame (D3): its id and language, the grammar entry point when it is
+    not the language's own, and ``"answer": true`` when it asks for the file's answer (§4.1
+    item 1; a skeleton request's header is unchanged)."""
+    named = {} if grammar is None else {"grammar": grammar}
+    asked = {"answer": True} if answer else {}
+    return json.dumps({"id": request_id, "language": language, **named, **asked}).encode()
 
 
 def _decode(payload: bytes | bytearray, request_id: int) -> ParseResult:
@@ -289,23 +310,36 @@ class _Worker:
         the cumulative RLIMIT_CPU, not the file being parsed) and does not."""
         return result in BREAKER_FAULTS and self.proc.returncode != _XCPU_EXIT
 
-    def request(self, language: str, data: bytes, grammar: str | None = None) -> ParseResult:
-        """One file's round trip, bounded as a whole by ``WALL_TIMEOUT_S``. ``grammar`` is
-        the profile's entry point for the file (None: the language's own, §6.3)."""
+    def request(
+        self, language: str, data: bytes, grammar: str | None = None, answer: bool = False
+    ) -> ParseResult:
+        """One file's round trip, ``send`` then ``receive``, bounded as a whole by
+        ``WALL_TIMEOUT_S``. ``grammar`` is the profile's entry point for the file (None: the
+        language's own, §6.3); ``answer`` asks for the file's answer (§4.1 item 1)."""
+        deadline = _deadline()
+        return self.send(language, data, grammar, answer, deadline) or self.receive(deadline)
+
+    def send(
+        self, language: str, data: bytes, grammar: str | None, answer: bool, deadline: float
+    ) -> FallbackReason | None:
+        """Ship one request, numbered by ``served`` (D3): None, or the fault that ended the
+        worker on the way out (a full pipe past ``deadline``, a worker gone)."""
         self.served += 1
-        deadline = time.monotonic() + WALL_TIMEOUT_S
-        named = {} if grammar is None else {"grammar": grammar}
-        header = json.dumps({"id": self.served, "language": language, **named}).encode()
+        header = _header(self.served, language, grammar, answer)
         try:
-            payload = self._exchange(header, data, deadline)
+            write_frame(self.proc.stdin, header, deadline)  # type: ignore[arg-type]
+            write_frame(self.proc.stdin, data, deadline)  # type: ignore[arg-type]
+        except _TRANSPORT_CLASSES as exc:
+            return self._fail(_transport_reason(exc))
+        return None
+
+    def receive(self, deadline: float) -> ParseResult:
+        """The reply to the request ``send`` shipped last, read by ``deadline``."""
+        try:
+            payload = read_frame(self.proc.stdout, FRAME_CAP, deadline)  # type: ignore[arg-type]
         except _TRANSPORT_CLASSES as exc:
             return self._fail(_transport_reason(exc))
         return self._crashed(deadline) if payload is None else self._reply(payload)
-
-    def _exchange(self, header: bytes, data: bytes, deadline: float) -> bytes | bytearray | None:
-        write_frame(self.proc.stdin, header, deadline)  # type: ignore[arg-type]
-        write_frame(self.proc.stdin, data, deadline)  # type: ignore[arg-type]
-        return read_frame(self.proc.stdout, FRAME_CAP, deadline)  # type: ignore[arg-type]
 
     def _reply(self, payload: bytes | bytearray) -> ParseResult:
         result = _decode(payload, self.served)
@@ -327,6 +361,20 @@ class _Worker:
 # ── the pool (§4) ────────────────────────────────────────────────────────────
 
 
+def _deadline() -> float:
+    """One request's deadline from now: ``WALL_TIMEOUT_S`` (a whole round trip, or a ticket's
+    read armed at collect)."""
+    return time.monotonic() + WALL_TIMEOUT_S
+
+
+def _refused(size: int) -> FallbackReason | None:
+    """Why no request of ``size`` bytes may go to a worker now — the breaker is open, or the
+    request would not fit a frame — else None."""
+    if _breaker().tripped:
+        return "circuit_open"
+    return "ir_too_large" if size > FRAME_CAP else None
+
+
 def _note_recycled(worker: _Worker) -> None:
     """A worker still alive when it is spent served its ``RECYCLE_AFTER`` files (D2) or grew
     past ``MAX_WORKER_RSS_MB`` (A43 (5))."""
@@ -334,22 +382,72 @@ def _note_recycled(worker: _Worker) -> None:
         current().coverage.record_recycled()
 
 
+def _replied(worker: _Worker) -> bool:
+    """Whether ``worker``'s reply pipe holds bytes, or its end, now: one poll that never
+    waits."""
+    poller = select.poll()
+    poller.register(worker.proc.stdout.fileno(), select.POLLIN)  # type: ignore[union-attr]
+    return bool(poller.poll(0))
+
+
 class _Slot:
-    """One of the pool's ``worker_count`` places for a worker, used by one request at a time."""
+    """One of the pool's ``worker_count`` places for a worker, used by one request at a time:
+    a synchronous ``parse``, or a ticket from ``issue`` until it is collected or discarded."""
 
     def __init__(self, cmd: list[str]) -> None:
         self._cmd = cmd
         self._worker: _Worker | None = None
 
-    def parse(self, language: str, data: bytes, grammar: str | None = None) -> ParseResult:
+    def parse(
+        self, language: str, data: bytes, grammar: str | None = None, answer: bool = False
+    ) -> ParseResult:
         if _breaker().tripped:
             return "circuit_open"
         worker = self._ready()
         if worker is None:
             return "spawn_failed"
-        result = worker.request(language, data, grammar)
+        result = worker.request(language, data, grammar, answer)
         self._settle(worker, result)
         return result
+
+    def issue(
+        self, pool: WorkerPool, language: str, data: bytes, grammar: str | None, answer: bool
+    ) -> Ticket:
+        """``parse``'s send, now: the ticket of the request it shipped, or of the fault that
+        met it (no worker could be started; the worker was lost on the way out), which
+        ``collect`` answers."""
+        worker = self._ready()
+        if worker is None:
+            return Ticket(pool, self, None, "spawn_failed")
+        return Ticket(pool, self, worker, worker.send(language, data, grammar, answer, _deadline()))
+
+    def collect(self, ticket: Ticket) -> ParseResult:
+        """``parse``'s receive, for ``ticket``: ``circuit_open`` (the ticket discarded) once the
+        collecting audit's breaker tripped; else the reply, read by a deadline armed NOW, its
+        breaker fault and recycle recorded on the collecting audit (§4.1 item 5)."""
+        if _breaker().tripped:
+            self.discard(ticket)
+            return "circuit_open"
+        worker = ticket.worker
+        if worker is None:
+            return "spawn_failed"
+        result = ticket.fault or worker.receive(_deadline())
+        self._settle(worker, result)
+        return result
+
+    def discard(self, ticket: Ticket) -> None:
+        """Drop ``ticket``'s request, recording nothing (no breaker fault, no recycle): a reply
+        already readable is read and dropped; a worker with none yet is retired, never waited
+        on. A worker left spent is replaced."""
+        worker = ticket.pending
+        if worker is None:
+            return
+        if _replied(worker):
+            worker.receive(_deadline())
+        else:
+            worker.end()
+        if worker.spent:
+            self.retire()
 
     def retire(self) -> None:
         worker, self._worker = self._worker, None
@@ -374,8 +472,42 @@ class _Slot:
             self.retire()
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class Ticket:
+    """A request sent ahead (§4.1 item 5): its pool and the slot it holds until ``collect`` or
+    ``discard``; the worker that has it, None when none could be started; and the fault that
+    met it on the way out, which ``collect`` answers instead of a reply."""
+
+    pool: WorkerPool
+    slot: _Slot
+    worker: _Worker | None
+    fault: FallbackReason | None = None
+
+    @property
+    def pending(self) -> _Worker | None:
+        """The worker that owes this ticket a reply, or None."""
+        return self.worker if self.fault is None else None
+
+
+def _guarded[R](slot: _Slot, fallback: R, operation: Callable[..., R], *args: Any) -> R:
+    """``operation(*args)`` on ``slot``, never raising: an unexpected fault retires the slot's
+    worker and answers ``fallback`` (the pool's last guard)."""
+    try:
+        return operation(*args)
+    except Exception as exc:  # a pool operation never raises
+        logger.warning("ast worker pool: unexpected %s; file falls back", type(exc).__name__)
+        slot.retire()
+        return fallback
+
+
 class WorkerPool:
     """Isolated parse workers behind a FIFO queue of ``worker_count()`` slots (§4).
+
+    A request either waits for a free slot (``parse``) or is sent ahead on one taken without
+    waiting (``issue``), answered later by ``collect`` or dropped by ``discard`` (§4.1 item 5).
+    The outstanding tickets are counted exactly, under a lock, and never take the last
+    ``PREFETCH_RESERVE`` slots: a synchronous request always finds one within
+    ``WALL_TIMEOUT_S``, so a ticket holder never starves a request it waits on.
 
     ``cmd`` replaces the worker command (tests inject hook workers); every other part of the
     spawn — private cwd, env, pipes, stderr — is the same for any command.
@@ -387,24 +519,61 @@ class WorkerPool:
         self._free: queue.Queue[_Slot] = queue.Queue()
         for slot in self._slots:
             self._free.put(slot)
+        self._tickets_lock = threading.Lock()
+        self._tickets = 0
 
-    def parse(self, language: str, data: bytes, grammar: str | None = None) -> ParseResult:
+    def parse(
+        self, language: str, data: bytes, grammar: str | None = None, answer: bool = False
+    ) -> ParseResult:
         """The worker document for ``data`` in ``language``, parsed with the grammar entry
-        point ``grammar`` (None: the language's own), or why there is none. Never raises;
-        never waits past one file's ``WALL_TIMEOUT_S`` once a slot is free."""
-        if _breaker().tripped:
-            return "circuit_open"
-        if len(data) > FRAME_CAP:
-            return "ir_too_large"
+        point ``grammar`` (None: the language's own) — the file's answer when ``answer`` (§4.1
+        item 1) — or why there is none. Never raises; never waits past one file's
+        ``WALL_TIMEOUT_S`` once a slot is free."""
+        refused = _refused(len(data))
+        if refused is not None:
+            return refused
         slot = self._free.get()
         try:
-            return slot.parse(language, data, grammar)
-        except Exception as exc:  # the last guard: parse never raises
-            logger.warning("ast worker pool: unexpected %s; file falls back", type(exc).__name__)
-            slot.retire()
-            return "worker_error"
+            return _guarded(slot, "worker_error", slot.parse, language, data, grammar, answer)
         finally:
             self._free.put(slot)
+
+    def issue(
+        self, language: str, data: bytes, grammar: str | None = None, answer: bool = False
+    ) -> Ticket | None:
+        """``parse``'s request sent now, on a slot taken without waiting: its ticket, or None —
+        the breaker is open, ``data`` would not fit a frame, or no slot may be taken (§4.1
+        item 5). It records nothing: what the request meets is recorded at ``collect``."""
+        slot = self._take(len(data))
+        if slot is None:
+            return None
+        ticket = _guarded(slot, None, slot.issue, self, language, data, grammar, answer)
+        if ticket is None:
+            self._release(slot)
+        return ticket
+
+    def issuable(self) -> bool:
+        """Whether ``issue`` would find a slot now: a hint read without waiting, so a caller
+        skips its read when none is free (another thread may still take it first; ``issue``
+        decides)."""
+        with self._tickets_lock:
+            return not self._counted_out() and not self._free.empty()
+
+    def collect(self, ticket: Ticket) -> ParseResult:
+        """What ``parse`` answers ``ticket``'s request, its breaker fault and recycle recorded
+        on the collecting audit; the slot freed. Never raises."""
+        try:
+            return _guarded(ticket.slot, "worker_error", ticket.slot.collect, ticket)
+        finally:
+            self._release(ticket.slot)
+
+    def discard(self, ticket: Ticket) -> None:
+        """Drop ``ticket``'s request and free its slot, recording nothing; never waits on a
+        silent worker. Never raises."""
+        try:
+            _guarded(ticket.slot, None, ticket.slot.discard, ticket)
+        finally:
+            self._release(ticket.slot)
 
     @property
     def size(self) -> int:
@@ -415,6 +584,36 @@ class WorkerPool:
         """End every worker of this pool (a slot in use ends its worker mid-file)."""
         for slot in self._slots:
             slot.retire()
+
+    def _take(self, size: int) -> _Slot | None:
+        """A free slot for a ticket of ``size`` bytes, counted out; None while the breaker is
+        open or the request would not fit a frame (``_refused``)."""
+        if _refused(size) is not None:
+            return None
+        with self._tickets_lock:
+            return self._spare()
+
+    def _spare(self) -> _Slot | None:
+        """Under the tickets lock: a free slot taken without waiting, and counted out, while
+        fewer than ``size - PREFETCH_RESERVE`` tickets are out (W = 1 never has one)."""
+        if self._counted_out():
+            return None
+        try:
+            slot = self._free.get_nowait()
+        except queue.Empty:
+            return None
+        self._tickets += 1
+        return slot
+
+    def _counted_out(self) -> bool:
+        """Under the tickets lock: ``size - PREFETCH_RESERVE`` tickets are out already."""
+        return self._tickets >= self.size - PREFETCH_RESERVE
+
+    def _release(self, slot: _Slot) -> None:
+        """A ticket's slot back in the queue, and the ticket counted in."""
+        with self._tickets_lock:
+            self._tickets -= 1
+        self._free.put(slot)
 
 
 _POOL: WorkerPool | None = None

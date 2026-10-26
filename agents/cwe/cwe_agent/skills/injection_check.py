@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
-from cwe_agent.skills._ast_head import AstAnswer, ast_answers, ast_owns, regex_row
+from cwe_agent.skills._ast_head import AstAnswer, ast_answers, ast_owns, ast_walk, regex_row
 from shared.ast.consume import FamilyRule, command_param
 from shared.language import detect_language
 from shared.tools.file_scanner import (
@@ -482,8 +482,10 @@ SAFE_SSRF_PATTERNS = re.compile(
 # Feature 0102, the AST tier's ``server_ctx`` gate (LLD §8.5, A40 (3), A41 (3)): the glued
 # callee keys of the request sinks that exist in the browser too, which are SSRF only in a
 # file with server context — the AST twin of ``_SSRF_CLIENT_CAPABLE_PATTERNS``. The key is the
-# callee's GLUED last identifier (``Flow.sink_key``), never its last word: ``this.http.get(u)``,
-# ``fetch(u)`` and ``map.get(k)`` are gated; ``urlOpen(u)`` (key ``urlopen``) is not.
+# callee's GLUED last identifier (``Flow.sink_key``), never its last word: ``this.http.get(u)``
+# and ``fetch(u)`` are gated; ``urlOpen(u)`` (key ``urlopen``) is not. A generic verb with no
+# HTTP-client evidence (``map.get(k)``) is no request sink at all (A44 (1) (a)), so it never
+# reaches the gate.
 _BROWSER_SINK_KEYS = frozenset({"fetch", "get", "open", "do"})
 
 
@@ -599,10 +601,9 @@ def check_injection(source_path: str) -> dict:
     """
     findings: list[dict] = []
 
-    for file_path in scan_code_files(source_path):
-        if _is_excluded_file(file_path):
-            continue
-        _analyze_file(file_path, findings)
+    with ast_walk(scan_code_files(source_path), _is_excluded_file, (_RULE_918, _RULE_78)) as files:
+        for file_path in files:
+            _analyze_file(file_path, findings)
 
     return {"findings": findings}
 

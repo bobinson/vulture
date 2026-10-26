@@ -3093,9 +3093,9 @@ def _preflight_vetoes(effective_use_llm: bool, run_id: str, agent_label: str) ->
     return True, f"LLM preflight: provider unreachable - {reason}"
 
 
-# ── Feature 0102: the audit's AST context (D20; plan 3.4; A41 (6), (7); A42 (5)) ──
+# ── Feature 0102: the audit's AST context (D20; plan 3.4; A41 (6), (7); A42 (5); A44 (2)) ──
 #
-# `run_combined_audit` reaches the shared AST layer only through these three straight-line
+# `run_combined_audit` reaches the shared AST layer only through these four straight-line
 # helpers, so the layer imports at run time (importing the runner loads none of it).
 
 
@@ -3121,6 +3121,14 @@ def _ast_declines(emitter: AgUiEventEmitter, run: _AstRun, source_path: str) -> 
     """The skills' AST declines (§10.3, D13; A41 (7)) as thinking lines, each file relative to
     the audited root, then the one ``ast_decline_summary`` line."""
     return map(emitter.text_message, run.audit.ledger.lines(source_path))
+
+
+def _ast_close(run: _AstRun) -> None:
+    """Close the audit's ticket index (LLD §4.1 item 8): every request a skill thread issued
+    ahead and nobody claimed is discarded, and later issues are refused, so an abandoned skill
+    thread goes synchronous. Called in the skill phase's ``finally`` — the cancel and deadline
+    paths, which never reach ``_ast_result``'s ``leave``, included. Never raises."""
+    run.audit.tickets.close()
 
 
 def _ast_result(run: _AstRun, source_path: str) -> dict[str, Any]:
@@ -3331,6 +3339,7 @@ def run_combined_audit(
             pool.shutdown(wait=not _drain, cancel_futures=_drain)
         except (RuntimeError, TypeError):
             pool.shutdown(wait=False)
+        _ast_close(ast_run)  # 0102 A44 (2): no ticket outlives the skill phase
 
     logger.info("skill_phase_done run_id=%s findings=%d", run_id, len(skill_findings))
     yield from _ast_declines(emitter, ast_run, source_path)

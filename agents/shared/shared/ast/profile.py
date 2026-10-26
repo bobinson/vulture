@@ -52,6 +52,7 @@ __all__ = [
     "Capture",
     "LanguageProfile",
     "build_query",
+    "owns_family",
     "profile_for",
 ]
 
@@ -80,6 +81,14 @@ def profile_for(path: str | Path) -> LanguageProfile | None:
     back (``disabled_until``): the one decision point, so the file is ``unsupported``."""
     profile = PROFILES.get(detect_language(str(path)))
     return None if profile is None or profile.disabled_until else profile
+
+
+def owns_family(path: str | Path, family: str) -> bool | None:
+    """D10 by extension alone, never a parse: whether ``path``'s profile owns ``family``
+    (§6.3 ``owned_families``: C and C++ own no ``request``); None when it has no profile. The
+    one ownership predicate of the consumer heads and the prefetch (§4.1 item 6)."""
+    profile = profile_for(path)
+    return None if profile is None else family in profile.owned_families
 
 
 # ── query generation (LLD §6.3) ──────────────────────────────────────────────

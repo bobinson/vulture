@@ -242,8 +242,8 @@ _TREE: dict[str, str] = {
     "routes/files.ts": _SINKS_JS,
     "views.py": "def view(request):\n    return open(request.args['f']).read()\n",
     "main.go": 'package main\n\nimport "os"\n\nfunc main() { os.ReadFile(os.Args[1]) }\n',
-    "app.test.js": _SINKS_JS,
-    "__tests__/helper.js": _SINKS_JS,
+    "app.test.js": _SINKS_JS + "// a skipped copy\n",
+    "__tests__/helper.js": _SINKS_JS + "// another skipped copy\n",
     "README.md": "Call `fs.readFile(req.query.f)` only with a constant.\n",
     "skills/path_check.py": "def check(request):\n    return open(request.args['f'])\n",
 }
@@ -339,7 +339,7 @@ def _spied(patch: pytest.MonkeyPatch, calls: _Calls, home: ModuleType, name: str
 
 def _pairs(log: list[tuple[str, Any]]) -> list[tuple[str, str]]:
     """Each ``advance`` with the call right after it: ``(that call's name, same file?)``."""
-    after = zip(log, [*log[1:], ("end", None)], strict=True)
+    after = zip(log, [*log[1:], ("end", None)])
     return [(nxt, str(path == other)) for (name, path), (nxt, other) in after if name == "advance"]
 
 

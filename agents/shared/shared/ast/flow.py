@@ -80,7 +80,7 @@ from shared.ast._records import (
     role_set,
     unknown,
 )
-from shared.ast._sizing import own_ints, own_strs, sized_once
+from shared.ast._sizing import flow_parts, own_ints, sized_once
 from shared.ast.coverage import ENV_ONLY_SINKS, ROLE_FILTERED_SINKS, UNKNOWN_ONLY_SINKS
 from shared.ast.profile import PROFILES
 from shared.ast.profiles import COMMAND, FAMILIES
@@ -467,20 +467,12 @@ def _kept(analysis: FlowAnalysis) -> Iterator[object]:
 
 
 def _flow_parts(flow: Flow) -> Iterator[object]:
-    """One flow's own objects: the record, its span, origin set and hops, its guards (a flow
-    with none holds the shared ``()``), each hop and guard, the strings it holds of its own
-    (``_sizing.own_strs``) — each ``.``-joined hop name, which the flow pass minted (a
-    one-segment name is the model's text, D16: no segment holds a ``.``, or a placeholder),
-    and its sink key, which ``glue`` made (A41 (2)) — and its own ints (``_flow_ints``)."""
-    held = (flow, flow.span, flow.origins, flow.hops, *flow.hops, *flow.guards)
-    guards = (flow.guards,) if flow.guards else ()
-    names = (hop.name for hop in flow.hops if "." in hop.name)
-    return chain(held, guards, own_strs(chain(names, (flow.sink_key,))), _flow_ints(flow))
+    """One flow's own objects (``_sizing.flow_parts``). Of its hop names only a ``.``-joined
+    one is the analysis' own, minted by the flow pass: a one-segment name is the model's text
+    (D16: no segment holds a ``.``) or a placeholder."""
+    return flow_parts(flow, _dotted)
 
 
-def _flow_ints(flow: Flow) -> Iterator[int]:
-    """The ints a flow holds that are objects of their own (``_sizing.own_ints``): its sink,
-    sink line, argument and span, each hop's line, each guard's node."""
-    lines = (hop.line for hop in flow.hops)
-    nodes = (guard.node for guard in flow.guards)
-    return own_ints(chain((flow.sink, flow.sink_line, flow.arg, *flow.span), lines, nodes))
+def _dotted(name: str) -> bool:
+    """A ``.``-joined hop name: one the flow pass minted."""
+    return "." in name

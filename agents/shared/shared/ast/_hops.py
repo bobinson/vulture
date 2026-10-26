@@ -26,7 +26,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from shared.ast._nodes import CHAINS, cached, first, preorder
-from shared.ast._records import Hop, has_external
+from shared.ast._records import EXPR, FLAG, INDEX, Hop, has_external
 from shared.ast._validate import IDENTIFIER
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import MAX_HOP_SEGMENTS, MAX_HOPS
@@ -41,9 +41,6 @@ __all__ = ["Hops"]
 type _Trail = tuple[tuple[Hop, ...], int]
 type _At = tuple[int, int]  # (context, Def position)
 
-_EXPR = "<expr>"
-_INDEX = "<index>"
-_FLAG = "<flag>"
 _EMPTY_TRAIL: _Trail = ((), 0)
 # A Def's kind -> its hop kind; any other is ``assign`` (``member`` for a path write).
 _HOP_KINDS: Mapping[str, str] = MappingProxyType({
@@ -166,7 +163,7 @@ class Hops:
 
     def _name(self, node: int) -> str:
         segments = self._segments(node, MAX_HOP_SEGMENTS)
-        return ".".join(segments) if segments else _EXPR
+        return ".".join(segments) if segments else EXPR
 
     def _segments(self, node: int, budget: int) -> list[str] | None:
         """``node``'s name segments, or None past ``budget`` segments or for anything else."""
@@ -180,7 +177,7 @@ class Hops:
         return [text] if "." not in text and IDENTIFIER.fullmatch(text) else None
 
     def _literal_segment(self, node: int, budget: int) -> list[str] | None:
-        return [_FLAG] if self._m.ident(node) else None
+        return [FLAG] if self._m.ident(node) else None
 
     def _member_segments(self, node: int, budget: int) -> list[str] | None:
         """The object's segments, then the property's — a compound PROPERTY (C++
@@ -189,7 +186,7 @@ class Hops:
         return self._joined(first(self._m, node, Field.OBJECT), tail, budget)
 
     def _subscript_segments(self, node: int, budget: int) -> list[str] | None:
-        return self._joined(first(self._m, node, Field.OBJECT), [_INDEX], budget)
+        return self._joined(first(self._m, node, Field.OBJECT), [INDEX], budget)
 
     def _call_segments(self, node: int, budget: int) -> list[str] | None:
         callee = self._segments(first(self._m, node, Field.CALLEE), budget)

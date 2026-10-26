@@ -79,13 +79,14 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, field
-from itertools import chain, repeat, takewhile
+from itertools import chain, islice, repeat, takewhile
 from operator import attrgetter
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from shared.ast._nodes import (
     CHAINS,
+    and_ancestors,
     cached,
     first,
     first_segment,
@@ -97,11 +98,12 @@ from shared.ast._nodes import (
     open_links,
     params_in,
     segment,
+    unawaited,
     union,
 )
 from shared.ast.coverage import BRANCH_DEPTH  # the branches past MAX_BRANCH_DEPTH (A28 (3), A32)
 from shared.ast.kinds import Field, Kind
-from shared.ast.limits import MAX_BRANCH_DEPTH
+from shared.ast.limits import MAX_BRANCH_DEPTH, MAX_CHAIN
 from shared.ast.profile import PROFILES
 
 if TYPE_CHECKING:
@@ -109,7 +111,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BRANCH_DEPTH",
-    "IMPORT_CALLS",
     "STATEMENTS",
     "CallWrites",
     "Def",
@@ -117,7 +118,9 @@ __all__ = [
     "ScopeTable",
     "StateFactory",
     "Use",
+    "binds_whole_module",
     "decorators",
+    "import_call",
 ]
 
 # ── records (§7.1, A22, A24) ─────────────────────────────────────────────────
@@ -206,7 +209,7 @@ _PARAM_HOLDERS = frozenset({Kind.ARGS, Kind.PARAM})
 _STATEMENT_PARENTS = frozenset({Kind.MODULE, Kind.BLOCK, Kind.CLASS, Kind.EXPORT, Kind.OTHER})
 _IMPORTED = frozenset({Kind.NAME, Kind.PAIR, Kind.MEMBER})
 # R-H (W6, every language): a DESTRUCT of a call to one of these builtins is an import binding.
-IMPORT_CALLS = frozenset({"require", "import"})
+_IMPORT_CALLS = frozenset({"require", "import"})
 # C2 (R-X): a bare ``parameter_declaration`` ships as a PARAM whose one child is this.
 _BARE_TYPE = (Field.ANNOTATION, Kind.NAME)
 # The kinds whose node opens a delta, and the CATCH whose handler delta opens over its TRY's
@@ -856,14 +859,7 @@ class _Pass:
             self._bind(leaf, self._m.ident(leaf), "destruct", value, symbol)
 
     def _imports_from(self, value: int | None) -> bool:
-        call = self._unawaited(value)
-        callee = self._m.callee(call) if is_kind(self._m, call, Kind.CALL) else -1
-        return callee >= 0 and self._m.ident(callee) in IMPORT_CALLS
-
-    def _unawaited(self, value: int | None) -> int:
-        if value is None:
-            return -1
-        return first(self._m, value, Field.NONE) if self._m.kind(value) is Kind.AWAIT else value
+        return value is not None and import_call(self._m, unawaited(self._m, value))
 
     def _symbol(self, leaf: int, pair: int) -> str | None:
         """R-H: a PAIR leaf's symbol is its key's last identifier, any other leaf's its name."""
@@ -1543,6 +1539,27 @@ def _subtree_counts(model: FileModel, nodes: Iterable[int]) -> Counter[int]:
         held[model.function_of(fn)] += held[fn]
     del held[-1]  # a Counter's del of a missing key is no error
     return held
+
+
+# ── import calls (R-H, W6) ───────────────────────────────────────────────────
+
+
+def import_call(model: FileModel, node: int) -> bool:
+    """R-H (W6): ``node`` is a CALL to one of the import builtins (``require("x")``,
+    ``import("x")``); never for ``-1``."""
+    callee = model.callee(node) if is_kind(model, node, Kind.CALL) else -1
+    return callee >= 0 and model.ident(callee) in _IMPORT_CALLS
+
+
+def binds_whole_module(model: FileModel, d: Def) -> bool:
+    """An import Def whose bound name sits under its IMPORT's SOURCE — a whole module (Python
+    ``import m`` / ``import m as n``), not a member it names (``from m import x``, a JS
+    specifier): ``_Pass._imported``'s choice, read back off the tree from the bound name up
+    to the IMPORT (at most ``MAX_CHAIN`` nodes)."""
+    if d.kind != "import":
+        return False
+    below = takewhile(lambda node: node != d.value, islice(and_ancestors(model, d.node), MAX_CHAIN))
+    return any(model.field(node) is Field.SOURCE for node in below)
 
 
 # ── decorators (W7, A22) ─────────────────────────────────────────────────────
