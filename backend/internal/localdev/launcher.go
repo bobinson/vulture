@@ -389,6 +389,7 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 	// once: agentBrokerEnv reads only the process env, and the filtered base
 	// is identical for every agent.
 	brokerEnv, withholdKey := agentBrokerEnv(os.Getenv)
+	ensureAgentToken() // before spawnBase, which snapshots the environment
 	spawnBase := AgentSpawnEnvFromHost(SpawnEnvPolicyFromEnv(withholdKey))
 
 	for _, entry := range config.AllAgents {
@@ -503,9 +504,11 @@ func (l *Launcher) startAgents(ctx context.Context) error {
 		// every agent a slice over ONE shared backing array, so the second
 		// agent's entries could overwrite the first's in place.
 		full := slices.Concat(spawnBase, env)
+		// Loopback only: /run scans any path the user can read and streams it
+		// back, so no other machine may reach it. The backend dials localhost.
 		err := l.mgr.StartWithEnv(ctx, name, agentDir, full,
 			pythonBin, "-m", "uvicorn", entry.Module,
-			"--host", "0.0.0.0", "--port", port,
+			"--host", "127.0.0.1", "--port", port,
 		)
 		if err != nil {
 			return fmt.Errorf("start agent %s: %w", entry.Type, err)

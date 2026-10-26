@@ -19,8 +19,19 @@ export default defineConfig({
     },
   },
   server: {
-    host: "0.0.0.0",
+    // Loopback only. This server proxies /api to a backend that, in local
+    // mode, serves the local user without a password; on 0.0.0.0 that handed
+    // the whole API to anyone on the network. IPv4 rather than "localhost" so
+    // the bind is the same on every OS (macOS resolves localhost to ::1 first;
+    // browsers and tools fall back to 127.0.0.1).
+    host: "127.0.0.1",
     port: devPort,
+    // Fail if the port is taken instead of quietly moving to the next one,
+    // which left a stale — possibly outdated — server answering on the port.
+    strictPort: true,
+    // xfwd: record each client's address (X-Forwarded-For) so the backend can
+    // refuse a request relayed for another machine even if this server is
+    // ever exposed again (e.g. `npm run dev -- --host`).
     proxy: {
       // SSE audit streams stay open for the full length of an audit — a slow
       // local model (LM Studio/Ollama) can run well past 10 minutes. The dev
@@ -29,8 +40,13 @@ export default defineConfig({
       // both timeouts (0 = no timeout) so the proxy holds the stream open for
       // as long as the backend does. Dev-only; production serves the built SPA
       // without this proxy.
-      "/api": { target: backendURL, timeout: 0, proxyTimeout: 0 },
-      "/health": { target: backendURL, timeout: 0, proxyTimeout: 0 },
+      "/api": { target: backendURL, timeout: 0, proxyTimeout: 0, xfwd: true },
+      "/health": {
+        target: backendURL,
+        timeout: 0,
+        proxyTimeout: 0,
+        xfwd: true,
+      },
     },
   },
   build: {
