@@ -263,9 +263,13 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	// 0036 Phase 3 (C3): allowlist-driven CORS replaces the previous
 	// wildcard. Empty CORSAllowedOrigins is the strict default (no
 	// cross-origin allowed).
-	corsMux := addCORSWithAllowlist(mux, cfg.CORSAllowedOrigins)
+	var edge http.Handler = addCORSWithAllowlist(mux, cfg.CORSAllowedOrigins)
+	if cfg.LocalMode {
+		// Passwordless local mode serves this machine only — see locality.go.
+		edge = localOnly(edge)
+	}
 	return &Server{
-		mux:        addRequestLogging(addRequestID(corsMux)),
+		mux:        addRequestLogging(addRequestID(edge)),
 		plugins:    reg,
 		supervisor: supervisor,
 		broker:     broker,

@@ -196,6 +196,12 @@ build is deterministic for your toolchain; a toolchain mismatch produces a WARN.
 - **Daemon binds `127.0.0.1` only** by default. LAN exposure requires explicit
   `vulture start --unsafe-allow-network --yes` and is incompatible with
   passwordless local mode.
+- **Local mode serves this machine only.** A request is answered only if it is
+  local end to end: loopback peer, every proxy-recorded client address
+  (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`) loopback, and a loopback `Host`
+  (a DNS-rebinding page is refused).
+- **Agents bind `127.0.0.1` and require a shared token.** Each start generates
+  `VULTURE_AGENT_TOKEN` unless you set one; agents refuse `/run` without it.
 - **Cosign-verified release artifacts** (Rekor transparency log) by default;
   SHA-only fallback only with `VULTURE_ALLOW_UNSIGNED=true`.
 - **Subprocess env scrubbing** — agents never inherit `LD_PRELOAD`,

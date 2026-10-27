@@ -66,6 +66,17 @@ def current_broker_task_type() -> str | None:
     return _current_broker_task_type.get()
 
 
+TASK_TYPE_HEADER = "X-Vulture-Task-Type"
+
+
+def broker_headers() -> dict[str, str]:
+    """The scope header every broker completion carries (§26 C1): this run's
+    task type, or nothing when the run has none (the broker then rejects —
+    fail-closed). One source for every client that calls the broker."""
+    task_type = current_broker_task_type()
+    return {TASK_TYPE_HEADER: task_type} if task_type else {}
+
+
 # Ambient per-run context window (§31). The broker resolves the run model's
 # context window from its registry and injects it at dispatch; the transport
 # binds it here so provider.get_context_window can prefer it over the agent's
@@ -242,10 +253,7 @@ def _default_client_factory(*, base_url: str, api_key: str) -> Any:
     """
     from openai import AsyncOpenAI
 
-    headers: dict[str, str] = {}
-    task_type = current_broker_task_type()
-    if task_type:
-        headers["X-Vulture-Task-Type"] = task_type
+    headers = broker_headers()
     # §32.1 #6: the BROKER owns retries (per-provider retrier + budget). Disable
     # the SDK's own client-side retries so a transient failure is not amplified
     # (broker 3× × SDK 2× × agent retry_llm_call 3×). max_retries=0 leaves the

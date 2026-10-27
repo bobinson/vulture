@@ -79,3 +79,5 @@ magicrouter/docs/features/0007_cross_modality_end_to_end/research/deep_research_
 magicrouter/docs/features/0007_cross_modality_end_to_end/research/claims_by_source.json
 magicrouter/docs/features/0008_enterprise_readiness/research/deep_research_run.json
 magicrouter/docs/features/0008_enterprise_readiness/research/claims_by_source.json
+
+.env

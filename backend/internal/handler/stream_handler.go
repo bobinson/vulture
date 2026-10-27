@@ -428,7 +428,7 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 	// the "ERROR:" prefix collectErrorText requires, so res.AgentError is empty
 	// and the completion branch would otherwise mark this `completed`.
 	audit.CancelReason = b.CancelReason()
-	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason, res.ScanOutcomes)
+	h.persistResultsWithError(audit, source, res)
 }
 
 // failAudit marks an audit failed after a dispatch-time error, so it does not sit
@@ -438,7 +438,7 @@ func (h *StreamHandler) failAudit(auditID, reason string) {
 	if err != nil {
 		return
 	}
-	h.persistResultsWithError(audit, nil, nil, nil, nil, reason, "", nil)
+	h.persistResultsWithError(audit, nil, DrainResult{AgentError: reason})
 }
 
 // eventChCapacity sizes the producer channel. The historical formula yields ZERO
@@ -484,6 +484,10 @@ type DrainResult struct {
 	// snapshot — or sent a pre-0091 one — has no entry, and the closure pass
 	// then treats its scope as UNKNOWN, which is the safe reading (S26).
 	ScanOutcomes map[string]*model.ScanResult
+	// Finished names the agents whose own agent_end reported status
+	// "completed" — the one signal from an agent, like prove, that reports
+	// without a result snapshot (see missingRequestedAgents).
+	Finished map[string]bool
 }
 
 func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sink EventSink) DrainResult {
@@ -514,10 +518,14 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 	var degradedReason string
 	// Feature 0096: the OWASP agent's validated mapping, if it sent one.
 	var mapping *model.ComplianceMapping
+	finished := map[string]bool{}
 	for evt := range eventCh {
 		if evt == nil {
 			// processEvent and WriteEvent both dereference evt.Type unguarded.
 			continue
+		}
+		if finishedRun(evt) {
+			finished[evt.AgentType] = true
 		}
 		if evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
 			snapshotAgents[evt.AgentType] = true
@@ -594,7 +602,15 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 		OwaspCoverage:  owaspCoverage,
 		DegradedReason: degradedReason,
 		ScanOutcomes:   scanOutcomes,
+		Finished:       finished,
 	}
+}
+
+// finishedRun reports whether evt is an agent's own statement that its run
+// completed: agent_end with status "completed". "skipped" and "failed" ended a
+// run without doing it.
+func finishedRun(evt *model.AgUIEvent) bool {
+	return evt.Type == model.EventStepFinished && evt.AgentType != "" && evt.RunStatus == "completed"
 }
 
 // extractOwaspCoverage returns the owasp_coverage manifest embedded in an
@@ -1566,7 +1582,7 @@ func extractProveResult(delta json.RawMessage, auditID string, fpLookup map[stri
 }
 
 func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult) {
-	h.persistResultsWithError(audit, source, findings, scores, proveResults, "", "", nil)
+	h.persistResultsWithError(audit, source, DrainResult{Findings: findings, Scores: scores, ProveResults: proveResults})
 }
 
 // persistResultsWithError records audit state, propagating an
@@ -1574,12 +1590,13 @@ func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source,
 // short-circuited (zero findings + ERROR text). Discover-agent
 // short-circuits on bad config used to land as status=completed; this
 // path now surfaces the failure.
-func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string, degradedReason string, scanOutcomes map[string]*model.ScanResult) {
+func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, res DrainResult) {
+	findings, scores, scanOutcomes := res.Findings, res.Scores, res.ScanOutcomes
 	log.Printf("[persist] audit=%s findings=%d scores=%v", audit.ID, len(findings), scores)
 
 	saveFindings(h.auditSvc, audit.ID, findings)
-	missing := missingRequestedAgents(audit.Types, scanOutcomes, scores, findings)
-	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError, degradedReason, missing)
+	missing := missingRequestedAgents(audit.Types, res)
+	completeAuditWithError(h.auditSvc, audit, findings, scores, res.AgentError, res.DegradedReason, missing)
 	// Feature 0064 §6/M3: the run reached a terminal state — revoke its
 	// broker token(s) so a leaked token can't keep spending. No-op when the
 	// broker is off (revoker nil / run had no minted tokens).
@@ -1587,7 +1604,7 @@ func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *mode
 		h.brokerRevoker.RevokeRun(audit.ID)
 	}
 	dispatchWebhook(h.webhookSvc, audit, findings, scores)
-	backfillAndSaveProve(h.proveSvc, findings, proveResults, audit.ID)
+	backfillAndSaveProve(h.proveSvc, findings, res.ProveResults, audit.ID)
 	storeMemoriesAndLineage(h, audit, source, findings, scanOutcomes)
 
 	if h.pipelineSvc != nil {
@@ -1653,36 +1670,28 @@ func saveFindings(svc service.AuditService, auditID string, findings []model.Fin
 // An empty Types list is the documented "default scan" — the router chooses the
 // set, so there is no per-agent contract to violate.
 //
-// "Did not run" is judged on THREE signals, not just the snapshot: an agent
+// "Did not run" is judged on FOUR signals, not just the snapshot: an agent
 // counts as having reported if it sent a result snapshot, or carries a score,
-// or contributed a finding. A snapshot-only test was too strict and wrongly
-// failed an agent whose findings and score were both present — and it would
-// have re-failed the rescued-delta path (an agent that streamed findings then
-// died before its snapshot), whose whole purpose is to salvage that work. A
-// genuinely skipped agent contributes none of the three, which is exactly what
-// makes the disjunction safe: it is narrow enough to still catch every skip
-// path and wide enough never to accuse an agent that did something.
-func missingRequestedAgents(
-	requested []string,
-	reported map[string]*model.ScanResult,
-	scores map[string]int,
-	findings []model.Finding,
-) []string {
+// or contributed a finding, or ended its own run with agent_end status
+// "completed". A snapshot-only test was too strict and wrongly failed an agent
+// whose findings and score were both present — and it would have re-failed the
+// rescued-delta path (an agent that streamed findings then died before its
+// snapshot), whose whole purpose is to salvage that work. A genuinely skipped
+// agent contributes none of the four, which is exactly what makes the
+// disjunction safe: it is narrow enough to still catch every skip path and wide
+// enough never to accuse an agent that did something.
+//
+// The fourth exists for prove, which reports verdicts on OTHER agents'
+// findings: no snapshot, no score, no finding of its own. Without it every
+// prove audit failed as "did not run: prove", including runs that verified
+// findings. A completed agent_end is sent only at the end of a run the agent
+// finished; no skip path above produces one, and an agent that dies mid-run
+// never sends it. A "skipped" or "failed" status does not count.
+func missingRequestedAgents(requested []string, res DrainResult) []string {
 	if len(requested) == 0 {
 		return nil
 	}
-	contributed := make(map[string]bool, len(reported)+len(scores))
-	for at := range reported {
-		contributed[at] = true
-	}
-	for at := range scores {
-		contributed[at] = true
-	}
-	for _, f := range findings {
-		if f.AgentType != "" {
-			contributed[f.AgentType] = true
-		}
-	}
+	contributed := reportedAgents(res)
 	var missing []string
 	seen := make(map[string]bool, len(requested))
 	for _, t := range requested {
@@ -1695,6 +1704,27 @@ func missingRequestedAgents(
 		}
 	}
 	return missing
+}
+
+// reportedAgents is every agent carrying any of missingRequestedAgents' four
+// signals.
+func reportedAgents(res DrainResult) map[string]bool {
+	contributed := make(map[string]bool, len(res.ScanOutcomes)+len(res.Scores)+len(res.Finished))
+	for at := range res.ScanOutcomes {
+		contributed[at] = true
+	}
+	for at := range res.Scores {
+		contributed[at] = true
+	}
+	for at := range res.Finished {
+		contributed[at] = true
+	}
+	for _, f := range res.Findings {
+		if f.AgentType != "" {
+			contributed[f.AgentType] = true
+		}
+	}
+	return contributed
 }
 
 // completeAuditWithError records final state. When agentError is

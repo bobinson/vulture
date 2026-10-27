@@ -626,6 +626,11 @@ def litellm_retry_extra_args(resolved_model: str) -> dict:
         return {}
     if _broker_on():
         return {}
+    return _single_attempt_kwargs()
+
+
+def _single_attempt_kwargs() -> dict:
+    """Per-call litellm kwargs for ONE HTTP attempt within the call budget."""
     return {"max_retries": 0, "timeout": _call_timeout_s(), "num_retries": 0}
 
 
@@ -685,6 +690,70 @@ def resolve_model_for_litellm_with_fallback(preference: str | None = None) -> st
     if resolved.startswith("litellm/"):
         return resolved[len("litellm/"):]
     return resolved
+
+
+# Routing prefixes, longest first so `litellm/anthropic/` is never half-stripped
+# to `anthropic/claude-...`.
+_MODEL_PREFIX_STRIPS = (
+    "litellm/openai/",
+    "litellm/anthropic/",
+    "litellm/gemini/",
+    "litellm/azure/",
+    "litellm/bedrock/",
+    "litellm/ollama/",
+    "litellm/",
+    "openai/",
+    "anthropic/",
+    "gemini/",
+    "azure/",
+    "ollama/",
+)
+
+
+def bare_model_name(model: str) -> str:
+    """*model* without its client-routing prefix: `litellm/ollama/qwen3:8b` ->
+    `qwen3:8b`. The name a raw OpenAI-compatible endpoint (the broker, or the
+    L5 judge's client) is asked for."""
+    for p in _MODEL_PREFIX_STRIPS:
+        if model.startswith(p):
+            return model[len(p):]
+    return model
+
+
+def litellm_route_kwargs(model: str) -> dict:
+    """Where a direct ``litellm.acompletion`` call goes: ``model`` plus routing.
+
+    *model* is a ``resolve_model_for_litellm*`` string. On a broker run the
+    call goes where the SDK generate path and the L5 judge send theirs: the
+    broker's OpenAI-compatible endpoint, this run's token, its task-type
+    header. Broker mode withholds OPENAI_BASE_URL and the provider keys from
+    agents, so a direct call that ignored the broker had no endpoint at all and
+    failed every time ("LLM Provider NOT provided"). The model travels as the
+    bare name — the broker's model hint — under litellm's ``openai/`` route,
+    with one HTTP attempt per call: the broker owns retries (§32.1 #6).
+
+    Without a broker: *model* as given, plus the custom OpenAI-compatible
+    endpoint from OPENAI_BASE_URL when one is set (litellm needs api_base, and
+    an api_key even for a keyless local server, passed explicitly).
+    """
+    from shared.llm.broker import broker_headers, current_broker_token, resolve_broker_config
+
+    route = resolve_broker_config(current_broker_token())
+    if route is not None:
+        return {
+            "model": f"openai/{bare_model_name(model)}",
+            "api_base": route.base_url,
+            "api_key": route.api_key,
+            "extra_headers": broker_headers(),
+            **_single_attempt_kwargs(),
+        }
+    kwargs: dict = {"model": model}
+    custom_base = os.environ.get("OPENAI_BASE_URL", "")
+    if custom_base:
+        kwargs["api_base"] = custom_base
+        if not os.environ.get("OPENAI_API_KEY"):
+            kwargs["api_key"] = "not-needed"
+    return kwargs
 
 
 def get_model_with_fallback(preference: str | None = None) -> str:

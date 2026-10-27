@@ -26,6 +26,18 @@ from shared.models.audit_request import AuditRequest
 RunHandler = Callable[[str, str, dict, list[dict[str, Any]]], Generator[str, None, None]]
 
 _AGENT_TOKEN = os.environ.get("VULTURE_AGENT_TOKEN", "")
+AGENT_TOKEN_HEADER = "X-Vulture-Agent-Token"
+
+
+def agent_token_headers() -> dict[str, str]:
+    """Headers for an agent-to-agent ``/run`` call.
+
+    The receiving agent refuses ``/run`` without the shared token whenever
+    VULTURE_AGENT_TOKEN is set (``_verify_agent_token``), and the launcher sets
+    one on every start. Built from the same value the verifier reads, so the
+    two sides cannot drift.
+    """
+    return {AGENT_TOKEN_HEADER: _AGENT_TOKEN} if _AGENT_TOKEN else {}
 
 logger = logging.getLogger(__name__)
 
@@ -198,8 +210,9 @@ def _verify_agent_token(
     """Verify the shared agent token on /run requests.
 
     When VULTURE_AGENT_TOKEN is set, requests without a matching
-    X-Vulture-Agent-Token header are rejected. When unset (local dev),
-    all requests are allowed.
+    X-Vulture-Agent-Token header are rejected. The native launcher always sets
+    one (``localdev.ensureAgentToken``); only an agent started by hand without
+    it allows every request.
     """
     if _AGENT_TOKEN and x_vulture_agent_token != _AGENT_TOKEN:
         raise HTTPException(status_code=403, detail="invalid or missing agent token")

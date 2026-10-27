@@ -70,6 +70,14 @@ event: agent_end
 data: {"run_id": "uuid", "status": "completed"}
 ```
 
+`agent_end.status` is `completed`, `skipped` or `failed`. Every agent an audit
+requests must report, or the audit fails with `requested agents did not run`.
+An agent reports by sending a `result` snapshot, a score or a finding of its
+own, or an `agent_end` with status `completed`. The last is how prove reports:
+its verdicts arrive as `proof_result` / `proof_summary`, never a snapshot. A
+`skipped` or `failed` status, or a stream that ends with no `agent_end`, does
+not count.
+
 ### LLM-tier fields (feature 0074, all optional)
 
 Feature 0074 adds the fields below. Every one is additive and optional. A
