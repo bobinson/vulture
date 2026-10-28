@@ -81,3 +81,5 @@ magicrouter/docs/features/0008_enterprise_readiness/research/deep_research_run.j
 magicrouter/docs/features/0008_enterprise_readiness/research/claims_by_source.json
 
 .env
+verification/simulated-target/
+plugins/semgrep/rules/
