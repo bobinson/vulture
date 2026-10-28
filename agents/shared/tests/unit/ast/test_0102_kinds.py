@@ -910,9 +910,14 @@ def test_ambiguous_single_keys_are_never_builtins(p: LanguageProfile) -> None:
     assert {"new", "get", "of", "replace", "pathnew"} & set(p.builtin_sinks) == set()
 
 
-def test_go_declares_no_builtins() -> None:
-    """§6.3 Go: the stdlib keys suffice; the profile declares no builtin."""
-    assert dict(_profile("go").builtin_sinks) == {}
+def test_go_declares_only_its_predeclared_shadows() -> None:
+    """§6.3 Go: the stdlib keys suffice for every sink, so the profile's only builtins are
+    A47 (2) (i)'s predeclared slice builtins ``append`` and ``copy``, each with the EMPTY family
+    set (R5's mechanism): never a path sink, whatever their arguments."""
+    sinks = _profile("go").builtin_sinks
+    assert {key: frozenset(sink.families) for key, sink in sinks.items()} == {
+        "append": frozenset(), "copy": frozenset(),
+    }
 
 
 @pytest.mark.parametrize("language", ["c", "cpp"])

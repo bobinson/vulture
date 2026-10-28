@@ -30,9 +30,9 @@ its own rows with it, so the two tiers' rows cannot drift apart.
 
 A rule may carry ONE named heuristic (``FamilyRule.heuristic``): ``command_param`` (D25,
 A42 (1), A43 (1)) is the command rule's — a flow whose origins are UNKNOWN-only, holding
-``unknown(param)``, at a sink that shells the argument, of a built argument or of the whole
-command of a profile builtin process API, with no same-file caller binding the parameter,
-reports. It is a heuristic, not data flow, and says
+``unknown(param)`` or ``unknown(argv)`` (A47 D22-c), at a sink that shells the argument, of a
+built argument or of the whole command of a profile builtin process API, with no same-file
+caller binding the parameter, reports. It is a heuristic, not data flow, and says
 so on its row (``validation.flow.heuristic``).
 
 ``import shared.ast`` stays a leaf (D1): a skill reads ``FamilyRule`` and ``OWNED_CHECK_IDS``
@@ -50,12 +50,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from shared.ast import MODEL_SCHEMA, VALIDATION_KEYS
 from shared.ast._nodes import parsed_buffer
-from shared.ast._records import PARAM
+from shared.ast._records import ARGV, PARAM
 from shared.ast.declines import render_origins
 from shared.tools.snippet import extract_snippet
 
 if TYPE_CHECKING:
-    from shared.ast._records import Flow
+    from shared.ast._records import Flow, Origins
     from shared.ast.answer import FileFacts
     from shared.ast.context import AuditContext
 
@@ -91,6 +91,9 @@ _HEURISTIC_KEY = "heuristic"
 # D25's token (A42 (1)): stable, it names the command parameter heuristic on every row it
 # reports and in SKILLS.md.
 COMMAND_PARAM = "command_param"
+# What D25 keys on: ``unknown(param)``, and ``unknown(argv)`` read as it (A47 D22-c). One set,
+# so a flow is tested by the hashes both sets store.
+_COMMAND_KEYS: Origins = frozenset({PARAM, ARGV})
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,17 +119,19 @@ class FamilyRule:
 
 def command_param(flow: Flow) -> str | None:
     """D25 (§8.5, A42 (1), A43 (1)), the command rule's hook: ``COMMAND_PARAM`` when the flow
-    holds ``unknown(param)`` at a sink that shells the argument, of a built argument or of a
-    profile builtin's whole command, and no same-file caller bound the parameter
-    (``Flow.shell_sink``, ``built_arg``, ``builtin_program``, ``param_bound``); else None.
-    ``decide`` asks it only for a flow with no external origin."""
+    holds ``unknown(param)`` or ``unknown(argv)`` (A47 D22-c) at a sink that shells the
+    argument, of a built argument or of a profile builtin's whole command, and no same-file
+    caller bound the parameter (``Flow.shell_sink``, ``built_arg``, ``builtin_program``,
+    ``param_bound``: set on a flow holding ``unknown(param)`` only, so it supersedes one holding
+    both); else None. ``decide`` asks it only for a flow with no external origin."""
     return COMMAND_PARAM if _param_at_a_command(flow) and not flow.param_bound else None
 
 
 def _param_at_a_command(flow: Flow) -> bool:
-    """The flow holds ``unknown(param)``, and its sink shells the argument, it is built or it
-    is a profile builtin's whole command."""
-    return PARAM in flow.origins and (flow.shell_sink or flow.built_arg or flow.builtin_program)
+    """The flow holds ``unknown(param)`` or ``unknown(argv)``, and its sink shells the
+    argument, it is built or it is a profile builtin's whole command."""
+    held = not flow.origins.isdisjoint(_COMMAND_KEYS)
+    return held and (flow.shell_sink or flow.built_arg or flow.builtin_program)
 
 
 def _as_is(finding: Finding, _cwe_id: str) -> Finding:

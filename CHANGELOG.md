@@ -171,21 +171,37 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     value (`users.get(req.cookies.token)`) does not report. A command key on a
     regex or data-store receiver (`re.exec(s)`, `db.exec(sql)`) runs no
     process, and a multi-word callee reaches a command key only through an
-    exact leading key plus a process word. A container word (`params`,
-    `payload`, `body`, `query`, `headers`, …) names a request source only on
-    a request-rooted chain, in a function in handler context or through a
-    framework's extractor type. A dominating call statement such as
-    `assertInsideRoot(p)` (a validation verb plus a role word, taking the
+    exact leading key plus a process word on the callee, on its receiver or
+    in the module its import names, so `cp.execFile(cmd)` after
+    `const cp = require("child_process")` is a command sink. A container word
+    (`params`, `payload`, `body`, `query`, `headers`, …) names a request
+    source only on a request-rooted chain, in a function in handler context
+    or through a framework's extractor type. A dominating call statement such
+    as `assertInsideRoot(p)` (a validation verb plus a role word, taking the
     flowing value) guards its role, a call returning a containment-checked
     path is a sanitiser, and a same-file function that tests its parameter
-    and exits early guards its callers. A synchronous twin of a path API
-    (`fs.mkdirSync`, `fs.existsSync`) is a CWE-22 sink. Measured skills-only
-    against the previous release on two public codebases, rows on the
-    three ids go from 9 to 16 on one (4 true positives added, 4 false
-    positives removed, 7 false positives added) and from 149 to 188 on the
-    other (89 false positives removed; no true positive among the previous
-    release's rows or in a sample of 40 of the 128 added rows). The gaps that
-    remain are listed in the CWE agent's `SKILLS.md`.
+    and exits early guards its callers. Such a check, or an early exit, before
+    a sink guards it from any block enclosing the sink within its function,
+    so a later `if` with no check of its own no longer hides it; neither
+    reaches into a callback that holds the sink. A synchronous twin of a path
+    API (`fs.mkdirSync`, `fs.existsSync`) is a CWE-22 sink, and a generic file
+    verb (`open`, `copy`, `save`, …) is one only with file-system evidence: a
+    file-system word on the callee or receiver chain or in the path of the
+    module its import names, or a call to a language global such as Python's
+    `open`. The parameter-name hint (`fileName`, `dest_path`) applies only to
+    a function a caller in another file can reach: an exported one (a class
+    exported by name contributes its methods, in TypeScript as in
+    JavaScript), or a public top-level one nothing in the file calls. A
+    program's own arguments (`process.argv`, `sys.argv`) are no external
+    source, except the `argv` of a C/C++ `main`; elsewhere they report only
+    through the command parameter heuristic, when shelled or built into a
+    command. Measured skills-only against the previous release on two public
+    codebases, rows on the three ids go from 9 to 12 on one (4 true positives
+    added, 7 false positives removed, 6 false positives added) and from 149
+    to 66 on the other (127 false positives removed, 44 added; every added
+    row was read and none is a true positive, nor is any of the previous
+    release's rows).
+    The gaps that remain are listed in the CWE agent's `SKILLS.md`.
   - **Row sets change.** Multi-statement flows, call results and same-file
     helpers are now reported; regex rows the flow does not support are not.
     Under `VULTURE_LINEAGE_FIX_MODE=evidence` (the default) a deterministic row

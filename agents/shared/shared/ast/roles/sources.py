@@ -7,7 +7,8 @@ its glued key against ``SOURCE_CALL_KEYS`` (W9 (a)). The structural callee lexic
 §8.4 rules read (``ACCESSOR_WORDS``, ``HANDLER_REGISTRATION_WORDS``, ``ITERATION_WORDS``,
 ``OUTPUT_PARAM_WORDS``, ``MERGE_WORDS``) are sink-side: stored glued, matched by the glued key
 (mode (a)). ``DEMOTED_WORDS`` is the lift test's record of every word deliberately left out
-of every lexicon, each with its reason.
+of every role lexicon, each with its reason (``dir`` and ``paths`` are also A47 (2) (i)'s
+``FILE_SYSTEM_WORDS``, an evidence word set that makes no sink by itself).
 """
 
 from __future__ import annotations
@@ -65,6 +66,8 @@ SOURCE_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
         "formdata", "searchparams", "files", "matchinfo", "pathparams", "queryparams",
         "viewargs",
     }),
+    # minted `unknown(argv)` (A47 D22-c, ``_origins._minted``), reported only through D25;
+    # `external(argv)` comes from C/C++ `main`'s argv parameter alone (C4, ``_params``)
     "argv": frozenset({"argv"}),
     "stdin": frozenset({"stdin", "readline", "prompt", "input", "getpass"}),
     "network": frozenset({"recv", "recvfrom", "socket", "message", "msg", "frame", "packet"}),
@@ -84,6 +87,7 @@ CONTAINER_WORDS = frozenset({
 # W9 (b): a chain matches iff its root's word is the key and the next segment's word is a member
 # key, whose value names the role (`process.env` -> env, `event.records` -> request). A root
 # bound by an IMPORT (a module) is skipped by the flat SOURCE_WORDS test: `flask.request.args`.
+# An `argv` / `args` member mints `unknown(argv)`, as SOURCE_WORDS' argv row (A47 D22-c).
 _REQ = "request"
 CONDITIONAL_SOURCE_ROOTS: Mapping[str, Mapping[str, str]] = MappingProxyType({
     root: MappingProxyType(members)
@@ -238,7 +242,8 @@ SINK_SIDE_KEYS = SINK_KEYS.union(*_STRUCTURAL, COMMAND_BUILDER_WORDS)
 # Every word deliberately in no lexicon, with its reason; the lift test accepts a regex token
 # only through a lexicon, this record or its stop list. Each is keyed as the lift test probes
 # it (its glued form or one of its words, lowercase: BASE_DIR -> basedir) and enters NO role
-# lexicon. CWE rules are framework-agnostic: a library or module name is never an entry.
+# lexicon (`dir`, `paths`: also FILE_SYSTEM_WORDS, module docstring). CWE rules are
+# framework-agnostic: a library or module name is never an entry.
 _LIBRARY = "a library or module name: CWE rules are framework-agnostic (concepts + data flow)"
 _CONFIG = "a configuration constant naming a base directory: a value, not an operation"
 _JAVA_READ = (

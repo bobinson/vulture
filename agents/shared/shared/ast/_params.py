@@ -1,5 +1,5 @@
 """Parameters and source calls as the flow pass reads them (feature 0102, LLD §8.2 PARAM row,
-§8.4 R-A ... R-E, R-T, R-U; W4, W7, W9, C4/A23, A28 (1)).
+§8.4 R-A ... R-E, R-T, R-U; W4, W7, W9, C4/A23, A28 (1), A47 D23-d).
 
 A parameter's BASE origins — the ones it has when its function is analysed on its own, not
 under a summary binding (§8.4) — come from the structural rules, each one O(1) set probes:
@@ -11,7 +11,10 @@ under a summary binding (§8.4) — come from the structural rules, each one O(1
   request-named) makes every parameter outside ``RESPONSE_WORDS`` ``external(request)``;
 * R-D: decorator and default-call words against ``PARAM_ANNOTATION_WORDS``, type-annotation
   words against ``TYPE_ANNOTATION_WORDS`` (W4) — ``external(upload)`` for an upload word;
-* R-T: a ``PARAM_HINTS`` combination of its words — ``external(param_hint)`` (D23);
+* R-T: a ``PARAM_HINTS`` combination of its words — ``external(param_hint)`` (D23) — for a
+  parameter of an ENTRY function of the file only (A47 D23-d, ``_Entries``: in JavaScript /
+  TypeScript an exported one, in every language a public top-level one no same-file call
+  site resolves to), with no server-context condition;
 * C4 (a flow fact, A23): ``main``'s second parameter in C/C++ — ``external(argv)``.
 
 R-B (an iteration callback's element parameter takes its receiver's origins) needs an origin,
@@ -22,13 +25,25 @@ then a reading function by its glued key (``SOURCE_CALL_KEYS``, W9 (a)).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import chain
 from typing import TYPE_CHECKING
 
-from shared.ast._nodes import cached, chain_root, is_kind, named, params_in, preorder
+from shared.ast._nodes import (
+    cached,
+    chain_root,
+    first,
+    is_kind,
+    methods_of,
+    named,
+    pair_part,
+    params_in,
+    preorder,
+    segment,
+    top_statement,
+)
 from shared.ast._records import Origins, external, only
 from shared.ast.kinds import Field, Kind
 from shared.ast.profile import PROFILES
@@ -54,6 +69,8 @@ from shared.ast.roles import (
     chain_names,
     glue,
     hits,
+    identifier_text,
+    last_identifier,
     named_by,
     word_set,
 )
@@ -75,6 +92,12 @@ _names_request = partial(named_by, lexicon=NAMED_REQUEST_WORDS)
 # R-T: each word's PARAM_HINTS combinations, so a name's words probe only the hints they could
 # complete (no combination is empty: each holds a word of any name it is a subset of).
 _HINTS_OF_WORD = invert({hint: hint for hint in PARAM_HINTS})
+
+
+def _hint_named(name: str) -> bool:
+    """R-T: ``name``'s words complete a PARAM_HINTS combination."""
+    found = word_set((name,))
+    return any(hint <= found for word in found for hint in _HINTS_OF_WORD.get(word, ()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +139,7 @@ class Params:
         profile = PROFILES[model.language]  # a model is of a validated language
         self._main = profile.main_argv  # C4
         self._receiver_list = profile.receiver_list  # A3 (Go)
+        self._entries: frozenset[int] | None = None  # A47 D23-d: built on first use
 
     # ── a function's parameters ──
 
@@ -257,10 +281,18 @@ class Params:
         return self._m.kind(node) is Kind.MEMBER and self._is_type(node)
 
     def _hinted(self, d: Def) -> Iterator[str]:
-        """R-T (D23): a PARAM_HINTS combination of the name's words."""
-        found = word_set((d.name,))
-        if any(hint <= found for word in found for hint in _HINTS_OF_WORD.get(word, ())):
+        """R-T (D23): a PARAM_HINTS combination of the name's words, for a parameter of an
+        ENTRY function of the file only (A47 D23-d, ``entries``); elsewhere the hint yields
+        nothing, so the parameter is ``unknown(param)`` (or R-B's receiver)."""
+        if _hint_named(d.name) and d.scope in self.entries():
             yield "param_hint"
+
+    def entries(self) -> frozenset[int]:
+        """A47 D23-d: the file's ENTRY functions (``_Entries``), read once per file, on the
+        first hinted parameter's ask (a None sentinel, as ``Calls.reaching_sinks``)."""
+        if self._entries is None:
+            self._entries = _Entries(self._m, self._scope, self._calls).read()
+        return self._entries
 
     def _argv(self, d: Def) -> Iterator[str]:
         """C4: the entry function's argv PARAM, by position (P6)."""
@@ -341,3 +373,131 @@ class Params:
         receiving = not (marks | types).isdisjoint(ACCESSOR_RECEIVER_WORDS)
         return receiving or self.request_named(d) or self.handler(d.scope).route
 
+
+# ── A47 D23-d: the ENTRY functions of a file ─────────────────────────────────
+
+
+class _Entries:
+    """One file's ENTRY functions (A47 D23-d), read once: ``Params.entries`` keeps the set.
+
+    An entry is a function an outside caller can reach: where the language exports
+    (``LanguageProfile.export_chains``: JavaScript / TypeScript) an EXPORTED one
+    (``_exported``), and in every language a PUBLIC top-level named one
+    (``LanguageProfile.public_name``; ``function_of == -1``, so a method of a top-level class
+    too) that no same-file call site resolves to (``_uncalled``). One pass over the file's
+    functions, its EXPORT nodes and its ASSIGNs, and one read of the local-call edges
+    (``Calls.called``, memoised there); an exported name reads its Defs and the top-level
+    classes of its name, indexed once."""
+
+    def __init__(self, model: FileModel, scope: ScopeTable, calls: Calls) -> None:
+        self._m = model
+        self._scope = scope
+        self._calls = calls
+        self._profile = PROFILES[model.language]  # a model is of a validated language
+        self._classes: dict[str, list[int]] | None = None  # built on first use
+
+    def read(self) -> frozenset[int]:
+        return frozenset(chain(self._exported(), self._uncalled()))
+
+    # ── public, top-level and uncalled (every language) ──
+
+    def _uncalled(self) -> Iterator[int]:
+        """The public top-level named FUNCTIONs that no ``Calls.local`` call site reaches
+        (``Calls.called``); a reference (``items.forEach(f)``) is no call site."""
+        called = self._calls.called()
+        return (fn for fn in self._m.functions() if fn not in called and self._public(fn))
+
+    def _public(self, fn: int) -> bool:
+        """``fn`` is top-level and its declared name is public (``public_name``; an anonymous
+        one has none)."""
+        return self._top(fn) and self._profile.public_name(self._declared_name(fn))
+
+    def _top(self, node: int) -> bool:
+        """``node`` is in no FUNCTION (module level)."""
+        return self._m.function_of(node) == -1
+
+    def _declared_name(self, fn: int) -> str:
+        """``fn``'s declared name: its NAME's last identifier (W3), so a C++ out-of-line method
+        (``Store::readEntry``) is named as the same method defined in its class."""
+        return identifier_text(self._m, last_identifier(self._m, first(self._m, fn, Field.NAME)))
+
+    # ── exported (JavaScript / TypeScript) ──
+
+    def _exported(self) -> Iterator[int]:
+        """The top-level functions an ``export`` statement holds (``_held``), and the ones each
+        value an ``export`` lists (``export { f }``, ``export default f``) or a CommonJS export
+        assigns names (``_value_fns``)."""
+        if not self._profile.export_chains:
+            return iter(())
+        listed = chain.from_iterable(map(self._m.children, self._m.nodes(Kind.EXPORT)))
+        values = chain(listed, self._commonjs_values())
+        held = filter(self._held, self._m.functions())
+        return chain(held, chain.from_iterable(map(self._value_fns, values)))
+
+    def _held(self, fn: int) -> bool:
+        """``fn`` is top-level and its module-level statement is an ``export`` (``export
+        function``, ``export default function``, ``export const f = () => ...``, an ``export
+        class``'s methods)."""
+        return self._top(fn) and is_kind(self._m, top_statement(self._m, fn), Kind.EXPORT)
+
+    def _commonjs_values(self) -> Iterator[int]:
+        """The value of each top-level ASSIGN to ``exports.x`` or ``module.exports[.x]``."""
+        assigns = filter(self._commonjs, self._m.nodes(Kind.ASSIGN))
+        return chain.from_iterable(self._m.children(a, Field.RHS) for a in assigns)
+
+    def _commonjs(self, assign: int) -> bool:
+        """A top-level ASSIGN whose target is a chain from CommonJS's export object: its root,
+        or its root and next segment, is one of the profile's ``export_chains``."""
+        if not self._top(assign):
+            return False
+        links, root = chain_root(self._m, first(self._m, assign, Field.LHS))
+        head = (self._m.ident(root), segment(self._m, links[-1])) if links else ()
+        return not self._profile.export_chains.isdisjoint((head[:1], head))
+
+    def _value_fns(self, value: int) -> Iterable[int]:
+        """The FUNCTIONs an exported value names (``_named_fns``); for an OBJECT, the ones its
+        members name — one level, no deeper (``{ read }``, ``{ read: readEntry }``, a method)."""
+        if not is_kind(self._m, value, Kind.OBJECT):
+            return self._named_fns(value)
+        members = map(self._member_value, self._m.children(value))
+        return chain.from_iterable(map(self._named_fns, members))
+
+    def _member_value(self, member: int) -> int:
+        """An OBJECT member's value: a PAIR's VALUE, else the member itself."""
+        return pair_part(self._m, member, Field.VALUE)
+
+    def _named_fns(self, value: int) -> Iterable[int]:
+        """A FUNCTION itself, a CLASS's methods, a NAME's bound function or class
+        (``_bound``)."""
+        if is_kind(self._m, value, Kind.NAME):
+            return chain.from_iterable(map(self._fns_of, self._bound(value)))
+        return self._fns_of(value)
+
+    def _bound(self, name: int) -> list[int]:
+        """What the NAME ``name`` binds: its Defs' values, then the file's top-level CLASS
+        declarations of its name (A47 (5)(a), (6)(b): a class declaration makes no scope Def,
+        and none is added; a Def holding no function or class, ``X = register(X)``, does not
+        hide the class declared as ``X``)."""
+        defs = self._scope.resolve(name)
+        declared = self._declared().get(self._m.ident(name) or "", ())
+        return [*(d.value for d in defs if d.value is not None), *declared]
+
+    def _fns_of(self, value: int) -> Sequence[int]:
+        """A FUNCTION itself, a CLASS's methods, else none."""
+        if is_kind(self._m, value, Kind.CLASS):
+            return methods_of(self._m, value)
+        return (value,) if is_kind(self._m, value, Kind.FUNCTION) else ()
+
+    def _declared(self) -> Mapping[str, list[int]]:
+        """The file's top-level CLASSes by declared name, indexed on first use."""
+        if self._classes is None:
+            self._classes = self._top_classes()
+        return self._classes
+
+    def _top_classes(self) -> dict[str, list[int]]:
+        """Each named top-level CLASS (``function_of == -1``) under its name, in order."""
+        found: dict[str, list[int]] = {}
+        for cls in filter(self._top, self._m.nodes(Kind.CLASS)):
+            found.setdefault(named(self._m, cls), []).append(cls)
+        found.pop("", None)  # an anonymous class expression declares no name
+        return found

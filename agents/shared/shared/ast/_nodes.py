@@ -38,14 +38,17 @@ __all__ = [
     "kids_outside",
     "last_segment",
     "member_object",
+    "methods_of",
     "named",
     "object_of",
     "of_kind",
     "open_links",
+    "pair_part",
     "params_in",
     "parsed_buffer",
     "preorder",
     "segment",
+    "top_statement",
     "unawaited",
     "union",
 ]
@@ -282,3 +285,25 @@ def segment(model: FileModel, link: int) -> str | None:
     fld, kind = _SEGMENTS[model.kind(link)]
     part = first(model, link, fld)
     return model.ident(part) if is_kind(model, part, kind) else None
+
+
+def top_statement(model: FileModel, node: int) -> int:
+    """The module-level statement holding ``node``: its ancestor, or ``node`` itself, whose
+    parent is the MODULE (``edges_up``); ``-1`` when none is within ``MAX_DEPTH`` (and for
+    ``-1``, which ``ancestors`` would read as the last node)."""
+    if node < 0:
+        return -1
+    edges = edges_up(model, node)
+    return next((child for child, up in edges if model.kind(up) is Kind.MODULE), -1)
+
+
+def methods_of(model: FileModel, cls: int) -> list[int]:
+    """A CLASS's methods: the FUNCTION children of its BODY, in document order."""
+    bodies = model.children(cls, Field.BODY)
+    return [fn for body in bodies for fn in kids_of(model, body, Kind.FUNCTION)]
+
+
+def pair_part(model: FileModel, node: int, fld: Field) -> int:
+    """A PAIR's child under ``fld`` (an OBJECT member's VALUE, an aliased import's KEY), else
+    ``node`` itself."""
+    return first(model, node, fld) if is_kind(model, node, Kind.PAIR) else node

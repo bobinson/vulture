@@ -140,7 +140,10 @@ next audit retries the file.
 * **Origins.** Every value carries a set of origins: `external(role, via)`
   (role `request`, `network`, `upload`, `argv`, `stdin`, `env`, `error` or the
   `param_hint` heuristic; `via` the sanitiser roles it passed), `constant`, or
-  `unknown(reason)` (`param`, `unresolved`, `external_call`, `recursion`, …).
+  `unknown(reason)` (`param`, `argv`, `unresolved`, `external_call`,
+  `recursion`, …). `external(argv)` is only the `argv` parameter of a C/C++
+  `main`; every other read of a program's own arguments (`process.argv`,
+  `sys.argv`, a name `argv`) is `unknown(argv)`.
   A call to an unknown callee passes its arguments' origins through. A call to
   a same-file function is summarised (at most 1 + 4 summaries per callee,
   nesting depth 2; re-entering a callee is `unknown(recursion)`).
@@ -153,9 +156,18 @@ next audit retries the file.
   request sink only with HTTP-client evidence and never on a collection
   receiver; a regex or data-store receiver runs no command; a container word
   (`params`, `body`, …) is a request source only in request context; a
-  dominating validation call statement is a guard; and `<stem>sync` is a path
-  sink when `<stem>` is. The lexicons live in `shared/ast/roles/`, one home
-  each.
+  dominating validation call statement and an early exit are read in the
+  sink's block and in every block enclosing it up to its function's body,
+  never across a nested function, so neither guards a sink inside a callback
+  placed after it; `<stem>sync` is a path sink when `<stem>` is; and a
+  generic file verb (`open`, `copy`, `save`, …) is a path sink only with
+  file-system evidence (a file-system word in the callee or receiver chain or
+  in the module path its import names, or a call to a language global such
+  as Python's `open`). That import is the one of the bare callee or of the
+  receiver chain's root (`cp` in `cp.execFile` after
+  `const cp = require("child_process")`), and a multi-word command callee
+  finds its process word the same way. The lexicons live in
+  `shared/ast/roles/`, one home each.
 * **The decision.** `decide(flow, rule, ctx)` is the only place a flow is
   judged:
   * `report` when an external origin of a role the family accepts reaches the
@@ -167,9 +179,13 @@ next audit retries the file.
     rule's named heuristic reports it.
 * **Named heuristics.** Two places use a name, not a flow, and say so on the
   row: the parameter-name hint (a parameter named like `filename` or
-  `dest_path` is an external origin of role `param_hint`, shown as
+  `dest_path` of an entry function of the file — an exported one in
+  JavaScript/TypeScript (a function, or a method of a class exported by
+  name), or a public top-level one no call in the file reaches — is an
+  external origin of role `param_hint`, shown as
   `external:param_hint`), and the CWE-78 command parameter heuristic (an
-  UNKNOWN-only flow holding a function parameter reports when the sink shells
+  UNKNOWN-only flow holding a function parameter or a program argument,
+  `unknown(param)` or `unknown(argv)`, reports when the sink shells
   the argument, the argument is built, or it is the whole command of a
   command builtin of the profile's own table (`new ProcessBuilder(cmd)`),
   unless a caller in the same file binds the parameter; the row carries
@@ -237,7 +253,7 @@ tallies and degrades in the conservative direction, never loops.
 | branch nesting per function | `MAX_BRANCH_DEPTH` 32 | `unknown(depth)`, tallied |
 | origins per value | `MAX_ORIGINS` 16 | collapse to a reportable set, tallied |
 | callee summaries | `MAX_SUMMARY_SIGNATURES` 4, `MAX_SUMMARY_DEPTH` 2 | `unknown(summary_cap)`, tallied |
-| guard search | `MAX_ARG_NAMES` 16, `MAX_TEST_NODES` 64, `GUARD_WINDOW` 8 preceding `if`/`try` | an unexamined guard is no guard (reportable) |
+| guard search | `MAX_ARG_NAMES` 16, `MAX_TEST_NODES` 64, `GUARD_WINDOW` 8 preceding `if`/`try` statements and 8 preceding check calls in each block from the sink's up to its function's body | an unexamined guard is no guard (reportable) |
 | arguments per call | `MAX_ARGS` 16 | the rest unread, tallied |
 | hops per flow | `MAX_HOPS` 8 | the first 8 kept, `truncated` |
 | declines per label | `MAX_SUPPRESSIONS_PER_RULE` 50 | label named in `capped_rules` |
@@ -380,6 +396,13 @@ examples in the CWE agent's `SKILLS.md`:
   word is not seen.
 * No exhaustiveness analysis of switch/match arms; a switch is never a guard;
   C/C++ `case` fall-through is not followed.
+* An exit or a check call before a nested function guards nothing inside it,
+  but an enclosing `if` is still read across that boundary: its test covers a
+  sink in a callback in its body even when the value is reassigned before the
+  callback runs (a recorded decline).
+* A TypeScript `abstract class` is not modelled as a class: a `this.m()` call
+  inside it resolves to no method, and its public methods read as uncalled
+  top-level functions (entry functions for the parameter-name hint).
 * The C preprocessor is not expanded: a macro that breaks the parse sends the
   file to the regex fallback, and a sink behind a macro that parses cleanly is
   invisible. `.h` files parse with the C grammar.

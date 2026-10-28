@@ -1,9 +1,13 @@
-"""Guards (feature 0102, LLD §8.5 "Guard", §8.4 R-R, §8.7; L4, L11, L12, W2, W8, A29, A32).
+"""Guards (feature 0102, LLD §8.5 "Guard", §8.4 R-R, §8.7, §8.8 (h); L4, L11, L12, W2, W8,
+A29, A32, A47).
 
 ``guards_for(sink, arg)`` answers the ``Guard(node, roles)`` records of one sink argument, in a
 deterministic order — the sink's IF ancestors (nearest first, at most ``MAX_DEPTH``), then the
-``GUARD_WINDOW`` nearest IF or TRY siblings preceding ``stmt(sink)`` in ``block_of(sink)`` (a
-plain statement takes no window slot, A29 (4)).
+window: in ``block_of(sink)`` and in each BLOCK enclosing it up to the body of the FUNCTION
+holding ``block_of(sink)`` (the MODULE when none), nearest block first, the ``GUARD_WINDOW``
+nearest IF or TRY siblings preceding the sink's ancestor statement there (a plain statement
+takes no window slot, A29 (4)); an early exit dominates the rest of its function (A47 (h));
+then the check CALL statements before the sink in those same blocks (A44 (1) (d), A47 (6)(g)).
 
 **Reads (A29 (3), W8).** ``roots(arg)`` is the reads of the argument subtree — its FIRST
 ``MAX_ARG_NAMES`` read sites in document order (A32) — each a ``(Def, member path)`` pair, the
@@ -31,8 +35,9 @@ every CATCH exits (a ``try``/``finally`` has none, so a failing check propagates
 
 **Cost (§8.7).** Every fact of a guard candidate — a TEST's reads, a body's ``exits``, a TRY's
 checked Defs, an IF's roles — is computed once per node, and a block's IF / TRY children once
-per block, so one sink costs the caps (``MAX_DEPTH`` ancestors, ``GUARD_WINDOW`` siblings found
-by bisection, ``MAX_TEST_NODES`` × ``MAX_ARG_NAMES`` read pairs), never the size of its block.
+per block, so one sink costs the caps (``MAX_DEPTH`` ancestors, at most ``MAX_DEPTH`` window
+blocks of ``GUARD_WINDOW`` siblings each found by one bisection, ``MAX_TEST_NODES`` ×
+``MAX_ARG_NAMES`` read pairs), never the size of its blocks.
 """
 
 from __future__ import annotations
@@ -40,13 +45,12 @@ from __future__ import annotations
 from bisect import bisect_left
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from itertools import chain, islice
+from itertools import chain, islice, takewhile
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from shared.ast._nodes import (
     CHAINS,
-    ancestors,
     cached,
     chain_links,
     edges_up,
@@ -82,6 +86,7 @@ __all__ = ["Guards"]
 type _Path = tuple[str | None, ...]  # a read's member path (M1: None is a dynamic key)
 type _Read = tuple[int, _Path]  # (the Def's position, member path)
 type _Roots = Mapping[int, list[_Path]]  # a sink argument's reads, by the Def's position
+type _Edges = Sequence[tuple[int, int]]  # ``(stmt, block)`` pairs up from a sink, nearest first
 
 _EXITS = frozenset({Kind.RETURN, Kind.THROW, Kind.JUMP})
 _NO_DEFS: frozenset[int] = frozenset()  # a TRY that checks no Def (memoised per TRY)
@@ -124,7 +129,9 @@ class Guards:
         roots = _by_def(self._reads_of(islice(self._sites(arg, self._m.node_count), MAX_ARG_NAMES)))
         if not roots:
             return ()
-        return (*self._ancestors(sink, roots), *self._window(sink, roots), *self._checks_of(sink, roots))
+        own = self._own_blocks(sink)  # one walk up, read by both window clauses
+        window, checks = self._window(own, roots), self._checks_of(own, roots)
+        return (*self._ancestors(sink, roots), *window, *checks)
 
     # ── reads (A29 (3), W8) ──
 
@@ -196,36 +203,40 @@ class Guards:
     def _negated(self, test: int) -> bool:
         return self._m.kind(test) is Kind.UNARY and self._m.ident(test) in NEGATION_OPERATORS
 
-    def _window(self, sink: int, roots: _Roots) -> Iterator[Guard]:
-        """Clause (a) and R-R: the ``GUARD_WINDOW`` nearest IF / TRY siblings before
-        ``stmt(sink)``."""
-        for sibling in self._earlier(sink):
-            if _WINDOW_TESTS[self._m.kind(sibling)](self, sibling, roots):
-                yield self._guard(sibling)
+    def _window(self, own: _Edges, roots: _Roots) -> Iterator[Guard]:
+        """Clause (a) and R-R (A47 (h)): in each of the sink's own blocks, nearest first
+        (``_own_blocks``), its window siblings (``_window_in``) that are guards."""
+        for statement, block in own:
+            for sibling in self._window_in(block, statement):
+                if _WINDOW_TESTS[self._m.kind(sibling)](self, sibling, roots):
+                    yield self._guard(sibling)
 
-    def _earlier(self, sink: int) -> Sequence[int]:
-        """The ``GUARD_WINDOW`` IF and TRY siblings preceding ``stmt(sink)`` in
-        ``block_of(sink)``, nearest first (a plain statement takes no slot, A29 (4)): node ids
-        are in document order, so the block's IF / TRY children bisect at ``stmt(sink)``."""
-        block = self._m.block_of(sink)
-        if block < 0:
-            return ()
+    def _own_blocks(self, sink: int) -> _Edges:
+        """``(stmt, block)`` for ``block_of(sink)`` and each BLOCK enclosing it up to the body
+        of the FUNCTION holding ``block_of(sink)`` (the MODULE when none), nearest first:
+        ``_enclosing`` cut at the function boundary (A47 (h), (6)(g)). R-O joins every Def of a
+        closure read, so neither an exit nor a check statement before a nested function's
+        statement guards its body."""
+        function_of = self._m.function_of
+        fn = function_of(self._m.block_of(sink))
+        return tuple(takewhile(lambda edge: function_of(edge[1]) == fn, self._enclosing(sink)))
+
+    def _enclosing(self, sink: int) -> Iterator[tuple[int, int]]:
+        """``(stmt, block)`` for each BLOCK or MODULE above the sink, ``stmt`` its child on the
+        way down to the sink."""
+        edges = edges_up(self._m, sink)
+        return ((child, node) for child, node in edges if self._m.kind(node) in BLOCK_KINDS)
+
+    def _window_in(self, block: int, statement: int) -> Sequence[int]:
+        """The ``GUARD_WINDOW`` IF and TRY children of ``block`` preceding ``statement``,
+        nearest first (a plain statement takes no slot, A29 (4)): node ids are in document
+        order, so the block's IF / TRY children (once per block) bisect at ``statement``."""
         windowed = cached(self._facts.windowed, block, self._windowed)
-        return _nearest_before(windowed, windowed, self._statement(sink, block))
+        return _nearest_before(windowed, windowed, statement)
 
     def _windowed(self, block: int) -> list[int]:
         """``block``'s IF and TRY children, in document order."""
         return [s for s in self._m.children(block) if self._m.kind(s) in _WINDOWED]
-
-    def _statement(self, sink: int, block: int) -> int:
-        """``stmt(sink)``: the sink's ancestor that is a direct child of ``block`` (the last
-        one ``ancestors`` reads when none is)."""
-        node = sink
-        for parent in ancestors(self._m, sink):
-            if parent == block:
-                break
-            node = parent
-        return node
 
     def _early_exit(self, branch_if: int, roots: _Roots) -> bool:
         """Clause (a): a TEST, a CONSEQ that exits, and reads that meet the roots."""
@@ -286,21 +297,15 @@ class Guards:
 
     # ── statement-level checks (A44 (1) (d) (i), (iii)) ──
 
-    def _checks_of(self, sink: int, roots: _Roots) -> Iterator[Guard]:
-        """The check CALL statements that dominate the sink: in each block enclosing it (at
-        most ``MAX_DEPTH`` up), the ``GUARD_WINDOW`` nearest before the sink's statement there,
-        nearest block first, each a guard when it checks a root (``_check_roles``)."""
-        for statement, block in self._enclosing(sink):
+    def _checks_of(self, own: _Edges, roots: _Roots) -> Iterator[Guard]:
+        """The check CALL statements that dominate the sink: in each of its own blocks
+        (``_own_blocks``, A47 (6)(g)), the ``GUARD_WINDOW`` nearest before the sink's statement
+        there, nearest block first, each a guard when it checks a root (``_check_roles``)."""
+        for statement, block in own:
             for call in self._preceding(block, statement):
                 roles = self._check_roles(call, roots)
                 if roles:
                     yield Guard(call, roles)
-
-    def _enclosing(self, sink: int) -> Iterator[tuple[int, int]]:
-        """``(stmt, block)`` for each BLOCK or MODULE above the sink, ``stmt`` its child on the
-        way down to the sink."""
-        edges = edges_up(self._m, sink)
-        return ((child, node) for child, node in edges if self._m.kind(node) in BLOCK_KINDS)
 
     def _preceding(self, block: int, statement: int) -> Sequence[int]:
         """The check CALLs of ``block``'s statements before ``statement``, the

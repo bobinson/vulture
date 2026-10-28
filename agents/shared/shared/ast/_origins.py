@@ -1,5 +1,5 @@
 """The origin pass (feature 0102, LLD §8.1, §8.2, §8.4, §8.7; L6, W6, W8, W9, W11, W12, R-I,
-R-J, R-K, R-O, R-Q, R-S, A28).
+R-J, R-K, R-O, R-Q, R-S, A28, A47 D22-c).
 
 ``Engine`` answers ``origins`` for three kinds of KEY, each memoised: a node in a context
 (``_NODE``), a Def in a context (``_DEF``) and the union of a summarised function's return
@@ -57,6 +57,7 @@ from shared.ast._nodes import (
 )
 from shared.ast._params import Params
 from shared.ast._records import (
+    ARGV,
     CONSTANT,
     EMPTY,
     EXTERNAL,
@@ -116,6 +117,7 @@ CONSTANTS: Origins = frozenset({CONSTANT})
 _OVERFLOWED: Origins = frozenset({OVERFLOW})
 _UNRESOLVED: Origins = frozenset({unknown("unresolved")})
 _PARAM: Origins = frozenset({PARAM})
+_ARGV: Origins = frozenset({ARGV})
 _ERROR = only("error")
 _NETWORK = only("network")
 _REQUEST = only("request")
@@ -447,7 +449,7 @@ class Engine:
         name = self.m.ident(node) or ""
         role = self._builtin_sources.get(name)
         if role is not None:
-            return only(role)
+            return _minted(role)
         return _source_roles(name, bound=False) or _UNRESOLVED
 
     def _chain(self, ctx: int, node: int) -> Answer:
@@ -528,7 +530,7 @@ class Engine:
         """R-U: ``external(request)``; a reading function: ``external(role)`` ∪ its arguments."""
         role = self.params.source_role(call) or ""
         parts = yield from _gather(self.node_key(ctx, a) for a in self.calls.values(call))
-        return _union((only(role), *parts))
+        return _union((_minted(role), *parts))
 
     def _value_call(self, ctx: int, call: int) -> Need:
         """The value-level CALL rows, in §8.2's order: the accessor shape (L6, W9 (c)), a
@@ -813,19 +815,29 @@ def _sanitised(args: Origins, roles: frozenset[str]) -> Origins:
 _SOURCE_TABLES: tuple[Mapping[str, frozenset[str]], ...] = (SOURCE_WORDS, BOUND_SOURCE_WORDS)
 
 
+def _minted(role: str) -> Origins:
+    """The origin a source table's ``role`` mints: ``external(role)``, but ``unknown(argv)``
+    for argv (A47 D22-c) — a program's own arguments are external only through C4, C/C++
+    ``main``'s argv parameter, which ``_params`` mints. Every source word, conditional root,
+    profile builtin source and reading function is minted here, so no other read is
+    ``external(argv)``."""
+    return _ARGV if role == ARGV.role else only(role)
+
+
 @lru_cache(maxsize=WORDS_MEMO)
 def _source_roles(text: str, *, bound: bool) -> Origins:
-    """``external(role)`` for each source role a word of ``text`` hits (W9 (b)), read as a
+    """``_minted(role)`` for each source role a word of ``text`` hits (W9 (b)), read as a
     bound name or not (``_SOURCE_TABLES``); memoised like ``words()``, under the same bound."""
     found = words(text)
-    return _union(only(role) for role, lexicon in _SOURCE_TABLES[bound].items() if not lexicon.isdisjoint(found))
+    tables = _SOURCE_TABLES[bound].items()
+    return _union(_minted(role) for role, lexicon in tables if not lexicon.isdisjoint(found))
 
 
 def _conditional_source(root: str, following: str) -> Origins:
-    """W9 (b): ``external(role)`` when ``CONDITIONAL_SOURCE_ROOTS`` names the chain's root
+    """W9 (b): ``_minted(role)`` when ``CONDITIONAL_SOURCE_ROOTS`` names the chain's root
     identifier with the segment that follows it, else nothing."""
     role = CONDITIONAL_SOURCE_ROOTS.get(glue(root), EMPTY_MAP).get(glue(following))
-    return only(role) if role else EMPTY
+    return _minted(role) if role else EMPTY
 
 
 def _imported(symbol: str) -> Origins:

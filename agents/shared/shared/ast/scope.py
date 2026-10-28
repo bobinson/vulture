@@ -96,6 +96,7 @@ from shared.ast._nodes import (
     kids_outside,
     last_segment,
     open_links,
+    pair_part,
     params_in,
     segment,
     unawaited,
@@ -118,9 +119,10 @@ __all__ = [
     "ScopeTable",
     "StateFactory",
     "Use",
-    "binds_whole_module",
+    "bound_source",
     "decorators",
     "import_call",
+    "module_of",
 ]
 
 # ── records (§7.1, A22, A24) ─────────────────────────────────────────────────
@@ -1551,15 +1553,28 @@ def import_call(model: FileModel, node: int) -> bool:
     return callee >= 0 and model.ident(callee) in _IMPORT_CALLS
 
 
-def binds_whole_module(model: FileModel, d: Def) -> bool:
-    """An import Def whose bound name sits under its IMPORT's SOURCE — a whole module (Python
-    ``import m`` / ``import m as n``), not a member it names (``from m import x``, a JS
-    specifier): ``_Pass._imported``'s choice, read back off the tree from the bound name up
-    to the IMPORT (at most ``MAX_CHAIN`` nodes)."""
+def bound_source(model: FileModel, d: Def) -> int:
+    """The SOURCE child of an import Def's IMPORT that holds its bound name — a whole module
+    (Python ``import m`` / ``import m as n``), the one of several it binds (``import os, store
+    as sh``: ``sh`` sits under ``store as sh``) — else ``-1`` (a member it names, ``from m
+    import x``, a JS specifier; any other Def): ``_Pass._imported``'s choice, read back off the
+    tree from the bound name up to the IMPORT (at most ``MAX_CHAIN`` nodes)."""
     if d.kind != "import":
-        return False
+        return -1
     below = takewhile(lambda node: node != d.value, islice(and_ancestors(model, d.node), MAX_CHAIN))
-    return any(model.field(node) is Field.SOURCE for node in below)
+    return next((node for node in below if model.field(node) is Field.SOURCE), -1)
+
+
+def module_of(model: FileModel, d: Def) -> int:
+    """The node naming the module an import Def binds from: its ``bound_source``, else its
+    IMPORT's first SOURCE (``from m import x``, a JS specifier); an aliased whole-module
+    import's PAIR by its KEY (``import shutil as sh``); ``-1`` for none (a Java or PHP import
+    names its module by no SOURCE child)."""
+    if d.kind != "import" or d.value is None:
+        return -1
+    held = bound_source(model, d)
+    source = held if held >= 0 else first(model, d.value, Field.SOURCE)
+    return pair_part(model, source, Field.KEY)
 
 
 # ── decorators (W7, A22) ─────────────────────────────────────────────────────

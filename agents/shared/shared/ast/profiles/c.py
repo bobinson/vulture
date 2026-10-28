@@ -18,6 +18,7 @@ from shared.ast.profiles import (
     COMMAND,
     IF_ROW,
     LOOP_BODY,
+    NO_FAMILY,
     PATH,
     Builtin,
     LanguageProfile,
@@ -67,14 +68,13 @@ _NODE_MAP = {
     "ERROR": cap(K.ERROR),
 }
 
-_NO_FAMILY = Builtin(frozenset())
-
 _BUILTINS = {
     # L9/P4: openat(dirfd, path, flags) - arg 0 is a directory fd.
     "openat": Builtin(PATH, path_args=(1,)),
     # C5/P4/R5: arg 0 is an fd (read, write) or a buffer (fread, fgets, fwrite), never a path;
-    # the EMPTY family set overrides the generic `read`/`write` path words.
-    **dict.fromkeys(("read", "fread", "fgets", "write", "fwrite"), _NO_FAMILY),
+    # the EMPTY family set overrides the generic `read`/`write` path words (the one shared
+    # ``NO_FAMILY`` entry, A47 (2) (i)).
+    **dict.fromkeys(("read", "fread", "fgets", "write", "fwrite"), NO_FAMILY),
     # posix_spawn(pid, path, actions, attrs, argv, envp): the program is arg 1.
     "posixspawn": Builtin(COMMAND, command_args=(1,)),
 }

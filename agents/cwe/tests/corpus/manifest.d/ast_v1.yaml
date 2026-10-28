@@ -299,3 +299,31 @@
 - {file: ast_v1/cwe_22_69_clean.js, language: JavaScript, cwe: "22", expectation: negative}
 - {file: ast_v1/cwe_22_70.js, language: JavaScript, cwe: "22", expectation: positive, line: 9}
 - {file: ast_v1/cwe_918_25_clean.js, language: JavaScript, cwe: "918", expectation: negative}
+
+# ── Real-code precision rows (A47) ──
+# Stage D round 2: the same kind of synthetic reproductions for the four rules
+# A47 adds, each stated once, in the shared suite's
+# tests/unit/ast/test_0102_precision_a47.py.
+# D23-d CWE-22: the parameter-name hint only for an entry function's parameter
+- {file: ast_v1/cwe_22_78.ts, language: TypeScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_78_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_79.py, language: Python, cwe: "22", expectation: positive, line: 3}
+- {file: ast_v1/cwe_22_79_clean.py, language: Python, cwe: "22", expectation: negative}
+# D22-c: argv is external only in C/C++ main (C4); elsewhere only D25 reports it
+- {file: ast_v1/cwe_22_80_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_78_26.py, language: Python, cwe: "78", expectation: positive, line: 7}
+- {file: ast_v1/cwe_78_26_clean.py, language: Python, cwe: "78", expectation: negative}
+# (h) CWE-22: an early exit in an enclosing block guards a nested sink
+- {file: ast_v1/cwe_22_71.ts, language: TypeScript, cwe: "22", expectation: positive, line: 14}
+- {file: ast_v1/cwe_22_71_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_72.py, language: Python, cwe: "22", expectation: positive, line: 16}
+- {file: ast_v1/cwe_22_72_clean.py, language: Python, cwe: "22", expectation: negative}
+# (i) CWE-22: a generic path verb is a path sink only with file-system evidence
+- {file: ast_v1/cwe_22_73.js, language: JavaScript, cwe: "22", expectation: positive, line: 9}
+- {file: ast_v1/cwe_22_73_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_74.py, language: Python, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_74_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_75_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_76_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_77_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_go_4_clean.go, language: Go, cwe: "22", expectation: negative}

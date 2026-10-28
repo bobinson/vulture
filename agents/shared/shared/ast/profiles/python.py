@@ -106,6 +106,13 @@ _NODE_MAP = {
     "ERROR": cap(K.ERROR),
 }
 
+
+def _public(name: str) -> bool:
+    """A47 D23-d: a public Python name has no leading ``_`` (``_helper``, ``__init__`` are
+    not)."""
+    return bool(name) and not name.startswith("_")
+
+
 PYTHON = LanguageProfile(
     language="python",
     grammar_module="tree_sitter_python",
@@ -121,4 +128,5 @@ PYTHON = LanguageProfile(
     # R9: os.replace(src, dst) - both arguments are paths; `replace` alone is no sink.
     builtin_sinks=frozen(pair("os", "replace", EVERY_ARG_PATH)),
     arm_types=frozenset(_ARMS),
+    public_name=_public,
 )

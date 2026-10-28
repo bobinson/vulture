@@ -39,8 +39,9 @@ does not carry, so the walk, not the capture list, builds the document:
   shift (it is opened as a placeholder and collapsed afterwards when it holds fewer than two);
 * every other unlisted node is transparent: its shipped descendants hang from the nearest
   shipped ancestor under the Field its OUTERMOST transparent ancestor was captured with;
-* a PRUNED type, and a type name (W3) outside an ANNOTATION/CALLEE position, is dropped
-  with its subtree. Every transparent and dropped type is tallied in ``unmapped``;
+* a PRUNED type, and a type name (W3) outside an ANNOTATION/CALLEE position that no
+  ``(parent type, type)`` row names, is dropped with its subtree. Every transparent and
+  dropped type is tallied in ``unmapped``;
 * a row with ``callee_from`` (C3, A28 (9): the C++ stack constructor ``std::ifstream
   in(p.c_str())``) ships its node as a synthetic CALL whose CALLEE is a COPY of the name
   chain the nearest shipped ancestor holds under that Field — the declaration's type, shipped
@@ -574,9 +575,11 @@ def _positioned(frame: _Frame, position: int) -> int:
     return _segment_field(frame, position) if own is None else own
 
 
-def _misplaced_type(node_type: str, field: int, frame: _Frame) -> bool:
-    """W3: a type name outside ANNOTATION/CALLEE and outside a compound name there."""
-    return node_type in _TYPE_NAMES and field not in _TYPE_FIELDS and not frame.types
+def _misplaced_type(kid: int, field: int, frame: _Frame) -> bool:
+    """W3: a type name (``type_name``'s nodes) outside ANNOTATION/CALLEE and outside a compound
+    name there, that no ``(parent type, type)`` row names for its parent (W1: a TypeScript
+    class's name)."""
+    return kid not in frame.paired and field not in _TYPE_FIELDS and not frame.types
 
 
 def _member_frame(node: tree_sitter.Node, child: _Frame, field: int, frame: _Frame) -> None:
@@ -825,8 +828,9 @@ class _Skeleton:
     def type_name(
         self, node: tree_sitter.Node, kid: int, frame: _Frame, field: int, row: _Row
     ) -> bool:
-        """W3: a type name outside the positions the analysis reads is dropped."""
-        if _misplaced_type(self._names[kid], field, frame):
+        """W3: a type name outside the positions the analysis reads is dropped
+        (``_misplaced_type``)."""
+        if _misplaced_type(kid, field, frame):
             return self.pruned(node, kid, frame, field, row)
         return self.paired(node, kid, frame, field, row)
 

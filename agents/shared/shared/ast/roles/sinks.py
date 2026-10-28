@@ -38,7 +38,9 @@ __all__ = [
     "COMMAND_WEAK",
     "DATA_STORE_WORDS",
     "EXIT_WORDS",
+    "FILE_SYSTEM_WORDS",
     "FLAG_LITERALS",
+    "GENERIC_PATH_VERBS",
     "GENERIC_REQUEST_VERBS",
     "PATH_KWARGS",
     "PATH_SYNC_TWINS",
@@ -105,6 +107,26 @@ SINK_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
 # structural suffix rule of the sink lookup (``sync_twin``), never a per-name entry;
 # `readfilesync`, the one entry that predates the rule, stays.
 SYNC_SUFFIX = "sync"
+
+# ── path: generic verbs and file-system evidence (A47 (2) (i)) ───────────────
+
+# The path sink keys that are generic verbs: a list, a DOM node, a form, a storage object, a
+# buffer or a document parser answers them as often as a file API does, so each - and its
+# synchronous twin, read as its stem - is a path sink only with file-system evidence
+# (``_calls``): a FILE_SYSTEM_WORDS word in the callee chain, the receiver chain or the whole
+# module path its binding is imported from, or a bare call to a language global. Every other
+# path key names a file operation by itself.
+GENERIC_PATH_VERBS = frozenset({
+    "open", "read", "write", "append", "remove", "rename", "copy", "move", "truncate", "exists",
+    "access", "watch", "walk", "stream", "save", "load", "extract",
+})
+# The file-system concept words that evidence shows a file API by (`fs`, `Files`, `os.path`,
+# `uploadDir`, `node:fs/promises`). `shutil` follows PROCESS_WORDS' `subprocess`: a concept
+# word that is also a module name. A storage, root, cache or buffer concept is none.
+FILE_SYSTEM_WORDS = frozenset({
+    "fs", "file", "files", "path", "paths", "dir", "dirs", "directory", "folder", "filesystem",
+    "os", "shutil",
+})
 
 # ── request: generic verbs and HTTP-client evidence (A44 (1) (a)) ────────────
 

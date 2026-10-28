@@ -58,11 +58,12 @@ pytestmark = pytest.mark.usefixtures("real_pool")
 # ── the §9.1 tables, by kind ─────────────────────────────────────────────────
 
 # Mode (a): the sink-side callee lexicons, stored glued (L1 (a)); A27 (6) names the §8.2 R-J
-# merge keys MERGE_WORDS.
+# merge keys MERGE_WORDS; A47 (2) (i)'s GENERIC_PATH_VERBS are path sink keys.
 SINK_SIDE_TABLES = (
     "SINK_WORDS", "COMMAND_STRONG", "COMMAND_WEAK", "REQUEST_TERMINAL_WORDS",
     "COMMAND_BUILDER_WORDS", "OUTPUT_PARAM_WORDS", "EXIT_WORDS", "REQUEST_SINK_NO_POSITIONAL",
     "ACCESSOR_WORDS", "HANDLER_REGISTRATION_WORDS", "ITERATION_WORDS", "MERGE_WORDS",
+    "GENERIC_PATH_VERBS",
 )
 # Mode (b): the guard and sanitiser WORD lexicons and the composition word sets (P1, R4, L12).
 ROLE_WORD_TABLES = (
@@ -71,12 +72,13 @@ ROLE_WORD_TABLES = (
 )
 # R4: the EXACT glued callee-key lexicons (language builtin spellings and single words).
 EXACT_KEY_TABLES = ("MEMBERSHIP_KEYS", "EQUALITY_KEYS", "SANITIZER_KEYS", "GUARD_KEYS")
-# Mode (c): the word sets, matched on ``roles.words`` (W4 adds TYPE_ANNOTATION_WORDS).
+# Mode (c): the word sets, matched on ``roles.words`` (W4 adds TYPE_ANNOTATION_WORDS, A47 (2)
+# (i) FILE_SYSTEM_WORDS).
 WORD_SET_TABLES = (
     "SOURCE_WORDS", "CONDITIONAL_SOURCE_ROOTS", "PARAM_HINTS", "PARAM_ANNOTATION_WORDS",
     "TYPE_ANNOTATION_WORDS", "ROUTE_WORDS", "CALLBACK_PAYLOAD_WORDS", "RESPONSE_WORDS",
     "ACCESSOR_RECEIVER_WORDS", "REQUEST_CARRIER_WORDS", "COMMAND_CARRIER_WORDS",
-    "COMMAND_RECEIVER_WORDS",
+    "COMMAND_RECEIVER_WORDS", "FILE_SYSTEM_WORDS",
 )
 # Derived once (W9 (a), §9.1) and the demotion record the lift test reads.
 DERIVED_TABLES = ("SOURCE_CALL_KEYS", "SINK_SIDE_KEYS", "WORD_ROLES", "KEY_ROLES", "DEMOTED_WORDS")
@@ -554,6 +556,9 @@ KEY_BUILTIN_SPELLINGS = frozenset({
     "isdigit", "isnumeric", "isdecimal",
 })
 CONCEPT_KEY_TABLES = ("MEMBERSHIP_KEYS", "EQUALITY_KEYS", "SANITIZER_KEYS")
+# (iii) A47 (2) (i)'s concept tables: no entry glues two of their own entries or of the role
+# lexicons (``filepath`` would: ``file`` + ``path``).
+A47_CONCEPT_TABLES = ("GENERIC_PATH_VERBS", "FILE_SYSTEM_WORDS")
 
 
 def _is_compound(entry: str, vocab: set[str]) -> bool:
@@ -561,10 +566,13 @@ def _is_compound(entry: str, vocab: set[str]) -> bool:
     return any(entry[:i] in vocab and entry[i:] in vocab for i in range(2, len(entry) - 1))
 
 
-def compounds(names: Iterable[str], allowed: frozenset[str]) -> list[str]:
+def compounds(
+    names: Iterable[str], allowed: frozenset[str], own: tuple[str, ...] = ()
+) -> list[str]:
     """The entries of ``names``, builtin spellings ``allowed`` aside, that concatenate two
-    entries of the role and exact-key lexicons: a helper name, not a concept word."""
-    vocab = entries_of((*ROLE_WORD_TABLES, *EXACT_KEY_TABLES))
+    entries of the role and exact-key lexicons (and of the ``own`` tables): a helper name, not
+    a concept word."""
+    vocab = entries_of((*ROLE_WORD_TABLES, *EXACT_KEY_TABLES, *own))
     return sorted(e for e in entries_of(names) - allowed if _is_compound(e, vocab))
 
 
@@ -572,18 +580,21 @@ def test_role_words_generic_no_helper_names() -> None:
     """L1 (b), P1, R4: (i) no retired helper key is an entry of a role lexicon, and ``shlex``
     is admitted ONLY as a ``SHELL_CONTEXT_WORDS`` context word; (ii) every role-lexicon entry
     is one concept word or a listed builtin spelling, and the R4 exact-key sets hold single
-    words and listed builtin spellings - no other entry concatenates two entries."""
+    words and listed builtin spellings - no other entry concatenates two entries; (iii) nor
+    does an entry of A47 (2) (i)'s two concept tables, whose own entries count too."""
     facts = {
         "retired keys": {name: sorted(entries(name) & RETIRED_HELPER_KEYS) for name in RETIRED_KEY_TABLES},
         "tables holding shlex": tables_holding("shlex"),
         "compound role words": compounds(ROLE_WORD_TABLES, WORD_BUILTIN_SPELLINGS),
         "compound exact keys": compounds(CONCEPT_KEY_TABLES, KEY_BUILTIN_SPELLINGS),
+        "compound A47 words": compounds(A47_CONCEPT_TABLES, frozenset(), A47_CONCEPT_TABLES),
     }
     assert facts == {
         "retired keys": dict.fromkeys(RETIRED_KEY_TABLES, []),
         "tables holding shlex": ["SHELL_CONTEXT_WORDS"],
         "compound role words": [],
         "compound exact keys": [],
+        "compound A47 words": [],
     }
 
 

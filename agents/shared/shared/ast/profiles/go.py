@@ -3,8 +3,11 @@
 ``statement_list``, ``expression_list``, ``expression_statement``, ``pointer_type``,
 ``slice_type``, ``map_type``, ``generic_type`` and ``parenthesized_expression`` are unlisted,
 hence transparent (W1): a block's statements and a ``:=``'s targets are direct children.
-No TRY/CATCH: error values are ordinary names. No builtins: the stdlib keys suffice
-(``os.ReadFile``, ``exec.Command``, ``http.Get``; ``os.Open`` is a path sink only, L8).
+No TRY/CATCH: error values are ordinary names. The stdlib keys suffice for every sink
+(``os.ReadFile``, ``exec.Command``, ``http.Get``; ``os.Open`` is a path sink only, L8), so the
+only builtins are the predeclared slice builtins ``append`` and ``copy``, which shadow two path
+sink words: ``NO_FAMILY`` makes them no sink at all (R5's mechanism, A47 (2) (i)), and W5's
+single key reads them on any receiver.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from shared.ast.profiles import (
     IF_ROW,
     LAMBDA_ROW,
     LOOP_BODY,
+    NO_FAMILY,
     PAIR_KV,
     TYPE_ARGUMENTS,
     LanguageProfile,
@@ -31,6 +35,8 @@ from shared.ast.profiles import (
 __all__ = ["GO"]
 
 _ARMS = ("expression_case", "type_case", "communication_case", "default_case")
+# A47 (2) (i): the predeclared slice builtins (module docstring).
+_SHADOWS = ("append", "copy")
 
 _NODE_MAP = {
     "source_file": cap(K.MODULE),
@@ -75,6 +81,12 @@ _NODE_MAP = {
     "ERROR": cap(K.ERROR),
 }
 
+
+def _public(name: str) -> bool:
+    """A47 D23-d: Go exports a name by its upper-case initial."""
+    return name[:1].isupper()
+
+
 GO = LanguageProfile(
     language="go",
     grammar_module="tree_sitter_go",
@@ -82,8 +94,10 @@ GO = LanguageProfile(
     node_map=frozen(_NODE_MAP),
     # `:=` and `var` are block-scoped; an import spec is its path's last segment (W3)
     scope_rules=ScopeRules(block_scoped=frozenset({"*"}), import_spec_text=True),
+    builtin_sinks=frozen(dict.fromkeys(_SHADOWS, NO_FAMILY)),
     arm_types=frozenset(_ARMS),
     pruned=TYPE_ARGUMENTS,
     receiver_list=True,
     reference_args=True,
+    public_name=_public,
 )

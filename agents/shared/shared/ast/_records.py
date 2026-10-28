@@ -25,6 +25,7 @@ from typing import NamedTuple
 
 __all__ = [
     "ANY",
+    "ARGV",
     "CONSTANT",
     "EMPTY",
     "EXPR",
@@ -71,12 +72,12 @@ CONSTANT = Origin("constant")
 EMPTY: Origins = frozenset()
 # §8.1's closed vocabularies: an external origin's role (``any`` is the overflow collapse's) and
 # an unknown origin's reason. The flow pass mints no other; D3' admits a worker-built answer's
-# origins against them (§4.1 item 2).
+# origins against them (§4.1 item 2). ``argv`` is in both (``ARGV``, A47 D22-c).
 EXTERNAL_ROLES = frozenset({
     "request", "network", "upload", "argv", "stdin", "env", "error", "param_hint", "any",
 })
 UNKNOWN_REASONS = frozenset({
-    "unresolved", "param", "depth", "dynamic", "recursion", "arity", "external_call",
+    "unresolved", "param", "argv", "depth", "dynamic", "recursion", "arity", "external_call",
     "summary_cap", "overflow",
 })
 
@@ -104,6 +105,10 @@ OVERFLOW = unknown("overflow")
 # A read of a parameter no caller in the file binds (§8.1): what the command parameter
 # heuristic keys on (D25, A42 (1)).
 PARAM = unknown("param")
+# A program's own arguments read anywhere but C4 (C/C++ ``main``'s argv parameter, the one
+# ``external(argv)``): ``process.argv``, ``sys.argv``, a name ``argv`` ... (A47 D22-c). The
+# command parameter heuristic reads it as it reads ``PARAM``.
+ARGV = unknown("argv")
 # §8.1: what an origin set past MAX_ORIGINS collapses to.
 TOP: Origins = frozenset({ANY, OVERFLOW})
 

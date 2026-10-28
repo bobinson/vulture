@@ -13,8 +13,9 @@ needs — never an origin, so every answer is the same in every summary context:
 * the local FUNCTION a callee resolves to (a bound NAME, R-G, or ``this.m``/``self.m``, R-F):
   a local def wins over every lexicon (§8.4);
 * the sink arguments of each family (§8.5): the builtin positions (L9, P4, W5 ``when``), the
-  path defaults (R10's two-path keys, W14's one-argument writes), the request union (W10, L8,
-  R-V) and the command program position with R-M's interpreter + flag (L3, W15 (a), L7);
+  path defaults (R10's two-path keys, W14's one-argument writes; a generic verb only with
+  file-system evidence, A47 (2) (i)), the request union (W10, L8, R-V) and the command program
+  position with R-M's interpreter + flag (L3, W15 (a), L7);
 * the command parameter heuristic's three facts of a command sink argument (D25, A42 (1),
   A43 (1)), read off the same command row: whether the sink shells it (``shell_arg``), whether
   it is built (``built``) and whether it is the whole command of a profile builtin
@@ -28,7 +29,7 @@ alone (no R-H symbol). Nothing here imports ``tree_sitter`` (D1).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import chain, filterfalse
@@ -39,10 +40,12 @@ from typing import TYPE_CHECKING, NamedTuple
 from shared.ast._nodes import (
     ancestors,
     cached,
+    chain_root,
     first,
     is_kind,
     kids_of,
     member_object,
+    methods_of,
     named,
     of_kind,
     parsed_buffer,
@@ -55,7 +58,6 @@ from shared.ast.profiles import EMPTY_MAP, FAMILIES, Builtin, Positions
 from shared.ast.roles import (
     BROWSER_REQUEST_KEYS,
     BUILDER_ARG_KEYS,
-    BUILTIN_KEYS,
     COLLECTION_WORDS,
     COMMAND_BUILDER_WORDS,
     COMMAND_RECEIVER_WORDS,
@@ -63,7 +65,9 @@ from shared.ast.roles import (
     COMMAND_WEAK,
     DATA_STORE_WORDS,
     EXACT_NON_STRONG,
+    FILE_SYSTEM_WORDS,
     FLAG_LITERALS,
+    GENERIC_PATH_VERBS,
     GENERIC_REQUEST_VERBS,
     MERGE_WORDS,
     NO_WORDS,
@@ -99,7 +103,7 @@ from shared.ast.roles import (
     word_set,
     words,
 )
-from shared.ast.scope import binds_whole_module, import_call
+from shared.ast.scope import bound_source, import_call, module_of
 
 if TYPE_CHECKING:
     from shared.ast.model import FileModel
@@ -135,10 +139,15 @@ _BUILT = frozenset({Kind.BINOP, Kind.TEMPLATE})
 # The ``_of_function`` group of the local calls (no family is named so).
 _LOCAL_CALLS = "local calls"
 _LITERAL_TRUE = "true"
+# Every profile's builtin sink keys that name a family (a ``NO_FAMILY`` shadow names none).
+_FAMILY_BUILTINS = frozenset(
+    key for p in PROFILES.values() for key, b in p.builtin_sinks.items() if b.families
+)
 # What a site's glued key must be for the site to be any sink (§8.5), derived once from the
 # roles tables: a word-sink key (path, request, R-V's terminal, command), or any key a builtin's
 # PAIR can end in. ``builtin`` probes ``glue(qualifier) + key`` first (W5, ``_pair``), so every
-# proper suffix of a builtin key is one (the whole key is a ``SINK_KEYS`` entry). ``""`` is a
+# proper suffix of a builtin key that names a family is one (the whole key is a ``SINK_KEYS``
+# entry; a ``NO_FAMILY`` shadow's suffix could only reach an empty answer). ``""`` is a
 # key-less callee: R-L's ``$`` glues to it (an import-aliased ``$`` is ``_dollar``'s). A strong
 # prefix (R-N) is the one other way in. One probe rejects most call sites before any of their
 # sink rows is read.
@@ -146,7 +155,7 @@ _SINK_SIDE = frozenset().union(
     SINK_KEYS,
     REQUEST_TERMINAL_WORDS,
     ("",),
-    (key[i:] for key in BUILTIN_KEYS for i in range(1, len(key))),
+    (key[i:] for key in _FAMILY_BUILTINS for i in range(1, len(key))),
     PATH_SYNC_TWINS,  # A44 (1) (e): ``path_sink_key``'s twins
 )
 
@@ -277,6 +286,7 @@ class Calls:
         self._parsed: str | bytes | None = None  # the parsed buffer, built on first use
         self._sinks_by_family: dict[str, list[int]] | None = None  # built on first use
         self._locals: tuple[int, ...] | None = None  # built on first use
+        self._calling: dict[int, set[int]] | None = None  # built on first use
 
     def _declared(self, site: int, names: Sequence[int]) -> None:
         """C2 (R-X): a declaration's call shape, known up front — its declared type is the
@@ -513,9 +523,8 @@ class Calls:
         return cached(self._facts.methods, cls, self._class_methods) if cls >= 0 else EMPTY_MAP
 
     def _class_methods(self, cls: int) -> Mapping[str, int]:
-        """Its BODY's FUNCTION children, by declared name."""
-        fns = (f for body in self._m.children(cls, Field.BODY) for f in kids_of(self._m, body, Kind.FUNCTION))
-        return MappingProxyType({named(self._m, f): f for f in fns})
+        """Its methods (``methods_of``: its BODY's FUNCTION children), by declared name."""
+        return MappingProxyType({named(self._m, f): f for f in methods_of(self._m, cls)})
 
     # ── which functions can hold a flow (§8.4) ──
 
@@ -542,13 +551,19 @@ class Calls:
         found.discard(-1)
         return frozenset(found)
 
+    def called(self) -> Collection[int]:
+        """The local FUNCTIONs some same-file call site resolves to (``local``): D23-d's
+        entry test reads it (A47), §8.4's reach its edges."""
+        return self._callers().keys()
+
     def _callers(self) -> dict[int, set[int]]:
         """The reverse local-call edges: each local FUNCTION's calling FUNCTIONs (``-1`` for
-        module level)."""
-        callers: dict[int, set[int]] = {}
-        for site in self._local_sites():
-            callers.setdefault(self.local(site), set()).add(self._m.function_of(site))
-        return callers
+        module level), built once."""
+        if self._calling is None:
+            self._calling = {}
+            for site in self._local_sites():
+                self._calling.setdefault(self.local(site), set()).add(self._m.function_of(site))
+        return self._calling
 
     # ── sinks (§8.5) ──
 
@@ -603,9 +618,10 @@ class Calls:
     # ── path (§8.5; L9, W14, R10) ──
 
     def _path_args(self, site: int) -> tuple[int, ...]:
-        """A path sink key, a synchronous twin's by its stem (A44 (1) (e)): its arguments."""
+        """A path sink key, a synchronous twin's by its stem (A44 (1) (e)), that names a file
+        operation (``_file_operation``, A47 (2) (i)): its arguments."""
         key = path_sink_key(self.key(site))
-        if not key:
+        if not key or not self._file_operation(site, key):
             return _NONE
         args = self.args(site)
         if key in TWO_PATH_SINKS:
@@ -621,6 +637,83 @@ class Calls:
 
     def _named(self, site: int, names: frozenset[str]) -> Iterator[int]:
         return (value for name, value in self.kwargs(site).items() if glue(name) in names)
+
+    # ── file-system evidence (A47 (2) (i)) ──
+
+    def _file_operation(self, site: int, key: str) -> bool:
+        """A path key outside ``GENERIC_PATH_VERBS`` names a file operation by itself; a
+        generic verb only with file-system evidence (``_file_system_evidence``). A profile
+        builtin decides before this row is read (W5, ``_sinks``: Go's ``copy``, C's ``read``)."""
+        return key not in GENERIC_PATH_VERBS or self._file_system_evidence(site)
+
+    def _file_system_evidence(self, site: int) -> bool:
+        """A bare call to a language global (``_language_global``), or a ``FILE_SYSTEM_WORDS``
+        word in the callee chain (W3 qualifiers: ``std::filesystem::remove``), the receiver
+        chain (``Files.copy``) or the whole module path of the binding's import (``_evidence``:
+        ``node:fs/promises``, ``import shutil as sh``). Read once per site,
+        inside its memoised sink answer: ``MAX_CHAIN`` identifiers a chain, ``MAX_ARG_NAMES``
+        Defs and ``_LITERAL_HEAD`` literal bytes at most."""
+        if self._language_global(site):
+            return True
+        return self._evidence(site, self.chain_words(self.callee(site)), FILE_SYSTEM_WORDS)
+
+    def _language_global(self, site: int) -> bool:
+        """A bare call to a name no Def binds (Python ``open``, PHP ``rename``, C ``remove``):
+        a parameter or a value the file binds is no language global."""
+        return self.receiver(site) < 0 and not self._resolve(self.callee(site))
+
+    # ── the module an import binding names (A44 (1) (c), A47 (2) (i)) ──
+
+    def _evidence(self, site: int, own: Iterable[str], concept: frozenset[str]) -> bool:
+        """A ``concept`` word in ``own`` (the callee's words), the receiver chain or the whole
+        module path of the binding's import (``_binding``, ``_module_words``): the one reading
+        (c)'s process evidence and (i)'s file-system evidence share (A47 (6)(h))."""
+        module = self._module_words(self._binding(site))
+        return not concept.isdisjoint(chain(own, self._receiver_words(site), module))
+
+    def _binding(self, site: int) -> int:
+        """The node whose import binding names the site's module: the bare callee, else the
+        NAME the receiver chain starts at (``chain_root``: ``fsp`` of ``fsp.promises.open``)."""
+        holder = self.receiver(site)
+        return self.callee(site) if holder < 0 else chain_root(self._m, holder)[1]
+
+    def _module_words(self, node: int) -> Iterator[str]:
+        """The words of the module path of each import Def the NAME ``node`` resolves to
+        (``_import_words``; a MEMBER resolves to none, so ``_evidence`` passes its chain's
+        root, ``_binding``): at most ``MAX_ARG_NAMES`` Defs."""
+        defs = self._resolve(node)[:MAX_ARG_NAMES] if node >= 0 else ()
+        return chain.from_iterable(map(self._import_words, defs))
+
+    def _import_words(self, d: Def) -> Iterable[str]:
+        """The words of the WHOLE module path a Def binds from (A47 (2) (i)): an IMPORT's module
+        (``scope.module_of``: ``"node:fs/promises"`` -> node, fs, promises; Python ``from
+        tools.process import run`` -> tools, process), or an import call's module literal
+        (``require("fs-extra")``)."""
+        if d.value is None:
+            return ()
+        if d.kind != "import":
+            return self._required_words(d.value)
+        return self._module_path_words(module_of(self._m, d))
+
+    def _module_path_words(self, module: int) -> Iterable[str]:
+        """A module node's words: a string literal's by its head (``_literal_words``), a dotted
+        name's by its chain identifiers (``chain_words``, memoised); none for no module node (a
+        Java or PHP import names its module by no SOURCE child)."""
+        if module < 0:
+            return ()
+        literal = is_kind(self._m, module, Kind.LITERAL)
+        return self._literal_words(module) if literal else self.chain_words(module)
+
+    def _required_words(self, value: int) -> tuple[str, ...]:
+        """W6's import call (``scope.import_call``): the words of its module literal
+        (``_literal_words``); none for any other value."""
+        if not import_call(self._m, value):
+            return ()
+        return self._literal_words(next(iter(self._m.args(value)), -1))
+
+    def _literal_words(self, node: int) -> tuple[str, ...]:
+        """The words of a module LITERAL's head (``_literal_head``); none for any other node."""
+        return words(self._literal_head(node)) if is_kind(self._m, node, Kind.LITERAL) else ()
 
     # ── request (§8.5; L8, W10, R-V) ──
 
@@ -659,9 +752,9 @@ class Calls:
 
     def _free_call(self, site: int) -> bool:
         """A bare call, or one on a NAME a whole-module import binds (``import requests``:
-        ``scope.binds_whole_module``)."""
+        ``scope.bound_source``)."""
         holder = self.receiver(site)
-        return holder < 0 or any(binds_whole_module(self._m, d) for d in self._arg_defs(holder))
+        return holder < 0 or any(bound_source(self._m, d) >= 0 for d in self._arg_defs(holder))
 
     def _url_shaped(self, site: int, key: str) -> bool:
         """A KWARG or PAIR named like a URL, or a positional URL argument that is URL-shaped
@@ -794,33 +887,10 @@ class Calls:
 
     def _process_evidence(self, site: int) -> bool:
         """A44 (1) (c): a ``PROCESS_WORDS`` concept in the callee's own words, its receiver
-        chain or the module its import binding names (``import { execSync } from
-        "child_process"``)."""
-        own, module = words(self.ident(site)), self._module_words(self.callee(site))
-        return not PROCESS_WORDS.isdisjoint(chain(own, self._receiver_words(site), module))
-
-    def _module_words(self, node: int) -> Iterator[str]:
-        """The words of the module text of each import Def ``node`` resolves to (a MEMBER by its
-        base, as ``ScopeTable.resolve`` reads a chain): at most ``MAX_ARG_NAMES`` Defs."""
-        defs = self._resolve(node)[:MAX_ARG_NAMES] if node >= 0 else ()
-        return chain.from_iterable(map(self._import_words, defs))
-
-    def _import_words(self, d: Def) -> tuple[str, ...]:
-        """The words of the module a Def binds from: an IMPORT's text (W3: the last segment of
-        a string module path), or an import call's module literal (``require("node:x")``)."""
-        if d.value is None:
-            return ()
-        if d.kind == "import":
-            return words(self._m.ident(d.value) or "")
-        return self._required_words(d.value)
-
-    def _required_words(self, value: int) -> tuple[str, ...]:
-        """W6's import call (``scope.import_call``): the words of its module literal's head
-        (``_literal_head``); none for any other value."""
-        if not import_call(self._m, value):
-            return ()
-        module = next(iter(self._m.args(value)), -1)
-        return words(self._literal_head(module)) if is_kind(self._m, module, Kind.LITERAL) else ()
+        chain or the whole module path of the binding's import (``_evidence``: ``import {
+        execSync } from "child_process"``, ``cp.execFile`` with ``const cp =
+        require("child_process")``, ``from tools.process import run``)."""
+        return self._evidence(site, words(self.ident(site)), PROCESS_WORDS)
 
     def _not_a_process(self, site: int) -> bool:
         """A44 (1) (c): the receiver is a regex — a regex literal, or a NAME one of whose

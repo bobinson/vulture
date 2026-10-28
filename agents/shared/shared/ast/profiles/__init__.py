@@ -16,9 +16,9 @@ Capture is TRANSPARENT with its own field map; every unlisted type is transparen
 ``LanguageProfile.pruned`` is dropped with its subtree.
 
 The rows several grammars spell the same way (``IF_ROW``, ``CALL_FA``, ``LOOP_BODY`` ...), the
-family sets and the shared builtin are defined once here (D19); each table keeps its own
-grammar keys and refers to them. Only ``ERROR`` exists in every grammar, so the tables share
-rows, never keys.
+family sets and the shared builtins (``EVERY_ARG_PATH``, ``NO_FAMILY``) are defined once here
+(D19); each table keeps its own grammar keys and refers to them. Only ``ERROR`` exists in every
+grammar, so the tables share rows, never keys.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ __all__ = [
     "IF_ROW",
     "LAMBDA_ROW",
     "LOOP_BODY",
+    "NO_FAMILY",
     "PAIR_KV",
     "PATH",
     "REQUEST",
@@ -187,6 +188,10 @@ _ARGS_FOR: Mapping[str, Callable[[Builtin], Positions]] = MappingProxyType({
 # L9/W5/R9/R10: a builtin that takes a path on EVERY argument (Java's File constructors,
 # Python's os.replace, PHP's copy).
 EVERY_ARG_PATH = Builtin(PATH, path_args="all")
+# P4/R5: a language global that only shadows a sink word - its EMPTY family set makes the
+# callee no sink at all (C's fd and buffer calls, Go's predeclared ``append`` / ``copy``,
+# A47 (2) (i)): the one entry every such key shares.
+NO_FAMILY = Builtin(frozenset())
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +273,13 @@ class LanguageProfile:
     ``receiver_list`` - a method's receiver list is its first PARAMS holder, before its
     parameters (Go, A3); ``reference_args`` - an argument can take a reference (``&x``) a
     call writes through (R-W, A28 (7): Go and Rust); ``main_argv`` - the entry function's
-    name and its argv PARAM's position (C4: C and C++).
+    name and its argv PARAM's position (C4: C and C++); ``export_chains`` - the chain heads
+    whose assignment exports a value (CommonJS ``exports.x``, ``module.exports[.x]``): a
+    language with any also exports by an ``export`` statement, and either makes a function an
+    ENTRY (A47 D23-d: JavaScript and TypeScript);
+    ``public_name`` - whether a top-level declared name is public, so an outside caller can
+    reach it (A47 D23-d: Python no leading ``_``, Go an upper-case initial; elsewhere any
+    name, ``bool``: an anonymous function has none).
     """
 
     language: str
@@ -290,6 +301,8 @@ class LanguageProfile:
     receiver_list: bool = False
     reference_args: bool = False
     main_argv: tuple[str, int] | None = None
+    export_chains: frozenset[tuple[str, ...]] = frozenset()
+    public_name: Callable[[str], bool] = bool
 
     def grammar_for(self, path: str | PurePath) -> str:
         """The grammar entry point that parses ``path``: its suffix's variant, else the

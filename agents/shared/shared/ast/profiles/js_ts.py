@@ -1,10 +1,13 @@
 """JavaScript and TypeScript ``NODE_MAP`` (feature 0102, LLD §6.3).
 
-The two languages share every plain row. Only the ``(formal_parameters, type)`` rows differ,
-because the grammars shape parameters differently: tree-sitter-javascript puts identifiers
-and patterns DIRECTLY under ``formal_parameters`` (W1), tree-sitter-typescript wraps each in
-a ``required_parameter`` / ``optional_parameter`` (W7). TypeScript type nodes are not
-listed, so they are transparent and ship no NAME (W4: TS R-D reads decorators and names).
+The two languages share every plain row. Only ``(parent, type)`` rows differ, because the
+grammars shape two things differently: tree-sitter-javascript puts identifiers and patterns
+DIRECTLY under ``formal_parameters`` (W1), tree-sitter-typescript wraps each in a
+``required_parameter`` / ``optional_parameter`` (W7); and a class's declared name is an
+``identifier`` there, a ``type_identifier`` here. TypeScript type nodes are not listed, so
+they are transparent and ship no NAME (W4: TS R-D reads decorators and names); the class name
+is the one type name a ``(parent, type)`` row ships, so the two languages model a class alike
+(A47 (6)(a)).
 A ``.tsx`` file is parsed with ``language_tsx`` (JSX), a ``.ts`` file with
 ``language_typescript`` (whose angle-bracket casts ``<T>x`` the tsx grammar reads as JSX).
 ``.jsx`` needs no variant: tree-sitter-javascript parses JSX.
@@ -35,13 +38,14 @@ from shared.ast.profiles import (
 __all__ = ["JAVASCRIPT", "TYPESCRIPT"]
 
 _ARMS = ("switch_case", "switch_default")  # L10
+_CLASSES = ("class_declaration", "class")  # CLASS rows; TypeScript names each by a type name
 
 _PLAIN = {
     "program": cap(K.MODULE),
     **rows(FUNCTION_ROW, "function_declaration", "function_expression", "method_definition",
            "generator_function", "generator_function_declaration"),
     "arrow_function": cap(K.FUNCTION, parameters=F.PARAMS, parameter=F.PARAMS, body=F.BODY),
-    **rows(CLASS_ROW, "class_declaration", "class"),
+    **rows(CLASS_ROW, *_CLASSES),
     "formal_parameters": cap(K.ARGS),
     **rows(cap(K.BLOCK), "statement_block", "class_body"),
     "if_statement": IF_ROW,
@@ -98,6 +102,14 @@ _TS_PARAMETERS = rows(
     ("formal_parameters", "required_parameter"), ("formal_parameters", "optional_parameter"),
 )
 
+# A class's declared name (javascript: an `identifier`, a NAME already) as the DIRECT child of
+# a CLASS row, under its NAME field. A type annotation, type argument or heritage type is
+# never a direct child there and still ships nothing (W3, W4); an interface or a type alias
+# has no CLASS row, and an abstract class none either (transparent).
+_TS_CLASS_NAMES = rows(cap(K.NAME), *((parent, "type_identifier") for parent in _CLASSES))
+
+# A47 D23-d: CommonJS's export object, ``exports`` or ``module.exports``, at a chain's head.
+_COMMONJS = frozenset({("exports",), ("module", "exports")})
 _SCOPE = ScopeRules(block_scoped=frozenset({"let", "const", "class"}), function_scoped=frozenset({"var"}))
 
 JAVASCRIPT = LanguageProfile(
@@ -108,16 +120,18 @@ JAVASCRIPT = LanguageProfile(
     scope_rules=_SCOPE,
     browser_capable=True,
     arm_types=frozenset(_ARMS),
+    export_chains=_COMMONJS,
 )
 
 TYPESCRIPT = LanguageProfile(
     language="typescript",
     grammar_module="tree_sitter_typescript",
     grammar_attr="language_typescript",
-    node_map=frozen(_PLAIN | _TS_PARAMETERS),
+    node_map=frozen(_PLAIN | _TS_PARAMETERS | _TS_CLASS_NAMES),
     scope_rules=_SCOPE,
     browser_capable=True,
     arm_types=frozenset(_ARMS),
     pruned=TYPE_ARGUMENTS,
     grammar_variants=frozen({".tsx": "language_tsx"}),
+    export_chains=_COMMONJS,
 )

@@ -177,7 +177,7 @@ def test_name_reads_its_def_else_a_source_word_else_unresolved() -> None:
 
     assert [_arg(m, "sink", n) for n in range(3)] == [
         frozenset({constant()}),
-        frozenset({external("argv")}),  # W9 (b): the root word, SOURCE_WORDS["argv"]
+        frozenset({unknown("argv")}),  # W9 (b): the root word; A47 D22-c: unknown outside C4
         frozenset({unknown("unresolved")}),
     ]
 
@@ -221,8 +221,10 @@ def test_member_reads_its_binding_else_its_root_source() -> None:
     assert [externals(origins_of(m, a)) for a in m.args(chains)] == [
         {external("request")}, frozenset(), frozenset(), frozenset(),  # W9 (b): ROOT word only
     ]
-    assert [externals(origins_of(m, a)) for a in m.args(conditional)] == [
-        {external("env")}, {external("argv")}, {external("request")},  # CONDITIONAL_SOURCE_ROOTS
+    # CONDITIONAL_SOURCE_ROOTS; A47 D22-c: argv outside C4 is unknown(argv), no external
+    found = map(functools.partial(origins_of, m), m.args(conditional))
+    assert [(externals(o), unknown("argv") in o) for o in found] == [
+        ({external("env")}, False), (frozenset(), True), ({external("request")}, False),
     ]
 
 
@@ -551,11 +553,17 @@ def test_ro_closure_reads_the_join_of_every_enclosing_def() -> None:
     assert external("request") in _externals(m, "path", 5)
 
 
+# A command-line program's own arguments and its stdin, each read at a request sink
+_ARGV_FETCH = ("js", "function h() {\n  fetch(process.argv[2]);\n}\n")
+_STDIN_FETCH = ("js", "function h() {\n  fetch(process.stdin.read());\n}\n")
 _POLICY = {
     "env-path": ("cwe_22_48", "path", 3, set(), set()),
-    "argv-command": ("cwe_78_14", "command", 5, {5}, {"argv"}),
+    # A47 D22-c: process.argv is unknown(argv), which a rule with no D25 hook leaves unreported
+    "argv-command": ("cwe_78_14", "command", 5, set(), set()),
+    "c4-argv-command": ("cwe_78_cpp_1", "command", 7, {7}, {"argv"}),
     "env-command": ("cwe_78_15_clean", "command", 5, set(), set()),
-    "argv-request": (("js", "function h() {\n  fetch(process.argv[2]);\n}\n"), "request", 2, set(), set()),
+    "argv-request": (_ARGV_FETCH, "request", 2, set(), set()),
+    "stdin-request": (_STDIN_FETCH, "request", 2, set(), set()),
 }
 
 
@@ -578,7 +586,10 @@ def test_rp_a_flow_it_empties_is_none_and_tallied_env_only() -> None:
 
 _FILTERED = {
     "env-path": ("cwe_22_48", "path", 3, {"env"}),
-    "argv-request": (("js", "function h() {\n  fetch(process.argv[2]);\n}\n"), "request", 2, {"argv"}),
+    # A47 D22-c: process.argv is unknown(argv), no external origin, so R-P removes nothing
+    "argv-request": (_ARGV_FETCH, "request", 2, set()),
+    # D22: stdin reports for path and command, never request, so R-P removes it here
+    "stdin-request": (_STDIN_FETCH, "request", 2, {"stdin"}),
     "argv-command": ("cwe_78_14", "command", 5, set()),
 }
 
