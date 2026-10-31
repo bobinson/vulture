@@ -1,7 +1,7 @@
 """ASVS V5.1.1 must require a filesystem SINK, and registry findings must not
 fire once per LINE.
 
-Measured through the real agent path (`vulture scan ~/src/togetherapp --types asvs`):
+Measured through the real agent path (`vulture scan ~/src/reference-app --types asvs`):
 504 of 517 ASVS findings — 97.5%, all HIGH — were V5.1.1. Sampling them showed
 the same shape every time: an ordinary relative import.
 
@@ -61,7 +61,7 @@ RELATIVE_IMPORTS = {
     "esm_import.ts": "import { loadEnv } from '../env';\nexport const a = loadEnv();\n",
     "esm_reexport.ts": "export { x } from '../../shared/types';\n",
     "cjs_require.js": "const m = require('../lib/util');\nmodule.exports = m;\n",
-    "dynamic_import.ts": "const mod = await import('../frontend/lib/qa/seed-runner');\n",
+    "dynamic_import.ts": "const mod = await import('../frontend/lib/tools/seed-tool');\n",
     "css_import.css": "@import '../styles/base.css';\n",
 }
 
@@ -203,12 +203,12 @@ def test_bare_traversal_not_reported_by_default():
 
 def test_identifier_ending_in_path_is_not_traversal():
     """`Path\\(` without a left boundary matched the TAIL of any identifier
-    ending in "Path", so `resolveCompletionPath(user, url)` was reported as
+    ending in "Path", so `resolveFollowupPath(user, url)` was reported as
     path traversal — the single V5.1.1 row that survived the sink gate on the
     measured target, and a false positive too. Same defect as DROP matching
     inside "backdrop-filter" in CWE-89."""
     for line in [
-        "  return resolveCompletionPath(user, resolvedUrl);",
+        "  return resolveFollowupPath(user, resolvedUrl);",
         "  const p = getPath(user);",
         "  const out = buildPath(req.query.x);",
     ]:

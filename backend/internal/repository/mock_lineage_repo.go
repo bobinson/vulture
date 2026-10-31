@@ -31,6 +31,7 @@ type MockLineageRepository struct {
 	GetLineageByFingerprintsForTargetFn func([]string, string) (map[string]*model.FindingLineage, error)
 	LegacyTargetKeyFn                   func(string) (string, error)
 	LegacyTargetKeysForFn               func(string) ([]string, error)
+	RekeyTargetFn                       func(TargetRekey) (int, error)
 	// Feature 0091 P4 (the target-scoped read side).
 	ListTargetsFn       func() ([]model.TargetSummary, error)
 	TargetScansFn       func(string) ([]model.TargetScan, error)
@@ -134,6 +135,14 @@ func (m *MockLineageRepository) LegacyTargetKey(sourcePath string) (string, erro
 		return m.LegacyTargetKeyFn(sourcePath)
 	}
 	return "", nil
+}
+
+// RekeyTarget defaults to moving nothing.
+func (m *MockLineageRepository) RekeyTarget(move TargetRekey) (int, error) {
+	if m.RekeyTargetFn != nil {
+		return m.RekeyTargetFn(move)
+	}
+	return 0, nil
 }
 
 func (m *MockLineageRepository) AddEvent(e *model.LineageEvent) error {

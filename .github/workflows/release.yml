@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Must match ci.yml's NODE_VERSION and frontend/package.json engines.
           # The frontend's devDependencies (jsdom 30 -> undici 8) require Node
@@ -58,7 +58,7 @@ jobs:
         working-directory: frontend
         run: npx --yes audit-ci --high
         continue-on-error: false
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-dist
           path: frontend/dist/
@@ -83,20 +83,20 @@ jobs:
       # VULTURE_PBS_TAG/PYVER drive both the cosign-verified download of the
       # vendored asset (fetch-vendored-pbs.sh) and build-release.sh's pin
       # lookup, so the fetched tarball always matches the committed SHA pin.
-      VULTURE_PBS_TAG: '20260610'
-      VULTURE_PBS_PYVER: '3.12.13'
+      VULTURE_PBS_TAG: '20261021'
+      VULTURE_PBS_PYVER: '3.12.15'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.26.10'
           # No root go.mod in this repo (modules are backend/ + cli/), so the
           # default cache probe fails and disables module caching on all four
           # matrix legs. Point it at the real lockfiles.
           cache-dependency-path: |
             backend/go.sum
             cli/go.sum
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: frontend-dist
           path: frontend/dist/
@@ -116,7 +116,7 @@ jobs:
           # be lifted and the .sig/.pem outputs dropped.
           cosign-release: 'v2.4.3'
       - name: install syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
       - name: install trivy
         # Official cross-platform installer (detects OS/arch). PINNED to the
         # v0.71.0 tag of contrib/install.sh *and* the installed version, so we
@@ -217,7 +217,7 @@ jobs:
         run: scripts/verify-no-secrets-in-logs.sh "${VULTURE_HOME:-$HOME/.vulture-smoke}"
         if: env.VULTURE_HOME != ''
         continue-on-error: true
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/
@@ -228,7 +228,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           merge-multiple: true

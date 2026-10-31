@@ -149,7 +149,13 @@ class RuleStats:
     @property
     def surviving_recall(self) -> Optional[float]:
         """Share of labelled-real findings NOT dismissed (T7.3's guard:
-        a false refutation deletes findings; this is where it shows)."""
+        a false refutation deletes findings; this is where it shows).
+
+        Not a guard for drops BEFORE status assignment: it only sees rows that
+        were emitted and carry a ``validation_status``, so a labelled-real row
+        lost earlier (eligibility, dedup, L4) leaves its denominator and reads
+        as an improvement. Use :func:`prestatus_recall` for that.
+        """
         if self.labelled_real == 0:
             return None
         return 1.0 - (self.dismissed_true_positives / self.labelled_real)
@@ -186,6 +192,40 @@ def evaluate_rules(
         elif status == "likely_fp" and is_real:
             s.dismissed_true_positives += 1
     return stats
+
+
+def _site_key(finding: dict[str, Any]) -> tuple[Any, Any, str]:
+    """A finding's site: file, first line and rule — never status or identity."""
+    return (finding.get("file_path"), finding.get("line_start"), _rule_of(finding))
+
+
+def prestatus_recall(
+    corpus: list[tuple[dict[str, Any], bool]],
+    emitted: list[dict[str, Any]],
+) -> Optional[float]:
+    """Share of labelled-real CORPUS sites emitted and not dismissed (0074 P7).
+
+    ``corpus`` takes the ``(finding, is_real)`` shape :func:`evaluate_rules`
+    takes; ``emitted`` is what came out, each row carrying
+    ``validation_status``. Sites match on (file_path, line_start, rule), so a
+    row dropped before status assignment counts against recall here, where
+    ``surviving_recall`` cannot see it. One set lookup per site; ``None``
+    when the corpus has no labelled-real site.
+    """
+    real = _real_sites(corpus)
+    if not real:
+        return None
+    return len(real & _kept_sites(emitted)) / len(real)
+
+
+def _real_sites(corpus: list[tuple[dict[str, Any], bool]]) -> set[tuple[Any, Any, str]]:
+    return {_site_key(site) for site, is_real in corpus if is_real}
+
+
+def _kept_sites(emitted: list[dict[str, Any]]) -> set[tuple[Any, Any, str]]:
+    """Sites of emitted rows the voter did not dismiss."""
+    return {_site_key(row) for row in emitted
+            if row.get("validation_status") != "likely_fp"}
 
 
 def rules_below_precision(

@@ -51,6 +51,21 @@ type fakeDocker struct {
 	infoCalls      atomic.Int32
 	pullStarted    chan string // signaled when each pull begins
 	pullHold       chan struct{}
+	builds         []buildCall
+	buildErr       error
+	psErr          error
+}
+
+type buildCall struct {
+	tag        string
+	contextDir string
+}
+
+func (f *fakeDocker) Build(ctx context.Context, tag, contextDir string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.builds = append(f.builds, buildCall{tag: tag, contextDir: contextDir})
+	return f.buildErr
 }
 
 type stopCall struct {
@@ -107,7 +122,7 @@ func (f *fakeDocker) Remove(ctx context.Context, name string) error {
 func (f *fakeDocker) PS(ctx context.Context) ([]pluginsupervisor.RunningContainer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.psResult, nil
+	return f.psResult, f.psErr
 }
 
 func (f *fakeDocker) Info(ctx context.Context) error {

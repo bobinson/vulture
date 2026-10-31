@@ -63,7 +63,7 @@ var perfCorpus = []perfTargetSpec{
 	{"blu-simulator", 4200, 6},
 	{"openclaw", 2600, 5},
 	{"vulture", 1600, 8}, // the real vulture target's size
-	{"idattestor", 1150, 4},
+	{"authportal", 1150, 4},
 	{"magicrouter", 700, 3},
 }
 

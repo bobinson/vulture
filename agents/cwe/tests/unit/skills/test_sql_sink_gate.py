@@ -1,7 +1,7 @@
 """CWE-89: the template-literal clause must require SQL EVIDENCE, not just a
 DML-looking word.
 
-Measured on a real audit of ~/src/togetherapp (773 findings): of 27 CWE-89 rows,
+Measured on a real audit of ~/src/reference-app (773 findings): of 27 CWE-89 rows,
 19 had no SQL sink anywhere in the file, and 17 of the 25 CRITICAL rows were
 false. Every one of those false rows is an ordinary English log message, a JSX
 prop, or CSS:
@@ -79,7 +79,7 @@ FALSE_POSITIVES = {
         "    await chain.mark(id);\n"
         "  } catch (error) {\n"
         "    console.error(\n"
-        "      `Failed to update blockchain status for letterContent ${id}:`,\n"
+        "      `Failed to update blockchain status for recordContent ${id}:`,\n"
         "      error instanceof Error ? error.message : String(error),\n"
         "    );\n"
         "  }\n"
@@ -93,11 +93,11 @@ FALSE_POSITIVES = {
         "`;\n"
     ),
     "ModeStep.tsx": (
-        "export function ModeStep({ copy, cardTabIndex }) {\n"
+        "export function ModeStep({ copy, tileTabIndex }) {\n"
         "  return (\n"
         "    <Card\n"
         "      ariaLabel={`Select ${copy.title}`}\n"
-        "      tabIndex={cardTabIndex}\n"
+        "      tabIndex={tileTabIndex}\n"
         "    />\n"
         "  );\n"
         "}\n"
@@ -158,7 +158,7 @@ def test_sink_on_a_preceding_line_still_detected():
     is why the evidence window must look backwards, not just at the match."""
     body = (
         "export async function lookup(prefix: string) {\n"
-        "  const result = await hasuraRunSql(\n"
+        "  const result = await gatewayRunSql(\n"
         "    `SELECT \"passwordHash\" FROM users WHERE email LIKE ${prefix} LIMIT 1;`\n"
         "  );\n"
         "  return result;\n"
@@ -168,24 +168,24 @@ def test_sink_on_a_preceding_line_still_detected():
 
 
 def test_project_helper_sink_with_bigram_still_detected():
-    """`runBatchInsert` is a project-specific wrapper: the SQL forms a real
+    """`storeBatchInsert` is a project-specific wrapper: the SQL forms a real
     verb+clause bigram (INSERT INTO ... VALUES), which is evidence on its own."""
     body = (
-        "await runBatchInsert(\n"
+        "await storeBatchInsert(\n"
         "  records,\n"
         "  (values) => `INSERT INTO letters (id, state) VALUES ${values} ON CONFLICT DO NOTHING;`,\n"
         ");\n"
     )
-    assert _sqli(_run({"lsgb-seed-helpers.ts": body})), "bigram + project sink must still be flagged"
+    assert _sqli(_run({"batch-seed-helpers.ts": body})), "bigram + project sink must still be flagged"
 
 
 def test_update_set_bigram_still_detected():
     body = (
-        "await hasuraRunSql(\n"
+        "await gatewayRunSql(\n"
         "  `UPDATE letters SET is_match = true WHERE \"issueId\" = ${issueId};`\n"
         ");\n"
     )
-    assert _sqli(_run({"seed-runner.ts": body})), "UPDATE..SET bigram with sink must still be flagged"
+    assert _sqli(_run({"seed-tool.ts": body})), "UPDATE..SET bigram with sink must still be flagged"
 
 
 def test_parameterised_query_still_not_flagged():

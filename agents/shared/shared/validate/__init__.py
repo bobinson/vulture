@@ -14,6 +14,7 @@ from typing import Any
 
 from shared.tools.window import record_window_reason, window_reason_of
 
+from . import l5_cache
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
 from .llm_judge import (
@@ -571,10 +572,11 @@ def validate(
     out_findings = _provisional_vote(
         findings, l1_results, l2_results, cfg, layers_run, duration_ms,
     )
-    _run_l5_phase(
-        out_findings, l1_results, cfg, audit_id, emit_validation_update,
-        event_texts, layers_run, duration_ms, source_path, rollups,
-    )
+    with l5_cache.counting(audit_id):
+        _run_l5_phase(
+            out_findings, l1_results, cfg, audit_id, emit_validation_update,
+            event_texts, layers_run, duration_ms, source_path, rollups,
+        )
     _emit_summary(out_findings, rollups, duration_ms, event_texts)
 
     return ValidationResult(

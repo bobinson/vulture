@@ -20,12 +20,15 @@ TTL: 30 days. Older entries are pruned lazily on read.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
 import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -35,6 +38,55 @@ _LOCK = threading.Lock()
 _CONN: Optional[sqlite3.Connection] = None
 _DB_PATH: Optional[str] = None
 _DISABLED = False
+
+
+class RunCounters:
+    """One validate run's cache traffic (feature 0074 T5.4).
+
+    Incremented from L5 pool workers concurrently, hence the lock; owned by one
+    run, never shared between runs.
+    """
+
+    __slots__ = ("hits", "misses", "stores", "_lock")
+
+    def __init__(self) -> None:
+        self.hits = 0
+        self.misses = 0
+        self.stores = 0
+        self._lock = threading.Lock()
+
+    def add(self, name: str) -> None:
+        """Count one ``hits`` / ``misses`` / ``stores`` event."""
+        with self._lock:
+            setattr(self, name, getattr(self, name) + 1)
+
+
+# Run-scoped, NOT a module counter: `sse_app` drives up to
+# VULTURE_AUDIT_EXECUTOR_WORKERS audit generators in one interpreter, each in its
+# own context, and the L5 pool submits through `contextvars.copy_context()` so a
+# worker counts into the run that dispatched it. Outside `counting` it is None
+# and nothing is counted.
+_RUN_COUNTERS: contextvars.ContextVar[Optional[RunCounters]] = contextvars.ContextVar(
+    "l5_cache_run_counters", default=None)
+
+
+def _count(name: str) -> None:
+    counters = _RUN_COUNTERS.get()
+    if counters is not None:
+        counters.add(name)
+
+
+@contextmanager
+def counting(run_id: str) -> Iterator[RunCounters]:
+    """Count this run's lookups and stores; log ONE ``l5_cache`` line at exit."""
+    counters = RunCounters()
+    token = _RUN_COUNTERS.set(counters)
+    try:
+        yield counters
+    finally:
+        _RUN_COUNTERS.reset(token)
+        log.info("l5_cache run_id=%s hits=%d misses=%d stores=%d",
+                 run_id, counters.hits, counters.misses, counters.stores)
 
 
 def _default_path() -> str:
@@ -190,7 +242,14 @@ def cache_key(*, file_path: str, line_start: int, line_end: int,
 
 def lookup(key: str) -> Optional[dict]:
     """Return `{exploitable, reasoning, model, language, judged_at}` or
-    None on miss / expired / disabled."""
+    None on miss / expired / disabled. Counted as a hit or a miss for the
+    enclosing ``counting`` run, if any."""
+    found = _lookup(key)
+    _count("misses" if found is None else "hits")
+    return found
+
+
+def _lookup(key: str) -> Optional[dict]:
     conn = _connect()
     if conn is None:
         return None
@@ -256,6 +315,7 @@ def store(key: str, *, exploitable: float, reasoning: str,
                  None if evidence_line is None else int(evidence_line),
                  evidence_file or None),
             )
+        _count("stores")
     except Exception as exc:
         log.warning("[validate.l5] cache store failed: %s", exc)
 

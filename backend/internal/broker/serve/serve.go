@@ -56,6 +56,7 @@ type Broker struct {
 	ttl        time.Duration
 	models     []string       // primary + fallbacks — the scope covers task:model for each
 	verify     token.Verifier // used to read back a freshly-minted jti for revocation tracking
+	probe      *windowProbe   // 0074 §5.2 loaded-window measurement; nil = never probed
 
 	mu      sync.Mutex
 	runJTIs map[string][]string // run_id → minted jtis (for RevokeRun)
@@ -91,12 +92,11 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		defaultProvider = "openai"
 	}
 	allowlist := egress.NewAllowlist(allowlistOrDefault(cfg.ProviderAllowlist, defaultProvider)...)
-	ssrf := egress.NewSSRFValidator(allowlist, netResolver)
-	if cfg.AllowLocalEgress {
-		// Dev/self-host: permit loopback/RFC1918 + http for the configured local
-		// provider (link-local/IMDS/multicast stay blocked, §11).
-		ssrf = egress.NewSSRFValidatorAllowingLocal(allowlist, netResolver)
-	}
+	newSSRF := ssrfFactory(allowlist, cfg.AllowLocalEgress)
+	ssrf := newSSRF(netResolver)
+
+	keys := keysFromEnv(defaultProvider)
+	baseURL := defaultBaseURL(cfg.ProviderBaseURL, defaultProvider)
 
 	budgetDB := budget.NewSQLDB(db, dia)
 	// Provision the tenant budget: the sharded CAS reserves against existing
@@ -108,6 +108,12 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 	if err := seedTenantBudget(db, dia, "local", cfg.BudgetShards, cfg.BudgetUSD); err != nil {
 		return nil, fmt.Errorf("seed budget: %w", err)
 	}
+	// 0074 §5.2: the loaded-window probe goes through the same egress rules,
+	// resolving under its own deadline.
+	probe := startWindowProbe(probeTarget{
+		provider: defaultProvider, baseURL: baseURL, key: keys[defaultProvider],
+		model: primaryModel, newSSRF: newSSRF,
+	})
 	deps := server.Dependencies{
 		Verifier:        verifier,
 		Denylist:        denylist,
@@ -117,20 +123,22 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		SSRF:            ssrf,
 		Allowlist:       allowlist,
 		Adapters:        defaultAdapters(cfg.CallTimeoutSec, defaultProvider),
-		Keys:            keysFromEnv(defaultProvider),
+		Keys:            keys,
 		DefaultProvider: defaultProvider,
 		// §30: egress SSRF-validates + pins a CONCRETE base URL before the
 		// adapter runs, so a native cloud provider needs its canonical endpoint
 		// when no explicit base URL is configured (gemini/anthropic would
 		// otherwise hit egress with an empty URL and fail). An operator override
 		// (VULTURE_LLM_BROKER_PROVIDER_BASE_URL, e.g. a local LM Studio) wins.
-		DefaultBaseURL: defaultBaseURL(cfg.ProviderBaseURL, defaultProvider),
+		DefaultBaseURL: baseURL,
 		Breakers:       resilience.NewBreakerPool(resilience.CircuitConfig{FailureThreshold: 5, OpenTimeout: 30 * time.Second, HalfOpenMaxCalls: 1, SuccessThreshold: 1, IsFailure: breakerCountsAsFailure}),
 		Bulkheads:      resilience.NewBulkheadPool(resilience.BulkheadConfig{MaxConcurrent: 16}),
 		Retriers:       resilience.NewRetrierPool(retrierConfig()),
 		CallTimeoutSec: cfg.CallTimeoutSec,
 		AuditLog:       sqlstore.NewAuditLog(db, dia),
 		DBHealth:       db.PingContext,
+		// 0074 #12: an upstream overflow re-measures the loaded window.
+		OnContextOverflow: probe.onOverflow,
 	}
 
 	b := &Broker{
@@ -143,6 +151,7 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		models:     append([]string{primaryModel}, cfg.Fallbacks...),
 		verify:     verifier,
 		runJTIs:    map[string][]string{},
+		probe:      probe,
 	}
 	b.startSweeper(budgetDB)
 	return b, nil
@@ -185,16 +194,27 @@ func (b *Broker) MintForAgent(runID, taskType string) (string, error) {
 	return tok, nil
 }
 
-// ContextWindow resolves the run's primary model's context window (tokens) via
-// the broker-owned registry (§31), honoring a VULTURE_LLM_CTX_SIZE override. It
-// is injected at dispatch so the agent sizes its LLM phase without its own
-// table. Returns 0 when disabled / no model — the caller then injects nothing
+// ContextWindow resolves the run's primary model's context window (tokens) and
+// HOW it was obtained (0074 §5.1(a)): a VULTURE_LLM_CTX_SIZE override (env),
+// else the loaded window the probe measured (probe), else the broker-owned
+// registry (§31: table | family | default). It is injected at dispatch so the
+// agent sizes its LLM phase without its own table and can publish the source.
+// Returns (0, "") when disabled / no model — the caller then injects nothing
 // and the agent falls back to its own resolution (Mode A unchanged).
-func (b *Broker) ContextWindow() int {
-	if b == nil || !b.Enabled || len(b.models) == 0 {
-		return 0
+func (b *Broker) ContextWindow() (int, string) {
+	model, ok := b.primaryModel()
+	if !ok {
+		return 0, ""
 	}
-	return modelmeta.ResolveContextWindow(b.models[0], os.Getenv("VULTURE_LLM_CTX_SIZE"))
+	return modelmeta.ResolveMeasuredContextWindow(model, os.Getenv("VULTURE_LLM_CTX_SIZE"), b.probe.loaded())
+}
+
+// primaryModel is the run's primary model; false when the broker is off.
+func (b *Broker) primaryModel() (string, bool) {
+	if b == nil || !b.Enabled || len(b.models) == 0 {
+		return "", false
+	}
+	return b.models[0], true
 }
 
 // RevokeRun revokes every token minted for runID (§6/M3, run end/cancel).
@@ -215,9 +235,13 @@ func (b *Broker) RevokeRun(runID string) {
 	}
 }
 
-// Close stops the lease sweeper.
+// Close stops the lease sweeper and cancels a loaded-window probe in flight.
 func (b *Broker) Close() {
-	if b != nil && b.stopSweep != nil {
+	if b == nil {
+		return
+	}
+	b.probe.close()
+	if b.stopSweep != nil {
 		b.stopSweep()
 	}
 }
@@ -294,6 +318,19 @@ func parsePriv(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 		return nil, errors.New("mint key is not an EC private key")
 	}
 	return key, nil
+}
+
+// ssrfFactory builds the broker's egress validator over a resolver: the
+// standard one, or — dev/self-host, AllowLocalEgress — one that permits
+// loopback/RFC1918 + http for the configured local provider
+// (link-local/IMDS/multicast stay blocked, §11).
+func ssrfFactory(allowlist egress.Allowlist, allowLocal bool) func(egress.Resolver) egress.SSRFValidator {
+	if allowLocal {
+		return func(r egress.Resolver) egress.SSRFValidator {
+			return egress.NewSSRFValidatorAllowingLocal(allowlist, r)
+		}
+	}
+	return func(r egress.Resolver) egress.SSRFValidator { return egress.NewSSRFValidator(allowlist, r) }
 }
 
 // netResolver is the production SSRF resolver (real DNS).

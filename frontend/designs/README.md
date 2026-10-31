@@ -39,3 +39,4 @@ produces one file with the CSS inlined. Fonts still load from Google Fonts.
 | file | feature | status |
 |---|---|---|
 | `0091-unified-target-report.html` | 0091 — one report per codebase; scans, filters, closures, drill-down | for review |
+| `0074-provenance-family.html` | 0074 — `llm_family` / `both` provenance filter values; read-only anchor result | for review |

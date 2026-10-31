@@ -66,6 +66,17 @@ def current_broker_task_type() -> str | None:
     return _current_broker_task_type.get()
 
 
+TASK_TYPE_HEADER = "X-Vulture-Task-Type"
+
+
+def broker_headers() -> dict[str, str]:
+    """The scope header every broker completion carries (§26 C1): this run's
+    task type, or nothing when the run has none (the broker then rejects —
+    fail-closed). One source for every client that calls the broker."""
+    task_type = current_broker_task_type()
+    return {TASK_TYPE_HEADER: task_type} if task_type else {}
+
+
 # Ambient per-run context window (§31). The broker resolves the run model's
 # context window from its registry and injects it at dispatch; the transport
 # binds it here so provider.get_context_window can prefer it over the agent's
@@ -83,6 +94,26 @@ def set_context_window(window: int | None) -> contextvars.Token:
 def current_context_window() -> int | None:
     """The ambient per-run broker-injected context window, or ``None``."""
     return _current_context_window.get()
+
+
+# Ambient per-run window SOURCE (feature 0074 P1): HOW the broker obtained the
+# injected window (``env`` / ``probe`` / ``table`` / ``family`` / ``default``).
+# For PUBLICATION only — it never changes sizing: ``resolve_context_window``
+# still labels an injected window ``broker`` (who decided), whatever the source
+# says (how). ``None`` when no broker injected one (Mode A, older backend).
+_current_context_window_source: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "vulture_ctx_window_source", default=None
+)
+
+
+def set_context_window_source(source: str | None) -> contextvars.Token:
+    """Bind *source* as the ambient per-run broker window source."""
+    return _current_context_window_source.set(source)
+
+
+def current_context_window_source() -> str | None:
+    """The ambient per-run broker window source, or ``None``."""
+    return _current_context_window_source.get()
 
 
 async def aclose_broker_client() -> None:
@@ -222,10 +253,7 @@ def _default_client_factory(*, base_url: str, api_key: str) -> Any:
     """
     from openai import AsyncOpenAI
 
-    headers: dict[str, str] = {}
-    task_type = current_broker_task_type()
-    if task_type:
-        headers["X-Vulture-Task-Type"] = task_type
+    headers = broker_headers()
     # §32.1 #6: the BROKER owns retries (per-provider retrier + budget). Disable
     # the SDK's own client-side retries so a transient failure is not amplified
     # (broker 3× × SDK 2× × agent retry_llm_call 3×). max_retries=0 leaves the

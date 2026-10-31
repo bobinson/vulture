@@ -111,6 +111,18 @@ func (s *StateMachine) Force(to PluginState) {
 	s.cur = to
 }
 
+// forceUnless forces `to` unless the machine is currently in `sticky`,
+// atomically. Reports whether the state was applied.
+func (s *StateMachine) forceUnless(to, sticky PluginState) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cur == sticky {
+		return false
+	}
+	s.cur = to
+	return true
+}
+
 // RestartTracker implements the sliding-window restart-storm counter
 // (AC #7). Window length and cap are configured at construction; the
 // clock function is injected so tests can move time deterministically.
@@ -213,6 +225,15 @@ func (s *stateStore) setError(name, msg string, now time.Time) {
 	if e, ok := s.data[name]; ok {
 		e.lastError = msg
 		e.updatedAt = now
+	}
+}
+
+// incRestart bumps the externally reported restart counter.
+func (s *stateStore) incRestart(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.data[name]; ok {
+		e.restartCount++
 	}
 }
 

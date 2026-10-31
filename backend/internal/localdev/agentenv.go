@@ -1,6 +1,8 @@
 package localdev
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"os"
 	"strings"
@@ -8,6 +10,23 @@ import (
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/pkg/pluginregistry"
 )
+
+// ensureAgentToken gives the agents and the backend a shared /run secret when
+// the operator has not set one. An agent refuses /run without it whenever it is
+// set (shared/transport/sse_app.py) and the backend's agent proxy sends it; with
+// neither set — the old local default — any local process, or a DNS-rebinding
+// page in the browser, could make an agent scan any readable path and stream it
+// back. It is set in the launcher's own environment so both sides inherit the
+// same value: the backend through Manager.Start, the agents through
+// AgentSpawnEnvFromHost, whose keep-set names it.
+func ensureAgentToken() {
+	if os.Getenv("VULTURE_AGENT_TOKEN") != "" {
+		return
+	}
+	b := make([]byte, 32)
+	_, _ = rand.Read(b) // never fails since Go 1.24
+	_ = os.Setenv("VULTURE_AGENT_TOKEN", hex.EncodeToString(b))
+}
 
 // Feature 0073 — the agent spawn-env filter.
 //

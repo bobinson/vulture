@@ -123,11 +123,15 @@ def _collect_scannable_files(source_path: str) -> list[Path]:
     happens inline with the normal walk — one tree traversal instead of
     two for a 10K-file repo.
     """
-    return scan_code_files(
-        source_path,
-        extensions=secret_scan_extensions(),  # resolved per-run so the switch is live
-        extra_filenames=_DOTENV_NAMES,
-    )
+    extensions, filenames = walk_sets()
+    return scan_code_files(source_path, extensions=extensions, extra_filenames=filenames)
+
+
+def walk_sets() -> tuple[frozenset[str], frozenset[str]]:
+    """The (extensions, extra file names) this skill walks with, resolved per
+    run so the prose switch is live. Shared with callers that must say whether
+    THIS skill reads a file (the offline gate's not-scanned reason)."""
+    return secret_scan_extensions(), _DOTENV_NAMES
 
 
 # Names that the secret_scan wants on top of the suffix-based scan.

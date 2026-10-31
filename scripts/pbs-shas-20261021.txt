@@ -1,0 +1,4 @@
+5ff9f0602ce964a529ed1e8555d3abab6341926d724402ba9a15e9e877191124  cpython-3.12.15+20261021-x86_64-unknown-linux-gnu-install_only.tar.gz
+f53cca8fcd20805bddaa8bff1ef722a6918f8225d37561bd36ad901d13d580af  cpython-3.12.15+20261021-aarch64-unknown-linux-gnu-install_only.tar.gz
+869e0b30959beccc616ce14907439f4d0b3170c5830a2362dade07f07b0ed3b8  cpython-3.12.15+20261021-x86_64-apple-darwin-install_only.tar.gz
+a18cc33862b53bd54a148c710def5375c1b47470cccedf817a19c2d211764584  cpython-3.12.15+20261021-aarch64-apple-darwin-install_only.tar.gz

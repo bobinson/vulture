@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -186,37 +187,134 @@ func Load() *Config {
 // agents/shared/tests/unit/test_0093_transport_diagnostics.py.
 const DefaultLLMCallTimeoutSec = 439
 
-// Broker is off unless VULTURE_LLM_BROKER=on. Every field follows the
-// env > config.ini > default precedence used elsewhere in this file.
+// Broker defaults ON whenever any LLM is in use. Rule 6: the default is
+// DERIVED from VULTURE_USE_LLM, not an independent flag, so "LLM is in use" and
+// "the raw provider key is withheld from agents" can never drift apart — if an
+// LLM is used, the broker holds the credential and mints a per-run token by
+// default. An explicit VULTURE_LLM_BROKER wins (set it off to run LLM without
+// the broker); skills-only (VULTURE_USE_LLM off) ⇒ broker off, the Mode A
+// default, unchanged. Every other field follows env > config.ini > default.
 func loadBrokerConfig(ini iniValues) BrokerConfig {
-	enabled := isTruthy(resolve(ini, "VULTURE_LLM_BROKER", "broker", "enabled", "off"))
+	brokerRaw := strings.TrimSpace(resolve(ini, "VULTURE_LLM_BROKER", "broker", "enabled", ""))
+	enabled := EnvFlag("VULTURE_USE_LLM", false)
+	autoEnabled := false
+	if brokerRaw != "" {
+		enabled = isTruthy(brokerRaw) // explicit operator choice wins
+	} else {
+		autoEnabled = enabled // on PURELY because an LLM is in use
+	}
+
+	listen := resolve(ini, "VULTURE_LLM_BROKER_LISTEN", "broker", "listen", "127.0.0.1:8090")
+	url := resolve(ini, "VULTURE_LLM_BROKER_URL", "broker", "url", "")
+	if url == "" {
+		url = DefaultBrokerURL(listen) // reachable without extra config
+	}
+
+	// Derive the broker's upstream from the existing provider endpoint so an
+	// auto-enabled broker egresses WHERE THE AGENT WOULD HAVE: a local LM
+	// Studio / vLLM / Ollama reached via OPENAI_BASE_URL keeps working after
+	// the broker turns on. Explicit broker provider config still wins.
+	provider := resolve(ini, "VULTURE_LLM_BROKER_PROVIDER", "broker", "provider", "")
+	providerBaseURL := resolve(ini, "VULTURE_LLM_BROKER_PROVIDER_BASE_URL", "broker", "provider_base_url", "")
+	allowLocalRaw := strings.TrimSpace(resolve(ini, "VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS", "broker", "allow_local_egress", ""))
+	allowLocal := isTruthy(allowLocalRaw)
+	if providerBaseURL == "" {
+		if openaiBase := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")); openaiBase != "" {
+			providerBaseURL = openaiBase
+			if provider == "" {
+				provider = "openai-compatible"
+			}
+			// An auto-enabled broker must keep a LOCAL llm reachable: if the
+			// operator's endpoint is loopback/RFC1918 and they never set the
+			// egress switch, enable it (they already demonstrably intend local
+			// egress by pointing the LLM there). Only on auto-enable — an
+			// explicit broker operator configures egress deliberately.
+			if autoEnabled && allowLocalRaw == "" && isLocalURL(providerBaseURL) {
+				allowLocal = true
+			}
+		}
+	}
+	if provider == "" {
+		provider = "openai"
+	}
+
 	return BrokerConfig{
 		Enabled:           enabled,
-		URL:               resolve(ini, "VULTURE_LLM_BROKER_URL", "broker", "url", ""),
+		URL:               url,
 		MintKey:           resolve(ini, "VULTURE_LLM_BROKER_MINT_KEY", "broker", "mint_key", ""),
 		VerifyJWKS:        resolve(ini, "VULTURE_LLM_BROKER_VERIFY_JWKS", "broker", "verify_jwks", ""),
 		ProviderAllowlist: parseCSV(resolve(ini, "VULTURE_LLM_PROVIDER_ALLOWLIST", "broker", "provider_allowlist", "")),
 		BudgetShards:      atoiOr(resolve(ini, "VULTURE_LLM_BUDGET_SHARDS", "broker", "budget_shards", ""), 1),
 		BudgetUSD:         atofOr(resolve(ini, "VULTURE_LLM_BUDGET_USD", "broker", "budget_usd", ""), 0),
 		CallTimeoutSec:    atoiOr(resolve(ini, "VULTURE_LLM_CALL_TIMEOUT_SEC", "broker", "call_timeout_sec", ""), DefaultLLMCallTimeoutSec),
-		Listen:            resolve(ini, "VULTURE_LLM_BROKER_LISTEN", "broker", "listen", "127.0.0.1:8090"),
+		Listen:            listen,
 		Fallbacks:         parseCSV(resolve(ini, "VULTURE_LLM_FALLBACKS", "broker", "fallbacks", "")),
-		Provider:          resolve(ini, "VULTURE_LLM_BROKER_PROVIDER", "broker", "provider", "openai"),
-		ProviderBaseURL:   resolve(ini, "VULTURE_LLM_BROKER_PROVIDER_BASE_URL", "broker", "provider_base_url", ""),
-		AllowLocalEgress:  isTruthy(resolve(ini, "VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS", "broker", "allow_local_egress", "off")),
+		Provider:          provider,
+		ProviderBaseURL:   providerBaseURL,
+		AllowLocalEgress:  allowLocal,
 	}
+}
+
+// BrokerEnabled reports whether the LLM broker should run, from a getenv. Rule
+// 6: the default is derived from VULTURE_USE_LLM (broker ON whenever an LLM is
+// used) so it cannot drift from "LLM in use"; an explicit VULTURE_LLM_BROKER
+// wins. This env-only form is what the agent launcher uses so the backend and
+// the spawn path agree on exactly one decision (loadBrokerConfig applies the
+// same rule with config.ini precedence).
+func BrokerEnabled(getenv func(string) string) bool {
+	if raw := strings.TrimSpace(getenv("VULTURE_LLM_BROKER")); raw != "" {
+		return ParseFlag(raw, false)
+	}
+	return ParseFlag(getenv("VULTURE_USE_LLM"), false)
+}
+
+// DefaultBrokerURL is the agent-facing broker URL derived from the internal
+// listen address (VULTURE_LLM_BROKER_LISTEN) when VULTURE_LLM_BROKER_URL is
+// unset, so an auto-enabled broker is reachable with no extra configuration.
+func DefaultBrokerURL(listen string) string {
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		listen = "127.0.0.1:8090"
+	}
+	return "http://" + listen + "/v1"
+}
+
+// isLocalURL reports whether a provider base URL points at loopback or an
+// RFC1918 private host — the "the operator means local egress" signal used
+// only when the broker auto-enables (loadBrokerConfig).
+func isLocalURL(raw string) bool {
+	s := raw
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	host := s
+	if i := strings.LastIndex(host, ":"); i >= 0 && !strings.Contains(host[i+1:], ":") {
+		host = host[:i] // strip :port (not an IPv6 group)
+	}
+	host = strings.Trim(host, "[]")
+	switch {
+	case host == "localhost", host == "127.0.0.1", host == "::1", strings.HasPrefix(host, "127."):
+		return true
+	case strings.HasPrefix(host, "10."), strings.HasPrefix(host, "192.168."):
+		return true
+	case strings.HasPrefix(host, "172."):
+		// 172.16.0.0 – 172.31.255.255
+		var a, b int
+		if n, _ := fmt.Sscanf(host, "172.%d.%d", &a, &b); n >= 1 && a >= 16 && a <= 31 {
+			return true
+		}
+	}
+	return false
 }
 
 // isTruthy reports whether s enables a flag. §26/M9: the accepted set
 // (on/true/1/yes) MUST match the Python agent's broker.py `_TRUTHY` so the two
 // runtimes never disagree about whether VULTURE_LLM_BROKER is on.
 func isTruthy(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "on", "true", "1", "yes":
-		return true
-	default:
-		return false
-	}
+	return ParseFlag(s, false)
 }
 
 // atoiOr parses s as an int, returning fallback when empty or invalid.

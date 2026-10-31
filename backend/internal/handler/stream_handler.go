@@ -19,6 +19,7 @@ import (
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/service"
+	"github.com/vulture/backend/internal/textutil"
 	"github.com/vulture/backend/pkg/agentregistry"
 )
 
@@ -427,7 +428,7 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 	// the "ERROR:" prefix collectErrorText requires, so res.AgentError is empty
 	// and the completion branch would otherwise mark this `completed`.
 	audit.CancelReason = b.CancelReason()
-	h.persistResultsWithError(audit, source, res.Findings, res.Scores, res.ProveResults, res.AgentError, res.DegradedReason, res.ScanOutcomes)
+	h.persistResultsWithError(audit, source, res)
 }
 
 // failAudit marks an audit failed after a dispatch-time error, so it does not sit
@@ -437,7 +438,7 @@ func (h *StreamHandler) failAudit(auditID, reason string) {
 	if err != nil {
 		return
 	}
-	h.persistResultsWithError(audit, nil, nil, nil, nil, reason, "", nil)
+	h.persistResultsWithError(audit, nil, DrainResult{AgentError: reason})
 }
 
 // eventChCapacity sizes the producer channel. The historical formula yields ZERO
@@ -483,6 +484,10 @@ type DrainResult struct {
 	// snapshot — or sent a pre-0091 one — has no entry, and the closure pass
 	// then treats its scope as UNKNOWN, which is the safe reading (S26).
 	ScanOutcomes map[string]*model.ScanResult
+	// Finished names the agents whose own agent_end reported status
+	// "completed" — the one signal from an agent, like prove, that reports
+	// without a result snapshot (see missingRequestedAgents).
+	Finished map[string]bool
 }
 
 func drainResult(eventCh <-chan *model.AgUIEvent, auditID string, sink EventSink) DrainResult {
@@ -513,10 +518,14 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 	var degradedReason string
 	// Feature 0096: the OWASP agent's validated mapping, if it sent one.
 	var mapping *model.ComplianceMapping
+	finished := map[string]bool{}
 	for evt := range eventCh {
 		if evt == nil {
 			// processEvent and WriteEvent both dereference evt.Type unguarded.
 			continue
+		}
+		if finishedRun(evt) {
+			finished[evt.AgentType] = true
 		}
 		if evt.Type == model.EventStateSnapshot && evt.AgentType != "" {
 			snapshotAgents[evt.AgentType] = true
@@ -558,7 +567,10 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 			rescued, auditID)
 	}
 	findings = withoutMapperFindings(findings, scanOutcomes)
-	findings, rollupShadowed := dedupCrossAgentWithShadow(findings, sourceRoot)
+	merged := dedupCrossAgentDetailed(findings, sourceRoot)
+	findings, rollupShadowed := merged.kept, merged.shadowed
+	// Feature 0074 P4 (AC19): account for every LLM row, per emitting agent.
+	logDedupBuckets(auditID, merged.llm, scanOutcomes)
 	// Feature 0091 S21. The set is global to the run — the parent and the leaf
 	// it shadows are routinely different agents — so it is stamped on every
 	// agent's outcome rather than split per agent. The 0096 mapping likewise:
@@ -590,7 +602,15 @@ func drainResultAt(eventCh <-chan *model.AgUIEvent, auditID, sourceRoot string, 
 		OwaspCoverage:  owaspCoverage,
 		DegradedReason: degradedReason,
 		ScanOutcomes:   scanOutcomes,
+		Finished:       finished,
 	}
+}
+
+// finishedRun reports whether evt is an agent's own statement that its run
+// completed: agent_end with status "completed". "skipped" and "failed" ended a
+// run without doing it.
+func finishedRun(evt *model.AgUIEvent) bool {
+	return evt.Type == model.EventStepFinished && evt.AgentType != "" && evt.RunStatus == "completed"
 }
 
 // extractOwaspCoverage returns the owasp_coverage manifest embedded in an
@@ -792,11 +812,12 @@ func parseSnapshot(snapshot json.RawMessage, auditID string, agentType string, f
 	}
 }
 
+// truncate caps s at maxLen bytes without splitting a rune, marking a cut.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return textutil.CutAtRune(s, maxLen) + "..."
 }
 
 func generateFindingID(auditID, title, filePath string, index int) string {
@@ -860,104 +881,176 @@ func deduplicateCrossAgentAt(findings []model.Finding, sourceRoot string) []mode
 // so re-deriving "is a parent covering this row present" would compare paths
 // that do not have to match. The eviction itself is unambiguous.
 func dedupCrossAgentWithShadow(findings []model.Finding, sourceRoot string) ([]model.Finding, map[string]bool) {
+	out := dedupCrossAgentDetailed(findings, sourceRoot)
+	return out.kept, out.shadowed
+}
+
+// dedupOutcome is everything one cross-agent merge decides: the surviving
+// rows, the S21 rollup-shadow record, and (feature 0074 P4) what happened to
+// every LLM-tier row, charged to the agent that emitted it.
+type dedupOutcome struct {
+	kept     []model.Finding
+	shadowed map[string]bool
+	llm      map[string]llmTally
+}
+
+// dedupCrossAgentDetailed is the merge itself. The dedup key is always
+// canonicalised against the source root: the deterministic tier emits the
+// absolute path it walked, the LLM tier the relative one the prompt showed, so
+// with a raw key they could never collide. An empty root is identity, which is
+// how the replay path keeps byte-identical behaviour.
+func dedupCrossAgentDetailed(findings []model.Finding, sourceRoot string) dedupOutcome {
 	if len(findings) <= 1 {
-		return findings, nil
+		// Nothing to merge across agents: the one row there may be (index 0)
+		// is kept, with what its own agent merged folded in (C3).
+		return dedupOutcome{kept: soloSurvivors(findings), llm: tallyLLMRows(findings, map[int]bool{0: true})}
 	}
-	// The dedup key is always canonicalised against the source root. The two
-	// tiers emit systematically different path forms for the same file -- the
-	// deterministic tier the absolute path it walked, the LLM tier the relative
-	// one the prompt showed -- so with a raw key they can never collide, and one
-	// weakness becomes two findings and two lineage rows. An empty root is
-	// identity, which is how the replay path keeps byte-identical behaviour.
-	keyRoot := sourceRoot
-	type entry struct {
-		index int
-		score int
-	}
-	seen := make(map[string]entry, len(findings))
-	// Pre-compute cross-agent keys to avoid recomputation
-	keys := make([]string, len(findings))
-	agentsByKey := make(map[string][]string, len(findings))
-	provenanceByKey := make(map[string]string, len(findings))
-	categoriesByKey := make(map[string][]string, len(findings))
-
+	idx := buildDedupIndex(findings, sourceRoot)
+	kept := idx.keptIndices()
+	shadowed := rollupShadowed(findings, idx, kept)
+	result := make([]model.Finding, 0, len(kept))
 	for i, f := range findings {
-		key := crossAgentKeyWithRoot(f, keyRoot)
-		keys[i] = key
-		s := findingDetailScore(f)
-		agentsByKey[key] = append(agentsByKey[key], f.AgentType)
-		if f.Provenance != "" {
-			provenanceByKey[key] = f.Provenance
+		if kept[i] {
+			result = append(result, mergeSurvivor(f, idx.members[idx.keys[i]], findings))
 		}
-		categoriesByKey[key] = appendLabelSource(categoriesByKey[key], f)
-		if prev, ok := seen[key]; ok {
-			if crossAgentPrefers(f, findings[prev.index], s, prev.score) {
-				seen[key] = entry{index: i, score: s}
-			}
-			continue
-		}
-		seen[key] = entry{index: i, score: s}
 	}
+	logDedupRemoval(len(findings), len(result), len(shadowed))
+	return dedupOutcome{kept: result, shadowed: shadowed, llm: tallyLLMRows(findings, kept)}
+}
 
-	kept := make(map[int]bool, len(seen))
-	for _, e := range seen {
+func logDedupRemoval(before, after, shadowed int) {
+	if removed := before - after; removed > 0 {
+		log.Printf("[dedup] removed %d cross-agent duplicate findings (%d → %d, %d shadowed by a rollup parent)",
+			removed, before, after, shadowed)
+	}
+}
+
+// dedupEntry is the current winner of one dedup key.
+type dedupEntry struct {
+	index int
+	score int
+}
+
+// dedupIndex groups the rows by cross-agent key: each row's key, the winner
+// of each key, and every row index that contributed to it (in input order),
+// so the survivor can be told about each of them in O(1) per row.
+type dedupIndex struct {
+	keys    []string
+	winner  map[string]dedupEntry
+	members map[string][]int
+}
+
+func buildDedupIndex(findings []model.Finding, root string) dedupIndex {
+	idx := dedupIndex{
+		keys:    make([]string, len(findings)),
+		winner:  make(map[string]dedupEntry, len(findings)),
+		members: make(map[string][]int, len(findings)),
+	}
+	for i := range findings {
+		idx.add(i, findings, root)
+	}
+	return idx
+}
+
+func (x dedupIndex) add(i int, findings []model.Finding, root string) {
+	f := findings[i]
+	key := crossAgentKeyWithRoot(f, root)
+	x.keys[i] = key
+	x.members[key] = append(x.members[key], i)
+	s := findingDetailScore(f)
+	prev, ok := x.winner[key]
+	if !ok || crossAgentPrefers(f, findings[prev.index], s, prev.score) {
+		x.winner[key] = dedupEntry{index: i, score: s}
+	}
+}
+
+func (x dedupIndex) keptIndices() map[int]bool {
+	kept := make(map[int]bool, len(x.winner))
+	for _, e := range x.winner {
 		kept[e.index] = true
 	}
-	// The rollup half of the eviction record (S21): a finding removed because
-	// the row that won its key IS a rollup parent was reported by the agent
-	// and consolidated, not repaired.
+	return kept
+}
+
+// rollupShadowed is the rollup half of the eviction record (S21): a finding
+// removed because the row that won its key IS a rollup parent was reported by
+// the agent and consolidated, not repaired.
+func rollupShadowed(findings []model.Finding, idx dedupIndex, kept map[int]bool) map[string]bool {
 	var shadowed map[string]bool
 	for i, f := range findings {
-		if kept[i] || f.IsRollup || f.Fingerprint == "" {
-			continue
-		}
-		if w, ok := seen[keys[i]]; !ok || !findings[w.index].IsRollup {
-			continue
-		}
-		if shadowed == nil {
-			shadowed = map[string]bool{}
-		}
-		shadowed[f.Fingerprint] = true
-		if f.FingerprintV2 != "" {
-			shadowed[f.FingerprintV2] = true
+		if isShadowedByRollup(i, f, findings, idx, kept) {
+			shadowed = markShadowed(shadowed, f)
 		}
 	}
-	result := make([]model.Finding, 0, len(findings))
-	for i, f := range findings {
-		if !kept[i] {
-			continue
-		}
-		key := keys[i]
-		f.AbsorbedCategories = absorbedCategories(categoriesByKey[key], f)
-		agents := agentsByKey[key]
-		if len(agents) > 1 {
-			origins := make([]string, 0, len(agents)-1)
-			for _, at := range agents {
-				if at != f.AgentType {
-					origins = append(origins, at)
-				}
-			}
-			f.CrossAgentOrigins = deduplicateStrings(origins)
+	return shadowed
+}
 
-			// Provenance survives the merge (feature 0058 R6/T5): if
-			// the richer winner lacks one, adopt a duplicate's.
-			if f.Provenance == "" {
-				f.Provenance = provenanceByKey[key]
-			}
+func isShadowedByRollup(i int, f model.Finding, findings []model.Finding, idx dedupIndex, kept map[int]bool) bool {
+	if kept[i] || f.IsRollup || f.Fingerprint == "" {
+		return false
+	}
+	return findings[idx.winner[idx.keys[i]].index].IsRollup
+}
 
-			// L3 cross-agent merge (feature 0045): append a validation
-			// check + re-vote so this finding's confidence reflects the
-			// cross-agent corroboration. Each additional confirming
-			// agent adds +0.10 weight (capped at +0.30).
-			f = applyCrossAgentValidation(f)
+func markShadowed(shadowed map[string]bool, f model.Finding) map[string]bool {
+	if shadowed == nil {
+		shadowed = map[string]bool{}
+	}
+	shadowed[f.Fingerprint] = true
+	if f.FingerprintV2 != "" {
+		shadowed[f.FingerprintV2] = true
+	}
+	return shadowed
+}
+
+// mergeSurvivor stamps the key's winner with what the rows merged into it
+// carried: absorbed CWE categories (0096 H2), the other agents
+// (CrossAgentOrigins, which drives the L3 re-vote), an adopted provenance
+// when it lacks one (0058 R6/T5), and — feature 0074 P4 — every contributing
+// tier and the losers' descriptions, beside the verdict and never inside it.
+func mergeSurvivor(f model.Finding, members []int, findings []model.Finding) model.Finding {
+	f.AbsorbedCategories = absorbedCategories(keyLabelSources(members, findings), f)
+	if len(members) < 2 {
+		return recordAgentMerges(f, members, findings)
+	}
+	f.CrossAgentOrigins = deduplicateStrings(otherAgents(members, findings, f.AgentType))
+	if f.Provenance == "" {
+		f.Provenance = lastProvenance(members, findings)
+	}
+	// L3 cross-agent merge (feature 0045): each additional confirming agent
+	// adds +0.10 weight (capped at +0.30) and re-votes.
+	f = applyCrossAgentValidation(f)
+	return recordMergedRows(f, members, findings)
+}
+
+// keyLabelSources is the key's distinct canonical CWE categories (0096 H2).
+func keyLabelSources(members []int, findings []model.Finding) []string {
+	var cats []string
+	for _, m := range members {
+		cats = appendLabelSource(cats, findings[m])
+	}
+	return cats
+}
+
+func otherAgents(members []int, findings []model.Finding, own string) []string {
+	origins := make([]string, 0, len(members)-1)
+	for _, m := range members {
+		if at := findings[m].AgentType; at != own {
+			origins = append(origins, at)
 		}
-		result = append(result, f)
 	}
-	if removed := len(findings) - len(result); removed > 0 {
-		log.Printf("[dedup] removed %d cross-agent duplicate findings (%d → %d, %d shadowed by a rollup parent)",
-			removed, len(findings), len(result), len(shadowed))
+	return origins
+}
+
+// lastProvenance is the provenance of the last contributing row that has one.
+func lastProvenance(members []int, findings []model.Finding) string {
+	out := ""
+	for _, m := range members {
+		if p := findings[m].Provenance; p != "" {
+			out = p
+		}
 	}
-	return result, shadowed
+	return out
 }
 
 // appendLabelSource adds a row's canonical CWE category to its dedup key's
@@ -988,6 +1081,16 @@ func absorbedCategories(keyCats []string, survivor model.Finding) []string {
 	return out
 }
 
+// newValidationSeed is the validation blob a finding that has none starts
+// from: its own verdict and an empty check list.
+func newValidationSeed(f model.Finding) map[string]interface{} {
+	return map[string]interface{}{
+		"status":     f.ValidationStatus,
+		"confidence": f.ValidationConfidence,
+		"checks":     []interface{}{},
+	}
+}
+
 // applyCrossAgentValidation appends an L3 cross-agent merge check to a
 // finding's validation.checks and re-votes the result. Mutates and
 // returns the finding. Idempotent: if `cross_agent` already in the
@@ -1011,11 +1114,7 @@ func applyCrossAgentValidation(f model.Finding) model.Finding {
 	}
 	// Build/extend the validation map.
 	if f.Validation == nil {
-		f.Validation = map[string]interface{}{
-			"status":     f.ValidationStatus,
-			"confidence": f.ValidationConfidence,
-			"checks":     []interface{}{},
-		}
+		f.Validation = newValidationSeed(f)
 	}
 	checks, _ := f.Validation["checks"].([]interface{})
 	// Strip any prior cross_agent check (idempotency).
@@ -1118,11 +1217,7 @@ func applyMemoryPriorIfEnabled(findings []model.Finding) []model.Finding {
 			"extras": map[string]interface{}{"label": label},
 		}
 		if findings[i].Validation == nil {
-			findings[i].Validation = map[string]interface{}{
-				"status":     findings[i].ValidationStatus,
-				"confidence": findings[i].ValidationConfidence,
-				"checks":     []interface{}{},
-			}
+			findings[i].Validation = newValidationSeed(findings[i])
 		}
 		checks, _ := findings[i].Validation["checks"].([]interface{})
 		// Strip prior memory check (idempotency).
@@ -1262,7 +1357,7 @@ func tieBreakKey(f model.Finding) string {
 //
 // 0076 D5: a deterministic row outranks an `llm` row at equal-or-lower
 // severity. Re-anchoring newly creates these collisions, so the guard ships
-// with it. VULTURE_DEDUP_PREFER_DETERMINISTIC=false restores 0075 behaviour.
+// with it. The preference is hard-wired; no switch restores 0075 behaviour.
 // Scope is exactly llm-vs-deterministic: det-vs-det (feature 0058 R6) and
 // llm-vs-llm merges are left to the detail score, as is any collision
 // involving a rollup parent (feature 0045 keeps parents ahead of members).
@@ -1301,7 +1396,7 @@ func llmSeverityVerdict(llm, deterministic model.Finding) int {
 // had travelled furthest through validation — the ones most likely to be
 // claiming a high severity against a real skill finding.
 func isLLMProvenance(f model.Finding) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.Provenance)), "llm")
+	return model.TierOf(f.Provenance) == model.TierLLM
 }
 
 // findingDetailScore ranks how rich a finding is. Higher = more detail.
@@ -1487,7 +1582,7 @@ func extractProveResult(delta json.RawMessage, auditID string, fpLookup map[stri
 }
 
 func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult) {
-	h.persistResultsWithError(audit, source, findings, scores, proveResults, "", "", nil)
+	h.persistResultsWithError(audit, source, DrainResult{Findings: findings, Scores: scores, ProveResults: proveResults})
 }
 
 // persistResultsWithError records audit state, propagating an
@@ -1495,12 +1590,13 @@ func (h *StreamHandler) persistResults(audit *model.Audit, source *model.Source,
 // short-circuited (zero findings + ERROR text). Discover-agent
 // short-circuits on bad config used to land as status=completed; this
 // path now surfaces the failure.
-func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, findings []model.Finding, scores map[string]int, proveResults []model.ProveResult, agentError string, degradedReason string, scanOutcomes map[string]*model.ScanResult) {
+func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *model.Source, res DrainResult) {
+	findings, scores, scanOutcomes := res.Findings, res.Scores, res.ScanOutcomes
 	log.Printf("[persist] audit=%s findings=%d scores=%v", audit.ID, len(findings), scores)
 
 	saveFindings(h.auditSvc, audit.ID, findings)
-	missing := missingRequestedAgents(audit.Types, scanOutcomes, scores, findings)
-	completeAuditWithError(h.auditSvc, audit, findings, scores, agentError, degradedReason, missing)
+	missing := missingRequestedAgents(audit.Types, res)
+	completeAuditWithError(h.auditSvc, audit, findings, scores, res.AgentError, res.DegradedReason, missing)
 	// Feature 0064 §6/M3: the run reached a terminal state — revoke its
 	// broker token(s) so a leaked token can't keep spending. No-op when the
 	// broker is off (revoker nil / run had no minted tokens).
@@ -1508,7 +1604,7 @@ func (h *StreamHandler) persistResultsWithError(audit *model.Audit, source *mode
 		h.brokerRevoker.RevokeRun(audit.ID)
 	}
 	dispatchWebhook(h.webhookSvc, audit, findings, scores)
-	backfillAndSaveProve(h.proveSvc, findings, proveResults, audit.ID)
+	backfillAndSaveProve(h.proveSvc, findings, res.ProveResults, audit.ID)
 	storeMemoriesAndLineage(h, audit, source, findings, scanOutcomes)
 
 	if h.pipelineSvc != nil {
@@ -1574,36 +1670,28 @@ func saveFindings(svc service.AuditService, auditID string, findings []model.Fin
 // An empty Types list is the documented "default scan" — the router chooses the
 // set, so there is no per-agent contract to violate.
 //
-// "Did not run" is judged on THREE signals, not just the snapshot: an agent
+// "Did not run" is judged on FOUR signals, not just the snapshot: an agent
 // counts as having reported if it sent a result snapshot, or carries a score,
-// or contributed a finding. A snapshot-only test was too strict and wrongly
-// failed an agent whose findings and score were both present — and it would
-// have re-failed the rescued-delta path (an agent that streamed findings then
-// died before its snapshot), whose whole purpose is to salvage that work. A
-// genuinely skipped agent contributes none of the three, which is exactly what
-// makes the disjunction safe: it is narrow enough to still catch every skip
-// path and wide enough never to accuse an agent that did something.
-func missingRequestedAgents(
-	requested []string,
-	reported map[string]*model.ScanResult,
-	scores map[string]int,
-	findings []model.Finding,
-) []string {
+// or contributed a finding, or ended its own run with agent_end status
+// "completed". A snapshot-only test was too strict and wrongly failed an agent
+// whose findings and score were both present — and it would have re-failed the
+// rescued-delta path (an agent that streamed findings then died before its
+// snapshot), whose whole purpose is to salvage that work. A genuinely skipped
+// agent contributes none of the four, which is exactly what makes the
+// disjunction safe: it is narrow enough to still catch every skip path and wide
+// enough never to accuse an agent that did something.
+//
+// The fourth exists for prove, which reports verdicts on OTHER agents'
+// findings: no snapshot, no score, no finding of its own. Without it every
+// prove audit failed as "did not run: prove", including runs that verified
+// findings. A completed agent_end is sent only at the end of a run the agent
+// finished; no skip path above produces one, and an agent that dies mid-run
+// never sends it. A "skipped" or "failed" status does not count.
+func missingRequestedAgents(requested []string, res DrainResult) []string {
 	if len(requested) == 0 {
 		return nil
 	}
-	contributed := make(map[string]bool, len(reported)+len(scores))
-	for at := range reported {
-		contributed[at] = true
-	}
-	for at := range scores {
-		contributed[at] = true
-	}
-	for _, f := range findings {
-		if f.AgentType != "" {
-			contributed[f.AgentType] = true
-		}
-	}
+	contributed := reportedAgents(res)
 	var missing []string
 	seen := make(map[string]bool, len(requested))
 	for _, t := range requested {
@@ -1616,6 +1704,27 @@ func missingRequestedAgents(
 		}
 	}
 	return missing
+}
+
+// reportedAgents is every agent carrying any of missingRequestedAgents' four
+// signals.
+func reportedAgents(res DrainResult) map[string]bool {
+	contributed := make(map[string]bool, len(res.ScanOutcomes)+len(res.Scores)+len(res.Finished))
+	for at := range res.ScanOutcomes {
+		contributed[at] = true
+	}
+	for at := range res.Scores {
+		contributed[at] = true
+	}
+	for at := range res.Finished {
+		contributed[at] = true
+	}
+	for _, f := range res.Findings {
+		if f.AgentType != "" {
+			contributed[f.AgentType] = true
+		}
+	}
+	return contributed
 }
 
 // completeAuditWithError records final state. When agentError is
