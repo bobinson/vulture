@@ -572,7 +572,10 @@ stack, which runs centralized with its shipped defaults (`VULTURE_LOCAL_MODE=fal
     `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.1`; the backend no longer starts
     0.1.0. This release is tagged only once that image is published and an anonymous
     pull of it matches the index digest given in the release notes; there is no
-    fallback to 0.1.0. A plugin started by hand behind a backend with a shared token
+    fallback to 0.1.0. The image is published by a tag-triggered workflow that uses
+    the repository's own short-lived token, signs the pushed digest with keyless
+    cosign and attaches a build-provenance attestation (to verify: "Plugin image" in
+    `docs/guides/cosign_verification.md`). A plugin started by hand behind a backend with a shared token
     needs the derived value (the contract shows how to compute it); with no token
     set, its `/run` is open and logs a warning. A third-party plugin should check
     `X-Vulture-Agent-Token` against its own `VULTURE_AGENT_TOKEN`, and one that used

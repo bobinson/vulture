@@ -174,15 +174,22 @@ In local mode a host-network plugin also shares the machine's loopback, where
 the backend's API serves any local process as the local user: the
 `host-network` acknowledgement grants it that trust.
 
+## Image build and verification
+
+The published image is built, signed and attested by
+`.github/workflows/plugin-image.yml` from a tag `plugin-semgrep-v<version>`.
+To verify one, see
+[Plugin image](../../docs/guides/cosign_verification.md#plugin-image).
+
 ## Migration path (when extracted)
 
 When this directory is mature enough to live in its own repo:
 
 1. `git filter-repo --path plugins/semgrep` produces a clean repo with
    full history.
-2. Set up a GitHub Actions release workflow that builds the image,
-   pushes to `ghcr.io`, and cosign-signs both the image and the
-   `plugin.toml` via Sigstore keyless OIDC.
+2. Carry `.github/workflows/plugin-image.yml` over (it already builds,
+   pushes, signs and attests the image), and add a keyless cosign
+   signature for `plugin.toml`.
 3. Change `tier = "in-tree"` → `tier = "community-signed"` and add
    the `signature = "cosign://sigstore/..."` field.
 4. Change `publisher` from `vulture-core` to your maintainer org.

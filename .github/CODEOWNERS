@@ -51,6 +51,12 @@
 # The release CVE gate and the waiver-file check it shares with its tests.
 /scripts/release-cve-gate.sh                      @bobinson
 /scripts/lib/trivyignore.sh                       @bobinson
+# The plugin image workflow (GITHUB_TOKEN push, keyless signing) and its tag check.
+/.github/workflows/plugin-image.yml               @bobinson
+/scripts/plugin-version-check.sh                  @bobinson
+# Inputs of the signed plugin image.
+/plugins/semgrep/Dockerfile                       @bobinson
+/plugins/semgrep/plugin.toml                      @bobinson
 
 # Supply-chain hardening (feature 0056): the CI lockfile gate, the dispatch-only
 # relock + security-digest workflows, the pinned-uv composite action, the uv-pin

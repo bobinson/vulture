@@ -5,7 +5,9 @@ signed, verifiable set of native-install tarballs — and how vulnerabilities ar
 caught and handled along the way.
 
 > Native-install releases only (Mode E). Docker images (Modes A–D) are not built
-> by this pipeline. Verification of a download is covered in
+> by this pipeline; the one image it depends on, the bundled semgrep plugin's, has
+> its own workflow ([Bundled plugin image](#bundled-plugin-image-before-tagging)).
+> Verification of a download is covered in
 > [`cosign_verification.md`](cosign_verification.md).
 
 ## At a glance
@@ -169,41 +171,75 @@ if you've advanced a minor (see [Versioning](#versioning)).
 The supervisor pulls a bundled plugin's image by the tag in its manifest
 (`plugins/semgrep/plugin.toml`, `[runtime].image`), and a native install can
 only pull it: the tarball ships neither the image nor its Dockerfile. When a
-release changes that tag, publish the image **before** Step 2, from a clean
-checkout of the commit that carries the version bump, never from a working tree
-with local changes:
+release changes that tag, publish the image **before** Step 2.
+
+### From CI (the normal path)
+
+`.github/workflows/plugin-image.yml` builds, pushes, signs and attests the image
+when a tag `plugin-semgrep-v<version>` is pushed, after the owner approves the
+run. It uses the job's own short-lived `GITHUB_TOKEN`; no personal registry
+token is created or stored.
+
+One-time setup (owner, GitHub UI), done **before** the first such tag:
+1. The package `vulture-plugin-semgrep` → Package settings → Manage Actions
+   access: add this repository with the **Write** role.
+2. The same settings → visibility: **Public** (anonymous pulls).
+3. Repository → Settings → Environments → `plugin-release`: you as required
+   reviewer; deployments limited to tags `plugin-semgrep-v*`. A workflow that
+   names a missing environment makes GitHub create it with no protection rules,
+   so create it first.
+
+Then, on the commit that carries the version bump:
+
+```sh
+V=<the new plugin version>
+git tag "plugin-semgrep-v$V" <commit> && git push origin "plugin-semgrep-v$V"
+```
+
+1. Approve the `publish` job (Actions → plugin-image → Review deployments). It
+   refuses a tag whose version differs from `plugin.toml` or `pyproject.toml`,
+   and checks its own signature before it finishes.
+2. Copy the index digest from the run summary into the release notes.
+3. Verify the signature and the attestation: [Plugin
+   image](cosign_verification.md#plugin-image).
+
+A tag is never re-pushed: a bad image is superseded by the next patch version.
+
+### By hand (break-glass)
+
+Only when Actions is unavailable. The image is **not signed**; say so in the
+release notes. From a clean checkout of the commit that carries the version
+bump, never from a working tree with local changes:
 
 ```sh
 C=<the commit that carries the version bump>; V=<the new plugin version>
 git worktree add --detach ../vulture-plugin-image "$C"
 test -z "$(git -C ../vulture-plugin-image status --porcelain)"
-grep -q "vulture-plugin-semgrep:$V" ../vulture-plugin-image/plugins/semgrep/plugin.toml
+sh ../vulture-plugin-image/scripts/plugin-version-check.sh "plugin-semgrep-v$V" >/dev/null
 # a write:packages token read from a file you choose; never echo or commit it
 docker login ghcr.io -u <owner> --password-stdin < <token-file>
-docker buildx build --platform linux/amd64,linux/arm64 \
+docker buildx build --platform linux/amd64,linux/arm64 --provenance=false \
   --tag "ghcr.io/bobinson/vulture-plugin-semgrep:$V" --push ../vulture-plugin-image/plugins/semgrep
 docker buildx imagetools inspect "ghcr.io/bobinson/vulture-plugin-semgrep:$V"
 docker logout ghcr.io
 git worktree remove ../vulture-plugin-image
 ```
 
-1. Record the index digest (the `Digest:` line of `imagetools inspect`) and `$C`
-   in the release notes.
-2. Make the package public if it is not already (package settings → visibility;
-   owner only, in the GitHub UI).
-3. Prove an anonymous pull with an empty docker configuration:
-   `DOCKER_CONFIG=$(mktemp -d) docker pull "ghcr.io/bobinson/vulture-plugin-semgrep:$V"`.
-   Its digest must equal the recorded one.
+Record the index digest (the `Digest:` line of `imagetools inspect`) and `$C` in
+the release notes, and make the package public if it is not already. The arm64
+leg needs a native arm64 builder or QEMU binfmt on the build host.
 
-The arm64 leg needs a native arm64 builder or QEMU binfmt on the build host.
+### Either path: the anonymous pull is a hard precondition
 
-The anonymous pull (item 3) is a hard precondition for the tag: do not run
-Step 2 until it succeeds at the recorded digest. A release whose manifest names
-an unpublished tag loses that plugin's tier on every fresh install. Reverting
-the plugin's version bump is not a fallback: the plugin's own tests
-(`plugins/semgrep/tests/unit/test_version_consistency.py`) refuse any version
-before 0.1.1, the first whose `/run` requires the run token. The image is
-referenced by tag and is not signed.
+```sh
+DOCKER_CONFIG=$(mktemp -d) docker pull "ghcr.io/bobinson/vulture-plugin-semgrep:$V"
+```
+
+Its digest must equal the recorded one. Do not run Step 2 until it does: a
+release whose manifest names an unpublished tag loses that plugin's tier on every
+fresh install. Reverting the plugin's version bump is not a fallback: the
+plugin's own tests (`plugins/semgrep/tests/unit/test_version_consistency.py`)
+refuse any version before 0.1.1, the first whose `/run` requires the run token.
 
 ## Vulnerabilities
 
