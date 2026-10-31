@@ -39,7 +39,7 @@ cryptography>=50.0.0; sys_platform != "darwin"
 # REMOVE this constraint (and re-lock) when litellm ships a macOS/universal wheel
 # again (watch https://pypi.org/project/litellm/#files for a macosx_/universal2/
 # py3-none-any wheel on a newer release).
-litellm<1.92.0
+litellm<1.101.0
 
 # Security floors for transitive deps flagged by the audit-python gate
 # (scripts + .github/workflows audit `agents/requirements-frozen.txt` with
