@@ -397,7 +397,7 @@ A browser session is an HttpOnly, SameSite=Strict cookie, issued to a sign-in th
 
 - **Use a dedicated hostname.** Serve Vulture on a hostname that no other service uses, on any port. Cookies are not isolated by port: every HTTP(S) service on another port of the same name receives the session cookie, and its value is a JWT the API also accepts as a Bearer token.
 - **Cookies are host-only.** Each hostname has its own session, so users sign in separately on the read-only viewer (Optional Step 10).
-- **Reload open tabs after upgrading.** A tab loaded before the upgrade may be refused with `cookie-authenticated requests must send X-Vulture-CSRF; reload the page`.
+- **Reload open tabs after upgrading.** A tab loaded before the upgrade may be refused with `cookie-authenticated requests must send X-Vulture-CSRF; reload the page`. After the reload, users sign in once: the UI discards the token an older version kept in browser storage instead of exchanging it (local mode signs in again by itself).
 
 The CLI, CI clients and scripts are unaffected: they send a Bearer token and never the `X-Vulture-CSRF` header, so login still returns the token in its body.
 

@@ -25,6 +25,12 @@ export const SEVERITY_ORDER: Record<string, number> = {
   info: 4,
 };
 
+/** CSRF header of the cookie session (feature 0102). The SPA sends it on every
+ *  API request: with it a sign-in sets the HttpOnly session cookie, and the
+ *  backend refuses a cookie-authenticated write or a logout without it. A
+ *  cross-site page cannot add it: the backend's CORS preflight never allows it. */
+export const CSRF_HEADER = "X-Vulture-CSRF";
+
 
 export const AGENT_TYPES = [
   "chaos",
