@@ -284,7 +284,9 @@ The backend will connect directly to Neon via the `VULTURE_DB_DSN` in `.env`.
 
 ## Step 7: TLS termination
 
-The Vulture backend listens on port 28080 (HTTP). You need a reverse proxy to terminate TLS and expose HTTPS on port 443.
+Compose runs two plain-HTTP services. The backend on port 28080 answers the API (`/api/...`, including the SSE audit streams) and `/health`; it serves no web UI under compose, so `/` is a 404 there. The `frontend` container on port 23001 serves the web UI. You need a reverse proxy that terminates TLS on port 443 and routes `/api/*` and `/health` to 28080 and every other path to 23001, so that the UI, the API and the CLI share one HTTPS origin. Both examples below do that.
+
+Only the proxy should be reachable from outside. Compose publishes 28080 and 23001 on every interface, and a host firewall such as ufw does not filter ports that Docker publishes, so close both in the VM's cloud firewall or security group: allow inbound SSH and the proxy's ports only (443, and 80 if your ACME client or an HTTP-to-HTTPS redirect uses it). A browser that signs in over plain HTTP, such as `http://<vm>:23001`, gets a session cookie without `Secure` (see "Browser sessions behind the proxy" below).
 
 ### Option A: Caddy (recommended -- automatic HTTPS)
 
@@ -304,10 +306,18 @@ Create `/etc/caddy/Caddyfile`:
 
 ```
 vulture.example.com {
-  reverse_proxy localhost:28080 {
-    transport http {
-      response_header_timeout 5m
+  # API, SSE audit streams and health checks: the backend
+  @backend path /api/* /health
+  handle @backend {
+    reverse_proxy localhost:28080 {
+      transport http {
+        response_header_timeout 5m
+      }
     }
+  }
+  # Every other path: the web UI (the frontend container)
+  handle {
+    reverse_proxy localhost:23001
   }
 }
 ```
@@ -335,12 +345,15 @@ server {
     ssl_certificate     /etc/letsencrypt/live/vulture.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/vulture.example.com/privkey.pem;
 
-    location / {
+    # Inherited by each location below that sets no proxy_set_header of its own
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # API and SSE audit streams: the backend
+    location /api/ {
         proxy_pass http://127.0.0.1:28080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
 
         # SSE support -- disable buffering and set long timeouts
         proxy_buffering off;
@@ -348,10 +361,45 @@ server {
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:28080;
+    }
+
+    # Every other path: the web UI (the frontend container)
+    location / {
+        proxy_pass http://127.0.0.1:23001;
+    }
 }
 ```
 
 Obtain certificates via certbot or your preferred ACME client.
+
+Once the proxy runs, check both routes. The first command must print `200` (the UI); a `404` means `/` still goes to the backend:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://vulture.example.com/
+curl -s https://vulture.example.com/health
+# {"status":"healthy"}
+```
+
+### Browser sessions behind the proxy (feature 0102)
+
+A browser session is an HttpOnly, SameSite=Strict cookie, issued to a sign-in that sends `X-Vulture-CSRF: 1`, not a token that page scripts can read. Four things follow from that:
+
+- **Forward `X-Forwarded-Proto`.** Over HTTPS the backend issues `__Host-vulture_session` with `Secure`; it can only tell HTTPS apart through that header, since TLS ends at the proxy. Without it the cookie is a non-`Secure` `vulture_session` and HSTS is left out. The nginx example above sets it with `proxy_set_header X-Forwarded-Proto $scheme;`, and Caddy's `reverse_proxy` sends it by default. Check it once, with no credentials needed:
+
+  ```bash
+  curl -s -o /dev/null -D - -X POST -H 'X-Vulture-CSRF: 1' \
+    https://vulture.example.com/api/auth/logout | grep -i '^set-cookie'
+  # Want: Set-Cookie: __Host-vulture_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict
+  ```
+
+- **Use a dedicated hostname.** Serve Vulture on a hostname that no other service uses, on any port. Cookies are not isolated by port: every HTTP(S) service on another port of the same name receives the session cookie, and its value is a JWT the API also accepts as a Bearer token.
+- **Cookies are host-only.** Each hostname has its own session, so users sign in separately on the read-only viewer (Optional Step 10).
+- **Reload open tabs after upgrading.** A tab loaded before the upgrade may be refused with `cookie-authenticated requests must send X-Vulture-CSRF; reload the page`.
+
+The CLI, CI clients and scripts are unaffected: they send a Bearer token and never the `X-Vulture-CSRF` header, so login still returns the token in its body.
 
 ---
 
@@ -391,6 +439,8 @@ vulture api-key create ci-github-actions
 #   Name:   ci-github-actions
 #   Prefix: vk_XXXX
 ```
+
+The API-key routes and `POST /api/admin/users` accept only a Bearer credential, as the CLI sends; a browser session cookie gets 403 there, so a web page can never turn a session into a key or a user.
 
 Copy the full key (`vk_...`) and store it in your CI system's secrets. You will never be able to retrieve it again -- only the prefix is stored.
 
@@ -436,7 +486,7 @@ EOF
 docker compose -f docker-compose.readonly.yml up -d --build
 ```
 
-The viewer connects to the same Neon database (read-only) and shares the JWT secret so auth tokens validate on both servers. See [neon_deployment.md](neon_deployment.md) for full details.
+The viewer connects to the same Neon database (read-only) and shares the JWT secret so auth tokens validate on both servers. Browser sessions do not carry over, because the session cookie is host-only: users sign in on the viewer's hostname separately. Login and logout work on the viewer; writes stay refused. See [neon_deployment.md](neon_deployment.md) for full details.
 
 ---
 

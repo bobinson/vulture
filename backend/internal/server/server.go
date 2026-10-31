@@ -639,10 +639,14 @@ func registerAuthRoutes(
 	}
 	// 0065 §H7: admin-gated user provisioning so default-off Mode B can
 	// still add users. Reuses Register hashing but never self-authenticates
-	// the created user.
-	mux.HandleFunc("/api/admin/users", authMW.Require(handler.RequireRole("admin", ReadOnlyGuard(readOnly, authH.AdminCreateUser))))
+	// the created user. 0102: a Bearer credential only, never the session
+	// cookie, like every route that mints a credential.
+	mux.HandleFunc("/api/admin/users", authMW.Require(handler.RequireBearerCredential(handler.RequireRole("admin", ReadOnlyGuard(readOnly, authH.AdminCreateUser)))))
 	mux.HandleFunc("/api/auth/login", RateLimit(10, time.Minute, authH.Login))
 	mux.HandleFunc("/api/auth/local-session", authH.LocalSession)
+	// 0102: logout only deletes the session cookie, so it needs no principal
+	// and stays open on a read-only viewer (no Require, no ReadOnlyGuard).
+	mux.HandleFunc("/api/auth/logout", authH.Logout)
 	mux.HandleFunc("/api/auth/me", authMW.Require(authH.Me))
 
 	mux.HandleFunc("/api/sources", authMW.Require(handler.RequireWrite(ReadOnlyGuard(readOnly, sourceH.Create))))
@@ -658,7 +662,7 @@ func registerAuthRoutes(
 	}
 	// 0065 §H1: method-gated RequireWrite lets viewers GET/list while POST
 	// (create) requires member/admin. Sits inside Require, outside ReadOnlyGuard.
-	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, auditsH)))))
+	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, handler.PrincipalRateKey, handler.RequireWrite(ReadOnlyGuard(readOnly, auditsH)))))
 	mux.HandleFunc("/api/audits/", handler.MaskedValuesNoStore(authMW.Require(ReadOnlyGuard(readOnly, auditDetailH))))
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
@@ -680,7 +684,7 @@ func registerAuthRoutes(
 	if rawDB != nil {
 		labelH := handler.NewFindingLabelHandler(rawDB, dialect)
 		mux.HandleFunc("/api/findings/", authMW.Require(
-			RateLimitByKey(60, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, labelH.Handle)))))
+			RateLimitByKey(60, handler.PrincipalRateKey, handler.RequireWrite(ReadOnlyGuard(readOnly, labelH.Handle)))))
 
 		// L4 memory_prior lookup — runs in the stream handler's drain
 		// path; nil-safe when DB not configured.
@@ -942,7 +946,9 @@ func registerAPIKeyRoutes(
 	authMW.SetAPIKeyService(svc) // enable vk_... bearer auth
 
 	h := handler.NewAPIKeyHandler(svc)
-	mux.HandleFunc("/api/api-keys", authMW.Require(ReadOnlyGuard(readOnly, h.CreateOrList)))
-	mux.HandleFunc("/api/api-keys/", authMW.Require(ReadOnlyGuard(readOnly, h.Revoke)))
+	// 0102: API keys are minted and managed with a Bearer credential only,
+	// never with the browser session cookie.
+	mux.HandleFunc("/api/api-keys", authMW.Require(handler.RequireBearerCredential(ReadOnlyGuard(readOnly, h.CreateOrList))))
+	mux.HandleFunc("/api/api-keys/", authMW.Require(handler.RequireBearerCredential(ReadOnlyGuard(readOnly, h.Revoke))))
 	log.Println("Feature 0031: API keys enabled — endpoints registered at /api/api-keys")
 }

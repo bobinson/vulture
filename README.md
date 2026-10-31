@@ -112,6 +112,8 @@ by environment variables. The default `make docker-up` starts **Mode A**.
 | **D — CI client** | GitHub Actions etc. | `vulture scan <git-url> --api-key X --server Y --wait` | See [docs/guides/ci_integration.md](docs/guides/ci_integration.md). |
 | **E — Native install** | Single-user laptop, no Docker | `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh \| sh` | One-shot installer in the style of nuclei: per-platform tarball + SQLite, all under `~/.vulture/`. Installs the `vulture` CLI (scan/start/stop/doctor) + the embedded UI. The installer **auto-detects a local Python >= 3.12** and, when present, installs the audit agents locally (hash-verified deps) so agent scanning runs without Docker. **Current limitation:** if no suitable Python is found, agent-based (multi-framework / LLM) scanning requires Docker (Mode A or B). See [docs/guides/native_installation.md](docs/guides/native_installation.md). |
 
+**Browser sessions (Modes B and C).** A browser session is an HttpOnly, SameSite=Strict cookie (`__Host-vulture_session` over HTTPS), issued to a sign-in that sends `X-Vulture-CSRF: 1`. Cookies are not isolated by port, so serve Vulture on a dedicated hostname with no other service on any port of that name: such a service would receive the session cookie, a JWT that the API also accepts as a Bearer token. Browsers must reach Vulture only through the TLS proxy, which routes the UI and the API and must forward `X-Forwarded-Proto` (Step 7 of [docs/guides/central_server_deployment.md](docs/guides/central_server_deployment.md)).
+
 ## Native install (no Docker)
 
 If you don't want to install Docker, Node, and Python by hand, run:
@@ -280,7 +282,7 @@ make docker-down    # Stop all services
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VITE_API_URL` | `http://localhost:28080` | Backend API URL |
+| `VITE_API_URL` | `http://localhost:28080` | Backend API URL. Browser sessions are same-origin only (the session cookie is host-only), so a build whose API URL is another origin is unsupported for browser sign-in |
 
 ### Configuration File
 
@@ -341,6 +343,7 @@ The frontend auto-discovers available agents via `GET /api/agents` and dynamical
 | `POST` | `/api/auth/login` | Authenticate and receive a JWT token |
 | `GET` | `/api/auth/me` | Get current user (requires authentication) |
 | `GET` | `/api/auth/local-session` | Passwordless token for local mode |
+| `POST` | `/api/auth/logout` | Delete the browser session cookie (requires `X-Vulture-CSRF`) |
 | `GET` | `/api/memories/search` | Semantic search across audit findings (pgvector) |
 | `GET` | `/api/memories/by-path` | Get findings for a specific codebase path |
 | `GET` | `/api/memories/:id/edges` | Get related memories via graph edges |

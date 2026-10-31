@@ -454,12 +454,17 @@ The frontend first obtains a short-lived, single-use stream token, then connects
 
 ```
 POST /api/audits/{id}/stream-token
-Authorization: Bearer <jwt>
+Authorization: Bearer <jwt>          (CLI, scripts)
+  or
+Cookie: vulture_session=<jwt>        (browser session; __Host-vulture_session over HTTPS)
+X-Vulture-CSRF: 1
 → 200 { "stream_token": "..." }
 
 GET /api/audits/{id}/stream?stream_token=<token>
 Accept: text/event-stream
 ```
+
+The token POST is authenticated like any API call; with the session cookie it is an unsafe request, so it needs `X-Vulture-CSRF`. The stream GET carries only the stream token, because `EventSource` cannot set headers; a `stream_token` that does not validate is refused even beside a valid cookie or Bearer header.
 
 Stream tokens expire after 60 seconds and can only be used once. This avoids exposing the long-lived JWT in URL query parameters.
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/vulture/backend/internal/handler"
 	"github.com/vulture/backend/internal/requestid"
 )
 
@@ -199,8 +200,7 @@ func addCORSWithAllowlist(next http.Handler, allowed []string) *http.ServeMux {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
 		// L1 audit: HSTS only on HTTPS; TLS terminator may be upstream
 		// so check the X-Forwarded-Proto header in addition to r.TLS.
-		if r.TLS != nil || strings.EqualFold(
-			r.Header.Get("X-Forwarded-Proto"), "https") {
+		if handler.IsHTTPSRequest(r) {
 			w.Header().Set("Strict-Transport-Security",
 				"max-age=31536000; includeSubDomains")
 		}

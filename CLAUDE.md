@@ -253,7 +253,7 @@ These rules are mandatory for all code in this project:
 - Native EventSource API for SSE streaming (no ag-ui client library)
 - react-i18next for internationalization (en, es, de, fr, ja, pt)
 - Tailwind CSS v4 with custom theme (cream bg `#F6F5F0`, blue accent `#2563eb`, green highlight `#22c55e`)
-- Auth: JWT token in localStorage, AuthProvider context, protected routes
+- Auth: AuthProvider context, protected routes. The backend issues a browser session as an HttpOnly, SameSite=Strict cookie (`vulture_session`; `__Host-vulture_session` with `Secure` over HTTPS) to a sign-in that sends `X-Vulture-CSRF: 1`, and refuses a cookie-authenticated unsafe request without that header (403). The SPA still keeps the body JWT in localStorage and sends it as a Bearer header
 - Tests: Playwright for E2E (22 tests), Vitest for unit tests
 - Use `eslint` + `prettier` for linting/formatting
 
@@ -286,15 +286,18 @@ To add a new audit type (e.g., GDPR):
 | GET | `/api/audits/:id/findings/:fid/masked` | Locate the masked values in a finding's snippet against the scanned file; the values themselves only to an authorised human (admin; locally, the signed-in session). See `docs/architecture/agent_protocol.md` "Masked values" |
 | GET | `/api/agents` | List available agent types |
 | GET | `/api/agents/:type/info` | Get agent config schema & skills |
-| POST | `/api/auth/register` | Register new user |
-| POST | `/api/auth/login` | Login and get JWT token |
-| GET | `/api/auth/me` | Get current user (requires auth) |
-| GET | `/api/auth/local-session` | Passwordless token (local mode) |
+| POST | `/api/auth/register` | Register new user (session as for login) |
+| POST | `/api/auth/login` | Login. A JWT in the body for Bearer clients (CLI, CI, scripts); with `X-Vulture-CSRF: 1`, an HttpOnly session cookie instead, and no `token` in the body |
+| POST | `/api/auth/logout` | Delete the session cookie (204). Requires `X-Vulture-CSRF`; no auth, so it works on a read-only viewer. The JWT is not revoked: it expires with the session (24h) |
+| GET | `/api/auth/me` | Get current user. 401 unless the request presented a credential, so local mode's implicit user gets 401 here |
+| GET | `/api/auth/local-session` | Passwordless token (local mode); with `X-Vulture-CSRF: 1`, the session cookie instead |
 | GET | `/api/memories/search` | Semantic search (pgvector) |
 | GET | `/api/memories/by-path` | Get findings for a codebase path |
 | GET | `/api/memories/:id/edges` | Get related memories (graph) |
 | GET | `/api/filesystem/browse` | Browse server directories (member or admin; follows `VULTURE_SOURCE_ROOT`) |
 | GET | `/health` | Health check |
+
+Credentials: a request presents ONE credential, in this order, and a present one never falls through to the next: a `stream_token` (honoured only on `/api/audits/:id/stream`), an `Authorization` header (a JWT or a `vk_` API key), then the session cookie (a JWT only; ignored on a request whose `Sec-Fetch-Site` is `same-site` or `cross-site`). A cookie-authenticated unsafe request must send `X-Vulture-CSRF` (403 otherwise). The routes that mint or manage credentials (`/api/api-keys`, `/api/admin/users`) take a Bearer credential only; the session cookie gets 403 there. `X-Vulture-CSRF` is deliberately absent from the CORS `Access-Control-Allow-Headers`.
 
 ## Memory System
 
@@ -446,7 +449,7 @@ VULTURE_BACKEND_URL=http://backend:8080  # Backend URL for memory API
 OLLAMA_API_BASE=http://localhost:11434  # Ollama endpoint (local models)
 
 # Frontend
-VITE_API_URL=http://localhost:8080  # Backend URL
+VITE_API_URL=http://localhost:8080  # Backend URL. Browser sessions are same-origin only (the session cookie is host-only), so a build whose API URL is another origin is unsupported for browser sign-in; the dev proxy, nginx `/api/` and the embedded UI are all same-origin
 ```
 
 ## SSE Event Types

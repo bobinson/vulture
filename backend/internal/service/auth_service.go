@@ -177,6 +177,10 @@ func (s *authService) IssueLocalAdminToken() (*model.AuthResponse, error) {
 	return &model.AuthResponse{Token: token, User: *user}, nil
 }
 
+// SessionTTL is how long a session lasts: the JWT's exp and the browser
+// session cookie's Max-Age, so the two cannot drift apart.
+const SessionTTL = 24 * time.Hour
+
 func (s *authService) generateToken(user *model.User) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 
@@ -186,7 +190,7 @@ func (s *authService) generateToken(user *model.User) (string, error) {
 		"role":    user.Role,
 		"team_id": user.TeamID,
 		"iat":     time.Now().Unix(),
-		"exp":     time.Now().Add(24 * time.Hour).Unix(),
+		"exp":     time.Now().Add(SessionTTL).Unix(),
 	}
 	claimsJSON, err := json.Marshal(claims)
 	if err != nil {

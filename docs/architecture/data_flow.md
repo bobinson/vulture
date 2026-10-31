@@ -42,7 +42,7 @@ User → Frontend (AuditTypeSelector + Submit)
 ### Step 3: SSE Stream Connection
 
 ```
-Frontend → POST /api/audits/xyz789/stream-token (JWT in Authorization header)
+Frontend → POST /api/audits/xyz789/stream-token (authenticated like any API call: the session cookie with X-Vulture-CSRF: 1, or an Authorization: Bearer token)
   ← Response: { stream_token: "..." }
 Frontend → GET /api/audits/xyz789/stream?stream_token=<token>
   → Go Backend: stream_handler
