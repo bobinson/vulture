@@ -41,7 +41,7 @@ func (h *SourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	src, err := h.svc.Ingest(r.Context(), &req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeInvalidOrInternal(w, r, "ingest source", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, src)
@@ -59,7 +59,7 @@ func (h *SourceHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get source", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, src)

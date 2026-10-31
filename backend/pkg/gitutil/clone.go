@@ -14,6 +14,7 @@ import (
 
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/pkg/errkind"
 	"github.com/vulture/backend/pkg/netguard"
 )
 
@@ -24,6 +25,22 @@ type CloneURLPolicy struct {
 	HostAllowlist  map[string]bool // empty = any public host
 	Resolver       netguard.Resolver
 }
+
+var (
+	// ErrURLNotAllowed classifies a refusal of the URL's shape: its scheme or
+	// form, plain http, or a host missing from the allowlist. Its text holds
+	// only what the caller submitted plus literals, so it may be shown to the
+	// caller. A refused host (netguard.ErrHostRefused) is not this kind.
+	ErrURLNotAllowed = errors.New("git url not allowed")
+	// ErrCloneFailed classifies a git run that git itself failed: a non-zero
+	// exit while the request is live. Its text holds git's stderr (server
+	// paths, the remote's answer): the log needs it, a caller must not see it.
+	ErrCloneFailed = errors.New("git clone failed")
+)
+
+// notAllowed marks a refusal of the URL's shape ErrURLNotAllowed, text
+// unchanged.
+func notAllowed(err error) error { return errkind.Mark(ErrURLNotAllowed, err) }
 
 // ValidateCloneURL extends ValidateGitURL with SSRF protection: rejects hosts
 // that are/resolve to internal IPs, enforces an optional host allowlist, and
@@ -46,24 +63,27 @@ func ValidateCloneURL(ctx context.Context, rawURL string, creds *model.GitCreden
 		return nil
 	}
 	if !p.AllowPlainHTTP && scheme == "http" {
-		return fmt.Errorf("plain http:// git URLs are not allowed in this deployment; use https://, or set VULTURE_LOCAL_MODE=true for a trusted local host")
+		return notAllowed(fmt.Errorf("plain http:// git URLs are not allowed in this deployment; use https://, or set VULTURE_LOCAL_MODE=true for a trusted local host"))
 	}
 	if len(p.HostAllowlist) > 0 && !p.HostAllowlist[strings.ToLower(host)] {
-		return fmt.Errorf("git host %q is not in VULTURE_GIT_HOST_ALLOWLIST", host)
+		return notAllowed(fmt.Errorf("git host %q is not in VULTURE_GIT_HOST_ALLOWLIST", host))
 	}
 	if err := netguard.ValidateHostPublic(ctx, host, resolver); err != nil {
 		var be *netguard.BlockedError
 		if errors.As(err, &be) {
-			// Actionable alert (0065): tell the operator what was blocked and the
-			// exact off-by-default flag to flip if the host is trusted, so they
-			// can take a decision. Also logged for operator visibility.
-			log.Printf("WARN gitutil: %v — clone blocked; if %q is a trusted internal git host set VULTURE_GIT_HOST_ALLOWLIST to include it", be, host)
-			return fmt.Errorf("%w; if %q is a trusted internal git host, set VULTURE_GIT_HOST_ALLOWLIST to include it", err, host)
+			// Alert (0065): tell the operator what was blocked, and that the
+			// allowlist is no remedy. Also logged for operator visibility.
+			log.Printf("WARN gitutil: %v — clone blocked; %s", be, allowlistNoExemption)
+			return fmt.Errorf("%w; %s", err, allowlistNoExemption)
 		}
 		return err
 	}
 	return nil
 }
+
+// allowlistNoExemption is the hint on an internal git host's refusal: the
+// public-address check above runs for every host, listed or not.
+const allowlistNoExemption = "VULTURE_GIT_HOST_ALLOWLIST only limits which git hosts a clone may use; it does not exempt a host that resolves to a non-public address"
 
 func cloneHostScheme(rawURL string) (host, scheme string) {
 	if !strings.Contains(rawURL, "://") && strings.Contains(rawURL, "@") { // user@host:path
@@ -111,10 +131,11 @@ var allowedSchemes = map[string]bool{
 // Blocks file://, ssh://, git://, ext::, and other dangerous schemes
 // that could enable SSRF or command execution.
 // When SSH key credentials are provided, ssh:// and SSH shorthand are allowed.
+// Every refusal is ErrURLNotAllowed.
 func ValidateGitURL(rawURL string, creds *model.GitCredentials) error {
 	// Block ext:: transport (executes arbitrary commands)
 	if strings.HasPrefix(strings.ToLower(rawURL), "ext::") {
-		return fmt.Errorf("ext:: git transport is not allowed")
+		return notAllowed(fmt.Errorf("ext:: git transport is not allowed"))
 	}
 
 	sshAllowed := creds != nil && creds.Type == "ssh_key"
@@ -122,13 +143,13 @@ func ValidateGitURL(rawURL string, creds *model.GitCredentials) error {
 	// Block SSH shorthand (user@host:path) unless SSH key provided
 	if !strings.Contains(rawURL, "://") && strings.Contains(rawURL, "@") {
 		if !sshAllowed {
-			return fmt.Errorf("SSH shorthand URLs are not allowed; use https://")
+			return notAllowed(fmt.Errorf("SSH shorthand URLs are not allowed; use https://"))
 		}
 		return nil
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return notAllowed(fmt.Errorf("invalid URL: %w", err))
 	}
 
 	if sshAllowed && strings.ToLower(u.Scheme) == "ssh" {
@@ -136,7 +157,7 @@ func ValidateGitURL(rawURL string, creds *model.GitCredentials) error {
 	}
 
 	if !allowedSchemes[strings.ToLower(u.Scheme)] {
-		return fmt.Errorf("URL scheme %q is not allowed; only https:// and http:// are supported", u.Scheme)
+		return notAllowed(fmt.Errorf("URL scheme %q is not allowed; only https:// and http:// are supported", u.Scheme))
 	}
 	return nil
 }
@@ -221,7 +242,7 @@ func Clone(ctx context.Context, gitURL, destPath string, depth int, creds *model
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return cloneFailure(err, stderr.String())
+		return runFailure(ctx, err, stderr.String())
 	}
 	return nil
 }
@@ -373,12 +394,28 @@ func scrubString(msg string) string {
 // maxStderrBytes bounds how much git stderr is retained in a clone error.
 const maxStderrBytes = 8 << 10
 
+// runFailure is the error for a git run that did not succeed. Only git's own
+// non-zero exit while ctx is live is a failed clone (cloneFailure). A request
+// cancelled or past its deadline (git is then killed), or a git that cannot
+// start (missing from PATH), is a server fault: unmarked, so the caller gets a
+// 500, with the cause kept in the chain for errors.Is.
+func runFailure(ctx context.Context, runErr error, stderr string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("git clone stopped: %w (git: %w)", err, runErr)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) {
+		return fmt.Errorf("git clone could not run git: %w", runErr)
+	}
+	return cloneFailure(runErr, stderr)
+}
+
 // cloneFailure builds the error for a failed `git clone`, surfacing git's
 // (credential-scrubbed) stderr instead of a bare "exit status N". A redirect is
 // refused inside the git subprocess (0065: http.followRedirects=false), so its
 // only signal is stderr; when redirects are disabled (default) and git reports
 // one, the error guides the operator to the off-by-default opt-in so they can
-// decide whether to trust the host.
+// decide whether to trust the host. The error is ErrCloneFailed.
 func cloneFailure(runErr error, stderr string) error {
 	detail := scrubString(strings.TrimSpace(stderr))
 	if len(detail) > maxStderrBytes {
@@ -390,9 +427,9 @@ func cloneFailure(runErr error, stderr string) error {
 	}
 	err := fmt.Errorf("git clone failed: %s", base)
 	if !config.EnvTruthy("VULTURE_GIT_ALLOW_REDIRECTS") && looksLikeRedirect(detail) {
-		return fmt.Errorf("%w; the remote issued an HTTP redirect, which is blocked to prevent SSRF — if you trust this host, set VULTURE_GIT_ALLOW_REDIRECTS=true", err)
+		err = fmt.Errorf("%w; the remote issued an HTTP redirect, which is blocked to prevent SSRF — if you trust this host, set VULTURE_GIT_ALLOW_REDIRECTS=true", err)
 	}
-	return err
+	return errkind.Mark(ErrCloneFailed, err)
 }
 
 // looksLikeRedirect heuristically detects a redirect in git stderr. Used ONLY to

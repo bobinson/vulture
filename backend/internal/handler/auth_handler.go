@@ -73,7 +73,7 @@ func (h *AuthHandler) LocalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.IssueLocalAdminToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "local session unavailable")
+		writeInternalError(w, r, "issue local session", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -127,7 +127,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Register(req)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeRegisterError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
@@ -145,7 +145,7 @@ func (h *AuthHandler) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Register(req)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeRegisterError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp.User)

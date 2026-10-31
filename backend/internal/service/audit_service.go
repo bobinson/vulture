@@ -81,7 +81,7 @@ func (s *auditService) Create(req *model.AuditRequest) (*model.Audit, error) {
 	// to defend against DNS rebinding between create + deliver.
 	if req.WebhookURL != "" {
 		if err := ValidateWebhookURL(context.Background(), req.WebhookURL); err != nil {
-			return nil, fmt.Errorf("invalid webhook_url: %w", err)
+			return nil, classifyWebhookErr(err)
 		}
 	}
 	audit := &model.Audit{

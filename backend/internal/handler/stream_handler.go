@@ -183,7 +183,7 @@ func (h *StreamHandler) CreateStreamToken(w http.ResponseWriter, r *http.Request
 
 	token, err := h.streamTokenStore.Create(auditID, user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create stream token")
+		writeInternalError(w, r, "create stream token", err)
 		return
 	}
 
@@ -208,7 +208,7 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get audit", err)
 		return
 	}
 

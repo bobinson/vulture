@@ -149,8 +149,10 @@ VULTURE_TRUSTED_PROXIES=172.16.0.0/12
 # Public self-registration is OFF by default in Mode B; provision users via the
 # admin-only POST /api/admin/users (see Step 8 for first-admin bootstrap).
 # VULTURE_ALLOW_OPEN_REGISTRATION=false
-# Optional egress allowlists (empty = internal targets blocked):
-# VULTURE_GIT_HOST_ALLOWLIST=git.internal.example
+# Optional egress controls (see "Security hardening variables" below). The git
+# list limits clones to the hosts it names, each still on a public address; the
+# webhook list exempts internal receivers from the SSRF guard:
+# VULTURE_GIT_HOST_ALLOWLIST=github.com
 # VULTURE_WEBHOOK_HOST_ALLOWLIST=hooks.internal.example
 EOF
 ```
@@ -174,7 +176,9 @@ Not every default here preserves older behavior: some now refuse what an older r
 
 Egress controls (all default to blocking internal/private targets, which is correct for a public-facing server):
 
-- `VULTURE_GIT_HOST_ALLOWLIST` / `VULTURE_WEBHOOK_HOST_ALLOWLIST` — comma lists of internal hosts to exempt from the SSRF guard, for a trusted internal git host or webhook receiver. A blocked request surfaces an actionable error naming the flag.
+- `VULTURE_GIT_HOST_ALLOWLIST` — comma list of the only git hosts a clone may use; empty means any public host. It narrows the SSRF guard and never widens it: a listed host must still resolve to a public address, so the list cannot admit an internal git server. A git host missing from the list is refused with a `400` that names the host and the variable.
+- `VULTURE_WEBHOOK_HOST_ALLOWLIST` — comma list of internal hosts to exempt from the SSRF guard, for a trusted internal webhook receiver.
+- A git or webhook host that is internal or cannot be resolved is refused with a `400` that carries a fixed message and a `request_id`. For an internal host, the backend log line for that id names the host and the allowlist variable: for a webhook, the variable that would exempt it; for git, that `VULTURE_GIT_HOST_ALLOWLIST` does not exempt it.
 - `VULTURE_GIT_ALLOW_REDIRECTS` — off by default (git redirects are blocked to prevent redirect-SSRF); enable only for a trusted host that redirects.
 - `VULTURE_GIT_SSH_STRICT` / `VULTURE_GIT_SSH_KNOWN_HOSTS` / `VULTURE_GIT_SSH_INSECURE` — SSH host-key policy for key-based clones (default `accept-new` TOFU; `_INSECURE=true` is a rollback escape hatch that disables MITM protection).
 - `VULTURE_ALLOW_INSECURE_LLM` / `VULTURE_STRICT_LLM_ENDPOINT` — govern whether the provider API key may be sent to a non-TLS LLM endpoint. Default: the key is withheld from an `http://` endpoint and the server boots with a warning; set `VULTURE_STRICT_LLM_ENDPOINT=true` to hard-fail startup instead.
@@ -185,7 +189,7 @@ The failed-login throttle (per email+IP, escalating capped delay, with a hard-ce
 
 Every audit re-checks its stored local source (`sources.type = 'local'`) against the current local-path policy before any agent runs. An audit of a row the policy refuses fails with `source refused by the local-path policy`, and nothing is scanned. Such rows exist when a database created in local mode is served centralized, when the root is narrowed, or when a row was stored through a path spelling an older release accepted (a `..` after a symlink, or an outside symlink into the root). A stored path keeps the spelling of its original request, so these rows can be listed before upgrading and re-ingested under their canonical path.
 
-**When the root itself is unavailable.** The backend opens the root to confine every path, so its user needs read and search permission on the root itself, not only search. A root that is missing or unmounted, is not a directory, or cannot be opened is the server's fault, not the caller's: browse answers 500, ingest refuses without the `path not permitted` text a caller's own path gets, and an audit of a stored local source fails with `source root unavailable`. No response names the root. The backend logs `source_root_unavailable` at ERROR with the cause: once at startup, naming `VULTURE_SOURCE_ROOT`, and again on each refused browse or ingest. A refused audit is logged as `local_source_refused`.
+**When the root itself is unavailable.** The backend opens the root to confine every path, so its user needs read and search permission on the root itself, not only search. A root that is missing or unmounted, is not a directory, or cannot be opened is the server's fault, not the caller's: browse and ingest answer the generic `500` (`internal error` and a `request_id`), never the `path not permitted` refusal a caller's own path gets, and an audit of a stored local source fails with `source root unavailable`. No response names the root. The backend logs `source_root_unavailable` at ERROR with the cause: once at startup, naming `VULTURE_SOURCE_ROOT`, and again on each refused browse or ingest, just before that request's `http_internal_error` line, which carries the `request_id` and reads `source root unavailable`. A refused audit is logged as `local_source_refused`.
 
 **When the root does not answer.** The startup check waits at most 5 seconds for the root. A root on a mount that has stopped answering, such as a hung hard-mounted network share, is logged the same way, with the cause `probe timed out after 5s`, and the backend starts anyway. Browse, ingest and the audit of a stored local source still check the root themselves, with no such bound, so they can wait on that mount.
 
@@ -451,6 +455,39 @@ docker compose logs -f agent-cwe agent-owasp
 # Search for errors
 docker compose logs backend 2>&1 | grep -i error
 ```
+
+**Tracing an error to its cause (feature 0102).** No `500` and no curated
+`400` carries internal detail. An unexpected failure answers `500` with only
+`{"error":"internal error","request_id":"<id>"}`. That includes a clone the
+server could not run or that stopped with its request: git missing from
+`PATH`, the client gone, or the ingest time limit reached. A refusal whose
+cause names something of the server's, such as a git or webhook host that
+resolves to an internal address, or a `git clone` that git itself fails,
+answers `400` with a fixed message and the same `request_id`. The id is also
+the `X-Request-ID` response header. A client may send its own id (1-64
+characters of `A-Z a-z 0-9 . _ -`); any other value is replaced by a
+server-generated one. The cause is logged once under that id
+(`http_internal_error` at ERROR for a 500, `http_caller_error` at WARN for a
+400), with the operation, method and path. The path and the cause are each
+cut to 2048 bytes, and `err_bytes` gives the cause's full length. Grep the
+backend log for the id a user reports:
+
+```bash
+docker compose logs backend 2>&1 | grep '<request_id>'
+```
+
+Some responses carry server detail by design:
+
+- The LLM health message names the LLM endpoint and the probe's error.
+  `GET /api/llm/health` reports it, and `POST /api/audits` answers it as a
+  `503` when `VULTURE_REQUIRE_LLM=true` and the LLM is unreachable.
+- When no agent answers, `GET /api/llm/health` answers `502`
+  `could not reach any agent: …`, with an agent's address and its dial error.
+- An audit's `degraded_reason` can hold the LLM health message, an agent's
+  error text, or the text of a panic that ended the run.
+- In local mode with no `VULTURE_SOURCE_ROOT`, a local path that fails for a
+  reason the server does not classify is answered `400` `validate path: …`,
+  with its cause.
 
 ### Updating Vulture
 

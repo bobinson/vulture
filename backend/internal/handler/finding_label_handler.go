@@ -77,7 +77,7 @@ func (h *FindingLabelHandler) setLabel(w http.ResponseWriter, r *http.Request, f
 		return
 	}
 	if err := h.writeLabel(r.Context(), fingerprint, req.Label, userID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("write label: %v", err))
+		writeInternalError(w, r, "write label", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -90,7 +90,7 @@ func (h *FindingLabelHandler) clearLabel(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if err := h.writeLabel(r.Context(), fingerprint, "", ""); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("clear label: %v", err))
+		writeInternalError(w, r, "clear label", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

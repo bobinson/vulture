@@ -6,10 +6,13 @@ package netguard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"time"
+
+	"github.com/vulture/backend/pkg/errkind"
 )
 
 // resolveTimeout bounds every host lookup (H4: no unbounded net.LookupIP).
@@ -91,17 +94,27 @@ func (e *BlockedError) Error() string {
 	return fmt.Sprintf("egress blocked: host %q (%s)", e.Host, e.Reason)
 }
 
+// ErrHostRefused classifies every ValidateHostPublic refusal: an internal
+// address, a resolver failure, no address, an empty host. Their texts name
+// what the server resolved (an address, the resolver), so a caller shows a
+// fixed message for this kind and logs the text.
+var ErrHostRefused = errors.New("host refused")
+
+// refused marks a ValidateHostPublic failure ErrHostRefused, text unchanged.
+func refused(err error) error { return errkind.Mark(ErrHostRefused, err) }
+
 // ValidateHostPublic rejects a bare host (or literal IP) that is, or resolves
 // to, any internal IP. Rejects if ANY resolved IP is internal so a rebinder
 // returning [public, internal] cannot pass. Resolution is bounded by
-// resolveTimeout regardless of the caller's ctx (H4).
+// resolveTimeout regardless of the caller's ctx (H4). Every refusal is
+// ErrHostRefused; an address refusal is also a *BlockedError.
 func ValidateHostPublic(ctx context.Context, host string, resolver Resolver) error {
 	if host == "" {
-		return fmt.Errorf("empty host")
+		return refused(fmt.Errorf("empty host"))
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if IsInternalIP(ip) {
-			return &BlockedError{Host: host, IP: host, Reason: "non-public IP"}
+			return refused(&BlockedError{Host: host, IP: host, Reason: "non-public IP"})
 		}
 		return nil
 	}
@@ -109,14 +122,14 @@ func ValidateHostPublic(ctx context.Context, host string, resolver Resolver) err
 	defer cancel()
 	ips, err := resolver(rctx, host)
 	if err != nil {
-		return fmt.Errorf("resolve %q: %w", host, err)
+		return refused(fmt.Errorf("resolve %q: %w", host, err))
 	}
 	if len(ips) == 0 {
-		return fmt.Errorf("no IPs for %q", host)
+		return refused(fmt.Errorf("no IPs for %q", host))
 	}
 	for _, ip := range ips {
 		if IsInternalIP(ip) {
-			return &BlockedError{Host: host, IP: ip.String(), Reason: "non-public IP"}
+			return refused(&BlockedError{Host: host, IP: ip.String(), Reason: "non-public IP"})
 		}
 	}
 	return nil

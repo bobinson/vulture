@@ -26,7 +26,7 @@ func (h *MemoryHandler) Search(w http.ResponseWriter, r *http.Request) {
 	if query == "" {
 		memories, err := h.svc.ListRecent(limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, "list recent memories", err)
 			return
 		}
 		if memories == nil {
@@ -45,7 +45,7 @@ func (h *MemoryHandler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 	memories, err := h.svc.Search(req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "search memories", err)
 		return
 	}
 	if memories == nil {
@@ -67,7 +67,7 @@ func (h *MemoryHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get memory", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, mem)
@@ -81,7 +81,7 @@ func (h *MemoryHandler) GetEdges(w http.ResponseWriter, r *http.Request) {
 	}
 	edges, err := h.svc.GetEdges(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get memory edges", err)
 		return
 	}
 	if edges == nil {
@@ -113,7 +113,7 @@ func (h *MemoryHandler) UpdateRemediation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := h.svc.UpdateRemediation(id, req.Status, req.Notes); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "update remediation", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -127,7 +127,7 @@ func (h *MemoryHandler) ListByAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	memories, err := h.svc.ListByAudit(auditID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list memories by audit", err)
 		return
 	}
 	if memories == nil {
@@ -146,7 +146,7 @@ func (h *MemoryHandler) ListByCodebasePath(w http.ResponseWriter, r *http.Reques
 	limit := queryInt(r, "limit", 50)
 	memories, err := h.svc.ListByCodebasePath(path, agentType, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list memories by path", err)
 		return
 	}
 	if memories == nil {

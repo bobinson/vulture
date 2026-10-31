@@ -84,16 +84,15 @@ func localPathError(path string, err error, confined bool) error {
 	return fmt.Errorf("validate path: %w", err)
 }
 
-// maxLoggedErrBytes bounds the cause in a local_path_refused line: os.Stat's
-// error repeats the whole path, which a request may make 1 MiB long.
-const maxLoggedErrBytes = 2048
-
 // checkLocalPath decides a local ingest under the policy before anything else
 // touches the path: a disabled policy refuses with no filesystem access, and a
 // root confines the path before it is stat'd. A root fault is the server's,
 // not the path's: its cause is logged at ERROR and the caller gets only
-// ErrRootUnavailable. Any other refusal is logged with the path and its cause
-// truncated, and returned as client text by localPathError.
+// ErrRootUnavailable, unmarked, so it answers as a server fault. Any other
+// refusal is logged with the path and its cause truncated (the cause by
+// textutil.CutForLog: os.Stat's error repeats the whole path, which a request
+// may make 1 MiB long), and returned as client text by localPathError, marked
+// as the caller's to fix.
 func (s *sourceService) checkLocalPath(path string) error {
 	err := s.policy.Local.ResolveDir(path)
 	if err == nil {
@@ -105,8 +104,8 @@ func (s *sourceService) checkLocalPath(path string) error {
 	}
 	cause := err.Error()
 	slog.Warn("local_path_refused", "path", fmt.Sprintf("%.256s", path), "bytes", len(path),
-		"err", textutil.CutAtRune(cause, maxLoggedErrBytes), "err_bytes", len(cause))
-	return localPathError(path, err, s.policy.Local.Root != "")
+		"err", textutil.CutForLog(cause), "err_bytes", len(cause))
+	return InvalidInput(localPathError(path, err, s.policy.Local.Root != ""))
 }
 
 // runIDRe constrains run_id to a safe, filesystem-legal token (0065 §1.1,
@@ -152,13 +151,13 @@ func (s *sourceService) Ingest(ctx context.Context, req *model.SourceRequest) (*
 	case model.SourceTypeGit:
 		return s.ingestGit(ctx, req)
 	default:
-		return nil, fmt.Errorf("unsupported source type: %q", req.Type)
+		return nil, InvalidInput(fmt.Errorf("unsupported source type: %q", req.Type))
 	}
 }
 
 func (s *sourceService) ingestLocal(ctx context.Context, req *model.SourceRequest) (*model.Source, error) {
 	if req.Path == "" {
-		return nil, fmt.Errorf("path is required for local source")
+		return nil, InvalidInput(fmt.Errorf("path is required for local source"))
 	}
 	// 0102: the local-path policy decides before anything below reads the
 	// path. The request spelling is kept as the stored path (target identity
@@ -236,10 +235,10 @@ func (s *sourceService) stampTargetKey(src *model.Source) {
 
 func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest) (*model.Source, error) {
 	if req.URL == "" {
-		return nil, fmt.Errorf("url is required for git source")
+		return nil, InvalidInput(fmt.Errorf("url is required for git source"))
 	}
 	if err := validateRunID(req.RunID); err != nil {
-		return nil, fmt.Errorf("invalid run_id: %w", err)
+		return nil, InvalidInput(fmt.Errorf("invalid run_id: %w", err))
 	}
 	id := generateID(req.URL)
 	baseDir := filepath.Join(os.TempDir(), "vulture-sources")
@@ -253,7 +252,7 @@ func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest)
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 	if err := gitutil.Clone(ctx, req.URL, destPath, 1, req.GitCredentials); err != nil {
-		return nil, fmt.Errorf("clone: %w", err)
+		return nil, classifyCloneErr(err)
 	}
 	fileCount, err := fileutil.CountFilesCtx(ctx, destPath)
 	if err != nil {

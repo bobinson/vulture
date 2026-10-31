@@ -58,13 +58,13 @@ func (h *FilesystemHandler) Browse(w http.ResponseWriter, r *http.Request) {
 
 	absPath, code, msg := h.resolve(r.URL.Query().Get("path"))
 	if code != 0 {
-		writeError(w, code, msg)
+		writeBrowseRefusal(w, r, code, msg)
 		return
 	}
 
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot read directory")
+		writeInternalError(w, r, "read directory", err)
 		return
 	}
 
@@ -78,12 +78,24 @@ func (h *FilesystemHandler) Browse(w http.ResponseWriter, r *http.Request) {
 
 // resolve applies the local-path policy, then validates reqPath against the
 // policy's root. A disabled policy answers 403 with its own text before
-// reqPath is parsed or any syscall is made.
+// reqPath is parsed or any syscall is made. Its one 5xx is a root fault.
 func (h *FilesystemHandler) resolve(reqPath string) (string, int, string) {
 	if err := h.local.Allow(); err != nil {
 		return "", http.StatusForbidden, err.Error()
 	}
 	return validateBrowsePathWithRoot(reqPath, h.local.Root)
+}
+
+// writeBrowseRefusal answers a path resolve refused. A 4xx is the caller's,
+// answered with resolve's literal text. A 5xx is the server's: like every 500
+// it goes through writeInternalError, so the body is the generic one with a
+// request id, and msg goes only to the log line for that id.
+func writeBrowseRefusal(w http.ResponseWriter, r *http.Request, code int, msg string) {
+	if code >= http.StatusInternalServerError {
+		writeInternalError(w, r, "browse", errors.New(msg))
+		return
+	}
+	writeError(w, code, msg)
 }
 
 // validateBrowsePath retains the old signature for callers that
@@ -150,8 +162,9 @@ func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string
 }
 
 // confinementRefusal answers a path confinement refused: a root fault is the
-// server's (500, logged with its cause at ERROR), and every other refusal is
-// the one 403 an outside path gets. Neither text names a path or the root.
+// server's (500, its cause logged at ERROR as source_root_unavailable), and
+// every other refusal is the one 403 an outside path gets. Neither text names
+// a path or the root.
 func confinementRefusal(err error) (int, string) {
 	if errors.Is(err, pathutil.ErrRootUnavailable) {
 		slog.Error("source_root_unavailable", "err", err)

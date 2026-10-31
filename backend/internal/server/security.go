@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/vulture/backend/internal/requestid"
 )
 
 // 0036 Phase 3 — Mode-B security hardening.
@@ -216,7 +218,7 @@ func addCORSWithAllowlist(next http.Handler, allowed []string) *http.ServeMux {
 			"GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers",
 			"Content-Type, Accept, Authorization")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
+		w.Header().Set("Access-Control-Expose-Headers", requestid.Header)
 		w.Header().Set("Access-Control-Max-Age", "86400")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

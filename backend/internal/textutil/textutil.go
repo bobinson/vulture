@@ -16,3 +16,12 @@ func CutAtRune(s string, n int) string {
 	}
 	return s[:n]
 }
+
+// MaxLogBytes bounds what one log attribute takes of a text the caller can
+// influence: a request path, or an error that repeats one (os.Stat names the
+// whole path, netguard a refused host twice). Callers log the full length
+// beside the cut text.
+const MaxLogBytes = 2048
+
+// CutForLog is s cut to MaxLogBytes on a rune boundary, for a log attribute.
+func CutForLog(s string) string { return CutAtRune(s, MaxLogBytes) }

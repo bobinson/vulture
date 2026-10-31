@@ -34,7 +34,7 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	pipeline, err := h.svc.CreatePipeline(&req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "create pipeline", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, pipeline)
@@ -47,7 +47,7 @@ func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
 	offset := queryInt(r, "offset", 0)
 	pipelines, err := h.svc.ListPipelines(limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list pipelines", err)
 		return
 	}
 	if pipelines == nil {
@@ -66,7 +66,7 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	pipeline, err := h.svc.GetPipeline(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get pipeline", err)
 		return
 	}
 	if pipeline == nil {

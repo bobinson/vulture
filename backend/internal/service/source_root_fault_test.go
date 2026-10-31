@@ -13,6 +13,7 @@ import (
 
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/pathutil"
+	"github.com/vulture/backend/internal/textutil"
 )
 
 // Local ingest when the source root itself is unavailable (feature 0102), and
@@ -103,10 +104,22 @@ func loggedRootFault(out, root string) bool {
 	return strings.Contains(out, "ERROR source_root_unavailable") && strings.Contains(out, root)
 }
 
+// TestIngestLocal_RootUnavailable_NotTheCallers: the root fault is left
+// unmarked, so no handler can answer it as a 400 the caller could fix.
+func TestIngestLocal_RootUnavailable_NotTheCallers(t *testing.T) {
+	captureLog(t)
+	for name, root := range unavailableRoots(t) {
+		err := ingestLocal(root, false, filepath.Join(root, "project"))
+		if msg, _, ok := CallerMessage(err); ok || err == nil {
+			t.Errorf("%s: ingest = %v, caller message %q; want an unmarked server fault", name, err, msg)
+		}
+	}
+}
+
 // refusalLogBound is the most a local_path_refused line may take: the path
-// field is cut at 256 runes, the err field at maxLoggedErrBytes, and the rest
-// is the time stamp and the attribute names.
-const refusalLogBound = 256*4 + maxLoggedErrBytes + 512
+// field is cut at 256 runes, the err field at textutil.MaxLogBytes, and the
+// rest is the time stamp and the attribute names.
+const refusalLogBound = 256*4 + textutil.MaxLogBytes + 512
 
 // TestCheckLocalPath_RefusalLogBounded: a refused path is logged with both
 // fields bounded, though the cause repeats the path (os.Stat's error in local

@@ -54,7 +54,7 @@ func NewAuthService(repo repository.UserRepository, jwtSecret string) AuthServic
 func (s *authService) Register(req *model.RegisterRequest) (*model.AuthResponse, error) {
 	existing, _ := s.repo.GetUserByEmail(req.Email)
 	if existing != nil {
-		return nil, fmt.Errorf("email already registered")
+		return nil, ErrEmailRegistered
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
