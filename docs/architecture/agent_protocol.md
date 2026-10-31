@@ -16,6 +16,7 @@ The Go backend acts as a translator between these two layers.
 ```
 POST http://agent-{type}:{port}/run
 Content-Type: application/json
+X-Vulture-Agent-Token: <token>
 
 {
   "run_id": "uuid",
@@ -39,6 +40,27 @@ never part of `config`: the proxy strips an `accepts_mapping` key from every
 agent's `config` (escaped spellings included), and the shared transport passes
 the top-level field only to a run handler that declares an `accepts_mapping`
 parameter.
+
+### Authentication
+
+Every `/run` the backend sends carries the header `X-Vulture-Agent-Token`.
+
+- **In-tree agents** compare it with their own `VULTURE_AGENT_TOKEN`
+  (`shared/transport/sse_app.py`, constant time over bytes). When that variable
+  is set, a missing, wrong or non-ASCII header gets `403 {"detail": "invalid or
+  missing agent token"}`; an agent started by hand without it accepts every
+  request. The native launcher sets one on every start (generated unless the
+  operator set one) and both the backend and the agents inherit it. In
+  centralized mode the backend refuses to start without a token.
+- **Which value is sent** depends on the agent type. An in-tree agent (the
+  plugin registry's own entry for it) gets the shared `VULTURE_AGENT_TOKEN`.
+  Every other type, that is every plugin, gets a token derived for that plugin
+  alone and never the shared one. The derivation, how the supervisor delivers it
+  and the plugin-side rules (Host, Content-Type) are in the plugin contract,
+  [Authentication and request hygiene](../spec/plugin-v1/contract.md#authentication-and-request-hygiene).
+- The token authenticates the backend to an agent. Agents do not authenticate to
+  the backend with it; an agent presents it only on its own agent-to-agent
+  `/run` calls (`agent_token_headers()`).
 
 ### Response (Python → Go via SSE)
 

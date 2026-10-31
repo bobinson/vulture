@@ -324,6 +324,7 @@ VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001  # Agent endpoints
 VULTURE_AGENT_OWASP_URL=http://agent-owasp:8002
 VULTURE_AGENT_SOC2_URL=http://agent-soc2:8003
 VULTURE_AGENT_CWE_URL=http://agent-cwe:8004
+VULTURE_AGENT_TOKEN=  # Shared /run secret of the in-tree agents: the backend sends it as X-Vulture-Agent-Token, and an agent refuses /run without it whenever it is set. REQUIRED in centralized mode (startup fails without it); the native launcher generates one per start when unset. Plugins never get it: each gets hex(HMAC-SHA256(key, "vulture-plugin-run-token/v1:<name>")), key = this token or a per-process random one, delivered through its container env; the docker CLI that starts plugins never inherits it
 VULTURE_EMBEDDING_URL=  # Custom embedding endpoint
 VULTURE_EMBEDDING_MODEL=  # Embedding model override
 

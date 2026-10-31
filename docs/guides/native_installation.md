@@ -202,6 +202,14 @@ build is deterministic for your toolchain; a toolchain mismatch produces a WARN.
   (a DNS-rebinding page is refused).
 - **Agents bind `127.0.0.1` and require a shared token.** Each start generates
   `VULTURE_AGENT_TOKEN` unless you set one; agents refuse `/run` without it.
+- **Plugins get a token of their own.** A supervised plugin (for example
+  `--plugins semgrep`) never receives the shared token: the backend derives one
+  for that plugin alone and hands it over through the container's environment,
+  never the command line, and the plugin refuses `/run` without it (bundled
+  semgrep 0.1.1 and later). The docker CLI that starts plugins runs without the
+  backend's credentials. On Linux a host-network plugin shares this machine's
+  loopback, where local mode serves any process as you: the `host-network`
+  acknowledgement grants it that trust.
 - **Cosign-verified release artifacts** (Rekor transparency log) by default;
   SHA-only fallback only with `VULTURE_ALLOW_UNSIGNED=true`.
 - **Subprocess env scrubbing** — agents never inherit `LD_PRELOAD`,

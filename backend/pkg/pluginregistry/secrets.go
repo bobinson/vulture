@@ -7,7 +7,7 @@ import "strings"
 // both argv.go (launch-time) and manifest.go (install-time).
 var secretEnvExact = map[string]bool{
 	"VULTURE_JWT_SECRET": true, "VULTURE_DB_DSN": true, "VULTURE_DB_PATH": true,
-	"VULTURE_AGENT_TOKEN": true, "VULTURE_WEBHOOK_SECRET": true,
+	AgentTokenEnv: true, "VULTURE_WEBHOOK_SECRET": true,
 	"VULTURE_LLM_BROKER_MINT_KEY": true, "VULTURE_API_KEYS": true,
 	// Provider credentials the backend/broker hold for model routing — all
 	// non-VULTURE_-prefixed, so the VULTURE_ rule below does NOT catch them;

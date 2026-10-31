@@ -125,6 +125,13 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		}
 	}
 
+	// Feature 0102: the /run credentials, built once and shared by the agent
+	// proxy and the plugin supervisor. In-tree agents get the shared token;
+	// every plugin gets its own derived token, keyed by the shared token or,
+	// without one, by a per-process random key, so a supervised plugin always
+	// enforces. The registry decides what is in-tree; reg may be nil.
+	runTokens := pluginregistry.NewRunTokens(cfg.AgentToken, reg)
+
 	var supervisor *pluginsupervisor.Supervisor
 	if reg != nil {
 		all := reg.All()
@@ -146,6 +153,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 				// On macOS docker's host network is its VM's, so a
 				// host-network plugin is bridged and published on loopback.
 				HostNetworkIsVM: pluginsupervisor.HostNetworkIsVM(runtime.GOOS),
+				RunTokens:       runTokens,
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
@@ -182,7 +190,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		Clone: gitutil.CloneOptions{DataDir: cfg.DataDir()},
 	})
 	auditSvc := service.NewAuditService(repo)
-	proxyService := service.NewAgentProxyService(broker)
+	proxyService := service.NewAgentProxyServiceWithTokens(broker, runTokens)
 	// Feature 0049: stream service consults the plugin registry via
 	// stagerouter for capability-based dispatch. When the registry
 	// built successfully, the router is wired and used for every

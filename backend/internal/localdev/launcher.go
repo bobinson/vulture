@@ -565,6 +565,9 @@ func (l *Launcher) awaitAgents(started []startedAgent) error {
 }
 
 func (l *Launcher) startBackend(ctx context.Context) error {
+	// The backend keys every plugin's run token from this value, so it must
+	// hold the same token the agents get, whichever of the two starts first.
+	ensureAgentToken()
 	dbPath := filepath.Join(l.cfg.DataDir, "vulture.db")
 	// If VULTURE_DB_DSN is set (e.g. Neon), use Postgres; otherwise SQLite.
 	dbDSN := os.Getenv("VULTURE_DB_DSN")

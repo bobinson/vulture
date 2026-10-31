@@ -28,8 +28,15 @@ type Plugin struct {
 	// Manifest is the parsed TOML.
 	Manifest Manifest
 
-	// Source records where the manifest came from, for diagnostics.
-	// One of: "in-tree", "local", "env:<path>".
+	// Source records where the plugin came from: SourceVirtual for an
+	// entry AllVirtualPlugins synthesises for an in-tree agent, "builtin"
+	// (the bundled plugins dir), "local" (~/.vulture/plugins) or
+	// "env:<dir>" (a VULTURE_PLUGIN_DIRS entry). It is load-bearing, not
+	// only diagnostic: only a SourceVirtual entry receives the shared agent
+	// token (RunTokens), and only a "builtin" one may pair tier=in-tree
+	// with a container runtime or have its image built from its own
+	// Dockerfile. The loader sets it from where it found the manifest, so
+	// it must never be taken from manifest content.
 	Source string
 
 	// Path is the absolute path to the plugin.toml file. Empty for
@@ -40,6 +47,12 @@ type Plugin struct {
 	// to true on first discovery.
 	Enabled bool
 }
+
+// SourceVirtual is the Source AllVirtualPlugins stamps on the entries it
+// synthesises for the in-tree agents. No manifest on disk can carry it: the
+// loader sets Source from where it found the file ("builtin", "local",
+// "env:<dir>").
+const SourceVirtual = "in-tree"
 
 // Manifest is the parsed plugin.toml.
 type Manifest struct {

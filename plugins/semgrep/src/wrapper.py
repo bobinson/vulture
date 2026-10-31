@@ -14,12 +14,26 @@ Design notes:
 - ``source_path`` is validated via ``normalise_source_path`` BEFORE
   any subprocess call to prevent argv-injection (TM4) and symlink
   escape (BLOCKER #9).
+- Request hygiene (feature 0102; docs/spec/plugin-v1/contract.md,
+  "Authentication and request hygiene"): on a connection that arrived on a
+  loopback address every route requires a loopback ``Host`` (403
+  ``forbidden host``), which refuses a DNS-rebinding page; the app serves no
+  generated docs routes, so no route escapes that check. On any other address
+  (the macOS bridge, compose networks) the check does not apply, and the run
+  token is what keeps such a page out of ``/run``. ``/run`` requires the
+  ``X-Vulture-Agent-Token`` the backend derived for this plugin whenever
+  ``VULTURE_AGENT_TOKEN`` is set (403 ``invalid or missing agent token``),
+  and a JSON ``Content-Type`` before the body is read (415); a body that is
+  not JSON is the caller's error (400), not the server's.
 """
 
 from __future__ import annotations
 
 import asyncio
+import email.message
 import functools
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -30,9 +44,9 @@ import tempfile
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .sse import write_event
@@ -40,7 +54,94 @@ from .translate import normalise_source_path, summarize_scam_risk, translate_fin
 
 log = logging.getLogger(__name__)
 
-app = FastAPI()
+# The supervisor injects this plugin's own run token under the in-tree agents'
+# variable name, and the backend presents it in this header on every /run.
+AGENT_TOKEN_ENV: Final = "VULTURE_AGENT_TOKEN"
+AGENT_TOKEN_HEADER: Final = "X-Vulture-Agent-Token"
+
+# The Host names the backend's rule (server.isLoopbackHost) accepts verbatim.
+# Matching is case-sensitive, as there: "LOCALHOST" is not on the list.
+_LOOPBACK_NAMES: Final = frozenset({"localhost", "127.0.0.1", "::1"})
+_BRACKETS: Final = frozenset("[]")
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Whether a ``Host`` header value names a loopback target.
+
+    A port of the backend's ``server.isLoopbackHost``; both are tested against
+    ``docs/spec/plugin-v1/loopback_host_vectors.json``. An empty Host counts as
+    loopback, the port is stripped where Go's ``net.SplitHostPort`` would strip
+    it, IPv6 brackets are trimmed, and the rest must be one of
+    ``_LOOPBACK_NAMES`` or a loopback IP address.
+    """
+    if not host:
+        return True
+    name = _split_host(host).removeprefix("[").removesuffix("]")
+    return name in _LOOPBACK_NAMES or _is_loopback_ip(name)
+
+
+def _split_host(hostport: str) -> str:
+    """The host part Go's ``net.SplitHostPort`` returns for ``hostport``, or
+    ``hostport`` unchanged where Go reports an error (no port, or a malformed
+    form). The port is whatever follows the last colon and holds no bracket."""
+    head, colon, port = hostport.rpartition(":")
+    host = _host_before_port(head) if colon and _BRACKETS.isdisjoint(port) else None
+    return hostport if host is None else host
+
+
+def _host_before_port(head: str) -> str | None:
+    """The host in the text before a port: ``[h]`` gives ``h``, which may hold
+    colons (IPv6); a bare host may not. Neither may hold another bracket."""
+    if head[:1] + head[-1:] == "[]":
+        return _bracket_free(head[1:-1])
+    return None if ":" in head else _bracket_free(head)
+
+
+def _bracket_free(host: str) -> str | None:
+    return host if _BRACKETS.isdisjoint(host) else None
+
+
+def _is_loopback_ip(name: str) -> bool:
+    """Whether ``name`` parses as a loopback IP address, as Go's ``net.ParseIP``
+    and ``IP.IsLoopback`` decide it: an IPv4-mapped IPv6 address counts, and an
+    IPv6 zone (``::1%lo``), which Go does not parse, does not."""
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return (
+        not getattr(ip, "scope_id", None)
+        and (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
+    )
+
+
+async def _require_loopback_host(request: Request) -> None:
+    """Refuse a non-loopback ``Host`` on a connection that arrived on loopback.
+
+    Such a request comes from a browser page whose own name an attacker
+    resolved to 127.0.0.1 (DNS rebinding). The check is inert where the
+    connection arrived on any other address: the bridge and compose networks,
+    where the Host is a container name, and the in-process test client
+    (``testserver``).
+    """
+    server = request.scope.get("server")
+    if (
+        server
+        and _is_loopback_ip(server[0])
+        and not _is_loopback_host(request.headers.get("host", ""))
+    ):
+        raise HTTPException(status_code=403, detail="forbidden host")
+
+
+# The Host guard is an app-wide dependency, which only API routes run. FastAPI's
+# generated documentation routes are plain routes that would skip it, so the
+# app serves none: every route it has runs the guard.
+app = FastAPI(
+    dependencies=[Depends(_require_loopback_host)],
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+)
 
 # AUDIT_INPUTS_ROOT is the read-only mount the runtime gives the
 # plugin (declared in plugin.toml's runtime.fs.read). Tests substitute
@@ -82,7 +183,7 @@ def health() -> dict:
 def info() -> dict:
     return {
         "name": "semgrep",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "capabilities": [
             {
                 "phase": "scan",
@@ -404,9 +505,65 @@ async def _stream_run(run_id: str, source_path: str, config: dict) -> AsyncItera
         yield ev
 
 
-@app.post("/run")
+def _verify_agent_token(
+    x_vulture_agent_token: str | None = Header(None, alias=AGENT_TOKEN_HEADER),
+) -> None:
+    """Refuse ``/run`` without the run token whenever one is configured.
+
+    The token is read per request, never at import. It is compared as bytes,
+    in constant time: a missing, wrong or non-ASCII header is a 403, never a
+    500 (``hmac.compare_digest`` raises on non-ASCII ``str``). Unset, the
+    plugin was started by hand and ``/run`` stays open; under the backend's
+    supervisor a token is always injected.
+    """
+    expected = os.environ.get(AGENT_TOKEN_ENV, "")
+    if not expected:
+        _warn_open_run()
+        return
+    if not hmac.compare_digest((x_vulture_agent_token or "").encode(), expected.encode()):
+        raise HTTPException(status_code=403, detail="invalid or missing agent token")
+
+
+@functools.cache
+def _warn_open_run() -> None:
+    log.warning(
+        "%s is not set: /run accepts every caller. Only a plugin started by hand runs "
+        "this way; under the Vulture backend a token is always injected.",
+        AGENT_TOKEN_ENV,
+    )
+
+
+def _require_json(request: Request) -> None:
+    """Refuse a ``/run`` body not declared as JSON, before it is read.
+
+    FastAPI's own media-type rule (``application/json`` or
+    ``application/*+json``, parsed with ``email.message``), except that a
+    missing ``Content-Type`` is refused too: a form or multipart post, which a
+    browser may send cross-origin without a preflight, never reaches the body.
+    """
+    if not _is_json_media_type(request.headers.get("content-type", "")):
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+
+
+def _is_json_media_type(content_type: str) -> bool:
+    message = email.message.Message()
+    message["content-type"] = content_type
+    subtype = message.get_content_subtype()
+    return message.get_content_maintype() == "application" and (
+        subtype == "json" or subtype.endswith("+json")
+    )
+
+
+async def _read_json(req: Request) -> Any:
+    try:
+        return await req.json()
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError alike
+        raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+
+
+@app.post("/run", dependencies=[Depends(_verify_agent_token), Depends(_require_json)])
 async def run(req: Request):
-    body: Any = await req.json()
+    body: Any = await _read_json(req)
     _validate_envelope(body)
     run_id = body.get("run_id", "")
     source_path = _resolve_source_path(body)

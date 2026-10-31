@@ -30,6 +30,7 @@ and `install.sh` (which resolves `releases/latest`) ignores drafts until then.
 | Version ≥ `FALLBACK_TAG` (semver) | `install.sh`'s anti-downgrade guard refuses a lower tag |
 | The pinned `uv` installed *(only if re-locking)* | reproducible `requirements-frozen.txt` (the uv version pinned in `gen-lockfile.sh` / `scripts/uv-version.sh`) |
 | No un-waived HIGH/CRITICAL CVE in deps | the release build's Trivy gate will otherwise go red (see [Vulnerabilities](#vulnerabilities)) |
+| The bundled plugin image is published and anonymously pullable at its recorded digest *(only if the release changes the tag in `plugins/semgrep/plugin.toml`)* | the supervisor pulls the image by that tag; neither the preflight nor `release.yml` checks it, and reverting the version bump is no fallback (see [Bundled plugin image](#bundled-plugin-image-before-tagging)) |
 
 ## Step 1 — Preflight (local, before tagging)
 
@@ -49,6 +50,11 @@ Runs six fail-fast gates (`scripts/release-preflight.sh`):
 `==> release preflight: ALL GATES PASSED` ⇒ safe to tag.
 
 ## Step 2 — Tag and push (the only trigger)
+
+If this release changes the bundled plugin's image tag (`plugins/semgrep/plugin.toml`,
+`[runtime].image`), do not tag until the anonymous pull in
+[Bundled plugin image](#bundled-plugin-image-before-tagging) has succeeded at the
+recorded digest; reverting the version bump is no fallback.
 
 ```sh
 git tag vX.Y.Z && git push origin vX.Y.Z
@@ -102,6 +108,47 @@ if you've advanced a minor (see [Versioning](#versioning)).
 - `check-fallback-tag.sh` enforces `FALLBACK_TAG` is a real release and **≤ 1
   minor behind** the tag being cut. Bump `FALLBACK_TAG` in `install.sh` when you
   advance a minor, in the same PR.
+
+## Bundled plugin image (before tagging)
+
+The supervisor pulls a bundled plugin's image by the tag in its manifest
+(`plugins/semgrep/plugin.toml`, `[runtime].image`), and a native install can
+only pull it: the tarball ships neither the image nor its Dockerfile. When a
+release changes that tag, publish the image **before** Step 2, from a clean
+checkout of the commit that carries the version bump, never from a working tree
+with local changes:
+
+```sh
+C=<the commit that carries the version bump>; V=<the new plugin version>
+git worktree add --detach ../vulture-plugin-image "$C"
+test -z "$(git -C ../vulture-plugin-image status --porcelain)"
+grep -q "vulture-plugin-semgrep:$V" ../vulture-plugin-image/plugins/semgrep/plugin.toml
+# a write:packages token read from a file you choose; never echo or commit it
+docker login ghcr.io -u <owner> --password-stdin < <token-file>
+docker buildx build --platform linux/amd64,linux/arm64 \
+  --tag "ghcr.io/bobinson/vulture-plugin-semgrep:$V" --push ../vulture-plugin-image/plugins/semgrep
+docker buildx imagetools inspect "ghcr.io/bobinson/vulture-plugin-semgrep:$V"
+docker logout ghcr.io
+git worktree remove ../vulture-plugin-image
+```
+
+1. Record the index digest (the `Digest:` line of `imagetools inspect`) and `$C`
+   in the release notes.
+2. Make the package public if it is not already (package settings → visibility;
+   owner only, in the GitHub UI).
+3. Prove an anonymous pull with an empty docker configuration:
+   `DOCKER_CONFIG=$(mktemp -d) docker pull "ghcr.io/bobinson/vulture-plugin-semgrep:$V"`.
+   Its digest must equal the recorded one.
+
+The arm64 leg needs a native arm64 builder or QEMU binfmt on the build host.
+
+The anonymous pull (item 3) is a hard precondition for the tag: do not run
+Step 2 until it succeeds at the recorded digest. A release whose manifest names
+an unpublished tag loses that plugin's tier on every fresh install. Reverting
+the plugin's version bump is not a fallback: the plugin's own tests
+(`plugins/semgrep/tests/unit/test_version_consistency.py`) refuse any version
+before 0.1.1, the first whose `/run` requires the run token. The image is
+referenced by tag and is not signed.
 
 ## Vulnerabilities
 

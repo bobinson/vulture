@@ -40,10 +40,14 @@ type Config struct {
 	// VULTURE_CORS_ALLOWED_ORIGINS as a comma-separated string.
 	// 0036 Phase 3 finding C3.
 	CORSAllowedOrigins []string `json:"cors_allowed_origins"`
-	// AgentToken is the shared bearer token gating direct HTTP
-	// access to agent services. When non-empty, the backend includes
-	// it on outbound calls and agents reject requests without a
-	// matching Authorization header. 0036 Phase 3.
+	// AgentToken is the shared /run token of the in-tree agent services
+	// (VULTURE_AGENT_TOKEN). When non-empty, the backend sends it as the
+	// X-Vulture-Agent-Token header on every /run to an in-tree agent, and
+	// an agent whose own VULTURE_AGENT_TOKEN is set refuses /run without a
+	// match. Agents do not authenticate to the backend with it. Plugins
+	// never receive it: each gets a token derived from it
+	// (pluginregistry.RunTokens). Required when not in local mode. 0036
+	// Phase 3.
 	AgentToken string `json:"agent_token"`
 	// SourceRoot (VULTURE_SOURCE_ROOT) confines every server-side local
 	// path (folder browse, local-path ingest, and the dispatch of a stored

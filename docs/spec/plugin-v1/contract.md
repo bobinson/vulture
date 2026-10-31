@@ -267,6 +267,113 @@ Errors during a run are reported in-band via `thinking` events. The
 plugin SHOULD set `run_finished.status="failed"` if no useful output
 was produced.
 
+### Authentication and request hygiene
+
+These rules add to `vulture-plugin/1.0`; `api_version` stays `1.0`. They are
+SHOULD-level and not part of [Conformance](#conformance). A plugin that
+predates them keeps working with an orchestrator that applies them.
+
+**Run token (SHOULD).** The orchestrator presents a token on every `POST /run`,
+in the header `X-Vulture-Agent-Token`. The plugin reads the value it expects
+from the environment variable `VULTURE_AGENT_TOKEN`, at request time:
+
+- When the variable is set, `/run` SHOULD answer `403 {"detail": "invalid or
+  missing agent token"}` unless the header matches. Compare in constant time,
+  over bytes (Python: `hmac.compare_digest(presented.encode(),
+  expected.encode())`), so a missing, wrong or non-ASCII header is a 403,
+  never a 5xx.
+- When the variable is unset, the plugin was started by hand: `/run` is open,
+  and the plugin SHOULD log a warning once. Under the orchestrator's
+  supervisor the variable is always set.
+
+**Which token a plugin receives.** Never the orchestrator's shared agent
+token. A plugin named `<name>` receives
+
+```
+hex(HMAC-SHA256(key, "vulture-plugin-run-token/v1:" + <name>))
+```
+
+where `key` is the operator's `VULTURE_AGENT_TOKEN` when one is configured,
+and a random key the orchestrator draws at each start otherwise. The token
+opens that plugin's `/run` and nothing else, and it does not reveal the key.
+The shared token goes only to the in-tree agents, and "in-tree" means the
+entry the orchestrator synthesises for one of its own agents: a manifest that
+claims `tier = "in-tree"`, or a plugin that reuses an in-tree agent's name,
+gets a derived token like any other plugin.
+
+**Delivery.** The supervisor starts the container with a name-only
+`docker run -e VULTURE_AGENT_TOKEN` and sets the value in the docker CLI's own
+environment, so the token never appears on a command line. The docker CLI runs
+with the host environment minus every protected backend credential (the names
+`runtime.env` may never forward) and minus the dynamic-linker and interpreter
+injection variables (`LD_PRELOAD`, `PYTHONSTARTUP`, ...).
+
+**Running a plugin by hand** against an orchestrator with a configured shared
+token: set the plugin's `VULTURE_AGENT_TOKEN` to the derived value, never to
+the shared one (the plugin would refuse every dispatch with 403). The shared
+token must never appear on a command line, where any local user can read it
+(`ps`, `/proc/<pid>/cmdline`), so compute the value in a process that reads it
+from the environment. In a shell whose `VULTURE_AGENT_TOKEN` holds the shared
+token, for the plugin `semgrep`:
+
+```sh
+python3 - semgrep <<'EOF'
+import hashlib, hmac, os, sys
+key = os.environ["VULTURE_AGENT_TOKEN"].encode()
+msg = ("vulture-plugin-run-token/v1:" + sys.argv[1]).encode()
+print(hmac.new(key, msg, hashlib.sha256).hexdigest())
+EOF
+```
+
+Without a configured shared token the orchestrator's key exists only inside
+its process, so a hand-run plugin must then run without a token.
+
+**Host (SHOULD).** On a connection that arrived on a loopback address, a
+plugin SHOULD refuse every route with `403 {"detail": "forbidden host"}` unless
+the `Host` header is loopback. Every route includes the ones a web framework
+generates (an OpenAPI document, interactive API docs): serve none, or put them
+behind the same check. That stops a page in a browser on the same machine that
+re-resolved its own name to 127.0.0.1 (DNS rebinding). The rule: an empty Host
+is loopback; a port is stripped; IPv6 brackets are trimmed; `localhost`,
+`127.0.0.1` and `::1` match case-sensitively; any other value is loopback only
+if it parses as a loopback IP address, an IPv4-mapped IPv6 address included,
+and a value with an IPv6 zone (`::1%lo`) is not.
+[`loopback_host_vectors.json`](loopback_host_vectors.json) is the
+authoritative table; the orchestrator's own rule and the bundled plugin's are
+both tested against it. On any other address (bridge or compose networks,
+where the Host is a container name) the check does not apply. That includes a
+host-network plugin the supervisor runs on the default bridge on macOS: its
+port is published on the Mac's loopback, but connections reach the container
+on its bridge address, so there the run token is what keeps a rebinding page
+out of `/run`.
+
+**Content type and body (SHOULD).** Before it reads the body, `/run` SHOULD
+refuse a request whose `Content-Type` is not `application/json` or
+`application/*+json`, a missing header included, with `415 {"detail":
+"Content-Type must be application/json"}`. A body that is not valid JSON
+SHOULD get `400 {"detail": "invalid JSON body"}`, not a 5xx.
+
+| Status | `detail` | Check, in the order applied |
+|---|---|---|
+| 403 | `forbidden host` | loopback connection, non-loopback `Host` (every route) |
+| 403 | `invalid or missing agent token` | `/run`, `VULTURE_AGENT_TOKEN` set, header missing or different |
+| 415 | `Content-Type must be application/json` | `/run`, not a JSON media type |
+| 400 | `invalid JSON body` | `/run`, the body does not parse |
+
+The orchestrator reports any non-200 answer to `/run` as that plugin's tier
+not being active for the run. The bundled `semgrep` plugin applies every rule
+above from version 0.1.1, the image its manifest names
+(`ghcr.io/bobinson/vulture-plugin-semgrep:0.1.1`); earlier versions apply none
+of them.
+
+**Local mode: a host-network plugin has local-process trust.** In local mode
+(the native launcher, `VULTURE_LOCAL_MODE=true`) the orchestrator's API serves
+any process on the machine as the implicit local user. A Linux plugin with
+`runtime.network = "host"` shares the host's network namespace, so it can call
+that API as the local user, whatever its token. Acknowledging `host-network`
+grants that trust: install such a plugin only if you would run its code as
+yourself.
+
 ## Event shapes
 
 All events match the AG-UI envelope already used by in-tree agents.
@@ -641,6 +748,7 @@ allow before install:
 |----------------------|------------------------------------------------------------------------|----------------------------------|
 | `runs-real-exploits` | Plugin sends real exploit payloads to the staging target               | UI warning per finding; logged per run |
 | `network-egress`     | Plugin makes outbound network calls beyond the staging target          | `runtime.network = "host"` triggers this auto |
+| `host-network`       | Plugin runs in the host's network namespace (`runtime.network = "host"`) | Required with `runtime.network = "host"`; the supervisor binds the plugin to 127.0.0.1 (on macOS: the default bridge, published on loopback only). In local mode the plugin can reach the orchestrator's loopback API, which serves any local process as the local user: this ack grants local-process trust (see [Authentication and request hygiene](#authentication-and-request-hygiene)) |
 | `host-fs-write`      | Plugin writes to the host filesystem outside its sandbox tmp dir       | `runtime.fs.write` entries outside `/tmp/*` require this |
 | `privileged`         | Plugin requires `--privileged` container or root host access           | Highest-friction ack; orchestrator may refuse to install on production deployments |
 | `commercial-key`     | Plugin requires a paid commercial API key passed via `runtime.env`     | Operator confirms billing acceptance |
@@ -762,3 +870,4 @@ is removed in the next major version.
 | Version | Date       | Change                                  |
 |---------|------------|-----------------------------------------|
 | 1.0.0   | 2026-05-25 | Initial release                         |
+| 1.0.0   | 2026-10-29 | Additive amendment, no version change (feature 0102): "Authentication and request hygiene" (SHOULD-level rules: the `/run` token header, its per-plugin derivation and delivery, the Host and Content-Type checks, the 403/415/400 answers, `loopback_host_vectors.json`, local-process trust of a host-network plugin in local mode); the `host-network` ack row. `api_version`, the manifest schema and conformance are unchanged |

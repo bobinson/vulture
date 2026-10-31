@@ -2,6 +2,7 @@
 
 import asyncio
 import contextvars
+import hmac
 import inspect
 import logging
 import os
@@ -213,8 +214,14 @@ def _verify_agent_token(
     X-Vulture-Agent-Token header are rejected. The native launcher always sets
     one (``localdev.ensureAgentToken``); only an agent started by hand without
     it allows every request.
+
+    The comparison is constant-time over bytes: a missing, wrong or non-ASCII
+    header is a 403, never a 500 (``hmac.compare_digest`` raises on ``None``
+    and on non-ASCII ``str``).
     """
-    if _AGENT_TOKEN and x_vulture_agent_token != _AGENT_TOKEN:
+    if _AGENT_TOKEN and not hmac.compare_digest(
+        (x_vulture_agent_token or "").encode(), _AGENT_TOKEN.encode()
+    ):
         raise HTTPException(status_code=403, detail="invalid or missing agent token")
 
 

@@ -68,7 +68,7 @@ in your fork.
 | `[plugin].description` | "Bundled reference plugin..." | one-line description of what your scanner does |
 | `[plugin].homepage` | `https://github.com/bobinson/vulture/tree/main/plugins/semgrep` | `https://github.com/your-org/vulture-plugin-yours` |
 | `[plugin].documentation` | bundled README link | link to your README |
-| `[runtime].image` | `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.0` | `ghcr.io/your-org/vulture-plugin-yours:0.1.0` |
+| `[runtime].image` | `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.1` | `ghcr.io/your-org/vulture-plugin-yours:0.1.0` |
 | `[trust].signature` (new field — bundled plugin omits it) | _absent_ | `cosign://sigstore/your-org/vulture-plugin-yours` |
 
 You will also change `[trust].tier` from `in-tree` to
@@ -138,15 +138,41 @@ Semgrep fetches its registry rule packs (`p/security-audit`, and any
 `config.rule_packs`) from the network at scan time. Two consequences an operator
 must weigh: (1) `config.rule_packs` is allowlisted to pinned `p/<name>` registry
 packs only (URLs / local paths / `auto` are rejected) so it cannot be turned
-into an SSRF or arbitrary-file sink; (2) host networking means `/run` is
-reachable on the host interface — run the plugin only on trusted hosts, or put
-it behind the supervisor's network controls. On macOS, where docker's host network
+into an SSRF or arbitrary-file sink; (2) host networking shares the host's
+network namespace — the supervisor binds the plugin to `127.0.0.1`, and `/run`
+answers only a caller holding the plugin's run token (see Request guards
+below); run the plugin only on trusted hosts. On macOS, where docker's host network
 is its VM's rather than the Mac's, the supervisor runs the plugin on the default
 bridge instead and publishes its port on the Mac's loopback only
 (`-p 127.0.0.1:28011:28011`), so it is reachable at `localhost:28011` and on no
 other interface. Rulesets are **not** currently
 version-pinned (feature 0058 R8 tracks pinning), so findings can drift with the
 upstream registry.
+
+### Request guards (0.1.1 and later)
+
+The plugin guards its own HTTP API ([contract: Authentication and request
+hygiene](../../docs/spec/plugin-v1/contract.md#authentication-and-request-hygiene)):
+
+- **Run token.** Whenever `VULTURE_AGENT_TOKEN` is set in the container, `/run`
+  requires a matching `X-Vulture-Agent-Token` header (403 otherwise). The
+  supervisor always sets it, to a token derived for this plugin alone, never the
+  backend's shared agent token. Started by hand without it, `/run` is open and a
+  warning is logged once; to put a hand-run plugin behind a backend that has a
+  shared token, give it the derived value the contract shows how to compute.
+- **Host.** On a connection that arrived on loopback, every route answers a
+  non-loopback `Host` with 403, which refuses a DNS-rebinding page in a local
+  browser. The plugin serves no generated API docs (`/openapi.json`, `/docs`,
+  `/redoc`), so no route skips this check. On macOS the plugin runs on the
+  default bridge: its port is published on the Mac's loopback, but connections
+  reach the container on its bridge address, so the Host check does not apply
+  there, and the run token is what keeps such a page out of `/run`.
+- **Body.** `/run` refuses a body not declared as JSON (415) before reading it,
+  and a body that is not valid JSON gets 400.
+
+In local mode a host-network plugin also shares the machine's loopback, where
+the backend's API serves any local process as the local user: the
+`host-network` acknowledgement grants it that trust.
 
 ## Migration path (when extracted)
 
