@@ -62,14 +62,17 @@ var (
 	// §32.1: PERMANENT provider faults — retriable=false so neither the broker
 	// retrier nor the agent retries them (they would fail identically), and the
 	// distinct codes surface the REAL cause instead of a generic outage.
-	errProviderBadRequest   = &apiError{code: "provider_bad_request", message: "provider rejected the request", status: http.StatusBadGateway, retriable: false}
-	errProviderAuth         = &apiError{code: "provider_auth_error", message: "provider authentication failed", status: http.StatusBadGateway, retriable: false}
-	errModelNotFound        = &apiError{code: "model_not_found", message: "model not found or not routable", status: http.StatusBadGateway, retriable: false}
-	errAllProvidersDown     = &apiError{code: "all_providers_down", message: "all providers unavailable", status: http.StatusServiceUnavailable, retriable: true}
-	errProviderNotAllowlist = &apiError{code: "provider_unavailable", message: "provider not allowlisted", status: http.StatusBadGateway, retriable: false}
-	errSSRFBlocked          = &apiError{code: "invalid_request", message: "egress target rejected", status: http.StatusBadRequest, retriable: false}
-	errMethodNotAllowed     = &apiError{code: "invalid_request", message: "method not allowed", status: http.StatusMethodNotAllowed, retriable: false}
-	errInternal             = &apiError{code: "provider_unavailable", message: "internal error", status: http.StatusBadGateway, retriable: true}
+	errProviderBadRequest = &apiError{code: "provider_bad_request", message: "provider rejected the request", status: http.StatusBadGateway, retriable: false}
+	// 0074 C5: the size class of a bad request, so the agent halves and
+	// retries rather than giving up. Static message: never the provider body.
+	errProviderContextOverflow = &apiError{code: "provider_context_overflow", message: "request exceeds the model's context window", status: http.StatusRequestEntityTooLarge, retriable: false}
+	errProviderAuth            = &apiError{code: "provider_auth_error", message: "provider authentication failed", status: http.StatusBadGateway, retriable: false}
+	errModelNotFound           = &apiError{code: "model_not_found", message: "model not found or not routable", status: http.StatusBadGateway, retriable: false}
+	errAllProvidersDown        = &apiError{code: "all_providers_down", message: "all providers unavailable", status: http.StatusServiceUnavailable, retriable: true}
+	errProviderNotAllowlist    = &apiError{code: "provider_unavailable", message: "provider not allowlisted", status: http.StatusBadGateway, retriable: false}
+	errSSRFBlocked             = &apiError{code: "invalid_request", message: "egress target rejected", status: http.StatusBadRequest, retriable: false}
+	errMethodNotAllowed        = &apiError{code: "invalid_request", message: "method not allowed", status: http.StatusMethodNotAllowed, retriable: false}
+	errInternal                = &apiError{code: "provider_unavailable", message: "internal error", status: http.StatusBadGateway, retriable: true}
 	// §26/H4: body exceeded the size cap.
 	errRequestTooLarge = &apiError{code: "request_too_large", message: "request body too large", status: http.StatusRequestEntityTooLarge, retriable: false}
 	// §9/H2: the model emitted more tool calls / larger aggregate arguments
@@ -120,6 +123,7 @@ var providerErrTable = []errCase{
 	{provider.ErrRateLimited, errRateLimited},
 	// §32.1: permanent client/config faults FIRST — distinct, non-retriable
 	// codes so a bad request/key/model is not relabeled a transient outage.
+	{provider.ErrContextOverflow, errProviderContextOverflow}, // before its parent class
 	{provider.ErrProviderBadRequest, errProviderBadRequest},
 	{provider.ErrProviderAuth, errProviderAuth},
 	{provider.ErrModelNotFound, errModelNotFound},

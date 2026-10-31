@@ -84,7 +84,12 @@ PINNED: dict[str, tuple[str, str]] = {
     "discover/system": ("c39041e4cd3ae5ae", "16ad218fc6c1695a"),
     "domains/asvs": ("43ddac3b0b5f6006", "1403cec6b1224115"),
     "domains/chaos": ("f83422f26557dfde", "61bfec93581a2123"),
-    "domains/cwe": ("a89b463ab7377b30", "3008549c80c572ab"),
+    # 0098: the coverage counts became the computed values (171 literals,
+    # N=81, 24 skills); `generate/cwe` 5 -> 6.
+    # 0101: the CWE-778/770/209 definition lines state the rules' concepts
+    # (security-relevant failure, input-driven uncapped accumulation, error
+    # value reaching a peer); text half only; `generate/cwe` 6 -> 7.
+    "domains/cwe": ("c1044b702b29e8b9", "3008549c80c572ab"),
     "domains/do178c": ("0d50a3fdead2ab59", "61bfec93581a2123"),
     "domains/soc2": ("6615334023dd605b", "61bfec93581a2123"),
     "domains/ssdf": ("a4d31d7cd1144e36", "61bfec93581a2123"),
@@ -176,7 +181,7 @@ VERSIONS: dict[str, int] = {
     "discover_suggest": 3,        # item 4.8 (4.6 took it to 2)
     "generate/asvs": 5,           # item 4.8 (4.7 took it to 4)
     "generate/chaos": 5,          # item 4.8 (4.7 took it to 4)
-    "generate/cwe": 5,            # item 4.8 (4.7 took it to 4)
+    "generate/cwe": 7,            # 0101: domains/cwe 778/770/209 definitions (0098 took it to 6)
     "generate/do178c": 5,         # item 4.8 (4.7 took it to 4)
     "generate/soc2": 5,           # item 4.8 (4.7 took it to 4)
     "generate/ssdf": 5,           # item 4.8 (4.7 took it to 4)

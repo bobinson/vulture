@@ -9,6 +9,7 @@ import type {
   CreateAuditRequest,
   CreatePipelineRequest,
   CreateSourceRequest,
+  MaskedValues,
   DashboardStats,
   DiscoverResult,
   FindingLineage,
@@ -246,6 +247,16 @@ export const api = {
   getAggregate(targetKey: string, query = ""): Promise<AggregateResponse> {
     return request<AggregateResponse>(
       `/api/targets/${encodeURIComponent(targetKey)}/aggregate${query}`,
+    );
+  },
+
+  // 0074 item 1b. Never deduplicated or cached: an explicit (empty) headers
+  // object bypasses the in-flight map, and fetch skips the HTTP cache. No custom
+  // request header, so a cross-origin API needs no extra CORS preflight.
+  maskedValues(auditId: string, findingId: string): Promise<MaskedValues> {
+    return request<MaskedValues>(
+      `/api/audits/${encodeURIComponent(auditId)}/findings/${encodeURIComponent(findingId)}/masked`,
+      { cache: "no-store", headers: {} },
     );
   },
 

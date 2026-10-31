@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26"
+  GO_VERSION: "1.26.10"
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "22"
 
@@ -65,6 +65,8 @@ jobs:
         run: sh scripts/tests/test_pbs_multiplatform.sh
       - name: pbs vendor wiring tests
         run: sh scripts/tests/test_pbs_vendor_wiring.sh
+      - name: active pbs pin consistency tests
+        run: sh scripts/tests/test_pbs_pin_active.sh
       - name: release preflight tests
         run: sh scripts/tests/test_release_preflight.sh
       - name: smoke-scan contract tests
@@ -73,6 +75,14 @@ jobs:
         run: sh scripts/tests/test_check_ssh_version.sh
       - name: db DSN host/internal port wiring tests
         run: sh scripts/tests/test_db_dsn_wiring.sh
+      - name: LM Studio loaded-window detector tests (0074)
+        run: sh scripts/tests/test_lmstudio_window.sh
+      - name: LM Studio context probe never aborts the launcher
+        run: sh scripts/tests/test_lmstudio_ctx_probe.sh
+      - name: launcher --tier3 flag tests
+        run: sh scripts/tests/test_tier3_flags.sh
+      - name: launcher tier-3 summary reads the VULTURE_USE_LLM token list
+        run: sh scripts/tests/test_tier3_llm_tokens.sh
 
   build-backend:
     runs-on: ubuntu-latest
@@ -151,7 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -171,7 +181,7 @@ jobs:
     needs: lint-agents
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -198,6 +208,23 @@ jobs:
           echo "Functions at complexity grade C or worse (target < C; monitored, not gated):"
           (cd agents && radon cc . -nc --exclude=".venv/*") || true
 
+  test-mcp:
+    # The MCP server (mcp/) has its own dependency set (the mcp SDK, respx);
+    # install it from mcp/pyproject.toml's [dev] extra, the same set
+    # `make test-mcp` builds its local venv from.
+    runs-on: ubuntu-latest
+    needs: lint-agents
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -e "./mcp[dev]"
+      - name: Test MCP server
+        run: cd mcp && python -m pytest tests/ -v
+
   # ── CWE corpus gate (feature 0057 P5e / R17) ────────────────
   # PR lane: the CURATED subset only (`make cwe-corpus`) — deterministic,
   # <~60s, no live LLM. The FULL sweep (Juliet included once vendored) runs on
@@ -208,7 +235,7 @@ jobs:
     needs: lint-agents
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -235,7 +262,7 @@ jobs:
     needs: lint-agents
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
@@ -258,7 +285,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -273,7 +300,7 @@ jobs:
     needs: lint-frontend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -288,7 +315,7 @@ jobs:
     needs: build-frontend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -302,7 +329,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
-    needs: [test-backend, test-agents, test-frontend]
+    needs: [test-backend, test-agents, test-mcp, test-frontend]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # NOTE: deliberately NOT using docker/setup-buildx-action. It creates an
@@ -365,7 +392,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -382,7 +409,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install pip-audit
@@ -420,6 +447,8 @@ jobs:
         # govulncheck reports only vulns reachable from actual call paths (low
         # false-positive). It also flags Go STDLIB CVEs, so a PR built on an
         # unpatched toolchain fails until GO_VERSION picks up the fixed patch.
+        # GO_VERSION names the exact patch: a minor-only "1.26" resolves to the
+        # runner's cached toolchain, which can lag the fixed release.
         run: cd backend && "$(go env GOPATH)/bin/govulncheck" ./...
       - name: Go vulnerability scan (cli)
         run: cd cli && "$(go env GOPATH)/bin/govulncheck" ./...

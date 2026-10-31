@@ -2,6 +2,8 @@
 
 Integrate Vulture compliance audits into your CI/CD pipelines. CI runners act as thin clients (Mode D) that submit scan requests to a centralized Vulture server (Mode B). The CI runner never executes the backend, agents, or LLMs itself.
 
+> No server? To gate a pull request or a commit on the CWE skills alone (changed files only, no backend, no LLM), use `vulture-offline-skills`. See [offline_skills_gate.md](offline_skills_gate.md).
+
 ```
 CI runner (ephemeral)                 Central server (persistent VM)
  vulture scan <git-url>  ──HTTPS──>   backend + agents + LLM

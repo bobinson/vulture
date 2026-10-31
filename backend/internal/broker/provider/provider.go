@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 // ErrNotImplemented is returned by surfaces that are deliberately deferred
@@ -41,6 +42,12 @@ var (
 	// malformed (400/413/422) — a translation/schema/size fault the client
 	// cannot fix by retrying. PERMANENT.
 	ErrProviderBadRequest = errors.New("broker/provider: provider rejected request")
+	// ErrContextOverflow is the size class of ErrProviderBadRequest (feature
+	// 0074, contract C5): a 413, or a 4xx whose body names the context or
+	// payload limit. It wraps ErrProviderBadRequest, so it stays PERMANENT and
+	// breaker-neutral for the broker, but it is mapped to its own code so the
+	// agent can halve the request instead of abandoning the batch.
+	ErrContextOverflow = fmt.Errorf("broker/provider: request exceeds the model's context: %w", ErrProviderBadRequest)
 	// ErrProviderAuth indicates an auth/permission failure (401/403) on the
 	// broker-held key — the agent cannot remediate it (N1). PERMANENT.
 	ErrProviderAuth = errors.New("broker/provider: provider auth failed")

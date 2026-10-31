@@ -96,7 +96,7 @@ func (s *lineageService) ProcessAuditFindings(audit *model.Audit, source *model.
 	// Read before write (§6.3, audit note R4): snapshot the rows each pass may
 	// act on BEFORE the upserts below create or move any of them, so a row
 	// minted by this very scan can never be considered for closure by it.
-	target := ResolveTarget(source)
+	target := s.targetOf(source)
 	snapshots := map[string][]model.FindingLineage{}
 	if source != nil {
 		for agentType := range agentTypes {
@@ -135,7 +135,7 @@ func (s *lineageService) RecordScanOutcome(audit *model.Audit, source *model.Sou
 	if result == nil {
 		result = &model.ScanResult{}
 	}
-	target := ResolveTarget(source)
+	target := s.targetOf(source)
 	rows := s.rowsForPass(target, source, agentType, result)
 	agentFindings, present := findingsOfAgent(result.Findings, agentType)
 	s.upsertFindings(audit, source, target, agentFindings, result.ComplianceMapping)
@@ -333,7 +333,7 @@ func (s *lineageService) PendingChecks(source *model.Source, agentTypes []string
 	if source == nil || len(agentTypes) == 0 {
 		return nil
 	}
-	target := ResolveTarget(source)
+	target := s.targetOf(source)
 	out := map[string]*model.LineageChecksRequest{}
 	for _, at := range agentTypes {
 		rows := s.checkableRows(target, source, at)

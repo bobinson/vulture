@@ -25,9 +25,9 @@ from xss_agent.skills._check_id import cid
 HEADER_INJECTION_PATTERNS = [
     re.compile(r"(?:set_header|add_header|Header\(\)\.Set|Header\(\)\.Add|setHeader|header\()\s*\([^)]*(?:request|req\.|input|user|body|query|param)", re.IGNORECASE),
     # Both ends must be ANCHORED. Unanchored, these fired on ordinary code:
-    # `const hasProfileLocation = Boolean(userAddressData)` matched the
-    # Location arm because "Location" sits inside `hasProfileLocation` and
-    # "user" inside `userAddressData`. A header name only counts when it
+    # `const hasVenueLocation = Boolean(userKioskData)` matched the
+    # Location arm because "Location" sits inside `hasVenueLocation` and
+    # "user" inside `userKioskData`. A header name only counts when it
     # appears AS a header -- quoted, or followed by a colon -- and a taint
     # token only counts as a whole word.
     header_taint_pattern("Content-Disposition"),

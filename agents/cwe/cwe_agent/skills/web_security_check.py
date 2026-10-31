@@ -25,7 +25,7 @@ OPEN_REDIRECT_PATTERNS = [
     re.compile(r"(?:res|response)\.redirect\s*\(\s*(?:req|request)\.", re.IGNORECASE),
     re.compile(r"http\.Redirect\([^,]+,\s*[^,]+,\s*r\.", re.IGNORECASE),
     # Anchored at both ends. Unanchored, this matched
-    # `const hasProfileLocation = Boolean(userAddressData)` -- "Location"
+    # `const hasVenueLocation = Boolean(userKioskData)` -- "Location"
     # inside the identifier, "user" inside the value. Shared with the xss
     # agent, which carried a byte-identical copy of the same defect.
     header_taint_pattern("Location"),
@@ -841,7 +841,9 @@ _SERVER_COOKIE_ACCESSOR = (
     r"req(?:uest)?\.cookies|request\.COOKIES|\$_COOKIE|ctx\.cookies\.get"
     r"|cookies\(\)\.get|r\.Cookie|c\.Cookie|Request\.Cookies|cookies(?=\[\s*:)"
 )
-_PRIV_NAME = (
+# Public: the guard-application rule (_guard_application) leaves these cookie
+# names to this rule, so the two never report the same read twice.
+PRIV_COOKIE_NAME = (
     r"is_?admin|isadmin|admin|roles?|is_?auth\w*|authenticated|logged_?in"
     r"|loggedin|user_?id|userid|uid|account_?id|priv\w*|access_?level"
     r"|is_?verified|superuser|impersonat\w*"
@@ -862,7 +864,7 @@ def _cookie_read_re(accessor: str) -> re.Pattern:
     return re.compile(
         rf"(?<![\w$])(?:{accessor})"
         rf"\s*(?:\[\s*:?\s*|\(\s*|\.\s*(?:get\s*\(\s*)?)"
-        rf"['\"]?(?P<name>{_PRIV_NAME})\b",
+        rf"['\"]?(?P<name>{PRIV_COOKIE_NAME})\b",
         re.IGNORECASE,
     )
 

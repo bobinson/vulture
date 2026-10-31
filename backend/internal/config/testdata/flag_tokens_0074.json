@@ -1,0 +1,22 @@
+{
+ "_comment": "Feature 0074 re-audit T2/#25: ONE token list for every boolean switch both runtimes read (VULTURE_USE_LLM above all). Go config.ParseFlag/EnvFlag and the agents' shared.env.env_flag / env_truthy (and every agent reader of VULTURE_USE_LLM: audit_runner, llm/mode.py, llm/health.py) must give each value its verdict: true and false are the flag's value, \"default\" means the value is not a token (blank, or unrecognised) and the caller's default applies. An unrecognised NON-BLANK value is also warned about once, naming the variable (`warns`). Case-insensitive; surrounding whitespace ignored.",
+ "cases": [
+  {"value": "true", "verdict": true, "warns": false},
+  {"value": "True", "verdict": true, "warns": false},
+  {"value": "1", "verdict": true, "warns": false},
+  {"value": "yes", "verdict": true, "warns": false},
+  {"value": " YES ", "verdict": true, "warns": false},
+  {"value": "on", "verdict": true, "warns": false},
+  {"value": "ON", "verdict": true, "warns": false},
+  {"value": "false", "verdict": false, "warns": false},
+  {"value": "0", "verdict": false, "warns": false},
+  {"value": "no", "verdict": false, "warns": false},
+  {"value": "off", "verdict": false, "warns": false},
+  {"value": " Off ", "verdict": false, "warns": false},
+  {"value": "", "verdict": "default", "warns": false},
+  {"value": "   ", "verdict": "default", "warns": false},
+  {"value": "flase", "verdict": "default", "warns": true},
+  {"value": "maybe", "verdict": "default", "warns": true},
+  {"value": "2", "verdict": "default", "warns": true}
+ ]
+}

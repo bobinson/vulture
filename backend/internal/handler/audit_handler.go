@@ -45,7 +45,13 @@ type AuditHandler struct {
 	// Recomputing it via pluginregistry.Default() would build a second
 	// registry and reintroduce exactly that drift.
 	pluginReg pluginregistry.Registry
+	// localMode decides who may receive masked values (MaskedValues).
+	localMode bool
 }
+
+// SetLocalMode tells the handler the server runs in local mode (cfg.LocalMode),
+// where a masked value is shown only to an explicit token on a loopback Host.
+func (h *AuditHandler) SetLocalMode(enabled bool) { h.localMode = enabled }
 
 // SetPluginRegistry wires the plugin registry consulted when validating
 // requested audit types. Mirrors AgentHandler.SetPluginRegistry. nil-safe:
@@ -98,7 +104,7 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// so a client cannot inject a forged/foreign per-run credential (mirrors the
 	// DegradedReason overwrite below).
 	req.BrokerToken = ""
-	req.ContextWindow = 0 // §31: broker-injected at dispatch, never client-supplied
+	req.ContextWindow, req.ContextWindowSource = 0, "" // §31 / 0074 §5.1(c): broker-injected at dispatch, never client-supplied
 
 	// Reject a type that names no dispatchable agent BEFORE anything is
 	// persisted or probed. Dispatch silently skips an unresolvable type, so
@@ -225,6 +231,8 @@ func (h *AuditHandler) CachedAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.enrichProveResults(audit)
+	// Served like GET /api/audits/{id}: the merge record only under ?detail=full.
+	omitMergeDetail(audit, r.URL.Query().Get("detail"))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"cached": true,
 		"audit":  audit,
@@ -251,6 +259,11 @@ func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// 0096 follow-up: serve the effective coverage (triaged false positives
 	// left out); the persisted column stays the scan-time record.
 	withEffectiveOwaspCoverage(audit, h.lineageRepo)
+	// 0074 P2: select rows by provenance LAST, so every audit-level field
+	// above is computed over the full finding set and stays unchanged.
+	markOriginsRecorded(audit)
+	filterFindingsByProvenance(audit, r.URL.Query().Get("provenance"))
+	omitMergeDetail(audit, r.URL.Query().Get("detail"))
 	writeJSON(w, http.StatusOK, audit)
 }
 

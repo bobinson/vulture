@@ -112,5 +112,7 @@ magicrouter
 
 # local-only instruction files
 CLAUDE.local.md
+# private reference-repo pins for the CWE corpus tests
+agents/cwe/tests/corpus/cwe778_counts.local.json
 
 docs/features

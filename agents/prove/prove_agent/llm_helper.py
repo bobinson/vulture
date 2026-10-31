@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 
 from shared.llm.cooldown import cooldown_manager
 from shared.llm.provider import (
+    effective_context_window,
     estimate_cost,
-    get_context_window,
+    litellm_route_kwargs,
     resolve_model_for_litellm_with_fallback,
 )
 from shared.prompt import Mode, PromptSpec, RenderedPrompt, profile_for, render
@@ -233,13 +234,15 @@ def reset_token_usage() -> None:
     _session_usage = ProveTokenUsage()
 
 
-def _truncate_prompt(prompt: str, max_tokens: int) -> str:
+def _truncate_prompt(prompt: str, max_tokens: int, model: str | None = None) -> str:
     """Truncate prompt to fit within context window minus output budget.
 
     Uses a conservative chars-per-token estimate. Leaves room for the
-    system message (~50 tokens) and output tokens.
+    system message (~50 tokens) and output tokens. The window is the EFFECTIVE
+    one of the model actually called (feature 0074 AC36): the gateway clamp
+    applies behind a custom endpoint, as it does to every other budget.
     """
-    ctx_window = get_context_window()
+    ctx_window = effective_context_window(model).effective
     # Reserve: system message (~50 tokens) + output budget + 256 safety margin
     available = ctx_window - max_tokens - 50 - 256
     if available <= 0:
@@ -278,21 +281,16 @@ async def llm_json_call(
     model = _get_cached_model(model_preference)
 
     # Truncate prompt to fit context window
-    prompt = _truncate_prompt(prompt, max_tokens)
+    prompt = _truncate_prompt(prompt, max_tokens, model)
 
-    # For custom OpenAI-compatible endpoints (LM Studio, vLLM, Ollama),
-    # litellm needs api_key + api_base passed explicitly when using
-    # provider-prefixed models like "openai/gpt-oss-20b".
+    # Endpoint, credential and model name for THIS run: the broker on a broker
+    # run, else a custom OpenAI-compatible endpoint when one is configured.
+    # `model` itself stays the cooldown and usage key.
     base_kwargs: dict = {
-        "model": model,
+        **litellm_route_kwargs(model),
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
     }
-    custom_base = os.environ.get("OPENAI_BASE_URL", "")
-    if custom_base:
-        base_kwargs["api_base"] = custom_base
-        if not os.environ.get("OPENAI_API_KEY"):
-            base_kwargs["api_key"] = "not-needed"
 
     for attempt in range(_MAX_RETRIES):
         try:

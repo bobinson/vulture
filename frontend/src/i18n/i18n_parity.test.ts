@@ -5,6 +5,7 @@ import es from "./locales/es.json";
 import fr from "./locales/fr.json";
 import ja from "./locales/ja.json";
 import pt from "./locales/pt.json";
+import { ANCHOR_VOCABULARY } from "@/test/anchorVocabulary";
 
 /**
  * Feature 0091 P5 (RED) — locale parity.
@@ -113,6 +114,50 @@ describe("i18n 0091 aggregate + lineage keys", () => {
   it.each(Object.keys(LOCALES))("%s defines every 0091 key with a non-empty string", (name) => {
     const json = LOCALES[name];
     for (const key of REQUIRED_0091_KEYS) {
+      const value = key.split(".").reduce<unknown>((acc, part) => (acc as Json)?.[part], json);
+      expect(typeof value, `${name}.json is missing ${key}`).toBe("string");
+      expect((value as string).trim().length, `${name}.json has an empty ${key}`).toBeGreaterThan(0);
+    }
+  });
+});
+
+/**
+ * The 0074 surface: the tier-family provenance filter values and 0076's
+ * read-only anchor result (plan §5.6, T2.2, AC39). The en copy drawn in
+ * designs/0074-provenance-family.html is pinned in
+ * __tests__/provenanceFamilyLocaleKeys.0074.test.ts.
+ */
+const REQUIRED_0074_KEYS = [
+  "results.provenanceFamily.llm_family",
+  "results.provenanceFamily.both",
+  "results.provenanceFamily.bothNotRecorded",
+  "results.anchor.title",
+  // The status and range vocabularies come from the agent's export, so a
+  // status added in anchor.py fails here until every locale names it (#20).
+  ...ANCHOR_VOCABULARY.statuses.map((s) => `results.anchor.status.${s}`),
+  ...ANCHOR_VOCABULARY.claimed_line_ranges.map((r) => `results.anchor.range.${r}`),
+];
+
+// 0074 verification item 1b: the masked-value switch and its explanations.
+const REQUIRED_0074_REVEAL_KEYS = [
+  "toggle", "hint", "loading", "changed", "unavailable", "ambiguous", "unverifiable", "notPermitted", "error",
+].map((k) => `results.reveal.${k}`);
+
+describe("i18n 0074 masked-value reveal keys", () => {
+  it.each(Object.keys(LOCALES))("%s defines every reveal key with a non-empty string", (name) => {
+    const json = LOCALES[name as keyof typeof LOCALES] as Json;
+    for (const key of REQUIRED_0074_REVEAL_KEYS) {
+      const value = key.split(".").reduce<unknown>((acc, part) => (acc as Json)?.[part], json);
+      expect(typeof value, `${name}.json is missing ${key}`).toBe("string");
+      expect((value as string).trim().length, `${name}.json has an empty ${key}`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("i18n 0074 provenance-family + anchor keys", () => {
+  it.each(Object.keys(LOCALES))("%s defines every 0074 key with a non-empty string", (name) => {
+    const json = LOCALES[name];
+    for (const key of REQUIRED_0074_KEYS) {
       const value = key.split(".").reduce<unknown>((acc, part) => (acc as Json)?.[part], json);
       expect(typeof value, `${name}.json is missing ${key}`).toBe("string");
       expect((value as string).trim().length, `${name}.json has an empty ${key}`).toBeGreaterThan(0);

@@ -102,7 +102,7 @@ def test_real_sinks_are_not_diagnostic():
         "db.query(`SELECT * FROM t WHERE id = ${id}`)",
         "res.send(payload)",
         "fs.readFile(p, cb)",
-        "await hasuraRunSql(sql)",
+        "await gatewayRunSql(sql)",
         "const logger = makeLogger()",   # a definition, not a call
         "loggerFactory(config)",         # not logger.*
     ]:

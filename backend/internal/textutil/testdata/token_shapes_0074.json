@@ -1,0 +1,22 @@
+{
+  "_comment": "0074 verification item 1. Token shapes BOTH runtimes must mask in finding text (Python mask_secret_values is authoritative and masks more; Go MaskTokenShapes is the defence in depth for an older agent's merge text). Each case: text, and the raw substrings that must not survive. 'keep' cases must come back unchanged. All values are synthetic.",
+  "mask": [
+    {"name": "jwt", "text": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl here", "gone": ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJl"]},
+    {"name": "url userinfo", "text": "connects with postgres://admin:S3cr3tPassw0rdX9@db.internal:5432/app", "gone": ["S3cr3tPassw0rdX9"]},
+    {"name": "url empty user", "text": "redis://:Pa55w0rdSynthetic@cache:6379", "gone": ["Pa55w0rdSynthetic"]},
+    {"name": "google key", "text": "key AIzaSyD-synthetic0000000000000000000000 in config", "gone": ["AIzaSyD-synthetic0000000000000000000000"]},
+    {"name": "github token", "text": "ghp_0123456789abcdefABCDEF0123456789ab", "gone": ["ghp_0123456789abcdefABCDEF0123456789ab"]},
+    {"name": "slack token", "text": "xoxb-0123456789-synthetic-token", "gone": ["xoxb-0123456789-synthetic-token"]},
+    {"name": "aws key id", "text": "AKIA0123456789ABCDEF", "gone": ["AKIA0123456789ABCDEF"]},
+    {"name": "stripe", "text": "sk_live_0123456789abcdefSYNTH", "gone": ["sk_live_0123456789abcdefSYNTH"]},
+    {"name": "gitlab", "text": "glpat-0123456789abcdefSYNTH", "gone": ["glpat-0123456789abcdefSYNTH"]},
+    {"name": "sendgrid", "text": "SG.0123456789abcdefSYNTH.0123456789abcdefSYNTH", "gone": ["SG.0123456789abcdefSYNTH.0123456789abcdefSYNTH"]},
+    {"name": "pem body", "text": "the key\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\n-----END RSA PRIVATE KEY-----\nend", "gone": ["MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun"]}
+  ],
+  "keep": [
+    "The handler builds the SQL string by concatenation; use a parameterised query.",
+    "See https://example.com/docs/auth for the login flow.",
+    "-----BEGIN PUBLIC KEY----- is not a secret header",
+    "Calls skLearn-style helpers and eyJ prefixes alone."
+  ]
+}

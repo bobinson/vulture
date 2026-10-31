@@ -108,7 +108,7 @@ Environment:
   VULTURE_PORT             Backend port (default: from config.ini)
   VULTURE_DB_PATH          SQLite database path (default: /data/vulture.db)
   VULTURE_DB_DSN           PostgreSQL DSN (if set, uses Postgres instead of SQLite)
-  VULTURE_USE_LLM          Enable LLM analysis (true|false; default false = skills-only)
+  VULTURE_USE_LLM          Enable LLM analysis (on for true, 1, yes or on, any case; default off = skills-only)
   VULTURE_LLM_MODEL        LLM model name (e.g. gpt-4o, claude-sonnet, gemini-pro, qwen3:1.7b)
   OPENAI_API_KEY           API key for OpenAI / OpenAI-compatible LLM audits
   OPENAI_BASE_URL          Custom OpenAI-compatible endpoint (LM Studio, vLLM, proxies)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 type DockerClient interface {
 	Pull(ctx context.Context, image string) error
 	Inspect(ctx context.Context, image string) (bool, error)
+	Build(ctx context.Context, tag, contextDir string) error
 	Run(ctx context.Context, argv []string) (containerID string, err error)
 	Stop(ctx context.Context, name string, timeout time.Duration) error
 	Remove(ctx context.Context, name string) error
@@ -113,6 +115,14 @@ func (d *dockerExec) Inspect(ctx context.Context, image string) (bool, error) {
 	}
 	// Non-zero exit means image not present locally; that's not a hard error.
 	return false, nil
+}
+
+// Build builds contextDir/Dockerfile with contextDir as the build
+// context and tags the result `tag`.
+func (d *dockerExec) Build(ctx context.Context, tag, contextDir string) error {
+	dockerfile := filepath.Join(contextDir, "Dockerfile")
+	_, _, err := d.run(ctx, []string{"build", "-t", tag, "-f", dockerfile, contextDir})
+	return err
 }
 
 func (d *dockerExec) Run(ctx context.Context, argv []string) (string, error) {

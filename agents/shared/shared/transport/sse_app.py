@@ -5,6 +5,7 @@ import contextvars
 import inspect
 import logging
 import os
+import sys
 from collections.abc import AsyncGenerator, Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -14,14 +15,77 @@ from fastapi.responses import StreamingResponse
 
 from shared.cancellation import CancelToken, set_cancel_token
 from shared.lineage_context import set_lineage_checks_requested
-from shared.llm.broker import set_broker_task_type, set_broker_token, set_context_window
+from shared.llm.broker import (
+    set_broker_task_type,
+    set_broker_token,
+    set_context_window,
+    set_context_window_source,
+)
 from shared.models.audit_request import AuditRequest
 
 RunHandler = Callable[[str, str, dict, list[dict[str, Any]]], Generator[str, None, None]]
 
 _AGENT_TOKEN = os.environ.get("VULTURE_AGENT_TOKEN", "")
+AGENT_TOKEN_HEADER = "X-Vulture-Agent-Token"
+
+
+def agent_token_headers() -> dict[str, str]:
+    """Headers for an agent-to-agent ``/run`` call.
+
+    The receiving agent refuses ``/run`` without the shared token whenever
+    VULTURE_AGENT_TOKEN is set (``_verify_agent_token``), and the launcher sets
+    one on every start. Built from the same value the verifier reads, so the
+    two sides cannot drift.
+    """
+    return {AGENT_TOKEN_HEADER: _AGENT_TOKEN} if _AGENT_TOKEN else {}
 
 logger = logging.getLogger(__name__)
+
+# Marks the one handler ``configure_agent_logging`` attaches, so building the
+# app again (tests, reload) never stacks a second copy of every line.
+_AGENT_LOG_MARK = "_vulture_agent_log"
+
+
+class _StderrHandler(logging.StreamHandler):
+    """Writes to whatever ``sys.stderr`` is at emit time (as ``lastResort``
+    does), so a swapped or closed stream is never pinned at attach time."""
+
+    @property
+    def stream(self) -> Any:  # type: ignore[override]
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value: object) -> None:
+        return None
+
+
+def configure_agent_logging(*names: str) -> None:
+    """Route INFO+ from the named package loggers to stderr (feature 0074 AC7).
+
+    uvicorn's log config gives handlers to its own loggers only, so a
+    ``shared.*`` record found none and fell to ``logging.lastResort``, which is
+    WARNING-level: once-per-run INFO lines (``llm_window``, ``audit_start``)
+    never reached the agent log while the warnings did. The bare
+    ``%(message)s`` format keeps those visible lines byte-identical.
+    """
+    for name in dict.fromkeys(n for n in names if n):
+        _attach_agent_handler(logging.getLogger(name))
+
+
+def _attach_agent_handler(pkg_logger: logging.Logger) -> None:
+    if any(getattr(h, _AGENT_LOG_MARK, False) for h in pkg_logger.handlers):
+        return
+    handler = _StderrHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    setattr(handler, _AGENT_LOG_MARK, True)
+    pkg_logger.addHandler(handler)
+    if pkg_logger.level == logging.NOTSET:
+        pkg_logger.setLevel(logging.INFO)
+
+
+def _agent_package(run_handler: RunHandler) -> str:
+    """Top-level package of the agent's run handler (``cwe_agent``...)."""
+    return (getattr(run_handler, "__module__", None) or "").split(".")[0]
 
 
 def _int_env(name: str, default: int) -> int:
@@ -94,6 +158,10 @@ async def _cancellable_stream(
     # get_context_window prefers it over the local table (custom-gateway models
     # the agent doesn't know). None (broker off) → the agent resolves its own.
     ctx.run(set_context_window, getattr(req, "context_window", None))
+    # feature 0074 P1: the broker's window SOURCE, bound beside the window for
+    # publication only (the run's `llm_window` facts). Bound on every run, so a
+    # run without one never inherits a previous run's source.
+    ctx.run(set_context_window_source, getattr(req, "context_window_source", None))
     # feature 0091 §6.1: bind the backend's lineage evidence question. Ambient
     # for the same reason as the three above — `run_audit` has no parameter for
     # it and widening ten agent signatures to carry one dict from the request
@@ -142,8 +210,9 @@ def _verify_agent_token(
     """Verify the shared agent token on /run requests.
 
     When VULTURE_AGENT_TOKEN is set, requests without a matching
-    X-Vulture-Agent-Token header are rejected. When unset (local dev),
-    all requests are allowed.
+    X-Vulture-Agent-Token header are rejected. The native launcher always sets
+    one (``localdev.ensureAgentToken``); only an agent started by hand without
+    it allows every request.
     """
     if _AGENT_TOKEN and x_vulture_agent_token != _AGENT_TOKEN:
         raise HTTPException(status_code=403, detail="invalid or missing agent token")
@@ -167,6 +236,7 @@ def create_sse_app(
     Returns:
         Configured FastAPI application.
     """
+    configure_agent_logging("shared", _agent_package(run_handler))
     app = FastAPI(title=f"Vulture {agent_name} Agent")
 
     @app.get("/health")

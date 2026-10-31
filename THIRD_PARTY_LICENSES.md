@@ -209,20 +209,20 @@ runtime** (§6) ships a GPL-3.0 component on macOS.
 `release.yml` bundles a python-build-standalone (PBS) CPython 3.12 runtime into
 every native-install tarball (`runtime/python/`), so the components below are
 **redistributed in the release binaries** and must be attributed. Inventory
-verified 2026-06-24 against the pinned build `cpython-3.12.13+20260610`
-(SHA-matched to `scripts/pbs-shas-20260610.txt`).
+verified 2026-10-26 against the pinned build `cpython-3.12.15+20261021`
+(SHA-matched to `scripts/pbs-shas-20261021.txt`).
 
 | Component | Version | License | Where |
 |-----------|---------|---------|-------|
-| CPython | 3.12.13 | PSF License Agreement | the interpreter |
+| CPython | 3.12.15 | PSF License Agreement | the interpreter |
 | OpenSSL | 3.x | Apache-2.0 | `_ssl`, `_hashlib` |
 | SQLite | 3.x | public domain | `_sqlite3` |
-| zlib | 1.3.1 | zlib | `zlib` |
+| zlib | 1.3.2 | zlib | `zlib` |
 | xz / liblzma | 5.x | 0BSD / public domain | `_lzma` |
 | bzip2 | 1.0.8 | bzip2 (BSD-like) | `_bz2` |
 | libffi | — | MIT | `_ctypes` |
-| expat | 2.8.1 | MIT | `pyexpat` |
-| libmpdec | 2.5.x | BSD-2-Clause | `_decimal` |
+| expat | 2.9.0 | MIT | `pyexpat` |
+| libmpdec | 4.0.0 | BSD-2-Clause | `_decimal` |
 | ncurses | 6.5 | MIT/X11-style | `_curses` |
 | **libedit** | — | BSD-2-Clause | `readline` — **NOT** GNU readline (no GPL) |
 | Tcl/Tk | 9.0 | Tcl/Tk (BSD-style) | `_tkinter` (`libtcl9*.so`) |

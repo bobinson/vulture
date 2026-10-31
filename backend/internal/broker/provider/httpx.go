@@ -35,3 +35,11 @@ func pinnedClient(base *http.Client, cache *sync.Map, pinnedIP string) *http.Cli
 	c, _ := cache.LoadOrStore(pinnedIP, &pinned)
 	return c.(*http.Client)
 }
+
+// PinnedClient is the exported one-shot form of pinnedClient for a caller
+// outside the adapters that makes a single call and needs no keep-alive cache
+// (the broker's loaded-window probe, feature 0074 §5.2): the connection dials
+// the SSRF-validated pinnedIP, never a re-resolved host.
+func PinnedClient(base *http.Client, pinnedIP string) *http.Client {
+	return pinnedClient(base, &sync.Map{}, pinnedIP)
+}
