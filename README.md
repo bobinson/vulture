@@ -344,7 +344,7 @@ The frontend auto-discovers available agents via `GET /api/agents` and dynamical
 | `GET` | `/api/memories/search` | Semantic search across audit findings (pgvector) |
 | `GET` | `/api/memories/by-path` | Get findings for a specific codebase path |
 | `GET` | `/api/memories/:id/edges` | Get related memories via graph edges |
-| `POST` | `/api/filesystem/browse` | Browse local filesystem directories |
+| `GET` | `/api/filesystem/browse` | Browse server directories (member or admin; refused in centralized mode without `VULTURE_SOURCE_ROOT`, and on a read-only server) |
 | `GET` | `/health` | Health check |
 
 ### SSE Event Types

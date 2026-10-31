@@ -148,44 +148,64 @@ func extractAuditIDFromPath(path string) string {
 	return path
 }
 
-// writeRoles are the principal roles permitted to perform state-changing
-// requests. "apikey" is included deliberately: API-key principals are minted
-// with that synthetic role (see Require), keys can only be created by an admin,
-// and they are the documented Mode-D / CI write credential
-// (`vulture scan --api-key ...`). Excluding it 403s every CI client.
-var writeRoles = map[string]bool{"member": true, "admin": true, "apikey": true}
+// isWriteRole reports whether a principal role may perform state-changing
+// requests: a human writer (member, admin) or "apikey". "apikey" is included
+// deliberately: API-key principals are minted with that synthetic role (see
+// Require), keys can only be created by an admin, and they are the documented
+// Mode-D / CI write credential (`vulture scan --api-key ...`). Excluding it
+// 403s every CI client.
+func isWriteRole(role string) bool { return humanWriter(role) || role == "apikey" }
 
-// RequireWrite gates only state-changing methods so combined GET+POST handlers
-// (e.g. /api/audits) keep serving reads to viewers (0065 §H1). Read methods
-// pass straight through; writes require a role in writeRoles. Must be applied
-// inside authMW.Require so getUserFromContext sees the DB-fresh principal.
-func RequireWrite(next http.HandlerFunc) http.HandlerFunc {
+// IsSafeMethod reports whether m is a read-only HTTP method: GET, HEAD or
+// OPTIONS, matched exactly as net/http spells them.
+func IsSafeMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
+
+// requireRoleWhere is the one role gate the Require* wrappers share: it
+// answers 403 with msg unless the request's principal has a role that
+// allowed admits. Must be applied inside authMW.Require so
+// getUserFromContext sees the DB-fresh principal.
+func requireRoleWhere(allowed func(string) bool, msg string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
-			next(w, r)
-			return
-		}
-		u := getUserFromContext(r)
-		if u == nil || !writeRoles[u.Role] {
-			writeError(w, http.StatusForbidden, "write access requires member, admin, or api-key credentials")
+		if u := getUserFromContext(r); u == nil || !allowed(u.Role) {
+			writeError(w, http.StatusForbidden, msg)
 			return
 		}
 		next(w, r)
 	}
 }
 
-// RequireRole gates an entire handler to a specific role (for /api/admin/*).
-// Must be applied inside authMW.Require so getUserFromContext sees the
-// DB-fresh principal. 0065 §H7.
-func RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
+// RequireWrite gates only state-changing methods so combined GET+POST handlers
+// (e.g. /api/audits) keep serving reads to viewers (0065 §H1). Safe methods
+// pass straight through; writes require a role isWriteRole admits. Must be
+// applied inside authMW.Require.
+func RequireWrite(next http.HandlerFunc) http.HandlerFunc {
+	gated := requireRoleWhere(isWriteRole, "write access requires member, admin, or api-key credentials", next)
 	return func(w http.ResponseWriter, r *http.Request) {
-		u := getUserFromContext(r)
-		if u == nil || u.Role != role {
-			writeError(w, http.StatusForbidden, "requires "+role+" role")
+		if IsSafeMethod(r.Method) {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		gated(w, r)
 	}
+}
+
+// RequireRole gates an entire handler to a specific role (for /api/admin/*).
+// Must be applied inside authMW.Require. 0065 §H7.
+func RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
+	return requireRoleWhere(func(r string) bool { return r == role }, "requires "+role+" role", next)
+}
+
+// RequireHumanWriter admits only human writers (member or admin), on EVERY
+// method, to a route that viewers and API keys have no use for, such as
+// folder browse (0102). Must be applied inside authMW.Require.
+func RequireHumanWriter(next http.HandlerFunc) http.HandlerFunc {
+	return requireRoleWhere(humanWriter, "requires member or admin role", next)
 }
 
 func getUserFromContext(r *http.Request) *model.User {

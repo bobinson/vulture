@@ -216,10 +216,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	// 0071: POST /api/audits dispatches the run in the background. Without this
 	// wiring an audit is created and never runs unless someone opens its stream.
 	auditH.SetDispatcher(streamH)
-	fsH := handler.NewFilesystemHandler()
-	// 0036 Phase 3 — confine filesystem browse to cfg.SourceRoot when
-	// set. Empty SourceRoot = legacy denylist-only behaviour.
-	fsH.SetSourceRoot(cfg.SourceRoot)
+	// 0102: browse follows the server's local-path policy (refused when it
+	// is disabled, confined to cfg.SourceRoot when one is set).
+	fsH := handler.NewFilesystemHandler(cfg.LocalSources())
 
 	mux := http.NewServeMux()
 	mux.Handle("/health", healthH)
@@ -655,7 +654,9 @@ func registerAuthRoutes(
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
 	mux.HandleFunc("/api/llm/health", authMW.Require(llmHealthH.ServeHTTP))
-	mux.HandleFunc("/api/filesystem/browse", authMW.Require(ReadOnlyGuard(readOnly, fsH.Browse)))
+	// 0102: only human writers browse; viewers and API keys have no browse
+	// consumer. The handler itself refuses when local paths are disabled.
+	mux.HandleFunc("/api/filesystem/browse", authMW.Require(handler.RequireHumanWriter(ReadOnlyGuard(readOnly, fsH.Browse))))
 
 	// Feature 0045: finding label endpoint (writes audit_memories.user_label).
 	// SH2 rate-limit: 60 POST/min/user via RateLimitByKey.

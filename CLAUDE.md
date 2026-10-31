@@ -292,7 +292,7 @@ To add a new audit type (e.g., GDPR):
 | GET | `/api/memories/search` | Semantic search (pgvector) |
 | GET | `/api/memories/by-path` | Get findings for a codebase path |
 | GET | `/api/memories/:id/edges` | Get related memories (graph) |
-| POST | `/api/filesystem/browse` | Browse local filesystem |
+| GET | `/api/filesystem/browse` | Browse server directories (member or admin; follows `VULTURE_SOURCE_ROOT`) |
 | GET | `/health` | Health check |
 
 ## Memory System
@@ -336,12 +336,12 @@ VULTURE_LINEAGE_KEY=target  # `target` (default) or `path`. What counts as "the 
 VULTURE_FINDING_IDENTITY=observe  # `observe` (default) / `off` / `enforce`. Whether a finding is stamped with `fingerprint_v2`, the identity keyed on check_id and a root-canonical path so it survives an LLM rephrasing and a mount change. `enforce` also swaps `fingerprint` itself and is irreversible; `off` is the rollback
 VULTURE_MEMORY_SYNC=true  # Propagate every lineage status transition onto `audit_memories.remediation_status` (open/in_progress/regression/unconfirmed -> `open`; fixed/resolved -> `resolved`; false_positive and accepted_risk map to themselves).
 
-# Security hardening — opt-in; defaults preserve current behavior
+# Security hardening — each entry states its default. Not every default preserves older behavior: some now refuse what an older release allowed
 VULTURE_TRUSTED_PROXIES=  # Comma CIDR/IP list of proxies allowed to set X-Forwarded-For. Unset = trust the direct peer only.
 VULTURE_LOGIN_LOCKOUT_MAX=5  # Failed logins per (email,IP) before the escalating (capped) delay engages; a hard ceiling at 2x returns 429. Non-positive value falls back to 5
 VULTURE_LOGIN_LOCKOUT_WINDOW_SEC=900  # Sliding window (seconds) for the login throttle (default 900 = 15 min). Non-positive value falls back to 900
 VULTURE_ALLOW_OPEN_REGISTRATION=  # Allow public POST /api/auth/register. Default: true when VULTURE_LOCAL_MODE is set, false otherwise. When false, provision users via admin-only POST /api/admin/users
-VULTURE_SOURCE_ROOT=  # Confines local-path (Type=local) source ingest to this directory (symlinked parents resolved so they cannot escape). In centralized mode (VULTURE_LOCAL_MODE unset) local ingest is REJECTED unless this is set
+VULTURE_SOURCE_ROOT=  # Confines server-side local paths to this directory: local-path (Type=local) source ingest and the folder browser (GET /api/filesystem/browse); symlinked parents are resolved so they cannot escape. In centralized mode (VULTURE_LOCAL_MODE unset) both are REFUSED unless this is set, and a read-only server refuses both whatever its value. Browse also requires a member or admin, and every outside path gets the same refusal. Use a dedicated directory, never the checkout, named as the backend sees it: e.g. /srv/vulture/sources for a backend on the host; under docker compose the backend sees host files only at /mnt/source (the VULTURE_SOURCE_DIR bind mount, whose default ./ is the checkout), so set /mnt/source and point VULTURE_SOURCE_DIR at the dedicated directory. Browse refuses denylisted system trees (/var, /usr, /etc, ...) even inside the root
 VULTURE_GIT_HOST_ALLOWLIST=  # Comma list of git hosts permitted even if they resolve to an internal IP (SSRF guard). Empty = public hosts only; internal targets blocked
 VULTURE_GIT_ALLOW_REDIRECTS=false  # Allow git to follow HTTP redirects during clone. Default off (http.followRedirects=false) blocks redirect-based SSRF; enable only for trusted hosts
 VULTURE_GIT_SSH_STRICT=accept-new  # SSH StrictHostKeyChecking mode for key clones (TOFU on first contact). Requires OpenSSH >= 7.6 (startup probe falls back and warns otherwise)

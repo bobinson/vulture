@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vulture/backend/internal/pathutil"
 	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/iniutil"
 )
@@ -44,11 +45,16 @@ type Config struct {
 	// it on outbound calls and agents reject requests without a
 	// matching Authorization header. 0036 Phase 3.
 	AgentToken string `json:"agent_token"`
-	// SourceRoot, when set, constrains the filesystem-browse
-	// endpoint to paths whose canonical (EvalSymlinks) form is
-	// inside this directory. Empty = legacy denylist-only behaviour
-	// (acceptable for dev laptops; set to e.g. /var/vulture/sources
-	// for Mode B). 0036 Phase 3.
+	// SourceRoot (VULTURE_SOURCE_ROOT) confines every server-side local
+	// path, folder browse and local-path ingest alike, to paths whose
+	// canonical (EvalSymlinks) form is inside this directory. In
+	// centralized mode it is also what permits them: with it empty, both
+	// are refused, and a read-only server refuses them whatever the root
+	// (see LocalSources). Empty in local mode leaves browse limited by
+	// the system denylist only (dev laptops). Point it at a dedicated
+	// directory such as /srv/vulture/sources: browse refuses anything
+	// under a denylisted tree (/var, /usr, /etc, ...) even inside the
+	// root. 0036 Phase 3; 0102.
 	SourceRoot string `json:"source_root"`
 	// TrustedProxies is the list of proxy IPs/CIDRs whose
 	// X-Forwarded-For header is honored when deriving the client IP.
@@ -70,6 +76,12 @@ type Config struct {
 	// off by default (Mode A stays zero-config); every field is opt-in.
 	Broker BrokerConfig           `json:"broker"`
 	Agents map[string]AgentConfig `json:"agents"`
+}
+
+// LocalSources is the server's local-path policy, derived from SourceRoot,
+// LocalMode and ReadOnly in the one place that derives it.
+func (c *Config) LocalSources() pathutil.LocalSources {
+	return pathutil.NewLocalSources(c.SourceRoot, c.LocalMode, c.ReadOnly)
 }
 
 // BrokerConfig is the feature 0064 LLM-broker configuration block. All

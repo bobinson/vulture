@@ -133,9 +133,14 @@ VULTURE_EMBEDDING_URL=https://api.openai.com/v1
 # rate-limit / login-throttle bucket. Verify against `docker compose logs
 # backend` (the logged remote= address) and tighten to the narrowest CIDR.
 VULTURE_TRUSTED_PROXIES=172.16.0.0/12
-# Local-path (Type=local) ingest is rejected in centralized mode unless a
-# confinement root is set. Most Mode B servers scan git URLs and don't need it:
-# VULTURE_SOURCE_ROOT=/srv/vulture/allowed-sources
+# Server-side local paths (Type=local ingest and the folder browser) are
+# refused in centralized mode unless a confinement root is set. Most Mode B
+# servers scan git URLs and don't need it. If you do, use a dedicated directory
+# (never the checkout, which holds .env, nor the clone temp dir) as
+# VULTURE_SOURCE_DIR above: the backend container sees host files only at
+# /mnt/source, its mount, so the root is that container path (a host path
+# such as /srv/vulture/allowed-sources would refuse every local path):
+# VULTURE_SOURCE_ROOT=/mnt/source
 # Public self-registration is OFF by default in Mode B; provision users via the
 # admin-only POST /api/admin/users (see Step 8 for first-admin bootstrap).
 # VULTURE_ALLOW_OPEN_REGISTRATION=false
@@ -154,13 +159,13 @@ sed -i "s/VULTURE_WEBHOOK_SECRET=CHANGE_ME/VULTURE_WEBHOOK_SECRET=$(openssl rand
 
 ### Security hardening variables (feature 0065)
 
-These controls are opt-in and default to the pre-0065 behavior, but three of them materially affect a Mode B deployment:
+Not every default here preserves older behavior: some now refuse what an older release allowed, such as local paths in centralized mode without `VULTURE_SOURCE_ROOT`. Three of these controls materially affect a Mode B deployment:
 
 | Variable | Mode B guidance |
 |---|---|
 | `VULTURE_TRUSTED_PROXIES` | **Set this.** With TLS terminated by the Step 7 reverse proxy, the backend sees the proxy as the client. Unless you list the proxy's source address (CIDR/IP), `X-Forwarded-For` is ignored and per-IP rate limiting **and** the login throttle key on the proxy address — so every client shares one bucket. Tighten to the narrowest range that covers your proxy. |
 | `VULTURE_ALLOW_OPEN_REGISTRATION` | Defaults to **false** in Mode B (`VULTURE_LOCAL_MODE` unset), so `POST /api/auth/register` returns 403. Create users with the admin-only `POST /api/admin/users`; see Step 8 for first-admin bootstrap. Set to `true` only if you intend a shared, self-service workspace. |
-| `VULTURE_SOURCE_ROOT` | Only needed if you ingest **local paths** (`type=local`) on the server; centralized mode rejects local ingest unless this confinement root is set. Git-URL scans (the usual CI flow) don't need it. |
+| `VULTURE_SOURCE_ROOT` | Only needed if you ingest **local paths** (`type=local`) or use the **folder browser** on the server. Centralized mode refuses both unless this confinement root is set; browse then answers 403 `local paths are disabled on this server: …` for every path. A read-only (Mode C) server refuses both whatever the root: browse gives a member or admin that same 403, although its advice to set the root cannot help there, and ingest is refused as a write before the path is looked at, with 503 `read-only mode: …` (a viewer gets 403 `write access requires member, admin, or api-key credentials` instead). With a root set, browse is open to members and admins only (viewers and API keys get 403 `requires member or admin role`), is confined to the root, and gives every outside path the same refusal, so it reveals nothing about the rest of the filesystem. Point the root at a dedicated directory: never the checkout (it holds `.env`), never the clone temp dir, and never one containing automount or network mounts. The root is a path as the backend sees it. Under `docker compose` the backend sees host files only through the `VULTURE_SOURCE_DIR` bind mount at `/mnt/source`, so set `VULTURE_SOURCE_ROOT=/mnt/source` and point `VULTURE_SOURCE_DIR` at the dedicated host directory (its default, `./`, is the checkout). A host path such as `/srv/vulture/allowed-sources` fits only a backend that runs on the host; under compose it refuses every local path. Browse also refuses the denylisted system trees (`/var`, `/usr`, `/etc`, …) even inside the root, so do not place the root under them. Git-URL scans (the usual CI flow) don't need it. |
 
 Egress controls (all default to blocking internal/private targets, which is correct for a public-facing server):
 

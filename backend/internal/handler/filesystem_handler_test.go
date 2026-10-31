@@ -7,7 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/vulture/backend/internal/pathutil"
 )
+
+// localDev is local mode with no source root: browse is limited only by the
+// system denylist, the behaviour these tests exercise.
+var localDev = pathutil.NewLocalSources("", true, false)
 
 func TestFilesystemHandlerBrowse(t *testing.T) {
 	// Create a temp directory with some files
@@ -15,7 +21,7 @@ func TestFilesystemHandlerBrowse(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "subdir"), 0755)
 	os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello"), 0644)
 
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("GET", "/api/filesystem/browse?path="+dir, nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
@@ -42,7 +48,7 @@ func TestFilesystemHandlerBrowse(t *testing.T) {
 }
 
 func TestFilesystemHandlerBrowseDefaultPath(t *testing.T) {
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("GET", "/api/filesystem/browse", nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
@@ -58,7 +64,7 @@ func TestFilesystemHandlerBrowseHiddenFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".hidden"), []byte("secret"), 0644)
 	os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("hello"), 0644)
 
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("GET", "/api/filesystem/browse?path="+dir, nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
@@ -79,7 +85,7 @@ func TestFilesystemHandlerBrowseHiddenFiles(t *testing.T) {
 }
 
 func TestFilesystemHandlerBrowseNotFound(t *testing.T) {
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("GET", "/api/filesystem/browse?path=/nonexistent_path_xyz", nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
@@ -93,7 +99,7 @@ func TestFilesystemHandlerBrowseNotDir(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "file.txt")
 	os.WriteFile(f, []byte("hello"), 0644)
 
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("GET", "/api/filesystem/browse?path="+f, nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
@@ -104,7 +110,7 @@ func TestFilesystemHandlerBrowseNotDir(t *testing.T) {
 }
 
 func TestFilesystemHandlerBrowseBlockedPath(t *testing.T) {
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("GET", "/api/filesystem/browse?path=/proc", nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
@@ -115,7 +121,7 @@ func TestFilesystemHandlerBrowseBlockedPath(t *testing.T) {
 }
 
 func TestFilesystemHandlerBrowseBlockedSubpath(t *testing.T) {
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("GET", "/api/filesystem/browse?path=/sys/kernel", nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
@@ -126,7 +132,7 @@ func TestFilesystemHandlerBrowseBlockedSubpath(t *testing.T) {
 }
 
 func TestFilesystemHandlerBrowseMethodNotAllowed(t *testing.T) {
-	h := NewFilesystemHandler()
+	h := NewFilesystemHandler(localDev)
 	req := httptest.NewRequest("POST", "/api/filesystem/browse", nil)
 	w := httptest.NewRecorder()
 	h.Browse(w, req)
