@@ -77,11 +77,12 @@ services:
       # some now refuse what an older release allowed. With
       # VULTURE_LOCAL_MODE=false (this file's default) and VULTURE_SOURCE_ROOT
       # empty, local-path ingest (since 0065) and the folder browser (since
-      # 0102) are both refused. The backend sees host files only at
-      # /mnt/source, the VULTURE_SOURCE_DIR mount under volumes, so a root
-      # set here is /mnt/source, not a host path, and VULTURE_SOURCE_DIR must
-      # then be a dedicated directory, not the default ./ (the checkout,
-      # which holds .env).
+      # 0102) are both refused, and (since 0102) an audit of a stored local
+      # source the policy refuses fails before any agent runs. The backend
+      # sees host files only at /mnt/source, the VULTURE_SOURCE_DIR mount
+      # under volumes, so a root set here is /mnt/source, not a host path,
+      # and VULTURE_SOURCE_DIR must then be a dedicated directory, not the
+      # default ./ (the checkout, which holds .env).
       - VULTURE_TRUSTED_PROXIES=${VULTURE_TRUSTED_PROXIES:-}
       - VULTURE_ALLOW_OPEN_REGISTRATION=${VULTURE_ALLOW_OPEN_REGISTRATION:-}
       - VULTURE_SOURCE_ROOT=${VULTURE_SOURCE_ROOT:-}

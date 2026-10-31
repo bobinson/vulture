@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -131,7 +133,8 @@ func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string
 	// symlinked parent cannot escape; empty sourceRoot is a no-op (legacy
 	// denylist-only behaviour).
 	if _, err := pathutil.EnsureWithinRoot(sourceRoot, absPath); err != nil {
-		return "", http.StatusForbidden, "access denied: path outside source root"
+		code, msg := confinementRefusal(err)
+		return "", code, msg
 	}
 	if isBlockedPath(absPath) {
 		return "", http.StatusForbidden, "access denied"
@@ -144,6 +147,17 @@ func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string
 		return "", http.StatusBadRequest, "path is not a directory"
 	}
 	return absPath, 0, ""
+}
+
+// confinementRefusal answers a path confinement refused: a root fault is the
+// server's (500, logged with its cause at ERROR), and every other refusal is
+// the one 403 an outside path gets. Neither text names a path or the root.
+func confinementRefusal(err error) (int, string) {
+	if errors.Is(err, pathutil.ErrRootUnavailable) {
+		slog.Error("source_root_unavailable", "err", err)
+		return http.StatusInternalServerError, pathutil.ErrRootUnavailable.Error()
+	}
+	return http.StatusForbidden, "access denied: path outside source root"
 }
 
 // containsParentDirSegment returns true if any path component is

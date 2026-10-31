@@ -3,17 +3,20 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/pathutil"
 	"github.com/vulture/backend/internal/repository"
+	"github.com/vulture/backend/internal/textutil"
 	"github.com/vulture/backend/pkg/fileutil"
 	"github.com/vulture/backend/pkg/gitutil"
 )
@@ -23,14 +26,87 @@ type SourceService interface {
 	Get(id string) (*model.Source, error)
 }
 
-type sourceService struct {
-	repo       repository.AuditRepository
-	sourceRoot string
-	localMode  bool
+// SourcePolicy is what the source service may ingest. Local is the server's
+// local-path policy (config.Config.LocalSources).
+type SourcePolicy struct {
+	Local pathutil.LocalSources
 }
 
+type sourceService struct {
+	repo   repository.AuditRepository
+	policy SourcePolicy
+}
+
+// NewSourceService builds the policy from a source root and the local-mode
+// flag (never read-only). It exists for tests; the server builds its policy
+// from config and calls NewSourceServiceWithPolicy.
 func NewSourceService(repo repository.AuditRepository, sourceRoot string, localMode bool) SourceService {
-	return &sourceService{repo: repo, sourceRoot: sourceRoot, localMode: localMode}
+	return NewSourceServiceWithPolicy(repo, SourcePolicy{Local: pathutil.NewLocalSources(sourceRoot, localMode, false)})
+}
+
+// NewSourceServiceWithPolicy returns a source service that ingests under p.
+func NewSourceServiceWithPolicy(repo repository.AuditRepository, p SourcePolicy) SourceService {
+	return &sourceService{repo: repo, policy: p}
+}
+
+// errLocalPathNotPermitted is the one refusal a confined server gives for a
+// path it will not describe: outside the root, unresolvable, or of the wrong
+// shape. It is byte-identical for all of them, so it reveals nothing.
+var errLocalPathNotPermitted = errors.New("path not permitted: must be an existing directory inside the source root")
+
+// localPathErrors maps a local-path refusal to its client text. The first
+// matching row wins, so a confinement refusal is never reported by a cause it
+// happens to carry. Only the rows after it name the path: they are reached
+// only inside the root or in local mode, where the caller may see it.
+var localPathErrors = []struct {
+	class error
+	text  func(path string) error
+}{
+	{pathutil.ErrLocalSourcesDisabled, func(string) error { return pathutil.ErrLocalSourcesDisabled }},
+	{pathutil.ErrNotPermitted, func(string) error { return errLocalPathNotPermitted }},
+	{fs.ErrNotExist, func(p string) error { return fmt.Errorf("path does not exist: %s", p) }},
+	{fs.ErrPermission, func(p string) error { return fmt.Errorf("path is not readable by the server: %s", p) }},
+	{pathutil.ErrNotDir, func(p string) error { return fmt.Errorf("path is not a directory: %s", p) }},
+}
+
+// localPathError is the client error for a refused local path. An
+// unrecognised failure gets the uniform refusal when confined, and its cause
+// in local mode.
+func localPathError(path string, err error, confined bool) error {
+	for _, row := range localPathErrors {
+		if errors.Is(err, row.class) {
+			return row.text(path)
+		}
+	}
+	if confined {
+		return errLocalPathNotPermitted
+	}
+	return fmt.Errorf("validate path: %w", err)
+}
+
+// maxLoggedErrBytes bounds the cause in a local_path_refused line: os.Stat's
+// error repeats the whole path, which a request may make 1 MiB long.
+const maxLoggedErrBytes = 2048
+
+// checkLocalPath decides a local ingest under the policy before anything else
+// touches the path: a disabled policy refuses with no filesystem access, and a
+// root confines the path before it is stat'd. A root fault is the server's,
+// not the path's: its cause is logged at ERROR and the caller gets only
+// ErrRootUnavailable. Any other refusal is logged with the path and its cause
+// truncated, and returned as client text by localPathError.
+func (s *sourceService) checkLocalPath(path string) error {
+	err := s.policy.Local.ResolveDir(path)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pathutil.ErrRootUnavailable) {
+		slog.Error("source_root_unavailable", "err", err)
+		return pathutil.ErrRootUnavailable
+	}
+	cause := err.Error()
+	slog.Warn("local_path_refused", "path", fmt.Sprintf("%.256s", path), "bytes", len(path),
+		"err", textutil.CutAtRune(cause, maxLoggedErrBytes), "err_bytes", len(cause))
+	return localPathError(path, err, s.policy.Local.Root != "")
 }
 
 // runIDRe constrains run_id to a safe, filesystem-legal token (0065 §1.1,
@@ -45,17 +121,6 @@ func validateRunID(runID string) error {
 		return fmt.Errorf("run_id %q must match [A-Za-z0-9_-]{1,64}", runID)
 	}
 	return pathutil.RejectTraversal(runID) // belt-and-suspenders
-}
-
-func ensureWithin(base, target string) error {
-	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(target))
-	if err != nil {
-		return fmt.Errorf("path containment: %w", err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("run dir %q escapes base %q", target, base)
-	}
-	return nil
 }
 
 func (s *sourceService) Get(id string) (*model.Source, error) {
@@ -95,20 +160,11 @@ func (s *sourceService) ingestLocal(ctx context.Context, req *model.SourceReques
 	if req.Path == "" {
 		return nil, fmt.Errorf("path is required for local source")
 	}
-	info, err := os.Stat(req.Path)
-	if err != nil {
-		return nil, fmt.Errorf("validate path: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("path is not a directory: %s", req.Path)
-	}
-	// 0065 §1.4 (F12): confine local ingest to the configured source root.
-	// path is stat'd first, so it exists — no lexical-fallback gap here.
-	if s.sourceRoot == "" && !s.localMode {
-		return nil, fmt.Errorf("local source ingest requires VULTURE_SOURCE_ROOT in centralized mode")
-	}
-	if _, err := pathutil.EnsureWithinRoot(s.sourceRoot, req.Path); err != nil {
-		return nil, fmt.Errorf("path not permitted: %w", err)
+	// 0102: the local-path policy decides before anything below reads the
+	// path. The request spelling is kept as the stored path (target identity
+	// and source reuse key on it); only its acceptance depends on the check.
+	if err := s.checkLocalPath(req.Path); err != nil {
+		return nil, err
 	}
 
 	// Capture git metadata if available
@@ -188,8 +244,10 @@ func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest)
 	id := generateID(req.URL)
 	baseDir := filepath.Join(os.TempDir(), "vulture-sources")
 	destPath := SourceRunDir(baseDir, id, req.RunID)
-	if err := ensureWithin(filepath.Join(baseDir, id), destPath); err != nil {
-		return nil, err
+	// Belt and braces behind validateRunID: the run dir must stay under its
+	// source's clone dir.
+	if !pathutil.Within(filepath.Join(baseDir, id), destPath) {
+		return nil, errors.New("run dir escapes its source directory")
 	}
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)

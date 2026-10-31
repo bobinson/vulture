@@ -173,7 +173,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		}()
 	}
 
-	sourceSvc := service.NewSourceService(repo, cfg.SourceRoot, cfg.LocalMode)
+	// 0102: local ingest follows the server's local-path policy, the same
+	// value browse and dispatch use.
+	sourceSvc := service.NewSourceServiceWithPolicy(repo, service.SourcePolicy{Local: cfg.LocalSources()})
 	auditSvc := service.NewAuditService(repo)
 	proxyService := service.NewAgentProxyService(broker)
 	// Feature 0049: stream service consults the plugin registry via
@@ -200,6 +202,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	auditH.SetLocalMode(cfg.LocalMode) // who may receive masked values (0074 item 1b)
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
 	streamH.SetBrokerRevoker(broker) // 0064 §6/M3: revoke run tokens at terminal state (no-op when off)
+	// 0102: a stored local source is re-checked against the same policy before
+	// dispatch, so a row the policy now refuses is never scanned.
+	streamH.SetLocalSourcePolicy(cfg.LocalSources())
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
 	// G1: surface enabled registry plugins (e.g. semgrep) in /api/agents so the
@@ -219,6 +224,10 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	// 0102: browse follows the server's local-path policy (refused when it
 	// is disabled, confined to cfg.SourceRoot when one is set).
 	fsH := handler.NewFilesystemHandler(cfg.LocalSources())
+	// 0102: a source root that ingest, browse and dispatch cannot use is
+	// named once here, by its setting; each request still fails closed on it.
+	// The check is bounded, so a root on a hung mount cannot hold up start.
+	logSourceRootFault(cfg.LocalSources().CheckRoot, sourceRootProbeTimeout)
 
 	mux := http.NewServeMux()
 	mux.Handle("/health", healthH)

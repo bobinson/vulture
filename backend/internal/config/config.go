@@ -46,15 +46,17 @@ type Config struct {
 	// matching Authorization header. 0036 Phase 3.
 	AgentToken string `json:"agent_token"`
 	// SourceRoot (VULTURE_SOURCE_ROOT) confines every server-side local
-	// path, folder browse and local-path ingest alike, to paths whose
-	// canonical (EvalSymlinks) form is inside this directory. In
-	// centralized mode it is also what permits them: with it empty, both
-	// are refused, and a read-only server refuses them whatever the root
-	// (see LocalSources). Empty in local mode leaves browse limited by
-	// the system denylist only (dev laptops). Point it at a dedicated
-	// directory such as /srv/vulture/sources: browse refuses anything
-	// under a denylisted tree (/var, /usr, /etc, ...) even inside the
-	// root. 0036 Phase 3; 0102.
+	// path (folder browse, local-path ingest, and the dispatch of a stored
+	// local source) to paths spelled under this directory whose canonical
+	// (EvalSymlinks) form is inside it. A confined path must be absolute,
+	// without "..", and at most 4096 bytes. In centralized mode it is also
+	// what permits them: with it empty, all three are refused, and a
+	// read-only server refuses them whatever the root (see LocalSources).
+	// Empty in local mode leaves browse limited by the system denylist
+	// only (dev laptops). Point it at a dedicated directory such as
+	// /srv/vulture/sources: browse refuses anything under a denylisted
+	// tree (/var, /usr, /etc, ...) even inside the root. 0036 Phase 3;
+	// 0102.
 	SourceRoot string `json:"source_root"`
 	// TrustedProxies is the list of proxy IPs/CIDRs whose
 	// X-Forwarded-For header is honored when deriving the client IP.

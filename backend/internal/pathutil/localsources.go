@@ -40,3 +40,39 @@ func (p LocalSources) Allow() error {
 	}
 	return nil
 }
+
+// ResolveDir answers an ingest: nil when the policy allows local paths and
+// path is an existing directory, confined to Root when one is set. A refusal
+// of the policy itself is ErrLocalSourcesDisabled, and nothing is looked at;
+// a Root the server cannot use is ErrRootUnavailable.
+func (p LocalSources) ResolveDir(path string) error {
+	if err := p.Allow(); err != nil {
+		return err
+	}
+	return ResolveDirWithinRoot(p.Root, path)
+}
+
+// Recheck answers a dispatch of a stored path: nil when the policy allows
+// local paths and, with a Root, the path is confined to it (ErrNotPermitted
+// otherwise, and also ErrRootUnavailable when the Root itself cannot be
+// used). The path need not exist any more; dispatch already handles a
+// missing tree. In local mode with no Root it is a no-op.
+func (p LocalSources) Recheck(path string) error {
+	if err := p.Allow(); err != nil || p.Root == "" {
+		return err
+	}
+	_, err := EnsureWithinRoot(p.Root, path)
+	return err
+}
+
+// CheckRoot returns the root fault (ErrRootUnavailable) every confined path
+// would meet now, or nil. It is nil when the policy confines nothing
+// (disabled, or no Root), so it can run once at startup to name a broken
+// root before any request is refused for it.
+func (p LocalSources) CheckRoot() error {
+	if p.Allow() != nil || p.Root == "" {
+		return nil
+	}
+	_, _, err := resolveRoot(p.Root)
+	return err
+}
