@@ -48,6 +48,9 @@
 # The release's Trivy installer and its committed tarball SHA-256 pins.
 /scripts/install-trivy.sh                         @bobinson
 /scripts/trivy-shas-*.txt                         @bobinson
+# The release CVE gate and the waiver-file check it shares with its tests.
+/scripts/release-cve-gate.sh                      @bobinson
+/scripts/lib/trivyignore.sh                       @bobinson
 
 # Supply-chain hardening (feature 0056): the CI lockfile gate, the dispatch-only
 # relock + security-digest workflows, the pinned-uv composite action, the uv-pin

@@ -73,6 +73,14 @@ jobs:
         run: sh scripts/tests/test_workflow_supply_chain.sh
       - name: pinned Trivy installer tests (0102)
         run: sh scripts/tests/test_install_trivy.sh
+      - name: release CVE gate wiring and waiver-file guards (0102)
+        run: sh scripts/tests/test_release_cve_gate_wiring.sh
+      - name: release CVE gate behaviour tests (0102)
+        run: sh scripts/tests/test_release_cve_gate.sh
+      - name: release CVE gate caller-isolation tests (0102)
+        run: sh scripts/tests/test_release_cve_gate_isolation.sh
+      - name: release CVE gate trivy-argument tests (0102)
+        run: sh scripts/tests/test_release_cve_gate_trivy_arg.sh
       - name: release preflight tests
         run: sh scripts/tests/test_release_preflight.sh
       - name: smoke-scan contract tests

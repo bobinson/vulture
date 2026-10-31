@@ -2,8 +2,10 @@ name: release
 
 # Feature 0044 — Native installer release pipeline.
 # Triggered on tag push (vX.Y.Z); produces 4 platform tarballs + cosign
-# signatures + CycloneDX SBOMs + Trivy/pip-audit inventory reports, uploads to
-# GH Releases as a draft.
+# signatures + CycloneDX SBOMs + Trivy CVE reports, uploads to GH Releases as
+# a draft. Nothing is signed unless the `scan` job's CVE gate passed
+# (scripts/release-cve-gate.sh: Trivy over each extracted tarball, HIGH/CRITICAL,
+# dated waivers in .trivyignore).
 #
 # Least privilege, job by job (feature 0102). The workflow default grants
 # nothing; every job declares its own permissions and checks out without
@@ -161,9 +163,11 @@ jobs:
           # All four triples (linux/darwin × amd64/arm64) now have a committed PBS
           # SHA pin (scripts/pbs-shas-*.txt); build-release derives the triple from
           # (os,arch) and verifies fail-closed against that pin. If a platform ever
-          # lacks a triple, build-release gracefully ships a lean (unbundled)
-          # tarball instead of erroring. NOTE: bundling pulls the agent deps into
-          # the tarball; the `scan` job's SBOM and pip-audit inventory cover them.
+          # lacks a triple, build-release ships a lean (unbundled) tarball instead
+          # of erroring, and the `scan` job's CVE gate then refuses the release
+          # (no Python packages to inventory). NOTE: bundling pulls the agent deps
+          # into the tarball; that gate covers them, and the `scan` job's SBOM
+          # and pip-audit reports inventory them.
           VULTURE_BUNDLE_PBS: '1'
         run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
       - name: record tarball digest
@@ -189,7 +193,7 @@ jobs:
           if-no-files-found: error
 
   scan:
-    name: scan (Trivy, audit-ci, SBOM, pip-audit; read-only)
+    name: scan (Trivy CVE gate, audit-ci, SBOM, pip-audit; read-only)
     needs: build-binary
     runs-on: ubuntu-latest
     permissions:
@@ -208,26 +212,29 @@ jobs:
           merge-multiple: true
           path: dist/
       - name: install trivy (tarball SHA-256 committed in scripts/trivy-shas-*.txt)
+        run: scripts/install-trivy.sh "$TRIVY_VERSION" "$RUNNER_TEMP/trivy-bin"
+      # The gate judges the bytes `sign` signs: the expected sums are the build
+      # legs' digest outputs, rendered by the same jq program as in `sign`.
+      - name: expected tarball digests (the build legs' outputs)
+        env:
+          DIGESTS: ${{ toJSON(needs.build-binary.outputs) }}
         run: |
-          scripts/install-trivy.sh "$TRIVY_VERSION" "$RUNNER_TEMP/trivy-bin"
-          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
-      - name: Trivy report
-        # `trivy fs` does not unpack a .tar.gz, so this is an inventory of
-        # what Trivy recognises in each tarball, not a CVE gate over the
-        # bundled dependencies (the pre-tag pip-audit gate,
-        # scripts/security-preflight.sh, and audit-ci below are the gates).
-        run: |
-          rc=0
-          for tb in dist/vulture-"${GITHUB_REF_NAME}"-*.tar.gz; do
-            out="${tb%.tar.gz}.vulns.json"
-            trivy fs --severity HIGH,CRITICAL --ignorefile .trivyignore \
-              --format json --output "$out" --exit-code 1 "$tb" \
-              || { rc=1; trivy convert --format table "$out"; }
-          done
-          exit "$rc"
+          printf '%s' "$DIGESTS" | jq -r --arg v "$GITHUB_REF_NAME" \
+            'to_entries[] | select(.value != "") | "\(.value)  vulture-\($v)-\(.key | ltrimstr("sha256_") | sub("_"; "-")).tar.gz"' \
+            > "$RUNNER_TEMP/expected.sha256"
+      # The CVE gate: Trivy over each EXTRACTED tarball (`trivy fs` does not
+      # unpack an archive) and over the wheels' own SBOMs, HIGH/CRITICAL, with
+      # the dated waivers in .trivyignore. It runs before every step that runs
+      # floating code (setup-node, audit-ci, syft, pip-audit), and Trivy, tar
+      # and jq run inside the gate's work dir with an emptied environment, so
+      # no step, variable or file in the checkout (a trivy-secret.yaml, say)
+      # can configure, redirect or swap what it scans. Each tarball's report
+      # lands in dist/<tarball>.vulns.json (uploaded as scan-reports).
+      - name: release CVE gate (Trivy, blocking)
+        run: scripts/release-cve-gate.sh "$RUNNER_TEMP/trivy-bin/trivy" dist "$RUNNER_TEMP/cve-gate" .trivyignore "$RUNNER_TEMP/expected.sha256"
       # npm advisory gate. It runs HERE, after the build legs have consumed
-      # frontend-dist and recorded their digests, and after the Trivy step:
-      # npx resolves audit-ci's own dependencies at run time (caret ranges, no
+      # frontend-dist and recorded their digests, and after the CVE gate: npx
+      # resolves audit-ci's own dependencies at run time (caret ranges, no
       # lockfile), so nothing it pulls may run where its output is signed.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

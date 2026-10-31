@@ -272,8 +272,11 @@ It approximates the re-check, which also resolves symlinks, with two differences
 ## Step 5: Start services
 
 ```bash
-docker compose up -d --build
+docker build -t vulture-agent-base:latest -f agents/Dockerfile.base agents/
+COMPOSE_BAKE=false docker compose up -d --build
 ```
+
+Every agent image is built `FROM vulture-agent-base:latest`, the image that holds the agents' shared code (`agents/shared`). Compose neither builds nor rebuilds it, and it is never pushed to a registry, so build it first, and again on every update (see "Updating Vulture" below). `COMPOSE_BAKE=false` makes Compose build through the Docker daemon, which finds that local image; Compose's bake builder may look for it in a registry instead and fail to pull it. The repository's own launchers (`scripts/prod_start.sh`, `scripts/mode-b-smoke.sh`) run the same two commands.
 
 Verify all services are healthy:
 
@@ -573,8 +576,11 @@ Some responses carry server detail by design:
 ```bash
 cd /opt/vulture
 git pull
-docker compose up -d --build
+docker build -t vulture-agent-base:latest -f agents/Dockerfile.base agents/
+COMPOSE_BAKE=false docker compose up -d --build
 ```
+
+Rebuild the agent base image first, as in Step 5: `docker compose up --build` rebuilds each agent image on top of whatever base image is already there, so without that step the agents keep the shared code of the release you are leaving.
 
 Migrations run automatically at backend startup. Neon schema changes are idempotent (`CREATE ... IF NOT EXISTS`).
 
