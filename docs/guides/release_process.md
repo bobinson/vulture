@@ -14,7 +14,7 @@ caught and handled along the way.
  main (clean) ──▶ preflight ──▶ tag vX.Y.Z + push ──▶ release.yml ──▶ DRAFT release ──▶ review ──▶ Publish
                   (local)         (the only trigger)    (CI: build×4,                  (SBOM,        │
                                                          PBS bundle, SBOM,             vulns,         ▼
-                                                         Trivy gate, cosign)           cosign)   install.sh
+                                                         scan, cosign)                 cosign)   install.sh
                                                                                                  picks it up
 ```
 
@@ -29,7 +29,7 @@ and `install.sh` (which resolves `releases/latest`) ignores drafts until then.
 | Lockfile fresh (`make check-lockfile`) | the bundled agent deps match `pyproject.toml` |
 | Version ≥ `FALLBACK_TAG` (semver) | `install.sh`'s anti-downgrade guard refuses a lower tag |
 | The pinned `uv` installed *(only if re-locking)* | reproducible `requirements-frozen.txt` (the uv version pinned in `gen-lockfile.sh` / `scripts/uv-version.sh`) |
-| No un-waived HIGH/CRITICAL CVE in deps | the release build's Trivy gate will otherwise go red (see [Vulnerabilities](#vulnerabilities)) |
+| No un-waived HIGH/CRITICAL advisory in deps | the preflight's pip-audit gate (gate 6) refuses the tag, and the release build's `audit-ci` step goes red on an npm advisory (see [Vulnerabilities](#vulnerabilities)) |
 | The bundled plugin image is published and anonymously pullable at its recorded digest *(only if the release changes the tag in `plugins/semgrep/plugin.toml`)* | the supervisor pulls the image by that tag; neither the preflight nor `release.yml` checks it, and reverting the version bump is no fallback (see [Bundled plugin image](#bundled-plugin-image-before-tagging)) |
 
 ## Step 1 — Preflight (local, before tagging)
@@ -64,12 +64,26 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 
 ## Step 3 — What CI does (`release.yml`)
 
-| Job | Does |
-|-----|------|
-| **lint** | `shellcheck`; `check-fallback-tag.sh` |
-| **build-frontend** | `npm ci` + build; `audit-ci --high` (gating) |
-| **build-binary** (matrix: linux amd64/arm64, darwin amd64/arm64, each on its native runner) | cross-build the Go binary with the embedded SPA; bundle a SHA-pinned CPython 3.12 PBS runtime + the hashed agent deps (`VULTURE_BUNDLE_PBS=1`); **SBOM** (syft); **Trivy** `HIGH,CRITICAL --exit-code 1` (**hard gate**, scans bundled deps, honors `.trivyignore`); **pip-audit** (advisory, `\|\| true`); **cosign sign-blob** each tarball (keyless); `smoke-install.sh` (real install + scan) + `smoke-negative.sh` |
-| **release** | aggregate `SHA256SUMS`; **cosign sign-blob** it; `gh release create --draft` (idempotent) + upload all tarballs, `.sig`/`.pem`, `.sbom.json`, `.vulns.json` |
+```
+lint ──▶ build-frontend ──▶ build-binary ×4 ──▶ scan ──▶ sign ──▶ release
+```
+
+| Job | Token | Does |
+|-----|-------|------|
+| **lint** | `contents: read` | `shellcheck`; `check-fallback-tag.sh` |
+| **build-frontend** | `contents: read` | `npm ci` + `npm run build` + upload, and nothing else: its output is embedded in the signed tarball, so no scanner and no `npx` runs here |
+| **build-binary** (matrix: linux amd64/arm64, darwin amd64/arm64, each on its native runner) | `contents: read` | cross-build the Go binary with the embedded SPA; bundle a SHA-pinned CPython 3.12 PBS runtime + the hashed agent deps (`VULTURE_BUNDLE_PBS=1`); record the tarball's SHA-256 as a job output **before** `smoke-install.sh` (real install + scan) + `smoke-negative.sh`; upload the tarball only |
+| **scan** | `contents: read` | **Trivy**, installed by `scripts/install-trivy.sh` from a tarball whose SHA-256 is committed, writes each tarball's `.vulns.json` (an **inventory**: `trivy fs` does not unpack a tarball, so it is not a CVE gate over the bundled deps); **audit-ci** `--high` over `frontend/package-lock.json` (**gating**, pinned version); **SBOM** (syft) per tarball; **pip-audit** over the lockfile (advisory, `\|\| true`) |
+| **sign** | `id-token: write` | checks out no code; refuses unless the 4 tarballs match the digests the build legs recorded; rebuilds `SHA256SUMS`; **cosign sign-blob** each tarball and `SHA256SUMS` (keyless), then verifies each bundle against this workflow's identity |
+| **release** | `contents: write` | checks out no code; `sha256sum -c` over `SHA256SUMS`, exactly 4 tarballs and 28 assets; `gh release create --draft` (idempotent) + upload the tarballs, `.sig`/`.pem`/`.bundle`, `.sbom.json`, `.vulns.json` |
+
+The workflow grants nothing by default: each job declares its own token, and
+no checkout persists credentials. Third-party tooling (npm, Go modules, syft,
+Trivy, pip-audit, audit-ci) runs only in read-only jobs. `audit-ci` runs in
+`scan`, never in a job whose output is signed: `npx` resolves its dependencies
+at run time, and by then the build legs have recorded their digests, so
+anything it pulls cannot change the signed bytes. Caches are off in the build
+jobs.
 
 Each platform builds **on its own runner**, so `pip` evaluates environment markers
 locally — e.g. the macOS legs install the `cryptography` version pinned for Darwin
@@ -78,8 +92,8 @@ in `agents/lockfile-constraints.txt` (see [feature 0055 B1a](../features/0055_na
 ## Step 4 — Review the draft
 
 In the GitHub Releases UI, before publishing, check:
-- all four `*.tar.gz` + their `.sig`/`.pem` are present;
-- `*.vulns.json` (Trivy) has no surprises;
+- all four `*.tar.gz` + their `.sig`/`.pem`/`.bundle` are present;
+- `*.vulns.json` (the Trivy inventory, not a CVE gate) has no surprises;
 - `*.sbom.json` reflects the expected dependency set.
 
 ## Step 5 — Verify the signatures
@@ -158,18 +172,20 @@ How a vulnerable dependency is caught and handled:
 |-------|--------|--------|
 | **Continuous** | Dependabot **alert** (Security tab + notification) | the canonical inventory: package, severity, patched version |
 | **Pre-tag** | the preflight **security gate** (`security-preflight.sh`, gate 6) runs `pip-audit` over the locked deps + lists open Dependabot alerts (PAT) | plan + verify the fix **before** tagging, not after a red build |
-| **Release build** | **Trivy** `HIGH,CRITICAL --exit-code 1` | hard backstop — a vulnerable bundled dep fails the build with the CVE + package |
+| **Release build** | **audit-ci** `--high` in the `scan` job; **Trivy** and **pip-audit** reports | audit-ci fails the run before anything is signed. Trivy does not unpack the tarballs, so its report is an inventory, not a CVE gate over the bundled Python deps; pip-audit here is advisory. The pre-tag gate is the Python check that counts |
 
 **Fixing:**
 1. **Patch exists** → widen the `pyproject.toml` range if needed, then
    `make freeze-deps` (pinned uv + constraint) → the lockfile picks up the patched
-   version with correct hashes → Trivy goes green.
+   version with correct hashes → the preflight's pip-audit gate goes green.
 2. **Darwin-capped `cryptography`** → the `==48.0.1; sys_platform=="darwin"` pin in
    `lockfile-constraints.txt` won't auto-bump; hand-pick a patched version that
    still ships a macOS wheel and edit the constraint.
-3. **No patch yet** → add a time-boxed waiver to `.trivyignore` / `.pip-audit-ignore`
-   (CVE/GHSA/PYSEC id + justification + ≤90-day expiry). **CODEOWNERS routes it to
-   the SECURITY owner** for review; the gate re-fires when the waiver expires.
+3. **No patch yet** → add a time-boxed waiver to `.pip-audit-ignore`, the list the
+   preflight gate honours (CVE/GHSA/PYSEC id + justification + ≤90-day expiry).
+   **CODEOWNERS routes it to the SECURITY owner** for review; re-review it by its
+   expiry date (the preflight does not expire waivers itself). `.trivyignore` is
+   read only by the release build's Trivy inventory step.
 
 **Disclose fixed vulnerabilities in the release notes.** Any release that fixes a
 security issue MUST record it in [`CHANGELOG.md`](../../CHANGELOG.md) under a
@@ -202,8 +218,9 @@ one names a **Python package** in the agents' dependency closure, follow this lo
 5. **PR + CI** — open a PR with **both** the `pyproject.toml` and the regenerated
    `requirements-frozen.txt`; the **lockfile gate** (`.github/workflows/lockfile.yml`)
    re-derives + diffs in CI, so a mis-lock or a dropped Darwin split goes red.
-6. **Release** — tag as usual; the build's **Trivy** `--exit-code 1` gate is the
-   final backstop, and the patched dependency ships in every tarball.
+6. **Release** — tag as usual; the patched dependency ships in every tarball. The
+   build's Trivy report is an inventory, not a backstop: the preflight gate in
+   step 4 is the check that counts.
 
 ## Dependency updates / re-locking
 
@@ -235,11 +252,36 @@ Trigger the `security-digest` workflow on the same cadence so open advisories ar
 missed. Without a named owner, enforcing the lockfile gate just converts silent
 dependency drift into unexpectedly-blocked PRs.
 
+## Bumping the Trivy pin
+
+The release's Trivy version is `TRIVY_VERSION` in the `scan` job of
+`.github/workflows/release.yml`, and `scripts/trivy-shas-<TRIVY_VERSION>.txt`
+holds the SHA-256 of its tarball for each of the 4 platforms. Dependabot does
+not bump either. To move to a new Trivy release `vX.Y.Z` (at least 14 days old):
+
+1. Download `trivy_X.Y.Z_checksums.txt` and `trivy_X.Y.Z_checksums.txt.sigstore.json`
+   from the upstream release, and verify them:
+   ```sh
+   cosign verify-blob --bundle trivy_X.Y.Z_checksums.txt.sigstore.json \
+     --certificate-identity-regexp '^https://github\.com/aquasecurity/trivy/' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     trivy_X.Y.Z_checksums.txt
+   ```
+2. Copy its `Linux-64bit`, `Linux-ARM64`, `macOS-64bit` and `macOS-ARM64`
+   `.tar.gz` lines into a new `scripts/trivy-shas-vX.Y.Z.txt`
+   (`<sha256>  trivy_X.Y.Z_<platform>.tar.gz`), and delete the old pin file.
+3. Set `TRIVY_VERSION: 'vX.Y.Z'` in the `scan` job.
+4. Check: `sh scripts/tests/test_workflow_supply_chain.sh` (S9 requires the
+   pin for `TRIVY_VERSION`), `sh scripts/tests/test_install_trivy.sh`, and one
+   real install, `sh scripts/install-trivy.sh vX.Y.Z "$(mktemp -d)"`.
+
+CODEOWNERS routes both files to the SECURITY owner.
+
 ## Rollback
 
 | Situation | Action |
 |-----------|--------|
-| Release **build** fails on a leg | fix on `main`, `git push origin --delete vX.Y.Z`, re-tag. No draft is created unless **all** legs pass (the `release` job `needs: build-binary`). |
+| Release **build** fails on a leg | fix on `main`, `git push origin --delete vX.Y.Z`, re-tag. No draft is created unless **all** legs pass (`release` needs `sign`, which needs every build leg and `scan`). |
 | **Draft** looks wrong | delete the draft + tag in the UI, or `gh release delete vX.Y.Z --cleanup-tag --yes`; re-cut. |
 | Already **published**, must pull | mark the release as a **pre-release** (drops it from `releases/latest` so `install.sh` stops serving it) or delete it; existing `~/.vulture` installs are untouched. Cut a fixed patch. |
 
@@ -252,6 +294,8 @@ dependency drift into unexpectedly-blocked PRs.
 | `release not found` / vendored-PBS fetch fails | the vendored PBS asset is optional — `build-release.sh` falls back to a pin-verified direct upstream fetch |
 | `install.sh` refuses the version | the tag is below `FALLBACK_TAG` (anti-downgrade) — cut a higher version |
 | preflight: `lockfile STALE` | a `pyproject` dep changed without a re-lock — `make freeze-deps` and commit |
+| sign: `want 4 build-leg digests` or a `sha256sum -c` failure | a build leg's digest output is missing, or a tarball changed after its leg recorded it. Re-run the whole workflow; never sign around it |
+| scan: `install-trivy: checksum mismatch` | the downloaded Trivy tarball is not the one pinned in `scripts/trivy-shas-<version>.txt`. Stop and investigate; do not edit the pin to match |
 
 ## See also
 - [`cosign_verification.md`](cosign_verification.md) — verify a download.

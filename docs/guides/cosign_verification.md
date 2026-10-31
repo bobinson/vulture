@@ -16,7 +16,7 @@ per platform (`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`):
 | `vulture-<ver>-<os>-<arch>.tar.gz` | the release tarball | ✅ sidecar `.tar.gz.sig` + `.tar.gz.pem` |
 | `SHA256SUMS` | sha256 of all four tarballs | ✅ `SHA256SUMS.sig` + `SHA256SUMS.pem` |
 | `*.sbom.json` | CycloneDX SBOM (for inspection) | — |
-| `*.vulns.json` | Trivy CVE report (for inspection) | — |
+| `*.vulns.json` | Trivy inventory report (for inspection; not a CVE gate) | — |
 
 **The signed surface is the tarballs and `SHA256SUMS`.** The SBOM and vuln
 reports are provided for inspection only — verify the tarball, not them.

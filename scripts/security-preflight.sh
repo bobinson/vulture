@@ -4,8 +4,9 @@
 #
 # The sixth gate run by scripts/release-preflight.sh. It gives the release
 # manager the open-vulnerability picture for the LOCKED Python set BEFORE a tag
-# is cut, mirroring the CI Trivy verdict (Trivy stays the broad hard gate; this
-# is the Python-deps subset, surfaced early on the laptop).
+# is cut. It is the gate for those deps: the release workflow's Trivy step is
+# an inventory (`trivy fs` does not unpack the tarballs) and its pip-audit run
+# is advisory.
 #
 # What it does:
 #   1. `pip-audit -r <requirements>` over the locked set, honoring the
@@ -82,7 +83,7 @@ waiver_args() {
 # FAILS the gate if pip-audit is absent (M2) or reports an un-waived finding.
 run_pip_audit() {
     if ! command -v pip-audit >/dev/null 2>&1; then
-        die "pip-audit is not installed — refusing to tag with no local dependency audit (install it: 'pipx install pip-audit'). Trivy remains the CI hard gate."
+        die "pip-audit is not installed — refusing to tag with no local dependency audit (install it: 'pipx install pip-audit'). The release workflow does not gate on Python advisories."
     fi
     [ -f "$REQUIREMENTS" ] || die "requirements file not found: $REQUIREMENTS"
     # shellcheck disable=SC2046  # word-splitting the waiver flags is intentional

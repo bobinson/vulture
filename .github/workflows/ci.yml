@@ -40,7 +40,7 @@ jobs:
         # golangci-lint v2 (schema v2 config in backend/.golangci.yml). Required
         # because the repo targets Go 1.25 and golangci-lint v1.64.8 was built
         # with Go 1.24 (refuses a newer target). v2 needs action v7+.
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           working-directory: backend
           version: v2.12.2   # pin for reproducible lint (matches backend/.golangci.yml schema v2)
@@ -67,6 +67,12 @@ jobs:
         run: sh scripts/tests/test_pbs_vendor_wiring.sh
       - name: active pbs pin consistency tests
         run: sh scripts/tests/test_pbs_pin_active.sh
+      - name: workflow pin-guard self-test (0102)
+        run: sh scripts/tests/test_lib_unpinned_uses.sh
+      - name: release supply-chain workflow guards (0102)
+        run: sh scripts/tests/test_workflow_supply_chain.sh
+      - name: pinned Trivy installer tests (0102)
+        run: sh scripts/tests/test_install_trivy.sh
       - name: release preflight tests
         run: sh scripts/tests/test_release_preflight.sh
       - name: smoke-scan contract tests

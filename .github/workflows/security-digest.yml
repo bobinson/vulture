@@ -2,8 +2,9 @@
 #
 # Renders a proactive open-vulnerability digest (pip-audit over the locked deps +
 # open Dependabot alerts) to the run summary and keeps ONE rolling tracking issue
-# up to date. Additive + advisory: a missed digest blocks nothing (Trivy in CI +
-# the C4 pre-tag gate remain the enforcement).
+# up to date. Additive + advisory: a missed digest blocks nothing (the C4
+# pre-tag gate and the release workflow's audit-ci step remain the enforcement;
+# the release Trivy step is an inventory).
 #
 # workflow_dispatch ONLY — NO cron (LLD §0/§7), same dead-cron rationale as
 # relock.yml: a solo repo's schedules die silently after 60 days of inactivity,
