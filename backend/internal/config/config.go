@@ -80,6 +80,29 @@ type Config struct {
 	Agents map[string]AgentConfig `json:"agents"`
 }
 
+// DataDir is the absolute directory that holds the database file (DBPath),
+// where state that belongs beside the database is kept: the SSH host-key
+// store is <DataDir>/ssh/known_hosts. It is "" when there is no database
+// file (no DBPath, or an in-memory SQLite database) or the directory cannot
+// be made absolute, so a caller that needs it fails closed. A relative DBPath
+// is resolved against the working directory the database is opened from, so
+// nothing kept here depends on where a later step happens to run.
+//
+// It is defined by DBPath alone, so it is not localdev.DataDir: the native
+// launcher sets VULTURE_DB_PATH to <its data dir>/vulture.db, which is
+// $VULTURE_HOME/data in install mode but ~/.vulture in dev mode (not
+// localdev.DataDir's <project root>/data). In the container it is /data.
+func (c *Config) DataDir() string {
+	if c.DBPath == "" || strings.Contains(c.DBPath, ":memory:") {
+		return ""
+	}
+	dir, err := filepath.Abs(filepath.Dir(c.DBPath))
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
 // LocalSources is the server's local-path policy, derived from SourceRoot,
 // LocalMode and ReadOnly in the one place that derives it.
 func (c *Config) LocalSources() pathutil.LocalSources {

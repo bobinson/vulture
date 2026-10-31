@@ -28,6 +28,7 @@ import (
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
 	"github.com/vulture/backend/internal/staging"
+	"github.com/vulture/backend/pkg/gitutil"
 	"github.com/vulture/backend/pkg/pluginregistry"
 	"github.com/vulture/backend/pkg/stagerouter"
 )
@@ -174,8 +175,12 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	}
 
 	// 0102: local ingest follows the server's local-path policy, the same
-	// value browse and dispatch use.
-	sourceSvc := service.NewSourceServiceWithPolicy(repo, service.SourcePolicy{Local: cfg.LocalSources()})
+	// value browse and dispatch use; a key-based git clone keeps its SSH
+	// host-key store beside the database (<data dir>/ssh/known_hosts).
+	sourceSvc := service.NewSourceServiceWithPolicy(repo, service.SourcePolicy{
+		Local: cfg.LocalSources(),
+		Clone: gitutil.CloneOptions{DataDir: cfg.DataDir()},
+	})
 	auditSvc := service.NewAuditService(repo)
 	proxyService := service.NewAgentProxyService(broker)
 	// Feature 0049: stream service consults the plugin registry via

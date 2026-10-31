@@ -245,7 +245,7 @@ make docker-down    # Stop all services
 |----------|---------|-------------|
 | `VULTURE_PORT` | `28080` | Backend server port |
 | `VULTURE_DB_DSN` | -- | PostgreSQL connection string (uses SQLite if unset) |
-| `VULTURE_DB_PATH` | `/data/vulture.db` | SQLite database path (fallback) |
+| `VULTURE_DB_PATH` | `/data/vulture.db` | SQLite database path (fallback). Its directory also holds the SSH host-key store of key-based clones, `ssh/known_hosts`, unless `VULTURE_GIT_SSH_KNOWN_HOSTS` names another (see the central server deployment guide) |
 | `VULTURE_JWT_SECRET` | -- | JWT signing key (required in production) |
 | `VULTURE_LOCAL_MODE` | `false` | Enable passwordless authentication (set `true` for development) |
 | `VULTURE_AGENT_CHAOS_URL` | `http://agent-chaos:28001` | Chaos agent endpoint |

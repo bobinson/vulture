@@ -15,10 +15,11 @@ import (
 // StrictHostKeyChecking=accept-new requires OpenSSH >= 7.6. It probes the
 // installed ssh via `ssh -V`; if the version is older than 7.6 while strict is
 // still the accept-new default, it forces VULTURE_GIT_SSH_STRICT=yes semantics
-// (which still verifies once the persistent known_hosts is populated) and
-// returns a prominent warning string. Returns "" when no adjustment is needed
-// or when the probe is not applicable (insecure rollback flag set, or strict
-// explicitly overridden to a non-accept-new value).
+// (which verifies against the host-key store but accepts no new host, so the
+// store must be seeded) and returns a prominent warning string naming it.
+// Returns "" when no adjustment is needed or when the probe is not applicable
+// (insecure rollback flag set, or strict explicitly overridden to a
+// non-accept-new value).
 func EnsureSSHStrictCompat(ctx context.Context, setenv func(string, string) error) string {
 	if config.EnvTruthy("VULTURE_GIT_SSH_INSECURE") {
 		return "" // legacy no-verification rollback; nothing to gate
@@ -39,8 +40,11 @@ func EnsureSSHStrictCompat(ctx context.Context, setenv func(string, string) erro
 	}
 	_ = setenv("VULTURE_GIT_SSH_STRICT", "yes")
 	return fmt.Sprintf("WARNING (0065): OpenSSH %d.%d < 7.6 does not support "+
-		"StrictHostKeyChecking=accept-new; forcing strict=yes behind the "+
-		"persistent known_hosts. Upgrade OpenSSH or set VULTURE_GIT_SSH_KNOWN_HOSTS.",
+		"StrictHostKeyChecking=accept-new; forcing strict=yes, which accepts no "+
+		"new host: every ssh_key clone fails until the host-key store "+
+		"<directory of the database file>/ssh/known_hosts holds the git hosts' "+
+		"keys. Seed it, or set VULTURE_GIT_SSH_KNOWN_HOSTS to an operator-managed "+
+		"known_hosts file, or upgrade OpenSSH.",
 		major, minor)
 }
 

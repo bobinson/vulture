@@ -180,10 +180,39 @@ Egress controls (all default to blocking internal/private targets, which is corr
 - `VULTURE_WEBHOOK_HOST_ALLOWLIST` — comma list of internal hosts to exempt from the SSRF guard, for a trusted internal webhook receiver.
 - A git or webhook host that is internal or cannot be resolved is refused with a `400` that carries a fixed message and a `request_id`. For an internal host, the backend log line for that id names the host and the allowlist variable: for a webhook, the variable that would exempt it; for git, that `VULTURE_GIT_HOST_ALLOWLIST` does not exempt it.
 - `VULTURE_GIT_ALLOW_REDIRECTS` — off by default (git redirects are blocked to prevent redirect-SSRF); enable only for a trusted host that redirects.
-- `VULTURE_GIT_SSH_STRICT` / `VULTURE_GIT_SSH_KNOWN_HOSTS` / `VULTURE_GIT_SSH_INSECURE` — SSH host-key policy for key-based clones (default `accept-new` TOFU; `_INSECURE=true` is a rollback escape hatch that disables MITM protection).
+- `VULTURE_GIT_SSH_STRICT` / `VULTURE_GIT_SSH_KNOWN_HOSTS` / `VULTURE_GIT_SSH_INSECURE` — SSH host-key policy for key-based clones (default `accept-new` TOFU, pins kept in the host-key store described under "SSH host-key store" below; `_INSECURE=true` is a rollback escape hatch that disables MITM protection).
 - `VULTURE_ALLOW_INSECURE_LLM` / `VULTURE_STRICT_LLM_ENDPOINT` — govern whether the provider API key may be sent to a non-TLS LLM endpoint. Default: the key is withheld from an `http://` endpoint and the server boots with a warning; set `VULTURE_STRICT_LLM_ENDPOINT=true` to hard-fail startup instead.
 
 The failed-login throttle (per email+IP, escalating capped delay, with a hard-ceiling 429) is always on. Its threshold and window are tunable via `VULTURE_LOGIN_LOCKOUT_MAX` (default 5) and `VULTURE_LOGIN_LOCKOUT_WINDOW_SEC` (default 900 = 15 min); a non-positive value falls back to the default.
+
+#### SSH host-key store (feature 0102)
+
+A key-based clone (`git_credentials.type = ssh_key`) records the host keys it has accepted in a known_hosts file, the host-key store. Unless `VULTURE_GIT_SSH_KNOWN_HOSTS` names one, the store is `<directory of the database file>/ssh/known_hosts`, the directory of `VULTURE_DB_PATH` (default `/data/vulture.db`, so `/data/ssh/known_hosts` in the container, also when the database itself is Postgres; `~/.vulture/ssh/known_hosts` for the native dev launcher; `$VULTURE_HOME/data/ssh/known_hosts` for a native install).
+
+The backend verifies the default store before every key clone, and writes the private key only after the store passes:
+
+- `<data dir>/ssh` must be a real directory (not a symlink) owned by the backend's user. A directory of its own with group or other permissions is tightened to `0700`, which is logged once at WARN (`ssh_store_dir_tightened`).
+- Its parent (the data directory) must not be world-writable without the sticky bit.
+- `known_hosts` must be absent (ssh creates it on first contact) or a regular file owned by the backend's user with a single hard link.
+- The path must not contain a character ssh would interpret (`"`, `'`, `%`, `$`, `\` or a control character). A path with a space is quoted for ssh.
+
+Anything else fails the clone closed, before git runs: the response is a generic 500 (`{"error":"internal error","request_id":…}`), and the backend log line for that request id (`http_internal_error`) carries the cause, `ssh host-key store refused: <path>: <reason>; set VULTURE_GIT_SSH_KNOWN_HOSTS to an operator-managed known_hosts file`. The same refusal follows when there is no database file to put the store beside (an in-memory `VULTURE_DB_PATH`). A server that cannot satisfy these checks, such as a container with an arbitrary UID or a read-only filesystem, sets `VULTURE_GIT_SSH_KNOWN_HOSTS` instead: that file is used as given, with no checks, and is the operator's to protect.
+
+When upgrading: pins an older release kept in the shared temp directory (`/tmp/vulture-ssh/known_hosts`) are not imported, because anyone on the host could have written them. Under the default `accept-new`, each git host is therefore accepted once more on its first key clone. In the container, `/data` is not a volume, so the store starts empty whenever the backend container is recreated; mount an operator-managed file and point `VULTURE_GIT_SSH_KNOWN_HOSTS` at it to keep pins across recreation.
+
+**Seeding the store for `VULTURE_GIT_SSH_STRICT=yes`.** With `yes`, ssh accepts no host it does not already know, so every key clone fails (a 400 `clone: git clone failed: …`, with ssh's host-key error in the log) until the store holds each git host's key. The backend also forces `yes` at startup when the installed OpenSSH is older than 7.6, which cannot do `accept-new`; it logs a warning naming the store. To seed it, as the backend's user:
+
+```bash
+DATA_DIR=/data                       # the directory of VULTURE_DB_PATH
+install -d -m 0700 "$DATA_DIR/ssh"
+keys=$(mktemp)
+ssh-keyscan -t ed25519 git.example.com >> "$keys"   # repeat for each git host
+ssh-keygen -lf "$keys"               # compare each fingerprint with the one the host publishes
+cat "$keys" >> "$DATA_DIR/ssh/known_hosts" && chmod 0600 "$DATA_DIR/ssh/known_hosts"
+rm -f "$keys"
+```
+
+`ssh-keyscan` trusts the network it runs on, so the fingerprint comparison is the step that makes the pin trustworthy. In the container, run the same commands with `docker compose exec backend sh -c '…'` (they run as the image's `vulture` user), or, because `/data` does not survive a recreated container, seed an operator-managed file and set `VULTURE_GIT_SSH_KNOWN_HOSTS` to its mounted path.
 
 ### Stored local sources (feature 0102)
 

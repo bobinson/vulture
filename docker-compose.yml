@@ -82,7 +82,9 @@ services:
       # sees host files only at /mnt/source, the VULTURE_SOURCE_DIR mount
       # under volumes, so a root set here is /mnt/source, not a host path,
       # and VULTURE_SOURCE_DIR must then be a dedicated directory, not the
-      # default ./ (the checkout, which holds .env).
+      # default ./ (the checkout, which holds .env). Since 0102 a key clone
+      # also fails closed when the default SSH host-key store is unsafe (set
+      # VULTURE_GIT_SSH_KNOWN_HOSTS to an operator-managed known_hosts file).
       - VULTURE_TRUSTED_PROXIES=${VULTURE_TRUSTED_PROXIES:-}
       - VULTURE_ALLOW_OPEN_REGISTRATION=${VULTURE_ALLOW_OPEN_REGISTRATION:-}
       - VULTURE_SOURCE_ROOT=${VULTURE_SOURCE_ROOT:-}

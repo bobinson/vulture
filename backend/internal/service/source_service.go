@@ -26,10 +26,13 @@ type SourceService interface {
 	Get(id string) (*model.Source, error)
 }
 
-// SourcePolicy is what the source service may ingest. Local is the server's
-// local-path policy (config.Config.LocalSources).
+// SourcePolicy is what the source service may ingest and how. Local is the
+// server's local-path policy (config.Config.LocalSources); Clone is what a git
+// clone needs from the server's configuration (its data directory, which
+// holds the SSH host-key store).
 type SourcePolicy struct {
 	Local pathutil.LocalSources
+	Clone gitutil.CloneOptions
 }
 
 type sourceService struct {
@@ -251,7 +254,7 @@ func (s *sourceService) ingestGit(ctx context.Context, req *model.SourceRequest)
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
-	if err := gitutil.Clone(ctx, req.URL, destPath, 1, req.GitCredentials); err != nil {
+	if err := gitutil.CloneWith(ctx, s.policy.Clone, req.URL, destPath, 1, req.GitCredentials); err != nil {
 		return nil, classifyCloneErr(err)
 	}
 	fileCount, err := fileutil.CountFilesCtx(ctx, destPath)

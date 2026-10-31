@@ -11,7 +11,7 @@ import (
 // to /dev/null. References buildSSHCommand, which does not yet exist —
 // compile failure is the intended red state.
 func TestBuildSSHCommand_DefaultVerifiesHostKey(t *testing.T) {
-	out := buildSSHCommand("/tmp/vulture-ssh/key")
+	out := sshCommandFor(t, "/tmp/vulture-ssh/key")
 	if strings.Contains(out, "StrictHostKeyChecking=no") {
 		t.Errorf("default must not disable host-key checking, got %q", out)
 	}
@@ -25,7 +25,7 @@ func TestBuildSSHCommand_DefaultVerifiesHostKey(t *testing.T) {
 // no-verification string.
 func TestBuildSSHCommand_InsecureFlagRestoresLegacy(t *testing.T) {
 	t.Setenv("VULTURE_GIT_SSH_INSECURE", "true")
-	out := buildSSHCommand("/tmp/vulture-ssh/key")
+	out := sshCommandFor(t, "/tmp/vulture-ssh/key")
 	if !strings.Contains(out, "StrictHostKeyChecking=no") {
 		t.Errorf("insecure flag must restore StrictHostKeyChecking=no, got %q", out)
 	}
@@ -37,8 +37,19 @@ func TestBuildSSHCommand_InsecureFlagRestoresLegacy(t *testing.T) {
 // TestBuildSSHCommand_QuotesPaths verifies §L1: the key path is single-quoted
 // so a path containing spaces survives shell execution of GIT_SSH_COMMAND.
 func TestBuildSSHCommand_QuotesPaths(t *testing.T) {
-	out := buildSSHCommand("/tmp/vulture ssh/key")
+	out := sshCommandFor(t, "/tmp/vulture ssh/key")
 	if !strings.Contains(out, "'/tmp/vulture ssh/key'") {
 		t.Errorf("key path must be single-quoted, got %q", out)
 	}
+}
+
+// sshCommandFor is the GIT_SSH_COMMAND for keyPath with the host-key options
+// of a fresh data directory.
+func sshCommandFor(t *testing.T, keyPath string) string {
+	t.Helper()
+	opts, err := sshHostKeyOptions(t.TempDir())
+	if err != nil {
+		t.Fatalf("host-key options: %v", err)
+	}
+	return buildSSHCommand(keyPath, opts)
 }

@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/vulture/backend/internal/config"
@@ -180,71 +180,105 @@ func baseCloneArgs() []string {
 	return []string{"-c", "http.followRedirects=false", "clone"}
 }
 
-// Clone clones a git repo to destPath. Optional creds are used for
-// authentication (token or SSH key) and are never persisted, logged,
-// or retained.
+// CloneOptions is what a clone needs from the server's configuration.
+type CloneOptions struct {
+	// DataDir holds the default SSH host-key store, <DataDir>/ssh/known_hosts
+	// (config.Config.DataDir). Empty means no default store: an ssh_key clone
+	// then fails closed unless VULTURE_GIT_SSH_KNOWN_HOSTS names one.
+	DataDir string
+}
+
+// Clone is CloneWith with no options, so an ssh_key clone needs
+// VULTURE_GIT_SSH_KNOWN_HOSTS (or the insecure rollback); with the default
+// store it fails closed.
 func Clone(ctx context.Context, gitURL, destPath string, depth int, creds *model.GitCredentials) error {
+	return CloneWith(ctx, CloneOptions{}, gitURL, destPath, depth, creds)
+}
+
+// CloneWith clones a git repo to destPath under opts. Optional creds are used
+// for authentication (token or SSH key) and are never persisted, logged, or
+// retained.
+func CloneWith(ctx context.Context, opts CloneOptions, gitURL, destPath string, depth int, creds *model.GitCredentials) error {
 	if err := ValidateCloneURL(ctx, gitURL, creds, PolicyFromEnv()); err != nil {
 		return err
 	}
-	args := baseCloneArgs()
-	if depth > 0 {
-		args = append(args, "--depth", fmt.Sprintf("%d", depth))
+	credEnv, cleanup, err := credentialEnv(creds, opts)
+	if err != nil {
+		return err
 	}
-
+	defer cleanup()
+	cmd := exec.CommandContext(ctx, "git", cloneArgs(gitURL, destPath, depth)...)
 	// 0073: clone deliberately inherits (SSH agent socket, proxy and CA vars
 	// are all needed by git); it is not an agent spawn.
-	env := os.Environ() //nolint:forbidigo // git needs the caller's environment
-	effectiveURL := gitURL
-
-	if creds != nil {
-		switch creds.Type {
-		case "token":
-			// 0036 Phase 3 (M15) — avoid embedding the token in the
-			// URL passed via argv. URL-embedded creds appear in `ps`,
-			// in syslog, and in some HTTP error messages git emits.
-			// Instead, write a one-shot askpass script + GIT_ASKPASS
-			// env. The script is `chmod 0700` in a tempdir; the token
-			// lives only in the script file's contents (mode 0700)
-			// and is deleted at function exit.
-			askpathPath, cleanup, err := writeAskpassScript(creds.Value)
-			if err != nil {
-				return fmt.Errorf("write askpass: %w", err)
-			}
-			defer cleanup()
-			env = append(env,
-				"GIT_ASKPASS="+askpathPath,
-				// Disable terminal prompts so an unset askpass can't
-				// hang the clone waiting for stdin.
-				"GIT_TERMINAL_PROMPT=0",
-			)
-			// effectiveURL stays as the original https URL — no embedded
-			// userinfo. git will invoke GIT_ASKPASS to get the password
-			// when it gets a 401 from the remote.
-		case "ssh_key":
-			keyPath, cleanup, err := writeSSHKey(creds.Value)
-			if err != nil {
-				return err
-			}
-			defer cleanup()
-			env = append(env, "GIT_SSH_COMMAND="+buildSSHCommand(keyPath))
-		}
-	}
-
-	// "--" ends option parsing so a URL can never be read as a git flag
-	// (e.g. "--upload-pack=..."). ValidateGitURL already rejects such input
-	// — it has no allowed scheme — so this is defence in depth, and it closes
-	// the CodeQL command-injection path by construction rather than by relying
-	// on a validator two call frames away staying correct.
-	args = append(args, "--", effectiveURL, destPath)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = env
+	cmd.Env = append(os.Environ(), credEnv...) //nolint:forbidigo // git needs the caller's environment
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return runFailure(ctx, err, stderr.String())
 	}
 	return nil
+}
+
+// cloneArgs is git's argument list for a clone of gitURL into destPath.
+func cloneArgs(gitURL, destPath string, depth int) []string {
+	args := baseCloneArgs()
+	if depth > 0 {
+		args = append(args, "--depth", strconv.Itoa(depth))
+	}
+	// "--" ends option parsing so a URL can never be read as a git flag
+	// (e.g. "--upload-pack=..."). ValidateGitURL already rejects such input
+	// — it has no allowed scheme — so this is defence in depth, and it closes
+	// the CodeQL command-injection path by construction rather than by relying
+	// on a validator two call frames away staying correct.
+	return append(args, "--", gitURL, destPath)
+}
+
+// noCleanup is the cleanup of a clone that wrote no credential file.
+func noCleanup() {}
+
+// credentialEnv is the environment that authenticates a clone with creds,
+// and the cleanup that removes whatever it wrote. No creds, or a type it
+// does not know, need neither.
+func credentialEnv(creds *model.GitCredentials, opts CloneOptions) ([]string, func(), error) {
+	if creds == nil {
+		return nil, noCleanup, nil
+	}
+	switch creds.Type {
+	case "token":
+		return tokenEnv(creds.Value)
+	case "ssh_key":
+		return sshKeyEnv(creds.Value, opts)
+	}
+	return nil, noCleanup, nil
+}
+
+// tokenEnv answers git's credential prompt with token (0036 Phase 3, M15).
+// A token embedded in the URL would appear in `ps`, in syslog and in some
+// HTTP error messages git emits, so the URL stays as given and git asks a
+// one-shot askpass script, deleted by the cleanup, when the remote answers
+// 401. Terminal prompts are off, so an unanswered prompt cannot hang the
+// clone waiting for stdin.
+func tokenEnv(token string) ([]string, func(), error) {
+	askpass, cleanup, err := writeAskpassScript(token)
+	if err != nil {
+		return nil, nil, fmt.Errorf("write askpass: %w", err)
+	}
+	return []string{"GIT_ASKPASS=" + askpass, "GIT_TERMINAL_PROMPT=0"}, cleanup, nil
+}
+
+// sshKeyEnv authenticates with the private key pem. The host-key store is
+// verified FIRST, so a refused store (ErrHostKeyStore) never puts the key on
+// disk; the cleanup deletes the key file.
+func sshKeyEnv(pem string, opts CloneOptions) ([]string, func(), error) {
+	hostKeyOpts, err := sshHostKeyOptions(opts.DataDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyPath, cleanup, err := writeSSHKey(pem)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []string{"GIT_SSH_COMMAND=" + buildSSHCommand(keyPath, hostKeyOpts)}, cleanup, nil
 }
 
 // embedToken rewrites an HTTPS git URL to embed a token for authentication.
@@ -323,43 +357,51 @@ func writeSSHKey(pem string) (string, func(), error) {
 }
 
 // buildSSHCommand returns GIT_SSH_COMMAND for a key clone (0065 §1.3, F8).
-// Default: TOFU via accept-new with a persistent known_hosts. Paths are
-// single-quoted (§L1) — the command is executed by a shell, so an unquoted
-// path with spaces breaks. ssh serializes its own known_hosts updates, so
-// concurrent first-contact writes do not corrupt the file (§L3, residual: two
-// clones of the SAME new host may both prompt-then-accept; harmless).
+// It is ssh with the key at keyPath and the host-key options hostKeyOpts
+// (sshHostKeyOptions). The command is executed by a shell, so the key path is
+// single-quoted (§L1): an unquoted path with spaces breaks.
+func buildSSHCommand(keyPath, hostKeyOpts string) string {
+	return "ssh -i " + shQuote(keyPath) + " " + hostKeyOpts
+}
+
+// insecureHostKeyOptions is the legacy no-verification host-key part of
+// GIT_SSH_COMMAND, restored only by VULTURE_GIT_SSH_INSECURE=true (rollback).
+const insecureHostKeyOptions = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+// sshHostKeyOptions is the host-key part of GIT_SSH_COMMAND for a key clone
+// whose default store lives under dataDir: StrictHostKeyChecking and the
+// shell-quoted UserKnownHostsFile. By default that is TOFU via accept-new
+// with a persistent store, <dataDir>/ssh/known_hosts, which knownHostsOption
+// verifies on every call (the checks are listed in knownhosts.go); without a
+// dataDir there is no default store. An error is a refused store
+// (ErrHostKeyStore); sshKeyEnv writes the private key only when there is
+// none. ssh serializes its own known_hosts updates, so concurrent
+// first-contact writes do not corrupt the file (residual: two clones of the
+// SAME new host may both prompt-then-accept; harmless).
 //
-//	VULTURE_GIT_SSH_STRICT       (default accept-new; requires OpenSSH >= 7.6)
-//	VULTURE_GIT_SSH_KNOWN_HOSTS  (default per-install path)
-//	VULTURE_GIT_SSH_INSECURE=true  restores legacy no-verification (rollback)
-func buildSSHCommand(keyPath string) string {
+//	VULTURE_GIT_SSH_STRICT         StrictHostKeyChecking, default accept-new
+//	                               (requires OpenSSH >= 7.6); yes accepts no
+//	                               new host: seed the store first
+//	VULTURE_GIT_SSH_KNOWN_HOSTS    an operator-managed known_hosts, used
+//	                               verbatim and unchecked in place of the
+//	                               default store
+//	VULTURE_GIT_SSH_INSECURE=true  restores legacy no-verification (rollback);
+//	                               it needs no store
+func sshHostKeyOptions(dataDir string) (string, error) {
 	if config.EnvTruthy("VULTURE_GIT_SSH_INSECURE") {
-		return fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", shQuote(keyPath))
+		return insecureHostKeyOptions, nil
 	}
-	strict := os.Getenv("VULTURE_GIT_SSH_STRICT") // R1: no undefined helper
-	if strict == "" {
-		strict = "accept-new"
+	kh, err := knownHostsOption(dataDir)
+	if err != nil {
+		return "", err
 	}
-	kh := os.Getenv("VULTURE_GIT_SSH_KNOWN_HOSTS")
-	if kh == "" {
-		kh = defaultKnownHostsPath()
-	}
-	return fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=%s -o UserKnownHostsFile=%s",
-		shQuote(keyPath), strict, shQuote(kh))
+	return "-o StrictHostKeyChecking=" + sshStrictMode() + " -o UserKnownHostsFile=" + shQuote(kh), nil
 }
 
-// shQuote single-quotes a path for a /bin/sh command line; app-controlled
-// paths never contain a single quote, but reject if one appears (fail-closed).
+// shQuote single-quotes p for a /bin/sh command line. Each single quote
+// inside p ends the quoting, is added as \', and starts it again, so the
+// shell passes p through literally whatever it holds.
 func shQuote(p string) string { return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'" }
-
-func defaultKnownHostsPath() string {
-	dir := filepath.Join(os.TempDir(), "vulture-ssh")
-	if d := os.Getenv("VULTURE_DATA_DIR"); d != "" {
-		dir = filepath.Join(d, "ssh")
-	}
-	_ = os.MkdirAll(dir, 0o700)
-	return filepath.Join(dir, "known_hosts")
-}
 
 // scrubCredentials removes any token-embedded URL from error messages.
 func scrubCredentials(err error) error {
