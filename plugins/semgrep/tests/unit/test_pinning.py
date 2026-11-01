@@ -23,6 +23,12 @@ Contract pinned by these tests:
 
 (c) The plugin ``GET /info`` version equals the ``[project] version``
     in ``pyproject.toml`` (single source of truth for the pin).
+
+(d) Feature 0102: every ``pip install`` in the Dockerfile pins each
+    requirement exactly and runs under a constraint file of the packages the
+    base already ships, so no package the wrapper adds can replace one Semgrep
+    imports; and a later ``RUN`` starts the engine (``semgrep --version``), so
+    a build whose engine cannot start fails before anything is pushed.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -145,4 +152,60 @@ def test_info_version_matches_pyproject_version():
     assert resp.json()["version"] == expected, (
         "GET /info `version` must equal pyproject.toml [project] version "
         f"({expected!r}) — one source of truth for the plugin pin"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (d) Wrapper packages cannot replace the engine's; the build starts the engine
+# ---------------------------------------------------------------------------
+
+_EXACT_REQ_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?==\d+(\.\d+)*$")
+_BASE_FREEZE_RE = re.compile(r"pip list --format=freeze > (\S+)")
+
+
+def _run_instructions() -> list[str]:
+    """Each RUN instruction of the Dockerfile, continuation lines joined."""
+    joined = re.sub(r"\\\n", " ", DOCKERFILE.read_text())
+    return [line[4:] for line in joined.splitlines() if line.startswith("RUN ")]
+
+
+def _pip_install_args(run: str) -> list[list[str]]:
+    """The arguments of every `pip install` command in one RUN instruction."""
+    commands = re.split(r"&&|;", run)
+    return [shlex.split(c.split("pip install", 1)[1]) for c in commands if "pip install" in c]
+
+
+def _requirements(args: list[str]) -> list[str]:
+    """The requirements of one `pip install`: neither an option nor an option's value."""
+    values = {args[i + 1] for i, a in enumerate(args[:-1]) if a in ("-c", "--constraint")}
+    return [a for a in args if not a.startswith("-") and a not in values]
+
+
+def test_dockerfile_pip_installs_pin_every_requirement_exactly():
+    installs = [args for run in _run_instructions() for args in _pip_install_args(run)]
+    assert installs, "the Dockerfile no longer installs anything with pip"
+    for args in installs:
+        loose = [r for r in _requirements(args) if not _EXACT_REQ_RE.match(r)]
+        assert not loose, f"pip requirements must be pinned `name==X.Y.Z`, got {loose}"
+
+
+def test_dockerfile_pip_installs_are_constrained_to_the_base_packages():
+    for run in (r for r in _run_instructions() if "pip install" in r):
+        freeze = _BASE_FREEZE_RE.search(run)
+        assert freeze, (
+            f"RUN {run!r} must first freeze the base's packages (`pip list --format=freeze > FILE`)"
+        )
+        for args in _pip_install_args(run):
+            assert f"-c {freeze.group(1)}" in shlex.join(args), (
+                f"pip install {shlex.join(args)!r} must run with `-c {freeze.group(1)}`, so it "
+                "can never replace a package Semgrep imports"
+            )
+
+
+def test_dockerfile_starts_the_engine_after_the_last_install():
+    runs = _run_instructions()
+    last_install = max(i for i, r in enumerate(runs) if "pip install" in r)
+    assert any("semgrep --version" in r for r in runs[last_install + 1 :]), (
+        "a RUN after the last pip install must run `semgrep --version`, so an image "
+        "whose engine cannot start never builds"
     )

@@ -1,7 +1,7 @@
 [plugin]
 name           = "semgrep"
 display_name   = "Semgrep (bundled)"
-version        = "0.1.1"
+version        = "0.1.2"
 api_version    = "vulture-plugin/1.0"
 publisher      = "vulture-core"
 description    = "Cross-language SAST via Semgrep. Reference bundled plugin demonstrating the vulture-plugin/1.0 contract. Maintainers: Vulture core team."
@@ -15,7 +15,7 @@ required_ack   = ["network-egress", "host-network"]
 
 [runtime]
 type            = "container"
-image           = "ghcr.io/bobinson/vulture-plugin-semgrep:0.1.1"
+image           = "ghcr.io/bobinson/vulture-plugin-semgrep:0.1.2"
 port            = 28011
 health_endpoint = "/health"
 info_endpoint   = "/info"

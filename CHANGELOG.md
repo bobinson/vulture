@@ -431,6 +431,12 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **The semgrep plugin's 0.1.1 image cannot start Semgrep; 0.1.2 replaces it.** Its Dockerfile installed
+  the wrapper's server packages unpinned, so the build took a fastapi that requires a newer
+  `opentelemetry-api` than the OpenTelemetry exporters in Semgrep's base image, and every Semgrep run failed
+  on import while `/health` still answered. The packages are now pinned exactly and installed under a
+  constraint of every package the base ships, and the build runs `semgrep --version`, so an image whose
+  engine cannot start fails to build and is never pushed or signed.
 - **Host-network plugins are reachable on macOS.** Docker on macOS runs in a Linux VM, so a plugin on
   `--network host` (the bundled semgrep plugin) listened on the VM's localhost while the backend dialled the
   Mac's, and `vulture.sh dev` started a plugin it could never reach. When the backend runs on darwin, a
@@ -569,8 +575,9 @@ stack, which runs centralized with its shipped defaults (`VULTURE_LOCAL_MODE=fal
     `api_version` (1.0), the manifest schema and the conformance checks are
     unchanged.
   - **Upgrade notes:** the bundled plugin's image is now
-    `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.1`; the backend no longer starts
-    0.1.0. This release is tagged only once that image is published and an anonymous
+    `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.2` (the published 0.1.1 image
+    cannot start its engine; see Fixed); the backend no longer starts 0.1.0. This
+    release is tagged only once that image is published and an anonymous
     pull of it matches the index digest given in the release notes; there is no
     fallback to 0.1.0. The image is published by a tag-triggered workflow that uses
     the repository's own short-lived token, signs the pushed digest with keyless

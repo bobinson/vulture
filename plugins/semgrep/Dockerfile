@@ -37,8 +37,18 @@ COPY rules/  /app/rules/
 # (PEP 668) Python env; the base already ships semgrep 1.168.0 so this pin
 # resolves as "already satisfied" (a no-op assertion that fails loudly only
 # if the base ever drifts from the pinned version).
-RUN pip install --no-cache-dir --break-system-packages semgrep==1.168.0
-RUN pip install --no-cache-dir --break-system-packages fastapi "uvicorn[standard]"
+# The wrapper's server packages are pinned exactly and installed under a
+# constraint of every package the base ships, so none can replace one Semgrep
+# imports: unpinned, fastapi 0.162 lifted opentelemetry-api past the base's
+# exporters and the 0.1.1 image's engine could not start.
+RUN pip list --format=freeze > /tmp/base.txt \
+ && pip install --no-cache-dir --break-system-packages -c /tmp/base.txt \
+      semgrep==1.168.0 fastapi==0.139.0 "uvicorn[standard]==0.49.0" \
+ && rm /tmp/base.txt
+# The build fails here, before anything is pushed or signed, if the engine
+# cannot start.
+RUN HOME=/tmp/engine-check semgrep --version --disable-version-check >/dev/null \
+ && rm -rf /tmp/engine-check
 
 EXPOSE 28011
 # Explicit numeric uid for `nobody` avoids cross-distro variance (TM5).

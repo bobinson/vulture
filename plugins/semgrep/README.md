@@ -68,7 +68,7 @@ in your fork.
 | `[plugin].description` | "Bundled reference plugin..." | one-line description of what your scanner does |
 | `[plugin].homepage` | `https://github.com/bobinson/vulture/tree/main/plugins/semgrep` | `https://github.com/your-org/vulture-plugin-yours` |
 | `[plugin].documentation` | bundled README link | link to your README |
-| `[runtime].image` | `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.1` | `ghcr.io/your-org/vulture-plugin-yours:0.1.0` |
+| `[runtime].image` | `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.2` | `ghcr.io/your-org/vulture-plugin-yours:0.1.0` |
 | `[trust].signature` (new field — bundled plugin omits it) | _absent_ | `cosign://sigstore/your-org/vulture-plugin-yours` |
 
 You will also change `[trust].tier` from `in-tree` to

@@ -183,7 +183,7 @@ def health() -> dict:
 def info() -> dict:
     return {
         "name": "semgrep",
-        "version": "0.1.1",
+        "version": "0.1.2",
         "capabilities": [
             {
                 "phase": "scan",
