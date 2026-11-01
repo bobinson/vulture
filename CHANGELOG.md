@@ -130,6 +130,24 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **The bundled SAST plugin is now `opengrep` 0.2.0, replacing `semgrep` (feature 0102).** Vulture may
+  not redistribute Semgrep's proprietary engine, which the official Semgrep image carries, nor use the
+  Semgrep Registry's rules, whose licence allows internal use only. The plugin now:
+  - runs [Opengrep](https://github.com/opengrep/opengrep) 1.33.1 (LGPL-2.1), which the image build on
+    your machine downloads from Opengrep's release and checks against a pinned sha256 per architecture,
+    on a digest-pinned `python:3.12-slim` base, with the wrapper's packages hash-locked;
+  - scans with bundled rules only, offline: Vulture's own, plus GitLab `sast-rules` (MIT and
+    Apache-2.0 folders), elttam and 0xdea (MIT), each file pinned by sha256 with its licence in
+    `rules/RULESET_SNAPSHOT.json`. No `p/…` or `r/…` Registry pack can reach the engine;
+    `config.rule_sets` (bundled set names) replaces `config.rule_packs`, which is ignored;
+  - returns real code snippets (Semgrep CE without a login answered `requires login`), sends no usage
+    metrics, and follows taint across functions within a file (`--taint-intrafile`). It still skips test
+    code (`test/`, `tests/`, `*_test.go`), now as explicit excludes: `.semgrepignore` files are ignored,
+    since the engine's default also matched a scan root's own ancestors.
+
+  Findings carry `agent_type` and `provenance` `opengrep`; the results-page "tier not active" notice
+  recognises both names.
+
 - **CWE-22, CWE-918 and CWE-78 rows come from the AST layer on parsed files
   (feature 0102).** On a JavaScript, TypeScript, Go, Java, Rust, PHP or Python
   file that parses with no error, `cwe.input_validation.path_traversal`,
@@ -422,6 +440,12 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Removed
 
+- **The Semgrep Registry tier of the bundled plugin (feature 0102):** the `p/security-audit` default, the
+  `r/solidity` Solidity namespace with its `VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY` switch, the
+  `SEMGREP_APP_TOKEN` / `--pro` path, `rules/rule_to_cwe.json` (Registry rule IDs; CWE now comes from each
+  rule's own metadata) and the plugin's `VULTURE_SEMGREP_AUDIT_ROOT` / `VULTURE_SEMGREP_VENDORED_RULES`
+  test hooks.
+
 - **The `next_middleware_matcher` CWE skill and category (feature 0097).** Its
   Next.js matcher-bypass detection is one instance of the access_control
   route-matcher arm and is reported as
@@ -431,16 +455,15 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
-- **The bundled semgrep plugin's image is built on your machine and never published.** Its base is
-  Semgrep's own image, which carries Semgrep's engines, one of them proprietary, and Vulture must not
-  redistribute them; the briefly published `ghcr.io/bobinson/vulture-plugin-semgrep` package is deleted.
-  The manifest names a local image, `vulture-plugin-semgrep:0.1.3`. The backend never pulls a bundled
-  plugin that ships a Dockerfile: it uses the local image or builds it from that Dockerfile. The
-  native-install tarball now ships the plugin's build context (Dockerfile, `pyproject.toml`, `src/`),
-  never an image, and the image build fetches no Semgrep Registry rules. The build also pins the
-  wrapper's server packages exactly, under a constraint of every package the base ships, and runs
-  `semgrep --version`: unpinned, fastapi 0.162 lifted `opentelemetry-api` past the base's exporters and
-  Semgrep could not start while `/health` still answered.
+- **The bundled plugin's image is built on your machine and never published.** The briefly published
+  `ghcr.io/bobinson/vulture-plugin-semgrep` images were built on Semgrep's own image, which carries
+  Semgrep's engines, one of them proprietary; the package is deleted. The manifest names a local image
+  (`vulture-plugin-opengrep:0.2.0`), and the backend never pulls a bundled plugin that ships a
+  Dockerfile: it uses the local image or builds it from that Dockerfile. The native-install tarball now
+  ships the plugin's build context (Dockerfile, `requirements.txt`, `pyproject.toml`, `src/`, bundled
+  rules), never an image. The build runs the engine once (`opengrep --version`), so an image whose engine
+  cannot start fails to build: unpinned, fastapi 0.162 had lifted `opentelemetry-api` past the Semgrep
+  base's exporters and the 0.1.1 image's engine could not start while `/health` still answered.
 - **Host-network plugins are reachable on macOS.** Docker on macOS runs in a Linux VM, so a plugin on
   `--network host` (the bundled semgrep plugin) listened on the VM's localhost while the backend dialled the
   Mac's, and `vulture.sh dev` started a plugin it could never reach. When the backend runs on darwin, a
@@ -578,9 +601,14 @@ stack, which runs centralized with its shipped defaults (`VULTURE_LOCAL_MODE=fal
     documents the rules; checking the token is a SHOULD for a plugin, so
     `api_version` (1.0), the manifest schema and the conformance checks are
     unchanged.
-  - **Upgrade notes:** the bundled plugin is now 0.1.3, whose image the backend
-    builds on your machine as `vulture-plugin-semgrep:0.1.3` (see Fixed); the
-    backend no longer starts 0.1.0. A plugin started by hand behind a backend with a shared token
+  - **Upgrade notes:** the bundled plugin is now `opengrep` 0.2.0 (see Changed), whose
+    image the backend builds on your machine as `vulture-plugin-opengrep:0.2.0`; the
+    backend no longer starts the `semgrep` plugin. Enable it as `opengrep`
+    (`VULTURE_PLUGINS=opengrep`, `--plugins opengrep`, or the UI): a list still naming
+    `semgrep` matches nothing and the backend's warning names the rename, and a
+    `semgrep` enablement stored in `state.toml` does not carry over. This plugin's
+    findings get new fingerprints (they include the agent type), so its lineage
+    restarts once. A plugin started by hand behind a backend with a shared token
     needs the derived value (the contract shows how to compute it); with no token
     set, its `/run` is open and logs a warning. A third-party plugin should check
     `X-Vulture-Agent-Token` against its own `VULTURE_AGENT_TOKEN`, and one that used

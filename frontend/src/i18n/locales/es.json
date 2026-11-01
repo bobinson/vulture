@@ -96,7 +96,7 @@
         "no_line": "Sin línea"
       }
     },
-    "semgrepTierNotice": "Nivel Semgrep no activo — esta auditoría se ejecutó solo con skills deterministas y firmas.",
+    "semgrepTierNotice": "Nivel {{engine}} no activo — esta auditoría se ejecutó solo con skills deterministas y firmas.",
     "agent": "Agente",
     "scores": "Puntuaciones de Cumplimiento",
     "waitingAgents": "Esperando a que los agentes inicien...",

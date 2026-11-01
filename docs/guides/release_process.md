@@ -5,7 +5,7 @@ signed, verifiable set of native-install tarballs — and how vulnerabilities ar
 caught and handled along the way.
 
 > Native-install releases only (Mode E). Docker images (Modes A–D) are not built
-> by this pipeline, and no image is ever published: the bundled semgrep plugin's
+> by this pipeline, and no image is ever published: the bundled opengrep plugin's
 > is built on the user's machine ([Bundled plugin](#bundled-plugin-built-locally)).
 > Verification of a download is covered in
 > [`cosign_verification.md`](cosign_verification.md).
@@ -162,13 +162,13 @@ if you've advanced a minor (see [Versioning](#versioning)).
 
 ## Bundled plugin (built locally)
 
-The bundled semgrep plugin's image is never published. Its base is Semgrep's own
-image, which carries Semgrep's engines (one of them proprietary), and Vulture
-must not redistribute them. The backend builds the image on the user's machine
-from `plugins/semgrep/Dockerfile`, tagged as `[runtime].image` in
-`plugins/semgrep/plugin.toml` (a local name, no registry), and never pulls it;
+The bundled opengrep plugin's image is never published: Vulture redistributes
+neither its base image nor its engine (Opengrep, LGPL-2.1), which the build
+downloads from Opengrep's release and checks against a pinned sha256. The backend builds the image on the user's machine
+from `plugins/opengrep/Dockerfile`, tagged as `[runtime].image` in
+`plugins/opengrep/plugin.toml` (a local name, no registry), and never pulls it;
 the release tarball ships that build context, never an image. A plugin release
-is a version bump that `plugins/semgrep/tests/unit/test_version_consistency.py`
+is a version bump that `plugins/opengrep/tests/unit/test_version_consistency.py`
 accepts: every version site agrees and the image name stays local.
 
 ## Vulnerabilities

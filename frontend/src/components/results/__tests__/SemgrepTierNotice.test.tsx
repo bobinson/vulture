@@ -34,6 +34,22 @@ describe("SemgrepTierNotice", () => {
     expect(notice.textContent).toContain("results.semgrepTierNotice");
   });
 
+  it("renders the banner for the opengrep plugin's notice, naming the engine (0102)", () => {
+    render(
+      <SemgrepTierNotice
+        lines={[line("opengrep tier not active (agent unavailable); continuing with the remaining agents")]}
+      />,
+    );
+    const notice = screen.getByTestId("semgrep-tier-notice");
+    expect(notice.textContent).toContain("results.semgrepTierNotice");
+    expect(notice.getAttribute("data-engine")).toBe("Opengrep");
+  });
+
+  it("names Semgrep for an older audit's notice", () => {
+    render(<SemgrepTierNotice lines={[line("semgrep tier not active (agent unavailable)")]} />);
+    expect(screen.getByTestId("semgrep-tier-notice").getAttribute("data-engine")).toBe("Semgrep");
+  });
+
   it("renders nothing when no line mentions the semgrep tier", () => {
     const { container } = render(
       <SemgrepTierNotice lines={[line("Agent started: cwe"), line("Audit completed")]} />,

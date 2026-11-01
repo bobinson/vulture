@@ -11,7 +11,7 @@
 #       build-release.sh COPIES 'requirements-frozen.txt' into the staged tree
 #       (so the fail-closed empty-marker branch alone cannot satisfy it).
 #   C6: build-release.sh COPIES plugin MANIFESTS (plugin.toml + rules) and a
-#       bundled plugin's build context (Dockerfile, pyproject.toml, src) into
+#       bundled plugin's build context (Dockerfile, requirements.txt, pyproject.toml, src) into
 #       runtime/plugins/, so the backend builds the image locally; it does NOT
 #       bundle container images, and no workflow publishes one (feature 0102:
 #       a plugin image would redistribute the engine it wraps).
@@ -97,8 +97,8 @@ test_c6_no_images
 test_c6_plugin_build_context() {
     name="C6-plugin-build-context-staged"
     detail=""
-    for f in Dockerfile pyproject.toml src; do
-        grep -Eq "cp .*${f}.*runtime/plugins" "$BUILD_SH" \
+    for f in Dockerfile requirements.txt pyproject.toml src; do
+        grep -Eq "(cp|rsync) .*${f}.*runtime/plugins" "$BUILD_SH" \
             || detail="$detail $f not copied into runtime/plugins;"
     done
     if [ -z "$detail" ]; then

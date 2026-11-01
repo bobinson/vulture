@@ -21,7 +21,7 @@ per platform (`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`):
 **The signed surface is the tarballs and `SHA256SUMS`.** The SBOM and vuln
 reports are provided for inspection only — verify the tarball, not them.
 
-No container image is published: the bundled semgrep plugin's image is built
+No container image is published: the bundled opengrep plugin's image is built
 on your machine from the Dockerfile in the tarball.
 
 ## Prerequisites

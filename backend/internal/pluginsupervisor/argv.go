@@ -326,7 +326,7 @@ func buildEnvArgs(plug pluginregistry.Plugin, opts Options) ([]string, error) {
 	// to bind loopback; the backend reaches host-network plugins via localhost
 	// (see buildProbeURL). Non-host (bridge/compose) plugins keep the default
 	// 0.0.0.0 so cross-container traffic works. The plugin image must honor
-	// VULTURE_BIND_HOST (see plugins/semgrep/Dockerfile); images that ignore it
+	// VULTURE_BIND_HOST (see plugins/opengrep/Dockerfile); images that ignore it
 	// are unaffected. A bridged host-network plugin is the exception: it must
 	// listen on its own interface for the loopback publish to reach it, and the
 	// publish address is what keeps it off the LAN (see buildPublishArgs).

@@ -138,7 +138,7 @@ MCP `vulture_get_findings` `provenance` argument and the results-page filter all
 take the same values:
 
 * Any other value is matched exactly and case-sensitively against a finding's
-  `provenance`, e.g. `llm`, `llm_l5_verified` or `semgrep`. An unknown value,
+  `provenance`, e.g. `llm`, `llm_l5_verified` or `opengrep`. An unknown value,
   or `LLM_FAMILY`, selects nothing.
 * `llm_family` selects the LLM family: rows whose provenance, trimmed and
   lower-cased, starts with `llm` (a prefix rule, not a substring one: `llmfoo`

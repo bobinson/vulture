@@ -73,7 +73,7 @@ plugin process MAY serve multiple phases.
         ┌──────────────┬────────────┼────────────┬──────────────┐
         ▼              ▼            ▼            ▼              ▼
    in-tree agent  community plugin  user-supplied plugin  ...   ...
-   (chaos, cwe,   (semgrep, gosec,  (metasploit, zap,
+   (chaos, cwe,   (opengrep, gosec,  (metasploit, zap,
     owasp, ...)    spotbugs, ...)    custom-internal, ...)
 ```
 
@@ -91,24 +91,24 @@ Full schema: `manifest.schema.json`. Required fields and shape:
 ```toml
 # ── Identity (REQUIRED) ──────────────────────────────────────────────
 [plugin]
-name           = "semgrep"                 # unique slug, [a-z0-9_-]+
-display_name   = "Semgrep"                 # human-readable
+name           = "examplescan"             # unique slug, [a-z0-9_-]+
+display_name   = "ExampleScan"             # human-readable
 version        = "1.0.0"                   # semver
 api_version    = "vulture-plugin/1.0"      # contract version this plugin honours
-publisher      = "returntocorp"
-description    = "Cross-language SAST via the Semgrep engine."
+publisher      = "example-org"
+description    = "Cross-language SAST via the ExampleScan engine."
 
 # Optional metadata
-homepage       = "https://semgrep.dev"
-license        = "LGPL-2.1"
-documentation  = "https://semgrep.dev/docs"
+homepage       = "https://example.org/examplescan"
+license        = "Apache-2.0"
+documentation  = "https://example.org/examplescan/docs"
 
 # ── Trust (REQUIRED) ─────────────────────────────────────────────────
 [trust]
 tier           = "community-signed"   # in-tree | community-signed | user-supplied
 
 # Required for community-signed: cosign keyless OIDC identity reference
-signature      = "cosign://sigstore/returntocorp/semgrep-plugin"
+signature      = "cosign://sigstore/example-org/examplescan-plugin"
 
 # Required for user-supplied tier: list of acknowledgements the
 # operator must pass to `vulture plugin install --trust <ack1,ack2>`.
@@ -118,7 +118,7 @@ required_ack   = []
 # ── Runtime (REQUIRED) ───────────────────────────────────────────────
 [runtime]
 type           = "container"          # container | host-binary | in-tree
-image          = "returntocorp/vulture-semgrep:1.0.0"
+image          = "example-org/vulture-examplescan:1.0.0"
 port           = 8080
 health_endpoint = "/health"
 info_endpoint  = "/info"
@@ -207,7 +207,7 @@ this at install + on each `vulture plugin reload`.
 ```json
 {
   "envelope": "vulture-plugin/1.0",
-  "name": "semgrep",
+  "name": "examplescan",
   "version": "1.0.0",
   "phases": ["scan"],
   "capabilities": [
@@ -217,8 +217,8 @@ this at install + on each `vulture plugin reload`.
       "emits": ["finding"]
     }
   ],
-  "tool_versions": { "semgrep": "1.45.0" },
-  "ruleset_versions": { "p/javascript": "2026.04.15" },
+  "tool_versions": { "examplescan": "1.45.0" },
+  "ruleset_versions": { "web": "2026.04.15" },
   "status": "ready"
 }
 ```
@@ -314,10 +314,10 @@ the shared one (the plugin would refuse every dispatch with 403). The shared
 token must never appear on a command line, where any local user can read it
 (`ps`, `/proc/<pid>/cmdline`), so compute the value in a process that reads it
 from the environment. In a shell whose `VULTURE_AGENT_TOKEN` holds the shared
-token, for the plugin `semgrep`:
+token, for the plugin `opengrep`:
 
 ```sh
-python3 - semgrep <<'EOF'
+python3 - opengrep <<'EOF'
 import hashlib, hmac, os, sys
 key = os.environ["VULTURE_AGENT_TOKEN"].encode()
 msg = ("vulture-plugin-run-token/v1:" + sys.argv[1]).encode()
@@ -361,9 +361,9 @@ SHOULD get `400 {"detail": "invalid JSON body"}`, not a 5xx.
 | 400 | `invalid JSON body` | `/run`, the body does not parse |
 
 The orchestrator reports any non-200 answer to `/run` as that plugin's tier
-not being active for the run. The bundled `semgrep` plugin applies every rule
-above from version 0.1.1 (its manifest names `vulture-plugin-semgrep:0.1.3`,
-which the backend builds locally); earlier versions apply none of them.
+not being active for the run. The bundled `opengrep` plugin applies every rule
+above (as did the `semgrep` plugin it replaced, from 0.1.1); its manifest names
+`vulture-plugin-opengrep:0.2.0`, which the backend builds locally.
 
 **Local mode: a host-network plugin has local-process trust.** In local mode
 (the native launcher, `VULTURE_LOCAL_MODE=true`) the orchestrator's API serves
@@ -430,7 +430,7 @@ The canonical event set:
   "file_path": "/src/api/users.js",
   "line_start": 42,
   "line_end": 47,
-  "check_id": "semgrep.javascript.express.security.express-sql-injection",
+  "check_id": "examplescan.javascript.sql-injection",
   "code_snippet": "...",
   "recommendation": "...",
   "references": ["https://cwe.mitre.org/data/definitions/89.html"]
@@ -641,11 +641,11 @@ Three sub-modes (combine freely):
 ```toml
 # Inline exact map — best for ≤ 100 rules
 [normalization.rule_to_cwe]
-"semgrep.javascript.express.express-sql-injection" = "CWE-89"
+"examplescan.javascript.sql-injection" = "CWE-89"
 
 # Prefix map — best for rule families
 [normalization.prefix_to_cwe]
-"semgrep.javascript.lang.security.audit.xss." = "CWE-79"
+"examplescan.javascript.xss." = "CWE-79"
 
 # External file shipped in the plugin's container (for large maps)
 mapping_file = "/etc/vulture-plugin/rules-to-cwe.json"
@@ -662,8 +662,6 @@ Vulture ships canonical cross-maps in
 
 - `owasp_top_10_2021_to_cwe.json`
 - `sans_top_25_to_cwe.json`
-- `semgrep_rule_metadata_extracted.json` (auto-extracted from Semgrep
-  community rules' metadata)
 - `bandit_test_id_to_cwe.json`
 - `gosec_rule_to_cwe.json`
 
@@ -690,14 +688,14 @@ quality. Operators see the warning and can either:
 
 Without normalisation:
 
-- Cross-agent dedup (L3) can't merge a Semgrep CWE-89 with an in-tree
+- Cross-agent dedup (L3) can't merge a plugin's CWE-89 with an in-tree
   CWE skill's CWE-89 — different category strings, no merge.
 - L1 sanitiser map is CWE-keyed — non-CWE categories skip
   language-aware sanitiser detection entirely.
 - L2 rollup groups by `(category, file_path)` — different categories
   mean no rollup, so the same bug shows up N times in the UI.
 - L4 memory_prior inheritance fingerprints include category — a user
-  labelling a Semgrep verdict as FP doesn't propagate to CWE-skill
+  labelling a plugin verdict as FP doesn't propagate to CWE-skill
   findings of the same CWE.
 
 ## Trust tiers
@@ -797,7 +795,7 @@ RUN-FINISHED   (terminal event; orchestrator marks finding-emissions complete)
 `~/.vulture/plugins/state.toml`:
 
 ```toml
-[plugins.semgrep]
+[plugins.opengrep]
 installed_at  = "2026-05-27T13:21:00Z"
 version       = "1.0.0"
 enabled       = true

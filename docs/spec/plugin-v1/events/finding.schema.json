@@ -26,7 +26,7 @@
     "line_end": {"type": "integer", "minimum": 0},
     "check_id": {
       "type": "string",
-      "description": "Plugin-name-prefixed rule ID, e.g. 'semgrep.javascript.express.express-sql-injection'"
+      "description": "Plugin-name-prefixed rule ID, e.g. 'examplescan.javascript.sql-injection'"
     },
     "code_snippet": {"type": "string", "maxLength": 16384},
     "recommendation": {"type": "string", "maxLength": 2048},

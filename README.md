@@ -168,7 +168,7 @@ endpoint). Container plugins also still require Docker.
 (parsed, never sourced — no code execution), so it can hold your
 `VULTURE_USE_LLM` / `OPENAI_API_KEY` / `VULTURE_EMBEDDING_*` settings and a
 `VULTURE_PLUGINS` allow-list. The installer seeds an empty `VULTURE_PLUGINS=`
-(no plugins by default); set e.g. `VULTURE_PLUGINS=semgrep` to enable one.
+(no plugins by default); set e.g. `VULTURE_PLUGINS=opengrep` to enable one.
 Container plugins still require Docker — see [Plugins](#plugins).
 
 Full security model (19 invariants — JWT CSPRNG, bind 127.0.0.1, env
@@ -296,10 +296,10 @@ discovery alone never auto-runs them.
 
 ```bash
 # Dev: activate by name (or "all" / "none") — flag wins over .env
-./scripts/vulture.sh dev openai gpt-4o --plugins semgrep
+./scripts/vulture.sh dev openai gpt-4o --plugins opengrep
 
 # Or persist it — project .env (dev) or ~/.vulture/config/.env (native install):
-VULTURE_PLUGINS=semgrep
+VULTURE_PLUGINS=opengrep
 ```
 
 `VULTURE_PLUGINS=all` activates every discovered plugin; `none` (or an empty

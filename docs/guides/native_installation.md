@@ -203,10 +203,10 @@ build is deterministic for your toolchain; a toolchain mismatch produces a WARN.
 - **Agents bind `127.0.0.1` and require a shared token.** Each start generates
   `VULTURE_AGENT_TOKEN` unless you set one; agents refuse `/run` without it.
 - **Plugins get a token of their own.** A supervised plugin (for example
-  `--plugins semgrep`) never receives the shared token: the backend derives one
+  `--plugins opengrep`) never receives the shared token: the backend derives one
   for that plugin alone and hands it over through the container's environment,
-  never the command line, and the plugin refuses `/run` without it (bundled
-  semgrep 0.1.1 and later). The docker CLI that starts plugins runs without the
+  never the command line, and the plugin refuses `/run` without it (the bundled
+  opengrep plugin, and the semgrep plugin it replaced from 0.1.1). The docker CLI that starts plugins runs without the
   backend's credentials. On Linux a host-network plugin shares this machine's
   loopback, where local mode serves any process as you: the `host-network`
   acknowledgement grants it that trust.

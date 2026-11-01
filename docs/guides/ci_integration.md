@@ -271,7 +271,7 @@ to read the server log to find out what was lost. Example:
 
 ```
   Status: failed
-  Reason: requested agents did not run: semgrep
+  Reason: requested agents did not run: opengrep
 ```
 
 Severity levels from lowest to highest: `info`, `low`, `medium`, `high`, `critical`. Setting `--exit-on medium` will cause exit code 1 if any finding is `medium`, `high`, or `critical`.

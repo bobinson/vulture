@@ -3,7 +3,6 @@ package pluginregistry
 import (
 	"log"
 	"os"
-	"strings"
 	"sync/atomic"
 )
 
@@ -68,7 +67,7 @@ func Build(opts LoadOptions, statePath string) (Registry, error) {
 		var unknown []string
 		plugins, unknown = applyActivationList(plugins, spec)
 		if len(unknown) > 0 {
-			logger.Printf("[plugin] VULTURE_PLUGINS: ignoring unknown plugin(s): %s", strings.Join(unknown, ", "))
+			logger.Printf("[plugin] VULTURE_PLUGINS: ignoring unknown plugin(s): %s", describeUnknownPlugins(unknown))
 		}
 	}
 	return &registry{plugins: plugins}, nil

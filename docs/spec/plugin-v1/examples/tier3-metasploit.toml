@@ -44,7 +44,7 @@ phase          = "prove"
 # target a category, list the CWE ids this plugin can prove.
 matches_cwe    = ["CWE-78", "CWE-79", "CWE-89", "CWE-90", "CWE-94", "CWE-502", "CWE-611", "CWE-918"]
 matches_check_id_prefix = [
-  "semgrep.*injection*",
+  "opengrep.*injection*",
   "cwe.injection.*",
 ]
 emits          = ["proof_phase", "proof_plan", "proof_review", "proof_attempt", "proof_reflection", "proof_result", "proof_summary", "thinking", "run_started", "run_finished"]

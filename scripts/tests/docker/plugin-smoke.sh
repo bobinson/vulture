@@ -3,20 +3,20 @@
 # scripts/tests/docker/plugin-smoke.sh — plugin-activation e2e (feature 0055).
 #
 # Modeled on ui-smoke.sh. Proves the full external-plugin activation path inside
-# a fresh ubuntu:24.04 container: tarball discovery (runtime/plugins/semgrep) ->
+# a fresh ubuntu:24.04 container: tarball discovery (runtime/plugins/opengrep) ->
 # the VULTURE_PLUGINS allow-list -> /api/agents surfacing.
 #
 # It installs the REAL release tarball offline, starts the install-mode launcher
 # (`vulture start --foreground`, which serves API + embedded SPA on :28080), and
 # runs two cases against the unauthenticated (local-mode) /api/agents endpoint:
 #
-#   CASE A (default):   config/.env ships VULTURE_PLUGINS= (empty) -> the semgrep
+#   CASE A (default):   config/.env ships VULTURE_PLUGINS= (empty) -> the opengrep
 #                       plugin is discovered but DISABLED -> /api/agents must NOT
-#                       contain "semgrep".
-#   CASE B (activated): VULTURE_PLUGINS=semgrep -> the plugin is enabled ->
-#                       /api/agents MUST contain a semgrep entry.
+#                       contain "opengrep".
+#   CASE B (activated): VULTURE_PLUGINS=opengrep -> the plugin is enabled ->
+#                       /api/agents MUST contain an opengrep entry.
 #
-# semgrep is surfaced by PRESENCE in the registry allow-list even though its
+# opengrep is surfaced by PRESENCE in the registry allow-list even though its
 # container cannot run (no docker-in-docker) — that graceful state is expected;
 # this asserts presence, not health.
 #
@@ -91,7 +91,7 @@ docker run --rm \
         return 0
     }
 
-    # --- CASE A: default seeded VULTURE_PLUGINS= (empty) -> semgrep absent ---
+    # --- CASE A: default seeded VULTURE_PLUGINS= (empty) -> opengrep absent ---
     grep -q "^VULTURE_PLUGINS=$" "$ENVF" \
         || echo "WARN: seeded VULTURE_PLUGINS is not empty in $ENVF:" >&2
     grep "^VULTURE_PLUGINS=" "$ENVF" >&2 || true
@@ -99,21 +99,21 @@ docker run --rm \
     A=$(fetch_agents) || exit 1
     echo "AGENTS_A_BEGIN"; echo "$A"; echo "AGENTS_A_END"
 
-    # --- CASE B: VULTURE_PLUGINS=semgrep -> semgrep present ---
+    # --- CASE B: VULTURE_PLUGINS=opengrep -> opengrep present ---
     # Edit config/.env in place so the change flows through the real start path.
     if grep -q "^VULTURE_PLUGINS=" "$ENVF"; then
-        sed -i "s/^VULTURE_PLUGINS=.*/VULTURE_PLUGINS=semgrep/" "$ENVF"
+        sed -i "s/^VULTURE_PLUGINS=.*/VULTURE_PLUGINS=opengrep/" "$ENVF"
     else
-        echo "VULTURE_PLUGINS=semgrep" >> "$ENVF"
+        echo "VULTURE_PLUGINS=opengrep" >> "$ENVF"
     fi
 
     B=$(fetch_agents) || exit 1
     echo "AGENTS_B_BEGIN"; echo "$B"; echo "AGENTS_B_END"
 
     fail=""
-    printf "%s" "$A" | grep -q "semgrep" && fail="$fail CASE-A-semgrep-present-but-should-be-absent;"
-    printf "%s" "$B" | grep -q "semgrep" || fail="$fail CASE-B-semgrep-absent-but-should-be-present;"
+    printf "%s" "$A" | grep -q "opengrep" && fail="$fail CASE-A-opengrep-present-but-should-be-absent;"
+    printf "%s" "$B" | grep -q "opengrep" || fail="$fail CASE-B-opengrep-absent-but-should-be-present;"
     if [ -n "$fail" ]; then echo "PLUGIN assertions failed:$fail"; exit 1; fi
-    echo "PLUGIN OK: semgrep absent (A) then present (B) via VULTURE_PLUGINS allow-list"
+    echo "PLUGIN OK: opengrep absent (A) then present (B) via VULTURE_PLUGINS allow-list"
 '
 echo "PASS [plugin] activation A/B holds in $IMAGE"
