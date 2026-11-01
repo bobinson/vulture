@@ -58,10 +58,10 @@ agents/cwe/tests/corpus/fixtures/
 agents/cwe/tests/e2e/fixtures/0101_cwe*/
 agents/cwe/tests/e2e/fixtures/0101_heldout/
 
-# Feature 0058: Semgrep plugin test fixtures are deliberately vulnerable
+# Feature 0058: opengrep plugin test fixtures are deliberately vulnerable
 # code (taint source->sink flows) authored to TEST the detectors — they
 # must never be flagged by self-audits.
-plugins/semgrep/tests/fixtures/
+plugins/opengrep/tests/fixtures/
 
 # Local scratchpad — throwaway test drivers, evidence, scan slices (incl.
 # woofy example code). Git-ignored; also excluded from self-audit.
@@ -81,3 +81,5 @@ magicrouter/docs/features/0008_enterprise_readiness/research/deep_research_run.j
 magicrouter/docs/features/0008_enterprise_readiness/research/claims_by_source.json
 
 .env
+verification/simulated-target/
+plugins/opengrep/rules/

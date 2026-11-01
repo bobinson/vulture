@@ -68,17 +68,63 @@ describe("api.updateRemediation", () => {
   });
 });
 
-describe("auth headers", () => {
-  it("includes Bearer token when present", async () => {
-    localStorage.setItem("vulture_token", "test-jwt");
+// Feature 0102: the session is an HttpOnly cookie the browser attaches.
+// Every request names the CSRF header the backend checks and never carries
+// an Authorization header; only a 204 confirms a logout.
+describe("cookie session", () => {
+  const CSRF = "X-Vulture-CSRF";
+
+  function sentHeaders(call = 0): Headers {
+    return new Headers(mockFetch.mock.calls[call][1].headers as HeadersInit);
+  }
+
+  it("exports the header name the backend checks", async () => {
+    const { CSRF_HEADER } = await import("./constants.ts");
+    expect(CSRF_HEADER).toBe(CSRF);
+  });
+
+  it("sends the CSRF header and no Authorization, even with a legacy token stored", async () => {
+    localStorage.setItem("vulture_token", "legacy-jwt");
+    mockFetch.mockReturnValueOnce(jsonResponse([])).mockReturnValueOnce(jsonResponse({ id: "a1" }));
+    await api.listAudits();
+    await api.createAudit({ source_id: "s1", types: ["owasp"] });
+    for (const call of [0, 1]) {
+      expect(sentHeaders(call).get(CSRF)).toBe("1");
+      expect(sentHeaders(call).has("Authorization")).toBe(false);
+    }
+  });
+
+  it("keeps fetch's default same-origin credentials", async () => {
     mockFetch.mockReturnValueOnce(jsonResponse([]));
     await api.listAudits();
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer test-jwt" }),
+    expect(mockFetch.mock.calls[0][1].credentials ?? "same-origin").toBe("same-origin");
+  });
+
+  it("me() takes no token and is deduplicated like any GET", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ id: "user-1" }));
+    await Promise.all([api.me(), api.me()]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith("/api/auth/me", expect.any(Object));
+    expect(sentHeaders().has("Authorization")).toBe(false);
+  });
+
+  it("logout() POSTs with the CSRF header and resolves on a 204 without parsing a body", async () => {
+    mockFetch.mockReturnValueOnce(
+      Promise.resolve({
+        ok: true,
+        status: 204,
+        json: () => Promise.reject(new SyntaxError("Unexpected end of JSON input")),
+        text: () => Promise.resolve(""),
       }),
     );
+    await expect(api.logout()).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledWith("/api/auth/logout", expect.objectContaining({ method: "POST" }));
+    expect(sentHeaders().get(CSRF)).toBe("1");
+  });
+
+  it.each([200, 500])("logout() rejects on a %i: only a 204 confirms the sign-out", async (status) => {
+    mockFetch.mockReturnValueOnce(jsonResponse({ error: "not signed out" }, status));
+    await expect(api.logout()).rejects.toThrow();
   });
 });
 

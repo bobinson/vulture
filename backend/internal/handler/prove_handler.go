@@ -50,7 +50,7 @@ func (h *ProveHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 	}
 	results, err := h.svc.GetResults(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get prove results", err)
 		return
 	}
 	if results == nil {
@@ -69,7 +69,7 @@ func (h *ProveHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := h.svc.GetSummary(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get prove summary", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -85,7 +85,7 @@ func (h *ProveHandler) GetResultsByFingerprint(w http.ResponseWriter, r *http.Re
 	}
 	results, err := h.svc.GetResultsByFingerprint(fp)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get prove results by fingerprint", err)
 		return
 	}
 	if results == nil {

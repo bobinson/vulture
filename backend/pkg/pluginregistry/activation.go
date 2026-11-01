@@ -26,7 +26,7 @@ func parseActivationSpec(spec string) []string {
 //
 // In-tree built-in agents (chaos/owasp/…) are NEVER touched — they're governed
 // by state.toml, not by this list. This is the load-bearing safety property:
-// VULTURE_PLUGINS=semgrep must not switch off the core agents.
+// VULTURE_PLUGINS=opengrep must not switch off the core agents.
 func applyActivationList(plugins []Plugin, spec string) (out []Plugin, unknown []string) {
 	tokens := parseActivationSpec(spec)
 	all, none := false, false
@@ -72,4 +72,22 @@ func applyActivationList(plugins []Plugin, spec string) (out []Plugin, unknown [
 		}
 	}
 	return out, unknown
+}
+
+// renamedPlugins maps a retired plugin slug to the one that replaced it, so a
+// VULTURE_PLUGINS list written for the old name is told what to use (0102:
+// the bundled `semgrep` plugin became `opengrep` when its engine changed).
+var renamedPlugins = map[string]string{"semgrep": "opengrep"}
+
+// describeUnknownPlugins formats unmatched VULTURE_PLUGINS tokens for the
+// warning, naming the replacement of a renamed plugin.
+func describeUnknownPlugins(unknown []string) string {
+	out := make([]string, len(unknown))
+	for i, name := range unknown {
+		out[i] = name
+		if to, ok := renamedPlugins[name]; ok {
+			out[i] = name + " (renamed: use " + to + ")"
+		}
+	}
+	return strings.Join(out, ", ")
 }

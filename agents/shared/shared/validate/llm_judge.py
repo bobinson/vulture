@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 from shared.anchor import anchor_extras
 from shared.cancellation import current_audit_deadline, current_cancel_token
+from shared.language import detect_language
 from shared.lines import parse_line
 from shared.llm.errors import broker_detail
 from shared.llm.jsonscan import iter_balanced_objects
@@ -45,7 +46,6 @@ from shared.tools.line_format import strip_line_number
 from shared.tools.window import CODE_SNIPPET_START
 
 from . import l5_cache
-from .language import detect_language
 from .refutation import POLICY_CLASSES
 from .types import ValidateConfig, ValidationCheck
 from .voter import JUDGE_CITED, JUDGE_UNCITED, JUDGE_UNDECIDED

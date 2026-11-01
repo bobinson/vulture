@@ -129,3 +129,14 @@ func TestApplyActivationList(t *testing.T) {
 		}
 	})
 }
+
+// 0102: the bundled `semgrep` plugin was renamed `opengrep` (its engine
+// changed). A VULTURE_PLUGINS list still naming `semgrep` matches nothing, so
+// the warning names the new slug instead of leaving the tier silently off.
+func TestDescribeUnknownPlugins_NamesTheRename(t *testing.T) {
+	got := describeUnknownPlugins([]string{"semgrep", "nosuch"})
+	want := "semgrep (renamed: use opengrep), nosuch"
+	if got != want {
+		t.Errorf("describeUnknownPlugins = %q; want %q", got, want)
+	}
+}

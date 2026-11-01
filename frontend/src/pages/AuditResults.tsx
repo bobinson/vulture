@@ -144,7 +144,8 @@ function AuditResultsView({ id }: { id: string | undefined }) {
   const steps = useSynthetic ? completedSteps : streamSteps;
   const done = isTerminal ? true : streamDone;
 
-  // Feature 0058 (R9): graceful-absence notice when the semgrep tier was
+  // Feature 0058 (R9): graceful-absence notice when the opengrep (or, in older
+  // audits, semgrep) tier was
   // ticked but unavailable. Hoisted once — both the terminal and running
   // layouts render this same element (simplify review #3).
   const semgrepNotice = <SemgrepTierNotice lines={lines} />;

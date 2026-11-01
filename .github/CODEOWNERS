@@ -45,6 +45,17 @@
 /.github/workflows/release.yml                    @bobinson
 /.github/workflows/vendor-pbs.yml                 @bobinson
 /.github/workflows/vendor-cosign.yml              @bobinson
+# The release's Trivy installer and its committed tarball SHA-256 pins.
+/scripts/install-trivy.sh                         @bobinson
+/scripts/trivy-shas-*.txt                         @bobinson
+# The release CVE gate and the waiver-file check it shares with its tests.
+/scripts/release-cve-gate.sh                      @bobinson
+/scripts/lib/trivyignore.sh                       @bobinson
+# The bundled plugin's build recipe and manifest (built on the user's machine, never published).
+/plugins/opengrep/Dockerfile                      @bobinson
+/plugins/opengrep/plugin.toml                     @bobinson
+/plugins/opengrep/requirements.txt                @bobinson
+/plugins/opengrep/rules/RULESET_SNAPSHOT.json     @bobinson
 
 # Supply-chain hardening (feature 0056): the CI lockfile gate, the dispatch-only
 # relock + security-digest workflows, the pinned-uv composite action, the uv-pin

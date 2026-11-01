@@ -95,7 +95,10 @@ Otherwise, follow the install instructions in Step 2.
 git clone https://github.com/bobinson/vulture.git /opt/vulture
 cd /opt/vulture
 
-# Create the source directory for per-run git clones
+# Create the host directory for VULTURE_SOURCE_DIR (set below). Compose
+# mounts it read-only at /mnt/source in the backend and every agent, for
+# local paths to scan, if any. Git clones do not go here: the backend clones
+# into its own temp dir.
 sudo mkdir -p /var/vulture/sources
 sudo chown $USER:$USER /var/vulture/sources
 ```
@@ -133,14 +136,23 @@ VULTURE_EMBEDDING_URL=https://api.openai.com/v1
 # rate-limit / login-throttle bucket. Verify against `docker compose logs
 # backend` (the logged remote= address) and tighten to the narrowest CIDR.
 VULTURE_TRUSTED_PROXIES=172.16.0.0/12
-# Local-path (Type=local) ingest is rejected in centralized mode unless a
-# confinement root is set. Most Mode B servers scan git URLs and don't need it:
-# VULTURE_SOURCE_ROOT=/srv/vulture/allowed-sources
+# Server-side local paths (Type=local ingest, the folder browser, and audits
+# of stored local sources) are refused in centralized mode unless a
+# confinement root is set. Most Mode B servers scan git URLs and don't need
+# it. If you do, use a dedicated directory (never the checkout, which holds
+# .env, nor the clone temp dir) as VULTURE_SOURCE_DIR above: the backend
+# container sees host files only at /mnt/source, its mount, so the root is
+# that container path (a host path such as /srv/vulture/allowed-sources
+# would refuse every local path). See "Stored local sources" below before
+# upgrading a server that already holds local sources:
+# VULTURE_SOURCE_ROOT=/mnt/source
 # Public self-registration is OFF by default in Mode B; provision users via the
 # admin-only POST /api/admin/users (see Step 8 for first-admin bootstrap).
 # VULTURE_ALLOW_OPEN_REGISTRATION=false
-# Optional egress allowlists (empty = internal targets blocked):
-# VULTURE_GIT_HOST_ALLOWLIST=git.internal.example
+# Optional egress controls (see "Security hardening variables" below). The git
+# list limits clones to the hosts it names, each still on a public address; the
+# webhook list exempts internal receivers from the SSRF guard:
+# VULTURE_GIT_HOST_ALLOWLIST=github.com
 # VULTURE_WEBHOOK_HOST_ALLOWLIST=hooks.internal.example
 EOF
 ```
@@ -154,30 +166,117 @@ sed -i "s/VULTURE_WEBHOOK_SECRET=CHANGE_ME/VULTURE_WEBHOOK_SECRET=$(openssl rand
 
 ### Security hardening variables (feature 0065)
 
-These controls are opt-in and default to the pre-0065 behavior, but three of them materially affect a Mode B deployment:
+Not every default here preserves older behavior: some now refuse what an older release allowed, such as local paths in centralized mode without `VULTURE_SOURCE_ROOT`. Three of these controls materially affect a Mode B deployment:
 
 | Variable | Mode B guidance |
 |---|---|
 | `VULTURE_TRUSTED_PROXIES` | **Set this.** With TLS terminated by the Step 7 reverse proxy, the backend sees the proxy as the client. Unless you list the proxy's source address (CIDR/IP), `X-Forwarded-For` is ignored and per-IP rate limiting **and** the login throttle key on the proxy address — so every client shares one bucket. Tighten to the narrowest range that covers your proxy. |
 | `VULTURE_ALLOW_OPEN_REGISTRATION` | Defaults to **false** in Mode B (`VULTURE_LOCAL_MODE` unset), so `POST /api/auth/register` returns 403. Create users with the admin-only `POST /api/admin/users`; see Step 8 for first-admin bootstrap. Set to `true` only if you intend a shared, self-service workspace. |
-| `VULTURE_SOURCE_ROOT` | Only needed if you ingest **local paths** (`type=local`) on the server; centralized mode rejects local ingest unless this confinement root is set. Git-URL scans (the usual CI flow) don't need it. |
+| `VULTURE_SOURCE_ROOT` | Only needed if you ingest **local paths** (`type=local`) or use the **folder browser** on the server. Centralized mode refuses both unless this confinement root is set: browse answers 403 and ingest 400 `local paths are disabled on this server: …` for every path, before the path is looked at. A read-only (Mode C) server refuses both whatever the root: browse gives a member or admin that same 403, although its advice to set the root cannot help there, and ingest is refused as a write before the path is looked at, with 503 `read-only mode: …` (a viewer gets 403 `write access requires member, admin, or api-key credentials` instead). With a root set, a local path must be absolute, without `..`, at most 4096 bytes, and spelled under the root; an outside symlink that points into the root is refused, so submit the canonical path. Ingest then gives every path that is outside the root, missing, unreadable, unresolvable or linked out of it the same 400 `path not permitted: must be an existing directory inside the source root`; only a path inside the root gets an error that names it (`path does not exist: …`, `path is not a directory: …`). Browse is open to members and admins only (viewers and API keys get 403 `requires member or admin role`), is confined the same way, and gives every outside path the same refusal, so neither reveals anything about the rest of the filesystem. Every audit re-checks its stored local source against the same policy before any agent runs (see "Stored local sources" below). Point the root at a dedicated directory: never the checkout (it holds `.env`), never the clone temp dir, and never one containing automount or network mounts, where a path probe can block. The root is a path as the backend sees it. Under `docker compose` the backend sees host files only through the `VULTURE_SOURCE_DIR` bind mount at `/mnt/source`, so set `VULTURE_SOURCE_ROOT=/mnt/source` and point `VULTURE_SOURCE_DIR` at the dedicated host directory (its default, `./`, is the checkout). A host path such as `/srv/vulture/allowed-sources` fits only a backend that runs on the host; under compose it refuses every local path. Browse also refuses the denylisted system trees (`/var`, `/usr`, `/etc`, …) even inside the root, so do not place the root under them. Git-URL scans (the usual CI flow) don't need it. |
 
 Egress controls (all default to blocking internal/private targets, which is correct for a public-facing server):
 
-- `VULTURE_GIT_HOST_ALLOWLIST` / `VULTURE_WEBHOOK_HOST_ALLOWLIST` — comma lists of internal hosts to exempt from the SSRF guard, for a trusted internal git host or webhook receiver. A blocked request surfaces an actionable error naming the flag.
+- `VULTURE_GIT_HOST_ALLOWLIST` — comma list of the only git hosts a clone may use; empty means any public host. It narrows the SSRF guard and never widens it: a listed host must still resolve to a public address, so the list cannot admit an internal git server. A git host missing from the list is refused with a `400` that names the host and the variable.
+- `VULTURE_WEBHOOK_HOST_ALLOWLIST` — comma list of internal hosts to exempt from the SSRF guard, for a trusted internal webhook receiver.
+- A git or webhook host that is internal or cannot be resolved is refused with a `400` that carries a fixed message and a `request_id`. For an internal host, the backend log line for that id names the host and the allowlist variable: for a webhook, the variable that would exempt it; for git, that `VULTURE_GIT_HOST_ALLOWLIST` does not exempt it.
 - `VULTURE_GIT_ALLOW_REDIRECTS` — off by default (git redirects are blocked to prevent redirect-SSRF); enable only for a trusted host that redirects.
-- `VULTURE_GIT_SSH_STRICT` / `VULTURE_GIT_SSH_KNOWN_HOSTS` / `VULTURE_GIT_SSH_INSECURE` — SSH host-key policy for key-based clones (default `accept-new` TOFU; `_INSECURE=true` is a rollback escape hatch that disables MITM protection).
+- `VULTURE_GIT_SSH_STRICT` / `VULTURE_GIT_SSH_KNOWN_HOSTS` / `VULTURE_GIT_SSH_INSECURE` — SSH host-key policy for key-based clones (default `accept-new` TOFU, pins kept in the host-key store described under "SSH host-key store" below; `_INSECURE=true` is a rollback escape hatch that disables MITM protection).
 - `VULTURE_ALLOW_INSECURE_LLM` / `VULTURE_STRICT_LLM_ENDPOINT` — govern whether the provider API key may be sent to a non-TLS LLM endpoint. Default: the key is withheld from an `http://` endpoint and the server boots with a warning; set `VULTURE_STRICT_LLM_ENDPOINT=true` to hard-fail startup instead.
 
 The failed-login throttle (per email+IP, escalating capped delay, with a hard-ceiling 429) is always on. Its threshold and window are tunable via `VULTURE_LOGIN_LOCKOUT_MAX` (default 5) and `VULTURE_LOGIN_LOCKOUT_WINDOW_SEC` (default 900 = 15 min); a non-positive value falls back to the default.
+
+#### SSH host-key store (feature 0102)
+
+A key-based clone (`git_credentials.type = ssh_key`) records the host keys it has accepted in a known_hosts file, the host-key store. Unless `VULTURE_GIT_SSH_KNOWN_HOSTS` names one, the store is `<directory of the database file>/ssh/known_hosts`, the directory of `VULTURE_DB_PATH` (default `/data/vulture.db`, so `/data/ssh/known_hosts` in the container, also when the database itself is Postgres; `~/.vulture/ssh/known_hosts` for the native dev launcher; `$VULTURE_HOME/data/ssh/known_hosts` for a native install).
+
+The backend verifies the default store before every key clone, and writes the private key only after the store passes:
+
+- `<data dir>/ssh` must be a real directory (not a symlink) owned by the backend's user. A directory of its own with group or other permissions is tightened to `0700`, which is logged once at WARN (`ssh_store_dir_tightened`).
+- Its parent (the data directory) must not be world-writable without the sticky bit.
+- `known_hosts` must be absent (ssh creates it on first contact) or a regular file owned by the backend's user with a single hard link.
+- The path must not contain a character ssh would interpret (`"`, `'`, `%`, `$`, `\` or a control character). A path with a space is quoted for ssh.
+
+Anything else fails the clone closed, before git runs: the response is a generic 500 (`{"error":"internal error","request_id":…}`), and the backend log line for that request id (`http_internal_error`) carries the cause, `ssh host-key store refused: <path>: <reason>; set VULTURE_GIT_SSH_KNOWN_HOSTS to an operator-managed known_hosts file`. The same refusal follows when there is no database file to put the store beside (an in-memory `VULTURE_DB_PATH`). A server that cannot satisfy these checks, such as a container with an arbitrary UID or a read-only filesystem, sets `VULTURE_GIT_SSH_KNOWN_HOSTS` instead: that file is used as given, with no checks, and is the operator's to protect.
+
+When upgrading: pins an older release kept in the shared temp directory (`/tmp/vulture-ssh/known_hosts`) are not imported, because anyone on the host could have written them. Under the default `accept-new`, each git host is therefore accepted once more on its first key clone. In the container, `/data` is not a volume, so the store starts empty whenever the backend container is recreated; mount an operator-managed file and point `VULTURE_GIT_SSH_KNOWN_HOSTS` at it to keep pins across recreation.
+
+**Seeding the store for `VULTURE_GIT_SSH_STRICT=yes`.** With `yes`, ssh accepts no host it does not already know, so every key clone fails (a 400 `clone: git clone failed: …`, with ssh's host-key error in the log) until the store holds each git host's key. The backend also forces `yes` at startup when the installed OpenSSH is older than 7.6, which cannot do `accept-new`; it logs a warning naming the store. To seed it, as the backend's user:
+
+```bash
+DATA_DIR=/data                       # the directory of VULTURE_DB_PATH
+install -d -m 0700 "$DATA_DIR/ssh"
+keys=$(mktemp)
+ssh-keyscan -t ed25519 git.example.com >> "$keys"   # repeat for each git host
+ssh-keygen -lf "$keys"               # compare each fingerprint with the one the host publishes
+cat "$keys" >> "$DATA_DIR/ssh/known_hosts" && chmod 0600 "$DATA_DIR/ssh/known_hosts"
+rm -f "$keys"
+```
+
+`ssh-keyscan` trusts the network it runs on, so the fingerprint comparison is the step that makes the pin trustworthy. In the container, run the same commands with `docker compose exec backend sh -c '…'` (they run as the image's `vulture` user), or, because `/data` does not survive a recreated container, seed an operator-managed file and set `VULTURE_GIT_SSH_KNOWN_HOSTS` to its mounted path.
+
+### Stored local sources (feature 0102)
+
+Every audit re-checks its stored local source (`sources.type = 'local'`) against the current local-path policy before any agent runs. An audit of a row the policy refuses fails with `source refused by the local-path policy`, and nothing is scanned. Such rows exist when a database created in local mode is served centralized, when the root is narrowed, or when a row was stored through a path spelling an older release accepted (a `..` after a symlink, or an outside symlink into the root). A stored path keeps the spelling of its original request, so these rows can be listed before upgrading and re-ingested under their canonical path.
+
+**When the root itself is unavailable.** The backend opens the root to confine every path, so its user needs read and search permission on the root itself, not only search. A root that is missing or unmounted, is not a directory, or cannot be opened is the server's fault, not the caller's: browse and ingest answer the generic `500` (`internal error` and a `request_id`), never the `path not permitted` refusal a caller's own path gets, and an audit of a stored local source fails with `source root unavailable`. No response names the root. The backend logs `source_root_unavailable` at ERROR with the cause: once at startup, naming `VULTURE_SOURCE_ROOT`, and again on each refused browse or ingest, just before that request's `http_internal_error` line, which carries the `request_id` and reads `source root unavailable`. A refused audit is logged as `local_source_refused`.
+
+**When the root does not answer.** The startup check waits at most 5 seconds for the root. A root on a mount that has stopped answering, such as a hung hard-mounted network share, is logged the same way, with the cause `probe timed out after 5s`, and the backend starts anyway. Browse, ingest and the audit of a stored local source still check the root themselves, with no such bound, so they can wait on that mount.
+
+**With a root set**, this query lists the rows the policy would refuse. Pass the root exactly as configured, with no trailing slash. It uses only `substr`, `length`, `||` and `LIKE`, which both engines provide, and compares the root by length rather than with a `LIKE` prefix, because `_` and `%` in a root path would act as wildcards:
+
+```sql
+-- stored_local_rows.sql
+-- SQLite (sqlite3 CLI):
+--   sqlite3 "$VULTURE_DB_PATH" ".parameter set :root '/srv/vulture/sources'" ".read stored_local_rows.sql"
+-- Postgres (psql): replace :root with :'root' and run
+--   psql "$VULTURE_DB_DSN" -v root=/srv/vulture/sources -f stored_local_rows.sql
+SELECT id, path, created_at
+FROM sources
+WHERE type = 'local'
+  AND (   NOT (path = :root OR substr(path, 1, length(:root) + 1) = :root || '/')
+       OR path LIKE '%/../%' OR path LIKE '%/..' OR path NOT LIKE '/%')
+ORDER BY created_at;
+```
+
+**With no root in centralized mode**, every local row is refused: `SELECT id, path, created_at FROM sources WHERE type = 'local' ORDER BY created_at;`
+
+What the query cannot see:
+
+- It is lexical. A row whose path is under the root with no `..` segment, but runs through an in-root symlink that was planted or swapped to point outside after ingest, passes it. Only the re-check at dispatch, or the dry run below, finds those.
+- If the root is itself a symlink, rows stored under its resolved spelling are listed as false positives. Run the query again with the resolved root (`realpath`) and keep the rows that both runs list.
+
+**Recommended dry run before upgrading.** It has two halves, because no one place has both a database client and the backend's view of the paths. List the stored paths where a database client runs, then resolve them as the backend's user where those paths are valid, i.e. inside the backend container for compose paths such as `/mnt/source/…`. The backend image has neither `psql` nor `sqlite3`. With the compose `postgres` service (user, database and port as in Step 8):
+
+```sh
+docker compose exec -T postgres psql -U vulture -d vulture -p 25432 -At \
+  -c "SELECT path FROM sources WHERE type='local'" |
+docker compose exec -T backend sh -c '
+R=$(realpath "$VULTURE_SOURCE_ROOT") || exit 1
+n=0
+while IFS= read -r p; do
+  n=$((n+1))
+  r=$(realpath "$p" 2>/dev/null) || { printf "UNRESOLVABLE %s\n" "$p"; continue; }
+  case "$r/" in "$R"/*) ;; *) printf "OUTSIDE %s -> %s\n" "$p" "$r" ;; esac
+done
+echo "checked $n local sources"'
+```
+
+With a Neon database, run the same query with `psql "<your Neon connection string>" -At -c "…"` on any host that has `psql`, and pipe it into the same `docker compose exec -T backend sh -c '…'`. A backend that runs natively, not in a container, runs the loop on its own host as its own user, fed by `psql "$VULTURE_DB_DSN" -At -c "…"` or, for SQLite, `sqlite3 -noheader "$VULTURE_DB_PATH" "SELECT path FROM sources WHERE type='local'"`.
+
+Read the last line before the rest: `checked 0 local sources` means the loop got no paths (no local rows, or the query failed or never reached it), not that every row passed. The loop stops with an error when `VULTURE_SOURCE_ROOT` is unset or does not resolve in the backend.
+
+It approximates the re-check, which also resolves symlinks, with two differences: `realpath` reports a stored path as `UNRESOLVABLE` when more than its last component is missing, while the re-check judges any missing tail lexically; and the sketch does not handle paths that contain a newline. It passes paths to `realpath` without `--`, because the backend image's `realpath` (BusyBox) reads `--` as a path, which would make every row `UNRESOLVABLE`; a GNU `realpath` reports a stored path that starts with `-` as `UNRESOLVABLE` instead.
 
 ---
 
 ## Step 5: Start services
 
 ```bash
-docker compose up -d --build
+docker build -t vulture-agent-base:latest -f agents/Dockerfile.base agents/
+COMPOSE_BAKE=false docker compose up -d --build
 ```
+
+Every agent image is built `FROM vulture-agent-base:latest`, the image that holds the agents' shared code (`agents/shared`). Compose neither builds nor rebuilds it, and it is never pushed to a registry, so build it first, and again on every update (see "Updating Vulture" below). `COMPOSE_BAKE=false` makes Compose build through the Docker daemon, which finds that local image; Compose's bake builder may look for it in a registry instead and fail to pull it. The repository's own launchers (`scripts/prod_start.sh`, `scripts/mode-b-smoke.sh`) run the same two commands.
 
 Verify all services are healthy:
 
@@ -217,7 +316,9 @@ The backend will connect directly to Neon via the `VULTURE_DB_DSN` in `.env`.
 
 ## Step 7: TLS termination
 
-The Vulture backend listens on port 28080 (HTTP). You need a reverse proxy to terminate TLS and expose HTTPS on port 443.
+Compose runs two plain-HTTP services. The backend on port 28080 answers the API (`/api/...`, including the SSE audit streams) and `/health`; it serves no web UI under compose, so `/` is a 404 there. The `frontend` container on port 23001 serves the web UI. You need a reverse proxy that terminates TLS on port 443 and routes `/api/*` and `/health` to 28080 and every other path to 23001, so that the UI, the API and the CLI share one HTTPS origin. Both examples below do that.
+
+Only the proxy should be reachable from outside. Compose publishes 28080 and 23001 on every interface, and a host firewall such as ufw does not filter ports that Docker publishes, so close both in the VM's cloud firewall or security group: allow inbound SSH and the proxy's ports only (443, and 80 if your ACME client or an HTTP-to-HTTPS redirect uses it). A browser that signs in over plain HTTP, such as `http://<vm>:23001`, gets a session cookie without `Secure` (see "Browser sessions behind the proxy" below).
 
 ### Option A: Caddy (recommended -- automatic HTTPS)
 
@@ -237,10 +338,18 @@ Create `/etc/caddy/Caddyfile`:
 
 ```
 vulture.example.com {
-  reverse_proxy localhost:28080 {
-    transport http {
-      response_header_timeout 5m
+  # API, SSE audit streams and health checks: the backend
+  @backend path /api/* /health
+  handle @backend {
+    reverse_proxy localhost:28080 {
+      transport http {
+        response_header_timeout 5m
+      }
     }
+  }
+  # Every other path: the web UI (the frontend container)
+  handle {
+    reverse_proxy localhost:23001
   }
 }
 ```
@@ -268,12 +377,15 @@ server {
     ssl_certificate     /etc/letsencrypt/live/vulture.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/vulture.example.com/privkey.pem;
 
-    location / {
+    # Inherited by each location below that sets no proxy_set_header of its own
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # API and SSE audit streams: the backend
+    location /api/ {
         proxy_pass http://127.0.0.1:28080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
 
         # SSE support -- disable buffering and set long timeouts
         proxy_buffering off;
@@ -281,10 +393,45 @@ server {
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:28080;
+    }
+
+    # Every other path: the web UI (the frontend container)
+    location / {
+        proxy_pass http://127.0.0.1:23001;
+    }
 }
 ```
 
 Obtain certificates via certbot or your preferred ACME client.
+
+Once the proxy runs, check both routes. The first command must print `200` (the UI); a `404` means `/` still goes to the backend:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://vulture.example.com/
+curl -s https://vulture.example.com/health
+# {"status":"healthy"}
+```
+
+### Browser sessions behind the proxy (feature 0102)
+
+A browser session is an HttpOnly, SameSite=Strict cookie, issued to a sign-in that sends `X-Vulture-CSRF: 1`, not a token that page scripts can read. Four things follow from that:
+
+- **Forward `X-Forwarded-Proto`.** Over HTTPS the backend issues `__Host-vulture_session` with `Secure`; it can only tell HTTPS apart through that header, since TLS ends at the proxy. Without it the cookie is a non-`Secure` `vulture_session` and HSTS is left out. The nginx example above sets it with `proxy_set_header X-Forwarded-Proto $scheme;`, and Caddy's `reverse_proxy` sends it by default. Check it once, with no credentials needed:
+
+  ```bash
+  curl -s -o /dev/null -D - -X POST -H 'X-Vulture-CSRF: 1' \
+    https://vulture.example.com/api/auth/logout | grep -i '^set-cookie'
+  # Want: Set-Cookie: __Host-vulture_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict
+  ```
+
+- **Use a dedicated hostname.** Serve Vulture on a hostname that no other service uses, on any port. Cookies are not isolated by port: every HTTP(S) service on another port of the same name receives the session cookie, and its value is a JWT the API also accepts as a Bearer token.
+- **Cookies are host-only.** Each hostname has its own session, so users sign in separately on the read-only viewer (Optional Step 10).
+- **Reload open tabs after upgrading.** A tab loaded before the upgrade may be refused with `cookie-authenticated requests must send X-Vulture-CSRF; reload the page`. After the reload, users sign in once: the UI discards the token an older version kept in browser storage instead of exchanging it (local mode signs in again by itself).
+
+The CLI, CI clients and scripts are unaffected: they send a Bearer token and never the `X-Vulture-CSRF` header, so login still returns the token in its body.
 
 ---
 
@@ -324,6 +471,8 @@ vulture api-key create ci-github-actions
 #   Name:   ci-github-actions
 #   Prefix: vk_XXXX
 ```
+
+The API-key routes and `POST /api/admin/users` accept only a Bearer credential, as the CLI sends; a browser session cookie gets 403 there, so a web page can never turn a session into a key or a user.
 
 Copy the full key (`vk_...`) and store it in your CI system's secrets. You will never be able to retrieve it again -- only the prefix is stored.
 
@@ -369,7 +518,7 @@ EOF
 docker compose -f docker-compose.readonly.yml up -d --build
 ```
 
-The viewer connects to the same Neon database (read-only) and shares the JWT secret so auth tokens validate on both servers. See [neon_deployment.md](neon_deployment.md) for full details.
+The viewer connects to the same Neon database (read-only) and shares the JWT secret so auth tokens validate on both servers. Browser sessions do not carry over, because the session cookie is host-only: users sign in on the viewer's hostname separately. Login and logout work on the viewer; writes stay refused. See [neon_deployment.md](neon_deployment.md) for full details.
 
 ---
 
@@ -389,13 +538,49 @@ docker compose logs -f agent-cwe agent-owasp
 docker compose logs backend 2>&1 | grep -i error
 ```
 
+**Tracing an error to its cause (feature 0102).** No `500` and no curated
+`400` carries internal detail. An unexpected failure answers `500` with only
+`{"error":"internal error","request_id":"<id>"}`. That includes a clone the
+server could not run or that stopped with its request: git missing from
+`PATH`, the client gone, or the ingest time limit reached. A refusal whose
+cause names something of the server's, such as a git or webhook host that
+resolves to an internal address, or a `git clone` that git itself fails,
+answers `400` with a fixed message and the same `request_id`. The id is also
+the `X-Request-ID` response header. A client may send its own id (1-64
+characters of `A-Z a-z 0-9 . _ -`); any other value is replaced by a
+server-generated one. The cause is logged once under that id
+(`http_internal_error` at ERROR for a 500, `http_caller_error` at WARN for a
+400), with the operation, method and path. The path and the cause are each
+cut to 2048 bytes, and `err_bytes` gives the cause's full length. Grep the
+backend log for the id a user reports:
+
+```bash
+docker compose logs backend 2>&1 | grep '<request_id>'
+```
+
+Some responses carry server detail by design:
+
+- The LLM health message names the LLM endpoint and the probe's error.
+  `GET /api/llm/health` reports it, and `POST /api/audits` answers it as a
+  `503` when `VULTURE_REQUIRE_LLM=true` and the LLM is unreachable.
+- When no agent answers, `GET /api/llm/health` answers `502`
+  `could not reach any agent: …`, with an agent's address and its dial error.
+- An audit's `degraded_reason` can hold the LLM health message, an agent's
+  error text, or the text of a panic that ended the run.
+- In local mode with no `VULTURE_SOURCE_ROOT`, a local path that fails for a
+  reason the server does not classify is answered `400` `validate path: …`,
+  with its cause.
+
 ### Updating Vulture
 
 ```bash
 cd /opt/vulture
 git pull
-docker compose up -d --build
+docker build -t vulture-agent-base:latest -f agents/Dockerfile.base agents/
+COMPOSE_BAKE=false docker compose up -d --build
 ```
+
+Rebuild the agent base image first, as in Step 5: `docker compose up --build` rebuilds each agent image on top of whatever base image is already there, so without that step the agents keep the shared code of the release you are leaving.
 
 Migrations run automatically at backend startup. Neon schema changes are idempotent (`CREATE ... IF NOT EXISTS`).
 

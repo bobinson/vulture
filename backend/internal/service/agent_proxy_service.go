@@ -17,6 +17,7 @@ import (
 	"github.com/vulture/backend/internal/agui"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/pkg/pluginregistry"
 )
 
 type AgentProxyService interface {
@@ -38,6 +39,9 @@ type BrokerMinter interface {
 type agentProxyService struct {
 	client *http.Client
 	minter BrokerMinter
+	// tokens supplies the X-Vulture-Agent-Token each dispatch presents: the
+	// shared token to an in-tree agent, the derived token to any other type.
+	tokens pluginregistry.RunTokens
 	// auditTimeout bounds a whole per-agent audit (env
 	// VULTURE_AGENT_PROXY_TIMEOUT_SEC, default 600s). A slow local model
 	// (LM Studio/Ollama) scanning a large tree may need longer than the historical
@@ -124,6 +128,11 @@ func timeoutMarginWarning(proxy, agentMax, llmCall time.Duration) string {
 // NewAgentProxyService builds the proxy. minter may be nil (broker off) — then
 // no broker_token is injected and agents use their env provider keys (Mode A).
 // The two per-agent timeouts are env-configurable (see the struct fields).
+//
+// The run tokens are built once, here, from VULTURE_AGENT_TOKEN and no plugin
+// registry, so the agent registry's names decide what is in-tree; that is exact
+// for a backend without plugins. The server, which holds the registry, uses
+// NewAgentProxyServiceWithTokens.
 func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 	auditTimeout := envDurationSec("VULTURE_AGENT_PROXY_TIMEOUT_SEC", defaultAgentProxyTimeoutSec)
 	respHeaderTimeout := envDurationSec("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", defaultAgentRespHeaderTimeoutSec)
@@ -142,6 +151,7 @@ func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 	}
 	return &agentProxyService{
 		minter:            minter,
+		tokens:            pluginregistry.NewRunTokens(os.Getenv(pluginregistry.AgentTokenEnv), nil),
 		auditTimeout:      auditTimeout,
 		respHeaderTimeout: respHeaderTimeout,
 		client: &http.Client{
@@ -154,6 +164,15 @@ func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 			},
 		},
 	}
+}
+
+// NewAgentProxyServiceWithTokens is NewAgentProxyService presenting t, the run
+// tokens the server built once from its configuration and plugin registry and
+// shares with the plugin supervisor.
+func NewAgentProxyServiceWithTokens(minter BrokerMinter, t pluginregistry.RunTokens) AgentProxyService {
+	s := NewAgentProxyService(minter).(*agentProxyService)
+	s.tokens = t
+	return s
 }
 
 // envFirstToken reads an env var and keeps only its leading whitespace/comment
@@ -255,8 +274,8 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token := os.Getenv("VULTURE_AGENT_TOKEN"); token != "" {
-		req.Header.Set("X-Vulture-Agent-Token", token)
+	if token := s.tokens.For(agentType); token != "" {
+		req.Header.Set(pluginregistry.AgentTokenHeader, token)
 	}
 
 	// 0065 §L5: quote the manifest/config-derived agent URL against log injection.

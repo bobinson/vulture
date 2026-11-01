@@ -96,7 +96,7 @@
         "no_line": "行なし"
       }
     },
-    "semgrepTierNotice": "Semgrep層は無効です。この監査はスキルとシグネチャのみで実行されました。",
+    "semgrepTierNotice": "{{engine}}層は無効です。この監査はスキルとシグネチャのみで実行されました。",
     "agent": "エージェント",
     "scores": "コンプライアンススコア",
     "waitingAgents": "エージェントの起動を待機中...",

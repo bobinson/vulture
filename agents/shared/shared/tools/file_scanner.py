@@ -5,6 +5,7 @@ import fnmatch
 import logging
 import os
 import re
+import sys
 import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -16,6 +17,15 @@ from pathlib import Path
 SCANNER_DEF_LINE = re.compile(r"re\.compile\(|=\s*\[?\s*re\.", re.IGNORECASE)
 SAFE_IMPORT_LINE = re.compile(r"^\s*(?:from|import)\s")
 COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
+
+
+def is_non_code_line(line: str, imports: re.Pattern[str]) -> bool:
+    """A line a skill's per-line checks skip: a comment, an import by the skill's own
+    ``imports`` shape, or a scanner's own pattern definition."""
+    return bool(
+        COMMENT_INDICATORS.match(line) or imports.match(line) or SCANNER_DEF_LINE.search(line)
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -1032,6 +1042,17 @@ def read_file_safe(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
     return content
 
 
+def read_file_uncached(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
+    """``read_file_safe`` read from disk now, past its path-keyed cache: the same size cap,
+    decode and read recorder. For a caller that keys what it builds on the file's stat
+    (the AST model cache, feature 0102 A9), which the cached text of an earlier read in the
+    same audit could predate.
+    """
+    content = _read_file_cached.__wrapped__(str(path), max_size)
+    _note_read(path, content is not None)
+    return content
+
+
 @lru_cache(maxsize=1024)
 def _read_file_cached(path_str: str, max_size: int) -> str | None:
     """Cached file reader keyed by path string (hashable)."""
@@ -1345,6 +1366,17 @@ def clear_caches() -> None:
     from shared.anchor import clear_cache as _clear_anchor_cache
 
     _clear_anchor_cache()
+    _reset_ast_audit_state()
+
+
+def _reset_ast_audit_state() -> None:
+    """Feature 0102 (D20, A20): start the AST layer's process-default audit over — its
+    tallies, declines, breaker and declined parses (``context.reset_default()``; an entered
+    audit is untouched, and ``shared.ast.cache`` says why its models stay). Only a process
+    that loaded the layer has any: one that never did is not made to import it here."""
+    ast_context = sys.modules.get("shared.ast.context")
+    if ast_context is not None:
+        ast_context.reset_default()
 
 
 def is_entry_or_config(path: Path) -> bool:

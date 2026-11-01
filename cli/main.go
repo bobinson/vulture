@@ -184,9 +184,10 @@ func findComposeFile() string {
 // VULTURE_SOURCE_DIR=<target> set so the bind-mount is updated, then waits
 // for the backend's /health endpoint to return 200.
 //
-// This solves the recurring "Error: validate path: stat <abs-path>: no such
-// file or directory" surfacing when users scan paths outside the project
-// root that was originally mounted.
+// This solves the recurring "Error: path does not exist: <abs-path>" (from
+// older servers: "validate path: stat <abs-path>: no such file or
+// directory") surfacing when users scan paths outside the project root that
+// was originally mounted.
 func remountBackendIfNeeded(target, apiURL string) error {
 	if !backendInDocker() {
 		// Bare-metal backend: no docker bind-mount to manage; the

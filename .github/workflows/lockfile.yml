@@ -68,7 +68,7 @@ jobs:
                agents \
                scripts/gen-lockfile.sh scripts/check-lockfile.sh \
                scripts/check-lockfile-installable.sh scripts/uv-version.sh \
-               scripts/lock-date.txt \
+               scripts/lock-date.txt scripts/lock-date-packages.txt \
                .github/workflows/lockfile.yml .github/actions/setup-pinned-uv) || {
             echo "could not compute base diff (base=$BASE_SHA) — running freshness check to fail safe"
             echo 'relevant=true' >> "$GITHUB_OUTPUT"

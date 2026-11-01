@@ -96,7 +96,7 @@
         "no_line": "No line"
       }
     },
-    "semgrepTierNotice": "Semgrep tier not active — this audit ran deterministic skills + signatures only.",
+    "semgrepTierNotice": "{{engine}} tier not active — this audit ran deterministic skills + signatures only.",
     "agent": "Agent",
     "scores": "Compliance Scores",
     "waitingAgents": "Waiting for agents to start...",

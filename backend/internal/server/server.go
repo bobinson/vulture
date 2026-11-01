@@ -28,6 +28,7 @@ import (
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/internal/service"
 	"github.com/vulture/backend/internal/staging"
+	"github.com/vulture/backend/pkg/gitutil"
 	"github.com/vulture/backend/pkg/pluginregistry"
 	"github.com/vulture/backend/pkg/stagerouter"
 )
@@ -124,6 +125,13 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		}
 	}
 
+	// Feature 0102: the /run credentials, built once and shared by the agent
+	// proxy and the plugin supervisor. In-tree agents get the shared token;
+	// every plugin gets its own derived token, keyed by the shared token or,
+	// without one, by a per-process random key, so a supervised plugin always
+	// enforces. The registry decides what is in-tree; reg may be nil.
+	runTokens := pluginregistry.NewRunTokens(cfg.AgentToken, reg)
+
 	var supervisor *pluginsupervisor.Supervisor
 	if reg != nil {
 		all := reg.All()
@@ -145,6 +153,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 				// On macOS docker's host network is its VM's, so a
 				// host-network plugin is bridged and published on loopback.
 				HostNetworkIsVM: pluginsupervisor.HostNetworkIsVM(runtime.GOOS),
+				RunTokens:       runTokens,
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
@@ -173,9 +182,15 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 		}()
 	}
 
-	sourceSvc := service.NewSourceService(repo, cfg.SourceRoot, cfg.LocalMode)
+	// 0102: local ingest follows the server's local-path policy, the same
+	// value browse and dispatch use; a key-based git clone keeps its SSH
+	// host-key store beside the database (<data dir>/ssh/known_hosts).
+	sourceSvc := service.NewSourceServiceWithPolicy(repo, service.SourcePolicy{
+		Local: cfg.LocalSources(),
+		Clone: gitutil.CloneOptions{DataDir: cfg.DataDir()},
+	})
 	auditSvc := service.NewAuditService(repo)
-	proxyService := service.NewAgentProxyService(broker)
+	proxyService := service.NewAgentProxyServiceWithTokens(broker, runTokens)
 	// Feature 0049: stream service consults the plugin registry via
 	// stagerouter for capability-based dispatch. When the registry
 	// built successfully, the router is wired and used for every
@@ -200,6 +215,9 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	auditH.SetLocalMode(cfg.LocalMode) // who may receive masked values (0074 item 1b)
 	streamH := handler.NewStreamHandler(auditSvc, sourceSvc, streamSvc, cfg.Agents)
 	streamH.SetBrokerRevoker(broker) // 0064 §6/M3: revoke run tokens at terminal state (no-op when off)
+	// 0102: a stored local source is re-checked against the same policy before
+	// dispatch, so a row the policy now refuses is never scanned.
+	streamH.SetLocalSourcePolicy(cfg.LocalSources())
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
 	// G1: surface enabled registry plugins (e.g. semgrep) in /api/agents so the
@@ -216,10 +234,13 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	// 0071: POST /api/audits dispatches the run in the background. Without this
 	// wiring an audit is created and never runs unless someone opens its stream.
 	auditH.SetDispatcher(streamH)
-	fsH := handler.NewFilesystemHandler()
-	// 0036 Phase 3 — confine filesystem browse to cfg.SourceRoot when
-	// set. Empty SourceRoot = legacy denylist-only behaviour.
-	fsH.SetSourceRoot(cfg.SourceRoot)
+	// 0102: browse follows the server's local-path policy (refused when it
+	// is disabled, confined to cfg.SourceRoot when one is set).
+	fsH := handler.NewFilesystemHandler(cfg.LocalSources())
+	// 0102: a source root that ingest, browse and dispatch cannot use is
+	// named once here, by its setting; each request still fails closed on it.
+	// The check is bounded, so a root on a hung mount cannot hold up start.
+	logSourceRootFault(cfg.LocalSources().CheckRoot, sourceRootProbeTimeout)
 
 	mux := http.NewServeMux()
 	mux.Handle("/health", healthH)
@@ -631,10 +652,14 @@ func registerAuthRoutes(
 	}
 	// 0065 §H7: admin-gated user provisioning so default-off Mode B can
 	// still add users. Reuses Register hashing but never self-authenticates
-	// the created user.
-	mux.HandleFunc("/api/admin/users", authMW.Require(handler.RequireRole("admin", ReadOnlyGuard(readOnly, authH.AdminCreateUser))))
+	// the created user. 0102: a Bearer credential only, never the session
+	// cookie, like every route that mints a credential.
+	mux.HandleFunc("/api/admin/users", authMW.Require(handler.RequireBearerCredential(handler.RequireRole("admin", ReadOnlyGuard(readOnly, authH.AdminCreateUser)))))
 	mux.HandleFunc("/api/auth/login", RateLimit(10, time.Minute, authH.Login))
 	mux.HandleFunc("/api/auth/local-session", authH.LocalSession)
+	// 0102: logout only deletes the session cookie, so it needs no principal
+	// and stays open on a read-only viewer (no Require, no ReadOnlyGuard).
+	mux.HandleFunc("/api/auth/logout", authH.Logout)
 	mux.HandleFunc("/api/auth/me", authMW.Require(authH.Me))
 
 	mux.HandleFunc("/api/sources", authMW.Require(handler.RequireWrite(ReadOnlyGuard(readOnly, sourceH.Create))))
@@ -650,12 +675,14 @@ func registerAuthRoutes(
 	}
 	// 0065 §H1: method-gated RequireWrite lets viewers GET/list while POST
 	// (create) requires member/admin. Sits inside Require, outside ReadOnlyGuard.
-	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, auditsH)))))
+	mux.HandleFunc("/api/audits", authMW.Require(RateLimitByKey(apiKeyRPM, handler.PrincipalRateKey, handler.RequireWrite(ReadOnlyGuard(readOnly, auditsH)))))
 	mux.HandleFunc("/api/audits/", handler.MaskedValuesNoStore(authMW.Require(ReadOnlyGuard(readOnly, auditDetailH))))
 	mux.HandleFunc("/api/audits/cache", authMW.Require(auditH.CachedAudit))
 	mux.HandleFunc("/api/agents", authMW.Require(agentH.List))
 	mux.HandleFunc("/api/llm/health", authMW.Require(llmHealthH.ServeHTTP))
-	mux.HandleFunc("/api/filesystem/browse", authMW.Require(ReadOnlyGuard(readOnly, fsH.Browse)))
+	// 0102: only human writers browse; viewers and API keys have no browse
+	// consumer. The handler itself refuses when local paths are disabled.
+	mux.HandleFunc("/api/filesystem/browse", authMW.Require(handler.RequireHumanWriter(ReadOnlyGuard(readOnly, fsH.Browse))))
 
 	// Feature 0045: finding label endpoint (writes audit_memories.user_label).
 	// SH2 rate-limit: 60 POST/min/user via RateLimitByKey.
@@ -670,7 +697,7 @@ func registerAuthRoutes(
 	if rawDB != nil {
 		labelH := handler.NewFindingLabelHandler(rawDB, dialect)
 		mux.HandleFunc("/api/findings/", authMW.Require(
-			RateLimitByKey(60, principalKeyFunc, handler.RequireWrite(ReadOnlyGuard(readOnly, labelH.Handle)))))
+			RateLimitByKey(60, handler.PrincipalRateKey, handler.RequireWrite(ReadOnlyGuard(readOnly, labelH.Handle)))))
 
 		// L4 memory_prior lookup — runs in the stream handler's drain
 		// path; nil-safe when DB not configured.
@@ -932,7 +959,9 @@ func registerAPIKeyRoutes(
 	authMW.SetAPIKeyService(svc) // enable vk_... bearer auth
 
 	h := handler.NewAPIKeyHandler(svc)
-	mux.HandleFunc("/api/api-keys", authMW.Require(ReadOnlyGuard(readOnly, h.CreateOrList)))
-	mux.HandleFunc("/api/api-keys/", authMW.Require(ReadOnlyGuard(readOnly, h.Revoke)))
+	// 0102: API keys are minted and managed with a Bearer credential only,
+	// never with the browser session cookie.
+	mux.HandleFunc("/api/api-keys", authMW.Require(handler.RequireBearerCredential(ReadOnlyGuard(readOnly, h.CreateOrList))))
+	mux.HandleFunc("/api/api-keys/", authMW.Require(handler.RequireBearerCredential(ReadOnlyGuard(readOnly, h.Revoke))))
 	log.Println("Feature 0031: API keys enabled — endpoints registered at /api/api-keys")
 }

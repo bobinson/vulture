@@ -96,7 +96,7 @@
         "no_line": "Aucune ligne"
       }
     },
-    "semgrepTierNotice": "Niveau Semgrep inactif — cet audit n'a exécuté que les skills déterministes et les signatures.",
+    "semgrepTierNotice": "Niveau {{engine}} inactif — cet audit n'a exécuté que les skills déterministes et les signatures.",
     "agent": "Agent",
     "scores": "Scores de Conformité",
     "waitingAgents": "En attente du démarrage des agents...",

@@ -2,7 +2,8 @@
 
 * ``result_payload`` / ``result_findings`` / ``llm_rows`` read the ``result``
   event that ``run_combined_audit`` yields (the payload Go decodes as
-  ``ScanResult``).
+  ``ScanResult``); ``event_data`` / ``thinking_lines`` read any event, and
+  ``skill_failures`` the runner's per-skill failure lines among them.
 * ``agent_app`` / ``post_run`` are "the real SSE app over the real runner": a
   field pydantic does not declare is dropped at the door without a word, so
   only a real ``POST /run`` shows whether a request field reaches the runner.
@@ -18,18 +19,31 @@ from typing import Any
 # The LLM phase needs a non-empty tool list to build its agent; the fake
 # runner never calls it.
 DUMMY_TOOLS = ["__dummy_tool__"]
+# How the raw SSE text of the ``result`` event starts.
+RESULT_HEAD = "event: result\n"
 
 
-def _data(event: str) -> dict[str, Any]:
+def event_data(event: str) -> dict[str, Any]:
+    """The JSON payload of one raw SSE ``event``."""
     line = next(ln for ln in event.split("\n") if ln.startswith("data:"))
     return json.loads(line[5:])
 
 
 def result_payload(events: list[str]) -> dict[str, Any]:
     """The one ``result`` event's payload."""
-    results = [e for e in events if e.startswith("event: result\n")]
+    results = [e for e in events if e.startswith(RESULT_HEAD)]
     assert len(results) == 1, f"expected exactly one result event, got {len(results)}"
-    return _data(results[0])
+    return event_data(results[0])
+
+
+def thinking_lines(events: list[str]) -> list[str]:
+    """The text of every ``thinking`` event, in stream order."""
+    return [event_data(e)["content"] for e in events if e.startswith("event: thinking\n")]
+
+
+def skill_failures(events: list[str]) -> list[str]:
+    """The runner's ``Skill <category> failed: ...`` lines: a failing stub skill says why."""
+    return [line for line in thinking_lines(events) if line.startswith("Skill ")]
 
 
 def result_findings(events: list[str]) -> list[dict[str, Any]]:

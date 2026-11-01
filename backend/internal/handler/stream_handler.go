@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/vulture/backend/internal/agui"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/internal/pathutil"
 	"github.com/vulture/backend/internal/service"
 	"github.com/vulture/backend/internal/textutil"
 	"github.com/vulture/backend/pkg/agentregistry"
@@ -42,6 +44,12 @@ type StreamHandler struct {
 	// brokerRevoker revokes a finished run's LLM-broker token(s) at
 	// terminal state (feature 0064 §6/M3). nil when the broker is off.
 	brokerRevoker RunRevoker
+
+	// localSources is the local-path policy a stored local source is
+	// re-checked against before dispatch (feature 0102). nil means "not
+	// configured", which only tests that predate the setter hit: the server
+	// always sets it.
+	localSources *pathutil.LocalSources
 
 	// runs maps audit id -> the live (or recently finished) run's broadcaster.
 	//
@@ -73,6 +81,10 @@ type RunRevoker interface {
 // SetBrokerRevoker wires the LLM-broker run-token revoker (feature 0064). When
 // unset, run completion simply does not revoke (tokens are short-TTL).
 func (h *StreamHandler) SetBrokerRevoker(r RunRevoker) { h.brokerRevoker = r }
+
+// SetLocalSourcePolicy wires the server's local-path policy, so a stored local
+// source the policy now refuses is never handed to an agent (feature 0102).
+func (h *StreamHandler) SetLocalSourcePolicy(p pathutil.LocalSources) { h.localSources = &p }
 
 func (h *StreamHandler) SetMemoryService(svc service.MemoryService) {
 	h.memorySvc = svc
@@ -171,7 +183,7 @@ func (h *StreamHandler) CreateStreamToken(w http.ResponseWriter, r *http.Request
 
 	token, err := h.streamTokenStore.Create(auditID, user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create stream token")
+		writeInternalError(w, r, "create stream token", err)
 		return
 	}
 
@@ -196,7 +208,7 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get audit", err)
 		return
 	}
 
@@ -374,17 +386,9 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 		return
 	}
 
-	// Source is optional (discover-only audits may have no source).
-	var source *model.Source
-	var sourcePath string
-	if audit.SourceID != "" {
-		source, err = h.sourceSvc.Get(audit.SourceID)
-		if err != nil {
-			log.Printf("[dispatch] source %s: %v", audit.SourceID, err)
-			h.failAudit(auditID, "source unavailable: "+err.Error())
-			return
-		}
-		sourcePath = source.Path
+	source, sourcePath, ok := h.sourceFor(auditID, audit)
+	if !ok {
+		return
 	}
 
 	audit.Status = model.AuditStatusRunning
@@ -429,6 +433,58 @@ func (h *StreamHandler) runAudit(auditID string, b *broadcaster) {
 	// and the completion branch would otherwise mark this `completed`.
 	audit.CancelReason = b.CancelReason()
 	h.persistResultsWithError(audit, source, res)
+}
+
+// sourceFor loads the audit's source and returns it with the path the agents
+// will scan. Source is optional (discover-only audits may have no source):
+// then it is (nil, "", true). When the source cannot be loaded, or is a local
+// source the local-path policy refuses, the audit is failed and ok is false.
+func (h *StreamHandler) sourceFor(auditID string, a *model.Audit) (*model.Source, string, bool) {
+	if a.SourceID == "" {
+		return nil, "", true
+	}
+	src, err := h.sourceSvc.Get(a.SourceID)
+	if err != nil {
+		log.Printf("[dispatch] source %s: %v", a.SourceID, err)
+		h.failAudit(auditID, "source unavailable: "+err.Error())
+		return nil, "", false
+	}
+	if !h.localSourceAllowed(auditID, src) {
+		return nil, "", false
+	}
+	return src, src.Path, true
+}
+
+// localSourceRefusedReason is the fixed reason an audit fails with when its
+// stored local source is outside the local-path policy.
+const localSourceRefusedReason = "source refused by the local-path policy"
+
+// localSourceAllowed re-checks a stored local source against the current
+// policy. A row stored under an older or wider policy (a bypass spelling, a
+// narrowed root, a local-mode database now served centralized) fails the
+// audit instead of being scanned, as does any row while the root itself is
+// unavailable. Git sources and an unset policy pass.
+func (h *StreamHandler) localSourceAllowed(auditID string, src *model.Source) bool {
+	if h.localSources == nil || src.Type != model.SourceTypeLocal {
+		return true
+	}
+	err := h.localSources.Recheck(src.Path)
+	if err == nil {
+		return true
+	}
+	slog.Warn("local_source_refused", "audit_id", auditID, "source_id", src.ID, "err", err)
+	h.failAudit(auditID, localSourceRefusal(err))
+	return false
+}
+
+// localSourceRefusal is the fixed reason for a refused re-check: the root
+// fault's own text when the root is unavailable (the operator's to fix), else
+// localSourceRefusedReason. Neither names the path or the root.
+func localSourceRefusal(err error) string {
+	if errors.Is(err, pathutil.ErrRootUnavailable) {
+		return pathutil.ErrRootUnavailable.Error()
+	}
+	return localSourceRefusedReason
 }
 
 // failAudit marks an audit failed after a dispatch-time error, so it does not sit

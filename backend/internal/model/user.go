@@ -32,6 +32,8 @@ type RegisterRequest struct {
 }
 
 type AuthResponse struct {
-	Token string `json:"token"`
+	// Token is the JWT for a Bearer client. It is left out when the session
+	// went into a browser cookie instead.
+	Token string `json:"token,omitempty"`
 	User  User   `json:"user"`
 }

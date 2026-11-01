@@ -49,6 +49,10 @@ type Options struct {
 	// then run on the default bridge with its port published on loopback, so
 	// it is reachable at the localhost:<port> the backend dials.
 	HostNetworkIsVM bool
+	// RunTokens supplies each plugin's /run token: always the plugin's own
+	// derived token (RunTokens.ForPlugin), never the shared agent token. The
+	// zero value gives none, so no token flag is emitted.
+	RunTokens pluginregistry.RunTokens
 }
 
 // HostNetworkIsVM reports whether docker's "host" network on a backend
@@ -113,7 +117,29 @@ func argvBuilders(plug pluginregistry.Plugin, opts Options, alias string) []func
 		func() ([]string, error) { return buildResourceArgs(plug), nil },
 		func() ([]string, error) { return buildFSArgs(plug, opts) },
 		func() ([]string, error) { return buildEnvArgs(plug, opts) },
+		func() ([]string, error) { return buildRunTokenArgs(opts.RunTokens.ForPlugin(plug.Name())), nil },
 	}
+}
+
+// buildRunTokenArgs forwards the plugin's run token into the container by NAME
+// only, so its value never appears on the docker command line (visible to
+// every local user through ps). The value reaches docker through the CLI's
+// environment overlay, RunEnv, built from the same token.
+func buildRunTokenArgs(tok string) []string {
+	if tok == "" {
+		return nil
+	}
+	return []string{"-e", pluginregistry.AgentTokenEnv}
+}
+
+// RunEnv is the environment overlay for the `docker run` that launches a
+// plugin holding tok: the value the name-only flag from buildRunTokenArgs
+// copies into the container. No token, no overlay.
+func RunEnv(tok string) []string {
+	if tok == "" {
+		return nil
+	}
+	return []string{pluginregistry.AgentTokenEnv + "=" + tok}
 }
 
 // buildPublishArgs publishes the plugin port. A bridged host-network plugin is
@@ -300,7 +326,7 @@ func buildEnvArgs(plug pluginregistry.Plugin, opts Options) ([]string, error) {
 	// to bind loopback; the backend reaches host-network plugins via localhost
 	// (see buildProbeURL). Non-host (bridge/compose) plugins keep the default
 	// 0.0.0.0 so cross-container traffic works. The plugin image must honor
-	// VULTURE_BIND_HOST (see plugins/semgrep/Dockerfile); images that ignore it
+	// VULTURE_BIND_HOST (see plugins/opengrep/Dockerfile); images that ignore it
 	// are unaffected. A bridged host-network plugin is the exception: it must
 	// listen on its own interface for the loopback publish to reach it, and the
 	// publish address is what keeps it off the LAN (see buildPublishArgs).

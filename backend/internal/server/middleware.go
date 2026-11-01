@@ -295,24 +295,3 @@ func (t *LoginThrottle) maybeEvict(now time.Time) {
 	}
 	t.lastEvict = now
 }
-
-// principalKeyFunc returns a key-extraction function that derives the
-// rate-limit key from the Authorization header. API key tokens (vk_ prefix)
-// use the token itself; other Bearer tokens use "jwt:<token-prefix>" to
-// provide a stable per-user key without needing access to the decoded JWT.
-// Returns "" when no Authorization header is present (triggers IP fallback).
-func principalKeyFunc(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	if h == "" {
-		return ""
-	}
-	token := strings.TrimPrefix(h, "Bearer ")
-	if token == h {
-		return "" // not a Bearer token
-	}
-	if strings.HasPrefix(token, "vk_") {
-		return "apikey:" + token
-	}
-	// JWT tokens: use the full token as key (stable per session).
-	return "jwt:" + token
-}

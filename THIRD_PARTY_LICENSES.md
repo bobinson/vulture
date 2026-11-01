@@ -16,14 +16,15 @@ All current runtime dependencies use permissive OSI-approved licenses (Apache-2.
 MIT, BSD-3-Clause, BSD-2-Clause). No GPL/AGPL/SSPL or non-OSI licenses are pulled
 in by the lockfiles as of the v0.1.0 release.
 
-**One exception, scoped:** the optional bundled Semgrep plugin
-(`plugins/semgrep/`) ships a Dockerfile that pulls the upstream
-`semgrep/semgrep` Docker image. Semgrep is LGPL-2.1-only. It runs as a
-separate process in its own container and communicates with Vulture
-exclusively over HTTP/SSE — no static linking, no in-process loading.
-The Apache-2.0 Vulture code is therefore not a derivative work of
-Semgrep. See section 5 below for the full attribution and the
-dynamic-linking rationale.
+**One exception, scoped:** the optional bundled Opengrep plugin
+(`plugins/opengrep/`) ships a Dockerfile whose build, on the user's machine,
+downloads the Opengrep engine (LGPL-2.1) from Opengrep's own release; Vulture
+never publishes that image or the engine. The engine runs as a separate process
+in its own container and communicates with Vulture exclusively over HTTP/SSE —
+no static linking, no in-process loading. The Apache-2.0 Vulture code is
+therefore not a derivative work of Opengrep. See section 4 below for the full
+attribution and the rationale, and for the permissively licensed rule sets the
+plugin bundles.
 
 ---
 
@@ -123,54 +124,57 @@ modules; section numbers and identifiers are preserved.
 
 ---
 
-## 4. Semgrep CLI (bundled plugin)
+## 4. Opengrep engine and bundled rules (bundled plugin)
 
-**What:** A multi-language static-analysis tool for finding bugs and
-security issues. Vulture ships a bundled reference plugin
-(`plugins/semgrep/`) that wraps the upstream Semgrep CLI behind the
-Vulture plugin contract.
+**What:** Opengrep, a multi-language static-analysis engine (the community fork
+of Semgrep CE; not affiliated with or endorsed by Semgrep, Inc.). Vulture ships a
+bundled reference plugin (`plugins/opengrep/`) that wraps the Opengrep CLI behind
+the Vulture plugin contract.
 
-**Upstream version vendored:** none — the plugin's Dockerfile pulls the
-upstream `semgrep/semgrep:1.84.0` Docker image at build time. No
-Semgrep source is committed to this repository.
+**Upstream version used:** 1.33.1, not vendored — the plugin's image build, on the
+user's machine, downloads `opengrep_manylinux_{x86,aarch64}` from Opengrep's
+release and checks it against a pinned sha256 (each asset's keyless signature,
+from Opengrep's `rolling-release.yml` workflow, was verified when the digests were
+pinned). No Opengrep source or binary is committed to this repository, shipped in
+a release, or published in an image. Nothing of Semgrep's (image, packages,
+binaries or rules) is used.
 
-**Upstream URL:** https://github.com/semgrep/semgrep
+**Upstream URL:** https://github.com/opengrep/opengrep
 
 **License / terms:** GNU Lesser General Public License v2.1
-([LGPL-2.1-only](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)).
-Copyright © Semgrep, Inc. and contributors.
+([LGPL-2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)).
 
-**Dynamic-linking rationale (why Apache-2.0 Vulture code is not a
-derivative work of LGPL-2.1 Semgrep):**
+**Separate-process rationale (why Apache-2.0 Vulture code is not a derivative
+work of LGPL-2.1 Opengrep):**
 
-1. Semgrep is invoked as a **separate process** running in its own
-   container. Vulture does not link Semgrep's libraries into its own
-   address space.
-2. Communication is over the network: Vulture POSTs an audit request
-   to the plugin's `/run` endpoint and consumes an SSE stream. No
-   shared memory, no FFI, no dynamic library load.
-3. The plugin wrapper at `plugins/semgrep/src/wrapper.py` is
-   Apache-2.0-licensed Vulture code; it executes the Semgrep CLI via
-   `subprocess.run`. Treating subprocess invocation as a derivative
-   work would make every Unix shell pipeline a derivative work of
-   every program it runs — that interpretation has been consistently
-   rejected by the FSF and by the courts.
-4. The LGPL-2.1 distribution obligations therefore apply to **the
-   Semgrep image itself** (which carries its own LGPL-2.1 license text
-   inside the container), not to Vulture.
+1. Opengrep is invoked as a **separate process** running in its own container.
+   Vulture does not link Opengrep's libraries into its own address space.
+2. Communication is over the network: Vulture POSTs an audit request to the
+   plugin's `/run` endpoint and consumes an SSE stream. No shared memory, no
+   FFI, no dynamic library load.
+3. The plugin wrapper at `plugins/opengrep/src/wrapper.py` is Apache-2.0
+   Vulture code; it executes the Opengrep CLI via `subprocess.run`.
+4. The LGPL-2.1 distribution obligations apply to whoever distributes Opengrep
+   (Opengrep's release), not to Vulture, which distributes no part of it.
 
-**Operator obligations:** if you modify the Semgrep CLI itself, you
-must comply with LGPL-2.1 at the container layer (publish your
-modified Semgrep source, retain copyright notices, etc.). Modifying
-the Vulture wrapper around it is purely Apache-2.0.
+**Bundled rule sets (redistributed, permissive licences only):** see
+`plugins/opengrep/rules/RULESET_SNAPSHOT.json` for every file's source, commit,
+sha256 and licence, and each set's `LICENSE` and `SOURCE.md`.
 
-**What we redistribute:** the plugin manifest (`plugin.toml`), the
-wrapper code, the Dockerfile, the rule-to-CWE map. Not the Semgrep
-binary itself, not Semgrep source.
+| Set | Upstream @ commit | Licence | What is bundled (unmodified) |
+|---|---|---|---|
+| `gitlab` | [GitLab sast-rules](https://gitlab.com/gitlab-org/security-products/sast-rules) @ `9c375dc49a7cd431e2b95c2620af651ef1d096a4` | MIT, © 2011-present GitLab Inc.; the 26 `go/` files marked "Apache 2.0 (c) gosec" derive from [gosec](https://github.com/securego/gosec) (Apache-2.0, `LICENSE-APACHE-2.0`) | 263 rule files from `csharp/ go/ java/ javascript/ python/ scala/` in `plugins/opengrep/rules/third_party/gitlab/` |
+| `0xdea` | [0xdea/semgrep-rules](https://github.com/0xdea/semgrep-rules) @ `60d33a2ab635e529fc7aad9328005c9ba8ac99d3` | MIT, © 2022 raptor (Marco Ivaldi) | 47 rule files from `rules/c/` in `plugins/opengrep/rules/third_party/0xdea/` |
 
-**Modifications applied:** none. The plugin invokes `semgrep scan
---json` with operator-specified rule packs and translates the JSON
-output into Vulture's finding shape.
+Files whose provenance could not be shown to be the set's own (e.g. rules
+matching semgrep-rules, or naming its former owner) are left out and listed in
+each set's `SOURCE.md`. elttam/semgrep-rules is not bundled: although MIT, its
+LICENSE names Semgrep as the copyright holder.
+
+Never bundled or fetched: the Semgrep Registry (`p/…`, `r/…`) and the
+semgrep-rules repository (Semgrep Rules License v1.0: internal use only), the
+archived opengrep-rules fork (LGPL-2.1 with the Commons Clause), and copyleft or
+non-commercial rule sets.
 
 ---
 
@@ -190,6 +194,19 @@ Direct dependencies of note:
 **Python agents (via `agents/shared/pyproject.toml`):**
 - `fastapi`, `pydantic`, `openai-agents`, `litellm`, `tiktoken` — MIT
 - `uvicorn`, `httpx`, `sse-starlette` — BSD-3-Clause
+
+**Python agents — AST layer, feature 0102 (via `agents/shared/pyproject.toml`;
+version as locked in `agents/requirements-frozen.txt`):**
+- `tree-sitter` 0.26.0 — MIT — AST layer, feature 0102
+- `tree-sitter-javascript` 0.25.0 — MIT — AST layer, feature 0102
+- `tree-sitter-typescript` 0.23.2 — MIT — AST layer, feature 0102
+- `tree-sitter-python` 0.25.0 — MIT — AST layer, feature 0102
+- `tree-sitter-go` 0.25.0 — MIT — AST layer, feature 0102
+- `tree-sitter-java` 0.23.5 — MIT — AST layer, feature 0102
+- `tree-sitter-rust` 0.24.2 — MIT — AST layer, feature 0102
+- `tree-sitter-php` 0.25.1 — MIT — AST layer, feature 0102
+- `tree-sitter-c` 0.24.2 — MIT — AST layer, feature 0102
+- `tree-sitter-cpp` 0.23.4 — MIT — AST layer, feature 0102
 
 **Frontend:**
 - `react`, `react-dom`, `react-router-dom`, `i18next` — MIT

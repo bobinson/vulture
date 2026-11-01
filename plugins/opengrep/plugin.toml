@@ -1,0 +1,46 @@
+[plugin]
+name           = "opengrep"
+display_name   = "Opengrep (bundled)"
+version        = "0.2.0"
+api_version    = "vulture-plugin/1.0"
+publisher      = "vulture-core"
+description    = "Cross-language SAST via Opengrep with bundled, permissively licensed rules. Reference bundled plugin demonstrating the vulture-plugin/1.0 contract. Maintainers: Vulture core team."
+homepage       = "https://github.com/bobinson/vulture/tree/main/plugins/opengrep"
+license        = "Apache-2.0"
+documentation  = "https://github.com/bobinson/vulture/tree/main/plugins/opengrep/README.md"
+
+[trust]
+tier           = "in-tree"
+required_ack   = ["network-egress", "host-network"]
+
+[runtime]
+type            = "container"
+image           = "vulture-plugin-opengrep:0.2.0"
+port            = 28011
+health_endpoint = "/health"
+info_endpoint   = "/info"
+run_endpoint    = "/run"
+restart         = "on-failure"
+network         = "host"
+resources       = { cpu = "2", memory = "4g" }
+
+[runtime.fs]
+read           = ["/audit-inputs"]
+write          = ["/tmp/opengrep-cache"]
+
+[runtime.env]
+required       = []
+optional       = []
+
+[[capabilities]]
+phase          = "scan"
+# Empty = "any" per the router contract. Pre-detection of source-tree
+# languages by the stream service isn't shipped yet; until it is,
+# declaring specific languages here filters the plugin out of every audit.
+# When language sniffing lands, restore the proper list.
+languages      = []
+# Must match what src/wrapper.py actually emits (C2, 0058 audit): the wrapper
+# streams run_started, agent_start, finding, result, agent_end, run_finished.
+# It does NOT emit progress/thinking — advertising them here was a false claim.
+emits          = ["run_started", "agent_start", "finding", "result", "agent_end", "run_finished"]
+timeout_s      = 1800

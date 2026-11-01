@@ -38,24 +38,38 @@ This product redistributes the following third-party content:
     Source:        https://csrc.nist.gov/Projects/ssdf
     Distributed in: agents/ssdf/ssdf_agent/practice_groups/
 
-  - Semgrep CLI (bundled plugin, optional)
-    Copyright (c) Semgrep, Inc. and contributors.
-    Licensed under the GNU Lesser General Public License v2.1
-    (LGPL-2.1-only).
+  - Opengrep (bundled plugin engine, optional)
+    Licensed under the GNU Lesser General Public License v2.1.
     License:       https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
-    Source:        https://github.com/semgrep/semgrep
-    Distributed in: plugins/semgrep/ (this bundled plugin ships a
-                    Dockerfile that pulls the upstream
-                    semgrep/semgrep:1.84.0 image). The Semgrep binary
-                    runs as a separate process inside its own container
-                    and communicates with Vulture only over HTTP/SSE
-                    across a process boundary — no static linking, no
-                    in-process loading of Semgrep code. The Vulture
-                    Apache-2.0 code is therefore not a derivative work
-                    of Semgrep for LGPL purposes. The plugin wrapper
-                    code under plugins/semgrep/ is itself Apache-2.0.
-                    Operators who modify Semgrep itself must comply
-                    with LGPL-2.1 separately at the container layer.
+    Source:        https://github.com/opengrep/opengrep
+    Not distributed: plugins/opengrep/ ships only a Dockerfile, whose
+                    build on the user's machine downloads Opengrep
+                    1.33.1 from Opengrep's release and checks it
+                    against a pinned sha256; Vulture never publishes
+                    that image or the engine. The engine runs as a
+                    separate process inside its own container and
+                    communicates with Vulture only over HTTP/SSE. The
+                    plugin wrapper code under plugins/opengrep/ is
+                    itself Apache-2.0. Opengrep is not affiliated with
+                    or endorsed by Semgrep, Inc.
+
+  - GitLab sast-rules (bundled plugin rules)
+    Copyright (c) 2011-present GitLab Inc. MIT License.
+    Source:        https://gitlab.com/gitlab-org/security-products/sast-rules
+    Commit:        9c375dc49a7cd431e2b95c2620af651ef1d096a4
+    Distributed in: plugins/opengrep/rules/third_party/gitlab/ (263 rule
+                    files from csharp/ go/ java/ javascript/ python/
+                    scala/, unmodified). 26 go/ files derive from gosec
+                    (https://github.com/securego/gosec), (c) the gosec
+                    authors, Apache License 2.0
+                    (third_party/gitlab/LICENSE-APACHE-2.0).
+
+  - 0xdea semgrep-rules (bundled plugin rules)
+    Copyright (c) 2022 raptor (Marco Ivaldi). MIT License.
+    Source:        https://github.com/0xdea/semgrep-rules
+    Commit:        60d33a2ab635e529fc7aad9328005c9ba8ac99d3
+    Distributed in: plugins/opengrep/rules/third_party/0xdea/ (47 rule
+                    files from rules/c/, unmodified).
 
     - Bundled CPython runtime (native-install tarballs, feature 0055)
       Each release tarball bundles a python-build-standalone CPython

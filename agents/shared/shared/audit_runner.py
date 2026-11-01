@@ -9,12 +9,12 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel, create_model
 
@@ -59,6 +59,9 @@ from shared.tools.file_scanner import (
 from shared.tools.finding_collapse import collapse_line_stacks
 from shared.tools.memory_client import _normalize_title, estimate_tokens, safe_estimate_tokens
 from shared.transport.event_emitter import AgUiEventEmitter
+
+if TYPE_CHECKING:
+    from shared.ast.context import AuditContext
 
 logger = logging.getLogger(__name__)
 
@@ -2803,6 +2806,41 @@ def _assign_finding_id(finding: dict[str, Any], audit_id: str, index: int) -> No
     finding["id"] = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+class _FindingSlots(NamedTuple):
+    """Where a row's ``_assign_finding_id`` index comes from (feature 0102, A43 (3)).
+
+    Skills finish in whatever order their threads do, so a row's place in the stream is no
+    part of its identity: the index is the row's position in its own skill's result,
+    interleaved by the skill's SUBMISSION ordinal (``position * width + slot``). The last of
+    the ``width`` slots is the LLM tier's, so no two rows of one audit share an index,
+    whichever skill or tier they came from. It cannot be a running offset: the id is fixed
+    when the row streams, before an earlier-submitted skill may have finished.
+    """
+
+    ordinals: dict[Any, int]  # each submitted skill (its future) -> its submission ordinal
+
+    @classmethod
+    def of(cls, submitted: Iterable[Any]) -> "_FindingSlots":
+        """The slots of the skills ``submitted``, in submission order."""
+        return cls({key: ordinal for ordinal, key in enumerate(submitted)})
+
+    def skill(self, key: Any, position: int) -> int:
+        """The index of row ``position`` of skill ``key``'s result."""
+        return self._at(self.ordinals[key], position)
+
+    def llm(self, position: int) -> int:
+        """The index of the LLM tier's new row ``position``."""
+        return self._at(len(self.ordinals), position)
+
+    def _at(self, slot: int, position: int) -> int:
+        return position * (len(self.ordinals) + 1) + slot
+
+
+# A one-skill audit's slots, its one skill keyed 0: how ``finalize_skill_findings`` numbers its
+# rows, so they get the ids a one-skill audit streams.
+_ONE_SKILL = _FindingSlots.of(range(1))
+
+
 def _finalize_finding_inplace(
     finding: dict[str, Any], run_id: str, index: int,
 ) -> None:
@@ -2930,10 +2968,11 @@ def finalize_skill_findings(
     calls, in the audit's order, so the two paths cannot drift.
 
     ``findings`` are mutated in place and must cite paths under ``source_path``
-    for the window and the validate stage to read them.
+    for the window and the validate stage to read them. Their ids are numbered
+    as a one-skill audit numbers its rows (``_ONE_SKILL``).
     """
-    for index, finding in enumerate(findings):
-        _finalize_finding_inplace(finding, run_id, index)
+    for position, finding in enumerate(findings):
+        _finalize_finding_inplace(finding, run_id, _ONE_SKILL.skill(0, position))
     kept, _collapsed = _collapse_skill_findings(findings, run_id)
     _attach_code_snippet_safely(kept, source_path, run_id)
     return [_public_view(f) for f in _validate_without_llm(kept, source_path, run_id)]
@@ -3054,6 +3093,57 @@ def _preflight_vetoes(effective_use_llm: bool, run_id: str, agent_label: str) ->
     return True, f"LLM preflight: provider unreachable - {reason}"
 
 
+# ── Feature 0102: the audit's AST context (D20; plan 3.4; A41 (6), (7); A42 (5); A44 (2)) ──
+#
+# `run_combined_audit` reaches the shared AST layer only through these four straight-line
+# helpers, so the layer imports at run time (importing the runner loads none of it).
+
+
+class _AstRun(NamedTuple):
+    """The AST context one audit entered (``audit``) and the token that leaves it."""
+
+    token: contextvars.Token[Any]
+    audit: "AuditContext"
+
+
+def _ast_enter(source_path: str) -> _AstRun:
+    """Enter this audit's AST context (D20): current in the context driving the run and,
+    through the skill pool's ``copy_context`` submit, in every skill thread (a pool thread
+    inherits no context). The audit is held too, so what the run reports is the audit it
+    entered whichever context resumes the generator."""
+    from shared.ast import context
+
+    token = context.enter(root=source_path)
+    return _AstRun(token, context.current())
+
+
+def _ast_declines(emitter: AgUiEventEmitter, run: _AstRun, source_path: str) -> Iterator[str]:
+    """The skills' AST declines (§10.3, D13; A41 (7)) as thinking lines, each file relative to
+    the audited root, then the one ``ast_decline_summary`` line."""
+    return map(emitter.text_message, run.audit.ledger.lines(source_path))
+
+
+def _ast_close(run: _AstRun) -> None:
+    """Close the audit's ticket index (LLD §4.1 item 8): every request a skill thread issued
+    ahead and nobody claimed is discarded, and later issues are refused, so an abandoned skill
+    thread goes synchronous. Called in the skill phase's ``finally`` — the cancel and deadline
+    paths, which never reach ``_ast_result``'s ``leave``, included. Never raises."""
+    run.audit.tickets.close()
+
+
+def _ast_result(run: _AstRun, source_path: str) -> dict[str, Any]:
+    """The result's ``ast_coverage`` (§10.2, D13): which files the AST tier owned and which
+    fell back, and why — the backend's lineage pass reads ``files.fallback_keys`` and
+    ``files.breaker_tripped`` from it (D24). The audit is left right after its snapshot
+    (A41 (6)), so the context that drove the run is a direct caller's again; on the normal
+    path only, as the generator has no ``finally``."""
+    from shared.ast import context
+
+    coverage = run.audit.coverage.snapshot(source_path)
+    context.leave(run.token)
+    return {"ast_coverage": coverage}
+
+
 @_bind_category_enum
 def run_combined_audit(
     run_id: str,
@@ -3125,6 +3215,7 @@ def run_combined_audit(
     effective_use_llm = use_llm if use_llm is not None else USE_LLM
 
     clear_caches()  # Ensure stale file contents don't leak across audit runs
+    ast_run = _ast_enter(source_path)
     emitter = AgUiEventEmitter(run_id)
     yield emitter.run_started(llm_window=_llm_window(model, effective_use_llm))
     logger.info("audit_start run_id=%s source=%s categories=%s use_llm=%s",
@@ -3171,7 +3262,8 @@ def run_combined_audit(
             fn = skill_map.get(cat)
             if fn is None:
                 continue
-            futures[pool.submit(retry_skill, fn, source_path)] = cat
+            futures[pool.submit(contextvars.copy_context().run, retry_skill, fn, source_path)] = cat
+        slots = _FindingSlots.of(futures)  # 0102 A43 (3): ids by submission, not completion
 
         # feature 0061: bound the skill wait by the shared whole-audit deadline
         # and honor cancel, so a hung skill or a client disconnect cannot pin
@@ -3207,8 +3299,10 @@ def run_combined_audit(
                 # `extractDeltaFindings` only auto-generates IDs when the
                 # incoming finding has an empty id field — non-empty IDs are
                 # preserved verbatim. Hash matches backend's
-                # `generateFindingID(auditID, title, file_path, index)`.
-                for finding in findings:
+                # `generateFindingID(auditID, title, file_path, index)`; the
+                # index is the row's slot (`_FindingSlots`), not its place in
+                # the stream, so it does not move with completion order.
+                for position, finding in enumerate(findings):
                     # Conform the category, assign the deterministic id, and
                     # (feature 0057 P2a) redact secret-bearing snippets BEFORE
                     # the per-finding SSE event, so the live frontend view — and
@@ -3218,7 +3312,7 @@ def run_combined_audit(
                     # `_attach_code_snippet` finalisation pass re-sees the
                     # already-masked form (idempotent).
                     _finalize_finding_inplace(
-                        finding, run_id, len(skill_findings),
+                        finding, run_id, slots.skill(future, position),
                     )
                     skill_findings.append(finding)
                     yield emitter.finding_event(**_live_view(finding))
@@ -3245,8 +3339,10 @@ def run_combined_audit(
             pool.shutdown(wait=not _drain, cancel_futures=_drain)
         except (RuntimeError, TypeError):
             pool.shutdown(wait=False)
+        _ast_close(ast_run)  # 0102 A44 (2): no ticket outlives the skill phase
 
     logger.info("skill_phase_done run_id=%s findings=%d", run_id, len(skill_findings))
+    yield from _ast_declines(emitter, ast_run, source_path)
 
     # --- Line-stack collapse (skill-vs-skill) -------------------
     # `_deduplicate_findings` below is LLM-vs-skill only; skill rows have never
@@ -3364,9 +3460,8 @@ def run_combined_audit(
             yield emitter.text_message(
                 f"LLM discovered {len(llm_new_findings)} additional finding(s)."
             )
-            # Continue indexing from the end of skill_findings so IDs
-            # remain unique across phases. (Feature 0046 issue #1.)
-            base_idx = len(skill_findings)
+            # The LLM tier's own slot keeps IDs unique across phases.
+            # (Feature 0046 issue #1; 0102 A43 (3).)
             for offset, finding in enumerate(llm_new_findings):
                 # Feature 0057: tag LLM findings so the validate stage knows
                 # they are non-deterministic (L5-demotable), while skill
@@ -3376,7 +3471,7 @@ def run_combined_audit(
                 # (feature 0057 P2a) redact secret-bearing LLM-finding snippets
                 # before the per-finding SSE event (the LLM is the realistic
                 # source of unquoted / env-style / comment-embedded secrets).
-                _finalize_finding_inplace(finding, run_id, base_idx + offset)
+                _finalize_finding_inplace(finding, run_id, slots.llm(offset))
                 yield emitter.finding_event(**_live_view(finding))
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")
@@ -3553,6 +3648,7 @@ def run_combined_audit(
         # secret-shape masking; a backend uses this to tell a masking agent from an
         # older one (0074 verification item 1).
         "merged_llm_masked": True,
+        **_ast_result(ast_run, source_path),
     }
     if degraded_reason:
         result_extra["degraded_reason"] = degraded_reason

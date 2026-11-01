@@ -14,9 +14,14 @@ here, so a fix lands in all three rules at once.
 CONTRACT
 --------
 Pure functions: no I/O, no environment reads, no state beyond bounded caches.
-Every input is capped at ``MAX_SCAN_CHARS`` before any pattern runs, and every
-quantifier is bounded, so a 512 KB single-line file costs what a 2000-character
-line costs (gated by ``tests/unit/test_0101_lexical_redos.py``).
+Every input is capped before any pattern runs - at ``MAX_SCAN_CHARS``, or for
+``identifier_words`` at ``MAX_WORDS`` words, its scan stopping at the cap - and
+every quantifier is bounded, so a 512 KB single-line file costs what a
+2000-character line costs (gated by ``tests/unit/test_0101_lexical_redos.py``).
+
+``identifier_words`` IS the AST layer's ``shared.ast.roles.words`` (feature 0102,
+A10, A27 (8)): one splitter, so the 0101 rules and the AST tier's word lexicons
+read an identifier the same way.
 
 The smaller helpers every rule reads lines through live here too, for the same
 reason: ``stripped_code`` (the capped, comment- and literal-free line),
@@ -41,6 +46,7 @@ import re
 from functools import lru_cache
 
 from cwe_agent.skills._args import mask_literals
+from shared.ast.roles import words as identifier_words
 from shared.tools.line_context import strip_strings_and_comments
 from shared.tools.pattern_matcher import _MAX_LINE_CHARS as MAX_SCAN_CHARS
 
@@ -60,18 +66,13 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # identifier_words
 # ---------------------------------------------------------------------------
-# A word is a capitalised or lower-case run, or an ACRONYM run that stops before
-# the capital that starts the next word (`HTTPServer` -> HTTP, Server). Digits
-# stay attached to the letters before them: `oauth2Token` -> (oauth2, token),
-# `loadX509Cert` -> (load, x509, cert), `HTTP2Server` -> (http2, server). `_`,
-# `-` and `$` are not word characters, so they split.
-_WORD = re.compile(r"[A-Z]?[a-z0-9]{1,64}|[A-Z]{1,64}[0-9]{0,16}(?![a-z])")
-
-
-@lru_cache(maxsize=4096)
-def identifier_words(ident: str) -> tuple[str, ...]:
-    """Lower-cased words of ``ident`` split on `_`, `-`, `$` and case boundaries."""
-    return tuple(w.lower() for w in _WORD.findall(ident[:MAX_SCAN_CHARS]))
+# Re-exported above: `shared.ast.roles.words`, defined once in
+# `shared/ast/roles/_words.py`. A word is a capitalised or lower-case run, or an
+# ACRONYM run that stops before the capital that starts the next word
+# (`HTTPServer` -> HTTP, Server). Digits stay attached to the letters before
+# them: `oauth2Token` -> (oauth2, token), `loadX509Cert` -> (load, x509, cert),
+# `HTTP2Server` -> (http2, server). `_`, `-` and `$` are not word characters, so
+# they split. At most MAX_WORDS (16) words are returned (A27 (8)).
 
 
 # ---------------------------------------------------------------------------

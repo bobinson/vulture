@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/vulture/backend/internal/handler"
 )
 
 // ReadOnlyGuard wraps a handler so that when readOnly is true, only GET,
@@ -16,16 +18,15 @@ func ReadOnlyGuard(readOnly bool, next http.HandlerFunc) http.HandlerFunc {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		if handler.IsSafeMethod(r.Method) {
 			next(w, r)
-		default:
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": "read-only mode: this Vulture instance does not accept writes",
-				"hint":  "run audits on the writer backend; this instance only serves stored results",
-			})
+			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "read-only mode: this Vulture instance does not accept writes",
+			"hint":  "run audits on the writer backend; this instance only serves stored results",
+		})
 	}
 }

@@ -1,0 +1,24 @@
+[project]
+name = "vulture-plugin-opengrep"
+version = "0.2.0"
+description = "Bundled Opengrep reference plugin for Vulture (features 0053, 0102)."
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+# Tests import the wrapper as `from src.wrapper import app` and the
+# translator as `from src.translate import ...`. Setting pythonpath to
+# the plugin root makes those imports resolve when pytest is invoked
+# from either the plugin dir or the repo root.
+pythonpath = ["."]
+testpaths = ["tests"]

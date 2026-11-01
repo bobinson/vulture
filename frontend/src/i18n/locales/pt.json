@@ -96,7 +96,7 @@
         "no_line": "Sem linha"
       }
     },
-    "semgrepTierNotice": "Camada Semgrep inativa — esta auditoria executou apenas skills determinísticas e assinaturas.",
+    "semgrepTierNotice": "Camada {{engine}} inativa — esta auditoria executou apenas skills determinísticas e assinaturas.",
     "agent": "Agente",
     "scores": "Pontuações de Conformidade",
     "waitingAgents": "Aguardando início dos agentes...",

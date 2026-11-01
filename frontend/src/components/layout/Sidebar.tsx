@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
 import { ROUTES } from "@/lib/constants.ts";
 import { useAuth } from "@/lib/auth.tsx";
+import { InlineRetry } from "@/components/shared/InlineRetry.tsx";
 
 const NAV_ITEMS = [
   { path: ROUTES.DASHBOARD, icon: "dashboard", labelKey: "nav.dashboard" },
@@ -55,6 +56,56 @@ function NavIcon({ type, className }: { type: string; className?: string }) {
   }
 }
 
+// Only the server can end the cookie session. A sign-out it did not confirm
+// keeps the session live, so say so and offer a retry beside the control.
+// While a sign-out runs both controls are busy: aria-disabled rather than
+// `disabled`, so a focused control keeps the focus (the auth context ignores
+// a repeat press).
+function SignOut() {
+  const { t } = useTranslation();
+  const { logout, logoutFailed, logoutFailures, logoutPending } = useAuth();
+  return (
+    <>
+      <button
+        type="button"
+        className="text-[11px] text-muted hover:text-danger transition-colors cursor-pointer aria-disabled:opacity-45 aria-disabled:pointer-events-none"
+        aria-busy={logoutPending}
+        aria-disabled={logoutPending}
+        onClick={logout}
+      >
+        {t("auth.logout")}
+      </button>
+      {logoutFailed && (
+        <InlineRetry message={t("common.error")} onRetry={logout} busy={logoutPending} failureCount={logoutFailures} />
+      )}
+    </>
+  );
+}
+
+// The signed-in user. Collapsed, the details are invisible as well as
+// zero-width, so the hidden sign-out control leaves the keyboard order too.
+function UserBlock({ expanded }: { expanded: boolean }) {
+  const { user } = useAuth();
+  if (!user) return null;
+  return (
+    <div
+      className={`flex items-center gap-2 transition-all duration-300 ${expanded ? "px-2" : "justify-center"}`}
+    >
+      <div className="w-7 h-7 rounded-full bg-accent/8 text-accent flex items-center justify-center text-[11px] font-bold shrink-0">
+        {user.name.charAt(0).toUpperCase()}
+      </div>
+      <div
+        className={`overflow-hidden transition-all duration-300 ${expanded ? "opacity-100 w-auto" : "opacity-0 w-0 invisible"}`}
+      >
+        <p className="text-[12px] font-medium text-foreground truncate max-w-[130px]">
+          {user.name}
+        </p>
+        <SignOut />
+      </div>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const [pinned, setPinned] = useState(() => {
     const stored = localStorage.getItem(COLLAPSE_KEY);
@@ -64,9 +115,11 @@ export function Sidebar() {
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { t } = useTranslation();
   const location = useLocation();
-  const { user, logout } = useAuth();
+  const { logoutFailed } = useAuth();
 
-  const expanded = pinned || hovered;
+  // A failed sign-out keeps the rail open: the session is still live, and its
+  // retry must not wait in the collapsed rail for a hover.
+  const expanded = pinned || hovered || logoutFailed;
 
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, String(pinned));
@@ -177,29 +230,7 @@ export function Sidebar() {
 
       {/* User */}
       <div className="border-t border-border px-2 py-2">
-        {user && (
-          <div
-            className={`flex items-center gap-2 transition-all duration-300 ${expanded ? "px-2" : "justify-center"}`}
-          >
-            <div className="w-7 h-7 rounded-full bg-accent/8 text-accent flex items-center justify-center text-[11px] font-bold shrink-0">
-              {user.name.charAt(0).toUpperCase()}
-            </div>
-            <div
-              className={`overflow-hidden transition-all duration-300 ${expanded ? "opacity-100 w-auto" : "opacity-0 w-0"}`}
-            >
-              <p className="text-[12px] font-medium text-foreground truncate max-w-[130px]">
-                {user.name}
-              </p>
-              <button
-                type="button"
-                className="text-[11px] text-muted hover:text-danger transition-colors cursor-pointer"
-                onClick={logout}
-              >
-                {t("auth.logout")}
-              </button>
-            </div>
-          </div>
-        )}
+        <UserBlock expanded={expanded} />
       </div>
 
       {/* Version */}

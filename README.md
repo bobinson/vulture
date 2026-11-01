@@ -112,6 +112,8 @@ by environment variables. The default `make docker-up` starts **Mode A**.
 | **D — CI client** | GitHub Actions etc. | `vulture scan <git-url> --api-key X --server Y --wait` | See [docs/guides/ci_integration.md](docs/guides/ci_integration.md). |
 | **E — Native install** | Single-user laptop, no Docker | `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh \| sh` | One-shot installer in the style of nuclei: per-platform tarball + SQLite, all under `~/.vulture/`. Installs the `vulture` CLI (scan/start/stop/doctor) + the embedded UI. The installer **auto-detects a local Python >= 3.12** and, when present, installs the audit agents locally (hash-verified deps) so agent scanning runs without Docker. **Current limitation:** if no suitable Python is found, agent-based (multi-framework / LLM) scanning requires Docker (Mode A or B). See [docs/guides/native_installation.md](docs/guides/native_installation.md). |
 
+**Browser sessions (Modes B and C).** A browser session is an HttpOnly, SameSite=Strict cookie (`__Host-vulture_session` over HTTPS), issued to a sign-in that sends `X-Vulture-CSRF: 1`. Cookies are not isolated by port, so serve Vulture on a dedicated hostname with no other service on any port of that name: such a service would receive the session cookie, a JWT that the API also accepts as a Bearer token. Browsers must reach Vulture only through the TLS proxy, which routes the UI and the API and must forward `X-Forwarded-Proto` (Step 7 of [docs/guides/central_server_deployment.md](docs/guides/central_server_deployment.md)).
+
 ## Native install (no Docker)
 
 If you don't want to install Docker, Node, and Python by hand, run:
@@ -166,7 +168,7 @@ endpoint). Container plugins also still require Docker.
 (parsed, never sourced — no code execution), so it can hold your
 `VULTURE_USE_LLM` / `OPENAI_API_KEY` / `VULTURE_EMBEDDING_*` settings and a
 `VULTURE_PLUGINS` allow-list. The installer seeds an empty `VULTURE_PLUGINS=`
-(no plugins by default); set e.g. `VULTURE_PLUGINS=semgrep` to enable one.
+(no plugins by default); set e.g. `VULTURE_PLUGINS=opengrep` to enable one.
 Container plugins still require Docker — see [Plugins](#plugins).
 
 Full security model (19 invariants — JWT CSPRNG, bind 127.0.0.1, env
@@ -243,7 +245,7 @@ make docker-down    # Stop all services
 |----------|---------|-------------|
 | `VULTURE_PORT` | `28080` | Backend server port |
 | `VULTURE_DB_DSN` | -- | PostgreSQL connection string (uses SQLite if unset) |
-| `VULTURE_DB_PATH` | `/data/vulture.db` | SQLite database path (fallback) |
+| `VULTURE_DB_PATH` | `/data/vulture.db` | SQLite database path (fallback). Its directory also holds the SSH host-key store of key-based clones, `ssh/known_hosts`, unless `VULTURE_GIT_SSH_KNOWN_HOSTS` names another (see the central server deployment guide) |
 | `VULTURE_JWT_SECRET` | -- | JWT signing key (required in production) |
 | `VULTURE_LOCAL_MODE` | `false` | Enable passwordless authentication (set `true` for development) |
 | `VULTURE_AGENT_CHAOS_URL` | `http://agent-chaos:28001` | Chaos agent endpoint |
@@ -280,7 +282,7 @@ make docker-down    # Stop all services
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VITE_API_URL` | `http://localhost:28080` | Backend API URL |
+| `VITE_API_URL` | `http://localhost:28080` | Backend API URL. Browser sessions are same-origin only (the session cookie is host-only), so a build whose API URL is another origin is unsupported for browser sign-in |
 
 ### Configuration File
 
@@ -294,10 +296,10 @@ discovery alone never auto-runs them.
 
 ```bash
 # Dev: activate by name (or "all" / "none") — flag wins over .env
-./scripts/vulture.sh dev openai gpt-4o --plugins semgrep
+./scripts/vulture.sh dev openai gpt-4o --plugins opengrep
 
 # Or persist it — project .env (dev) or ~/.vulture/config/.env (native install):
-VULTURE_PLUGINS=semgrep
+VULTURE_PLUGINS=opengrep
 ```
 
 `VULTURE_PLUGINS=all` activates every discovered plugin; `none` (or an empty
@@ -341,10 +343,11 @@ The frontend auto-discovers available agents via `GET /api/agents` and dynamical
 | `POST` | `/api/auth/login` | Authenticate and receive a JWT token |
 | `GET` | `/api/auth/me` | Get current user (requires authentication) |
 | `GET` | `/api/auth/local-session` | Passwordless token for local mode |
+| `POST` | `/api/auth/logout` | Delete the browser session cookie (requires `X-Vulture-CSRF`) |
 | `GET` | `/api/memories/search` | Semantic search across audit findings (pgvector) |
 | `GET` | `/api/memories/by-path` | Get findings for a specific codebase path |
 | `GET` | `/api/memories/:id/edges` | Get related memories via graph edges |
-| `POST` | `/api/filesystem/browse` | Browse local filesystem directories |
+| `GET` | `/api/filesystem/browse` | Browse server directories (member or admin; refused in centralized mode without `VULTURE_SOURCE_ROOT`, and on a read-only server) |
 | `GET` | `/health` | Health check |
 
 ### SSE Event Types

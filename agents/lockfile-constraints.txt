@@ -7,8 +7,10 @@
 # `pip install --only-binary :all:` it. Cap Darwin to 48.0.1, the newest release
 # that still ships a macosx_10_9_universal2 wheel (covers Intel AND Apple Silicon).
 # Non-Darwin is left UNpinned here so uv emits the complement marker automatically
-# and `make freeze-deps --upgrade` can still bump linux. Both 48.0.1 and 49.x are
-# CVE-clean (OSV), so this trips no Trivy/pip-audit gate and needs no allowlist.
+# and `make freeze-deps --upgrade` can still bump linux. 48.0.1 is NOT CVE-clean:
+# its advisories are waived, each with an expiry, in .pip-audit-ignore (the
+# preflight's pip-audit gate) and .trivyignore (the release CVE gate). Renew them
+# only after re-tracing, per docs/guides/release_process.md "Vulnerabilities".
 #
 # REMOVE this constraint (and re-lock) when EITHER:
 #   (a) cryptography ships a macOS x86_64 wheel again, OR

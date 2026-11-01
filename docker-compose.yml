@@ -69,10 +69,22 @@ services:
       - VULTURE_REQUIRE_LLM=${VULTURE_REQUIRE_LLM:-false}
       - VULTURE_USE_LLM=${VULTURE_USE_LLM:-false}
       - VULTURE_WEBHOOK_SECRET=${VULTURE_WEBHOOK_SECRET:-}
-      # Security hardening (feature 0065). Every default below preserves the
-      # pre-0065 behavior, so Mode A `docker compose up` is unchanged; these are
-      # passed through so a Docker/Mode-B operator can actually SET them (they
-      # are read by internal/config + pkg/gitutil + internal/service).
+      # Security hardening (features 0065 and 0102). These are passed through
+      # so a Docker/Mode-B operator can actually SET them (they are read by
+      # internal/config + pkg/gitutil + internal/service), and
+      # docs/guides/central_server_deployment.md ("Security hardening
+      # variables") covers each. Not every default preserves older behavior:
+      # some now refuse what an older release allowed. With
+      # VULTURE_LOCAL_MODE=false (this file's default) and VULTURE_SOURCE_ROOT
+      # empty, local-path ingest (since 0065) and the folder browser (since
+      # 0102) are both refused, and (since 0102) an audit of a stored local
+      # source the policy refuses fails before any agent runs. The backend
+      # sees host files only at /mnt/source, the VULTURE_SOURCE_DIR mount
+      # under volumes, so a root set here is /mnt/source, not a host path,
+      # and VULTURE_SOURCE_DIR must then be a dedicated directory, not the
+      # default ./ (the checkout, which holds .env). Since 0102 a key clone
+      # also fails closed when the default SSH host-key store is unsafe (set
+      # VULTURE_GIT_SSH_KNOWN_HOSTS to an operator-managed known_hosts file).
       - VULTURE_TRUSTED_PROXIES=${VULTURE_TRUSTED_PROXIES:-}
       - VULTURE_ALLOW_OPEN_REGISTRATION=${VULTURE_ALLOW_OPEN_REGISTRATION:-}
       - VULTURE_SOURCE_ROOT=${VULTURE_SOURCE_ROOT:-}

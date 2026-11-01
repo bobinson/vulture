@@ -208,7 +208,7 @@ func (s *Supervisor) launchOne(ctx context.Context, plug pluginregistry.Plugin) 
 	// `docker run --name` would then fail with a name conflict. Remove any
 	// existing container first; "no such container" is benign and ignored.
 	_ = s.docker.Remove(ctx, containerName(name))
-	if _, err := s.docker.Run(ctx, argv); err != nil {
+	if _, err := s.docker.Run(ctx, argv, RunEnv(s.opts.RunTokens.ForPlugin(name))); err != nil {
 		s.markFailed(name, fmt.Sprintf("run: %v", err))
 		return append(out, Action{Plugin: name, Kind: "fail", Detail: err.Error()})
 	}

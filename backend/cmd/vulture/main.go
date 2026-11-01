@@ -291,7 +291,7 @@ func runScan() {
 		fmt.Fprintln(os.Stderr, "usage: vulture scan <path_or_url>")
 		os.Exit(1)
 	}
-	target := os.Args[2]
+	target := localScanTarget(os.Args[2])
 	cfg := config.Load()
 	apiURL := os.Getenv("VULTURE_API_URL")
 	if apiURL == "" {
@@ -462,6 +462,19 @@ func checkHealth(url string) string {
 		return "UP"
 	}
 	return fmt.Sprintf("ERROR (%d)", resp.StatusCode)
+}
+
+// localScanTarget is the target `vulture scan` submits: a git URL unchanged,
+// a local path made absolute. A confined server refuses a relative path, and
+// the server's working directory is not the caller's.
+func localScanTarget(arg string) string {
+	if isGitURL(arg) {
+		return arg
+	}
+	if abs, err := filepath.Abs(arg); err == nil {
+		return abs
+	}
+	return arg
 }
 
 func isGitURL(s string) bool {

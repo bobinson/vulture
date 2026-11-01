@@ -1,0 +1,32 @@
+[
+ {
+  "category": "CWE-78",
+  "check_id": "cwe.injection.command",
+  "fixture": "injection/cwe_078_1.py",
+  "line_end": 6,
+  "line_start": 6,
+  "recommendation": "Use subprocess with shell=False and list arguments",
+  "severity": "critical",
+  "title": "OS command injection"
+ },
+ {
+  "category": "CWE-78",
+  "check_id": "cwe.injection.command",
+  "fixture": "injection/cwe_078_2.py",
+  "line_end": 6,
+  "line_start": 6,
+  "recommendation": "Use subprocess with shell=False and list arguments",
+  "severity": "critical",
+  "title": "OS command injection"
+ },
+ {
+  "category": "CWE-78",
+  "check_id": "cwe.injection.command",
+  "fixture": "injection/cwe_078_3.py",
+  "line_end": 6,
+  "line_start": 6,
+  "recommendation": "Use subprocess with shell=False and list arguments",
+  "severity": "critical",
+  "title": "OS command injection"
+ }
+]

@@ -62,7 +62,7 @@ func TestSourceHandlerCreateMissingType(t *testing.T) {
 func TestSourceHandlerCreateError(t *testing.T) {
 	svc := &mockSourceService{
 		ingestFn: func(ctx context.Context, req *model.SourceRequest) (*model.Source, error) {
-			return nil, errors.New("unsupported source type")
+			return nil, service.InvalidInput(errors.New("unsupported source type"))
 		},
 	}
 	h := NewSourceHandler(svc)

@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { ReactNode } from "react";
@@ -20,11 +21,18 @@ export interface User {
 
 interface AuthState {
   user: User | null;
-  token: string | null;
   loading: boolean;
+  // Sign-outs the server did not confirm since the last sign-in or sign-out,
+  // so the session is kept. A count, not a flag: the UI can tell a repeat
+  // failure from the one already on screen and announce it again.
+  logoutFailures: number;
+  // A sign-out request is in flight.
+  logoutPending: boolean;
 }
 
 interface AuthContextValue extends AuthState {
+  // The last sign-out was not confirmed by the server (logoutFailures > 0).
+  logoutFailed: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (
     email: string,
@@ -37,64 +45,62 @@ interface AuthContextValue extends AuthState {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const TOKEN_KEY = "vulture_token";
+// The bearer token an older SPA kept in Web Storage. It is only ever removed.
+const LEGACY_TOKEN_KEY = "vulture_token";
+const LOGOUT_TIMEOUT_MS = 3000;
+const BOOTING: AuthState = { user: null, loading: true, logoutFailures: 0, logoutPending: false };
 
-function getInitialToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+// Auth is resolved: to a user, or to signed out (null).
+function resolved(user: User | null): AuthState {
+  return { user, loading: false, logoutFailures: 0, logoutPending: false };
 }
 
+// Sign-out updaters. Only resolved() clears the failure count, so a retry
+// keeps the failure line (and a focused Retry button in it) on screen while it
+// runs.
+const signingOut = (s: AuthState): AuthState => ({ ...s, logoutPending: true });
+const signOutFailed = (s: AuthState): AuthState => ({
+  ...s,
+  logoutFailures: s.logoutFailures + 1,
+  logoutPending: false,
+});
+
+function purgeLegacyToken() {
+  try {
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+  } catch {
+    // Web Storage is blocked: there is nothing to purge.
+  }
+}
+
+// The session is an HttpOnly cookie (feature 0102): no credential is kept in
+// Web Storage or in this context, and only the server can end the session.
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AuthState>(() => {
-    const token = getInitialToken();
-    // Always start in loading: we resolve auth (existing token OR a
-    // passwordless local session) before deciding to show /login.
-    return { user: null, token, loading: true };
-  });
+  const [state, setState] = useState<AuthState>(BOOTING);
 
   useEffect(() => {
+    purgeLegacyToken();
     let cancelled = false;
-
-    // Passwordless local session — RUNTIME-detected (not a build flag): the
-    // backend returns a token only when VULTURE_LOCAL_MODE is on AND the host
-    // is loopback; otherwise it 404s and we fall through to /login. This makes
-    // a native/local install auto-login with no credentials, while a
-    // centralized (Mode B) server still requires sign-in (0055).
-    const tryLocalSession = () => {
-      api
-        .localSession()
-        .then((resp) => {
-          if (cancelled) return;
-          localStorage.setItem(TOKEN_KEY, resp.token);
-          setState({ user: resp.user, token: resp.token, loading: false });
-        })
-        .catch(() => {
-          if (!cancelled) setState({ user: null, token: null, loading: false });
-        });
+    const settle = (user: User | null) => {
+      if (!cancelled) setState(resolved(user));
     };
-
-    // No token: attempt a local session.
-    if (!state.token) {
-      tryLocalSession();
-      return () => { cancelled = true; };
-    }
-
-    // Have a token: validate it; on failure drop it and retry a local session.
-    const token = state.token;
+    // The cookie session first. Then the passwordless local session, which is
+    // RUNTIME-detected (not a build flag): the backend grants it only when
+    // VULTURE_LOCAL_MODE is on AND the host is loopback, so a native/local
+    // install signs in with no credentials while a centralized (Mode B) server
+    // answers an error and the user lands on /login (0055).
     api
-      .me(token)
-      .then((user) => { if (!cancelled) setState({ user, token, loading: false }); })
-      .catch(() => {
-        if (cancelled) return;
-        localStorage.removeItem(TOKEN_KEY);
-        tryLocalSession();
-      });
-    return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .me()
+      .catch(() => api.localSession().then((resp) => resp.user))
+      .then(settle, () => settle(null));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const login = useCallback(async (email: string, password: string) => {
     const resp = await api.login({ email, password });
-    localStorage.setItem(TOKEN_KEY, resp.token);
-    setState({ user: resp.user, token: resp.token, loading: false });
+    setState(resolved(resp.user));
   }, []);
 
   const register = useCallback(
@@ -110,19 +116,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         name,
         team_name: teamName,
       });
-      localStorage.setItem(TOKEN_KEY, resp.token);
-      setState({ user: resp.user, token: resp.token, loading: false });
+      setState(resolved(resp.user));
     },
     []
   );
 
+  // Signed out only once the server confirms (it clears the cookie). A failure,
+  // or no answer within LOGOUT_TIMEOUT_MS, keeps the session and counts in
+  // logoutFailures, so the UI can offer a retry instead of a /login page shown
+  // over a cookie that still works. One request at a time: a call while one
+  // is in flight is ignored (the timeout bounds how long that lasts), so two
+  // overlapping answers cannot leave the flags out of step with the session.
+  const logoutInFlight = useRef(false);
   const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    setState({ user: null, token: null, loading: false });
+    if (logoutInFlight.current) return;
+    logoutInFlight.current = true;
+    setState(signingOut);
+    api
+      .logout(AbortSignal.timeout(LOGOUT_TIMEOUT_MS))
+      .then(
+        () => setState(resolved(null)),
+        () => setState(signOutFailed)
+      )
+      .finally(() => {
+        logoutInFlight.current = false;
+      });
   }, []);
 
   const value = useMemo(
-    () => ({ ...state, login, register, logout }),
+    () => ({ ...state, logoutFailed: state.logoutFailures > 0, login, register, logout }),
     [state, login, register, logout]
   );
 

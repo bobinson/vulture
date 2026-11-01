@@ -1,0 +1,5 @@
+# The image build needs only the files the Dockerfile copies (feature 0102).
+**/__pycache__
+*.egg-info
+tests/
+tools/

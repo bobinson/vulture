@@ -232,6 +232,7 @@ These rules are mandatory for all code in this project:
 - All handlers accept service interfaces for testability
 - All services accept repository interfaces for mock injection
 - Error handling: return errors, don't panic. Wrap errors with context using `fmt.Errorf("operation: %w", err)`
+- Error responses never carry internal error text (CWE-209): every 500 goes through `writeInternalError` (logs the cause under the request id; body `{"error":"internal error","request_id":…}`), and only caller-input text marked with `service.InvalidInput`, or a curated literal from `service.InvalidInputMsg`, reaches a 4xx (via `writeInvalidOrInternal`). Mark errors with `errkind.Mark`, which keeps the text for the log. `handler/error_body_static_test.go` enforces literal messages and no direct 500s
 - Naming: `handler/audit_handler.go`, `service/audit_service.go`, `model/audit.go`
 - Tests: `*_test.go` next to source files for unit tests, `test/e2e/` for E2E
 - Use `golangci-lint` for linting, `gocyclo` for complexity checks
@@ -252,7 +253,7 @@ These rules are mandatory for all code in this project:
 - Native EventSource API for SSE streaming (no ag-ui client library)
 - react-i18next for internationalization (en, es, de, fr, ja, pt)
 - Tailwind CSS v4 with custom theme (cream bg `#F6F5F0`, blue accent `#2563eb`, green highlight `#22c55e`)
-- Auth: JWT token in localStorage, AuthProvider context, protected routes
+- Auth: AuthProvider context, protected routes. The backend issues a browser session as an HttpOnly, SameSite=Strict cookie (`vulture_session`; `__Host-vulture_session` with `Secure` over HTTPS) to a sign-in that sends `X-Vulture-CSRF: 1`, and refuses a cookie-authenticated unsafe request without that header (403). The SPA keeps no credential: nothing in Web Storage (it removes the legacy `vulture_token` key once, at start) and no `Authorization` header; `api.ts` sends `X-Vulture-CSRF: 1` on every request with fetch's default `same-origin` credentials. Boot asks `GET /api/auth/me`, then the local session, then shows /login. Sign-out POSTs `/api/auth/logout` and clears the session only on its 204: on an error, or no answer within 3 s, the session stays and the sidebar offers a retry (the SPA cannot delete the HttpOnly cookie itself). `src/lib/credential_storage.guard.test.ts` fails vitest if production code puts a credential in Web Storage, builds an `Authorization` header or touches `document.cookie`. The Settings page stores only the model choice (`vulture_settings`): the API key field is never written to Web Storage, and a key an older version saved there is stripped on load
 - Tests: Playwright for E2E (22 tests), Vitest for unit tests
 - Use `eslint` + `prettier` for linting/formatting
 
@@ -285,15 +286,18 @@ To add a new audit type (e.g., GDPR):
 | GET | `/api/audits/:id/findings/:fid/masked` | Locate the masked values in a finding's snippet against the scanned file; the values themselves only to an authorised human (admin; locally, the signed-in session). See `docs/architecture/agent_protocol.md` "Masked values" |
 | GET | `/api/agents` | List available agent types |
 | GET | `/api/agents/:type/info` | Get agent config schema & skills |
-| POST | `/api/auth/register` | Register new user |
-| POST | `/api/auth/login` | Login and get JWT token |
-| GET | `/api/auth/me` | Get current user (requires auth) |
-| GET | `/api/auth/local-session` | Passwordless token (local mode) |
+| POST | `/api/auth/register` | Register new user (session as for login) |
+| POST | `/api/auth/login` | Login. A JWT in the body for Bearer clients (CLI, CI, scripts); with `X-Vulture-CSRF: 1`, an HttpOnly session cookie instead, and no `token` in the body |
+| POST | `/api/auth/logout` | Delete the session cookie (204). Requires `X-Vulture-CSRF`; no auth, so it works on a read-only viewer. The JWT is not revoked: it expires with the session (24h) |
+| GET | `/api/auth/me` | Get current user. 401 unless the request presented a credential, so local mode's implicit user gets 401 here |
+| GET | `/api/auth/local-session` | Passwordless token (local mode); with `X-Vulture-CSRF: 1`, the session cookie instead |
 | GET | `/api/memories/search` | Semantic search (pgvector) |
 | GET | `/api/memories/by-path` | Get findings for a codebase path |
 | GET | `/api/memories/:id/edges` | Get related memories (graph) |
-| POST | `/api/filesystem/browse` | Browse local filesystem |
+| GET | `/api/filesystem/browse` | Browse server directories (member or admin; follows `VULTURE_SOURCE_ROOT`) |
 | GET | `/health` | Health check |
+
+Credentials: a request presents ONE credential, in this order, and a present one never falls through to the next: a `stream_token` (honoured only on `/api/audits/:id/stream`), an `Authorization` header (a JWT or a `vk_` API key), then the session cookie (a JWT only; ignored on a request whose `Sec-Fetch-Site` is `same-site` or `cross-site`). A cookie-authenticated unsafe request must send `X-Vulture-CSRF` (403 otherwise). The routes that mint or manage credentials (`/api/api-keys`, `/api/admin/users`) take a Bearer credential only; the session cookie gets 403 there. `X-Vulture-CSRF` is deliberately absent from the CORS `Access-Control-Allow-Headers`.
 
 ## Memory System
 
@@ -320,6 +324,7 @@ VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001  # Agent endpoints
 VULTURE_AGENT_OWASP_URL=http://agent-owasp:8002
 VULTURE_AGENT_SOC2_URL=http://agent-soc2:8003
 VULTURE_AGENT_CWE_URL=http://agent-cwe:8004
+VULTURE_AGENT_TOKEN=  # Shared /run secret of the in-tree agents: the backend sends it as X-Vulture-Agent-Token, and an agent refuses /run without it whenever it is set. REQUIRED in centralized mode (startup fails without it); the native launcher generates one per start when unset. Plugins never get it: each gets hex(HMAC-SHA256(key, "vulture-plugin-run-token/v1:<name>")), key = this token or a per-process random one, delivered through its container env; the docker CLI that starts plugins never inherits it
 VULTURE_EMBEDDING_URL=  # Custom embedding endpoint
 VULTURE_EMBEDDING_MODEL=  # Embedding model override
 
@@ -336,16 +341,16 @@ VULTURE_LINEAGE_KEY=target  # `target` (default) or `path`. What counts as "the 
 VULTURE_FINDING_IDENTITY=observe  # `observe` (default) / `off` / `enforce`. Whether a finding is stamped with `fingerprint_v2`, the identity keyed on check_id and a root-canonical path so it survives an LLM rephrasing and a mount change. `enforce` also swaps `fingerprint` itself and is irreversible; `off` is the rollback
 VULTURE_MEMORY_SYNC=true  # Propagate every lineage status transition onto `audit_memories.remediation_status` (open/in_progress/regression/unconfirmed -> `open`; fixed/resolved -> `resolved`; false_positive and accepted_risk map to themselves).
 
-# Security hardening — opt-in; defaults preserve current behavior
+# Security hardening — each entry states its default. Not every default preserves older behavior: some now refuse what an older release allowed
 VULTURE_TRUSTED_PROXIES=  # Comma CIDR/IP list of proxies allowed to set X-Forwarded-For. Unset = trust the direct peer only.
 VULTURE_LOGIN_LOCKOUT_MAX=5  # Failed logins per (email,IP) before the escalating (capped) delay engages; a hard ceiling at 2x returns 429. Non-positive value falls back to 5
 VULTURE_LOGIN_LOCKOUT_WINDOW_SEC=900  # Sliding window (seconds) for the login throttle (default 900 = 15 min). Non-positive value falls back to 900
 VULTURE_ALLOW_OPEN_REGISTRATION=  # Allow public POST /api/auth/register. Default: true when VULTURE_LOCAL_MODE is set, false otherwise. When false, provision users via admin-only POST /api/admin/users
-VULTURE_SOURCE_ROOT=  # Confines local-path (Type=local) source ingest to this directory (symlinked parents resolved so they cannot escape). In centralized mode (VULTURE_LOCAL_MODE unset) local ingest is REJECTED unless this is set
-VULTURE_GIT_HOST_ALLOWLIST=  # Comma list of git hosts permitted even if they resolve to an internal IP (SSRF guard). Empty = public hosts only; internal targets blocked
+VULTURE_SOURCE_ROOT=  # Confines server-side local paths to this directory: local-path (Type=local) source ingest, the folder browser (GET /api/filesystem/browse), and the dispatch of a stored local source (an audit of a row the policy now refuses fails with `source refused by the local-path policy`, and no agent runs). In centralized mode (VULTURE_LOCAL_MODE unset) all three are REFUSED unless this is set, and a read-only server refuses them whatever its value. A confined path must be absolute, without `..`, at most 4096 bytes, and spelled under the root (an outside symlink spelling that points into the root is refused: submit the canonical path); symlinks are then resolved so nothing escapes. Refusals are deliberately uniform: every outside, unresolvable or hostile path gets the same 400 (`path not permitted: must be an existing directory inside the source root`), and only paths inside the root get errors that name them. Browse also requires a member or admin. Use a dedicated directory, never the checkout, named as the backend sees it: e.g. /srv/vulture/sources for a backend on the host; under docker compose the backend sees host files only at /mnt/source (the VULTURE_SOURCE_DIR bind mount, whose default ./ is the checkout), so set /mnt/source and point VULTURE_SOURCE_DIR at the dedicated directory. Browse refuses denylisted system trees (/var, /usr, /etc, ...) even inside the root
+VULTURE_GIT_HOST_ALLOWLIST=  # Comma list of the only git hosts a clone may use. Empty = any public host. It does NOT exempt a host from the SSRF guard: every git host, listed or not, must resolve to a public IP, so an internal git server cannot be cloned
 VULTURE_GIT_ALLOW_REDIRECTS=false  # Allow git to follow HTTP redirects during clone. Default off (http.followRedirects=false) blocks redirect-based SSRF; enable only for trusted hosts
-VULTURE_GIT_SSH_STRICT=accept-new  # SSH StrictHostKeyChecking mode for key clones (TOFU on first contact). Requires OpenSSH >= 7.6 (startup probe falls back and warns otherwise)
-VULTURE_GIT_SSH_KNOWN_HOSTS=  # UserKnownHostsFile path for SSH clones. Default: a per-install path under the data dir
+VULTURE_GIT_SSH_STRICT=accept-new  # SSH StrictHostKeyChecking mode for key clones (TOFU on first contact). Requires OpenSSH >= 7.6 (startup probe falls back to yes and warns otherwise). `yes` accepts no new host: seed the host-key store first (docs/guides/central_server_deployment.md "SSH host-key store")
+VULTURE_GIT_SSH_KNOWN_HOSTS=  # Operator-managed UserKnownHostsFile for SSH key clones, used verbatim and unchecked. Default: <directory of VULTURE_DB_PATH>/ssh/known_hosts (container /data/ssh/known_hosts), verified before every key clone and before the key is written: the ssh dir is a real directory of the backend user's (a loose mode is tightened to 0700), its parent is not world-writable without the sticky bit, the file is absent or a single-link regular file of the backend user's, and the path holds nothing ssh would interpret. Anything else, or no database file (in-memory), fails the clone closed with a 500; the cause and this remedy go to the log. Never the shared temp dir
 VULTURE_GIT_SSH_INSECURE=false  # Restore legacy no-host-key-verification for SSH clones (rollback escape hatch; disables MITM protection)
 VULTURE_WEBHOOK_HOST_ALLOWLIST=  # Comma list of internal hosts permitted as webhook targets. Empty = public-only (internal webhook targets blocked)
 VULTURE_AGENT_ENV_SCRUB=true  # Native modes: spawned agents receive a FILTERED copy of the backend env — backend credentials (JWT secret, DB DSN/password, webhook HMAC, broker mint key) and injection vectors (LD_PRELOAD, LD_AUDIT, DYLD_*, PYTHONSTARTUP, PYTHONUSERBASE, PYTHONHOME) are removed.
@@ -445,7 +450,7 @@ VULTURE_BACKEND_URL=http://backend:8080  # Backend URL for memory API
 OLLAMA_API_BASE=http://localhost:11434  # Ollama endpoint (local models)
 
 # Frontend
-VITE_API_URL=http://localhost:8080  # Backend URL
+VITE_API_URL=http://localhost:8080  # Backend URL. Browser sessions are same-origin only (the session cookie is host-only), so a build whose API URL is another origin is unsupported for browser sign-in; the dev proxy, nginx `/api/` and the embedded UI are all same-origin
 ```
 
 ## SSE Event Types
