@@ -431,12 +431,16 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
-- **The semgrep plugin's 0.1.1 image cannot start Semgrep; 0.1.2 replaces it.** Its Dockerfile installed
-  the wrapper's server packages unpinned, so the build took a fastapi that requires a newer
-  `opentelemetry-api` than the OpenTelemetry exporters in Semgrep's base image, and every Semgrep run failed
-  on import while `/health` still answered. The packages are now pinned exactly and installed under a
-  constraint of every package the base ships, and the build runs `semgrep --version`, so an image whose
-  engine cannot start fails to build and is never pushed or signed.
+- **The bundled semgrep plugin's image is built on your machine and never published.** Its base is
+  Semgrep's own image, which carries Semgrep's engines, one of them proprietary, and Vulture must not
+  redistribute them; the briefly published `ghcr.io/bobinson/vulture-plugin-semgrep` package is deleted.
+  The manifest names a local image, `vulture-plugin-semgrep:0.1.3`. The backend never pulls a bundled
+  plugin that ships a Dockerfile: it uses the local image or builds it from that Dockerfile. The
+  native-install tarball now ships the plugin's build context (Dockerfile, `pyproject.toml`, `src/`),
+  never an image, and the image build fetches no Semgrep Registry rules. The build also pins the
+  wrapper's server packages exactly, under a constraint of every package the base ships, and runs
+  `semgrep --version`: unpinned, fastapi 0.162 lifted `opentelemetry-api` past the base's exporters and
+  Semgrep could not start while `/health` still answered.
 - **Host-network plugins are reachable on macOS.** Docker on macOS runs in a Linux VM, so a plugin on
   `--network host` (the bundled semgrep plugin) listened on the VM's localhost while the backend dialled the
   Mac's, and `vulture.sh dev` started a plugin it could never reach. When the backend runs on darwin, a
@@ -574,15 +578,9 @@ stack, which runs centralized with its shipped defaults (`VULTURE_LOCAL_MODE=fal
     documents the rules; checking the token is a SHOULD for a plugin, so
     `api_version` (1.0), the manifest schema and the conformance checks are
     unchanged.
-  - **Upgrade notes:** the bundled plugin's image is now
-    `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.2` (the published 0.1.1 image
-    cannot start its engine; see Fixed); the backend no longer starts 0.1.0. This
-    release is tagged only once that image is published and an anonymous
-    pull of it matches the index digest given in the release notes; there is no
-    fallback to 0.1.0. The image is published by a tag-triggered workflow that uses
-    the repository's own short-lived token, signs the pushed digest with keyless
-    cosign and attaches a build-provenance attestation (to verify: "Plugin image" in
-    `docs/guides/cosign_verification.md`). A plugin started by hand behind a backend with a shared token
+  - **Upgrade notes:** the bundled plugin is now 0.1.3, whose image the backend
+    builds on your machine as `vulture-plugin-semgrep:0.1.3` (see Fixed); the
+    backend no longer starts 0.1.0. A plugin started by hand behind a backend with a shared token
     needs the derived value (the contract shows how to compute it); with no token
     set, its `/run` is open and logs a warning. A third-party plugin should check
     `X-Vulture-Agent-Token` against its own `VULTURE_AGENT_TOKEN`, and one that used

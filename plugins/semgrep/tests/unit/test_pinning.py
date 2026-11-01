@@ -29,6 +29,9 @@ Contract pinned by these tests:
     base already ships, so no package the wrapper adds can replace one Semgrep
     imports; and a later ``RUN`` starts the engine (``semgrep --version``), so
     a build whose engine cannot start fails before anything is pushed.
+
+(e) Feature 0102: the build fetches no Semgrep Registry rules (no
+    ``--config p/...``): the image holds only the engine and Vulture's code.
 """
 
 from __future__ import annotations
@@ -209,3 +212,8 @@ def test_dockerfile_starts_the_engine_after_the_last_install():
         "a RUN after the last pip install must run `semgrep --version`, so an image "
         "whose engine cannot start never builds"
     )
+
+
+def test_dockerfile_fetches_no_registry_rules():
+    fetching = [r for r in _run_instructions() if re.search(r"--config[ =]+p/", r)]
+    assert not fetching, f"the build must not fetch Semgrep Registry rules: {fetching}"

@@ -362,9 +362,8 @@ SHOULD get `400 {"detail": "invalid JSON body"}`, not a 5xx.
 
 The orchestrator reports any non-200 answer to `/run` as that plugin's tier
 not being active for the run. The bundled `semgrep` plugin applies every rule
-above from version 0.1.1 (its manifest names
-`ghcr.io/bobinson/vulture-plugin-semgrep:0.1.2`); earlier versions apply none
-of them.
+above from version 0.1.1 (its manifest names `vulture-plugin-semgrep:0.1.3`,
+which the backend builds locally); earlier versions apply none of them.
 
 **Local mode: a host-network plugin has local-process trust.** In local mode
 (the native launcher, `VULTURE_LOCAL_MODE=true`) the orchestrator's API serves

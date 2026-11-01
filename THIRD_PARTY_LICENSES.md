@@ -17,8 +17,9 @@ MIT, BSD-3-Clause, BSD-2-Clause). No GPL/AGPL/SSPL or non-OSI licenses are pulle
 in by the lockfiles as of the v0.1.0 release.
 
 **One exception, scoped:** the optional bundled Semgrep plugin
-(`plugins/semgrep/`) ships a Dockerfile that pulls the upstream
-`semgrep/semgrep` Docker image. Semgrep is LGPL-2.1-only. It runs as a
+(`plugins/semgrep/`) ships a Dockerfile that the backend builds on the
+user's machine from the upstream `semgrep/semgrep` Docker image; Vulture never
+publishes that image. Semgrep's engine is LGPL-2.1-only. It runs as a
 separate process in its own container and communicates with Vulture
 exclusively over HTTP/SSE — no static linking, no in-process loading.
 The Apache-2.0 Vulture code is therefore not a derivative work of
@@ -130,9 +131,13 @@ security issues. Vulture ships a bundled reference plugin
 (`plugins/semgrep/`) that wraps the upstream Semgrep CLI behind the
 Vulture plugin contract.
 
-**Upstream version vendored:** none — the plugin's Dockerfile pulls the
-upstream `semgrep/semgrep:1.84.0` Docker image at build time. No
-Semgrep source is committed to this repository.
+**Upstream version vendored:** none — the backend builds the plugin image
+on the user's machine from the upstream `semgrep/semgrep:1.168.0` Docker
+image, which the user's Docker pulls from Semgrep. No Semgrep source or
+binary is committed to this repository, shipped in a release, or published
+in an image. That upstream image also carries a proprietary Semgrep engine
+(`semgrep-core-proprietary`) under Semgrep's own terms; the plugin never
+invokes it unless the operator supplies their own `SEMGREP_APP_TOKEN`.
 
 **Upstream URL:** https://github.com/semgrep/semgrep
 
@@ -156,8 +161,8 @@ derivative work of LGPL-2.1 Semgrep):**
    every program it runs — that interpretation has been consistently
    rejected by the FSF and by the courts.
 4. The LGPL-2.1 distribution obligations therefore apply to **the
-   Semgrep image itself** (which carries its own LGPL-2.1 license text
-   inside the container), not to Vulture.
+   Semgrep image itself**, which Semgrep distributes, not to Vulture,
+   which distributes no part of it.
 
 **Operator obligations:** if you modify the Semgrep CLI itself, you
 must comply with LGPL-2.1 at the container layer (publish your
@@ -165,8 +170,8 @@ modified Semgrep source, retain copyright notices, etc.). Modifying
 the Vulture wrapper around it is purely Apache-2.0.
 
 **What we redistribute:** the plugin manifest (`plugin.toml`), the
-wrapper code, the Dockerfile, the rule-to-CWE map. Not the Semgrep
-binary itself, not Semgrep source.
+wrapper code, the Dockerfile, the Vulture-authored rules, the rule-to-CWE
+map. Not the Semgrep image, binaries or source, and no image built on it.
 
 **Modifications applied:** none. The plugin invokes `semgrep scan
 --json` with operator-specified rule packs and translates the JSON

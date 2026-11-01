@@ -21,8 +21,8 @@ per platform (`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`):
 **The signed surface is the tarballs and `SHA256SUMS`.** The SBOM and vuln
 reports are provided for inspection only — verify the tarball, not them.
 
-The bundled semgrep plugin's container image is signed too, by its own
-workflow; see [Plugin image](#plugin-image).
+No container image is published: the bundled semgrep plugin's image is built
+on your machine from the Dockerfile in the tarball.
 
 ## Prerequisites
 
@@ -146,31 +146,6 @@ The signature is permanently, publicly logged when the entry's
 `verification.inclusionProof` (a Merkle audit path + signed checkpoint) and
 `signedEntryTimestamp` are present — that is the tamper-evident proof Rekor holds
 for it. (`index/retrieve` is occasionally flaky with a 502 — just retry.)
-
-## Plugin image
-
-The semgrep plugin's image, `ghcr.io/bobinson/vulture-plugin-semgrep:<ver>`, is
-pulled by the backend's plugin supervisor, not shipped in the tarball. It is
-built by `.github/workflows/plugin-image.yml` from a tag `plugin-semgrep-v<ver>`,
-signed by digest with keyless cosign, and given a build-provenance attestation.
-Verify the digest your host pulled (`docker images --digests`, or the one in the
-release notes):
-
-```sh
-V=<plugin version>; D=<sha256:… digest>
-cosign verify "ghcr.io/bobinson/vulture-plugin-semgrep@$D" \
-  --certificate-identity "https://github.com/bobinson/vulture/.github/workflows/plugin-image.yml@refs/tags/plugin-semgrep-v$V" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-gh attestation verify "oci://ghcr.io/bobinson/vulture-plugin-semgrep@$D" --repo bobinson/vulture
-```
-
-| Field | Value |
-|-------|-------|
-| identity | `https://github.com/bobinson/vulture/.github/workflows/plugin-image.yml@refs/tags/plugin-semgrep-v<ver>` |
-| OIDC issuer | `https://token.actions.githubusercontent.com` |
-
-An image built by hand (the release process's break-glass path) is not signed,
-and its release notes say so.
 
 ## Troubleshooting
 

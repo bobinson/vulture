@@ -81,10 +81,6 @@ jobs:
         run: sh scripts/tests/test_release_cve_gate_isolation.sh
       - name: release CVE gate trivy-argument tests (0102)
         run: sh scripts/tests/test_release_cve_gate_trivy_arg.sh
-      - name: plugin image workflow guards (0102)
-        run: sh scripts/tests/test_plugin_image_workflow.sh
-      - name: plugin image version check tests (0102)
-        run: sh scripts/tests/test_plugin_version_check.sh
       - name: release preflight tests
         run: sh scripts/tests/test_release_preflight.sh
       - name: smoke-scan contract tests

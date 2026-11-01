@@ -10,8 +10,11 @@
 #   C5: a committed, non-empty, HASHED frozen lockfile exists, AND
 #       build-release.sh COPIES 'requirements-frozen.txt' into the staged tree
 #       (so the fail-closed empty-marker branch alone cannot satisfy it).
-#   C6: build-release.sh COPIES plugin MANIFESTS (plugin.toml + rules) into
-#       runtime/plugins/ and does NOT bundle container images.
+#   C6: build-release.sh COPIES plugin MANIFESTS (plugin.toml + rules) and a
+#       bundled plugin's build context (Dockerfile, pyproject.toml, src) into
+#       runtime/plugins/, so the backend builds the image locally; it does NOT
+#       bundle container images, and no workflow publishes one (feature 0102:
+#       a plugin image would redistribute the engine it wraps).
 #   C7: build-release.sh has a VULTURE_BUNDLE_PBS opt-in path that is
 #       env-guarded, downloads a cpython 3.12 install_only PBS tarball,
 #       SHA256-verifies it fail-closed against a committed pin (the mismatch
@@ -90,6 +93,33 @@ test_c6_no_images() {
     fi
 }
 test_c6_no_images
+
+test_c6_plugin_build_context() {
+    name="C6-plugin-build-context-staged"
+    detail=""
+    for f in Dockerfile pyproject.toml src; do
+        grep -Eq "cp .*${f}.*runtime/plugins" "$BUILD_SH" \
+            || detail="$detail $f not copied into runtime/plugins;"
+    done
+    if [ -z "$detail" ]; then
+        pass "$name"
+    else
+        fail "$name" "$detail"
+    fi
+}
+test_c6_plugin_build_context
+
+test_c6_no_image_publish() {
+    name="C6-no-workflow-publishes-an-image"
+    hits=$(grep -lE 'docker/build-push-action|docker[[:space:]]+push|buildx[[:space:]].*--push|ghcr\.io/' \
+        "$REPO_ROOT"/.github/workflows/*.yml 2>/dev/null)
+    if [ -z "$hits" ]; then
+        pass "$name"
+    else
+        fail "$name" "workflows publish a container image: $hits"
+    fi
+}
+test_c6_no_image_publish
 
 # ---------------------------------------------------------------------------
 # C7 — VULTURE_BUNDLE_PBS opt-in path.

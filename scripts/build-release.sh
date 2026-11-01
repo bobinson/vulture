@@ -139,10 +139,13 @@ for agent in shared chaos_engineering owasp soc2 cwe xss ssdf asvs do178c discov
 done
 
 echo "==> Copying plugin manifests"
-# Ship plugin DISCOVERY METADATA only (plugin.toml + CWE rule sidecars), NOT
-# container images — those pull at runtime (same deferral posture as PBS). The
-# install-mode launcher points VULTURE_BUILTIN_PLUGINS_DIR here so discovery +
-# VULTURE_PLUGINS can act on them. Running a container plugin still needs Docker.
+# Ship plugin DISCOVERY METADATA (plugin.toml + CWE rule sidecars) and, for a
+# plugin with a Dockerfile, its BUILD CONTEXT (Dockerfile, pyproject.toml, src),
+# NEVER a container image: the backend builds a bundled plugin's image on the
+# user's machine, so Vulture redistributes nothing the image's base contains
+# (feature 0102). The install-mode launcher points VULTURE_BUILTIN_PLUGINS_DIR
+# here so discovery + VULTURE_PLUGINS can act on them. Running a container
+# plugin still needs Docker.
 if [ -d "$REPO_ROOT/plugins" ]; then
     for d in "$REPO_ROOT"/plugins/*/; do
         [ -f "$d/plugin.toml" ] || continue
@@ -150,6 +153,10 @@ if [ -d "$REPO_ROOT/plugins" ]; then
         mkdir -p "$STAGE/runtime/plugins/$name"
         cp "$d/plugin.toml" "$STAGE/runtime/plugins/$name/"
         [ -d "$d/rules" ] && cp -R "$d/rules" "$STAGE/runtime/plugins/$name/"
+        if [ -f "$d/Dockerfile" ]; then
+            cp "$d/Dockerfile" "$d/pyproject.toml" "$STAGE/runtime/plugins/$name/"
+            cp -R "$d/src" "$STAGE/runtime/plugins/$name/"
+        fi
     done
 fi
 

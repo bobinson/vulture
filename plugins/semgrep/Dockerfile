@@ -1,27 +1,16 @@
-# Single-stage build (NIT #21 fix). Base image pinned by DIGEST so the
-# verified license (Semgrep 1.168.0 = LGPL-2.1, OSS engine) and contents
-# can't change under a re-pushed tag. The :1.168.0 tag is kept for human
-# readability; Docker resolves the @sha256 digest (multi-arch index). On any
-# version bump, update the digest AND re-verify Semgrep's upstream LICENSE.
+# Single-stage build (NIT #21 fix). The backend builds this image on the
+# user's machine and it is never published: the base image is Semgrep's own,
+# pulled from Semgrep's registry by the user, and it carries Semgrep's engines
+# (the LGPL-2.1 engine and a proprietary one), which Vulture must not
+# redistribute (feature 0102). Base pinned by DIGEST so its contents can't
+# change under a re-pushed tag; the :1.168.0 tag is kept for readability. On
+# any version bump, update the digest AND re-verify Semgrep's upstream licence.
 FROM semgrep/semgrep:1.168.0@sha256:59fbed6127ea7c5dde3ba6a85142733bb20ea9aaa36120c953904f1539aaf66e
 WORKDIR /app
 
-# MINOR #15 fix: Semgrep's default rules cache lives under $HOME/.semgrep,
-# which is /root for this image. After the USER drop below `nobody`
-# cannot read /root. Redirect the cache to /srv/semgrep-rules (writable
-# by nobody after chown), pre-warm under that path, then drop user.
-ENV SEMGREP_RULES_CACHE=/srv/semgrep-rules
-# HOME is supplied at RUN time by the supervisor (-e HOME=/tmp, see
-# buildEnvArgs) so Semgrep can write $HOME/.semgrep as the runtime user.
-# We do NOT bake ENV HOME here: the build pre-warm below runs as root, and
-# a root-created /tmp/.semgrep would then be unwritable by the dropped
-# runtime user. Build-time prime of the default pack (NOT an offline cache
-# — Semgrep re-resolves registry packs per run; the vendored rules/vulture
-# rules are the hermetic tier, and a registry-fetch failure now surfaces as
-# an audit error, not a silent 0 — see agui/translator.go resultErrorText).
-RUN mkdir -p /srv/semgrep-rules \
- && chown -R 65534:65534 /srv/semgrep-rules \
- && semgrep --config p/auto --quiet /tmp 2>/dev/null || true
+# HOME is supplied at run time by the supervisor (-e HOME=/tmp, see
+# buildEnvArgs) so Semgrep can write $HOME/.semgrep as the runtime user. The
+# build fetches no rules: the vendored rules/vulture set is copied below.
 
 COPY pyproject.toml /app/
 COPY src/    /app/src/

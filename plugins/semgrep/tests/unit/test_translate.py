@@ -112,7 +112,7 @@ def test_translate_findings_full_fixture():
 
     by_check = {f["check_id"]: f for f in findings}
 
-    sql = by_check["python.django.security.injection.sql.sql-injection-using-raw"]
+    sql = by_check["vulture.python.sqli.concatenated-query"]
     assert sql["agent_type"] == "semgrep"
     assert sql["severity"] == "high"          # ERROR → high
     assert sql["category"] == "CWE-89"        # canonical CWE preferred
@@ -123,23 +123,23 @@ def test_translate_findings_full_fixture():
     assert sql["description"]                 # non-empty
     assert "cursor.execute" in sql["code_snippet"]
 
-    xss = by_check["javascript.express.security.audit.xss.direct-response-write"]
+    xss = by_check["vulture.javascript.xss.unescaped-response"]
     assert xss["severity"] == "medium"        # WARNING → medium
     assert xss["category"] == "CWE-79"
 
-    md5 = by_check["go.lang.security.audit.crypto.weak-hashes.use-of-md5"]
+    md5 = by_check["vulture.go.crypto.md5-hash"]
     assert md5["severity"] == "medium"
     assert md5["category"] == "CWE-327"
 
 
 def test_translate_findings_falls_back_to_check_id():
-    # The "unused-variable" rule in the fixture has NO cwe metadata —
+    # The "unused-local" rule in the fixture has NO cwe metadata —
     # the translator must fall back to using check_id as the category
     # so the 0050 prefix map can attempt resolution downstream.
     semgrep_json = _load_fixture()
     findings = translate_findings(semgrep_json, agent_type="semgrep")
-    unused = next(f for f in findings if f["check_id"] == "python.lang.best-practice.unused-variable")
-    assert unused["category"] == "python.lang.best-practice.unused-variable"
+    unused = next(f for f in findings if f["check_id"] == "vulture.python.hygiene.unused-local")
+    assert unused["category"] == "vulture.python.hygiene.unused-local"
     assert unused["severity"] == "info"
 
 

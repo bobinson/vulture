@@ -44,9 +44,13 @@ This product redistributes the following third-party content:
     (LGPL-2.1-only).
     License:       https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
     Source:        https://github.com/semgrep/semgrep
-    Distributed in: plugins/semgrep/ (this bundled plugin ships a
-                    Dockerfile that pulls the upstream
-                    semgrep/semgrep:1.84.0 image). The Semgrep binary
+    Not distributed: plugins/semgrep/ ships only a Dockerfile.
+                    The backend builds the plugin image on the
+                    user's machine from the upstream
+                    semgrep/semgrep:1.168.0 image, which Semgrep
+                    distributes under its own terms (it also carries
+                    a proprietary Semgrep engine); Vulture never
+                    publishes that image. The Semgrep binary
                     runs as a separate process inside its own container
                     and communicates with Vulture only over HTTP/SSE
                     across a process boundary — no static linking, no

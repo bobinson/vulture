@@ -68,7 +68,7 @@ in your fork.
 | `[plugin].description` | "Bundled reference plugin..." | one-line description of what your scanner does |
 | `[plugin].homepage` | `https://github.com/bobinson/vulture/tree/main/plugins/semgrep` | `https://github.com/your-org/vulture-plugin-yours` |
 | `[plugin].documentation` | bundled README link | link to your README |
-| `[runtime].image` | `ghcr.io/bobinson/vulture-plugin-semgrep:0.1.2` | `ghcr.io/your-org/vulture-plugin-yours:0.1.0` |
+| `[runtime].image` | `vulture-plugin-semgrep:0.1.3` (built locally) | `ghcr.io/your-org/vulture-plugin-yours:0.1.0` |
 | `[trust].signature` (new field — bundled plugin omits it) | _absent_ | `cosign://sigstore/your-org/vulture-plugin-yours` |
 
 You will also change `[trust].tier` from `in-tree` to
@@ -116,12 +116,12 @@ the language-neutral requirements.
 
 ## Operating notes
 
-### Rule cache
+### Home directory
 
-`SEMGREP_RULES_CACHE` defaults to `/srv/semgrep-rules` inside the
-container (writable by the `nobody` user). Pre-warmed at image build
-time. Mount a docker volume there if you want the cache to persist
-across container restarts.
+Semgrep writes its settings under `$HOME/.semgrep`; the supervisor runs the
+container with `HOME=/tmp`, so they live and die with the container. The image
+build fetches no rules: it holds only the engine and the vendored
+`rules/vulture` set.
 
 ### Authentication
 
@@ -174,12 +174,14 @@ In local mode a host-network plugin also shares the machine's loopback, where
 the backend's API serves any local process as the local user: the
 `host-network` acknowledgement grants it that trust.
 
-## Image build and verification
+## Image build
 
-The published image is built, signed and attested by
-`.github/workflows/plugin-image.yml` from a tag `plugin-semgrep-v<version>`.
-To verify one, see
-[Plugin image](../../docs/guides/cosign_verification.md#plugin-image).
+The image is never published. The backend builds it on the user's machine from
+this directory's `Dockerfile` the first time the plugin starts, tagged as
+`[runtime].image` (`vulture-plugin-semgrep:<version>`, a local name), and never
+pulls it. Its base is Semgrep's own image, pulled from Semgrep by the user; it
+carries Semgrep's engines, one of them proprietary, which Vulture must not
+redistribute. The native-install tarball ships this build context, not an image.
 
 ## Migration path (when extracted)
 
@@ -187,9 +189,9 @@ When this directory is mature enough to live in its own repo:
 
 1. `git filter-repo --path plugins/semgrep` produces a clean repo with
    full history.
-2. Carry `.github/workflows/plugin-image.yml` over (it already builds,
-   pushes, signs and attests the image), and add a keyless cosign
-   signature for `plugin.toml`.
+2. Do not publish an image built on `semgrep/semgrep`: it would
+   redistribute Semgrep's engines. Ship the Dockerfile and let the host
+   build it, and add a keyless cosign signature for `plugin.toml`.
 3. Change `tier = "in-tree"` → `tier = "community-signed"` and add
    the `signature = "cosign://sigstore/..."` field.
 4. Change `publisher` from `vulture-core` to your maintainer org.
