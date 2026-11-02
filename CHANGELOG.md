@@ -455,6 +455,18 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **Nested `.gitignore` files are honoured, as git honours them.** The scanner read only the
+  `.gitignore` at the scanned root, so a package's own `.gitignore`, or a cache directory that
+  ignores itself (Hypothesis writes `*` into `.hypothesis/.gitignore`), was audited as source.
+  Every `.gitignore` in the tree now applies to the paths beneath its own directory, with its
+  patterns relative to that directory and the deepest matching file deciding; one inside an
+  ignored directory is never read. The skills' walks, the pattern search, the judge's file
+  tools, the offline gate and the staged copy a container plugin scans all apply them, and a
+  directory they prune is reported in `pruned_dirs`, so lineage reads it as not looked at rather
+  than fixed. The root `.vultureignore` still overrides every `.gitignore`, and
+  `VULTURE_IGNORE_GITIGNORE=true` now disables nested ones too. Two smaller changes come with it:
+  an ignore file is no longer read through a symlink (git does not follow one either), and an
+  edited ignore file applies to the agent's next audit instead of after a restart.
 - **The bundled plugin's image is built on your machine and never published.** The briefly published
   `ghcr.io/bobinson/vulture-plugin-semgrep` images were built on Semgrep's own image, which carries
   Semgrep's engines, one of them proprietary; the package is deleted. The manifest names a local image

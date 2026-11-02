@@ -6,14 +6,18 @@
 // guard meaningful: host files outside the staged tree are unreachable.
 //
 // Ignore-pattern support is a documented SUBSET of gitignore syntax,
-// applied to the root .gitignore and .vultureignore of the source dir:
+// applied to the root .vultureignore of the source dir and to every
+// .gitignore in it, each to the entries beneath its own directory (a
+// .gitignore inside a skipped directory is never read; a symlinked one is
+// not followed):
 //   - blank lines and '#' comment lines are skipped;
 //   - '!' negation lines are unsupported and skipped;
 //   - a trailing '/' marks a directory-name pattern (matches directories
-//     with that name at any depth);
+//     with that name at any depth below the file's directory);
 //   - all other lines are globs matched via path.Match against both the
-//     entry's base name and its slash-separated path relative to the root;
-//   - leading-'/' root anchoring and '**' globs are not supported.
+//     entry's base name and its slash-separated path relative to the
+//     file's directory;
+//   - leading-'/' anchoring and '**' globs are not supported.
 package staging
 
 import (
@@ -135,7 +139,7 @@ type stagedEntry struct {
 // collectEntries performs the single filtered walk: it gathers every
 // entry Stage will copy and sums regular-file sizes for the capacity
 // guard.
-func collectEntries(srcDir string, ig *ignoreSet) ([]stagedEntry, int64, error) {
+func collectEntries(srcDir string, ig *ignoreTree) ([]stagedEntry, int64, error) {
 	var entries []stagedEntry
 	var size int64
 	err := walkTree(srcDir, ig, func(p, rel string, d fs.DirEntry) error {
@@ -192,11 +196,12 @@ func StagedContainerPath(auditID string) string {
 // the absolute source path, rel its path relative to the walk root.
 type stageFunc func(p, rel string, d fs.DirEntry) error
 
-// walkTree walks srcDir applying the staging filters (skipDirs + root
-// ignore patterns) and invokes fn for every entry that will be staged.
+// walkTree walks srcDir applying the staging filters (skipDirs + the
+// ignore patterns of the root and of every directory entered) and invokes
+// fn for every entry that will be staged.
 // The root itself is not passed to fn. Symlinks are never followed
 // (filepath.WalkDir lstat semantics).
-func walkTree(srcDir string, ig *ignoreSet, fn stageFunc) error {
+func walkTree(srcDir string, ig *ignoreTree, fn stageFunc) error {
 	return filepath.WalkDir(srcDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -210,21 +215,24 @@ func walkTree(srcDir string, ig *ignoreSet, fn stageFunc) error {
 }
 
 // visit applies the skip/ignore filters to one walk entry.
-func visit(p, rel string, d fs.DirEntry, ig *ignoreSet, fn stageFunc) error {
-	if shouldSkipDir(rel, d, ig) {
-		return filepath.SkipDir
+func visit(p, rel string, d fs.DirEntry, ig *ignoreTree, fn stageFunc) error {
+	if d.IsDir() {
+		return visitDir(p, rel, d, ig, fn)
 	}
-	if !d.IsDir() && ig.matches(rel, false) {
+	if ig.matches(rel, false) {
 		return nil
 	}
 	return fn(p, rel, d)
 }
 
-func shouldSkipDir(rel string, d fs.DirEntry, ig *ignoreSet) bool {
-	if !d.IsDir() {
-		return false
+// visitDir skips a filtered directory, else enters it: its own .gitignore
+// then applies to the entries beneath it.
+func visitDir(p, rel string, d fs.DirEntry, ig *ignoreTree, fn stageFunc) error {
+	if skipDirs[d.Name()] || ig.matches(rel, true) {
+		return filepath.SkipDir
 	}
-	return skipDirs[d.Name()] || ig.matches(rel, true)
+	ig.enter(p, rel)
+	return fn(p, rel, d)
 }
 
 // copyEntries replicates the collected entries under dst (the copy half

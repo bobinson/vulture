@@ -99,8 +99,10 @@ vulture/
 The file scanner (`agents/shared/shared/tools/file_scanner.py`) skips paths in three layers, in order:
 
 1. Hardcoded `SKIP_DIRS` / `SKIP_FILES` (e.g. `.git`, `node_modules`, `__pycache__`, lock files).
-2. `.gitignore` at the source root — read by default, gitignore-syntax via `pathspec`. Disable with `VULTURE_IGNORE_GITIGNORE=true`.
-3. `.vultureignore` at the source root — same syntax, always honored when present. Use this to exclude paths that aren't gitignored but shouldn't be audited (test artifacts, vendored data files, recorded fixtures).
+2. Every `.gitignore` in the tree, applied as git applies it — read by default, gitignore-syntax via `pathspec`: each to the paths beneath its own directory with patterns relative to it, the deepest matching file deciding; one inside an ignored directory is never read, and none is followed through a symlink. So a directory that ignores itself (Hypothesis's `.hypothesis/`, whose `.gitignore` holds `*`) is skipped. Disable all of them with `VULTURE_IGNORE_GITIGNORE=true`.
+3. `.vultureignore` at the source root (root only) — same syntax, always honored when present, and it overrides every `.gitignore`. Use this to exclude paths that aren't gitignored but shouldn't be audited (test artifacts, vendored data files, recorded fixtures).
+
+The judge's file tools and the staged copy a container plugin scans (`backend/internal/staging`, a documented subset of the syntax) apply the same files.
 
 The repo ships its own `.vultureignore` covering `.playwright-mcp/`, `docs/cwe_version_*/`, `agents/cwe/cwe_agent/data/cwe_catalog.json`, etc. Add project-specific patterns at the bottom of that file. Note `.vultureignore` is read from the **scanned** root, so this repo's copy has no effect when auditing some other project.
 

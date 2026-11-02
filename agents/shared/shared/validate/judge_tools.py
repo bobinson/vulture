@@ -226,7 +226,8 @@ class JudgeToolExecutor:
     # ── helpers ──────────────────────────────────────────────────────
 
     def _ignore_spec(self):
-        """The scanned tree's own exclusion spec, loaded once per executor.
+        """The scanned root's ignore rules, loaded once per executor; nested
+        `.gitignore` files extend them along each path (`path_ignored`).
 
         Root confinement alone is not the scan's policy. The scanner refuses
         `.gitignore` and `.vultureignore` paths as well, and those files exist
@@ -260,7 +261,7 @@ class JudgeToolExecutor:
             SKIP_DIRS,
             SKIP_FILES,
             _is_backup_dir,
-            _is_path_ignored,
+            path_ignored,
         )
         root = Path(self.root)                      # type: ignore[arg-type]
         try:
@@ -282,25 +283,17 @@ class JudgeToolExecutor:
         if parts and (parts[-1] in SKIP_FILES
                       or parts[-1] in SKIP_DIRS or _is_backup_dir(parts[-1])):
             return True
-        # Layers 2/3 — .gitignore and .vultureignore at the scan root.
+        # Layers 2/3 — the root's .vultureignore and every .gitignore on the
+        # path, applied as the walker applies them. The walker PRUNES ignored
+        # directories and never descends, so a negation pattern re-including a
+        # file inside a pruned directory ("secrets/" plus "!secrets/keep.txt")
+        # leaves that file unscanned while the file alone tests not-ignored:
+        # `path_ignored` tests every ancestor the walker would have had to enter.
         spec = self._ignore_spec()
         if spec is None:
             return False
         try:
-            if _is_path_ignored(resolved, root, spec):
-                return True
-            # The walker PRUNES ignored directories and never descends, so a
-            # negation pattern re-including a file inside a pruned directory
-            # ("secrets/" plus "!secrets/keep.txt") leaves that file unscanned
-            # while pathspec reports the file itself as not-ignored. Testing
-            # the file alone therefore diverges from the scan; test every
-            # ancestor the walker would have had to enter.
-            probe = root
-            for part in rel.parts[:-1]:
-                probe = probe / part
-                if _is_path_ignored(probe, root, spec):
-                    return True
-            return False
+            return path_ignored(root, resolved, spec)
         except Exception:
             return False
 

@@ -7,40 +7,100 @@ import (
 	"strings"
 )
 
-// ignoreSet holds the root-level .gitignore/.vultureignore patterns of a
-// source dir, split into directory patterns (trailing '/') and plain
-// globs. See the package doc for the supported syntax subset.
+// ignoreSet holds the patterns of one directory's ignore files, split into
+// directory patterns (trailing '/') and plain globs, matched against paths
+// relative to that directory. See the package doc for the supported syntax
+// subset.
 type ignoreSet struct {
 	dirPatterns []string // "fixtures/" → "fixtures"; matched against dirs only
 	patterns    []string // globs matched against base name + rel path
 }
 
+// ignoreTree is the ignore sets in force during one staging walk: the
+// root's .gitignore and .vultureignore, and the .gitignore of every
+// directory the walk enters, keyed by root-relative slash path ("" for the
+// root). Each applies to the entries beneath its own directory. The subset
+// has no negation, so an entry is excluded when any of them matches.
+type ignoreTree struct {
+	readGitignore bool
+	byDir         map[string]*ignoreSet
+}
+
 // loadIgnores reads the ignore files at the source root. Missing files
 // simply contribute no patterns. Honors VULTURE_IGNORE_GITIGNORE=true by
-// skipping .gitignore (still applying .vultureignore) — matching the
+// skipping every .gitignore (still applying .vultureignore) — matching the
 // in-tree scanner's contract (file_scanner._load_ignore_spec), so the
 // staged tree a container plugin scans and the tree the skills scan don't
 // diverge (0058 review, MEDIUM).
-func loadIgnores(srcDir string) *ignoreSet {
-	s := &ignoreSet{}
-	names := []string{".gitignore", ".vultureignore"}
-	if os.Getenv("VULTURE_IGNORE_GITIGNORE") == "true" {
-		names = []string{".vultureignore"}
+func loadIgnores(srcDir string) *ignoreTree {
+	t := &ignoreTree{
+		readGitignore: os.Getenv("VULTURE_IGNORE_GITIGNORE") != "true",
+		byDir:         map[string]*ignoreSet{},
 	}
-	for _, name := range names {
-		s.addFile(filepath.Join(srcDir, name))
+	t.enter(srcDir, "")
+	root := t.setFor("")
+	root.addFile(filepath.Join(srcDir, ".vultureignore"))
+	return t
+}
+
+// enter reads the .gitignore of the directory dir (root-relative rel) as
+// the walk descends into it. A directory the walk skips is never entered,
+// so a .gitignore inside an ignored directory is never read, as in git.
+func (t *ignoreTree) enter(dir, rel string) {
+	if t.readGitignore {
+		t.setFor(rel).addFile(filepath.Join(dir, ".gitignore"))
 	}
-	return s
+}
+
+func (t *ignoreTree) setFor(rel string) *ignoreSet {
+	key := filepath.ToSlash(rel)
+	if t.byDir[key] == nil {
+		t.byDir[key] = &ignoreSet{}
+	}
+	return t.byDir[key]
+}
+
+// matches reports whether the entry at rel is excluded by the ignore set
+// of any directory above it, each tested with rel made relative to it.
+func (t *ignoreTree) matches(rel string, isDir bool) bool {
+	rel = filepath.ToSlash(rel)
+	for _, dir := range ancestors(rel) {
+		if s := t.byDir[dir]; s != nil && s.matches(strings.TrimPrefix(rel, dir+"/"), isDir) {
+			return true
+		}
+	}
+	return false
+}
+
+// ancestors lists the root-relative directories above rel, nearest first,
+// ending with the root ("").
+func ancestors(rel string) []string {
+	var dirs []string
+	for dir := path.Dir(rel); dir != "."; dir = path.Dir(dir) {
+		dirs = append(dirs, dir)
+	}
+	return append(dirs, "")
 }
 
 func (s *ignoreSet) addFile(p string) {
-	data, err := os.ReadFile(p)
-	if err != nil {
+	data, ok := readRegular(p)
+	if !ok {
 		return
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		s.addPattern(strings.TrimSpace(line))
 	}
+}
+
+// readRegular reads one ignore file, unless it is missing or not a regular
+// file: git does not follow a symlinked .gitignore, and following one would
+// read rules from outside the source tree.
+func readRegular(p string) ([]byte, bool) {
+	if fi, err := os.Lstat(p); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	data, err := os.ReadFile(p)
+	return data, err == nil
 }
 
 func (s *ignoreSet) addPattern(line string) {

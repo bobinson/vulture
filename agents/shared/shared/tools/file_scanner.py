@@ -9,8 +9,10 @@ import sys
 import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 # Shared line-classification patterns used across all skill files.
 # Defined here once to satisfy DRY — import from this module.
@@ -806,53 +808,144 @@ def _scan_all_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]
     )
 
 
-@lru_cache(maxsize=16)
-def _load_ignore_spec(source_path: str):
-    """Load gitignore-style patterns from `.vultureignore` and
-    `.gitignore` at ``source_path`` and compile a ``PathSpec``.
+def _compile_ignore_lines(lines: list[str]):
+    """A gitignore-syntax ``PathSpec`` for ``lines``, or None when there are none."""
+    import pathspec
 
-    Honors `.gitignore` by default (set ``VULTURE_IGNORE_GITIGNORE=true``
-    to disable). Honors `.vultureignore` always when present.
-
-    Returns a compiled ``pathspec.PathSpec`` or ``None`` if both files
-    are absent / unreadable / pathspec isn't installed.
-    """
-    try:
-        import pathspec
-    except ImportError:
-        return None
-
-    root = Path(source_path)
-    patterns: list[str] = []
-
-    # Read .gitignore first so .vultureignore patterns layer on top
-    # (later patterns override earlier ones in pathspec's gitwildmatch
-    # semantics). Skip if operator opted out.
-    if os.environ.get("VULTURE_IGNORE_GITIGNORE", "").lower() != "true":
-        gi = root / ".gitignore"
-        if gi.is_file():
-            try:
-                patterns.extend(gi.read_text(encoding="utf-8", errors="ignore").splitlines())
-            except OSError:
-                pass
-
-    vi = root / ".vultureignore"
-    if vi.is_file():
-        try:
-            patterns.extend(vi.read_text(encoding="utf-8", errors="ignore").splitlines())
-        except OSError:
-            pass
-
-    if not patterns:
+    if not lines:
         return None
     # Use the newer "gitignore" style introduced in pathspec 0.12; the
     # legacy "gitwildmatch" name was deprecated in pathspec 1.x. Fall
     # back to gitwildmatch for pathspec < 0.12 (which doesn't expose
     # gitignore) so we don't break older installs.
     try:
-        return pathspec.PathSpec.from_lines("gitignore", patterns)
+        return pathspec.PathSpec.from_lines("gitignore", lines)
     except (ValueError, LookupError):
-        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+
+
+def _read_lines(path: Path) -> list[str]:
+    """The lines of one ignore file; nothing when it is absent, unreadable or a
+    symlink. Git does not follow a symlinked `.gitignore`, and following one
+    would read rules from outside the scanned tree."""
+    if path.is_symlink() or not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+
+
+@lru_cache(maxsize=4096)
+def _gitignore_spec(directory: str):
+    """The compiled `.gitignore` of ``directory``, or None.
+
+    Cached because every walk of a tree (code, all files, backups, autorun,
+    pattern search) passes each directory; cleared per audit by
+    :func:`clear_caches`.
+    """
+    return _compile_ignore_lines(_read_lines(Path(directory) / ".gitignore"))
+
+
+def _verdict(spec, rel: str) -> bool | None:
+    """True if ``spec`` ignores ``rel``, False if a negation re-includes it,
+    None if no pattern matched."""
+    return None if spec is None else spec.check_file(rel).include
+
+
+def _below(base: str, rel: str) -> str:
+    """Root-relative ``rel`` made relative to the root-relative directory ``base``."""
+    return rel[len(base) + 1:] if base else rel
+
+
+@dataclass(frozen=True, eq=False)
+class IgnoreRules:
+    """The ignore files in force in one directory of a walk (gitignore(5)).
+
+    ``gitignores`` pairs each `.gitignore` between the scan root and that
+    directory, shallowest first, with the root-relative directory its patterns
+    are relative to (``""`` for the root). The deepest one whose patterns match
+    decides, and within it the last matching pattern. ``vultureignore`` is the
+    root's `.vultureignore` and overrides them all. A `.gitignore` inside an
+    ignored directory is never read, because the walk never enters it: git
+    cannot re-include a path whose parent directory is excluded either.
+    """
+
+    gitignores: tuple[tuple[str, Any], ...] = ()
+    vultureignore: Any = None
+    read_gitignore: bool = True
+
+    def descend(self, rel_dir: str, directory: Path) -> "IgnoreRules":
+        """The rules in force inside ``directory`` (root-relative ``rel_dir``)."""
+        spec = _gitignore_spec(str(directory)) if self.read_gitignore else None
+        if spec is None:
+            return self
+        return replace(self, gitignores=(*self.gitignores, (rel_dir, spec)))
+
+    def ignored(self, rel: str, is_dir: bool) -> bool:
+        """Whether root-relative ``rel`` is ignored where it sits."""
+        key = f"{rel}/" if is_dir else rel
+        for base, spec in (("", self.vultureignore), *reversed(self.gitignores)):
+            verdict = _verdict(spec, _below(base, key))
+            if verdict is not None:
+                return verdict
+        return False
+
+
+@lru_cache(maxsize=16)
+def _load_ignore_spec(source_path: str) -> IgnoreRules | None:
+    """The ignore rules in force at the scan root ``source_path``.
+
+    Honors its `.gitignore` by default (set ``VULTURE_IGNORE_GITIGNORE=true``
+    to disable every `.gitignore`, nested ones included) and its
+    `.vultureignore` always when present. A walk extends the rules with each
+    nested `.gitignore` through :meth:`IgnoreRules.descend`.
+
+    Returns None only when pathspec isn't installed.
+    """
+    try:
+        import pathspec  # noqa: F401
+    except ImportError:
+        return None
+
+    root = Path(source_path)
+    rules = IgnoreRules(
+        vultureignore=_compile_ignore_lines(_read_lines(root / ".vultureignore")),
+        read_gitignore=os.environ.get("VULTURE_IGNORE_GITIGNORE", "").lower() != "true",
+    )
+    return rules.descend("", root)
+
+
+def _descend(rules: IgnoreRules | None, scan_root: Path, directory: Path) -> IgnoreRules | None:
+    """``rules`` extended by ``directory``'s own `.gitignore`, for the walk inside it."""
+    return None if rules is None else rules.descend(_rel_of(scan_root, directory), directory)
+
+
+def path_ignored(scan_root: Path, path: Path, rules: IgnoreRules | None = None) -> bool:
+    """Whether the walk of ``scan_root`` skips ``path`` because of an ignore file.
+
+    It does when ``path``, or a directory the walk would have to enter to reach
+    it, is ignored by the rules in force where it sits. For a caller that is
+    handed one path rather than walking (the judge's tools); ``rules`` defaults
+    to the root's.
+    """
+    rules = _load_ignore_spec(str(scan_root)) if rules is None else rules
+    rel = _rel_of(scan_root, path)
+    if rules is None or rel in ("", "."):
+        return False
+    return _ignored_along(scan_root, Path(rel).parts, rules)
+
+
+def _ignored_along(scan_root: Path, parts: tuple[str, ...], rules: IgnoreRules) -> bool:
+    """Follow ``parts`` down from the root as the walk would: ignored as soon as
+    an entry on the way is, each tested by the rules in force where it sits."""
+    entry = scan_root
+    for i, part in enumerate(parts[:-1]):
+        entry = entry / part
+        if _is_path_ignored(entry, scan_root, rules):
+            return True
+        rules = rules.descend("/".join(parts[:i + 1]), entry)
+    return _is_path_ignored(scan_root.joinpath(*parts), scan_root, rules)
 
 
 # Feature 0091 §6.5: the root-relative prefixes each scan refused to descend
@@ -985,7 +1078,8 @@ def _walk_filtered(
 
     Skips entries that:
     - Are in :data:`SKIP_DIRS` or :data:`SKIP_FILES` (hardcoded baseline).
-    - Match a `.vultureignore` / `.gitignore` pattern from ``scan_root``.
+    - Are ignored by the root's `.vultureignore` or by a `.gitignore` in any
+      directory above them, as git applies it (:class:`IgnoreRules`).
     - Are symlinks (avoid loops).
     - Are backup directories (`-backup`, `_old`, etc.).
 
@@ -1005,26 +1099,20 @@ def _walk_filtered(
             dirs.append((entry, kind == "restricted"))
 
     for directory, child_restricted in dirs:
-        yield from _walk_filtered(directory, scan_root, spec, child_restricted)
+        child_spec = _descend(spec, scan_root, directory)
+        yield from _walk_filtered(directory, scan_root, child_spec, child_restricted)
 
 
-def _is_path_ignored(entry: Path, scan_root: Path, spec) -> bool:
-    """True if ``entry`` matches the loaded ignore spec.
+def _is_path_ignored(entry: Path, scan_root: Path, spec: IgnoreRules | None) -> bool:
+    """True if ``entry`` is ignored by the rules in force in its directory.
 
-    Pathspec's gitwildmatch matcher operates on POSIX-style relative
-    paths. Directories must be matched with a trailing slash for
-    dir-only patterns (e.g. `node_modules/`) to apply.
+    Directories are matched with a trailing slash for dir-only patterns
+    (e.g. `node_modules/`) to apply.
     """
-    if spec is None:
+    rel = _rel_of(scan_root, entry)
+    if spec is None or rel in ("", "."):
         return False
-    try:
-        rel = entry.relative_to(scan_root)
-    except ValueError:
-        return False
-    rel_posix = rel.as_posix()
-    if entry.is_dir():
-        rel_posix += "/"
-    return spec.match_file(rel_posix)
+    return spec.ignored(rel, entry.is_dir())
 
 
 def read_file_safe(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
@@ -1354,6 +1442,10 @@ def clear_caches() -> None:
     _scan_backup_files_cached.cache_clear()
     _scan_all_files_cached.cache_clear()
     _scan_autorun_files_cached.cache_clear()
+    # The ignore files are read once per audit too: an edited `.gitignore` must
+    # apply to the next scan, not to the agent's next restart.
+    _load_ignore_spec.cache_clear()
+    _gitignore_spec.cache_clear()
     # Feature 0091 §6.5: the pruned-prefix record is produced BY those walks and
     # keyed the same way, so it must be dropped with them — a stale entry would
     # report the previous run's tree as out of scope for this one.
