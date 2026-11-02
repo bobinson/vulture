@@ -28,13 +28,15 @@ func GetInfo(repoPath string) (*GitInfo, error) {
 }
 
 func isGitRepo(path string) bool {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--git-dir")
-	return cmd.Run() == nil
+	return gitCmd(path, "rev-parse", "--git-dir") != ""
 }
 
+// gitCmd runs git in repoPath and returns its trimmed output, or "" on any
+// error. The path is the command's working directory, never an argument, so
+// git's option parser cannot see it, whatever its spelling.
 func gitCmd(repoPath string, args ...string) string {
-	fullArgs := append([]string{"-C", repoPath}, args...)
-	cmd := exec.Command("git", fullArgs...)
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoPath
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
