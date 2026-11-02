@@ -96,7 +96,7 @@
         "no_line": "Keine Zeile"
       }
     },
-    "semgrepTierNotice": "{{engine}}-Ebene nicht aktiv — dieser Audit lief nur mit deterministischen Skills und Signaturen.",
+    "opengrepTierNotice": "Opengrep-Ebene nicht aktiv — dieser Audit lief nur mit deterministischen Skills und Signaturen.",
     "agent": "Agent",
     "scores": "Compliance-Bewertungen",
     "waitingAgents": "Warte auf Agentenstart...",

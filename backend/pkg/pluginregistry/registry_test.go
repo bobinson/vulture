@@ -1,10 +1,12 @@
 package pluginregistry
 
 import (
+	"bytes"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -129,5 +131,22 @@ func TestRegistry_AllAgentsCovered(t *testing.T) {
 		if _, ok := r.ByName(want); !ok {
 			t.Errorf("registry missing in-tree agent %q", want)
 		}
+	}
+}
+
+// An unknown VULTURE_PLUGINS token is named as given and nothing else: the
+// warning carries no table of retired plugins.
+func TestBuild_UnknownActivationTokensWarnedVerbatim(t *testing.T) {
+	t.Setenv("VULTURE_PLUGINS", "semgrep,nosuch")
+	var buf bytes.Buffer
+	if _, err := Build(LoadOptions{
+		IncludeVirtual: true,
+		Logger:         log.New(&buf, "", 0),
+	}, filepath.Join(t.TempDir(), "state.toml")); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	want := "[plugin] VULTURE_PLUGINS: ignoring unknown plugin(s): semgrep, nosuch\n"
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("log = %q; want a line %q", buf.String(), want)
 	}
 }

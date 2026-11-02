@@ -20,7 +20,7 @@ var secretSuffixes = []string{"_SECRET", "_TOKEN", "_DSN", "_PASSWORD", "_API_KE
 
 // IsBackendSecret HARD-blocks: the exact list, OR any VULTURE_-prefixed,
 // secret-shaped name. The VULTURE_ rule auto-covers FUTURE backend secrets
-// (0065 §M8) while leaving plugin-namespaced secrets (e.g. SEMGREP_APP_TOKEN)
+// (0065 §M8) while leaving plugin-namespaced secrets (e.g. EXAMPLESCAN_TOKEN)
 // to LooksLikeSecret (warn-only, still forwarded).
 func IsBackendSecret(name string) bool {
 	up := strings.ToUpper(name)

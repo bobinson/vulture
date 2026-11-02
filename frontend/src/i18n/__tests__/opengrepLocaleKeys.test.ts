@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-// Feature 0058 (RED) — i18n keys for the semgrep augmentation UI.
+// Feature 0058 — i18n keys for the plugin augmentation UI (Opengrep since 0102).
 // Contract: every locale file gains (non-empty string values):
 //   results.provenance         — label for the provenance filter/chip
-//   results.semgrepTierNotice  — copy for the R9 "tier not active" banner
+//   results.opengrepTierNotice — copy for the R9 "tier not active" banner
 import de from "../locales/de.json";
 import en from "../locales/en.json";
 import es from "../locales/es.json";
@@ -19,10 +19,10 @@ const LOCALES: Record<string, { results: Record<string, unknown> }> = {
   pt,
 };
 
-const REQUIRED_KEYS = ["provenance", "semgrepTierNotice"] as const;
+const REQUIRED_KEYS = ["provenance", "opengrepTierNotice"] as const;
 
-describe("i18n semgrep augmentation keys (0058)", () => {
-  it("all 6 locales define results.provenance and results.semgrepTierNotice", () => {
+describe("i18n plugin augmentation keys (0058)", () => {
+  it("all 6 locales define results.provenance and results.opengrepTierNotice", () => {
     for (const [name, locale] of Object.entries(LOCALES)) {
       for (const key of REQUIRED_KEYS) {
         const value = locale.results[key];
@@ -32,6 +32,12 @@ describe("i18n semgrep augmentation keys (0058)", () => {
           `${name}.json results.${key} must be non-empty`,
         ).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it("no locale keeps the retired results.semgrepTierNotice key", () => {
+    for (const [name, locale] of Object.entries(LOCALES)) {
+      expect(locale.results, `${name}.json`).not.toHaveProperty("semgrepTierNotice");
     }
   });
 });

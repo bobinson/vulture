@@ -73,21 +73,3 @@ func applyActivationList(plugins []Plugin, spec string) (out []Plugin, unknown [
 	}
 	return out, unknown
 }
-
-// renamedPlugins maps a retired plugin slug to the one that replaced it, so a
-// VULTURE_PLUGINS list written for the old name is told what to use (0102:
-// the bundled `semgrep` plugin became `opengrep` when its engine changed).
-var renamedPlugins = map[string]string{"semgrep": "opengrep"}
-
-// describeUnknownPlugins formats unmatched VULTURE_PLUGINS tokens for the
-// warning, naming the replacement of a renamed plugin.
-func describeUnknownPlugins(unknown []string) string {
-	out := make([]string, len(unknown))
-	for i, name := range unknown {
-		out[i] = name
-		if to, ok := renamedPlugins[name]; ok {
-			out[i] = name + " (renamed: use " + to + ")"
-		}
-	}
-	return strings.Join(out, ", ")
-}

@@ -882,7 +882,7 @@ func generateFindingID(auditID, title, filePath string, index int) string {
 }
 
 // namespaceFindingID scopes a pre-set (plugin-supplied) finding ID by audit.
-// Plugins (e.g. semgrep) emit deterministic IDs like "{check_id}:{path}:{line}"
+// Plugins (e.g. opengrep) emit deterministic IDs like "{check_id}:{path}:{line}"
 // that are byte-identical across audits of an unchanged repo. Without this,
 // re-scans collide with prior audit rows on the findings PK and get dropped
 // (Postgres ON CONFLICT DO NOTHING). The result is unique per audit yet stable
@@ -1713,8 +1713,8 @@ func saveFindings(svc service.AuditService, auditID string, findings []model.Fin
 //   - an agent dispatched that died before emitting its snapshot.
 //
 // Every one of them used to persist as `completed` with an empty
-// degraded_reason. Measured live: audit 914bd27a requested {cwe,semgrep},
-// semgrep was skipped because the staging root was root-owned, and the record
+// degraded_reason. Measured live: audit 914bd27a requested cwe and the SAST
+// plugin, the plugin was skipped because the staging root was root-owned, and the record
 // read completed / scores {"cwe":16} / no reason. The requested detector never
 // ran and nothing said so — a false all-clear for everything it would have
 // caught.

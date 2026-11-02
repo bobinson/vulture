@@ -16,7 +16,7 @@
 //	pluginregistry.Default()             // singleton, lazy-initialised
 //	r.All()                              // every discovered plugin
 //	r.Enabled()                          // only state.enabled=true
-//	r.ByName("semgrep")                  // lookup
+//	r.ByName("opengrep")                 // lookup
 //
 // Capability-based dispatch and stage routing land in feature 0049.
 package pluginregistry

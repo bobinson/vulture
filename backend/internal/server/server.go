@@ -220,7 +220,7 @@ func NewWithRegistry(cfg *config.Config, reg pluginregistry.Registry) (*Server, 
 	streamH.SetLocalSourcePolicy(cfg.LocalSources())
 	agentH := handler.NewAgentHandler(cfg.Agents)
 	agentH.SetReadOnly(cfg.ReadOnly)
-	// G1: surface enabled registry plugins (e.g. semgrep) in /api/agents so the
+	// G1: surface enabled registry plugins (e.g. opengrep) in /api/agents so the
 	// UI selector and results filter can see them — not just the built-ins.
 	if reg != nil {
 		agentH.SetPluginRegistry(reg, stagerouter.NewURLResolver(cfg.Agents).Resolve)

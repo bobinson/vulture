@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// Feature 0058 — Semgrep CWE augmentation UI (LLD R6 / R9).
+// Feature 0058 — Opengrep CWE augmentation UI (LLD R6 / R9).
 // Runs in the E2E phase against a live stack: gated on
 // VULTURE_E2E_BASE_URL (skipped when unset, mirroring env-gated specs).
 //
@@ -9,9 +9,9 @@ import { test, expect, type Page } from "@playwright/test";
 //     data-testid="provenance-chip" labeled with the provenance value
 //   - the findings table exposes a provenance filter with buttons
 //     data-testid="provenance-filter-all" and
-//     data-testid="provenance-filter-<value>" (e.g. provenance-filter-semgrep)
-//   - when the audit stream reports "Semgrep tier not active", the
-//     results page shows a banner with data-testid="semgrep-tier-notice"
+//     data-testid="provenance-filter-<value>" (e.g. provenance-filter-opengrep)
+//   - when the audit stream reports "Opengrep tier not active", the
+//     results page shows a banner with data-testid="opengrep-tier-notice"
 
 const BASE = process.env.VULTURE_E2E_BASE_URL ?? "";
 
@@ -34,21 +34,21 @@ async function mockAuth(page: Page) {
   });
 }
 
-const AUDIT_ID = "audit-semgrep-1";
+const AUDIT_ID = "audit-opengrep-1";
 
-// Two semgrep-provenance findings + one untagged skill finding.
+// Two opengrep-provenance findings + one untagged skill finding.
 const FINDINGS = [
   {
-    id: "f-sg-1", severity: "critical", category: "injection",
+    id: "f-og-1", severity: "critical", category: "injection",
     title: "Tainted SQL Sink", description: "source→sink dataflow", file_path: "db.py",
     line_start: 42, line_end: 44, recommendation: "parameterize",
-    provenance: "semgrep",
+    provenance: "opengrep",
   },
   {
-    id: "f-sg-2", severity: "high", category: "injection",
+    id: "f-og-2", severity: "high", category: "injection",
     title: "Command Injection Flow", description: "tainted exec", file_path: "run.py",
     line_start: 7, line_end: 9, recommendation: "sanitize",
-    provenance: "semgrep",
+    provenance: "opengrep",
   },
   {
     id: "f-skill", severity: "medium", category: "crypto",
@@ -66,7 +66,7 @@ async function mockCompletedAudit(page: Page) {
         id: AUDIT_ID,
         source_id: "src-1",
         status: "completed",
-        types: ["cwe", "semgrep"],
+        types: ["cwe", "opengrep"],
         findings: FINDINGS,
         scores: { cwe: 55 },
         created_at: new Date().toISOString(),
@@ -79,7 +79,7 @@ async function mockCompletedAudit(page: Page) {
   });
 }
 
-const NOTICE_AUDIT_ID = "audit-semgrep-notice";
+const NOTICE_AUDIT_ID = "audit-opengrep-notice";
 
 async function mockRunningAuditWithNoticeStream(page: Page) {
   await page.route(`**/api/audits/${NOTICE_AUDIT_ID}`, async (route) => {
@@ -90,7 +90,7 @@ async function mockRunningAuditWithNoticeStream(page: Page) {
         id: NOTICE_AUDIT_ID,
         source_id: "src-1",
         status: "running",
-        types: ["cwe", "semgrep"],
+        types: ["cwe", "opengrep"],
         findings: [],
         created_at: new Date().toISOString(),
       }),
@@ -109,7 +109,7 @@ async function mockRunningAuditWithNoticeStream(page: Page) {
   // Replayed SSE stream carrying the R9 graceful-absence notice.
   const sse = [
     'event: RunStarted\ndata: {"runId":"run-notice-1"}\n\n',
-    'event: TextMessageContent\ndata: {"delta":"Semgrep tier not active — running skills + signatures only"}\n\n',
+    'event: TextMessageContent\ndata: {"delta":"Opengrep tier not active — running skills + signatures only"}\n\n',
     'event: RunFinished\ndata: {}\n\n',
   ].join("");
   // Match ONLY the SSE endpoint (which carries a ?stream_token= query).
@@ -125,7 +125,7 @@ async function mockRunningAuditWithNoticeStream(page: Page) {
   });
 }
 
-test.describe("Semgrep augmentation UI (0058)", () => {
+test.describe("Opengrep augmentation UI (0058)", () => {
   test.skip(
     !BASE,
     "VULTURE_E2E_BASE_URL unset — runs in the E2E phase against a live stack",
@@ -135,22 +135,22 @@ test.describe("Semgrep augmentation UI (0058)", () => {
     await mockAuth(page);
   });
 
-  test("provenance chips are visible on semgrep findings only", async ({ page }) => {
+  test("provenance chips are visible on opengrep findings only", async ({ page }) => {
     await mockCompletedAudit(page);
     await page.goto(`${BASE}/audit/${AUDIT_ID}`);
     await expect(page.locator("text=Tainted SQL Sink")).toBeVisible({ timeout: 5000 });
 
     const chips = page.getByTestId("provenance-chip");
     await expect(chips).toHaveCount(2);
-    await expect(chips.first()).toContainText("semgrep");
+    await expect(chips.first()).toContainText("opengrep");
   });
 
-  test("provenance filter narrows the table to semgrep findings and 'all' resets", async ({ page }) => {
+  test("provenance filter narrows the table to opengrep findings and 'all' resets", async ({ page }) => {
     await mockCompletedAudit(page);
     await page.goto(`${BASE}/audit/${AUDIT_ID}`);
     await expect(page.locator("text=Hardcoded Secret")).toBeVisible({ timeout: 5000 });
 
-    await page.getByTestId("provenance-filter-semgrep").click();
+    await page.getByTestId("provenance-filter-opengrep").click();
     await expect(page.locator("text=Hardcoded Secret")).toHaveCount(0);
     await expect(page.locator("text=Tainted SQL Sink")).toBeVisible();
     await expect(page.locator("text=Command Injection Flow")).toBeVisible();
@@ -159,10 +159,10 @@ test.describe("Semgrep augmentation UI (0058)", () => {
     await expect(page.locator("text=Hardcoded Secret")).toBeVisible();
   });
 
-  test("notice banner appears when the semgrep tier is not active", async ({ page }) => {
+  test("notice banner appears when the opengrep tier is not active", async ({ page }) => {
     await mockRunningAuditWithNoticeStream(page);
     await page.goto(`${BASE}/audit/${NOTICE_AUDIT_ID}`);
 
-    await expect(page.getByTestId("semgrep-tier-notice")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("opengrep-tier-notice")).toBeVisible({ timeout: 10000 });
   });
 });

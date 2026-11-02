@@ -11,7 +11,7 @@ import { ANCHOR_VOCABULARY } from "@/test/anchorVocabulary";
  * Feature 0091 P5 (RED) — locale parity.
  *
  * The project rule is "i18n keys in ALL SIX locales", but nothing enforced it:
- * `i18n/index.test.ts` covers lazy loading and `__tests__/semgrepLocaleKeys.test.ts`
+ * `i18n/index.test.ts` covers lazy loading and `__tests__/opengrepLocaleKeys.test.ts`
  * covers exactly two keys of one feature. A key added to `en.json` alone renders
  * as English (or as the raw key) for every other language, silently.
  *

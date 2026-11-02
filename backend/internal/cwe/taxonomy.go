@@ -4,7 +4,7 @@ import "strings"
 
 // CWE taxonomy reconciliation (feature 0058, LLD R5b): when two
 // detectors report taxonomically-related CWE ids for the same site
-// (e.g. a skill's CWE-22 vs Semgrep's CWE-73), cross-agent dedup must
+// (e.g. a skill's CWE-22 vs a plugin's CWE-73), cross-agent dedup must
 // treat them as ONE finding, not two. This package is the single
 // source of truth for CWE semantics (feature 0050 normalization lives
 // here too), so the family tables belong here — not in the handler.

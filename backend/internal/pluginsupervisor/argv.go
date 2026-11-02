@@ -315,13 +315,13 @@ func buildEnvArgs(plug pluginregistry.Plugin, opts Options) ([]string, error) {
 	optional := toStringSlice(r.Env, "optional")
 	// Container images run as a non-root user (e.g. nobody, uid 65534)
 	// with no home directory, so CLI tools that write a per-user config/
-	// cache dir — semgrep's ~/.semgrep → /.semgrep — crash with EACCES.
+	// cache dir — ~/.<tool> → /.<tool> — crash with EACCES.
 	// Default HOME to a writable path. A manifest-declared HOME (appended
 	// below from the host env) takes precedence via docker's last-wins
 	// rule (Feature 0055).
 	out := []string{"-e", "HOME=/tmp"}
 	// S2 (0058 audit): a host-network plugin shares the host netns, so binding
-	// 0.0.0.0 would expose its HTTP API (e.g. semgrep /run) on every host
+	// 0.0.0.0 would expose its HTTP API (e.g. opengrep /run) on every host
 	// interface — reachable by any LAN peer, unauthenticated. Force the image
 	// to bind loopback; the backend reaches host-network plugins via localhost
 	// (see buildProbeURL). Non-host (bridge/compose) plugins keep the default

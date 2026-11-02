@@ -137,7 +137,7 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     your machine downloads from Opengrep's release and checks against a pinned sha256 per architecture,
     on a digest-pinned `python:3.12-slim` base, with the wrapper's packages hash-locked;
   - scans with bundled rules only, offline: Vulture's own, plus GitLab `sast-rules` (MIT and
-    Apache-2.0 folders), elttam and 0xdea (MIT), each file pinned by sha256 with its licence in
+    Apache-2.0 folders) and 0xdea (MIT), each file pinned by sha256 with its licence in
     `rules/RULESET_SNAPSHOT.json`. No `p/…` or `r/…` Registry pack can reach the engine;
     `config.rule_sets` (bundled set names) replaces `config.rule_packs`, which is ignored;
   - returns real code snippets (Semgrep CE without a login answered `requires login`), sends no usage
@@ -146,7 +146,7 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     since the engine's default also matched a scan root's own ancestors.
 
   Findings carry `agent_type` and `provenance` `opengrep`; the results-page "tier not active" notice
-  recognises both names.
+  matches the `opengrep` plugin only, so an older audit's `semgrep` notice no longer shows the banner.
 
 - **CWE-22, CWE-918 and CWE-78 rows come from the AST layer on parsed files
   (feature 0102).** On a JavaScript, TypeScript, Go, Java, Rust, PHP or Python
@@ -605,7 +605,7 @@ stack, which runs centralized with its shipped defaults (`VULTURE_LOCAL_MODE=fal
     image the backend builds on your machine as `vulture-plugin-opengrep:0.2.0`; the
     backend no longer starts the `semgrep` plugin. Enable it as `opengrep`
     (`VULTURE_PLUGINS=opengrep`, `--plugins opengrep`, or the UI): a list still naming
-    `semgrep` matches nothing and the backend's warning names the rename, and a
+    `semgrep` matches nothing (the backend warns that it ignores the name), and a
     `semgrep` enablement stored in `state.toml` does not carry over. This plugin's
     findings get new fingerprints (they include the agent type), so its lineage
     restarts once. A plugin started by hand behind a backend with a shared token
