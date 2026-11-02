@@ -260,7 +260,7 @@ make docker-down    # Stop all services
 | `VULTURE_AGENT_ASVS_URL` | `http://agent-asvs:28010` | ASVS agent endpoint |
 | `VULTURE_EMBEDDING_URL` | -- | Custom embedding endpoint |
 | `VULTURE_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
-| `VULTURE_PLUGINS` | -- | Plugin activation allow-list: `all`, `none`, or a comma-separated list of slugs (e.g. `semgrep`). Unset = stored state; empty = no external plugins. Built-in agents are never affected by this. See [Plugins](#plugins). |
+| `VULTURE_PLUGINS` | -- | Plugin activation allow-list: `all`, `none`, or a comma-separated list of slugs (e.g. `opengrep`). Unset = stored state; empty = no external plugins. Built-in agents are never affected by this. See [Plugins](#plugins). |
 | `VULTURE_BUILTIN_PLUGINS_DIR` | -- | Directory scanned for bundled plugin manifests. Auto-set to `~/.vulture/runtime/plugins` in install mode when present. |
 
 #### Python Agents
@@ -290,7 +290,7 @@ Vulture uses a `config.ini` file at the project root as the single source of tru
 
 ### Plugins
 
-Optional plugins (e.g. **Semgrep**) extend scanning beyond the built-in agents.
+Optional plugins (e.g. **Opengrep**) extend scanning beyond the built-in agents.
 They are activated **explicitly** via the `VULTURE_PLUGINS` allow-list —
 discovery alone never auto-runs them.
 
@@ -307,10 +307,10 @@ value) activates none. The list governs **external** plugins only — built-in
 agents (chaos, owasp, …) are never disabled by it. Verify with
 `curl localhost:28080/api/agents` (an enabled plugin appears in the list).
 
-> **Container plugins need Docker.** Semgrep runs as a container, so it requires
-> Docker (Mode A/B) to execute. Without Docker it is still discovered and listed
-> in `GET /api/agents` as `unhealthy`, and `vulture doctor` reports it as a
-> WARN (not a failure) — it simply won't run.
+> **Container plugins need Docker.** Opengrep runs as a container, so the machine
+> running the backend needs Docker to execute it. Without Docker it is still
+> discovered and listed in `GET /api/agents` as `unhealthy`, and `vulture doctor`
+> reports it as a WARN (not a failure) — it simply won't run.
 
 ## Adding New Audit Types
 
