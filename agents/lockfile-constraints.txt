@@ -19,7 +19,7 @@
 # 50.0.0 have none), and release.yml:72 still builds darwin/amd64 on
 # macos-15-intel. Dependabot #122 moved this pin 48.0.1 -> 50.0.0 and left
 # the rationale comment untouched, which silently re-broke that leg.
-cryptography==48.0.1; sys_platform == "darwin"
+cryptography==50.0.0; sys_platform == "darwin"
 # The complement is stated EXPLICITLY so the marker fork is deterministic.
 # Left implicit, uv unifies both platforms onto one version whenever a single
 # version satisfies everything, and the split the darwin/amd64 leg depends on
