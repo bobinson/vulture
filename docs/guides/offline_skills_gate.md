@@ -195,7 +195,7 @@ A file is reported as **not scanned** when the scanner never reads it:
 |--------|---------|
 | submodule (git link) | `lib` in a commit that bumps the `lib` submodule. |
 | symlink (not followed) | `settings.py -> ~/.aws/credentials`. The full audit's walker skips every symlink, and git commits only the link. The target is never read. |
-| ignored or pruned path (`<dir>/`) | a file under a pruned directory (`vendor/`, `build/`, `data/`, ...) or under a directory that a `.gitignore` above it, or the root's `.vultureignore`, ignores. |
+| ignored or pruned path (`<dir>/`) | a file under a pruned directory (`vendor/`, `build/`, `fixtures/`, ...: the folders of the scanner's default ignore file) or under a directory that a `.gitignore` above it, or the root's `.vultureignore`, ignores. |
 | extension outside the scan set | `logo.png`, `blob.bin`. |
 | minified or bundled artefact | `app.min.js`, or a hash-named chunk whose lines are bundle-length. |
 | exceeds the scanner's read size cap (not copied) | a source file over `VULTURE_MAX_FILE_SIZE` (512KB), or a dependency manifest over `VULTURE_MAX_MANIFEST_SIZE` (16MB). |

@@ -5,9 +5,9 @@ moment somebody opens the folder, before they run anything and before any code
 review of the thing that ran. A VS Code task with ``"runOn": "folderOpen"`` is
 the canonical instance; an IDEA shell run configuration, a devcontainer
 lifecycle command and a Claude Code hook are the same shape. All of them live
-inside directories the walker used to prune outright (``.vscode``, ``.idea``,
-``.claude`` are in ``SKIP_DIRS``), so a scan of a project root reported nothing
-about the single most dangerous thing the project could contain.
+inside directories the walker used to prune outright (its default ignore file
+lists ``.vscode``, ``.idea``, ``.claude``), so a scan of a project root reported
+nothing about the single most dangerous thing the project could contain.
 
 WHY IT IS DETERMINISTIC. The one time the reference incident WAS reported, it
 came from the LLM tier — and an LLM-tier finding goes into the next scan's

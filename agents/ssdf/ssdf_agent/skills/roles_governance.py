@@ -5,6 +5,9 @@ from pathlib import Path
 
 from agents import function_tool
 
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import present, tree_files
+
 _GOVERNANCE_FILES = {
     "codeowners", "maintainers.md", "maintainers", "maintainers.txt",
     "owners", "owners.md",
@@ -39,9 +42,9 @@ def check_roles_governance(source_path: str) -> dict:
             "practice": "PO-prepare-organization",
             "title": "No CODEOWNERS or maintainers file found",
             "description": "No CODEOWNERS or MAINTAINERS file defining code ownership and review responsibilities",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Create a CODEOWNERS file to define code review responsibilities",
         })
 
@@ -50,11 +53,9 @@ def check_roles_governance(source_path: str) -> dict:
 
 def _find_governance_file(root: Path) -> bool:
     """Check for governance files."""
-    for item in root.iterdir():
-        if item.is_file() and item.name.lower() in _GOVERNANCE_FILES:
-            return True
-    github_co = root / _GITHUB_CODEOWNERS
-    return github_co.exists()
+    if any(item.name.lower() in _GOVERNANCE_FILES for item in tree_files(root, depth=1)):
+        return True
+    return present(root, _GITHUB_CODEOWNERS)
 
 
 check_roles_governance_tool = function_tool(check_roles_governance)

@@ -62,9 +62,9 @@ from shared.audit_runner import finalize_skill_findings
 from shared.llm.errors import escape_unprintable, retry_skill
 from shared.tools import suppression
 from shared.tools.file_scanner import (
-    SKIP_DIRS,
     autorun_rel_path,
     clear_caches,
+    ignored_by_default,
     is_generated_file,
     is_skill_source_file,
     is_story_file,
@@ -317,7 +317,7 @@ def _is_neutral(base: Path) -> bool:
     by the absolute path, so a ``$TMPDIR`` under ``tests/`` or ``docs/`` would
     turn every copied file into one of those and pass the gate.
     """
-    if any(part in SKIP_DIRS for part in base.parts):
+    if any(ignored_by_default(part) for part in base.parts):
         return False
     probe = base / "root"
     return not any(check(probe / name) for check, name in _PATH_CLASSIFIERS)

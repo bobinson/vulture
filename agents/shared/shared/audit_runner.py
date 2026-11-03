@@ -31,6 +31,7 @@ from shared.lineage_context import current_lineage_checks_requested
 from shared.lines import parse_line
 from shared.llm.errors import mask_secret_values, retry_skill
 from shared.llm.mode import llm_enabled
+from shared.models.finding import REPO_ROOT_PATH
 
 # Feature 0089 §11.3: the response-extraction chain (fenced -> scan -> salvage ->
 # empty-answer, plus the reasoning strip) now lives in ONE place, shared with the
@@ -1461,27 +1462,64 @@ def _normalize_dedup_path(fp: str, source_path: str = "") -> str:
     the file, so we never invent a wrong directory). The directory structure
     is preserved, so distinct directories stay distinct.
     """
-    if not fp:
-        return ""
     # Backward-compat: when no source root is known (direct unit-test calls),
     # preserve the exact path so the historical (check_id, file_path) key is
     # unchanged. Normalization only kicks in for the real audit pipeline,
     # which always passes source_path.
     if not source_path:
-        return fp
+        return fp or ""
+    # No specific file -- an empty path, the root itself, or the token a
+    # repository-wide skill row carries -- is ONE key, the backend's spelling
+    # of the root: a model row that names no file, or the absolute root,
+    # collapses into the skill row that says ".".
+    if _names_no_file(fp, source_path):
+        return REPO_ROOT_PATH
+    return _root_relative(_canonical(fp), _canonical(source_path).rstrip("/"))
 
-    root = source_path.rstrip("/")
+
+def _names_no_file(fp: str, source_path: str) -> bool:
+    return not fp or _is_scan_root(fp, source_path)
+
+
+def _root_relative(fp: str, root: str) -> str:
+    """``fp`` relative to ``root``, normalised; a relative ``fp`` as it stands."""
     # Absolute path under the root → strip the root, keep the full subpath.
-    if fp.startswith(root):
-        rel = fp[len(root):].lstrip("/")
-        return os.path.normpath(rel) if rel else ""
+    # A path BOUNDARY, not a string prefix: `/x/repo-old/a.py` is not under
+    # `/x/repo`.
+    if fp.startswith(root + "/"):
+        return os.path.normpath(fp[len(root):].lstrip("/"))
     # Already source-relative (the LLM's normal output): normalise in place,
-    # stripping any leading "./". Keep the FULL relative path (not the
+    # which also drops a leading "./". Keep the FULL relative path (not the
     # basename) so same-basename files in different directories stay distinct.
     cleaned = fp.lstrip("/")
-    if cleaned.startswith("./"):
-        cleaned = cleaned[2:]
     return os.path.normpath(cleaned) if cleaned else ""
+
+
+def _is_scan_root(fp: str, source_path: str) -> bool:
+    """Whether ``fp`` names the scan root itself, however it is spelled: a
+    trailing slash, a ``.`` segment, doubled or leading ``//`` separators, or
+    the same directory through a symlink (macOS ``/private/var`` for
+    ``/var``, a symlinked mount). Never when either is empty: no root is
+    known, or the row names no path."""
+    if not (fp and source_path):
+        return False
+    return _canonical(fp) == _canonical(source_path) or _same_real_dir(fp, source_path)
+
+
+def _canonical(path: str) -> str:
+    """``normpath``, with POSIX's preserved leading ``//`` folded to ``/``."""
+    norm = os.path.normpath(path)
+    return "/" + norm.lstrip("/") if norm.startswith("/") else norm
+
+
+def _same_real_dir(fp: str, source_path: str) -> bool:
+    """The root reached through a symlink. Only for an absolute ``fp`` outside
+    the root's own spelling: a relative one would resolve against this
+    process's directory, and a path under the root is a file, not the root --
+    which also keeps ``realpath`` off the common path."""
+    root = _canonical(source_path).rstrip("/")
+    outside = os.path.isabs(fp) and not _canonical(fp).startswith(root + "/")
+    return outside and os.path.realpath(fp) == os.path.realpath(source_path)
 
 
 def _dedup_key(f: dict, source_path: str = "") -> tuple[str, str]:
@@ -2842,7 +2880,7 @@ _ONE_SKILL = _FindingSlots.of(range(1))
 
 
 def _finalize_finding_inplace(
-    finding: dict[str, Any], run_id: str, index: int,
+    finding: dict[str, Any], run_id: str, index: int, source_path: str = "",
 ) -> None:
     """The single pre-egress choke point BOTH tiers pass through.
 
@@ -2884,11 +2922,24 @@ def _finalize_finding_inplace(
     later pass in ``_attach_code_snippet`` is now a no-op for everything that
     egressed through here — keep it: it is the backstop for findings that never
     pass an emit site.
+
+    A row citing the scan root ``source_path`` itself leaves citing
+    ``REPO_ROOT_PATH``: the repository-wide skills say so themselves, and this
+    covers any skill or model row that still names the host path. It runs
+    before the id, which hashes the path.
     """
     _set_provenance(finding)
     _conform_category(finding)
+    _cite_root_as_token(finding, source_path)
     _assign_finding_id(finding, run_id, index)
     _redact_finding_inplace(finding)
+
+
+def _cite_root_as_token(finding: dict[str, Any], source_path: str) -> None:
+    """Replace a ``file_path`` that names the scan root with ``REPO_ROOT_PATH``."""
+    fp = finding.get("file_path")
+    if isinstance(fp, str) and _is_scan_root(fp, source_path):
+        finding["file_path"] = REPO_ROOT_PATH
 
 
 def _attach_code_snippet_safely(
@@ -2972,7 +3023,9 @@ def finalize_skill_findings(
     as a one-skill audit numbers its rows (``_ONE_SKILL``).
     """
     for position, finding in enumerate(findings):
-        _finalize_finding_inplace(finding, run_id, _ONE_SKILL.skill(0, position))
+        _finalize_finding_inplace(
+            finding, run_id, _ONE_SKILL.skill(0, position), source_path,
+        )
     kept, _collapsed = _collapse_skill_findings(findings, run_id)
     _attach_code_snippet_safely(kept, source_path, run_id)
     return [_public_view(f) for f in _validate_without_llm(kept, source_path, run_id)]
@@ -3312,7 +3365,7 @@ def run_combined_audit(
                     # `_attach_code_snippet` finalisation pass re-sees the
                     # already-masked form (idempotent).
                     _finalize_finding_inplace(
-                        finding, run_id, slots.skill(future, position),
+                        finding, run_id, slots.skill(future, position), source_path,
                     )
                     skill_findings.append(finding)
                     yield emitter.finding_event(**_live_view(finding))
@@ -3471,7 +3524,7 @@ def run_combined_audit(
                 # (feature 0057 P2a) redact secret-bearing LLM-finding snippets
                 # before the per-finding SSE event (the LLM is the realistic
                 # source of unquoted / env-style / comment-embedded secrets).
-                _finalize_finding_inplace(finding, run_id, slots.llm(offset))
+                _finalize_finding_inplace(finding, run_id, slots.llm(offset), source_path)
                 yield emitter.finding_event(**_live_view(finding))
         elif not llm_error:
             yield emitter.text_message("LLM analysis complete — no additional findings.")

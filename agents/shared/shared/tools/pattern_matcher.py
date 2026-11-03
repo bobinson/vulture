@@ -5,8 +5,8 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.confine import is_within_root
-from shared.tools.file_scanner import _load_ignore_spec, _walk_filtered, read_file_safe
+from shared.tools.confine import admitted_files, rel_under, scan_refusal
+from shared.tools.file_scanner import read_file_safe
 
 # Feature 0057 P1c / finding #9: the LLM supplies the regex AND the directory.
 # An adversarial / hallucinating model could send a catastrophic-backtracking
@@ -20,17 +20,20 @@ _MAX_RESULTS = 500
 _MAX_PATTERN_CHARS = 1000
 
 
-def search_pattern(path: str, pattern: str) -> list[dict]:
+def search_pattern(path: str, pattern: str, under: str = "") -> list[dict]:
     """Search for a regex pattern across files in a directory.
 
-    Uses ``_walk_filtered`` so that ``.git``, ``node_modules``,
-    ``__pycache__``, ``vendor``, and other non-source directories
-    are automatically skipped, plus any `.vultureignore` /
-    `.gitignore` patterns from the source root.
+    Searches exactly the files the audit walk reads, from the cached listing
+    of the walk of ``path``: ``.git``, ``node_modules``, ``__pycache__``,
+    ``vendor`` and the other non-source directories are skipped, as are the
+    `.vultureignore` and every `.gitignore`, and SKIP_FILES names.
 
     Args:
-        path: Directory path to search.
+        path: Directory path to search -- the scan root whose rules apply.
         pattern: Regular expression pattern.
+        under: A root-relative subdirectory to restrict the search to. The
+            rules stay the root's: naming a subdirectory as ``path`` instead
+            would make IT the root, and drop every ignore file above it.
 
     Returns:
         List of dicts with keys: file, line, match.
@@ -46,10 +49,8 @@ def search_pattern(path: str, pattern: str) -> list[dict]:
     except re.error:
         return []
 
-    spec = _load_ignore_spec(str(root))
     results: list[dict] = []
-
-    for file_path in _walk_filtered(root, root, spec):
+    for file_path in admitted_files(root, under):
         _search_file(file_path, compiled, results)
         if len(results) >= _MAX_RESULTS:
             break
@@ -95,8 +96,10 @@ search_pattern_tool = function_tool(search_pattern)
 def make_search_pattern_tool(source_root: str):
     """Feature 0057 P1c: a source-root-CONFINED search_pattern tool.
 
-    Rejects directory paths outside the audit source tree and filters any
-    matched files (symlink escapes) that resolve outside it.
+    Rejects directory paths outside the audit source tree or excluded from the
+    audit. The search always runs from the scan ROOT, restricted to the named
+    directory: the walk never follows a symlink, so no hit can resolve outside
+    the root, and the root's ignore rules hold below any subdirectory.
     """
     root = Path(source_root).resolve()
 
@@ -111,11 +114,8 @@ def make_search_pattern_tool(source_root: str):
             List of dicts with keys: file, line, match; empty if the directory
             is outside the audit source tree.
         """
-        if not is_within_root(path, root):
+        if scan_refusal(path, root):
             return []
-        return [
-            r for r in search_pattern(path, pattern)
-            if is_within_root(r.get("file", ""), root)
-        ]
+        return search_pattern(source_root, pattern, under=rel_under(path, root))
 
     return function_tool(search_pattern_confined)

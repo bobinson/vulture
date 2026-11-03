@@ -4,7 +4,9 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import tree_files
+from ssdf_agent.skills._ci_utils import present_contents
 
 _LINTER_FILES = {
     ".eslintrc", ".eslintrc.js", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml",
@@ -52,9 +54,9 @@ def check_secure_coding(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No linter configuration found",
             "description": "No code linter configuration (eslint, ruff, golangci-lint, rubocop) found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Configure a linter appropriate for your language(s) to enforce coding standards",
         })
 
@@ -63,18 +65,15 @@ def check_secure_coding(source_path: str) -> dict:
 
 def _find_linter(root: Path) -> bool:
     """Check for linter configuration files."""
-    for item in root.iterdir():
-        if item.is_file() and item.name.lower() in _LINTER_FILES:
-            return True
-    # Check pyproject.toml for linter sections (avoids false positive)
-    pyproject = root / "pyproject.toml"
-    if pyproject.exists():
-        content = read_file_safe(pyproject)
-        if content:
-            for section in _PYPROJECT_LINTER_SECTIONS:
-                if section in content:
-                    return True
-    return False
+    if any(item.name.lower() in _LINTER_FILES for item in tree_files(root, depth=1)):
+        return True
+    return _pyproject_configures_linter(root)
+
+
+def _pyproject_configures_linter(root: Path) -> bool:
+    """A linter section in pyproject.toml (the file alone would be a false positive)."""
+    pyproject = present_contents(root, ("pyproject.toml",))
+    return any(section in content for content in pyproject for section in _PYPROJECT_LINTER_SECTIONS)
 
 
 check_secure_coding_tool = function_tool(check_secure_coding)

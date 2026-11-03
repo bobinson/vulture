@@ -5,8 +5,8 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
-from ssdf_agent.skills._ci_utils import gather_ci_content
+from shared.models.finding import REPO_ROOT_PATH
+from ssdf_agent.skills._ci_utils import gather_ci_content, present_contents
 
 _RELEASE_PATTERNS = re.compile(
     r"create-release|gh\s+release|actions/upload-release-asset|goreleaser|semantic-release",
@@ -40,9 +40,9 @@ def check_archive_protection(source_path: str) -> dict:
             "practice": "PS-protect-software",
             "title": "No automated release archival process",
             "description": "No automated release workflow (GitHub releases, goreleaser, semantic-release) found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Configure automated release archival via GitHub releases or goreleaser",
         })
 
@@ -52,13 +52,9 @@ def check_archive_protection(source_path: str) -> dict:
 def _gather_release_content(root: Path) -> str:
     """Gather CI + release-specific content."""
     base = gather_ci_content(root)
-    extras: list[str] = []
-    for name in (".releaserc", ".releaserc.json", ".goreleaser.yml", ".goreleaser.yaml"):
-        p = root / name
-        if p.exists():
-            content = read_file_safe(p)
-            if content:
-                extras.append(content)
+    extras = present_contents(
+        root, (".releaserc", ".releaserc.json", ".goreleaser.yml", ".goreleaser.yaml"),
+    )
     if extras:
         return base + "\n" + "\n".join(extras)
     return base

@@ -39,6 +39,19 @@ Discovers API endpoints, URLs, and forms using a priority-ordered plugin system.
 | 80 | llm_suggest | LLM-powered hidden endpoint suggestion (requires VULTURE_USE_LLM=true) |
 | 90 | endpoint_validation | Parallel HTTP validation of discovered endpoints, 404 removal, method probing |
 
+**Source tree reads:** the plugins that read source (`raw_http_handlers`, `webhook_receivers`,
+`mobile_routes`, `infra_config`, `grpc_reflection`, `mqtt_amqp`, `sse`, `soap_wsdl`,
+`nextjs_app_router`, `nextauth_routes`, `env_service_urls`) find files through the audit walker
+(`shared.tools.file_scanner.tree_files`), never a walk of their own. They read only what the audit
+reads: nothing under a folder the default ignore file lists (`node_modules`, `dist`, `build`,
+`.next`, backup copies, ...) unless the root `.vultureignore` brings it back, a version-control
+store or a virtualenv, a path a `.gitignore` or the root `.vultureignore` excludes, or behind a
+symlink. A route segment named with an ordinary word (`app/api/data/`) is read. That
+includes `env_service_urls`' root `.env*` files: a gitignored `.env` is a developer's local
+settings and is not read. What is skipped is decided relative to the scan root, so a checkout
+that sits under a directory named `build` is read in full. Each plugin's file cap stops its walk.
+The walker's caches are cleared at the start of every run.
+
 ### security_exposure_analysis
 Analyzes the SiteMap for security issues:
 - Missing security headers (HSTS, CSP, X-Content-Type-Options, X-Frame-Options)

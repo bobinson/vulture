@@ -5,7 +5,9 @@ from pathlib import Path
 
 from agents import function_tool
 
+from shared.models.finding import REPO_ROOT_PATH
 from shared.tools.file_scanner import read_file_safe
+from ssdf_agent.skills._ci_utils import present_contents, workflow_files
 
 _SIGNING_PATTERNS = re.compile(
     r"cosign|sigstore|gpg\s+--sign|gpg\s+--detach-sign|signcode|authenticode",
@@ -44,9 +46,9 @@ def check_release_integrity(source_path: str) -> dict:
             "practice": "PS-protect-software",
             "title": "No release signing configured",
             "description": "No code/artifact signing mechanism (cosign, GPG, sigstore) found in release workflow",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Sign releases using cosign/sigstore or GPG for integrity verification",
         })
 
@@ -58,9 +60,9 @@ def check_release_integrity(source_path: str) -> dict:
             "practice": "PS-protect-software",
             "title": "No checksum generation in build/release",
             "description": "No checksum generation (SHA256) found in build or release processes",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Generate and publish SHA256 checksums for all release artifacts",
         })
 
@@ -72,9 +74,9 @@ def check_release_integrity(source_path: str) -> dict:
             "practice": "PS-protect-software",
             "title": "No supply chain provenance generation",
             "description": "No SLSA provenance or in-toto attestation generation found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Generate SLSA provenance for build artifacts to ensure supply chain integrity",
         })
 
@@ -83,20 +85,8 @@ def check_release_integrity(source_path: str) -> dict:
 
 def _gather_release_content(root: Path) -> str:
     """Gather release and CI content."""
-    parts: list[str] = []
-    workflows = root / ".github" / "workflows"
-    if workflows.is_dir():
-        for f in workflows.iterdir():
-            if f.suffix in (".yml", ".yaml"):
-                content = read_file_safe(f)
-                if content:
-                    parts.append(content)
-    for name in ("Makefile", "Taskfile.yml", "justfile", "Rakefile"):
-        p = root / name
-        if p.exists():
-            content = read_file_safe(p)
-            if content:
-                parts.append(content)
+    parts = [content for f in workflow_files(root) if (content := read_file_safe(f))]
+    parts += present_contents(root, ("Makefile", "Taskfile.yml", "justfile", "Rakefile"))
     return "\n".join(parts)
 
 

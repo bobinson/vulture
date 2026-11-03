@@ -24,6 +24,7 @@ frontend/playwright-report/
 # ── Verification harness scratch ────────────────────────────────────
 verification/build/
 verification/.coq/
+verification/
 
 # ── IDE / tooling state ─────────────────────────────────────────────
 # Most of these are also in .gitignore, but listed here so an

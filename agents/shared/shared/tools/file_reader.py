@@ -5,7 +5,7 @@ from pathlib import Path
 from agents import function_tool
 
 from shared.env import env_flag
-from shared.tools.confine import is_within_root
+from shared.tools.confine import EXCLUDED_MESSAGE, OUTSIDE, scan_refusal
 
 # Feature 0076 T2.5: the LEAF line-format module, never ``shared.audit_runner``.
 # ``shared/tools/__init__.py`` re-exports this module, so importing the runner from
@@ -78,7 +78,8 @@ def make_read_file_tool(source_root: str):
     The LLM-supplied ``path`` is model-controlled; a prompt-injected /
     hallucinating model could ask to read ``/etc/passwd`` or ``~/.ssh/id_rsa``
     and exfiltrate it via a finding. This wrapper rejects any path that does
-    not resolve to a file under ``source_root`` (symlink-escape safe).
+    not resolve to a file under ``source_root`` (symlink-escape safe), and any
+    the audit's walk never opens: a gitignored ``.env`` is inside the root too.
     """
     root = Path(source_root).resolve()
 
@@ -92,10 +93,13 @@ def make_read_file_tool(source_root: str):
 
         Returns:
             File contents, or an error message if the path is outside the
-            audit source tree or cannot be read.
+            audit source tree, excluded from the audit, or cannot be read.
         """
-        if not is_within_root(path, root):
+        refusal = scan_refusal(path, root)
+        if refusal == OUTSIDE:
             return "Error: path is outside the audit source tree"
+        if refusal:
+            return EXCLUDED_MESSAGE
         return read_file(path, start_line, end_line)
 
     return function_tool(read_file_confined)

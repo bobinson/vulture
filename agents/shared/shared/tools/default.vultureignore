@@ -1,0 +1,83 @@
+# Folders Vulture skips by default, in .vultureignore syntax.
+#
+# A scanned project brings one back with a negation in its root
+# .vultureignore: `!build/` scans every directory named `build`, `!web/build/`
+# that one only. A .gitignore cannot bring one back. Version-control stores
+# (.git, .svn, .hg, .bzr) and Python virtualenvs (a directory holding
+# pyvenv.cfg) are skipped by the scanner itself and are never brought back.
+#
+# Each line is one directory-name glob ending in `/`, matching a directory of
+# that name at any depth: no `!`, and no `/` inside the name.
+#
+# Edit this file, at the repository root. The scanner, the backend and the
+# opengrep plugin are each built from their own directory, so each carries a
+# byte-identical copy that its tests compare with this one. After an edit:
+#   for d in agents/shared/shared/tools backend/pkg/scanignore plugins/opengrep/src; do cp default.vultureignore "$d/"; done
+
+# Installed dependencies and virtualenvs
+node_modules/
+vendor/
+third_party/
+venv/
+.venv/
+.env/
+
+# Build output
+dist/
+build/
+target/
+obj/
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+.angular/
+.docusaurus/
+storybook-static/
+.gradle/
+
+# Tool caches
+__pycache__/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.turbo/
+.parcel-cache/
+.cache/
+
+# Coverage and test reports
+coverage/
+.coverage/
+htmlcov/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Infrastructure state
+.terraform/
+.pulumi/
+
+# Editor and assistant state. The scanner still reads the files in them that
+# run when the folder is opened (.vscode/tasks.json, .claude/settings.json, ...)
+# unless the project's own ignore files exclude the folder.
+.idea/
+.vscode/
+.eclipse/
+.claude/
+
+# Test data
+fixtures/
+testdata/
+test-fixtures/
+snapshots/
+__snapshots__/
+
+# Backup copies of a folder
+*-backup/
+*_backup/
+*-old/
+*_old/
+*-bak/
+*_bak/

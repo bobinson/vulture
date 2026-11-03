@@ -118,6 +118,7 @@ the language-neutral requirements.
 | `src/wrapper.py` | FastAPI app implementing `/health`, `/info`, `/run`. |
 | `src/translate.py` | Maps the scanner's native output to Vulture's `Finding` shape. Includes the `normalise_source_path` guard against TM4 / BLOCKER #9. |
 | `src/sse.py` | Canonical SSE writer for the contract. Copy verbatim. |
+| `src/default.vultureignore` | The folders the engine never walks: a copy of the repository root's `default.vultureignore`, which a test keeps byte-identical. The scanned root's `.vultureignore` brings one back with a negation (`!build/`). |
 | `Dockerfile` | Single-stage build; runs as `nobody`. |
 | `rules/RULESET_SNAPSHOT.json` | Every bundled rule set: source, commit, and each file's sha256 and licence (MIT or Apache-2.0 only). CWE comes from each rule's own `metadata.cwe`. |
 | `rules/vulture/`, `rules/third_party/` | Vulture's own rules and the vendored third-party sets (each with its `LICENSE` and `SOURCE.md`). |

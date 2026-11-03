@@ -146,23 +146,56 @@ app = FastAPI(
 # a tmp_path-based root by monkeypatching this module attribute.
 AUDIT_INPUTS_ROOT = "/audit-inputs"
 
-# 0055: vendored/build/VCS dirs to skip. With --no-git-ignore the engine
-# would otherwise walk these (e.g. a multi-GB node_modules), producing
-# noise and OOM-killing the container. A SAST tool should audit first-
-# party source, not third-party dependencies.
-_SCAN_EXCLUDES = [
-    # VCS + dependencies
-    "node_modules", ".git", "vendor", ".venv", "venv", "__pycache__",
-    # build outputs — GENERATED artifacts (minified/bundled), not source.
-    # Scanning these yields low-value, duplicated findings in framework code
-    # (the real hit is in the source the artifact was built from). Keep in
-    # sync with agents/shared file_scanner.SKIP_DIRS + backend staging.skipDirs.
-    "target", "dist", "build", "out", ".next", ".nuxt", ".output",
-    ".svelte-kit", ".angular", ".docusaurus", "storybook-static",
-    ".gradle", ".mvn",
-    # tool caches + coverage/test reports
-    ".turbo", ".parcel-cache", ".cache", "coverage", ".nyc_output",
-]
+# 0055: with --no-git-ignore the engine would walk every folder (a multi-GB
+# node_modules OOM-killed the container) and report on vendored and generated
+# code. It skips what Vulture's scanner skips instead: the version-control
+# stores, and every folder of Vulture's default ignore file -- a byte-identical
+# copy of the repository root's default.vultureignore, which the tests compare
+# -- unless the scanned root's .vultureignore brings it back with a negation.
+# In local mode the staged tree has already left them out; under compose the
+# engine walks the source itself.
+_VCS_DIRS = (".git", ".svn", ".hg", ".bzr")
+_DEFAULT_IGNORE = Path(__file__).with_name("default.vultureignore")
+
+
+def _pattern_lines(text: str) -> list[str]:
+    """An ignore file's pattern lines: no blank line, no comment."""
+    lines = (line.strip() for line in text.splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
+
+
+# Each line is a directory-name glob ending in "/".
+_DEFAULT_IGNORE_GLOBS = tuple(
+    line.removesuffix("/") for line in _pattern_lines(_DEFAULT_IGNORE.read_text(encoding="utf-8"))
+)
+
+
+def _root_vultureignore(source_path: str) -> str:
+    """The scanned root's .vultureignore; empty when it is absent, unreadable
+    or a symlink, which is never followed (it could point outside the tree)."""
+    path = Path(source_path) / ".vultureignore"
+    if path.is_symlink() or not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _brought_back(source_path: str) -> frozenset[str]:
+    """The folder name each negation in the root .vultureignore names:
+    ``!build/``, ``!build`` and ``!web/build/`` all name ``build``. An
+    ``--exclude`` names a folder wherever it is, so a path negation brings
+    back every folder of that name: more than the scanner reads, never less."""
+    negations = (line[1:] for line in _pattern_lines(_root_vultureignore(source_path))
+                 if line.startswith("!"))
+    return frozenset(line.rstrip("/").rsplit("/", 1)[-1] for line in negations)
+
+
+def _scan_excludes(source_path: str) -> list[str]:
+    back = _brought_back(source_path)
+    return [*_VCS_DIRS, *(glob for glob in _DEFAULT_IGNORE_GLOBS if glob not in back)]
+
 
 # Test code, which the engine's default ignore skipped until plugin 0.2.0.
 # The plugin now ignores .semgrepignore files (their default also matched a
@@ -280,7 +313,7 @@ def _engine_argv(source_path: str, config: dict) -> list[str]:
     # host's git ownership, causing silent "0 files scanned"; disabling it makes
     # the scan deterministic regardless of how the volume was mounted.
     # --x-ignore-semgrepignore-files: the engine's default ignore also matches
-    # the scan root's own ancestors; _SCAN_EXCLUDES + _TEST_EXCLUDES are the
+    # the scan root's own ancestors; _scan_excludes + _TEST_EXCLUDES are the
     # explicit skip list instead.
     # --taint-intrafile: follow taint across functions within a file.
     args = [
@@ -290,7 +323,7 @@ def _engine_argv(source_path: str, config: dict) -> list[str]:
     # 0055: --no-git-ignore makes the engine walk EVERYTHING (node_modules,
     # target, .git, ...) — noise + a hard OOM (a 3 GB node_modules killed the
     # 4 GB container). Exclude vendored/build dirs and cap analysis memory.
-    for pattern in _SCAN_EXCLUDES + _TEST_EXCLUDES:
+    for pattern in _scan_excludes(source_path) + _TEST_EXCLUDES:
         args += ["--exclude", pattern]
     args += ["--max-memory", str(_clamp_memory_mb(config))]
     args += _rule_config_args(config)

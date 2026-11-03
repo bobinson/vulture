@@ -7,22 +7,28 @@ import (
 	"strings"
 )
 
-// ignoreSet holds the patterns of one directory's ignore files, split into
-// directory patterns (trailing '/') and plain globs, matched against paths
-// relative to that directory. See the package doc for the supported syntax
-// subset.
+// ignoreSet holds the pattern lines of one ignore file, in order, matched
+// against paths relative to that file's directory. See the package doc for
+// the supported syntax subset.
 type ignoreSet struct {
-	dirPatterns []string // "fixtures/" → "fixtures"; matched against dirs only
-	patterns    []string // globs matched against base name + rel path
+	rules []ignoreRule
 }
 
-// ignoreTree is the ignore sets in force during one staging walk: the
-// root's .gitignore and .vultureignore, and the .gitignore of every
+// ignoreRule is one pattern line: its glob, whether it matches directories
+// only (a trailing '/'), and whether it re-includes (a leading '!').
+type ignoreRule struct {
+	glob    string
+	dirOnly bool
+	negate  bool
+}
+
+// ignoreTree is the ignore files in force during one staging walk: the
+// root's .vultureignore, and the .gitignore of the root and of every
 // directory the walk enters, keyed by root-relative slash path ("" for the
-// root). Each applies to the entries beneath its own directory. The subset
-// has no negation, so an entry is excluded when any of them matches.
+// root). Each .gitignore applies to the entries beneath its own directory.
 type ignoreTree struct {
 	readGitignore bool
+	vultureignore *ignoreSet
 	byDir         map[string]*ignoreSet
 }
 
@@ -35,11 +41,11 @@ type ignoreTree struct {
 func loadIgnores(srcDir string) *ignoreTree {
 	t := &ignoreTree{
 		readGitignore: os.Getenv("VULTURE_IGNORE_GITIGNORE") != "true",
+		vultureignore: &ignoreSet{},
 		byDir:         map[string]*ignoreSet{},
 	}
+	t.vultureignore.addFile(filepath.Join(srcDir, ".vultureignore"))
 	t.enter(srcDir, "")
-	root := t.setFor("")
-	root.addFile(filepath.Join(srcDir, ".vultureignore"))
 	return t
 }
 
@@ -60,16 +66,38 @@ func (t *ignoreTree) setFor(rel string) *ignoreSet {
 	return t.byDir[key]
 }
 
-// matches reports whether the entry at rel is excluded by the ignore set
-// of any directory above it, each tested with rel made relative to it.
+// matches reports whether the ignore files exclude the entry at rel, as
+// git and the scanner decide it: the .vultureignore when one of its lines
+// matches, else the nearest .gitignore above rel with a matching line.
 func (t *ignoreTree) matches(rel string, isDir bool) bool {
 	rel = filepath.ToSlash(rel)
+	if excluded, ok := t.vultureignore.verdict(rel, isDir); ok {
+		return excluded
+	}
 	for _, dir := range ancestors(rel) {
-		if s := t.byDir[dir]; s != nil && s.matches(strings.TrimPrefix(rel, dir+"/"), isDir) {
-			return true
+		if excluded, ok := t.gitignoreVerdict(dir, rel, isDir); ok {
+			return excluded
 		}
 	}
 	return false
+}
+
+// gitignoreVerdict is the verdict of the .gitignore of dir, if it has one,
+// on the entry at rel.
+func (t *ignoreTree) gitignoreVerdict(dir, rel string, isDir bool) (excluded, ok bool) {
+	s := t.byDir[dir]
+	if s == nil {
+		return false, false
+	}
+	return s.verdict(strings.TrimPrefix(rel, dir+"/"), isDir)
+}
+
+// bringsBack reports whether the root .vultureignore re-includes the
+// directory at rel, which overrides the default ignore file
+// (pkg/scanignore). A .gitignore never does.
+func (t *ignoreTree) bringsBack(rel string) bool {
+	excluded, ok := t.vultureignore.verdict(filepath.ToSlash(rel), true)
+	return ok && !excluded
 }
 
 // ancestors lists the root-relative directories above rel, nearest first,
@@ -104,42 +132,36 @@ func readRegular(p string) ([]byte, bool) {
 }
 
 func (s *ignoreSet) addPattern(line string) {
-	if !isSupportedPattern(line) {
+	if line == "" || strings.HasPrefix(line, "#") {
 		return
 	}
-	if dir, ok := strings.CutSuffix(line, "/"); ok {
-		s.dirPatterns = append(s.dirPatterns, dir)
-		return
+	var r ignoreRule
+	line, r.negate = strings.CutPrefix(line, "!")
+	r.glob, r.dirOnly = strings.CutSuffix(line, "/")
+	if r.glob != "" {
+		s.rules = append(s.rules, r)
 	}
-	s.patterns = append(s.patterns, line)
 }
 
-// isSupportedPattern filters the documented subset: blank lines, '#'
-// comments, and '!' negation lines (unsupported) are not patterns.
-func isSupportedPattern(line string) bool {
-	return line != "" && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "!")
-}
-
-// matches reports whether the entry at rel is excluded. Directory
-// patterns apply to dirs only; plain globs apply to any entry.
-func (s *ignoreSet) matches(rel string, isDir bool) bool {
-	rel = filepath.ToSlash(rel)
-	if isDir && matchAny(s.dirPatterns, rel) {
-		return true
-	}
-	return matchAny(s.patterns, rel)
-}
-
-// matchAny globs each pattern against the entry's base name (gitignore's
-// slashless-pattern-matches-anywhere rule) and its full rel path.
-func matchAny(patterns []string, rel string) bool {
-	base := path.Base(rel)
-	for _, pat := range patterns {
-		if globMatch(pat, base) || globMatch(pat, rel) {
-			return true
+// verdict reports whether the set excludes the entry at rel: the last line
+// matching it decides, and ok is false when no line does.
+func (s *ignoreSet) verdict(rel string, isDir bool) (excluded, ok bool) {
+	for _, r := range s.rules {
+		if r.matches(rel, isDir) {
+			excluded, ok = !r.negate, true
 		}
 	}
-	return false
+	return excluded, ok
+}
+
+// matches globs the rule against the entry's base name (gitignore's
+// slashless-pattern-matches-anywhere rule) and its full rel path. A
+// directory pattern applies to directories only.
+func (r ignoreRule) matches(rel string, isDir bool) bool {
+	if r.dirOnly && !isDir {
+		return false
+	}
+	return globMatch(r.glob, path.Base(rel)) || globMatch(r.glob, rel)
 }
 
 func globMatch(pattern, name string) bool {

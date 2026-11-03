@@ -1,11 +1,13 @@
 """PW.8 - Security testing audit skill for SSDF."""
 
 import re
+from itertools import chain
 from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import read_file_safe, tree_dirs, tree_files
 from ssdf_agent.skills._ci_utils import gather_ci_content
 
 _SECURITY_TEST_PATTERNS = re.compile(
@@ -16,6 +18,12 @@ _SECURITY_TEST_PATTERNS = re.compile(
 _FUZZ_PATTERNS = re.compile(
     r"fuzz_|FuzzTest|fuzzing|hypothesis|atheris|go-fuzz",
     re.IGNORECASE,
+)
+
+# Basenames of security-focused test files, at any depth.
+_SECURITY_TEST_GLOBS = (
+    "test*security*", "security*test*", "test*auth*",
+    "test*xss*", "test*injection*", "test*csrf*",
 )
 
 _COVERAGE_GATE_PATTERNS = re.compile(
@@ -44,9 +52,9 @@ def check_security_testing(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No dedicated security test files found",
             "description": "No test files focused on security testing (auth, injection, XSS) found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Add dedicated security test suites for auth, injection, and access control",
         })
 
@@ -58,9 +66,9 @@ def check_security_testing(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No fuzz testing configured",
             "description": "No fuzz testing framework (go-fuzz, hypothesis, atheris) found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Implement fuzz testing for input parsing and data processing functions",
         })
 
@@ -73,9 +81,9 @@ def check_security_testing(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No test coverage enforcement in CI",
             "description": "No test coverage threshold or gate found in CI configuration",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Add coverage thresholds to CI to enforce minimum test coverage",
         })
 
@@ -84,33 +92,19 @@ def check_security_testing(source_path: str) -> dict:
 
 def _find_security_tests(root: Path) -> bool:
     """Check for security-focused test files."""
-    # Search test directories with targeted globs instead of rglob("*")
-    for pattern in ("**/test*security*", "**/security*test*", "**/test*auth*",
-                    "**/test*xss*", "**/test*injection*", "**/test*csrf*"):
-        for item in root.rglob(pattern):
-            if item.is_file():
-                return True
-    return False
+    return any(True for _ in tree_files(root, globs=_SECURITY_TEST_GLOBS))
 
 
 def _find_fuzz_tests(root: Path) -> bool:
-    """Check for fuzz test files or configs."""
-    # Targeted glob for fuzz_ prefixed files
-    for item in root.rglob("fuzz_*"):
-        if item.is_file():
-            return True
-    # Targeted search for __fuzz__ dirs
-    for item in root.rglob("__fuzz__"):
-        if item.is_dir():
-            return True
-    # Check for fuzz patterns in test files
-    for item in root.rglob("*test*"):
-        if not item.is_file():
-            continue
-        content = read_file_safe(item)
-        if content and _FUZZ_PATTERNS.search(content):
-            return True
-    return False
+    """Check for fuzz test files, a ``__fuzz__`` directory (empty or not), or
+    fuzz patterns in test files."""
+    fuzz_paths = chain(tree_files(root, globs=("fuzz_*",)), tree_dirs(root, names={"__fuzz__"}))
+    return next(fuzz_paths, None) is not None or _tests_mention_fuzzing(root)
+
+
+def _tests_mention_fuzzing(root: Path) -> bool:
+    tests = tree_files(root, globs=("*test*",))
+    return any(_FUZZ_PATTERNS.search(read_file_safe(item) or "") for item in tests)
 
 
 check_security_testing_tool = function_tool(check_security_testing)

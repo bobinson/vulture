@@ -14,6 +14,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,9 @@ class MobileRoutesPlugin(DiscoveryPlugin):
             return result
 
         scanned = 0
-        for fpath in root.rglob("*"):
-            if scanned >= _MAX_MOBILE_FILES or not fpath.is_file():
-                continue
+        for fpath in tree_files(root):
+            if scanned >= _MAX_MOBILE_FILES:
+                break
             extractors = _get_extractors(fpath)
             if not extractors:
                 continue

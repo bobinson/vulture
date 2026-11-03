@@ -15,6 +15,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,17 @@ class RawHTTPHandlersPlugin(DiscoveryPlugin):
 def _scan_all_files(
     root: Path, routes: list[dict], techs: set[str],
 ) -> None:
-    """Walk JS/TS files looking for pathname routing patterns."""
+    """Walk JS/TS files looking for pathname routing patterns.
+
+    The audit's walk decides what is skipped (``node_modules``, ``dist``,
+    ``build``, ``.next`` and every ignored path) relative to the scan root, so
+    a checkout that sits under a directory named ``build`` is still read.
+    """
     scanned = 0
-    for fpath in root.rglob("*"):
+    for fpath in tree_files(root):
         if scanned >= _MAX_FILES:
             break
-        if not _is_scannable(fpath):
+        if fpath.suffix not in _JS_EXTENSIONS:
             continue
         try:
             content = fpath.read_text(errors="replace")
@@ -84,19 +90,6 @@ def _scan_all_files(
             continue
         scanned += 1
         _scan_file(content, fpath, root, routes, techs)
-
-
-def _is_scannable(fpath: Path) -> bool:
-    """Check if a file should be scanned."""
-    if not fpath.is_file() or fpath.suffix not in _JS_EXTENSIONS:
-        return False
-    return not _is_excluded(fpath)
-
-
-def _is_excluded(fpath: Path) -> bool:
-    """Skip node_modules, dist, build, .next directories."""
-    parts = fpath.parts
-    return any(p in ("node_modules", "dist", "build", ".next") for p in parts)
 
 
 def _scan_file(

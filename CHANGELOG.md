@@ -148,6 +148,25 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   Findings carry `agent_type` and `provenance` `opengrep`; the results-page "tier not active" notice
   matches the `opengrep` plugin only, so an older audit's `semgrep` notice no longer shows the banner.
 
+- **The folders Vulture skips by default are listed in one file, not in code.**
+  `default.vultureignore` at the repository root, in `.vultureignore` syntax, replaces the walker's
+  `SKIP_DIRS` list, the backend staging copy's list, the source file count's list and the opengrep
+  plugin's excludes, which had drifted apart; the scanner, the backend and the plugin each build
+  from their own directory and carry a byte-identical copy that their tests compare with it. A project brings a listed folder back with a
+  negation in its root `.vultureignore` (`!build/` for every `build` directory, `!web/build/` for
+  that one only); a `.gitignore` cannot. Only the version-control stores (`.git`, `.svn`, `.hg`,
+  `.bzr`) and Python virtualenvs (by `pyvenv.cfg`) stay in code, and neither can be brought back.
+  `docs/guides/vultureignore-howto.md` documents the rules with examples. What changes:
+  - the staged copy a container plugin scans, and the opengrep plugin, now leave out what the agents
+    leave out: test data (`fixtures`, `testdata`, `snapshots`), `.claude`, `.eclipse`, backup folders
+    (`*-backup`, `*_old`, ...), `third_party`, `obj`, `htmlcov`, `.pulumi`, `playwright-report` and
+    `test-results`, so opengrep reports fewer findings on a tree holding them. Both now include
+    `out` and `.mvn`, which the agents never skipped; the agents now skip `.gradle` (a build cache);
+  - the staged copy honours `!` negations in `.gitignore` and `.vultureignore`, as git and the
+    scanner do, and its `.vultureignore` overrides every `.gitignore`;
+  - backup folders match case-sensitively: `src-backup/` is skipped, `Src-Backup/` is scanned;
+  - the source file count skips the same folders, so it is lower for a tree holding them.
+
 - **CWE-22, CWE-918 and CWE-78 rows come from the AST layer on parsed files
   (feature 0102).** On a JavaScript, TypeScript, Go, Java, Rust, PHP or Python
   file that parses with no error, `cwe.input_validation.path_traversal`,
@@ -473,6 +492,41 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   broker's permanent codes); a malformed answer or a timeout still walks them, since a smaller
   request is what recovers a verdict when size was the cause. A rate-limited judge batch now costs
   at most the SDK's three attempts instead of about 27.
+- **Every look at the scanned tree applies the audit's exclusions.** SSDF's evidence searches
+  (threat model, design review, security and fuzz tests, Dockerfiles, CI and issue templates,
+  post-mortems), discover's source plugins, the route model that refutes authorization findings, the
+  generate phase's `read_file` / `list_files` / `search_pattern` and the L5 judge's tools walked the
+  tree on their own and ignored SKIP_DIRS, every `.gitignore` and `.vultureignore`. A vendored
+  `architecture.md` inside `.venv` hid a real "No design review evidence found", an ignored file
+  could refute a real finding, the generate tools could read a gitignored `.env`, and a search of a
+  subdirectory dropped the root's ignore rules. They now read the shared walker's cached listing
+  (`tree_files`, `tree_dirs`, `present`), always from the scan root, and stay complete when that
+  listing hits `VULTURE_MAX_FILES`. The model-facing tools also refuse SKIP_FILES names, a file
+  named like a skipped directory and the dotenv family (`.env`, `.env.*`, `.envrc`; the secret scan
+  still reports what they hold), and any path not spelled as its directory lists it (on a
+  case-insensitive filesystem `.GIT/config` would otherwise open `.git/config`). A missing path gets
+  the same "excluded" answer an existing one gets whenever a rule would hide it, and the answer says
+  that an excluded path is not evidence of absence. `list_files` keeps `rglob` pattern semantics
+  (`src/**/*.py`). The judge
+  now reads `.vscode/tasks.json`, as the walker does, and discover plugins no longer find nothing
+  when the checkout sits under a directory named `build`.
+- **Directories named `data`, `bin`, `env` or `mocks` are scanned.** The walker pruned these names
+  at any depth, so source under them (a Next.js `app/api/data/route.ts`, a Go `internal/data`
+  package, `config/env/*.js`, `bin/*.sh`) was never read by any agent or tool. Projects name their
+  own code with these words; output kept under them is excluded by the project's `.gitignore`, and
+  a Python virtualenv is now recognised by its `pyvenv.cfg` and pruned whatever it is called. Names
+  a tool gives its own tree (`node_modules`, `dist`, `build`, `target`, `.venv`, `coverage`, ...)
+  and test data (`fixtures`, `testdata`, `snapshots`) are still pruned. A tree with such
+  directories reports more findings.
+- **Repository-wide findings cite the repository, not the scan path.** SSDF's 29 repository-wide
+  checks and SOC2's `soc2.monitoring.absent` / `soc2.data_retention.missing_policy` carried the
+  absolute scan root as `file_path`, so moving the checkout made them look new (and the old ones
+  fixed) to v1 fingerprints and comparisons. They now report `file_path: "."` and line 0, the token
+  the backend already uses for the root, so `fingerprint_v2` and lineage are unchanged; the v1
+  `fingerprint`, and a triage label keyed on it, changes once for these rows. Before a
+  finding leaves the agent, any path equal to the scan root becomes `"."` too (model rows that cite
+  the root), the agent's dedup key spells the root the same way, and the window stage records these
+  rows as `no_code_location` instead of `unreadable`.
 - **Line rules read the code they report on.** On a self-scan: CWE-681 matched `int(` inside
   `fmt.Sprint(err)` and `keys.isdisjoint(found)`, and reported Python's `int(x)`, which has no width
   to lose; a conversion is now a call of the type itself, and Go's bare `int(x)` is reported only
@@ -532,9 +586,8 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   ignored directory is never read. The shared file walk the skills scan through, the pattern
   search, the judge's file tools, the offline gate and the staged copy a container plugin scans
   all apply them, and a directory they prune is reported in `pruned_dirs`, so lineage reads it
-  as not looked at rather than fixed. Checks that look for particular files by name with their
-  own walk (several SSDF practices, the discover plugins) and the LLM's file tools do not apply
-  ignore rules yet. The root `.vultureignore` still overrides every `.gitignore`, and
+  as not looked at rather than fixed. So do the checks that look for particular files by name and
+  the model's file tools (next entry). The root `.vultureignore` still overrides every `.gitignore`, and
   `VULTURE_IGNORE_GITIGNORE=true` now disables nested ones too. Two smaller changes come with it:
   an ignore file is no longer read through a symlink (git does not follow one either), and an
   edited ignore file applies to the agent's next audit instead of after a restart.

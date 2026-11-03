@@ -100,6 +100,21 @@ its verdicts arrive as `proof_result` / `proof_summary`, never a snapshot. A
 `skipped` or `failed` status, or a stream that ends with no `agent_end`, does
 not count.
 
+A finding about the repository as a whole (SSDF's "no SECURITY.md", SOC2's
+"no monitoring") carries `file_path: "."` and line 0: `"."` is the token the
+backend's path canonicaliser already uses for the scan root, so the row keeps
+its identity when the checkout moves. Before it leaves the agent, any finding
+that cites the absolute scan root is rewritten to `"."` as well.
+
+The file tools the model calls (`read_file`, `list_files`, `search_pattern`,
+and the L5 judge's tools) see what the audit walk sees: a path outside the
+source root, one the walk never reaches (a version-control store, a folder the
+default ignore file lists, a symlink, a `.gitignore`d or `.vultureignore`d path, a component not spelled as
+its directory lists it), a SKIP_FILES name, a file named like a skipped
+directory or a dotenv file (`.env`, `.env.*`, `.envrc`) is refused with an
+"excluded … do not treat this as evidence of absence" error, whether or not
+the file exists.
+
 ### LLM-tier fields (feature 0074, all optional)
 
 Feature 0074 adds the fields below. Every one is additive and optional. A
@@ -558,7 +573,8 @@ Every finding's `validation.checks[]` may carry a zero-weight `window` check
 whose `result` says why the finding has the code window it has: `present` (a
 window that contains the cited line), `inherited` (carried from another
 agent's finding, not re-read), `rollup_parent` (stands for several sites),
-`no_code_location` (the class has no file or line), `no_line` (a file but no
+`no_code_location` (the class has no file or line, including a
+repository-wide `"."` row), `no_line` (a file but no
 usable line), `unreadable` (the path did not resolve or the read failed) and,
 since 0074, `out_of_range` (the file was read and the cited line lies past its
 end, so no window is shown). A model-written window that does not show the

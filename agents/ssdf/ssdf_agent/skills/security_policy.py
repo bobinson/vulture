@@ -5,7 +5,9 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import present, tree_files
+from ssdf_agent.skills._ci_utils import present_contents
 
 _POLICY_FILES = {
     "security.md", "security.txt", "security.rst",
@@ -47,9 +49,9 @@ def check_security_policy(source_path: str) -> dict:
             "practice": "PO-prepare-organization",
             "title": "No security policy document found",
             "description": "No SECURITY.md or security policy documentation found in the repository",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Create a SECURITY.md with vulnerability disclosure and reporting procedures",
         })
 
@@ -58,23 +60,15 @@ def check_security_policy(source_path: str) -> dict:
 
 def _find_policy_file(root: Path) -> bool:
     """Check for dedicated security policy files."""
-    for item in root.iterdir():
-        if item.is_file() and item.name.lower() in _POLICY_FILES:
-            return True
-    github_sec = root / _GITHUB_SECURITY
-    return github_sec.exists()
+    if any(item.name.lower() in _POLICY_FILES for item in tree_files(root, depth=1)):
+        return True
+    return present(root, _GITHUB_SECURITY)
 
 
 def _find_policy_reference(root: Path) -> bool:
     """Check for security policy references in README/CONTRIBUTING."""
-    for name in ("README.md", "README.rst", "README.txt", "CONTRIBUTING.md"):
-        path = root / name
-        if not path.exists():
-            continue
-        content = read_file_safe(path)
-        if content and _POLICY_REFS.search(content):
-            return True
-    return False
+    docs = present_contents(root, ("README.md", "README.rst", "README.txt", "CONTRIBUTING.md"))
+    return any(_POLICY_REFS.search(content) for content in docs)
 
 
 check_security_policy_tool = function_tool(check_security_policy)
