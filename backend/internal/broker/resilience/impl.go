@@ -52,8 +52,12 @@ type CircuitConfig struct {
 
 // BulkheadConfig configures a per-provider bulkhead.
 type BulkheadConfig struct {
-	// MaxConcurrent is the semaphore size (concurrency cap).
+	// MaxConcurrent is the semaphore size (concurrency cap). Up to
+	// waitersPerSlot×MaxConcurrent further calls may queue for a slot.
 	MaxConcurrent int
+	// MaxWait bounds how long a call queues for a slot before it is shed with
+	// ErrBulkheadFull. 0 bounds the wait by the call's context alone.
+	MaxWait time.Duration
 }
 
 // RetrierConfig configures a retry-budget retrier.
@@ -67,7 +71,8 @@ type RetrierConfig struct {
 // NewCircuitBreaker builds a per-(provider,model) breaker (per-replica-local).
 func NewCircuitBreaker(cfg CircuitConfig) CircuitBreaker { return newCircuitBreaker(cfg) }
 
-// NewBulkhead builds a per-provider bulkhead (semaphore concurrency cap).
+// NewBulkhead builds a per-provider bulkhead (semaphore concurrency cap with a
+// bounded admission queue).
 func NewBulkhead(cfg BulkheadConfig) Bulkhead { return newBulkhead(cfg) }
 
 // NewRetrier builds a retry-budget retrier.

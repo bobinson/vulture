@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/vulture/backend/internal/broker/budget"
@@ -51,11 +52,7 @@ func (s *Server) runEmbed(ctx context.Context, claims *token.Claims, req *embedR
 	if apiErr := s.reserveEmbed(ctx, req); apiErr != nil {
 		return nil, apiErr
 	}
-	adapter, creds, apiErr := s.adapterFor(target)
-	if apiErr != nil {
-		return nil, apiErr
-	}
-	resp, apiErr := s.callEmbed(ctx, adapter, creds, req)
+	resp, apiErr := s.embedOnce(ctx, target, req)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -72,7 +69,7 @@ func (s *Server) reserveEmbed(ctx context.Context, req *embedRequest) *apiError 
 		TenantID:      req.TenantID,
 		EstimatedUSD:  provider.EstimateUSD(req.Model, 0),
 		ModelSnapshot: req.Model,
-		LeaseTTL:      reserveTTL,
+		LeaseTTL:      s.leaseTTL(1),
 	})
 	if err != nil {
 		return mapBudgetErr(err)
@@ -100,8 +97,22 @@ func (s *Server) reconcileEmbed(ctx context.Context, req *embedRequest, resp *pr
 	s.auditLog(ctx, entry, false)
 }
 
+// embedOnce runs the embeddings call and, when it fails, hands the lease
+// straight back — the same rule as the completion path's callCandidates.
+func (s *Server) embedOnce(ctx context.Context, target *egress.PinnedTarget, req *embedRequest) (*provider.EmbeddingResponse, *apiError) {
+	resp, apiErr := s.callEmbed(ctx, target, req)
+	if apiErr != nil {
+		s.releaseLease(ctx, req.RunID, req.RequestID)
+	}
+	return resp, apiErr
+}
+
 // callEmbed runs the embeddings adapter under the resilience stack (§9).
-func (s *Server) callEmbed(ctx context.Context, adapter provider.Adapter, creds provider.Credentials, req *embedRequest) (*provider.EmbeddingResponse, *apiError) {
+func (s *Server) callEmbed(ctx context.Context, target *egress.PinnedTarget, req *embedRequest) (*provider.EmbeddingResponse, *apiError) {
+	adapter, creds, apiErr := s.adapterFor(target)
+	if apiErr != nil {
+		return nil, apiErr
+	}
 	var resp *provider.EmbeddingResponse
 	err := s.guard(ctx, creds.Provider, creds.Provider+":"+req.Model, func(c context.Context) error {
 		r, e := adapter.Embed(c, creds, provider.EmbeddingRequest{
@@ -115,10 +126,21 @@ func (s *Server) callEmbed(ctx context.Context, adapter provider.Adapter, creds 
 		return e
 	})
 	if err != nil {
-		return nil, mapProviderErrWithUpstream(err)
+		return nil, embedErr(ctx, err)
 	}
 	if resp == nil {
 		return nil, errProviderUnavailable
 	}
 	return resp, nil
+}
+
+// embedErr maps an embeddings egress failure. A context error is attributed
+// exactly as on the completion path (attributeCtxErr): the caller leaving —
+// while queued or mid-call — is request_aborted, not a provider fault, while
+// the broker's own deadline firing still blames the provider.
+func embedErr(caller context.Context, err error) *apiError {
+	if errors.Is(attributeCtxErr(caller, err), errCallerAborted) {
+		return errRequestAborted
+	}
+	return mapProviderErrWithUpstream(err)
 }

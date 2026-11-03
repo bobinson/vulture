@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/vulture/backend/internal/broker/budget"
 	"github.com/vulture/backend/internal/broker/egress"
@@ -25,7 +26,20 @@ type apiError struct {
 	// entirely — a consumer that does not know the field sees byte-identical
 	// output for every error it already handles.
 	upstream *upstreamInfo
+	// retryAfter, when positive, is sent as the Retry-After header (whole
+	// seconds): how long the client should back off before trying again.
+	retryAfter time.Duration
 }
+
+// rateLimitedRetryAfter is the back-off a rate_limited answer advises. The
+// broker queues a burst rather than refusing it, so this answer now means
+// sustained overload — the admission queue is full, a request outwaited the
+// admission bound, or the provider itself throttled after the broker's own
+// retries — and a client should step back for a few provider calls' worth
+// instead of retrying at the SDK's sub-second default. It stays well inside
+// the range the OpenAI SDK honours (it ignores a longer one and does not retry
+// at all past it), so the SDK's own retries actually follow it.
+const rateLimitedRetryAfter = 10 * time.Second
 
 // upstreamInfo is the borrowed half of the envelope. It is a VALUE on a copy of
 // the static apiError, never a mutation of it: the package-level errors are
@@ -58,7 +72,7 @@ var (
 	errBudgetExceeded      = &apiError{code: "budget_exceeded", message: "budget exceeded", status: http.StatusPaymentRequired, retriable: false}
 	errInvalidRequest      = &apiError{code: "invalid_request", message: "invalid request", status: http.StatusBadRequest, retriable: false}
 	errProviderUnavailable = &apiError{code: "provider_unavailable", message: "provider unavailable", status: http.StatusBadGateway, retriable: true}
-	errRateLimited         = &apiError{code: "rate_limited", message: "rate limited", status: http.StatusTooManyRequests, retriable: true}
+	errRateLimited         = &apiError{code: "rate_limited", message: "rate limited", status: http.StatusTooManyRequests, retriable: true, retryAfter: rateLimitedRetryAfter}
 	// §32.1: PERMANENT provider faults — retriable=false so neither the broker
 	// retrier nor the agent retries them (they would fail identically), and the
 	// distinct codes surface the REAL cause instead of a generic outage.

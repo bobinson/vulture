@@ -32,7 +32,7 @@ from shared.anchor import anchor_extras
 from shared.cancellation import current_audit_deadline, current_cancel_token
 from shared.language import detect_language
 from shared.lines import parse_line
-from shared.llm.errors import broker_detail
+from shared.llm.errors import LLMErrorKind, broker_detail, classify_llm_error
 from shared.llm.jsonscan import iter_balanced_objects
 from shared.llm.provider import bare_model_name
 from shared.prompt import Mode, RenderedPrompt, Slot, profile_for, render
@@ -1027,7 +1027,8 @@ def _call_with_strict_retry(
     pool_active: Any = None,
 ) -> list[dict[str, Any]]:
     """Call LLM; on JSON-parse failure, retry once with a strict-JSON
-    nudge (D14). Returns parsed verdicts or [] on double-failure."""
+    nudge (D14). Returns parsed verdicts or [] on double-failure. A transport
+    failure propagates as _TransportFailure: no nudge is sent for it."""
     # An orphaned worker whose pool has retired must not issue a call — the
     # load-bearing half of the fix. A worker that entered _judge_batch while
     # its pool was active (past the entry gate) can be slow to reach here; by
@@ -1120,6 +1121,11 @@ def _judge_batch(
     Pre-call cache lookup: any finding whose cache key already has a
     fresh verdict skips the LLM round-trip. If every finding in the
     batch hits the cache, the LLM call is skipped entirely.
+
+    A request that fails in TRANSPORT (see _is_transport_failure) ends the
+    batch at once with only its cached verdicts: the fallbacks below exist for
+    malformed answers and oversized requests, and re-sending a reshaped request
+    to a saturated or unreachable endpoint only multiplies the failure.
     """
     # Cheap early-out for a queued orphan that starts after its pool retired:
     # bail before the cache lookup. This is NOT sufficient on its own — a
@@ -1141,6 +1147,36 @@ def _judge_batch(
         log.info("[validate.l5] batch %d fully cached (%d findings)",
                  batch_idx, len(batch))
         return verdicts
+    try:
+        _judge_uncached(
+            verdicts, uncached_batch, batch_idx=batch_idx, audit_id=audit_id,
+            system_prompt=system_prompt, model=model,
+            per_batch_timeout_s=per_batch_timeout_s, cancel=cancel,
+            tool_executor=tool_executor, max_tool_calls=max_tool_calls,
+            pool_active=pool_active,
+        )
+    except _TransportFailure as exc:
+        _log_transport_stop(batch_idx, exc)
+    return verdicts
+
+
+def _judge_uncached(
+    verdicts: dict[str, dict[str, Any]],
+    uncached_batch: list[tuple[int, dict[str, Any], str]],
+    *,
+    batch_idx: int,
+    audit_id: str,
+    system_prompt: str,
+    model: str,
+    per_batch_timeout_s: float,
+    cancel: Any,
+    tool_executor: Any,
+    max_tool_calls: int,
+    pool_active: Any,
+) -> None:
+    """Judge the batch's uncached findings into `verdicts`: the tool loop when
+    tools are on, falling back to plain judging. Raises _TransportFailure when
+    the endpoint could not answer at all (see `_judge_batch`)."""
     # ONE marker token per request (feature 0089 item 4.3). Minted here rather
     # than inside either consumer because the user turn is built before the
     # tool loop starts and both have to delimit with the same value: two tokens
@@ -1153,48 +1189,13 @@ def _judge_batch(
     # Feature 0072 P3b: tool-equipped path, with a hard fallback — a provider
     # that rejects the `tools=` parameter must degrade to plain judging, not
     # kill the layer.
-    if tool_executor is not None:
-        # No `system_prompt`: the tool path's system turn depends on the batch
-        # size (the tool contract names it), so it renders its own from
-        # VALIDATE_JUDGE. `rt.system_prompt` is the TOOL-FREE turn and is only
-        # what the fallback below sends.
-        parsed, exhausted, ok = _call_llm_with_tools(
-            user_msg, model, per_batch_timeout_s,
-            tool_executor, max_tool_calls, len(uncached_batch), cancel=cancel,
-            pool_active=pool_active, nonce=nonce,
-        )
-        if ok:
-            if exhausted:
-                # T3.9a/AC31: running out of tool calls is a genuine "could
-                # not decide". No verdict built on the partial view is
-                # admitted — every uncached finding lands at the prompt's own
-                # cannot-judge value with no closure assertion. NOT cached:
-                # budget exhaustion is environmental, not a property of the
-                # code, and a 30-day cache would freeze it in.
-                for finding_idx, finding, _lang in uncached_batch:
-                    fid = finding.get("id") or _synthetic_id(finding_idx, finding)
-                    verdicts[fid] = {
-                        "id": fid, "exploitable": 0.5,
-                        "reasoning": "tool budget exhausted before a decision",
-                        "window_sufficient": None, "evidence_line": None,
-                        "evidence_file": None,
-                    }
-                return verdicts
-            if parsed is not None:
-                # T3.8/AC30: a tool-run DEMOTION that cites no found
-                # construct is an absence claim over a bounded search — it
-                # may not assert closure (the flag that lets a demotion
-                # override the deterministic tier).
-                for v in parsed:
-                    if (float(v.get("exploitable", 0.5)) < 0.5
-                            and v.get("evidence_line") is None):
-                        v["window_sufficient"] = None
-                _store_verdicts(parsed, uncached_batch, model, verdicts)
-                return verdicts
-            # ok but nothing parsed: fall through to the strict-retry path.
-        else:
-            log.info("[validate.l5] batch %d: tool call path failed; "
-                     "falling back to plain judging", batch_idx)
+    if tool_executor is not None and _judge_with_tools(
+        verdicts, uncached_batch, user_msg, nonce, batch_idx=batch_idx,
+        model=model, per_batch_timeout_s=per_batch_timeout_s, cancel=cancel,
+        tool_executor=tool_executor, max_tool_calls=max_tool_calls,
+        pool_active=pool_active,
+    ):
+        return
 
     # A SECOND user turn, from the spec this path actually sends. Under
     # TRANSCRIBE the two were identical — the user turn is the verbatim
@@ -1214,7 +1215,76 @@ def _judge_batch(
         len(uncached_batch), batch_idx, cancel=cancel, pool_active=pool_active,
     )
     _store_verdicts(parsed, uncached_batch, model, verdicts)
-    return verdicts
+
+
+def _judge_with_tools(
+    verdicts: dict[str, dict[str, Any]],
+    uncached_batch: list[tuple[int, dict[str, Any], str]],
+    user_msg: str,
+    nonce: str,
+    *,
+    batch_idx: int,
+    model: str,
+    per_batch_timeout_s: float,
+    cancel: Any,
+    tool_executor: Any,
+    max_tool_calls: int,
+    pool_active: Any,
+) -> bool:
+    """Run the tool loop; True when it settled the batch into `verdicts`, False
+    to fall back to plain judging (the tool path failed, or answered nothing
+    parseable)."""
+    # No `system_prompt`: the tool path's system turn depends on the batch
+    # size (the tool contract names it), so it renders its own from
+    # VALIDATE_JUDGE. `rt.system_prompt` is the TOOL-FREE turn and is only
+    # what the fallback sends.
+    parsed, exhausted, ok = _call_llm_with_tools(
+        user_msg, model, per_batch_timeout_s,
+        tool_executor, max_tool_calls, len(uncached_batch), cancel=cancel,
+        pool_active=pool_active, nonce=nonce,
+    )
+    if not ok:
+        log.info("[validate.l5] batch %d: tool call path failed; "
+                 "falling back to plain judging", batch_idx)
+        return False
+    if exhausted:
+        _mark_undecided(verdicts, uncached_batch)
+        return True
+    if parsed is None:
+        # ok but nothing parsed: fall through to the strict-retry path.
+        return False
+    _drop_uncited_closure(parsed)
+    _store_verdicts(parsed, uncached_batch, model, verdicts)
+    return True
+
+
+def _mark_undecided(
+    verdicts: dict[str, dict[str, Any]],
+    uncached_batch: list[tuple[int, dict[str, Any], str]],
+) -> None:
+    """T3.9a/AC31: running out of tool calls is a genuine "could not decide".
+    No verdict built on the partial view is admitted — every uncached finding
+    lands at the prompt's own cannot-judge value with no closure assertion.
+    NOT cached: budget exhaustion is environmental, not a property of the
+    code, and a 30-day cache would freeze it in."""
+    for finding_idx, finding, _lang in uncached_batch:
+        fid = finding.get("id") or _synthetic_id(finding_idx, finding)
+        verdicts[fid] = {
+            "id": fid, "exploitable": 0.5,
+            "reasoning": "tool budget exhausted before a decision",
+            "window_sufficient": None, "evidence_line": None,
+            "evidence_file": None,
+        }
+
+
+def _drop_uncited_closure(parsed: list[dict[str, Any]]) -> None:
+    """T3.8/AC30: a tool-run DEMOTION that cites no found construct is an
+    absence claim over a bounded search — it may not assert closure (the flag
+    that lets a demotion override the deterministic tier)."""
+    for v in parsed:
+        if (float(v.get("exploitable", 0.5)) < 0.5
+                and v.get("evidence_line") is None):
+            v["window_sufficient"] = None
 
 
 def _call_llm_with_tools(
@@ -1235,6 +1305,11 @@ def _call_llm_with_tools(
         T3.9a the caller must treat the whole batch as could-not-decide.
       * ``ok=False`` — the tool path itself failed (e.g. the provider
         rejects ``tools=``); the caller falls back to plain judging.
+
+    A transport failure (see ``_is_transport_failure``) raises
+    ``_TransportFailure`` instead: plain judging would meet the same endpoint.
+    A timeout does not — a tool-loop turn carries the tool results, and the
+    smaller plain request is what recovers a verdict when size was the problem.
 
     Tool time counts against the existing per-request timeout and the pool's
     total deadline (T3.9) — the loop adds no second budget, only a bounded
@@ -1329,6 +1404,7 @@ def _call_llm_with_tools(
         return None, True, True
     except Exception as exc:
         _log_call_failure(exc, "tool-loop")
+        _raise_if_transport(exc)
         return None, False, False
 
 
@@ -1461,8 +1537,10 @@ def _call_llm(
     model: str,
     timeout_s: float,
 ) -> str:
-    """Single LLM call. Returns raw response text or empty string on
-    failure. Failure is non-fatal at this level; caller handles."""
+    """Single LLM call. Returns raw response text, or an empty string when
+    no usable answer came back in either response mode at either token
+    budget; the caller handles that. Raises _TransportFailure when the
+    endpoint could not answer at all — reshaping the request cannot help."""
     client = _get_client()
     if client is None:
         return ""
@@ -1518,7 +1596,8 @@ def _call_llm(
 
 
 def _try_both_modes(do_call: Any, budget: int) -> str:
-    """Structured-output first, then plain; "" when both fail at this budget."""
+    """Structured-output first, then plain; "" when both fail at this budget.
+    A transport failure in either mode ends the attempt (_TransportFailure)."""
     try:
         text = do_call(use_json_format=True, budget=budget)
         if text:
@@ -1526,11 +1605,91 @@ def _try_both_modes(do_call: Any, budget: int) -> str:
         log.info("[validate.l5] structured-output mode returned empty; retrying plain")
     except Exception as exc:
         _log_call_failure(exc, "structured-output")
+        _raise_if_transport(exc)
     try:
         return do_call(use_json_format=False, budget=budget)
     except Exception as exc2:
         _log_call_failure(exc2, "plain")
+        _raise_if_transport(exc2)
         return ""
+
+
+class _TransportFailure(Exception):
+    """A judge request failed in transport (see _is_transport_failure). It ends
+    the batch past every fallback. Those fallbacks — the other response mode, a
+    doubled token budget, a strict-JSON nudge, plain judging after the tool
+    loop — exist for malformed answers and oversized requests; re-sent to a
+    saturated or unreachable endpoint each one fails the same way, and each
+    costs the SDK's own retries on top. Measured against a saturated broker:
+    ~27 rate-limited requests per batch in ~15 s, then no verdict anyway."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+
+
+# The kinds that mean the endpoint could not take the request at all. TIMEOUT
+# is deliberately absent: a judge request often times out because of its SIZE
+# (a tool-loop turn carrying tool results, a json_object request), and the
+# smaller plain request that follows is what used to recover the verdict.
+_TRANSPORT_KINDS = frozenset({
+    LLMErrorKind.RATE_LIMITED,
+    LLMErrorKind.CONNECTION_ERROR,
+    LLMErrorKind.SERVER_ERROR,
+})
+# A 408 is the server timing the request out, a 504 a gateway giving up on the
+# upstream: timeouts by status, whatever the body says.
+_TIMEOUT_STATUSES = frozenset({408, 504})
+# The shared classifier files ECONNRESET under timeout; a reset connection is
+# the endpoint dropping the request, not a slow answer.
+_CONN_RESET_RE = re.compile(r"ECONNRESET|connection reset|reset by peer", re.IGNORECASE)
+
+
+def _is_transport_failure(exc: Exception) -> bool:
+    """True when `exc` says the endpoint could not take the request: rate
+    limited, connection refused/reset/unreachable, or a 5xx other than the
+    broker's permanent codes (the shared classifier reads ``x_retriable:
+    false`` / ``provider_bad_request`` first, so those stay request-shape
+    faults). Never a timeout (see _TRANSPORT_KINDS).
+
+    The status decides before any reading of the text: the shared classifier
+    matches status-like digits anywhere in a message, and a 400 whose body
+    mentions "15000" is not a server error. A 4xx other than 429 is the
+    endpoint refusing THIS request — an unsupported ``response_format`` or
+    ``tools=`` — which a reshaped request may pass."""
+    if _status_rules_out_transport(getattr(exc, "status_code", None)):
+        return False
+    kind = classify_llm_error(exc)
+    if kind is LLMErrorKind.TIMEOUT:
+        return bool(_CONN_RESET_RE.search(str(exc)))
+    return kind in _TRANSPORT_KINDS
+
+
+def _status_rules_out_transport(status: object) -> bool:
+    """A timeout status, or a 4xx other than 429."""
+    if not isinstance(status, int):
+        return False
+    return status in _TIMEOUT_STATUSES or (400 <= status < 500 and status != 429)
+
+
+def _raise_if_transport(exc: Exception) -> None:
+    """Escalate a transport failure past the format fallbacks."""
+    if _is_transport_failure(exc):
+        raise _TransportFailure(classify_llm_error(exc).value) from exc
+
+
+def _log_transport_stop(batch_idx: int, exc: _TransportFailure) -> None:
+    """One line per batch ended by a transport failure. The call failure itself
+    was already logged where it happened; this says what it cost. A cancelled
+    run's in-flight failures are expected, so they stay at INFO."""
+    cancel = current_cancel_token()
+    level = logging.INFO if cancel is not None and cancel.cancelled() else logging.WARNING
+    log.log(
+        level,
+        "[validate.l5] batch %d: the LLM endpoint failed in transport (%s); "
+        "no fallback requests sent, the batch gets no verdict",
+        batch_idx, exc.kind,
+    )
 
 
 # `_broker_detail` moved to shared.llm.errors so the generate path — whose

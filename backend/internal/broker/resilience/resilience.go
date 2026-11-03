@@ -1,8 +1,8 @@
 // Package resilience defines the LLM-broker chaos-resilience wrappers
 // (feature 0064, §9): a per-(provider,model) circuit breaker
 // (per-replica-local for P0), a per-provider bulkhead (pool + concurrency
-// cap), and a retry budget capping the retried fraction. Wrappers compose
-// around a provider egress call.
+// cap + bounded admission queue), and a retry budget capping the retried
+// fraction. Wrappers compose around a provider egress call.
 
 package resilience
 
@@ -17,8 +17,9 @@ var (
 	// ErrCircuitOpen indicates the breaker for a (provider,model) is
 	// open; the caller should fail over (§9).
 	ErrCircuitOpen = errors.New("broker/resilience: circuit open")
-	// ErrBulkheadFull indicates the per-provider concurrency cap is
-	// reached; load-shed fast → rate_limited (§9).
+	// ErrBulkheadFull indicates the per-provider concurrency cap AND its
+	// admission queue are full, or a queued call outwaited MaxWait; the call
+	// is shed → rate_limited (§9).
 	ErrBulkheadFull = errors.New("broker/resilience: bulkhead full")
 	// ErrRetryBudgetExhausted indicates the retried-fraction cap was hit.
 	ErrRetryBudgetExhausted = errors.New("broker/resilience: retry budget exhausted")
@@ -51,9 +52,13 @@ type CircuitBreaker interface {
 }
 
 // Bulkhead caps concurrency per provider (§9), isolating one slow provider
-// from starving others.
+// from starving others. Calls over the cap queue for a slot (bounded in count
+// and in time) rather than being refused outright.
 type Bulkhead interface {
-	// Execute runs fn if a slot is available, else ErrBulkheadFull.
+	// Execute runs fn once a slot is available, waiting for one while the
+	// admission queue has room. It returns ctx's error when the caller leaves
+	// while queued, and ErrBulkheadFull when the queue is full or the wait
+	// outlasts MaxWait; fn runs on the caller's ctx, unshortened by the wait.
 	Execute(ctx context.Context, fn Call) error
 	// InFlight reports current occupancy.
 	InFlight() int

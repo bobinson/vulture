@@ -414,7 +414,10 @@ VULTURE_SECRET_SCAN_PROSE=true  # CWE agent: scan prose/data files for secrets. 
 # (gpt-4o) and the broker path, extra_args are splatted into openai's create, which accepts
 # neither the kwarg nor **kwargs — the broker's own client already sets max_retries=0.
 # SCOPE: this covers the GENERATE path only. The L5 judge builds its own client
-# (validate/llm_judge.py) and is NOT covered — it keeps the SDK default of 2 retries.
+# (validate/llm_judge.py) and keeps the SDK default of 2 retries, which follow the broker's
+# Retry-After. A rate-limited / refused / reset / 5xx judge request ends its batch after that
+# one request; only a malformed answer or a timeout walks the response-mode / token-budget /
+# strict-JSON fallbacks, so a rate-limited batch costs at most 3 HTTP attempts (was ~27).
 
 # Evidence quotation and anchor verification. The LLM tier now has to QUOTE
 # the source it accuses, and the quote is checked by whitespace-normalised string search in
@@ -445,7 +448,7 @@ VULTURE_LLM_QUOTE_NEAR_MISS_MIN=0.6  # Similarity at or above which a non-matchi
 
 VULTURE_FINDING_WINDOW_PARITY=true  # Records WHY a finding has no code window, as a zero-weight `window` check inside the existing `validation` blob: inherited / rollup_parent / no_code_location / unreadable / no_line / present / out_of_range (= the anchor stamp's `past_eof`: the file was read but the cited line is past its end, so the row gets no window and keeps no snippet).
 VULTURE_AGENT_MAX_AUDIT_SECONDS=900  # whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Keep this at or below VULTURE_AGENT_PROXY_TIMEOUT_SEC - VULTURE_LLM_CALL_TIMEOUT_SEC. 0 disables
-VULTURE_LLM_CALL_TIMEOUT_SEC=  # per-LLM-call/per-batch timeout so a hung model can't starve the between-batch cancel/deadline checks.
+VULTURE_LLM_CALL_TIMEOUT_SEC=  # per-LLM-call/per-batch timeout so a hung model can't starve the between-batch cancel/deadline checks. Through the broker the deadline starts when a request is admitted to a provider slot (16 per provider); a request queues for a slot for at most this long, and past that, or past 4 waiters per slot, the broker answers rate_limited with Retry-After; the caller's own timeout still includes the wait. Budget leases are sized from it, and a failed request releases its lease at once
 VULTURE_AUDIT_EXECUTOR_WORKERS=8  # dedicated audit-producer thread pool size = per-agent concurrent-audit cap
 VULTURE_AGENT_PORT=8001  # Service port (varies per agent)
 VULTURE_BACKEND_URL=http://backend:8080  # Backend URL for memory API

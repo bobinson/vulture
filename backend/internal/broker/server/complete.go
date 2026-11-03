@@ -24,8 +24,54 @@ const defaultProvider = "openai"
 // URL (never "") ensures the SSRF validator actually runs in the request path.
 const defaultOpenAIBaseURL = "https://api.openai.com/v1"
 
-// reserveTTL bounds a budget lease; it must be >= the call timeout (§8).
-const reserveTTL = 2 * time.Minute
+// fallbackLeaseTTL is the lease bound when the broker's per-call deadline is
+// disabled (CallTimeoutSec <= 0: unit tests, or an operator who set it to 0).
+// leaseTTL then has no deadline to size the lease from: each HTTP attempt is
+// still capped by the adapters' own client timeout (serve.defaultAdapters), but
+// the retrier may make several and that cap is not visible here, so the
+// historical fixed TTL stands. A call that outlives it is still charged at
+// reconcile (the swept-lease fallback); only the cap is unguarded meanwhile.
+const fallbackLeaseTTL = 2 * time.Minute
+
+// leaseSlack covers what follows the last provider call before reconcile
+// deletes the lease: decoding the answer and the reconcile transaction itself.
+const leaseSlack = time.Minute
+
+// releaseTimeout bounds handing a lease back. The release runs after the
+// caller may have gone, so it cannot borrow the request's cancellation.
+const releaseTimeout = 10 * time.Second
+
+// AdmissionWait is how long a request may queue for a provider slot before the
+// broker sheds it as rate_limited: one call timeout. The agents bound each
+// request by that timeout or a shorter one, so a request still queued past it
+// belongs to a caller that has already given up — the bound only stops a
+// stalled queue from holding it forever. Being a bound is also what lets the
+// budget lease be sized to outlive the queue (see leaseTTL). 0 (no call timeout
+// configured) leaves the wait bounded by the request context alone.
+func AdmissionWait(callTimeoutSec int) time.Duration {
+	if callTimeoutSec <= 0 {
+		return 0
+	}
+	return time.Duration(callTimeoutSec) * time.Second
+}
+
+// leaseTTL sizes a budget lease to outlive its request (§8): every candidate the
+// chain may try can queue up to AdmissionWait for a slot and then run up to the
+// call timeout. The fixed two-minute lease this replaces expired under a single
+// 439 s call, and the sweeper then returned a live reservation to the cap.
+func (s *Server) leaseTTL(candidates int) time.Duration {
+	perCandidate := AdmissionWait(s.deps.CallTimeoutSec) + s.callTimeout()
+	if perCandidate <= 0 {
+		return fallbackLeaseTTL
+	}
+	return time.Duration(candidates)*perCandidate + leaseSlack
+}
+
+// callTimeout is the per-call bound (§9/§16, VULTURE_LLM_CALL_TIMEOUT_SEC);
+// <= 0 when the guard is disabled.
+func (s *Server) callTimeout() time.Duration {
+	return time.Duration(s.deps.CallTimeoutSec) * time.Second
+}
 
 // statusClientClosedRequest is the "client closed request" status returned when
 // the CALLER abandoned the request. net/http has no constant for it; 499 is the
@@ -90,7 +136,7 @@ func (s *Server) runComplete(ctx context.Context, claims *token.Claims, req *com
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	resp, apiErr := s.tryCandidates(ctx, claims, req, cands, target)
+	resp, apiErr := s.callCandidates(ctx, claims, req, cands, target)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -128,6 +174,35 @@ func toolOutputWithinBounds(resp *provider.CompletionResponse) bool {
 		}
 	}
 	return true
+}
+
+// callCandidates runs the candidate chain and, when it fails — for any reason,
+// before or after a call reached a provider — hands the request's lease
+// straight back. Only a completion that came back is ever reconciled, so a
+// failed request's lease would be returned uncharged by the sweeper anyway;
+// holding it until then only blocks a capped budget, for the lease's whole TTL.
+func (s *Server) callCandidates(ctx context.Context, claims *token.Claims, req *completeRequest, cands []egress.Candidate, target *egress.PinnedTarget) (*provider.CompletionResponse, *apiError) {
+	resp, apiErr := s.tryCandidates(ctx, claims, req, cands, target)
+	if apiErr != nil {
+		s.releaseLease(ctx, req.RunID, req.RequestID)
+	}
+	return resp, apiErr
+}
+
+// releaseLease hands an unreconciled lease back when the budget store can
+// (budget.Releaser); otherwise the sweeper reclaims it after its TTL. A failed
+// release is logged and left to the sweeper, never surfaced: the request has
+// already failed for its own reason.
+func (s *Server) releaseLease(ctx context.Context, runID, requestID string) {
+	r, ok := s.deps.Budget.(budget.Releaser)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+	if err := r.Release(ctx, runID, requestID); err != nil {
+		log.Printf("broker: lease release failed run=%s request=%s (the sweeper will reclaim it): %v", runID, requestID, err)
+	}
 }
 
 // tryCandidates walks the resolved candidate chain (§7/§9): the primary
@@ -230,7 +305,7 @@ func (s *Server) prepare(ctx context.Context, claims *token.Claims, req *complet
 	if apiErr != nil {
 		return nil, nil, apiErr
 	}
-	if apiErr := s.reserve(ctx, req, primary.Model); apiErr != nil {
+	if apiErr := s.reserve(ctx, req, primary.Model, s.leaseTTL(len(cands))); apiErr != nil {
 		return nil, nil, apiErr
 	}
 	return cands, target, nil
@@ -320,15 +395,16 @@ func (s *Server) keyFor(provider string) string {
 	return s.deps.Keys.KeyFor(provider)
 }
 
-// reserve CAS-reserves budget for one call keyed by (run_id,request_id) (§8).
-func (s *Server) reserve(ctx context.Context, req *completeRequest, model string) *apiError {
+// reserve CAS-reserves budget for one call keyed by (run_id,request_id) (§8),
+// under a lease sized to outlive the request (leaseTTL).
+func (s *Server) reserve(ctx context.Context, req *completeRequest, model string, ttl time.Duration) *apiError {
 	_, err := s.deps.Budget.Reserve(ctx, budget.ReserveRequest{
 		RunID:         req.RunID,
 		RequestID:     req.RequestID,
 		TenantID:      req.TenantID,
 		EstimatedUSD:  provider.EstimateUSD(model, req.MaxTokens),
 		ModelSnapshot: model,
-		LeaseTTL:      reserveTTL,
+		LeaseTTL:      ttl,
 	})
 	if err != nil {
 		return mapBudgetErr(err)
@@ -338,22 +414,14 @@ func (s *Server) reserve(ctx context.Context, req *completeRequest, model string
 
 // callOnce runs ONE candidate's adapter call under the resilience stack,
 // returning the raw error so the fallback loop can classify failover (§9).
+// ctx is the CALLER's context: the broker's own per-call deadline is derived
+// inside guard, after admission, and keeping the two apart is what makes their
+// cancellations tellable apart (see attributeCtxErr).
 func (s *Server) callOnce(ctx context.Context, target *egress.PinnedTarget, req provider.CompletionRequest) (*provider.CompletionResponse, error) {
-	// Keep a handle on the CALLER's context BEFORE deriving our own deadline —
-	// that reference is what makes the two cancellation sources tellable apart
-	// (see attributeCtxErr).
-	caller := ctx
-	// §9/§16: bound the provider call so a hung/slow provider cannot hold the
-	// goroutine, bulkhead slot, and budget lease indefinitely.
-	if s.deps.CallTimeoutSec > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(s.deps.CallTimeoutSec)*time.Second)
-		defer cancel()
-	}
 	// The caller went away (possibly while an earlier candidate was in flight):
 	// do not enter the resilience stack at all — no bulkhead slot held, no
 	// breaker sample recorded, no provider dialed.
-	if err := callerAborted(caller); err != nil {
+	if err := callerAborted(ctx); err != nil {
 		return nil, err
 	}
 	adapter, creds, apiErr := s.adapterFor(target)
@@ -367,7 +435,7 @@ func (s *Server) callOnce(ctx context.Context, target *egress.PinnedTarget, req 
 		return e
 	})
 	if err != nil {
-		return nil, attributeCtxErr(caller, err)
+		return nil, attributeCtxErr(ctx, err)
 	}
 	if !usageOK(resp) {
 		return nil, provider.ErrUsageMissing
@@ -393,7 +461,7 @@ func callerAborted(ctx context.Context) error {
 //     provider_unavailable, and must not count toward the circuit breaker or a
 //     model cooldown. Becomes errCallerAborted.
 //   - the caller's context is fine → the only other clock in play is the
-//     broker's OWN CallTimeoutSec deadline (set above), i.e. the provider outran
+//     broker's OWN CallTimeoutSec deadline (set in guard), i.e. the provider outran
 //     the time we allow it. That is a genuine provider timeout, so the error is
 //     passed through unchanged and keeps its provider_unavailable (retriable)
 //     classification.
@@ -456,15 +524,34 @@ func (s *Server) logReconcileFailure(runID, requestID string, err error) {
 	log.Printf("broker: reconcile failed run=%s request=%s: %v", runID, requestID, err)
 }
 
-// guard composes the resilience wrappers around fn (§9): the PER-PROVIDER
-// bulkhead sheds fast, the PER-(provider,model) breaker fails over on open,
-// the retrier applies the retry budget.
+// guard composes the resilience wrappers around fn (§9). The PER-PROVIDER
+// bulkhead admits the call first, queueing for a slot when every one is busy;
+// only THEN does the broker's own per-call deadline start, so queueing never
+// eats into the time the BROKER allows the provider. It cannot do the same for
+// the caller: the caller's own timeout (an agent's batch wait and socket read
+// timeout, the judge's per-request timeout) runs from when it sent the request
+// and still includes the queue. Inside the slot the PER-(provider,model)
+// breaker fails over on open and the retrier applies the retry budget (its
+// backoff counts against the deadline). A caller that leaves while queued gets
+// its context error back without the breaker ever seeing it.
 func (s *Server) guard(ctx context.Context, providerKey, breakerKey string, fn func(context.Context) error) error {
-	return s.deps.Bulkheads.For(providerKey).Execute(ctx, func(c1 context.Context) error {
-		return s.deps.Breakers.For(breakerKey).Execute(c1, func(c2 context.Context) error {
-			return s.deps.Retriers.For(providerKey).Execute(c2, fn)
+	return s.deps.Bulkheads.For(providerKey).Execute(ctx, func(admitted context.Context) error {
+		callCtx, cancel := s.withCallDeadline(admitted)
+		defer cancel()
+		return s.deps.Breakers.For(breakerKey).Execute(callCtx, func(c context.Context) error {
+			return s.deps.Retriers.For(providerKey).Execute(c, fn)
 		})
 	})
+}
+
+// withCallDeadline bounds ONE admitted provider call (§9/§16) so a hung or slow
+// provider cannot hold the goroutine, bulkhead slot and budget lease
+// indefinitely. CallTimeoutSec <= 0 disables the guard (test default).
+func (s *Server) withCallDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.deps.CallTimeoutSec <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, s.callTimeout())
 }
 
 // usageOK enforces the usage-sanity floor: a clean completion must be present

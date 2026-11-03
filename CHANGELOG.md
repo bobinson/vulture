@@ -455,6 +455,24 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **The LLM broker queues a burst instead of refusing it, and the L5 judge stops multiplying
+  failures.** When every provider slot (16 per provider) was busy, the broker answered
+  `rate_limited` at once: an 8-agent scan against one local model received 2,552 such answers in
+  4.5 minutes while the model itself was idle, CWE's generate phase aborted after 9 of 10 batches,
+  and most L5 judge batches ended `judge_error`. A request now waits for a slot, in arrival order.
+  At most four waiters per slot queue, none longer than one `VULTURE_LLM_CALL_TIMEOUT_SEC`; beyond
+  either the broker still answers `rate_limited`, now with `Retry-After`. The broker's own per-call
+  deadline starts when a request is admitted, so queueing does not cut into the time the provider is
+  given (a caller's own timeout still includes the wait). A caller that leaves while queued gets
+  `request_aborted` on the completion and embedding endpoints, which the circuit breaker never
+  counts. Budget leases are sized from the call timeout to outlive the queue and the call, instead
+  of a fixed two minutes that a single default-length call outlived, and a failed request returns
+  its reservation at once: only a success is ever charged, so holding it only blocked a capped
+  budget. The judge no longer runs its response-mode, token-budget and strict-JSON fallbacks after a
+  transport failure (rate limited, connection refused, reset or unreachable, a 5xx other than the
+  broker's permanent codes); a malformed answer or a timeout still walks them, since a smaller
+  request is what recovers a verdict when size was the cause. A rate-limited judge batch now costs
+  at most the SDK's three attempts instead of about 27.
 - **CWE-209 judges a response helper by its definition, not its name.** A call such as
   `writeInternalError(w, r, op, err)` or `sendError(res, err)` was reported whenever an error
   reached any argument, because a helper defined in another file was judged by its name alone.
