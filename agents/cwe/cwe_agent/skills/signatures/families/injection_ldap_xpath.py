@@ -68,8 +68,11 @@ LDAP_SANITIZER = re.compile(
 
 # ── CWE-91: XPath injection ───────────────────────────────────────────
 # Sink: an XPath evaluate/compile/selectNodes call built with concat/interp.
+# A `compile` on a regular-expression module or class (`re`, `regex`, Java
+# `Pattern`) compiles a regex, not an XPath expression.
 _XPATH_CALL = (
-    r"\.(?:evaluate|compile|selectNodes|selectSingleNode|xpath)\s*\("
+    r"\.(?:evaluate|selectNodes|selectSingleNode|xpath)\s*\("
+    r"|(?<!\bre)(?<!\bregex)(?<!\bPattern)\.compile\s*\("
     r"|XPathExpression|createExpression\("
 )
 XPATH_SINK = re.compile(

@@ -251,17 +251,16 @@ are under the pruned directory, those are listed as not scanned
 
 ### Limitation: per-CWE caps in the catalog tier
 
-The catalog tier (`check_catalog_generic`: the keyword rows `cwe.catalog.cwe_<N>`,
-the signature rows `cwe.sig.*`, and the Class/Pillar rollups
-`cwe.catalog.cwe_<N>.rollup`) reports each CWE in at most
+The catalog tier's keyword rows (`cwe.catalog.cwe_<N>`) and Class/Pillar rollups
+(`cwe.catalog.cwe_<N>.rollup`) report each CWE in at most
 8 files per CWE per scanned tree, in path order, as the full audit does for the
 same set of files.
 Files outside the root, and each editor autorun tree, are scanned and counted
-separately. A file's catalog rows can therefore depend on which other files are
-passed with it: in a large change, a ninth file matching the same CWE gets no
-catalog row for it. The dedicated skills (injection, secrets, access control,
-...) have no such cap. Gate on them, and run a full audit for catalog coverage
-of a large change.
+separately. A file's keyword and rollup rows can therefore depend on which other
+files are passed with it: in a large change, a ninth file matching the same CWE
+gets no keyword row for it. The signature rows (`cwe.sig.*`) and the dedicated
+skills (injection, secrets, access control, ...) have no such cap. Gate on them,
+and run a full audit for keyword coverage of a large change.
 
 ### Limitation: it reads the working tree
 

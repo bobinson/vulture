@@ -86,6 +86,33 @@ def strip_strings_and_comments(line: str) -> str:
     return _COMMENT_RE.sub("", line)
 
 
+# A one-line string literal with its prefix (`f"..."`, `rb'...'`), for the strip
+# that keeps the code a literal interpolates. The body loop is possessive, so an
+# unclosed quote fails in one pass instead of backtracking.
+_PREFIXED_STRING_RE = re.compile(
+    r"(?P<prefix>\b[rRbBuUfF]{1,2})?(?P<q>['\"`])(?P<body>(?:\\.|(?!(?P=q))[^\\])*+)(?P=q)"
+)
+_TEMPLATE_FIELD_RE = re.compile(r"\$\{([^{}]*)\}")
+_FORMAT_FIELD_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def interpolated_code(line: str) -> str:
+    """``line`` with string text blanked and comments stripped, keeping the code
+    a literal interpolates: a template literal's ``${...}`` and an f-string's
+    ``{...}`` fields. What a log call logs is that code, not its message text."""
+    return _COMMENT_RE.sub("", _PREFIXED_STRING_RE.sub(_interpolations, line))
+
+
+def _interpolations(m: re.Match) -> str:
+    if m["q"] == "`":
+        fields = _TEMPLATE_FIELD_RE
+    elif "f" in (m["prefix"] or "").lower():
+        fields = _FORMAT_FIELD_RE
+    else:
+        return '""'
+    return " " + " ".join(fields.findall(m["body"])) + " "
+
+
 # A line whose purpose is to DISPLAY a value rather than execute it.
 #
 # The riskiest predicate here: log-injection detectors (CWE-117) exist precisely

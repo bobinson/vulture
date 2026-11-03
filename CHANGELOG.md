@@ -510,6 +510,19 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   (`src/**/*.py`). The judge
   now reads `.vscode/tasks.json`, as the walker does, and discover plugins no longer find nothing
   when the checkout sits under a directory named `build`.
+- **A CWE signature row is reported in every file it fires in.** The catalog tier reported each
+  CWE in at most 8 files, in path order, and its deterministic signatures (`cwe.sig.*`) shared that
+  cap. Files walked earlier therefore pushed real findings out: on juice-shop, the challenge
+  snippets under `data/static/codefixes/` displaced the NoSQL injections in
+  `routes/trackOrder.ts` and `routes/updateProductReviews.ts`, and adding an unrelated file could
+  make a reported row disappear. Signatures are no longer capped. The keyword rows and Class/Pillar
+  rollups keep the cap; it never fills on juice-shop, openclaw, pygoat or Vulture's own tree. The
+  cap was also hiding two imprecise signatures, now fixed. `cwe.sig.xpath` read every
+  `re.compile(...)` built by concatenation as an XPath query; a regex compile (`re`, `regex`, Java
+  `Pattern`) is no longer a sink. `cwe.sig.loginj` fired on any log call that interpolated a value
+  when a word such as `params`, `user` or `input` appeared within four lines; the logged code itself
+  must now use the untrusted value, directly or through a variable assigned from one on the lines
+  above, and words in the message text do not count.
 - **Directories named `data`, `bin`, `env` or `mocks` are scanned.** The walker pruned these names
   at any depth, so source under them (a Next.js `app/api/data/route.ts`, a Go `internal/data`
   package, `config/env/*.js`, `bin/*.sh`) was never read by any agent or tool. Projects name their

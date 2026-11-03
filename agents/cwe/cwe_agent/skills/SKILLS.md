@@ -401,6 +401,8 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
   - Severity derived from CWE catalog consequences (impact → severity mapping)
   - Skips Pillar/Class abstractions (too generic) and all 221 dedicated-skill CWEs (avoid duplication)
   - Limits to 15 findings per file to avoid noise
+  - A keyword-matched CWE, and a Class/Pillar rollup, is reported in at most 8 files per scan (`_MAX_FILES_PER_CWE`, in path order). The signature rows (`cwe.sig.*`) ride the same output but have no such cap: each is reported in every file it fires in, at most once per file
+  - Signature gates: `cwe.sig.xpath` does not treat a regular-expression compile (`re.compile`, `regex.compile`, Java `Pattern.compile`) as an XPath sink; `cwe.sig.loginj` (`source_flows`) needs the logged code itself to use an untrusted value, directly or through a variable assigned from one on the 4 lines above. A request word elsewhere in the window, or in the message text, is not a source
 - **CWE Coverage**: keyword-scannable catalog entries not covered by dedicated skills (metadata/context — fires ~0 on real code, NOT counted in N), nominally spanning:
   - Uncommon injection variants, race conditions, API misuse
   - Platform-specific weaknesses, deprecated function usage

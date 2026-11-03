@@ -150,7 +150,11 @@ _GENERIC_TOKENS = frozenset({
     "exception", "handling", "read", "write", "list",
 })
 
-# Max files a single CWE can be reported across before being capped.
+# Max files a keyword-matched CWE, or a Class/Pillar rollup, is reported in:
+# a noise bound for the keyword tier, in walk order. The signature tier has no
+# cap. A deterministic signature reports every file it fires in, as the
+# dedicated skills do: capped in walk order, files walked earlier (a folder of
+# challenge snippets) pushed real injections out of the report.
 _MAX_FILES_PER_CWE = 8
 
 # Language extension mapping for catalog language filtering
@@ -393,7 +397,6 @@ def _apply_signatures(
     lines: list[str],
     findings: list[dict],
     seen_per_file: dict[str, set[str]],
-    cwe_file_counts: dict[str, int],
 ) -> None:
     """Feature 0057 P4d (R11): run the deterministic SIGNATURE tier and route
     its findings through this same ``check_catalog_generic`` output.
@@ -404,7 +407,9 @@ def _apply_signatures(
     re-emitted by the keyword path and (b) participates in the parent/child
     rollup machinery exactly like a keyword hit. ``check_id`` stays the
     ``sig_id`` (deterministic, hierarchical); ``signature_status`` rides along
-    for the voter's candidate/trusted tiering (P4e).
+    for the voter's candidate/trusted tiering (P4e). Unlike a keyword hit, a
+    signature is not capped per CWE (``_MAX_FILES_PER_CWE``): every file it
+    fires in is reported.
 
     Two kill switches gate this tier (audit MEDIUM "ROLLBACK-killswitch"),
     mirroring ``VULTURE_CWE_DISABLE_LLM`` for the LLM phase:
@@ -423,12 +428,9 @@ def _apply_signatures(
         cwe_id = finding["category"].removeprefix("CWE-")
         if cwe_id in seen_per_file[file_key]:
             continue
-        if cwe_file_counts.get(cwe_id, 0) >= _MAX_FILES_PER_CWE:
-            continue
         finding["file_path"] = file_key
         findings.append(enrich_finding(finding, cwe_id))
         seen_per_file[file_key].add(cwe_id)
-        cwe_file_counts[cwe_id] = cwe_file_counts.get(cwe_id, 0) + 1
 
 
 def _analyze_file(
@@ -454,9 +456,7 @@ def _analyze_file(
     # owned CWEs register in seen_per_file before the keyword loop (which is
     # already suppressed from those CWEs via _DEDICATED_SKILL_CWES) and before
     # the rollup pass, sharing the single catalog output (R11).
-    _apply_signatures(
-        file_path, file_ext, lines, findings, seen_per_file, cwe_file_counts,
-    )
+    _apply_signatures(file_path, file_ext, lines, findings, seen_per_file)
     for line_num, line in enumerate(lines, start=1):
         if _COMMENT.match(line):
             continue
