@@ -12,6 +12,12 @@ from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._ast_head import AstAnswer, ast_spans, ast_walk, claim, regex_row
+from cwe_agent.skills._lexical import (
+    MAX_SCAN_CHARS,
+    enclosing_routine,
+    routine_header,
+    stripped_code,
+)
 from shared.ast.consume import FamilyRule
 from shared.tools.file_scanner import (
     CODE_EXTENSIONS,
@@ -1152,16 +1158,18 @@ _SPAN_CHILDREN = tuple(hit for _, hit in _CHILDREN)
 
 
 # Names BOUND on a line: `const { a, b } = ...`, `const x = ...`, `let y = ...`,
-# `x, y = ...`. Used to tie a downstream guard to THIS extraction.
+# `x, y = ...`, an annotated `body: Any = ...`. Used to tie a downstream guard to
+# THIS extraction.
 _BOUND_NAMES = re.compile(
     r"(?:const|let|var)\s*\{([^}]{0,200})\}"
     r"|(?:const|let|var)\s+([A-Za-z_$][\w$]{0,63})\s*="
-    r"|^\s*([A-Za-z_$][\w$]{0,63})\s*="
+    r"|^\s*([A-Za-z_$][\w$]{0,63})\s*(?::[^=\n]{1,80})?="
 )
 
 # A guard SHAPE: a falsy/emptiness check, a regex test, a validator call, or a
 # throw. Kept separate from SAFE_VALIDATION_PATTERNS, which is a vocabulary of
-# validation LIBRARIES rather than of guard syntax.
+# validation LIBRARIES rather than of guard syntax. The last four are the same
+# concepts in Python: a falsy test, a None test, a type test, and a raise.
 _GUARD_SHAPE = re.compile(
     r"if\s*\(\s*!"
     r"|if\s*\([^)]{0,120}(?:===|!==|==|!=)\s*(?:undefined|null|\"\"|'')"
@@ -1169,6 +1177,25 @@ _GUARD_SHAPE = re.compile(
     r"|\.(?:parse|safeParse|validateSync|validate)\s*\("
     r"|\bthrow\s+new\s+\w{0,48}(?:Error|Exception)"
     r"|\.(?:length|trim)\s*(?:===|!==|<|>|<=|>=)"
+    r"|\bif\s+not\s"
+    r"|\bis\s+(?:not\s+)?None\b"
+    r"|\bisinstance\s*\("
+    r"|\braise\b"
+)
+
+# `return [await] <source>` binds nothing: the routine hands the request value
+# to its caller, and the guard, if there is one, follows where a caller binds it.
+_RETURN_OPERAND = re.compile(r"^\s*+return\s++(?:await\s++)?")
+# The name a routine header declares: a keyword form (`def name(`, `function*
+# name(`, Go `func (r *T) Name(`), a function bound to a name (`name = (...) =>`,
+# `name: function (`), or a method (`async name(...) {`).
+_ROUTINE_NAME = re.compile(
+    r"\b(?:def|function|func|fn|fun|sub|proc)\b[\s*]{0,8}(?:\([^()]{0,80}\)\s{0,4})?"
+    r"([A-Za-z_$][\w$]{0,63})\s{0,4}[(<]"
+    r"|(?<![\w$])([A-Za-z_$][\w$]{0,63})\s{0,4}[:=]\s{0,4}(?:async\s{1,4})?"
+    r"(?:function\b|\(|[A-Za-z_$][\w$]{0,63}\s{0,4}=>)"
+    r"|^\s{0,80}(?:(?:public|private|protected|static|async|override)\s{1,4}){0,4}"
+    r"([A-Za-z_$][\w$]{0,63})\s{0,4}\("
 )
 
 # How far AHEAD to look for the guard. Measured: on one real target 80 of 102
@@ -1200,13 +1227,15 @@ def _guarded_downstream(lines: list[str], line_num: int, names: set[str]) -> boo
     """
     if not names:
         return False
-    end = min(len(lines), line_num + _GUARD_LOOKAHEAD)
-    for text in lines[line_num:end]:
-        if not _GUARD_SHAPE.search(text):
-            continue
-        if any(re.search(rf"\b{re.escape(n)}\b", text) for n in names):
-            return True
-    return False
+    named = re.compile(rf"\b(?:{'|'.join(map(re.escape, sorted(names)))})\b")
+    return any(_GUARD_SHAPE.search(code) and named.search(code) for code in _lookahead(lines, line_num))
+
+
+def _lookahead(lines: list[str], line_num: int) -> list[str]:
+    """The lines after ``line_num`` a guard may sit on, each read up to the shared
+    scan cap: a guard is never past it, and the guard shape's bounded scans cost
+    a constant per character."""
+    return [text[:MAX_SCAN_CHARS] for text in lines[line_num:line_num + _GUARD_LOOKAHEAD]]
 
 
 def _check_no_validation(
@@ -1214,39 +1243,74 @@ def _check_no_validation(
     findings: list[dict],
 ) -> None:
     """Check for CWE-20 improper input validation."""
-    # Check surrounding context for validation
-    context_start = max(0, line_num - 4)
-    context_end = min(len(lines), line_num + 3)
-    context = "\n".join(lines[context_start:context_end])
-    if SAFE_VALIDATION_PATTERNS.search(context):
+    # Every excuse is evaluated AFTER the pattern match: it is a per-candidate
+    # cost, and paying it first made every scanned line pay a context join, a
+    # regex findall and a 30-line window walk for a line no pattern reports.
+    if not _matches(NO_VALIDATION_PATTERNS, line) or _excused(lines, line_num, line):
         return
-    for pattern in NO_VALIDATION_PATTERNS:
-        if pattern.search(line):
-            # The commonest real shape is extract-then-guard, and the 7-line
-            # context above cannot see it. Look ahead for a guard that names a
-            # value bound HERE (see _guarded_downstream for why the name
-            # matters).
-            #
-            # Evaluated AFTER the pattern match, not before: this is a
-            # per-candidate cost, and hoisting it above the loop made every
-            # scanned line pay a regex findall plus a 30-line window walk to
-            # decide something no pattern was going to report anyway.
-            if _guarded_downstream(lines, line_num, _bound_names(line)):
-                return
-            finding = {
-                "severity": "medium",
-                "check_id": "cwe.input_validation.missing_validation",
-                "category": "CWE-20",
-                "title": "Missing input validation",
-                "description": f"User input used without validation at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Validate and sanitize all user input before processing",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "20"))
-            return
+    finding = {
+        "severity": "medium",
+        "check_id": "cwe.input_validation.missing_validation",
+        "category": "CWE-20",
+        "title": "Missing input validation",
+        "description": f"User input used without validation at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Validate and sanitize all user input before processing",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "20"))
+
+
+def _excused(lines: list[str], line_num: int, line: str) -> bool:
+    """The read is validated here or, when it is returned, at every caller."""
+    return _validated(lines, line_num, line) or (
+        _returns_input(line) and _callers_validate(lines, line_num)
+    )
+
+
+def _validated(lines: list[str], line_num: int, line: str) -> bool:
+    """The excuses for an input read at ``line_num``: validation vocabulary within
+    +/-3 lines, or a guard on a value bound HERE further down.
+
+    The commonest real shape is extract-then-guard, which the 7-line context
+    cannot see; the lookahead names the bound value (see _guarded_downstream).
+    """
+    context = "\n".join(lines[max(0, line_num - 4):line_num + 3])
+    return bool(SAFE_VALIDATION_PATTERNS.search(context)) or _guarded_downstream(
+        lines, line_num, _bound_names(line)
+    )
+
+
+def _returns_input(line: str) -> bool:
+    """True when the input read on ``line`` is the operand of a `return [await]`."""
+    operand = _RETURN_OPERAND.match(line)
+    return operand is not None and any(p.match(line, operand.end()) for p in NO_VALIDATION_PATTERNS)
+
+
+def _callers_validate(lines: list[str], line_num: int) -> bool:
+    """True when the routine returning input at ``line_num`` is called in this file
+    and every call site has an excuse. No call site in the file: nothing shows a
+    guard, so the read is still reported."""
+    name = _routine_name(enclosing_routine(lines, line_num))
+    sites = _call_sites(lines, name) if name else []
+    return bool(sites) and all(_validated(lines, k, lines[k - 1]) for k in sites)
+
+
+def _routine_name(header: str | None) -> str | None:
+    """The name ``header`` declares, else None."""
+    m = _ROUTINE_NAME.search(stripped_code(header)) if header else None
+    return next(filter(None, m.groups()), None) if m else None
+
+
+def _call_sites(lines: list[str], name: str) -> list[int]:
+    """1-based lines that call ``name`` in code, other than routine headers."""
+    call = re.compile(rf"(?<![\w$]){re.escape(name)}\s*\(")
+    return [
+        k for k, text in enumerate(lines, start=1)
+        if call.search(stripped_code(text)) and not routine_header(text)
+    ]
 
 
 def _check_file_upload(

@@ -100,6 +100,14 @@ OOB_READ_PATTERNS = [
 
 SAFE_BOUNDS_CHECK = re.compile(r"(?:len\(|\.(?:size|length|Len)\b|<\s*\w+\s*\)|sizeof)")
 
+# The index-arithmetic arm is C/C++ only. Go checks every index and slice bound
+# at run time: `buf[i+1]` past the end panics, it never reads adjacent memory, so
+# CWE-125 does not describe it. The tainted-index arms still read Go.
+_OOB_READ_ARMS = (
+    (OOB_READ_PATTERNS[0], _C_STRING_EXTENSIONS),
+    *((pattern, BUFFER_EXTENSIONS) for pattern in OOB_READ_PATTERNS[1:]),
+)
+
 # CWE-416: Use after free
 USE_AFTER_FREE_PATTERNS = [
     re.compile(r"\bfree\s*\(\s*(\w+)\s*\)"),
@@ -145,7 +153,8 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     C-string-only checks (`unbounded_copy`, `oob_write`,
     `use_after_free`) are gated to C/C++ extensions — running them on
     Go is wasted work since `strcpy` etc. cannot exist in Go.
-    OOB-read and integer-overflow patterns apply to both languages.
+    Integer-overflow patterns apply to both languages, and so do the
+    OOB-read arms other than index arithmetic.
     """
     lines = read_file_lines(file_path)
     if lines is None:
@@ -225,26 +234,31 @@ def _check_oob_read(
     Now matches only on indices likely derived from external input or
     arithmetic (see OOB_READ_PATTERNS doc). Pure `arr[i]` in a bounded
     loop body is no longer flagged — the previous behaviour produced
-    hundreds of FPs per audit on standard C/Go code.
+    hundreds of FPs per audit on standard C/Go code. Index arithmetic is
+    read in C/C++ only (see ``_OOB_READ_ARMS``).
     """
-    if SAFE_BOUNDS_CHECK.search(line):
+    if SAFE_BOUNDS_CHECK.search(line) or not _oob_read_shape(file_path.suffix.lower(), line):
         return
-    for pattern in OOB_READ_PATTERNS:
-        if pattern.search(line):
-            finding = {
-                "severity": "medium",
-                "check_id": "cwe.buffer.oob_read",
-                "category": "CWE-125",
-                "title": "Potential out-of-bounds read",
-                "description": f"Array access at line {line_num} uses a tainted or derived index without a bounds check",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Add bounds checking before array access",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "125"))
-            return
+    finding = {
+        "severity": "medium",
+        "check_id": "cwe.buffer.oob_read",
+        "category": "CWE-125",
+        "title": "Potential out-of-bounds read",
+        "description": f"Array access at line {line_num} uses a tainted or derived index without a bounds check",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Add bounds checking before array access",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "125"))
+
+
+def _oob_read_shape(suffix: str, line: str) -> bool:
+    """True when an OOB-read arm that applies to ``suffix`` matches ``line``."""
+    return any(
+        suffix in extensions and pattern.search(line) for pattern, extensions in _OOB_READ_ARMS
+    )
 
 
 def _check_use_after_free(

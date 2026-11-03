@@ -11,7 +11,11 @@ payload is sensitive).
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +32,56 @@ class CloudPattern:
     kind: str  # live / test / temp / id / info
     rule_id: str  # short stable name for the check_id suffix
     prefix_filter: str | None = None  # if set, file must contain this substring
+    # If set, False for a matched value whose own format shows no key made it
+    # (a fixture), which is then skipped like a placeholder.
+    issued: Callable[[str], bool] | None = None
+
+
+# ---------------------------------------------------------------------------
+# JWT format (RFC 7515 / 7518)
+# ---------------------------------------------------------------------------
+# A signed JWT is header.payload.signature, each base64url. The header is a JSON
+# object that names its `alg`; the signature is a MAC or a signature over the
+# first two segments: at least 16 bytes even truncated (HS256/192 halves), 32 or
+# more for every full JWS algorithm, and indistinguishable from random bytes. A
+# third segment that decodes to readable text, or to fewer bytes, was written by
+# hand; a header that is not a JSON object with `alg` is not a JOSE header.
+_JWS_MIN_SIGNATURE_BYTES = 16
+_PRINTABLE = frozenset(range(0x20, 0x7F))
+
+
+def _b64url(segment: str) -> bytes | None:
+    try:
+        return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _jose_header(segment: str) -> bool:
+    """True when ``segment`` decodes to a JSON object naming an `alg`."""
+    try:
+        header = json.loads(_b64url(segment) or b"")
+    except (ValueError, RecursionError):  # JSON/Unicode errors, or nesting past the limit
+        return False
+    return isinstance(header, dict) and "alg" in header
+
+
+def _keyed_signature(segment: str) -> bool:
+    """False for a signature segment that is too short or readable text.
+
+    A segment that does not decode (the match may stop before its last
+    character) cannot be judged, so it is kept.
+    """
+    raw = _b64url(segment)
+    if raw is None:
+        return True
+    return len(raw) >= _JWS_MIN_SIGNATURE_BYTES and not _PRINTABLE.issuperset(raw)
+
+
+def _jwt_issued(token: str) -> bool:
+    """True when ``token`` has the header and signature a key-signed JWS has."""
+    header, _payload, signature = token.split(".", 2)
+    return _jose_header(header) and _keyed_signature(signature)
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +353,8 @@ CLOUD_PATTERNS: list[CloudPattern] = [
 
     # ── JWT ──────────────────────────────────────────────────────────
     # JWTs aren't always secret (the public claim format is by design),
-    # but a checked-in JWT often signals a leaked session token.
+    # but a checked-in JWT often signals a leaked session token. One that
+    # no key signed (see _jwt_issued) is a fixture.
     CloudPattern(
         regex=re.compile(
             r"\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]{10,}\b"
@@ -308,6 +363,7 @@ CLOUD_PATTERNS: list[CloudPattern] = [
         cwe="200", severity="medium", kind="info",
         rule_id="jwt",
         prefix_filter="eyJ",
+        issued=_jwt_issued,
     ),
 
     # ── npm token ────────────────────────────────────────────────────
@@ -427,39 +483,62 @@ def find_cloud_secrets(file_path: Path, content: str) -> list[dict]:
         # so prefixes like "aws" match "AWS_SECRET_ACCESS_KEY".
         if pattern.prefix_filter and pattern.prefix_filter.lower() not in content_lower:
             continue
-
-        for match in pattern.regex.finditer(content):
-            # Find the line number containing the match start.
-            line_num = content.count("\n", 0, match.start()) + 1
-            line_text = lines[line_num - 1][1] if line_num <= len(lines) else ""
-
-            # Skip placeholder-shaped values via the line context.
-            if ctx.is_safe_context_line(line_text):
-                continue
-
-            findings.append({
-                "severity": pattern.severity,
-                "check_id": f"cwe.secret_scan.cloud.{pattern.rule_id}",
-                "category": f"CWE-{pattern.cwe}",
-                "title": f"Hardcoded {pattern.name}",
-                "description": (
-                    f"{pattern.name} pattern detected at line {line_num}. "
-                    f"Hardcoded credentials must never be committed to source."
-                ),
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": (
-                    "Remove the credential from source. Use a secrets manager "
-                    "(Vault, AWS Secrets Manager, GCP Secret Manager) or "
-                    "environment variables loaded at runtime. If this credential "
-                    "was committed publicly, rotate it immediately."
-                ),
-                "code_snippet": _redact(line_text, match.group(0)),
-                "kind": pattern.kind,
-            })
+        findings += _pattern_findings(pattern, file_path, content, lines)
 
     return findings
+
+
+def _pattern_findings(
+    pattern: CloudPattern, file_path: Path, content: str, lines: list[tuple[int, str]],
+) -> list[dict]:
+    """Every reportable match of one pattern in ``content``."""
+    findings: list[dict] = []
+    for match in pattern.regex.finditer(content):
+        # Find the line number containing the match start.
+        line_num = content.count("\n", 0, match.start()) + 1
+        line_text = _line_at(lines, line_num)
+
+        # Skip placeholder-shaped values via the line context, and
+        # values whose own format shows no key issued them.
+        if ctx.is_safe_context_line(line_text) or not _is_issued(pattern, match.group(0)):
+            continue
+        findings.append(_cloud_finding(pattern, file_path, line_num, line_text, match.group(0)))
+    return findings
+
+
+def _line_at(lines: list[tuple[int, str]], line_num: int) -> str:
+    return lines[line_num - 1][1] if line_num <= len(lines) else ""
+
+
+def _cloud_finding(
+    pattern: CloudPattern, file_path: Path, line_num: int, line_text: str, value: str,
+) -> dict:
+    return {
+        "severity": pattern.severity,
+        "check_id": f"cwe.secret_scan.cloud.{pattern.rule_id}",
+        "category": f"CWE-{pattern.cwe}",
+        "title": f"Hardcoded {pattern.name}",
+        "description": (
+            f"{pattern.name} pattern detected at line {line_num}. "
+            f"Hardcoded credentials must never be committed to source."
+        ),
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": (
+            "Remove the credential from source. Use a secrets manager "
+            "(Vault, AWS Secrets Manager, GCP Secret Manager) or "
+            "environment variables loaded at runtime. If this credential "
+            "was committed publicly, rotate it immediately."
+        ),
+        "code_snippet": _redact(line_text, value),
+        "kind": pattern.kind,
+    }
+
+
+def _is_issued(pattern: CloudPattern, value: str) -> bool:
+    """True unless ``pattern`` can tell from ``value`` alone that it is a fixture."""
+    return pattern.issued is None or pattern.issued(value)
 
 
 def _redact(line: str, secret: str) -> str:

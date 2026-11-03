@@ -247,6 +247,24 @@ def collect_scoped_body(
     return body
 
 
+def find_block_close(
+    lines: Sequence[str], start_idx: int, opener: str, closer: str, max_lines: int,
+) -> int:
+    """Return the (exclusive) line index where ``opener``/``closer`` balance.
+
+    One walker for every delimiter family: parens for a multi-line call (a
+    cookie call's attributes) and braces for a handler body (CWE-940). Caps at
+    ``max_lines`` so an unbalanced file can't make the whole file the "context".
+    """
+    depth = 0
+    end = min(start_idx + max_lines, len(lines))
+    for i in range(start_idx, end):
+        depth += lines[i].count(opener) - lines[i].count(closer)
+        if depth <= 0 and i > start_idx:
+            return i + 1
+    return end
+
+
 def check_context(content: str, context_patterns: list[re.Pattern]) -> bool:  # type: ignore[type-arg]
     """Return True if any context pattern matches in file content.
 

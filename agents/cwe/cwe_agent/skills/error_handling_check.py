@@ -18,11 +18,14 @@ from shared.tools.file_scanner import (
 )
 from shared.tools.snippet import extract_snippet
 
-# CWE-252: Unchecked return value
+# CWE-252: Unchecked return value. Both shapes are Go's blank identifier, so they
+# are read in Go files only: in Python `_` is an ordinary name, and a failure is
+# raised, not returned.
 UNCHECKED_RETURN_GO = [
     re.compile(r"^\s*_\s*,\s*_\s*=\s*\w+"),  # Go: _, _ = func()
     re.compile(r"^\s*_\s*=\s*\w+\.\w+\("),  # Go: _ = obj.Method()
 ]
+_UNCHECKED_RETURN_SUFFIX = ".go"
 GO_ERR_ASSIGN = re.compile(r",\s*err\s*:?=\s*\w+")
 GO_ERR_CHECK = re.compile(r"if\s+err\s*!=\s*nil")
 
@@ -277,12 +280,15 @@ IMPORT_LINE = re.compile(r"^\s*(?:import|from|package)\s+")
 # One table, one emitter (DRY). Every `category` is a LITERAL: the coverage
 # extractor reads `"category": "CWE-N"` out of this source, so an f-string
 # would detect the weakness while the attestation denied it.
+# Every row is an EXPLICIT discard: assigning to `_` is a decision written in the
+# code, not a result nobody looked at, so it is reported low. The check id and
+# title are unchanged so an existing row keeps its lineage identity.
 _UNCHECKED_RETURN_SPEC = {
-    "severity": "high",
+    "severity": "low",
     "check_id": "cwe.error_handling.unchecked_return",
     "category": "CWE-252",
     "title": "Unchecked return value",
-    "detail": "Return value discarded",
+    "detail": "Error explicitly discarded by assignment to the blank identifier",
     "recommendation": "Check all return values, especially errors",
 }
 _GENERIC_TYPE_CATCH_SPEC = {
@@ -491,8 +497,9 @@ def _check_unchecked_return(
     file_path: Path, line: str, line_num: int, lines: list[str],
     findings: list[dict],
 ) -> None:
-    """Check for unchecked return values (CWE-252)."""
-    if _matches_any(UNCHECKED_RETURN_GO, line):
+    """Check for a Go result discarded with the blank identifier (CWE-252)."""
+    go_file = file_path.suffix.lower() == _UNCHECKED_RETURN_SUFFIX
+    if go_file and _matches_any(UNCHECKED_RETURN_GO, line):
         findings.append(
             _finding_from_spec(file_path, line_num, lines, _UNCHECKED_RETURN_SPEC)
         )

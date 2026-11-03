@@ -51,7 +51,7 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **CWE Coverage**:
   - **CWE-120** Buffer Overflow: `strcpy`, `strcat`, `sprintf`, `gets`, `wcscpy`, `wcscat`
   - **CWE-787** Out-of-Bounds Write: `memcpy`/`memmove` without `sizeof` validation
-  - **CWE-125** Out-of-Bounds Read: Array access without bounds checking (excludes constant indices)
+  - **CWE-125** Out-of-Bounds Read: Array access without bounds checking (excludes constant indices). Index arithmetic (`a[i + 1]`) is reported for C/C++ only: Go bounds-checks every index, so a bad one panics rather than reading out of bounds. The tainted-index arms apply to Go too.
   - **CWE-416** Use After Free: `free()` followed by pointer dereference within 5 lines
   - **CWE-190** Integer Overflow: Unchecked integer arithmetic, `malloc(count * size)` without overflow guard
 - **Severity**: critical (CWE-120, CWE-416), high (CWE-787, CWE-190), medium (CWE-125)
@@ -87,7 +87,7 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **Purpose**: Detects input validation failures including path traversal, XXE, CSRF, and deserialization
 - **CWE Coverage**:
   - **CWE-22** Path Traversal: `os.path.join` with user input, `../` patterns
-  - **CWE-20** Improper Input Validation: Direct request data access without validation
+  - **CWE-20** Improper Input Validation: Direct request data access without validation. A request value a routine returns (`return [await] <source>`) is judged at that routine's same-file call sites: reported when there is none, or any is unguarded. Guards are the JavaScript shapes plus Python `if not x`, `x is None`, `isinstance(` and `raise` naming the value.
   - **CWE-434** Unrestricted File Upload: File upload without type/size validation
   - **CWE-611** XML External Entity (XXE): XML parsing without entity restriction
   - **CWE-352** Cross-Site Request Forgery (CSRF): POST/PUT/DELETE without CSRF token
@@ -116,8 +116,8 @@ Analyzes source code for Common Weakness Enumeration (CWE v4.19.1) vulnerabiliti
 - **Purpose**: Detects resource management issues including leaks, null dereferences, and unbounded allocations
 - **CWE Coverage**:
   - **CWE-400** Uncontrolled Resource Consumption: Infinite loops
-  - **CWE-404** Improper Resource Shutdown: Open without close/defer/with
-  - **CWE-476** NULL Pointer Dereference: No nil check after call
+  - **CWE-404** Improper Resource Shutdown: Open without cleanup (`.close()`/`.Close()`, `defer`, `with open`) in the rest of its routine. When the result is bound to a name, the cleanup must name it: closing another handle does not count.
+  - **CWE-476** NULL Pointer Dereference: No nil check after call. Uses are read only inside the block that binds the value, and a comma-ok result tested before the first use (`if !ok {` that exits, `!ok ||`, `ok &&`) is a guard.
   - **CWE-770** Allocation Without Limits (`cwe.resource.unbounded_alloc`, feature 0101): **input-driven, uncapped accumulation**. A row needs all four of:
     - **sink**: a receiver that grows. Growth verbs by prefix (`append`, `push`, `add`, `extend`, `insert`, `put`, `enqueue`, `emplace`, `unshift`, so `push_back`, `AddRange`, `extend_from_slice` count; `concat` returns a new array and does not); self-growth operators (`x = append(x, …)`, `x = realloc(x, …)`, `x = x + …`, `x[] =`, `array_push(x, …)`, `x << v`, PHP `x .= v`, and `x += v` only when `x` was initialised empty in the routine or the right side is a pull); `.write*(` only on a receiver bound in the routine to a growable in-memory buffer (constructor words buffer/builder, or bytes/string/memory/array with io/stream; a `var buf bytes.Buffer` declaration counts). Scalars are excluded: a value-returning `x = x.add(…)`, a receiver initialised to a number or an atomic/counter type, counter-named receivers (count, total, sum, …), and an `add` whose arguments are only numeric (`wg.Add(1)`, `metrics.add(len(d))`) unless the receiver is first bound in the routine to an empty literal or a collection constructor. A `put` keyed by a literal, or an `insert` keyed by a string literal, with two or more arguments, is an overwrite;
     - **lifetime**: the receiver is not declared, or reset to something that does not contain itself, inside the driving loop (`batch = []` after a flush, a self-slice `buf = buf[:0]`);
@@ -199,11 +199,11 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
 - **Function**: `check_error_handling(source_path: str) -> dict`
 - **Purpose**: Detects error handling weaknesses
 - **CWE Coverage**:
-  - **CWE-252** Unchecked Return Value: Go `_, _ = func()` patterns
+  - **CWE-252** Unchecked Return Value: Go files only, `_ = f()` / `_, _ = f()`: an error explicitly discarded, reported low with that wording (check id and title unchanged)
   - **CWE-755** Improper Exception Handling: Bare `except:`, `catch(...)`
   - **CWE-390** Error Without Action: Empty catch/except blocks
   - **CWE-754** Unchecked I/O: I/O without error handling
-- **Severity**: high (CWE-252, CWE-755, CWE-390), medium (CWE-754)
+- **Severity**: high (CWE-755, CWE-390), medium (CWE-754), low (CWE-252)
 
 ## concurrency_check
 
@@ -211,7 +211,7 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
 - **Purpose**: Detects concurrency vulnerabilities
 - **CWE Coverage**:
   - **CWE-367** TOCTOU: File check followed by file use
-  - **CWE-662** Improper Synchronization: Threading without locks
+  - **CWE-662** Improper Synchronization: Threading without a lock within ±20 lines; a goroutine whose own body does a channel send/receive, `close(ch)` or a WaitGroup `Done`/`Wait` is synchronised
   - **CWE-833** Deadlock: Nested lock acquisition
 - **Severity**: high (CWE-367, CWE-662, CWE-833)
 
@@ -227,6 +227,8 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
   - **CWE-113** CRLF Injection: User input in HTTP headers without CR/LF stripping
 - **Severity**: high (CWE-601, CWE-384, CWE-113), medium (CWE-1004, CWE-614)
 - **Detection**: Context-aware scanning with safe-pattern exclusions (URL validation, HttpOnly/Secure flags, session regeneration)
+  - **Cookie attributes** (CWE-1004 / 614 / 1275): judged on the cookie call from two lines before it through its closing paren, plus the definition of each routine of the same file that builds the cookie: one called in the call's own arguments (`http.SetCookie(w, sessionCookie(r, token))` reads `sessionCookie`'s body) or one whose result a variable passed there was assigned on the three lines above (`c := strictCookie(t)`). The enclosing routine, its neighbours and other calls nearby add nothing, and a name defined more than once, or not in the file, adds nothing. An attribute assigned a value other than a false literal (`Secure: https`, `setHttpOnly(true)`) is set, and `HttpOnly: false` is not; a SameSite enum member naming Strict or Lax (`http.SameSiteStrictMode`, `SameSiteMode.Lax`) is Strict or Lax, None and Default are not. The predicates and the context are shared with the ASVS agent's V3.3.1/3.3.2/3.3.4 (`shared.tools.cookie_attributes`).
+  - **CRLF (CWE-113)**: the header call's last name segment is `header` (`header(`, `setHeader(`, `addHeader(`, `add_header(`, `w.Header().Set(`; not `hasCSRFHeader(`) and an input word (`request`, `req`, `params`, `input`, `user`) is a whole segment of a name (`req.query`, `userInput`, `user_id`), never part of one (`requestid.Header`, `requests`).
 
 ## configuration_check
 
@@ -268,6 +270,7 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
   - **CWE-1321** Prototype Pollution: Object.assign/merge/spread from user input without validation
 - **Severity**: high (CWE-134, CWE-704, CWE-1321), medium (CWE-681, CWE-838)
 - **Detection**: Pattern matching with safe-alternative exclusions (schema validators, Object.create(null), UTF-8)
+  - **CWE-681**: a conversion is a call of the type itself, so its name starts at a word boundary (`fmt.Sprint(err)` and `keys.isdisjoint(found)` are not conversions). A sized cast (`int32(n)`, `uint8(b)`) and an untrusted value (`int(request...)`, `parseInt(req.query.n)`) are reported in any language. Go's bare `int(x)` is reported only when `x` is declared before it in the same function (or earlier on its line) with a wider type (`int64`, `uint64`, `uint`, `uintptr`, `float32`, `float64`); Python's `int(x)` has no width to lose.
 
 ## memory_safety_check
 
@@ -318,6 +321,7 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
 - **Detection**: Binary `/` or `%` operator whose RHS is a non-literal identifier (`\b(\w+)\s*([/%])\s*([A-Za-z_]\w*)\b`).
 - **Safe-context** (5-line preceding window): `(?:!=|==|>|<)\s*0`, `is_zero`, `isZero`, `.is_zero(`, `assert ... (!=|==) 0`.
 - **Language-gate**: `.c .h .cpp .cc .cxx .hpp .go .rs` (undefined-behavior languages; Python / JS / Java raise a well-defined exception instead).
+- **Compile-time**: a division in a Go `const` (or a `const (` group), a Rust `const`/`static NAME:` item or a C/C++ `constexpr` variable is evaluated by the compiler and not reported; a `var` group, a `const fn` and a `constexpr` function are.
 - **Severity**: medium.
 
 ## dangerous_function_check
@@ -342,7 +346,7 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
   - `cwe_778`: a Python `except` or a brace-language `catch` handler whose scoped body neither logs, propagates nor delegates, and is not excused as a hand-off (below).
   - `go_swallow`: a Go `if err != nil` block that neither logs nor propagates the error. Unchanged by 0101.
   - `promise_swallow`: `.catch(() => …)` that discards a rejection.
-  - `auth_decision`: a line naming an authentication or authorization outcome (`unauthorized`, `forbidden`, `access_denied`, `token_expired`, …) with no log call within 4 lines.
+  - `auth_decision`: a line naming an authentication or authorization outcome (`unauthorized`, `forbidden`, `access_denied`, `token_expired`, …) with no log call within 4 lines. A line inside a docstring, a multi-line string or a block comment is prose, not a decision (not applied to JavaScript, TypeScript and Ruby, whose regex literals such as `/\/*$/` the whole-file mask cannot tell from a comment opener).
   - extra-language shapes: `rescue_swallow`, `rescue_modifier` (Ruby); `swift_catch`, `swift_try_optional`; `scala_case_arm`, `scala_try_tooption`; `kt_run_catching`; `php_suppress`, `php_empty_error_handler`; `rust_if_let_err`, `rust_match_err`, `rust_ok_discard`.
   - `aggregate.<language>`: opt-in hygiene row (`metric_version=0101.1`).
 - **Excused without further analysis**: a log call (`log.`, `logger.`, `logging.`, `LOG.warn`, `_logger.LogError`, `console.error/warn/info/log`, `slog.`, `tracing::`, `syslog`, `System.err.println`, `printStackTrace`, `error_log`, `fmt.Fprintf(os.Stderr`, …), propagation (`raise`, `throw`, a rethrow, `?`), or delegation to an error-handler-named routine with an error-named argument.
@@ -416,7 +420,7 @@ Every row is `high` and blocks the offline pre-commit gate, so every row needs t
   - `substrate` — Polkadot.js encrypted keystore JSON (3-fact match), Substrate dev-account URIs (`//Alice` etc., path-aware severity: `medium` in production, `info` in tests), `subkey` CLI output, SS58 addresses (Substrate / Polkadot / Kusama).
   - `config_files` — JSON / YAML / `.env` config-file extraction. Applies cloud-provider patterns to extracted values + flags suspicious key names with literal values.
   - `entropy` — Shannon-entropy fallback (off by default, `VULTURE_SECRET_SCAN_ENTROPY=true` to enable). Catches generic high-entropy strings without identifier context.
-- **CWE Coverage**: **CWE-798** Use of Hard-coded Credentials, **CWE-321** Use of Hard-coded Cryptographic Key, **CWE-200** Information Exposure (for JWTs and SS58 addresses).
+- **CWE Coverage**: **CWE-798** Use of Hard-coded Credentials, **CWE-321** Use of Hard-coded Cryptographic Key, **CWE-200** Information Exposure (for JWTs and SS58 addresses). A JWT whose header is not a JSON object naming `alg`, or whose signature decodes to fewer than 16 bytes or to printable text, is a fixture, not a token signed with a real key (RFC 7515/7518), and is skipped.
 - **File-extension override**: Per-skill extension list adds `.pem`, `.key`, `.crt`, `.cer`, `.pfx`, `.ovpn`, `.kdbx`, `.env`, `.envrc`. Other skills' extension lists unchanged.
 - **Severity calibration**: PEM unencrypted private keys → critical; encrypted PEMs / encrypted keystores → high; live cloud-provider keys → critical; test variants (`sk_test_*`) → low; informational shapes (Substrate dev URIs in test paths, public addresses) → info. Test/fixture path detection downgrades severity by one level.
 - **Redaction**: Findings never include the raw secret bytes — `code_snippet` shows the first 4-6 chars then `[REDACTED]`. PEM blocks are rendered as `BEGIN…[REDACTED — N lines of key material]…END`.

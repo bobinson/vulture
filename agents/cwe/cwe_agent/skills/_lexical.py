@@ -43,6 +43,7 @@ look-back bound.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from functools import lru_cache
 
 from cwe_agent.skills._args import mask_literals
@@ -254,6 +255,24 @@ def stripped_code(line: str) -> str:
 def indent_width(text: str) -> int:
     """Leading whitespace characters of ``text``."""
     return len(text) - len(text.lstrip())
+
+
+# How far above a line the header of the routine holding it is looked for.
+_ROUTINE_LOOKBACK = 200
+
+
+def _enclosing_lines(lines: list[str], line_num: int) -> Iterable[str]:
+    """Each code line above ``line_num`` that opens a block holding it, innermost first."""
+    level = indent_width(lines[line_num - 1])
+    for text in reversed(lines[max(0, line_num - 1 - _ROUTINE_LOOKBACK):line_num - 1]):
+        if stripped_code(text).strip() and indent_width(text) < level:
+            level = indent_width(text)
+            yield text
+
+
+def enclosing_routine(lines: list[str], line_num: int) -> str | None:
+    """The header line of the routine holding line ``line_num`` (by indentation), else None."""
+    return next(filter(routine_header, _enclosing_lines(lines, line_num)), None)
 
 
 # A parameter's name is its LAST identifier before the first `:` or `=` (a type

@@ -473,6 +473,45 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
   broker's permanent codes); a malformed answer or a timeout still walks them, since a smaller
   request is what recovers a verdict when size was the cause. A rate-limited judge batch now costs
   at most the SDK's three attempts instead of about 27.
+- **Line rules read the code they report on.** On a self-scan: CWE-681 matched `int(` inside
+  `fmt.Sprint(err)` and `keys.isdisjoint(found)`, and reported Python's `int(x)`, which has no width
+  to lose; a conversion is now a call of the type itself, and Go's bare `int(x)` is reported only
+  for an operand declared wider in the same function. CWE-113 read `requestid.Header` and
+  `*http.Request` as user input; header calls and input words are now whole name segments
+  (`userInput` and `req.query` still count). CWE-1004 / 614 / 1275 and ASVS V3.3.1 / 3.3.2 / 3.3.4
+  judged `http.SetCookie(w, sessionCookie(r, token))` on its line although `sessionCookie` sets every
+  attribute, and ASVS judged every multi-line cookie call on its first line: both agents now read
+  the call through its closing paren plus the routine of the same file that builds the cookie,
+  called in the call's arguments or assigned to a variable it passes
+  (`shared.tools.cookie_attributes`). An attribute set from a value counts (`Secure: https`),
+  `HttpOnly: false` no longer counts as set, and a SameSite enum member naming Strict or Lax
+  (`http.SameSiteStrictMode`) is Strict or Lax; a regex whose `re.compile(` call opens on the line
+  above (`r"Set-Cookie:..."`) is a pattern, not a cookie call. CWE-778 `auth_decision` reported the word
+  "forbidden" inside docstrings; multi-line strings and block comments are now masked first
+  (outside JavaScript, TypeScript and Ruby, whose regex literals the mask cannot read).
+- **Seven more CWE rules judge the construct they report.** CWE-404: a `.close()` / `.Close()` could
+  never count as cleanup (a `\b` after `)`); a close of the opened handle anywhere in its routine
+  now does, a close of another handle does not. CWE-476: the dereference search stops at the end of
+  the value's block, and a comma-ok result tested before use (`if !ok {` that exits, `!ok ||`,
+  `ok &&`) is a guard. CWE-662: a channel operation or WaitGroup `Done` / `Wait` in a goroutine's own
+  body is synchronisation. CWE-252: Go files only, and an explicit `_ =` discard is reported low as
+  explicitly discarded (check id and title unchanged). CWE-125: index arithmetic is reported for
+  C/C++ only, as Go checks every index. CWE-369: a division in a Go `const`, a Rust `const` /
+  `static` item or a C++ `constexpr` variable is evaluated by the compiler. CWE-200: a JWT whose
+  header names no `alg`, or whose signature is under 16 bytes or readable text, is a fixture. CWE-20:
+  a returned request value is judged at its same-file call sites, and Python guards (`if not x`,
+  `x is None`, `isinstance(`, `raise`) count.
+- **Chaos and SOC2 rules match the construct, not the word.** Chaos `blast_radius`: the `global`
+  trigger is the statement (Python `global x`, PHP `global $x`), not the word in comments, strings
+  or `npm install --global`, and isolation evidence that excuses a finding counts only in code.
+  SOC2 `change_management`: rsync and scp are reported only as commands that copy to another host
+  (`user@host:path`, `host:`, `$HOST:path`, `"$USER"@"$HOST":`, `${{ secrets.H }}:`, `{{ host }}:`,
+  `%s@%s:`, `host + ":" + dest`, `rsync://`, `host::module`, `-e ssh`), at low when the destination
+  is one variable; `mkdirSync`, local staging copies, comments and echoed instructions are not
+  deployments, and a remote `scp` no longer needs the word "deploy". SOC2 `access_logging`: a
+  `create_` / `update_` / `delete_` definition counts only with an actor in scope, a parameter
+  (user, request, session, account, caller, …) or one its body uses (`self.request.user`,
+  `current_user`), and is reported at its `def` line instead of line 1.
 - **CWE-209 judges a response helper by its definition, not its name.** A call such as
   `writeInternalError(w, r, op, err)` or `sendError(res, err)` was reported whenever an error
   reached any argument, because a helper defined in another file was judged by its name alone.

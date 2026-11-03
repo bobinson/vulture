@@ -21,6 +21,13 @@ SAFE_IMPORT_LINE = re.compile(r"^\s*(?:from|import)\s")
 COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
 
 
+def opens_pattern_definition(line: str) -> bool:
+    """A scanner pattern definition left open on ``line`` (``re.compile(`` whose
+    argument continues below): the next line is the pattern, not code. The
+    per-line ``SCANNER_DEF_LINE`` test sees only the line holding the call."""
+    return bool(SCANNER_DEF_LINE.search(line)) and line.count("(") > line.count(")")
+
+
 def is_non_code_line(line: str, imports: re.Pattern[str]) -> bool:
     """A line a skill's per-line checks skip: a comment, an import by the skill's own
     ``imports`` shape, or a scanner's own pattern definition."""
