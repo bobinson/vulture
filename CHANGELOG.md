@@ -455,15 +455,29 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **CWE-209 judges a response helper by its definition, not its name.** A call such as
+  `writeInternalError(w, r, op, err)` or `sendError(res, err)` was reported whenever an error
+  reached any argument, because a helper defined in another file was judged by its name alone.
+  A helper that logs the error and answers a fixed message, the remediation CWE-209 asks for,
+  was therefore reported at every call, and a codebase that adopted it saw no fewer rows (this
+  repository's own: 43 of its 44). The helper's only definition in the scanned tree now decides,
+  as a same-file definition already did: the call is reported when the error reaches a parameter
+  that definition writes to the response, and a call inside it to another routine of its file
+  writes only what that routine writes. A leak inside the helper is reported there, once. Where
+  no single definition matches the call by position (none, several, keyword arguments, a
+  variadic tail), the name decides as before. No other target changed (juice-shop, openclaw,
+  pygoat: identical rows).
 - **Nested `.gitignore` files are honoured, as git honours them.** The scanner read only the
   `.gitignore` at the scanned root, so a package's own `.gitignore`, or a cache directory that
   ignores itself (Hypothesis writes `*` into `.hypothesis/.gitignore`), was audited as source.
   Every `.gitignore` in the tree now applies to the paths beneath its own directory, with its
   patterns relative to that directory and the deepest matching file deciding; one inside an
-  ignored directory is never read. The skills' walks, the pattern search, the judge's file
-  tools, the offline gate and the staged copy a container plugin scans all apply them, and a
-  directory they prune is reported in `pruned_dirs`, so lineage reads it as not looked at rather
-  than fixed. The root `.vultureignore` still overrides every `.gitignore`, and
+  ignored directory is never read. The shared file walk the skills scan through, the pattern
+  search, the judge's file tools, the offline gate and the staged copy a container plugin scans
+  all apply them, and a directory they prune is reported in `pruned_dirs`, so lineage reads it
+  as not looked at rather than fixed. Checks that look for particular files by name with their
+  own walk (several SSDF practices, the discover plugins) and the LLM's file tools do not apply
+  ignore rules yet. The root `.vultureignore` still overrides every `.gitignore`, and
   `VULTURE_IGNORE_GITIGNORE=true` now disables nested ones too. Two smaller changes come with it:
   an ignore file is no longer read through a symlink (git does not follow one either), and an
   edited ignore file applies to the agent's next audit instead of after a restart.

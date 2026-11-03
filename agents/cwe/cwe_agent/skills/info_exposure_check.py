@@ -2773,6 +2773,8 @@ _CONVERSIONS = "|".join(map(re.escape, sorted(_TRAILING_TRANSFORMS)))
 # H: a Go parameter entry, name before type (`msg string`, `w http.ResponseWriter`); match only
 _NAME_BEFORE_TYPE = re.compile(r"\A\s{0,4}([A-Za-z_]\w{0,63})\s{1,4}[\[\]*.\w]")
 _ENTRY_NAME_TAIL = re.compile(r"\s{0,2}(?::(?!:)|=(?![=>]))")   # match only: after a key / keyword name
+# A call argument passed by name (`status=500`, `message: text`): it binds no position. Match only
+_NAMED_ARGUMENT = re.compile(r"\A[A-Za-z_]\w{0,63}\s{0,2}(?::(?!:)|=(?![=>]))")
 _FUNC_WORD = re.compile(r"(?<![\w$.])func\s")
 _CONTENT_TEST = re.compile(
     r"(?:\.|\b)(?:includes|startsWith|endsWith|match|test|contains|Contains|HasPrefix|HasSuffix|"
@@ -2854,7 +2856,7 @@ class _ScanCtx:
 
     __slots__ = ("emitted", "path", "file_path", "lines", "findings", "owner", "active", "prose", "suffix",
                  "frames", "seen_params", "in_prov", "x2_off", "x_guard", "defs", "indexed", "deferred",
-                 "complete", "other", "templates", "detached", "rows", "rows_rf")
+                 "complete", "other", "sole", "templates", "detached", "rows", "rows_rf")
 
     def __init__(self, complete: bool, detached: bool = False) -> None:
         self.emitted: set[tuple[str, int]] = set()
@@ -2871,6 +2873,7 @@ class _ScanCtx:
         self.deferred: dict[str, tuple[Path, Sequence[str]]] = {}
         self.complete = complete
         self.other: dict[str, tuple[str, ...]] = {}
+        self.sole: dict[str, str | None] = {}       # helper name -> the one file declaring it
         self.templates: dict[tuple, re.Pattern[str]] = {}
         self.rows: frozenset[int] = frozenset()    # `_arm_rows` of the current file, while
         self.rows_rf: object = _NO_RF               # the thread's arm file is this object
@@ -4578,7 +4581,7 @@ def _peer_write_arguments(lines: Sequence[str], r: int, raw: str) -> Iterator[st
 def _writer_writes(lines: Sequence[str], r: int, code: str, masked: str) -> Iterator[str]:
     calls = list(_WRITER_ARG_CALL.finditer(masked))
     if calls and not _declares_routine(code, lines, r):
-        yield from filter(None, (_writer_write(code, masked, m) for m in calls))
+        yield from filter(None, (_writer_write(lines, code, masked, m) for m in calls))
 
 
 def _declares_routine(code: str, lines: Sequence[str], r: int) -> bool:
@@ -4586,10 +4589,10 @@ def _declares_routine(code: str, lines: Sequence[str], r: int) -> bool:
     return routine_header(code) and _is_declaration(code, lines, r)
 
 
-def _writer_write(code: str, masked: str, m: re.Match[str]) -> str | None:
+def _writer_write(lines: Sequence[str], code: str, masked: str, m: re.Match[str]) -> str | None:
     """`verb(w, args...)`: the arguments after the writer; `f(w).verb(args)`: the chained call's."""
     if m.group(2) == ",":
-        return _after_writer(code, masked.index("(", m.end(1))) if _is_writer_verb(m.group(1)) else None
+        return _after_writer(lines, code, masked, m) if _is_writer_verb(m.group(1)) else None
     return _chained_write(code, _CHAINED_CALL.match(masked, m.end()))
 
 
@@ -4599,8 +4602,59 @@ def _chained_write(code: str, chained: re.Match[str] | None) -> str | None:
     return call_argument_text(code, chained.end() - 1, MAX_SCAN_CHARS)
 
 
-def _after_writer(code: str, open_at: int) -> str:
-    return " , ".join(_split_top(call_argument_text(code, open_at, MAX_SCAN_CHARS))[1:])
+def _after_writer(lines: Sequence[str], code: str, masked: str, m: re.Match[str]) -> str:
+    """The arguments after the writer; of a bare call to a routine this file defines, only those its
+    own body writes: a sanitising helper is not a sink (`writeLoggedError(w, r, 500, "internal
+    error", op, err)` writes the literal, not `err`)."""
+    args = _split_top(call_argument_text(code, masked.index("(", m.end(1)), MAX_SCAN_CHARS))
+    written = _matched_writes(lines, m.group(1), args) if _bare_name(masked, m.start(1)) else None
+    return " , ".join(args[1:] if written is None else _written_args(args, written))
+
+
+def _bare_name(masked: str, start: int) -> bool:
+    """No member access before the name: `http.Error(w, …)` is not a routine this file defines."""
+    return start == 0 or masked[start - 1] not in ".>:"
+
+
+def _written_args(args: list[str], written: set[int]) -> list[str]:
+    return [args[i] for i in sorted(written) if 0 < i < len(args)]
+
+
+def _matched_writes(lines: Sequence[str], name: str, args: list[str]) -> set[int] | None:
+    """The parameters the definition of ``name`` in ``lines`` writes to a peer, when a call passing
+    ``args`` binds them by position; None when there is no such definition, or the call names or
+    spreads an argument or passes more than the definition declares (a variadic tail)."""
+    return _helper_writes(lines, name) if _binds_by_position(lines, name, args) else None
+
+
+def _binds_by_position(lines: Sequence[str], name: str, args: list[str]) -> bool:
+    arity = _helper_arity(lines, name)
+    return arity is not None and len(args) <= arity and not any(map(_unbound, args))
+
+
+def _unbound(arg: str) -> bool:
+    """Passed by name (`status=500`, `message: text`) or spread (`*rest`, `...rest`, `rest...`):
+    it binds no one position."""
+    text = arg.strip()
+    return _NAMED_ARGUMENT.match(text) is not None or text.startswith(("*", "...")) or text.endswith("...")
+
+
+def _helper_arity(lines: Sequence[str], name: str) -> int | None:
+    """How many parameters every definition of ``name`` in ``lines`` declares; None when none does
+    or two disagree (memoised per file)."""
+    return _memo(_r3_file(lines), ("arity", name), lambda: _helper_arity_uncached(lines, name))
+
+
+def _helper_arity_uncached(lines: Sequence[str], name: str) -> int | None:
+    counts = set(_param_counts(lines, name))
+    return counts.pop() if len(counts) == 1 else None
+
+
+def _param_counts(lines: Sequence[str], name: str) -> Iterator[int]:
+    for r in _def_rows(lines, name):
+        params = _helper_params(_header_text(lines, r), name)
+        if params is not None:
+            yield len(params)
 
 
 def _is_writer_verb(name: str) -> bool:
@@ -5366,8 +5420,59 @@ def _responder_arm(lines: Sequence[str], line_num: int, call: _BareCall) -> str 
 
 def _response_helper_arm(lines: Sequence[str], line_num: int, call: _BareCall) -> str | None:
     if call.first in _PEER_ARGS and _is_response_helper(call.name):
-        return "C1" if _response_helper_discloses(lines, line_num, call) else None
+        return _response_helper_verdict(lines, line_num, call)
     return None
+
+
+def _response_helper_verdict(lines: Sequence[str], line_num: int, call: _BareCall) -> str | None:
+    """C1 by name, unless the helper's only definition in the tree decides it as H decides a
+    same-file one: a helper that logs the error and answers a literal is not a sink."""
+    if not _response_helper_discloses(lines, line_num, call) or _awaits_tree_index():
+        return None
+    return _definition_verdict(lines, line_num, call, _tree_helper_writes(call))
+
+
+def _definition_verdict(lines: Sequence[str], line_num: int, call: _BareCall, written: set[int] | None) -> str | None:
+    """C1 when no definition decides; else H, on the parameters it writes."""
+    if written is None:
+        return "C1"
+    return "H" if _helper_call_discloses(lines, line_num, call, written) else None
+
+
+def _awaits_tree_index() -> bool:
+    """While the walk is still indexing, the helper's definition may be in a file not read yet:
+    the file is judged again after the walk, and the line is not reported now (an emitted row is
+    never withdrawn)."""
+    ctx = _active_scan()
+    if ctx.complete:
+        return False
+    _defer_current(ctx)
+    return True
+
+
+def _tree_helper_writes(call: _BareCall) -> set[int] | None:
+    """The parameters the helper's only definition in the tree writes, when it binds the call's
+    arguments by position; None when there is no such definition."""
+    other = _sole_definition(call.name)
+    if other is None or len(_def_rows(other, call.name)) != 1:
+        return None
+    return _matched_writes(other, call.name, call.parts)
+
+
+def _sole_definition(name: str) -> Sequence[str] | None:
+    """The lines of the one scanned file that declares ``name``. The tree index also lists a file
+    that only calls ``name`` at the start of a line (a Go statement), so each listed file's own
+    index decides (once per name and scan)."""
+    ctx = _active_scan()
+    if name not in ctx.sole:
+        ctx.sole[name] = _sole_declaring_path(ctx, name)
+    path = ctx.sole[name]
+    return None if path is None else _other_lines(ctx, path)
+
+
+def _sole_declaring_path(ctx: _ScanCtx, name: str) -> str | None:
+    declaring = [p for p in ctx.defs.get(name, ()) if _def_rows(_other_lines(ctx, p), name)]
+    return declaring[0] if len(declaring) == 1 else None
 
 
 def _helper_call_discloses(lines: Sequence[str], line_num: int, call: _BareCall, written: set[int]) -> bool:
