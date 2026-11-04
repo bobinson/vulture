@@ -109,12 +109,21 @@ def _slice(text: str, spans: list[tuple[int, int]]) -> list[str]:
     return [] if slots == [""] else slots
 
 
+def arg_spans(text: str, start: int) -> list[tuple[int, int]] | None:
+    """``(begin, end)`` offsets of each positional argument of the call whose ``(``
+    sits at ``start``; the last ``end`` is the closing bracket.
+
+    None when the call does not close within ``text``.
+    """
+    return _arg_spans(mask_literals(text), start)
+
+
 def split_call_args(text: str, start: int) -> list[str] | None:
     """Positional argument slots of the call whose ``(`` sits at ``start``.
 
     None when the call does not close within ``text``.
     """
-    spans = _arg_spans(mask_literals(text), start)
+    spans = arg_spans(text, start)
     return None if spans is None else _slice(text, spans)
 
 
@@ -125,7 +134,7 @@ def call_span_end(text: str, start: int) -> int | None:
     "this call ends the expression" instead of approximating it with ``[^)]*``,
     which cannot span a nested call.
     """
-    spans = _arg_spans(mask_literals(text), start)
+    spans = arg_spans(text, start)
     return None if spans is None else spans[-1][1]
 
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import bisect
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -13,8 +14,11 @@ from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._ast_head import AstAnswer, ast_answers, ast_owns, ast_walk, regex_row
+from cwe_agent.skills._lexical import MAX_SCAN_CHARS
+from cwe_agent.skills._literal_provenance import constant_sprintf
 from shared.ast.consume import FamilyRule, command_param
 from shared.language import detect_language
+from shared.tools.code_view import CodeView
 from shared.tools.file_scanner import (
     SAFE_IMPORT_LINE,
     is_generated_file,
@@ -53,6 +57,20 @@ _JS_TEMPLATE_LOOSE = re.compile(
     r"`[^`]{0,400}" + _SQL_VERB + r"[^`]{0,400}\$\{", re.IGNORECASE
 )
 
+
+
+def _sql_clause(select_list: str, update_target: str) -> str:
+    """A DML verb with its mandatory clause, adjacent: real SQL shape. ``select_list``
+    spans SELECT to FROM, ``update_target`` is UPDATE's table."""
+    return (
+        rf"(?:SELECT{select_list}FROM\s"
+        r"|INSERT\s+INTO\s"
+        rf"|UPDATE\s+{update_target}\s+SET\s"
+        r"|DELETE\s+FROM\s"
+        r"|DROP\s+(?:TABLE|DATABASE)\s)"
+    )
+
+
 # The BIGRAM clause: a verb with its mandatory clause, adjacent. Real SQL shape,
 # strong evidence. Quantifiers stay bounded so the alternation is ReDoS-safe.
 _JS_TEMPLATE_BIGRAM = re.compile(
@@ -60,14 +78,56 @@ _JS_TEMPLATE_BIGRAM = re.compile(
     # Identifier class accepts quoted/bracketed columns: the audited true
     # positive `SELECT "passwordHash" FROM users ...` failed the bigram without
     # the quote and bracket characters here.
-    r"(?:SELECT\s+[\w*.,\s()\"'\[\]]{1,120}?\s+FROM\s"
-    r"|INSERT\s+INTO\s"
-    r"|UPDATE\s+[\w.\"'\[\]]{1,60}\s+SET\s"
-    r"|DELETE\s+FROM\s"
-    r"|DROP\s+(?:TABLE|DATABASE)\s)"
-    r"[^`]{0,400}\$\{",
+    + _sql_clause(r"\s+[\w*.,\s()\"'\[\]]{1,120}?\s+", r"[\w.\"'\[\]]{1,60}")
+    + r"[^`]{0,400}\$\{",
     re.IGNORECASE,
 )
+
+# The same shape for the formatting clauses (f-string, `.format`, `%`, Sprintf),
+# where the interpolation may BE the column list or the table (`SELECT {cols}
+# FROM`, `UPDATE %s SET`). Read from source text, so a keyword may also sit next
+# to a quote (`f"FROM {t}"`) or an escape (`"\nSELECT`, `*\tFROM`). SQL keywords,
+# not English, widen a statement: `INSERT OR REPLACE INTO`, `INSERT IGNORE INTO`,
+# an aliased `UPDATE users u SET`, a multi-table `DELETE t1 FROM t1 JOIN ...`, a
+# `SELECT nextval(...)` with no FROM, a subquery `FROM(`.
+_SQL_EDGE = r"(?:(?<![A-Za-z0-9_$])|(?<=\\[nrt]))"
+_SQL_GAP = r"(?:\s|\\[nrt])"
+_SQL_STATEMENT = re.compile(
+    _SQL_EDGE + r"(?:INSERT(?:\s+(?:OR\s+\w{1,10}|IGNORE|LOW_PRIORITY|DELAYED|HIGH_PRIORITY))?\s+INTO\s"
+    r"|UPDATE\s+\S{1,60}(?:\s+(?:AS\s+)?\w{1,30})?\s+SET\s"
+    r"|DELETE\s+FROM\s"
+    r"|DELETE\s+\w{1,30}(?:\s*,\s*\w{1,30}){0,4}\s+FROM\s+\S{1,60}\s+(?:JOIN|INNER|LEFT|RIGHT|CROSS|USING)\s"
+    r"|SELECT\s+[\w.]{1,60}\s*\("
+    r"|DROP\s+(?:TABLE|DATABASE)\s)",
+    re.IGNORECASE,
+)
+_SELECT = re.compile(_SQL_EDGE + r"SELECT" + _SQL_GAP, re.IGNORECASE)
+_FROM = re.compile(_SQL_EDGE + r"FROM(?:\s|\\[nrt]|\()", re.IGNORECASE)
+_STATEMENT_END = re.compile(";")
+# How far a FROM may follow its SELECT: a column list, not a paragraph.
+_SELECT_SPAN = 400
+
+
+def _sql_shape(text: str) -> bool:
+    """SQL statement shape anywhere in ``text``."""
+    return _SQL_STATEMENT.search(text) is not None or _select_from(text)
+
+
+def _select_from(text: str) -> bool:
+    """A SELECT whose next FROM follows within ``_SELECT_SPAN`` characters, in the
+    same statement. Each SELECT is paired with the first FROM after it, so the
+    test is linear however many of either the text holds."""
+    froms = [m.start() for m in _FROM.finditer(text)]
+    ends = [m.start() for m in _STATEMENT_END.finditer(text)]
+    return any(_select_reaches_from(sel.end(), froms, ends) for sel in _SELECT.finditer(text)) if froms else False
+
+
+def _select_reaches_from(at: int, froms: list[int], ends: list[int]) -> bool:
+    nxt = bisect.bisect_left(froms, at)
+    if nxt == len(froms) or froms[nxt] - at > _SELECT_SPAN:
+        return False
+    end = bisect.bisect_left(ends, at)
+    return end == len(ends) or ends[end] > froms[nxt]
 
 # A SQL EXECUTION sink — the thing that turns a string into a query. Kept
 # generous on purpose: a missing sink here costs a true positive.
@@ -85,6 +145,21 @@ _SQL_SINK = re.compile(
     r"|\b\w*(?:runSql|batchInsert)\s*\(|\b(?:rawQuery|knex\.raw"
     r"|sequelize\.query|cursor\.execute)\s*\("
     r"|\$(?:queryRaw|executeRaw)\b",
+    re.IGNORECASE,
+)
+
+# The formatting clauses run in every language, so their sinks are named by what
+# a call does, not by one library: a member call (`.`, `->`, `::`) whose name
+# starts query/execute/exec/prepare (`stmt.executeQuery(`, `$db->prepare(`,
+# `cmd.ExecuteReader(`), a query factory (`em.createQuery(`), a function named
+# `<api>_query` / `_exec` / `_execute` / `_prepare` (`mysqli_query(`,
+# `pg_query(`), and a command object built from the string (`new SqlCommand(`).
+# Without these a PHP or Java statement split over two lines lost its row.
+_SQL_CALL_SINK = re.compile(
+    r"(?:\.|->|::)\s*(?:query|execute|exec|prepare)\w*\s*\("
+    r"|\bcreate\w{0,20}Query\s*\("
+    r"|\b\w*?_(?:query|exec|execute|prepare)\s*\("
+    r"|\bnew\s+\w{0,30}Command\s*\(",
     re.IGNORECASE,
 )
 
@@ -150,7 +225,7 @@ def _strip_comments_only(line: str) -> str:
     return _COMMENT_ONLY.sub("", line)
 
 
-def _sql_escaper_nearby(lines: list[str], line_num: int) -> bool:
+def _sql_escaper_nearby(lines: Sequence[str], line_num: int) -> bool:
     """True if a SQL-escaping helper appears within the measured radius.
 
     ``line_num`` is 1-based, matching the callers in this module. Comments and
@@ -165,7 +240,7 @@ def _sql_escaper_nearby(lines: list[str], line_num: int) -> bool:
     )
 
 
-def _sql_evidence(line: str, line_num: int, lines: list[str]) -> bool:
+def _sql_evidence(line: str, line_num: int, lines: Sequence[str]) -> bool:
     """Whether a LOOSE-clause match has evidence it is really SQL.
 
     Tier 1 — a SQL execution sink WITHIN the window, looking both BACKWARD and
@@ -189,8 +264,8 @@ def _sql_evidence(line: str, line_num: int, lines: list[str]) -> bool:
     the verb+clause bigram (real SQL shape) on the line itself.
     """
     start = max(0, line_num - 1 - _SQL_EVIDENCE_LOOKBACK)
-    veto_window = "\n".join(lines[start:line_num])
-    sink_window = "\n".join(lines[start:line_num + _SQL_EVIDENCE_LOOKBACK])
+    veto_window = _joined(lines, start, line_num)
+    sink_window = _joined(lines, start, line_num + _SQL_EVIDENCE_LOOKBACK)
 
     if _SQL_SINK.search(sink_window):
         return True
@@ -199,25 +274,100 @@ def _sql_evidence(line: str, line_num: int, lines: list[str]) -> bool:
     return bool(_JS_TEMPLATE_BIGRAM.search(line))
 
 
+def _joined(lines: Sequence[str], start: int, end: int, sep: str = "\n") -> str:
+    """``lines[start:end]`` joined, each cut at MAX_SCAN_CHARS so a window's cost is
+    bounded whatever the file."""
+    return sep.join(text[:MAX_SCAN_CHARS] for text in lines[max(0, start):end])
+
+
+def _template_evidence(m: re.Match[str], line_num: int, lines: Sequence[str]) -> bool:
+    return _sql_evidence(m.string, line_num, lines)
+
+
+def _format_evidence(m: re.Match[str], line_num: int, lines: Sequence[str]) -> bool:
+    """Whether a formatting-clause match (f-string, `.format`, `%`, Sprintf) is SQL.
+
+    These clauses match a DML-looking word in any formatted string, and the word
+    is ordinary English: `f"DELETE {ep} returned 200"` reported an HTTP method,
+    `"Unable to delete volume '%s'" % v` a log message. Evidence it is SQL:
+
+      * a SQL sink within the window either side (as for template literals, with
+        the language-neutral sinks of `_SQL_CALL_SINK`);
+      * else, unless the string is handed to a display consumer opened BEFORE it
+        on the line (`log.info(f"DELETE ...")`), SQL shape on the line or a
+        neighbour (a statement split over adjacent literals).
+
+    Unlike the template-literal gate a consumer elsewhere vetoes nothing:
+    `log.info("deleting %s", uid)` on the line above `q = f"DELETE FROM users
+    ..."`, or `log.info(q)` after it on the same line, is a log call next to a
+    query, not the query's consumer.
+    """
+    start = line_num - 1 - _SQL_EVIDENCE_LOOKBACK
+    sinks = _joined(lines, start, line_num + _SQL_EVIDENCE_LOOKBACK)
+    if _SQL_SINK.search(sinks) or _SQL_CALL_SINK.search(sinks):
+        return True
+    if _NON_SQL_CONSUMER.search(m.string, 0, _sql_text_start(m)):
+        return False
+    return _sql_shape(_joined(lines, line_num - 2, line_num + 1, " "))
+
+
+_DML_WORD = re.compile(r"SELECT|INSERT|UPDATE|DELETE|DROP", re.IGNORECASE)
+
+
+def _sql_text_start(m: re.Match[str]) -> int:
+    """Where the SQL-looking text of a clause match begins: its first DML word."""
+    verb = _DML_WORD.search(m.string, m.start(), m.end())
+    return m.start() if verb is None else verb.start()
+
+
+# The formatting clauses. Each matches a DML-looking word plus a formatting
+# construct, which English messages satisfy as readily as SQL does, so each needs
+# `_format_evidence` (see `_SQL_EVIDENCE`).
+# A verb in one literal and a `{` after it in the same literal. The first verb is
+# committed to (atomic), then the literal is read to its first `{` or quote: the
+# same matches as `f"[^"]*VERB[^"]*\{`, without re-splitting the literal per verb.
+_FSTRING_DQ = re.compile(r'f"(?>[^"]*?(?:SELECT|INSERT|UPDATE|DELETE|DROP))[^"{]*+\{')
+_FSTRING_SQ = re.compile(r"f'(?>[^']*?(?:SELECT|INSERT|UPDATE|DELETE|DROP))[^'{]*+\{")
+_FORMAT_ARG = re.compile(r"\.format\([^)]*(?:SELECT|INSERT|UPDATE|DELETE)", re.IGNORECASE)
+# `.format(` called ON the SQL text: the first DML verb on the line, then the
+# first `.format(` after it whose receiver (up to two blanks back) is a literal or
+# a `)`; `_formats_a_literal` then checks that receiver and the later `.format(`
+# calls. `.format(` is case-sensitive: Go's `time.Now().Format(` is another
+# method. It was `VERB\s.*\.format\(` under IGNORECASE, which fired on a
+# parameterised Go UPDATE whose argument list formats a timestamp, and on JS
+# `moment().format(`. Anchored, atomic and possessive: one linear pass.
+_RECEIVER_END = r"(?:(?<=[\"')])|(?<=[\"')][ \t])|(?<=[\"')][ \t]{2}))"
+_NOT_RECEIVER_END = r"(?<![\"')])(?<![\"')][ \t])(?<![\"')][ \t]{2})"
+_FORMAT_ON_LITERAL = re.compile(
+    r"^(?>[^\n]*?" + _SQL_EDGE + r"(?:SELECT|INSERT|UPDATE|DELETE)\s)"
+    r"(?:[^.\n]++|\.(?!(?-i:format)\()|" + _NOT_RECEIVER_END + r"\.(?-i:format)\()*+"
+    + _RECEIVER_END + r"\.(?-i:format)\(",
+    re.IGNORECASE,
+)
+# Likewise `"...VERB..." % x`, committed to the first verb of the literal.
+_PERCENT_FORMAT = re.compile(
+    r'["\'](?>[^"\']*?(?:SELECT|INSERT|UPDATE|DELETE|DROP))[^"\']*+["\']\s*+%\s*+[\w(]',
+    re.IGNORECASE,
+)
+_SPRINTF_SQL = re.compile(r'Sprintf\([^)]*(?:SELECT|INSERT|UPDATE|DELETE)', re.IGNORECASE)
+
 SQL_INJECTION_PATTERNS = [
     # f-strings
-    re.compile(r'f"[^"]*(?:SELECT|INSERT|UPDATE|DELETE|DROP)[^"]*\{'),
-    re.compile(r"f'[^']*(?:SELECT|INSERT|UPDATE|DELETE|DROP)[^']*\{"),
+    _FSTRING_DQ,
+    _FSTRING_SQ,
     # .format(...)
-    re.compile(r"\.format\([^)]*(?:SELECT|INSERT|UPDATE|DELETE)", re.IGNORECASE),
-    re.compile(r"(?:SELECT|INSERT|UPDATE|DELETE)\s.*\.format\(", re.IGNORECASE),
+    _FORMAT_ARG,
+    _FORMAT_ON_LITERAL,
     # %-formatting against a SQL string. Two complementary shapes
     # because the SQL keyword can be in either operand of `%`.
-    re.compile(
-        r'["\'][^"\']*(?:SELECT|INSERT|UPDATE|DELETE|DROP)[^"\']*["\']\s*%\s*[\w(]',
-        re.IGNORECASE,
-    ),
+    _PERCENT_FORMAT,
+    # The left-hand name is the evidence (`query = "..." % x`): no gate.
     re.compile(
         r'(?:query|sql|stmt)\s*=\s*["\'][^"\']*(?:SELECT|INSERT|UPDATE|DELETE)[^"\']*["\']\s*%',
         re.IGNORECASE,
     ),
     # Sprintf (Go)
-    re.compile(r'Sprintf\([^)]*(?:SELECT|INSERT|UPDATE|DELETE)', re.IGNORECASE),
+    _SPRINTF_SQL,
     # Concatenation
     re.compile(r'(?:query|sql|stmt)\s*=\s*["\'][^"\']*(?:SELECT|INSERT|UPDATE|DELETE)[^"\']*["\']\s*\+',
                re.IGNORECASE),
@@ -250,6 +400,21 @@ SQL_INJECTION_PATTERNS = [
     # so the alternation stays ReDoS-safe on adversarial input.
     _JS_TEMPLATE_BIGRAM,
 ]
+
+_JS_TEMPLATE_CLAUSES = (_JS_TEMPLATE_LOOSE, _JS_TEMPLATE_BIGRAM)
+
+# The clauses that need evidence their string is SQL, and the evidence each takes.
+# The clauses not listed carry their own: an assignment to `query`/`sql`/`stmt`.
+# The one-release rollback `VULTURE_CWE_SQL_REQUIRE_SINK=false` lifts every gate
+# here; it does not restore the `.format(` receiver or the Go constant-Sprintf
+# test, which define what the clauses match.
+_SQL_EVIDENCE: dict[re.Pattern[str], Callable[[re.Match[str], int, Sequence[str]], bool]] = {
+    **dict.fromkeys(_JS_TEMPLATE_CLAUSES, _template_evidence),
+    **dict.fromkeys(
+        (_FSTRING_DQ, _FSTRING_SQ, _FORMAT_ARG, _FORMAT_ON_LITERAL, _PERCENT_FORMAT, _SPRINTF_SQL),
+        _format_evidence,
+    ),
+}
 
 # CWE-78: OS Command Injection
 #
@@ -564,7 +729,7 @@ _DECL_LOOKAHEAD = 3
 
 
 def _is_declaration_not_call(
-    line: str, match_end: int, line_num: int, lines: list[str],
+    line: str, match_end: int, line_num: int, lines: Sequence[str],
 ) -> bool:
     """Whether the matched `eval(`/`exec(` opens a SIGNATURE, not a call.
 
@@ -576,7 +741,7 @@ def _is_declaration_not_call(
     if not candidates[0].strip():
         for nxt in lines[line_num:line_num + _DECL_LOOKAHEAD]:
             if nxt.strip():
-                candidates.append(nxt)
+                candidates.append(nxt[:MAX_SCAN_CHARS])
                 break
     for text in candidates:
         # Prefilter: both shapes require a colon. Cheaper than either regex
@@ -638,6 +803,9 @@ class _FileCtx(NamedTuple):
     server_ctx: bool
     ssrf: AstAnswer
     command: AstAnswer
+    # The file's code view, masked on first use (by CWE-89's Go Sprintf test or a
+    # CWE-94 candidate) and dropped with this context.
+    code: CodeView
 
 
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
@@ -667,14 +835,16 @@ def _file_context(file_path: Path, lines: list[str]) -> _FileCtx:
     text = "\n".join(lines)
     server_ctx = bool(_SERVER_CONTEXT.search(text))
     ssrf, command = ast_answers(file_path, text, (_RULE_918, _RULE_78), server_ctx)
+    lang = detect_language(str(file_path))
     return _FileCtx(
         file_path=file_path,
         lines=lines,
-        lang=detect_language(str(file_path)),
+        lang=lang,
         ext=file_path.suffix.lower(),
         server_ctx=server_ctx,
         ssrf=ssrf,
         command=command,
+        code=CodeView(lines, lang),
     )
 
 
@@ -687,10 +857,10 @@ def _scanned(line: str) -> bool:
 def _check_line(ctx: _FileCtx, line: str, line_num: int, findings: list[dict]) -> None:
     """Every per-line check, in the order their rows are emitted."""
     file_path, lines = ctx.file_path, ctx.lines
-    _check_sql(file_path, line, line_num, lines, findings)
+    _check_sql(file_path, line, line_num, lines, findings, ctx.code)
     _check_command(ctx, line, line_num, findings)
     _check_xss(file_path, line, line_num, lines, findings)
-    _check_code_injection(file_path, line, line_num, lines, findings)
+    _check_code_injection(file_path, line, line_num, lines, findings, ctx.code)
     _check_ssrf(ctx, line, line_num, findings)
     _check_a05_specialisations(
         _LineCtx(file_path, ctx.ext, line, line_num, lines), findings
@@ -698,50 +868,119 @@ def _check_line(ctx: _FileCtx, line: str, line_num: int, findings: list[dict]) -
 
 
 def _check_sql(
-    file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict],
+    file_path: Path, line: str, line_num: int, lines: Sequence[str],
+    findings: list[dict], view: CodeView | None = None,
 ) -> None:
-    """Check for CWE-89 SQL injection."""
-    for pattern in SQL_INJECTION_PATTERNS:
-        if not pattern.search(line):
-            continue
-        # The LOOSE template-literal clause matches a DML-looking WORD plus an
-        # interpolation, which every interpolated English log line satisfies
-        # ("Failed to insert offices for ${name}"). Require evidence that the
-        # string is actually executed as SQL. Scoped to this one clause: the
-        # Python/Go patterns and the bigram carry their own evidence.
-        # The bigram is included because real SQL SHAPE is still not proof of
-        # execution: `console.log(\`INSERT INTO t VALUES ${v}\`)` is a log line.
-        # A Tier-1 sink always wins, so gating the bigram cannot lose a genuine
-        # query — only a query nobody executes.
-        if (
-            pattern in (_JS_TEMPLATE_LOOSE, _JS_TEMPLATE_BIGRAM)
-            and _sql_require_sink()
-            and not _sql_evidence(line, line_num, lines)
-        ):
-            continue
-        # An escaped interpolation is not injection. Measured: 5 of 8 CWE-89
-        # rows on one target were false at CRITICAL because the value went
-        # through the project's own escaper (see _sql_escaper_nearby).
-        if pattern in (_JS_TEMPLATE_LOOSE, _JS_TEMPLATE_BIGRAM) and \
-                _sql_escaper_nearby(list(lines), line_num):
-            continue
-        finding = {
-            "severity": "critical",
-            "check_id": "cwe.injection.sql",
-            "category": "CWE-89",
-            "title": "SQL injection via string interpolation",
-            "description": f"SQL query built with string formatting at line {line_num}",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Use parameterized queries or prepared statements",
-            "verification_hints": ["Test with payload: ' OR 1=1--", "Check if input is reflected in SQL error"],
-            "requires_context": True,
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(enrich_finding(finding, "89"))
+    """Check for CWE-89 SQL injection. ``view`` is the file's code view; without
+    one (a direct call) the Go constant-Sprintf test is skipped."""
+    if not _sql_row(line[:MAX_SCAN_CHARS], line_num, lines, view):
         return
+    finding = {
+        "severity": "critical",
+        "check_id": "cwe.injection.sql",
+        "category": "CWE-89",
+        "title": "SQL injection via string interpolation",
+        "description": f"SQL query built with string formatting at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Use parameterized queries or prepared statements",
+        "verification_hints": ["Test with payload: ' OR 1=1--", "Check if input is reflected in SQL error"],
+        "requires_context": True,
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "89"))
+
+
+def _sql_row(line: str, line_num: int, lines: Sequence[str], view: CodeView | None) -> bool:
+    """Whether a CWE-89 row stands on ``line`` (already cut at MAX_SCAN_CHARS): the
+    first clause whose match survives its evidence and construct tests."""
+    for pattern in SQL_INJECTION_PATTERNS:
+        m = pattern.search(line)
+        if m is not None and _sql_evidence_holds(pattern, m, line_num, lines) \
+                and _sql_construct_holds(pattern, m, line_num, view):
+            return True
+    return False
+
+
+def _sql_evidence_holds(pattern: re.Pattern[str], m: re.Match[str], line_num: int, lines: Sequence[str]) -> bool:
+    """The clause's SQL evidence (when it needs any), then the JS escaper veto.
+
+    A Tier-1 sink always wins, so gating a clause cannot lose a genuine query --
+    only a string nobody executes. An escaped interpolation is not injection:
+    measured, 5 of 8 CWE-89 rows on one target were false at CRITICAL because the
+    value went through the project's own escaper (see _sql_escaper_nearby). The
+    escaper veto applies whatever the rollback switch says, as it always has.
+    """
+    evidence = _SQL_EVIDENCE.get(pattern)
+    if evidence is not None and _sql_require_sink() and not evidence(m, line_num, lines):
+        return False
+    return not (pattern in _JS_TEMPLATE_CLAUSES and _sql_escaper_nearby(lines, line_num))
+
+
+def _sql_construct_holds(pattern: re.Pattern[str], m: re.Match[str], line_num: int, view: CodeView | None) -> bool:
+    """The construct the clause names is there: `.format(` really is called on a
+    literal, and a Go `fmt.Sprintf` holding the match splices in something that is
+    not constant text (`_literal_provenance`)."""
+    if pattern is _FORMAT_ON_LITERAL and not _formats_a_literal(m.string, m.end() - len(".format(")):
+        return False
+    return view is None or view.language != "go" or not constant_sprintf(view, line_num, m.start())
+
+
+# A line formats with at most this many `.format(` calls before it is reading prose.
+_FORMAT_CALLS = 32
+_METHOD_BEFORE = re.compile(r"\.\s*\w+\s*$")
+
+
+def _formats_a_literal(line: str, at: int) -> bool:
+    """One of the `.format(` calls from ``at`` on is called on a literal."""
+    for _ in range(_FORMAT_CALLS):
+        if at < 0:
+            return False
+        if _receiver_holds_literal(line, at - 1):
+            return True
+        at = line.find(".format(", at + 1)
+    return False
+
+
+def _receiver_holds_literal(line: str, at: int) -> bool:
+    """The receiver ending at ``at`` (blanks skipped) is a literal, a parenthesised
+    group holding one, or a method chain on either: `("SELECT ... " "{}")`,
+    `"SELECT ...".strip()` are; `moment()`, `arrow.now()` are not."""
+    at = _last_char(line, at)
+    while at >= 0 and line[at] == ")":
+        holds, opened = _group_holds_literal(line, at)
+        if holds:
+            return True
+        at = _last_char(line, _method_receiver_end(line, opened))
+    return at >= 0 and line[at] in "\"'"
+
+
+def _last_char(line: str, at: int) -> int:
+    """The index of the last non-blank character at or before ``at``, else -1."""
+    return len(line[:at + 1].rstrip()) - 1 if at >= 0 else -1
+
+
+def _group_holds_literal(line: str, close: int) -> tuple[bool, int]:
+    """Whether the group closed at ``close`` holds a quote, and where it opens (-1:
+    not on the line)."""
+    depth = 0
+    for index in range(close, -1, -1):
+        char = line[index]
+        if char in "\"'":
+            return True, index
+        depth += (char == ")") - (char == "(")
+        if depth == 0:
+            return False, index
+    return False, -1
+
+
+def _method_receiver_end(line: str, opened: int) -> int:
+    """For a call `recv.name(` opening at ``opened``, the end of `recv`; else -1."""
+    if opened <= 0:
+        return -1
+    method = _METHOD_BEFORE.search(line, max(0, opened - 64), opened)
+    return -1 if method is None else method.start() - 1
 
 
 def _has_validation_context(lines: list[str], line_num: int, radius: int = 10) -> bool:
@@ -916,31 +1155,72 @@ def _bypass_arg_is_route_tainted(
 
 
 def _check_code_injection(
-    file_path: Path, line: str, line_num: int, lines: list[str],
-    findings: list[dict],
+    file_path: Path, line: str, line_num: int, lines: Sequence[str],
+    findings: list[dict], view: CodeView | None = None,
 ) -> None:
-    """Check for CWE-94 code injection."""
+    """Check for CWE-94 code injection.
+
+    ``view`` is the file's code view; a direct call without one builds it here.
+    """
+    if _code_injection_site(line[:MAX_SCAN_CHARS], line_num, lines, file_path, view):
+        findings.append(_code_injection_row(file_path, line_num, lines))
+
+
+def _code_injection_site(
+    line: str, line_num: int, lines: Sequence[str], file_path: Path, view: CodeView | None,
+) -> bool:
+    """Whether ``line`` (cut at MAX_SCAN_CHARS) makes a dynamic-execution call.
+
+    The construct is a CALL, so a match counts only where the file's code view
+    shows its first character as code: `eval(` in a comment, a docstring or a
+    message string is text (a self-scan reported all three at CRITICAL), while a
+    call inside an interpolation (`f"{eval(x)}"`, `${eval(x)}`) is code. The
+    first pattern with a match in code decides; the view is built only once a
+    pattern matches the raw line.
+    """
+    code = None
     for pattern in CODE_INJECTION_PATTERNS:
-        m = pattern.search(line)
-        if m:
-            if SAFE_STATIC_CALL.search(line):
-                return
-            if _is_declaration_not_call(line, m.end(), line_num, lines):
-                return
-            finding = {
-                "severity": "critical",
-                "check_id": "cwe.injection.code",
-                "category": "CWE-94",
-                "title": "Code injection via dynamic execution",
-                "description": f"Dynamic code execution at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Avoid eval/exec; use safe alternatives or whitelisted operations",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "94"))
-            return
+        if not pattern.search(line):
+            continue
+        code = code if code is not None else _code_line(view, lines, line_num, file_path)
+        m = _code_match(pattern, line, code)
+        if m is not None:
+            return not _code_call_vetoed(m, line, line_num, lines)
+    return False
+
+
+def _code_line(view: CodeView | None, lines: Sequence[str], line_num: int, file_path: Path) -> str:
+    return (view or CodeView(lines, detect_language(str(file_path)))).line(line_num)
+
+
+def _code_match(pattern: re.Pattern[str], line: str, code: str) -> re.Match[str] | None:
+    """The first match of ``pattern`` on ``line`` that starts in code (``code`` is
+    the line's masked view: a blanked column is a comment or literal text)."""
+    return next((m for m in pattern.finditer(line) if code[m.start()] != " "), None)
+
+
+def _code_call_vetoed(m: re.Match[str], line: str, line_num: int, lines: Sequence[str]) -> bool:
+    """The matched call runs nothing a caller supplies: a static string argument,
+    or it is a declaration (a signature), not a call."""
+    return bool(SAFE_STATIC_CALL.match(line, m.start())) or _is_declaration_not_call(
+        line, m.end(), line_num, lines,
+    )
+
+
+def _code_injection_row(file_path: Path, line_num: int, lines: Sequence[str]) -> dict:
+    finding = {
+        "severity": "critical",
+        "check_id": "cwe.injection.code",
+        "category": "CWE-94",
+        "title": "Code injection via dynamic execution",
+        "description": f"Dynamic code execution at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Avoid eval/exec; use safe alternatives or whitelisted operations",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    return enrich_finding(finding, "94")
 
 
 def _ssrf_taint_hop(line: str, line_num: int, lines: list[str]) -> str | None:
@@ -1126,10 +1406,11 @@ _HQL_OPERAND = re.compile(r"\+\s*([A-Za-z_$][\w$.]*)")
 _HQL_CONSTANT_OPERAND = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
-def _cwe89_owns_line(line: str) -> bool:
-    """True when an existing CWE-89 pattern already matches — that row is
-    emitted by ``_check_sql``, so the 564 specialisation must not stack on it."""
-    return any(pattern.search(line) for pattern in SQL_INJECTION_PATTERNS)
+def _cwe89_owns_line(ctx: _LineCtx) -> bool:
+    """True when ``_check_sql`` emits a CWE-89 row for the line, so the 564
+    specialisation must not stack on it. The same decision, not a pattern match:
+    a clause its evidence gate drops must leave the line to CWE-564."""
+    return _sql_row(ctx.line[:MAX_SCAN_CHARS], ctx.line_num, ctx.lines, None)
 
 
 def _hql_has_dynamic_operand(line: str) -> bool:
@@ -1146,7 +1427,7 @@ def _hql_has_dynamic_operand(line: str) -> bool:
 def _is_hql_injection(ctx: _LineCtx) -> bool:
     """CWE-564: a Hibernate/JPA query sink with a non-constant, non-type-derived
     concatenated operand (or a `${}` template interpolation)."""
-    if not _HQL_SINK.search(ctx.line) or _cwe89_owns_line(ctx.line):
+    if not _HQL_SINK.search(ctx.line) or _cwe89_owns_line(ctx):
         return False
     if _HQL_TYPE_DERIVED.search(ctx.line):
         return False

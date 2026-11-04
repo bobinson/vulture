@@ -474,6 +474,37 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **Four CWE rules report the construct they name, not its words.** A CWE+OWASP self-scan
+  reported 13 CRITICAL rows on lines that do not do what the rule describes, from four rule
+  defects:
+  - CWE-269 matched the English phrase "run(s) as root" in messages, a docstring and a SQL
+    `strip_runmode(...) AS root` alias. It now reports only a `--privileged` / `--user root` /
+    `--user=root` flag after `run`/`exec` (newly also the `=` spelling); the phrase is not
+    reported.
+  - CWE-89's f-string, `.format(`, `%` and `Sprintf` clauses carried no SQL evidence, so an HTTP
+    method (`f"DELETE {ep} returned 200"`) and English log messages were SQL injection. They now
+    need a SQL sink within 3 lines or SQL shape, as the template-literal clauses already did, with
+    sinks named by what a call does (PHP `mysqli_query(`, Java `executeQuery(`, C# `new
+    SqlCommand(`) and only a display consumer on the line itself vetoing. `.format(` must be called
+    on the SQL literal (Go `time.Now().Format(` in a parameterised query's arguments no longer
+    counts). A Go `fmt.Sprintf` whose verbs take only numbers, literals or strings built from
+    literals in the same function is not reported. CWE-564 now defers to CWE-89 only where CWE-89
+    actually emits. `VULTURE_CWE_SQL_REQUIRE_SINK=false` (existing, one release) lifts the
+    evidence gates; it does not restore the `.format(` receiver or the Sprintf test.
+  - CWE-94 matched `eval(`/`exec(` in comments, docstrings and strings. A match now counts only
+    where the new shared code view (`shared.tools.code_view`, a linear, column-preserving lexer
+    for Python, JS/TS, Ruby, PHP and Go) shows it as code; interpolated code stays code. Known
+    gaps are listed in the CWE agent's SKILLS.md.
+  - CWE-312 treated `"..."` and `"********"` as stored secrets; a value now needs a letter or
+    digit.
+
+  Measured offline on 17 public codebases: these rules' 1,022 rows became 646, none added. Every
+  removed row was read: English messages, docstrings, comments, HTML/CSS, placeholders, constant
+  Go SQL; the only removed `eval(` calls sit inside a string later handed to `new Function(`, which
+  is still reported. The rules also cut each line at 2000 characters before matching and their regexes are linear,
+  so their cost per line is bounded on hostile input (CWE-312's setter clause was cubic on a long
+  line, and it re-searched the whole file for every row it emitted).
+
 - **The LLM broker queues a burst instead of refusing it, and the L5 judge stops multiplying
   failures.** When every provider slot (16 per provider) was busy, the broker answered
   `rate_limited` at once: an 8-agent scan against one local model received 2,552 such answers in

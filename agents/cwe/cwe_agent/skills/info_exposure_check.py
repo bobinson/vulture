@@ -202,8 +202,22 @@ SENSITIVE_RESPONSE_PATTERNS = [
 
 # CWE-312: Cleartext storage of sensitive info
 CLEARTEXT_STORAGE_PATTERNS = [
-    re.compile(r"(?:password|secret|token|api_key)\s*=\s*[\"'][^\"']+[\"']", re.IGNORECASE),
-    re.compile(r"(?:set|put|store|save)\w*\(.*(?:password|secret|token).*,\s*[\"']", re.IGNORECASE),
+    # A value with no letter or digit (`"..."`, `"********"`) is a placeholder,
+    # not a stored secret: a doc's `api_key = "..."` was a CRITICAL row. (The
+    # validate layer's `context_heuristics._PLACEHOLDER_RE` is the wider notion.)
+    # The lookahead and the possessive body keep the match linear.
+    re.compile(
+        r"(?:password|secret|token|api_key)\s*=\s*[\"'](?=[^\"'\n]*?[^\W_])[^\"']++[\"']",
+        re.IGNORECASE,
+    ),
+    # A setter call, a sensitive word after its `(`, then `, "` after that.
+    # Anchored and atomic, it commits to the FIRST of each, which matches exactly
+    # when some setter, word and quote do in that order -- in one pass, where the
+    # two unbounded `.*` it replaces were cubic on a long line.
+    re.compile(
+        r"^(?>.*?(?:set|put|store|save)\w*+\()(?>.*?(?:password|secret|token))(?>.*?,\s*+[\"'])",
+        re.IGNORECASE,
+    ),
 ]
 # Exclude safe patterns: hashing, env vars, config constants
 SAFE_STORAGE = re.compile(
@@ -6523,33 +6537,42 @@ def _check_cleartext_storage(
     indirections that the static analysis can't see resolve to a
     literal.
     """
-    if SAFE_STORAGE.search(line):
+    if not _cleartext_storage_line(line[:MAX_SCAN_CHARS]):
         return
-    if line_value_is_variable_ref(line):
+    # Two-tier: demote to medium if file lacks database/persist context
+    finding = {
+        "severity": "critical" if _storage_context(content) else "medium",
+        "check_id": "cwe.info_exposure.cleartext_storage",
+        "category": "CWE-312",
+        "title": "Cleartext storage of sensitive information",
+        "description": f"Sensitive value stored in cleartext at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Use environment variables, vaults, or encryption for sensitive data",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    if should_suppress(finding["title"], file_path, line, INFO_EXPOSURE_SUPPRESSIONS, suppression_counts):
         return
-    for pattern in CLEARTEXT_STORAGE_PATTERNS:
-        if not pattern.search(line):
-            continue
-        # Two-tier: demote to medium if file lacks database/persist context
-        severity = "critical"
-        if not check_context(content, _STORAGE_CONTEXT):
-            severity = "medium"
-        finding = {
-            "severity": severity,
-            "check_id": "cwe.info_exposure.cleartext_storage",
-            "category": "CWE-312",
-            "title": "Cleartext storage of sensitive information",
-            "description": f"Sensitive value stored in cleartext at line {line_num}",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Use environment variables, vaults, or encryption for sensitive data",
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        if should_suppress(finding["title"], file_path, line, INFO_EXPOSURE_SUPPRESSIONS, suppression_counts):
-            return
-        findings.append(enrich_finding(finding, "312"))
-        return
+    findings.append(enrich_finding(finding, "312"))
+
+
+def _cleartext_storage_line(line: str) -> bool:
+    """A sensitive value stored as a literal on ``line`` (cut at MAX_SCAN_CHARS)."""
+    return (
+        not SAFE_STORAGE.search(line)
+        and not line_value_is_variable_ref(line)
+        and any(pattern.search(line) for pattern in CLEARTEXT_STORAGE_PATTERNS)
+    )
+
+
+@lru_cache(maxsize=4)
+def _storage_context(content: str) -> bool:
+    """Whether the file persists data. Asked by every CWE-312 row of a file about
+    the same text, so it is answered once per file, not once per row (which made
+    a file of credential lines quadratic). The cached key is the scanner's own
+    cached content string, so the cache holds no copy."""
+    return check_context(content, _STORAGE_CONTEXT)
 
 
 def _check_sensitive_response(
