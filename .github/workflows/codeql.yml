@@ -51,12 +51,15 @@ jobs:
           # Deliberately-vulnerable test fixtures must not be scanned — they are
           # intentional bad code (the CWE agent's ReDoS corpus under
           # tests/corpus/fixtures/, and the OWASP-over-CWE pipeline fixture under
-          # tests/fixtures/, e.g. agents/owasp/tests/fixtures/vulnerable_flask_app/).
+          # tests/fixtures/, e.g. agents/owasp/tests/fixtures/vulnerable_flask_app/,
+          # and the agents' e2e rule fixtures under tests/e2e/fixtures/, whose pos/
+          # cases each hold the bad code a rule must report).
           # Depth-agnostic globs so every agent's fixtures dir is excluded.
           config: |
             paths-ignore:
               - '**/tests/corpus/fixtures/**'
               - '**/tests/fixtures/**'
+              - '**/tests/e2e/fixtures/**'
               - '**/simulated-target/**'
 
       # Go uses manual build-mode (none is unsupported). The primary module is

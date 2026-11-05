@@ -64,7 +64,7 @@ function hits(code: string, pattern: RegExp, keep: (m: RegExpExecArray) => boole
 
 function declaredString(name: string, src: string): string | undefined {
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return undefined;
-  const decl = new RegExp(String.raw`\b(?:const|let|var)\s+${name.replace(/\$/g, "\\$")}\s*(?::[^=]+)?=\s*(["'\`])(.*?)\1`);
+  const decl = new RegExp(String.raw`\b(?:const|let|var)\s+${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\s*(?::[^=]+)?=\s*(["'\`])(.*?)\1`);
   return decl.exec(src)?.[2];
 }
 

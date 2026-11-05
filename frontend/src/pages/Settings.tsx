@@ -30,7 +30,7 @@ function saveSettings(settings: StoredSettings): void {
 }
 
 // Earlier versions also stored the API key: rewrite such a value without it.
-function withoutApiKey(stored: StoredSettings): StoredSettings {
+function migrateStored(stored: StoredSettings): StoredSettings {
   if (!("apiKey" in stored)) return stored;
   const kept = { model: stored.model };
   saveSettings(kept);
@@ -40,7 +40,7 @@ function withoutApiKey(stored: StoredSettings): StoredSettings {
 function loadSettings(): StoredSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return withoutApiKey(JSON.parse(raw) as StoredSettings);
+    if (raw) return migrateStored(JSON.parse(raw) as StoredSettings);
   } catch { /* ignore corrupted data or blocked storage */ }
   return { model: "gpt-4o" };
 }
