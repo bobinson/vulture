@@ -1,0 +1,170 @@
+name: install-online-smoke
+
+# Closes #29 ([REQUEST] Test install.sh) — the durable half.
+#
+# The native install method has two halves in CI today, and neither one runs
+# the flow a user actually runs:
+#   - scripts/smoke-install.sh (release.yml) installs a LOCALLY BUILT tarball
+#     via VULTURE_OFFLINE_TARBALL — it never touches the GitHub API, never
+#     downloads a published release, and never exercises the SHA/cosign
+#     verification of a real release.
+#   - scripts/tests/docker (test-install-docker.yml) runs install.sh in fresh
+#     containers, but against a FABRICATED tarball.
+# This workflow runs the real online flow from the README /
+# docs/guides/native_installation.md on every OS the installer supports
+# (GNU/Linux and macOS): the checked-out install.sh resolves the latest
+# published release via the GitHub API, downloads the real tarball, verifies
+# it, installs it, and then a real skills-only `vulture scan` of a tiny
+# fixture must complete with findings — proving the audit pipeline runs
+# end-to-end, not merely that the installer exits 0.
+#
+# The literal user-facing form is `curl -fsSL
+# https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh`;
+# on main (and on the weekly schedule run) the checked-out install.sh below
+# is byte-identical to that file, so the two forms exercise the same code.
+# On a PR the checked-out copy is the one under test, which curl|sh could
+# not fetch yet.
+#
+# No LLM keys are configured here on purpose: the scan runs skills-only
+# (the default), which is what #29 asks to verify first. An LLM-backed run
+# needs provider credentials and stays a manual check.
+
+on:
+  push:
+    paths:
+      - 'install.sh'
+      - '.github/workflows/test-install-online.yml'
+  pull_request:
+    paths:
+      - 'install.sh'
+      - '.github/workflows/test-install-online.yml'
+  schedule:
+    # Weekly: catch drift between install.sh and the published releases
+    # (stale fallback tag, moved release assets, revoked signing certs)
+    # even when install.sh itself has not changed.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  online-smoke:
+    # Runner labels mirror the release matrix in release.yml.
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest }
+          - { runner: macos-14 }
+          - { runner: macos-15-intel }
+    env:
+      VULTURE_NO_UPDATE_CHECK: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: run install.sh (online, real release)
+        run: sh ./install.sh
+
+      - name: add ~/.local/bin to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: vulture doctor must not FAIL
+        run: |
+          set +e
+          vulture doctor
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "FAIL: vulture doctor exited $rc (want 0 OK or 2 WARN)"
+            exit 1
+          fi
+
+      - name: start daemon and wait for all agents healthy
+        run: |
+          vulture start
+          # The daemon backgrounds itself; poll /health, then require EVERY
+          # agent healthy at /api/agents before scanning — the scan dispatches
+          # to all audit agents at once, and gating on any-healthy races the
+          # scan ahead of the still-booting heavy agents (see
+          # scripts/smoke-install.sh agents_all_up).
+          for i in $(seq 1 60); do
+            curl -fsS --max-time 5 http://127.0.0.1:28080/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS --max-time 5 http://127.0.0.1:28080/health >/dev/null \
+            || { echo "FAIL: daemon /health never came up"; vulture logs backend 2>/dev/null || true; exit 1; }
+          for i in $(seq 1 120); do
+            agents=$(curl -fsS --max-time 5 http://127.0.0.1:28080/api/agents 2>/dev/null || true)
+            if printf '%s' "$agents" | grep -q '"status":"healthy"' \
+              && ! printf '%s' "$agents" | grep -qE '"status":"(unhealthy|unknown)"'; then
+              echo "all agents healthy"
+              break
+            fi
+            sleep 2
+            if [ "$i" -eq 120 ]; then
+              echo "FAIL: not all agents healthy within ~4 min"
+              vulture status
+              exit 1
+            fi
+          done
+          vulture status
+
+      - name: real skills-only scan of a tiny fixture
+        run: |
+          fixture="$RUNNER_TEMP/install-smoke-fixture"
+          mkdir -p "$fixture"
+          cat > "$fixture/vuln.py" <<'PY'
+          import hashlib, subprocess
+
+          password = "hunter2"  # hardcoded credential
+
+
+          def weak_digest(data):
+              return hashlib.md5(data).hexdigest()  # weak hash
+
+
+          def run(cmd):
+              return subprocess.call(cmd, shell=True)  # shell injection
+          PY
+          out=$(vulture scan "$fixture" 2>&1 || true)
+          echo "$out"
+          audit_id=$(printf '%s' "$out" | sed -n 's/^Audit ID: \([0-9a-f]*\).*/\1/p' | tail -n1)
+          if [ -z "$audit_id" ]; then
+            echo "FAIL: vulture scan did not create an audit (no Audit ID in output)"
+            exit 1
+          fi
+          # Opening the stream is what triggers the run on the backend; drain
+          # it so the run completes regardless of the CLI's auto-run behaviour.
+          curl -fsS -N --max-time 120 "http://127.0.0.1:28080/api/audits/$audit_id/stream" >/dev/null 2>&1 || true
+          status=""
+          findings=""
+          for i in $(seq 1 60); do
+            body=$(curl -fsS --max-time 10 "http://127.0.0.1:28080/api/audits/$audit_id" 2>/dev/null || true)
+            status=$(printf '%s' "$body" | grep -oE '"status":[[:space:]]*"[A-Za-z0-9_]+"' | head -n1 | sed -E 's/.*"status":[[:space:]]*"//; s/"//')
+            findings=$(printf '%s' "$body" | grep -oE '"findings_count":[[:space:]]*[0-9]+' | head -n1 | sed -E 's/.*: //')
+            if [ "$status" = "completed" ] || [ "$status" = "failed" ]; then break; fi
+            sleep 2
+          done
+          echo "audit $audit_id status=$status findings=${findings:-0}"
+          if [ "$status" != "completed" ]; then
+            echo "FAIL: scan did not complete (status=$status)"
+            exit 1
+          fi
+          if [ "${findings:-0}" -lt 1 ]; then
+            echo "FAIL: bundled agents ran but the scan produced 0 findings"
+            exit 1
+          fi
+
+      - name: stop daemon and uninstall
+        if: always()
+        run: |
+          vulture stop || true
+          vulture uninstall --yes || true
+          if [ -d "$HOME/.vulture" ]; then
+            echo "FAIL: ~/.vulture still present after uninstall"
+            exit 1
+          fi
