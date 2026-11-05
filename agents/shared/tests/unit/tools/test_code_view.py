@@ -225,14 +225,16 @@ _CHILD = textwrap.dedent(
     import json, sys, time
     from shared.tools.code_view import mask_non_code
     language, unit = sys.argv[1], sys.argv[2]
+
+    def lex_seconds(text):
+        start = time.perf_counter()
+        mask_non_code(text, language)
+        return time.perf_counter() - start
+
     out = []
     for n in json.loads(sys.argv[3]):
         text = (unit * (n // len(unit) + 1))[:n]
-        best = min(
-            (time.perf_counter(), mask_non_code(text, language), time.perf_counter())
-            for _ in range(3)
-        )
-        out.append(best[2] - best[0])
+        out.append(min(lex_seconds(text) for _ in range(3)))
     print(json.dumps(out))
     """
 )
