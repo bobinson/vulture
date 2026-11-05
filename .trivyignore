@@ -12,8 +12,6 @@
 #
 # The SECURITY codeowner approves every entry explicitly (CODEOWNERS); see
 # docs/guides/release_process.md, "Vulnerabilities".
-CVE-2026-114612 exp:2027-01-27 # litellm 1.91.5: LiteLLM Proxy server endpoint flaw; litellm.proxy modules are imported but no proxy server is ever started (no run_server call)
-GHSA-g5ff-637f-6q2m exp:2027-01-27 # litellm 1.91.5: LiteLLM Proxy server endpoint flaw; litellm.proxy modules are imported but no proxy server is ever started (no run_server call)
 CVE-2026-114613 exp:2027-01-27 # msgpack 1.1.2 vendored by pip 26.2.2 (newest pip); used only when pip runs (release build, install.sh fallback)
 GHSA-6v7p-g79w-8964 exp:2027-01-27 # msgpack 1.1.2 vendored by pip 26.2.2 (newest pip); used only when pip runs (release build, install.sh fallback)
 CVE-2025-47273 exp:2027-01-27 # setuptools 70.3.0 vendored by pip 26.2.2: pip ships pkg_resources only, not the vulnerable package_index
