@@ -393,8 +393,9 @@ def _parse_engine_stdout(stdout: str) -> tuple[dict | None, str | None]:
     """Return (parsed_json, error_message). Exactly one is non-None."""
     try:
         return json.loads(stdout or "{}"), None
-    except json.JSONDecodeError as exc:
-        return None, f"invalid opengrep JSON: {_redact_stderr(str(exc))}"
+    except json.JSONDecodeError:
+        log.exception("invalid opengrep JSON output")
+        return None, "invalid opengrep JSON output"
 
 
 async def _run_engine_or_failure(argv: list[str]) -> tuple[Any, dict | None]:
