@@ -128,11 +128,31 @@ def classify_llm_error(exc: Exception) -> LLMErrorKind:
     Returns:
         Categorized error kind for retry/fallback decisions.
     """
-    msg = str(exc)
+    msg = error_text(exc)
     for pattern, kind in _CLASSIFIERS:
         if pattern.search(msg):
             return kind
     return LLMErrorKind.UNKNOWN
+
+
+def error_text(exc: Exception) -> str:
+    """The text the classifiers read: the message plus every error body a
+    client left on the exception, each in Python's repr rendering.
+
+    openai 2.x rendered the decoded body into the message (`Error code: 502 -
+    {'error': {... 'x_retriable': False}}`), and the patterns here were written
+    against that. openai 3.x puts only the body's `message` field there and
+    leaves `code`, `type` and `x_retriable` on `.body`, so the broker's
+    permanent-fault signal and the overflow codes vanished from the text.
+    Appending the bodies gives every client version the same text. Never
+    raises: it runs inside failure handlers.
+    """
+    msg = str(exc)
+    try:
+        bodies = [repr(c) for c in _envelope_candidates(exc) if isinstance(c, dict)]
+    except Exception:  # pragma: no cover - never fail inside a failure handler
+        return msg
+    return " - ".join([msg, *bodies])
 
 
 # First match wins. The size/overflow codes come first (0074 review item 5),

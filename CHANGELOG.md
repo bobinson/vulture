@@ -490,6 +490,14 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **LLM error classification reads the error body, not only the message.** openai 3.x puts
+  only the body's `message` field in the exception text and leaves `code`, `type` and
+  `x_retriable` on the exception, so the broker's permanent-fault signal
+  (`provider_bad_request`, `x_retriable: false`) and the overflow codes were no longer seen:
+  a permanent 502 was treated as a retryable transport failure and ended the L5 judge's
+  fallbacks. The classifier and the judge's size check now read the parsed body as well, the
+  same for every SDK version. The release lockfile still pins openai 2.x; agents installed
+  from their package metadata, as CI does, already got 3.x.
 - **Four CWE rules report the construct they name, not its words.** A CWE+OWASP self-scan
   reported 13 CRITICAL rows on lines that do not do what the rule describes, from four rule
   defects:

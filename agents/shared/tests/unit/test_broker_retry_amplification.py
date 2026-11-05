@@ -9,7 +9,7 @@ import types
 
 import pytest
 
-from shared.llm.errors import RETRYABLE_KINDS, classify_llm_error
+from shared.llm.errors import RETRYABLE_KINDS, LLMErrorKind, classify_llm_error
 
 
 def test_default_client_factory_disables_sdk_retries(monkeypatch):
@@ -56,3 +56,39 @@ def test_plain_502_still_retryable():
 def test_retriable_502_with_x_retriable_true_still_retryable():
     msg = 'Error code: 502 - {"error":{"code":"provider_unavailable","x_retriable":true}}'
     assert classify_llm_error(Exception(msg)) in RETRYABLE_KINDS
+
+
+class _SdkStatusError(Exception):
+    """The shape openai 3.x raises: the message carries only the body's
+    `message` field, and the decoded (unwrapped) body sits on `.body`."""
+
+    def __init__(self, status: int, body: dict):
+        super().__init__(f"Error code: {status} - {body.get('message', '')}")
+        self.body = body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"code": "provider_bad_request", "message": "provider rejected the request", "x_retriable": False},
+        {"code": "provider_auth_error", "message": "provider rejected the key", "x_retriable": False},
+        {"code": "budget_exceeded", "message": "budget exhausted", "x_retriable": False},
+    ],
+)
+def test_broker_permanent_signal_read_from_the_body(body):
+    """openai 3.x left `x_retriable` and the code out of the message text; the
+    classifier must still read them, from `.body`."""
+    kind = classify_llm_error(_SdkStatusError(502, body))
+    assert kind not in RETRYABLE_KINDS, f"{body!r} classified retryable ({kind})"
+
+
+def test_overflow_code_read_from_the_body():
+    """The broker's overflow code wins over its x_retriable:false, so the
+    generate path can retry smaller, whichever text the SDK rendered."""
+    body = {"type": "provider_context_overflow", "message": "request body too large", "x_retriable": False}
+    assert classify_llm_error(_SdkStatusError(413, body)) is LLMErrorKind.CONTEXT_OVERFLOW
+
+
+def test_retriable_body_still_retryable():
+    body = {"code": "provider_unavailable", "message": "provider unavailable", "x_retriable": True}
+    assert classify_llm_error(_SdkStatusError(502, body)) in RETRYABLE_KINDS

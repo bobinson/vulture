@@ -32,7 +32,7 @@ from shared.anchor import anchor_extras
 from shared.cancellation import current_audit_deadline, current_cancel_token
 from shared.language import detect_language
 from shared.lines import parse_line
-from shared.llm.errors import LLMErrorKind, broker_detail, classify_llm_error
+from shared.llm.errors import LLMErrorKind, broker_detail, classify_llm_error, error_text
 from shared.llm.jsonscan import iter_balanced_objects
 from shared.llm.provider import bare_model_name
 from shared.prompt import Mode, RenderedPrompt, Slot, profile_for, render
@@ -1528,7 +1528,7 @@ def _is_size_error(exc: Exception) -> bool:
     *code*, while LiteLLM surfaces the human *message* with spaces. Keying on
     only one of them is why an earlier size-retry never fired.
     """
-    return bool(_SIZE_ERROR_RE.search(str(exc)))
+    return bool(_SIZE_ERROR_RE.search(error_text(exc)))
 
 
 def _call_llm(
