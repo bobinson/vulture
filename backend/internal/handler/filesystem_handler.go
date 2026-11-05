@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,9 +19,11 @@ import (
 // A disabled policy (centralized mode without VULTURE_SOURCE_ROOT, or any
 // read-only server) refuses every browse with one text before the path is
 // parsed or touched. With a root, browse is confined to paths whose
-// canonical (EvalSymlinks) form is inside it (0036 Phase 3). The system
-// denylist applies in every mode; local mode with no root can list the
-// rest of what the process can read (dev laptops only).
+// canonical (EvalSymlinks) form is inside it (0036 Phase 3), and the
+// directory is stat'd and listed through an os.Root opened at the root, so
+// a link swapped in after the check cannot make either describe anything
+// outside it. The system denylist applies in every mode; local mode with no
+// root can list the rest of what the process can read (dev laptops only).
 type FilesystemHandler struct {
 	local pathutil.LocalSources
 }
@@ -56,32 +59,50 @@ func (h *FilesystemHandler) Browse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	absPath, code, msg := h.resolve(r.URL.Query().Get("path"))
+	dir, code, msg := h.resolve(r.URL.Query().Get("path"))
 	if code != 0 {
 		writeBrowseRefusal(w, r, code, msg)
 		return
 	}
 
-	entries, err := os.ReadDir(absPath)
+	entries, err := listDir(dir)
 	if err != nil {
 		writeInternalError(w, r, "read directory", err)
 		return
 	}
 
 	result := browseResponse{
-		Path:    absPath,
-		Parent:  filepath.Dir(absPath),
-		Entries: buildDirEntries(absPath, entries),
+		Path:    dir.Path(),
+		Parent:  filepath.Dir(dir.Path()),
+		Entries: entries,
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// listDir lists dir through an os.Root opened on it. With a source root that
+// is the directory the check accepted, never one a link swapped in since
+// points to. fs.ReadDir sorts by name as os.ReadDir does, and an entry read
+// from a directory opened in an os.Root carries its FileInfo, lstat'd
+// relative to that directory, so the sizes come through it too.
+func listDir(dir pathutil.Confined) ([]dirEntry, error) {
+	root, err := dir.OpenDir()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return nil, err
+	}
+	return buildDirEntries(dir.Path(), entries), nil
 }
 
 // resolve applies the local-path policy, then validates reqPath against the
 // policy's root. A disabled policy answers 403 with its own text before
 // reqPath is parsed or any syscall is made. Its one 5xx is a root fault.
-func (h *FilesystemHandler) resolve(reqPath string) (string, int, string) {
+func (h *FilesystemHandler) resolve(reqPath string) (pathutil.Confined, int, string) {
 	if err := h.local.Allow(); err != nil {
-		return "", http.StatusForbidden, err.Error()
+		return pathutil.Confined{}, http.StatusForbidden, err.Error()
 	}
 	return validateBrowsePathWithRoot(reqPath, h.local.Root)
 }
@@ -103,7 +124,8 @@ func writeBrowseRefusal(w http.ResponseWriter, r *http.Request, code int, msg st
 // validateBrowsePathWithRoot with an empty SourceRoot (legacy
 // denylist-only behaviour).
 func validateBrowsePath(reqPath string) (string, int, string) {
-	return validateBrowsePathWithRoot(reqPath, "")
+	dir, code, msg := validateBrowsePathWithRoot(reqPath, "")
+	return dir.Path(), code, msg
 }
 
 // validateBrowsePathWithRoot is the Phase-3 validator. Confinement
@@ -121,18 +143,20 @@ func validateBrowsePath(reqPath string) (string, int, string) {
 //     same refusal, whatever tree it resolves into.
 //   - Apply the system-path denylist regardless of root (so even an
 //     operator who sets SourceRoot=/ can't accidentally expose /etc).
-func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string) {
+//   - Stat the directory, through the root when there is one, and return
+//     it confined, so Browse lists it through the root as well.
+func validateBrowsePathWithRoot(reqPath, sourceRoot string) (pathutil.Confined, int, string) {
 	// Defence-in-depth: reject literal ".." segments. filepath.Clean
 	// would normalise these silently; a 400 surfaces the intent.
 	if containsParentDirSegment(reqPath) {
-		return "", http.StatusBadRequest, "invalid path: '..' segments not allowed"
+		return pathutil.Confined{}, http.StatusBadRequest, "invalid path: '..' segments not allowed"
 	}
 	if reqPath == "" {
 		reqPath = "/"
 	}
 	absPath, err := filepath.Abs(reqPath)
 	if err != nil {
-		return "", http.StatusBadRequest, "invalid path"
+		return pathutil.Confined{}, http.StatusBadRequest, "invalid path"
 	}
 	absPath = filepath.Clean(absPath)
 	// Resolve symlinks before checking the source root + blocklist.
@@ -141,24 +165,25 @@ func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string
 		absPath = resolved
 	}
 	// 0065 §M3 — one confinement implementation shared with local ingest.
-	// EnsureWithinRoot resolves the deepest existing ancestor's symlinks so a
+	// Confine resolves the deepest existing ancestor's symlinks so a
 	// symlinked parent cannot escape; empty sourceRoot is a no-op (legacy
 	// denylist-only behaviour).
-	if _, err := pathutil.EnsureWithinRoot(sourceRoot, absPath); err != nil {
+	dir, err := pathutil.Confine(sourceRoot, absPath)
+	if err != nil {
 		code, msg := confinementRefusal(err)
-		return "", code, msg
+		return pathutil.Confined{}, code, msg
 	}
 	if isBlockedPath(absPath) {
-		return "", http.StatusForbidden, "access denied"
+		return pathutil.Confined{}, http.StatusForbidden, "access denied"
 	}
-	info, err := os.Stat(absPath)
+	err = dir.StatDir()
+	if errors.Is(err, pathutil.ErrNotDir) {
+		return pathutil.Confined{}, http.StatusBadRequest, "path is not a directory"
+	}
 	if err != nil {
-		return "", http.StatusNotFound, "path not found"
+		return pathutil.Confined{}, http.StatusNotFound, "path not found"
 	}
-	if !info.IsDir() {
-		return "", http.StatusBadRequest, "path is not a directory"
-	}
-	return absPath, 0, ""
+	return dir, 0, ""
 }
 
 // confinementRefusal answers a path confinement refused: a root fault is the

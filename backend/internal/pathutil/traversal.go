@@ -63,42 +63,86 @@ func RejectTraversal(p string) error {
 	return nil
 }
 
-// EnsureWithinRoot returns the resolved absolute form of path, or an error
-// wrapping ErrNotPermitted when it is not confined to root. root == "" means
-// no confinement: the path is returned unchanged. With a root, path must be
-// absolute, at most MaxConfinedPathBytes, free of "..", and spelled under the
-// root (its absolute or resolved spelling); its deepest existing ancestor's
-// symlinks are then resolved, so a symlinked parent cannot escape (0065),
-// and a missing tail is judged lexically.
-func EnsureWithinRoot(root, path string) (string, error) {
-	if root == "" {
-		return path, nil
-	}
-	_, resolved, err := confine(root, path)
-	return resolved, err
+// Confined is a path that confinement accepted, held with the resolved root
+// it was confined to. StatDir and OpenDir reach the filesystem through
+// os.Root at that root, so a link swapped in after the check cannot lead them
+// outside it. With no root (local mode) there is nothing to confine to, and
+// they use the path as given.
+type Confined struct {
+	realRoot string // "" when there is no root
+	path     string
 }
 
-// ResolveDirWithinRoot returns nil when path is an existing directory
-// confined to root. root == "" stats path as given, keeping the stat's error
-// class (fs.ErrNotExist, fs.ErrPermission) or returning ErrNotDir. With a root
-// the path is confined first, and the resolved result is stat'd through
-// os.Root, so a link swapped in after confinement cannot make the stat
-// describe anything outside the root.
-func ResolveDirWithinRoot(root, path string) error {
+// Confine confines path to root, or returns an error wrapping ErrNotPermitted.
+// root == "" means no confinement: the path is accepted unchanged. With a
+// root, path must be absolute, at most MaxConfinedPathBytes, free of "..", and
+// spelled under the root (its absolute or resolved spelling); its deepest
+// existing ancestor's symlinks are then resolved, so a symlinked parent cannot
+// escape (0065), and a missing tail is judged lexically.
+func Confine(root, path string) (Confined, error) {
 	if root == "" {
-		return requireDir(os.Stat(path))
+		return Confined{path: path}, nil
 	}
 	realRoot, resolved, err := confine(root, path)
 	if err != nil {
+		return Confined{}, err
+	}
+	return Confined{realRoot: realRoot, path: resolved}, nil
+}
+
+// Path is the confined path: resolved with a root, as given without one.
+func (c Confined) Path() string { return c.path }
+
+// StatDir returns nil when the path is an existing directory, ErrNotDir when
+// it is something else, or the stat's own error, whose class (fs.ErrNotExist,
+// fs.ErrPermission) the caller can name. With a root the stat goes through
+// os.Root, so a link swapped in after confinement cannot make it describe
+// anything outside the root.
+func (c Confined) StatDir() error {
+	if c.realRoot == "" {
+		return requireDir(os.Stat(c.path))
+	}
+	return statInRoot(c.realRoot, c.path)
+}
+
+// OpenDir opens the directory as an os.Root for the caller to read through and
+// close. With a root it is opened through os.Root at the root, so it is the
+// directory confinement accepted or a refusal, never what a link swapped in
+// since points to, and nothing read through it can lie outside it.
+func (c Confined) OpenDir() (*os.Root, error) {
+	if c.realRoot == "" {
+		return os.OpenRoot(c.path)
+	}
+	r, rel, err := inRoot(c.realRoot, c.path)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return r.OpenRoot(rel)
+}
+
+// EnsureWithinRoot returns the resolved absolute form of path, or an error
+// wrapping ErrNotPermitted when it is not confined to root (see Confine).
+// root == "" returns the path unchanged.
+func EnsureWithinRoot(root, path string) (string, error) {
+	c, err := Confine(root, path)
+	return c.path, err
+}
+
+// ResolveDirWithinRoot returns nil when path is an existing directory
+// confined to root: Confine, then StatDir. root == "" stats path as given.
+func ResolveDirWithinRoot(root, path string) error {
+	c, err := Confine(root, path)
+	if err != nil {
 		return err
 	}
-	return statInRoot(realRoot, resolved)
+	return c.StatDir()
 }
 
 // Within reports whether p is lexically inside base. It does not resolve
 // symlinks: pass paths that are already resolved, or that have passed
-// RejectTraversal. A user-supplied path goes through EnsureWithinRoot or
-// ResolveDirWithinRoot instead.
+// RejectTraversal. A user-supplied path goes through Confine (or
+// EnsureWithinRoot / ResolveDirWithinRoot, built on it) instead.
 //
 // It has filepath.Rel semantics and fails closed: false when either side is
 // empty, and false for a mixed absolute and relative pair, so a relative p
@@ -241,20 +285,31 @@ func prefixEnds(abs string) []int {
 }
 
 // statInRoot stats resolved, a path confine returned, through os.Root at
-// realRoot. The relative name comes from the RESOLVED path: os.Root refuses
-// an absolute symlink even when it points inside the root, so the request
-// spelling (current -> /root/releases/v2) would fail there.
+// realRoot.
 func statInRoot(realRoot, resolved string) error {
-	rel, err := filepath.Rel(realRoot, resolved)
+	r, rel, err := inRoot(realRoot, resolved)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrNotPermitted, err)
-	}
-	r, err := os.OpenRoot(realRoot)
-	if err != nil {
-		return rootFault(err)
+		return err
 	}
 	defer r.Close()
 	return requireDir(r.Stat(rel))
+}
+
+// inRoot opens realRoot as an os.Root, for the caller to close, and names
+// resolved, a path confine returned, relative to it. The relative name comes
+// from the RESOLVED path: os.Root refuses an absolute symlink even when it
+// points inside the root, so the request spelling (current ->
+// /root/releases/v2) would fail there.
+func inRoot(realRoot, resolved string) (*os.Root, string, error) {
+	rel, err := filepath.Rel(realRoot, resolved)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %v", ErrNotPermitted, err)
+	}
+	r, err := os.OpenRoot(realRoot)
+	if err != nil {
+		return nil, "", rootFault(err)
+	}
+	return r, rel, nil
 }
 
 // requireDir turns a stat result into nil for a directory, ErrNotDir for

@@ -292,14 +292,89 @@ func wantAncestorAgrees(t *testing.T, q string) {
 // through os.Root, so a directory swapped for an outbound link AFTER the
 // ancestor walk fails the stat instead of describing the link's target.
 func TestResolveDirWithinRoot_SwappedOutboundLinkRefused(t *testing.T) {
-	for name, target := range map[string]func(confineTree) string{
-		"absolute link to an outside dir":     func(tr confineTree) string { return tr.outside },
-		"absolute link to an outside missing": func(tr confineTree) string { return filepath.Join(tr.outside, "missing") },
-		"relative link to an outside dir":     func(confineTree) string { return filepath.Join("..", "outside") },
-		"relative link to an outside missing": func(confineTree) string { return filepath.Join("..", "outside", "missing") },
-	} {
+	for name, target := range outboundLinkTargets {
 		t.Run(name, func(t *testing.T) { wantSwapRefused(t, target) })
 	}
+}
+
+// outboundLinkTargets are the targets of a link swapped in for root/proj
+// after confinement, each pointing outside the root.
+var outboundLinkTargets = map[string]func(confineTree) string{
+	"absolute link to an outside dir":     func(tr confineTree) string { return tr.outside },
+	"absolute link to an outside missing": func(tr confineTree) string { return filepath.Join(tr.outside, "missing") },
+	"relative link to an outside dir":     func(confineTree) string { return filepath.Join("..", "outside") },
+	"relative link to an outside missing": func(confineTree) string { return filepath.Join("..", "outside", "missing") },
+}
+
+// TestConfine_OpenDirSwappedOutboundLinkRefused: OpenDir opens through
+// os.Root, so a directory swapped for an outbound link after confinement is
+// not opened, and what the caller lists cannot be the link's target.
+func TestConfine_OpenDirSwappedOutboundLinkRefused(t *testing.T) {
+	for name, target := range outboundLinkTargets {
+		t.Run(name, func(t *testing.T) {
+			tr := newConfineTree(t)
+			proj := confineMkdir(t, filepath.Join(tr.root, "proj"))
+			c, err := Confine(tr.root, proj)
+			if err != nil {
+				t.Fatalf("Confine(%q) before the swap = %v; want nil", proj, err)
+			}
+			confineSwapForLink(t, proj, target(tr))
+			if d, err := c.OpenDir(); err == nil || errors.Is(err, fs.ErrNotExist) {
+				if d != nil {
+					d.Close()
+				}
+				t.Errorf("OpenDir of %q after the swap = %v; want a refusal that does not describe the target", proj, err)
+			}
+		})
+	}
+}
+
+// TestConfine_OpenDirOpensTheConfinedDir: OpenDir opens the directory that
+// confinement accepted: the root itself, a directory inside it, and one
+// reached through an absolute in-root link, also through a symlinked
+// spelling of the root (opened under the resolved path, since os.Root
+// refuses an absolute link). With no root it opens the path as given.
+func TestConfine_OpenDirOpensTheConfinedDir(t *testing.T) {
+	tr := newConfineTree(t)
+	release := confineMkdir(t, filepath.Join(tr.root, "releases", "v2"))
+	confineFile(t, filepath.Join(release, "marker"))
+	current := confineSymlink(t, release, filepath.Join(tr.root, "current"))
+	for _, c := range []struct{ root, p, want string }{
+		{tr.root, tr.root, "current releases"},
+		{tr.root, release, "marker"},
+		{tr.root, current, "marker"},
+		{tr.rootLink, filepath.Join(tr.rootLink, "current"), "marker"},
+		{"", release, "marker"},
+	} {
+		if got := confineListing(t, c.root, c.p); got != c.want {
+			t.Errorf("listing of Confine(%q, %q).OpenDir() = %q; want %q", c.root, c.p, got, c.want)
+		}
+	}
+}
+
+// confineListing confines p to root, opens it with OpenDir and returns the
+// names it lists, sorted and space-separated.
+func confineListing(t *testing.T, root, p string) string {
+	t.Helper()
+	c, err := Confine(root, p)
+	if err != nil {
+		t.Fatalf("Confine(%q, %q) = %v; want nil", root, p, err)
+	}
+	d, err := c.OpenDir()
+	if err != nil {
+		t.Errorf("Confine(%q, %q).OpenDir() = %v; want nil", root, p, err)
+		return ""
+	}
+	defer d.Close()
+	entries, err := fs.ReadDir(d.FS(), ".")
+	if err != nil {
+		t.Fatalf("read %q: %v", p, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return strings.Join(names, " ")
 }
 
 // wantSwapRefused confines root/proj while it is a directory, swaps it for a
@@ -411,10 +486,10 @@ func TestEnsureWithinRoot_UsesWithin(t *testing.T) {
 		_, err := EnsureWithinRoot(tr.root, p)
 		wantNotPermitted(t, "EnsureWithinRoot("+p+")", err)
 	}
-	allowed := map[string]bool{"Within": true, "statInRoot": true}
+	allowed := map[string]bool{"Within": true, "inRoot": true}
 	for _, fn := range relCallers(t) {
 		if !allowed[fn] {
-			t.Errorf("%s calls filepath.Rel; containment goes through Within, and only statInRoot needs a relative path", fn)
+			t.Errorf("%s calls filepath.Rel; containment goes through Within, and only inRoot needs a relative path", fn)
 		}
 	}
 }

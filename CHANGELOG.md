@@ -882,8 +882,10 @@ stack, which runs centralized with its shipped defaults (`VULTURE_LOCAL_MODE=fal
     centralized mode without a root, and on a read-only server whatever the root.
     With a root, it is confined to it, and every outside path gets the same refusal
     (`access denied: path outside source root`), including one that resolves into a
-    denylisted tree. Browse requires a member or admin; viewers and API keys get 403
-    `requires member or admin role`. Local mode is unchanged.
+    denylisted tree. The directory is then stat'd and listed through the root
+    (`os.Root`), so a link swapped in after the check cannot make browse list a
+    directory outside it. Browse requires a member or admin; viewers and API keys
+    get 403 `requires member or admin role`. Local mode is unchanged.
   - **Upgrade notes:** a centralized server, or a `docker compose` stack with its
     shipped defaults, that used the folder browser without `VULTURE_SOURCE_ROOT` now
     gets a 403 there; set the root to a dedicated directory. Do not place it under a

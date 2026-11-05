@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -258,6 +259,87 @@ func TestBrowse_RootSet_Confined(t *testing.T) {
 	} {
 		wantBrowse(t, browseAs(t, addr, member, c.path), c.status, "")
 	}
+}
+
+// browseListing is the body of a successful browse.
+type browseListing struct {
+	Path    string `json:"path"`
+	Entries []struct {
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size"`
+	} `json:"entries"`
+}
+
+// TestBrowse_RootSet_Listing pins what a confined browse lists, read through
+// the root: the root itself, a directory inside it, and an absolute link
+// inside the root to a directory inside it, which lists its target under the
+// resolved path. Directories come first, hidden entries are left out, and a
+// file carries its size.
+func TestBrowse_RootSet_Listing(t *testing.T) {
+	root := browseRoot(t)
+	project := filepath.Join(root, "project")
+	for _, d := range []string{filepath.Join(project, "sub"), filepath.Join(project, ".git")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(project, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.Symlink(project, filepath.Join(root, "current")); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+	addr, dbPath := startBrowseModeB(t, root, false)
+	member := registerAndLogin(t, addr, dbPath, "member@example.test", "member-password-1", false)
+
+	for _, c := range []struct {
+		path, wantPath, want string
+	}{
+		{project, project, "sub/ main.go:13"},
+		{filepath.Join(root, "current"), project, "sub/ main.go:13"},
+		{root, root, "project/ current:-"},
+	} {
+		got := browseListingOf(t, browseAs(t, addr, member, c.path))
+		if got.Path != c.wantPath || summarizeListing(got) != c.want {
+			t.Errorf("browse %q: path %q, entries %q; want path %q, entries %q",
+				c.path, got.Path, summarizeListing(got), c.wantPath, c.want)
+		}
+	}
+}
+
+// browseListingOf decodes a 200 browse reply.
+func browseListingOf(t *testing.T, reply browseReply) browseListing {
+	t.Helper()
+	if reply.status != http.StatusOK {
+		t.Fatalf("browse %q: got %d %.200s; want 200", reply.path, reply.status, reply.body)
+	}
+	var listing browseListing
+	if err := json.Unmarshal([]byte(reply.body), &listing); err != nil {
+		t.Fatalf("browse %q: decode %v", reply.path, err)
+	}
+	return listing
+}
+
+// summarizeListing renders the entries in order: "name/" for a directory,
+// "name:size" for a file, "name:-" for a link (its own size varies), and
+// fails the summary when an entry's path is not under the listed directory.
+func summarizeListing(l browseListing) string {
+	parts := make([]string, 0, len(l.Entries))
+	for _, e := range l.Entries {
+		switch {
+		case e.Path != filepath.Join(l.Path, e.Name):
+			parts = append(parts, e.Name+"@"+e.Path)
+		case e.IsDir:
+			parts = append(parts, e.Name+"/")
+		case e.Name == "current":
+			parts = append(parts, e.Name+":-")
+		default:
+			parts = append(parts, e.Name+":"+strconv.FormatInt(e.Size, 10))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // TestBrowse_LocalMode_Unchanged pins local mode with no root and no token:

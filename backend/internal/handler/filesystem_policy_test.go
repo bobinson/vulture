@@ -33,10 +33,10 @@ func TestBrowse_DisabledPolicyRefusesBeforeFS(t *testing.T) {
 	}
 }
 
-// resolveOutcome is browse's answer for one path: the resolved path (empty on
-// a refusal), the status and the error text.
+// resolveOutcome is browse's answer for one path: the confined directory (the
+// zero value on a refusal), the status and the error text.
 type resolveOutcome struct {
-	abs  string
+	dir  pathutil.Confined
 	code int
 	msg  string
 }
@@ -52,7 +52,7 @@ func assertBrowseDisabled(t *testing.T, h *FilesystemHandler, p string) {
 		t.Errorf("browse %q: got %+v (body %s); want %+v", p, got, w.Body.String(), want)
 	}
 	var got resolveOutcome
-	got.abs, got.code, got.msg = h.resolve(p)
+	got.dir, got.code, got.msg = h.resolve(p)
 	if got != want {
 		t.Errorf("resolve(%q) = %+v; want %+v", p, got, want)
 	}

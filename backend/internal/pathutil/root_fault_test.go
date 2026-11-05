@@ -14,8 +14,8 @@ import (
 // (os.Root), which needs read permission on it, so a root the server can only
 // traverse cannot confine anything. That is the operator's fault, not the
 // requested path's: every entry point reports it as ErrRootUnavailable for
-// any path, so ingest (ResolveDir), browse (EnsureWithinRoot) and dispatch
-// (Recheck) agree. It stays a refusal (ErrNotPermitted), so a caller that
+// any path, so ingest (ResolveDir), browse (Confine, which EnsureWithinRoot
+// wraps) and dispatch (Recheck) agree. It stays a refusal (ErrNotPermitted), so a caller that
 // knows only that fails closed, and its cause names the root, never the path.
 
 // brokenRoot is a root the server cannot use, with a path spelled inside it.
