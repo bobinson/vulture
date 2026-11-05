@@ -227,7 +227,10 @@ class TestProtocolDetection:
         with patch("prove_agent.protocols.detection._probe_http", return_value=False), \
              patch("prove_agent.protocols.detection._probe_jsonrpc_http", return_value=(False, [])), \
              patch("prove_agent.protocols.detection._probe_websocket", return_value=False), \
-             patch("prove_agent.protocols.detection._probe_jsonrpc_ws", return_value=(False, [])):
+             patch("prove_agent.protocols.detection._probe_jsonrpc_ws", return_value=(False, [])), \
+             patch("prove_agent.protocols.detection._probe_grpc", return_value=False), \
+             patch("prove_agent.protocols.detection._probe_sse", return_value=False), \
+             patch("prove_agent.protocols.detection._probe_mqtt_ws", return_value=False):
             caps, summary = await detect_capabilities("http://dead.host")
             assert caps.primary == ProbeProtocol.HTTP
             assert "none" in summary
@@ -238,7 +241,10 @@ class TestProtocolDetection:
         with patch("prove_agent.protocols.detection._probe_http", side_effect=asyncio.CancelledError()), \
              patch("prove_agent.protocols.detection._probe_jsonrpc_http", return_value=(False, [])), \
              patch("prove_agent.protocols.detection._probe_websocket", return_value=False), \
-             patch("prove_agent.protocols.detection._probe_jsonrpc_ws", return_value=(False, [])):
+             patch("prove_agent.protocols.detection._probe_jsonrpc_ws", return_value=(False, [])), \
+             patch("prove_agent.protocols.detection._probe_grpc", return_value=False), \
+             patch("prove_agent.protocols.detection._probe_sse", return_value=False), \
+             patch("prove_agent.protocols.detection._probe_mqtt_ws", return_value=False):
             caps, summary = await detect_capabilities("http://example.com")
             assert caps.http is False
             assert "none" in summary
