@@ -241,6 +241,11 @@ def normalise_source_path(raw: Any, root: str) -> str | None:
         return None
     resolved = os.path.realpath(raw)
     real_root = os.path.realpath(root)
-    if resolved != real_root and not resolved.startswith(real_root + os.sep):
+    # The root itself is returned as the root's own spelling, so the one
+    # value that reaches a caller from the request has passed the prefix
+    # check on every path (a static analyser can see the guard).
+    if resolved == real_root:
+        return real_root
+    if not resolved.startswith(real_root + os.sep):
         return None
     return resolved
