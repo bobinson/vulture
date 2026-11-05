@@ -3,3 +3,4 @@
 # required version postdates the frozen snapshot; bumping lock-date.txt instead
 # would move every existing pin. Drop the line at the next intentional relock.
 tree-sitter-php=2026-10-07T00:00:00Z
+litellm=2026-10-27T20:00:00Z
