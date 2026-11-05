@@ -5,7 +5,8 @@ from pathlib import Path
 
 from agents import function_tool
 
-from ssdf_agent.skills._ci_utils import gather_ci_content
+from shared.models.finding import REPO_ROOT_PATH
+from ssdf_agent.skills._ci_utils import gather_ci_content, github_or_root_files
 
 _SAST_PATTERNS = re.compile(
     r"semgrep|snyk\s+test|codeql|sonarqube|sonar-scanner|bandit|gosec|brakeman|spotbugs",
@@ -44,9 +45,9 @@ def check_toolchain(source_path: str) -> dict:
             "practice": "PO-prepare-organization",
             "title": "No SAST tool configured in CI/CD",
             "description": "No static analysis security tool (semgrep, codeql, snyk, bandit, gosec) found in CI configuration",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Add a SAST tool to your CI pipeline (e.g., semgrep, CodeQL, Snyk Code)",
         })
 
@@ -58,9 +59,9 @@ def check_toolchain(source_path: str) -> dict:
             "practice": "PO-prepare-organization",
             "title": "No DAST tool configured in CI/CD",
             "description": "No dynamic analysis tool (ZAP, nuclei, nikto) found in CI configuration",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Add a DAST tool to your CI pipeline (e.g., OWASP ZAP, nuclei)",
         })
 
@@ -72,9 +73,9 @@ def check_toolchain(source_path: str) -> dict:
             "practice": "PO-prepare-organization",
             "title": "No SCA/dependency scanning configured",
             "description": "No dependency scanning tool (Dependabot, Renovate, Snyk) configuration found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Enable Dependabot or Renovate for automated dependency updates",
         })
 
@@ -83,15 +84,7 @@ def check_toolchain(source_path: str) -> dict:
 
 def _find_sca_config(root: Path) -> bool:
     """Check for SCA tool configuration files."""
-    github_dir = root / ".github"
-    if github_dir.is_dir():
-        for item in github_dir.iterdir():
-            if item.name.lower() in _SCA_FILES:
-                return True
-    for item in root.iterdir():
-        if item.is_file() and item.name.lower() in _SCA_FILES:
-            return True
-    return False
+    return any(item.name.lower() in _SCA_FILES for item in github_or_root_files(root))
 
 
 check_toolchain_tool = function_tool(check_toolchain)

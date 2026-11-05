@@ -108,7 +108,7 @@ Environment:
   VULTURE_PORT             Backend port (default: from config.ini)
   VULTURE_DB_PATH          SQLite database path (default: /data/vulture.db)
   VULTURE_DB_DSN           PostgreSQL DSN (if set, uses Postgres instead of SQLite)
-  VULTURE_USE_LLM          Enable LLM analysis (true|false; default false = skills-only)
+  VULTURE_USE_LLM          Enable LLM analysis (on for true, 1, yes or on, any case; default off = skills-only)
   VULTURE_LLM_MODEL        LLM model name (e.g. gpt-4o, claude-sonnet, gemini-pro, qwen3:1.7b)
   OPENAI_API_KEY           API key for OpenAI / OpenAI-compatible LLM audits
   OPENAI_BASE_URL          Custom OpenAI-compatible endpoint (LM Studio, vLLM, proxies)
@@ -291,7 +291,7 @@ func runScan() {
 		fmt.Fprintln(os.Stderr, "usage: vulture scan <path_or_url>")
 		os.Exit(1)
 	}
-	target := os.Args[2]
+	target := localScanTarget(os.Args[2])
 	cfg := config.Load()
 	apiURL := os.Getenv("VULTURE_API_URL")
 	if apiURL == "" {
@@ -462,6 +462,19 @@ func checkHealth(url string) string {
 		return "UP"
 	}
 	return fmt.Sprintf("ERROR (%d)", resp.StatusCode)
+}
+
+// localScanTarget is the target `vulture scan` submits: a git URL unchanged,
+// a local path made absolute. A confined server refuses a relative path, and
+// the server's working directory is not the caller's.
+func localScanTarget(arg string) string {
+	if isGitURL(arg) {
+		return arg
+	}
+	if abs, err := filepath.Abs(arg); err == nil {
+		return abs
+	}
+	return arg
 }
 
 func isGitURL(s string) bool {

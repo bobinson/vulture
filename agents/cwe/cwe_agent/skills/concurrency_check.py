@@ -6,6 +6,7 @@ from pathlib import Path
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from cwe_agent.skills._lexical import stripped_code
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -15,7 +16,7 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
-from shared.tools.snippet import extract_snippet
+from shared.tools.snippet import collect_scoped_body, extract_snippet
 
 # CWE-362: Race condition (shared mutable state without locks)
 SHARED_STATE_PATTERNS = [
@@ -69,6 +70,23 @@ THREAD_NO_SYNC = [
     re.compile(r"threading\.Thread\s*\("),
     re.compile(r"go\s+func\s*\("),
 ]
+_GO_FUNC = THREAD_NO_SYNC[1]
+# Synchronisation a goroutine shows in its OWN body without a lock, read on code
+# with strings and comments stripped (`"<-"` in a message is not a channel
+# operation): a channel send or receive (a send happens before the matching
+# receive completes), the builtin `close(ch)`, or `Done`/`Wait` on a receiver the
+# file declares as a `sync.WaitGroup` (a variable, field or parameter of that
+# type, or one bound to `sync.WaitGroup{}`, `&sync.WaitGroup{}` or
+# `new(sync.WaitGroup)`). Any other `Wait` or `Done` (`cmd.Wait()`,
+# `ctx.Done()`) orders nothing.
+_CHANNEL_SYNC = re.compile(r"<-|(?<![\w.])close\s*\(")
+_WAIT_GROUP_CALL = re.compile(r"(?<![\w$])([A-Za-z_]\w{0,63})\s{0,4}\.\s{0,4}(?:Done|Wait)\s{0,4}\(")
+_WAIT_GROUP_DECL = re.compile(
+    r"(?<![\w.])([A-Za-z_]\w{0,63})\s{1,8}\*?sync\.WaitGroup\b"
+    r"|(?<![\w.])([A-Za-z_]\w{0,63})\s{0,8}:?=\s{0,8}"
+    r"(?:&\s{0,4}sync\.WaitGroup\s{0,4}\{|sync\.WaitGroup\s{0,4}\{|new\(\s{0,4}sync\.WaitGroup\s{0,4}\))"
+)
+_GOROUTINE_BODY_LINES = 40
 
 IMPORT_LINE = re.compile(r"^\s*(?:import|from|package)\s+")
 
@@ -199,30 +217,57 @@ def _check_thread_no_sync(
     Locks are checked WITHIN the surrounding function scope (±20 lines)
     rather than file-globally. A lock_acquire elsewhere in the file
     doesn't protect this specific spawn site; conversely, a lock right
-    next to the spawn does.
+    next to the spawn does. A goroutine needs no lock when its own body
+    communicates over a channel or signals a WaitGroup.
     """
-    for pattern in THREAD_NO_SYNC:
-        if not pattern.search(line):
-            continue
-        scope_start = max(0, line_num - 21)
-        scope_end = min(len(lines), line_num + 20)
-        scope = "\n".join(lines[scope_start:scope_end])
-        if LOCK_ACQUIRE_PRESENT.search(scope):
-            return
-        finding = {
-            "severity": "high",
-            "check_id": "cwe.concurrency.no_sync",
-            "category": "CWE-662",
-            "title": "Thread/goroutine without synchronization",
-            "description": f"Concurrent execution at line {line_num} with no nearby locking primitive",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Use mutexes, locks, or channels to synchronize shared state",
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(enrich_finding(finding, "662"))
+    if not any(p.search(line) for p in THREAD_NO_SYNC) or _synchronised(line, line_num, lines):
         return
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.concurrency.no_sync",
+        "category": "CWE-662",
+        "title": "Thread/goroutine without synchronization",
+        "description": f"Concurrent execution at line {line_num} with no nearby locking primitive",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Use mutexes, locks, or channels to synchronize shared state",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "662"))
+
+
+def _synchronised(line: str, line_num: int, lines: list[str]) -> bool:
+    """A lock-acquire shape within +/-20 lines, or synchronisation in the goroutine's body."""
+    scope = "\n".join(lines[max(0, line_num - 21):line_num + 20])
+    locked = bool(LOCK_ACQUIRE_PRESENT.search(scope))
+    return locked or _goroutine_synchronised(line, line_num, lines)
+
+
+def _goroutine_synchronised(line: str, line_num: int, lines: list[str]) -> bool:
+    """True when the goroutine started on ``line`` synchronises inside its own body.
+
+    The body is the rest of the spawn line (a one-line goroutine) and the block
+    the spawn opens; a channel operation outside it orders none of its writes.
+    """
+    spawn = _GO_FUNC.search(line)
+    if spawn is None:
+        return False
+    block = collect_scoped_body(lines, line_num, True, _GOROUTINE_BODY_LINES, _GOROUTINE_BODY_LINES)
+    body = [stripped_code(text) for text in (line[spawn.end():], *block)]
+    return any(map(_CHANNEL_SYNC.search, body)) or _signals_wait_group(body, lines)
+
+
+def _signals_wait_group(body: list[str], lines: list[str]) -> bool:
+    """True when ``body`` calls `Done`/`Wait` on a WaitGroup the file declares."""
+    receivers = {m.group(1) for code in body for m in _WAIT_GROUP_CALL.finditer(code)}
+    return bool(receivers) and not receivers.isdisjoint(_wait_groups(lines))
+
+
+def _wait_groups(lines: list[str]) -> set[str]:
+    """The names the file declares as a `sync.WaitGroup`."""
+    text = "\n".join(stripped_code(t) for t in lines if "WaitGroup" in t)
+    return {"".join(names) for names in _WAIT_GROUP_DECL.findall(text)}  # one group is empty
 
 
 def _check_deadlock(

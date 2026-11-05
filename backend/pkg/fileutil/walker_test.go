@@ -37,6 +37,25 @@ func TestCountFilesIgnoresGit(t *testing.T) {
 	}
 }
 
+// The count skips the folders the scanner skips by default (pkg/scanignore),
+// not a list of its own.
+func TestCountFilesSkipsTheDefaultIgnoreFilesFolders(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a.go"), "package a")
+	for _, sub := range []string{"build", "fixtures", "src-backup", ".hg", "data"} {
+		mustMkdir(t, filepath.Join(dir, sub))
+		mustWrite(t, filepath.Join(dir, sub, "x.go"), "package x")
+	}
+
+	count, err := CountFiles(dir)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 files (a.go, data/x.go), got %d", count)
+	}
+}
+
 func TestCountFilesNonexistent(t *testing.T) {
 	_, err := CountFiles("/nonexistent/path/12345")
 	if err == nil {

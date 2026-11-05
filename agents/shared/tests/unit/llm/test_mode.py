@@ -27,7 +27,9 @@ class TestIsSkillsOnly:
         assert mode.is_skills_only() is True
 
     def test_garbage_is_skills_only(self, monkeypatch):
-        monkeypatch.setenv("VULTURE_USE_LLM", "yes")
+        # "yes" is an on-token since 0074 contract T2 (the Go backend's list);
+        # see tests/unit/test_0074_use_llm_tokens.py.
+        monkeypatch.setenv("VULTURE_USE_LLM", "maybe")
         assert mode.is_skills_only() is True
 
     def test_true_is_not_skills_only(self, monkeypatch):

@@ -8,17 +8,17 @@ appears in ``xss_agent/skills/header_injection_check.py`` (CWE-113) and in
 ``cwe_agent/skills/web_security_check.py`` (CWE-601). Neither end is anchored,
 so ordinary code matches::
 
-    const hasProfileLocation = Boolean(userAddressData);
+    const hasVenueLocation = Boolean(userKioskData);
     #          ^^^^^^^^ "Location"        ^^^^ "user"
 
-"Location" is a substring of ``hasProfileLocation`` and "user" of
-``userAddressData``, and IGNORECASE makes both reachable. Measured on a real
+"Location" is a substring of ``hasVenueLocation`` and "user" of
+``userKioskData``, and IGNORECASE makes both reachable. Measured on a real
 target, this produced a CWE-113 "HTTP header injection via user input" finding
 on a line that sets no header and contains no user input.
 
 The fix is anchoring, not narrowing: a header name counts only when it appears
 AS a header -- quoted (``"Location"``) or followed by a colon (``Location:``) --
-and a taint token counts only as a whole word, so ``userAddressData`` no longer
+and a taint token counts only as a whole word, so ``userKioskData`` no longer
 qualifies while ``req.query.next`` still does.
 """
 from __future__ import annotations

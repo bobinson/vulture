@@ -12,6 +12,7 @@ from uuid import uuid4
 import httpx
 
 from shared.discovery.sitemap import SiteMap
+from shared.transport.sse_app import agent_token_headers
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def call_discover(
         with httpx.Client(timeout=_TIMEOUT) as client:
             with client.stream(
                 "POST", f"{_DISCOVER_URL}/run", json=payload,
+                headers=agent_token_headers(),
             ) as resp:
                 event_type = ""
                 for line in resp.iter_lines():

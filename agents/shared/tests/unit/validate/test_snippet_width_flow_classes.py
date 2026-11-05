@@ -11,9 +11,9 @@ because it has no entry at all.
 
 Measured consequences on one run:
 
-* ``seed-poll-verifications.qa.ts:423`` — the judge saw +/-2 lines around a
+* ``seed-roster-checks.qa.ts:423`` — the judge saw +/-2 lines around a
   SQL sink and could not see the anchored-UUID guard at the handler entry.
-* ``updateSignUpInProgressUserAccountType.ts:52`` — a genuine plaintext
+* ``updateDraftAccountKind.ts:52`` — a genuine plaintext
   private key. The judge answered "the snippet only shows privateKey as part
   of an object literal ... does not show the database interaction",
   returned ``undecided`` at weight 0, and a real critical settled at the

@@ -14,8 +14,9 @@ import pathlib
 import re
 from typing import Any
 
-from shared.anchor import anchor_weight
+from shared.anchor import ANCHOR_CHECK_ID, anchor_weight
 from shared.env import env_truthy
+from shared.lines import parse_line
 
 from .refutation import REFUTATION_MAP, Scope, obligation_check, route_model_for
 from .types import ValidationCheck
@@ -364,12 +365,12 @@ def _suppression_check(file_path: str, line_start: int) -> ValidationCheck | Non
 # on. Re-deriving the table here would be the non-DRY alternative, and gating
 # only the AUTHORITATIVE_CHECKS membership while leaving −1.0 applied is the
 # exact silent downgrade AC34 forbids.
-_ANCHOR_ID = "anchor"
 
 # (private stamp, extras key). Numeric provenance only — the status itself is
 # the check's `result`, like every other L1 check's outcome label.
 _ANCHOR_PROVENANCE: tuple[tuple[str, str], ...] = (
     ("_claimed_line", "claimed_line"),
+    ("_claimed_line_range", "claimed_line_range"),
     ("_anchor_delta", "delta"),
     ("_anchor_candidates", "candidates"),
     ("_anchor_other_path", "other_path"),
@@ -435,7 +436,7 @@ def _anchor_check(finding: dict[str, Any]) -> ValidationCheck | None:
         return None
 
     return ValidationCheck(
-        id=_ANCHOR_ID, result=status, weight=anchor_weight(status),
+        id=ANCHOR_CHECK_ID, result=status, weight=anchor_weight(status),
         reason=_anchor_reason(finding, status),
         extras=_anchor_extras(finding),
     )
@@ -640,7 +641,7 @@ def _secret_value_check(
 #
 # An interpolated value that is provably validated cannot carry an injection,
 # and nothing in the pipeline could see that. Measured on one run:
-# `seed-poll-verifications.qa.ts:423` interpolates `pollId` into a SQL string
+# `seed-roster-checks.qa.ts:423` interpolates `pollId` into a SQL string
 # and scored 0.99 `high_confidence`, while the identifier is validated at the
 # handler entry ~100 lines above by an anchored regex
 # (`UUID_RE.test(pollId)`, `UUID_RE = /^[0-9a-f]{8}-...$/i`) — so no quote or
@@ -690,7 +691,7 @@ _INPUT_VALIDATION_ID = "input_validation"
 
 # A value that can only ever be one of a few constants cannot carry a quote
 # or a semicolon, so the sink is unreachable however it is concatenated.
-# Measured: `seed-poll-verifications.qa.ts:367` interpolates `pollId` AND
+# Measured: `seed-roster-checks.qa.ts:367` interpolates `pollId` AND
 # `label`, where `label` is a local assigned only `"UNVERIFIED"` /
 # `"PLATINUM"` / `"GOLD"`. With only the pattern and membership shapes that
 # row came out `partial` and kept its 0.99.
@@ -930,7 +931,7 @@ def _finding_checks(
 ) -> list[ValidationCheck]:
     """Every L1 check for ONE finding, in blob order."""
     file_path = f.get("file_path", "") or ""
-    line_start = int(f.get("line_start") or 0)
+    line_start = parse_line(f.get("line_start"))
     category = f.get("category", "") or ""
     san = _sanitizer_check(file_path, line_start, category)
     secret = _secret_value_check(file_path, line_start, category)

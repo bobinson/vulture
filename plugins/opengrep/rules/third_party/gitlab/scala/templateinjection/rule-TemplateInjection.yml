@@ -1,0 +1,43 @@
+# yamllint disable
+# License: MIT (c) GitLab Inc.
+# yamllint enable
+---
+rules:
+- id: "scala_templateinjection_rule-TemplateInjection"
+  languages:
+  - "scala"
+  message: |
+    A malicious user in control of a template can run malicious code on the
+    server-side. Velocity templates should be seen as scripts.
+  metadata:
+    category: "security"
+    cwe: "CWE-94"
+    owasp:
+    - "A03:2021-Injection"
+    - "A05:2025-Injection"
+    shortDescription: "Improper Control of Generation of Code ('Code Injection')"
+    security-severity: "Info"
+  pattern-either:
+  - patterns:
+    - pattern: "org.apache.velocity.app.Velocity.evaluate(..., $VAR)"
+    - pattern-not: "org.apache.velocity.app.Velocity.evaluate(..., \"...\")"
+  - patterns:
+    - pattern-not-inside: |
+        $C = ($CFG: freemarker.template.Configuration).getTemplate("...");
+        ...
+    - pattern-inside: |
+        $C = ($CFG: freemarker.template.Configuration).getTemplate($IN);
+        ...
+    - pattern: "$C.process(...)"
+  - patterns:
+    - pattern-inside: |
+        import com.mitchellbosecke.pebble.PebbleEngine;
+        ...
+    - pattern-inside: |
+        $C = $T.getTemplate($IN);
+        ...
+    - pattern-not-inside: |
+        $C = $T.getTemplate("...");
+        ...
+    - pattern: "$C.evaluate(...)"
+  severity: "ERROR"

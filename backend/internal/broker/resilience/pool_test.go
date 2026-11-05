@@ -51,9 +51,12 @@ func TestBulkheadPool_ProvidersAreIsolated(t *testing.T) {
 	<-started
 	defer close(block)
 
-	// openai's single slot is occupied → openai sheds…
-	if err := pool.For("openai").Execute(context.Background(), func(context.Context) error { return nil }); !errors.Is(err, ErrBulkheadFull) {
-		t.Fatalf("occupied provider: err = %v, want ErrBulkheadFull", err)
+	// openai's single slot is occupied → an openai call is not admitted (it
+	// queues until its context ends)…
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := pool.For("openai").Execute(ctx, func(context.Context) error { return nil }); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("occupied provider: err = %v, want it held in the queue until its context ended", err)
 	}
 	// …but lmstudio still has capacity.
 	if err := pool.For("lmstudio").Execute(context.Background(), func(context.Context) error { return nil }); err != nil {

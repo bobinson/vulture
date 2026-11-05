@@ -8,11 +8,11 @@ independent of dataflow. Execution sinks (``eval``/``exec``/``os.system``/
 (CWE-78 command injection / CWE-94 code injection), which already matches them
 with a receiver-boundary that excludes benign method calls like
 ``RegExp.exec()`` and ioredis ``pipeline.exec()``. This removed a class of
-false positives (idattestor VLT-1037/1038/1039/1043) and the historical
+false positives (a dogfood target, VLT-1037/1038/1039/1043) and the historical
 CWE-676↔CWE-78 double-report.
 
 Detection is **language-aware**: the file's language (via
-``shared.validate.language.detect_language``) selects its sink set, so a name
+``shared.language.detect_language``) selects its sink set, so a name
 that is a dangerous C library call is not flagged in a JavaScript file that
 merely defines a same-named function.
 """
@@ -24,6 +24,7 @@ from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
 from shared.env import env_truthy
+from shared.language import detect_language
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     is_generated_file,
@@ -32,7 +33,6 @@ from shared.tools.file_scanner import (
     scan_code_files,
 )
 from shared.tools.snippet import extract_snippet
-from shared.validate.language import detect_language
 
 # --- Sink patterns (data) -------------------------------------------------
 # Each is ReDoS-safe (bounded, no nested quantifiers). The C/Rust bare-name

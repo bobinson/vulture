@@ -68,7 +68,7 @@ def _of(findings: list[dict], cwe: str) -> list[dict]:
 # Attestation literals
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("cwe", ["566", "425"])
+@pytest.mark.parametrize("cwe", ["566", "425", "807", "290"])
 def test_category_literal_is_present_in_source(cwe: str) -> None:
     """The coverage extractor reads `"category": "CWE-N"` literals out of the
     skill source; a category assembled with an f-string is invisible to it."""

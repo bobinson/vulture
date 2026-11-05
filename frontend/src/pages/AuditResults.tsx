@@ -20,7 +20,7 @@ import { CrossAgentSummary } from "@/components/results/CrossAgentSummary.tsx";
 import { AuditComparisonView } from "@/components/results/AuditComparisonView.tsx";
 import { FixedFindingsList } from "@/components/results/FixedFindingsList.tsx";
 import { LLMDegradedBanner } from "@/components/results/LLMDegradedBanner.tsx";
-import { SemgrepTierNotice } from "@/components/results/SemgrepTierNotice.tsx";
+import { OpengrepTierNotice } from "@/components/results/OpengrepTierNotice.tsx";
 import { agentLabel } from "@/lib/constants.ts";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback.ts";
 
@@ -144,10 +144,10 @@ function AuditResultsView({ id }: { id: string | undefined }) {
   const steps = useSynthetic ? completedSteps : streamSteps;
   const done = isTerminal ? true : streamDone;
 
-  // Feature 0058 (R9): graceful-absence notice when the semgrep tier was
+  // Feature 0058 (R9): graceful-absence notice when the opengrep tier was
   // ticked but unavailable. Hoisted once — both the terminal and running
   // layouts render this same element (simplify review #3).
-  const semgrepNotice = <SemgrepTierNotice lines={lines} />;
+  const opengrepNotice = <OpengrepTierNotice lines={lines} />;
 
   // Feature 0046 issue #19: merge live L5 verdict updates into the
   // findings array so cards / table show the in-progress badge update
@@ -239,7 +239,7 @@ function AuditResultsView({ id }: { id: string | undefined }) {
             captured at audit-creation time when LLM was unreachable. */}
         <LLMDegradedBanner preset={audit?.degraded_reason} />
 
-        {semgrepNotice}
+        {opengrepNotice}
 
         {/* Status bar */}
         <div className="flex items-center justify-between">
@@ -394,6 +394,7 @@ function AuditResultsView({ id }: { id: string | undefined }) {
             owaspCategory={owaspCategory}
             onOwaspCategoryChange={setOwaspCategory}
             onLineageSaved={onLineageSaved}
+            originsRecorded={audit?.origins_recorded}
           />
         )}
 
@@ -431,7 +432,7 @@ function AuditResultsView({ id }: { id: string | undefined }) {
   // --- RUNNING / PENDING layout: stream-first ---
   return (
     <div className="space-y-5 max-w-6xl">
-      {semgrepNotice}
+      {opengrepNotice}
 
       {/* Status bar */}
       <div className="flex items-center gap-4">

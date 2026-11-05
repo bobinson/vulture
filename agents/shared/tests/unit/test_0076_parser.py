@@ -54,6 +54,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared inputs. One tree of fixtures, reused (DRY) — the ranking, tie-break and
 # AC26 tests all need the same "real payload" and "decoy" shapes.
@@ -569,7 +571,8 @@ def test_the_two_forbidden_field_sets_are_disjoint():
     it impossible for an operator to reverse the dedup regression without also
     re-trusting model-authored evidence.
     """
-    from shared.audit_runner import _MODEL_FORBIDDEN_CHECK_ID, _MODEL_FORBIDDEN_SNIPPET
+    from shared.audit_runner import _MODEL_CHECK_ID_FIELD as _MODEL_FORBIDDEN_CHECK_ID
+    from shared.audit_runner import _MODEL_FORBIDDEN_SNIPPET
 
     assert "code_snippet" in _MODEL_FORBIDDEN_SNIPPET
     assert "check_id" in _MODEL_FORBIDDEN_CHECK_ID
@@ -628,21 +631,18 @@ def test_stripping_check_id_changes_no_finding_count(monkeypatch):
 
     Same two rows as the control above, but the LLM row now goes through the
     real parse path. The strip must preserve the identity as `_model_check_id`
-    and `_dedup_key` must fall back to it, so the survivor count is IDENTICAL to
-    what it is with `VULTURE_LLM_TRUST_MODEL_CHECK_ID=true` (no strip at all).
+    and `_dedup_key` must fall back to it, so the LLM row survives next to the
+    skill row instead of being deleted by it.
+
+    Reworked by 0074 T-1.5 (signed off): the comparison against
+    `VULTURE_LLM_TRUST_MODEL_CHECK_ID=true` is gone with the switch.
     """
     from shared.audit_runner import _deduplicate_findings
 
     stripped = _parse_structured(monkeypatch, **_MODEL_ROW)
-    stripped_survivors = _deduplicate_findings([_SKILL_ROW], [stripped], "")
 
-    monkeypatch.setenv("VULTURE_LLM_TRUST_MODEL_CHECK_ID", "true")
-    trusted = _parse_structured(monkeypatch, **_MODEL_ROW)
-    trusted_survivors = _deduplicate_findings([_SKILL_ROW], [trusted], "")
-
-    assert len(stripped_survivors) == len(trusted_survivors) == 1, (
-        "AC26: stripping the model's check_id must change the post-dedup count "
-        f"by ZERO; stripped={len(stripped_survivors)} trusted={len(trusted_survivors)}"
+    assert len(_deduplicate_findings([_SKILL_ROW], [stripped], "")) == 1, (
+        "AC26: stripping the model's check_id must change the post-dedup count by ZERO"
     )
 
 
@@ -667,34 +667,47 @@ def test_the_stripped_identity_is_preserved_as_model_check_id(monkeypatch):
     )
 
 
-def test_trust_model_check_id_restores_the_prior_keying(monkeypatch):
-    """`VULTURE_LLM_TRUST_MODEL_CHECK_ID=true` (§5.9) reverses P1's strip on its
-    own, read at call time."""
-    from shared.audit_runner import _dedup_key
+# ─────────────────────────────────────────────────────────────────────────────
+# 0074 T-1.5 / AC26' — `VULTURE_LLM_TRUST_MODEL_CHECK_ID` is retired (rule 6).
+# It had no effect on the final row: `_restore_dedup_identity` publishes the
+# model's check_id after the strip whichever value it held. Reworked with owner
+# sign-off; the restore itself stays and is pinned below.
+# ─────────────────────────────────────────────────────────────────────────────
 
-    assert not _parse_structured(monkeypatch, **_MODEL_ROW).get("check_id")
+_RETIRED_SWITCH = "VULTURE_LLM_TRUST_MODEL_CHECK_ID"
 
-    monkeypatch.setenv("VULTURE_LLM_TRUST_MODEL_CHECK_ID", "true")
-    trusted = _parse_structured(monkeypatch, **_MODEL_ROW)
-    assert trusted.get("check_id") == _MODEL_ROW["check_id"], (
-        "the switch must restore the model-authored check_id verbatim"
+
+@pytest.mark.parametrize("switch", [None, "true", "false"])
+def test_carry_check_id_does_not_read_the_retired_switch(monkeypatch, switch):
+    """AC26' / T-1.5: `_carry_check_id` gives ONE answer whatever the retired
+    switch holds (unset is the suite default) — the model's value, preserved
+    privately for the restore."""
+    from shared.audit_runner import _carry_check_id
+
+    if switch is not None:
+        monkeypatch.setenv(_RETIRED_SWITCH, switch)
+
+    assert _carry_check_id(dict(_MODEL_ROW)) == {"_model_check_id": _MODEL_ROW["check_id"]}, (
+        f"{_RETIRED_SWITCH}={switch!r}: the switch is retired; _carry_check_id must not branch on it"
     )
-    assert _dedup_key(trusted)[0] == _MODEL_ROW["check_id"], "and with it the prior keying"
-
-    monkeypatch.setenv("VULTURE_LLM_TRUST_MODEL_CHECK_ID", "false")
-    assert not _parse_structured(monkeypatch, **_MODEL_ROW).get("check_id"), (
-        "flipping back must take effect with no module reload"
-    )
 
 
-def test_trust_model_check_id_does_not_also_restore_the_snippet(monkeypatch):
-    """§5.1, stated as the reason the two switches are separate: an operator who
-    hits a dedup regression can reverse exactly that "without also restoring
-    model-authored snippets"."""
-    monkeypatch.setenv("VULTURE_LLM_TRUST_MODEL_CHECK_ID", "true")
-    row = _parse_structured(monkeypatch, **_MODEL_ROW)
+@pytest.mark.parametrize("quote_mode", ["off", "observe", "enforce"])
+def test_final_row_carries_the_model_check_id_publicly(monkeypatch, tmp_path, quote_mode):
+    """AC26' / T-1.5: through the choke point (`_verify_and_strip`) the final row
+    carries the model's check_id as its PUBLIC dedup identity, with no private
+    carrier left and no model-authored snippet, in every quote-verify mode. The
+    restore is the behaviour that stays (0057's LLM duplicate still collapses
+    onto its skill twin). The retired switch is not varied here: that nothing
+    reads it is test_0074_env_inventory's and the test above's to prove."""
+    from shared.audit_runner import _verify_and_strip
 
-    assert row.get("check_id") == _MODEL_ROW["check_id"]
-    assert not row.get("code_snippet"), (
-        "restoring the dedup identity must not re-open the fabricated-evidence channel"
-    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "db.py").write_text("x = 1\n" * 41 + "cursor.execute(q + uid)\n")
+    monkeypatch.setenv("VULTURE_LLM_QUOTE_VERIFY", quote_mode)
+
+    row = _verify_and_strip([_parse_structured(monkeypatch, **_MODEL_ROW)], str(tmp_path))[0]
+
+    assert (row.get("check_id"), "_model_check_id" in row, row.get("code_snippet")) == (
+        _MODEL_ROW["check_id"], False, None,
+    ), row

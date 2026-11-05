@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from shared.validate.language import detect_language
+from shared.language import detect_language
 
 
 @pytest.mark.parametrize("path,expected", [
@@ -75,7 +75,7 @@ def test_detect_language_ignores_query_strings_via_basename() -> None:
 
 def test_feature_0060_extension_additions():
     """Feature 0060: close detect_language coverage cliffs (RED-1)."""
-    from shared.validate.language import detect_language
+    from shared.language import detect_language
     assert detect_language("a.cjs") == "javascript"
     assert detect_language("a.mts") == "typescript"
     assert detect_language("a.cts") == "typescript"

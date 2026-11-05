@@ -11,10 +11,11 @@ learns from each attempt rather than blindly repeating.
 import asyncio
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from enum import Enum
 from urllib.parse import urlparse
 
+from prove_agent.evidence_scrub import clip, note_route, scrubbing
 from prove_agent.protocols.detection import TargetCapabilities
 from prove_agent.strategies.base import (
     AttemptRecord,
@@ -73,11 +74,15 @@ def _synthesize_timeout_evidence(
     title: str,
     timeout: float,
     attempts: list[AttemptRecord],
+    scrub: Callable[[str], str] = str,
 ) -> str:
     """Build rich timeout evidence from partial attempts.
 
     Instead of a generic "Timed out after Xs", synthesizes forensics
-    from whatever attempts completed before the timeout.
+    from whatever attempts completed before the timeout. ``scrub`` runs on
+    the raw attempt evidence BEFORE the 200-character cut (feature 0101): a
+    path or code line crossing the cut no longer matches its marker, and the
+    fragment was persisted.
     """
     if not attempts:
         return f"Timed out after {timeout:.0f}s with no completed attempts"
@@ -87,7 +92,7 @@ def _synthesize_timeout_evidence(
         f"Last: {last.method} {last.url_path} -> HTTP {last.status_code}.",
     ]
     if last.evidence:
-        parts.append(f"Evidence: {last.evidence[:200]}")
+        parts.append(f"Evidence: {clip(scrub(last.evidence), 200)}")
     statuses = sorted({a.status_code for a in attempts})
     parts.append(f"Status codes seen: {statuses}")
     return " ".join(parts)
@@ -112,6 +117,10 @@ async def prove_finding_with_timeout(
     """
     finding_id = finding.get("id", "unknown")
     title = finding.get("title", "Unknown finding")
+    # Feature 0101: the model is shown this finding's path and code excerpt
+    # and repeats them; every event for the finding (the timeout result too)
+    # is emitted through an emitter that removes them. See evidence_scrub.
+    emitter = scrubbing(emitter, finding, target_url=staging_url)
     events: list[str] = []
     timed_out = False
     # Shared attempt sink so timeout wrapper can inspect partial progress
@@ -137,7 +146,7 @@ async def prove_finding_with_timeout(
         yield event
 
     if timed_out:
-        evidence = _synthesize_timeout_evidence(title, timeout, attempt_sink)
+        evidence = _synthesize_timeout_evidence(title, timeout, attempt_sink, scrub=emitter.scrub)
         yield emitter.text_message(
             f"Timeout ({timeout:.0f}s) reached for {title}"
         )
@@ -231,6 +240,9 @@ async def prove_finding(
             continue
 
         consecutive_failures = 0
+        # Feature 0101: this path was requested from the target; a finding
+        # file name that is also this route (/package.json) is target content.
+        note_route(emitter, plan.url_path)
 
         # Record rich attempt data for self-learning
         proto_used = result.protocol_used or plan.protocol.value

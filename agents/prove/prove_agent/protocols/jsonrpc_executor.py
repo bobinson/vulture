@@ -13,6 +13,7 @@ import websockets
 
 from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.protocols.detection import TargetCapabilities, to_ws_url
+from prove_agent.public_error import describe_failure, log_failure
 from prove_agent.strategies.base import (
     ExecutionResult,
     FailureReason,
@@ -134,8 +135,10 @@ async def _jsonrpc_over_http(
             protocol_used=ProbeProtocol.JSONRPC.value,
         )
     except httpx.ConnectError as exc:
+        log_failure(logger, "jsonrpc_http_probe", exc)
         return ExecutionResult(
-            conclusive=False, evidence=f"JSON-RPC/HTTP connection failed: {exc}",
+            conclusive=False,
+            evidence=f"JSON-RPC/HTTP connection failed: {describe_failure(exc)}",
             failure_reason=FailureReason.CONNECTION_ERROR,
             protocol_used=ProbeProtocol.JSONRPC.value,
         )
@@ -176,8 +179,9 @@ async def _jsonrpc_over_websocket(
             reason = FailureReason.PROTOCOL_ERROR
         else:
             reason = FailureReason.CONNECTION_ERROR
+        log_failure(logger, "jsonrpc_ws_probe", exc)
         return ExecutionResult(
-            conclusive=False, evidence=f"JSON-RPC/WS error: {exc}",
+            conclusive=False, evidence=f"JSON-RPC/WS error: {describe_failure(exc)}",
             failure_reason=reason,
             protocol_used=ProbeProtocol.JSONRPC.value,
         )

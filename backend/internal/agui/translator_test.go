@@ -2,6 +2,7 @@ package agui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/vulture/backend/internal/model"
@@ -211,5 +212,52 @@ func TestTranslateUnknown(t *testing.T) {
 	}
 	if events != nil {
 		t.Fatalf("expected nil events for unknown, got %d", len(events))
+	}
+}
+
+// The completeness check needs to know WHICH agent finished and HOW: agent_end
+// is the only statement an agent makes that its run ended, and its status is
+// what separates a finished run from a skipped or failed one.
+func TestTranslateAgentEndCarriesAgentAndStatus(t *testing.T) {
+	for _, status := range []string{"completed", "skipped", "failed"} {
+		data, _ := json.Marshal(map[string]string{"run_id": "r-1", "status": status})
+		events, err := Translate("prove", "agent_end", data)
+		if err != nil {
+			t.Fatalf("translate: %v", err)
+		}
+		if len(events) != 1 || events[0].Type != model.EventStepFinished {
+			t.Fatalf("expected one StepFinished event, got %+v", events)
+		}
+		if events[0].AgentType != "prove" || events[0].RunStatus != status {
+			t.Errorf("status %q: got agent=%q status=%q", status, events[0].AgentType, events[0].RunStatus)
+		}
+	}
+}
+
+// An agent_end with no status (or an unreadable one) states nothing about the
+// run, so it must read as no status rather than as completed.
+func TestTranslateAgentEndWithoutStatusHasNone(t *testing.T) {
+	for _, data := range []string{`{}`, ``, `not json`} {
+		events, err := Translate("chaos", "agent_end", json.RawMessage(data))
+		if err != nil {
+			t.Fatalf("translate %q: %v", data, err)
+		}
+		if len(events) != 1 || events[0].RunStatus != "" {
+			t.Errorf("data %q: expected no status, got %+v", data, events)
+		}
+	}
+}
+
+// RunStatus feeds the backend's completeness check only; the StepFinished
+// frame the frontend receives must not change shape because of it.
+func TestRunStatusIsNotOnTheWire(t *testing.T) {
+	data, _ := json.Marshal(map[string]string{"status": "completed"})
+	events, _ := Translate("prove", "agent_end", data)
+	frame, err := EncodeFrame(events[0])
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if strings.Contains(string(frame), "completed") {
+		t.Errorf("the agent's run status leaked onto the wire: %s", frame)
 	}
 }

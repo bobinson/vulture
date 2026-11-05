@@ -25,10 +25,11 @@ pair, with no change to the obligation gate.
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from shared.tools.file_scanner import scan_code_files
 
 __all__ = [
     "ExpressRouteModel",
@@ -39,11 +40,6 @@ __all__ = [
 
 # Files worth parsing for routes. Deliberately narrow: this runs once per repo.
 _SOURCE_SUFFIXES = (".ts", ".js", ".mjs", ".tsx", ".jsx")
-
-_SKIP_DIRS = {
-    ".git", "node_modules", "dist", "build", "coverage", "__pycache__",
-    ".venv", "venv", "vendor", "third_party",
-}
 
 # app.get( / router.use( / app.all(
 _MOUNT_RE = re.compile(
@@ -337,33 +333,38 @@ def _scan_routes(path: str, text: str) -> list[Route]:
 def build_route_model(root: str, *, max_files: int = 4000) -> ExpressRouteModel:
     """Build the route model for a source tree. One pass per repository.
 
-    Cheap by construction: it reads only JS/TS sources and skips the usual
-    vendored directories. The caller is expected to cache it — agents are
-    separate processes, so an in-memory model would otherwise be rebuilt once
-    per agent.
+    Cheap by construction: it reads only JS/TS sources. It reads them from
+    the audit's own file walk, never a walk of its own: the model REFUTES
+    findings, so a mount in a file the audit never reads -- gitignored build
+    output, a ``.vultureignore``d recording, a ``mocks/`` tree -- must not be
+    able to discharge a finding in code the audit did read. The caller is
+    expected to cache it — agents are separate processes, so an in-memory
+    model would otherwise be rebuilt once per agent.
     """
     routes: list[Route] = []
     effects: dict[str, dict[str, str]] = {}
     defs: dict[str, tuple[str, int, int]] = {}
-    seen = 0
 
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
-        for fn in filenames:
-            if not fn.endswith(_SOURCE_SUFFIXES):
-                continue
-            seen += 1
-            if seen > max_files:
-                break
-            path = os.path.join(dirpath, fn)
-            try:
-                with open(path, encoding="utf-8", errors="replace") as fh:
-                    text = fh.read()
-            except OSError:
-                continue
-            file_defs = _scan_definitions(path, text)
-            defs.update(file_defs)
-            effects.update(_scan_middleware_effects(text, file_defs))
-            routes.extend(_scan_routes(path, text))
+    for path in _route_sources(root, max_files):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        file_defs = _scan_definitions(path, text)
+        defs.update(file_defs)
+        effects.update(_scan_middleware_effects(text, file_defs))
+        routes.extend(_scan_routes(path, text))
 
     return ExpressRouteModel(routes=routes, effects=effects, defs=defs)
+
+
+def _route_sources(root: str, max_files: int) -> list[str]:
+    """The walked JS/TS files of ``root``, at most ``max_files``.
+
+    The scan set resolves a backup copy (``routes.js.bak``) to the type it
+    shadows and folds in canonical extensionless names (``Dockerfile``); the
+    route model wants neither, so the real suffix is checked again.
+    """
+    files = scan_code_files(root, extensions=frozenset(_SOURCE_SUFFIXES), max_files=max_files)
+    return [str(p) for p in files if p.name.endswith(_SOURCE_SUFFIXES)]

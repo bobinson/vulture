@@ -1,0 +1,1294 @@
+{
+  "schema_version": 2,
+  "sets": {
+    "0xdea": {
+      "commit": "60d33a2ab635e529fc7aad9328005c9ba8ac99d3",
+      "files": {
+        "rules/c/argv-envp-access.yaml": {
+          "license": "MIT",
+          "sha256": "086816dd1bc68c3168b52ceba5941a6701bf6c388306fe8f0f7be07a9687be3f"
+        },
+        "rules/c/command-injection.yaml": {
+          "license": "MIT",
+          "sha256": "9853fbecd89048df3c6e941b3f494d9bfd33f6d3cdfc3312bd1c89e0e89ec5ae"
+        },
+        "rules/c/double-free.yaml": {
+          "license": "MIT",
+          "sha256": "7f97efbc6bd0c73e55aa762341323218ef80ce05e13f9c767ccc6ba7c7a9f56e"
+        },
+        "rules/c/format-string-bugs.yaml": {
+          "license": "MIT",
+          "sha256": "d6127079635340bd65c9ea2b076401be1b365d552076d740df2eb65989593f5c"
+        },
+        "rules/c/high-entropy-assignment.yaml": {
+          "license": "MIT",
+          "sha256": "a04983ace2243f7e390302fa3d2b71015fdfb380cd74389f231740b2f7a0f936"
+        },
+        "rules/c/incorrect-order-setuid-setgid.yaml": {
+          "license": "MIT",
+          "sha256": "4ab184cebdf06464d3b4195c25d010ddb5a87d87b5a4eaed3a8f9dd12f356eb3"
+        },
+        "rules/c/incorrect-unsigned-comparison.yaml": {
+          "license": "MIT",
+          "sha256": "131e9eeb059717d38a5be0e0dfa44fc8fde1cfcca1cd998515ce11586ca8b352"
+        },
+        "rules/c/incorrect-use-of-free.yaml": {
+          "license": "MIT",
+          "sha256": "36f45f59725115bc3a945955d427d1484306b0bc13393ec2d64d3589ad93c860"
+        },
+        "rules/c/incorrect-use-of-memset.yaml": {
+          "license": "MIT",
+          "sha256": "a4d32967836736f8c06933454d16775d272dfa448397495b8cbf768d25b04907"
+        },
+        "rules/c/incorrect-use-of-sizeof.yaml": {
+          "license": "MIT",
+          "sha256": "cd4a492d354a290ce4dc4f481bc82f212dc44478d0ebffb03375284cff147278"
+        },
+        "rules/c/incorrect-use-of-strncat.yaml": {
+          "license": "MIT",
+          "sha256": "7450acff6d03c97e2b1c5e92a316afd86536b7b665478c1acbbf3d6206f69899"
+        },
+        "rules/c/insecure-api-access-stat.yaml": {
+          "license": "MIT",
+          "sha256": "d807b74d184e7283e1fdf3193566465a0349918322b2712981432b4c42d9e874"
+        },
+        "rules/c/insecure-api-alloca.yaml": {
+          "license": "MIT",
+          "sha256": "9bd9c4dfb3990851bc6938ed646e7f53bdbe765690b8288a1ed6950d3317c9cc"
+        },
+        "rules/c/insecure-api-ato.yaml": {
+          "license": "MIT",
+          "sha256": "24b73fd7d77bb35ddc9cf71b7dc1450ec8df9444c7d46227841ba30dd91e20df"
+        },
+        "rules/c/insecure-api-gets.yaml": {
+          "license": "MIT",
+          "sha256": "184afb46808532ae024322322b0bc0171859ef833b79e8ee7ea47a84820d067f"
+        },
+        "rules/c/insecure-api-mktemp-tmpnam-tempnam.yaml": {
+          "license": "MIT",
+          "sha256": "60e371556add3bf80b7ac29d2de6eae7f3981c3245c596091005fddc14e954d6"
+        },
+        "rules/c/insecure-api-rand-srand.yaml": {
+          "license": "MIT",
+          "sha256": "7267d8e5291bc848d1c6baa4da2387d31900f692ccd9df037dd86a1fa93d201f"
+        },
+        "rules/c/insecure-api-scanf.yaml": {
+          "license": "MIT",
+          "sha256": "9150c50d7bf403fcbdc4a403c235e43264282628ffa3feb8cdbe91a8cf417814"
+        },
+        "rules/c/insecure-api-signal.yaml": {
+          "license": "MIT",
+          "sha256": "9d18af572463b2b46bc34ab3041eb311905918292555ca0de8a72beb07fd42cd"
+        },
+        "rules/c/insecure-api-sprintf-vsprintf.yaml": {
+          "license": "MIT",
+          "sha256": "41da105efae2db54897649a199a0b38cbcc6d2077064a7b83b6ca7332d33c875"
+        },
+        "rules/c/insecure-api-strcpy-strcat.yaml": {
+          "license": "MIT",
+          "sha256": "87585575b9e92174efec337a5a7cbf4c17f176b9ad9a3988224caf8a3f420ed6"
+        },
+        "rules/c/integer-truncation.yaml": {
+          "license": "MIT",
+          "sha256": "907821bce0d8882822678465093cd70add09db9232db729f9589c09d15172b6f"
+        },
+        "rules/c/integer-wraparound.yaml": {
+          "license": "MIT",
+          "sha256": "27d4948843de5cccfafe020f16d0904c9a6b05a4d830138b5fe23c7c926fc5c7"
+        },
+        "rules/c/interesting-api-calls.yaml": {
+          "license": "MIT",
+          "sha256": "51e0f542b1f555c76a78621654391a4eeb06fa7175fd94a9b77254fa64c2af57"
+        },
+        "rules/c/memory-address-exposure.yaml": {
+          "license": "MIT",
+          "sha256": "269e000d559b001d77f8a03defe2aff1f5e7e518e50623947d46a2ba98dd78fb"
+        },
+        "rules/c/mismatched-memory-management-cpp.yaml": {
+          "license": "MIT",
+          "sha256": "13be850b69ecc989aa5e611a76590e79806e8cb8e726399ac853034a489400fd"
+        },
+        "rules/c/mismatched-memory-management.yaml": {
+          "license": "MIT",
+          "sha256": "55331d496f71e8e6eae47c36312a4c09b214fa5092d189cc3772c671c009eaf3"
+        },
+        "rules/c/missing-return.yaml": {
+          "license": "MIT",
+          "sha256": "3d9c6ae639bee6ffa94941a9ded7c50e9a61774bce7bea281eee322fe7e3d67b"
+        },
+        "rules/c/off-by-one.yaml": {
+          "license": "MIT",
+          "sha256": "03123e96d70bbc5e8c93683ee54385e22e4573f252e4cfc03343d60e7df0f1e2"
+        },
+        "rules/c/overlapping-source-destination.yaml": {
+          "license": "MIT",
+          "sha256": "d2545f62ac3566fceeb73056263c80b6089fbcbe7eac0bc811fc7e0da6a9beb8"
+        },
+        "rules/c/pointer-subtraction.yaml": {
+          "license": "MIT",
+          "sha256": "b6b2162322051138064112ccb4c0c4cfeda4c91d67bcccdca7f1de197a9a54fb"
+        },
+        "rules/c/putenv-stack-var.yaml": {
+          "license": "MIT",
+          "sha256": "921496b89f6a1ea8eed1a5dd49a2a27c5f12eb3e7ddbc51e211ae51a9b25d2d3"
+        },
+        "rules/c/regex-dos.yaml": {
+          "license": "MIT",
+          "sha256": "6db97a2eade6cf5f3843f26e1deb6d1aed00017820329dd1c2330b119a14845a"
+        },
+        "rules/c/ret-stack-address.yaml": {
+          "license": "MIT",
+          "sha256": "c7278ecd49da34c42b11e082c30fe6b4fd0c5e5254f7c8c8e572a4a9fe1b5ddc"
+        },
+        "rules/c/signed-unsigned-conversion.yaml": {
+          "license": "MIT",
+          "sha256": "a4ec62b4b8be9865dd6a55fd576afc21abefcec1608bc8d101ca1665027e61dd"
+        },
+        "rules/c/suspicious-assert.yaml": {
+          "license": "MIT",
+          "sha256": "426b08edc9ae88ee07d67da4507000c51f579ac1071627a4005be715b53c7b95"
+        },
+        "rules/c/typos.yaml": {
+          "license": "MIT",
+          "sha256": "2fd2073cd29651c4331bbec87d5ae878314c3fe613d02671789ace51ec5701a2"
+        },
+        "rules/c/unchecked-ret-malloc.yaml": {
+          "license": "MIT",
+          "sha256": "1303d90463c816b244081edc7e0647942fe0e1b9f25cf6599ab7bf13d23f3606"
+        },
+        "rules/c/unchecked-ret-scanf.yaml": {
+          "license": "MIT",
+          "sha256": "a60b1f8d6fd38b1d77f889408bd23d5f2dd4bd7ac116885b2a2f9a6d8b8eb8ac"
+        },
+        "rules/c/unchecked-ret-setuid-seteuid.yaml": {
+          "license": "MIT",
+          "sha256": "cdba3b17c797115bd416fc22e92a152331017fd6d9c590e0fd0948079e60bd7f"
+        },
+        "rules/c/unsafe-ret-snprintf-vsnprintf.yaml": {
+          "license": "MIT",
+          "sha256": "729726facc17bed1b92a2c795fbf7144acae5335a92bf026b37a62d228df1645"
+        },
+        "rules/c/unsafe-ret-strlcpy-strlcat.yaml": {
+          "license": "MIT",
+          "sha256": "0e4d1141a5e619e663d4419ff9a66ac4e7df53869262de0570c70079fbf4b21f"
+        },
+        "rules/c/unsafe-strlen.yaml": {
+          "license": "MIT",
+          "sha256": "b6b91d8663d1e5a8d872cd001092a56a90fafd1a6f5d9d859e6153313e490449"
+        },
+        "rules/c/unterminated-string-strncpy.yaml": {
+          "license": "MIT",
+          "sha256": "15eeecc12664c983d4b7f02e7c4be2e4bdb6bc7cb4722939df7dd6874f41003f"
+        },
+        "rules/c/use-after-free.yaml": {
+          "license": "MIT",
+          "sha256": "c9c3d0eb87947adcf0313de1b3257e48c2b8bc59c332c990bcb4ad97f96add2b"
+        },
+        "rules/c/use-of-source-size-in-copy.yaml": {
+          "license": "MIT",
+          "sha256": "bdfdaa7e03356ab5dd34cd9eb28bafdc43e62b501500dccf1869a61debefa4fa"
+        },
+        "rules/c/write-into-stack-buffer.yaml": {
+          "license": "MIT",
+          "sha256": "8316f1d6cec93e9a6d9c963bf5684ab145dd5e2748afdd8b6220bf6b4884a58f"
+        }
+      },
+      "license_files": [
+        "third_party/0xdea/LICENSE"
+      ],
+      "path": "third_party/0xdea",
+      "source": "https://github.com/0xdea/semgrep-rules"
+    },
+    "gitlab": {
+      "commit": "9c375dc49a7cd431e2b95c2620af651ef1d096a4",
+      "files": {
+        "csharp/cookies/rule-CookieWithoutHttpOnlyFlag.yml": {
+          "license": "MIT",
+          "sha256": "bd919b8ed682d9908a09c37198b69c76fa2dd51e55313a9fbcd02d3368668315"
+        },
+        "csharp/cookies/rule-CookieWithoutSSLFlag.yml": {
+          "license": "MIT",
+          "sha256": "273c46e66d373caddea632e963ca2fa684049fb462c172667fba30dfe592f39d"
+        },
+        "csharp/crypto/rule-WeakCipherAlgorithm.yml": {
+          "license": "MIT",
+          "sha256": "d3b96f2fd5e2563210848fd671305b00334e9801a8f976f0bdabc03e19fc60b2"
+        },
+        "csharp/crypto/rule-WeakCipherMode.yml": {
+          "license": "MIT",
+          "sha256": "bb8a0f1ae5effbbacdb921b5f1875d9d8a3198133898cb12ed6ed42e77a663a1"
+        },
+        "csharp/crypto/rule-WeakHashingFunction.yml": {
+          "license": "MIT",
+          "sha256": "776f11c75085dc15b765e4805df42ad1db1c43843d04fd265d933dffced41def"
+        },
+        "csharp/crypto/rule-WeakRNG.yml": {
+          "license": "MIT",
+          "sha256": "4250d4095d56433c69dba21fa2ba30949ec0911833126b60fccdf89f5be971c7"
+        },
+        "csharp/csrf/rule-Csrf.yml": {
+          "license": "MIT",
+          "sha256": "705a6526bb8e956797ae478834d4dc790d3b5576961a8fb583c9fa1faeb460db"
+        },
+        "csharp/deserialization/rule-InsecureDeserialization.yml": {
+          "license": "MIT",
+          "sha256": "f76f0c7149adff1aaea89eee34110dea67dd0cf0657fa2d30c95e6aac24fe78f"
+        },
+        "csharp/endpoint/rule-UnvalidatedRedirect.yml": {
+          "license": "MIT",
+          "sha256": "06d812358149d9a1024aeb115b0a46685bc4aeb17e490e4dea053aef32e473af"
+        },
+        "csharp/injection/rule-CommandInjection.yml": {
+          "license": "MIT",
+          "sha256": "5a1f12f1fbb358abf67577e7354bf550b724da007ac768ea43ac892162b24059"
+        },
+        "csharp/injection/rule-LdapInjection.yml": {
+          "license": "MIT",
+          "sha256": "1267ed018f93792ff11daa4615059e2e8c64cb86d167729a34a91606790aa38c"
+        },
+        "csharp/injection/rule-SQLInjection.yml": {
+          "license": "MIT",
+          "sha256": "4f11305df5a307ce15998705fca4b3e69eae9b664c7162932e812809345c148c"
+        },
+        "csharp/injection/rule-XPathInjection.yml": {
+          "license": "MIT",
+          "sha256": "0f84b7e3bf44f31a93712b09054263deffae64b398a6c2ef621b40947533a34b"
+        },
+        "csharp/injection/rule-XmlDocumentXXEInjection.yml": {
+          "license": "MIT",
+          "sha256": "f25f954abf94d999c2bc50186ca476a86666cf8bc3732a3e08e8531825f12ce6"
+        },
+        "csharp/injection/rule-XmlReaderXXEInjection.yml": {
+          "license": "MIT",
+          "sha256": "25a97bbfc7d6b5375aaeeb3340d82d4cd5a2b230049ebfb95e1f51890d4655d7"
+        },
+        "csharp/other/rule-UnsafeXSLTSettingUsed.yml": {
+          "license": "MIT",
+          "sha256": "0acb5db5eec3715674152b6115fc857d98f4ccbc951f3123ffdbb8c8fd4c3fd8"
+        },
+        "csharp/password/rule-PasswordComplexity.yml": {
+          "license": "MIT",
+          "sha256": "12a34204aceab985c2e9abb27be6b4530ebf9dec3bb765302e98466387546259"
+        },
+        "csharp/path/rule-PathTraversal.yml": {
+          "license": "MIT",
+          "sha256": "eaf60803162fe42b2291c7672d37d4718026b53ba457603f5180006ca898a973"
+        },
+        "csharp/validation/rule-InputValidation.yml": {
+          "license": "MIT",
+          "sha256": "fa3ed1c13d1631dbbf02daeafdb52a112237a5fd700786d35e898ebf575b6a71"
+        },
+        "csharp/xss/rule-HtmlElementXss.yml": {
+          "license": "MIT",
+          "sha256": "c907d9031e12a8b3e0c488ba06c3506685050357b2a7a5ee5a3f2cc425214f1a"
+        },
+        "csharp/xss/rule-ScriptXss.yml": {
+          "license": "MIT",
+          "sha256": "93bcb5e68b7b20c7c57e5de5500963bd1ea6c9c5d4e3695d347b1f4194a4a3eb"
+        },
+        "go/blocklist/rule-blocklist-des.yml": {
+          "license": "Apache-2.0",
+          "sha256": "3847da3d5b77b31882aab293319871a852c99b534bb322c3a602331912e77287"
+        },
+        "go/blocklist/rule-blocklist-md5.yml": {
+          "license": "Apache-2.0",
+          "sha256": "1284f0ec904497a6ca6e2bf3eb44c87ad28a1480ddf12c3be5496885a1659a66"
+        },
+        "go/blocklist/rule-blocklist-rc4.yml": {
+          "license": "Apache-2.0",
+          "sha256": "93dd91d71c4733c59b4528fb70ab578681be4d521fcc78ea97db5d0e920fef6e"
+        },
+        "go/blocklist/rule-blocklist-sha1.yml": {
+          "license": "Apache-2.0",
+          "sha256": "838e84783441f8f293a2f96da0421ea1aa1fc81276d741e36d9350c516067f1c"
+        },
+        "go/crypto/rule-badtlssettings.yml": {
+          "license": "Apache-2.0",
+          "sha256": "293cbc1ba2b8cbcf2357392f02ad2fc5b8a71c91e2b2481145671d75bd3e1568"
+        },
+        "go/crypto/rule-insecure-ignore-host-key.yml": {
+          "license": "Apache-2.0",
+          "sha256": "8b44db76de65512904ba20ea1eac327c682d50dfb2d0d8551e2915c8b417dc34"
+        },
+        "go/crypto/rule-tlsversion.yml": {
+          "license": "MIT",
+          "sha256": "447cfe992de2ef972ae8ebda534653290c23d12a0860385401be779634891d9d"
+        },
+        "go/crypto/rule-weakkeystrength.yml": {
+          "license": "Apache-2.0",
+          "sha256": "4bc5ea4080746745677533317f4b8a15c02561ee2462bad4b1a278ed0cdfa137"
+        },
+        "go/crypto/rule-weakrandsource.yml": {
+          "license": "Apache-2.0",
+          "sha256": "219f254406b3b425ee7e256bb3a42949caf3b45151f9608b29183d29dcdb536a"
+        },
+        "go/file_permissions/rule-fileperm.yml": {
+          "license": "Apache-2.0",
+          "sha256": "fce51d68dce96d0472371290d2ad5177fedc82c4a04058a4007ea81203a2e894"
+        },
+        "go/file_permissions/rule-mkdir.yml": {
+          "license": "Apache-2.0",
+          "sha256": "841aa14d55ee79bdf183beb4cc41033b79eed20d0631935703bee9558ee30ae6"
+        },
+        "go/filesystem/rule-decompression-bomb.yml": {
+          "license": "Apache-2.0",
+          "sha256": "219e19deb11a6e743a977ef91a98120554793b08bfc2f6a942ee38336401ad0a"
+        },
+        "go/filesystem/rule-fileread.yml": {
+          "license": "Apache-2.0",
+          "sha256": "c14e6e3f658c59a4b62081768fe0d9ff4efaab151d9e84975e6411045e7aacec"
+        },
+        "go/filesystem/rule-httprootdir.yml": {
+          "license": "Apache-2.0",
+          "sha256": "b1835648cdf63bcaa1ff0197a1ecc95015bf8f9f343e66d07d122e1ea9e58f4d"
+        },
+        "go/filesystem/rule-poorwritepermissions.yml": {
+          "license": "Apache-2.0",
+          "sha256": "23c9300589ca87b5dca081451151d705234b5d21a50613106b679b26c6149f4f"
+        },
+        "go/filesystem/rule-tempfiles.yml": {
+          "license": "Apache-2.0",
+          "sha256": "ea993a23913efe2b62caf0904221c86403d8cb4952d1d9e53fb4edf617b398a1"
+        },
+        "go/filesystem/rule-ziparchive.yml": {
+          "license": "Apache-2.0",
+          "sha256": "61744a438d8cf45470791ffac1bb6cc922a9165c0ce2a7a8279d54d335211e28"
+        },
+        "go/http/rule-http-serve.yml": {
+          "license": "Apache-2.0",
+          "sha256": "87ae144671fd1bfd1a824e54a9731f369cfb22f68934c3fb333428e50ccb916f"
+        },
+        "go/injection/rule-ssrf.yml": {
+          "license": "Apache-2.0",
+          "sha256": "dfe372da4c399d512cf19dcb118b613a10c3b0abe8a574c3994048ec6d98437e"
+        },
+        "go/injection/rule-template-injection.yml": {
+          "license": "Apache-2.0",
+          "sha256": "ce15c5ef530e329743fe227fc45e81cdb36c1854943a6f6739544cec809683bc"
+        },
+        "go/leak/rule-pprof-endpoint.yml": {
+          "license": "Apache-2.0",
+          "sha256": "0ae795faedd0501a871637b516770eb8599660e637c292b2ae519abbb8591566"
+        },
+        "go/memory/rule-integer-overflow.yml": {
+          "license": "Apache-2.0",
+          "sha256": "60379e31b48631dc5bbcb7270d636e091c566139b55d75d3e5bafc8e62f84d5d"
+        },
+        "go/memory/rule-memoryaliasing.yml": {
+          "license": "Apache-2.0",
+          "sha256": "06bfad2f4d4592dd7e8b290cb083ad592d2cb1e6c575b38ccff9bdd0d050a04b"
+        },
+        "go/network/rule-bind-to-all-interfaces.yml": {
+          "license": "Apache-2.0",
+          "sha256": "bbad7ae4b87e409d3c5a536611c00225abdbcc776aab949df175ca23be004bd5"
+        },
+        "go/sql/rule-concat-sqli.yml": {
+          "license": "Apache-2.0",
+          "sha256": "faeaf36a51298ab0f4f56a77bdbbac9a5f97d4f2fe35cfb05cc69778eb81b760"
+        },
+        "go/subproc/rule-subproc.yml": {
+          "license": "Apache-2.0",
+          "sha256": "c920efef89fc373ab991a594eb0f92768fced69f6bd46a569bfad271a30233fb"
+        },
+        "go/unsafe/rule-unsafe.yml": {
+          "license": "Apache-2.0",
+          "sha256": "25c5a206ed1149c502b5ae00350e4295746cd8ef8ac464f4f92ee6fd7aea339a"
+        },
+        "java/cookie/rule-CookieInsecure.yml": {
+          "license": "MIT",
+          "sha256": "6ccdc9d3124d7cbe96d0deae424c2249c59d05cb47547f49febcf3a33d96af51"
+        },
+        "java/cookie/rule-HttpResponseSplitting.yml": {
+          "license": "MIT",
+          "sha256": "9f37b3385a48bbf16f2a7872da4cdba38ed6c625a620f96b88302df4d590ede6"
+        },
+        "java/cookie/rule-RequestParamToHeader.yml": {
+          "license": "MIT",
+          "sha256": "0d40a67c62f374fe0462d8ba3e371a9515b16aefc78f43f921eca7643aa88b1b"
+        },
+        "java/cors/rule-PermissiveCORSInjection.yml": {
+          "license": "MIT",
+          "sha256": "c92bd81dcef0007d36dde4d887ce718f65a1c82696596daff41d8d6d7408086b"
+        },
+        "java/crypto/rule-BlowfishKeySize.yml": {
+          "license": "MIT",
+          "sha256": "603a44ca13e67ee61d935502acb0247edd4d05eda7f124b03e3204cf49d84758"
+        },
+        "java/crypto/rule-CipherDESInsecure.yml": {
+          "license": "MIT",
+          "sha256": "aa785226525d9e05d59b3a8b6679c3a6ccb51b1549c95a35808c077f40d69913"
+        },
+        "java/crypto/rule-CipherDESedeInsecure.yml": {
+          "license": "MIT",
+          "sha256": "cacb2b30067ce28e206777e051749bbef6c9de4ff80e05694cf4ea060b2eef3e"
+        },
+        "java/crypto/rule-CipherECBMode.yml": {
+          "license": "MIT",
+          "sha256": "14ac22e6185951e9d45f890f833929dc3fef7440f442a46aacaa61e73774a3c5"
+        },
+        "java/crypto/rule-CipherIntegrity.yml": {
+          "license": "MIT",
+          "sha256": "4ee989ddb4958a14a2ca7ff9df8bd48503db72710341de2869fd24b83c99b91a"
+        },
+        "java/crypto/rule-CipherPaddingOracle.yml": {
+          "license": "MIT",
+          "sha256": "54a56985718cd56bb21eb16f3dbb5982d9c111ea42cc7c4c39781bf394457570"
+        },
+        "java/crypto/rule-CustomMessageDigest.yml": {
+          "license": "MIT",
+          "sha256": "3f648a03592edb262cb41cf28de2cfbf5911c9064d62b307227806f25503a05e"
+        },
+        "java/crypto/rule-HazelcastSymmetricEncryption.yml": {
+          "license": "MIT",
+          "sha256": "c80a3fdefe76806ebcda11bacda37b38091d53843841f796f56c2c454e077950"
+        },
+        "java/crypto/rule-InsufficientKeySizeRsa.yml": {
+          "license": "MIT",
+          "sha256": "91d920f8cecb14aa041904a1131b64c6dbed7b9b6205ff00a6807e9ec398e4a4"
+        },
+        "java/crypto/rule-NullCipher.yml": {
+          "license": "MIT",
+          "sha256": "8ec84fc33a9ee19d593a9db5f64d43388a3c45daaeb52c829b2368c7389e279c"
+        },
+        "java/crypto/rule-RsaNoPadding.yml": {
+          "license": "MIT",
+          "sha256": "6d4de39369ee768f1d5bd0e5f1caed85e207e4f6c2d62772c8d471fd8ec69184"
+        },
+        "java/crypto/rule-WeakMessageDigest.yml": {
+          "license": "MIT",
+          "sha256": "725e55cce51fd9050606111143a0e367688aa3625c1b80ecf06ef164e04ea22e"
+        },
+        "java/crypto/rule-WeakTLSProtocolDefaultHttpClient.yml": {
+          "license": "MIT",
+          "sha256": "87746a780cef99ff17541949c0af34a387bf7d26d5dafd5afd34f836ba335698"
+        },
+        "java/crypto/rule-WeakTLSProtocolSSLContext.yml": {
+          "license": "MIT",
+          "sha256": "8a48f928ce6816ffb30d0dd3546f7628e783e0af6a845462e15f050e00ac23c1"
+        },
+        "java/crypto/rule-WeakTLSProtocolVersion.yml": {
+          "license": "MIT",
+          "sha256": "5a818f90e3ab6fb68f38de3687d0d80f3c979e85db14613def8f0e8e7d9885ae"
+        },
+        "java/endpoint/rule-HostnameVerifier.yml": {
+          "license": "MIT",
+          "sha256": "7f451e5b346cb7e042dcc9afa11a6dc688431fb5d6c245723c471745ac2b28a3"
+        },
+        "java/endpoint/rule-UnvalidatedRedirect.yml": {
+          "license": "MIT",
+          "sha256": "d715a7551b3e263d712f192f6698e7a072b73d59364fd4824f9db39193f25e7e"
+        },
+        "java/endpoint/rule-X509TrustManager.yml": {
+          "license": "MIT",
+          "sha256": "9a84998103045a041d4c2b1d59ed24fea7a8ff84a23eb3f8a3e65be85e17ad53"
+        },
+        "java/file/rule-FileUploadFileName.yml": {
+          "license": "MIT",
+          "sha256": "eaef2f614556932b186d8808d765ddb6e99432fe076f23021e6fae9c239195b9"
+        },
+        "java/file/rule-FilenameUtils.yml": {
+          "license": "MIT",
+          "sha256": "7bd9755678437eb33c9b18192e2e57d531c019df9ca0f794091eba5626f58dee"
+        },
+        "java/inject/rule-CommandInjection.yml": {
+          "license": "MIT",
+          "sha256": "014d117a4fb6dd2a2cdf12b4e9cf085b757101ec2b69fac99031711a9517da95"
+        },
+        "java/inject/rule-ELInjection.yml": {
+          "license": "MIT",
+          "sha256": "ed18e62ac44e768c8eb03d0280a0567e24b73170355cb206091e2ca20109b158"
+        },
+        "java/inject/rule-FileDisclosureRequestDispatcher.yml": {
+          "license": "MIT",
+          "sha256": "16e55c4f3b559878e84b59736819abb7f13dc17a15f169f5423a3d1f33ec6cf6"
+        },
+        "java/inject/rule-FileDisclosureSpringFramework.yml": {
+          "license": "MIT",
+          "sha256": "54c2d31af82cc2275d5d25ae785f04a734d98a14b7ce4aa05f961fbfcce7a86e"
+        },
+        "java/inject/rule-HttpParameterPollution.yml": {
+          "license": "MIT",
+          "sha256": "b2ba80e333930450b0064813b3fe7e2850b49812013861b53b87a2405c56ce04"
+        },
+        "java/inject/rule-LDAPInjection.yml": {
+          "license": "MIT",
+          "sha256": "384cda8b480dcfcdbbe03a37644e9ba6608ba893679bc9b10861630eb052aedc"
+        },
+        "java/inject/rule-OgnlInjection.yml": {
+          "license": "MIT",
+          "sha256": "74f21a649e1e12d2acbf4db533f86e8b9149560f0f2eeb073f8c4a1e30ca5838"
+        },
+        "java/inject/rule-SpotbugsPathTraversalAbsolute.yml": {
+          "license": "MIT",
+          "sha256": "e1b64c3e3ba41868981dc45fcd1300ea39b834fa0da9a6e8e32fea13e7b98402"
+        },
+        "java/ldap/rule-AnonymousLDAP.yml": {
+          "license": "MIT",
+          "sha256": "886314b622ecd3f462b1adfb886c69afecf59a60f76d148643496330b9118f01"
+        },
+        "java/password/rule-ConstantDBPassword.yml": {
+          "license": "MIT",
+          "sha256": "7cf5a7dd8107bba7c57e8f868ad44e0c9a945a0d1ee3197254af77862cde7350"
+        },
+        "java/password/rule-EmptyDBPassword.yml": {
+          "license": "MIT",
+          "sha256": "6d5650e0a70cc8fd8a0c760b12c82e0f2f96eb9b0aec142bfea7ac896853ff87"
+        },
+        "java/password/rule-HardcodePassword.yml": {
+          "license": "MIT",
+          "sha256": "0fa17783231531e44b67d4912cd5a0a7b8e1bff954b3e4db7b552f9f0cc2061f"
+        },
+        "java/perm/rule-DangerousPermissions.yml": {
+          "license": "MIT",
+          "sha256": "a8072af4aa31b3ab33ecbd60dee57b7b290224fc3befc04aef134aea79a2a3ad"
+        },
+        "java/perm/rule-OverlyPermissiveFilePermissionInline.yml": {
+          "license": "MIT",
+          "sha256": "a0ca3ee6e2aa936e9c666418d5378afff90e97d9432179f8ce23be43757e43c2"
+        },
+        "java/script/rule-ScriptInjection.yml": {
+          "license": "MIT",
+          "sha256": "48160f5b16bf83d33c6d0e4c8fbe0bd3afdd7e9354d8d7973265c1053c5d4eee"
+        },
+        "java/script/rule-SpringSpelExpressionParser.yml": {
+          "license": "MIT",
+          "sha256": "23d8102688842dec379bf72fc736d1806d66e2cd7311b66cec671cda5090cb08"
+        },
+        "java/smtp/rule-InsecureSmtp.yml": {
+          "license": "MIT",
+          "sha256": "c904f64afc3885cf107314bfac4a6783a3d77e13d7bb4e331d18b100330a84ae"
+        },
+        "java/smtp/rule-SmtpClient.yml": {
+          "license": "MIT",
+          "sha256": "92ceddc866b798ee176ecaa8ee7312be2c761fa7a45e43d99379d8bab4e3da24"
+        },
+        "java/ssrf/rule-SSRF.yml": {
+          "license": "MIT",
+          "sha256": "f90b16a033527bedf9f7b65d1d77fa105e0e26f4dc5c4456b3f386f3d137db02"
+        },
+        "java/strings/rule-BadHexConversion.yml": {
+          "license": "MIT",
+          "sha256": "f0395aa1b83be2615fabbfb8abf27c41863a8fe6310e5f047d9d4a8c10847600"
+        },
+        "java/strings/rule-FormatStringManipulation.yml": {
+          "license": "MIT",
+          "sha256": "c8b9ffe2170e58952ec85b6655f67f7cda658efb695a0fbb54472244877904fb"
+        },
+        "java/strings/rule-ModifyAfterValidation.yml": {
+          "license": "MIT",
+          "sha256": "e3634595df92b81604e5652ba974c4744e0f77e421f9c24e28cff138d5aa55e5"
+        },
+        "java/strings/rule-NormalizeAfterValidation.yml": {
+          "license": "MIT",
+          "sha256": "d346397f772559d8a98fe3f6f472722bdf41b54277a4a5ee9d5e918449a1b4f7"
+        },
+        "java/templateinjection/rule-TemplateInjection.yml": {
+          "license": "MIT",
+          "sha256": "65dad71cc9e5c05f76ba093e750e19998505024ae51081326eab3ead647eab32"
+        },
+        "java/unsafe/rule-ExternalConfigControl.yml": {
+          "license": "MIT",
+          "sha256": "d811dc55e4f60904ddf58507fc9781ce326b4d1d4206a835bc74e7f75cdd654c"
+        },
+        "java/xml/rule-SAMLIgnoreComments.yml": {
+          "license": "MIT",
+          "sha256": "215b917c5d9ff7036aaac0fab4454a4a353214c9a3d885527ddd832496cb9b4c"
+        },
+        "java/xml/rule-XmlDecoder.yml": {
+          "license": "MIT",
+          "sha256": "4acabd60252b9c8e3cd88db36d82fee5f00e996cdd67e013c0fabdd79f167e77"
+        },
+        "java/xml/rule-XsltTransform.yml": {
+          "license": "MIT",
+          "sha256": "5f1ded353b3d861105bacaf1f1923fff16aed2b980c092d1791d398da13835c1"
+        },
+        "java/xss/rule-WicketXSS.yml": {
+          "license": "MIT",
+          "sha256": "edff508989327220e153f1cd63aaaa9c9c71934ac8e454b3139f29562dec57aa"
+        },
+        "java/xss/rule-XSSReqParamToServletWriter.yml": {
+          "license": "MIT",
+          "sha256": "66ff4772b63ce376e9431741ce91815de06bc378996d1e1349db4f7161079da4"
+        },
+        "java/xxe/rule-XMLRdr.yml": {
+          "license": "MIT",
+          "sha256": "81f22ba0c74b34dd2effa345173ebf77ba478e9397e8850956aedbcec27bf111"
+        },
+        "javascript/buf/rule-buffer-noassert-read.yml": {
+          "license": "MIT",
+          "sha256": "5ed51fdc61c271d8d2856ec1f62f42257bddf5b0f8e2fd5a14dd164c68f49cac"
+        },
+        "javascript/buf/rule-buffer-noassert-write.yml": {
+          "license": "MIT",
+          "sha256": "44267b8f91c7f73a35e5768b3f268aa63fdb5d09c38afde215c5bbd9d132279e"
+        },
+        "javascript/buf/rule-detect-new-buffer.yml": {
+          "license": "MIT",
+          "sha256": "4b1ca91bd91b36e70b6c92c2532992abf37759c80027fff4e786d34acd5564f2"
+        },
+        "javascript/dos/rule-non-literal-regexp.yml": {
+          "license": "MIT",
+          "sha256": "5178adc3e41175c46b4f0b377cfc87de5bb5d7580af75a32bbfb183f5feb22ff"
+        },
+        "javascript/eval/rule-eval-with-expression.yml": {
+          "license": "MIT",
+          "sha256": "6a60110e2d2a7f22d9c4a69b09d2d489e151da40ad5c8aeb6a55401791faf5ed"
+        },
+        "javascript/pathtraversal/rule-non-literal-fs-filename.yml": {
+          "license": "MIT",
+          "sha256": "429484d0b1c907ec22f6416c97ca8b0a46d8e8a23683384de0d0c4e6b0344169"
+        },
+        "javascript/random/rule-pseudo-random-bytes.yml": {
+          "license": "MIT",
+          "sha256": "44b32800f17196b53b965e1be11b787a521cdf5ce164249c0a2e2d4604c0b870"
+        },
+        "javascript/react/rule-dangerouslysetinnerhtml.yml": {
+          "license": "MIT",
+          "sha256": "1a43ece6a249e7486bfb156a4bfc0ea7043d477e36d52442b07fd9291ae60e68"
+        },
+        "javascript/require/rule-non-literal-require.yml": {
+          "license": "MIT",
+          "sha256": "e464056a07762ff78332adc779ec8bf558a09304d7d09881f750135803fd9564"
+        },
+        "javascript/timing/rule-possible-timing-attacks.yml": {
+          "license": "MIT",
+          "sha256": "dde4f910f55979cba09d1994626f17d1dd27f4e0ba89199dcb0428580bb158bf"
+        },
+        "javascript/xss/rule-mustache-escape.yml": {
+          "license": "MIT",
+          "sha256": "58ca5a063f5f919333c79d7e8adb4f16575ae963fede25589ea0f32fe2b36549"
+        },
+        "python/assert/rule-assert-used.yml": {
+          "license": "MIT",
+          "sha256": "75bf2c385362bd942562948c46e4ca06962fe0267c42234e577a6a5b7a5214f6"
+        },
+        "python/crypto/rule-cipher-modes.yml": {
+          "license": "MIT",
+          "sha256": "579be41611e34d423691c9341ea6e9b5471d35ac934b09d119646ad2bb04b779"
+        },
+        "python/crypto/rule-crypto-cipher-blowfish.yml": {
+          "license": "MIT",
+          "sha256": "98432fc326baaeedf04ce105093d30593777e9c50db378bbfb56de606096f349"
+        },
+        "python/crypto/rule-crypto-cipher-des.yml": {
+          "license": "MIT",
+          "sha256": "c4a72951ba44060b5957566aed08086242a7755d256fa791df87b8ffc861b138"
+        },
+        "python/crypto/rule-crypto-cipher-rc2.yml": {
+          "license": "MIT",
+          "sha256": "4c6b7354a6b6990c37406ff457054b4a1513c654ad0c9a97a7ccca765238ee46"
+        },
+        "python/crypto/rule-crypto-cipher-rc4.yml": {
+          "license": "MIT",
+          "sha256": "1a152e8a7f9fa44f6639df7e199023906983402f434732ae1b9200377aee92dc"
+        },
+        "python/crypto/rule-crypto-cipher-xor.yml": {
+          "license": "MIT",
+          "sha256": "a94a1eb095d2c8b4ac1ed9e0c7e118c0fb5a4412edd02fa72e6a57ad6ea0cda6"
+        },
+        "python/crypto/rule-crypto-encrypt-dsa-rsa.yml": {
+          "license": "MIT",
+          "sha256": "9fadf035dac3736e3de1d6d1463cda3659fb7a4281c3cfc19ac3146034f0f517"
+        },
+        "python/crypto/rule-crypto-hash-md5.yml": {
+          "license": "MIT",
+          "sha256": "d2df42348852a44fcc61bb02a39de831c0940bad9e0069809404cc412f3d7e8a"
+        },
+        "python/crypto/rule-crypto-hash-sha1.yml": {
+          "license": "MIT",
+          "sha256": "576a2466dab13cb4cf3d7ab1a034b83c31b12ddf4f077baf25a856ddeb07555b"
+        },
+        "python/crypto/rule-crypto-hazmat-cipher-arc4.yml": {
+          "license": "MIT",
+          "sha256": "86a2fcd4d721ba5050168e6d00b653b8ff8eb14c9847b91dc58db9dec5b120a4"
+        },
+        "python/crypto/rule-crypto-hazmat-cipher-blowfish.yml": {
+          "license": "MIT",
+          "sha256": "6664d107499416988b11b624e85fa3158191d0cec5bae71754df6405d62d90e1"
+        },
+        "python/crypto/rule-crypto-hazmat-cipher-idea.yml": {
+          "license": "MIT",
+          "sha256": "37e222953c38028e03a1d0c8f595dc87cf694a95a38c8b802aa7acf2af1da657"
+        },
+        "python/crypto/rule-crypto-hazmat-hash-md5.yml": {
+          "license": "MIT",
+          "sha256": "d65341d672ab0679e48d063fd026418ea45fb6644b8a3f2f004be18d2d61e9c6"
+        },
+        "python/crypto/rule-crypto-hazmat-hash-sha1.yml": {
+          "license": "MIT",
+          "sha256": "2e49a98758c396b7936efc6f6faed848a00f93220319878ed2af5a320d294c34"
+        },
+        "python/crypto/rule-hash-md2.yml": {
+          "license": "MIT",
+          "sha256": "ce8e79cb18041ef60d38012ba0002525d4db8036e90acd944584f0ef9436f24f"
+        },
+        "python/crypto/rule-hash-md4.yml": {
+          "license": "MIT",
+          "sha256": "a1c01385a5604c3ec52ffb52a1782cc3d1803f42d8bb92e2ac8b1b9375774822"
+        },
+        "python/crypto/rule-hash-md5.yml": {
+          "license": "MIT",
+          "sha256": "a1ea675f50c0404e7dcc1c94630a18cfae6251afdcdc17a23922309beb15d09c"
+        },
+        "python/crypto/rule-hash-sha1.yml": {
+          "license": "MIT",
+          "sha256": "31cbaf048f10d1937c434ff461c962b24336213c1455c3f20cdb0498b3a968da"
+        },
+        "python/crypto/rule-hashlib-new-insecure-functions.yml": {
+          "license": "MIT",
+          "sha256": "894ff7b3a25230c15572c24ab7872afcf357ac29965482cf1a36d7ac21ecc43c"
+        },
+        "python/crypto/rule-import-pycrypto.yml": {
+          "license": "MIT",
+          "sha256": "b78ad33eb3f0c485638d92e028cf42cf12466e7978fd1f49eda3c5dc2786c919"
+        },
+        "python/deserialization/rule-cpickle.yml": {
+          "license": "MIT",
+          "sha256": "6f481a1ad60a0b17d23747518da2e884e4642e9c505f17b50eeb4c6db9aadaf8"
+        },
+        "python/deserialization/rule-dill.yml": {
+          "license": "MIT",
+          "sha256": "33c5f3b59b33ba8eb1b8f68b6e404d821d5c1c9eda5f3c919784ab4e2ec87fef"
+        },
+        "python/deserialization/rule-pickle.yml": {
+          "license": "MIT",
+          "sha256": "604febbd00d5d0aec6f12b515330aa99cb39af30e237afa64415fcc70c8a2a8d"
+        },
+        "python/deserialization/rule-shelve.yml": {
+          "license": "MIT",
+          "sha256": "c7e2ac0f2571009e65d9596adeffed22ab962270774a046a0cdd5afd9857d1bb"
+        },
+        "python/deserialization/rule-yaml-load.yml": {
+          "license": "MIT",
+          "sha256": "f356f893e9b58b637209f0079bc3f60ff4d84b4b3c46858333682d2682e50572"
+        },
+        "python/django/rule-django-extra-used.yml": {
+          "license": "MIT",
+          "sha256": "37dcc477c25cc1cd092581ec2efc629ca221f4a11675f161e563d276bc3c8576"
+        },
+        "python/escaping/rule-jinja2-autoescape-false.yml": {
+          "license": "MIT",
+          "sha256": "4a6273aa13150b0e0a7810e601ccac7fbf24e4b26add58a638424f0789112826"
+        },
+        "python/escaping/rule-use-of-mako-templates.yml": {
+          "license": "MIT",
+          "sha256": "00a0ebcb5cf8a8b3d02fb21c7d9c3c06ef16f6e272430a9b1c4bb82600326e94"
+        },
+        "python/eval/rule-eval.yml": {
+          "license": "MIT",
+          "sha256": "f0ef96a45a2d432e7cd364883653c35a96acdca162180c7a45c30b9551e9e87d"
+        },
+        "python/exec/rule-exec-used.yml": {
+          "license": "MIT",
+          "sha256": "00cc80d176a1a801801fb8412894c150902b9e3c29466cd574df2f5d846859a2"
+        },
+        "python/exec/rule-linux-command-wildcard-injection.yml": {
+          "license": "MIT",
+          "sha256": "c78b58400f82dfb4b16f6d84549d0a587fc7ee00323159fdbee87e7991deb045"
+        },
+        "python/exec/rule-os-path.yml": {
+          "license": "MIT",
+          "sha256": "e02a31e93847850dbcd0d02f5f8aed8fd86a004c62c62729b4bcd9d5c8fd9346"
+        },
+        "python/exec/rule-os-popen2.yml": {
+          "license": "MIT",
+          "sha256": "2dc4551679a2636582dd8c518c3632929e480629ed23fe27352df7383de9218e"
+        },
+        "python/exec/rule-start-process-with-no-shell.yml": {
+          "license": "MIT",
+          "sha256": "0538e647b62caee1348d18633b17aaa20a8fc0d2d03ec5113ad450db5e5b34e0"
+        },
+        "python/exec/rule-subprocess-call.yml": {
+          "license": "MIT",
+          "sha256": "874386052dc293105a222211f15e28c3cab47592000682aa6706401033098f5f"
+        },
+        "python/exec/rule-subprocess-popen-shell-true.yml": {
+          "license": "MIT",
+          "sha256": "697dc9cf925703ca91cba0231bfb07c44d9a61e8ec159e93bd2263ec6cae251b"
+        },
+        "python/exec/rule-subprocess-shell-TRUE.yml": {
+          "license": "MIT",
+          "sha256": "ed5b254f615cff63a2d390d7c21b3b3e54e14ed5a0994b840d77e5e12fea1046"
+        },
+        "python/file_permissions/rule-general-bad-permission.yml": {
+          "license": "MIT",
+          "sha256": "2b34fbb865d85916558a8388a9bb5bbe0874293b47e0e7f4d6b0d7e56a156437"
+        },
+        "python/files/rule-tarfile-unsafe-members.yml": {
+          "license": "MIT",
+          "sha256": "01d488fa3f0b7de5643e5bf5289e3201c9078ed3334f7f874ad0121609e86531"
+        },
+        "python/flask/rule-app-debug.yml": {
+          "license": "MIT",
+          "sha256": "6dfa6301da8474b8f57c319bdc4f114decd8ffc08aea393ce51749a9cd42b0cf"
+        },
+        "python/ftp/rule-ftplib.yml": {
+          "license": "MIT",
+          "sha256": "da0a9b91bf9396837a0edf87c63af697322c22148981107a25814df58e0bf3d8"
+        },
+        "python/log/rule-logging-config-insecure-listen.yml": {
+          "license": "MIT",
+          "sha256": "581ff4351a7333e103c735f47f8f1a8f9c6e94981eddc0b789e5e44cd10c0994"
+        },
+        "python/random/rule-random.yml": {
+          "license": "MIT",
+          "sha256": "06610ca04152d6eb2627c169b833df95acfa660e6cc00fd605b6f786847e1a6e"
+        },
+        "python/requests/rule-request-without-timeout.yml": {
+          "license": "MIT",
+          "sha256": "fd3940d67788d0695a019c6e4d4678ebce74428a65919dfefea445ee4a840ef7"
+        },
+        "python/snmp/rule-insecure-snmp-version.yml": {
+          "license": "MIT",
+          "sha256": "0030cb025c25a44f291983628ff3459ecf174d6bc693a3e634afaf4170044034"
+        },
+        "python/snmp/rule-snmp-weak-cryptography.yml": {
+          "license": "MIT",
+          "sha256": "31c1f1375f4515d8410204387fd07e67d49435faa862f86701aa3f842ea8fc83"
+        },
+        "python/sql/rule-hardcoded-sql-expression.yml": {
+          "license": "MIT",
+          "sha256": "0b3efb24d1e631ba2704bf2af3edef7a173990f12f46b107b9128b9ec0ce2323"
+        },
+        "python/ssl/rule-ssl-no-version.yml": {
+          "license": "MIT",
+          "sha256": "202672f5b1b6668a1991b1945b48a73f359343c4ee8f1ca3a12cb595f1c004c7"
+        },
+        "python/ssl/rule-unverified-context.yml": {
+          "license": "MIT",
+          "sha256": "b895b4fa102fc0362652c0c6b59a52468c61a38fc9bf6ca5249267968eeb7bc4"
+        },
+        "python/telnet/rule-import-telnib.yml": {
+          "license": "MIT",
+          "sha256": "1ecb890e46adfb29bb1580e7f1f7f471e85137c32ad6dda913a940e644351228"
+        },
+        "python/tmpdir/rule-hardcodedtmp.yml": {
+          "license": "MIT",
+          "sha256": "bc7fdab58f75607050580350026e62e31f394e8ac3936475d0ac46009d68884c"
+        },
+        "python/tmpdir/rule-mktemp-q.yml": {
+          "license": "MIT",
+          "sha256": "fd2b4caafbdfa0a867faf7ea8ed75d563eaa9a02f26844e851fb398e93185f90"
+        },
+        "python/urlopen/rule-urllib-urlopen.yml": {
+          "license": "MIT",
+          "sha256": "f76f741b217c7dd7823596785a4180dc5e7ab2d68c8d21d3970bb4ab6c4ba2f4"
+        },
+        "python/xml/rule-celement.yml": {
+          "license": "MIT",
+          "sha256": "b006aa121ecfd7a068fe48853fba6d3c01173906ec7f9b1880ea9c7aad59dd99"
+        },
+        "python/xml/rule-element.yml": {
+          "license": "MIT",
+          "sha256": "52f546c49625a51bc7dfd99e259adc28edfda8f840a264abbe0bf567fb73b4a5"
+        },
+        "python/xml/rule-etree.yml": {
+          "license": "MIT",
+          "sha256": "081a39e7afb105af4abc826dcddf904965ab969c4f41ac7bdc175a0ffd7af2dd"
+        },
+        "python/xml/rule-expatbuilder.yml": {
+          "license": "MIT",
+          "sha256": "90f209120fd1b7d2920c533cc88af2e2b98be7b0ecc67408eab12d17039bf437"
+        },
+        "python/xml/rule-expatreader.yml": {
+          "license": "MIT",
+          "sha256": "06ca936c5fdb0cf79983e198fcfa1af35a2fab5e34da12b921744f91ab54a761"
+        },
+        "python/xml/rule-minidom.yml": {
+          "license": "MIT",
+          "sha256": "c386a666a6b96c06f85ef3eb213d2b5774e09114621bef5e9e4ebc0fc13e0900"
+        },
+        "python/xml/rule-pulldom.yml": {
+          "license": "MIT",
+          "sha256": "932d143eff3e8a95d6be0b0f0acb025c281b2b464019d150e83a978154942c0f"
+        },
+        "python/xml/rule-sax.yml": {
+          "license": "MIT",
+          "sha256": "d1b194d9f5037b89bdd2b8034ac47b5a884da855b1577b6c33e6f578a8b8dd8a"
+        },
+        "scala/cookie/rule-CookieHTTPOnly.yml": {
+          "license": "MIT",
+          "sha256": "1697ea42f0b10267f907d8a8a4ad8610046bb9ea6308c51410401a40ad7df167"
+        },
+        "scala/cookie/rule-CookieInsecure.yml": {
+          "license": "MIT",
+          "sha256": "0deb22fd38fcce28afe1eeccbb4c1f758212d48c45a63e43ea35cbdb0414146d"
+        },
+        "scala/cookie/rule-CookiePersistent.yml": {
+          "license": "MIT",
+          "sha256": "60e924ca96f87a1e3bc0937f6daaa66719adb8b4e21599b24c926542e60af340"
+        },
+        "scala/cookie/rule-CookieUsage.yml": {
+          "license": "MIT",
+          "sha256": "ce154faca383a895f7799763672a1e8d52a4b1fec99a646ddd88cc46c17101d2"
+        },
+        "scala/cookie/rule-HttpResponseSplitting.yml": {
+          "license": "MIT",
+          "sha256": "fc2d979512f01ad150a4020652c6fba2c033454a00999754796a487104764dc5"
+        },
+        "scala/cookie/rule-RequestParamToCookie.yml": {
+          "license": "MIT",
+          "sha256": "93791c1bf99ad774bc2d039822ca148d7da648745cd49a8d33b61d09b9261951"
+        },
+        "scala/cookie/rule-RequestParamToHeader.yml": {
+          "license": "MIT",
+          "sha256": "b243a695c808a2591fa26ff71e6199f8e4508cbd212373e7dccc65c87a82f6e3"
+        },
+        "scala/cookie/rule-TrustBoundaryViolation.yml": {
+          "license": "MIT",
+          "sha256": "be70f35f6ebe7b98686259e1f0de1ad19c10de309ae35133b4391b163c599687"
+        },
+        "scala/cors/rule-PermissiveCORS.yml": {
+          "license": "MIT",
+          "sha256": "152db969960d09e53a58953503fccf8c807b6ed8e80e8a222dec9af3d112e927"
+        },
+        "scala/cors/rule-PermissiveCORSInjection.yml": {
+          "license": "MIT",
+          "sha256": "e91e3dbbd95b100fed4be732af4ec4c89a2c94340055db145f1bc2c61c759844"
+        },
+        "scala/crypto/rule-BlowfishKeySize.yml": {
+          "license": "MIT",
+          "sha256": "5750ff28d7a83ef73168e2ae1490f30fc7a8b5a3007a1cbd51b6ff0308e75bf1"
+        },
+        "scala/crypto/rule-CipherDESInsecure.yml": {
+          "license": "MIT",
+          "sha256": "81ee9cc8ae73efeb44fcde6fcc2a2a8c42a61cdd1f0897406eddae561e1395d9"
+        },
+        "scala/crypto/rule-CipherDESedeInsecure.yml": {
+          "license": "MIT",
+          "sha256": "21019c52e4d616237d1ae24a12a9b132e995266374bb6aaedc90a9efb9078d7e"
+        },
+        "scala/crypto/rule-CipherECBMode.yml": {
+          "license": "MIT",
+          "sha256": "f0b36009bdc4c544d805c254fb53c1cc030a3882937496a47dbe9c53ec853b64"
+        },
+        "scala/crypto/rule-CipherIntegrity.yml": {
+          "license": "MIT",
+          "sha256": "935002e37c7184169e825ef53090863172c0e620d22b91b36a6c5cab0f98e6f5"
+        },
+        "scala/crypto/rule-CipherPaddingOracle.yml": {
+          "license": "MIT",
+          "sha256": "9cf48594c3433f78753acdc484e9c7af666c137d452adbe8a3f390823eb3252e"
+        },
+        "scala/crypto/rule-CustomMessageDigest.yml": {
+          "license": "MIT",
+          "sha256": "300acae6e31f4c969f26f71eabe2af36962059f0f3b363f3ced72918ff1ed62d"
+        },
+        "scala/crypto/rule-DefaultHTTPClient.yml": {
+          "license": "MIT",
+          "sha256": "f961c435b0590e9088f593630a05d87d12a569261a167eca940cc577d5c58119"
+        },
+        "scala/crypto/rule-HazelcastSymmetricEncryption.yml": {
+          "license": "MIT",
+          "sha256": "0527fe2d96394bfa6e3d3422302ea28cab6b501404ec90a8763dc284719578cf"
+        },
+        "scala/crypto/rule-InsufficientKeySizeRsa.yml": {
+          "license": "MIT",
+          "sha256": "04acc12ff6722e5bebde564afcf6d5e712421dd81b5f0defccaecc609eee0658"
+        },
+        "scala/crypto/rule-NullCipher.yml": {
+          "license": "MIT",
+          "sha256": "e2694dd4e45e347b63c681b17c8108f8781530da5b99f8a247b5946b9ef164ce"
+        },
+        "scala/crypto/rule-RsaNoPadding.yml": {
+          "license": "MIT",
+          "sha256": "5edc37ea074691462ed6b4c33c381b61109f661c05a790fce05d0bfd780fd5e9"
+        },
+        "scala/crypto/rule-WeakMessageDigest.yml": {
+          "license": "MIT",
+          "sha256": "738a7bc1938583c26767b656af84a960ec0ccb91ea1657125c688873dd0f614c"
+        },
+        "scala/crypto/rule-WeakTLSProtocol.yml": {
+          "license": "MIT",
+          "sha256": "4c33afecb6062aff41667277c4ab7e21e2f13b6117950efeed332f30b26d163d"
+        },
+        "scala/endpoint/rule-JaxRsEndpoint.yml": {
+          "license": "MIT",
+          "sha256": "2d6451bff6567c206115a5d01c3dc21539576c6f9b2fc49f0418b10b7f2fb605"
+        },
+        "scala/endpoint/rule-JaxWsEndpoint.yml": {
+          "license": "MIT",
+          "sha256": "c51af463eda5d66958d8ac7559bf95950c3a4d3290656b3fefe1ec2577bd59e4"
+        },
+        "scala/endpoint/rule-UnencryptedSocket.yml": {
+          "license": "MIT",
+          "sha256": "921b21bf4882a75f728be5fcf46c07e66e1d5637a55e27b80846a44498512dd1"
+        },
+        "scala/endpoint/rule-UnvalidatedRedirect.yml": {
+          "license": "MIT",
+          "sha256": "a5897d095f410f330b9d6c0330088b61b867820924b174f1b9538f68f4171742"
+        },
+        "scala/endpoint/rule-WeakHostNameVerification.yml": {
+          "license": "MIT",
+          "sha256": "edd93f9f224c9b47dc29a93ddefe4b9d18a21a091d8b30f727267b93462350df"
+        },
+        "scala/file/rule-FileUploadFileName.yml": {
+          "license": "MIT",
+          "sha256": "ecb23f3aa3772a856e4f84982a4963acdd899fe8454269c51d10af63875d9f68"
+        },
+        "scala/file/rule-FilenameUtils.yml": {
+          "license": "MIT",
+          "sha256": "154e35b48e7ab3a3eeafc70474b78148dbc13b3b12b03890e8a3c340d1ba18c3"
+        },
+        "scala/form/rule-FormValidate.yml": {
+          "license": "MIT",
+          "sha256": "b3c490df807f9a2c94ef40ac234ff0bcf93d1e423895ce092b44a6e4d8b82866"
+        },
+        "scala/inject/rule-AWSQueryInjection.yml": {
+          "license": "MIT",
+          "sha256": "45c0313f4303eef3d5d5614efbb7e44def70dcbb43832be90049b944f513472f"
+        },
+        "scala/inject/rule-BeanPropertyInjection.yml": {
+          "license": "MIT",
+          "sha256": "5ad5a5bdc0d340c239c6fbb791d19611464beb977201d4d1ed1d15626c77fbac"
+        },
+        "scala/inject/rule-CLRFInjectionLogs.yml": {
+          "license": "MIT",
+          "sha256": "6d8bbea44e54d4f99774789848b992dd6a271f7cce638a0995bd80076b1aab34"
+        },
+        "scala/inject/rule-CommandInjection.yml": {
+          "license": "MIT",
+          "sha256": "3bed8434242e8f431ab72ab42eaef80e5721fbb47fc647b19348cfaea30f2085"
+        },
+        "scala/inject/rule-CustomInjection.yml": {
+          "license": "MIT",
+          "sha256": "5cb03aebf67411b9f24139bfd0660f08c74aab318a7a81f41160b84040c2ebad"
+        },
+        "scala/inject/rule-CustomInjectionSQLString.yml": {
+          "license": "MIT",
+          "sha256": "891c402a3d882b8b7a56a33214a4afdc582e98bfef672147391d397ff0abae3a"
+        },
+        "scala/inject/rule-ELInjection.yml": {
+          "license": "MIT",
+          "sha256": "4a3831f216665547a3063e97d8ec4193a8e5a9f96a358e73964f5264d2e84b0b"
+        },
+        "scala/inject/rule-FileDisclosure.yml": {
+          "license": "MIT",
+          "sha256": "21682060fe2872e237ea8ee8328e52a9a9295baff068c4cc27a8209c2fb73a61"
+        },
+        "scala/inject/rule-HttpParameterPollution.yml": {
+          "license": "MIT",
+          "sha256": "8dc75e56763ad43ce92ce2b07dd688558b77a4a4793d5bda08b8ae59d38093da"
+        },
+        "scala/inject/rule-LDAPInjection.yml": {
+          "license": "MIT",
+          "sha256": "c362e14e8befbf735b69d5237d78fc8cef23bf70ed4afd500127b5b8f3c4ce52"
+        },
+        "scala/inject/rule-OgnlInjection.yml": {
+          "license": "MIT",
+          "sha256": "4d5f038bdd0c6f613db74beb64b4f16e8ba47bfcd31c37b3d6541424a469c7ec"
+        },
+        "scala/inject/rule-PathTraversalIn.yml": {
+          "license": "MIT",
+          "sha256": "e2563829f01cf096252fbf812b7d0bfde491ec12c1ebb7258052d21da1fd18dd"
+        },
+        "scala/inject/rule-PathTraversalOut.yml": {
+          "license": "MIT",
+          "sha256": "b0c9dcbd519d6453011ee8d3ea08b35a427d75a9ca0e1afc7a383e81ca20f956"
+        },
+        "scala/inject/rule-SpotbugsPathTraversalAbsolute.yml": {
+          "license": "MIT",
+          "sha256": "023f229cbcbab36a948bb68a1fa459aef3024a42455900f2346043639b3ffe3f"
+        },
+        "scala/inject/rule-SpotbugsPathTraversalRelative.yml": {
+          "license": "MIT",
+          "sha256": "47c4515d3751940352d83c7eeffb0c02cca5458bf50de906203aca00393cb721"
+        },
+        "scala/inject/rule-SqlInjection.yml": {
+          "license": "MIT",
+          "sha256": "dc5eb42f73a31422cbe04afaed92aef9b5799b370b17b1ddac4fddebfebfc003"
+        },
+        "scala/ldap/rule-AnonymousLDAP.yml": {
+          "license": "MIT",
+          "sha256": "5c7a2d795036ef6b258cc0bb837b4477e8a8ef4d2691fd617d92aba89bb94278"
+        },
+        "scala/ldap/rule-EntryPoisoning.yml": {
+          "license": "MIT",
+          "sha256": "4caf84d355fdfe771e7c8ce898e48b1d6451148ffcc5f6d8721fda7429d09004"
+        },
+        "scala/password/rule-ConstantDBPassword.yml": {
+          "license": "MIT",
+          "sha256": "50399d405dc8afca564bb8ec34e05d9990bf8669754cf4428af3778b4787831c"
+        },
+        "scala/password/rule-EmptyDBPassword.yml": {
+          "license": "MIT",
+          "sha256": "679b970e0e661b20f79c688c93478d10e21e853ce98e3e5f3f954b46964f77eb"
+        },
+        "scala/password/rule-HardcodePassword.yml": {
+          "license": "MIT",
+          "sha256": "6b590965adcfbb28569b59e7df6ce2129cecd33f9ead43ac4b77d559f2a26dc1"
+        },
+        "scala/perm/rule-DangerousPermissions.yml": {
+          "license": "MIT",
+          "sha256": "d5cefcc8b8682957df4dcfdef3febded59b5d446a33cfe189bb27f77a9917e8d"
+        },
+        "scala/perm/rule-OverlyPermissiveFilePermissionInline.yml": {
+          "license": "MIT",
+          "sha256": "151c727fdbc7d2054511dccff46059fa8f605905dca442cdb450c2870a039e97"
+        },
+        "scala/perm/rule-OverlyPermissiveFilePermissionObj.yml": {
+          "license": "MIT",
+          "sha256": "b65747292a87cc84c1fd264920d12b81211699b0500ad3e8db23d979df256c4c"
+        },
+        "scala/script/rule-ScriptInjection.yml": {
+          "license": "MIT",
+          "sha256": "dba0960748cbb182307f450e88040fae1cc33ef42590cf1070a6fe16d4f64d3f"
+        },
+        "scala/script/rule-SpelView.yml": {
+          "license": "MIT",
+          "sha256": "83ded0355daabc2541b4927a513065a0d3d3eda9433def1506ff4e457a8c3dd4"
+        },
+        "scala/smtp/rule-InsecureSmtp.yml": {
+          "license": "MIT",
+          "sha256": "d3c485c9ae6369206dc583590ca04a26853aaabf2d4af39c54d2fe13e619ee35"
+        },
+        "scala/smtp/rule-SmtpClient.yml": {
+          "license": "MIT",
+          "sha256": "c4f5eb0d34706c02a713b0a9fa731b9f1d4a9c1a36bc89cb61570795d39a077c"
+        },
+        "scala/ssrf/rule-PlaySSRF.yml": {
+          "license": "MIT",
+          "sha256": "af157efadba0fce0f99708c9044a68674f24309a60de295964e8660d3377619d"
+        },
+        "scala/ssrf/rule-SSRF.yml": {
+          "license": "MIT",
+          "sha256": "e1a13c7de3ba2047fade3de6029755ebd4a7479f9e92cf44466bf0b60e0dc114"
+        },
+        "scala/strings/rule-BadHexConversion.yml": {
+          "license": "MIT",
+          "sha256": "ff08fa2b91f15d6ec0968e25b165a3f5a80d2b21d9a1cebf01fb05914cb2dd4b"
+        },
+        "scala/strings/rule-FormatStringManipulation.yml": {
+          "license": "MIT",
+          "sha256": "82f8e504efe33ce9e535f32456ea0859ec0613575ea87c071d3a52e3cc59e6a9"
+        },
+        "scala/strings/rule-ImproperUnicode.yml": {
+          "license": "MIT",
+          "sha256": "e6d13571ee4e5ca8c6af5d0a82ba60fe35ffd596fd05228a00504f253a344135"
+        },
+        "scala/strings/rule-ModifyAfterValidation.yml": {
+          "license": "MIT",
+          "sha256": "2b7c7dc1348400e9e0e23b7f9a0164fe5d74e75bda7dc255ec6586cedf623fdb"
+        },
+        "scala/strings/rule-NormalizeAfterValidation.yml": {
+          "license": "MIT",
+          "sha256": "34077a491d7bee63f0626f4f8a61aeeaf36c391870001333c5f893e40ec90c2c"
+        },
+        "scala/templateinjection/rule-TemplateInjection.yml": {
+          "license": "MIT",
+          "sha256": "24b2c289451237845bb0630197ec6d9814f2fb97398e406b1ea1e9529a0e7160"
+        },
+        "scala/unsafe/rule-ExternalConfigControl.yml": {
+          "license": "MIT",
+          "sha256": "4f388c497c472ef1f51642f1799ce800a7de2e75bfe7e5e27e6b261a5afb279f"
+        },
+        "scala/unsafe/rule-InformationExposure.yml": {
+          "license": "MIT",
+          "sha256": "7c105fb624d0a9cd2b1921fec5d04cfca8e0307f2533c46956e043e52d7065d0"
+        },
+        "scala/unsafe/rule-SensitiveDataExposure.yml": {
+          "license": "MIT",
+          "sha256": "19e744a30ee3427297369342a512d3895f6e1b1505241b9e3a79ba09c1c0898f"
+        },
+        "scala/xml/rule-ApacheXmlRpc.yml": {
+          "license": "MIT",
+          "sha256": "5a6c115b911b313cc3aaac4fa05587edf07e07ed38b852d81e6d584fda8bbda0"
+        },
+        "scala/xml/rule-SAMLIgnoreComments.yml": {
+          "license": "MIT",
+          "sha256": "63de306597473f179f5bc38548a91f5d1d7814544da6c2cbea0b366def335d0b"
+        },
+        "scala/xml/rule-XmlDecoder.yml": {
+          "license": "MIT",
+          "sha256": "e7ba1aff74e64f7b2c10709e4f4b6ab9f6cb950075f5d31ea9b3d1a1f295d634"
+        },
+        "scala/xml/rule-XsltTransform.yml": {
+          "license": "MIT",
+          "sha256": "21483615f474a79997e920e21ae671f1e64cbf3b6bc00663ff1afc1c08348be7"
+        },
+        "scala/xpathi/rule-XpathInjection.yml": {
+          "license": "MIT",
+          "sha256": "868cb4fdccacb45f657cad9e2c999188f1bf4fbee7c8d3c75af7ec77e44ca96c"
+        },
+        "scala/xss/rule-MVCApi.yml": {
+          "license": "MIT",
+          "sha256": "6238a339971308b29d45dd7d410c79ddaeb3a25b11d297bbd82f31826d1ef739"
+        },
+        "scala/xss/rule-RequestWrapper.yml": {
+          "license": "MIT",
+          "sha256": "9cce04a5e641dd0af288a1bb140b37ec8b7fa6af2480efc9b75c4206ca69a8a6"
+        },
+        "scala/xss/rule-WicketXSS.yml": {
+          "license": "MIT",
+          "sha256": "6b7f20f06fe6a993097df6c17769be7d9b5f53d69b975aa9aa7d8ca789b94e8a"
+        },
+        "scala/xss/rule-XSSReqParamToServletWriter.yml": {
+          "license": "MIT",
+          "sha256": "6de0e352f067ea2b07f79babeb6fab09fdb02a2879859e3eb45ffa4067cd8c2a"
+        },
+        "scala/xss/rule-XSSServlet.yml": {
+          "license": "MIT",
+          "sha256": "c25f5a21dabe50dd5cff2d8314194583abac7e515c41d5ea30c3e8dc8b03e453"
+        },
+        "scala/xxe/rule-Document.yml": {
+          "license": "MIT",
+          "sha256": "9dd7ac49fe3e207a4eb0ed04f018bb514240ba728eb1c92b6b5b1fac776586fd"
+        },
+        "scala/xxe/rule-SaxParserXXE.yml": {
+          "license": "MIT",
+          "sha256": "668f002a8a7978176f7e530c689f8bcdeb0290f46b001e17e6c6d119dd4fdd54"
+        },
+        "scala/xxe/rule-Trans.yml": {
+          "license": "MIT",
+          "sha256": "813d62f9d79e8aeaf0bb0e5c8127430dac756c159f968583f96ee041e1e651a4"
+        },
+        "scala/xxe/rule-XMLRdr.yml": {
+          "license": "MIT",
+          "sha256": "6fc72f356240a6cb359776ef9ba64b29fe8e9d6ed384a6b237340f5ca0e4759a"
+        },
+        "scala/xxe/rule-XMLStreamRdr.yml": {
+          "license": "MIT",
+          "sha256": "78b3ec9d7e907022922c7c1094d8292d3737d968de23aa4b92d0228a532feb48"
+        },
+        "scala/xxe/rule-XPathXXE.yml": {
+          "license": "MIT",
+          "sha256": "97932c78b2f9875525fd631d9cc6915949a5cfb1fd7d8b4dfbfc49bebb1d6c2d"
+        }
+      },
+      "license_files": [
+        "third_party/gitlab/LICENSE",
+        "third_party/gitlab/LICENSE-APACHE-2.0"
+      ],
+      "path": "third_party/gitlab",
+      "source": "https://gitlab.com/gitlab-org/security-products/sast-rules"
+    },
+    "vulture": {
+      "commit": null,
+      "files": {
+        "javascript-xss-taint.yaml": {
+          "license": "Apache-2.0",
+          "sha256": "0097b5c9952f9e8578bb2e6fb5502f95e03602a2fdb654a7a1954fb76949f3cb"
+        },
+        "python-command-injection-taint.yaml": {
+          "license": "Apache-2.0",
+          "sha256": "27a0d2d0a0dffb33436d0058f6c473f108cbd316fec1f83766799c4b45e70e34"
+        },
+        "python-path-traversal-taint.yaml": {
+          "license": "Apache-2.0",
+          "sha256": "19a93939fce874de4efd091b0e96b74a3d013c1b9450d77bf2f678ffd7b62d5f"
+        },
+        "python-sql-injection-taint.yaml": {
+          "license": "Apache-2.0",
+          "sha256": "b58a796319b4e2a75f47d6268072246486f1ff809703b3d7b5f5102aa23e4854"
+        },
+        "solidity/vulture-solidity.yaml": {
+          "license": "Apache-2.0",
+          "sha256": "3ded9eb1f83abd0bd9c52747cdd70df4f0567bfd7bbc3875561c12e4bb1bd652"
+        }
+      },
+      "license_files": [],
+      "path": "vulture",
+      "source": "Vulture-authored"
+    }
+  }
+}

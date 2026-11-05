@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from prove_agent.llm_helper import llm_json_call, render_prove_prompt
+from prove_agent.public_error import describe_failure, log_failure
 from prove_agent.strategies.base import (
     AttemptRecord,
     ExecutionResult,
@@ -777,7 +778,8 @@ async def execute_and_analyze(
             failure_reason=FailureReason.TIMEOUT,
         )
     except httpx.ConnectError as exc:
+        log_failure(logger, "http_probe", exc)
         return ExecutionResult(
-            conclusive=False, evidence=f"Connection failed: {exc}",
+            conclusive=False, evidence=f"Connection failed: {describe_failure(exc)}",
             failure_reason=FailureReason.CONNECTION_ERROR,
         )

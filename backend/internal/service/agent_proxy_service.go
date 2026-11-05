@@ -17,6 +17,7 @@ import (
 	"github.com/vulture/backend/internal/agui"
 	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
+	"github.com/vulture/backend/pkg/pluginregistry"
 )
 
 type AgentProxyService interface {
@@ -30,13 +31,17 @@ type AgentProxyService interface {
 type BrokerMinter interface {
 	MintForAgent(runID, taskType string) (string, error)
 	// ContextWindow resolves the run model's context window (tokens) via the
-	// broker registry (§31); 0 when disabled/unknown (nothing injected).
-	ContextWindow() int
+	// broker (§31) and names how it was obtained (0074 §5.1(a): env | probe |
+	// table | family | default); (0, "") when disabled/unknown (nothing injected).
+	ContextWindow() (int, string)
 }
 
 type agentProxyService struct {
 	client *http.Client
 	minter BrokerMinter
+	// tokens supplies the X-Vulture-Agent-Token each dispatch presents: the
+	// shared token to an in-tree agent, the derived token to any other type.
+	tokens pluginregistry.RunTokens
 	// auditTimeout bounds a whole per-agent audit (env
 	// VULTURE_AGENT_PROXY_TIMEOUT_SEC, default 600s). A slow local model
 	// (LM Studio/Ollama) scanning a large tree may need longer than the historical
@@ -123,6 +128,11 @@ func timeoutMarginWarning(proxy, agentMax, llmCall time.Duration) string {
 // NewAgentProxyService builds the proxy. minter may be nil (broker off) — then
 // no broker_token is injected and agents use their env provider keys (Mode A).
 // The two per-agent timeouts are env-configurable (see the struct fields).
+//
+// The run tokens are built once, here, from VULTURE_AGENT_TOKEN and no plugin
+// registry, so the agent registry's names decide what is in-tree; that is exact
+// for a backend without plugins. The server, which holds the registry, uses
+// NewAgentProxyServiceWithTokens.
 func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 	auditTimeout := envDurationSec("VULTURE_AGENT_PROXY_TIMEOUT_SEC", defaultAgentProxyTimeoutSec)
 	respHeaderTimeout := envDurationSec("VULTURE_AGENT_RESPONSE_HEADER_TIMEOUT_SEC", defaultAgentRespHeaderTimeoutSec)
@@ -141,6 +151,7 @@ func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 	}
 	return &agentProxyService{
 		minter:            minter,
+		tokens:            pluginregistry.NewRunTokens(os.Getenv(pluginregistry.AgentTokenEnv), nil),
 		auditTimeout:      auditTimeout,
 		respHeaderTimeout: respHeaderTimeout,
 		client: &http.Client{
@@ -153,6 +164,15 @@ func NewAgentProxyService(minter BrokerMinter) AgentProxyService {
 			},
 		},
 	}
+}
+
+// NewAgentProxyServiceWithTokens is NewAgentProxyService presenting t, the run
+// tokens the server built once from its configuration and plugin registry and
+// shares with the plugin supervisor.
+func NewAgentProxyServiceWithTokens(minter BrokerMinter, t pluginregistry.RunTokens) AgentProxyService {
+	s := NewAgentProxyService(minter).(*agentProxyService)
+	s.tokens = t
+	return s
 }
 
 // envFirstToken reads an env var and keeps only its leading whitespace/comment
@@ -243,23 +263,7 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 	if lineageChecks != nil && len(lineageChecks.Rows) > 0 {
 		payload["lineage_checks_requested"] = lineageChecks
 	}
-	// Feature 0064 §25.2: when the broker is enabled, mint a per-run token
-	// scoped to this agent's task_type and inject it (+ task_type for the
-	// X-Vulture-Task-Type header the agent sends). A disabled broker returns
-	// "", so nothing changes in Mode A.
-	if s.minter != nil {
-		if tok, err := s.minter.MintForAgent(runID, agentType); err != nil {
-			log.Printf("[agent-proxy] broker mint failed for run=%s agent=%s: %v", runID, agentType, err)
-		} else if tok != "" {
-			payload["broker_token"] = tok
-			payload["task_type"] = agentType
-			// §31: inject the broker-resolved model context window so the agent
-			// sizes its LLM phase from the registry, not a timid local default.
-			if cw := s.minter.ContextWindow(); cw > 0 {
-				payload["context_window"] = cw
-			}
-		}
-	}
+	s.injectBroker(payload, runID, agentType)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -270,8 +274,8 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token := os.Getenv("VULTURE_AGENT_TOKEN"); token != "" {
-		req.Header.Set("X-Vulture-Agent-Token", token)
+	if token := s.tokens.For(agentType); token != "" {
+		req.Header.Set(pluginregistry.AgentTokenHeader, token)
 	}
 
 	// 0065 §L5: quote the manifest/config-derived agent URL against log injection.
@@ -288,6 +292,42 @@ func (s *agentProxyService) RunAgentWithContext(ctx context.Context, agentURL st
 	}
 
 	return s.readSSEStream(ctx, agentType, resp, eventCh)
+}
+
+// injectBroker implements feature 0064 §25.2: when the broker is enabled, mint
+// a per-run token scoped to this agent's task_type and inject it (+ task_type
+// for the X-Vulture-Task-Type header the agent sends). A disabled broker
+// returns "", so nothing changes in Mode A.
+func (s *agentProxyService) injectBroker(payload map[string]interface{}, runID, agentType string) {
+	if s.minter == nil {
+		return
+	}
+	tok, err := s.minter.MintForAgent(runID, agentType)
+	if err != nil {
+		log.Printf("[agent-proxy] broker mint failed for run=%s agent=%s: %v", runID, agentType, err)
+		return
+	}
+	if tok == "" {
+		return
+	}
+	payload["broker_token"] = tok
+	payload["task_type"] = agentType
+	injectContextWindow(payload, s.minter)
+}
+
+// injectContextWindow injects the broker-resolved model context window (§31)
+// so the agent sizes its LLM phase from the registry, not a timid local
+// default, and beside it the window's source (0074 §5.1(a)) so the agent can
+// publish HOW the broker obtained it. No window, no source.
+func injectContextWindow(payload map[string]interface{}, m BrokerMinter) {
+	cw, src := m.ContextWindow()
+	if cw <= 0 {
+		return
+	}
+	payload["context_window"] = cw
+	if src != "" {
+		payload["context_window_source"] = src
+	}
 }
 
 func (s *agentProxyService) readSSEStream(ctx context.Context, agentType string, resp *http.Response, eventCh chan<- *model.AgUIEvent) error {

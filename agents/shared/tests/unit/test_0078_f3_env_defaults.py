@@ -403,6 +403,11 @@ def _explicit_resolvers() -> dict[str, Resolver]:
             audit_runner._preflight_mode,
             "agents/shared/shared/audit_runner.py _preflight_mode() [called]",
         ),
+        # Mode string normalised by shared.env.env_mode (0074 contract C16).
+        "VULTURE_LLM_QUOTE_VERIFY": (
+            audit_runner._quote_mode,
+            "agents/shared/shared/audit_runner.py _quote_mode() [called]",
+        ),
     }
     resolvers.update(_quote_knob_resolvers())
     resolvers.update(_judge_resolvers())
@@ -501,6 +506,13 @@ ALLOWLIST: dict[str, str] = {
         "docker-compose interpolation default (${VULTURE_SOURCE_DIR:-./}); it is "
         "read by compose, not by any Python or Go fallback, so there is no code "
         "default to agree with."
+    ),
+    "VULTURE_LLM_BROKER": (
+        "No single constant default: config.BrokerEnabled / loadBrokerConfig "
+        "DERIVE it from VULTURE_USE_LLM (rule 6 — the broker is on whenever an "
+        "LLM is used, so 'LLM in use' and 'key withheld from agents' cannot "
+        "drift). The env.example line is the explicit-override example "
+        "(set it off to run the LLM tier without the broker), not a default."
     ),
 }
 

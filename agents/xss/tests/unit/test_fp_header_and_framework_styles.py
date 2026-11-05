@@ -1,9 +1,9 @@
 """XSS agent false positives measured on a real target (3 of 3 rows false).
 
 1. CWE-113: `Location.*(?:...|user|...)` was unanchored at BOTH ends, so
-       const hasProfileLocation = Boolean(userAddressData);
-   matched -- "Location" inside `hasProfileLocation`, "user" inside
-   `userAddressData`. A header name must appear AS a header (quoted, or
+       const hasVenueLocation = Boolean(userKioskData);
+   matched -- "Location" inside `hasVenueLocation`, "user" inside
+   `userKioskData`. A header name must appear AS a header (quoted, or
    followed by a colon), and the taint token must be a whole word.
 
 2. CWE-79: `dangerouslySetInnerHTML={{ __html: extractStyle(cache) }}` is the
@@ -25,7 +25,7 @@ def _matches(line: str) -> bool:
 
 class TestHeaderInjectionAnchoring:
     def test_identifier_containing_location_is_not_a_header(self):
-        assert not _matches("    const hasProfileLocation = Boolean(userAddressData);")
+        assert not _matches("    const hasVenueLocation = Boolean(userKioskData);")
 
     def test_identifier_containing_content_type_is_not_a_header(self):
         assert not _matches("    const contentTypeLabel = userLabel;")

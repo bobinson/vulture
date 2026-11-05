@@ -145,3 +145,22 @@ func TestResolveTargetNilSource(t *testing.T) {
 		t.Fatalf("nil source resolved to %+v", got)
 	}
 }
+
+// TestResolveTargetRelativePathNeverClimbsTheWorkingDirectory: a relative scan
+// path would be climbed against the backend's working directory, so a marker
+// there would hand its identity to whatever relative path was submitted. Only
+// an absolute directory is examined; a relative one keys on its path.
+func TestResolveTargetRelativePathNeverClimbsTheWorkingDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "package.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(cwd, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	got := ResolveTarget(&model.Source{Type: model.SourceTypeLocal, Path: "proj"})
+	if got.Key != "path:proj" {
+		t.Fatalf("target key = %q, want %q", got.Key, "path:proj")
+	}
+}

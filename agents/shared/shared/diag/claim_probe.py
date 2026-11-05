@@ -139,38 +139,6 @@ def _text(claim: dict, name: str) -> str:
     return str(claim.get(name) or "")
 
 
-def _int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _checks(claim: dict) -> list:
-    """The persisted ``validation.checks`` list, or ``[]``."""
-    return (claim.get("validation") or {}).get("checks") or []
-
-
-# The persisted `id` of the check `run_l1` emits for the verifier
-# (`validate/context_heuristics.py:_ANCHOR_ID`). Named here as the READ side of a
-# wire value rather than imported, because a probe must not pull the validate
-# package in to read a JSON blob it was handed.
-_ANCHOR_CHECK_ID = "anchor"
-
-
-def _is_anchor_check(check: Any) -> bool:
-    return isinstance(check, dict) and check.get("id") == _ANCHOR_CHECK_ID
-
-
-def _anchor_extras(claim: dict) -> dict:
-    """``validation.checks[id == "anchor"].extras`` — the ONE persisted egress route
-    for the verifier's output (§5.4(4)), or ``{}`` for a row that predates it."""
-    for check in _checks(claim):
-        if _is_anchor_check(check):
-            return check.get("extras") or {}
-    return {}
-
-
 def _claim_quote(claim: dict, extras: dict) -> str:
     """The evidence quote as persisted.
 
@@ -192,7 +160,8 @@ def _replay_finding(claim: dict, extras: dict) -> dict:
     check's ``claimed_line`` extra — is preferred whenever it is there.
     """
     claimed = extras.get("claimed_line", claim.get("line_start"))
-    return {"evidence_quote": _claim_quote(claim, extras), "line_start": _int(claimed)}
+    return {"evidence_quote": _claim_quote(claim, extras),
+            "line_start": anchor.as_int(claimed)}
 
 
 # ── the rendered feed, as the sweep rendered it ──────────────────────────────
@@ -347,7 +316,7 @@ def _range_invalid(start: int, end: int, line_count: int) -> bool:
 def _shape_labels(claim: dict, path_key: str, start: int,
                   path: Path | None) -> dict[str, bool]:
     """The labels that need no quote — the only ones computable on a stored row."""
-    end = _int(claim.get("line_end")) or start
+    end = anchor.as_int(claim.get("line_end")) or start
     return {
         "declarative_line_unset": _suffix(path_key) in _DECLARATIVE_SUFFIXES and start <= 1,
         "range_invalid": _range_invalid(start, end, len(_file_lines(path))),
@@ -405,7 +374,7 @@ def _label_claim(claim: dict, index: int, ctx: _Context) -> dict[str, Any]:
     raw_path = _text(claim, "file_path")
     path_key = _normalize_dedup_path(raw_path, ctx.source_path)
     path = _resolve_finding_path(raw_path, ctx.source_path)
-    extras = _anchor_extras(claim)
+    extras = anchor.anchor_extras(claim)
     replay = _replay_finding(claim, extras)
     result = anchor.verify_anchor(replay, path, mode="observe",
                                   batch_paths=_batch_paths(ctx, path_key))
@@ -418,7 +387,7 @@ def _label_claim(claim: dict, index: int, ctx: _Context) -> dict[str, Any]:
         "category": _text(claim, "category"),
         "provenance": _text(claim, "provenance"),
         "line_start": replay["line_start"],
-        "line_end": _int(claim.get("line_end")),
+        "line_end": anchor.as_int(claim.get("line_end")),
         "anchor_line": line,
         "resolved": path is not None,
         "dedup_key": list(_dedup_key(claim, ctx.source_path)),

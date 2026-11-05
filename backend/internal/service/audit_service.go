@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vulture/backend/internal/config"
 	"github.com/vulture/backend/internal/model"
 	"github.com/vulture/backend/internal/repository"
 	"github.com/vulture/backend/pkg/agentregistry"
@@ -21,15 +22,13 @@ import (
 // LLM each scan used. Note: it reflects the backend's configured model — in the
 // normal flow identical to the agents'; it is not a per-agent runtime readback.
 func auditLLMModel() string {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("VULTURE_USE_LLM"))) {
-	case "true", "1", "yes":
-		if m := strings.TrimSpace(os.Getenv("VULTURE_LLM_MODEL")); m != "" {
-			return m
-		}
-		return "(default)"
-	default:
+	if !config.EnvFlag("VULTURE_USE_LLM", false) {
 		return "skills-only"
 	}
+	if m := strings.TrimSpace(os.Getenv("VULTURE_LLM_MODEL")); m != "" {
+		return m
+	}
+	return "(default)"
 }
 
 type AuditService interface {
@@ -82,7 +81,7 @@ func (s *auditService) Create(req *model.AuditRequest) (*model.Audit, error) {
 	// to defend against DNS rebinding between create + deliver.
 	if req.WebhookURL != "" {
 		if err := ValidateWebhookURL(context.Background(), req.WebhookURL); err != nil {
-			return nil, fmt.Errorf("invalid webhook_url: %w", err)
+			return nil, classifyWebhookErr(err)
 		}
 	}
 	audit := &model.Audit{

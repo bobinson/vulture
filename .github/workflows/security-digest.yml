@@ -2,8 +2,9 @@
 #
 # Renders a proactive open-vulnerability digest (pip-audit over the locked deps +
 # open Dependabot alerts) to the run summary and keeps ONE rolling tracking issue
-# up to date. Additive + advisory: a missed digest blocks nothing (Trivy in CI +
-# the C4 pre-tag gate remain the enforcement).
+# up to date. Additive + advisory: a missed digest blocks nothing (the release
+# workflow's Trivy CVE gate and audit-ci step + the C4 pre-tag gate remain the
+# enforcement).
 #
 # workflow_dispatch ONLY — NO cron (LLD §0/§7), same dead-cron rationale as
 # relock.yml: a solo repo's schedules die silently after 60 days of inactivity,
@@ -37,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install pip-audit

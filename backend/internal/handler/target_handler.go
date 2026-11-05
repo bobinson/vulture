@@ -46,7 +46,7 @@ func (h *TargetHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	targets, err := h.svc.ListTargets()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list targets", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, targets)
@@ -65,7 +65,7 @@ func (h *TargetHandler) Route(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "scans":
-		h.scans(w, key)
+		h.scans(w, r, key)
 	case "aggregate":
 		h.aggregate(w, r, key)
 	default:
@@ -73,10 +73,10 @@ func (h *TargetHandler) Route(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *TargetHandler) scans(w http.ResponseWriter, key string) {
+func (h *TargetHandler) scans(w http.ResponseWriter, r *http.Request, key string) {
 	scans, err := h.svc.Scans(key)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list target scans", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, scans)
@@ -94,7 +94,7 @@ func (h *TargetHandler) aggregate(w http.ResponseWriter, r *http.Request, key st
 	}
 	report, err := h.svc.Aggregate(q)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "aggregate target", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)

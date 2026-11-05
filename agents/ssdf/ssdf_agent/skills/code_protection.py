@@ -4,7 +4,9 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import present
+from ssdf_agent.skills._ci_utils import present_contents
 
 _PRE_COMMIT_FILES = {
     ".pre-commit-config.yaml", ".pre-commit-config.yml",
@@ -35,9 +37,9 @@ def check_code_protection(source_path: str) -> dict:
             "practice": "PS-protect-software",
             "title": "No pre-commit hooks configured",
             "description": "No pre-commit hook configuration (pre-commit, husky, lint-staged) found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Set up pre-commit hooks for linting and security checks before commit",
         })
 
@@ -49,9 +51,9 @@ def check_code_protection(source_path: str) -> dict:
             "practice": "PS-protect-software",
             "title": "No commit signing configuration found",
             "description": "No GPG/SSH commit signing configuration detected",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Configure commit signing to ensure code authenticity",
         })
 
@@ -60,30 +62,16 @@ def check_code_protection(source_path: str) -> dict:
 
 def _has_pre_commit_hooks(root: Path) -> bool:
     """Check for pre-commit hook configurations."""
-    for name in _PRE_COMMIT_FILES:
-        if (root / name).exists():
-            return True
-    if (root / _HUSKY_DIR).is_dir():
+    if any(present(root, name) for name in (*_PRE_COMMIT_FILES, _HUSKY_DIR)):
         return True
     # Check for lint-staged in package.json
-    pkg_json = root / "package.json"
-    if pkg_json.exists():
-        content = read_file_safe(pkg_json)
-        if content and "lint-staged" in content:
-            return True
-    return False
+    return any("lint-staged" in content for content in present_contents(root, ("package.json",)))
 
 
 def _has_commit_signing(root: Path) -> bool:
     """Check for commit signing configuration."""
-    gitconfig = root / ".gitconfig"
-    if gitconfig.exists():
-        content = read_file_safe(gitconfig)
-        if content:
-            for indicator in _SIGNING_INDICATORS:
-                if indicator in content:
-                    return True
-    return False
+    gitconfig = present_contents(root, (".gitconfig",))
+    return any(indicator in content for content in gitconfig for indicator in _SIGNING_INDICATORS)
 
 
 check_code_protection_tool = function_tool(check_code_protection)

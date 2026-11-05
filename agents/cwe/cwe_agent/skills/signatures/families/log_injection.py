@@ -2,7 +2,10 @@
 
 Sink: a logging call (log/logger/logrus/console.log) whose message is built by
 concatenating / interpolating an untrusted value, with no CRLF-stripping /
-encoding in the window. ``require_source=True``.
+encoding in the window. ``require_source=True`` with ``source_flows=True``: the
+logged code itself must use the untrusted value, directly or through a variable
+assigned from it on the lines above. A request word elsewhere in the window, or
+in the message text, logs nothing untrusted.
 
 Bounded quantifiers (ReDoS-safe).
 """
@@ -40,6 +43,7 @@ SIGNATURES = (
         source=LOG_SOURCE,
         sanitizer=LOG_SANITIZER,
         require_source=True,
+        source_flows=True,
         confidence=0.55,
         status="trusted",
     ),

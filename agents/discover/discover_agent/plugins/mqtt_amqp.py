@@ -16,6 +16,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +123,9 @@ async def _probe_rabbitmq_mgmt(host: str, result: DiscoveryResult) -> None:
 def _scan_broker_urls(root: Path, result: DiscoveryResult) -> None:
     """Extract broker URLs from source and config files."""
     scanned = 0
-    for fpath in root.rglob("*"):
+    for fpath in tree_files(root):
         if scanned >= 50:
             break
-        if not fpath.is_file():
-            continue
         if fpath.suffix.lower() not in (
             ".js", ".ts", ".py", ".go", ".java", ".yaml", ".yml",
             ".json", ".env", ".toml", ".conf", ".cfg", ".properties",

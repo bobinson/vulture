@@ -56,7 +56,9 @@ func (h *AuthHandler) SetLocalMode(enabled bool) {
 // LocalSession returns a token for the seeded local user without
 // credentials. Only available when local mode is enabled. Uses the
 // service's password-less IssueLocalAdminToken helper so this handler
-// no longer needs to know the (CSPRNG-generated) seed password.
+// no longer needs to know the (CSPRNG-generated) seed password. Like login
+// and register, a request carrying CSRFHeader gets the session as a cookie
+// instead (prepareSession).
 //
 // 0036 Phase 3 (H7) — defence-in-depth: even with LocalMode on AND a
 // loopback bind enforced (H9 in server.New), reject requests whose
@@ -73,9 +75,10 @@ func (h *AuthHandler) LocalSession(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.IssueLocalAdminToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "local session unavailable")
+		writeInternalError(w, r, "issue local session", err)
 		return
 	}
+	prepareSession(w, r, resp)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -127,9 +130,10 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Register(req)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeRegisterError(w, r, err)
 		return
 	}
+	prepareSession(w, r, resp)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -145,7 +149,7 @@ func (h *AuthHandler) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Register(req)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeRegisterError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp.User)
@@ -178,14 +182,32 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if h.throttle != nil {
 		h.throttle.Reset(email, ip)
 	}
+	prepareSession(w, r, resp)
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// Me answers the principal of a request that presented a credential. Local
+// mode's implicit admin is not one, so a request presenting nothing gets 401
+// even there: that is how the SPA learns to ask local-session for a session.
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r)
-	if user == nil {
+	if user == nil || !presentedCredential(r) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
+}
+
+// Logout deletes the browser session cookie and answers 204. It needs
+// CSRFHeader, so no other site can sign the user out, and nothing more: it
+// runs outside auth and the read-only guard, so a read-only viewer signs out
+// too, and a request without a session gets the same answer. The JWT is not
+// revoked; it expires with the session.
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	if !hasCSRFHeader(r) {
+		writeCSRFRequired(w)
+		return
+	}
+	clearSessionCookie(w, r)
+	w.WriteHeader(http.StatusNoContent)
 }

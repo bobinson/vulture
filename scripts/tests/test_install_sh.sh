@@ -1725,6 +1725,160 @@ test_link_binary_no_shadow() {
 }
 test_link_binary_no_shadow
 
+# ===========================================================================
+# glibc floor (check_glibc). The agents' Linux wheels are manylinux_2_28, so a
+# glibc below GLIBC_MIN is a hard error ONLY when this run installs the agents
+# (agents_planned: a bundled runtime, VULTURE_USE_SYSTEM_PYTHON=1, or AUTO with
+# a hashed lockfile + a supported Python). A CLI-only install warns, naming the
+# floor, and continues; an unreadable libc (musl) warns and continues; a
+# non-Linux host is skipped without probing.
+#
+# Fake getconf/ldd sit first on PATH and log each call to $LIBC_CALLS, so the
+# skip case can assert the libc was never probed.
+# ===========================================================================
+LIBC_CALLS="$SANDBOX/libc.calls"
+
+# make_libc_shims DIR GETCONF_LINE LDD_LINE LDD_RC — fake libc probes. An empty
+# GETCONF_LINE makes getconf fail silently, as it does on a non-glibc libc.
+make_libc_shims() {
+    mkdir -p "$1"
+    if [ -n "$2" ]; then _gc_body="echo '$2'"; else _gc_body='exit 1'; fi
+    printf '#!/bin/sh\necho getconf >> "%s"\n%s\n' "$LIBC_CALLS" "$_gc_body" > "$1/getconf"
+    printf '#!/bin/sh\necho ldd >> "%s"\necho '"'"'%s'"'"'\nexit %s\n' \
+        "$LIBC_CALLS" "$3" "$4" > "$1/ldd"
+    chmod +x "$1/getconf" "$1/ldd"
+}
+
+LIBC_231="$SANDBOX/libc-231";  make_libc_shims "$LIBC_231" 'glibc 2.31' 'ldd (GNU libc) 2.31' 0
+LIBC_217="$SANDBOX/libc-217";  make_libc_shims "$LIBC_217" 'glibc 2.17' 'ldd (GNU libc) 2.17' 0
+LIBC_LDD="$SANDBOX/libc-ldd";  make_libc_shims "$LIBC_LDD" '' 'ldd (GNU libc) 2.31' 0
+LIBC_MUSL="$SANDBOX/libc-musl"; make_libc_shims "$LIBC_MUSL" '' 'musl libc (x86_64)' 1
+
+# glibc_probe LIBCBIN HOME OS ENV — run check_glibc with LIBCBIN first on PATH
+# after evaluating ENV (assignments + export). Prints the function's output,
+# then __CONTINUED__ only if it returned rather than exiting.
+glibc_probe() {
+    : > "$LIBC_CALLS"
+    run_in_install '
+        unset VULTURE_USE_SYSTEM_PYTHON VULTURE_PYTHON FAKE_PYVER
+        PATH="'"$1"':'"$PATH"'"
+        VULTURE_HOME="'"$2"'"
+        OS="'"$3"'"
+        export PATH VULTURE_HOME OS
+        '"$4"'
+        check_glibc 2>&1
+        echo __CONTINUED__
+    '
+}
+
+# glibc_verdict NAME OUT RC WANT [MUST_GREP...] — WANT is continue|abort.
+# continue: rc 0 + __CONTINUED__; abort: rc != 0 and no __CONTINUED__. Every
+# MUST_GREP must appear in OUT.
+glibc_verdict() {
+    _n=$1; _o=$2; _rc=$3; _want=$4; shift 4
+    detail=""
+    case "$_want" in
+        continue)
+            [ "$_rc" -eq 0 ] || detail="$detail expected rc 0 got rc=$_rc;"
+            printf '%s' "$_o" | grep -q __CONTINUED__ || detail="$detail install did not continue;" ;;
+        abort)
+            [ "$_rc" -ne 0 ] || detail="$detail expected non-zero rc;"
+            printf '%s' "$_o" | grep -q __CONTINUED__ && detail="$detail install continued past the floor;" ;;
+    esac
+    for _g in "$@"; do
+        printf '%s' "$_o" | grep -qF -- "$_g" || detail="$detail output lacks '$_g';"
+    done
+    if [ -z "$detail" ]; then pass "$_n"
+    else fail "$_n" "$detail out=$(printf '%s' "$_o" | tr '\n' '|' | cut -c1-200)"; fi
+}
+
+# GLIBC1 — glibc 2.31 meets the floor even with the agents requested; the
+# getconf answer and the ldd-banner fallback (getconf silent) both pass, with
+# no warning.
+test_glibc_231_passes() {
+    name="GLIBC1-2.31-passes"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "check_glibc unreachable: seam absent"; return; fi
+    h=$(setup_home "$SANDBOX/g1-home")
+    for libc in "$LIBC_231" "$LIBC_LDD"; do
+        out=$(glibc_probe "$libc" "$h" linux 'VULTURE_USE_SYSTEM_PYTHON=1; export VULTURE_USE_SYSTEM_PYTHON')
+        rc=$?
+        glibc_verdict "$name ($(basename "$libc"))" "$out" "$rc" continue 'detected glibc 2.31'
+        printf '%s' "$out" | grep -qi warning && fail "$name ($(basename "$libc"))" "unexpected warning on a supported glibc"
+    done
+}
+test_glibc_231_passes
+
+# GLIBC2 — glibc 2.17 with the agents being installed is a hard error naming
+# the floor: (a) VULTURE_USE_SYSTEM_PYTHON=1; (b) a bundled runtime, which wins
+# over VULTURE_USE_SYSTEM_PYTHON=0; (c) AUTO with a hashed lockfile and a
+# supported Python.
+test_glibc_217_agents_fails() {
+    name="GLIBC2-2.17-with-agents-fails"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "check_glibc unreachable: seam absent"; return; fi
+    h=$(setup_home "$SANDBOX/g2a-home")
+    out=$(glibc_probe "$LIBC_217" "$h" linux 'VULTURE_USE_SYSTEM_PYTHON=1; export VULTURE_USE_SYSTEM_PYTHON')
+    rc=$?
+    glibc_verdict "$name (require)" "$out" "$rc" abort 'glibc 2.17' '2.28'
+
+    h=$(setup_home "$SANDBOX/g2b-home")
+    make_pip "$h/runtime/python/bin/pip"
+    out=$(glibc_probe "$LIBC_217" "$h" linux 'VULTURE_USE_SYSTEM_PYTHON=0; export VULTURE_USE_SYSTEM_PYTHON')
+    rc=$?
+    glibc_verdict "$name (bundled)" "$out" "$rc" abort 'glibc 2.17' '2.28'
+
+    h=$(setup_sys_home "$SANDBOX/g2c-home")
+    out=$(glibc_probe "$LIBC_217" "$h" linux \
+        'VULTURE_PYTHON="'"$PYBIN"'/python3.12"; FAKE_PYVER=3.12; export VULTURE_PYTHON FAKE_PYVER')
+    rc=$?
+    glibc_verdict "$name (auto)" "$out" "$rc" abort 'glibc 2.17' '2.28'
+}
+test_glibc_217_agents_fails
+
+# GLIBC3 — glibc 2.17 on a CLI-only install warns, naming the floor, and
+# continues: (a) VULTURE_USE_SYSTEM_PYTHON=0 despite a hashed lockfile; (b) AUTO
+# with no supported Python (3.11).
+test_glibc_217_cli_only_warns() {
+    name="GLIBC3-2.17-cli-only-warns"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "check_glibc unreachable: seam absent"; return; fi
+    h=$(setup_sys_home "$SANDBOX/g3a-home")
+    out=$(glibc_probe "$LIBC_217" "$h" linux 'VULTURE_USE_SYSTEM_PYTHON=0; export VULTURE_USE_SYSTEM_PYTHON')
+    rc=$?
+    glibc_verdict "$name (disabled)" "$out" "$rc" continue 'warning:' 'glibc 2.17' '2.28'
+
+    h=$(setup_sys_home "$SANDBOX/g3b-home")
+    out=$(glibc_probe "$LIBC_217" "$h" linux \
+        'VULTURE_PYTHON="'"$PYBIN"'/python3.12"; FAKE_PYVER=3.11; export VULTURE_PYTHON FAKE_PYVER')
+    rc=$?
+    glibc_verdict "$name (auto-no-python)" "$out" "$rc" continue 'warning:' 'glibc 2.17' '2.28'
+}
+test_glibc_217_cli_only_warns
+
+# GLIBC4 — a musl ldd banner (getconf silent, ldd exits 1) cannot be verified:
+# warn, naming the floor, and continue even with the agents requested.
+test_glibc_musl_warns() {
+    name="GLIBC4-musl-warns-and-continues"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "check_glibc unreachable: seam absent"; return; fi
+    h=$(setup_home "$SANDBOX/g4-home")
+    out=$(glibc_probe "$LIBC_MUSL" "$h" linux 'VULTURE_USE_SYSTEM_PYTHON=1; export VULTURE_USE_SYSTEM_PYTHON')
+    rc=$?
+    glibc_verdict "$name" "$out" "$rc" continue 'warning:' 'musl' '2.28'
+}
+test_glibc_musl_warns
+
+# GLIBC5 — a non-Linux host is skipped: no output, and the libc is never probed
+# (the shims would otherwise report 2.17 and abort a require install).
+test_glibc_non_linux_skips() {
+    name="GLIBC5-non-linux-skips"
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$name" "check_glibc unreachable: seam absent"; return; fi
+    h=$(setup_home "$SANDBOX/g5-home")
+    out=$(glibc_probe "$LIBC_217" "$h" darwin 'VULTURE_USE_SYSTEM_PYTHON=1; export VULTURE_USE_SYSTEM_PYTHON')
+    rc=$?
+    glibc_verdict "$name" "$out" "$rc" continue
+    [ "$out" = __CONTINUED__ ] || fail "$name (silent)" "expected no output on darwin; out=$(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"
+    [ -s "$LIBC_CALLS" ] && fail "$name (no-probe)" "getconf/ldd probed on darwin: $(tr '\n' ' ' < "$LIBC_CALLS")"
+}
+test_glibc_non_linux_skips
+
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

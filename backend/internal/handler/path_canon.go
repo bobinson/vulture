@@ -16,8 +16,8 @@ import (
 // crossAgentKey interpolates f.FilePath raw, an LLM row can never collide with a
 // deterministic one — 0 such collisions today, 24 once the path is normalised.
 //
-// So VULTURE_DEDUP_PREFER_DETERMINISTIC, documented as 0076 re-anchoring's hard
-// prerequisite, is VACUOUS: the collision it arbitrates cannot occur.
+// So the deterministic-first preference, documented as 0076 re-anchoring's hard
+// prerequisite, was VACUOUS: the collision it arbitrates could not occur.
 //
 // SCOPE: the KEY is canonicalised, never the stored value. `file_path` does two
 // incompatible jobs — display/resolution (llm_judge._file_signature does a bare

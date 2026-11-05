@@ -205,7 +205,7 @@ LEDGER: tuple[Insufficient, ...] = (
     Insufficient(
         key="regex_dos",
         rel_path="agents/shared/shared/validate/judge_tools.py",
-        anchor="results = _shared_search_pattern(str(self.root), pattern)",
+        anchor="results = _shared_search_pattern(str(self.root), pattern, under=under)",
         context=2,
         category="CWE-1333",
         severity="medium",

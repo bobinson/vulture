@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,6 +79,47 @@ func TestGetInfo_WithRemote(t *testing.T) {
 	}
 	if info.RemoteURL != "https://github.com/example/repo.git" {
 		t.Errorf("expected remote URL, got %q", info.RemoteURL)
+	}
+}
+
+// The repository path reaches git as its working directory and never as an
+// argument, so no spelling of a path can reach git's option parser (CodeQL
+// go/command-injection). A stub git on PATH records each call's directory
+// and arguments.
+func TestGetInfo_PathIsWorkingDirNotArgument(t *testing.T) {
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	script := "#!/bin/sh\n{ pwd -P; printf '%s\\n' \"$@\"; echo --; } >> '" + logPath + "'\necho stub\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	repo := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := GetInfo(repo); err != nil {
+		t.Fatalf("GetInfo: %v", err)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("stub git never ran: %v", err)
+	}
+	calls := strings.Split(strings.TrimSuffix(string(raw), "--\n"), "--\n")
+	for _, call := range calls {
+		lines := strings.Split(strings.TrimSuffix(call, "\n"), "\n")
+		if lines[0] != resolved {
+			t.Errorf("git ran in %q, want %q", lines[0], resolved)
+		}
+		for _, arg := range lines[1:] {
+			if arg == "-C" || arg == repo || arg == resolved {
+				t.Errorf("git argv %q carries the path or -C", lines[1:])
+				break
+			}
+		}
 	}
 }
 

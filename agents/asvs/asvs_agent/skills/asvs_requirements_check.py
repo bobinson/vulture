@@ -30,10 +30,15 @@ from asvs_agent.skills._cwe_patterns import (
     DEBUG_PROD_PATTERNS,
     HARDCODED_CRED_PATTERNS,
     PATH_TRAVERSAL_PATTERNS,
-    SAFE_COOKIE_PATTERNS,
-    SAFE_SECURE_PATTERNS,
     SESSION_FIXATION_PATTERNS,
     WEAK_RANDOM_PATTERNS,
+)
+from shared.tools.cookie_attributes import (
+    SAFE_HTTPONLY,
+    SAFE_SAMESITE,
+    SAFE_SECURE,
+    call_open,
+    cookie_context,
 )
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
@@ -42,6 +47,7 @@ from shared.tools.file_scanner import (
     is_generated_file,
     is_prose_file,
     is_test_file,
+    opens_pattern_definition,
     read_file_lines,
     scan_code_files,
 )
@@ -106,13 +112,8 @@ _COOKIE_NO_SAMESITE = re.compile(
     r"(?:\.set_cookie\s*\(|Set-Cookie:|response\.cookie\s*\(|http\.SetCookie\s*\()",
     re.IGNORECASE,
 )
-# SameSite=None is SAFE only when Secure is also set (RFC 6265bis); we
-# conservatively treat only Strict/Lax as unconditionally safe here.
-# SameSite=None without Secure is a real bug and must not be suppressed.
-_SAFE_SAMESITE = re.compile(
-    r"SameSite\s*[:=]\s*['\"]?(?:Strict|Lax)['\"]?",
-    re.IGNORECASE,
-)
+# The safe side of all three cookie requirements is shared with the CWE agent
+# (shared.tools.cookie_attributes): only Strict/Lax counts for SameSite.
 
 # V3.4.2 — CORS wildcard Access-Control-Allow-Origin
 _CORS_WILDCARD = re.compile(
@@ -362,7 +363,7 @@ _PATH_TRAVERSAL_UNION = _union(PATH_TRAVERSAL_PATTERNS)
 
 # Obvious non-secrets. Without this, V13.3.1 reported CRITICAL for a Storybook
 # mock whose value literally says "storybook":
-#     const VERIFICATION_TOKEN = "verification-token-2102-storybook";
+#     const VERIFICATION_TOKEN = "verification-token-7350-storybook";
 # Kept to markers that appear IN THE VALUE or on the line, so a real secret in
 # a file that merely happens to sit near tests is still reported.
 _CRED_PLACEHOLDER = re.compile(
@@ -404,16 +405,16 @@ _CHECKS: dict[str, CheckSpec] = {
     "V3.3.1": (
         _COOKIE_NO_SECURE_UNION,
         "high",
-        SAFE_SECURE_PATTERNS,
+        SAFE_SECURE,
         _WEB_EXTS,
     ),
     # V3.3.2 SameSite missing.
-    "V3.3.2": (_COOKIE_NO_SAMESITE, "medium", _SAFE_SAMESITE, _WEB_EXTS),
+    "V3.3.2": (_COOKIE_NO_SAMESITE, "medium", SAFE_SAMESITE, _WEB_EXTS),
     # V3.3.4 cookies missing HttpOnly.
     "V3.3.4": (
         _COOKIE_NO_HTTPONLY_UNION,
         "high",
-        SAFE_COOKIE_PATTERNS,
+        SAFE_HTTPONLY,
         _WEB_EXTS,
     ),
     # V3.4.2 CORS wildcard origin.
@@ -800,6 +801,7 @@ def _traversal_rollback_active() -> bool:
 # Requirements whose pattern is an HTML-injection sink, and which therefore
 # answer to the framework-CSS carve-out.
 _HTML_SINK_REQS = frozenset({"V3.2.2"})
+_COOKIE_REQS = frozenset({"V3.3.1", "V3.3.2", "V3.3.4"})
 
 
 def _registry_entry_matches(
@@ -848,18 +850,30 @@ def _scan_line_registry(
             continue
         if not _registry_entry_matches(spec, line, ext):
             continue
-        # Framework SSR CSS extraction is not an HTML-injection sink. The
-        # single-line safe-context regex above cannot express this, because the
-        # <style> element and the __html attribute are frequently on DIFFERENT
-        # lines; the shared predicate takes the surrounding window. Measured:
-        # this removed 2 of ASVS's V3.2.2 rows, the same two lines the XSS
-        # agent reported for the same reason.
-        if req_id in _HTML_SINK_REQS and is_framework_style_injection(
-            line, list(lines), lineno
-        ):
+        if _excused_beyond_line(req_id, spec, line, lines, lineno):
             continue
         seen_per_file.add(req_id)
         findings.append(_build_finding(req_id, spec[1], path_str, lineno, lines))
+
+
+def _excused_beyond_line(
+    req_id: str, spec: CheckSpec, line: str, lines: tuple[str, ...], lineno: int,
+) -> bool:
+    """Safe contexts the single-line regex cannot see.
+
+    Framework SSR CSS extraction is not an HTML-injection sink, but the <style>
+    element and the __html attribute are frequently on DIFFERENT lines; the
+    shared predicate takes the surrounding window. Measured: this removed 2 of
+    ASVS's V3.2.2 rows, the same two lines the XSS agent reported for the same
+    reason. A cookie's attributes sit on the call's other lines or in the routine
+    of the same file that builds it (`http.SetCookie(w, sessionCookie(r, token))`).
+    """
+    if req_id in _HTML_SINK_REQS:
+        return is_framework_style_injection(line, list(lines), lineno)
+    if req_id in _COOKIE_REQS:
+        context = cookie_context(lines, lineno, call_open(spec[0].search(line)))
+        return spec[2].search(context) is not None
+    return False
 
 
 def _score_req_for_line(
@@ -952,8 +966,9 @@ def _scan_lines(
     # every line of one file and must NOT leak to the next file, or a second
     # file's genuine violation would be silently swallowed.
     seen_registry: set[str] = set()
-    for lineno, line in enumerate(lines, start=1):
-        if not _line_is_scannable(line):
+    # A pattern definition's continuation line holds the pattern, not code.
+    for lineno, (line, before) in enumerate(zip(lines, ("", *lines[:-1])), start=1):
+        if not _line_is_scannable(line) or opens_pattern_definition(before):
             continue
         _scan_line_registry(
             line, lineno, path_str, lines, ext, active, findings, seen_registry,

@@ -45,7 +45,13 @@ type AuditHandler struct {
 	// Recomputing it via pluginregistry.Default() would build a second
 	// registry and reintroduce exactly that drift.
 	pluginReg pluginregistry.Registry
+	// localMode decides who may receive masked values (MaskedValues).
+	localMode bool
 }
+
+// SetLocalMode tells the handler the server runs in local mode (cfg.LocalMode),
+// where a masked value is shown only to an explicit token on a loopback Host.
+func (h *AuditHandler) SetLocalMode(enabled bool) { h.localMode = enabled }
 
 // SetPluginRegistry wires the plugin registry consulted when validating
 // requested audit types. Mirrors AgentHandler.SetPluginRegistry. nil-safe:
@@ -98,7 +104,7 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// so a client cannot inject a forged/foreign per-run credential (mirrors the
 	// DegradedReason overwrite below).
 	req.BrokerToken = ""
-	req.ContextWindow = 0 // §31: broker-injected at dispatch, never client-supplied
+	req.ContextWindow, req.ContextWindowSource = 0, "" // §31 / 0074 §5.1(c): broker-injected at dispatch, never client-supplied
 
 	// Reject a type that names no dispatchable agent BEFORE anything is
 	// persisted or probed. Dispatch silently skips an unresolvable type, so
@@ -132,7 +138,7 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInvalidOrInternal(w, r, "create audit", err)
 		return
 	}
 	// Feature 0071: an audit runs because it was created, not because someone is
@@ -178,7 +184,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 		audits, err = h.svc.List(limit, offset)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list audits", err)
 		return
 	}
 	if audits == nil {
@@ -190,10 +196,10 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, audits)
 }
 
-func (h *AuditHandler) Stats(w http.ResponseWriter, _ *http.Request) {
+func (h *AuditHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.svc.Stats()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "dashboard stats", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
@@ -217,7 +223,7 @@ func (h *AuditHandler) CachedAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	audit, err := h.svc.GetCachedAudit(sourceID, types)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get cached audit", err)
 		return
 	}
 	if audit == nil {
@@ -225,6 +231,8 @@ func (h *AuditHandler) CachedAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.enrichProveResults(audit)
+	// Served like GET /api/audits/{id}: the merge record only under ?detail=full.
+	omitMergeDetail(audit, r.URL.Query().Get("detail"))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"cached": true,
 		"audit":  audit,
@@ -244,13 +252,18 @@ func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get audit", err)
 		return
 	}
 	h.enrichProveResults(audit)
 	// 0096 follow-up: serve the effective coverage (triaged false positives
 	// left out); the persisted column stays the scan-time record.
 	withEffectiveOwaspCoverage(audit, h.lineageRepo)
+	// 0074 P2: select rows by provenance LAST, so every audit-level field
+	// above is computed over the full finding set and stays unchanged.
+	markOriginsRecorded(audit)
+	filterFindingsByProvenance(audit, r.URL.Query().Get("provenance"))
+	omitMergeDetail(audit, r.URL.Query().Get("detail"))
 	writeJSON(w, http.StatusOK, audit)
 }
 
@@ -304,13 +317,13 @@ func (h *AuditHandler) Compare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get audit", err)
 		return
 	}
 
 	prev, err := h.svc.GetPreviousCompletedAudit(audit.SourceID, audit.Types, audit.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get previous audit", err)
 		return
 	}
 	if prev == nil {

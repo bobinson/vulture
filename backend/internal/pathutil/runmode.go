@@ -88,6 +88,11 @@ func StripRunModePrefix(p string) (string, bool) {
 //   - A path OUTSIDE the root is returned absolute. Stripping the leading
 //     slash would turn /etc/passwd into etc/passwd, harmless in a private key
 //     and a real hazard anywhere it is rendered.
+//
+// It is a display mapper, not a containment test for a relative p, which it
+// returns unchanged whether or not it is under root; for an absolute p a
+// non-absolute result does mean "under root" (the masked-value reveal relies
+// on that), and new containment checks use Within under its precondition.
 func RelToRoot(p, root string) string {
 	if root == "" || p == "" {
 		return p

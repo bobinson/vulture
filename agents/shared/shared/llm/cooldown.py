@@ -21,6 +21,12 @@ _MAX_COOLDOWN = 300.0       # 5 minutes (default)
 _AUTH_COOLDOWN = 3600.0     # 1 hour for auth errors (daily quota, revoked keys)
 _RATE_LIMIT_MAX = 600.0     # 10 minutes max for rate limit errors
 _FAILURE_THRESHOLD = 3      # failures before cooldown
+# Backoff doublings counted before the ceiling applies. 2**64 times any real
+# base is far past every ceiling above, so more doublings change nothing; but
+# `2 ** n` stops converting to float at n = 1024, which a long-lived agent with
+# a persistently failing model reached after ~1,027 failures, and from then on
+# every record_failure raised OverflowError instead of recording.
+_MAX_DOUBLINGS = 64
 
 
 class CooldownManager:
@@ -87,7 +93,7 @@ class CooldownManager:
                     max_cd = _AUTH_COOLDOWN
                 elif error_kind == "rate_limited":
                     max_cd = _RATE_LIMIT_MAX
-                exponent = (count - self._failure_threshold)
+                exponent = min(count - self._failure_threshold, _MAX_DOUBLINGS)
                 duration = min(self._base_cooldown * (2 ** exponent), max_cd)
                 self._cooldown_until[model] = time.monotonic() + duration
                 if not CooldownManager._warned_per_process:

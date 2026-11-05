@@ -164,7 +164,7 @@ def test_found_elsewhere_is_bounded_by_the_rendered_batch():
 
 def test_anchor_is_declaration():
     root = _tree({"client.ts": _numbered([
-        "export interface AiRateLimitClient {",
+        "export interface LaneRateLimitClient {",
         "  eval(script: string, options: { keys: string[] }): Promise<unknown>;",
         "}",
     ])})

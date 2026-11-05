@@ -31,28 +31,17 @@ package handler
 //  2. At STRICTLY HIGHER `llm` severity nothing changes. The guard is about
 //     equal-or-lower only; it must not become a blanket "deterministic always
 //     wins" rule, and it must not touch det-vs-det or llm-vs-llm merges.
-//  3. `VULTURE_DEDUP_PREFER_DETERMINISTIC=false` restores the pre-0076 (0075)
-//     winner selection EXACTLY — the richer row wins, `llm` included.
-//     Unset/empty leaves the guard ON: it ships on, because it can only ever
-//     preserve a deterministic finding, never delete one.
-//  4. The survivor keeps its own `CheckID`, `References` and
+//  3. The survivor keeps its own `CheckID`, `References` and
 //     `VerificationHints`, and still records the corroborating agent.
 //
 // The finding COUNT is invariant in every case below: this guard changes WHICH
 // row survives a collapse that already happens, never HOW MANY rows survive.
-//
-// Note for the implementer: the switch is read at merge time (a plain
-// `os.Getenv` in the merge path, as at :1352 and :1432). It must not be cached
-// in a package-level `var`/`sync.Once`, or it stops being flippable — and
-// these table cases, which set it per subtest, stop being meaningful.
 
 import (
 	"testing"
 
 	"github.com/vulture/backend/internal/model"
 )
-
-const preferDeterministicEnv = "VULTURE_DEDUP_PREFER_DETERMINISTIC"
 
 // provenanceRow builds a finding at ONE fixed collision site. Titles differ
 // per row on purpose: `crossAgentKey` keys on the CWE category when it is set,
@@ -113,10 +102,7 @@ func richDeterministicRow(id string, sev model.Severity) model.Finding {
 }
 
 type provenanceMergeCase struct {
-	name string
-	// prefer is the value of VULTURE_DEDUP_PREFER_DETERMINISTIC for this
-	// case. "" means empty/unset — the shipped default, guard ON.
-	prefer   string
+	name     string
 	rows     [2]model.Finding
 	wantID   string
 	property string
@@ -128,7 +114,6 @@ type provenanceMergeCase struct {
 // row happens to be seen first is not a guard.
 func runProvenanceMergeCase(t *testing.T, c provenanceMergeCase) {
 	t.Helper()
-	t.Setenv(preferDeterministicEnv, c.prefer)
 	orders := [][]model.Finding{
 		{c.rows[0], c.rows[1]},
 		{c.rows[1], c.rows[0]},
@@ -141,8 +126,8 @@ func runProvenanceMergeCase(t *testing.T, c provenanceMergeCase) {
 				len(out), in[0].ID, in[1].ID)
 		}
 		if out[0].ID != c.wantID {
-			t.Errorf("%s\n  %s=%q, input order %q,%q: survivor = %q (severity=%q provenance=%q), want %q",
-				c.property, preferDeterministicEnv, c.prefer,
+			t.Errorf("%s\n  input order %q,%q: survivor = %q (severity=%q provenance=%q), want %q",
+				c.property,
 				in[0].ID, in[1].ID, out[0].ID, out[0].Severity, out[0].Provenance, c.wantID)
 		}
 	}
@@ -154,8 +139,7 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 			// RED before T4.2: llm scores 40+3 refs+3 snippet = 46 against
 			// the deterministic 44, so today the model row wins and the
 			// check_id/references/hints are dropped.
-			name:   "equal_severity_llm_richer_guard_default_on",
-			prefer: "",
+			name: "equal_severity_llm_richer_guard_default_on",
 			rows: [2]model.Finding{
 				deterministicRow("det-skill", model.SeverityHigh),
 				llmRow("llm-row", model.SeverityHigh, 3),
@@ -168,8 +152,7 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 			// RED before T4.2 via the SECOND route past the guard: severity
 			// is lower (medium=30) but 12 model-authored references plus a
 			// snippet total 45, beating the deterministic 44.
-			name:   "lower_severity_llm_outscores_on_reference_count",
-			prefer: "",
+			name: "lower_severity_llm_outscores_on_reference_count",
 			rows: [2]model.Finding{
 				deterministicRow("det-skill", model.SeverityHigh),
 				llmRow("llm-row", model.SeverityMedium, 12),
@@ -181,8 +164,7 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 		{
 			// Not over-constrained: the guard covers equal-or-lower only.
 			// llm critical (50+3) still beats deterministic high (44).
-			name:   "higher_severity_llm_still_wins_guard_on",
-			prefer: "",
+			name: "higher_severity_llm_still_wins_guard_on",
 			rows: [2]model.Finding{
 				deterministicRow("det-skill", model.SeverityHigh),
 				llmRow("llm-row", model.SeverityCritical, 0),
@@ -194,8 +176,7 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 		{
 			// Scope: the guard keys on `llm` vs deterministic. Between two
 			// deterministic rows the richer one still wins.
-			name:   "two_deterministic_rows_richer_still_wins",
-			prefer: "",
+			name: "two_deterministic_rows_richer_still_wins",
 			rows: [2]model.Finding{
 				deterministicRow("det-skill", model.SeverityHigh),
 				richDeterministicRow("det-semgrep", model.SeverityHigh),
@@ -206,8 +187,7 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 		},
 		{
 			// Scope: two `llm` rows are ranked by detail as before.
-			name:   "two_llm_rows_richer_still_wins",
-			prefer: "",
+			name: "two_llm_rows_richer_still_wins",
 			rows: [2]model.Finding{
 				llmRow("llm-bare", model.SeverityHigh, 0),
 				llmRow("llm-rich", model.SeverityHigh, 6),
@@ -230,7 +210,6 @@ func TestDeduplicateCrossAgent_ProvenanceGuard(t *testing.T) {
 // CheckID / References / VerificationHints delivers nothing, so the fields are
 // asserted directly rather than inferred from the survivor's ID.
 func TestDeduplicateCrossAgent_GuardKeepsDeterministicEvidenceFields(t *testing.T) {
-	t.Setenv(preferDeterministicEnv, "")
 	det := deterministicRow("det-skill", model.SeverityHigh)
 	llm := llmRow("llm-row", model.SeverityHigh, 3)
 
@@ -269,7 +248,6 @@ func TestDeduplicateCrossAgent_GuardKeepsDeterministicEvidenceFields(t *testing.
 // all. Pinned so the guard cannot be implemented as a filter that drops `llm`
 // rows: 0076 deletes no finding in any configuration (§5.7).
 func TestDeduplicateCrossAgent_GuardNeverDropsANonCollidingLLMRow(t *testing.T) {
-	t.Setenv(preferDeterministicEnv, "")
 	det := deterministicRow("det-skill", model.SeverityHigh)
 	llm := llmRow("llm-row", model.SeverityCritical, 2)
 	llm.FilePath = "src/other.py"

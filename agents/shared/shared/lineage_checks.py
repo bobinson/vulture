@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any
 
 from shared import anchor
+from shared.lines import parse_line
 from shared.quote_store import lookup, lookup_by_hash, quote_hash
 from shared.tools.confine import is_within_root
 
@@ -214,11 +215,9 @@ def _row_window(row: dict[str, Any]) -> tuple[int, int]:
 
 
 def _as_int(value: Any) -> int:
-    """``value`` as a non-negative int; junk costs the field, never the row."""
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+    """``value`` as a non-negative int; junk costs the field, never the row.
+    The shared lenient parser (0074 review item 9)."""
+    return max(0, parse_line(value))
 
 
 def _state_for(states: dict[str, _FileState], base: Path, rel: str,

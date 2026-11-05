@@ -12,6 +12,11 @@ dependencies = [
     "vulture-shared",
 ]
 
+[project.scripts]
+# Offline skills runner (feature 0098): used by pre-commit hooks / CI to gate
+# on new security issues in changed files, with no backend and no LLM.
+vulture-offline-skills = "cwe_agent.offline:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["cwe_agent"]
 
@@ -43,4 +48,11 @@ line-length = 100
 # `except: pass` one-liners, undefined `logger` and unused `e` ARE the
 # detector's subject. Linting them reports the defect the fixture exists to
 # contain, and "fixing" one would silently weaken a detection test.
-extend-exclude = ["tests/corpus/fixtures", "tests/fixtures"]
+# `tests/e2e/fixtures/message_send_0074` is the same kind: CWE-799 handlers read
+# as text, whose helpers are named but never defined, and whose expected rows the
+# 0074 E2E contract pins by line, so an added import would move them.
+extend-exclude = [
+    "tests/corpus/fixtures",
+    "tests/fixtures",
+    "tests/e2e/fixtures/message_send_0074",
+]

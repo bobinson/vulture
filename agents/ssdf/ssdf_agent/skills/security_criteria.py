@@ -5,7 +5,8 @@ from pathlib import Path
 
 from agents import function_tool
 
-from ssdf_agent.skills._ci_utils import gather_ci_content
+from shared.models.finding import REPO_ROOT_PATH
+from ssdf_agent.skills._ci_utils import gather_ci_content, github_or_root_files
 
 _QUALITY_GATE_PATTERNS = re.compile(
     r"required_status_checks|branch_protection|status.?check|if:\s*failure\(\)|quality.?gate",
@@ -39,9 +40,9 @@ def check_security_criteria(source_path: str) -> dict:
             "practice": "PO-prepare-organization",
             "title": "No security quality gates in CI/CD",
             "description": "No required status checks or quality gates found in CI configuration",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Configure required status checks and branch protection rules",
         })
 
@@ -53,9 +54,9 @@ def check_security_criteria(source_path: str) -> dict:
             "practice": "PO-prepare-organization",
             "title": "No PR template or merge policy found",
             "description": "No pull request template defining review checklists and merge criteria",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Create a PULL_REQUEST_TEMPLATE.md with security review checklist",
         })
 
@@ -64,15 +65,7 @@ def check_security_criteria(source_path: str) -> dict:
 
 def _find_merge_policy(root: Path) -> bool:
     """Check for PR template or merge policy files."""
-    github_dir = root / ".github"
-    if github_dir.is_dir():
-        for item in github_dir.iterdir():
-            if item.name.lower() in _MERGE_POLICY_FILES:
-                return True
-    for item in root.iterdir():
-        if item.is_file() and item.name.lower() in _MERGE_POLICY_FILES:
-            return True
-    return False
+    return any(item.name.lower() in _MERGE_POLICY_FILES for item in github_or_root_files(root))
 
 
 check_security_criteria_tool = function_tool(check_security_criteria)

@@ -16,8 +16,8 @@
 #   scripts/fetch-vendored-pbs.sh <os> <arch> <dest-dir>
 #
 # Env (defaults mirror build-release.sh so the fetched asset matches the pin):
-#   VULTURE_PBS_TAG          PBS upstream tag    (default 20260610)
-#   VULTURE_PBS_PYVER        CPython version     (default 3.12.13)
+#   VULTURE_PBS_TAG          PBS upstream tag    (default 20261021)
+#   VULTURE_PBS_PYVER        CPython version     (default 3.12.15)
 #   VULTURE_PBS_VENDOR_REPO  GitHub repo hosting the VENDORED (re-hosted) PBS
 #                            release we consume here — NOT upstream indygreg
 #                            (default $GITHUB_REPOSITORY, else bobinson/vulture)
@@ -46,8 +46,8 @@ for _tool in gh cosign; do
     }
 done
 
-PBS_TAG=${VULTURE_PBS_TAG:-20260610}
-PBS_PYVER=${VULTURE_PBS_PYVER:-3.12.13}
+PBS_TAG=${VULTURE_PBS_TAG:-20261021}
+PBS_PYVER=${VULTURE_PBS_PYVER:-3.12.15}
 # VENDOR repo = our own re-hosted PBS release (vendor-pbs.yml), NOT upstream
 # indygreg. build-release.sh's separate VULTURE_PBS_UPSTREAM_REPO means upstream.
 VENDOR_REPO=${VULTURE_PBS_VENDOR_REPO:-${GITHUB_REPOSITORY:-bobinson/vulture}}

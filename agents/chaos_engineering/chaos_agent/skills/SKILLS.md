@@ -28,4 +28,4 @@
 - **Function**: `assess_blast_radius(source_path: str) -> dict`
 - **Purpose**: Assesses shared state usage without isolation (bulkhead) patterns
 - **Severity**: medium
-- **Detection**: Scans for global/shared state, singletons, shared databases without rate limiting, semaphores, or namespace isolation
+- **Detection**: Scans for global/shared state, singletons, shared databases without rate limiting, semaphores, or namespace isolation. The `global` trigger is the statement (Python `global x`, PHP `global $x`: the keyword first on its line, case-sensitive, outside docstrings and other multi-line literals), not the word in prose. The isolation evidence that excuses a finding counts only in code: comments, docstrings and string literals are removed before it is matched

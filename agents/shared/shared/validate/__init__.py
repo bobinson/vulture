@@ -12,8 +12,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from shared.ast import VALIDATION_KEYS
 from shared.tools.window import record_window_reason, window_reason_of
 
+from . import l5_cache
 from .compliance import apply_compliance_mode
 from .context_heuristics import clear_l1_cache, run_l1
 from .llm_judge import (
@@ -227,6 +229,29 @@ def _strip_private(new_f: dict[str, Any]) -> None:
     _strip_private_fields(new_f)
 
 
+def _stamp_validation(
+    target: dict[str, Any], fv: FindingValidation, prior: Any,
+) -> None:
+    """Stamp ``fv`` on ``target``: ``validation`` — the stage's own keys, then
+    the AST tier's top-level keys of ``prior`` (the blob it replaces) as they
+    were — ``validation_status`` and ``validation_confidence``. Every place
+    the stage rebuilds a finding's blob stamps it here.
+
+    Feature 0102 (§10.1, A42 (3)): an AST-owned row reaches this stage with its
+    evidence in ``validation.ast`` and ``validation.flow``. Like 0074's
+    ``provenance_origins`` they are top-level keys, never ``checks[]`` entries,
+    so they are no voter input and ride the blob whole; rebuilding it from the
+    vote alone dropped them before the ``result`` snapshot and the persisted
+    row. A blob without them is rebuilt exactly as before.
+    """
+    blob = fv.to_json()
+    if isinstance(prior, dict):
+        blob.update((key, prior[key]) for key in VALIDATION_KEYS if key in prior)
+    target["validation"] = blob
+    target["validation_status"] = fv.status
+    target["validation_confidence"] = fv.confidence
+
+
 def _apply_validation_to_finding(
     finding: dict[str, Any], checks: list[ValidationCheck], cfg: ValidateConfig,
 ) -> dict[str, Any]:
@@ -243,9 +268,7 @@ def _apply_validation_to_finding(
     # reason" guarantee would hold nowhere it is actually measured.
     prior_window = window_reason_of(finding)
     _strip_private(new_f)
-    new_f["validation"] = v.to_json()
-    new_f["validation_status"] = v.status
-    new_f["validation_confidence"] = v.confidence
+    _stamp_validation(new_f, v, finding.get("validation"))
     # Re-attached AFTER the vote, never as an input to it: the check carries
     # weight 0.0 and recording why evidence is absent must not be able to move
     # a status or a confidence.
@@ -322,9 +345,7 @@ def _revote_finding_in_place(
     fv = FindingValidation(status=s, confidence=c, checks=revote_checks)
     if cfg.compliance_mode:
         fv = apply_compliance_mode(fv)
-    finding["validation"] = fv.to_json()
-    finding["validation_status"] = fv.status
-    finding["validation_confidence"] = fv.confidence
+    _stamp_validation(finding, fv, finding.get("validation"))
     _retag_l5_verified(finding, revote_checks)
 
 
@@ -571,10 +592,11 @@ def validate(
     out_findings = _provisional_vote(
         findings, l1_results, l2_results, cfg, layers_run, duration_ms,
     )
-    _run_l5_phase(
-        out_findings, l1_results, cfg, audit_id, emit_validation_update,
-        event_texts, layers_run, duration_ms, source_path, rollups,
-    )
+    with l5_cache.counting(audit_id):
+        _run_l5_phase(
+            out_findings, l1_results, cfg, audit_id, emit_validation_update,
+            event_texts, layers_run, duration_ms, source_path, rollups,
+        )
     _emit_summary(out_findings, rollups, duration_ms, event_texts)
 
     return ValidationResult(

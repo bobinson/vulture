@@ -19,10 +19,12 @@ regex touches it, on top of the bounded quantifiers the signatures already use.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from cwe_agent.skills.signatures.registry import SIGNATURES
 from cwe_agent.skills.signatures.schema import CweSignature
+from shared.tools.line_context import interpolated_code
 from shared.tools.snippet import extract_snippet
 
 # Catalog language name → file extensions (kept in sync with catalog_detector
@@ -76,15 +78,53 @@ def _signature_fires(
     """Apply the 3-step gate for one signature at 0-based line ``idx``."""
     if not sig.sink.search(line):
         return False
-    if sig.require_source or sig.sanitizer is not None:
-        window = _window_text(lines, idx, sig.window)
-        if sig.require_source and (
-            sig.source is None or not sig.source.search(window)
-        ):
-            return False
-        if sig.sanitizer is not None and sig.sanitizer.search(window):
-            return False
-    return True
+    if sig.require_source and not _source_present(sig, lines, idx):
+        return False
+    return not _sanitized(sig, lines, idx)
+
+
+def _source_present(sig: CweSignature, lines: Sequence[str], idx: int) -> bool:
+    """Step 2: a ``source`` match near line ``idx``, or reaching it."""
+    if sig.source is None:
+        return False
+    if sig.source_flows:
+        return _source_flows(sig.source, lines, idx, sig.window)
+    return sig.source.search(_window_text(lines, idx, sig.window)) is not None
+
+
+def _sanitized(sig: CweSignature, lines: Sequence[str], idx: int) -> bool:
+    """Step 3: a ``sanitizer`` match within the window suppresses."""
+    return sig.sanitizer is not None and (
+        sig.sanitizer.search(_window_text(lines, idx, sig.window)) is not None
+    )
+
+
+_IDENT = re.compile(r"[A-Za-z_]\w{0,63}")
+# The `=` of an assignment (`=`, `:=`, `+=`), not of `==`, `!=`, `<=`, `>=`, `=>`.
+_ASSIGN = re.compile(r"(?<![=!<>])=(?![=>])")
+
+
+def _source_flows(source: re.Pattern, lines: Sequence[str], idx: int, window: int) -> bool:
+    """Whether the code of line ``idx`` uses a ``source`` match directly, or a
+    variable a line up to ``window`` above assigns from one."""
+    code = interpolated_code(lines[idx][:_MAX_LINE_CHARS])
+    if source.search(code):
+        return True
+    names = set(_IDENT.findall(code))
+    return any(
+        _assigns_from(source, lines[j][:_MAX_LINE_CHARS], names)
+        for j in range(max(0, idx - window), idx)
+    )
+
+
+def _assigns_from(source: re.Pattern, line: str, names: set[str]) -> bool:
+    """Whether ``line`` assigns one of ``names`` from a ``source`` match."""
+    parts = _ASSIGN.split(interpolated_code(line), maxsplit=1)
+    return (
+        len(parts) == 2
+        and not names.isdisjoint(_IDENT.findall(parts[0]))
+        and source.search(parts[1]) is not None
+    )
 
 
 def _make_finding(sig: CweSignature, lines: Sequence[str], line_num: int) -> dict:

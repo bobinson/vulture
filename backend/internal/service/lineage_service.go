@@ -96,7 +96,7 @@ func (s *lineageService) ProcessAuditFindings(audit *model.Audit, source *model.
 	// Read before write (§6.3, audit note R4): snapshot the rows each pass may
 	// act on BEFORE the upserts below create or move any of them, so a row
 	// minted by this very scan can never be considered for closure by it.
-	target := ResolveTarget(source)
+	target := s.targetOf(source)
 	snapshots := map[string][]model.FindingLineage{}
 	if source != nil {
 		for agentType := range agentTypes {
@@ -135,7 +135,7 @@ func (s *lineageService) RecordScanOutcome(audit *model.Audit, source *model.Sou
 	if result == nil {
 		result = &model.ScanResult{}
 	}
-	target := ResolveTarget(source)
+	target := s.targetOf(source)
 	rows := s.rowsForPass(target, source, agentType, result)
 	agentFindings, present := findingsOfAgent(result.Findings, agentType)
 	s.upsertFindings(audit, source, target, agentFindings, result.ComplianceMapping)
@@ -169,17 +169,24 @@ func findingsOfAgent(findings []model.Finding, agentType string) ([]model.Findin
 // closeForAgent runs one (audit, agent_type) closure pass.
 func (s *lineageService) closeForAgent(audit *model.Audit, source *model.Source, target TargetIdentity,
 	agentType string, result *model.ScanResult, present map[string]bool, rows []model.FindingLineage) error {
+	scope := newScanScope(result, target)
+	guard, err := newASTGuard(result.ASTCoverage, scope)
+	if err != nil {
+		// The guard it returned holds every AST-owned row; this only records why.
+		log.Printf("[lineage] holding every AST-owned row audit=%s agent=%s: %v", audit.ID, agentType, err)
+	}
 	pass := &scanPass{
 		svc: s, audit: audit, source: source, agentType: agentType,
 		present:    present,
 		checks:     indexChecks(result.LineageChecks),
-		scope:      newScanScope(result, target),
+		scope:      scope,
 		llmEnabled: strings.TrimSpace(result.DegradedReason) == "",
 		degraded:   strings.TrimSpace(result.DegradedReason),
 
 		targetKeyed: targetKeyed(target),
 		noResult:    result.NoResultSnapshot,
 		shadowed:    result.RollupShadowed,
+		ast:         guard,
 	}
 	for i := range rows {
 		pass.apply(&rows[i])
@@ -333,7 +340,7 @@ func (s *lineageService) PendingChecks(source *model.Source, agentTypes []string
 	if source == nil || len(agentTypes) == 0 {
 		return nil
 	}
-	target := ResolveTarget(source)
+	target := s.targetOf(source)
 	out := map[string]*model.LineageChecksRequest{}
 	for _, at := range agentTypes {
 		rows := s.checkableRows(target, source, at)

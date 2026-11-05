@@ -8,6 +8,7 @@ PostgreSQL technology, ``NEXTAUTH_URL`` implies NextAuth routes.
 
 import logging
 import re
+from itertools import islice
 from pathlib import Path
 
 from discover_agent.plugins._shared import extract_urls_from_text, safe_yaml_load
@@ -17,6 +18,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -86,19 +88,15 @@ class EnvServiceURLsPlugin(DiscoveryPlugin):
 
 
 def _collect_env_vars(root: Path) -> dict[str, str]:
-    """Collect environment variables from .env* and env.yaml files."""
-    env_vars: dict[str, str] = {}
-    found = 0
+    """Collect environment variables from the root's .env* and env.yaml files.
 
-    for fpath in root.iterdir():
-        if found >= _MAX_FILES:
-            break
-        if not fpath.is_file():
-            continue
-        name = fpath.name
-        if _is_env_file(name):
-            found += 1
-            _parse_into(fpath, env_vars)
+    Only the ones the audit reads: a gitignored ``.env`` holds a developer's
+    local settings, not the project's, and the scan never opens it.
+    """
+    env_vars: dict[str, str] = {}
+    env_files = (f for f in tree_files(root, depth=1) if _is_env_file(f.name))
+    for fpath in islice(env_files, _MAX_FILES):
+        _parse_into(fpath, env_vars)
     return env_vars
 
 

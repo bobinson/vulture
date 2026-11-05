@@ -2,6 +2,22 @@
 
 NIST SP 800-218 SSDF v1.1 compliance audit skills. Each skill maps to one or more SSDF practices.
 
+## Common attributes
+
+- **Where evidence counts**: every skill looks at the repository through the audit walker
+  (`shared.tools.file_scanner.tree_files` for searches and directory listings, `present` for
+  fixed locations such as `SECURITY.md`, `.husky` or `docs/security`). Evidence counts only where
+  the audit itself reads: never under a `SKIP_DIRS` directory (`.venv`, `node_modules`, `dist`, ...),
+  a backup directory, a path a `.gitignore` or the root `.vultureignore` excludes, or behind a
+  symlink. A vendored package's `architecture.md` is not the project's design review. Fixed-location
+  probes do not apply `SKIP_FILES`: a lock file is never parsed, but it is exactly what the
+  lock-file check looks for. The listing is the walk's, so it is capped at `VULTURE_MAX_FILES`.
+- **Repository-wide findings** (a missing policy, tool or process, rather than a defect at a line)
+  cite `file_path: "."` and `line_start = line_end = 0`: the token the backend gives the scan
+  root, so the row is identified the same way wherever the checkout is mounted. Findings at a file
+  (`root_user_container`, `privileged_container`, `no_minimal_base_image`,
+  `unpinned_dependencies`, `secure_defaults`) cite that file and line.
+
 ## PO - Prepare the Organization
 
 ### security_policy (PO.1)

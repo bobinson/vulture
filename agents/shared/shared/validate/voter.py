@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 
+from shared.anchor import ANCHOR_CHECK_ID
+
 from .types import ValidationCheck
 
 __all__ = [
@@ -60,7 +62,7 @@ __all__ = [
 # (AUTHORITATIVE_POSITIVE) is deliberately NOT taken — on the adjudicated
 # population a located quote is not a true claim, so no anchor status
 # promotes (0076 AC27).
-AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression", "anchor"})
+AUTHORITATIVE_CHECKS: frozenset[str] = frozenset({"suppression", ANCHOR_CHECK_ID})
 
 # Secret-presence check (see context_heuristics._secret_value_check). `absent`
 # means the cited line was read and assigns no value at all.
@@ -230,7 +232,7 @@ def _may_confirm(checks: list[ValidationCheck]) -> bool:
     # source — the identifier is guarded by an anchored pattern or a
     # membership test in the cited file — so a model verdict formed on a
     # +/-2-line window must not outrank it. Measured: the judge scored
-    # `seed-poll-verifications.qa.ts:423` a real bug at exploitable=0.85
+    # `seed-roster-checks.qa.ts:423` a real bug at exploitable=0.85
     # while `pollId` was UUID-validated at the handler entry 100 lines above.
     #
     # The additive weight alone does not settle it: 0.5 base + 0.525 judge -

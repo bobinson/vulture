@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/vulture/backend/internal/broker/budget"
 	"github.com/vulture/backend/internal/broker/egress"
@@ -25,7 +26,20 @@ type apiError struct {
 	// entirely — a consumer that does not know the field sees byte-identical
 	// output for every error it already handles.
 	upstream *upstreamInfo
+	// retryAfter, when positive, is sent as the Retry-After header (whole
+	// seconds): how long the client should back off before trying again.
+	retryAfter time.Duration
 }
+
+// rateLimitedRetryAfter is the back-off a rate_limited answer advises. The
+// broker queues a burst rather than refusing it, so this answer now means
+// sustained overload — the admission queue is full, a request outwaited the
+// admission bound, or the provider itself throttled after the broker's own
+// retries — and a client should step back for a few provider calls' worth
+// instead of retrying at the SDK's sub-second default. It stays well inside
+// the range the OpenAI SDK honours (it ignores a longer one and does not retry
+// at all past it), so the SDK's own retries actually follow it.
+const rateLimitedRetryAfter = 10 * time.Second
 
 // upstreamInfo is the borrowed half of the envelope. It is a VALUE on a copy of
 // the static apiError, never a mutation of it: the package-level errors are
@@ -58,18 +72,21 @@ var (
 	errBudgetExceeded      = &apiError{code: "budget_exceeded", message: "budget exceeded", status: http.StatusPaymentRequired, retriable: false}
 	errInvalidRequest      = &apiError{code: "invalid_request", message: "invalid request", status: http.StatusBadRequest, retriable: false}
 	errProviderUnavailable = &apiError{code: "provider_unavailable", message: "provider unavailable", status: http.StatusBadGateway, retriable: true}
-	errRateLimited         = &apiError{code: "rate_limited", message: "rate limited", status: http.StatusTooManyRequests, retriable: true}
+	errRateLimited         = &apiError{code: "rate_limited", message: "rate limited", status: http.StatusTooManyRequests, retriable: true, retryAfter: rateLimitedRetryAfter}
 	// §32.1: PERMANENT provider faults — retriable=false so neither the broker
 	// retrier nor the agent retries them (they would fail identically), and the
 	// distinct codes surface the REAL cause instead of a generic outage.
-	errProviderBadRequest   = &apiError{code: "provider_bad_request", message: "provider rejected the request", status: http.StatusBadGateway, retriable: false}
-	errProviderAuth         = &apiError{code: "provider_auth_error", message: "provider authentication failed", status: http.StatusBadGateway, retriable: false}
-	errModelNotFound        = &apiError{code: "model_not_found", message: "model not found or not routable", status: http.StatusBadGateway, retriable: false}
-	errAllProvidersDown     = &apiError{code: "all_providers_down", message: "all providers unavailable", status: http.StatusServiceUnavailable, retriable: true}
-	errProviderNotAllowlist = &apiError{code: "provider_unavailable", message: "provider not allowlisted", status: http.StatusBadGateway, retriable: false}
-	errSSRFBlocked          = &apiError{code: "invalid_request", message: "egress target rejected", status: http.StatusBadRequest, retriable: false}
-	errMethodNotAllowed     = &apiError{code: "invalid_request", message: "method not allowed", status: http.StatusMethodNotAllowed, retriable: false}
-	errInternal             = &apiError{code: "provider_unavailable", message: "internal error", status: http.StatusBadGateway, retriable: true}
+	errProviderBadRequest = &apiError{code: "provider_bad_request", message: "provider rejected the request", status: http.StatusBadGateway, retriable: false}
+	// 0074 C5: the size class of a bad request, so the agent halves and
+	// retries rather than giving up. Static message: never the provider body.
+	errProviderContextOverflow = &apiError{code: "provider_context_overflow", message: "request exceeds the model's context window", status: http.StatusRequestEntityTooLarge, retriable: false}
+	errProviderAuth            = &apiError{code: "provider_auth_error", message: "provider authentication failed", status: http.StatusBadGateway, retriable: false}
+	errModelNotFound           = &apiError{code: "model_not_found", message: "model not found or not routable", status: http.StatusBadGateway, retriable: false}
+	errAllProvidersDown        = &apiError{code: "all_providers_down", message: "all providers unavailable", status: http.StatusServiceUnavailable, retriable: true}
+	errProviderNotAllowlist    = &apiError{code: "provider_unavailable", message: "provider not allowlisted", status: http.StatusBadGateway, retriable: false}
+	errSSRFBlocked             = &apiError{code: "invalid_request", message: "egress target rejected", status: http.StatusBadRequest, retriable: false}
+	errMethodNotAllowed        = &apiError{code: "invalid_request", message: "method not allowed", status: http.StatusMethodNotAllowed, retriable: false}
+	errInternal                = &apiError{code: "provider_unavailable", message: "internal error", status: http.StatusBadGateway, retriable: true}
 	// §26/H4: body exceeded the size cap.
 	errRequestTooLarge = &apiError{code: "request_too_large", message: "request body too large", status: http.StatusRequestEntityTooLarge, retriable: false}
 	// §9/H2: the model emitted more tool calls / larger aggregate arguments
@@ -120,6 +137,7 @@ var providerErrTable = []errCase{
 	{provider.ErrRateLimited, errRateLimited},
 	// §32.1: permanent client/config faults FIRST — distinct, non-retriable
 	// codes so a bad request/key/model is not relabeled a transient outage.
+	{provider.ErrContextOverflow, errProviderContextOverflow}, // before its parent class
 	{provider.ErrProviderBadRequest, errProviderBadRequest},
 	{provider.ErrProviderAuth, errProviderAuth},
 	{provider.ErrModelNotFound, errModelNotFound},

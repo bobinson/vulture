@@ -68,7 +68,7 @@ async def test_disabled_when_use_llm_unset(monkeypatch):
     assert r.provider == "disabled"
     assert r.reachable is False
     assert r.message() == (
-        "LLM disabled (VULTURE_USE_LLM != true). Audit will run skills-only."
+        "LLM disabled (VULTURE_USE_LLM is not true, 1, yes or on). Audit will run skills-only."
     )
 
 
@@ -592,7 +592,7 @@ async def test_precedence_gemini_in_model(monkeypatch):
 def test_message_format_disabled():
     s = LLMHealthStatus("disabled", "", "", False, "LLM disabled by config", {})
     assert s.message() == (
-        "LLM disabled (VULTURE_USE_LLM != true). Audit will run skills-only."
+        "LLM disabled (VULTURE_USE_LLM is not true, 1, yes or on). Audit will run skills-only."
     )
 
 

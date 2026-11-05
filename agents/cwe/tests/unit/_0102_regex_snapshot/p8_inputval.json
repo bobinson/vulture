@@ -1,0 +1,22 @@
+[
+ {
+  "category": "CWE-22",
+  "check_id": "cwe.input_validation.path_traversal",
+  "fixture": "p8_inputval/cwe_23_1_clean.js",
+  "line_end": 7,
+  "line_start": 7,
+  "recommendation": "Use os.path.realpath and validate against allowed base directory",
+  "severity": "high",
+  "title": "Potential path traversal"
+ },
+ {
+  "category": "CWE-22",
+  "check_id": "cwe.input_validation.path_traversal",
+  "fixture": "p8_inputval/cwe_73_2_clean.py",
+  "line_end": 7,
+  "line_start": 7,
+  "recommendation": "Use os.path.realpath and validate against allowed base directory",
+  "severity": "high",
+  "title": "Potential path traversal"
+ }
+]

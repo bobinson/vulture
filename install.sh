@@ -49,6 +49,11 @@ REPO_OWNER="bobinson"
 REPO_NAME="vulture"
 REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
 RELEASES_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+# glibc floor for the Python agents on Linux: their wheels (tiktoken, hf-xet,
+# the tree-sitter grammars) are published only as manylinux_2_28, so neither pip
+# nor a bundled runtime can load them on an older glibc. The Go CLI has no such
+# floor, so it binds only an install that brings the agents. See check_glibc.
+GLIBC_MIN="2.28"
 
 log()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -116,6 +121,45 @@ detect_platform() {
         *) err "unsupported architecture: $UNAME_M" ;;
     esac
     log "detected platform: ${OS}-${ARCH}"
+}
+
+# glibc_version — echo the host glibc version (e.g. 2.35), or return non-zero
+# when it cannot be read (musl or another non-glibc libc). getconf answers only
+# on glibc; the ldd fallback is trusted only when its banner names glibc, since
+# musl's `ldd --version` prints "musl libc (x86_64)" and exits non-zero.
+glibc_version() {
+    _gv=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}')
+    [ -n "$_gv" ] || _gv=$(ldd --version 2>&1 | awk 'NR == 1 && /GLIBC|GNU libc/ {print $NF}')
+    case "$_gv" in
+        [0-9]*.[0-9]*) printf '%s\n' "$_gv" ;;
+        *) return 1 ;;
+    esac
+}
+
+# _glibc_below_floor VERSION — a glibc below GLIBC_MIN cannot load the agent
+# wheels: refuse when this run installs the agents (agents_planned), otherwise
+# warn and let the CLI-only install continue.
+_glibc_below_floor() {
+    agents_planned && err "glibc $1 is too old for the Python agents, which require glibc >= $GLIBC_MIN (Ubuntu 20.04+, Debian 10+, RHEL/Alma/Rocky 8+, Amazon Linux 2023+); use Docker (Mode A/B) on this host"
+    warn "glibc $1 is below $GLIBC_MIN, the floor for the Python agents; continuing with a CLI-only install"
+}
+
+# check_glibc — Linux only: hold the host to GLIBC_MIN when the agents are
+# being installed. It runs after extraction because that decision needs the
+# extracted tree (a bundled runtime, the lockfile). A libc whose version cannot
+# be read (musl, ...) is not verifiable, so warn and continue. macOS has no
+# glibc and is skipped.
+check_glibc() {
+    [ "${OS:-}" = linux ] || return 0
+    _glibc=$(glibc_version) || {
+        warn "cannot verify the C library version (non-glibc libc such as musl?); the Python agents require glibc >= $GLIBC_MIN"
+        return 0
+    }
+    if version_lt "$_glibc" "$GLIBC_MIN"; then
+        _glibc_below_floor "$_glibc"
+        return 0
+    fi
+    log "detected glibc $_glibc (>= $GLIBC_MIN)"
 }
 
 # ─── 2. validate_home ──────────────────────────────────────────────────────
@@ -612,28 +656,46 @@ _install_python_deps_auto() {
     _system_python_build "$_sys_py"
 }
 
+# agent_runtime_mode — which agent-runtime path this install takes; echoes
+# bundled|disabled|require|auto. The ONE statement of the precedence, shared by
+# install_python_deps and agents_planned:
+#   (1) a bundled Python runtime wins (strict hash-pinned logic);
+#   (2) else the tri-state VULTURE_USE_SYSTEM_PYTHON:
+#       0|false|no  -> disabled -> CLI-only.
+#       1|true      -> require  -> strict opt-in (fail-closed on any gap).
+#       unset/empty -> auto     -> opt in iff hashed lockfile + python>=3.12.
+agent_runtime_mode() {
+    if [ -x "$VULTURE_HOME/runtime/python/bin/pip" ]; then
+        printf 'bundled\n'
+        return 0
+    fi
+    case "${VULTURE_USE_SYSTEM_PYTHON:-}" in
+        0|false|no) printf 'disabled\n' ;;
+        1|true)     printf 'require\n' ;;
+        *)          printf 'auto\n' ;;
+    esac
+}
+
+# agents_planned — true when install_python_deps will install the agents (or
+# fail trying): a bundled runtime, the require path, or auto with its two
+# prerequisites (hashed lockfile + a supported host Python) met.
+agents_planned() {
+    case $(agent_runtime_mode) in
+        disabled) return 1 ;;
+        auto) reqs_have_hashes "$VULTURE_HOME/runtime/agents/requirements-frozen.txt" \
+                  && detect_system_python >/dev/null ;;
+        *) return 0 ;;
+    esac
+}
+
 install_python_deps() {
     PIP="$VULTURE_HOME/runtime/python/bin/pip"
     REQS="$VULTURE_HOME/runtime/agents/requirements-frozen.txt"
-    # (1) Bundled Python runtime present -> existing strict hash-pinned logic.
-    if [ -x "$PIP" ]; then
-        _install_python_deps_bundled
-        return 0
-    fi
-    # (2) Tri-state VULTURE_USE_SYSTEM_PYTHON (only when no bundled interpreter):
-    #   0|false|no  -> DISABLE -> CLI-only.
-    #   1|true      -> REQUIRE -> strict opt-in (fail-closed on any gap).
-    #   unset/empty -> AUTO    -> opt in iff hashed lockfile + python>=3.12.
-    case "${VULTURE_USE_SYSTEM_PYTHON:-}" in
-        0|false|no)
-            cli_only_note "VULTURE_USE_SYSTEM_PYTHON explicitly disabled"
-            ;;
-        1|true)
-            _install_python_deps_require
-            ;;
-        *)
-            _install_python_deps_auto
-            ;;
+    case $(agent_runtime_mode) in
+        bundled)  _install_python_deps_bundled ;;
+        disabled) cli_only_note "VULTURE_USE_SYSTEM_PYTHON explicitly disabled" ;;
+        require)  _install_python_deps_require ;;
+        *)        _install_python_deps_auto ;;
     esac
     return 0
 }
@@ -808,6 +870,10 @@ main() {
     acquire_install_lock
     extract_atomic
     generate_jwt_secret
+    # After extraction, not as a preflight: whether the agents are installed
+    # (see agents_planned) depends on the extracted tree. An abort here is
+    # rolled back by the EXIT trap like any other pre-commit failure.
+    check_glibc
     install_python_deps
     set_permissions
     link_binary

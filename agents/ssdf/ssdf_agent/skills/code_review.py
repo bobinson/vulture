@@ -5,7 +5,9 @@ from pathlib import Path
 
 from agents import function_tool
 
-from ssdf_agent.skills._ci_utils import gather_ci_content
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import present
+from ssdf_agent.skills._ci_utils import gather_ci_content, github_or_root_files
 
 _PR_TEMPLATE_NAMES = {
     "pull_request_template.md", "pull_request_template.txt",
@@ -38,9 +40,9 @@ def check_code_review(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No PR/MR template found",
             "description": "No pull request template with review checklist found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Create a PULL_REQUEST_TEMPLATE.md with security review checklist",
         })
 
@@ -53,9 +55,9 @@ def check_code_review(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No required review configuration found",
             "description": "No required reviewer or approval configuration found in CI or branch rules",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Configure required reviewers and approval rules for code changes",
         })
 
@@ -64,23 +66,15 @@ def check_code_review(source_path: str) -> dict:
 
 def _find_pr_template(root: Path) -> bool:
     """Check for PR template files."""
-    github_dir = root / ".github"
-    if github_dir.is_dir():
-        for item in github_dir.iterdir():
-            if item.name.lower() in _PR_TEMPLATE_NAMES:
-                return True
-    for item in root.iterdir():
-        if item.is_file() and item.name.lower() in _PR_TEMPLATE_NAMES:
-            return True
-    return False
+    return any(item.name.lower() in _PR_TEMPLATE_NAMES for item in github_or_root_files(root))
 
 
 def _gather_review_content(root: Path) -> str:
     """Gather CI content + CODEOWNERS for review policy detection."""
     base = gather_ci_content(root)
     extras: list[str] = []
-    for codeowners in (root / "CODEOWNERS", root / ".github" / "CODEOWNERS"):
-        if codeowners.exists():
+    for codeowners in ("CODEOWNERS", ".github/CODEOWNERS"):
+        if present(root, codeowners):
             extras.append("codeowners required_reviewers")
     if extras:
         return base + "\n" + "\n".join(extras)

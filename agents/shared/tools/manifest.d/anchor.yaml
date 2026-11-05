@@ -58,7 +58,7 @@
   quote_lines: [55, 56]
   expect: reanchored
   why: >-
-    the measured signupCompletionChecker.ts case — the model cites the function
+    the measured signinFollowupChecker.ts case — the model cites the function
     SIGNATURE and quotes the BODY. A single candidate, one line away
 
 - id: reanchored_nearest_wins
@@ -74,7 +74,7 @@
   quote_lines: [15, 15]
   expect: reanchored
   why: >-
-    the measured scaleToSetName.ts residue — one defect, three claims citing
+    the measured scaleToPresetName.ts residue — one defect, three claims citing
     18/18/15. The first two are mislocated by 3 lines
 
 - id: reanchored_dupe_second

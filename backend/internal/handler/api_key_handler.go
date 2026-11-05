@@ -50,7 +50,7 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	plaintext, stored, err := h.svc.Create(strings.TrimSpace(req.Name), user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create api key")
+		writeInternalError(w, r, "create api key", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -71,7 +71,7 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	keys, err := h.svc.List(user.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list api keys")
+		writeInternalError(w, r, "list api keys", err)
 		return
 	}
 	out := make([]map[string]interface{}, 0, len(keys))
@@ -104,7 +104,7 @@ func (h *APIKeyHandler) Revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.Revoke(id); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to revoke api key")
+		writeInternalError(w, r, "revoke api key", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

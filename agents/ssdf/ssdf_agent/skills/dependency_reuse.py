@@ -5,7 +5,8 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import present, read_file_safe
 from shared.tools.snippet import extract_snippet
 
 _LOCK_FILES = {
@@ -40,9 +41,9 @@ def check_dependency_reuse(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No dependency lock file found",
             "description": "No dependency lock file found to ensure reproducible builds",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Commit dependency lock files (package-lock.json, go.sum, poetry.lock, etc.)",
         })
 
@@ -52,17 +53,15 @@ def check_dependency_reuse(source_path: str) -> dict:
 
 
 def _find_lock_file(root: Path) -> bool:
-    """Check for any dependency lock file."""
-    for name in _LOCK_FILES:
-        if (root / name).exists():
-            return True
-    return False
+    """Check for any dependency lock file (a SKIP_FILES name: the walk still
+    reaches it, so ``present`` finds it)."""
+    return any(present(root, name) for name in _LOCK_FILES)
 
 
 def _check_unpinned_deps(root: Path, findings: list[dict]) -> None:
     """Check for wildcard or 'latest' dependencies."""
     pkg_json = root / "package.json"
-    if not pkg_json.exists():
+    if not present(root, "package.json"):
         return
     content = read_file_safe(pkg_json)
     if content is None:

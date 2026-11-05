@@ -1,0 +1,138 @@
+package modelmeta
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// Helpers for the 0074 AC6 registry-parity canary (TestFamilyOrder_MirrorsPython).
+// They read the Python source of truth so the canary can never be satisfied by
+// editing a hand-maintained copy of it.
+
+// pyProviderPath is provider.py relative to this package directory
+// (backend/internal/broker/modelmeta → repo root is four levels up).
+var pyProviderPath = filepath.Join("..", "..", "..", "..", "agents", "shared", "shared", "llm", "provider.py")
+
+var (
+	pyExactRow  = regexp.MustCompile(`^\s*"([^"]+)":\s*([0-9_]+),`)
+	pyFamilyRow = regexp.MustCompile(`^\s*\("([^"]+)",\s*([0-9_]+)\),`)
+)
+
+type pyEntry struct {
+	key string
+	val int
+}
+
+func readPythonProvider(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(pyProviderPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", pyProviderPath, err)
+	}
+	return string(b)
+}
+
+// pyBlock returns the lines between the module-level assignment of name to a
+// literal opened by opener ("{" or "[") and the first line that is exactly
+// closer. The header is matched on the identifier and "= <opener>" only, so a
+// changed type annotation cannot break the canary.
+func pyBlock(t *testing.T, src, name, opener, closer string) []string {
+	t.Helper()
+	header := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\b[^=\n]*=\s*` + regexp.QuoteMeta(opener) + `[ \t]*$`)
+	loc := header.FindStringIndex(src)
+	if loc == nil {
+		t.Fatalf("provider.py: %s = %s not found", name, opener)
+	}
+	body, _, _ := strings.Cut(src[loc[1]:], "\n"+closer+"\n")
+	return strings.Split(body, "\n")
+}
+
+// parsePyRows extracts (key, value) rows from a block, in source order.
+func parsePyRows(t *testing.T, lines []string, row *regexp.Regexp) []pyEntry {
+	t.Helper()
+	out, err := scanPyRows(lines, row)
+	if err != nil {
+		t.Fatalf("provider.py: %v", err)
+	}
+	return out
+}
+
+// pyIgnorable is a blank line or a comment-only line inside a registry block.
+var pyIgnorable = regexp.MustCompile(`^\s*(#.*)?$`)
+
+// scanPyRows parses every row of a block. A line that is neither a row nor
+// ignorable is an error, never skipped: a row the canary cannot read (a value
+// spelled as a name, single quotes, a row split over lines) is exactly the
+// drift it exists to catch.
+func scanPyRows(lines []string, row *regexp.Regexp) ([]pyEntry, error) {
+	var out []pyEntry
+	for _, ln := range lines {
+		m := row.FindStringSubmatch(ln)
+		if m == nil {
+			if pyIgnorable.MatchString(ln) {
+				continue
+			}
+			return nil, fmt.Errorf("unparseable registry row %q", ln)
+		}
+		n, err := strconv.Atoi(strings.ReplaceAll(m[2], "_", ""))
+		if err != nil {
+			return nil, fmt.Errorf("bad int literal %q", m[2])
+		}
+		out = append(out, pyEntry{m[1], n})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("parsed zero rows — the canary would pass vacuously")
+	}
+	return out, nil
+}
+
+func parsePyFamilies(t *testing.T, src string) []pyEntry {
+	return parsePyRows(t, pyBlock(t, src, "_MODEL_FAMILY_CTX", "[", "]"), pyFamilyRow)
+}
+
+func parsePyExact(t *testing.T, src string) []pyEntry {
+	return parsePyRows(t, pyBlock(t, src, "CONTEXT_WINDOWS", "{", "}"), pyExactRow)
+}
+
+// assertFamilyParity: identical length, and at every position the same
+// substring AND the same window.
+func assertFamilyParity(t *testing.T, py []pyEntry) {
+	t.Helper()
+	if len(modelFamilyCtx) != len(py) {
+		t.Errorf("family list length: Go %d, Python %d (sync with _MODEL_FAMILY_CTX)", len(modelFamilyCtx), len(py))
+	}
+	for i := 0; i < min(len(py), len(modelFamilyCtx)); i++ {
+		assertFamilyAt(t, i, py[i])
+	}
+}
+
+func assertFamilyAt(t *testing.T, i int, want pyEntry) {
+	t.Helper()
+	if g := modelFamilyCtx[i]; g.sub != want.key || g.ctx != want.val {
+		t.Errorf("family[%d]: Go (%q,%d), Python (%q,%d)", i, g.sub, g.ctx, want.key, want.val)
+	}
+}
+
+// assertExactParity: the exact-match maps hold the same keys with the same
+// values, in both directions.
+func assertExactParity(t *testing.T, py []pyEntry) {
+	t.Helper()
+	for _, e := range py {
+		assertExactKey(t, e)
+	}
+	if len(contextWindows) != len(py) {
+		t.Errorf("exact map size: Go %d, Python %d (the key sets differ)", len(contextWindows), len(py))
+	}
+}
+
+func assertExactKey(t *testing.T, want pyEntry) {
+	t.Helper()
+	if got, ok := contextWindows[want.key]; !ok || got != want.val {
+		t.Errorf("exact map: Python %q=%d, Go has %d (present=%v)", want.key, want.val, got, ok)
+	}
+}

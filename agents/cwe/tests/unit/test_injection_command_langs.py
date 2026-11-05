@@ -4,12 +4,15 @@ the dangerous_function skill; 0060 moves ownership here so nothing is lost when
 dangerous_function narrows to memory-unsafe library functions.
 """
 
+import pytest
+
 
 def _cwes(tmp_path):
     from cwe_agent.skills.injection_check import check_injection
     return {x["category"] for x in check_injection(str(tmp_path))["findings"]}
 
 
+@pytest.mark.usefixtures("regex_tier")
 def test_java_runtime_exec_flagged_cwe78(tmp_path):
     f = tmp_path / "V.java"
     f.write_text(
@@ -40,12 +43,14 @@ def test_php_shell_exec_flagged_cwe78(tmp_path):
     assert "CWE-78" in _cwes(tmp_path)
 
 
+@pytest.mark.usefixtures("regex_tier")
 def test_php_passthru_flagged_cwe78(tmp_path):
     f = tmp_path / "v.php"
     f.write_text("<?php\nfunction run($cmd) { passthru($cmd); }\n")
     assert "CWE-78" in _cwes(tmp_path)
 
 
+@pytest.mark.usefixtures("regex_tier")
 def test_php_proc_open_flagged_cwe78(tmp_path):
     f = tmp_path / "v.php"
     f.write_text("<?php\nfunction run($cmd) { proc_open($cmd, [], $p); }\n")
@@ -115,6 +120,7 @@ def test_php_function_system_definition_not_flagged(tmp_path):
     assert "CWE-78" not in _cwes(tmp_path)
 
 
+@pytest.mark.usefixtures("regex_tier")
 def test_php_shell_exec_static_arg_still_flagged(tmp_path):
     """Audit #2: a static-string shell_exec is still a real shell invocation."""
     f = tmp_path / "v.php"
@@ -122,6 +128,7 @@ def test_php_shell_exec_static_arg_still_flagged(tmp_path):
     assert "CWE-78" in _cwes(tmp_path)
 
 
+@pytest.mark.usefixtures("regex_tier")
 def test_java_runtime_exec_static_arg_still_flagged(tmp_path):
     """Audit #2: static-string Runtime.exec must not be silently suppressed."""
     f = tmp_path / "V.java"

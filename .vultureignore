@@ -24,6 +24,7 @@ frontend/playwright-report/
 # ── Verification harness scratch ────────────────────────────────────
 verification/build/
 verification/.coq/
+verification/
 
 # ── IDE / tooling state ─────────────────────────────────────────────
 # Most of these are also in .gitignore, but listed here so an
@@ -52,10 +53,16 @@ cli/bin/
 # code authored to TEST the detectors — it must never be self-audited.
 agents/cwe/tests/corpus/fixtures/
 
-# Feature 0058: Semgrep plugin test fixtures are deliberately vulnerable
+# Feature 0101: synthetic CWE-778/770/209 rule fixtures (true positives,
+# clean twins, known gaps, held-out languages) authored to TEST the CWE
+# agent. The CWE rules already skip test paths; other agents do not.
+agents/cwe/tests/e2e/fixtures/0101_cwe*/
+agents/cwe/tests/e2e/fixtures/0101_heldout/
+
+# Feature 0058: opengrep plugin test fixtures are deliberately vulnerable
 # code (taint source->sink flows) authored to TEST the detectors — they
 # must never be flagged by self-audits.
-plugins/semgrep/tests/fixtures/
+plugins/opengrep/tests/fixtures/
 
 # Local scratchpad — throwaway test drivers, evidence, scan slices (incl.
 # woofy example code). Git-ignored; also excluded from self-audit.
@@ -73,3 +80,7 @@ magicrouter/docs/features/0007_cross_modality_end_to_end/research/deep_research_
 magicrouter/docs/features/0007_cross_modality_end_to_end/research/claims_by_source.json
 magicrouter/docs/features/0008_enterprise_readiness/research/deep_research_run.json
 magicrouter/docs/features/0008_enterprise_readiness/research/claims_by_source.json
+
+.env
+verification/simulated-target/
+plugins/opengrep/rules/

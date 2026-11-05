@@ -46,6 +46,11 @@ class CweSignature:
         confidence: Detector confidence in ``[0, 1]``.
         require_source: When True, a ``source`` match within the window is
             mandatory for the signature to fire (dataflow gate).
+        source_flows: With ``require_source``, the source must reach the
+            sink line instead of merely appearing near it: the line's code
+            (string text blanked, interpolations kept) matches ``source``, or
+            names a variable that a line up to ``window`` above assigns from
+            a ``source`` match. A source word elsewhere does not count.
         status: ``candidate`` (default; not yet corpus-gated) or ``trusted``.
     """
 
@@ -60,4 +65,5 @@ class CweSignature:
     window: int = 4
     confidence: float = 0.6
     require_source: bool = False
+    source_flows: bool = False
     status: str = "candidate"

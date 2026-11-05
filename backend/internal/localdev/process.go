@@ -319,15 +319,20 @@ type ProcessStatus struct {
 //
 // Feature 0069: without this, starting onto an occupied port produced a child
 // that died with `bind: address already in use` while the launcher logged a
-// successful start. Binding 0.0.0.0 is the strict check — it also fails when
-// only 127.0.0.1:port is held, which is what a stale loopback-bound service
-// looks like.
+// successful start. It probes the wildcard AND 127.0.0.1: Linux refuses a
+// wildcard bind while 127.0.0.1:port is held, but macOS (BSD semantics with
+// the SO_REUSEADDR Go always sets) allows it, so only the exact loopback bind
+// catches a stale loopback-bound service — what every agent and the backend
+// now are — there.
 func ensurePortFree(port string) error {
-	ln, err := net.Listen("tcp", ":"+port)
-	if err != nil {
-		return fmt.Errorf("port %s is already in use (%v) — stop the process holding it, or run `vulture stop`", port, err)
+	for _, addr := range []string{":" + port, "127.0.0.1:" + port} {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("port %s is already in use (%v) — stop the process holding it, or run `vulture stop`", port, err)
+		}
+		_ = ln.Close()
 	}
-	return ln.Close()
+	return nil
 }
 
 // healthProbeTimeout bounds a single readiness request.

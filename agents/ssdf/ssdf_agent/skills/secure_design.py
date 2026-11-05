@@ -1,11 +1,13 @@
 """PW.1 + PW.2 - Secure design audit skill for SSDF."""
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import present, read_file_safe, tree_files
 
 _THREAT_MODEL_NAMES = {
     "threat-model.md", "threat_model.md", "threatmodel.md",
@@ -42,9 +44,9 @@ def check_secure_design(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No threat model documentation found",
             "description": "No threat model document found in the repository",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Create a threat model document using STRIDE or similar methodology",
         })
 
@@ -56,9 +58,9 @@ def check_secure_design(source_path: str) -> dict:
             "practice": "PW-produce-well-secured-software",
             "title": "No design review evidence found",
             "description": "No design review or architecture review documentation found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Document design review processes in PR templates or dedicated docs",
         })
 
@@ -66,29 +68,25 @@ def check_secure_design(source_path: str) -> dict:
 
 
 def _find_threat_model(root: Path) -> bool:
-    """Check for threat model documents."""
-    for name in _THREAT_MODEL_NAMES:
-        if any(True for _ in root.rglob(name)):
-            return True
-    docs_security = root / "docs" / "security"
-    return bool(docs_security.is_dir())
+    """Check for threat model documents, or a ``docs/security`` directory."""
+    if any(True for _ in tree_files(root, names=_THREAT_MODEL_NAMES)):
+        return True
+    return present(root, "docs/security")
 
 
 def _find_design_review(root: Path) -> bool:
     """Check for design review evidence."""
-    for name in _DESIGN_DOC_NAMES:
-        for match in root.rglob(name):
-            if match.is_file():
-                return True
+    if any(True for _ in tree_files(root, names=_DESIGN_DOC_NAMES)):
+        return True
     # Check PR template for design review checklist
-    github_dir = root / ".github"
-    if github_dir.is_dir():
-        for item in github_dir.iterdir():
-            if "pull_request_template" in item.name.lower():
-                content = read_file_safe(item)
-                if content and _DESIGN_REVIEW_PATTERNS.search(content):
-                    return True
-    return False
+    return any(_DESIGN_REVIEW_PATTERNS.search(content) for content in _pr_templates(root))
+
+
+def _pr_templates(root: Path) -> Iterator[str]:
+    """The contents of the PR templates directly in ``.github``."""
+    for item in tree_files(root, under=".github", depth=1):
+        if "pull_request_template" in item.name.lower():
+            yield read_file_safe(item) or ""
 
 
 check_secure_design_tool = function_tool(check_secure_design)

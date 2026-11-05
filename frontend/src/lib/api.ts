@@ -9,6 +9,7 @@ import type {
   CreateAuditRequest,
   CreatePipelineRequest,
   CreateSourceRequest,
+  MaskedValues,
   DashboardStats,
   DiscoverResult,
   FindingLineage,
@@ -24,6 +25,7 @@ import type {
 } from "./types.ts";
 import type { User } from "./auth.tsx";
 import { normalizeLineageDetail } from "./lineage.ts";
+import { CSRF_HEADER } from "./constants.ts";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
@@ -36,23 +38,17 @@ class ApiError extends Error {
   }
 }
 
-function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem("vulture_token");
-  if (token) {
-    return { Authorization: `Bearer ${token}` };
-  }
-  return {};
-}
-
 const inFlightRequests = new Map<string, Promise<unknown>>();
 
-async function doRequest<T>(path: string, options?: RequestInit): Promise<T> {
-  const url = `${API_BASE}${path}`;
-  const response = await fetch(url, {
+// The session is an HttpOnly cookie the browser attaches on its own: fetch's
+// default credentials ("same-origin") send it, and no script ever sees it.
+// Every request names the CSRF header the backend checks (feature 0102).
+async function send(path: string, options?: RequestInit): Promise<Response> {
+  const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      ...getAuthHeaders(),
+      [CSRF_HEADER]: "1",
       ...options?.headers,
     },
   });
@@ -60,12 +56,19 @@ async function doRequest<T>(path: string, options?: RequestInit): Promise<T> {
     const text = await response.text().catch(() => "Unknown error");
     throw new ApiError(response.status, text);
   }
+  return response;
+}
+
+async function doRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await send(path, options);
   return response.json() as Promise<T>;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = options?.method ?? "GET";
-  // Only deduplicate GETs without custom headers (custom headers may carry different auth)
+  // Only deduplicate GETs that pass no headers: the in-flight map is keyed by
+  // path alone, so a caller with its own headers (maskedValues passes an empty
+  // object to opt out) must not be handed another call's response.
   if (method !== "GET" || options?.headers) return doRequest<T>(path, options);
   const existing = inFlightRequests.get(path);
   if (existing) return existing as Promise<T>;
@@ -75,7 +78,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 interface AuthResponse {
-  token: string;
+  // Absent on a cookie sign-in; the SPA never reads it.
+  token?: string;
   user: User;
 }
 
@@ -111,10 +115,15 @@ export const api = {
     });
   },
 
-  me(token: string): Promise<User> {
-    return request<User>("/api/auth/me", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+  me(): Promise<User> {
+    return request<User>("/api/auth/me");
+  },
+
+  // Only a 204 confirms the sign-out: the SPA cannot delete the HttpOnly
+  // cookie itself, so any other answer must not look like success.
+  async logout(signal?: AbortSignal): Promise<void> {
+    const response = await send("/api/auth/logout", { method: "POST", signal });
+    if (response.status !== 204) throw new ApiError(response.status, "sign-out not confirmed");
   },
 
   // Sources
@@ -246,6 +255,17 @@ export const api = {
   getAggregate(targetKey: string, query = ""): Promise<AggregateResponse> {
     return request<AggregateResponse>(
       `/api/targets/${encodeURIComponent(targetKey)}/aggregate${query}`,
+    );
+  },
+
+  // 0074 item 1b. Never deduplicated or cached: an explicit (empty) headers
+  // object bypasses the in-flight map, and fetch skips the HTTP cache. It adds
+  // no header of its own; send() still sets Content-Type and the CSRF header,
+  // as on every request.
+  maskedValues(auditId: string, findingId: string): Promise<MaskedValues> {
+    return request<MaskedValues>(
+      `/api/audits/${encodeURIComponent(auditId)}/findings/${encodeURIComponent(findingId)}/masked`,
+      { cache: "no-store", headers: {} },
     );
   },
 

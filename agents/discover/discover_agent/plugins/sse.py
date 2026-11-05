@@ -15,6 +15,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +105,10 @@ _SSE_EXTENSIONS = frozenset({".js", ".ts", ".jsx", ".tsx", ".py", ".go", ".java"
 def _scan_source_for_sse(root: Path, result: DiscoveryResult) -> None:
     """Scan source code for SSE patterns."""
     scanned = 0
-    for fpath in root.rglob("*"):
+    for fpath in tree_files(root):
         if scanned >= _MAX_SOURCE_FILES:
             break
-        if not fpath.is_file() or fpath.suffix.lower() not in _SSE_EXTENSIONS:
+        if fpath.suffix.lower() not in _SSE_EXTENSIONS:
             continue
         try:
             content = fpath.read_text(errors="replace")

@@ -8,6 +8,7 @@ import websockets
 
 from prove_agent.llm_helper import llm_json_call, render_prove_prompt
 from prove_agent.protocols.detection import TargetCapabilities, to_ws_url
+from prove_agent.public_error import describe_failure, log_failure
 from prove_agent.strategies.base import (
     ExecutionResult,
     FailureReason,
@@ -129,9 +130,10 @@ async def execute_websocket(
 
     except Exception as exc:
         failure = _classify_ws_failure(exc)
+        log_failure(logger, "ws_probe", exc)
         return ExecutionResult(
             conclusive=False,
-            evidence=f"WebSocket error: {exc}",
+            evidence=f"WebSocket error: {describe_failure(exc)}",
             failure_reason=failure,
             protocol_used=ProbeProtocol.WEBSOCKET.value,
         )

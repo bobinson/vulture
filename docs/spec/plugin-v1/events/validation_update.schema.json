@@ -9,7 +9,7 @@
   "properties": {
     "phase": {
       "type": "string",
-      "description": "Plugin name + short tag, e.g. 'semgrep-validate' or 'l5_judge'"
+      "description": "Plugin name + short tag, e.g. 'examplescan-validate' or 'l5_judge'"
     },
     "updates": {
       "type": "array",

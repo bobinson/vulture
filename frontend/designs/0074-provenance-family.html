@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Provenance Family Filter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+<style>
+/* ── Storybook chrome: minimal, tokens only ─────────────────────────────── */
+*{box-sizing:border-box}
+body{margin:0;background:var(--color-cream-darker)}
+.top{border-bottom:1px solid var(--color-border-dark);background:var(--color-cream-darker)}
+.top-in{max-width:1080px;margin:0 auto;padding:10px 24px;display:flex;align-items:center;gap:18px}
+.top h1{margin:0;font:600 var(--text-base)/1 var(--font-sans);letter-spacing:-.01em}
+.top h1 small{font-weight:500;color:var(--color-muted);margin-left:8px}
+.wrap{max-width:1080px;margin:0 auto;padding:28px 24px 96px}
+.lede{max-width:72ch;margin:0 0 28px;color:var(--color-secondary)}
+.lede p{margin:0 0 8px}
+.story{margin:0 0 48px}
+.story header{display:grid;gap:4px;margin:0 0 14px;max-width:80ch}
+.eyebrow{font:500 var(--text-2xs)/1 var(--font-mono);color:var(--color-muted);letter-spacing:.04em}
+.story h2{margin:0;font:600 var(--text-xl)/1.25 var(--font-sans);letter-spacing:var(--tracking-tight)}
+.intent{margin:0;color:var(--color-secondary)}
+code{font-family:var(--font-mono);font-size:var(--text-xs);background:var(--color-cream);padding:1px 5px;border-radius:var(--radius-badge);border:1px solid var(--color-border)}
+.frame{background:var(--color-cream);border:1px solid var(--color-border-dark);border-radius:var(--radius-card);padding:8px}
+/* specimen surroundings, as FindingsTable draws them */
+.spec-head{padding:16px}
+.spec-head .title{font-size:var(--text-sm);font-weight:600;margin:0 0 8px}
+.spec-detail{padding:16px 24px;display:grid;gap:12px;max-width:42rem;justify-items:start}
+.spec-detail p{margin:0;font-size:var(--text-sm)}
+.spec-path{font:400 var(--text-2xs)/1.5 var(--font-mono);color:var(--color-muted);background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-control);padding:8px 12px}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px 24px;margin:14px 0 0;padding:0;list-style:none}
+.notes li{font-size:var(--text-sm);color:var(--color-secondary)}
+.notes strong{color:var(--color-foreground)}
+.dec{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.dec th,.dec td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--color-border-dark)}
+.dec th{font:600 var(--text-2xs)/1 var(--font-mono);letter-spacing:.04em;color:var(--color-muted)}
+</style>
+</head>
+<body>
+<div class="top"><div class="top-in"><h1>Provenance family filter <small>design · 0074 · for review</small></h1></div></div>
+
+<div class="wrap">
+<div class="lede">
+  <p>Two new values in the findings table's existing provenance filter, and one read-only row in the expanded finding. Nothing here changes a finding's validation status, confidence or any voter input: the tier a finding came from is <b>orthogonal</b> to how much it is trusted.</p>
+  <p>Every specimen below is drawn with <code>tokens.css</code> + <code>components.css</code> and is the pixel reference for the implementation (the 0074 Playwright spec screenshots the elements marked <code>data-testid</code> here and in the app, in the same browser, and compares them).</p>
+</div>
+
+<!-- ═══════════ S1 ═══════════ -->
+<section class="story" id="s1">
+<header><div class="eyebrow">S1 · Filter, default</div><h2>"LLM (all)" and "Both tiers" join the provenance filter</h2>
+<p class="intent">The group is the shared <code>ChipGroup</code>: a legend, then shared <code>Chip</code>s. "All" first, then the two family values, then the exact tiers present in the audit, sorted. The exact tiers keep their exact meaning.</p></header>
+<div class="frame"><div class="card spec-head v-body">
+  <p class="title">Findings</p>
+  <div class="v-chipgroup" role="group" aria-label="Provenance" data-testid="provenance-filter" data-state="all">
+    <span class="legend">Provenance:</span>
+    <div class="chips">
+      <button type="button" class="badge chip-on" aria-pressed="true">All</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">LLM (all)</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">Both tiers</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">llm</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">llm_l5_verified</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">skill</button>
+    </div>
+  </div>
+</div></div>
+<ul class="notes">
+  <li><strong>LLM (all)</strong> (<code>llm_family</code>) keeps exactly the rows whose <code>provenance</code> is <code>llm</code> or <code>llm_l5_verified</code>. Until now those were two buttons that could not be combined.</li>
+  <li><strong>Both tiers</strong> (<code>both</code>) keeps the rows whose <code>validation.provenance_origins</code> names a deterministic tier <i>and</i> an LLM tier, whichever row won the merge.</li>
+  <li><strong>Content-sized.</strong> The group is <code>inline-flex</code>; it does not stretch to the card, so it is the same box in every layout.</li>
+</ul>
+</section>
+
+<!-- ═══════════ S2 ═══════════ -->
+<section class="story" id="s2">
+<header><div class="eyebrow">S2 · Filter, LLM (all) selected</div><h2>One click shows the whole LLM tier</h2>
+<p class="intent">Selected state is the shared Chip's <code>active</code> (foreground on surface). Paging resets to the first page, as for every other filter.</p></header>
+<div class="frame"><div class="card spec-head v-body">
+  <p class="title">Findings</p>
+  <div class="v-chipgroup" role="group" aria-label="Provenance" data-testid="provenance-filter" data-state="llm_family">
+    <span class="legend">Provenance:</span>
+    <div class="chips">
+      <button type="button" class="badge chip-neutral" aria-pressed="false">All</button>
+      <button type="button" class="badge chip-on" aria-pressed="true">LLM (all)</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">Both tiers</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">llm</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">llm_l5_verified</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">skill</button>
+    </div>
+  </div>
+</div></div>
+</section>
+
+<!-- ═══════════ S3 ═══════════ -->
+<section class="story" id="s3">
+<header><div class="eyebrow">S3 · Filter, Both tiers selected</div><h2>Rows both tiers reported</h2>
+<p class="intent">A row is in "Both tiers" because the merge recorded every contributing tier, not because it is more likely real. The validation badge on each row is unchanged.</p></header>
+<div class="frame"><div class="card spec-head v-body">
+  <p class="title">Findings</p>
+  <div class="v-chipgroup" role="group" aria-label="Provenance" data-testid="provenance-filter" data-state="both">
+    <span class="legend">Provenance:</span>
+    <div class="chips">
+      <button type="button" class="badge chip-neutral" aria-pressed="false">All</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">LLM (all)</button>
+      <button type="button" class="badge chip-on" aria-pressed="true">Both tiers</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">llm</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">llm_l5_verified</button>
+      <button type="button" class="badge chip-neutral" aria-pressed="false">skill</button>
+    </div>
+  </div>
+</div></div>
+</section>
+
+<!-- ═══════════ S4 ═══════════ -->
+<section class="story" id="s4">
+<header><div class="eyebrow">S4 · Finding detail</div><h2>The anchor result, read-only</h2>
+<p class="intent">What 0076's quote verifier found (<code>validation.checks[id=anchor].result</code>) and where the model's claimed line fell (<code>extras.claimed_line_range</code>), side by side. Two facts, two chips: neither relabels the other. No control: it is evidence, not a setting.</p></header>
+<div class="frame"><div class="card v-body"><div class="v-detail spec-detail">
+  <p>User-controlled value reaches a shell command without validation.</p>
+  <div class="spec-path">src/handlers/run.py:40</div>
+  <div class="v-chipgroup" role="group" aria-label="Anchor" data-testid="anchor-result">
+    <span class="legend">Anchor:</span>
+    <div class="chips">
+      <span class="badge chip-info" data-testid="anchor-status">Re-anchored</span>
+      <span class="badge chip-warning" data-testid="anchor-range">Past end of file</span>
+      <span class="badge chip-neutral" data-testid="anchor-line">L60 → L40</span>
+    </div>
+  </div>
+</div></div></div>
+<ul class="notes">
+  <li><strong>Line chip.</strong> <code>L{claimed_line}</code>, followed by <code>→ L{claimed_line + delta}</code> when the verifier moved the line (delta ≠ 0). No new field: the anchored line is derived.</li>
+  <li><strong>Absent pieces are omitted, never invented.</strong> A pre-0074 row has no range chip; a deterministic row has no anchor check and no anchor row at all.</li>
+</ul>
+</section>
+
+<!-- ═══════════ Vocabulary ═══════════ -->
+<section class="story" id="vocab">
+<header><div class="eyebrow">V · Vocabulary</div><h2>Tones and labels</h2></header>
+<table class="dec">
+  <thead><tr><th>value</th><th>en label</th><th>tone</th></tr></thead>
+  <tbody>
+    <tr><td><code>llm_family</code></td><td>LLM (all)</td><td>filter chip</td></tr>
+    <tr><td><code>both</code></td><td>Both tiers</td><td>filter chip</td></tr>
+    <tr><td><code>exact</code></td><td>Exact</td><td>success</td></tr>
+    <tr><td><code>reanchored</code></td><td>Re-anchored</td><td>info</td></tr>
+    <tr><td><code>ambiguous</code> · <code>near_miss</code> · <code>found_elsewhere</code></td><td>Ambiguous · Near miss · Found elsewhere</td><td>warning</td></tr>
+    <tr><td><code>absent</code></td><td>Absent</td><td>danger</td></tr>
+    <tr><td><code>unquoted</code> · <code>unreadable</code> · <code>oversize</code></td><td>Unquoted · Unreadable · Oversize</td><td>neutral</td></tr>
+    <tr><td><code>in_file</code> · <code>past_eof</code> · <code>no_line</code></td><td>In file · Past end of file · No line</td><td>neutral · warning · neutral</td></tr>
+  </tbody>
+</table>
+<ul class="notes">
+  <li><strong>i18n keys</strong> (all six locales): <code>results.provenanceFamily.llm_family</code>, <code>results.provenanceFamily.both</code>, <code>results.anchor.title</code>, <code>results.anchor.status.&lt;status&gt;</code>, <code>results.anchor.range.&lt;range&gt;</code>.</li>
+  <li><strong>Speed.</strong> Filtering is client-side over the loaded findings: one constant-time test per row, no request.</li>
+</ul>
+</section>
+</div>
+</body>
+</html>

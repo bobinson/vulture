@@ -1,5 +1,5 @@
 .PHONY: build build-backend build-agents build-agents-force build-frontend \
-       test test-backend test-race test-agents test-frontend \
+       test test-backend test-race test-agents test-frontend test-mcp \
        e2e coverage complexity lint \
        docker-up docker-down \
        gen-env config-check \
@@ -37,10 +37,21 @@ build-frontend:
 
 # Test targets (parallel)
 test:
-	$(MAKE) -j3 test-backend test-agents test-frontend
+	$(MAKE) -j3 test-backend test-agents test-frontend test-mcp
 
 test-backend:
 	cd backend && go test ./...
+
+# MCP server tests in an mcp-local venv built from mcp's own declared
+# dependencies (mcp/pyproject.toml, [dev] extra): the agents venv carries
+# neither the mcp SDK nor respx. IDEMPOTENT like build-agents: the install runs
+# only when the venv cannot import the test stack.
+MCP_PY := mcp/.venv/bin/python
+test-mcp:
+	@[ -x $(MCP_PY) ] || python3 -m venv mcp/.venv
+	@$(MCP_PY) -c "import mcp.server.fastmcp, respx, pytest_asyncio" 2>/dev/null \
+	  || $(MCP_PY) -m pip install -e "./mcp[dev]"
+	cd mcp && .venv/bin/python -m pytest tests/ -q
 
 # Race detector on the concurrency-bearing packages. Feature 0071 added a
 # per-audit event broadcaster with a fan-out goroutine per subscriber; none of

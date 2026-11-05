@@ -43,4 +43,13 @@ type AgUIEvent struct {
 	ToolID    string          `json:"toolCallId,omitempty"`
 	Error     string          `json:"error,omitempty"`
 	AgentType string          `json:"agentType,omitempty"`
+	// LLMWindow is the agent's published llm_window object (feature 0074
+	// §5.1(e): resolved, effective, provenance, source, model), passed through
+	// on the agent's StepStarted event. Absent when the agent sent none.
+	LLMWindow json.RawMessage `json:"llmWindow,omitempty"`
+	// RunStatus is the agent's own agent_end status ("completed", "failed",
+	// "skipped"), carried on its StepFinished event for the backend's
+	// completeness check. In-process only: the frame sent to clients is
+	// unchanged.
+	RunStatus string `json:"-"`
 }

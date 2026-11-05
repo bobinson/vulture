@@ -22,7 +22,7 @@ RETRY_PATTERNS = [
     re.compile(r"@retry|Retry\(|tenacity|urllib3\.util\.retry", re.IGNORECASE),
     re.compile(r"MaxRetries|retry_count|max_retries", re.IGNORECASE),
     # TypeScript/Node.js retry wrappers and npm packages
-    re.compile(r"withRetry|retryOrThrow|createApiRetryConfig|createDbRetryConfig", re.IGNORECASE),
+    re.compile(r"withRetry", re.IGNORECASE),
     re.compile(r"from\s+['\"](?:p-retry|async-retry|cockatiel|ts-retry)", re.IGNORECASE),
 ]
 

@@ -6,8 +6,8 @@
 #
 # It ALSO runs the release-INSTALLABILITY gate (scripts/check-lockfile-installable.sh):
 # a pin can pass freshness (reproducible) yet ship NO wheel for a release target
-# under `--only-binary :all:` — e.g. litellm >= 1.92.0 is manylinux-only, so it
-# breaks the darwin build. Checking it here surfaces it on the PR instead of at
+# under `--only-binary :all:` — e.g. litellm 1.92.0 was manylinux-only, so it
+# broke the darwin build. Checking it here surfaces it on the PR instead of at
 # release-cut / in the macOS build. Same pinned uv, same fork-PR safety posture.
 #
 # This is a SEPARATE workflow (not a ci.yml job) ON PURPOSE (audit M4): ci.yml has
@@ -68,7 +68,7 @@ jobs:
                agents \
                scripts/gen-lockfile.sh scripts/check-lockfile.sh \
                scripts/check-lockfile-installable.sh scripts/uv-version.sh \
-               scripts/lock-date.txt \
+               scripts/lock-date.txt scripts/lock-date-packages.txt \
                .github/workflows/lockfile.yml .github/actions/setup-pinned-uv) || {
             echo "could not compute base diff (base=$BASE_SHA) — running freshness check to fail safe"
             echo 'relevant=true' >> "$GITHUB_OUTPUT"

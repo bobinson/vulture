@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,11 +44,24 @@ func pollAuditStatus(t *testing.T, addr, auditID string, timeout time.Duration) 
 	return nil
 }
 
-func createAuditForDispatch(t *testing.T, addr string) string {
+// createAuditForDispatch creates a local source and a chaos audit over it,
+// with any extra (client-supplied) top-level fields merged into the POST body,
+// and returns the audit id once the create response reports pending.
+func createAuditForDispatch(t *testing.T, addr string, extra ...map[string]interface{}) string {
 	t.Helper()
-	sourceDir := createTestSourceDir(t)
+	a := postChaosAudit(t, addr, createDispatchSource(t, addr), extra...)
+	// The 201 body still reports the created state, before the run advances it.
+	if a["status"] != "pending" {
+		t.Fatalf("expected the create response to report pending, got %q", a["status"])
+	}
+	return a["id"].(string)
+}
+
+// createDispatchSource POSTs a fresh local source and returns its id.
+func createDispatchSource(t *testing.T, addr string) string {
+	t.Helper()
 	resp, err := httpPost(addr, "/api/sources", map[string]interface{}{
-		"type": "local", "path": sourceDir,
+		"type": "local", "path": createTestSourceDir(t),
 	})
 	if err != nil {
 		t.Fatalf("POST /api/sources: %v", err)
@@ -58,24 +72,27 @@ func createAuditForDispatch(t *testing.T, addr string) string {
 	if sourceID == "" {
 		t.Fatal("no source id")
 	}
+	return sourceID
+}
 
-	resp, err = httpPost(addr, "/api/audits", map[string]interface{}{
-		"source_id": sourceID, "types": []string{"chaos"},
-	})
+// postChaosAudit POSTs a chaos audit over sourceID and returns the create
+// response, failing unless it carries an id.
+func postChaosAudit(t *testing.T, addr, sourceID string, extra ...map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	body := map[string]interface{}{"source_id": sourceID, "types": []string{"chaos"}}
+	for _, e := range extra {
+		maps.Copy(body, e)
+	}
+	resp, err := httpPost(addr, "/api/audits", body)
 	if err != nil {
 		t.Fatalf("POST /api/audits: %v", err)
 	}
 	var a map[string]interface{}
 	readJSON(t, resp, &a)
-	auditID, _ := a["id"].(string)
-	if auditID == "" {
+	if id, _ := a["id"].(string); id == "" {
 		t.Fatal("no audit id")
 	}
-	// The 201 body still reports the created state, before the run advances it.
-	if a["status"] != "pending" {
-		t.Fatalf("expected the create response to report pending, got %q", a["status"])
-	}
-	return auditID
+	return a
 }
 
 // TestAutoDispatch_PostAloneCompletesTheAudit is the headline fix: before 0071 an

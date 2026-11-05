@@ -20,12 +20,17 @@ class AgUiEventEmitter:
         logger.debug("emit event=%s run_id=%s", event, self._run_id)
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
-    def run_started(self) -> str:
-        """Emit agent_start event."""
-        return self._format("agent_start", {
-            "agent_name": "",
-            "run_id": self._run_id,
-        })
+    def run_started(self, llm_window: dict[str, Any] | None = None) -> str:
+        """Emit agent_start event.
+
+        ``llm_window`` (feature 0074 P1, optional): the run's published window
+        facts — resolved / effective / provenance / source / model. Omitted
+        from the payload when not given, so existing callers are unchanged.
+        """
+        data: dict[str, Any] = {"agent_name": "", "run_id": self._run_id}
+        if llm_window is not None:
+            data["llm_window"] = llm_window
+        return self._format("agent_start", data)
 
     def step_started(self, step_name: str) -> str:
         """Emit step start event."""

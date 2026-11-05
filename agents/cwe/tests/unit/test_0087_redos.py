@@ -86,6 +86,8 @@ from pathlib import Path
 
 import pytest
 
+from shared.testing.timing import budget
+
 SKILL_MODULE = "cwe_agent.skills.insufficient_logging_check"
 
 # §5 gate constants.
@@ -112,7 +114,9 @@ INPUT_BYTES = 512 * 1024
 # absurdly expensive; the ratio catches a pattern that is super-linear at any
 # speed. Neither alone is sufficient.
 BUDGET_MS_PER_KB = 0.060
-BUDGET_MS = BUDGET_MS_PER_KB * (INPUT_BYTES / 1024)
+# The figure above is the reference box's; `budget` scales it to this machine
+# (shared.testing.timing). It never scales the PROC_TIMEOUT_SEC backstop.
+BUDGET_MS = budget(BUDGET_MS_PER_KB * (INPUT_BYTES / 1024))
 
 # A scaling assertion (4x input must cost < 8x time) was drafted here and
 # REMOVED: measured in-process it has no timeout, so a genuinely catastrophic

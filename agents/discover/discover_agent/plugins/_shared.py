@@ -8,11 +8,14 @@ handle malformed input gracefully.
 import asyncio
 import logging
 import re
+from itertools import islice
 from pathlib import Path
 from xml.etree import ElementTree
 from xml.etree.ElementTree import Element
 
 import httpx
+
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -263,23 +266,12 @@ def read_source_file(root: Path, *names: str) -> str | None:
 
 
 def find_files_by_name(root: Path, name: str, max_results: int = 50) -> list[Path]:
-    """Walk tree for a specific filename. Capped at *max_results*.
+    """The walked files named exactly *name*, at most *max_results*.
 
-    Uses os.walk instead of rglob to handle filenames containing glob
-    special characters (e.g. ``[...nextauth].ts``).
+    An exact-name match, never a glob, so a name carrying glob special
+    characters (``[...nextauth].ts``) means itself.
     """
-    import os
-
-    results: list[Path] = []
-    try:
-        for dirpath, _dirs, files in os.walk(root):
-            if name in files:
-                results.append(Path(dirpath) / name)
-                if len(results) >= max_results:
-                    break
-    except Exception:
-        pass
-    return results
+    return list(islice(tree_files(root, names={name}), max_results))
 
 
 async def probe_endpoint(

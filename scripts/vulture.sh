@@ -19,8 +19,10 @@
 #                      The positional model applies to EVERY LLM tier. Pass
 #                      --scan-model / --validate-model to differ per tier.
 #                               [--no-broker] [--budget <usd>]   (broker on by default)
+#                               [--tier3|--deep]   widen the LLM sweep (no effect with skills)
 #   server <provider>  Mode B: Central server — Docker + remote DB
 #                      Options: [--no-broker] [--budget <usd>]   (broker on by default)
+#                               [--tier3|--deep]   widen the LLM sweep (no effect with skills)
 #   viewer             Mode C: Read-only viewer VM — Docker, no agents
 #
 #   stop               Stop Mode A (bare metal processes)

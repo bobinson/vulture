@@ -11,10 +11,11 @@ confounds the fix with sampling noise. This probe measures the artefact instead.
 prints the stats as JSON, so a before/after comparison is a diff of two blobs.
 
 The probe deliberately calls the SAME helpers the sweep calls
-(``_llm_eligible_files``, ``_prioritize_files``, ``_build_source_batches``, and the
-env-resolved budgets). One that re-derived its own budget or batch size would
-report a shape no real run produces — worse than no probe, because it would look
-like evidence.
+(``_llm_eligible_files``, ``_prioritize_files`` — through its two halves
+``_tier_files`` / ``_order_tiers``, so the tiers it ordered by are the tiers it
+reports — ``_build_source_batches``, and the env-resolved budgets). One that
+re-derived its own budget or batch size would report a shape no real run
+produces — worse than no probe, because it would look like evidence.
 """
 
 from __future__ import annotations
@@ -37,13 +38,16 @@ from shared.audit_runner import (
     _llm_eligible_files,
     _llm_feed_extensions,
     _llm_tier3_enabled,
-    _prioritize_files,
+    _order_tiers,
     _quote_mode,
     _quote_required,
+    _reanchor_switch,
     _resolve_llm_budget_usd,
     _safe_int_env,
+    _safe_rel,
     _snippet_context_lines,
     _split_source_blocks,
+    _tier_files,
     _whole_file_max_lines,
 )
 from shared.env import env_truthy
@@ -247,10 +251,11 @@ def _quote_env() -> dict[str, Any]:
     known: dict[str, Any] = {
         "VULTURE_LLM_QUOTE_VERIFY": _quote_mode(),
         "VULTURE_LLM_QUOTE_REQUIRED": _quote_required(),
-        # The raw switch, not ``_reanchor_enabled()``: that reader ANDs in the
+        # The switch alone, not ``_reanchor_enabled()``: that reader ANDs in the
         # mode, and reporting a conjunction under a variable's own name would
-        # make an operator who set it read back false.
-        "VULTURE_LLM_QUOTE_REANCHOR": env_truthy("VULTURE_LLM_QUOTE_REANCHOR"),
+        # make an operator who set it read back false. Read through the
+        # pipeline's own resolver so the probe reports the O6 default (on).
+        "VULTURE_LLM_QUOTE_REANCHOR": _reanchor_switch(),
         "VULTURE_LLM_QUOTE_KEEP_TEXT": env_truthy("VULTURE_LLM_QUOTE_KEEP_TEXT"),
         "VULTURE_LLM_QUOTE_DEMOTE_ABSENT": env_truthy(anchor._DEMOTE_ABSENT),
     }
@@ -322,9 +327,10 @@ def render_feed(
     files = _llm_eligible_files(
         scan_code_files(source_path, max_files=max_files, extensions=_llm_feed_extensions())
     )
-    ordered = _prioritize_files(
-        files, source_path, findings, include_tier3=_llm_tier3_enabled(llm_tier3),
-    )
+    # ``_prioritize_files``, in its two halves, keeping the tier groups it fed.
+    include_tier3 = _llm_tier3_enabled(llm_tier3)
+    tiers = _tier_files(files, source_path, findings)
+    ordered = _order_tiers(tiers, include_tier3)
     packed = _build_source_batches(ordered, source_path, max_chars, findings)
     # T0.3c: the delivered feed, not the packed one. The probe used to copy the
     # sweep's char clamp (``min(max_chars, body_cap)``) instead of applying the
@@ -344,11 +350,50 @@ def render_feed(
     # truncated. ``VULTURE_LLM_MAX_BODY_BYTES`` travels in ``env`` so a consumer
     # can re-derive the sweep's narrower budget from the same blob.
     batches = [_cap_batch(text, paths) for text, paths in packed]
+    stats = _stats(batches, packed, len(files), max_chars, model, llm_tier3)
+    stats["yield"] = _yield(batches, _tier_by_rel(tiers, include_tier3, source_path))
+    return {"files": ordered, "batches": batches, "stats": stats}
+
+
+def _tier_by_rel(tiers: tuple[list, list, list], include_tier3: bool,
+                 source_path: str) -> dict[str, int]:
+    """Each fed file's prioritiser tier, keyed by the relative path a batch lists.
+
+    Read off the groups ``_tier_files`` already built, in fed order (tier 3 only
+    when it was fed), rather than re-running ``_file_tier`` over every file.
+    """
+    fed = tiers if include_tier3 else tiers[:2]
     return {
-        "files": ordered,
-        "batches": batches,
-        "stats": _stats(batches, packed, len(files), max_chars, model, llm_tier3),
+        _safe_rel(f, source_path): number
+        for number, group in enumerate(fed, start=1)
+        for f in group
     }
+
+
+def _extension_yield_row() -> dict[str, Any]:
+    """One extension's yield slots, zero-filled with both full vocabularies."""
+    return {
+        "files_sent": 0,
+        "findings": 0,
+        "anchor_status": dict.fromkeys(sorted(anchor.STATUSES), 0),
+        "claimed_line_range": dict.fromkeys(sorted(anchor.CLAIMED_LINE_RANGES), 0),
+    }
+
+
+def _yield(batches: list[tuple[str, list[str]]], tiers: dict[str, int]) -> dict[str, Any]:
+    """T0.3 (0074): files sent per prioritiser tier and per extension, as delivered.
+
+    The probe calls no model, so every ``findings`` / anchor / line-range slot
+    reads zero; the slots exist so a run that does call one fills the same shape.
+    """
+    per_tier = {f"tier{n}": {"files_sent": 0, "findings": 0} for n in (1, 2, 3)}
+    per_extension: dict[str, dict[str, Any]] = {}
+    for _text, paths in batches:
+        for path in paths:
+            per_tier[f"tier{tiers.get(path, 3)}"]["files_sent"] += 1
+            row = per_extension.setdefault(_suffix(path), _extension_yield_row())
+            row["files_sent"] += 1
+    return {"per_tier": per_tier, "per_extension": per_extension}
 
 
 def _stats(

@@ -16,7 +16,8 @@ The four buckets (honest in BOTH directions — no overclaim, no underclaim):
                           by the gate, NOT counted in N. Currently empty.
     DECLARED-ONLY       — declared/detectable deterministic CWE-ids that are NOT
                           corpus-gated: the emitted skill ``category`` literals
-                          (~73) UNION the trusted-signature CWE-ids, MINUS the
+                          (counted at runtime by ``skill_category_cwe_ids``)
+                          UNION the trusted-signature CWE-ids, MINUS the
                           VERIFIED set MINUS the below-gate set. (The 846-entry
                           catalog is metadata/context and its keyword path fires
                           ~0 on real code — stated in prose, not enumerated.)

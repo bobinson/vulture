@@ -6,6 +6,7 @@ Follows the same 2-phase pattern (rule-based + LLM fallback) as jsonrpc_executor
 
 import logging
 
+from prove_agent.public_error import describe_failure, log_failure
 from prove_agent.strategies.base import (
     ExecutionResult,
     FailureReason,
@@ -119,9 +120,10 @@ async def _try_grpc_http2(
                 failure_reason=FailureReason.PROTOCOL_ERROR,
             )
     except Exception as exc:
+        log_failure(logger, "grpc_http2_probe", exc)
         return ExecutionResult(
             conclusive=False,
-            evidence=f"gRPC HTTP/2 probe failed: {exc}",
+            evidence=f"gRPC HTTP/2 probe failed: {describe_failure(exc)}",
             protocol_used=ProbeProtocol.GRPC.value,
             failure_reason=FailureReason.CONNECTION_ERROR,
         )

@@ -2,6 +2,8 @@
 
 Integrate Vulture compliance audits into your CI/CD pipelines. CI runners act as thin clients (Mode D) that submit scan requests to a centralized Vulture server (Mode B). The CI runner never executes the backend, agents, or LLMs itself.
 
+> No server? To gate a pull request or a commit on the CWE skills alone (changed files only, no backend, no LLM), use `vulture-offline-skills`. See [offline_skills_gate.md](offline_skills_gate.md).
+
 ```
 CI runner (ephemeral)                 Central server (persistent VM)
  vulture scan <git-url>  ──HTTPS──>   backend + agents + LLM
@@ -269,7 +271,7 @@ to read the server log to find out what was lost. Example:
 
 ```
   Status: failed
-  Reason: requested agents did not run: semgrep
+  Reason: requested agents did not run: opengrep
 ```
 
 Severity levels from lowest to highest: `info`, `low`, `medium`, `high`, `critical`. Setting `--exit-on medium` will cause exit code 1 if any finding is `medium`, `high`, or `critical`.
@@ -439,6 +441,12 @@ The server enforces per-key rate limits to prevent runaway CI loops from exhaust
 - The `--git-credentials` token has expired or lacks read access to the repository.
 - The repository URL is incorrect (missing `.git` suffix for some hosts).
 - The server VM cannot reach the git host (firewall, DNS).
+
+### Server errors and request ids
+
+**Symptom:** `API error (500): {"error":"internal error","request_id":"…"}`, or a `400` whose message is fixed text with a `request_id`, such as `clone: git clone failed: the repository is unreachable or the credentials were rejected` or `clone: git host is not permitted or cannot be resolved`.
+
+No 500 and no curated 400 carries internal error detail, such as database errors, git output or resolved addresses (feature 0102). A few diagnostic texts carry server detail by design, such as the LLM health message (the LLM endpoint and the probe's error) and an audit's `degraded_reason`; [central_server_deployment.md](central_server_deployment.md) lists them under "Tracing an error to its cause". A 500 body and a curated 400 carry a `request_id`, which is also the `X-Request-ID` response header. Give it to the server operator, who finds the cause by grepping the backend log for it (`docker compose logs backend 2>&1 | grep '<request_id>'`). A request made directly to the API may send its own `X-Request-ID` to correlate a CI run (1-64 characters of `A-Z a-z 0-9 . _ -`); any other value is replaced by a server-generated id.
 
 ---
 

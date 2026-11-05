@@ -163,7 +163,8 @@ type LineageEvidenceUpdate struct {
 	// observed the code — never for `ambiguous`, and never on an error path.
 	IncrementSeen bool
 	// LineStart/LineEnd is the re-anchored window, applied only when
-	// UpdateWindow is set (VULTURE_LLM_QUOTE_REANCHOR).
+	// UpdateWindow is set (the re-anchor gate: VULTURE_LLM_QUOTE_VERIFY=enforce
+	// AND VULTURE_LLM_QUOTE_REANCHOR, config.QuoteReanchorEnabled).
 	LineStart    int
 	LineEnd      int
 	UpdateWindow bool
@@ -212,6 +213,13 @@ type LineageRepository interface {
 	// every historical row is invisible to the next scan. See
 	// lineage_legacy_key.go for why that failure is silent and what it costs.
 	LegacyTargetKey(sourcePath string) (string, error)
+	// RekeyTarget moves the rows under m.From whose source_path is m.ScanRoot
+	// or below it onto m.To, rebasing each file_path through m.Rebase, and
+	// returns how many moved. It is the carry for rows filed under a key the
+	// resolver no longer produces for that source (the home-climbed key; see
+	// service/lineage_home_bridge.go). Status, triage and history are left
+	// untouched; a row whose identity is already live under m.To stays put.
+	RekeyTarget(m TargetRekey) (int, error)
 	// GetRecentlyFixedBySourcePath returns `fixed` rows from the last
 	// `auditWindow` distinct fixing audits of this (source, agent). Feature
 	// 0091 §6.3: a fixed LLM row is re-checked for a bounded window so a

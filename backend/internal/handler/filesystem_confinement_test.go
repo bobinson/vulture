@@ -94,6 +94,34 @@ func TestSymlinkOutsideSourceRootRejected(t *testing.T) {
 	}
 }
 
+// TestListDirSwappedLinkNotListed: browse lists through an os.Root opened on
+// the directory the check accepted, so a directory swapped for a link to an
+// outside directory between the check and the listing is not listed.
+func TestListDirSwappedLinkNotListed(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(root, "proj")
+	if err := os.Mkdir(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, code, msg := validateBrowsePathWithRoot(proj, root)
+	if code != 0 {
+		t.Fatalf("validateBrowsePathWithRoot(%q) code=%d msg=%q; want accepted", proj, code, msg)
+	}
+	if err := os.Remove(proj); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, proj); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+	if entries, err := listDir(dir); err == nil {
+		t.Errorf("listDir after the swap = %+v; want a refusal", entries)
+	}
+}
+
 // Cap is exercised via buildDirEntries directly so we don't need
 // to mock filesystem entries up to maxBrowseEntries+1.
 func TestBuildDirEntriesCapsResultSize(t *testing.T) {

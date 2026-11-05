@@ -111,8 +111,8 @@ class VultureClient:
             params["status"] = status
         return await self._request("GET", "/api/audits", params=params)
 
-    async def get_audit(self, audit_id: str, wait: bool = False) -> dict:
-        return await self._request("GET", f"/api/audits/{audit_id}", wait=wait)
+    async def get_audit(self, audit_id: str, wait: bool = False, params: dict | None = None) -> dict:
+        return await self._request("GET", f"/api/audits/{audit_id}", wait=wait, params=params)
 
     async def get_comparison(self, audit_id: str) -> dict:
         return await self._request("GET", f"/api/audits/{audit_id}/comparison")
@@ -125,6 +125,13 @@ class VultureClient:
 
     async def get_audit_lineage(self, audit_id: str) -> list:
         return await self._request("GET", f"/api/audits/{audit_id}/lineage")
+
+    async def get_masked_values(self, audit_id: str, finding_id: str) -> dict:
+        return await self._request("GET", f"/api/audits/{audit_id}/findings/{finding_id}/masked")
+
+    @property
+    def base_url(self) -> str:
+        return self._base
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -344,6 +351,102 @@ def _active(*preds):
     return [p for p in preds if p]
 
 
+# Feature 0074: the provenance filter takes the vocabulary the findings API and
+# the UI take. An exact value matches `provenance` literally; "llm_family" and
+# "both" are the two family values. ONE family rule, the same as the backend's
+# isLLMProvenance and the agents' _is_deterministic: a tier is a string,
+# trimmed (Go's whitespace set, GO_SPACE) and lower-cased; a blank tier is no tier; a tier starting with "llm"
+# is the LLM family, any other tier the skill family. A GROUPING provenance
+# (catalog_rollup) names the rollup that grouped the leaves, not a tier that
+# detected anything, so as an origin it is neither family (C11).
+_SKILL_FAMILY, _LLM_FAMILY = 1, 2
+_BOTH_FAMILIES = _SKILL_FAMILY | _LLM_FAMILY
+_GROUPING_PROVENANCES = frozenset({"catalog_rollup"})
+
+# T1: the ONE whitespace set every runtime trims a tier with, exactly Go's
+# unicode.IsSpace (what strings.TrimSpace strips). Bare str.strip() also strips
+# U+001C-U+001F, which Go keeps; U+FEFF is whitespace nowhere.
+GO_SPACE = ("\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
+            "\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000")
+
+
+def _tier(value) -> str:
+    return value.strip(GO_SPACE).lower() if isinstance(value, str) else ""
+
+
+def _is_llm_tier(tier: str) -> bool:
+    return tier.startswith("llm")
+
+
+def _tier_family(value) -> int:
+    """The family bit of one origin: 0 for no tier or a grouping provenance."""
+    tier = _tier(value)
+    if not tier or tier in _GROUPING_PROVENANCES:
+        return 0
+    return _LLM_FAMILY if _is_llm_tier(tier) else _SKILL_FAMILY
+
+
+def _provenance_origins(finding: dict) -> list:
+    """validation.provenance_origins when it is a list, else nothing: a
+    malformed value (string, object, null, absent) is never an error."""
+    validation = finding.get("validation")
+    origins = validation.get("provenance_origins") if isinstance(validation, dict) else None
+    return origins if isinstance(origins, list) else []
+
+
+def _is_llm_family(finding: dict) -> bool:
+    return _is_llm_tier(_tier(finding.get("provenance")))
+
+
+def _spans_both_families(finding: dict) -> bool:
+    """True when the rows deduplicated into this one came from a skill-family
+    tier AND an LLM-family tier."""
+    seen = 0
+    for origin in _provenance_origins(finding):
+        seen |= _tier_family(origin)
+    return seen == _BOTH_FAMILIES
+
+
+def _origins_recorded(audit: dict, findings: list[dict]) -> bool:
+    """Whether the audit's findings record provenance_origins at all. The API's
+    origins_recorded flag wins; an older backend sends none, so any row whose
+    validation carries the provenance_origins key proves the record exists."""
+    flag = audit.get("origins_recorded")
+    if isinstance(flag, bool):
+        return flag
+    return any(_records_origins(f) for f in findings)
+
+
+def _records_origins(finding: dict) -> bool:
+    """The key's presence, whatever its value: the backend's markOriginsRecorded rule."""
+    validation = finding.get("validation")
+    return isinstance(validation, dict) and "provenance_origins" in validation
+
+
+_ORIGINS_NOT_RECORDED_NOTE = (
+    "This audit's findings record no provenance_origins (the audit predates "
+    "tier-origin recording), so an empty \"both\" result means not recorded, "
+    "not never corroborated.")
+
+
+def _both_marker(provenance: str | None, audit: dict) -> dict:
+    """#35: qualify a "both" result with whether origins were recorded."""
+    if provenance != "both":
+        return {}
+    recorded = _origins_recorded(audit, audit.get("findings") or [])
+    return {"origins_recorded": True} if recorded else {
+        "origins_recorded": False, "note": _ORIGINS_NOT_RECORDED_NOTE}
+
+
+_PROVENANCE_FAMILY_PREDS = {"llm_family": _is_llm_family, "both": _spans_both_families}
+
+
+def _provenance_pred(provenance: str | None):
+    """The filter value is exact and case-sensitive: a family word selects its
+    family, any other value matches `provenance` literally."""
+    return _PROVENANCE_FAMILY_PREDS.get(provenance) or _field_is("provenance", provenance)
+
+
 def _filter_findings(
     findings: list[dict],
     severity: str | None,
@@ -351,13 +454,15 @@ def _filter_findings(
     agent_type: str | None,
     framework: str | None = None,
     edition: str | None = None,
+    provenance: str | None = None,
 ) -> list[dict]:
     """Filter findings by optional criteria. Extracted to keep tool CC < 5.
 
     agent_type is always literal. With a framework, category and edition
-    filter that framework's labels; without one, category is the finding's own."""
+    filter that framework's labels; without one, category is the finding's own.
+    provenance is an exact value or a family word (see _provenance_pred)."""
     preds = _active(_field_is("severity", severity), _field_is("agent_type", agent_type),
-                    _category_pred(category, framework, edition))
+                    _category_pred(category, framework, edition), _provenance_pred(provenance))
     return [f for f in findings if all(p(f) for p in preds)]
 
 
@@ -609,8 +714,22 @@ async def vulture_get_findings(
     offset: int = 0,
     framework: str | None = None,
     edition: str | None = None,
+    provenance: str | None = None,
 ) -> dict:
     """Get findings from a specific audit with filtering and pagination.
+
+    provenance filters by the tier that produced a finding, with the same
+    vocabulary as the findings API: an exact value ("skill", "llm",
+    "llm_l5_verified", "semgrep") matches a finding's provenance literally;
+    "llm_family" keeps every finding whose provenance, trimmed and
+    lower-cased, starts with "llm"; "both" keeps findings that a skill-family
+    tier and an LLM-family tier both reported (validation.provenance_origins;
+    a catalog_rollup origin is a grouping, not a tier). A "both" result also
+    carries `origins_recorded`: false (with a `note`) when the audit's findings
+    record no origins, so an empty result there means "not recorded", not
+    "never corroborated".
+    The value is case-sensitive; an unknown value selects nothing. It combines
+    with the other filters and never changes a finding's validation.
 
     For an OWASP Top 10 category use framework="owasp" with category="A07";
     framework="owasp" alone returns every finding carrying an OWASP label.
@@ -629,9 +748,13 @@ async def vulture_get_findings(
     finding's own category literally (e.g. "CWE-89")."""
     framework, category, edition = _normalize_framework_filter(framework, category, edition)
     client = await _get_client()
-    audit = await client.get_audit(audit_id)
+    # Forward the provenance filter so a current backend selects server side;
+    # the local predicate below still runs, so an older backend that ignores
+    # the parameter yields the same rows.
+    audit = await client.get_audit(audit_id, params={"provenance": provenance} if provenance else None)
     findings = _framework_output(
-        _filter_findings(audit.get("findings", []), severity, category, agent_type, framework, edition),
+        _filter_findings(audit.get("findings", []), severity, category, agent_type, framework, edition,
+                         provenance),
         framework)
 
     # Enrich with lineage status and ref
@@ -646,6 +769,7 @@ async def vulture_get_findings(
         "total": total,
         "has_more": has_more,
         "next_offset": offset + limit if has_more else None,
+        **_both_marker(provenance, audit),
     }
 
 
@@ -665,6 +789,43 @@ async def vulture_get_finding_detail(audit_id: str, fingerprint: str) -> dict:
             result["lineage"] = _redact_record(lineage)
     except Exception as exc:
         result["lineage_error"] = f"Failed to fetch lineage: {type(exc).__name__}"
+    return result
+
+
+# 0074 verification item 1b. What an MCP client may learn about a masked value:
+# where it sits, what kind it is, the length of a fixed-format token, and
+# whether the scanned file still reproduces the masked rows. Never the value:
+# this output enters the calling model's context.
+_SPAN_FIELDS = ("line", "ordinal", "column", "kind", "length")
+_MASKED_FIELDS = ("source_available", "matches_scan", "file", "rows_checked", "reason")
+
+
+def _ui_url(base: str, ui_path: str) -> str:
+    """The finding in the UI: VULTURE_FRONTEND_URL when set (the CLI's rule),
+    else the server this client talks to (an install or remote server serves
+    its own UI)."""
+    origin = os.environ.get("VULTURE_FRONTEND_URL", "").strip() or base
+    return origin.rstrip("/") + ui_path
+
+
+@mcp.tool()
+async def vulture_verify_masked_values(audit_id: str, fingerprint: str) -> dict:
+    """Verify the masked values (secrets) in one finding's code snippet WITHOUT
+    receiving them. Returns, per masked value: line, column, kind (jwt,
+    url_userinfo, private_key, aws_key_id, ...) and, for fixed-format tokens,
+    the length; whether the scanned file still reproduces the masked rows
+    (matches_scan); and ui_url, where a human can switch the value on. With
+    local file access, read file:line:column yourself. Values are never
+    returned by this tool."""
+    client = await _get_client()
+    audit = await client.get_audit(audit_id)
+    finding = next((f for f in audit.get("findings", []) if f.get("fingerprint") == fingerprint), None)
+    if not finding or not finding.get("id"):
+        raise ValueError(f"Finding with fingerprint {fingerprint} not found in audit {audit_id}")
+    masked = await client.get_masked_values(audit_id, finding["id"])
+    result = {k: masked[k] for k in _MASKED_FIELDS if k in masked}
+    result["spans"] = [{k: span[k] for k in _SPAN_FIELDS if k in span} for span in masked.get("spans") or []]
+    result["ui_url"] = _ui_url(client.base_url, masked.get("ui_path") or f"/audit/{audit_id}")
     return result
 
 

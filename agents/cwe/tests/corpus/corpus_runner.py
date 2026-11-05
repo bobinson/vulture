@@ -51,7 +51,7 @@ from shared.tools.file_scanner import clear_caches
 
 # tests/corpus/ — this file's own directory.
 CORPUS_DIR = Path(__file__).resolve().parent
-_FIXTURES_DIR = CORPUS_DIR / "fixtures"
+FIXTURES_DIR = CORPUS_DIR / "fixtures"
 _MANIFEST_DIR = CORPUS_DIR / "manifest.d"
 _GATES_FILE = CORPUS_DIR / "gates.yaml"
 
@@ -190,7 +190,7 @@ def _hit_rate(files: list[str], target: str, detect: _Detector) -> float:
     if not files:
         return 0.0
     hits = sum(
-        1 for rel in files if target in detect(str(_FIXTURES_DIR / rel))
+        1 for rel in files if target in detect(str(FIXTURES_DIR / rel))
     )
     return hits / len(files)
 
@@ -210,7 +210,7 @@ def _score_cwe(
     )
 
 
-def _score_with(entries: list[dict], detect: _Detector) -> dict[str, CweScore]:
+def score_with(entries: list[dict], detect: _Detector) -> dict[str, CweScore]:
     """Shared per-CWE scoring loop, parameterized by the detector callable.
 
     ``detect`` is called EXACTLY ONCE per manifest entry with the absolute
@@ -250,7 +250,7 @@ def score_corpus(entries: list[dict]) -> dict[str, CweScore]:
     line against the manifest ``line`` within a tolerance window) is a future
     refinement, not a Phase-5 deliverable.
     """
-    return _score_with(entries, run_deterministic)
+    return score_with(entries, run_deterministic)
 
 
 def score_semgrep_corpus(
@@ -265,7 +265,7 @@ def score_semgrep_corpus(
     touches the semgrep binary or the filesystem; ``runner`` is called exactly
     once per entry with ``str(CORPUS_DIR / "fixtures" / entry["file"])``.
     """
-    return _score_with(entries, runner)
+    return score_with(entries, runner)
 
 
 # ── gate application + banding (R15/R16) ────────────────────────────────

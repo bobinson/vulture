@@ -20,7 +20,8 @@ finding": in the validate layer a discharge only *supports* a finding, so
 failing open is safe. Inside a DETECTOR that bias INVERTS — a missed strip
 becomes a dropped finding. The implementation is line-based and does not track
 multi-line strings or docstrings, so a template literal spanning lines is only
-partially blanked.
+partially blanked. ``mask_multiline`` is the whole-file pass that blanks them
+first.
 
 Therefore: use these to compute EVIDENCE (veto, demote, corroborate), never as a
 hard skip that can silently remove a finding.
@@ -29,11 +30,45 @@ from __future__ import annotations
 
 import functools
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 # Single-sourced with validate.context_heuristics, which imports them from here.
 _STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`[^`]*`")
 _COMMENT_RE = re.compile(r"#.*$|//.*$|/\*.*?\*/")
+
+
+# Multi-line literals and block comments, scanned over the whole file so a
+# triple-quoted docstring, a template literal or an unprefixed `/* */` line is
+# not read as code. Single-line strings and line comments are matched only so
+# that a `/*` or a backtick INSIDE them does not open anything; they are left
+# for the per-line strip. ReDoS: every body loop is possessive and every
+# construct ALSO ends at end of file (a single-line string at end of line), so
+# each opener is one linear match that always succeeds; an unclosed opener can
+# never fail and be retried from the next offset (that retry is quadratic).
+_MULTILINE = re.compile(
+    r'"""(?:[^"\\]|\\.|"(?!""))*+\\?(?:"""|\Z)'
+    r"|'''(?:[^'\\]|\\.|'(?!''))*+\\?(?:'''|\Z)"
+    r"|`(?:[^`\\]|\\.)*+\\?(?:`|\Z)"
+    r"|/\*(?:[^*]|\*(?!/))*+(?:\*/|\Z)"
+    r'|"(?:[^"\\\n]|\\.)*+\\?(?:"|(?=\n)|\Z)'
+    r"|'(?:[^'\\\n]|\\.)*+\\?(?:'|(?=\n)|\Z)"
+    r"|//[^\n]*"
+    r"|(?:^|(?<=\s))#[^\n]*",
+    re.MULTILINE | re.DOTALL,
+)
+_NON_NEWLINE = re.compile(r"[^\n]")
+
+
+def _blank_multiline(m: re.Match) -> str:
+    text = m.group(0)
+    return _NON_NEWLINE.sub(" ", text) if "\n" in text else text
+
+
+def mask_multiline(lines: Sequence[str]) -> list[str]:
+    """The lines with every MULTI-line literal or block comment blanked to
+    spaces (line count and columns kept); single-line constructs untouched."""
+    return _MULTILINE.sub(_blank_multiline, "\n".join(lines)).split("\n")
 
 
 def strip_strings_and_comments(line: str) -> str:
@@ -49,6 +84,33 @@ def strip_strings_and_comments(line: str) -> str:
     """
     line = _STRING_LITERAL_RE.sub('""', line)
     return _COMMENT_RE.sub("", line)
+
+
+# A one-line string literal with its prefix (`f"..."`, `rb'...'`), for the strip
+# that keeps the code a literal interpolates. The body loop is possessive, so an
+# unclosed quote fails in one pass instead of backtracking.
+_PREFIXED_STRING_RE = re.compile(
+    r"(?P<prefix>\b[rRbBuUfF]{1,2})?(?P<q>['\"`])(?P<body>(?:\\.|(?!(?P=q))[^\\])*+)(?P=q)"
+)
+_TEMPLATE_FIELD_RE = re.compile(r"\$\{([^{}]*)\}")
+_FORMAT_FIELD_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def interpolated_code(line: str) -> str:
+    """``line`` with string text blanked and comments stripped, keeping the code
+    a literal interpolates: a template literal's ``${...}`` and an f-string's
+    ``{...}`` fields. What a log call logs is that code, not its message text."""
+    return _COMMENT_RE.sub("", _PREFIXED_STRING_RE.sub(_interpolations, line))
+
+
+def _interpolations(m: re.Match) -> str:
+    if m["q"] == "`":
+        fields = _TEMPLATE_FIELD_RE
+    elif "f" in (m["prefix"] or "").lower():
+        fields = _FORMAT_FIELD_RE
+    else:
+        return '""'
+    return " " + " ".join(fields.findall(m["body"])) + " "
 
 
 # A line whose purpose is to DISPLAY a value rather than execute it.
@@ -97,7 +159,7 @@ def is_declaration_context(line: str, match_start: int) -> bool:
 
     Covers the shape that made CWE-94 fire on a Redis client interface::
 
-        export interface AiRateLimitClient {
+        export interface LaneRateLimitClient {
           eval(script: string, options: { keys: string[] }): Promise<unknown>;
         }
 

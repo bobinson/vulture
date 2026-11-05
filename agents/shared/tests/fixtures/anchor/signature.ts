@@ -1,4 +1,4 @@
-// signature.ts -- 0076 fixture: the measured signupCompletionChecker.ts case.
+// signature.ts -- 0076 fixture: the measured signinFollowupChecker.ts case.
 // The model cites the function SIGNATURE (54) and quotes the BODY (55-56).
 // filler 003
 // filler 004

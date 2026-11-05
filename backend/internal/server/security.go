@@ -5,6 +5,9 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/vulture/backend/internal/handler"
+	"github.com/vulture/backend/internal/requestid"
 )
 
 // 0036 Phase 3 — Mode-B security hardening.
@@ -197,8 +200,7 @@ func addCORSWithAllowlist(next http.Handler, allowed []string) *http.ServeMux {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'")
 		// L1 audit: HSTS only on HTTPS; TLS terminator may be upstream
 		// so check the X-Forwarded-Proto header in addition to r.TLS.
-		if r.TLS != nil || strings.EqualFold(
-			r.Header.Get("X-Forwarded-Proto"), "https") {
+		if handler.IsHTTPSRequest(r) {
 			w.Header().Set("Strict-Transport-Security",
 				"max-age=31536000; includeSubDomains")
 		}
@@ -216,7 +218,7 @@ func addCORSWithAllowlist(next http.Handler, allowed []string) *http.ServeMux {
 			"GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers",
 			"Content-Type, Accept, Authorization")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
+		w.Header().Set("Access-Control-Expose-Headers", requestid.Header)
 		w.Header().Set("Access-Control-Max-Age", "86400")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

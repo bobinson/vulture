@@ -14,12 +14,14 @@ in particular the two rules that keep it safe:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from shared import anchor, lineage_checks, quote_store
 from shared.lineage_checks import quote_hash, verify_lineage_checks
+from shared.testing.lineage import local_quote_store
 
 QUOTE = (
     'token = request.headers.get("X-Api-Token")\n'
@@ -40,12 +42,11 @@ QUOTE_LINE = 5
 
 
 @pytest.fixture(autouse=True)
-def _local_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VULTURE_L5_CACHE_PATH", str(tmp_path / "cache" / "l5_cache.db"))
-    quote_store.reset_for_tests()
+def _local_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # These tests reach the anchor verifier without file_scanner.clear_caches(),
+    # so its path-keyed index is dropped here.
     anchor.clear_cache()
-    yield
-    quote_store.reset_for_tests()
+    yield from local_quote_store(monkeypatch, tmp_path)
     anchor.clear_cache()
 
 

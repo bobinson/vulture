@@ -1,0 +1,4 @@
+// A deploy token signed with RS256: a 256-byte signature.
+export const DEPLOY_TOKEN =
+  // EXPECT-NEXT: finding
+  "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJkZXBsb3ktYm90In0.B-jsCjYslgsWy4pbOceS1PvoC10iFYbfEmc3aY6txn6u8DUh8vGUMa8Bhbn1siAOkDxYFPQpl2T_Y0d0DKXzYUNhZXs80-UIg1p6rvwyg0lHqt2om0K9kwQYnoV3FhnD1TyzyWFUcaqxzQkLnyt00z0ZAKgjZBHGIo4KDOth9b4ycf9NkuZWKZ8a5qdqaiDFf-F59iVbWD4nfKj1ZudjmK09orcwKp2FtTLvAaE4cHnnE1UzRYFuyH7hfrRrTxG32CCFH4iLlFzuiZ_7g9qyZ0ZtVlnPK9BQboTbIEze5zsOiKrhr5jefljXxdNTKKkPuzoaqWJm1Q59-ioW8JlILQ";

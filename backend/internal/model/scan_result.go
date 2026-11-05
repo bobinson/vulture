@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 // Feature 0091 §6.1 — the versioned wire contract between the backend and an
 // agent, in both directions.
 //
@@ -70,6 +72,19 @@ type ScanResult struct {
 	// ScanTruncated is set when the walker hit VULTURE_MAX_FILES, so the
 	// enumerated set is partial and absence proves nothing (S20).
 	ScanTruncated bool `json:"scan_truncated,omitempty"`
+	// LLMEmitted and LLMCollapsedAgent are the agent's LLM-row counters
+	// (feature 0074 P4): rows its LLM tier produced, and rows its own dedup
+	// dropped before sending. Pointers so an explicit 0 from a new agent
+	// survives and stays distinct from an older agent that sends neither —
+	// whose dedup buckets are then reported "unavailable", never derived.
+	LLMEmitted        *int `json:"llm_emitted,omitempty"`
+	LLMCollapsedAgent *int `json:"llm_collapsed_agent,omitempty"`
+	// ASTCoverage is the agent's raw `ast_coverage` member (feature 0102
+	// D24), kept opaque so a malformed value can never cost the envelope
+	// beside it. nil = ABSENT (an agent without the AST layer): the lineage
+	// pass then applies no AST guard. A PRESENT value it cannot read holds
+	// every AST-owned row instead of closing it.
+	ASTCoverage json.RawMessage `json:"ast_coverage,omitempty"`
 
 	// NoResultSnapshot marks a result the BACKEND synthesised for an agent
 	// that was dispatched and never sent one — killed by

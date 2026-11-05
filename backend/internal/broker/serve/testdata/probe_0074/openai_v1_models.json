@@ -1,0 +1,45 @@
+{
+  "data": [
+    {
+      "id": "qwen/qwen3.8-27b",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
+      "id": "text-embedding-nomic-embed-text-v1.5",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
+      "id": "google/gemma-4-31b",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
+      "id": "qwen/qwen3.6-35b-a3b",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
+      "id": "qwen/qwen3.6-27b",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
+      "id": "openai/gpt-oss-120b",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
+      "id": "text-embedding-msmarco-bert-base-dot-v5-i1",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "object": "model",
+      "owned_by": "organization_owner"
+    }
+  ],
+  "object": "list"
+}

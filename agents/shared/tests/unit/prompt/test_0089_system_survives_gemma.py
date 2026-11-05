@@ -64,6 +64,7 @@ import pytest
 
 from shared.prompt import Mode, profile_for, registry, render
 from shared.prompt.manifests import MANIFESTS
+from shared.prompt.profile import _family_of
 
 # The family the whole file is about. A model string, not a family name, so it
 # goes through `family_for` exactly as production does.
@@ -370,7 +371,7 @@ def test_the_validate_tier_delivers_its_contract_to_gemma(monkeypatch):
     keeps passing unchanged — which is the property the union was chosen for.
     """
     monkeypatch.setenv("VULTURE_LLM_MODEL", GEMMA)
-    profile_for.cache_clear()
+    _family_of.cache_clear()
     from shared.prompt.manifests import MANIFESTS as M
     from shared.validate.llm_judge import _judge_system_prompt, _render_user_message
 

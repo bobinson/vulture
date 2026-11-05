@@ -4,6 +4,7 @@ import re
 
 from agents import function_tool
 
+from shared.models.finding import REPO_ROOT_PATH
 from shared.tools.file_scanner import (
     is_generated_file,
     is_test_file,
@@ -59,7 +60,7 @@ def check_data_retention(source_path: str) -> dict:
             "category": "CC6-data-retention",
             "title": "No data retention policy detected",
             "description": "Data storage found but no retention/expiry/cleanup logic",
-            "file_path": source_path,
+            "file_path": REPO_ROOT_PATH,
             "line_start": 0,
             "line_end": 0,
             "recommendation": "Implement data retention policies with TTL and cleanup jobs",

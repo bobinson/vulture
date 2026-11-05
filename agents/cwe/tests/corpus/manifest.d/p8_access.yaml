@@ -38,3 +38,29 @@
 - {file: p8_access/cwe_425_1_clean.ts, language: TypeScript, cwe: "425", expectation: negative}
 - {file: p8_access/cwe_425_2_clean.py, language: Python, cwe: "425", expectation: negative}
 - {file: p8_access/cwe_425_3_clean.go, language: Go, cwe: "425", expectation: negative}
+
+# ── CWE-807 / CWE-290 Auth guard decided by a client-controlled attribute (0097) ──
+# Content-keyed like the rules above (no filename, suffix or framework import is
+# read), so the `f.<ext>` flattening cannot change a verdict. Each clean twin is
+# the same guard with ONE signal withdrawn, so it isolates that signal:
+#
+#   * 807 — the bypass branch removed (807_1); the exemption keyed on a PATH,
+#     not a request attribute (807_2); the server-observed peer address instead
+#     of a header (807_3); a path-only matcher (807_4).
+#   * 290 — the User-Agent branch removed (290_1); `REMOTE_ADDR`, which the
+#     server sets (290_2); the socket peer address (290_3). A misconfigured
+#     `trust proxy` behind a server-derived address is CWE-348's row, not this.
+- {file: p8_access/cwe_807_1.js, language: JavaScript, cwe: "807", expectation: positive, line: 4}
+- {file: p8_access/cwe_807_2.py, language: Python, cwe: "807", expectation: positive, line: 9}
+- {file: p8_access/cwe_807_3.go, language: Go, cwe: "807", expectation: positive, line: 7}
+- {file: p8_access/cwe_807_4.ts, language: TypeScript, cwe: "807", expectation: positive, line: 16}
+- {file: p8_access/cwe_807_1_clean.js, language: JavaScript, cwe: "807", expectation: negative}
+- {file: p8_access/cwe_807_2_clean.py, language: Python, cwe: "807", expectation: negative}
+- {file: p8_access/cwe_807_3_clean.go, language: Go, cwe: "807", expectation: negative}
+- {file: p8_access/cwe_807_4_clean.ts, language: TypeScript, cwe: "807", expectation: negative}
+- {file: p8_access/cwe_290_1.java, language: Java, cwe: "290", expectation: positive, line: 11}
+- {file: p8_access/cwe_290_2.php, language: PHP, cwe: "290", expectation: positive, line: 4}
+- {file: p8_access/cwe_290_3.ts, language: TypeScript, cwe: "290", expectation: positive, line: 7}
+- {file: p8_access/cwe_290_1_clean.java, language: Java, cwe: "290", expectation: negative}
+- {file: p8_access/cwe_290_2_clean.php, language: PHP, cwe: "290", expectation: negative}
+- {file: p8_access/cwe_290_3_clean.ts, language: TypeScript, cwe: "290", expectation: negative}

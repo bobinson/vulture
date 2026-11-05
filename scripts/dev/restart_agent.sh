@@ -37,15 +37,36 @@ LOG="$(mktemp -t "vulture-${AGENT}-XXXXXX.log")"
 [ -d "$AGENT_DIR" ] || { echo "error: agent dir not found: $AGENT_DIR (set VULTURE_RUNTIME_DIR)"; exit 3; }
 [ -x "$PYBIN" ] || PYBIN="python3"
 
+# Only the agent on THIS port — another stack may run the same module elsewhere.
+MATCH="uvicorn $APP .*--port $PORT\$"
+
+# agent_token_of <pid> — the VULTURE_AGENT_TOKEN a running agent was started
+# with (/proc on Linux, `ps -E` on macOS). The launcher generates one per start;
+# the restarted agent must keep it to accept the backend's calls and to keep
+# refusing everyone else's.
+agent_token_of() {
+    if [ -r "/proc/$1/environ" ]; then
+        tr '\0' '\n' < "/proc/$1/environ" | sed -n 's/^VULTURE_AGENT_TOKEN=//p'
+    else
+        ps -E -ww -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n 's/^VULTURE_AGENT_TOKEN=//p'
+    fi
+}
+if [ -z "${VULTURE_AGENT_TOKEN:-}" ]; then
+    for pid in $(pgrep -f "$MATCH" 2>/dev/null); do
+        tok=$(agent_token_of "$pid")
+        if [ -n "$tok" ]; then export VULTURE_AGENT_TOKEN="$tok"; break; fi
+    done
+fi
+
 echo "[restart] stopping '$APP' on :$PORT ..."
-for pid in $(pgrep -f "uvicorn $APP" 2>/dev/null); do
+for pid in $(pgrep -f "$MATCH" 2>/dev/null); do
     echo "  SIGTERM $pid"; kill -TERM "$pid" 2>/dev/null || true
 done
 for _ in $(seq 1 20); do
     curl -s -o /dev/null --max-time 1 "http://localhost:$PORT/health" 2>/dev/null || { echo "  :$PORT down"; break; }
     sleep 0.5
 done
-for pid in $(pgrep -f "uvicorn $APP" 2>/dev/null); do
+for pid in $(pgrep -f "$MATCH" 2>/dev/null); do
     echo "  SIGKILL leftover $pid"; kill -9 "$pid" 2>/dev/null || true
 done
 sleep 1
@@ -54,7 +75,7 @@ sleep 1
 for kv in "$@"; do export "$kv"; done
 
 echo "[restart] starting '$APP' from $AGENT_DIR (log: $LOG) ..."
-( cd "$AGENT_DIR" && nohup "$PYBIN" -m uvicorn "$APP" --host 0.0.0.0 --port "$PORT" >"$LOG" 2>&1 &
+( cd "$AGENT_DIR" && nohup "$PYBIN" -m uvicorn "$APP" --host 127.0.0.1 --port "$PORT" >"$LOG" 2>&1 &
   echo "  PID=$!" )
 
 for i in $(seq 1 60); do

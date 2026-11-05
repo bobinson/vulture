@@ -4,19 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+
+	"github.com/vulture/backend/pkg/scanignore"
 )
 
-var defaultIgnore = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	".DS_Store":    true,
-	"__pycache__":  true,
-	".venv":        true,
-	"vendor":       true,
-}
-
 // CountFiles walks root and returns the total count of regular files,
-// skipping defaultIgnore directories. Uses a background context.
+// skipping the version-control stores and the folders of the scanner's
+// default ignore file (pkg/scanignore). Uses a background context.
 func CountFiles(root string) (int, error) {
 	return CountFilesCtx(context.Background(), root)
 }
@@ -40,7 +34,7 @@ func CountFilesCtx(ctx context.Context, root string) (int, error) {
 			return ctx.Err()
 		default:
 		}
-		if d.IsDir() && defaultIgnore[d.Name()] {
+		if d.IsDir() && skipped(d.Name()) {
 			return filepath.SkipDir
 		}
 		if !d.IsDir() {
@@ -49,4 +43,10 @@ func CountFilesCtx(ctx context.Context, root string) (int, error) {
 		return nil
 	})
 	return count, err
+}
+
+// skipped reports whether a directory called name is left out of the count:
+// a version-control store, or a folder of the default ignore file.
+func skipped(name string) bool {
+	return scanignore.VCS(name) || scanignore.Default(name)
 }

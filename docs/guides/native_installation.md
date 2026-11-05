@@ -41,6 +41,14 @@ to. In local mode the UI logs you in automatically — no password needed.
 | Ubuntu 22.04+ / Debian 12+ | amd64, arm64 |
 | Fedora 38+ / RHEL 9 | best effort (community smoke-tested) |
 
+The table lists tested platforms; the hard floor on Linux is **glibc 2.28**.
+The agents' Linux wheels (`tiktoken`, `hf-xet`, the tree-sitter grammars) are
+published only as `manylinux_2_28`, so a native Linux install needs Ubuntu
+20.04+, Debian 10+, RHEL/Alma/Rocky 8+ or Amazon Linux 2023+ (check with
+`ldd --version`). The installer stops with an error on an older glibc; on a
+non-glibc system such as Alpine (musl) it cannot check, so it warns and
+continues.
+
 Windows is not supported.
 
 ## Agent runtime — auto-detected
@@ -188,6 +196,20 @@ build is deterministic for your toolchain; a toolchain mismatch produces a WARN.
 - **Daemon binds `127.0.0.1` only** by default. LAN exposure requires explicit
   `vulture start --unsafe-allow-network --yes` and is incompatible with
   passwordless local mode.
+- **Local mode serves this machine only.** A request is answered only if it is
+  local end to end: loopback peer, every proxy-recorded client address
+  (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`) loopback, and a loopback `Host`
+  (a DNS-rebinding page is refused).
+- **Agents bind `127.0.0.1` and require a shared token.** Each start generates
+  `VULTURE_AGENT_TOKEN` unless you set one; agents refuse `/run` without it.
+- **Plugins get a token of their own.** A supervised plugin (for example
+  `--plugins opengrep`) never receives the shared token: the backend derives one
+  for that plugin alone and hands it over through the container's environment,
+  never the command line, and the plugin refuses `/run` without it (the bundled
+  opengrep plugin, and the semgrep plugin it replaced from 0.1.1). The docker CLI that starts plugins runs without the
+  backend's credentials. On Linux a host-network plugin shares this machine's
+  loopback, where local mode serves any process as you: the `host-network`
+  acknowledgement grants it that trust.
 - **Cosign-verified release artifacts** (Rekor transparency log) by default;
   SHA-only fallback only with `VULTURE_ALLOW_UNSIGNED=true`.
 - **Subprocess env scrubbing** — agents never inherit `LD_PRELOAD`,

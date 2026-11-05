@@ -12,6 +12,7 @@ from shared.tools.file_scanner import (
     read_file_safe,
     scan_code_files,
 )
+from shared.tools.line_context import mask_multiline, strip_strings_and_comments
 
 ISOLATION_PATTERNS = [
     re.compile(r"bulkhead|Bulkhead|thread.?pool|semaphore", re.IGNORECASE),
@@ -19,8 +20,15 @@ ISOLATION_PATTERNS = [
     re.compile(r"namespace|isolation|partition", re.IGNORECASE),
 ]
 
+# The `global` STATEMENT (Python `global x`, PHP `global $x`): the keyword first
+# on its line, case-sensitive. Matched over the multi-line-masked text, so prose
+# using the word -- a `# ... a global that ...` comment, a docstring line wrapped
+# to begin with "global names ..." -- is not a declaration of shared state.
+# ReDoS: `^` pins each attempt to a line start, so the scan is linear.
+_GLOBAL_STATEMENT = re.compile(r"^[ \t]*global[ \t]+\$?[A-Za-z_]", re.MULTILINE)
+
 SHARED_STATE_PATTERNS = [
-    re.compile(r"\bglobal\s+\w+", re.IGNORECASE),
+    _GLOBAL_STATEMENT,
     re.compile(r"shared.?state|singleton", re.IGNORECASE),
     re.compile(r"\.Lock\(|sync\.Mutex|threading\.Lock"),
     re.compile(r"shared.?database|common.?cache|global.?config", re.IGNORECASE),
@@ -59,31 +67,8 @@ def assess_blast_radius(source_path: str) -> dict:
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     """Check a file for blast radius issues."""
     content = read_file_safe(file_path)
-    if content is None:
-        return
-
-    # Find lines matching Node.js/Next.js intentional singleton patterns.
-    nodejs_singleton_lines: set[int] = set()
-    for match in _NODEJS_SINGLETON.finditer(content):
-        line_no = content[:match.start()].count("\n")
-        nodejs_singleton_lines.add(line_no)
-
-    # Check shared state per-match, skipping lines that are Node.js singletons.
-    # Capture the line of the first non-singleton shared-state match
-    # so the finding points at the actual offender, not line 1.
-    shared_state_line = 0
-    for p in SHARED_STATE_PATTERNS:
-        for match in p.finditer(content):
-            line_no = content[:match.start()].count("\n")
-            if line_no not in nodejs_singleton_lines:
-                shared_state_line = line_no + 1  # 1-indexed
-                break
-        if shared_state_line:
-            break
-
-    has_isolation = any(p.search(content) for p in ISOLATION_PATTERNS)
-
-    if shared_state_line and not has_isolation:
+    shared_state_line = _unisolated_shared_state_line(content) if content else 0
+    if shared_state_line:
         findings.append({
             "severity": "medium",
             "check_id": "chaos.blast_radius.missing_isolation",
@@ -95,6 +80,64 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
             "line_end": shared_state_line,
             "recommendation": "Apply bulkhead pattern to isolate failure domains",
         })
+
+
+def _unisolated_shared_state_line(content: str) -> int:
+    """1-based line of the file's shared state; 0 for none, or when isolated."""
+    # The raw text is a superset of the masked one: skip masking a file with no
+    # candidate at all, which is most of them.
+    if not any(p.search(content) for p in SHARED_STATE_PATTERNS):
+        return 0
+    # Split on "\n" only, so the masked text keeps the content's offsets.
+    masked = mask_multiline(content.split("\n"))
+    shared_state_line = _shared_state_line(content, "\n".join(masked))
+    return 0 if _has_isolation(masked) else shared_state_line
+
+
+def _has_isolation(masked_lines: list[str]) -> bool:
+    """Whether the file's CODE uses an isolation mechanism.
+
+    This evidence EXCUSES a finding, so it is read with comments, docstrings and
+    string literals removed: a comment that mentions "namespace" isolates
+    nothing, and used to hide a real ``global`` statement. A missed strip only
+    keeps the old excuse.
+    """
+    code = "\n".join(map(strip_strings_and_comments, masked_lines))
+    return any(p.search(code) for p in ISOLATION_PATTERNS)
+
+
+def _shared_state_line(content: str, masked: str) -> int:
+    """1-based line of the first shared-state match, by pattern order; 0 for none.
+
+    Lines matching the Node.js/Next.js intentional singleton are skipped, and the
+    line points at the actual offender, not line 1. Only the ``global`` statement
+    is read from ``masked``: the other triggers keep the raw text, where a
+    singleton's only signal may be its doc comment.
+    """
+    singleton_lines = _singleton_lines(content)
+    for p in SHARED_STATE_PATTERNS:
+        line_no = _first_line(p, masked if p is _GLOBAL_STATEMENT else content, singleton_lines)
+        if line_no:
+            return line_no
+    return 0
+
+
+def _singleton_lines(content: str) -> set[int]:
+    """0-based lines holding a Node.js/Next.js intentional singleton."""
+    return {_line_index(content, m.start()) for m in _NODEJS_SINGLETON.finditer(content)}
+
+
+def _first_line(pattern: re.Pattern[str], text: str, skip: set[int]) -> int:
+    """1-based line of the first match of ``pattern`` on a line not in ``skip``; 0 for none."""
+    for match in pattern.finditer(text):
+        line_no = _line_index(text, match.start())
+        if line_no not in skip:
+            return line_no + 1
+    return 0
+
+
+def _line_index(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset)
 
 
 assess_blast_radius_tool = function_tool(assess_blast_radius)

@@ -1,0 +1,14 @@
+name: publish
+on:
+  push:
+    branches: [main]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rsync -avz dist/ ${{ secrets.U }}@${{ secrets.H }}:/var/www
+      - name: Mirror
+        run: |
+          npm ci
+          rsync -avz --delete dist/ ${{ secrets.MIRROR_USER }}@${{ secrets.MIRROR_HOST }}:/var/www/app

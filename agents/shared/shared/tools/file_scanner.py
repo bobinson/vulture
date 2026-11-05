@@ -1,19 +1,40 @@
 """Smart file scanner that handles large repositories efficiently."""
 
+import contextvars
 import fnmatch
 import logging
 import os
 import re
+import sys
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, NamedTuple
 
 # Shared line-classification patterns used across all skill files.
 # Defined here once to satisfy DRY — import from this module.
 SCANNER_DEF_LINE = re.compile(r"re\.compile\(|=\s*\[?\s*re\.", re.IGNORECASE)
 SAFE_IMPORT_LINE = re.compile(r"^\s*(?:from|import)\s")
 COMMENT_INDICATORS = re.compile(r"^\s*(#|//|/?\*|\*|<!--)")
+
+
+def opens_pattern_definition(line: str) -> bool:
+    """A scanner pattern definition left open on ``line`` (``re.compile(`` whose
+    argument continues below): the next line is the pattern, not code. The
+    per-line ``SCANNER_DEF_LINE`` test sees only the line holding the call."""
+    return bool(SCANNER_DEF_LINE.search(line)) and line.count("(") > line.count(")")
+
+
+def is_non_code_line(line: str, imports: re.Pattern[str]) -> bool:
+    """A line a skill's per-line checks skip: a comment, an import by the skill's own
+    ``imports`` shape, or a scanner's own pattern definition."""
+    return bool(
+        COMMENT_INDICATORS.match(line) or imports.match(line) or SCANNER_DEF_LINE.search(line)
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -28,24 +49,61 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
-# Directories to always skip
-SKIP_DIRS = frozenset({
-    ".git", ".svn", ".hg", ".bzr",
-    "node_modules", "__pycache__", ".tox", ".nox",
-    ".mypy_cache", ".ruff_cache", ".pytest_cache",
-    "vendor", "third_party", "dist", "build",
-    ".next", ".nuxt", ".output", ".svelte-kit", ".angular",
-    ".docusaurus", "storybook-static",
-    ".turbo", ".parcel-cache", ".cache", ".nyc_output",
-    "venv", ".venv", "env", ".env",
-    ".idea", ".vscode", ".eclipse", ".claude",
-    "target", "bin", "obj",
-    "coverage", ".coverage", "htmlcov",
-    ".terraform", ".pulumi",
-    "data", "fixtures", "testdata", "test-fixtures",
-    "snapshots", "mocks", "__snapshots__",
-    "playwright-report", "test-results",
-})
+# The only folder names in code: version-control stores, never walked whatever
+# any ignore file says (`.git/config` routinely carries a clone token).
+VCS_DIRS = frozenset({".git", ".svn", ".hg", ".bzr"})
+
+# Every other folder skipped by default is a line of this file, in
+# `.vultureignore` syntax, and a scanned project brings one back with a
+# negation in its root `.vultureignore` (`!build/`). It is a byte-identical
+# copy of `default.vultureignore` at the repository root, the file to edit:
+# this package is built without the repository root, as are the backend's
+# `pkg/scanignore` and the opengrep plugin, which carry the same copy.
+DEFAULT_IGNORE_FILE = Path(__file__).with_name("default.vultureignore")
+
+
+def _default_ignore_globs(path: Path) -> tuple[str, ...]:
+    """The directory-name globs of ``path``, one per ``<glob>/`` line.
+
+    Anything else is refused at import: the staging copy and the plugin match
+    these against bare directory names, so a negation or a path would mean
+    one thing here and another there.
+    """
+    globs = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            globs.append(_directory_glob(path, line))
+    return tuple(globs)
+
+
+_DIRECTORY_GLOB_LINE = re.compile(r"([^!\\/][^/]*)/")
+
+
+def _directory_glob(path: Path, line: str) -> str:
+    match = _DIRECTORY_GLOB_LINE.fullmatch(line)
+    if match is None:
+        raise ValueError(f"{path.name}: not a directory-name glob: {line!r}")
+    return match.group(1)
+
+
+DEFAULT_IGNORE_GLOBS = _default_ignore_globs(DEFAULT_IGNORE_FILE)
+_DEFAULT_IGNORED = re.compile("|".join(f"(?:{fnmatch.translate(g)})" for g in DEFAULT_IGNORE_GLOBS))
+
+# Every folder NAME skipped by default: the VCS stores and the default ignore
+# file's literal names (its globs, such as `*-backup`, are not names).
+SKIP_DIRS = VCS_DIRS | frozenset(g for g in DEFAULT_IGNORE_GLOBS if not set(g) & set("*?["))
+
+
+def ignored_by_default(name: str) -> bool:
+    """Whether a folder called ``name`` is skipped when no project ignore file
+    says otherwise: a VCS store, or a folder the default ignore file lists."""
+    return name in VCS_DIRS or _DEFAULT_IGNORED.match(name) is not None
+
+
+# The file every Python virtualenv carries (PEP 405): a directory holding it is
+# an installed environment whatever it is called, and is never walked.
+VIRTUALENV_MARKER = "pyvenv.cfg"
 
 # File names to always skip (lock files, generated files)
 SKIP_FILES = frozenset({
@@ -300,6 +358,10 @@ LLM_PROSE_EXTENSIONS: frozenset[str] = frozenset({
 # privateKey selection and an unbounded full-table fetch — so excluding them would have
 # deleted both. The mechanism stays for operators who cannot send config dialects to a
 # third-party provider.
+#
+# EVIDENCE GATE (0074 P6): no extension enters this default set without >= 20 cited
+# sites across >= 2 targets showing zero labelled-real findings, adjudicated under the
+# numbered presentation. Below that bar an exclusion deletes findings nobody measured.
 LLM_INELIGIBLE_EXTENSIONS: frozenset[str] = frozenset()
 
 
@@ -355,9 +417,6 @@ def llm_feed_extensions(single_shot: bool = True) -> frozenset[str] | None:
         excluded = excluded | LLM_PROSE_EXTENSIONS
     return frozenset(default_extensions()) - excluded
 
-
-# Suffixes / patterns for backup directories
-_BACKUP_SUFFIXES = ("-backup", "_backup", "-old", "_old", "-bak", "_bak")
 
 # ---------------------------------------------------------------------------
 # Backup / shadow FILE awareness (feature 0068)
@@ -542,12 +601,40 @@ def _include_file(
     heuristic costs a (cached) read, so it is only paid for files that would
     otherwise be scanned.
     """
+    return not _exclusion(path, exts, extras, scan_minified)
+
+
+def _exclusion(
+    path: Path, exts: frozenset[str], extras: frozenset[str], scan_minified: bool,
+) -> str:
+    """Why ``path`` is outside the scan set, or ``""`` when it is in it."""
     eff_name = effective_name(path.name)
     if not _wanted_by_name(path.name, effective_suffix(path.name), eff_name, exts, extras):
-        return False
-    if scan_minified:
-        return True
-    return not (is_minified_name(eff_name) or is_minified_content(path))
+        return "extension outside the scan set"
+    return _minified_exclusion(path, eff_name, scan_minified)
+
+
+def _minified_exclusion(path: Path, eff_name: str, scan_minified: bool) -> str:
+    if scan_minified or not (is_minified_name(eff_name) or is_minified_content(path)):
+        return ""
+    return "minified or bundled artefact"
+
+
+def scan_set_exclusion(
+    path: Path, readers: tuple[tuple[frozenset[str], frozenset[str]], ...] = (),
+) -> str:
+    """Why the walker's default scan set leaves ``path`` out, or ``""`` when it
+    takes it: the same predicate the walker applies, so a caller reporting a
+    file as not scanned names the scanner's own reason rather than a guess.
+
+    ``readers`` are the ``(extensions, extra_filenames)`` of skills that walk
+    with sets of their own (the secret scan reads ``.env.*`` and key files by
+    name): ``path`` is in the scan set when ANY of them takes it.
+    """
+    scan_minified = _scan_minified()
+    sets = ((default_extensions(), WELL_KNOWN_FILENAMES), *readers)
+    reasons = [_exclusion(path, exts, extras, scan_minified) for exts, extras in sets]
+    return "" if "" in reasons else reasons[0]
 
 
 @lru_cache(maxsize=16)
@@ -697,12 +784,20 @@ def _collect_capped(
     return tuple(files)
 
 
-def _walk_unfiltered_by_extension(source_path: str) -> Iterable[Path]:
-    """The shared walk primitive: SKIP_DIRS + ignore spec, no extension gate."""
+def _walk_entries(source_path: str) -> Iterable[tuple[Path, bool]]:
+    """The shared walk primitive: SKIP_DIRS + ignore spec, no extension gate.
+
+    Every file it yields (``False``) and every directory it enters (``True``).
+    """
     root = Path(source_path)
     if not root.is_dir():
         return ()
-    return _walk_filtered(root, root, _load_ignore_spec(str(root)))
+    return _walk_tree(root, root, _load_ignore_spec(str(root)))
+
+
+def _walk_unfiltered_by_extension(source_path: str) -> Iterable[Path]:
+    """The files of :func:`_walk_entries`."""
+    return (entry for entry, is_dir in _walk_entries(source_path) if not is_dir)
 
 
 def scan_autorun_files(source_path: str) -> list[Path]:
@@ -748,7 +843,7 @@ def scan_all_files(source_path: str, max_files: int = MAX_FILES) -> list[Path]:
     per-file loop never sees it.
 
     SKIP_DIRS and the ignore spec still apply, so vendored and ignored trees are
-    excluded as usual.
+    excluded as usual. The same cached walk answers :func:`tree_files`.
     """
     return list(_scan_all_files_cached(source_path, max_files))
 
@@ -756,59 +851,425 @@ def scan_all_files(source_path: str, max_files: int = MAX_FILES) -> list[Path]:
 @lru_cache(maxsize=16)
 def _scan_all_files_cached(source_path: str, max_files: int) -> tuple[Path, ...]:
     """Cached inner all-files walk — keyed by (path, max_files)."""
-    return _collect_capped(
-        _walk_unfiltered_by_extension(source_path), max_files, source_path,
-        "all_files_scan", "raise VULTURE_MAX_FILES for full enumeration",
-    )
+    return _tree_listing(source_path, max_files).files
+
+
+class _Listing(NamedTuple):
+    """One walk of a tree: its files and the directories it entered, each with
+    its root-relative POSIX path (computed once, so a query is string work),
+    and whether the file cap cut the walk short."""
+
+    files: tuple[Path, ...]
+    file_rels: tuple[str, ...]
+    dirs: tuple[Path, ...]
+    dir_rels: tuple[str, ...]
+    truncated: bool
 
 
 @lru_cache(maxsize=16)
-def _load_ignore_spec(source_path: str):
-    """Load gitignore-style patterns from `.vultureignore` and
-    `.gitignore` at ``source_path`` and compile a ``PathSpec``.
+def _tree_listing(source_path: str, max_files: int) -> _Listing:
+    """Every file the walk yields, capped at ``max_files`` as
+    :func:`scan_all_files` always was, and every directory it entered on the way."""
+    root = Path(source_path)
+    dirs: list[Path] = []
+    files = _collect_capped(
+        _files_noting_dirs(_walk_entries(source_path), dirs), max_files, source_path,
+        "all_files_scan", "raise VULTURE_MAX_FILES for full enumeration",
+    )
+    return _Listing(
+        files, tuple(_rel_of(root, p) for p in files),
+        tuple(dirs), tuple(_rel_of(root, d) for d in dirs),
+        len(files) >= max_files,
+    )
 
-    Honors `.gitignore` by default (set ``VULTURE_IGNORE_GITIGNORE=true``
-    to disable). Honors `.vultureignore` always when present.
 
-    Returns a compiled ``pathspec.PathSpec`` or ``None`` if both files
-    are absent / unreadable / pathspec isn't installed.
+def _files_noting_dirs(entries: Iterable[tuple[Path, bool]], dirs: list[Path]) -> Iterator[Path]:
+    """The files of ``entries``; each directory among them is appended to ``dirs``."""
+    for entry, is_dir in entries:
+        if is_dir:
+            dirs.append(entry)
+        else:
+            yield entry
+
+
+def tree_files(
+    source_path: str | Path, *, under: str = "", depth: int | None = None,
+    names: Iterable[str] = (), globs: Iterable[str] = (),
+) -> Iterator[Path]:
+    """The walked files of the scan root ``source_path``, filtered.
+
+    What a skill uses instead of its own ``rglob`` / ``iterdir`` / ``os.walk``.
+    Any other walk of the scanned tree finds what the audit never reads -- a
+    vendored package's ``architecture.md`` under ``.venv`` answered for the
+    project's design review -- so this filters the walker's own listing: the one
+    :func:`scan_all_files` returns, cached per root. It is always walked from
+    the scan ROOT, so a subdirectory query keeps the root's ``.vultureignore``
+    and every ``.gitignore`` above it.
+
+    The cached listing is capped at ``MAX_FILES`` and counts every file, data
+    and images included. A query must still be complete -- a capped listing
+    would make evidence beyond the cap look absent -- so when the listing was
+    cut short, the query walks the tree itself, lazily and uncapped.
+
+    Args:
+        source_path: The scan root.
+        under: A root-relative directory to look inside; ``""`` (or ``"."``)
+            is the whole tree.
+        depth: How many levels below ``under``: 1 lists its direct children,
+            as ``iterdir`` does; ``None`` is any depth.
+        names: Exact basenames to keep.
+        globs: ``fnmatchcase`` basename patterns to keep, with the semantics of
+            ``rglob(pattern)`` for a pattern without a separator.
+            A file matching either ``names`` or ``globs`` is kept; with neither,
+            every file is.
+    """
+    entries = _query_entries(str(Path(source_path)), under, depth, want_dirs=False)
+    return _select(entries, under, depth, _basename_test(names, globs))
+
+
+def tree_dirs(
+    source_path: str | Path, *, under: str = "", depth: int | None = None,
+    names: Iterable[str] = (), globs: Iterable[str] = (),
+) -> Iterator[Path]:
+    """The directories the walk of ``source_path`` enters, filtered exactly as
+    :func:`tree_files` filters files. An empty directory is listed: its
+    presence alone can be the evidence a skill looks for."""
+    entries = _query_entries(str(Path(source_path)), under, depth, want_dirs=True)
+    return _select(entries, under, depth, _basename_test(names, globs))
+
+
+def _query_entries(
+    source_path: str, under: str, depth: int | None, want_dirs: bool,
+) -> Iterable[tuple[Path, str]]:
+    """The (path, root-relative path) pairs a query filters: the cached
+    listing, or the uncapped walk when the listing was cut short."""
+    listing = _tree_listing(source_path, MAX_FILES)
+    if listing.truncated:
+        return _uncapped(source_path, under, depth, want_dirs)
+    if want_dirs:
+        return zip(listing.dirs, listing.dir_rels)
+    return zip(listing.files, listing.file_rels)
+
+
+def _uncapped(
+    source_path: str, under: str, depth: int | None, want_dirs: bool,
+) -> Iterator[tuple[Path, str]]:
+    """The walk itself below ``under``, uncapped and recording nothing (a query
+    is not the audit's walk), one level only for ``depth == 1``."""
+    root = Path(source_path)
+    start = _entered(root, _under_parts(under), _classify_on_disk)
+    if start is None:
+        return
+    for entry, is_dir in _walk_below(root, start, shallow=depth == 1):
+        if is_dir == want_dirs:
+            yield entry, _rel_of(root, entry)
+
+
+def _walk_below(
+    scan_root: Path, state: tuple[Path, Any, bool], shallow: bool,
+) -> Iterator[tuple[Path, bool]]:
+    """The walk from an entered directory: its children only, or all below it."""
+    directory, rules, restricted = state
+    if shallow:
+        children = _kept_children(directory, scan_root, rules, restricted, _no_record)
+        return ((entry, kind != "file") for entry, kind in children)
+    return _walk_tree(directory, scan_root, rules, restricted, _no_record)
+
+
+def _select(
+    entries: Iterable[tuple[Path, str]], under: str, depth: int | None,
+    wanted: Callable[[str], bool],
+) -> Iterator[Path]:
+    """The entries below ``under`` (within ``depth``) whose basename is ``wanted``."""
+    prefix = _under_prefix(under)
+    for path, rel in entries:
+        if _in_scope(rel, prefix, depth) and wanted(path.name):
+            yield path
+
+
+def _under_prefix(under: str) -> str:
+    """``under`` as the prefix of the root-relative paths below it."""
+    base = under.strip("/")
+    return "" if base in ("", ".") else base + "/"
+
+
+def _under_parts(under: str) -> tuple[str, ...]:
+    """``under`` as path segments below the root."""
+    return tuple(part for part in under.split("/") if part not in ("", "."))
+
+
+def _in_scope(rel: str, prefix: str, depth: int | None) -> bool:
+    """Whether root-relative ``rel`` lies below ``prefix``, within ``depth``."""
+    return rel.startswith(prefix) and (depth is None or rel.count("/", len(prefix)) < depth)
+
+
+def _basename_test(names: Iterable[str], globs: Iterable[str]) -> Callable[[str], bool]:
+    """A basename predicate: in ``names`` or matching a glob; everything when both are empty."""
+    exact, patterns = frozenset(names), tuple(globs)
+    if not (exact or patterns):
+        return lambda _name: True
+    matches = _glob_matcher(patterns)
+    return lambda name: name in exact or matches(name)
+
+
+def _glob_matcher(patterns: tuple[str, ...]) -> Callable[[str], bool]:
+    """``fnmatchcase`` against any of ``patterns``, as ONE compiled regex: a
+    query runs over every walked file, so it is one match per name, not one
+    per pattern."""
+    if not patterns:
+        return lambda _name: False
+    regex = re.compile("|".join(f"(?:{fnmatch.translate(p)})" for p in patterns))
+    return lambda name: regex.match(name) is not None
+
+
+def walk_reaches(scan_root: str | Path, path: str | Path) -> bool:
+    """Whether the walk of ``scan_root`` yields ``path`` (a file) or enters it
+    (a directory).
+
+    The walker's own verdict for one path, without walking the tree: each step
+    down from the root is classified by the same function the walk uses, with
+    the state the walk carries there (the autorun-only restriction, and each
+    directory's `.gitignore`). Each step must also be spelled exactly as its
+    directory lists it (:func:`_spelled_on_disk`). A probe records nothing in
+    :func:`pruned_dirs`: asking about a path is not pruning it. ``False`` for a
+    path outside the root, one spelled with ``..``, and one not on disk.
+    """
+    root, target = Path(scan_root), Path(path)
+    rel = _rel_of(root, target)
+    if rel == ".":
+        return root.is_dir()
+    parts = Path(rel).parts
+    return bool(parts) and ".." not in parts and _reaches_along(root, parts)
+
+
+def _reaches_along(scan_root: Path, parts: tuple[str, ...]) -> bool:
+    """Follow ``parts`` down from the root as the walk would, entering each
+    directory on the way; the last part is reached when the walk would yield
+    or enter it."""
+    state = _entered(scan_root, parts[:-1], _classify_on_disk)
+    if state is None:
+        return False
+    directory, rules, restricted = state
+    return _classify_on_disk(directory / parts[-1], scan_root, rules, restricted, False) in _REACHED
+
+
+def walk_excludes(scan_root: str | Path, path: str | Path) -> bool:
+    """Whether a rule of the walk keeps it from ``path``, whether or not
+    ``path`` exists.
+
+    By name and rules alone: every component above ``path`` is judged as the
+    directory it would have to be, and ``path`` as a file. For a caller that
+    must give a missing path the answer an existing one would get, so the
+    answer cannot reveal whether a hidden file exists.
+    """
+    root = Path(scan_root)
+    parts = Path(_rel_of(root, Path(path))).parts
+    if not parts:
+        return False
+    state = _entered(root, parts[:-1], _classify_as)
+    if state is None:
+        return True
+    directory, rules, restricted = state
+    return _classify_as(directory / parts[-1], root, rules, restricted, False) != "file"
+
+
+def _entered(
+    scan_root: Path, parts: tuple[str, ...], classify: Callable[..., str],
+) -> tuple[Path, Any, bool] | None:
+    """The directory ``parts`` names below the root, with the walk's state
+    inside it (its ignore rules, the autorun-only restriction), or ``None``
+    when ``classify`` says the walk would not enter one of them."""
+    rules, entry, restricted = _load_ignore_spec(str(scan_root)), scan_root, False
+    for part in parts:
+        entry = entry / part
+        kind = classify(entry, scan_root, rules, restricted, True)
+        if kind not in _ENTERED:
+            return None
+        restricted = kind == "restricted"
+        rules = _descend(rules, scan_root, entry)
+    return entry, rules, restricted
+
+
+def _classify_on_disk(entry: Path, scan_root: Path, spec, restricted: bool, _as_dir: bool) -> str:
+    """The walk's classification of an entry on disk, as the walk would have
+    listed it: a name spelled otherwise than its directory spells it is skipped."""
+    if not _spelled_on_disk(entry):
+        return "skip"
+    return _classify_entry(entry, scan_root, spec, restricted)
+
+
+def _spelled_on_disk(entry: Path) -> bool:
+    """Whether ``entry``'s name appears, spelled exactly so, in its directory.
+
+    On a case-insensitive filesystem ``.GIT/config`` opens ``.git/config``,
+    while every rule the walk applies -- SKIP_DIRS, SKIP_FILES, the ignore
+    files -- compares spellings. The walk only ever sees names as the
+    directory lists them, so a probe may reach a path only spelled that way.
     """
     try:
-        import pathspec
-    except ImportError:
-        return None
+        return entry.name in os.listdir(entry.parent)
+    except OSError:
+        return False
 
-    root = Path(source_path)
-    patterns: list[str] = []
 
-    # Read .gitignore first so .vultureignore patterns layer on top
-    # (later patterns override earlier ones in pathspec's gitwildmatch
-    # semantics). Skip if operator opted out.
-    if os.environ.get("VULTURE_IGNORE_GITIGNORE", "").lower() != "true":
-        gi = root / ".gitignore"
-        if gi.is_file():
-            try:
-                patterns.extend(gi.read_text(encoding="utf-8", errors="ignore").splitlines())
-            except OSError:
-                pass
+def present(source_path: str | Path, rel: str) -> bool:
+    """Whether the fixed root-relative location ``rel`` -- a file or a
+    directory -- exists where the walk reaches it.
 
-    vi = root / ".vultureignore"
-    if vi.is_file():
-        try:
-            patterns.extend(vi.read_text(encoding="utf-8", errors="ignore").splitlines())
-        except OSError:
-            pass
+    For a probe such as ``SECURITY.md`` or ``.husky``: the evidence counts only
+    where the audit reads. SKIP_FILES is deliberately not consulted -- it names
+    files the code scan never PARSES, which the walk still reaches, and a lock
+    file is exactly what the lock-file probe looks for.
+    """
+    return walk_reaches(source_path, Path(source_path) / rel)
 
-    if not patterns:
+
+def _compile_ignore_lines(lines: list[str]):
+    """A gitignore-syntax ``PathSpec`` for ``lines``, or None when there are none."""
+    import pathspec
+
+    if not lines:
         return None
     # Use the newer "gitignore" style introduced in pathspec 0.12; the
     # legacy "gitwildmatch" name was deprecated in pathspec 1.x. Fall
     # back to gitwildmatch for pathspec < 0.12 (which doesn't expose
     # gitignore) so we don't break older installs.
     try:
-        return pathspec.PathSpec.from_lines("gitignore", patterns)
+        return pathspec.PathSpec.from_lines("gitignore", lines)
     except (ValueError, LookupError):
-        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+
+
+def _read_lines(path: Path) -> list[str]:
+    """The lines of one ignore file; nothing when it is absent, unreadable or a
+    symlink. Git does not follow a symlinked `.gitignore`, and following one
+    would read rules from outside the scanned tree."""
+    if path.is_symlink() or not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+
+
+@lru_cache(maxsize=4096)
+def _gitignore_spec(directory: str):
+    """The compiled `.gitignore` of ``directory``, or None.
+
+    Cached because every walk of a tree (code, all files, backups, autorun,
+    pattern search) passes each directory; cleared per audit by
+    :func:`clear_caches`.
+    """
+    return _compile_ignore_lines(_read_lines(Path(directory) / ".gitignore"))
+
+
+def _verdict(spec, rel: str) -> bool | None:
+    """True if ``spec`` ignores ``rel``, False if a negation re-includes it,
+    None if no pattern matched."""
+    return None if spec is None else spec.check_file(rel).include
+
+
+def _below(base: str, rel: str) -> str:
+    """Root-relative ``rel`` made relative to the root-relative directory ``base``."""
+    return rel[len(base) + 1:] if base else rel
+
+
+@dataclass(frozen=True, eq=False)
+class IgnoreRules:
+    """The ignore files in force in one directory of a walk (gitignore(5)).
+
+    ``gitignores`` pairs each `.gitignore` between the scan root and that
+    directory, shallowest first, with the root-relative directory its patterns
+    are relative to (``""`` for the root). The deepest one whose patterns match
+    decides, and within it the last matching pattern. ``vultureignore`` is the
+    root's `.vultureignore` and overrides them all, the default ignore file
+    (:data:`DEFAULT_IGNORE_FILE`) included. A `.gitignore` inside an ignored
+    directory is never read, because the walk never enters it: git cannot
+    re-include a path whose parent directory is excluded either.
+    """
+
+    gitignores: tuple[tuple[str, Any], ...] = ()
+    vultureignore: Any = None
+    read_gitignore: bool = True
+
+    def descend(self, rel_dir: str, directory: Path) -> "IgnoreRules":
+        """The rules in force inside ``directory`` (root-relative ``rel_dir``)."""
+        spec = _gitignore_spec(str(directory)) if self.read_gitignore else None
+        if spec is None:
+            return self
+        return replace(self, gitignores=(*self.gitignores, (rel_dir, spec)))
+
+    def ignored(self, rel: str, is_dir: bool) -> bool:
+        """Whether root-relative ``rel`` is ignored where it sits."""
+        key = f"{rel}/" if is_dir else rel
+        for base, spec in (("", self.vultureignore), *reversed(self.gitignores)):
+            verdict = _verdict(spec, _below(base, key))
+            if verdict is not None:
+                return verdict
+        return False
+
+    def brings_back(self, rel_dir: str) -> bool:
+        """Whether the root `.vultureignore` re-includes the directory
+        ``rel_dir`` (its last matching pattern is a negation), which overrides
+        the default ignore file. A `.gitignore` never does."""
+        return _verdict(self.vultureignore, f"{rel_dir}/") is False
+
+
+@lru_cache(maxsize=16)
+def _load_ignore_spec(source_path: str) -> IgnoreRules | None:
+    """The ignore rules in force at the scan root ``source_path``.
+
+    Honors its `.gitignore` by default (set ``VULTURE_IGNORE_GITIGNORE=true``
+    to disable every `.gitignore`, nested ones included) and its
+    `.vultureignore` always when present. A walk extends the rules with each
+    nested `.gitignore` through :meth:`IgnoreRules.descend`.
+
+    Returns None only when pathspec isn't installed.
+    """
+    try:
+        import pathspec  # noqa: F401
+    except ImportError:
+        return None
+
+    root = Path(source_path)
+    rules = IgnoreRules(
+        vultureignore=_compile_ignore_lines(_read_lines(root / ".vultureignore")),
+        read_gitignore=os.environ.get("VULTURE_IGNORE_GITIGNORE", "").lower() != "true",
+    )
+    return rules.descend("", root)
+
+
+def _descend(rules: IgnoreRules | None, scan_root: Path, directory: Path) -> IgnoreRules | None:
+    """``rules`` extended by ``directory``'s own `.gitignore`, for the walk inside it."""
+    return None if rules is None else rules.descend(_rel_of(scan_root, directory), directory)
+
+
+def path_ignored(scan_root: Path, path: Path, rules: IgnoreRules | None = None) -> bool:
+    """Whether the walk of ``scan_root`` skips ``path`` because of an ignore file.
+
+    It does when ``path``, or a directory the walk would have to enter to reach
+    it, is ignored by the rules in force where it sits. By the rules alone, so
+    it answers for a path that does not exist too (the tools' confinement asks
+    it of one, :mod:`shared.tools.confine`); :func:`walk_reaches` is the whole
+    verdict for one that does. ``rules`` defaults to the root's.
+    """
+    rules = _load_ignore_spec(str(scan_root)) if rules is None else rules
+    rel = _rel_of(scan_root, path)
+    if rules is None or rel in ("", "."):
+        return False
+    return _ignored_along(scan_root, Path(rel).parts, rules)
+
+
+def _ignored_along(scan_root: Path, parts: tuple[str, ...], rules: IgnoreRules) -> bool:
+    """Follow ``parts`` down from the root as the walk would: ignored as soon as
+    an entry on the way is, each tested by the rules in force where it sits."""
+    entry = scan_root
+    for i, part in enumerate(parts[:-1]):
+        entry = entry / part
+        if _is_path_ignored(entry, scan_root, rules):
+            return True
+        rules = rules.descend("/".join(parts[:i + 1]), entry)
+    return _is_path_ignored(scan_root.joinpath(*parts), scan_root, rules)
 
 
 # Feature 0091 §6.5: the root-relative prefixes each scan refused to descend
@@ -855,25 +1316,40 @@ def pruned_dirs(source_path: str) -> list[str]:
         return sorted(_PRUNED_DIRS.get(str(Path(source_path)), set()))
 
 
-def _prune(scan_root: Path, entry: Path) -> str:
-    """Record ``entry`` when it is a directory, and classify it as skipped."""
-    if entry.is_dir():
-        _record_pruned(scan_root, entry)
-    return "skip"
+# What :func:`_classify_entry` answers. Classification is PURE: ``_PRUNED`` is a
+# skip the walk must record (a directory it did not look inside, or a file left
+# unread inside an autorun-only directory), and only the walk records it, so
+# :func:`walk_reaches` can ask the same question about one path without
+# reporting a prune the scan never made.
+_PRUNED = "pruned"
+_ENTERED = frozenset({"dir", "restricted"})
+_REACHED = _ENTERED | {"file"}
 
 
-def _excluded_entry(entry: Path, scan_root: Path, spec) -> bool:
-    """A symlink (loop guard) or an ignore-spec match: never walked, never yielded."""
-    return entry.is_symlink() or _is_path_ignored(entry, scan_root, spec)
+def _prune(entry: Path) -> str:
+    """Skip ``entry``; a directory is recorded by the walk as a pruned prefix."""
+    return _PRUNED if entry.is_dir() else "skip"
 
 
-def _pruned_dir_name(name: str) -> bool:
-    """A directory name the hardcoded baseline never descends into."""
-    return name in SKIP_DIRS or _is_backup_dir(name)
+def _no_record(_scan_root: Path, _entry: Path) -> None:
+    """The prune sink of a query's walk: what a query skips is not reported."""
+
+
+def _pruned_dir(entry: Path, rel: str, spec: IgnoreRules | None) -> bool:
+    """A directory no project ignore file excludes that the walk still does not
+    descend into: a VCS store or a virtualenv always, and a folder of the
+    default ignore file unless the root `.vultureignore` brings it back."""
+    if entry.name in VCS_DIRS or (entry / VIRTUALENV_MARKER).is_file():
+        return True
+    return ignored_by_default(entry.name) and not _brought_back(spec, rel)
+
+
+def _brought_back(spec: IgnoreRules | None, rel: str) -> bool:
+    return spec is not None and spec.brings_back(rel)
 
 
 def _classify_file(entry: Path, scan_root: Path, restricted: bool) -> str:
-    """``"file"`` / ``"skip"`` for one walked FILE.
+    """``"file"`` / ``_PRUNED`` for one walked FILE.
 
     Inside a restricted directory — one the walker entered ONLY to reach an
     autorun file — every other file is left unread and recorded, so the backend
@@ -883,47 +1359,61 @@ def _classify_file(entry: Path, scan_root: Path, restricted: bool) -> str:
         return "file"
     if is_autorun_entry(scan_root, entry):
         return "file"
-    _record_pruned(scan_root, entry)
-    return "skip"
+    return _PRUNED
 
 
-def _classify_pruned_dir(scan_root: Path, entry: Path, rel: str) -> str:
-    """A ``SKIP_DIRS`` name: entered ONLY when D2 needs an autorun file inside
+def _classify_pruned_dir(entry: Path, rel: str) -> str:
+    """A pruned directory: entered ONLY when D2 needs an autorun file inside
     it, and then only for that file."""
     if _is_autorun_dir(rel):
         return "restricted"
-    return _prune(scan_root, entry)
+    return _prune(entry)
 
 
-def _classify_dir(entry: Path, scan_root: Path, restricted: bool) -> str:
-    """``"dir"`` / ``"restricted"`` / ``"skip"`` for one walked DIRECTORY."""
+def _classify_dir(entry: Path, scan_root: Path, spec, restricted: bool) -> str:
+    """``"dir"`` / ``"restricted"`` / ``_PRUNED`` for one walked DIRECTORY."""
     rel = _rel_of(scan_root, entry)
     if restricted:
-        return "restricted" if _is_autorun_dir(rel) else _prune(scan_root, entry)
-    if not _pruned_dir_name(entry.name):
+        return "restricted" if _is_autorun_dir(rel) else _prune(entry)
+    if not _pruned_dir(entry, rel, spec):
         return "dir"
-    return _classify_pruned_dir(scan_root, entry, rel)
+    return _classify_pruned_dir(entry, rel)
 
 
 def _classify_entry(entry: Path, scan_root: Path, spec, restricted: bool = False) -> str:
-    """``"file"`` / ``"dir"`` / ``"restricted"`` / ``"skip"`` for one entry.
+    """``"file"`` / ``"dir"`` / ``"restricted"`` / ``_PRUNED`` / ``"skip"`` for one entry.
 
-    Split out of :func:`_walk_filtered` so that every reason a path is not
-    looked at passes through exactly one recording point — a prune the walker
-    performs but does not report is a lineage row the backend closes without
-    evidence.
+    Split out of the walk so that every reason a path is not looked at passes
+    through one classification, and every ``_PRUNED`` through one recording
+    point (:func:`_kept_children`) — a prune the walker performs but does not
+    report is a lineage row the backend closes without evidence.
 
     Order matters: the name test is applied only after the entry is known to be
-    a directory, because ``SKIP_DIRS`` holds bare names (``data``, ``fixtures``)
-    that a FILE may legitimately carry.
+    a directory, because the default ignore file lists bare names (``dist``,
+    ``fixtures``) that a FILE may legitimately carry.
     """
-    if _excluded_entry(entry, scan_root, spec):
-        return _prune(scan_root, entry)
+    if entry.is_symlink():  # loop guard: never walked, never yielded
+        return _prune(entry)
     if entry.is_file():
-        return _classify_file(entry, scan_root, restricted)
+        return _classify_as(entry, scan_root, spec, restricted, False)
     if not entry.is_dir():
         return "skip"
-    return _classify_dir(entry, scan_root, restricted)
+    return _classify_as(entry, scan_root, spec, restricted, True)
+
+
+def _classify_as(entry: Path, scan_root: Path, spec, restricted: bool, as_dir: bool) -> str:
+    """The walk's verdict on ``entry`` as a directory (``as_dir``) or a file,
+    by name and ignore rules alone: an entry on disk is classified through
+    here, and a path that does not exist is judged as what it would be."""
+    if _ignored_as(spec, _rel_of(scan_root, entry), as_dir):
+        return _PRUNED if as_dir else "skip"
+    if as_dir:
+        return _classify_dir(entry, scan_root, spec, restricted)
+    return _classify_file(entry, scan_root, restricted)
+
+
+def _ignored_as(spec: IgnoreRules | None, rel: str, as_dir: bool) -> bool:
+    return spec is not None and spec.ignored(rel, as_dir)
 
 
 def _sorted_entries(root: Path) -> list[Path]:
@@ -934,16 +1424,37 @@ def _sorted_entries(root: Path) -> list[Path]:
         return []
 
 
-def _walk_filtered(
+def _kept_children(
+    root: Path, scan_root: Path, spec, restricted: bool,
+    on_prune: Callable[[Path, Path], None] = _record_pruned,
+) -> Iterator[tuple[Path, str]]:
+    """``root``'s children the walk keeps, each with its kind; every child it
+    prunes goes to ``on_prune`` -- recorded (feature 0091 §6.5) unless the
+    walk is a query's."""
+    for entry in _sorted_entries(root):
+        kind = _classify_entry(entry, scan_root, spec, restricted)
+        if kind == _PRUNED:
+            on_prune(scan_root, entry)
+        elif kind != "skip":
+            yield entry, kind
+
+
+def _walk_tree(
     root: Path, scan_root: Path, spec, restricted: bool = False,
-) -> Iterator[Path]:
-    """Walk directory tree, skipping ignored directories.
+    on_prune: Callable[[Path, Path], None] = _record_pruned,
+) -> Iterator[tuple[Path, bool]]:
+    """Walk the tree; yield each file (``False``) and each directory entered (``True``).
 
     Skips entries that:
-    - Are in :data:`SKIP_DIRS` or :data:`SKIP_FILES` (hardcoded baseline).
-    - Match a `.vultureignore` / `.gitignore` pattern from ``scan_root``.
+    - Are ignored by the root's `.vultureignore` or by a `.gitignore` in any
+      directory above them, as git applies it (:class:`IgnoreRules`).
+    - Are directories the default ignore file lists (:data:`DEFAULT_IGNORE_FILE`:
+      dependencies, build output, caches, test data, backup copies, ...), unless
+      the root `.vultureignore` brings them back.
+    - Are version-control stores (:data:`VCS_DIRS`) or virtualenvs, whatever
+      their name (:data:`VIRTUALENV_MARKER`).
+      :data:`SKIP_FILES` is not the walker's: the code-file scan applies it.
     - Are symlinks (avoid loops).
-    - Are backup directories (`-backup`, `_old`, etc.).
 
     Feature 0091 D2 carves ONE hole in that: a pruned directory on the path to
     a :data:`WELL_KNOWN_AUTORUN_FILES` entry is entered in ``restricted`` mode
@@ -952,35 +1463,35 @@ def _walk_filtered(
     Every prefix the walk did not look inside is recorded (feature 0091 §6.5)
     and readable back through :func:`pruned_dirs`.
     """
-    dirs: list[tuple[Path, bool]] = []
-    for entry in _sorted_entries(root):
-        kind = _classify_entry(entry, scan_root, spec, restricted)
+    subdirs: list[tuple[Path, bool]] = []
+    for entry, kind in _kept_children(root, scan_root, spec, restricted, on_prune):
         if kind == "file":
-            yield entry
-        elif kind in ("dir", "restricted"):
-            dirs.append((entry, kind == "restricted"))
+            yield entry, False
+        else:
+            subdirs.append((entry, kind == "restricted"))
+    for directory, child_restricted in subdirs:
+        yield directory, True
+        child_spec = _descend(spec, scan_root, directory)
+        yield from _walk_tree(directory, scan_root, child_spec, child_restricted, on_prune)
 
-    for directory, child_restricted in dirs:
-        yield from _walk_filtered(directory, scan_root, spec, child_restricted)
+
+def _walk_filtered(
+    root: Path, scan_root: Path, spec, restricted: bool = False,
+) -> Iterator[Path]:
+    """The files of :func:`_walk_tree`: every walk of the scanned tree."""
+    return (entry for entry, is_dir in _walk_tree(root, scan_root, spec, restricted) if not is_dir)
 
 
-def _is_path_ignored(entry: Path, scan_root: Path, spec) -> bool:
-    """True if ``entry`` matches the loaded ignore spec.
+def _is_path_ignored(entry: Path, scan_root: Path, spec: IgnoreRules | None) -> bool:
+    """True if ``entry`` is ignored by the rules in force in its directory.
 
-    Pathspec's gitwildmatch matcher operates on POSIX-style relative
-    paths. Directories must be matched with a trailing slash for
-    dir-only patterns (e.g. `node_modules/`) to apply.
+    Directories are matched with a trailing slash for dir-only patterns
+    (e.g. `node_modules/`) to apply.
     """
-    if spec is None:
+    rel = _rel_of(scan_root, entry)
+    if spec is None or rel in ("", "."):
         return False
-    try:
-        rel = entry.relative_to(scan_root)
-    except ValueError:
-        return False
-    rel_posix = rel.as_posix()
-    if entry.is_dir():
-        rel_posix += "/"
-    return spec.match_file(rel_posix)
+    return spec.ignored(rel, entry.is_dir())
 
 
 def read_file_safe(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
@@ -993,7 +1504,20 @@ def read_file_safe(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
     Returns:
         File content as string, or None if unreadable/too large.
     """
-    return _read_file_cached(str(path), max_size)
+    content = _read_file_cached(str(path), max_size)
+    _note_read(path, content is not None)
+    return content
+
+
+def read_file_uncached(path: Path, max_size: int = MAX_FILE_SIZE) -> str | None:
+    """``read_file_safe`` read from disk now, past its path-keyed cache: the same size cap,
+    decode and read recorder. For a caller that keys what it builds on the file's stat
+    (the AST model cache, feature 0102 A9), which the cached text of an earlier read in the
+    same audit could predate.
+    """
+    content = _read_file_cached.__wrapped__(str(path), max_size)
+    _note_read(path, content is not None)
+    return content
 
 
 @lru_cache(maxsize=1024)
@@ -1036,7 +1560,42 @@ def read_file_lines(path: Path, max_size: int = MAX_FILE_SIZE) -> tuple[str, ...
     result = _splitlines_cached(str(path), max_size)
     if not result and _read_file_cached(str(path), max_size) is None:
         return None
+    _note_read(path, True)
     return result
+
+
+# Feature 0098: which files did the skills actually READ? A caller that scans a
+# chosen set of files (the offline gate) must say which of them were never
+# looked at, and the scanner's own reads are the only answer that cannot drift
+# from its rules -- extension set, size cap, minified and pruned/ignored paths
+# all end in "never read". `None` outside a `record_reads()` block, so the
+# ordinary audit path pays one ContextVar lookup per read and records nothing.
+_READ_RECORDER: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
+    "vulture_read_recorder", default=None,
+)
+
+
+def _note_read(path: Path, ok: bool) -> None:
+    """Record ``path`` in the active ``record_reads()`` set when it was read."""
+    reads = _READ_RECORDER.get()
+    if ok and reads is not None:
+        reads.add(str(path))
+
+
+@contextmanager
+def record_reads() -> Iterator[set[str]]:
+    """Collect the path of every file whose content is read inside the block.
+
+    Only successful reads count: a file over the size cap, or one that cannot
+    be read, is not "scanned". Scoped to the current context, so a block in one
+    thread does not see another thread's reads.
+    """
+    reads: set[str] = set()
+    token = _READ_RECORDER.set(reads)
+    try:
+        yield reads
+    finally:
+        _READ_RECORDER.reset(token)
 
 
 _TEST_SUFFIXES = frozenset({
@@ -1200,12 +1759,6 @@ def _is_generated_file_cached(path_str: str, name: str, suffix: str) -> bool:
     return bool("skills" in parts_set and name.endswith("_check.py"))
 
 
-def _is_backup_dir(name: str) -> bool:
-    """Check if directory name looks like a backup."""
-    lower = name.lower()
-    return any(lower.endswith(suffix) for suffix in _BACKUP_SUFFIXES)
-
-
 # Entry point / config file detection for LLM file prioritization.
 _ENTRY_POINT_NAMES = frozenset({
     "main.py", "app.py", "index.ts", "index.js", "index.tsx", "index.jsx",
@@ -1261,7 +1814,12 @@ def clear_caches() -> None:
     # score a stale tree. Clearing more is always safe.
     _scan_backup_files_cached.cache_clear()
     _scan_all_files_cached.cache_clear()
+    _tree_listing.cache_clear()
     _scan_autorun_files_cached.cache_clear()
+    # The ignore files are read once per audit too: an edited `.gitignore` must
+    # apply to the next scan, not to the agent's next restart.
+    _load_ignore_spec.cache_clear()
+    _gitignore_spec.cache_clear()
     # Feature 0091 §6.5: the pruned-prefix record is produced BY those walks and
     # keyed the same way, so it must be dropped with them — a stale entry would
     # report the previous run's tree as out of scope for this one.
@@ -1274,6 +1832,17 @@ def clear_caches() -> None:
     from shared.anchor import clear_cache as _clear_anchor_cache
 
     _clear_anchor_cache()
+    _reset_ast_audit_state()
+
+
+def _reset_ast_audit_state() -> None:
+    """Feature 0102 (D20, A20): start the AST layer's process-default audit over — its
+    tallies, declines, breaker and declined parses (``context.reset_default()``; an entered
+    audit is untouched, and ``shared.ast.cache`` says why its models stay). Only a process
+    that loaded the layer has any: one that never did is not made to import it here."""
+    ast_context = sys.modules.get("shared.ast.context")
+    if ast_context is not None:
+        ast_context.reset_default()
 
 
 def is_entry_or_config(path: Path) -> bool:

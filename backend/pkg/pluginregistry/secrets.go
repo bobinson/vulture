@@ -7,7 +7,7 @@ import "strings"
 // both argv.go (launch-time) and manifest.go (install-time).
 var secretEnvExact = map[string]bool{
 	"VULTURE_JWT_SECRET": true, "VULTURE_DB_DSN": true, "VULTURE_DB_PATH": true,
-	"VULTURE_AGENT_TOKEN": true, "VULTURE_WEBHOOK_SECRET": true,
+	AgentTokenEnv: true, "VULTURE_WEBHOOK_SECRET": true,
 	"VULTURE_LLM_BROKER_MINT_KEY": true, "VULTURE_API_KEYS": true,
 	// Provider credentials the backend/broker hold for model routing — all
 	// non-VULTURE_-prefixed, so the VULTURE_ rule below does NOT catch them;
@@ -20,7 +20,7 @@ var secretSuffixes = []string{"_SECRET", "_TOKEN", "_DSN", "_PASSWORD", "_API_KE
 
 // IsBackendSecret HARD-blocks: the exact list, OR any VULTURE_-prefixed,
 // secret-shaped name. The VULTURE_ rule auto-covers FUTURE backend secrets
-// (0065 §M8) while leaving plugin-namespaced secrets (e.g. SEMGREP_APP_TOKEN)
+// (0065 §M8) while leaving plugin-namespaced secrets (e.g. EXAMPLESCAN_TOKEN)
 // to LooksLikeSecret (warn-only, still forwarded).
 func IsBackendSecret(name string) bool {
 	up := strings.ToUpper(name)
