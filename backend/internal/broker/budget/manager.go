@@ -47,6 +47,19 @@ func (m *manager) Reconcile(ctx context.Context, entry LedgerEntry) error {
 	return nil
 }
 
+// Release hands back an unreconciled lease when the store can (see Releaser);
+// otherwise it is a no-op and the sweeper reclaims the lease after its TTL.
+func (m *manager) Release(ctx context.Context, runID, requestID string) error {
+	r, ok := m.db.(Releaser)
+	if !ok {
+		return nil
+	}
+	if err := r.Release(ctx, runID, requestID); err != nil {
+		return fmt.Errorf("release: %w", err)
+	}
+	return nil
+}
+
 // Remaining reports remaining budget for a tenant.
 func (m *manager) Remaining(ctx context.Context, tenantID string) (float64, error) {
 	remaining, err := m.db.Remaining(ctx, tenantID)
@@ -65,5 +78,9 @@ func wrapReserveErr(err error) error {
 	return fmt.Errorf("reserve: %w", err)
 }
 
-// Compile-time assertion the concrete manager satisfies the Manager seam.
-var _ Manager = (*manager)(nil)
+// Compile-time assertions the concrete manager satisfies the Manager seam and
+// can release a lease.
+var (
+	_ Manager  = (*manager)(nil)
+	_ Releaser = (*manager)(nil)
+)

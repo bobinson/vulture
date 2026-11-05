@@ -5,7 +5,9 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.models.finding import REPO_ROOT_PATH
+from shared.tools.file_scanner import read_file_safe, tree_files
+from ssdf_agent.skills._ci_utils import present_contents
 
 _SECURITY_ISSUE_TEMPLATE_NAMES = {
     "bug_report.md", "bug_report.yml",
@@ -44,9 +46,9 @@ def check_vuln_remediation(source_path: str) -> dict:
             "practice": "RV-respond-to-vulnerabilities",
             "title": "No security issue template found",
             "description": "No dedicated security bug/vulnerability issue template found",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Create a security vulnerability issue template in .github/ISSUE_TEMPLATE/",
         })
 
@@ -59,9 +61,9 @@ def check_vuln_remediation(source_path: str) -> dict:
             "practice": "RV-respond-to-vulnerabilities",
             "title": "No patching SLA or remediation timeline defined",
             "description": "No vulnerability patching SLA or remediation timeline found in security docs",
-            "file_path": source_path,
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Define remediation timelines (e.g., critical: 24h, high: 7d) in security policy",
         })
 
@@ -70,33 +72,20 @@ def check_vuln_remediation(source_path: str) -> dict:
 
 def _find_security_issue_template(root: Path) -> bool:
     """Check for security issue templates."""
-    issue_dir = root / ".github" / "ISSUE_TEMPLATE"
-    if issue_dir.is_dir():
-        for item in issue_dir.iterdir():
-            if item.name.lower() in _SECURITY_ISSUE_TEMPLATE_NAMES:
-                return True
-            content = read_file_safe(item)
-            if content and "security" in content.lower():
-                return True
-    return False
+    return any(
+        item.name.lower() in _SECURITY_ISSUE_TEMPLATE_NAMES
+        or "security" in (read_file_safe(item) or "").lower()
+        for item in tree_files(root, under=".github/ISSUE_TEMPLATE", depth=1)
+    )
 
 
 def _gather_security_docs(root: Path) -> str:
     """Gather security documentation content."""
-    parts: list[str] = []
-    for name in ("SECURITY.md", "SECURITY.txt", "security-policy.md"):
-        p = root / name
-        if p.exists():
-            content = read_file_safe(p)
-            if content:
-                parts.append(content)
-    docs_dir = root / "docs"
-    if docs_dir.is_dir():
-        for item in docs_dir.rglob("*security*"):
-            if item.is_file():
-                content = read_file_safe(item)
-                if content:
-                    parts.append(content)
+    parts = present_contents(root, ("SECURITY.md", "SECURITY.txt", "security-policy.md"))
+    parts += [
+        content for item in tree_files(root, under="docs", globs=("*security*",))
+        if (content := read_file_safe(item))
+    ]
     return "\n".join(parts)
 
 

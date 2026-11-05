@@ -169,17 +169,24 @@ func findingsOfAgent(findings []model.Finding, agentType string) ([]model.Findin
 // closeForAgent runs one (audit, agent_type) closure pass.
 func (s *lineageService) closeForAgent(audit *model.Audit, source *model.Source, target TargetIdentity,
 	agentType string, result *model.ScanResult, present map[string]bool, rows []model.FindingLineage) error {
+	scope := newScanScope(result, target)
+	guard, err := newASTGuard(result.ASTCoverage, scope)
+	if err != nil {
+		// The guard it returned holds every AST-owned row; this only records why.
+		log.Printf("[lineage] holding every AST-owned row audit=%s agent=%s: %v", audit.ID, agentType, err)
+	}
 	pass := &scanPass{
 		svc: s, audit: audit, source: source, agentType: agentType,
 		present:    present,
 		checks:     indexChecks(result.LineageChecks),
-		scope:      newScanScope(result, target),
+		scope:      scope,
 		llmEnabled: strings.TrimSpace(result.DegradedReason) == "",
 		degraded:   strings.TrimSpace(result.DegradedReason),
 
 		targetKeyed: targetKeyed(target),
 		noResult:    result.NoResultSnapshot,
 		shadowed:    result.RollupShadowed,
+		ast:         guard,
 	}
 	for i := range rows {
 		pass.apply(&rows[i])

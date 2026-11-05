@@ -132,7 +132,7 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 		// (VULTURE_LLM_BROKER_PROVIDER_BASE_URL, e.g. a local LM Studio) wins.
 		DefaultBaseURL: baseURL,
 		Breakers:       resilience.NewBreakerPool(resilience.CircuitConfig{FailureThreshold: 5, OpenTimeout: 30 * time.Second, HalfOpenMaxCalls: 1, SuccessThreshold: 1, IsFailure: breakerCountsAsFailure}),
-		Bulkheads:      resilience.NewBulkheadPool(resilience.BulkheadConfig{MaxConcurrent: 16}),
+		Bulkheads:      resilience.NewBulkheadPool(bulkheadConfig(cfg.CallTimeoutSec)),
 		Retriers:       resilience.NewRetrierPool(retrierConfig()),
 		CallTimeoutSec: cfg.CallTimeoutSec,
 		AuditLog:       sqlstore.NewAuditLog(db, dia),
@@ -439,6 +439,21 @@ func keysFromEnv(defaultProvider string) provider.StaticKeys {
 		}
 	}
 	return keys
+}
+
+// providerConcurrency is how many calls one provider serves at once, shared by
+// every agent, run and embedding; calls beyond it queue (see bulkheadConfig).
+const providerConcurrency = 16
+
+// bulkheadConfig caps each provider at providerConcurrency calls and lets the
+// rest queue for up to server.AdmissionWait — the bound the server sizes its
+// budget leases with, so a queued request's lease cannot expire under it. Both
+// derive from the one call-timeout setting, here, and so cannot drift apart.
+func bulkheadConfig(callTimeoutSec int) resilience.BulkheadConfig {
+	return resilience.BulkheadConfig{
+		MaxConcurrent: providerConcurrency,
+		MaxWait:       server.AdmissionWait(callTimeoutSec),
+	}
 }
 
 // retrierClassifier treats provider-unavailable (conn/5xx) and rate-limited

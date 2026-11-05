@@ -33,12 +33,30 @@ SAFE_FORMAT_PATTERNS = re.compile(
 )
 
 # CWE-681: Incorrect Conversion between Numeric Types
+# A conversion is a call of the type itself, so each name starts at a word
+# boundary: without it `int(` matched the tail of `fmt.Sprint(err)` and of
+# `keys.isdisjoint(found)`. A qualified name (`C.int(n)`, `strconv.Atoi(s)`)
+# still matches.
 NUMERIC_CONVERSION_PATTERNS = [
-    re.compile(r"(?:int|int8|int16|int32|uint8|uint16|uint32)\s*\(\s*\w+\s*\)"),  # Go narrow cast
+    re.compile(r"\b(?:int8|int16|int32|uint8|uint16|uint32)\s*\(\s*\w+\s*\)"),  # sized narrow cast
     re.compile(r"\((?:byte|short|char)\)\s*\w+"),  # Java narrowing cast
-    re.compile(r"(?:int|float)\s*\(\s*(?:request|req|params|input|user)", re.IGNORECASE),
-    re.compile(r"(?:atoi|atol|strtol)\s*\([^)]*(?:argv|args|input|buf)", re.IGNORECASE),
+    # `int(` / `float(` as a whole name, or as the last segment of one (`parseInt(`).
+    re.compile(
+        r"(?:\b(?:int|float)|(?-i:(?<=[a-z])(?:Int|Float)))\s*\(\s*(?:request|req|params|input|user)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:atoi|atol|strtol)\s*\([^)]*(?:argv|args|input|buf)", re.IGNORECASE),
 ]
+
+# Go's bare `int(x)` narrows only an operand wider than int, and only Go spells a
+# conversion that way: Python's `int(x)` has no width to lose. The operand counts
+# as wide when its declaration, earlier in the same function, names a wide type
+# (`n int64`, `secs, _ := v.(float64)`); a field such as `st.Uid` (uint32) is
+# not visible and is not reported.
+_GO_BARE_INT = re.compile(r"\bint\s*\(\s*([A-Za-z_]\w{0,63})\s*\)")
+_GO_WIDE_TYPE = re.compile(r"\b(?:u?int64|uint|uintptr|float32|float64)\b")
+_GO_FUNC = re.compile(r"^func\b")
+_GO_DECL_LOOKBACK = 200
 
 SAFE_CONVERSION_PATTERNS = re.compile(
     r"(?:try|catch|except|if.*err|overflow|bounds|range|clamp|saturating)",
@@ -248,22 +266,56 @@ def _check_numeric_conversion(
     context = "\n".join(lines[context_start:context_end])
     if SAFE_CONVERSION_PATTERNS.search(context):
         return
-    for pattern in NUMERIC_CONVERSION_PATTERNS:
-        if pattern.search(line):
-            finding = {
-                "severity": "medium",
-                "check_id": "cwe.data_handling.numeric_conversion",
-                "category": "CWE-681",
-                "title": "Potentially unsafe numeric type conversion",
-                "description": f"Narrowing or unchecked numeric conversion at line {line_num}",
-                "file_path": str(file_path),
-                "line_start": line_num,
-                "line_end": line_num,
-                "recommendation": "Check for overflow/truncation before narrowing casts",
-            }
-            finding["code_snippet"] = extract_snippet(lines, line_num)
-            findings.append(enrich_finding(finding, "681"))
-            return
+    if not _converts(file_path, line, line_num, lines):
+        return
+    finding = {
+        "severity": "medium",
+        "check_id": "cwe.data_handling.numeric_conversion",
+        "category": "CWE-681",
+        "title": "Potentially unsafe numeric type conversion",
+        "description": f"Narrowing or unchecked numeric conversion at line {line_num}",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Check for overflow/truncation before narrowing casts",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "681"))
+
+
+def _converts(file_path: Path, line: str, line_num: int, lines: list[str]) -> bool:
+    """A narrowing conversion on ``line``: a sized cast or an untrusted value
+    anywhere, or Go's bare ``int(x)`` of a visibly wide operand."""
+    if any(pattern.search(line) for pattern in NUMERIC_CONVERSION_PATTERNS):
+        return True
+    return file_path.suffix == ".go" and _narrows_go_int(line, line_num, lines)
+
+
+def _narrows_go_int(line: str, line_num: int, lines: list[str]) -> bool:
+    return any(_wide_operand(line, line_num, lines, m) for m in _GO_BARE_INT.finditer(line))
+
+
+def _wide_operand(line: str, line_num: int, lines: list[str], m: re.Match) -> bool:
+    """The operand is declared wide before the conversion: earlier on its own line
+    (`func conv(n uint64) int { return int(n) }`) or above it in its function."""
+    declared = re.compile(rf"\b{re.escape(m.group(1))}\b")
+    return _names_wide_type(line[:m.start()], declared) or _declared_wide(lines, line_num, declared)
+
+
+def _declared_wide(lines: list[str], line_num: int, declared: re.Pattern) -> bool:
+    """True when the name ``declared`` matches is declared with a wide type on a
+    line above ``line_num`` in its function."""
+    for row in reversed(lines[max(0, line_num - _GO_DECL_LOOKBACK):line_num - 1]):
+        if _names_wide_type(row, declared):
+            return True
+        if _GO_FUNC.match(row):
+            return False
+    return False
+
+
+def _names_wide_type(row: str, declared: re.Pattern) -> bool:
+    m = declared.search(row)
+    return m is not None and _GO_WIDE_TYPE.search(row, m.end()) is not None
 
 
 def _check_unsafe_cast(

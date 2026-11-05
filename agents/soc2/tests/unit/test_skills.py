@@ -96,7 +96,7 @@ def login(request):
     db.insert(data)
     return data
 
-def delete_record(id):
+def delete_record(request, id):
     db.delete(id)
 """
         (source_dir / "handlers.py").write_text(code)

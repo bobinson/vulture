@@ -29,6 +29,7 @@ from cwe_agent.skills._guard_application import (
     code_lines,
     guard_sites,
 )
+from cwe_agent.skills._lexical import MAX_SCAN_CHARS
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -254,9 +255,21 @@ _ADMIN_SEGMENT = re.compile(
 PRIVILEGE_PATTERNS = [
     re.compile(r"chmod\s+777\b"),
     re.compile(r"os\.chmod\([^)]*0o?777"),
-    re.compile(r'(?:run|exec).*(?:--privileged|as\s+root|USER\s+root)', re.IGNORECASE),
     re.compile(r"setuid\s*\(\s*0\s*\)"),
 ]
+
+# A container started with its isolation dropped: a `--privileged` or
+# `--user root` / `--user=root` flag after `run`/`exec`. The flag is the
+# evidence, so the verb may sit inside a name (`docker_run`, `$(DOCKER_RUN)`,
+# `runContainer([...])`), and the flag counts wherever the command sits, a quoted
+# argv included (`["docker", "run", "--privileged", img]`).
+#
+# The English phrase is not an operation. `(?:run|exec).*as\s+root` matched
+# "runs as root" in finding messages, "Run as root:" in a docstring and a SQL
+# `strip_runmode(...) AS root` alias: every one of 18 measured phrase rows was
+# text, none a privileged launch.
+_PRIVILEGED_FLAG = re.compile(r"--privileged\b|--user(?:=|\s+)root\b", re.IGNORECASE)
+_RUN_VERB = re.compile(r"run|exec", re.IGNORECASE)
 
 IMPORT_LINE = re.compile(r"^\s*(?:import|from)\s+")
 
@@ -682,9 +695,8 @@ def _check_privilege(
     findings: list[dict],
 ) -> None:
     """Check for improper privilege management (CWE-269)."""
-    for pattern in PRIVILEGE_PATTERNS:
-        if not pattern.search(line):
-            continue
+    line = line[:MAX_SCAN_CHARS]
+    if _privileged_run(line) or any(p.search(line) for p in PRIVILEGE_PATTERNS):
         finding = {
             "severity": "critical",
             "check_id": "cwe.access_control.improper_privilege",
@@ -698,7 +710,18 @@ def _check_privilege(
         }
         finding["code_snippet"] = extract_snippet(lines, line_num)
         findings.append(enrich_finding(finding, "269"))
-        return
+
+
+def _privileged_run(line: str) -> bool:
+    """A privilege-dropping flag after the first `run`/`exec` on the line.
+
+    Two linear searches: a flag after the FIRST verb exists exactly when some
+    verb precedes some flag.
+    """
+    if "--" not in line:
+        return False
+    verb = _RUN_VERB.search(line)
+    return verb is not None and _PRIVILEGED_FLAG.search(line, verb.end()) is not None
 
 
 # --- CWE-807 / CWE-290: guard application decided by a client attribute -----

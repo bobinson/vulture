@@ -26,7 +26,7 @@ func parseActivationSpec(spec string) []string {
 //
 // In-tree built-in agents (chaos/owasp/…) are NEVER touched — they're governed
 // by state.toml, not by this list. This is the load-bearing safety property:
-// VULTURE_PLUGINS=semgrep must not switch off the core agents.
+// VULTURE_PLUGINS=opengrep must not switch off the core agents.
 func applyActivationList(plugins []Plugin, spec string) (out []Plugin, unknown []string) {
 	tokens := parseActivationSpec(spec)
 	all, none := false, false

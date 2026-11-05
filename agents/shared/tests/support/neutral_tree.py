@@ -46,7 +46,7 @@ Renaming is not universally the safe move
   a vendored tree eligibility it never had. These are pruned at the source
   and recorded in :attr:`NeutralTree.pruned`.
 * directories a corpus legitimately uses to *organise itself*
-  (``fixtures``, ``testdata``, ``data``, ``mocks``, ``snapshots``). Skipping
+  (``fixtures``, ``testdata``, ``snapshots``). Skipping
   these is the defect being routed around, so they are renamed through.
 
 The split is **derived** from ``SKIP_DIRS`` (``PRUNE_DIRS = SKIP_DIRS -
@@ -70,9 +70,9 @@ from shared.tools.file_scanner import (
     SKIP_DIRS,
     SKIP_FILES,
     WELL_KNOWN_FILENAMES,
-    _is_backup_dir,
     clear_caches,
     effective_suffix,
+    ignored_by_default,
     is_backup_name,
     is_generated_file,
     is_skill_source_file,
@@ -96,8 +96,8 @@ _TMP_PREFIX = "ntree_"
 #: scanner skipping these IS the defect T5.4 routes around, so they are
 #: renamed through rather than dropped.
 ORGANISATIONAL_DIRS = frozenset({
-    "data", "fixtures", "testdata", "test-fixtures",
-    "snapshots", "__snapshots__", "mocks",
+    "fixtures", "testdata", "test-fixtures",
+    "snapshots", "__snapshots__",
 })
 
 #: Never corpus content. Pruned at the SOURCE — renaming these would hand the
@@ -177,7 +177,7 @@ def _neutral_file_name(index: int, name: str) -> str:
 
 
 def _prunable_dir(name: str) -> bool:
-    return name in PRUNE_DIRS or _is_backup_dir(name)
+    return name not in ORGANISATIONAL_DIRS and ignored_by_default(name)
 
 
 def _prunable(entry: Path) -> bool:

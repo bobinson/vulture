@@ -1,0 +1,29 @@
+# yamllint disable
+# License: MIT (c) GitLab Inc.
+# yamllint enable
+---
+rules:
+- id: "scala_crypto_rule-CipherECBMode"
+  languages:
+  - "scala"
+  message: |
+    An authentication cipher mode which provides better confidentiality of the encrypted data
+    should be used instead of Electronic Code Book (ECB) mode, which does not provide good
+    confidentiality. Specifically, ECB mode produces the same output for the same input each time.
+    This allows an attacker to intercept and replay the data.
+  metadata:
+    category: "security"
+    cwe: "CWE-326"
+    owasp:
+    - "A3:2017-Sensitive Data Exposure"
+    - "A02:2021-Cryptographic Failures"
+    - "A04:2025-Cryptographic Failures"
+    shortDescription: "Inadequate Encryption Strength"
+    technology:
+    - "scala"
+    security-severity: "Medium"
+  patterns:
+  - pattern-inside: |-
+      javax.crypto.Cipher.getInstance("...")
+  - pattern-regex: "(AES|DES(ede)?)(/ECB/*)"
+  severity: "ERROR"

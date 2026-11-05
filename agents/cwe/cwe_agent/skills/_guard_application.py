@@ -57,7 +57,7 @@ from itertools import accumulate, chain
 
 from cwe_agent.skills.web_security_check import PRIV_COOKIE_NAME
 from shared.tools.file_scanner import COMMENT_INDICATORS
-from shared.tools.line_context import strip_strings_and_comments
+from shared.tools.line_context import mask_multiline, strip_strings_and_comments
 from shared.tools.snippet import collect_scoped_body
 
 # --- vocabulary ------------------------------------------------------------------
@@ -541,26 +541,6 @@ _CONDITION_LIMIT = 12
 _OWNER_LOOKBACK = 8
 _RAILS_CONTINUATION = 2
 _RAW_REACH = 3
-# Multi-line literals and block comments, scanned over the whole file so a
-# triple-quoted docstring, a template literal or an unprefixed `/* */` line is
-# not read as code. Single-line strings and line comments are matched only so
-# that a `/*` or a backtick INSIDE them does not open anything; they are left
-# for the per-line strip. ReDoS: every body loop is possessive and every
-# construct ALSO ends at end of file (a single-line string at end of line), so
-# each opener is one linear match that always succeeds; an unclosed opener can
-# never fail and be retried from the next offset (that retry is quadratic).
-_MULTILINE = re.compile(
-    r'"""(?:[^"\\]|\\.|"(?!""))*+\\?(?:"""|\Z)'
-    r"|'''(?:[^'\\]|\\.|'(?!''))*+\\?(?:'''|\Z)"
-    r"|`(?:[^`\\]|\\.)*+\\?(?:`|\Z)"
-    r"|/\*(?:[^*]|\*(?!/))*+(?:\*/|\Z)"
-    r'|"(?:[^"\\\n]|\\.)*+\\?(?:"|(?=\n)|\Z)'
-    r"|'(?:[^'\\\n]|\\.)*+\\?(?:'|(?=\n)|\Z)"
-    r"|//[^\n]*"
-    r"|(?:^|(?<=\s))#[^\n]*",
-    re.MULTILINE | re.DOTALL,
-)
-_NON_NEWLINE = re.compile(r"[^\n]")
 
 
 # --- data ---------------------------------------------------------------------------
@@ -675,17 +655,6 @@ class DeclHit:
 
 
 # --- code view and reads ------------------------------------------------------------
-def _blank_multiline(m: re.Match) -> str:
-    text = m.group(0)
-    return _NON_NEWLINE.sub(" ", text) if "\n" in text else text
-
-
-def mask_multiline(lines: Sequence[str]) -> list[str]:
-    """The lines with every MULTI-line literal or block comment blanked to
-    spaces (line count and columns kept); single-line constructs untouched."""
-    return _MULTILINE.sub(_blank_multiline, "\n".join(lines)).split("\n")
-
-
 def _code_line(line: str) -> str:
     if not line.strip() or COMMENT_INDICATORS.match(line):
         return ""

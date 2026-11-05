@@ -14,6 +14,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,7 @@ def _parse_wsdl_xml(xml_text: str, result: DiscoveryResult) -> None:
 def _scan_wsdl_files(root: Path, result: DiscoveryResult) -> None:
     """Scan source for .wsdl files and parse them."""
     count = 0
-    for fpath in root.rglob("*.wsdl"):
+    for fpath in tree_files(root, globs=("*.wsdl",)):
         if count >= 10:
             break
         try:

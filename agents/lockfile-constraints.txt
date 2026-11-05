@@ -7,8 +7,10 @@
 # `pip install --only-binary :all:` it. Cap Darwin to 48.0.1, the newest release
 # that still ships a macosx_10_9_universal2 wheel (covers Intel AND Apple Silicon).
 # Non-Darwin is left UNpinned here so uv emits the complement marker automatically
-# and `make freeze-deps --upgrade` can still bump linux. Both 48.0.1 and 49.x are
-# CVE-clean (OSV), so this trips no Trivy/pip-audit gate and needs no allowlist.
+# and `make freeze-deps --upgrade` can still bump linux. 48.0.1 is NOT CVE-clean:
+# its advisories are waived, each with an expiry, in .pip-audit-ignore (the
+# preflight's pip-audit gate) and .trivyignore (the release CVE gate). Renew them
+# only after re-tracing, per docs/guides/release_process.md "Vulnerabilities".
 #
 # REMOVE this constraint (and re-lock) when EITHER:
 #   (a) cryptography ships a macOS x86_64 wheel again, OR
@@ -26,21 +28,6 @@ cryptography==50.0.0; sys_platform == "darwin"
 # silently disappears — which is what the freshness gate caught.
 cryptography>=50.0.0; sys_platform != "darwin"
 
-# litellm: 1.92.0 dropped the universal `litellm-*-py3-none-any.whl` and switched
-# to manylinux-only (Linux) wheels + an sdist — NO macOS wheel — so the darwin
-# release legs cannot `pip install --only-binary :all:` any litellm >= 1.92.0
-# (the universal resolve accepts the sdist, but the build forbids source installs;
-# caught by scripts/check-lockfile-installable.sh). Cap to the 1.91.x line — 1.91.4
-# is the last release shipping the universal py3-none-any wheel, installable on
-# EVERY target. Applied to ALL platforms (no marker split) so macOS and Linux
-# share ONE litellm version — predictable cross-platform behavior for the LLM
-# client, not a per-platform divergence.
-#
-# REMOVE this constraint (and re-lock) when litellm ships a macOS/universal wheel
-# again (watch https://pypi.org/project/litellm/#files for a macosx_/universal2/
-# py3-none-any wheel on a newer release).
-litellm<1.101.0
-
 # Security floors for transitive deps flagged by the audit-python gate
 # (scripts + .github/workflows audit `agents/requirements-frozen.txt` with
 # pip-audit). Both are pure-Python (universal wheel), so no marker split is
@@ -53,3 +40,9 @@ urllib3>=2.8.0
 # pyjwt: 2.13.0 is affected by PYSEC-2026-4140..4152 — fixed in 2.14.0, except
 # PYSEC-2026-4141 which needs 2.15.0; floor at 2.15.0 to clear the whole set.
 pyjwt>=2.15.0
+# filelock: every 3.x is affected by 13 advisories (GHSA-v4x8-3wr5-3wq8 and others),
+# fixed only in 4.2.1, with no 3.x backport. litellm 1.104.0 through 1.108.0 cap
+# filelock<4.0, so this floor holds litellm at the newest release without that cap
+# (1.103.x). litellm 1.109.0rc1 allows filelock<5: a re-lock moves litellm up once a
+# stable release does, with no edit here.
+filelock>=4.2.1

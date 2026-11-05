@@ -18,31 +18,40 @@ const LANGUAGES = [
 
 const STORAGE_KEY = "vulture_settings";
 
+// Only the model is kept. Nothing reads an API key back from the browser, so
+// the key field is never stored: Web Storage is readable by any script on the
+// origin (feature 0102).
 interface StoredSettings {
   model: string;
-  apiKey: string;
-}
-
-function loadSettings(): StoredSettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as StoredSettings;
-  } catch { /* ignore corrupted data */ }
-  return { model: "gpt-4o", apiKey: "" };
 }
 
 function saveSettings(settings: StoredSettings): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }
 
+// Earlier versions also stored the API key: rewrite such a value without it.
+function withoutApiKey(stored: StoredSettings): StoredSettings {
+  if (!("apiKey" in stored)) return stored;
+  const kept = { model: stored.model };
+  saveSettings(kept);
+  return kept;
+}
+
+function loadSettings(): StoredSettings {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return withoutApiKey(JSON.parse(raw) as StoredSettings);
+  } catch { /* ignore corrupted data or blocked storage */ }
+  return { model: "gpt-4o" };
+}
+
 export function Settings() {
   const { t, i18n } = useTranslation();
   const [model, setModel] = useState(() => loadSettings().model);
-  const [apiKey, setApiKey] = useState(() => loadSettings().apiKey);
   const [saved, setSaved] = useState(false);
 
   const handleSave = () => {
-    saveSettings({ model, apiKey });
+    saveSettings({ model });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -104,12 +113,11 @@ export function Settings() {
             <label className="text-[12px] font-medium text-muted block">
               {t("settings.apiKey")}
             </label>
+            {/* Uncontrolled on purpose: the key is never stored (see StoredSettings). */}
             <input
               type="password"
               className="input-field font-mono"
               placeholder={t("settings.apiKeyPlaceholder")}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
             />
           </div>
         </div>

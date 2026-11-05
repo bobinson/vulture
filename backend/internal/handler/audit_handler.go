@@ -138,7 +138,7 @@ func (h *AuditHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInvalidOrInternal(w, r, "create audit", err)
 		return
 	}
 	// Feature 0071: an audit runs because it was created, not because someone is
@@ -184,7 +184,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 		audits, err = h.svc.List(limit, offset)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list audits", err)
 		return
 	}
 	if audits == nil {
@@ -196,10 +196,10 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, audits)
 }
 
-func (h *AuditHandler) Stats(w http.ResponseWriter, _ *http.Request) {
+func (h *AuditHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.svc.Stats()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "dashboard stats", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
@@ -223,7 +223,7 @@ func (h *AuditHandler) CachedAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	audit, err := h.svc.GetCachedAudit(sourceID, types)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get cached audit", err)
 		return
 	}
 	if audit == nil {
@@ -252,7 +252,7 @@ func (h *AuditHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get audit", err)
 		return
 	}
 	h.enrichProveResults(audit)
@@ -317,13 +317,13 @@ func (h *AuditHandler) Compare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get audit", err)
 		return
 	}
 
 	prev, err := h.svc.GetPreviousCompletedAudit(audit.SourceID, audit.Types, audit.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get previous audit", err)
 		return
 	}
 	if prev == nil {

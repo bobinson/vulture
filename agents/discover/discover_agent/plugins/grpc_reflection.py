@@ -16,6 +16,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ async def _try_grpc_reflection(host: str, result: DiscoveryResult) -> None:
 def _scan_proto_files(root: Path, result: DiscoveryResult) -> None:
     """Parse .proto files for service and RPC method definitions."""
     count = 0
-    for fpath in root.rglob("*.proto"):
+    for fpath in tree_files(root, globs=("*.proto",)):
         if count >= 20:
             break
         try:

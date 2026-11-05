@@ -55,7 +55,10 @@ type ReserveRequest struct {
 	BudgetRef     string
 	EstimatedUSD  float64
 	ModelSnapshot string
-	// LeaseTTL must be >= the call timeout (§8).
+	// LeaseTTL must outlive the request it covers (§8): every wait for a
+	// provider slot plus every call it makes. A lease that expires mid-request
+	// is swept, its reservation returned while the call still runs, and the
+	// cap can then be overspent.
 	LeaseTTL time.Duration
 }
 
@@ -79,6 +82,18 @@ type DB interface {
 	SweepExpiredLeases(ctx context.Context, now time.Time) (int, error)
 	// Ping reports DB health for the readiness ladder (§12).
 	Ping(ctx context.Context) error
+}
+
+// Releaser hands back a lease that no call will reconcile — its request failed,
+// and only a success is ever reconciled — returning the reservation to its shard
+// at once instead of holding it against the cap until the sweeper returns it
+// uncharged anyway. A
+// lease with a ledger row (already charged) or none at all is left alone, so a
+// release is idempotent and never races a reconcile into a double return. It
+// is optional on both a DB and a Manager: without it the sweeper reclaims the
+// lease after its TTL, as before.
+type Releaser interface {
+	Release(ctx context.Context, runID, requestID string) error
 }
 
 // Manager is the high-level budget seam used by the request path (§8). The

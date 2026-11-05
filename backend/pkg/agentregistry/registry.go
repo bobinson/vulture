@@ -104,12 +104,25 @@ func AllScanAgentTypes() []string {
 // type — a plugin, say — is a scanner, which is the reading that keeps its
 // lineage exactly as it was.
 func IsMapper(agentType string) bool {
+	a, ok := find(agentType)
+	return ok && a.Kind == KindMapper
+}
+
+// IsInTree reports whether agentType names a registered in-tree agent. The
+// match is exact: "CWE" and "cwe " are not "cwe".
+func IsInTree(agentType string) bool {
+	_, ok := find(agentType)
+	return ok
+}
+
+// find returns the registry entry for agentType.
+func find(agentType string) (AgentRegistryEntry, bool) {
 	for _, a := range AllAgents {
 		if a.Type == agentType {
-			return a.Kind == KindMapper
+			return a, true
 		}
 	}
-	return false
+	return AgentRegistryEntry{}, false
 }
 
 // EnvPortKey returns the env var name for the agent's port, e.g. "VULTURE_AGENT_CHAOS_PORT".

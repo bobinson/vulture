@@ -1,0 +1,78 @@
+package pathutil
+
+import "errors"
+
+// LocalSources is the ONE local-path policy (feature 0102): whether this
+// server may touch a caller-named directory on its own filesystem at all, and
+// the root that confines it when one is configured. Every consumer gates
+// through Allow and none reads Enabled itself, so no two consumers can
+// disagree about a mode.
+//
+// The zero value is disabled: a caller that forgets to wire the policy fails
+// closed. Build it with NewLocalSources, never by setting Enabled by hand.
+type LocalSources struct {
+	// Root confines every path to this directory when non-empty. Empty
+	// leaves only the per-consumer checks (the browse denylist), which is
+	// local mode's behaviour.
+	Root string
+	// Enabled says whether local paths are permitted at all. Read it only
+	// through Allow.
+	Enabled bool
+}
+
+// ErrLocalSourcesDisabled is the refusal of a disabled policy. Its text
+// reaches the client, the same for every path, so a refusal reveals nothing
+// about the filesystem.
+var ErrLocalSourcesDisabled = errors.New("local paths are disabled on this server: set VULTURE_SOURCE_ROOT to allow them in centralized mode")
+
+// NewLocalSources derives the policy from the three settings that decide it.
+// Local paths are enabled in local mode or when a root confines them, and
+// never on a read-only server.
+func NewLocalSources(root string, localMode, readOnly bool) LocalSources {
+	return LocalSources{Root: root, Enabled: !readOnly && (localMode || root != "")}
+}
+
+// Allow returns ErrLocalSourcesDisabled when the policy is disabled, and nil
+// otherwise. It never looks at the filesystem, so a refusal costs no syscall.
+func (p LocalSources) Allow() error {
+	if !p.Enabled {
+		return ErrLocalSourcesDisabled
+	}
+	return nil
+}
+
+// ResolveDir answers an ingest: nil when the policy allows local paths and
+// path is an existing directory, confined to Root when one is set. A refusal
+// of the policy itself is ErrLocalSourcesDisabled, and nothing is looked at;
+// a Root the server cannot use is ErrRootUnavailable.
+func (p LocalSources) ResolveDir(path string) error {
+	if err := p.Allow(); err != nil {
+		return err
+	}
+	return ResolveDirWithinRoot(p.Root, path)
+}
+
+// Recheck answers a dispatch of a stored path: nil when the policy allows
+// local paths and, with a Root, the path is confined to it (ErrNotPermitted
+// otherwise, and also ErrRootUnavailable when the Root itself cannot be
+// used). The path need not exist any more; dispatch already handles a
+// missing tree. In local mode with no Root it is a no-op.
+func (p LocalSources) Recheck(path string) error {
+	if err := p.Allow(); err != nil || p.Root == "" {
+		return err
+	}
+	_, err := EnsureWithinRoot(p.Root, path)
+	return err
+}
+
+// CheckRoot returns the root fault (ErrRootUnavailable) every confined path
+// would meet now, or nil. It is nil when the policy confines nothing
+// (disabled, or no Root), so it can run once at startup to name a broken
+// root before any request is refused for it.
+func (p LocalSources) CheckRoot() error {
+	if p.Allow() != nil || p.Root == "" {
+		return nil
+	}
+	_, _, err := resolveRoot(p.Root)
+	return err
+}

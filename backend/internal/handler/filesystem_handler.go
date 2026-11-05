@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,14 +14,15 @@ import (
 
 // FilesystemHandler serves directory listings for the folder browser.
 //
-// 0036 Phase 3 — confinement: when SourceRoot is non-empty, browse
-// requests are constrained to paths whose canonical (EvalSymlinks)
-// form is inside SourceRoot. Empty SourceRoot falls back to the
-// pre-Phase-3 denylist behaviour (system paths are blocked but the
-// rest of the filesystem readable by the process is browsable —
-// acceptable for dev laptops, NOT for Mode B).
+// It follows the server's local-path policy (pathutil.LocalSources, 0102).
+// A disabled policy (centralized mode without VULTURE_SOURCE_ROOT, or any
+// read-only server) refuses every browse with one text before the path is
+// parsed or touched. With a root, browse is confined to paths whose
+// canonical (EvalSymlinks) form is inside it (0036 Phase 3). The system
+// denylist applies in every mode; local mode with no root can list the
+// rest of what the process can read (dev laptops only).
 type FilesystemHandler struct {
-	SourceRoot string
+	local pathutil.LocalSources
 }
 
 // maxBrowseEntries caps the number of entries returned per directory
@@ -27,15 +30,10 @@ type FilesystemHandler struct {
 // like /var/log or /tmp with thousands of files.
 const maxBrowseEntries = 1000
 
-// NewFilesystemHandler creates a new FilesystemHandler.
-func NewFilesystemHandler() *FilesystemHandler {
-	return &FilesystemHandler{}
-}
-
-// SetSourceRoot configures the confinement root. When non-empty, browse
-// rejects paths outside the canonical form of root with 403.
-func (h *FilesystemHandler) SetSourceRoot(root string) {
-	h.SourceRoot = root
+// NewFilesystemHandler creates a FilesystemHandler that follows the given
+// local-path policy (required: the zero value refuses every browse).
+func NewFilesystemHandler(local pathutil.LocalSources) *FilesystemHandler {
+	return &FilesystemHandler{local: local}
 }
 
 type dirEntry struct {
@@ -58,17 +56,15 @@ func (h *FilesystemHandler) Browse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	absPath, code, msg := validateBrowsePathWithRoot(
-		r.URL.Query().Get("path"), h.SourceRoot,
-	)
+	absPath, code, msg := h.resolve(r.URL.Query().Get("path"))
 	if code != 0 {
-		writeError(w, code, msg)
+		writeBrowseRefusal(w, r, code, msg)
 		return
 	}
 
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot read directory")
+		writeInternalError(w, r, "read directory", err)
 		return
 	}
 
@@ -78,6 +74,28 @@ func (h *FilesystemHandler) Browse(w http.ResponseWriter, r *http.Request) {
 		Entries: buildDirEntries(absPath, entries),
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// resolve applies the local-path policy, then validates reqPath against the
+// policy's root. A disabled policy answers 403 with its own text before
+// reqPath is parsed or any syscall is made. Its one 5xx is a root fault.
+func (h *FilesystemHandler) resolve(reqPath string) (string, int, string) {
+	if err := h.local.Allow(); err != nil {
+		return "", http.StatusForbidden, err.Error()
+	}
+	return validateBrowsePathWithRoot(reqPath, h.local.Root)
+}
+
+// writeBrowseRefusal answers a path resolve refused. A 4xx is the caller's,
+// answered with resolve's literal text. A 5xx is the server's: like every 500
+// it goes through writeInternalError, so the body is the generic one with a
+// request id, and msg goes only to the log line for that id.
+func writeBrowseRefusal(w http.ResponseWriter, r *http.Request, code int, msg string) {
+	if code >= http.StatusInternalServerError {
+		writeInternalError(w, r, "browse", errors.New(msg))
+		return
+	}
+	writeError(w, code, msg)
 }
 
 // validateBrowsePath retains the old signature for callers that
@@ -96,11 +114,13 @@ func validateBrowsePath(reqPath string) (string, int, string) {
 //   - Resolve the path via filepath.Abs + filepath.Clean +
 //     filepath.EvalSymlinks. Symlinks pointing outside the configured
 //     root are rejected.
-//   - Apply the system-path denylist regardless of root (so even an
-//     operator who sets SourceRoot=/ can't accidentally expose /etc).
 //   - When sourceRoot is non-empty, enforce that the canonical
 //     resolved path is inside sourceRoot (using a path-separator
-//     boundary so /tmp/sourcesXYZ doesn't match /tmp/sources).
+//     boundary so /tmp/sourcesXYZ doesn't match /tmp/sources). This
+//     runs BEFORE the denylist (0102), so every outside path gets the
+//     same refusal, whatever tree it resolves into.
+//   - Apply the system-path denylist regardless of root (so even an
+//     operator who sets SourceRoot=/ can't accidentally expose /etc).
 func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string) {
 	// Defence-in-depth: reject literal ".." segments. filepath.Clean
 	// would normalise these silently; a 400 surfaces the intent.
@@ -115,20 +135,21 @@ func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string
 		return "", http.StatusBadRequest, "invalid path"
 	}
 	absPath = filepath.Clean(absPath)
-	// Resolve symlinks before checking the blocklist + source root.
+	// Resolve symlinks before checking the source root + blocklist.
 	resolved, err := filepath.EvalSymlinks(absPath)
 	if err == nil {
 		absPath = resolved
-	}
-	if isBlockedPath(absPath) {
-		return "", http.StatusForbidden, "access denied"
 	}
 	// 0065 §M3 — one confinement implementation shared with local ingest.
 	// EnsureWithinRoot resolves the deepest existing ancestor's symlinks so a
 	// symlinked parent cannot escape; empty sourceRoot is a no-op (legacy
 	// denylist-only behaviour).
 	if _, err := pathutil.EnsureWithinRoot(sourceRoot, absPath); err != nil {
-		return "", http.StatusForbidden, "access denied: path outside source root"
+		code, msg := confinementRefusal(err)
+		return "", code, msg
+	}
+	if isBlockedPath(absPath) {
+		return "", http.StatusForbidden, "access denied"
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -138,6 +159,18 @@ func validateBrowsePathWithRoot(reqPath, sourceRoot string) (string, int, string
 		return "", http.StatusBadRequest, "path is not a directory"
 	}
 	return absPath, 0, ""
+}
+
+// confinementRefusal answers a path confinement refused: a root fault is the
+// server's (500, its cause logged at ERROR as source_root_unavailable), and
+// every other refusal is the one 403 an outside path gets. Neither text names
+// a path or the root.
+func confinementRefusal(err error) (int, string) {
+	if errors.Is(err, pathutil.ErrRootUnavailable) {
+		slog.Error("source_root_unavailable", "err", err)
+		return http.StatusInternalServerError, pathutil.ErrRootUnavailable.Error()
+	}
+	return http.StatusForbidden, "access denied: path outside source root"
 }
 
 // containsParentDirSegment returns true if any path component is

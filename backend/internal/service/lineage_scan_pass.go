@@ -55,6 +55,8 @@ type scanPass struct {
 	// shadowed holds the fingerprints cross-agent dedup replaced with a
 	// rollup parent covering the same site (S21).
 	shadowed map[string]bool
+	// ast is nil when the agent sent no ast_coverage (feature 0102 D24).
+	ast *astGuard
 }
 
 // apply decides one row.
@@ -63,7 +65,8 @@ type scanPass struct {
 // because §7.4 splits the two questions: grouping is per target, closure is
 // per branch, and a scan of another branch may CONFIRM a row it re-found even
 // though it may never close one it did not (S24). Testing the branch first
-// would silently drop the sighting.
+// would silently drop the sighting. The order continues, in the same sequence,
+// through applyAbsent and applyByScope.
 func (p *scanPass) apply(row *model.FindingLineage) {
 	if p.skip(row) {
 		return
@@ -80,6 +83,12 @@ func (p *scanPass) apply(row *model.FindingLineage) {
 		p.event(row, model.LineageEventAbsentInResult, absentReasonRollupParent, row.CurrentStatus)
 		return
 	}
+	p.applyAbsent(row)
+}
+
+// applyAbsent decides a row this scan did not report: never from another
+// branch, never from a partial delta rescue, otherwise by scope and tier.
+func (p *scanPass) applyAbsent(row *model.FindingLineage) {
 	if !sameBranch(row, p.source) {
 		// A file that is absent because you are standing on another branch has
 		// not been fixed; the commit that removed it may not even exist.
@@ -93,12 +102,20 @@ func (p *scanPass) apply(row *model.FindingLineage) {
 		p.event(row, model.LineageEventScopeUnknown, scopeReasonNoResult, row.CurrentStatus)
 		return
 	}
-	if reason := p.scope.exclusion(row.FilePath); reason != "" {
+	p.applyByScope(row)
+}
+
+// applyByScope decides an absent row on the scan's own branch: out of scope
+// it is only recorded; in scope a deterministic row closes on absence (unless
+// the AST guard holds it) and an LLM-tier row takes the evidence path.
+func (p *scanPass) applyByScope(row *model.FindingLineage) {
+	rel, reason := p.scope.locate(row.FilePath)
+	if reason != "" {
 		p.event(row, model.LineageEventOutOfScope, reason, row.CurrentStatus)
 		return
 	}
 	if model.TierOf(row.Provenance) == model.TierDeterministic {
-		p.closeDeterministic(row)
+		p.closeDeterministic(row, rel)
 		return
 	}
 	p.applyLLM(row)
@@ -137,7 +154,8 @@ func (p *scanPass) rollupShadowed(row *model.FindingLineage) bool {
 //     ruled on it and the scanner does not get a vote.
 //
 // The per-branch guard is NOT here: it bars closure, not observation, so it
-// sits in apply after the sighting has been recorded (§7.4, S24).
+// sits in applyAbsent, which apply reaches only after the sighting has been
+// recorded (§7.4, S24).
 func (p *scanPass) skip(row *model.FindingLineage) bool {
 	return row.MergedInto != "" || userDecided(row.CurrentStatus)
 }
@@ -239,9 +257,16 @@ func (p *scanPass) applyEvidenceGone(row *model.FindingLineage, check model.Line
 	p.svc.syncMemory(row, model.LineageStatusFixed)
 }
 
-// closeDeterministic is the pre-0091 rule, unchanged: a skill's absence from
-// an in-scope scan means the code is gone.
-func (p *scanPass) closeDeterministic(row *model.FindingLineage) {
+// closeDeterministic is the pre-0091 rule: a skill's absence from an
+// in-scope scan means the code is gone — unless the AST tier owned the row
+// and did not re-read its file this scan (feature 0102 D24), when the row is
+// held `unconfirmed` instead. rel is the row's file as apply placed it in
+// target coordinates, "" when it could not be placed.
+func (p *scanPass) closeDeterministic(row *model.FindingLineage, rel string) {
+	if reason := p.ast.holdReason(row, rel); reason != "" {
+		p.markUnconfirmed(row, reason)
+		return
+	}
 	if err := p.svc.repo.MarkFixed(row.ID, p.audit.ID, p.commit()); err != nil {
 		log.Printf("[lineage] mark fixed error id=%s: %v", row.ID, err)
 		return
@@ -426,19 +451,29 @@ func (s *scanScope) contains(filePath string) bool {
 // exclusion is contains with its reason: "" when the path was inside what the
 // scan walked, otherwise why it was not.
 func (s *scanScope) exclusion(filePath string) string {
+	_, reason := s.locate(filePath)
+	return reason
+}
+
+// locate is exclusion with the path it placed: rel is filePath in target
+// coordinates, "" when it could not be placed. A nil scope makes no scope
+// claim but still places the path (under no root), so the pass places each
+// row once and the AST guard (feature 0102 D24) decides on that placement.
+func (s *scanScope) locate(filePath string) (rel, reason string) {
 	if s == nil {
-		return ""
+		rel, _ = placeUnder("", filePath)
+		return rel, ""
 	}
 	if s.truncated {
 		// The walker stopped early, so the enumerated set is partial and
 		// absence proves nothing about any path (S20).
-		return scopeReasonTruncated
+		return "", scopeReasonTruncated
 	}
 	rel, ok := s.place(filePath)
 	if !ok {
-		return scopeReasonOtherMount
+		return "", scopeReasonOtherMount
 	}
-	return s.exclusionWithin(rel)
+	return rel, s.exclusionWithin(rel)
 }
 
 // exclusionWithin decides a path already expressed in target coordinates.
@@ -478,11 +513,26 @@ func (s *scanScope) exclusionWithin(rel string) string {
 // target coordinates by construction and is placed unchanged; that is the form
 // ~23% of the live table uses and it must keep working.
 func (s *scanScope) place(filePath string) (string, bool) {
-	rel := pathutil.RelToRoot(strings.TrimSpace(filepath.ToSlash(filePath)), s.root)
+	return placeUnder(s.root, filePath)
+}
+
+// placeUnder is place for an explicit root. With root "" a relative path is
+// placed unchanged and an absolute one cannot be placed.
+func placeUnder(root, filePath string) (string, bool) {
+	rel := pathutil.RelToRoot(strings.TrimSpace(filepath.ToSlash(filePath)), root)
 	if strings.HasPrefix(rel, "/") {
 		return "", false
 	}
 	return normalizeRel(rel), true
+}
+
+// stoodAt is the offset for a possibly-nil scope: "" when the scope is
+// unknown, the same reading a scan standing on the root gets.
+func (s *scanScope) stoodAt() string {
+	if s == nil {
+		return ""
+	}
+	return s.offset
 }
 
 // underOffset reports whether a target-relative path lies inside the sub-tree

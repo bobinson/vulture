@@ -1,0 +1,4 @@
+- hosts: web
+  tasks:
+    - name: Publish the site
+      local_action: command rsync -az dist/ {{ inventory_hostname }}:/srv

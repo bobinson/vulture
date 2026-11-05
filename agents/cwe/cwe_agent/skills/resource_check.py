@@ -14,13 +14,16 @@ from cwe_agent.catalog import enrich_finding
 from cwe_agent.skills._guard_application import CLIENT_IP_HEADER
 from cwe_agent.skills._lexical import (
     MAX_SCAN_CHARS,
+    _enclosing_lines,
     call_argument_text,
+    enclosing_routine,
     identifier_words,
     indent_width,
     opening_bracket,
     stripped_code,
 )
 from cwe_agent.skills._message_send import check_message_sends
+from shared.language import detect_language
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
@@ -95,13 +98,40 @@ GO_VAR_NIL_GUARD = re.compile(r"\b{v}\s*[!=]=\s*nil|\bnil\s*[!=]=\s*{v}\b")
 GO_LEN_GUARD = re.compile(r"\blen\(\s*{v}\s*\)")
 _DEREF_SCAN_LINES = 12
 
+# Go's comma-ok idiom (`e, ok := c.Lookup(k)`): the boolean second result guards
+# the value only where the code proves it true at the use:
+#   - in one expression, the test before the use (`ok && e.X`, `!ok || e.X`);
+#   - inside the block of `if ok {` / `if ok && … {`;
+#   - after the block of `if !ok {` / `if !ok || … {` when that block leaves
+#     (return, continue, break, goto, panic) at its OWN top level. A block that
+#     falls through, or leaves only from an inner `if`, proves nothing.
+# Blocks are read by indentation, which gofmt fixes. `[{{]` is a literal `{` once
+# formatted; `(?<![!.\w])` keeps `!ok &&` and a field `x.ok` out of the true form.
+GO_OK_SHORT_CIRCUIT = re.compile(r"!\s*{v}\s*\|\||(?<![!.\w]){v}\s*&&")
+GO_OK_POSITIVE_IF = re.compile(r"^\s*if\s+{v}\s*(?:&&|[{{])")
+GO_OK_NEGATED_IF = re.compile(r"^\s*if\s+!\s*{v}\s*(?:\|\||[{{])")
+GO_EXIT_STATEMENT = re.compile(r"^\s*(?:return|continue|break|goto|panic)\b")
 
-def _go_var_is_dereferenced(var: str, lines: list[str], line_num: int) -> bool:
-    """True when ``var`` is later used in a position that would fault if nil."""
-    import re as _re
-    pat = _re.compile(GO_DEREF_OF.format(v=_re.escape(var)))
-    end = min(line_num + _DEREF_SCAN_LINES, len(lines))
-    return any(pat.search(ln) for ln in lines[line_num:end])
+
+def _block_tail(
+    lines: list[str], line_num: int, limit: int, indent: int | None = None,
+) -> list[str]:
+    """Non-blank lines after statement ``line_num`` up to the end of the block that holds it.
+
+    ``collect_scoped_body`` reads its header as the line that OPENS a block. A
+    blank header (brace mode, ``indent`` None) starts the walk inside one open
+    block, so it stops at the brace closing the statement's own block. A header
+    ``indent`` wide (indent mode) stops at the first line not indented deeper.
+    """
+    header = "" if indent is None else " " * indent
+    window = [header, *lines[line_num:line_num + limit]]
+    return collect_scoped_body(window, 1, indent is None, limit, limit)
+
+
+def _first_deref(var: str, scope: list[str]) -> int | None:
+    """Index in ``scope`` of the first line using ``var`` where nil would fault."""
+    pat = re.compile(GO_DEREF_OF.format(v=re.escape(var)))
+    return next((i for i, text in enumerate(scope) if pat.search(text)), None)
 
 # CWE-400: Uncontrolled resource consumption
 RESOURCE_CONSUMPTION_PATTERNS = [
@@ -185,10 +215,43 @@ RESOURCE_OPEN_DECL = re.compile(
 # Markup is never a resource-shutdown site: `(click)="open()"` is a template
 # binding to a component method.
 _MARKUP_SUFFIXES = frozenset({".html", ".htm"})
-RESOURCE_CLOSE_SAFE = re.compile(
-    r"\b(?:defer\s|\.close\(\)|\.Close\(\)|with\s+open|context\s*manager)\b",
-    re.IGNORECASE,
+# Cleanup evidence, read on code with strings and comments stripped: a comment
+# saying `f.Close()` is never called, or a log line reminding someone to call
+# it, releases nothing. (HEAD wrapped the alternatives in one `\b`, which needs a
+# word character after `.close()`, so no close call ever counted.) Two kinds:
+#   - scope-exit forms run however the routine leaves, so they count anywhere in
+#     it: Go `defer` and a `with` statement (`with open(p) as f:` on the open line
+#     itself, `with closing(f):` below it);
+#   - a close call runs only on its own path, so it counts on the open's path:
+#     at the open's block level or shallower, or in a block entered
+#     unconditionally after it (`try`, `finally`, `ensure`, `with`, a deferred
+#     function), and not inside a call or callback on its own line. A close only
+#     in an error branch, an `except`, a loop or a callback leaves the normal
+#     path holding the handle.
+RESOURCE_CLOSE_SAFE = re.compile(r"\b(?:defer|with)\s")
+_CLOSE_CALL = re.compile(r"\.close\(\)", re.IGNORECASE)  # also Go's `.Close()`
+_PATH_BLOCK = re.compile(r"\b(?:try|finally|ensure|with|defer)\b")
+# A test that only asks whether the handle exists (`if (handle) {`, `if f != nil {`,
+# `if fh is not None:`) holds on every path where the open succeeded, so a close
+# under it still runs on the open's path. `[:{{]` is `[:{]` once formatted.
+_HANDLE_EXISTS_IF = re.compile(
+    r"^\s*if\s*\(?\s*{v}\s*(?:(?:!==?|!=)\s*(?:nil|null|undefined)|is\s+not\s+None)?"
+    r"\s*\)?\s*[:{{]?\s*$"
 )
+_BRACKET_STEP = {"(": 1, "[": 1, "{": 1, ")": -1, "]": -1, "}": -1}
+# The name the opened handle is bound to, read from the text BEFORE the open call
+# (`f, err := os.Open(p)`, `const out = fs.createWriteStream(p)`, `FILE *fp =
+# fopen(p, "r")`, `self.fh = open(p)`): the last identifier of the first target.
+# A cleanup must name it, so closing another handle in the routine excuses
+# nothing. An unbound open (`fs.createReadStream(p).pipe(res)`) takes any cleanup.
+_OPEN_BINDING = re.compile(
+    r"(?<![\w$])([A-Za-z_$][\w$]{0,63})(?:\s{0,4},\s{0,4}[A-Za-z_$][\w$]{0,63}){0,3}"
+    r"\s{0,4}:?=\s{0,4}(?:await\s{1,4})?$"
+)
+# How far below the open its cleanup is looked for, within the routine.
+_CLOSE_SCAN_LINES = 80
+# Languages whose blocks are delimited by indentation rather than braces.
+_INDENT_LANGUAGES = frozenset({"python", "ruby"})
 
 # CWE-770: Allocation without limits.
 # The Go `make([]T, 0)` arm is PROTECTED and unchanged (feature 0085: the
@@ -2519,32 +2582,119 @@ def _check_improper_shutdown(
     findings: list[dict],
 ) -> None:
     """Check for improper resource shutdown (CWE-404)."""
-    if file_path.suffix.lower() in _MARKUP_SUFFIXES:
+    opened = _open_call(file_path, line)
+    if opened is None or _closed_in_scope(file_path, line, line_num, lines, opened):
         return
-    if RESOURCE_OPEN_DECL.match(line):
-        return
-    for pattern in RESOURCE_OPEN_PATTERNS:
-        if not pattern.search(line):
-            continue
-        # Look for close/defer in surrounding context (next 5 lines)
-        context_end = min(line_num + 5, len(lines))
-        context = "\n".join(lines[line_num - 1 : context_end])
-        if RESOURCE_CLOSE_SAFE.search(context):
-            return
-        finding = {
-            "severity": "high",
-            "check_id": "cwe.resource.improper_shutdown",
-            "category": "CWE-404",
-            "title": "Resource opened without proper cleanup",
-            "description": f"Resource opened at line {line_num} without close/defer/with",
-            "file_path": str(file_path),
-            "line_start": line_num,
-            "line_end": line_num,
-            "recommendation": "Use defer (Go), with statement (Python), or try-finally to ensure cleanup",
-        }
-        finding["code_snippet"] = extract_snippet(lines, line_num)
-        findings.append(enrich_finding(finding, "404"))
-        return
+    finding = {
+        "severity": "high",
+        "check_id": "cwe.resource.improper_shutdown",
+        "category": "CWE-404",
+        "title": "Resource opened without proper cleanup",
+        "description": f"Resource opened at line {line_num} without close/defer/with",
+        "file_path": str(file_path),
+        "line_start": line_num,
+        "line_end": line_num,
+        "recommendation": "Use defer (Go), with statement (Python), or try-finally to ensure cleanup",
+    }
+    finding["code_snippet"] = extract_snippet(lines, line_num)
+    findings.append(enrich_finding(finding, "404"))
+
+
+def _open_call(file_path: Path, line: str) -> re.Match[str] | None:
+    """The resource-opening call on ``line`` (not a declaration, not markup), else None."""
+    if file_path.suffix.lower() in _MARKUP_SUFFIXES or RESOURCE_OPEN_DECL.match(line):
+        return None
+    return next(filter(None, (pattern.search(line) for pattern in RESOURCE_OPEN_PATTERNS)), None)
+
+
+def _closed_in_scope(
+    file_path: Path, line: str, line_num: int, lines: list[str], opened: re.Match[str],
+) -> bool:
+    """True when the open line, or the rest of its routine, releases the handle."""
+    bound = _OPEN_BINDING.search(line[:opened.start()])
+    name = bound.group(1) if bound else None
+    rows = [line_num - 1, *_close_scope(file_path, lines, line_num)]
+    return any(_releases(lines, line_num - 1, row, name) for row in rows)
+
+
+def _releases(lines: list[str], opened: int, row: int, name: str | None) -> bool:
+    """Cleanup on ``lines[row]`` that names the handle (when it has a name) and runs
+    on the path from the open at ``lines[opened]``."""
+    code = stripped_code(lines[row])
+    if not _names_handle(code, name):
+        return False
+    if RESOURCE_CLOSE_SAFE.search(code):
+        return True
+    close = _CLOSE_CALL.search(code)
+    return close is not None and _on_open_path(lines, (opened, row), code[:close.start()], name)
+
+
+def _names_handle(code: str, name: str | None) -> bool:
+    return name is None or re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", code) is not None
+
+
+def _on_open_path(lines: list[str], span: tuple[int, int], before: str, name: str | None) -> bool:
+    """True when a statement on ``lines[row]`` runs whenever the open's own path does.
+
+    ``span`` is (the open's row, ``row``). ``before`` is the line's code up to the
+    close: a bracket still open there makes the close an argument or a callback
+    body. Every block opened between the open and ``row`` that holds it must be one
+    entered unconditionally, or a test that the handle exists.
+    """
+    opened, row = span
+    between = lines[opened + 1:row + 1]
+    headers = _enclosing_lines(between, len(between)) if between else ()
+    return _at_line_level(before) and all(_path_header(stripped_code(h), name) for h in headers)
+
+
+def _path_header(code: str, name: str | None) -> bool:
+    if _PATH_BLOCK.search(code):
+        return True
+    return name is not None and _handle_exists_test(name).search(code) is not None
+
+
+@lru_cache(maxsize=1024)
+def _handle_exists_test(name: str) -> re.Pattern[str]:
+    return re.compile(_HANDLE_EXISTS_IF.pattern.format(v=re.escape(name)))
+
+
+def _at_line_level(before: str) -> bool:
+    """True when no bracket opened in ``before`` is still open at its end."""
+    depths = list(accumulate((_BRACKET_STEP.get(ch, 0) for ch in before), initial=0))
+    return depths[-1] == min(depths)
+
+
+def _close_scope(file_path: Path, lines: list[str], line_num: int) -> list[int]:
+    """Indices of the lines a cleanup of the handle opened at ``line_num`` may sit on.
+
+    The rest of the routine that opened it, ending at the first line indented no
+    deeper than its header: the closing brace, or the next statement of an
+    indent language. A fixed window both missed a close ten lines down and read
+    one in the NEXT routine, which releases a different handle. Without a routine
+    header above, the rest of the open line's own block in a brace language, and
+    a bounded window of module-level indent code (where a close inside a later
+    routine is off the open's path, so it does not count).
+    """
+    floor = _routine_indent(lines, line_num)
+    if floor is not None:
+        scope = _block_tail(lines, line_num, _CLOSE_SCAN_LINES, floor)
+    elif detect_language(str(file_path)) in _INDENT_LANGUAGES:
+        return list(range(line_num, min(len(lines), line_num + _CLOSE_SCAN_LINES)))
+    else:
+        scope = _block_tail(lines, line_num, _CLOSE_SCAN_LINES)
+    return _scope_rows(lines, line_num, len(scope))
+
+
+def _scope_rows(lines: list[str], line_num: int, count: int) -> list[int]:
+    """Indices of the first ``count`` non-blank lines after ``line_num``: the lines
+    ``_block_tail`` returned, which keeps every non-blank line up to its block's end."""
+    return list(islice((i for i in range(line_num, len(lines)) if lines[i].strip()), count))
+
+
+def _routine_indent(lines: list[str], line_num: int) -> int | None:
+    """Indent of the routine header enclosing line ``line_num``, else None."""
+    header = enclosing_routine(lines, line_num)
+    return None if header is None else indent_width(header)
 
 
 def _check_null_deref(
@@ -2555,54 +2705,8 @@ def _check_null_deref(
     findings: list[dict],
 ) -> None:
     """Check for NULL pointer dereference (CWE-476)."""
-    # Feature 0085 gate 1 — LANGUAGE. Every construct below is Go-specific, and
-    # Python's walrus operator is also `:=`, so without this the Go rule fires
-    # on Python.
-    if file_path.suffix.lower() != ".go":
-        return
-    # Focus on Go pattern: assignment from method call without nil check
-    if not NULL_DEREF_PATTERNS[0].search(line):
-        return
-    bound = GO_ASSIGN_FIRST.search(line)
-    if not bound:
-        return
-    # Feature 0085 gate 3 — NIL-ABILITY. If the right-hand side is a constructor
-    # that cannot return nil, there is nothing to dereference unsafely.
-    if GO_NEVER_NIL_CALL.search(line):
-        return
-    # Gate 3b — Go's `New*` constructor convention. A SINGLE-value assignment
-    # from a `New…` function returns a ready-to-use value; a constructor that
-    # can fail returns (T, error), which is a two-value assignment and is NOT
-    # suppressed here. This is an assumption, stated plainly: a `New…` that
-    # returns a bare nil on bad input is now missed. Recall knowingly traded
-    # against 56 measured false positives at HIGH severity, all of this shape.
-    if bound.group("second") is None and GO_NEW_CTOR.search(line):
-        return
-    # Feature 0085 gate 2 — the bound name must actually be DEREFERENCED later.
-    # Binding a value and passing it along cannot fault.
-    if not _go_var_is_dereferenced(bound.group("first"), lines, line_num):
-        return
-    # Check following lines for nil check before use
-    window_end = min(line_num + 5, len(lines))
-    window = "\n".join(lines[line_num:window_end])
-    if GO_NIL_CHECK.search(window):
-        return
-    # Feature 0085 gate 4 — a `len(v)` test is a nil guard for slices and maps,
-    # and a guard on THIS variable counts wherever it is written.
-    _v = re.escape(bound.group("first"))
-    if re.search(GO_LEN_GUARD.pattern.format(v=_v), window):
-        return
-    if re.search(GO_VAR_NIL_GUARD.pattern.format(v=_v), window):
-        return
-    # Gate 4b — a check on the assignment's OWN second result guards the first.
-    # `u, err := url.Parse(x)` followed by `err == nil && u.Host != ""` is
-    # correct Go: the error is what tells you the value is usable. Only a NAMED
-    # second result counts — `_` is precisely the discarded-error bug this rule
-    # must keep reporting.
-    _second = bound.group("second")
-    if _second and _second != "_" and re.search(
-        GO_VAR_NIL_GUARD.pattern.format(v=re.escape(_second)), window
-    ):
+    bound = _go_nilable_binding(file_path, line)
+    if bound is None or not _go_unguarded_deref(bound, lines, line_num):
         return
     finding = {
         "severity": "high",
@@ -2617,6 +2721,135 @@ def _check_null_deref(
     }
     finding["code_snippet"] = extract_snippet(lines, line_num)
     findings.append(enrich_finding(finding, "476"))
+
+
+def _go_nilable_binding(file_path: Path, line: str) -> re.Match[str] | None:
+    """The Go `:=` binding of a call result on ``line`` that may be nil, else None."""
+    bound = _go_call_binding(file_path, line)
+    return bound if bound and not _go_never_nil(line, bound) else None
+
+
+def _go_call_binding(file_path: Path, line: str) -> re.Match[str] | None:
+    """The Go `:=` binding of a call result on ``line``, else None."""
+    # Feature 0085 gate 1 — LANGUAGE. Every construct below is Go-specific, and
+    # Python's walrus operator is also `:=`, so without this the Go rule fires
+    # on Python.
+    if file_path.suffix.lower() != ".go" or not NULL_DEREF_PATTERNS[0].search(line):
+        return None
+    return GO_ASSIGN_FIRST.search(line)
+
+
+def _go_never_nil(line: str, bound: re.Match[str]) -> bool:
+    """True when the right-hand side cannot produce nil."""
+    # Feature 0085 gate 3 — NIL-ABILITY. If the right-hand side is a constructor
+    # that cannot return nil, there is nothing to dereference unsafely.
+    if GO_NEVER_NIL_CALL.search(line):
+        return True
+    # Gate 3b — Go's `New*` constructor convention. A SINGLE-value assignment
+    # from a `New…` function returns a ready-to-use value; a constructor that
+    # can fail returns (T, error), which is a two-value assignment and is NOT
+    # suppressed here. This is an assumption, stated plainly: a `New…` that
+    # returns a bare nil on bad input is now missed. Recall knowingly traded
+    # against 56 measured false positives at HIGH severity, all of this shape.
+    return bound.group("second") is None and bool(GO_NEW_CTOR.search(line))
+
+
+def _go_unguarded_deref(bound: re.Match[str], lines: list[str], line_num: int) -> bool:
+    """True when the bound value is dereferenced in its own block with no guard first."""
+    # Feature 0085 gate 2 — the bound name must actually be DEREFERENCED later.
+    # Binding a value and passing it along cannot fault. Only in the block that
+    # binds it: past that block's closing brace the same name is another variable
+    # (the next routine's parameter), so a use there says nothing about this one.
+    scope = _block_tail(lines, line_num, _DEREF_SCAN_LINES)
+    use = _first_deref(bound.group("first"), scope)
+    if use is None:
+        return False
+    window = "\n".join(lines[line_num:line_num + 5])
+    return not (_go_nil_guarded(bound, window) or _go_ok_guarded(bound, scope, use))
+
+
+def _go_nil_guarded(bound: re.Match[str], window: str) -> bool:
+    """A nil check on the value, or on its own named second result, in ``window``."""
+    # Feature 0085 gate 4 — a `len(v)` test is a nil guard for slices and maps,
+    # and a guard on THIS variable counts wherever it is written.
+    first = re.escape(bound.group("first"))
+    probes = [
+        GO_NIL_CHECK.pattern,
+        GO_LEN_GUARD.pattern.format(v=first),
+        GO_VAR_NIL_GUARD.pattern.format(v=first),
+    ]
+    # Gate 4b — a check on the assignment's OWN second result guards the first.
+    # `u, err := url.Parse(x)` followed by `err == nil && u.Host != ""` is
+    # correct Go: the error is what tells you the value is usable. Only a NAMED
+    # second result counts — `_` is precisely the discarded-error bug this rule
+    # must keep reporting.
+    second = _named_second(bound)
+    probes += [GO_VAR_NIL_GUARD.pattern.format(v=re.escape(second))] if second else []
+    return any(re.search(probe, window) for probe in probes)
+
+
+def _named_second(bound: re.Match[str]) -> str | None:
+    """The assignment's second result when it is named; `_` discards it."""
+    second = bound.group("second")
+    return None if second in (None, "_") else second
+
+
+class _OkForms(NamedTuple):
+    """The comma-ok templates formatted for one binding (`ok`, `e`)."""
+    test: re.Pattern[str]
+    positive: re.Pattern[str]
+    negated: re.Pattern[str]
+    deref: re.Pattern[str]
+
+
+@lru_cache(maxsize=1024)
+def _ok_forms(ok: str, value: str) -> _OkForms:
+    name = re.escape(ok)
+    tests = (GO_OK_SHORT_CIRCUIT, GO_OK_POSITIVE_IF, GO_OK_NEGATED_IF)
+    return _OkForms(
+        *(re.compile(t.pattern.format(v=name)) for t in tests),
+        re.compile(GO_DEREF_OF.format(v=re.escape(value))),
+    )
+
+
+def _go_ok_guarded(bound: re.Match[str], scope: list[str], use: int) -> bool:
+    """True when the comma-ok result proves the value usable at ``scope[use]``."""
+    second = _named_second(bound)
+    if second is None:
+        return False
+    forms = _ok_forms(second, bound.group("first"))
+    return _go_tested_in_expression(forms, scope[use]) or any(
+        _go_block_guards(forms, scope, i, use) for i in range(use)
+    )
+
+
+def _go_tested_in_expression(forms: _OkForms, text: str) -> bool:
+    """`ok && e.X` / `!ok || e.X`: the test comes before the use in one expression."""
+    code = stripped_code(text)
+    test, use = forms.test.search(code), forms.deref.search(code)
+    return bool(test and use) and test.end() <= use.start()
+
+
+def _go_block_guards(forms: _OkForms, scope: list[str], i: int, use: int) -> bool:
+    """The `if` at ``scope[i]`` proves ok at ``scope[use]``: the use is inside an
+    `if ok …` block, or after an `if !ok …` block that leaves at its top level."""
+    code = stripped_code(scope[i])
+    end = _block_end(scope, i)
+    if forms.positive.search(code):
+        return use < end
+    return bool(forms.negated.search(code)) and end < use and _exits_at_top(scope[i + 1:end])
+
+
+def _block_end(scope: list[str], i: int) -> int:
+    """Index of the first line after ``scope[i]`` indented no deeper than it (its close)."""
+    head = indent_width(scope[i])
+    return next((k for k in range(i + 1, len(scope)) if indent_width(scope[k]) <= head), len(scope))
+
+
+def _exits_at_top(body: list[str]) -> bool:
+    """A return/continue/break/goto/panic statement at the block's own top level."""
+    top = indent_width(body[0]) if body else -1
+    return any(indent_width(t) == top and GO_EXIT_STATEMENT.match(stripped_code(t)) for t in body)
 
 
 # --- CWE-770 site decision ----------------------------------------------------

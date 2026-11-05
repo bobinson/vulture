@@ -31,8 +31,8 @@ from collections.abc import Callable
 import pytest
 
 from shared import audit_runner
+from shared.testing.isolation import isolate
 from tests.support.agent_run import llm_rows, result_payload
-from tests.support.isolation import isolate
 
 SKILL_CHECK_ID = "cwe.sql_injection.string_concat"
 TITLE_ONLY_SKILL_TITLE = "Missing request timeout"

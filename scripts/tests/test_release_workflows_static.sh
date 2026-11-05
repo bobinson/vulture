@@ -48,8 +48,6 @@ RELOCK_YML="$REPO_ROOT/.github/workflows/relock.yml"
 DIGEST_YML="$REPO_ROOT/.github/workflows/security-digest.yml"
 DEPENDABOT_YML="$REPO_ROOT/.github/dependabot.yml"
 
-SHA_PIN_RE='@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]'
-
 # dispatch_only_ok <file> — print "" if <file> has workflow_dispatch AND no
 # schedule:/cron:, else a reason string. DRY helper for C2 + C5.
 dispatch_only_ok() {
@@ -59,16 +57,6 @@ dispatch_only_ok() {
     grep -Eq '^[[:space:]]*schedule:' "$_f" && _d="$_d has a schedule: trigger (must be dispatch-only, §0);"
     grep -Eq '(^|[[:space:]])cron:' "$_f" && _d="$_d has a cron: schedule (must be dispatch-only, §0);"
     printf '%s' "$_d"
-}
-
-# unpinned_uses <file> — print any third-party `uses:` line in <file> that is
-# NOT SHA-pinned (the in-repo ./.github/actions/ composite is exempt). Empty if
-# all are pinned. DRY helper used by every workflow case.
-unpinned_uses() {
-    grep -E '^[[:space:]]*-?[[:space:]]*uses:' "$1" \
-        | grep '@' \
-        | grep -v './.github/actions/' \
-        | grep -Ev "$SHA_PIN_RE" || true
 }
 
 # ===========================================================================

@@ -18,6 +18,20 @@ dependencies = [
     "httpx>=0.28.0",
     "tiktoken>=0.7.0",
     "pathspec>=0.12.0",
+    # Feature 0102 (shared AST layer): tree-sitter core + nine v1 grammars, all MIT.
+    # Ranges per D-A (newest) / D-D (Go, Java, Rust, PHP) / D-H (C, C++ own
+    # CWE-22+78 only); the locked versions are fixed by the four-target wheel gate
+    # (scripts/check-lockfile-installable.sh) and pinned by test_0102_grammar_versions.
+    "tree-sitter>=0.26,<0.27",
+    "tree-sitter-javascript>=0.23.1,<0.26",
+    "tree-sitter-python>=0.23.6,<0.26",
+    "tree-sitter-typescript>=0.23.2,<0.24",
+    "tree-sitter-go>=0.25,<0.26",
+    "tree-sitter-java>=0.23.5,<0.24",
+    "tree-sitter-rust>=0.24.2,<0.25",
+    "tree-sitter-php>=0.25.1,<0.26",
+    "tree-sitter-c>=0.24,<0.25",
+    "tree-sitter-cpp>=0.23.4,<0.24",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +43,7 @@ dev = [
     "ruff==0.16.0",  # pinned == CI (.github/workflows/ci.yml lint-agents); keep in sync so `make lint` == CI
     "radon>=6.0.0",
     "anyio[trio]>=4.0.0",
+    "hypothesis>=6.100",  # feature 0102 property tests (test_0102_property.py)
 ]
 
 [tool.hatch.build.targets.wheel]

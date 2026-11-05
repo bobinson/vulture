@@ -167,11 +167,12 @@ the files into a private temporary directory and scans that:
 - **Files under the root** keep their root-relative path. Path-aware rules
   still see their directories: the editor-autorun skill reads
   `.claude/settings.json` only under `.claude/`, and test detection reads
-  `tests/` and `e2e/`. The root's own `.gitignore` and `.vultureignore` (the
-  working-tree copies, whether staged or not) are copied alongside, so ignored
-  paths are skipped exactly as in a full audit. An ignore file anywhere else,
-  such as a nested one or one outside the root, has no effect. This is also
-  the full audit's behaviour.
+  `tests/` and `e2e/`. The root's own `.gitignore` and `.vultureignore`, and
+  the `.gitignore` of every directory between the root and a given file (the
+  working-tree copies, whether staged or not), are copied alongside, so ignored
+  paths are skipped exactly as in a full audit. A `.vultureignore` anywhere but
+  the root, an ignore file outside the root, and a symlinked one have no
+  effect. This is also the full audit's behaviour.
 - **Files outside the root** go into a separate tree, one numbered directory
   per source directory, so they can never collide with a repository path. They
   lose the directories above them, so test detection and ignore files do not
@@ -194,7 +195,7 @@ A file is reported as **not scanned** when the scanner never reads it:
 |--------|---------|
 | submodule (git link) | `lib` in a commit that bumps the `lib` submodule. |
 | symlink (not followed) | `settings.py -> ~/.aws/credentials`. The full audit's walker skips every symlink, and git commits only the link. The target is never read. |
-| ignored or pruned path (`<dir>/`) | a file under a pruned directory (`vendor/`, `build/`, `data/`, ...) or under a directory the root's `.gitignore` / `.vultureignore` ignores. |
+| ignored or pruned path (`<dir>/`) | a file under a pruned directory (`vendor/`, `build/`, `fixtures/`, ...: the folders of the scanner's default ignore file) or under a directory that a `.gitignore` above it, or the root's `.vultureignore`, ignores. |
 | extension outside the scan set | `logo.png`, `blob.bin`. |
 | minified or bundled artefact | `app.min.js`, or a hash-named chunk whose lines are bundle-length. |
 | exceeds the scanner's read size cap (not copied) | a source file over `VULTURE_MAX_FILE_SIZE` (512KB), or a dependency manifest over `VULTURE_MAX_MANIFEST_SIZE` (16MB). |
@@ -250,17 +251,16 @@ are under the pruned directory, those are listed as not scanned
 
 ### Limitation: per-CWE caps in the catalog tier
 
-The catalog tier (`check_catalog_generic`: the keyword rows `cwe.catalog.cwe_<N>`,
-the signature rows `cwe.sig.*`, and the Class/Pillar rollups
-`cwe.catalog.cwe_<N>.rollup`) reports each CWE in at most
+The catalog tier's keyword rows (`cwe.catalog.cwe_<N>`) and Class/Pillar rollups
+(`cwe.catalog.cwe_<N>.rollup`) report each CWE in at most
 8 files per CWE per scanned tree, in path order, as the full audit does for the
 same set of files.
 Files outside the root, and each editor autorun tree, are scanned and counted
-separately. A file's catalog rows can therefore depend on which other files are
-passed with it: in a large change, a ninth file matching the same CWE gets no
-catalog row for it. The dedicated skills (injection, secrets, access control,
-...) have no such cap. Gate on them, and run a full audit for catalog coverage
-of a large change.
+separately. A file's keyword and rollup rows can therefore depend on which other
+files are passed with it: in a large change, a ninth file matching the same CWE
+gets no keyword row for it. The signature rows (`cwe.sig.*`) and the dedicated
+skills (injection, secrets, access control, ...) have no such cap. Gate on them,
+and run a full audit for keyword coverage of a large change.
 
 ### Limitation: it reads the working tree
 
@@ -283,7 +283,8 @@ be committed while a clean edit stays unstaged, and the reverse also happens.
   mapfile -d '' files < "$tmp/.files"
   [ "${#files[@]}" -eq 0 ] && { rm -rf "$tmp"; exit 0; }
   git checkout-index --prefix="$tmp/tree/" -z --stdin < "$tmp/.files"
-  git checkout-index --prefix="$tmp/tree/" -- .gitignore .vultureignore 2>/dev/null
+  git ls-files -z -- .vultureignore ':(glob)**/.gitignore' |
+    git checkout-index --prefix="$tmp/tree/" -z --stdin
   (cd "$tmp/tree" && vulture-offline-skills --root . "${files[@]}"); rc=$?
   rm -rf "$tmp"; exit $rc
   ```

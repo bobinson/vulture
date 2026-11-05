@@ -6,14 +6,25 @@
 // guard meaningful: host files outside the staged tree are unreachable.
 //
 // Ignore-pattern support is a documented SUBSET of gitignore syntax,
-// applied to the root .gitignore and .vultureignore of the source dir:
+// applied to the root .vultureignore of the source dir and to every
+// .gitignore in it, each to the entries beneath its own directory (a
+// .gitignore inside a skipped directory is never read; a symlinked one is
+// not followed):
 //   - blank lines and '#' comment lines are skipped;
-//   - '!' negation lines are unsupported and skipped;
+//   - a leading '!' re-includes: within a file the last matching line
+//     decides, the nearest .gitignore with a matching line decides over the
+//     ones above it, and the .vultureignore overrides every .gitignore;
 //   - a trailing '/' marks a directory-name pattern (matches directories
-//     with that name at any depth);
+//     with that name at any depth below the file's directory);
 //   - all other lines are globs matched via path.Match against both the
-//     entry's base name and its slash-separated path relative to the root;
-//   - leading-'/' root anchoring and '**' globs are not supported.
+//     entry's base name and its slash-separated path relative to the
+//     file's directory;
+//   - leading-'/' anchoring and '**' globs are not supported.
+//
+// Besides the ignore files, the staged tree leaves out what the scanner
+// leaves out: the version-control stores, and every folder of the default
+// ignore file (pkg/scanignore) unless the root .vultureignore brings it
+// back with a negation.
 package staging
 
 import (
@@ -28,6 +39,7 @@ import (
 	"syscall"
 
 	"github.com/vulture/backend/pkg/pluginregistry"
+	"github.com/vulture/backend/pkg/scanignore"
 )
 
 // DefaultAuditsDir is the staging root mounted at /audit-inputs when
@@ -46,51 +58,10 @@ func AuditsDirFromEnv() string {
 	return DefaultAuditsDir
 }
 
-// skipDirs are vendored/build/cache directories never staged, so a
-// multi-GB node_modules is not duplicated onto the staging disk. This is
-// a DELIBERATELY conservative subset of the scanner's SKIP_DIRS
-// (agents/shared file_scanner): entries like data/, fixtures/ or
-// testdata/ are NOT skipped here because they may contain scannable
-// source — staging must never silently hide files a detector would scan;
-// per-detector excludes remain each scanner's job.
-var skipDirs = map[string]bool{
-	"node_modules":     true,
-	".git":             true,
-	"vendor":           true,
-	".venv":            true,
-	"venv":             true,
-	"__pycache__":      true,
-	"target":           true,
-	"dist":             true,
-	"build":            true,
-	"out":              true,
-	".next":            true,
-	".nuxt":            true,
-	".output":          true,
-	".svelte-kit":      true,
-	".angular":         true,
-	".docusaurus":      true,
-	"storybook-static": true,
-	".gradle":          true,
-	".mvn":             true,
-	".terraform":       true,
-	".idea":            true,
-	".vscode":          true,
-	".mypy_cache":      true,
-	".ruff_cache":      true,
-	".pytest_cache":    true,
-	".tox":             true,
-	".nox":             true,
-	".turbo":           true,
-	".parcel-cache":    true,
-	".cache":           true,
-	"coverage":         true,
-	".nyc_output":      true,
-}
-
 // Stage copies the srcDir tree into <auditsDir>/<auditID>/ and returns that
-// path. It skips skipDirs, honors root .gitignore/.vultureignore patterns
-// (see the package doc for the supported subset), preserves symlinks as
+// path. It skips the folders the package doc names, honors the
+// .gitignore/.vultureignore patterns (see the package doc for the supported
+// subset), preserves symlinks as
 // symlinks (never dereferences — S3), refuses to stage when the filesystem
 // lacks capacity, and bounds concurrent stagings via a package semaphore.
 func Stage(ctx context.Context, srcDir, auditsDir, auditID string) (string, error) {
@@ -135,7 +106,7 @@ type stagedEntry struct {
 // collectEntries performs the single filtered walk: it gathers every
 // entry Stage will copy and sums regular-file sizes for the capacity
 // guard.
-func collectEntries(srcDir string, ig *ignoreSet) ([]stagedEntry, int64, error) {
+func collectEntries(srcDir string, ig *ignoreTree) ([]stagedEntry, int64, error) {
 	var entries []stagedEntry
 	var size int64
 	err := walkTree(srcDir, ig, func(p, rel string, d fs.DirEntry) error {
@@ -192,11 +163,12 @@ func StagedContainerPath(auditID string) string {
 // the absolute source path, rel its path relative to the walk root.
 type stageFunc func(p, rel string, d fs.DirEntry) error
 
-// walkTree walks srcDir applying the staging filters (skipDirs + root
-// ignore patterns) and invokes fn for every entry that will be staged.
+// walkTree walks srcDir applying the staging filters (the skipped folders
+// + the ignore patterns of the root and of every directory entered) and invokes
+// fn for every entry that will be staged.
 // The root itself is not passed to fn. Symlinks are never followed
 // (filepath.WalkDir lstat semantics).
-func walkTree(srcDir string, ig *ignoreSet, fn stageFunc) error {
+func walkTree(srcDir string, ig *ignoreTree, fn stageFunc) error {
 	return filepath.WalkDir(srcDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -210,21 +182,34 @@ func walkTree(srcDir string, ig *ignoreSet, fn stageFunc) error {
 }
 
 // visit applies the skip/ignore filters to one walk entry.
-func visit(p, rel string, d fs.DirEntry, ig *ignoreSet, fn stageFunc) error {
-	if shouldSkipDir(rel, d, ig) {
-		return filepath.SkipDir
+func visit(p, rel string, d fs.DirEntry, ig *ignoreTree, fn stageFunc) error {
+	if d.IsDir() {
+		return visitDir(p, rel, d, ig, fn)
 	}
-	if !d.IsDir() && ig.matches(rel, false) {
+	if ig.matches(rel, false) {
 		return nil
 	}
 	return fn(p, rel, d)
 }
 
-func shouldSkipDir(rel string, d fs.DirEntry, ig *ignoreSet) bool {
-	if !d.IsDir() {
-		return false
+// visitDir skips a filtered directory, else enters it: its own .gitignore
+// then applies to the entries beneath it.
+func visitDir(p, rel string, d fs.DirEntry, ig *ignoreTree, fn stageFunc) error {
+	if skippedDir(d.Name(), rel, ig) {
+		return filepath.SkipDir
 	}
-	return skipDirs[d.Name()] || ig.matches(rel, true)
+	ig.enter(p, rel)
+	return fn(p, rel, d)
+}
+
+// skippedDir reports whether the directory at rel is left out: a
+// version-control store, one the ignore files exclude, or one the default
+// ignore file lists that the root .vultureignore does not bring back.
+func skippedDir(name, rel string, ig *ignoreTree) bool {
+	if scanignore.VCS(name) || ig.matches(rel, true) {
+		return true
+	}
+	return scanignore.Default(name) && !ig.bringsBack(rel)
 }
 
 // copyEntries replicates the collected entries under dst (the copy half

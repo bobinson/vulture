@@ -7,17 +7,25 @@ from pathlib import Path
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
+from shared.tools.cookie_attributes import (
+    SAFE_HTTPONLY,
+    SAFE_SAMESITE,
+    SAFE_SECURE,
+    call_open,
+    cookie_context,
+)
 from shared.tools.file_scanner import (
     COMMENT_INDICATORS,
     SCANNER_DEF_LINE,
     is_generated_file,
     is_prose_file,
     is_test_file,
+    opens_pattern_definition,
     read_file_lines,
     scan_code_files,
 )
 from shared.tools.header_taint import header_taint_pattern
-from shared.tools.snippet import extract_snippet
+from shared.tools.snippet import extract_snippet, find_block_close
 
 # CWE-601: URL Redirection to Untrusted Site (Open Redirect)
 OPEN_REDIRECT_PATTERNS = [
@@ -41,18 +49,13 @@ SAFE_REDIRECT_PATTERNS = re.compile(
 
 # CWE-1004: Sensitive Cookie Without 'HttpOnly' Flag
 # Detection relies on matching cookie-setting calls and then checking context
-# for HttpOnly via SAFE_COOKIE_PATTERNS (avoids broken negative lookaheads).
+# for HttpOnly via SAFE_HTTPONLY (avoids broken negative lookaheads).
 COOKIE_NO_HTTPONLY_PATTERNS = [
     re.compile(r"Set-Cookie:", re.IGNORECASE),
     re.compile(r"\.set_cookie\s*\(", re.IGNORECASE),
     re.compile(r"http\.SetCookie\s*\("),
     re.compile(r"(?:res|response)\.cookie\s*\(", re.IGNORECASE),
 ]
-
-SAFE_COOKIE_PATTERNS = re.compile(
-    r"(?:HttpOnly|httponly|http_only|httpOnly\s*[:=]\s*[Tt]rue)",
-    re.IGNORECASE,
-)
 
 # CWE-384: Session Fixation
 SESSION_FIXATION_PATTERNS = [
@@ -73,18 +76,6 @@ COOKIE_NO_SECURE_PATTERNS = [
     re.compile(r"Set-Cookie:"),
 ]
 
-SAFE_SAMESITE_PATTERNS = re.compile(
-    # CWE-1275 is NOT an "attribute absent" check like its siblings: SameSite=None
-    # is present AND vulnerable. Only strict/lax are safe, so presence alone must
-    # never suppress. A predicate copied from CWE-1004/614 passes on the worst case.
-    r"same[_-]?site\s*[:=]\s*['\"]?(?:strict|lax)\b",
-    re.IGNORECASE,
-)
-
-SAFE_SECURE_PATTERNS = re.compile(
-    r"(?:secure\s*[:=]\s*[Tt]rue|[;,]\s*[Ss]ecure\b|__Secure-|__Host-)",
-    re.IGNORECASE,
-)
 
 @dataclass(frozen=True)
 class CookieAttributeSpec:
@@ -92,9 +83,9 @@ class CookieAttributeSpec:
 
     CWE-1004 and CWE-614 were near-identical functions differing only in these
     fields; a third hand-written copy for CWE-1275 would have made the
-    duplication threefold. ``adaptive_window`` is per-spec deliberately: CWE-1004
-    needs the call-block window, and pinning CWE-614 to the fixed ±3 window keeps
-    its behaviour byte-identical through this refactor.
+    duplication threefold. All three judge the same text, ``cookie_context``: the
+    call's window plus the routines of the same file it calls, so a cookie built
+    by a helper is judged by what the helper sets.
 
     ``fields`` holds the static finding body and MUST spell its category as a
     literal ``"category": "CWE-N"``. The coverage attestation
@@ -107,7 +98,6 @@ class CookieAttributeSpec:
     fields: dict
     triggers: tuple[re.Pattern, ...]
     safe: re.Pattern
-    adaptive_window: bool
 
     @property
     def cwe(self) -> str:
@@ -125,8 +115,7 @@ COOKIE_ATTRIBUTE_SPECS: tuple[CookieAttributeSpec, ...] = (
             "recommendation": "Set HttpOnly flag on cookies to prevent XSS cookie theft",
         },
         triggers=tuple(COOKIE_NO_HTTPONLY_PATTERNS),
-        safe=SAFE_COOKIE_PATTERNS,
-        adaptive_window=True,
+        safe=SAFE_HTTPONLY,
     ),
     CookieAttributeSpec(
         fields={
@@ -137,8 +126,7 @@ COOKIE_ATTRIBUTE_SPECS: tuple[CookieAttributeSpec, ...] = (
             "recommendation": "Set Secure flag on cookies to prevent transmission over HTTP",
         },
         triggers=tuple(COOKIE_NO_SECURE_PATTERNS),
-        safe=SAFE_SECURE_PATTERNS,
-        adaptive_window=False,
+        safe=SAFE_SECURE,
     ),
     CookieAttributeSpec(
         fields={
@@ -155,17 +143,36 @@ COOKIE_ATTRIBUTE_SPECS: tuple[CookieAttributeSpec, ...] = (
             ),
         },
         triggers=tuple(COOKIE_NO_HTTPONLY_PATTERNS),
-        safe=SAFE_SAMESITE_PATTERNS,
-        adaptive_window=True,
+        safe=SAFE_SAMESITE,
     ),
 )
 
 
 # CWE-113: HTTP Response Splitting (CRLF Injection)
+def _input_word(*words: str) -> str:
+    """An input word that is a whole segment of a name: `req.query`, `userInput`,
+    `user_id`, `reqBody`; never `requestid` or `requests`."""
+    return rf"(?:\b|(?<=_)|(?-i:(?<=[a-z0-9])(?=[A-Z])))(?:{'|'.join(words)})(?-i:(?![a-z0-9]))"
+
+
+# The header call's last name segment is `header` (`header(`, `setHeader(`,
+# `addHeader(`, `add_header(`) and each input word is a name segment too. As
+# substrings, `requestid.Header` read as request input and
+# `hasCSRFHeader(r *http.Request)`, which reads a header, as a header write.
+# Gaps are bounded: an unbounded `.*` pair made the subscript form cubic.
+_HEADER_CALL = r"(?:\b|(?<=_)|(?-i:(?<=[a-z])(?=H)))header\s*\("
+_GAP = r"[^\n]{0,500}"
 CRLF_PATTERNS = [
-    re.compile(r"(?:header|Header)\s*\(.*(?:request|req|params|input|user)", re.IGNORECASE),
-    re.compile(r"(?:add_header|set_header|setHeader|w\.Header\(\)\.Set)\s*\(.*(?:request|req|params|input)", re.IGNORECASE),
-    re.compile(r"(?:response|res)\.headers?\[.*\]\s*=.*(?:request|req|params)", re.IGNORECASE),
+    re.compile(_HEADER_CALL + _GAP + _input_word("request", "req", "params", "input", "user"), re.IGNORECASE),
+    re.compile(
+        r"(?:\b(?:add_header|set_header|setHeader)|\bw\.Header\(\)\.Set)\s*\(" + _GAP
+        + _input_word("request", "req", "params", "input"),
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:response|res)\.headers?\[[^\]\n]{0,200}\]\s*=" + _GAP + _input_word("request", "req", "params"),
+        re.IGNORECASE,
+    ),
 ]
 
 SAFE_CRLF_PATTERNS = re.compile(
@@ -229,8 +236,10 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
 
 def _active_lines(lines: list[str]) -> list[tuple[int, str]]:
     """1-indexed (line_num, line) pairs that survive the module's guards."""
+    previous = ("", *lines[:-1])
     return [
-        (n, line) for n, line in enumerate(lines, start=1) if not _is_guarded(line)
+        (n, line) for n, (line, before) in enumerate(zip(lines, previous), start=1)
+        if not (_is_guarded(line) or opens_pattern_definition(before))
     ]
 
 
@@ -282,15 +291,10 @@ def _check_open_redirect(
             return
 
 
-def _cookie_context(line: str, lines: list[str], line_num: int, adaptive: bool) -> str:
-    """Window the cookie call for attribute lookup.
-
-    ``adaptive`` extends forward through the closing paren (12-line cap) when the
-    line opens a multi-line call. A fixed ±3 window missed `httponly=True` on a
-    6th line and produced false positives, which is why CWE-1004 needs this;
-    CWE-614 keeps the fixed window so P6 changes none of its behaviour.
-    """
-    if adaptive and _has_unmatched_open_paren(line):
+def _persistence_window(line: str, lines: list[str], line_num: int) -> str:
+    """The cookie call CWE-539 reads a lifetime from: through the closing paren
+    (12-line cap) when the line opens a multi-line call, else ±3 lines."""
+    if _has_unmatched_open_paren(line):
         end = _find_call_close(lines, line_num - 1, max_lines=12)
         return "\n".join(lines[max(0, line_num - 1):end])
     return "\n".join(lines[max(0, line_num - 3):min(len(lines), line_num + 3)])
@@ -306,9 +310,10 @@ def _check_cookie_attribute(
     their trigger list, safe-pattern and copy, so they are data (see
     ``COOKIE_ATTRIBUTE_SPECS``) rather than three near-identical functions.
     """
-    if not any(p.search(line) for p in spec.triggers):
+    trigger = next(filter(None, (p.search(line) for p in spec.triggers)), None)
+    if trigger is None:
         return
-    if spec.safe.search(_cookie_context(line, lines, line_num, spec.adaptive_window)):
+    if spec.safe.search(cookie_context(lines, line_num, call_open(trigger))):
         return
     finding = {
         **spec.fields,
@@ -334,25 +339,7 @@ def _find_call_close(lines: list[str], start_idx: int, max_lines: int = 12) -> i
     argument list. Caps at ``max_lines`` so a forgotten `)` can't make
     the whole file the "context".
     """
-    return _find_block_close(lines, start_idx, "(", ")", max_lines)
-
-
-def _find_block_close(
-    lines: list[str], start_idx: int, opener: str, closer: str, max_lines: int,
-) -> int:
-    """Return the (exclusive) line index where ``opener``/``closer`` balance.
-
-    One walker for both delimiter families: parens for a multi-line call
-    (CWE-1004's cookie context) and braces for a handler body (CWE-940). Caps at
-    ``max_lines`` so an unbalanced file can't make the whole file the "context".
-    """
-    depth = 0
-    end = min(start_idx + max_lines, len(lines))
-    for i in range(start_idx, end):
-        depth += lines[i].count(opener) - lines[i].count(closer)
-        if depth <= 0 and i > start_idx:
-            return i + 1
-    return end
+    return find_block_close(lines, start_idx, "(", ")", max_lines)
 
 
 def _check_session_fixation(
@@ -727,7 +714,7 @@ def _is_persistent_sensitive_cookie(
         return False
     if not _has_sensitive_token(_name_tokens(name), _PERSISTENT_SENSITIVE_TOKENS):
         return False
-    return _is_long_lifetime(_cookie_context(line, lines, line_num, True))
+    return _is_long_lifetime(_persistence_window(line, lines, line_num))
 
 
 def _is_long_lifetime(text: str) -> bool:
@@ -822,7 +809,7 @@ def _handler_body(lines: list[str], line_num: int, max_lines: int = 40) -> str:
     line = lines[line_num - 1]
     if line.count("{") <= line.count("}"):
         return line
-    end = _find_block_close(lines, line_num - 1, "{", "}", max_lines)
+    end = find_block_close(lines, line_num - 1, "{", "}", max_lines)
     return "\n".join(lines[line_num - 1:end])
 
 

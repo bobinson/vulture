@@ -299,6 +299,51 @@ func (p *sqlDB) SweepExpiredLeases(ctx context.Context, now time.Time) (n int, e
 	return len(victims), nil
 }
 
+// Release hands back ONE unreconciled lease (see Releaser): the same reclaim the
+// sweeper performs for an expired lease, applied now to a request that failed.
+// The NOT EXISTS ledger guard and the atomic
+// DELETE … RETURNING make it idempotent and safe against a concurrent reconcile
+// or sweep — whichever deletes the lease row first owns its reservation.
+func (p *sqlDB) Release(ctx context.Context, runID, requestID string) (err error) {
+	defer p.lockWrites()()
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin release txn: %w", err)
+	}
+	defer func() { err = finishTx(tx, err) }()
+	return p.releaseLease(ctx, tx, runID, requestID)
+}
+
+// releaseLease deletes one unledgered lease and returns its reservation to its
+// shard, inside the caller's transaction.
+func (p *sqlDB) releaseLease(ctx context.Context, tx *sql.Tx, runID, requestID string) error {
+	var tenant string
+	var shard int
+	var reserved float64
+	err := tx.QueryRowContext(ctx, p.dia.Rebind(
+		`DELETE FROM llm_lease
+		  WHERE run_id = ? AND request_id = ?
+		    AND NOT EXISTS (
+		        SELECT 1 FROM llm_ledger g
+		         WHERE g.run_id = llm_lease.run_id AND g.request_id = llm_lease.request_id)
+		 RETURNING tenant_id, shard, reserved`),
+		runID, requestID,
+	).Scan(&tenant, &shard, &reserved)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // already reconciled, swept or released
+	}
+	if err != nil {
+		return fmt.Errorf("release lease: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, p.dia.Rebind(
+		`UPDATE llm_budget_shard SET reserved = reserved - ? WHERE tenant_id = ? AND shard = ?`),
+		reserved, tenant, shard,
+	); err != nil {
+		return fmt.Errorf("release return reserved: %w", err)
+	}
+	return nil
+}
+
 // Ping reports DB health for the readiness ladder (§12).
 func (p *sqlDB) Ping(ctx context.Context) error {
 	if err := p.db.PingContext(ctx); err != nil {
@@ -325,5 +370,8 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// Compile-time assertion the SQL impl satisfies the DB seam.
-var _ DB = (*sqlDB)(nil)
+// Compile-time assertions the SQL impl satisfies the DB seam and can release.
+var (
+	_ DB       = (*sqlDB)(nil)
+	_ Releaser = (*sqlDB)(nil)
+)

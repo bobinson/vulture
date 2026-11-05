@@ -37,7 +37,7 @@ func (h *LineageHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	lineages, err := h.svc.ListBySourcePath(sourcePath, status, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list lineage", err)
 		return
 	}
 	if lineages == nil {
@@ -62,7 +62,7 @@ func (h *LineageHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get lineage", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -93,7 +93,7 @@ func (h *LineageHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "lineage not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "update lineage status", err)
 		return
 	}
 	updated, err := h.svc.GetLineage(id)
@@ -113,7 +113,7 @@ func (h *LineageHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := h.svc.GetTimeline(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get lineage timeline", err)
 		return
 	}
 	if events == nil {
@@ -131,7 +131,7 @@ func (h *LineageHandler) GetByAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	lineages, err := h.svc.ListByAudit(auditID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "list lineage by audit", err)
 		return
 	}
 	if lineages == nil {

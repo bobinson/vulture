@@ -53,6 +53,7 @@ from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from shared.anchor import RANGE_PAST_EOF, int_field, line_range, validation_checks
+from shared.models.finding import REPO_ROOT_PATH
 from shared.provenance import is_llm_provenance
 from shared.tools.line_format import read_line_number, strip_line_number
 from shared.tools.snippet import extract_snippet
@@ -310,10 +311,12 @@ def _record_window_start(finding: dict[str, Any], lines: Sequence[str] | None) -
 
 def _lineless_reason(finding: dict[str, Any]) -> str:
     """The reason for a row with no usable line: a window it already carries
-    stands; otherwise whether it at least names a file."""
+    stands; otherwise whether it at least names a file. ``REPO_ROOT_PATH``
+    names the repository as a whole, which is no more a file than no path."""
     if finding.get("code_snippet"):
         return WINDOW_PRESENT
-    return WINDOW_NO_LINE if finding.get("file_path") else WINDOW_NO_CODE_LOCATION
+    names_a_file = finding.get("file_path") not in ("", None, REPO_ROOT_PATH)
+    return WINDOW_NO_LINE if names_a_file else WINDOW_NO_CODE_LOCATION
 
 
 def _past_eof(lines: Sequence[str] | None, line_start: int) -> bool:

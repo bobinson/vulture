@@ -18,7 +18,10 @@ _SKILLS_DIR = pathlib.Path(__file__).resolve().parents[2] / "cwe_agent" / "skill
 
 # Match the CWE id in an emitted finding's category field, e.g.
 #   "category": "CWE-89"   or   'category': 'CWE-799'
-_EMITTED_RE = re.compile(r"""["']category["']\s*:\s*["']CWE-(\d+)["']""")
+# or in the category a finding is built from, given by keyword (feature 0102, D19: a migrated
+# check's identity is ONE ``FamilyRule(category="CWE-918", ...)`` both tiers emit), e.g.
+#   category="CWE-918"
+_EMITTED_RE = re.compile(r"""(?:["']category["']\s*:|\bcategory\s*=)\s*["']CWE-(\d+)["']""")
 # Signature/registry entries declare their CWE as e.g. cwe="CWE-489" / "CWE-489".
 _SIGNATURE_RE = re.compile(r"""["']CWE-(\d+)["']""")
 

@@ -236,7 +236,7 @@ def patch_l5_judge(
     # judge takes its documented fallback onto the strict-retry path, which the
     # fake above answers. Without this a test with a source root either gets
     # no verdict or reaches a live endpoint. The L5 verdict cache is isolated
-    # per test by the suite's conftest (tests.support.isolation).
+    # per test by the suite's conftest (shared.testing.isolation).
     monkeypatch.setattr(llm_judge, "_get_client", lambda: None)
 
 

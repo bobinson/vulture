@@ -265,6 +265,7 @@ class TestArgumentInjection:
         _write(tmp_path, name, body)
         assert _cats(tmp_path, "CWE-88") == []
 
+    @pytest.mark.usefixtures("regex_tier")
     def test_processbuilder_stays_cwe78_only(self, tmp_path):
         """Verbatim duplicate sink: CWE-78 owns ``new ProcessBuilder(``."""
         _write(tmp_path, "R.java", JAVA_PROCESSBUILDER)

@@ -1,26 +1,39 @@
 name: release
 
 # Feature 0044 — Native installer release pipeline.
-# Triggered on tag push (vX.Y.Z); produces 4 platform tarballs +
-# SBOM + cosign signatures + Trivy/pip-audit reports, uploads to GH
-# Releases as a draft.
+# Triggered on tag push (vX.Y.Z); produces 4 platform tarballs + cosign
+# signatures + CycloneDX SBOMs + Trivy CVE reports, uploads to GH Releases as
+# a draft. Nothing is signed unless the `scan` job's CVE gate passed
+# (scripts/release-cve-gate.sh: Trivy over each extracted tarball, HIGH/CRITICAL,
+# dated waivers in .trivyignore).
+#
+# Least privilege, job by job (feature 0102). The workflow default grants
+# nothing; every job declares its own permissions and checks out without
+# persisting credentials. Third-party tooling (npm, Go modules, syft, Trivy,
+# pip-audit, audit-ci) runs only in read-only jobs. The OIDC token (id-token: write)
+# exists only in `sign`, which checks out no code and signs only bytes whose
+# digests the build legs recorded; the write token (contents: write) exists
+# only in `release`, which runs only gh.
+#
+#   lint -> build-frontend -> build-binary (x4) -> scan -> sign -> release
 
 on:
   push:
     tags:
       - 'v*'
 
-permissions:
-  id-token: write       # cosign keyless OIDC
-  contents: write       # release upload
-  attestations: write   # SLSA attestations (Phase 2 hook)
+permissions: {}
 
 jobs:
   lint:
     name: shellcheck + fallback-tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: shellcheck
@@ -35,8 +48,12 @@ jobs:
     name: build frontend
     needs: lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Must match ci.yml's NODE_VERSION and frontend/package.json engines.
@@ -46,18 +63,15 @@ jobs:
           # bug fix — but a release artifact should come off the runtime its
           # tests ran on.
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          # No dependency cache in a release build: a restored cache is an
+          # input no review saw, and this job's output is signed.
+          package-manager-cache: false
       - name: npm ci
         working-directory: frontend
         run: npm ci
       - name: build
         working-directory: frontend
         run: npm run build
-      - name: audit-ci
-        working-directory: frontend
-        run: npx --yes audit-ci --high
-        continue-on-error: false
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-dist
@@ -66,6 +80,8 @@ jobs:
   build-binary:
     name: build tarball ${{ matrix.os }}-${{ matrix.arch }}
     needs: build-frontend
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -78,6 +94,14 @@ jobs:
           - { os: darwin, arch: amd64, runner: macos-15-intel }
           - { os: darwin, arch: arm64, runner: macos-14 }
     runs-on: ${{ matrix.runner }}
+    # One digest per leg, recorded by the `digest` step BEFORE any post-build
+    # step runs; `sign` refuses to sign bytes that differ. Each leg sets only
+    # its own key, so the matrix outputs combine instead of overwriting.
+    outputs:
+      sha256_linux_amd64: ${{ steps.digest.outputs.sha256_linux_amd64 }}
+      sha256_linux_arm64: ${{ steps.digest.outputs.sha256_linux_arm64 }}
+      sha256_darwin_amd64: ${{ steps.digest.outputs.sha256_darwin_amd64 }}
+      sha256_darwin_arm64: ${{ steps.digest.outputs.sha256_darwin_arm64 }}
     env:
       # Single source of truth for the vendored PBS coordinates: the same
       # VULTURE_PBS_TAG/PYVER drive both the cosign-verified download of the
@@ -87,50 +111,23 @@ jobs:
       VULTURE_PBS_PYVER: '3.12.15'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.10'
-          # No root go.mod in this repo (modules are backend/ + cli/), so the
-          # default cache probe fails and disables module caching on all four
-          # matrix legs. Point it at the real lockfiles.
-          cache-dependency-path: |
-            backend/go.sum
-            cli/go.sum
+          # No module/build cache in a release build: a restored cache is an
+          # input no review saw. Modules come from go.sum-verified downloads.
+          cache: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: frontend-dist
           path: frontend/dist/
-      - name: install cosign
+      - name: install cosign (verifies the vendored PBS; signing is in `sign`)
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          # Pin the cosign BINARY, not just the action. Without this the
-          # installer pulls the latest cosign, which now defaults to
-          # --new-bundle-format: that IGNORES --output-signature/-certificate
-          # and requires --bundle, breaking the separate .sig/.pem contract
-          # that install.sh's verify_signature depends on. Hold at the last
-          # v2 line that emits .sig/.pem by default.
-          #
-          # This pin is now a TRANSITION holder, not a permanent one. Releases
-          # from here on also publish a .bundle, and install.sh prefers it. Once
-          # every release users still install from carries a bundle, the pin can
-          # be lifted and the .sig/.pem outputs dropped.
+          # The same cosign pin as the `sign` job (the reason is there).
           cosign-release: 'v2.4.3'
-      - name: install syft
-        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-      - name: install trivy
-        # Official cross-platform installer (detects OS/arch). PINNED to the
-        # v0.71.0 tag of contrib/install.sh *and* the installed version, so we
-        # never pipe a moving 'main'-ref script into sh — keeping parity with
-        # the SHA-pinned actions in this workflow (supply-chain hardening).
-        # Retry + cap connect/total time so a flaky CDN can't hang the job
-        # (matches build-release.sh's curl posture).
-        run: curl -sfL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 30 --max-time 120 https://raw.githubusercontent.com/aquasecurity/trivy/v0.71.0/contrib/install.sh | sh -s -- -b /usr/local/bin v0.71.0
-      - name: install pip-audit
-        # PEP-668 varies by runner: macOS + ubuntu-24.04 refuse plain installs
-        # (need --break-system-packages), but ubuntu-22.04-arm's older pip
-        # doesn't support that flag and doesn't enforce PEP 668. Try plain
-        # first, fall back to the flag only where it's both needed and present.
-        run: python3 -m pip install pip-audit || python3 -m pip install --break-system-packages pip-audit
       - name: install GNU tar (macOS)
         # build-release.sh needs GNU tar for reproducible-tarball flags
         # (--sort/--mtime/--owner); macOS ships BSD tar. gnu-tar provides gtar.
@@ -166,23 +163,98 @@ jobs:
           # All four triples (linux/darwin × amd64/arm64) now have a committed PBS
           # SHA pin (scripts/pbs-shas-*.txt); build-release derives the triple from
           # (os,arch) and verifies fail-closed against that pin. If a platform ever
-          # lacks a triple, build-release gracefully ships a lean (unbundled)
-          # tarball instead of erroring. NOTE: bundling pulls the agent deps into
-          # the tarball, so the Trivy/SBOM steps below now also cover the Python
-          # runtime on every platform.
+          # lacks a triple, build-release ships a lean (unbundled) tarball instead
+          # of erroring, and the `scan` job's CVE gate then refuses the release
+          # (no Python packages to inventory). NOTE: bundling pulls the agent deps
+          # into the tarball; that gate covers them, and the `scan` job's SBOM
+          # and pip-audit reports inventory them.
           VULTURE_BUNDLE_PBS: '1'
         run: scripts/build-release.sh "${GITHUB_REF_NAME}" "${{ matrix.os }}" "${{ matrix.arch }}"
-      - name: generate SBOM
+      - name: record tarball digest
+        id: digest
         run: |
-          syft "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
-            -o cyclonedx-json="dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.sbom.json"
-      - name: Trivy CVE scan
+          . scripts/lib/hash.sh
+          sum=$(sha256_of "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz")
+          echo "sha256_${{ matrix.os }}_${{ matrix.arch }}=${sum}" >> "$GITHUB_OUTPUT"
+      - name: smoke install
+        run: scripts/smoke-install.sh "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+      - name: smoke negative
+        run: scripts/smoke-negative.sh
+      - name: verify no secrets in logs
+        run: scripts/verify-no-secrets-in-logs.sh "${VULTURE_HOME:-$HOME/.vulture-smoke}"
+        if: env.VULTURE_HOME != ''
+        continue-on-error: true
+      # The tarball only: build-release.sh's per-leg dist/SHA256SUMS must not
+      # ride along (`sign` rebuilds SHA256SUMS from the bound tarballs).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/vulture-*.tar.gz
+          if-no-files-found: error
+
+  scan:
+    name: scan (Trivy CVE gate, audit-ci, SBOM, pip-audit; read-only)
+    needs: build-binary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Workflow-local pin; scripts/trivy-shas-<this>.txt holds the tarball
+      # SHA-256s install-trivy.sh verifies against.
+      TRIVY_VERSION: 'v0.71.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+      - name: install trivy (tarball SHA-256 committed in scripts/trivy-shas-*.txt)
+        run: scripts/install-trivy.sh "$TRIVY_VERSION" "$RUNNER_TEMP/trivy-bin"
+      # The gate judges the bytes `sign` signs: the expected sums are the build
+      # legs' digest outputs, rendered by the same jq program as in `sign`.
+      - name: expected tarball digests (the build legs' outputs)
+        env:
+          DIGESTS: ${{ toJSON(needs.build-binary.outputs) }}
         run: |
-          trivy fs --severity HIGH,CRITICAL --ignorefile .trivyignore \
-            --format json --output "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.vulns.json" \
-            "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" || true
-          trivy fs --severity HIGH,CRITICAL --ignorefile .trivyignore --exit-code 1 \
-            "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          printf '%s' "$DIGESTS" | jq -r --arg v "$GITHUB_REF_NAME" \
+            'to_entries[] | select(.value != "") | "\(.value)  vulture-\($v)-\(.key | ltrimstr("sha256_") | sub("_"; "-")).tar.gz"' \
+            > "$RUNNER_TEMP/expected.sha256"
+      # The CVE gate: Trivy over each EXTRACTED tarball (`trivy fs` does not
+      # unpack an archive) and over the wheels' own SBOMs, HIGH/CRITICAL, with
+      # the dated waivers in .trivyignore. It runs before every step that runs
+      # floating code (setup-node, audit-ci, syft, pip-audit), and Trivy, tar
+      # and jq run inside the gate's work dir with an emptied environment, so
+      # no step, variable or file in the checkout (a trivy-secret.yaml, say)
+      # can configure, redirect or swap what it scans. Each tarball's report
+      # lands in dist/<tarball>.vulns.json (uploaded as scan-reports).
+      - name: release CVE gate (Trivy, blocking)
+        run: scripts/release-cve-gate.sh "$RUNNER_TEMP/trivy-bin/trivy" dist "$RUNNER_TEMP/cve-gate" .trivyignore "$RUNNER_TEMP/expected.sha256"
+      # npm advisory gate. It runs HERE, after the build legs have consumed
+      # frontend-dist and recorded their digests, and after the CVE gate: npx
+      # resolves audit-ci's own dependencies at run time (caret ranges, no
+      # lockfile), so nothing it pulls may run where its output is signed.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: audit-ci (npm advisories, gating)
+        working-directory: frontend
+        run: npx --yes audit-ci@7.1.0 --high
+      - name: install syft
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      - name: generate SBOMs
+        run: |
+          for tb in dist/vulture-"${GITHUB_REF_NAME}"-*.tar.gz; do
+            syft "$tb" -o cyclonedx-json="${tb%.tar.gz}.sbom.json"
+          done
+      - name: install pip-audit
+        # This job runs on ubuntu-latest, whose system python3 is externally
+        # managed (PEP 668) and refuses a plain `pip install`; its pip
+        # supports the opt-out flag, so the install passes it directly.
+        run: python3 -m pip install --break-system-packages pip-audit==2.10.1
       - name: pip-audit
         run: |
           if [ -f .pip-audit-ignore ]; then
@@ -195,44 +267,42 @@ jobs:
           fi
           # Audit the actual hashed lockfile — `agents/requirements.txt` never
           # existed (agents use pyproject.toml), so this step audited nothing.
-          # Advisory: Trivy above is the hard CVE gate; .pip-audit-ignore holds
+          # Advisory here (`|| true`): the gating pip-audit run is the pre-tag
+          # preflight (scripts/security-preflight.sh). .pip-audit-ignore holds
           # time-boxed, codeowner-reviewed waivers.
           # shellcheck disable=SC2086
           pip-audit -r agents/requirements-frozen.txt --strict $IGN || true
-      - name: cosign sign tarball
-        run: |
-          # Bundle emitted alongside .sig/.pem for anyone verifying a tarball
-          # directly; install.sh itself verifies SHA256SUMS and then checksums
-          # the tarball against it.
-          cosign sign-blob --yes \
-            "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" \
-            --output-signature "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.sig" \
-            --output-certificate "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.pem" \
-            --bundle "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz.bundle"
-      - name: smoke install
-        run: scripts/smoke-install.sh "dist/vulture-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
-      - name: smoke negative
-        run: scripts/smoke-negative.sh
-      - name: verify no secrets in logs
-        run: scripts/verify-no-secrets-in-logs.sh "${VULTURE_HOME:-$HOME/.vulture-smoke}"
-        if: env.VULTURE_HOME != ''
-        continue-on-error: true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/
+          name: scan-reports
+          path: |
+            dist/*.vulns.json
+            dist/*.sbom.json
+          if-no-files-found: error
 
-  release:
-    name: publish draft release
-    needs: build-binary
+  sign:
+    name: cosign sign (keyless)
+    needs: [build-binary, scan]
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist/
+      - name: bind the tarballs to the build-leg digests
+        env:
+          DIGESTS: ${{ toJSON(needs.build-binary.outputs) }}
+        run: |
+          want="$RUNNER_TEMP/expected.sha256"
+          printf '%s' "$DIGESTS" | jq -r --arg v "$GITHUB_REF_NAME" \
+            'to_entries[] | select(.value != "") | "\(.value)  vulture-\($v)-\(.key | ltrimstr("sha256_") | sub("_"; "-")).tar.gz"' > "$want"
+          cd dist
+          [ "$(grep -c . "$want")" -eq 4 ] || { echo "want 4 build-leg digests"; cat "$want"; exit 1; }
+          [ "$(find . -maxdepth 1 -type f | wc -l)" -eq 4 ] || { echo "want exactly the 4 tarballs"; ls -la; exit 1; }
+          sha256sum -c --strict "$want"
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
@@ -242,35 +312,84 @@ jobs:
           # and requires --bundle, breaking the separate .sig/.pem contract
           # that install.sh's verify_signature depends on. Hold at the last
           # v2 line that emits .sig/.pem by default.
+          #
+          # This pin is now a TRANSITION holder, not a permanent one. Releases
+          # from here on also publish a .bundle, and install.sh prefers it. Once
+          # every release users still install from carries a bundle, the pin can
+          # be lifted and the .sig/.pem outputs dropped.
           cosign-release: 'v2.4.3'
-      - name: aggregate SHA256SUMS
+      - name: cosign sign the tarballs + SHA256SUMS
         run: |
           cd dist
           sha256sum vulture-*.tar.gz | sort > SHA256SUMS
-      - name: cosign sign SHA256SUMS
-        run: |
-          cd dist
           # Emit BOTH forms. .sig/.pem keep every already-published installer
           # working; the bundle (sig + cert + Rekor proof in one file) is what
           # cosign v3+ expects, and install.sh prefers it when present. Verified
           # cross-compatible: a v2.4.3-produced bundle verifies on both v2.4.3
           # and v3.1.3, and the legacy default format is used deliberately —
           # --new-bundle-format would lock out cosign older than v2.4.
-          cosign sign-blob --yes SHA256SUMS \
-            --output-signature SHA256SUMS.sig \
-            --output-certificate SHA256SUMS.pem \
-            --bundle SHA256SUMS.bundle
+          for f in vulture-*.tar.gz SHA256SUMS; do
+            cosign sign-blob --yes "$f" --output-signature "$f.sig" \
+              --output-certificate "$f.pem" --bundle "$f.bundle"
+          done
+      - name: self-verify against this workflow's identity
+        run: |
+          cd dist
+          for f in vulture-*.tar.gz SHA256SUMS; do
+            cosign verify-blob --bundle "$f.bundle" \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$f"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signatures
+          overwrite: true
+          if-no-files-found: error
+          path: |
+            dist/SHA256SUMS
+            dist/*.sig
+            dist/*.pem
+            dist/*.bundle
+
+  release:
+    name: publish draft release
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scan-reports
+          path: dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signatures
+          path: dist/
+      - name: verify the asset set
+        run: |
+          cd dist
+          sha256sum -c --strict SHA256SUMS
+          [ "$(grep -c . SHA256SUMS)" -eq 4 ] || { echo "SHA256SUMS must list 4 tarballs"; exit 1; }
+          [ "$(find . -maxdepth 1 -type f | wc -l)" -eq 28 ] || { echo "want 28 assets"; ls -la; exit 1; }
+          # Fail loudly on any empty asset (e.g. a bad cosign sig) — GitHub's
+          # upload API otherwise rejects it with an opaque "Bad Content-Length".
+          if find . -maxdepth 1 -type f -empty | grep -q .; then
+            echo "error: empty release asset(s):" >&2
+            find . -maxdepth 1 -type f -empty >&2
+            exit 1
+          fi
       - name: gh release create (draft)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Fail loudly on any empty asset (e.g. a bad cosign sig) — GitHub's
-          # upload API otherwise rejects it with an opaque "Bad Content-Length".
-          if find dist -maxdepth 1 -type f -empty | grep -q .; then
-            echo "error: empty release asset(s):" >&2
-            find dist -maxdepth 1 -type f -empty >&2
-            exit 1
-          fi
           # Idempotent: create the draft if absent, else reuse it; then upload
           # assets with --clobber so re-runs (or a single flaky upload) don't
           # abort the whole release.

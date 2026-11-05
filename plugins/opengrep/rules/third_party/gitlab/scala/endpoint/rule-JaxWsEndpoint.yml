@@ -1,0 +1,36 @@
+# yamllint disable
+# License: MIT (c) GitLab Inc.
+# yamllint enable
+---
+rules:
+- id: "scala_endpoint_rule-JaxWsEndpoint"
+  languages:
+  - "scala"
+  message: |
+    This method is part of a SOAP Web Service (JSR224). The security of this web service should be
+    analyzed. For example:
+    - Authentication, if enforced, should be tested.
+    - Access control, if enforced, should be tested.
+    - The inputs should be tracked for potential vulnerabilities.
+    - The communication should ideally be over SSL.
+  metadata:
+    category: "security"
+    owasp:
+    - "A7:2017-Cross-Site Scripting (XSS)"
+    - "A08:2021-Software and Data Integrity Failures"
+    - "A08:2025-Software or Data Integrity Failures"
+    cwe: "CWE-348"
+    shortDescription: "Use of less trusted source"
+    technology:
+    - "scala"
+    security-severity: "Info"
+  mode: "taint"
+  pattern-sinks:
+  - pattern: "<...$VAR...>"
+  pattern-sources:
+  - patterns:
+    - pattern-inside: |
+        @javax.jws.WebMethod(...)
+        def $FUNC(..., $VAR: $TYPE, ...) = ...
+    - pattern: "$VAR"
+  severity: "INFO"

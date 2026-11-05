@@ -1,32 +1,32 @@
 # Scanning Solidity smart contracts
 
-Vulture scans Solidity through the **semgrep plugin**, not the CWE agent's own
+Vulture scans Solidity through the **opengrep plugin**, not the CWE agent's own
 skills — `.sol` is outside the CWE agent's `CODE_EXTENSIONS`, so only the plugin
-sees Solidity. The plugin ships two Solidity rule tiers plus a composite
+sees Solidity. The plugin ships pinned, offline Solidity rules plus a composite
 scam-risk correlator aimed at scammer-operated contracts (drainers, honeypots,
 rug pulls, proxy takeovers).
 
 ## Enable & run (dev mode)
 
-semgrep is **opt-in**. Unticked, it is never added to a scan.
+opengrep is **opt-in**. Unticked, it is never added to a scan.
 
 ```bash
 git clone https://github.com/bobinson/vulture
 cd vulture
 ./scripts/vulture.sh build
 
-# Start dev mode with the semgrep plugin activated — pick a provider:
-./scripts/vulture.sh dev gemini gemini-2.5-flash --pg --plugins semgrep   # Gemini
-./scripts/vulture.sh dev lmstudio --pg --plugins semgrep                  # local LMStudio
+# Start dev mode with the opengrep plugin activated — pick a provider:
+./scripts/vulture.sh dev gemini gemini-2.5-flash --pg --plugins opengrep   # Gemini
+./scripts/vulture.sh dev lmstudio --pg --plugins opengrep                  # local LMStudio
 ```
 
-Then run a scan selecting the semgrep tier:
+Then run a scan selecting the opengrep tier:
 
 ```bash
-vulture scan <path-or-git-url> --types cwe,semgrep
+vulture scan <path-or-git-url> --types cwe,opengrep
 ```
 
-Or, in the UI, tick **semgrep** on the audit-config screen. Findings stream live
+Or, in the UI, tick **opengrep** on the audit-config screen. Findings stream live
 and land in the final result snapshot.
 
 ## Threats detected (vendored tier — hermetic, pinned, offline)
@@ -67,29 +67,23 @@ single shape. The scam signal is **co-occurrence**. When ≥ 3 *distinct*
 drainer/owner-omnipotence markers fire in one contract, the plugin emits a
 single high-severity `vulture-solidity-composite-scam-risk` finding
 (CWE-284). Distinct matters: the same rule firing twice counts once. Threshold:
-`SCAM_SCORE_MIN_MARKERS` in `plugins/semgrep/src/translate.py`.
+`SCAM_SCORE_MIN_MARKERS` in `plugins/opengrep/src/translate.py`.
 
-## Registry tier (`r/solidity`)
+## No registry tier
 
-On top of the vendored rules, the plugin runs the Semgrep registry Solidity
-namespace (~50 community rules) by default — broader, but requires network
-egress and is not reproducible run-to-run.
-
-```bash
-VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY=true   # vendored-only: hermetic/offline
-```
-
-Skipped automatically when a client pins its own `rule_packs`. There is **no**
-`p/solidity` pack (404); `r/solidity` is the correct reference.
+The plugin runs only its bundled rules, offline. The Semgrep Registry's
+`r/solidity` namespace it used to add (feature 0058) was removed in plugin
+0.2.0 (feature 0102): Semgrep's rules licence permits neither redistributing
+those rules nor offering them as a service.
 
 ## Reading results
 
-All plugin findings carry `provenance=semgrep`. They are **not corpus-gated** —
+All plugin findings carry `provenance=opengrep` (`semgrep` in audits made before plugin 0.2.0). They are **not corpus-gated** —
 they surface as ungated findings, not counted toward the CWE agent's verified N.
 
 ## Limitations
 
-Pattern-tier only. Semgrep's Solidity support is experimental and has no
+Pattern-tier only. The engine's Solidity support is experimental and has no
 reliable dataflow, so these are **not** covered and need a future
 Slither/Mythril tier: reentrancy (call-vs-state ordering), true honeypot
 confirmation (buy/sell simulation), and backdoor reachability.
@@ -119,7 +113,7 @@ cast code <address> --rpc-url <url>          # foundry
 Recover function selectors/ABI with `whatsabi` or 4byte.directory.
 
 **3. Scan the emitted `.sol`** like any source tree — point a dev-mode scan at
-the folder: `vulture scan ./decompiled --types cwe,semgrep`.
+the folder: `vulture scan ./decompiled --types cwe,opengrep`.
 
 **Caveats.** Decompiled source is lossy — variable/function names are gone and
 control flow is approximate. Rules that key on identifiers (`fee`, `tax`,

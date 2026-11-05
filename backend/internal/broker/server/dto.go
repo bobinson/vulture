@@ -311,5 +311,8 @@ func writeErr(w http.ResponseWriter, e *apiError) {
 	if e.upstream != nil && e.upstream.Message != "" {
 		body["upstream"] = e.upstream
 	}
+	if e.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(e.retryAfter/time.Second)))
+	}
 	writeJSON(w, e.status, map[string]any{"error": body})
 }

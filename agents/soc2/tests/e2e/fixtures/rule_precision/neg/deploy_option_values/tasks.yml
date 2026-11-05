@@ -1,0 +1,1 @@
+- { name: stage, command: rsync -a dist/ out/, when: build_enabled }

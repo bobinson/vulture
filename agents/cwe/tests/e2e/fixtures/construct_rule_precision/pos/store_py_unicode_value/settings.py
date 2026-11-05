@@ -1,0 +1,1 @@
+password = "пароль"  # EXPECT: finding

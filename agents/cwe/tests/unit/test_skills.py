@@ -630,6 +630,7 @@ class TestCheckSSRF:
         ssrf = [f for f in result["findings"] if f["category"] == "CWE-918"]
         assert len(ssrf) >= 1
 
+    @pytest.mark.usefixtures("regex_tier")
     def test_no_finding_with_allowlist(self, source_dir):
         code = "import requests\ndef fetch(url):\n    validate_url(url)\n    allowed_hosts = ['api.example.com']\n    return requests.get(user_input)\n"
         (source_dir / "api.py").write_text(code)

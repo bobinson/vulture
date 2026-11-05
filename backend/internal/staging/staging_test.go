@@ -9,7 +9,7 @@ package staging
 //     - copies the srcDir tree into <auditsDir>/<auditID>/ and returns
 //       that path;
 //     - SKIPS the dirs: node_modules, .git, vendor, .venv, venv,
-//       __pycache__, target, dist, build, out;
+//       __pycache__, target, dist, build;
 //     - honors .gitignore and .vultureignore patterns found at the
 //       srcDir root, when present;
 //     - preserves symlinks AS SYMLINKS (never dereferences/follows).
@@ -84,7 +84,7 @@ func TestStage_SkipsVendoredAndBuildDirs(t *testing.T) {
 	writeFile(t, src, "keep.txt", "keep")
 	skipDirs := []string{
 		"node_modules", ".git", "vendor", ".venv", "venv",
-		"__pycache__", "target", "dist", "build", "out",
+		"__pycache__", "target", "dist", "build",
 	}
 	for _, d := range skipDirs {
 		writeFile(t, src, filepath.Join(d, "junk.bin"), "junk")

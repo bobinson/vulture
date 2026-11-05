@@ -6,7 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+
+	"github.com/vulture/backend/pkg/fileutil"
 )
 
 // ownedRoot refuses a git clone root under the shared temp staging tree that
@@ -22,6 +23,6 @@ func ownedRoot(root string) bool {
 	if err != nil {
 		return false
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(st.Uid) == os.Getuid() && info.IsDir()
+	uid, _, ok := fileutil.OwnerOf(info)
+	return ok && int(uid) == os.Getuid() && info.IsDir()
 }

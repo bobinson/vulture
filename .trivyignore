@@ -1,8 +1,23 @@
-# Vulture CVE allowlist (feature 0044 H3).
+# Trivy waivers for the release CVE gate (scripts/release-cve-gate.sh, run by
+# the `scan` job of .github/workflows/release.yml before anything is signed).
 #
-# Format: CVE-XXXX-YYYY: <one-line justification> (expires YYYY-MM-DD)
+# Format, one waiver per line, in the form Trivy honours:
+#   <ID> exp:YYYY-MM-DD # <reason>
+# Every non-blank line that does not start with # is an entry.
+# scripts/lib/trivyignore.sh refuses any other shape, an exp: that is not a real
+# date or is more than 90 days ahead, and a missing reason; the gate runs it at
+# tag time and scripts/tests/test_release_cve_gate_wiring.sh runs it in CI.
+# Trivy stops honouring an entry on its exp: date (UTC), which turns the gate
+# red again: renew an entry only after re-tracing it, or fix the dependency.
 #
-# CI lint refuses any entry older than 90 days from its expires date.
-# Allowlist additions require a SECURITY codeowner review (CODEOWNERS).
-#
-# No active allowlist entries.
+# The SECURITY codeowner approves every entry explicitly (CODEOWNERS); see
+# docs/guides/release_process.md, "Vulnerabilities".
+CVE-2026-114612 exp:2027-01-27 # litellm 1.91.5: LiteLLM Proxy server endpoint flaw; litellm.proxy modules are imported but no proxy server is ever started (no run_server call)
+GHSA-g5ff-637f-6q2m exp:2027-01-27 # litellm 1.91.5: LiteLLM Proxy server endpoint flaw; litellm.proxy modules are imported but no proxy server is ever started (no run_server call)
+CVE-2026-114613 exp:2027-01-27 # msgpack 1.1.2 vendored by pip 26.2.2 (newest pip); used only when pip runs (release build, install.sh fallback)
+GHSA-6v7p-g79w-8964 exp:2027-01-27 # msgpack 1.1.2 vendored by pip 26.2.2 (newest pip); used only when pip runs (release build, install.sh fallback)
+CVE-2025-47273 exp:2027-01-27 # setuptools 70.3.0 vendored by pip 26.2.2: pip ships pkg_resources only, not the vulnerable package_index
+CVE-2026-97687 exp:2027-01-27 # urllib3 2.7.0 vendored by pip 26.2.2 (newest pip): used only by pip, i.e. the hash-pinned release build and install.sh's fallback install, which honours HTTPS_PROXY
+CVE-2026-97689 exp:2027-01-27 # urllib3 2.7.0 vendored by pip 26.2.2 (newest pip): used only by pip (release build, install.sh fallback install)
+CVE-2026-69247 exp:2026-11-21 # cryptography 48.0.1, darwin-only pin; mirrors .pip-audit-ignore (renew only after its re-trace)
+CVE-2026-69249 exp:2026-11-21 # cryptography 48.0.1, darwin-only pin; mirrors .pip-audit-ignore (renew only after its re-trace)

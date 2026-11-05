@@ -20,10 +20,11 @@ func recvStarted(t *testing.T, ch <-chan struct{}) {
 	}
 }
 
-// Contract (§9): per-provider bulkhead = semaphore concurrency cap. When all
-// slots are occupied, further Execute calls load-shed FAST with
-// ErrBulkheadFull (→ rate_limited), without blocking. InFlight reflects
-// current occupancy. Slots release when fn returns.
+// Contract (§9): per-provider bulkhead = semaphore concurrency cap with a
+// bounded admission queue. When all slots are occupied a call waits for one
+// (see bulkhead_wait_test.go); once the queue is full too, further Execute
+// calls load-shed FAST with ErrBulkheadFull (→ rate_limited), without
+// blocking. InFlight reflects current occupancy. Slots release when fn returns.
 
 func TestBulkhead_AllowsUpToCap(t *testing.T) {
 	bh := NewBulkhead(BulkheadConfig{MaxConcurrent: 2})
@@ -80,7 +81,17 @@ func TestBulkhead_ShedsWhenFull(t *testing.T) {
 
 	recvStarted(t, started) // slot occupied
 
-	// Second call must shed immediately (fast, non-blocking).
+	// Fill the admission queue: these wait for the slot rather than shedding.
+	for i := 0; i < waitersPerSlot; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = bh.Execute(context.Background(), func(context.Context) error { return nil })
+		}()
+	}
+	waitForWaiters(t, bh, waitersPerSlot)
+
+	// The next call must shed immediately (fast, non-blocking).
 	sheddedCalledFn := false
 	done := make(chan error, 1)
 	go func() {

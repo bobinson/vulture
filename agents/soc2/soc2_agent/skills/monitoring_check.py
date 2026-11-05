@@ -4,6 +4,7 @@ import re
 
 from agents import function_tool
 
+from shared.models.finding import REPO_ROOT_PATH
 from shared.tools.file_scanner import (
     is_generated_file,
     is_test_file,
@@ -61,7 +62,7 @@ def check_monitoring(source_path: str) -> dict:
             "category": "CC7-monitoring",
             "title": "No monitoring or alerting detected",
             "description": "Service code found but no monitoring/alerting instrumentation",
-            "file_path": source_path,
+            "file_path": REPO_ROOT_PATH,
             "line_start": 0,
             "line_end": 0,
             "recommendation": "Add metrics, health checks, and alerting integration",

@@ -13,15 +13,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vulture/backend/internal/localdev"
 )
 
 // DockerClient is the subset of `docker` CLI capability the supervisor
-// needs. Injectable so tests can drive it with a fake.
+// needs. Injectable so tests can drive it with a fake. Run's env is an
+// overlay on the docker CLI's own environment (see RunEnv).
 type DockerClient interface {
 	Pull(ctx context.Context, image string) error
 	Inspect(ctx context.Context, image string) (bool, error)
 	Build(ctx context.Context, tag, contextDir string) error
-	Run(ctx context.Context, argv []string) (containerID string, err error)
+	Run(ctx context.Context, argv, env []string) (containerID string, err error)
 	Stop(ctx context.Context, name string, timeout time.Duration) error
 	Remove(ctx context.Context, name string) error
 	PS(ctx context.Context) ([]RunningContainer, error)
@@ -83,12 +86,18 @@ func (d *dockerExec) resolveBinary() (string, error) {
 
 // run executes argv against the resolved binary and returns
 // (stdout, stderr, error). A non-zero exit is wrapped in ErrDockerFailed.
-func (d *dockerExec) run(ctx context.Context, argv []string) (string, string, error) {
+//
+// The docker CLI gets the host environment minus the backend's credentials and
+// every injection vector (localdev.PluginCLIEnvFromHost), plus extra. A
+// name-only `-e NAME` in a run argv copies NAME from this environment into the
+// container, so the backend's own environment must never reach it whole.
+func (d *dockerExec) run(ctx context.Context, argv, extra []string) (string, string, error) {
 	binary, err := d.resolveBinary()
 	if err != nil {
 		return "", "", err
 	}
 	cmd := exec.CommandContext(ctx, binary, argv...)
+	cmd.Env = append(localdev.PluginCLIEnvFromHost(), extra...)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -101,12 +110,12 @@ func (d *dockerExec) run(ctx context.Context, argv []string) (string, string, er
 }
 
 func (d *dockerExec) Pull(ctx context.Context, image string) error {
-	_, _, err := d.run(ctx, []string{"pull", image})
+	_, _, err := d.run(ctx, []string{"pull", image}, nil)
 	return err
 }
 
 func (d *dockerExec) Inspect(ctx context.Context, image string) (bool, error) {
-	_, _, err := d.run(ctx, []string{"image", "inspect", image})
+	_, _, err := d.run(ctx, []string{"image", "inspect", image}, nil)
 	if err == nil {
 		return true, nil
 	}
@@ -121,12 +130,12 @@ func (d *dockerExec) Inspect(ctx context.Context, image string) (bool, error) {
 // context and tags the result `tag`.
 func (d *dockerExec) Build(ctx context.Context, tag, contextDir string) error {
 	dockerfile := filepath.Join(contextDir, "Dockerfile")
-	_, _, err := d.run(ctx, []string{"build", "-t", tag, "-f", dockerfile, contextDir})
+	_, _, err := d.run(ctx, []string{"build", "-t", tag, "-f", dockerfile, contextDir}, nil)
 	return err
 }
 
-func (d *dockerExec) Run(ctx context.Context, argv []string) (string, error) {
-	stdout, _, err := d.run(ctx, argv)
+func (d *dockerExec) Run(ctx context.Context, argv, env []string) (string, error) {
+	stdout, _, err := d.run(ctx, argv, env)
 	if err != nil {
 		return "", err
 	}
@@ -138,7 +147,7 @@ func (d *dockerExec) Stop(ctx context.Context, name string, timeout time.Duratio
 	if secs < 1 {
 		secs = 1
 	}
-	_, _, err := d.run(ctx, []string{"stop", "--time", strconv.Itoa(secs), name})
+	_, _, err := d.run(ctx, []string{"stop", "--time", strconv.Itoa(secs), name}, nil)
 	return err
 }
 
@@ -147,12 +156,12 @@ func (d *dockerExec) Stop(ctx context.Context, name string, timeout time.Duratio
 // StopAll leaves containers stopped, not removed). "no such container"
 // is benign — the caller ignores the error.
 func (d *dockerExec) Remove(ctx context.Context, name string) error {
-	_, _, err := d.run(ctx, []string{"rm", "-f", name})
+	_, _, err := d.run(ctx, []string{"rm", "-f", name}, nil)
 	return err
 }
 
 func (d *dockerExec) Info(ctx context.Context) error {
-	_, _, err := d.run(ctx, []string{"info"})
+	_, _, err := d.run(ctx, []string{"info"}, nil)
 	return err
 }
 
@@ -162,7 +171,7 @@ func (d *dockerExec) PS(ctx context.Context) ([]RunningContainer, error) {
 		"--filter", "name=vulture-agent-",
 		"--format", "{{.Names}}\t{{.Image}}\t{{.Status}}",
 	}
-	stdout, _, err := d.run(ctx, argv)
+	stdout, _, err := d.run(ctx, argv, nil)
 	if err != nil {
 		return nil, err
 	}

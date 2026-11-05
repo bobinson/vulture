@@ -4,6 +4,14 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+# The ``file_path`` of a finding about the repository as a whole ("no security
+# policy", "no monitoring"), cited with line 0. It is the token the backend's
+# path canonicaliser gives the scan root, so the row is identified the same way
+# wherever the checkout is mounted; the absolute root would make every such row
+# look new after a move, and hand the validator's path classifier the names of
+# the directories ABOVE the repository.
+REPO_ROOT_PATH = "."
+
 
 class Severity(str, Enum):
     """Severity levels for findings."""

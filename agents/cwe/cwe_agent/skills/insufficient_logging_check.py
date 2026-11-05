@@ -19,6 +19,7 @@ not a security operation (Concept C). Each fails toward the pre-0101 verdict.
 """
 import os
 import re
+from collections.abc import Sequence
 from functools import cached_property, lru_cache
 from itertools import islice
 from pathlib import Path
@@ -45,7 +46,7 @@ from shared.tools.file_scanner import (
     read_file_lines,
     scan_code_files,
 )
-from shared.tools.line_context import strip_strings_and_comments
+from shared.tools.line_context import mask_multiline, strip_strings_and_comments
 from shared.tools.snippet import (
     collect_handler_body,
     collect_scoped_body,
@@ -1343,6 +1344,7 @@ def _scan_file(
         and any(suffix in exts for exts, *_ in _EXTRA_SHAPES)
     )
     seen_lines: set[int] = set()
+    literals = _Literals(lines, suffix)
     max_chars = _max_line_chars()
     for lineno, line in enumerate(lines, 1):
         if max_chars and len(line) > max_chars:
@@ -1353,7 +1355,7 @@ def _scan_file(
         _scan_py_except(line, lineno, path_str, lines, findings)
         _scan_catch(line, lineno, path_str, lines, findings)
         _scan_auth_decision(
-            line, lineno, path_str, lines, findings, seen_lines, auth_strip
+            line, lineno, path_str, lines, findings, seen_lines, auth_strip, literals
         )
         if do_go:
             _scan_go_error_check(line, lineno, path_str, lines, findings)
@@ -2102,6 +2104,26 @@ def _scan_extra_language_shapes(
         return
 
 
+# Languages with regex literals. The whole-file mask cannot tell `/\/*$/` or
+# /`/ from a comment or a template opener, so in these files it could blank
+# everything after one; their lines keep the line-local strip only.
+_REGEX_LITERAL_SUFFIXES = _JS_EXTENSIONS | {".rb"}
+
+
+class _Literals:
+    """A file's lines with every multi-line string and block comment blanked,
+    built on first use: only an auth-candidate line ever needs them."""
+
+    def __init__(self, lines: tuple[str, ...], suffix: str):
+        self._lines, self._suffix = lines, suffix
+
+    @cached_property
+    def masked(self) -> Sequence[str]:
+        if self._suffix in _REGEX_LITERAL_SUFFIXES:
+            return self._lines
+        return mask_multiline(self._lines)
+
+
 def _scan_auth_decision(
     line: str,
     lineno: int,
@@ -2110,6 +2132,7 @@ def _scan_auth_decision(
     findings: list[dict],
     seen_lines: set[int],
     strip: bool | None = None,
+    literals: _Literals | None = None,
 ) -> None:
     """Flag auth-decision points that aren't audit-logged in the
     surrounding window. The same line is only reported once even if it
@@ -2131,8 +2154,10 @@ def _scan_auth_decision(
     # under strip_strings_and_comments — 15 are pure comment lines (`// … treated
     # as forbidden (403)`), several are enum entries (`"UNAUTHORIZED",`). The
     # module already imports the stripper; this path simply never used it.
+    # A docstring or block comment spans lines, so the line-local strip cannot
+    # see that `... a forbidden status` sits inside one: the whole-file mask can.
     if strip:
-        code = strip_strings_and_comments(line)
+        code = strip_strings_and_comments(literals.masked[lineno - 1] if literals else line)
         if not code.strip() or not _AUTH_DECISION.search(code):
             return
     if _auth_line_excused(line, lines, lineno):

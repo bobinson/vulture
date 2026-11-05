@@ -16,7 +16,7 @@ import pytest
 
 from shared.llm.cooldown import cooldown_manager
 from shared.llm.provider import get_model, get_model_with_fallback
-from tests.support.isolation import isolate
+from shared.testing.isolation import isolate
 
 
 def test_isolate_clears_model_cooldowns(tmp_path) -> None:

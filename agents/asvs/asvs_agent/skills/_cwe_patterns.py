@@ -14,6 +14,9 @@ Why a local copy (not an import from cwe_agent):
 
 Sync protocol: when CWE agent patterns change, review whether ASVS
 needs the update. Deliberate out-of-sync is acceptable.
+
+The cookie attributes' SAFE side is not copied here: both agents import it,
+with the call context it is judged on, from ``shared.tools.cookie_attributes``.
 """
 import os
 import re
@@ -145,14 +148,6 @@ COOKIE_NO_SECURE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'(?:res|response)\.cookie\s*\('),
     re.compile(r'Set-Cookie:'),
 ]
-
-SAFE_COOKIE_PATTERNS: re.Pattern[str] = re.compile(
-    r'(?:HttpOnly|httponly|http_only|httpOnly\s*[:=]\s*[Tt]rue)', re.IGNORECASE,
-)
-
-SAFE_SECURE_PATTERNS: re.Pattern[str] = re.compile(
-    r'(?:secure\s*[:=]\s*[Tt]rue|[;,]\s*[Ss]ecure\b|__Secure-|__Host-)', re.IGNORECASE,
-)
 
 SESSION_FIXATION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'session\[.*\]\s*=.*(?:request|req|params|input)', re.IGNORECASE),

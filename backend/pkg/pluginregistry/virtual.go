@@ -49,7 +49,7 @@ func AllVirtualPlugins() []Plugin {
 	for _, e := range agentregistry.AllAgents {
 		out = append(out, Plugin{
 			Manifest: VirtualManifestForInTreeAgent(e),
-			Source:   "in-tree",
+			Source:   SourceVirtual,
 			Enabled:  true,
 		})
 	}

@@ -5,11 +5,13 @@ from pathlib import Path
 
 from agents import function_tool
 
+from shared.models.finding import REPO_ROOT_PATH
 from shared.tools.file_scanner import (
     is_generated_file,
     is_test_file,
     read_file_safe,
     scan_code_files,
+    tree_files,
 )
 from shared.tools.snippet import extract_snippet
 
@@ -60,16 +62,16 @@ def _check_secrets_management(root: Path, findings: list[dict]) -> None:
             "practice": "PO-prepare-organization",
             "title": "No secrets management solution detected",
             "description": "No secrets management tool (Vault, AWS Secrets Manager, SOPS) references found",
-            "file_path": str(root),
-            "line_start": 1,
-            "line_end": 1,
+            "file_path": REPO_ROOT_PATH,
+            "line_start": 0,
+            "line_end": 0,
             "recommendation": "Integrate a secrets management solution (e.g., HashiCorp Vault, AWS Secrets Manager)",
         })
 
 
 def _check_container_security(root: Path, findings: list[dict]) -> None:
     """Check Dockerfiles and compose files for security issues."""
-    for file_path in root.rglob("Dockerfile*"):
+    for file_path in tree_files(root, globs=("Dockerfile*",)):
         if is_test_file(file_path):
             continue
         content = read_file_safe(file_path)
@@ -94,7 +96,7 @@ def _check_container_security(root: Path, findings: list[dict]) -> None:
                     })
                     break
 
-    for file_path in root.rglob("docker-compose*.yml"):
+    for file_path in tree_files(root, globs=("docker-compose*.yml",)):
         content = read_file_safe(file_path)
         if content is None:
             continue

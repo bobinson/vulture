@@ -91,7 +91,7 @@ func (f *fakeDocker) Pull(ctx context.Context, image string) error {
 	return err
 }
 
-func (f *fakeDocker) Run(ctx context.Context, argv []string) (string, error) {
+func (f *fakeDocker) Run(ctx context.Context, argv, _ []string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := append([]string(nil), argv...)

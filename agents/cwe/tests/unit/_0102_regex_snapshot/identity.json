@@ -1,0 +1,23 @@
+{
+ "cwe.injection.command": {
+  "category": "CWE-78",
+  "check_id": "cwe.injection.command",
+  "recommendation": "Use subprocess with shell=False and list arguments",
+  "severity": "critical",
+  "title": "OS command injection"
+ },
+ "cwe.injection.ssrf": {
+  "category": "CWE-918",
+  "check_id": "cwe.injection.ssrf",
+  "recommendation": "Validate URLs against an allowlist of permitted hosts/schemes",
+  "severity": "high",
+  "title": "Server-side request forgery (SSRF)"
+ },
+ "cwe.input_validation.path_traversal": {
+  "category": "CWE-22",
+  "check_id": "cwe.input_validation.path_traversal",
+  "recommendation": "Use os.path.realpath and validate against allowed base directory",
+  "severity": "high",
+  "title": "Potential path traversal"
+ }
+}

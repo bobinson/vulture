@@ -127,7 +127,7 @@ export interface Finding {
   fingerprint_v2?: string;
   cross_agent_origins?: string[];
   // Feature 0058 (R6) — detection tier that produced the finding
-  // (e.g. "skill", "signature", "semgrep"). Optional because pre-0058
+  // (e.g. "skill", "signature", "opengrep"). Optional because pre-0058
   // findings won't carry it.
   provenance?: string;
   // Feature 0045/0046 — validation layer outputs persisted on the

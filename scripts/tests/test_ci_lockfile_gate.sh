@@ -52,19 +52,10 @@ LOCKFILE_YML="$REPO_ROOT/.github/workflows/lockfile.yml"
 ACTION_YML="$REPO_ROOT/.github/actions/setup-pinned-uv/action.yml"
 CI_YML="$REPO_ROOT/.github/workflows/ci.yml"
 
-# A 40-char hex SHA followed by a `# vN` version comment — the repo's pinning
-# convention (e.g. `actions/checkout@34e1...8d5 # v4`).
-SHA_PIN_RE='@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]'
-
-# noncomment <file> — print <file> with YAML comments stripped: drop whole-line
-# comments (first non-blank char is `#`) and strip inline trailing ` #...`. The
-# NEGATIVE guards below (must-NOT-use pull_request_target / github.base_ref /
-# contains()) run against this so a comment that NAMES the forbidden token (to
-# explain it is forbidden) does not trip the guard. This narrows the guards to
-# real YAML usage; it does not relax the contract.
-noncomment() {
-    sed -e 's/[[:space:]]#.*$//' -e '/^[[:space:]]*#/d' "$1"
-}
+# The NEGATIVE guards below (must-NOT-use pull_request_target / github.base_ref
+# / contains()) run against lib.sh's `noncomment`, so a comment that NAMES the
+# forbidden token (to explain it is forbidden) does not trip the guard. This
+# narrows the guards to real YAML usage; it does not relax the contract.
 
 # ---------------------------------------------------------------------------
 # TEST 1 — lockfile.yml exists as a SEPARATE workflow (M4).
@@ -148,10 +139,7 @@ test_least_priv_and_sha_pins() {
     grep -Eq 'contents:[[:space:]]*write|packages:[[:space:]]*write|id-token:' "$LOCKFILE_YML" \
         && detail="$detail grants a write/id-token scope (must be contents:read only);"
     # Every third-party `uses:` (one with an `@`) must be SHA-pinned.
-    _bad=$(grep -E '^[[:space:]]*-?[[:space:]]*uses:' "$LOCKFILE_YML" \
-        | grep '@' \
-        | grep -v './.github/actions/' \
-        | grep -Ev "$SHA_PIN_RE" || true)
+    _bad=$(unpinned_uses "$LOCKFILE_YML")
     [ -z "$_bad" ] || detail="$detail unpinned third-party action(s): $(printf '%s' "$_bad" | tr '\n' '|');"
     if [ -z "$detail" ]; then pass "$name"; else fail "$name" "$detail"; fi
 }

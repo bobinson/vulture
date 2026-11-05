@@ -622,7 +622,7 @@ func (s *streamService) launch(ctx context.Context, wg *sync.WaitGroup, url, age
 // reported as not active and the audit continues without it.
 //
 // CONTRACT: the "<agent> tier not active" phrase is pinned — the
-// frontend (SemgrepTierNotice.tsx) string-matches it to show the
+// frontend (OpengrepTierNotice.tsx) string-matches it to show the
 // graceful-absence banner, and the T7 tests assert it. If you change
 // the wording, change both sides and the tests together.
 func agentUnavailableEvent(agentType string) *model.AgUIEvent {
@@ -729,7 +729,7 @@ func configMergeEnabled() bool {
 // Built from AllAgents, NOT ScanAgentTypes(): that helper excludes prove and
 // discover because they are pipeline stages rather than scanners, and treating
 // them as flat keys would merge `{"prove":{...}}` into every agent's config.
-// Plugin names come from the live registry, so a plugin such as semgrep routes
+// Plugin names come from the live registry, so a plugin such as opengrep routes
 // correctly with no edit here.
 func knownAgentTypes() map[string]bool {
 	known := make(map[string]bool, len(agentregistry.AllAgents)+4)

@@ -32,7 +32,7 @@ asked, and a stub's verdicts would leak into the developer's real cache). A
 test that depends on a variable sets it explicitly; ``monkeypatch.setenv`` in
 the test still wins because this fixture runs first.
 
-The implementation is ``tests.support.isolation.isolate`` so a module-scoped
+The implementation is ``shared.testing.isolation.isolate`` so a module-scoped
 fixture that runs a pipeline once can apply the identical isolation.
 """
 
@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.support.isolation import isolate
+from shared.testing.isolation import isolate
 
 
 @pytest.fixture(autouse=True)

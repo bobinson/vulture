@@ -84,6 +84,8 @@ type fakeBudget struct {
 	remainingErr   error
 	reserveReqs    []budget.ReserveRequest
 	reconcileCalls int
+	// released records the request ids whose lease was handed back.
+	released []string
 }
 
 func (f *fakeBudget) Reserve(ctx context.Context, req budget.ReserveRequest) (*budget.Reservation, error) {
@@ -114,6 +116,20 @@ func (f *fakeBudget) Reconcile(ctx context.Context, entry budget.LedgerEntry) er
 	}
 	f.reconciled = append(f.reconciled, entry)
 	return nil
+}
+
+// Release records a handed-back lease (budget.Releaser).
+func (f *fakeBudget) Release(ctx context.Context, runID, requestID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, requestID)
+	return nil
+}
+
+func (f *fakeBudget) releasedRequests() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.released...)
 }
 
 func (f *fakeBudget) Remaining(ctx context.Context, tenantID string) (float64, error) {
@@ -303,6 +319,7 @@ var (
 	_ token.Denylist            = (*fakeDenylist)(nil)
 	_ token.Revocation          = (*fakeRevocation)(nil)
 	_ budget.Manager            = (*fakeBudget)(nil)
+	_ budget.Releaser           = (*fakeBudget)(nil)
 	_ egress.ModelSelector      = (*fakeSelector)(nil)
 	_ egress.SSRFValidator      = (*fakeSSRF)(nil)
 	_ egress.Allowlist          = (*fakeAllowlist)(nil)

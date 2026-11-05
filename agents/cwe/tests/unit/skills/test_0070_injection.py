@@ -201,6 +201,7 @@ REACHABLE_PARAM = """export const checkIfDomainReachable = async (domain: string
 
 
 class TestSsrfOneHopTaint:
+    @pytest.mark.usefixtures("regex_tier")
     def test_req_body_assigned_identifier_reaches_fetch(self, tmp_path):
         (tmp_path / "imageUrlUpload.ts").write_text(PROFILE_IMAGE_UPLOAD)
         hits = _cats(check_injection(str(tmp_path)), "CWE-918")
@@ -215,6 +216,7 @@ class TestSsrfOneHopTaint:
         (tmp_path / "validate.ts").write_text(REACHABLE_PARAM)
         assert _cats(check_injection(str(tmp_path)), "CWE-918") == []
 
+    @pytest.mark.usefixtures("regex_tier")
     def test_taint_does_not_reach_beyond_window(self, tmp_path):
         body = ["import express from 'express'", "const url = req.query.u"]
         body += ["  // filler"] * 25

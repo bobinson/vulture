@@ -1,10 +1,10 @@
 package pluginsupervisor_test
 
-// Tests for the local-build fallback: when an in-tree (bundled) plugin's
-// image can be neither pulled nor found locally, the supervisor builds it
-// from the Dockerfile shipped beside its plugin.toml, tagged as the
-// manifest image. Anything else keeps the failure path, with a message
-// that names the image.
+// Tests for the local build: an in-tree (bundled) plugin with a Dockerfile
+// shipped beside its plugin.toml is never pulled; the supervisor uses its
+// local image or builds it from that Dockerfile, tagged as the manifest
+// image. Anything else is pulled, and keeps the failure path, with a
+// message that names the image.
 
 import (
 	"context"
@@ -142,5 +142,37 @@ func assertFailedNamingImage(t *testing.T, sup *pluginsupervisor.Supervisor, dk 
 	}
 	if len(dk.runs) != 0 {
 		t.Errorf("expected no docker run; got %d", len(dk.runs))
+	}
+}
+
+// A bundled plugin that ships a Dockerfile is never pulled: its image is
+// built on this machine, so no published copy of what it bundles (the
+// engine it wraps) is ever fetched from a registry.
+func TestImageBuild_BundledNeverPulled_BuildsWhenAbsent(t *testing.T) {
+	p, dir := bundledPlugin(t, true)
+	dk := &fakeDocker{}
+	reconcileOne(t, p, dk)
+
+	if len(dk.pulls) != 0 {
+		t.Errorf("bundled plugin must not be pulled; pulls=%v", dk.pulls)
+	}
+	if len(dk.builds) != 1 || dk.builds[0].contextDir != dir {
+		t.Errorf("expected 1 local build from %s; got %v", dir, dk.builds)
+	}
+	if len(dk.runs) != 1 {
+		t.Errorf("expected 1 docker run after the local build; got %d", len(dk.runs))
+	}
+}
+
+func TestImageBuild_BundledNeverPulled_UsesPresentImage(t *testing.T) {
+	p, _ := bundledPlugin(t, true)
+	dk := &fakeDocker{inspectPresent: true}
+	reconcileOne(t, p, dk)
+
+	if len(dk.pulls) != 0 || len(dk.builds) != 0 {
+		t.Errorf("present local image: no pull, no build; pulls=%v builds=%v", dk.pulls, dk.builds)
+	}
+	if len(dk.runs) != 1 {
+		t.Errorf("expected 1 docker run on the local image; got %d", len(dk.runs))
 	}
 }

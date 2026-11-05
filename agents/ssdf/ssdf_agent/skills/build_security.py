@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agents import function_tool
 
-from shared.tools.file_scanner import read_file_safe
+from shared.tools.file_scanner import read_file_safe, tree_files
 
 _SECURITY_FLAGS = re.compile(
     r"-fstack-protector|-D_FORTIFY_SOURCE|CGO_ENABLED=0|-fPIE|-pie|RELRO|stack-clash-protection",
@@ -37,11 +37,7 @@ def check_build_security(source_path: str) -> dict:
 
 def _check_dockerfiles(root: Path, findings: list[dict]) -> None:
     """Check Dockerfiles for build security practices."""
-    dockerfiles = list(root.rglob("Dockerfile*"))
-    if not dockerfiles:
-        return
-
-    for dockerfile in dockerfiles:
+    for dockerfile in tree_files(root, globs=("Dockerfile*",)):
         content = read_file_safe(dockerfile)
         if content is None:
             continue

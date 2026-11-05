@@ -9,7 +9,7 @@ import (
 
 // AuditInputsMount is the in-container path where a container plugin's
 // source tree is exposed. It is the platform convention declared by
-// plugins in runtime.fs.read (e.g. semgrep) and the default root the
+// plugins in runtime.fs.read (e.g. opengrep) and the default root the
 // plugin wrappers validate against. The supervisor mounts the source
 // here; ContainerSourcePath rewrites dispatched paths to match.
 const AuditInputsMount = "/audit-inputs"
@@ -83,7 +83,7 @@ func SanitiseDNSName(name string) string {
 //
 // Note: bridge-network plugins under localMode are not reachable on
 // localhost without published ports — a separate gap; the only shipped
-// container plugin (semgrep) declares network=host.
+// container plugin (opengrep) declares network=host.
 func PluginContainerHost(localMode bool, name string) string {
 	if localMode {
 		return "localhost"

@@ -1,0 +1,29 @@
+# yamllint disable
+# License: MIT (c) GitLab Inc.
+# yamllint enable
+---
+rules:
+- id: "scala_crypto_rule-CipherDESedeInsecure"
+  languages:
+  - "scala"
+  message: |
+    Triple DES (also known as 3DES or DESede) is considered strong ciphers for modern
+    applications. NIST recommends the usage of AES block ciphers instead of 3DES.
+  metadata:
+    category: "security"
+    cwe: "CWE-326"
+    owasp:
+    - "A3:2017-Sensitive Data Exposure"
+    - "A02:2021-Cryptographic Failures"
+    - "A04:2025-Cryptographic Failures"
+    shortDescription: "Inadequate Encryption Strength"
+    technology:
+    - "scala"
+    security-severity: "Medium"
+  patterns:
+  - pattern-inside: |-
+      javax.crypto.Cipher.getInstance("$ALG")
+  - metavariable-regex:
+      metavariable: "$ALG"
+      regex: "^(DESede)/.*"
+  severity: "WARNING"

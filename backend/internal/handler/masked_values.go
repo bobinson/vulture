@@ -117,14 +117,10 @@ func MaskedValuesNoStore(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // MaskedValuesRateKey keys the route's rate limit on the authenticated
-// principal (the route runs inside auth), so junk tokens that fall back to
-// local mode's admin share one bucket instead of minting one each.
-func MaskedValuesRateKey(r *http.Request) string {
-	if u := getUserFromContext(r); u != nil {
-		return "user:" + u.ID
-	}
-	return ""
-}
+// principal (PrincipalRateKey; the route runs inside auth), so junk tokens
+// that fall back to local mode's admin share one bucket instead of minting
+// one each.
+func MaskedValuesRateKey(r *http.Request) string { return PrincipalRateKey(r) }
 
 func presentedCredential(r *http.Request) bool {
 	byToken, _ := r.Context().Value(tokenAuthKey).(bool)

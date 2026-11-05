@@ -62,9 +62,9 @@ from shared.audit_runner import finalize_skill_findings
 from shared.llm.errors import escape_unprintable, retry_skill
 from shared.tools import suppression
 from shared.tools.file_scanner import (
-    SKIP_DIRS,
     autorun_rel_path,
     clear_caches,
+    ignored_by_default,
     is_generated_file,
     is_skill_source_file,
     is_story_file,
@@ -317,7 +317,7 @@ def _is_neutral(base: Path) -> bool:
     by the absolute path, so a ``$TMPDIR`` under ``tests/`` or ``docs/`` would
     turn every copied file into one of those and pass the gate.
     """
-    if any(part in SKIP_DIRS for part in base.parts):
+    if any(ignored_by_default(part) for part in base.parts):
         return False
     probe = base / "root"
     return not any(check(probe / name) for check, name in _PATH_CLASSIFIERS)
@@ -389,16 +389,34 @@ def _stage(tree: _Tree, src: Path, dst: Path) -> None:
         tree.stand_ins.add(dst)
 
 
-def _root_tree(files: list[Path], root: Path, base: Path) -> _Tree:
-    """Files under ``root`` at their root-relative paths, with the root's ignore files.
+def _dirs_between(files: list[Path], root: Path) -> set[Path]:
+    """Every directory strictly below ``root`` that holds a staged file."""
+    return {root / d for src in files for d in src.relative_to(root).parents if d.parts}
 
-    The ignore files are the root's working-tree copies, which is what the full
-    audit reads, whether or not they are among the staged files.
+
+def _ignore_candidates(files: list[Path], root: Path) -> Iterator[Path]:
+    """The root's ignore files, then the `.gitignore` of every directory between
+    the root and a staged file: the full audit applies each one beneath its own
+    directory."""
+    yield from (root / name for name in _IGNORE_FILES)
+    for directory in sorted(_dirs_between(files, root)):
+        yield directory / ".gitignore"
+
+
+def _ignore_files(files: list[Path], root: Path) -> list[Path]:
+    """The ignore files the full audit reads: never one through a symlink."""
+    return [p for p in _ignore_candidates(files, root) if p.is_file() and not p.is_symlink()]
+
+
+def _root_tree(files: list[Path], root: Path, base: Path) -> _Tree:
+    """Files under ``root`` at their root-relative paths, with their ignore files.
+
+    The ignore files are the working-tree copies, which is what the full audit
+    reads, whether or not they are among the staged files.
     """
     tree = _Tree(scan_root=base, source_root=str(root), dirs={base: root})
-    for name in _IGNORE_FILES:
-        if (root / name).is_file():
-            _copy(root / name, base / name)
+    for ignore in _ignore_files(files, root):
+        _copy(ignore, base / ignore.relative_to(root))
     for src in files:
         _stage(tree, src, base / src.relative_to(root))
     return tree

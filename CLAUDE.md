@@ -98,9 +98,11 @@ vulture/
 
 The file scanner (`agents/shared/shared/tools/file_scanner.py`) skips paths in three layers, in order:
 
-1. Hardcoded `SKIP_DIRS` / `SKIP_FILES` (e.g. `.git`, `node_modules`, `__pycache__`, lock files).
-2. `.gitignore` at the source root — read by default, gitignore-syntax via `pathspec`. Disable with `VULTURE_IGNORE_GITIGNORE=true`.
-3. `.vultureignore` at the source root — same syntax, always honored when present. Use this to exclude paths that aren't gitignored but shouldn't be audited (test artifacts, vendored data files, recorded fixtures).
+1. The default ignore file, `default.vultureignore` at the repo root: one directory-name glob per line (`node_modules/`, `dist/`, `build/`, `fixtures/`, `*-backup/`, ...), each matching at any depth, and never a word projects name their own code with (`data`, `bin`, `env`, `mocks`). No folder name is in code except the version-control stores (`.git`, `.svn`, `.hg`, `.bzr`), and a Python virtualenv is pruned by its `pyvenv.cfg` whatever its name; neither can be brought back. A project brings a listed folder back with a negation in its root `.vultureignore` (`!build/`, or `!web/build/` for that one only); a `.gitignore` cannot. The scanner (`agents/shared/shared/tools/`), the backend (`backend/pkg/scanignore/`: the staged copy a container plugin scans, the source file count) and the opengrep plugin (`plugins/opengrep/src/`) are each built from their own directory, so each carries a byte-identical copy that its tests compare with the root file: edit the root file, then copy it to all three (the command is in its header). How-to with examples: `docs/guides/vultureignore-howto.md`. `SKIP_FILES` (lock files) stays in code: the walk reaches those files, the code scan never parses them.
+2. Every `.gitignore` in the tree, applied as git applies it — read by default, gitignore-syntax via `pathspec`: each to the paths beneath its own directory with patterns relative to it, the deepest matching file deciding; one inside an ignored directory is never read, and none is followed through a symlink. So a directory that ignores itself (Hypothesis's `.hypothesis/`, whose `.gitignore` holds `*`) is skipped. Disable all of them with `VULTURE_IGNORE_GITIGNORE=true`.
+3. `.vultureignore` at the source root (root only) — same syntax, always honored when present, and it overrides every `.gitignore` and the default ignore file. Use this to exclude paths that aren't gitignored but shouldn't be audited (test artifacts, vendored data files, recorded fixtures).
+
+Every other look at the scanned tree goes through the same walker. Skills use `tree_files` / `tree_dirs` (filtered views of the cached walk, always from the scan root) and `present` (a fixed location the walk reaches; SKIP_FILES not applied) instead of `rglob`/`os.walk`. The model-facing tools — the generate phase's `read_file` / `list_files` / `search_pattern` and the L5 judge's tools — share one check, `shared.tools.confine.scan_refusal`: a path outside the root; one the walk never reaches, each step spelled as its directory lists it; or a withheld file name (SKIP_FILES, a file named like a skipped directory, the dotenv family `.env` / `.env.*` / `.envrc`) is refused. A missing path is refused whenever a rule would hide it, so a refusal never reveals whether a file exists. The staged copy a container plugin scans (`backend/internal/staging`, a documented subset of the syntax) applies the same files.
 
 The repo ships its own `.vultureignore` covering `.playwright-mcp/`, `docs/cwe_version_*/`, `agents/cwe/cwe_agent/data/cwe_catalog.json`, etc. Add project-specific patterns at the bottom of that file. Note `.vultureignore` is read from the **scanned** root, so this repo's copy has no effect when auditing some other project.
 
@@ -232,6 +234,7 @@ These rules are mandatory for all code in this project:
 - All handlers accept service interfaces for testability
 - All services accept repository interfaces for mock injection
 - Error handling: return errors, don't panic. Wrap errors with context using `fmt.Errorf("operation: %w", err)`
+- Error responses never carry internal error text (CWE-209): every 500 goes through `writeInternalError` (logs the cause under the request id; body `{"error":"internal error","request_id":…}`), and only caller-input text marked with `service.InvalidInput`, or a curated literal from `service.InvalidInputMsg`, reaches a 4xx (via `writeInvalidOrInternal`). Mark errors with `errkind.Mark`, which keeps the text for the log. `handler/error_body_static_test.go` enforces literal messages and no direct 500s
 - Naming: `handler/audit_handler.go`, `service/audit_service.go`, `model/audit.go`
 - Tests: `*_test.go` next to source files for unit tests, `test/e2e/` for E2E
 - Use `golangci-lint` for linting, `gocyclo` for complexity checks
@@ -252,7 +255,7 @@ These rules are mandatory for all code in this project:
 - Native EventSource API for SSE streaming (no ag-ui client library)
 - react-i18next for internationalization (en, es, de, fr, ja, pt)
 - Tailwind CSS v4 with custom theme (cream bg `#F6F5F0`, blue accent `#2563eb`, green highlight `#22c55e`)
-- Auth: JWT token in localStorage, AuthProvider context, protected routes
+- Auth: AuthProvider context, protected routes. The backend issues a browser session as an HttpOnly, SameSite=Strict cookie (`vulture_session`; `__Host-vulture_session` with `Secure` over HTTPS) to a sign-in that sends `X-Vulture-CSRF: 1`, and refuses a cookie-authenticated unsafe request without that header (403). The SPA keeps no credential: nothing in Web Storage (it removes the legacy `vulture_token` key once, at start) and no `Authorization` header; `api.ts` sends `X-Vulture-CSRF: 1` on every request with fetch's default `same-origin` credentials. Boot asks `GET /api/auth/me`, then the local session, then shows /login. Sign-out POSTs `/api/auth/logout` and clears the session only on its 204: on an error, or no answer within 3 s, the session stays and the sidebar offers a retry (the SPA cannot delete the HttpOnly cookie itself). `src/lib/credential_storage.guard.test.ts` fails vitest if production code puts a credential in Web Storage, builds an `Authorization` header or touches `document.cookie`. The Settings page stores only the model choice (`vulture_settings`): the API key field is never written to Web Storage, and a key an older version saved there is stripped on load
 - Tests: Playwright for E2E (22 tests), Vitest for unit tests
 - Use `eslint` + `prettier` for linting/formatting
 
@@ -285,15 +288,18 @@ To add a new audit type (e.g., GDPR):
 | GET | `/api/audits/:id/findings/:fid/masked` | Locate the masked values in a finding's snippet against the scanned file; the values themselves only to an authorised human (admin; locally, the signed-in session). See `docs/architecture/agent_protocol.md` "Masked values" |
 | GET | `/api/agents` | List available agent types |
 | GET | `/api/agents/:type/info` | Get agent config schema & skills |
-| POST | `/api/auth/register` | Register new user |
-| POST | `/api/auth/login` | Login and get JWT token |
-| GET | `/api/auth/me` | Get current user (requires auth) |
-| GET | `/api/auth/local-session` | Passwordless token (local mode) |
+| POST | `/api/auth/register` | Register new user (session as for login) |
+| POST | `/api/auth/login` | Login. A JWT in the body for Bearer clients (CLI, CI, scripts); with `X-Vulture-CSRF: 1`, an HttpOnly session cookie instead, and no `token` in the body |
+| POST | `/api/auth/logout` | Delete the session cookie (204). Requires `X-Vulture-CSRF`; no auth, so it works on a read-only viewer. The JWT is not revoked: it expires with the session (24h) |
+| GET | `/api/auth/me` | Get current user. 401 unless the request presented a credential, so local mode's implicit user gets 401 here |
+| GET | `/api/auth/local-session` | Passwordless token (local mode); with `X-Vulture-CSRF: 1`, the session cookie instead |
 | GET | `/api/memories/search` | Semantic search (pgvector) |
 | GET | `/api/memories/by-path` | Get findings for a codebase path |
 | GET | `/api/memories/:id/edges` | Get related memories (graph) |
-| POST | `/api/filesystem/browse` | Browse local filesystem |
+| GET | `/api/filesystem/browse` | Browse server directories (member or admin; follows `VULTURE_SOURCE_ROOT`) |
 | GET | `/health` | Health check |
+
+Credentials: a request presents ONE credential, in this order, and a present one never falls through to the next: a `stream_token` (honoured only on `/api/audits/:id/stream`), an `Authorization` header (a JWT or a `vk_` API key), then the session cookie (a JWT only; ignored on a request whose `Sec-Fetch-Site` is `same-site` or `cross-site`). A cookie-authenticated unsafe request must send `X-Vulture-CSRF` (403 otherwise). The routes that mint or manage credentials (`/api/api-keys`, `/api/admin/users`) take a Bearer credential only; the session cookie gets 403 there. `X-Vulture-CSRF` is deliberately absent from the CORS `Access-Control-Allow-Headers`.
 
 ## Memory System
 
@@ -320,6 +326,7 @@ VULTURE_AGENT_CHAOS_URL=http://agent-chaos:8001  # Agent endpoints
 VULTURE_AGENT_OWASP_URL=http://agent-owasp:8002
 VULTURE_AGENT_SOC2_URL=http://agent-soc2:8003
 VULTURE_AGENT_CWE_URL=http://agent-cwe:8004
+VULTURE_AGENT_TOKEN=  # Shared /run secret of the in-tree agents: the backend sends it as X-Vulture-Agent-Token, and an agent refuses /run without it whenever it is set. REQUIRED in centralized mode (startup fails without it); the native launcher generates one per start when unset. Plugins never get it: each gets hex(HMAC-SHA256(key, "vulture-plugin-run-token/v1:<name>")), key = this token or a per-process random one, delivered through its container env; the docker CLI that starts plugins never inherits it
 VULTURE_EMBEDDING_URL=  # Custom embedding endpoint
 VULTURE_EMBEDDING_MODEL=  # Embedding model override
 
@@ -336,16 +343,16 @@ VULTURE_LINEAGE_KEY=target  # `target` (default) or `path`. What counts as "the 
 VULTURE_FINDING_IDENTITY=observe  # `observe` (default) / `off` / `enforce`. Whether a finding is stamped with `fingerprint_v2`, the identity keyed on check_id and a root-canonical path so it survives an LLM rephrasing and a mount change. `enforce` also swaps `fingerprint` itself and is irreversible; `off` is the rollback
 VULTURE_MEMORY_SYNC=true  # Propagate every lineage status transition onto `audit_memories.remediation_status` (open/in_progress/regression/unconfirmed -> `open`; fixed/resolved -> `resolved`; false_positive and accepted_risk map to themselves).
 
-# Security hardening — opt-in; defaults preserve current behavior
+# Security hardening — each entry states its default. Not every default preserves older behavior: some now refuse what an older release allowed
 VULTURE_TRUSTED_PROXIES=  # Comma CIDR/IP list of proxies allowed to set X-Forwarded-For. Unset = trust the direct peer only.
 VULTURE_LOGIN_LOCKOUT_MAX=5  # Failed logins per (email,IP) before the escalating (capped) delay engages; a hard ceiling at 2x returns 429. Non-positive value falls back to 5
 VULTURE_LOGIN_LOCKOUT_WINDOW_SEC=900  # Sliding window (seconds) for the login throttle (default 900 = 15 min). Non-positive value falls back to 900
 VULTURE_ALLOW_OPEN_REGISTRATION=  # Allow public POST /api/auth/register. Default: true when VULTURE_LOCAL_MODE is set, false otherwise. When false, provision users via admin-only POST /api/admin/users
-VULTURE_SOURCE_ROOT=  # Confines local-path (Type=local) source ingest to this directory (symlinked parents resolved so they cannot escape). In centralized mode (VULTURE_LOCAL_MODE unset) local ingest is REJECTED unless this is set
-VULTURE_GIT_HOST_ALLOWLIST=  # Comma list of git hosts permitted even if they resolve to an internal IP (SSRF guard). Empty = public hosts only; internal targets blocked
+VULTURE_SOURCE_ROOT=  # Confines server-side local paths to this directory: local-path (Type=local) source ingest, the folder browser (GET /api/filesystem/browse), and the dispatch of a stored local source (an audit of a row the policy now refuses fails with `source refused by the local-path policy`, and no agent runs). In centralized mode (VULTURE_LOCAL_MODE unset) all three are REFUSED unless this is set, and a read-only server refuses them whatever its value. A confined path must be absolute, without `..`, at most 4096 bytes, and spelled under the root (an outside symlink spelling that points into the root is refused: submit the canonical path); symlinks are then resolved so nothing escapes. Refusals are deliberately uniform: every outside, unresolvable or hostile path gets the same 400 (`path not permitted: must be an existing directory inside the source root`), and only paths inside the root get errors that name them. Browse also requires a member or admin. Use a dedicated directory, never the checkout, named as the backend sees it: e.g. /srv/vulture/sources for a backend on the host; under docker compose the backend sees host files only at /mnt/source (the VULTURE_SOURCE_DIR bind mount, whose default ./ is the checkout), so set /mnt/source and point VULTURE_SOURCE_DIR at the dedicated directory. Browse refuses denylisted system trees (/var, /usr, /etc, ...) even inside the root
+VULTURE_GIT_HOST_ALLOWLIST=  # Comma list of the only git hosts a clone may use. Empty = any public host. It does NOT exempt a host from the SSRF guard: every git host, listed or not, must resolve to a public IP, so an internal git server cannot be cloned
 VULTURE_GIT_ALLOW_REDIRECTS=false  # Allow git to follow HTTP redirects during clone. Default off (http.followRedirects=false) blocks redirect-based SSRF; enable only for trusted hosts
-VULTURE_GIT_SSH_STRICT=accept-new  # SSH StrictHostKeyChecking mode for key clones (TOFU on first contact). Requires OpenSSH >= 7.6 (startup probe falls back and warns otherwise)
-VULTURE_GIT_SSH_KNOWN_HOSTS=  # UserKnownHostsFile path for SSH clones. Default: a per-install path under the data dir
+VULTURE_GIT_SSH_STRICT=accept-new  # SSH StrictHostKeyChecking mode for key clones (TOFU on first contact). Requires OpenSSH >= 7.6 (startup probe falls back to yes and warns otherwise). `yes` accepts no new host: seed the host-key store first (docs/guides/central_server_deployment.md "SSH host-key store")
+VULTURE_GIT_SSH_KNOWN_HOSTS=  # Operator-managed UserKnownHostsFile for SSH key clones, used verbatim and unchecked. Default: <directory of VULTURE_DB_PATH>/ssh/known_hosts (container /data/ssh/known_hosts), verified before every key clone and before the key is written: the ssh dir is a real directory of the backend user's (a loose mode is tightened to 0700), its parent is not world-writable without the sticky bit, the file is absent or a single-link regular file of the backend user's, and the path holds nothing ssh would interpret. Anything else, or no database file (in-memory), fails the clone closed with a 500; the cause and this remedy go to the log. Never the shared temp dir
 VULTURE_GIT_SSH_INSECURE=false  # Restore legacy no-host-key-verification for SSH clones (rollback escape hatch; disables MITM protection)
 VULTURE_WEBHOOK_HOST_ALLOWLIST=  # Comma list of internal hosts permitted as webhook targets. Empty = public-only (internal webhook targets blocked)
 VULTURE_AGENT_ENV_SCRUB=true  # Native modes: spawned agents receive a FILTERED copy of the backend env — backend credentials (JWT secret, DB DSN/password, webhook HMAC, broker mint key) and injection vectors (LD_PRELOAD, LD_AUDIT, DYLD_*, PYTHONSTARTUP, PYTHONUSERBASE, PYTHONHOME) are removed.
@@ -370,7 +377,7 @@ VULTURE_MAX_MANIFEST_SIZE=16777216  # Read cap for dependency manifests only (16
 VULTURE_EXTRA_EXTENSIONS=  # Comma list of extra extensions to scan, e.g. ".sol,jsonnet,.CUE" (leading dot optional, case-insensitive). Added on top of the built-in whitelist
 VULTURE_DISABLE_EXTENSION_WHITELIST=false  # Restore the narrow code-only extension set (drops templates, docs, .sql/.tf, and canonical Dockerfile/.npmrc coverage). Rollback escape hatch
 VULTURE_SCAN_MINIFIED=false  # Scan minified/bundled artefacts (*.min.js, *.bundle.css) as source. Off by default: one bundle produces dozens of line-1 findings for code you don't control
-VULTURE_SCAN_EDITOR_CONFIG=true  # the walker yields WELL_KNOWN_AUTORUN_FILES (.vscode/*.json,.idea/*,.claude/*,.devcontainer/*) even though those dirs are in SKIP_DIRS, so the CWE `workspace_autorun` skill can find a task that shells out on folder-open. Everything else in them stays pruned. false prunes them entirely
+VULTURE_SCAN_EDITOR_CONFIG=true  # the walker yields WELL_KNOWN_AUTORUN_FILES (.vscode/*.json,.idea/*,.claude/*,.devcontainer/*) even though the default ignore file lists those dirs, so the CWE `workspace_autorun` skill can find a task that shells out on folder-open. Everything else in them stays pruned. false prunes them entirely
 VULTURE_SECRET_SCAN_ENTROPY=  # Opt-in entropy scanning for the secret skill; without it a bare key blob with no assignment context yields nothing
 VULTURE_LLM_BUDGET_USD=  # Optional USD spend cap for the LLM phase; unset / <= 0 = no cap
 
@@ -407,7 +414,10 @@ VULTURE_SECRET_SCAN_PROSE=true  # CWE agent: scan prose/data files for secrets. 
 # (gpt-4o) and the broker path, extra_args are splatted into openai's create, which accepts
 # neither the kwarg nor **kwargs — the broker's own client already sets max_retries=0.
 # SCOPE: this covers the GENERATE path only. The L5 judge builds its own client
-# (validate/llm_judge.py) and is NOT covered — it keeps the SDK default of 2 retries.
+# (validate/llm_judge.py) and keeps the SDK default of 2 retries, which follow the broker's
+# Retry-After. A rate-limited / refused / reset / 5xx judge request ends its batch after that
+# one request; only a malformed answer or a timeout walks the response-mode / token-budget /
+# strict-JSON fallbacks, so a rate-limited batch costs at most 3 HTTP attempts (was ~27).
 
 # Evidence quotation and anchor verification. The LLM tier now has to QUOTE
 # the source it accuses, and the quote is checked by whitespace-normalised string search in
@@ -438,14 +448,14 @@ VULTURE_LLM_QUOTE_NEAR_MISS_MIN=0.6  # Similarity at or above which a non-matchi
 
 VULTURE_FINDING_WINDOW_PARITY=true  # Records WHY a finding has no code window, as a zero-weight `window` check inside the existing `validation` blob: inherited / rollup_parent / no_code_location / unreadable / no_line / present / out_of_range (= the anchor stamp's `past_eof`: the file was read but the cited line is past its end, so the row gets no window and keeps no snippet).
 VULTURE_AGENT_MAX_AUDIT_SECONDS=900  # whole-audit wall-clock ceiling (skill+generate+L5); backstops disconnect cancellation. Keep this at or below VULTURE_AGENT_PROXY_TIMEOUT_SEC - VULTURE_LLM_CALL_TIMEOUT_SEC. 0 disables
-VULTURE_LLM_CALL_TIMEOUT_SEC=  # per-LLM-call/per-batch timeout so a hung model can't starve the between-batch cancel/deadline checks.
+VULTURE_LLM_CALL_TIMEOUT_SEC=  # per-LLM-call/per-batch timeout so a hung model can't starve the between-batch cancel/deadline checks. Through the broker the deadline starts when a request is admitted to a provider slot (16 per provider); a request queues for a slot for at most this long, and past that, or past 4 waiters per slot, the broker answers rate_limited with Retry-After; the caller's own timeout still includes the wait. Budget leases are sized from it, and a failed request releases its lease at once
 VULTURE_AUDIT_EXECUTOR_WORKERS=8  # dedicated audit-producer thread pool size = per-agent concurrent-audit cap
 VULTURE_AGENT_PORT=8001  # Service port (varies per agent)
 VULTURE_BACKEND_URL=http://backend:8080  # Backend URL for memory API
 OLLAMA_API_BASE=http://localhost:11434  # Ollama endpoint (local models)
 
 # Frontend
-VITE_API_URL=http://localhost:8080  # Backend URL
+VITE_API_URL=http://localhost:8080  # Backend URL. Browser sessions are same-origin only (the session cookie is host-only), so a build whose API URL is another origin is unsupported for browser sign-in; the dev proxy, nginx `/api/` and the embedded UI are all same-origin
 ```
 
 ## SSE Event Types

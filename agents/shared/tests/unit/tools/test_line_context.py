@@ -165,3 +165,17 @@ def test_prose_file_unchanged():
     """Guard the pre-existing predicate the new ones sit beside."""
     assert is_prose_file(Path("README.md"))
     assert not is_prose_file(Path("main.py"))
+
+
+def test_interpolated_code_keeps_what_a_literal_interpolates():
+    """A log call logs its interpolations and concatenated operands, never its
+    message text (CWE-117 ``source_flows``)."""
+    from shared.tools.line_context import interpolated_code
+
+    assert interpolated_code('logger.warn("term=" + term);') == 'logger.warn("" + term);'
+    assert interpolated_code('logger.error(f"rejected {name}")') == "logger.error( name )"
+    assert interpolated_code("console.warn(`role ${req.headers.role}`);") == (
+        "console.warn( req.headers.role );"
+    )
+    assert "user" not in interpolated_code('log.info("user count: " + str(n))  # user')
+    assert interpolated_code("r = 'it''s'") == 'r = """"'

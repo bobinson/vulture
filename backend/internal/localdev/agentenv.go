@@ -18,14 +18,15 @@ import (
 // page in the browser, could make an agent scan any readable path and stream it
 // back. It is set in the launcher's own environment so both sides inherit the
 // same value: the backend through Manager.Start, the agents through
-// AgentSpawnEnvFromHost, whose keep-set names it.
+// AgentSpawnEnvFromHost, whose keep-set names it. Idempotent: both startBackend
+// and startAgents call it, whichever runs first.
 func ensureAgentToken() {
-	if os.Getenv("VULTURE_AGENT_TOKEN") != "" {
+	if os.Getenv(pluginregistry.AgentTokenEnv) != "" {
 		return
 	}
 	b := make([]byte, 32)
 	_, _ = rand.Read(b) // never fails since Go 1.24
-	_ = os.Setenv("VULTURE_AGENT_TOKEN", hex.EncodeToString(b))
+	_ = os.Setenv(pluginregistry.AgentTokenEnv, hex.EncodeToString(b))
 }
 
 // Feature 0073 — the agent spawn-env filter.
@@ -66,10 +67,12 @@ var agentEnvHazardVars = []string{
 // place the plugin vocabulary and the agent vocabulary differ, and it is
 // deliberately tiny.
 //
-// VULTURE_AGENT_TOKEN: the agent authenticates to the backend with it
-// (shared/transport/sse_app.py). Filtering it breaks every agent callback.
+// VULTURE_AGENT_TOKEN: the agent requires it on every /run the backend sends
+// (X-Vulture-Agent-Token, checked in shared/transport/sse_app.py) and presents
+// it on its own agent-to-agent /run calls. It is not a credential the agent
+// uses against the backend. Filtering it would leave the agent's /run open.
 var agentKeepSet = map[string]bool{
-	"VULTURE_AGENT_TOKEN": true,
+	pluginregistry.AgentTokenEnv: true,
 }
 
 // agentDeniedConfig are backend-only variables the secret RULE cannot catch
@@ -171,14 +174,20 @@ func AgentSpawnEnv(base []string, p SpawnEnvPolicy) []string {
 		return out
 	}
 
+	return subtractEnv(base, func(name string) bool { return agentEnvDenies(name, p) })
+}
+
+// subtractEnv returns a fresh copy of base without the entries whose NAME deny
+// matches. deny receives the name upper-cased and trimmed, the form
+// pluginregistry.IsBackendSecret uses. Removal has to happen here, before a
+// child starts: os/exec resolves a duplicate key to its last occurrence, so
+// appending can override a variable but never withhold one.
+func subtractEnv(base []string, deny func(string) bool) []string {
 	out := make([]string, 0, len(base))
 	for _, kv := range base {
 		name, _, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue // not a KEY=VALUE entry; os/exec ignores these anyway
-		}
-		if agentEnvDenies(strings.ToUpper(strings.TrimSpace(name)), p) {
-			continue
+		if !ok || deny(strings.ToUpper(strings.TrimSpace(name))) {
+			continue // denied, or not KEY=VALUE (os/exec ignores those anyway)
 		}
 		out = append(out, kv)
 	}
@@ -215,12 +224,34 @@ func agentEnvDenies(name string, p SpawnEnvPolicy) bool {
 	return pluginregistry.IsBackendSecret(name)
 }
 
-// AgentSpawnEnvFromHost is the ONLY sanctioned reader of the process
-// environment for agent spawning. Keeping the os.Environ() call in this one
-// file is what lets the forbidigo rule ban it everywhere else — the guardrail
-// 0044 specified (plan:1129) and never installed.
+// hostEnv is the package's ONLY sanctioned reader of the process environment
+// for a filtered child (agents, and the docker CLI that launches plugins).
+// Keeping the os.Environ() call in this one function is what lets the
+// forbidigo rule ban it everywhere else — the guardrail 0044 specified and
+// never installed. TestHostEnv_SingleSanctionedReader pins it.
+func hostEnv() []string {
+	return os.Environ() //nolint:forbidigo // the sanctioned call site
+}
+
+// AgentSpawnEnvFromHost is the host environment filtered for an agent spawn.
 func AgentSpawnEnvFromHost(p SpawnEnvPolicy) []string {
-	return AgentSpawnEnv(os.Environ(), p) //nolint:forbidigo // the sanctioned call site
+	return AgentSpawnEnv(hostEnv(), p)
+}
+
+// PluginCLIEnvFromHost is the host environment filtered for the docker CLI
+// that launches plugin containers. A name-only `-e NAME` in its argv copies
+// NAME from this environment into the container, so it must hold none of the
+// backend's credentials and no injection vector. Unlike the agent filter it has
+// no keep-set (VULTURE_AGENT_TOKEN included), no passthrough and no Scrub
+// hatch: a plugin's token is added by the supervisor as an explicit overlay.
+func PluginCLIEnvFromHost() []string {
+	return subtractEnv(hostEnv(), deniedForPluginCLI)
+}
+
+// deniedForPluginCLI is the docker CLI's deny rule: every injection vector and
+// every backend secret, including the provider keys the agent filter may keep.
+func deniedForPluginCLI(name string) bool {
+	return isHazardVar(name) || pluginregistry.IsBackendSecret(name)
 }
 
 // IsScrubbed reports whether the given env list omits every hazardous

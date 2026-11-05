@@ -100,7 +100,7 @@ func TestDockerClient_Run_ReturnsContainerID(t *testing.T) {
 	t.Setenv("VULTURE_DOCKER_BINARY", bin)
 
 	dc := pluginsupervisor.NewDockerClient(pluginsupervisor.DockerOptions{})
-	id, err := dc.Run(context.Background(), []string{"run", "-d", "ghcr.io/x/y:1"})
+	id, err := dc.Run(context.Background(), []string{"run", "-d", "ghcr.io/x/y:1"}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

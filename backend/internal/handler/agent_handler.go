@@ -14,7 +14,7 @@ import (
 type AgentHandler struct {
 	agents   map[string]config.AgentConfig
 	readOnly bool
-	// G1: when wired, enabled registry plugins (e.g. semgrep) are surfaced in
+	// G1: when wired, enabled registry plugins (e.g. opengrep) are surfaced in
 	// /api/agents alongside the built-in agents. nil-safe — when unset the
 	// handler behaves exactly as before (built-ins only).
 	reg       pluginregistry.Registry

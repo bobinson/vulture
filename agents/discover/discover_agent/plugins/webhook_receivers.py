@@ -7,6 +7,8 @@ GitHub, Slack, Telegram, Twilio, generic HMAC).
 
 import logging
 import re
+from collections.abc import Iterator
+from itertools import islice
 from pathlib import Path
 
 from shared.discovery.plugin_base import (
@@ -15,6 +17,7 @@ from shared.discovery.plugin_base import (
     DiscoveryResult,
     register_plugin,
 )
+from shared.tools.file_scanner import tree_files
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,6 @@ _WEBHOOK_SIGNATURES: list[tuple[re.Pattern, str]] = [
 ]
 
 _ROUTE_IN_FILE_RE = re.compile(r"""['"](/[\w/\-:.{}]+)['"]""")
-_EXCLUDED_DIRS = {"node_modules", "dist", "build", ".next", ".git", "__pycache__"}
 
 
 @register_plugin
@@ -57,7 +59,9 @@ class WebhookReceiversPlugin(DiscoveryPlugin):
         tech_set: set[str] = set()
 
         pass1_files = _find_webhook_files(root)
-        for fpath in pass1_files:
+        # In a fixed order: which file first claims a shared path must not
+        # depend on a set's iteration order.
+        for fpath in sorted(pass1_files):
             _process_file(fpath, root, receivers, seen_paths, tech_set)
 
         _scan_remaining(root, pass1_files, receivers, seen_paths, tech_set)
@@ -70,15 +74,8 @@ def _scan_remaining(
     receivers: list[dict], seen_paths: set[str], tech_set: set[str],
 ) -> None:
     """Pass 2: scan remaining files for webhook signatures."""
-    scanned = 0
-    for fpath in root.rglob("*"):
-        if scanned >= _MAX_FILES:
-            break
-        if not fpath.is_file() or fpath.suffix not in _JS_EXTENSIONS:
-            continue
-        if _is_excluded(fpath) or fpath in pass1_files:
-            continue
-        scanned += 1
+    remaining = (fpath for fpath in _source_files(root) if fpath not in pass1_files)
+    for fpath in islice(remaining, _MAX_FILES):
         _process_file(fpath, root, receivers, seen_paths, tech_set)
 
 
@@ -99,25 +96,15 @@ def _build_result(
 
 def _find_webhook_files(root: Path) -> set[Path]:
     """Find files with webhook/hook/callback in their path."""
-    results: set[Path] = set()
-    count = 0
-    for fpath in root.rglob("*"):
-        if count >= _MAX_FILES:
-            break
-        if not fpath.is_file() or fpath.suffix not in _JS_EXTENSIONS:
-            continue
-        if _is_excluded(fpath):
-            continue
-        rel = str(fpath.relative_to(root))
-        if _PATH_KEYWORDS.search(rel):
-            results.add(fpath)
-        count += 1
-    return results
+    return {
+        fpath for fpath in islice(_source_files(root), _MAX_FILES)
+        if _PATH_KEYWORDS.search(str(fpath.relative_to(root)))
+    }
 
 
-def _is_excluded(fpath: Path) -> bool:
-    """Skip vendor/build directories."""
-    return any(p in _EXCLUDED_DIRS for p in fpath.parts)
+def _source_files(root: Path) -> Iterator[Path]:
+    """The walked source files of the kinds a webhook receiver is written in."""
+    return (fpath for fpath in tree_files(root) if fpath.suffix in _JS_EXTENSIONS)
 
 
 def _process_file(

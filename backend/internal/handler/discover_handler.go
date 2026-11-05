@@ -27,7 +27,7 @@ func (h *DiscoverHandler) GetByAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.svc.GetResultByAuditID(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get discover result", err)
 		return
 	}
 	if result == nil {
@@ -47,7 +47,7 @@ func (h *DiscoverHandler) GetByTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.svc.GetResultByTarget(targetURL)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, "get discover result by target", err)
 		return
 	}
 	if result == nil {

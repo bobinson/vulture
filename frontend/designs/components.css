@@ -93,6 +93,17 @@
 .chip-on      { background-color: var(--color-foreground); color: var(--color-surface); }
 button.badge  { cursor: pointer; }
 
+/* Shared InlineRetry (src/components/shared/InlineRetry.tsx) — one line of
+   danger text, then a retry link-button in the app's 11px accent link style.
+   Busy (the retried action is in flight): aria-disabled, drawn like a
+   disabled button, and still focusable. The focus ring sits inside the box,
+   so a parent that clips its overflow cannot cut it off. */
+.v-inline-retry { margin: 0; font-size: var(--text-2xs); color: var(--color-danger); }
+.v-inline-retry button { color: var(--color-accent); cursor: pointer; }
+.v-inline-retry button:hover { text-decoration: underline; }
+.v-inline-retry button[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+.v-inline-retry button:focus-visible { outline-offset: -2px; }
+
 .terminal {
   background-color: var(--color-terminal); border-radius: var(--radius-card);
   font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.7; overflow: hidden; color: var(--color-terminal-text);
