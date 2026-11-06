@@ -203,11 +203,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install dependencies
-        # shared[dev] pulls the test stack (pytest, pytest-asyncio, pytest-cov,
-        # httpx, anyio) at the versions pinned in shared/pyproject.toml; the
-        # other packages share that stack, so plain editable installs suffice.
-        run: cd agents && pip install -e "shared/[dev]" && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/ && pip install -e asvs/ && pip install -e do178c/
+      - name: Build the agents' test venv
+        # agents/.venv-dev, from agents/requirements-dev-frozen.txt: the runtime
+        # pins plus the test tools (pytest, radon, ...), hashed wheels only, the
+        # agent packages loaded from the checkout. As `make test-agents` locally.
+        run: make build-agents-dev
       - name: Test agents
         # Run each package separately: collecting all trees in one pytest
         # invocation collides on duplicate test-file basenames (e.g.
@@ -217,19 +217,18 @@ jobs:
           cd agents
           for pkg in shared chaos_engineering owasp soc2 cwe prove xss ssdf discover asvs do178c; do
             echo "::group::pytest $pkg"
-            python -m pytest "$pkg/tests/" -v || exit 1
+            .venv-dev/bin/python -m pytest "$pkg/tests/" -v || exit 1
             echo "::endgroup::"
           done
       - name: Complexity report (target < C; informational, not gated)
         run: |
-          pip install radon
           echo "Functions at complexity grade C or worse (target < C; monitored, not gated):"
-          (cd agents && radon cc . -nc --exclude=".venv/*") || true
+          (cd agents && .venv-dev/bin/python -m radon cc . -nc --exclude=".venv/*,.venv-dev/*") || true
 
   test-mcp:
-    # The MCP server (mcp/) has its own dependency set (the mcp SDK, respx);
-    # install it from mcp/pyproject.toml's [dev] extra, the same set
-    # `make test-mcp` builds its local venv from.
+    # The MCP server (mcp/) has its own dependency set (the mcp SDK 1.x, respx):
+    # `make test-mcp` builds mcp/.venv from mcp/requirements-dev-frozen.txt and
+    # runs the tests in it, as locally.
     runs-on: ubuntu-latest
     needs: lint-agents
     steps:
@@ -238,10 +237,8 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install dependencies
-        run: pip install -e "./mcp[dev]"
       - name: Test MCP server
-        run: cd mcp && python -m pytest tests/ -v
+        run: make test-mcp
 
   # ── CWE corpus gate (feature 0057 P5e / R17) ────────────────
   # PR lane: the CURATED subset only (`make cwe-corpus`) — deterministic,
@@ -257,13 +254,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install agent deps (shared pulls openai-agents → `agents` SDK)
-        # The corpus runner imports cwe_agent.skills, which needs
-        # `function_tool` from the openai-agents SDK (a vulture-shared dep).
-        run: cd agents && pip install -e "shared/[dev]" && pip install -e cwe/
       - name: Curated CWE corpus subset + stale-golden gate
         # `make cwe-corpus` = curated fragments (deterministic, <~60s) +
-        # `report_coverage.py --check` (fails CI if VERIFIED_CWES.md drifted).
+        # `report_coverage.py --check` (fails CI if VERIFIED_CWES.md drifted),
+        # in agents/.venv-dev, which it builds from the dev lockfile first.
         run: make cwe-corpus
 
   # ── promptlint gate (feature 0089 Phase 3) ──────────────────
@@ -273,8 +267,7 @@ jobs:
   # owns the fix. No network and no LLM call: every check is decided from the
   # spec and the rendered bytes.
   #
-  # Standalone (nothing needs it) so it stays purely additive, and `shared`
-  # alone is installed — the prompt library has no agent-package dependency.
+  # Standalone (nothing needs it) so it stays purely additive.
   promptlint:
     runs-on: ubuntu-latest
     needs: lint-agents
@@ -284,18 +277,18 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install agent deps (shared pulls openai-agents → `agents` SDK)
+      - name: Build the agents' test venv
         # `shared.prompt.profile` resolves context windows through
-        # `shared.llm.provider`, so the shared package's own deps are required;
-        # no per-agent package is.
-        run: cd agents && pip install -e "shared/[dev]"
+        # `shared.llm.provider`, so the shared package's own deps are required.
+        # agents/.venv-dev holds them, from the dev lockfile.
+        run: make build-agents-dev
       - name: promptlint gate (all specs x all model families)
         # Non-zero exit on any unannotated violation or any defective allow
         # entry (missing owner/reason, or matching nothing). The runpy
         # RuntimeWarning on stderr is expected — see `lint.main`'s docstring.
-        run: cd agents/shared && python -m shared.prompt.lint
+        run: cd agents/shared && ../.venv-dev/bin/python -m shared.prompt.lint
       - name: promptlint gate tests
-        run: cd agents/shared && python -m pytest tests/unit/prompt/test_0089_gate.py -v
+        run: cd agents/shared && ../.venv-dev/bin/python -m pytest tests/unit/prompt/test_0089_gate.py -v
 
   # ── Frontend ────────────────────────────────────────────────
 

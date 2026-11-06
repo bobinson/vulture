@@ -184,20 +184,17 @@ check-lockfile:
 CWE_CORPUS_FRAGMENTS := injection sig_a sig_b signatures_a signatures_b skill_c
 CWE_CORPUS_DIR := agents/cwe/tests/corpus
 
-# Interpreter: prefer the project venv (agents/.venv — the canonical local test
-# interpreter, has openai-agents/shared installed) when present; otherwise fall
-# back to bare `python` (the interpreter CI populates via its editable installs
-# in the test-agents job). Resolved here so both lanes share one definition.
-CWE_CORPUS_PY := $(shell if [ -x agents/.venv/bin/python ]; then echo $(CURDIR)/agents/.venv/bin/python; else echo python; fi)
+# Interpreter: agents/.venv-dev, as for the agent tests (locally and in CI).
+CWE_CORPUS_PY := $(AGENTS_DEV_PY)
 
 # PR lane: run the curated subset deterministically + fail on a stale golden.
 # Fast (<~60s) and deterministic — safe for every PR.
-cwe-corpus:
+cwe-corpus: build-agents-dev
 	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) corpus_runner.py --fragments $(CWE_CORPUS_FRAGMENTS)
 	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) report_coverage.py --check
 
 # Nightly / label lane: the FULL deterministic sweep (every production fragment,
 # Juliet included once vendored) + the stale-golden gate. Slower; never on PRs.
-cwe-corpus-full:
+cwe-corpus-full: build-agents-dev
 	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) corpus_runner.py
 	cd $(CWE_CORPUS_DIR) && $(CWE_CORPUS_PY) report_coverage.py --check

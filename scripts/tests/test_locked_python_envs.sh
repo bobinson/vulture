@@ -102,4 +102,30 @@ for target in test-agents e2e coverage; do
 done
 verdict "agent tests run in the dev venv" "$detail"
 
+detail=""
+for target in cwe-corpus cwe-corpus-full; do
+    grep -qE "^$target:.*build-agents-dev" "$MK" || detail="$detail $target does not build the dev venv;"
+done
+grep -qE '^CWE_CORPUS_PY := \$\(AGENTS_DEV_PY\)$' "$MK" || detail="$detail CWE_CORPUS_PY is not the dev venv;"
+verdict "the CWE corpus lanes run in the dev venv" "$detail"
+
+# --- CI tests in the same venvs ---------------------------------------------------
+# ci_job <workflow> <job> <ere> — the job's steps match <ere>, install no Python
+# package themselves and never run the runner's own python.
+ci_job() {
+    body=$(job_block "$ROOT/.github/workflows/$1" "$2")
+    detail=""
+    [ -n "$body" ] || detail="no such job;"
+    printf '%s\n' "$body" | grep -qE -- "$3" || detail="$detail does not run: $3;"
+    own=$(printf '%s\n' "$body" | grep -E 'pip install|-m pip|uv pip|(^|[[:space:];&(])python3? -m ')
+    [ -z "$own" ] || detail="$detail runs: $own"
+    verdict "$1 $2 tests in a venv built from a lockfile" "$detail"
+}
+
+ci_job ci.yml test-agents 'make build-agents-dev'
+ci_job ci.yml test-mcp 'make test-mcp'
+ci_job ci.yml cwe-corpus 'make cwe-corpus'
+ci_job ci.yml promptlint 'make build-agents-dev'
+ci_job cwe-corpus-nightly.yml cwe-corpus-full 'make cwe-corpus-full'
+
 finish

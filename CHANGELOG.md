@@ -153,6 +153,12 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     cooldown, and `check-lockfile.sh`, `check-lockfile-installable.sh` and the CI pip-audit
     gate cover all three. `make build-agents-force` is gone: a re-lock changes the lockfile,
     and that rebuilds the venv.
+  - CI tests in the same venvs, built the same way. Its agent, MCP, CWE corpus and promptlint
+    jobs, and the nightly corpus sweep, used to `pip install -e` the agents (and an unpinned
+    radon) and resolve fresh on every run; they now run `make build-agents-dev` or
+    `make test-mcp`. `make cwe-corpus` and `make cwe-corpus-full` build and use
+    `agents/.venv-dev` too, where they used `agents/.venv` when present and the `python` on
+    your `PATH` otherwise.
   - The dev launcher, finding no uvicorn, runs `scripts/build.sh agents` and switches to that
     venv. It never installs into another interpreter.
   - `make` no longer installs the agents into the interpreter on your `PATH`. A copy an earlier

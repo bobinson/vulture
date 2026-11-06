@@ -43,13 +43,8 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install agent deps (shared pulls openai-agents → `agents` SDK)
-        # The corpus runner imports cwe_agent.skills, which imports
-        # `function_tool` from the openai-agents SDK (a dependency of
-        # vulture-shared). Editable-install shared + cwe into the runner's
-        # python so `make cwe-corpus-full` (bare `python`) resolves them.
-        run: cd agents && pip install -e "shared/[dev]" && pip install -e cwe/
       - name: Full deterministic corpus sweep + stale-golden gate
         # `make cwe-corpus-full` = full sweep (all production fragments) +
-        # `report_coverage.py --check` (fails if VERIFIED_CWES.md drifted).
+        # `report_coverage.py --check` (fails if VERIFIED_CWES.md drifted),
+        # in agents/.venv-dev, which it builds from the dev lockfile first.
         run: make cwe-corpus-full
