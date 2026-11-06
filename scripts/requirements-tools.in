@@ -1,0 +1,8 @@
+# The Python tools CI and `make lint` run outside the agents' venvs. Unversioned on
+# purpose: scripts/gen-lockfile.sh locks them into scripts/requirements-tools-frozen.txt
+# under the same cooldown as the agents, holding every pin of
+# agents/requirements-dev-frozen.txt, so ruff is the version the agents' dev extra
+# names (agents/shared/pyproject.toml) and pip-audit is the newest the cooldown allows.
+# `make build-tools` builds .venv-tools from that lockfile.
+pip-audit
+ruff

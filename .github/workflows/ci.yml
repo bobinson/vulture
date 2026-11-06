@@ -97,6 +97,12 @@ jobs:
         run: sh scripts/tests/test_tier3_flags.sh
       - name: launcher tier-3 summary reads the VULTURE_USE_LLM token list
         run: sh scripts/tests/test_tier3_llm_tokens.sh
+      - name: build.sh builds the agents venv from the hashed lockfile only
+        run: sh scripts/tests/test_build_agents_lockfile.sh
+      - name: every Python environment is built from a generated, audited lockfile
+        run: sh scripts/tests/test_locked_python_envs.sh
+      - name: the release targets linux amd64/arm64 and Apple Silicon only
+        run: sh scripts/tests/test_release_platforms.sh
 
   build-backend:
     runs-on: ubuntu-latest
@@ -179,16 +185,16 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install ruff
-        # Pin ruff: an unpinned `pip install ruff` makes the enforced rule set
-        # drift on every ruff release (0.16 broadened defaults, which silently
-        # added ~20 rule families). Pinning + the explicit `select` in
-        # agents/ruff.toml makes lint fully deterministic. Bump deliberately.
-        # KEEP IN SYNC with the ruff pin in agents/shared/pyproject.toml [dev]
-        # so `make lint` locally == this job.
-        run: pip install ruff==0.16.0
+      - name: Build the tools venv
+        # .venv-tools, from scripts/requirements-tools-frozen.txt (hashed wheels
+        # only), holds the ruff pinned in agents/shared/pyproject.toml [dev]: an
+        # unpinned ruff makes the enforced rule set drift on every ruff release
+        # (0.16 broadened defaults, which silently added ~20 rule families).
+        # Pinning + the explicit `select` in agents/ruff.toml makes lint fully
+        # deterministic, and `make lint` runs the same ruff. Bump it there.
+        run: make build-tools
       - name: Lint Python
-        run: cd agents && ruff check .
+        run: cd agents && ../.venv-tools/bin/ruff check .
 
   test-agents:
     runs-on: ubuntu-latest
@@ -199,11 +205,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install dependencies
-        # shared[dev] pulls the test stack (pytest, pytest-asyncio, pytest-cov,
-        # httpx, anyio) at the versions pinned in shared/pyproject.toml; the
-        # other packages share that stack, so plain editable installs suffice.
-        run: cd agents && pip install -e "shared/[dev]" && pip install -e chaos_engineering/ && pip install -e owasp/ && pip install -e soc2/ && pip install -e cwe/ && pip install -e prove/ && pip install -e xss/ && pip install -e ssdf/ && pip install -e discover/ && pip install -e asvs/ && pip install -e do178c/
+      - name: Build the agents' test venv
+        # agents/.venv-dev, from agents/requirements-dev-frozen.txt: the runtime
+        # pins plus the test tools (pytest, radon, ...), hashed wheels only, the
+        # agent packages loaded from the checkout. As `make test-agents` locally.
+        run: make build-agents-dev
       - name: Test agents
         # Run each package separately: collecting all trees in one pytest
         # invocation collides on duplicate test-file basenames (e.g.
@@ -213,19 +219,18 @@ jobs:
           cd agents
           for pkg in shared chaos_engineering owasp soc2 cwe prove xss ssdf discover asvs do178c; do
             echo "::group::pytest $pkg"
-            python -m pytest "$pkg/tests/" -v || exit 1
+            .venv-dev/bin/python -m pytest "$pkg/tests/" -v || exit 1
             echo "::endgroup::"
           done
       - name: Complexity report (target < C; informational, not gated)
         run: |
-          pip install radon
           echo "Functions at complexity grade C or worse (target < C; monitored, not gated):"
-          (cd agents && radon cc . -nc --exclude=".venv/*") || true
+          (cd agents && .venv-dev/bin/python -m radon cc . -nc --exclude=".venv/*,.venv-dev/*") || true
 
   test-mcp:
-    # The MCP server (mcp/) has its own dependency set (the mcp SDK, respx);
-    # install it from mcp/pyproject.toml's [dev] extra, the same set
-    # `make test-mcp` builds its local venv from.
+    # The MCP server (mcp/) has its own dependency set (the mcp SDK 1.x, respx):
+    # `make test-mcp` builds mcp/.venv from mcp/requirements-dev-frozen.txt and
+    # runs the tests in it, as locally.
     runs-on: ubuntu-latest
     needs: lint-agents
     steps:
@@ -234,10 +239,8 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install dependencies
-        run: pip install -e "./mcp[dev]"
       - name: Test MCP server
-        run: cd mcp && python -m pytest tests/ -v
+        run: make test-mcp
 
   # ── CWE corpus gate (feature 0057 P5e / R17) ────────────────
   # PR lane: the CURATED subset only (`make cwe-corpus`) — deterministic,
@@ -253,13 +256,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install agent deps (shared pulls openai-agents → `agents` SDK)
-        # The corpus runner imports cwe_agent.skills, which needs
-        # `function_tool` from the openai-agents SDK (a vulture-shared dep).
-        run: cd agents && pip install -e "shared/[dev]" && pip install -e cwe/
       - name: Curated CWE corpus subset + stale-golden gate
         # `make cwe-corpus` = curated fragments (deterministic, <~60s) +
-        # `report_coverage.py --check` (fails CI if VERIFIED_CWES.md drifted).
+        # `report_coverage.py --check` (fails CI if VERIFIED_CWES.md drifted),
+        # in agents/.venv-dev, which it builds from the dev lockfile first.
         run: make cwe-corpus
 
   # ── promptlint gate (feature 0089 Phase 3) ──────────────────
@@ -269,8 +269,7 @@ jobs:
   # owns the fix. No network and no LLM call: every check is decided from the
   # spec and the rendered bytes.
   #
-  # Standalone (nothing needs it) so it stays purely additive, and `shared`
-  # alone is installed — the prompt library has no agent-package dependency.
+  # Standalone (nothing needs it) so it stays purely additive.
   promptlint:
     runs-on: ubuntu-latest
     needs: lint-agents
@@ -280,18 +279,18 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install agent deps (shared pulls openai-agents → `agents` SDK)
+      - name: Build the agents' test venv
         # `shared.prompt.profile` resolves context windows through
-        # `shared.llm.provider`, so the shared package's own deps are required;
-        # no per-agent package is.
-        run: cd agents && pip install -e "shared/[dev]"
+        # `shared.llm.provider`, so the shared package's own deps are required.
+        # agents/.venv-dev holds them, from the dev lockfile.
+        run: make build-agents-dev
       - name: promptlint gate (all specs x all model families)
         # Non-zero exit on any unannotated violation or any defective allow
         # entry (missing owner/reason, or matching nothing). The runpy
         # RuntimeWarning on stderr is expected — see `lint.main`'s docstring.
-        run: cd agents/shared && python -m shared.prompt.lint
+        run: cd agents/shared && ../.venv-dev/bin/python -m shared.prompt.lint
       - name: promptlint gate tests
-        run: cd agents/shared && python -m pytest tests/unit/prompt/test_0089_gate.py -v
+        run: cd agents/shared && ../.venv-dev/bin/python -m pytest tests/unit/prompt/test_0089_gate.py -v
 
   # ── Frontend ────────────────────────────────────────────────
 
@@ -426,19 +425,27 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install pip-audit
-        run: python3 -m pip install pip-audit || python3 -m pip install --break-system-packages pip-audit
+      - name: Build the tools venv (pip-audit, from its hashed lockfile)
+        run: make build-tools
       - name: Python dependency audit (pip-audit, gating)
-        # Audits the pinned, hashed lockfile. Honors the shared .pip-audit-ignore
-        # allowlist (same parser as release.yml / security-digest.yml), but —
-        # unlike release — has NO `|| true`, so a finding fails the PR.
+        # Audits the pinned, hashed lockfiles: the runtime set the release ships,
+        # the two dev lockfiles the test environments are built from and the tools
+        # lockfile this job's own pip-audit comes from. Honors
+        # the shared .pip-audit-ignore allowlist (same parser as release.yml /
+        # security-digest.yml), but — unlike release — has NO `|| true`, so a
+        # finding in any of them fails the PR.
         run: |
           IGN=""
           if [ -f .pip-audit-ignore ]; then
             IGN=$(awk '/^[[:space:]]*(CVE|GHSA|PYSEC|OSV)-/ {sub(/^[[:space:]]+/,""); split($0,p,/[: \t]/); if (p[1]!="") printf " --ignore-vuln %s", p[1]}' .pip-audit-ignore)
           fi
-          # shellcheck disable=SC2086  # IGN is an intentionally word-split flag list
-          pip-audit -r agents/requirements-frozen.txt --strict $IGN
+          rc=0
+          for lock in agents/requirements-frozen.txt agents/requirements-dev-frozen.txt mcp/requirements-dev-frozen.txt scripts/requirements-tools-frozen.txt; do
+            echo "== $lock"
+            # shellcheck disable=SC2086  # IGN is an intentionally word-split flag list
+            .venv-tools/bin/pip-audit -r "$lock" --strict $IGN || rc=1
+          done
+          exit "$rc"
 
   audit-go:
     runs-on: ubuntu-latest

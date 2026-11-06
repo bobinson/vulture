@@ -14,6 +14,8 @@ dist/
 build/
 *.egg
 .venv/
+.venv-dev/
+.venv-tools/
 venv/
 .pytest_cache/
 .ruff_cache/

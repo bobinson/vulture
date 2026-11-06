@@ -1,7 +1,7 @@
 name: release
 
 # Feature 0044 — Native installer release pipeline.
-# Triggered on tag push (vX.Y.Z); produces 4 platform tarballs + cosign
+# Triggered on tag push (vX.Y.Z); produces 3 platform tarballs + cosign
 # signatures + CycloneDX SBOMs + Trivy CVE reports, uploads to GH Releases as
 # a draft. Nothing is signed unless the `scan` job's CVE gate passed
 # (scripts/release-cve-gate.sh: Trivy over each extracted tarball, HIGH/CRITICAL,
@@ -88,10 +88,9 @@ jobs:
         include:
           - { os: linux,  arch: amd64, runner: ubuntu-latest }
           - { os: linux,  arch: arm64, runner: ubuntu-22.04-arm }
-          # macos-13 (Intel) was retired 2025-12-08; macos-15-intel is its
-          # x86_64 replacement. Intel macOS support ends with macos-15 (~Fall
-          # 2027). arm64 stays on macos-14 (still supported).
-          - { os: darwin, arch: amd64, runner: macos-15-intel }
+          # No Intel Mac leg since v0.0.21: cryptography ships no Intel macOS
+          # wheel after 48.0.1, whose advisories that leg kept waived. install.sh
+          # refuses an Intel Mac and gives Rosetta on Apple Silicon this build.
           - { os: darwin, arch: arm64, runner: macos-14 }
     runs-on: ${{ matrix.runner }}
     # One digest per leg, recorded by the `digest` step BEFORE any post-build
@@ -100,7 +99,6 @@ jobs:
     outputs:
       sha256_linux_amd64: ${{ steps.digest.outputs.sha256_linux_amd64 }}
       sha256_linux_arm64: ${{ steps.digest.outputs.sha256_linux_arm64 }}
-      sha256_darwin_amd64: ${{ steps.digest.outputs.sha256_darwin_amd64 }}
       sha256_darwin_arm64: ${{ steps.digest.outputs.sha256_darwin_arm64 }}
     env:
       # Single source of truth for the vendored PBS coordinates: the same
@@ -160,7 +158,7 @@ jobs:
         env:
           # Tier B: bundle python-build-standalone into EVERY platform tarball so
           # a native install runs the agents with no system Python and no Docker.
-          # All four triples (linux/darwin × amd64/arm64) now have a committed PBS
+          # All three triples (linux amd64/arm64, darwin arm64) have a committed PBS
           # SHA pin (scripts/pbs-shas-*.txt); build-release derives the triple from
           # (os,arch) and verifies fail-closed against that pin. If a platform ever
           # lacks a triple, build-release ships a lean (unbundled) tarball instead
@@ -250,11 +248,11 @@ jobs:
           for tb in dist/vulture-"${GITHUB_REF_NAME}"-*.tar.gz; do
             syft "$tb" -o cyclonedx-json="${tb%.tar.gz}.sbom.json"
           done
-      - name: install pip-audit
-        # This job runs on ubuntu-latest, whose system python3 is externally
-        # managed (PEP 668) and refuses a plain `pip install`; its pip
-        # supports the opt-out flag, so the install passes it directly.
-        run: python3 -m pip install --break-system-packages pip-audit==2.10.1
+      - name: build the tools venv (pip-audit, from its hashed lockfile)
+        # .venv-tools, from scripts/requirements-tools-frozen.txt: hashed wheels
+        # only, installed by the system python3's pip into the venv, so PEP 668's
+        # externally-managed system Python is never written to.
+        run: make build-tools
       - name: pip-audit
         run: |
           if [ -f .pip-audit-ignore ]; then
@@ -271,7 +269,7 @@ jobs:
           # preflight (scripts/security-preflight.sh). .pip-audit-ignore holds
           # time-boxed, codeowner-reviewed waivers.
           # shellcheck disable=SC2086
-          pip-audit -r agents/requirements-frozen.txt --strict $IGN || true
+          .venv-tools/bin/pip-audit -r agents/requirements-frozen.txt --strict $IGN || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scan-reports
@@ -300,8 +298,8 @@ jobs:
           printf '%s' "$DIGESTS" | jq -r --arg v "$GITHUB_REF_NAME" \
             'to_entries[] | select(.value != "") | "\(.value)  vulture-\($v)-\(.key | ltrimstr("sha256_") | sub("_"; "-")).tar.gz"' > "$want"
           cd dist
-          [ "$(grep -c . "$want")" -eq 4 ] || { echo "want 4 build-leg digests"; cat "$want"; exit 1; }
-          [ "$(find . -maxdepth 1 -type f | wc -l)" -eq 4 ] || { echo "want exactly the 4 tarballs"; ls -la; exit 1; }
+          [ "$(grep -c . "$want")" -eq 3 ] || { echo "want 3 build-leg digests"; cat "$want"; exit 1; }
+          [ "$(find . -maxdepth 1 -type f | wc -l)" -eq 3 ] || { echo "want exactly the 3 tarballs"; ls -la; exit 1; }
           sha256sum -c --strict "$want"
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -377,8 +375,8 @@ jobs:
         run: |
           cd dist
           sha256sum -c --strict SHA256SUMS
-          [ "$(grep -c . SHA256SUMS)" -eq 4 ] || { echo "SHA256SUMS must list 4 tarballs"; exit 1; }
-          [ "$(find . -maxdepth 1 -type f | wc -l)" -eq 28 ] || { echo "want 28 assets"; ls -la; exit 1; }
+          [ "$(grep -c . SHA256SUMS)" -eq 3 ] || { echo "SHA256SUMS must list 3 tarballs"; exit 1; }
+          [ "$(find . -maxdepth 1 -type f | wc -l)" -eq 22 ] || { echo "want 22 assets"; ls -la; exit 1; }
           # Fail loudly on any empty asset (e.g. a bad cosign sig) — GitHub's
           # upload API otherwise rejects it with an opaque "Bad Content-Length".
           if find . -maxdepth 1 -type f -empty | grep -q .; then

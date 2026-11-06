@@ -130,6 +130,48 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **Every local Python environment is built from a hashed lockfile, and nothing else.**
+  `scripts/vulture.sh build agents`, `make build-agents` and `make test-mcp` used to resolve
+  dependencies fresh from the index with `pip install -e`, and the build also upgraded pip and
+  built the first-party packages with an unpinned `hatchling`. When the dev launcher found no
+  uvicorn, it ran the same `pip install -e`, retried with `--break-system-packages`, into
+  whatever Python it found. All of that bypassed the lockfile's cooldown
+  (`scripts/lock-date.txt`) and the CI pip-audit gate, so an environment could hold versions
+  newer than the cooldown allows, or known-vulnerable ones: litellm 1.108 caps filelock below 4,
+  and every filelock 3 release carries the advisories that filelock 4.2.1 fixes. Now:
+  - `scripts/locked-venv.sh` builds each venv from one lockfile: wheels only, each checked
+    against its hash. pip runs from the build interpreter, so the venv has no pip of its own,
+    and first-party packages load from the checkout through a path file, as the launcher's
+    `PYTHONPATH` already loads them. The venv keeps a copy of its lockfile. It is recreated
+    when the lockfile changes, which drops anything installed outside it, and is left alone
+    otherwise. The build needs pip 22.3 or later in the interpreter that runs it.
+  - `agents/.venv`, which the launcher runs, holds `agents/requirements-frozen.txt`, the set
+    the release ships. `make test-agents`, `make e2e` and `make coverage` now run in
+    `agents/.venv-dev`, built from the new `agents/requirements-dev-frozen.txt`: every runtime
+    pin, held, plus the agents' `dev` extras. `make test-mcp` builds `mcp/.venv` from the new
+    `mcp/requirements-dev-frozen.txt`. `make freeze-deps` writes all three under the same
+    cooldown, and `check-lockfile.sh`, `check-lockfile-installable.sh` and the CI pip-audit
+    gate cover all three. `make build-agents-force` is gone: a re-lock changes the lockfile,
+    and that rebuilds the venv.
+  - CI tests in the same venvs, built the same way. Its agent, MCP, CWE corpus and promptlint
+    jobs, and the nightly corpus sweep, used to `pip install -e` the agents (and an unpinned
+    radon) and resolve fresh on every run; they now run `make build-agents-dev` or
+    `make test-mcp`. `make cwe-corpus` and `make cwe-corpus-full` build and use
+    `agents/.venv-dev` too, where they used `agents/.venv` when present and the `python` on
+    your `PATH` otherwise.
+  - CI's tools come from a lockfile too. `scripts/requirements-tools-frozen.txt`, generated
+    with the others from `scripts/requirements-tools.in`, holds ruff (the version the agents'
+    dev extra pins) and pip-audit 2.10.1. `make build-tools` builds `.venv-tools` from it, and
+    CI's lint and pip-audit jobs, the security digest and the release's `scan` job run their
+    ruff and pip-audit from it, where they installed ruff and pip-audit by version without
+    hashes, or pip-audit with no version at all. `make lint` uses its ruff. CI's pip-audit
+    audits this lockfile as well.
+  - The dev launcher, finding no uvicorn, runs `scripts/build.sh agents` and switches to that
+    venv. It never installs into another interpreter.
+  - `make` no longer installs the agents into the interpreter on your `PATH`. A copy an earlier
+    `make build-agents` left there stays until you remove it.
+  - The dev venv has no `vulture-offline-skills` console script; run
+    `agents/.venv/bin/python -m cwe_agent.offline` instead.
 - **The frontend's lint tooling uses minimatch 11.0.4.** eslint, `@eslint/config-array` and
   typescript-eslint still require minimatch `^10`, and every minimatch 10 release carries
   GHSA-g3hv-75wg-m249 (moderate: a crafted glob pattern costs quadratic CPU and memory), which is
@@ -482,6 +524,21 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Removed
 
+- **Intel Mac (darwin-amd64) releases.** v0.0.21 is the last release with an Intel Mac tarball.
+  cryptography ships no Intel macOS wheel after 48.0.1, so that build held every macOS install at
+  48.0.1, under three advisories that could only be waived (PYSEC-2026-3552/3553/3554), and the
+  lockfiles carried a macOS-only cap that Dependabot reported against each of them.
+  - `release.yml` builds linux amd64/arm64 and darwin arm64, and `sign` and `release` expect 3
+    tarballs and 22 assets. `vendor-pbs.yml`, `vendor-cosign.yml`, `build-release.sh` and
+    `check-lockfile-installable.sh` no longer carry the Intel Mac target.
+  - `install.sh` refuses an Intel Mac, naming the last release that has a build for it. A shell
+    running under Rosetta on Apple Silicon reports x86_64; the installer detects it
+    (`sysctl.proc_translated`) and installs the arm64 build, which runs there natively.
+  - The cap is gone from `agents/lockfile-constraints.txt`, and with it `gen-lockfile.sh`'s check
+    that the split survived: every lockfile pins cryptography 50.0.2 for every platform. Its
+    waivers are gone from `.pip-audit-ignore` and `.trivyignore`, and the security digest no
+    longer audits the cap. `scripts/tests/test_release_platforms.sh` replaces
+    `test_lockfile_platform_split.sh` and fails if any of it comes back.
 - **The Semgrep Registry tier of the bundled plugin (feature 0102):** the `p/security-audit` default, the
   `r/solidity` Solidity namespace with its `VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY` switch, the
   `SEMGREP_APP_TOKEN` / `--pro` path, `rules/rule_to_cwe.json` (Registry rule IDs; CWE now comes from each

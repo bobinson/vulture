@@ -1,32 +1,12 @@
-# Platform-split version constraints fed to `uv pip compile --constraint` by
-# scripts/gen-lockfile.sh (LLD 0055 B1a). This is the ONLY hand-maintained input
-# to the otherwise-universal lockfile; the lockfile itself stays generated.
+# Version constraints fed to `uv pip compile --constraint` by
+# scripts/gen-lockfile.sh (LLD 0055 B1a) for every lockfile it writes. With
+# scripts/requirements-tools.in this is the ONLY hand-maintained lockfile input;
+# the lockfiles themselves stay generated.
 #
-# cryptography: 49.x dropped the macOS x86_64 (Intel) wheel — it ships
-# macosx_11_0_arm64 only — so the darwin/amd64 release leg (macos-15-intel) cannot
-# `pip install --only-binary :all:` it. Cap Darwin to 48.0.1, the newest release
-# that still ships a macosx_10_9_universal2 wheel (covers Intel AND Apple Silicon).
-# Non-Darwin is left UNpinned here so uv emits the complement marker automatically
-# and `make freeze-deps --upgrade` can still bump linux. 48.0.1 is NOT CVE-clean:
-# its advisories are waived, each with an expiry, in .pip-audit-ignore (the
-# preflight's pip-audit gate) and .trivyignore (the release CVE gate). Renew them
-# only after re-tracing, per docs/guides/release_process.md "Vulnerabilities".
-#
-# REMOVE this constraint (and re-lock) when EITHER:
-#   (a) cryptography ships a macOS x86_64 wheel again, OR
-#   (b) the darwin/amd64 leg is dropped from .github/workflows/release.yml
-#       (Intel-mac runner EOL ~Fall 2027 — see the build-binary matrix comment).
-# Darwin is CAPPED, not pinned to latest: 49.0.0 and 50.0.0 ship NO Intel
-# macOS wheel (verified on PyPI — 48.0.1 has 3 universal2 wheels, 49.0.0 and
-# 50.0.0 have none), and release.yml:72 still builds darwin/amd64 on
-# macos-15-intel. Dependabot #122 moved this pin 48.0.1 -> 50.0.0 and left
-# the rationale comment untouched, which silently re-broke that leg.
-cryptography==48.0.1; sys_platform == "darwin"
-# The complement is stated EXPLICITLY so the marker fork is deterministic.
-# Left implicit, uv unifies both platforms onto one version whenever a single
-# version satisfies everything, and the split the darwin/amd64 leg depends on
-# silently disappears — which is what the freshness gate caught.
-cryptography>=50.0.0; sys_platform != "darwin"
+# A per-platform pin goes here only when a release target lacks a wheel for a
+# package's latest version (uv then forks that package on a platform marker).
+# There is none: the last one, cryptography capped at 48.0.1 on macOS, went with
+# the Intel Mac release target after v0.0.21.
 
 # Security floors for transitive deps flagged by the audit-python gate
 # (scripts + .github/workflows audit `agents/requirements-frozen.txt` with

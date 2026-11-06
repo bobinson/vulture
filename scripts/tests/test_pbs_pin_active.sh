@@ -9,7 +9,7 @@
 # that the pin, the vendored release, or the license inventory does not
 # describe. Asserted:
 #   1) all four sources default to the SAME PBS tag and CPython version;
-#   2) scripts/pbs-shas-<tag>.txt pins all four triples for exactly that build;
+#   2) scripts/pbs-shas-<tag>.txt pins all three triples for exactly that build;
 #   3) NOTICE and THIRD_PARTY_LICENSES.md §6 name that build.
 #
 # Harness contract (matches scripts/tests/test_install_sh.sh): POSIX sh, set -u,
@@ -71,7 +71,7 @@ agree "pbs-pyver-agrees" "$PYVER" "$(shell_default "$FETCH" VULTURE_PBS_PYVER)" 
     "$(yaml_env "$RELEASE" VULTURE_PBS_PYVER)" "$(input_default "$VENDOR" python_version)"
 
 # ---------------------------------------------------------------------------
-# TEST 2 — the active pin covers all four triples of exactly this build.
+# TEST 2 — the active pin covers all three triples of exactly this build.
 # ---------------------------------------------------------------------------
 PIN="$REPO_ROOT/scripts/pbs-shas-$TAG.txt"
 require_file_or_bail "active-pin-present" "$PIN"
@@ -83,7 +83,7 @@ pinned() {
 
 test_pin_covers_build() {
     missing=
-    for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
+    for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin; do
         pinned "cpython-$PYVER+$TAG-$t-install_only.tar.gz" || missing="$missing $t"
     done
     if [ -z "$missing" ]; then

@@ -49,32 +49,12 @@ check_go() {
     log "Go $(go version | awk '{print $3}') (from $(command -v go))"
 }
 
-check_python() {
-    local py=""
-    if command -v python3 &>/dev/null; then py=python3
-    elif command -v python &>/dev/null; then py=python
-    else
-        err "Python 3 not found. Install with: sudo apt install python3 python3-pip python3-venv"
-        return 1
-    fi
-    log "Python $($py --version 2>&1 | awk '{print $2}')" >&2
-    echo "$py"
-}
-
 check_node() {
     if ! command -v node &>/dev/null; then
         err "Node.js not found. Install with: sudo apt install nodejs npm"
         return 1
     fi
     log "Node $(node --version)"
-}
-
-check_pip() {
-    local py="$1"
-    if ! "$py" -m pip --version &>/dev/null; then
-        err "pip not found. Install with: sudo apt install python3-pip"
-        return 1
-    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -111,83 +91,30 @@ build_cli() {
 # Build: Python agents
 # ---------------------------------------------------------------------------
 
+# The agents venv holds exactly the hashed lockfile, agents/requirements-frozen.txt
+# (the set the release ships), with every agents/<name>/ holding a pyproject.toml
+# loaded from the checkout. scripts/locked-venv.sh builds it; its header says why
+# nothing else is installed.
 build_agents() {
     log "Building Python agents..."
-    local py
-    py=$(check_python) || return 1
-    check_pip "$py" || return 1
+    local venv_dir="$PROJECT_ROOT/agents/.venv" f
+    local args=("$venv_dir" "$PROJECT_ROOT/agents/requirements-frozen.txt")
+    for f in "$PROJECT_ROOT"/agents/*/pyproject.toml; do
+        args+=("${f%/pyproject.toml}")
+    done
+    "$SCRIPT_DIR/locked-venv.sh" "${args[@]}" || return 1
 
-    # Install into a project-local venv so installs work on PEP-668 systems
-    # (Ubuntu 24.04+) without --break-system-packages, and so the runtime
-    # launcher's findPython picks up the same interpreter we installed into.
-    local venv_dir="$PROJECT_ROOT/agents/.venv"
-    local venv_py="$venv_dir/bin/python"
-    if [[ ! -x "$venv_py" ]]; then
-        log "  Creating agents venv at $venv_dir"
-        if ! "$py" -m venv "$venv_dir"; then
-            err "  failed to create venv (install with: sudo apt install python3-venv)"
-            return 1
-        fi
+    # The launcher invokes `python -m uvicorn ...`. A venv that matches the
+    # lockfile but cannot import it was damaged since it was built: rebuild it.
+    if ! "$venv_dir/bin/python" -c "import uvicorn" 2>/dev/null; then
+        warn "  uvicorn does not import from the venv; rebuilding it"
+        "$SCRIPT_DIR/locked-venv.sh" --force "${args[@]}" || return 1
     fi
-
-    # Verify pip is functional inside the venv. Ubuntu 24.04's `python3 -m venv`
-    # sometimes ships a partially-bootstrapped pip (package dir without
-    # __main__.py) when python3-pip-whl is stale or missing — install fails
-    # with `No module named pip.__main__`. Recover via ensurepip; if that
-    # also fails, recreate the venv from scratch.
-    if ! "$venv_py" -m pip --version >/dev/null 2>&1; then
-        warn "  venv pip is broken; bootstrapping via ensurepip"
-        if ! "$venv_py" -m ensurepip --upgrade >/dev/null 2>&1; then
-            warn "  ensurepip failed; recreating venv"
-            rm -rf "$venv_dir"
-            if ! "$py" -m venv "$venv_dir"; then
-                err "  venv recreate failed (try: sudo apt install python3-venv python3-pip-whl)"
-                return 1
-            fi
-            if ! "$venv_py" -m pip --version >/dev/null 2>&1; then
-                err "  pip still unavailable after venv recreate (try: sudo apt install python3-pip-whl)"
-                return 1
-            fi
-        fi
-    fi
-    if ! "$venv_py" -m pip install --quiet --upgrade pip; then
-        warn "  pip self-upgrade failed (continuing with bundled pip)"
-    fi
-
-    log "  Installing shared library..."
-    if ! "$venv_py" -m pip install -e "$PROJECT_ROOT/agents/shared" --quiet; then
-        err "  shared library install failed"
-        return 1
-    fi
-    ok "  shared library installed"
-
-    # Auto-discover agents from the filesystem. Any agents/<name>/pyproject.toml
-    # is treated as an installable agent (shared handled separately above).
-    # This prevents the hardcoded-list drift we hit when adding agent-asvs.
-    local installed=0
-    local skipped=0
-    while IFS= read -r -d '' agent_dir; do
-        local agent_name
-        agent_name=$(basename "$agent_dir")
-        [[ "$agent_name" == "shared" ]] && continue
-        log "  Installing $agent_name agent..."
-        if ! "$venv_py" -m pip install -e "$agent_dir" --quiet; then
-            err "  $agent_name agent install failed"
-            return 1
-        fi
-        ok "  $agent_name agent installed"
-        installed=$((installed + 1))
-    done < <(find "$PROJECT_ROOT/agents" -mindepth 1 -maxdepth 2 -name "pyproject.toml" \
-             -not -path "*/node_modules/*" -printf '%h\0' | sort -z)
-
-    # Sanity check: the launcher invokes `python -m uvicorn ...`, so this
-    # has to succeed before we declare the build done.
-    if ! "$venv_py" -c "import uvicorn" 2>/dev/null; then
+    if ! "$venv_dir/bin/python" -c "import uvicorn" 2>/dev/null; then
         err "  uvicorn missing from venv after install — aborting"
         return 1
     fi
-
-    ok "All $installed agents installed ($skipped skipped)"
+    ok "Agents venv built from the hashed lockfile"
 }
 
 # ---------------------------------------------------------------------------

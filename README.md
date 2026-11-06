@@ -190,26 +190,29 @@ The backend falls back to SQLite in local mode when `VULTURE_DB_DSN` is not set.
 ### Python Agents
 
 ```bash
-cd agents
-pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/ -e do178c/ -e asvs/
+make build-agents       # agents/.venv: the runtime set, from agents/requirements-frozen.txt
+make build-agents-dev   # agents/.venv-dev: the same pins plus the test tools
 
 # Run unit tests for individual agents (one example each)
-cd shared && python -m pytest tests/unit/ -v
-cd chaos_engineering && python -m pytest tests/unit/ -v
-cd owasp && python -m pytest tests/unit/ -v
-cd soc2 && python -m pytest tests/unit/ -v
-cd cwe && python -m pytest tests/unit/ -v
+(cd agents/shared && ../.venv-dev/bin/python -m pytest tests/unit/ -v)
+(cd agents/cwe && ../.venv-dev/bin/python -m pytest tests/unit/ -v)
+make test-agents        # every agent
 ```
 
-> **Note:** Vulture requires Python 3.12+ (declared in `.python-version`).
-> If `pip install -e` fails on Python 3.11 or earlier, install Python 3.12 via
-> `pyenv` or your distribution's package manager first.
+Both venvs are built from hashed lockfiles only, by `scripts/locked-venv.sh`, and
+load the agent packages from the checkout, so a code change needs no rebuild.
+Don't `pip install` into them: a venv is rebuilt from its lockfile whenever the
+lockfile changes.
+
+> **Note:** Vulture requires Python 3.12+ (declared in `.python-version`); the
+> lockfiles hold wheels for 3.12. If the build fails on Python 3.11 or earlier,
+> install Python 3.12 via `pyenv` or your distribution's package manager first.
 
 Each agent is a standalone FastAPI service. Start one individually:
 
 ```bash
 cd agents/owasp
-VULTURE_AGENT_PORT=28002 python -m uvicorn main:app --port 28002
+VULTURE_AGENT_PORT=28002 ../.venv/bin/python -m uvicorn main:app --port 28002
 ```
 
 ### React Frontend

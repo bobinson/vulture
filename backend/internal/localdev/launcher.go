@@ -113,7 +113,7 @@ func startTimeout() time.Duration {
 func (l *Launcher) Start(ctx context.Context) error {
 	// Install mode (Mode E) runs a different stack than the dev tree: a prebuilt
 	// backend binary + embedded SPA + bundled-venv agents. The dev flow below
-	// (go build, vite, pip-install-editable from the project tree) does not
+	// (go build, vite, the agents venv built from the project tree) does not
 	// apply. See docs/features/0055 §3 correction.
 	if DetectMode() == ModeInstall {
 		return l.startInstallMode(ctx)
@@ -313,6 +313,12 @@ func (l *Launcher) startInstallMode(ctx context.Context) error {
 	return nil
 }
 
+// installAgentDeps makes sure the agents can start. When uvicorn does not import,
+// it builds the agents venv with `scripts/build.sh agents`, which installs the
+// hashed lockfile and nothing else (see scripts/locked-venv.sh), and switches to
+// the venv's interpreter. It never installs into the interpreter it found: a
+// system Python would take its packages from the index, unpinned and past the
+// lockfile's cooldown and audit.
 func (l *Launcher) installAgentDeps(ctx context.Context) error {
 	// Skip if the venv (or system Python) already has uvicorn installed —
 	// the typical case after a successful `scripts/vulture.sh build`. This
@@ -322,46 +328,25 @@ func (l *Launcher) installAgentDeps(ctx context.Context) error {
 		return nil
 	}
 
-	agentsDir := filepath.Join(l.cfg.ProjectRoot, "agents")
-	sharedDir := filepath.Join(agentsDir, "shared")
-
-	log.Println("installing Python agent dependencies (one-time)...")
-	if err := runPipInstallEditable(ctx, l.detect.PythonPath, sharedDir); err != nil {
-		return fmt.Errorf("install shared: %w", err)
+	log.Println("building the agents venv from the hashed lockfile (one-time)...")
+	if err := runBuildAgents(ctx, l.cfg.ProjectRoot); err != nil {
+		return fmt.Errorf("build the agents venv: %w", err)
 	}
-
-	for _, entry := range config.AllAgents {
-		agentDir := filepath.Join(agentsDir, entry.DirName)
-		if _, err := os.Stat(agentDir); os.IsNotExist(err) {
-			continue
-		}
-		if err := runPipInstallEditable(ctx, l.detect.PythonPath, agentDir); err != nil {
-			log.Printf("warning: install %s: %v", entry.DirName, err)
-		}
-	}
+	l.detect.PythonPath = findPython(l.cfg.ProjectRoot)
 
 	// Verify uvicorn is importable now. If not, the agents will crash with
 	// a cryptic ImportError the moment they start — abort here with a clear
 	// message instead.
 	if !checkPythonModule(l.detect.PythonPath, "uvicorn") {
-		return fmt.Errorf("uvicorn not importable after pip install (python=%s); run: ./scripts/vulture.sh build agents", l.detect.PythonPath)
+		return fmt.Errorf("uvicorn not importable after building the agents venv (python=%s); run: ./scripts/vulture.sh build agents", l.detect.PythonPath)
 	}
 	l.detect.UvicornOK = true
 	return nil
 }
 
-// runPipInstallEditable runs `pip install -e <target>` synchronously against
-// the given Python interpreter. Tries a normal install first, then falls back
-// to --break-system-packages for PEP-668 system Pythons (Ubuntu 24.04+). When
-// `python` points at a venv the first attempt always succeeds.
-func runPipInstallEditable(ctx context.Context, python, target string) error {
-	cmd := exec.CommandContext(ctx, python, "-m", "pip", "install", "-e", target, "-q")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err == nil {
-		return nil
-	}
-	cmd = exec.CommandContext(ctx, python, "-m", "pip", "install", "-e", target, "-q", "--break-system-packages")
+// runBuildAgents runs `scripts/build.sh agents` in the project tree.
+func runBuildAgents(ctx context.Context, projectRoot string) error {
+	cmd := exec.CommandContext(ctx, "bash", filepath.Join(projectRoot, "scripts", "build.sh"), "agents")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

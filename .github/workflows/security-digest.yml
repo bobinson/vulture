@@ -41,8 +41,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Install pip-audit
-        run: python3 -m pip install pip-audit || python3 -m pip install --break-system-packages pip-audit
+      - name: Build the tools venv (pip-audit, from its hashed lockfile)
+        run: make build-tools
 
       - name: pip-audit the locked dependency set
         run: |
@@ -57,29 +57,7 @@ jobs:
               IGN=$(awk '/^[[:space:]]*(CVE|GHSA|PYSEC|OSV)-/ {sub(/^[[:space:]]+/,""); split($0,p,/[: \t]/); if (p[1]!="") printf " --ignore-vuln %s", p[1]}' .pip-audit-ignore)
             fi
             # shellcheck disable=SC2086
-            pip-audit -r agents/requirements-frozen.txt $IGN 2>&1 || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Audit the capped Darwin cryptography pin (folded former C6)
-        run: |
-          # The constraint file pins Darwin cryptography to a capped version
-          # (newest with an Intel-mac wheel). The structural guard (split line
-          # present + universal mode) lives in gen-lockfile.sh and runs in C1;
-          # here we add the FORWARD-LOOKING CVE check so the manual cap can't
-          # silently rot into a vulnerable version.
-          CAP=$(awk -F'==' '/^cryptography==/ {sub(/[; ].*$/,"",$2); print $2; exit}' agents/lockfile-constraints.txt)
-          {
-            echo
-            echo "### Capped Darwin cryptography pin"
-            echo '```'
-            if [ -n "$CAP" ]; then
-              echo "auditing cryptography==$CAP (Darwin cap from lockfile-constraints.txt)"
-              printf 'cryptography==%s\n' "$CAP" > /tmp/darwin-cap.txt
-              pip-audit -r /tmp/darwin-cap.txt 2>&1 || true
-            else
-              echo "no Darwin cryptography cap found in lockfile-constraints.txt"
-            fi
+            .venv-tools/bin/pip-audit -r agents/requirements-frozen.txt $IGN 2>&1 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

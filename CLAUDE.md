@@ -188,7 +188,7 @@ When a runtime error has multiple possible causes (proxy behavior, container net
 Post-edit verification commands (run these after modifying files of the corresponding type):
 
 - **Go** (`*.go`): `cd backend && go vet ./...` and `go test ./...` for the affected package
-- **Python** (`*.py`): `cd agents/<component> && python -m pytest tests/unit/ -q`
+- **Python** (`*.py`): `make build-agents-dev` (a no-op unless the dev lockfile changed), then `cd agents/<component> && ../.venv-dev/bin/python -m pytest tests/unit/ -q`
 - **TypeScript/React** (`*.ts`, `*.tsx`): `cd frontend && npx tsc --noEmit` and `npx vitest run` for affected test files
 - **SQL migrations** (`*.sql`): see `docs/guides/migration_authoring.md` for the full contract (filename grammar, idempotency, FK type-match rule). Migrations are embedded into the Go binary and auto-applied at backend startup. Verify locally with the integration test: `POSTGRES_TEST_DSN=postgres://test:test@localhost:25439/test?sslmode=disable go test -tags=integration ./internal/repository/migrations/`
 

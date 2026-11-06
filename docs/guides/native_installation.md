@@ -37,7 +37,7 @@ to. In local mode the UI logs you in automatically — no password needed.
 
 | OS | Architectures |
 |---|---|
-| macOS 14+ (Sonoma) | Intel (amd64), Apple Silicon (arm64) |
+| macOS 14+ (Sonoma) | Apple Silicon (arm64); an x86_64 shell under Rosetta gets the arm64 build. Intel Macs: no release after v0.0.21, and the installer refuses them |
 | Ubuntu 22.04+ / Debian 12+ | amd64, arm64 |
 | Fedora 38+ / RHEL 9 | best effort (community smoke-tested) |
 

@@ -69,7 +69,7 @@ sh scripts/install-trivy.sh "$(sed -n "s/^ *TRIVY_VERSION: '\(.*\)'$/\1/p" "$yml
 (cd dist && sha256sum vulture-*.tar.gz) > "$t/expected.sha256"
 scripts/release-cve-gate.sh "$t/bin/trivy" dist "$t/work" .trivyignore "$t/expected.sha256"
 # Trivy ignores environment markers, so the lockfile read as a requirements.txt
-# also covers the darwin-only pins a linux build does not ship. Like the gate, it
+# also covers the other platforms' pins a linux build does not ship. Like the gate, it
 # runs with an emptied environment and an empty config (HOME keeps Trivy's cache).
 mkdir "$t/req" && cp agents/requirements-frozen.txt "$t/req/requirements.txt" && : > "$t/empty.yaml"
 /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" "$t/bin/trivy" fs --config "$t/empty.yaml" \
@@ -103,10 +103,10 @@ lint ──▶ build-frontend ──▶ build-binary ×4 ──▶ scan ──�
 |-----|-------|------|
 | **lint** | `contents: read` | `shellcheck`; `check-fallback-tag.sh` |
 | **build-frontend** | `contents: read` | `npm ci` + `npm run build` + upload, and nothing else: its output is embedded in the signed tarball, so no scanner and no `npx` runs here |
-| **build-binary** (matrix: linux amd64/arm64, darwin amd64/arm64, each on its native runner) | `contents: read` | cross-build the Go binary with the embedded SPA; bundle a SHA-pinned CPython 3.12 PBS runtime + the hashed agent deps (`VULTURE_BUNDLE_PBS=1`); record the tarball's SHA-256 as a job output **before** `smoke-install.sh` (real install + scan) + `smoke-negative.sh`; upload the tarball only |
+| **build-binary** (matrix: linux amd64/arm64, darwin arm64, each on its native runner; no Intel Mac leg since v0.0.21) | `contents: read` | cross-build the Go binary with the embedded SPA; bundle a SHA-pinned CPython 3.12 PBS runtime + the hashed agent deps (`VULTURE_BUNDLE_PBS=1`); record the tarball's SHA-256 as a job output **before** `smoke-install.sh` (real install + scan) + `smoke-negative.sh`; upload the tarball only |
 | **scan** | `contents: read` | first the **Trivy CVE gate** (`scripts/release-cve-gate.sh`, **blocking**): Trivy, installed by `scripts/install-trivy.sh` from a tarball whose SHA-256 is committed, checks the tarballs against the digests the build legs recorded, then scans each one **extracted** (`trivy rootfs`, HIGH/CRITICAL vulnerabilities and secrets) and each bundled wheel's own SBOM (`trivy sbom`), honouring the dated waivers in `.trivyignore`, and writes each tarball's `.vulns.json`; then **audit-ci** `--high` over `frontend/package-lock.json` (**gating**, pinned version); **SBOM** (syft) per tarball; **pip-audit** over the lockfile (advisory, `\|\| true`) |
-| **sign** | `id-token: write` | checks out no code; refuses unless the 4 tarballs match the digests the build legs recorded; rebuilds `SHA256SUMS`; **cosign sign-blob** each tarball and `SHA256SUMS` (keyless), then verifies each bundle against this workflow's identity |
-| **release** | `contents: write` | checks out no code; `sha256sum -c` over `SHA256SUMS`, exactly 4 tarballs and 28 assets; `gh release create --draft` (idempotent) + upload the tarballs, `.sig`/`.pem`/`.bundle`, `.sbom.json`, `.vulns.json` |
+| **sign** | `id-token: write` | checks out no code; refuses unless the 3 tarballs match the digests the build legs recorded; rebuilds `SHA256SUMS`; **cosign sign-blob** each tarball and `SHA256SUMS` (keyless), then verifies each bundle against this workflow's identity |
+| **release** | `contents: write` | checks out no code; `sha256sum -c` over `SHA256SUMS`, exactly 3 tarballs and 22 assets; `gh release create --draft` (idempotent) + upload the tarballs, `.sig`/`.pem`/`.bundle`, `.sbom.json`, `.vulns.json` |
 
 The workflow grants nothing by default: each job declares its own token, and
 no checkout persists credentials. Third-party tooling (npm, Go modules, syft,
@@ -122,13 +122,13 @@ scans: only the dated waivers in `.trivyignore` apply.
 `sign` needs `scan`, so a red gate means nothing is signed or published.
 
 Each platform builds **on its own runner**, so `pip` evaluates environment markers
-locally — e.g. the macOS legs install the `cryptography` version pinned for Darwin
-in `agents/lockfile-constraints.txt` (see [feature 0055 B1a](../features/0055_native_installer_hardening/0055_implementation_plan.md)).
+locally: a per-platform pin in `agents/lockfile-constraints.txt`, should one ever be
+needed, takes effect only on its own leg.
 
 ## Step 4 — Review the draft
 
 In the GitHub Releases UI, before publishing, check:
-- all four `*.tar.gz` + their `.sig`/`.pem`/`.bundle` are present;
+- all three `*.tar.gz` + their `.sig`/`.pem`/`.bundle` are present;
 - `*.vulns.json` (the CVE gate's Trivy report per tarball) has no surprises.
   Waived findings do not appear in it, so read `.trivyignore` alongside;
 - `*.sbom.json` reflects the expected dependency set.
@@ -186,10 +186,7 @@ How a vulnerable dependency is caught and handled:
    `make freeze-deps` (pinned uv + constraint) → the lockfile picks up the patched
    version with correct hashes → the preflight's pip-audit gate and the release
    CVE gate go green.
-2. **Darwin-capped `cryptography`** → the `==48.0.1; sys_platform=="darwin"` pin in
-   `lockfile-constraints.txt` won't auto-bump; hand-pick a patched version that
-   still ships a macOS wheel and edit the constraint.
-3. **No patch yet** → add a time-boxed waiver to the list of each gate that
+2. **No patch yet** → add a time-boxed waiver to the list of each gate that
    reports the finding. **CODEOWNERS routes both files to the SECURITY owner**,
    who approves every entry explicitly; renew an entry only after re-tracing it.
    - `.pip-audit-ignore` (the preflight gate): CVE/GHSA/PYSEC id + justification +
@@ -203,10 +200,7 @@ How a vulnerable dependency is caught and handled:
      (UTC), which turns the gate red until the entry is renewed or the dependency
      fixed.
    - Read each waiver's expiry from its `exp:` date in `.trivyignore` (and the
-     `expires` note in `.pip-audit-ignore`) before every tag. The darwin
-     `cryptography` pin carries waivers in both files: a tag on or after their
-     `exp:` date needs them renewed (after a re-trace) or the pin replaced, and
-     until then the darwin tarballs fail the gate.
+     `expires` note in `.pip-audit-ignore`) before every tag.
 
 **Disclose fixed vulnerabilities in the release notes.** Any release that fixes a
 security issue MUST record it in [`CHANGELOG.md`](../../CHANGELOG.md) under a
@@ -225,12 +219,10 @@ one names a **Python package** in the agents' dependency closure, follow this lo
    `sh scripts/security-preflight.sh`).
 2. **Upgrade + re-lock locally** — bump the range in the owning
    `agents/*/pyproject.toml` *only if* the patched version is out of range, then
-   `make freeze-deps` (pinned uv + constraint → correct hashes + the Darwin split).
-   For Darwin-capped `cryptography`, hand-pick a patched macOS-wheel version and
-   edit `agents/lockfile-constraints.txt`.
+   `make freeze-deps` (pinned uv + constraint → correct hashes).
 3. **Test locally FIRST** — *before* committing or tagging:
    - agent unit tests for the touched component — `cd agents/<component> && python -m pytest tests/unit/ -q`;
-   - the lockfile is fresh and the split survived — `make check-lockfile`;
+   - the lockfile is fresh — `make check-lockfile`;
    - the installer/release suite is green — `for t in scripts/tests/test_*.sh; do sh "$t"; done`;
    - (optional) a real scan to confirm the agents still run.
 4. **Preflight** — `sh scripts/vulture.sh release vX.Y.Z`; the **security gate**
@@ -238,14 +230,24 @@ one names a **Python package** in the agents' dependency closure, follow this lo
    `.pip-audit-ignore` waiver). Green ⇒ safe to ship.
 5. **PR + CI** — open a PR with **both** the `pyproject.toml` and the regenerated
    `requirements-frozen.txt`; the **lockfile gate** (`.github/workflows/lockfile.yml`)
-   re-derives + diffs in CI, so a mis-lock or a dropped Darwin split goes red.
+   re-derives + diffs in CI, so a mis-lock goes red.
 6. **Release** — dry-run the CVE gate, then tag as usual; the patched
    dependency ships in every tarball, and the build's **Trivy CVE gate** is the
    final backstop.
 
 ## Dependency updates / re-locking
 
-`agents/requirements-frozen.txt` is **generated** — never hand-edit it.
+`agents/requirements-frozen.txt` is **generated** — never hand-edit it. So are the
+three lockfiles the same run writes, under the same cooldown, for the test and tool
+environments: `agents/requirements-dev-frozen.txt` (every runtime pin, held, plus
+the agents' `dev` extras), `mcp/requirements-dev-frozen.txt`, and
+`scripts/requirements-tools-frozen.txt` (ruff and pip-audit, listed in
+`scripts/requirements-tools.in`, every dev pin held). Every venv, local or in CI, is
+built from one of the four by `scripts/locked-venv.sh`, and the lockfile gate and
+CI's pip-audit cover all four. `make build-tools` builds `.venv-tools`: CI lints and
+audits with it, the release's `scan` job audits with it, and `make lint` uses its
+ruff. The preflight's security gate runs the `pip-audit` on your `PATH`, so put
+`.venv-tools/bin` first on it to run the locked one.
 
 ```sh
 make freeze-deps              # re-lock to current in-range versions (uses the uv version pinned in scripts/uv-version.sh)
@@ -255,7 +257,7 @@ make check-lockfile           # the exact freshness check the preflight runs
 
 > **Feature 0056 (shipped):** Dependabot no longer edits the lockfile — its
 > `pip`/`uv` updater is disabled (`.github/dependabot.yml`), so every refresh goes
-> through `gen-lockfile.sh` (pinned uv + the marker-split constraint).
+> through `gen-lockfile.sh` (pinned uv + the constraint file).
 > `check-lockfile.sh` now runs as a **CI gate on every PR**
 > (`.github/workflows/lockfile.yml`), and the preflight **security gate** (gate 6)
 > surfaces advisories before you tag. Dependabot still raises **alerts** (Security
@@ -314,7 +316,7 @@ CODEOWNERS routes both files to the SECURITY owner.
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| darwin/amd64: `no usable wheels` for a dep | a dep dropped its Intel-mac wheel — add a Darwin marker-split pin to `lockfile-constraints.txt` (see 0055 B1a) |
+| a build leg: `no usable wheels` for a dep | the dep's locked version has no wheel for that platform — `scripts/check-lockfile-installable.sh` names it; add a marker-split pin for that platform to `lockfile-constraints.txt` (see 0055 B1a) |
 | smoke-install: `0 findings` on a bundled tarball | agents not all up before the scan — `smoke-install.sh` waits for every agent (`agents_all_up`); a real regression means an agent failed to import |
 | `release not found` / vendored-PBS fetch fails | the vendored PBS asset is optional — `build-release.sh` falls back to a pin-verified direct upstream fetch |
 | `install.sh` refuses the version | the tag is below `FALLBACK_TAG` (anti-downgrade) — cut a higher version |

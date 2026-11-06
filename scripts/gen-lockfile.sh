@@ -6,6 +6,15 @@
 # vulture-* packages load via PYTHONPATH and are never pip-installed, so they are
 # stripped from the resolver input.
 #
+# Three more lockfiles come from the same run, under the same cooldown, for the
+# test and tool environments (scripts/locked-venv.sh builds every environment from
+# a lockfile):
+#   agents/requirements-dev-frozen.txt     every pin above, held, plus the agents'
+#                                          `dev` extras (the test tools)
+#   mcp/requirements-dev-frozen.txt        mcp/pyproject.toml's deps and `dev` extra
+#   scripts/requirements-tools-frozen.txt  scripts/requirements-tools.in (ruff,
+#                                          pip-audit), every dev pin held
+#
 # Usage:
 #   scripts/gen-lockfile.sh                 # lock to current in-range versions
 #   scripts/gen-lockfile.sh --upgrade       # refresh all to latest in-range
@@ -18,6 +27,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 OUT="agents/requirements-frozen.txt"
+DEV_OUT="agents/requirements-dev-frozen.txt"
+MCP_OUT="mcp/requirements-dev-frozen.txt"
+TOOLS_OUT="scripts/requirements-tools-frozen.txt"
 
 # Pin uv for reproducible lockfiles: a different uv can resolve different versions
 # or order hashes differently, which would make check-lockfile.sh's
@@ -35,22 +47,50 @@ if [ "$_uv_have" != "$UV_VERSION" ] && [ "${VULTURE_ALLOW_UV_MISMATCH:-}" != "tr
     exit 1
 fi
 
-# Stable input path (NOT mktemp): uv records the input path in '# via -r <path>'
+# 1. The constraint file (LLD 0055 B1a) holds what the pyproject ranges cannot:
+#    security floors on transitive dependencies, and a per-platform pin should a
+#    release target ever lack a wheel for a package's latest version. With the
+#    tool list (scripts/requirements-tools.in) it is the only hand-maintained
+#    lockfile input, and check-lockfile.sh inherits both by calling this script.
+CONSTRAINTS="agents/lockfile-constraints.txt"
+# REQUIRE the constraint (feature 0056 M1): without it, `--universal` resolves
+# fine but to the WRONG answer — below the floors, onto versions the pip-audit
+# gate flags. A missing constraint is a hard error, not a silent fallback.
+[ -f "$CONSTRAINTS" ] || {
+    echo "error: required constraint file $CONSTRAINTS is missing." >&2
+    echo "       it holds the security floors; without it the lockfile can" >&2
+    echo "       resolve versions with known advisories." >&2
+    exit 1
+}
+
+# Stable input paths (NOT mktemp): uv records the input path in '# via -r <path>'
 # provenance comments, so a random temp name makes the lockfile non-deterministic
 # and breaks check-lockfile.sh. A fixed relative path keeps those comments stable.
 mkdir -p build
 IN="build/agent-deps.in"
+DEV_IN="build/agent-dev-deps.in"
+MCP_IN="build/mcp-dev-deps.in"
+TOOLS_IN="scripts/requirements-tools.in"
+PINS="build/agent-runtime-pins.txt"
+DEV_PINS="build/agent-dev-pins.txt"
 TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
+DEV_TMP=$(mktemp)
+MCP_TMP=$(mktemp)
+TOOLS_TMP=$(mktemp)
+trap 'rm -f "$TMP" "$DEV_TMP" "$MCP_TMP" "$TOOLS_TMP"' EXIT
 
-# 1. Aggregate every third-party requirement across all agent pyprojects,
+# 2. third_party_deps <extra> <pyproject>... — every third-party requirement of
+#    the pyprojects, plus their <extra> optional dependencies ("" for none),
 #    dropping first-party 'vulture-*' deps (PYTHONPATH-loaded, never installed).
-python3 - <<'PY' > "$IN"
-import glob, tomllib
+third_party_deps() {
+    python3 - "$@" <<'PY'
+import sys, tomllib
+extra, files = sys.argv[1], sorted(sys.argv[2:])
 specs = {}
-for f in sorted(glob.glob("agents/*/pyproject.toml")):
-    data = tomllib.load(open(f, "rb"))
-    for dep in data.get("project", {}).get("dependencies", []):
+for f in files:
+    project = tomllib.load(open(f, "rb")).get("project", {})
+    deps = project.get("dependencies", []) + project.get("optional-dependencies", {}).get(extra, [])
+    for dep in deps:
         name = dep.replace("[", " ").split()[0]
         for sep in (">", "<", "=", "~", "!", ";", " "):
             name = name.split(sep)[0]
@@ -59,26 +99,15 @@ for f in sorted(glob.glob("agents/*/pyproject.toml")):
 for s in specs:
     print(s)
 PY
-
-# 2. Resolve to a hash-pinned lockfile targeting the 3.12 floor. Always a single
-#    universal lockfile — a universal→host fallback is fatal (M1/M6, below), since
-#    a host-only lockfile drops the per-platform marker splits.
-#    The constraint file (LLD 0055 B1a) marker-splits the few packages whose latest
-#    version lacks a wheel on some target — currently cryptography on Intel macOS;
-#    uv forks those into per-platform pins. It is the only hand-maintained lockfile
-#    input, and check-lockfile.sh inherits it by calling this script.
-CONSTRAINTS="agents/lockfile-constraints.txt"
-# REQUIRE the constraint (feature 0056 M1): without it, `--universal` resolves
-# fine but to the WRONG answer — it drops the Darwin cryptography split and
-# re-breaks the darwin/amd64 leg ("no usable wheels"). A missing constraint is a
-# hard error, not a silent host-platform fallback.
-[ -f "$CONSTRAINTS" ] || {
-    echo "error: required constraint file $CONSTRAINTS is missing." >&2
-    echo "       it marker-splits the Darwin cryptography pin; without it the" >&2
-    echo "       lockfile drops the split and the darwin/amd64 build breaks." >&2
-    exit 1
 }
+third_party_deps "" agents/*/pyproject.toml > "$IN"
+third_party_deps dev agents/*/pyproject.toml > "$DEV_IN"
+third_party_deps dev mcp/pyproject.toml > "$MCP_IN"
 
+# 3. Resolve to hash-pinned lockfiles targeting the 3.12 floor. Always universal
+#    lockfiles — a universal→host fallback is fatal (M1/M6, below), since a
+#    host-only lockfile drops the per-platform marker splits.
+#
 # Deterministic re-resolution (feature 0056 M5): resolve against a frozen index
 # snapshot date committed in scripts/lock-date.txt so check-lockfile.sh diffs
 # repo-to-repo, not repo-to-live-PyPI — an unrelated in-range patch release no
@@ -90,7 +119,7 @@ LOCK_DATE_FILE="scripts/lock-date.txt"
 }
 LOCK_DATE=$(cat "$LOCK_DATE_FILE")
 
-UV_ARGS=(pip compile "$IN" --generate-hashes --no-header --quiet --python-version 3.12)
+UV_ARGS=(--generate-hashes --no-header --quiet --python-version 3.12)
 UV_ARGS+=(--constraint "$CONSTRAINTS")
 UV_ARGS+=(--exclude-newer "$LOCK_DATE")
 # Per-package snapshot exceptions (comments and blank lines ignored): a new
@@ -107,41 +136,57 @@ case "${1:-}" in
     --upgrade-pkg) UV_ARGS+=(--upgrade-package "${2:?--upgrade-pkg needs a name}") ;;
 esac
 
+# compile <in> <out> [uv args...] — resolve <in> universally into <out>.
 # Fail CLOSED on a universal→host fallback (feature 0056 M1/M6). A host-only
-# lockfile silently omits the per-platform marker splits (e.g. the Darwin
-# cryptography cap), re-introducing the darwin/amd64 "no usable wheels" failure.
-# `--universal` resolving to the wrong answer is the real hole, so any universal
-# failure is fatal here — never emit a host-only lockfile.
-if ! uv "${UV_ARGS[@]}" --universal -o "$TMP" 2>/dev/null; then
-    echo "error: 'uv pip compile --universal' could not resolve." >&2
-    echo "       refusing to fall back to a host-only lockfile (it would drop the" >&2
-    echo "       per-platform marker splits and break the darwin/amd64 build)." >&2
-    exit 1
-fi
+# lockfile silently omits the pins the other release platforms need (and any
+# per-platform marker split), so their builds fail with "no usable wheels".
+# Any universal failure is fatal here — never emit a host-only lockfile.
+compile() {
+    local in=$1 out=$2
+    shift 2
+    if ! uv pip compile "$in" "${UV_ARGS[@]}" "$@" --universal -o "$out" 2>/dev/null; then
+        echo "error: 'uv pip compile --universal' could not resolve $in." >&2
+        echo "       refusing to fall back to a host-only lockfile (it would omit" >&2
+        echo "       the pins the other release platforms need)." >&2
+        exit 1
+    fi
+}
 MODE="universal"
 
-# Assert the Darwin split survived (feature 0056 M1/M6) BEFORE touching $OUT.
-# uv emits the marker in SINGLE-quote form (the constraint file uses double
-# quotes); match uv's output shape. If it's absent the universal resolve produced
-# a no-split lockfile and the darwin/amd64 leg would fail — fail closed WITHOUT
-# overwriting the committed file, so a failed assert can never leave a corrupt,
-# split-less lockfile on disk (the M1 fail-dirty trap). $TMP is cleaned by the
-# EXIT trap.
-if ! grep -Eq "^cryptography==[0-9][0-9.]* ; sys_platform == 'darwin'" "$TMP"; then
-    echo "error: generated lockfile is missing the Darwin cryptography split" >&2
-    echo "       (cryptography==… ; sys_platform == 'darwin'). The marker split" >&2
-    echo "       did not survive resolution — the darwin/amd64 build would break." >&2
-    echo "       refusing to overwrite $OUT with a split-less lockfile." >&2
-    exit 1
-fi
+compile "$IN" "$TMP"
+# The dev lockfile holds every runtime pin: the fresh runtime lockfile is one of
+# its constraints, so the tests run against exactly the versions that ship. The
+# tools lockfile holds every dev pin the same way, so CI lints with the ruff the
+# agents' dev extra names.
+cp "$TMP" "$PINS"
+compile "$DEV_IN" "$DEV_TMP" --constraint "$PINS"
+cp "$DEV_TMP" "$DEV_PINS"
+compile "$MCP_IN" "$MCP_TMP"
+compile "$TOOLS_IN" "$TOOLS_TMP" --constraint "$DEV_PINS"
 
-# Only now, after every fail-closed check has passed, write the committed file.
-{
-    echo "# GENERATED by scripts/gen-lockfile.sh ($MODE) — DO NOT EDIT BY HAND."
-    echo "# Regenerate with 'make freeze-deps' (then commit). Source of truth:"
-    echo "# the agents' pyproject.toml dependency ranges (first-party vulture-*"
-    echo "# packages are excluded; they load via PYTHONPATH)."
-    cat "$TMP"
-} > "$OUT"
+# write_lock <tmp> <out> <source of truth>... — the committed file: the header,
+# then the resolved pins.
+write_lock() {
+    local tmp=$1 out=$2
+    shift 2
+    {
+        echo "# GENERATED by scripts/gen-lockfile.sh ($MODE) — DO NOT EDIT BY HAND."
+        echo "# Regenerate with 'make freeze-deps' (then commit). Source of truth:"
+        printf '# %s\n' "$@"
+        cat "$tmp"
+    } > "$out"
+    echo "wrote $out — $(grep -c -- '--hash=' "$out") hash lines, mode=$MODE"
+}
 
-echo "wrote $OUT — $(grep -c -- '--hash=' "$OUT") hash lines, mode=$MODE"
+# Only now, after every resolution has succeeded, write the committed files.
+write_lock "$TMP" "$OUT" \
+    "the agents' pyproject.toml dependency ranges (first-party vulture-*" \
+    "packages are excluded; they load via PYTHONPATH)."
+write_lock "$DEV_TMP" "$DEV_OUT" \
+    "every pin of $OUT, held, plus the agents' \`dev\` extras" \
+    "(first-party vulture-* packages are excluded; they load via PYTHONPATH)."
+write_lock "$MCP_TMP" "$MCP_OUT" \
+    "mcp/pyproject.toml's dependency ranges and its \`dev\` extra (vulture-mcp" \
+    "itself loads from the checkout)."
+write_lock "$TOOLS_TMP" "$TOOLS_OUT" \
+    "$TOOLS_IN, with every pin of $DEV_OUT held."

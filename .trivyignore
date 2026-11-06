@@ -17,5 +17,3 @@ GHSA-6v7p-g79w-8964 exp:2027-01-27 # msgpack 1.1.2 vendored by pip 26.2.2 (newes
 CVE-2025-47273 exp:2027-01-27 # setuptools 70.3.0 vendored by pip 26.2.2: pip ships pkg_resources only, not the vulnerable package_index
 CVE-2026-97687 exp:2027-01-27 # urllib3 2.7.0 vendored by pip 26.2.2 (newest pip): used only by pip, i.e. the hash-pinned release build and install.sh's fallback install, which honours HTTPS_PROXY
 CVE-2026-97689 exp:2027-01-27 # urllib3 2.7.0 vendored by pip 26.2.2 (newest pip): used only by pip (release build, install.sh fallback install)
-CVE-2026-69247 exp:2026-11-21 # cryptography 48.0.1, darwin-only pin; mirrors .pip-audit-ignore (renew only after its re-trace)
-CVE-2026-69249 exp:2026-11-21 # cryptography 48.0.1, darwin-only pin; mirrors .pip-audit-ignore (renew only after its re-trace)

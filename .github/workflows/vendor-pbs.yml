@@ -37,7 +37,6 @@ jobs:
         include:
           - { triple: x86_64-unknown-linux-gnu,        platform: linux-amd64 }
           - { triple: aarch64-unknown-linux-gnu,       platform: linux-arm64 }
-          - { triple: x86_64-apple-darwin,             platform: darwin-amd64 }
           - { triple: aarch64-apple-darwin,            platform: darwin-arm64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
