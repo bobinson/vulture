@@ -83,7 +83,7 @@ waiver_args() {
 # FAILS the gate if pip-audit is absent (M2) or reports an un-waived finding.
 run_pip_audit() {
     if ! command -v pip-audit >/dev/null 2>&1; then
-        die "pip-audit is not installed — refusing to tag with no local dependency audit (install it: 'pipx install pip-audit'). The release workflow's Trivy CVE gate remains the CI backstop."
+        die "pip-audit is not installed — refusing to tag with no local dependency audit (build the locked one with 'make build-tools' and put .venv-tools/bin on PATH). The release workflow's Trivy CVE gate remains the CI backstop."
     fi
     [ -f "$REQUIREMENTS" ] || die "requirements file not found: $REQUIREMENTS"
     # shellcheck disable=SC2046  # word-splitting the waiver flags is intentional

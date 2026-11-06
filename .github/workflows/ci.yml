@@ -183,16 +183,16 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-      - name: Install ruff
-        # Pin ruff: an unpinned `pip install ruff` makes the enforced rule set
-        # drift on every ruff release (0.16 broadened defaults, which silently
-        # added ~20 rule families). Pinning + the explicit `select` in
-        # agents/ruff.toml makes lint fully deterministic. Bump deliberately.
-        # KEEP IN SYNC with the ruff pin in agents/shared/pyproject.toml [dev]
-        # so `make lint` locally == this job.
-        run: pip install ruff==0.16.0
+      - name: Build the tools venv
+        # .venv-tools, from scripts/requirements-tools-frozen.txt (hashed wheels
+        # only), holds the ruff pinned in agents/shared/pyproject.toml [dev]: an
+        # unpinned ruff makes the enforced rule set drift on every ruff release
+        # (0.16 broadened defaults, which silently added ~20 rule families).
+        # Pinning + the explicit `select` in agents/ruff.toml makes lint fully
+        # deterministic, and `make lint` runs the same ruff. Bump it there.
+        run: make build-tools
       - name: Lint Python
-        run: cd agents && ruff check .
+        run: cd agents && ../.venv-tools/bin/ruff check .
 
   test-agents:
     runs-on: ubuntu-latest
@@ -423,11 +423,12 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install pip-audit
-        run: python3 -m pip install pip-audit || python3 -m pip install --break-system-packages pip-audit
+      - name: Build the tools venv (pip-audit, from its hashed lockfile)
+        run: make build-tools
       - name: Python dependency audit (pip-audit, gating)
-        # Audits the pinned, hashed lockfiles: the runtime set the release ships
-        # and the two dev lockfiles the test environments are built from. Honors
+        # Audits the pinned, hashed lockfiles: the runtime set the release ships,
+        # the two dev lockfiles the test environments are built from and the tools
+        # lockfile this job's own pip-audit comes from. Honors
         # the shared .pip-audit-ignore allowlist (same parser as release.yml /
         # security-digest.yml), but — unlike release — has NO `|| true`, so a
         # finding in any of them fails the PR.
@@ -437,10 +438,10 @@ jobs:
             IGN=$(awk '/^[[:space:]]*(CVE|GHSA|PYSEC|OSV)-/ {sub(/^[[:space:]]+/,""); split($0,p,/[: \t]/); if (p[1]!="") printf " --ignore-vuln %s", p[1]}' .pip-audit-ignore)
           fi
           rc=0
-          for lock in agents/requirements-frozen.txt agents/requirements-dev-frozen.txt mcp/requirements-dev-frozen.txt; do
+          for lock in agents/requirements-frozen.txt agents/requirements-dev-frozen.txt mcp/requirements-dev-frozen.txt scripts/requirements-tools-frozen.txt; do
             echo "== $lock"
             # shellcheck disable=SC2086  # IGN is an intentionally word-split flag list
-            pip-audit -r "$lock" --strict $IGN || rc=1
+            .venv-tools/bin/pip-audit -r "$lock" --strict $IGN || rc=1
           done
           exit "$rc"
 

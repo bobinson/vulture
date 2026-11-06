@@ -159,6 +159,13 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     `make test-mcp`. `make cwe-corpus` and `make cwe-corpus-full` build and use
     `agents/.venv-dev` too, where they used `agents/.venv` when present and the `python` on
     your `PATH` otherwise.
+  - CI's tools come from a lockfile too. `scripts/requirements-tools-frozen.txt`, generated
+    with the others from `scripts/requirements-tools.in`, holds ruff (the version the agents'
+    dev extra pins) and pip-audit 2.10.1. `make build-tools` builds `.venv-tools` from it, and
+    CI's lint and pip-audit jobs, the security digest and the release's `scan` job run their
+    ruff and pip-audit from it, where they installed ruff and pip-audit by version without
+    hashes, or pip-audit with no version at all. `make lint` uses its ruff. CI's pip-audit
+    audits this lockfile as well.
   - The dev launcher, finding no uvicorn, runs `scripts/build.sh agents` and switches to that
     venv. It never installs into another interpreter.
   - `make` no longer installs the agents into the interpreter on your `PATH`. A copy an earlier

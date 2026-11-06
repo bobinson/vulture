@@ -250,11 +250,11 @@ jobs:
           for tb in dist/vulture-"${GITHUB_REF_NAME}"-*.tar.gz; do
             syft "$tb" -o cyclonedx-json="${tb%.tar.gz}.sbom.json"
           done
-      - name: install pip-audit
-        # This job runs on ubuntu-latest, whose system python3 is externally
-        # managed (PEP 668) and refuses a plain `pip install`; its pip
-        # supports the opt-out flag, so the install passes it directly.
-        run: python3 -m pip install --break-system-packages pip-audit==2.10.1
+      - name: build the tools venv (pip-audit, from its hashed lockfile)
+        # .venv-tools, from scripts/requirements-tools-frozen.txt: hashed wheels
+        # only, installed by the system python3's pip into the venv, so PEP 668's
+        # externally-managed system Python is never written to.
+        run: make build-tools
       - name: pip-audit
         run: |
           if [ -f .pip-audit-ignore ]; then
@@ -271,7 +271,7 @@ jobs:
           # preflight (scripts/security-preflight.sh). .pip-audit-ignore holds
           # time-boxed, codeowner-reviewed waivers.
           # shellcheck disable=SC2086
-          pip-audit -r agents/requirements-frozen.txt --strict $IGN || true
+          .venv-tools/bin/pip-audit -r agents/requirements-frozen.txt --strict $IGN || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scan-reports

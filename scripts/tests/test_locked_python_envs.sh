@@ -9,6 +9,7 @@
 #   agents/requirements-frozen.txt       the agents' runtime set (the release ships it)
 #   agents/requirements-dev-frozen.txt   the same pins plus the agents' test tools
 #   mcp/requirements-dev-frozen.txt      vulture-mcp's dependencies plus its test tools
+#   scripts/requirements-tools-frozen.txt  ruff and pip-audit, for CI and `make lint`
 #
 # Harness contract (matches scripts/tests/test_install_sh.sh): POSIX sh, set -u,
 # pass()/fail() counters, a final "N passed, M failed" line, exit 1 on any FAIL.
@@ -21,7 +22,8 @@ ROOT=$(repo_root "$0")
 RUNTIME=agents/requirements-frozen.txt
 DEV=agents/requirements-dev-frozen.txt
 MCP=mcp/requirements-dev-frozen.txt
-LOCKS="$RUNTIME $DEV $MCP"
+TOOLS=scripts/requirements-tools-frozen.txt
+LOCKS="$RUNTIME $DEV $MCP $TOOLS"
 MK="$ROOT/Makefile"
 
 # recipe <target> — the recipe lines of a Makefile target.
@@ -63,6 +65,12 @@ done
 pins "$ROOT/$MCP" | grep -q '^mcp==1\.' || detail="$detail $MCP does not pin an mcp 1.x;"
 verdict "the dev lockfiles carry the test tools" "$detail"
 
+detail=""
+pins "$ROOT/$TOOLS" | grep -q '^pip-audit==' || detail="$detail no pip-audit;"
+ruff=$(pins "$ROOT/$TOOLS" | grep '^ruff==')
+pins "$ROOT/$DEV" | grep -qxF "${ruff:-no ruff}" || detail="$detail ruff '${ruff:-none}' is not the dev lockfile's;"
+verdict "the tools lockfile holds pip-audit and the dev lockfile's ruff" "$detail"
+
 # --- generation, freshness, installability, audit --------------------------------
 for script in gen-lockfile.sh check-lockfile.sh check-lockfile-installable.sh; do
     detail=""
@@ -80,10 +88,10 @@ done
 verdict "CI pip-audit gates every lockfile" "${detail:+not audited:$detail}"
 
 detail=""
-for path in mcp/pyproject.toml "$MCP"; do
+for path in mcp/pyproject.toml "$MCP" scripts/requirements-tools.in "$TOOLS"; do
     grep -qF "$path" "$ROOT/.github/workflows/lockfile.yml" || detail="$detail $path;"
 done
-verdict "the lockfile gate runs when the mcp dependencies change" "${detail:+not watched:$detail}"
+verdict "the lockfile gate runs when the mcp or tools dependencies change" "${detail:+not watched:$detail}"
 
 # --- the Makefile installs nothing itself --------------------------------------
 installs=$(grep -vE '^[[:space:]]*#' "$MK" | grep -E 'pip install|-m pip|ensurepip|uv pip')
@@ -93,6 +101,12 @@ recipe_has "build-agents builds the runtime venv with build.sh" build-agents 'sc
 recipe_has "build-agents-dev builds agents/.venv-dev from the dev lockfile" build-agents-dev \
     "scripts/locked-venv.sh agents/.venv-dev $DEV"
 recipe_has "test-mcp builds mcp/.venv from the mcp lockfile" test-mcp "scripts/locked-venv.sh mcp/.venv $MCP"
+recipe_has "build-tools builds .venv-tools from the tools lockfile" build-tools "scripts/locked-venv.sh .venv-tools $TOOLS"
+
+detail=""
+grep -qE '^lint:.*build-tools' "$MK" || detail="$detail lint does not build the tools venv;"
+recipe lint | grep -qE '\.venv-tools/bin/ruff check' || detail="$detail lint does not run the tools venv's ruff;"
+verdict "make lint runs the locked ruff" "$detail"
 
 detail=""
 for target in test-agents e2e coverage; do
@@ -109,7 +123,7 @@ done
 grep -qE '^CWE_CORPUS_PY := \$\(AGENTS_DEV_PY\)$' "$MK" || detail="$detail CWE_CORPUS_PY is not the dev venv;"
 verdict "the CWE corpus lanes run in the dev venv" "$detail"
 
-# --- CI tests in the same venvs ---------------------------------------------------
+# --- CI runs Python only from those venvs ------------------------------------------
 # ci_job <workflow> <job> <ere> — the job's steps match <ere>, install no Python
 # package themselves and never run the runner's own python.
 ci_job() {
@@ -119,7 +133,7 @@ ci_job() {
     printf '%s\n' "$body" | grep -qE -- "$3" || detail="$detail does not run: $3;"
     own=$(printf '%s\n' "$body" | grep -E 'pip install|-m pip|uv pip|(^|[[:space:];&(])python3? -m ')
     [ -z "$own" ] || detail="$detail runs: $own"
-    verdict "$1 $2 tests in a venv built from a lockfile" "$detail"
+    verdict "$1 $2 runs Python from a venv built from a lockfile" "$detail"
 }
 
 ci_job ci.yml test-agents 'make build-agents-dev'
@@ -127,5 +141,9 @@ ci_job ci.yml test-mcp 'make test-mcp'
 ci_job ci.yml cwe-corpus 'make cwe-corpus'
 ci_job ci.yml promptlint 'make build-agents-dev'
 ci_job cwe-corpus-nightly.yml cwe-corpus-full 'make cwe-corpus-full'
+ci_job ci.yml lint-agents 'make build-tools'
+ci_job ci.yml audit-python 'make build-tools'
+ci_job security-digest.yml digest 'make build-tools'
+ci_job release.yml scan 'make build-tools'
 
 finish

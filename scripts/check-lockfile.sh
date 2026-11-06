@@ -9,7 +9,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 # Every lockfile gen-lockfile.sh writes.
-LOCKS=(agents/requirements-frozen.txt agents/requirements-dev-frozen.txt mcp/requirements-dev-frozen.txt)
+LOCKS=(agents/requirements-frozen.txt agents/requirements-dev-frozen.txt mcp/requirements-dev-frozen.txt
+       scripts/requirements-tools-frozen.txt)
 
 for f in "${LOCKS[@]}"; do
     if [ ! -f "$f" ]; then

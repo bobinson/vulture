@@ -5,7 +5,7 @@
        gen-env config-check \
        verify verify-proofs verify-simulate verify-all \
        release-local install-local smoke-install smoke-negative freeze-deps check-lockfile \
-       cwe-corpus cwe-corpus-full
+       cwe-corpus cwe-corpus-full build-tools
 
 # Build targets (parallel)
 build:
@@ -22,6 +22,7 @@ build-backend:
 #   agents/.venv      the runtime set the launcher runs (build-agents, via build.sh)
 #   agents/.venv-dev  the same pins plus the agents' test tools (the test targets)
 #   mcp/.venv         vulture-mcp's dependencies plus its test tools (test-mcp)
+#   .venv-tools       ruff and pip-audit (build-tools; lint, and CI's lint and audits)
 AGENT_DIRS := $(patsubst %/pyproject.toml,%,$(wildcard agents/*/pyproject.toml))
 AGENTS_DEV_PY := $(CURDIR)/agents/.venv-dev/bin/python
 
@@ -30,6 +31,9 @@ build-agents:
 
 build-agents-dev:
 	scripts/locked-venv.sh agents/.venv-dev agents/requirements-dev-frozen.txt $(AGENT_DIRS)
+
+build-tools:
+	scripts/locked-venv.sh .venv-tools scripts/requirements-tools-frozen.txt
 
 build-frontend:
 	cd frontend && npm ci && npm run build
@@ -104,9 +108,9 @@ complexity:
 	cd agents && radon cc . -a -nc && echo "Python complexity OK"
 
 # Lint
-lint:
+lint: build-tools
 	cd backend && golangci-lint run ./...
-	cd agents && ruff check .
+	cd agents && $(CURDIR)/.venv-tools/bin/ruff check .
 	cd frontend && npm run lint
 
 # Config: generate .env from config.ini

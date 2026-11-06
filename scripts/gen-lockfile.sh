@@ -6,11 +6,14 @@
 # vulture-* packages load via PYTHONPATH and are never pip-installed, so they are
 # stripped from the resolver input.
 #
-# Two dev lockfiles come from the same run, under the same cooldown, for the test
-# environments (scripts/locked-venv.sh builds every environment from a lockfile):
-#   agents/requirements-dev-frozen.txt  every pin above, held, plus the agents'
-#                                       `dev` extras (the test tools)
-#   mcp/requirements-dev-frozen.txt     mcp/pyproject.toml's deps and `dev` extra
+# Three more lockfiles come from the same run, under the same cooldown, for the
+# test and tool environments (scripts/locked-venv.sh builds every environment from
+# a lockfile):
+#   agents/requirements-dev-frozen.txt     every pin above, held, plus the agents'
+#                                          `dev` extras (the test tools)
+#   mcp/requirements-dev-frozen.txt        mcp/pyproject.toml's deps and `dev` extra
+#   scripts/requirements-tools-frozen.txt  scripts/requirements-tools.in (ruff,
+#                                          pip-audit), every dev pin held
 #
 # Usage:
 #   scripts/gen-lockfile.sh                 # lock to current in-range versions
@@ -26,6 +29,7 @@ cd "$ROOT"
 OUT="agents/requirements-frozen.txt"
 DEV_OUT="agents/requirements-dev-frozen.txt"
 MCP_OUT="mcp/requirements-dev-frozen.txt"
+TOOLS_OUT="scripts/requirements-tools-frozen.txt"
 
 # Pin uv for reproducible lockfiles: a different uv can resolve different versions
 # or order hashes differently, which would make check-lockfile.sh's
@@ -45,9 +49,9 @@ fi
 
 # 1. The constraint file (LLD 0055 B1a) marker-splits the few packages whose
 #    latest version lacks a wheel on some target — currently cryptography on
-#    Intel macOS; uv forks those into per-platform pins. It is the only
-#    hand-maintained lockfile input, and check-lockfile.sh inherits it by calling
-#    this script.
+#    Intel macOS; uv forks those into per-platform pins. With the tool list
+#    (scripts/requirements-tools.in) it is the only hand-maintained lockfile
+#    input, and check-lockfile.sh inherits both by calling this script.
 CONSTRAINTS="agents/lockfile-constraints.txt"
 # REQUIRE the constraint (feature 0056 M1): without it, `--universal` resolves
 # fine but to the WRONG answer — it drops the Darwin cryptography split and
@@ -67,11 +71,14 @@ mkdir -p build
 IN="build/agent-deps.in"
 DEV_IN="build/agent-dev-deps.in"
 MCP_IN="build/mcp-dev-deps.in"
+TOOLS_IN="scripts/requirements-tools.in"
 PINS="build/agent-runtime-pins.txt"
+DEV_PINS="build/agent-dev-pins.txt"
 TMP=$(mktemp)
 DEV_TMP=$(mktemp)
 MCP_TMP=$(mktemp)
-trap 'rm -f "$TMP" "$DEV_TMP" "$MCP_TMP"' EXIT
+TOOLS_TMP=$(mktemp)
+trap 'rm -f "$TMP" "$DEV_TMP" "$MCP_TMP" "$TOOLS_TMP"' EXIT
 
 # 2. third_party_deps <extra> <pyproject>... — every third-party requirement of
 #    the pyprojects, plus their <extra> optional dependencies ("" for none),
@@ -165,17 +172,28 @@ assert_darwin_split() {
     fi
 }
 
+# assert_split_if_pinned <file> <committed-path> — the same, for a lockfile that
+# need not pin cryptography at all.
+assert_split_if_pinned() {
+    if grep -q '^cryptography==' "$1"; then
+        assert_darwin_split "$1" "$2"
+    fi
+}
+
 compile "$IN" "$TMP"
 assert_darwin_split "$TMP" "$OUT"
 # The dev lockfile holds every runtime pin: the fresh runtime lockfile is one of
-# its constraints, so the tests run against exactly the versions that ship.
+# its constraints, so the tests run against exactly the versions that ship. The
+# tools lockfile holds every dev pin the same way, so CI lints with the ruff the
+# agents' dev extra names.
 cp "$TMP" "$PINS"
 compile "$DEV_IN" "$DEV_TMP" --constraint "$PINS"
 assert_darwin_split "$DEV_TMP" "$DEV_OUT"
+cp "$DEV_TMP" "$DEV_PINS"
 compile "$MCP_IN" "$MCP_TMP"
-if grep -q '^cryptography==' "$MCP_TMP"; then
-    assert_darwin_split "$MCP_TMP" "$MCP_OUT"
-fi
+assert_split_if_pinned "$MCP_TMP" "$MCP_OUT"
+compile "$TOOLS_IN" "$TOOLS_TMP" --constraint "$DEV_PINS"
+assert_split_if_pinned "$TOOLS_TMP" "$TOOLS_OUT"
 
 # write_lock <tmp> <out> <source of truth>... — the committed file: the header,
 # then the resolved pins.
@@ -201,3 +219,5 @@ write_lock "$DEV_TMP" "$DEV_OUT" \
 write_lock "$MCP_TMP" "$MCP_OUT" \
     "mcp/pyproject.toml's dependency ranges and its \`dev\` extra (vulture-mcp" \
     "itself loads from the checkout)."
+write_lock "$TOOLS_TMP" "$TOOLS_OUT" \
+    "$TOOLS_IN, with every pin of $DEV_OUT held."

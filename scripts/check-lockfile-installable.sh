@@ -23,8 +23,9 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LOCK="$ROOT/agents/requirements-frozen.txt"
-# The dev lockfiles build the test environments on the same hosts.
-LOCKS=("$LOCK" "$ROOT/agents/requirements-dev-frozen.txt" "$ROOT/mcp/requirements-dev-frozen.txt")
+# The dev and tools lockfiles build the test and tool environments on the same hosts.
+LOCKS=("$LOCK" "$ROOT/agents/requirements-dev-frozen.txt" "$ROOT/mcp/requirements-dev-frozen.txt"
+       "$ROOT/scripts/requirements-tools-frozen.txt")
 
 # The four release triples built by .github/workflows/release.yml, as uv
 # --python-platform targets. KEEP IN SYNC with the release matrix.
