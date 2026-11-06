@@ -97,6 +97,10 @@ jobs:
         run: sh scripts/tests/test_tier3_flags.sh
       - name: launcher tier-3 summary reads the VULTURE_USE_LLM token list
         run: sh scripts/tests/test_tier3_llm_tokens.sh
+      - name: build.sh builds the agents venv from the hashed lockfile only
+        run: sh scripts/tests/test_build_agents_lockfile.sh
+      - name: every Python environment is built from a generated, audited lockfile
+        run: sh scripts/tests/test_locked_python_envs.sh
 
   build-backend:
     runs-on: ubuntu-latest
@@ -429,16 +433,23 @@ jobs:
       - name: Install pip-audit
         run: python3 -m pip install pip-audit || python3 -m pip install --break-system-packages pip-audit
       - name: Python dependency audit (pip-audit, gating)
-        # Audits the pinned, hashed lockfile. Honors the shared .pip-audit-ignore
-        # allowlist (same parser as release.yml / security-digest.yml), but —
-        # unlike release — has NO `|| true`, so a finding fails the PR.
+        # Audits the pinned, hashed lockfiles: the runtime set the release ships
+        # and the two dev lockfiles the test environments are built from. Honors
+        # the shared .pip-audit-ignore allowlist (same parser as release.yml /
+        # security-digest.yml), but — unlike release — has NO `|| true`, so a
+        # finding in any of them fails the PR.
         run: |
           IGN=""
           if [ -f .pip-audit-ignore ]; then
             IGN=$(awk '/^[[:space:]]*(CVE|GHSA|PYSEC|OSV)-/ {sub(/^[[:space:]]+/,""); split($0,p,/[: \t]/); if (p[1]!="") printf " --ignore-vuln %s", p[1]}' .pip-audit-ignore)
           fi
-          # shellcheck disable=SC2086  # IGN is an intentionally word-split flag list
-          pip-audit -r agents/requirements-frozen.txt --strict $IGN
+          rc=0
+          for lock in agents/requirements-frozen.txt agents/requirements-dev-frozen.txt mcp/requirements-dev-frozen.txt; do
+            echo "== $lock"
+            # shellcheck disable=SC2086  # IGN is an intentionally word-split flag list
+            pip-audit -r "$lock" --strict $IGN || rc=1
+          done
+          exit "$rc"
 
   audit-go:
     runs-on: ubuntu-latest

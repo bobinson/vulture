@@ -1,4 +1,4 @@
-.PHONY: build build-backend build-agents build-agents-force build-frontend \
+.PHONY: build build-backend build-agents build-agents-dev build-frontend \
        test test-backend test-race test-agents test-frontend test-mcp \
        e2e coverage complexity lint \
        docker-up docker-down \
@@ -14,23 +14,22 @@ build:
 build-backend:
 	cd backend && go build -o bin/vulture ./cmd/vulture/
 
-# `python -m pip` (not bare `pip`) so deps install into the SAME interpreter
-# `make test` runs pytest with — bare `pip` can resolve to a different (e.g.
-# system, PEP-668 externally-managed) Python, failing to install AND leaving the
-# test interpreter missing deps like `pathspec`/`shared` → silent test failures.
-#
-# IDEMPOTENT: skip the (heavy) editable reinstall when the agents are already
-# importable. test-agents depends on this, so a full reinstall on every `make
-# test` would otherwise churn ~11 wheels concurrently with the parallel Go tests
-# and flake the load-sensitive process tests (internal/localdev). Force a clean
-# reinstall with `make build-agents-force` (e.g. after adding a dependency).
-build-agents:
-	@python -c "import shared, pathspec, chaos_agent" 2>/dev/null \
-	  && echo "agents already installed (run 'make build-agents-force' to reinstall)" \
-	  || $(MAKE) build-agents-force
+# Python environments come only from the hashed lockfiles, through
+# scripts/locked-venv.sh (its header says why): make never runs pip itself. Each
+# venv is rebuilt when its lockfile changes and left alone otherwise, so `make
+# test` reinstalls nothing while the parallel Go tests run. The first-party
+# packages load from the checkout, so a code change needs no rebuild.
+#   agents/.venv      the runtime set the launcher runs (build-agents, via build.sh)
+#   agents/.venv-dev  the same pins plus the agents' test tools (the test targets)
+#   mcp/.venv         vulture-mcp's dependencies plus its test tools (test-mcp)
+AGENT_DIRS := $(patsubst %/pyproject.toml,%,$(wildcard agents/*/pyproject.toml))
+AGENTS_DEV_PY := $(CURDIR)/agents/.venv-dev/bin/python
 
-build-agents-force:
-	cd agents && python -m pip install -e shared/ -e chaos_engineering/ -e owasp/ -e soc2/ -e cwe/ -e prove/ -e xss/ -e ssdf/ -e discover/ -e do178c/ -e asvs/
+build-agents:
+	scripts/build.sh agents
+
+build-agents-dev:
+	scripts/locked-venv.sh agents/.venv-dev agents/requirements-dev-frozen.txt $(AGENT_DIRS)
 
 build-frontend:
 	cd frontend && npm ci && npm run build
@@ -42,16 +41,12 @@ test:
 test-backend:
 	cd backend && go test ./...
 
-# MCP server tests in an mcp-local venv built from mcp's own declared
-# dependencies (mcp/pyproject.toml, [dev] extra): the agents venv carries
-# neither the mcp SDK nor respx. IDEMPOTENT like build-agents: the install runs
-# only when the venv cannot import the test stack.
-MCP_PY := mcp/.venv/bin/python
+# MCP server tests in mcp/.venv, built from mcp/requirements-dev-frozen.txt:
+# vulture-mcp needs the mcp SDK 1.x, and the agents' set pins 2.x.
+MCP_PY := $(CURDIR)/mcp/.venv/bin/python
 test-mcp:
-	@[ -x $(MCP_PY) ] || python3 -m venv mcp/.venv
-	@$(MCP_PY) -c "import mcp.server.fastmcp, respx, pytest_asyncio" 2>/dev/null \
-	  || $(MCP_PY) -m pip install -e "./mcp[dev]"
-	cd mcp && .venv/bin/python -m pytest tests/ -q
+	scripts/locked-venv.sh mcp/.venv mcp/requirements-dev-frozen.txt mcp
+	cd mcp && $(MCP_PY) -m pytest tests/ -q
 
 # Race detector on the concurrency-bearing packages. Feature 0071 added a
 # per-audit event broadcaster with a fan-out goroutine per subscriber; none of
@@ -61,46 +56,46 @@ test-mcp:
 test-race:
 	cd backend && go test -race ./internal/handler/... ./internal/service/... ./internal/agui/...
 
-# Depends on build-agents: the agents import each other (e.g. chaos_agent imports
-# `shared`), so they must be installed editable in the test interpreter first.
-# Without it, cross-package imports fail at collection ("No module named 'shared'").
-test-agents: build-agents
-	cd agents/shared && python -m pytest tests/unit/ -v
-	cd agents/chaos_engineering && python -m pytest tests/unit/ -v
-	cd agents/owasp && python -m pytest tests/unit/ -v
-	cd agents/soc2 && python -m pytest tests/unit/ -v
-	cd agents/cwe && python -m pytest tests/unit/ -v
-	cd agents/prove && python -m pytest tests/unit/ -v
-	cd agents/xss && python -m pytest tests/unit/ -v
-	cd agents/ssdf && python -m pytest tests/unit/ -v
-	cd agents/discover && python -m pytest tests/unit/ -v
-	cd agents/do178c && python -m pytest tests/unit/ -v
-	cd agents/asvs && python -m pytest tests/unit/ -v
+# Runs in agents/.venv-dev: the agents import each other (e.g. chaos_agent imports
+# `shared`), and that venv loads every agent package from the checkout. Without
+# it, cross-package imports fail at collection ("No module named 'shared'").
+test-agents: build-agents-dev
+	cd agents/shared && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/chaos_engineering && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/owasp && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/soc2 && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/cwe && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/prove && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/xss && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/ssdf && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/discover && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/do178c && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
+	cd agents/asvs && $(AGENTS_DEV_PY) -m pytest tests/unit/ -v
 
 test-frontend:
 	cd frontend && npm test
 
 # E2E tests
-e2e:
+e2e: build-agents-dev
 	cd backend && go test ./test/e2e/ -v -tags=e2e
-	cd agents/shared && python -m pytest tests/e2e/ -v
-	cd agents/chaos_engineering && python -m pytest tests/e2e/ -v
-	cd agents/owasp && python -m pytest tests/e2e/ -v
-	cd agents/soc2 && python -m pytest tests/e2e/ -v
-	cd agents/cwe && python -m pytest tests/e2e/ -v
-	cd agents/prove && python -m pytest tests/e2e/ -v
-	cd agents/xss && python -m pytest tests/e2e/ -v
-	cd agents/ssdf && python -m pytest tests/e2e/ -v
-	cd agents/discover && python -m pytest tests/e2e/ -v
-	cd agents/do178c && python -m pytest tests/e2e/ -v
-	cd agents/asvs && python -m pytest tests/e2e/ -v
+	cd agents/shared && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/chaos_engineering && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/owasp && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/soc2 && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/cwe && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/prove && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/xss && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/ssdf && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/discover && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/do178c && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
+	cd agents/asvs && $(AGENTS_DEV_PY) -m pytest tests/e2e/ -v
 	cd frontend && npx playwright test
 
 # Coverage verification (100% required)
-coverage:
+coverage: build-agents-dev
 	cd backend && go test ./... -coverprofile=coverage.out -covermode=atomic && \
 		go tool cover -func=coverage.out | grep total | awk '{print $$3}' | grep -q "100.0%"
-	cd agents && python -m pytest tests/ --cov=. --cov-report=term --cov-fail-under=100
+	cd agents && $(AGENTS_DEV_PY) -m pytest tests/ --cov=. --cov-report=term --cov-fail-under=100
 	cd frontend && npm test -- --coverage --coverageThreshold='{"global":{"lines":100,"branches":100,"functions":100,"statements":100}}'
 
 # Complexity verification (< 10)

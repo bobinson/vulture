@@ -2,7 +2,8 @@
 #
 # scripts/check-lockfile-installable.sh — release-installability gate.
 #
-# Verifies the hashed agent lockfile (agents/requirements-frozen.txt) ACTUALLY
+# Verifies the hashed agent lockfile (agents/requirements-frozen.txt), and the
+# dev lockfiles gen-lockfile.sh writes with it, ACTUALLY
 # installs — with the SAME `--only-binary :all:` the release build uses
 # (scripts/build-release.sh) — on EVERY release target platform, checked
 # cross-platform from a single host via `uv pip install --python-platform`.
@@ -22,6 +23,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LOCK="$ROOT/agents/requirements-frozen.txt"
+# The dev lockfiles build the test environments on the same hosts.
+LOCKS=("$LOCK" "$ROOT/agents/requirements-dev-frozen.txt" "$ROOT/mcp/requirements-dev-frozen.txt")
 
 # The four release triples built by .github/workflows/release.yml, as uv
 # --python-platform targets. KEEP IN SYNC with the release matrix.
@@ -48,27 +51,30 @@ uv venv "$VENV/v" --python "$PYVER" >/dev/null 2>&1 \
     || { echo "error: could not create python $PYVER venv (uv venv)" >&2; exit 1; }
 
 rc=0
-for plat in "${TARGETS[@]}"; do
-    if uv pip install --python "$VENV/v/bin/python" --dry-run \
-           --require-hashes --only-binary :all: --python-platform "$plat" \
-           -r "$LOCK" >/dev/null 2>&1; then
-        echo "  ok:   $plat"
-    else
-        echo "  FAIL: $plat — a pinned package has no installable wheel for this target" >&2
-        # Re-run visibly to surface the offending package(s).
-        uv pip install --python "$VENV/v/bin/python" --dry-run \
-            --require-hashes --only-binary :all: --python-platform "$plat" \
-            -r "$LOCK" 2>&1 | grep -iE 'no usable wheels|has no|because' | head -3 | sed 's/^/        /' >&2 || true
-        rc=1
-    fi
+for lock in "${LOCKS[@]}"; do
+    echo "  ${lock#"$ROOT"/}"
+    for plat in "${TARGETS[@]}"; do
+        if uv pip install --python "$VENV/v/bin/python" --dry-run \
+               --require-hashes --only-binary :all: --python-platform "$plat" \
+               -r "$lock" >/dev/null 2>&1; then
+            echo "    ok:   $plat"
+        else
+            echo "    FAIL: $plat — a pinned package has no installable wheel for this target" >&2
+            # Re-run visibly to surface the offending package(s).
+            uv pip install --python "$VENV/v/bin/python" --dry-run \
+                --require-hashes --only-binary :all: --python-platform "$plat" \
+                -r "$lock" 2>&1 | grep -iE 'no usable wheels|has no|because' | head -3 | sed 's/^/        /' >&2 || true
+            rc=1
+        fi
+    done
 done
 
 if [ "$rc" -ne 0 ]; then
-    echo "error: lockfile is NOT installable on all release targets (see above)." >&2
+    echo "error: a lockfile is NOT installable on all release targets (see above)." >&2
     echo "       a package resolves universally (its sdist satisfies the resolver) but ships" >&2
     echo "       no wheel for a target platform. Pin it to a version WITH wheels for every" >&2
     echo "       target (or add a marker split in agents/lockfile-constraints.txt), then" >&2
     echo "       re-run 'make freeze-deps' and commit." >&2
     exit 1
 fi
-echo "check-lockfile-installable: OK — all ${#TARGETS[@]} release targets installable (--only-binary, real PyPI)"
+echo "check-lockfile-installable: OK — ${#LOCKS[@]} lockfiles installable on all ${#TARGETS[@]} release targets (--only-binary, real PyPI)"

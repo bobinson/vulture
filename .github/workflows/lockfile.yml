@@ -58,14 +58,15 @@ jobs:
         id: scope
         # Git pathspecs mirror the former on.paths scope (M4: a PR editing ONLY
         # the generator inputs is still gated). `agents` recursively covers the
-        # agent dep declarations + lockfile-constraints.txt. base.sha is a trusted
+        # agent dep declarations + lockfile-constraints.txt; the mcp paths are
+        # vulture-mcp's dep declaration and its dev lockfile. base.sha is a trusted
         # 40-hex commit id, passed via env (never inlined into the shell).
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           # Fail CLOSED: if the diff can't be computed, run the check anyway.
           changed=$(git diff --name-only "$BASE_SHA" HEAD -- \
-               agents \
+               agents mcp/pyproject.toml mcp/requirements-dev-frozen.txt \
                scripts/gen-lockfile.sh scripts/check-lockfile.sh \
                scripts/check-lockfile-installable.sh scripts/uv-version.sh \
                scripts/lock-date.txt scripts/lock-date-packages.txt \

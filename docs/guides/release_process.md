@@ -245,7 +245,12 @@ one names a **Python package** in the agents' dependency closure, follow this lo
 
 ## Dependency updates / re-locking
 
-`agents/requirements-frozen.txt` is **generated** — never hand-edit it.
+`agents/requirements-frozen.txt` is **generated** — never hand-edit it. So are the
+two dev lockfiles the same run writes, under the same cooldown, for the test
+environments: `agents/requirements-dev-frozen.txt` (every runtime pin, held, plus
+the agents' `dev` extras) and `mcp/requirements-dev-frozen.txt`. Every local venv
+is built from one of the three by `scripts/locked-venv.sh`, and the lockfile gate
+and CI's pip-audit cover all three.
 
 ```sh
 make freeze-deps              # re-lock to current in-range versions (uses the uv version pinned in scripts/uv-version.sh)

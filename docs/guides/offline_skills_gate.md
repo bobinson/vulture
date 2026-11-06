@@ -56,14 +56,13 @@ This form builds the packages, so pip fetches their build backend (`hatchling`)
 from the index, unpinned, even with `--no-deps`. Use the `PYTHONPATH` form where
 that matters.
 
-In a Vulture development checkout, the agents virtualenv already holds both
-packages. An environment created before this command existed has no console
-script until it reinstalls the CWE package
-(`cd agents && python -m pip install --no-deps -e cwe/`, or
-`make build-agents-force`). The module form needs no console script:
+In a Vulture development checkout, `scripts/vulture.sh build agents` builds the
+agents virtualenv the first way: the hashed lockfile only, with both packages
+loaded from the checkout through a path file. It has no console script, so use
+the module form:
 
 ```bash
-python -m cwe_agent.offline --help
+agents/.venv/bin/python -m cwe_agent.offline --help
 ```
 
 The Docker images and the native installer (Mode E) do not put the command on

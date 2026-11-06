@@ -130,6 +130,35 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **Every local Python environment is built from a hashed lockfile, and nothing else.**
+  `scripts/vulture.sh build agents`, `make build-agents` and `make test-mcp` used to resolve
+  dependencies fresh from the index with `pip install -e`, and the build also upgraded pip and
+  built the first-party packages with an unpinned `hatchling`. When the dev launcher found no
+  uvicorn, it ran the same `pip install -e`, retried with `--break-system-packages`, into
+  whatever Python it found. All of that bypassed the lockfile's cooldown
+  (`scripts/lock-date.txt`) and the CI pip-audit gate, so an environment could hold versions
+  newer than the cooldown allows, or known-vulnerable ones: litellm 1.108 caps filelock below 4,
+  and every filelock 3 release carries the advisories that filelock 4.2.1 fixes. Now:
+  - `scripts/locked-venv.sh` builds each venv from one lockfile: wheels only, each checked
+    against its hash. pip runs from the build interpreter, so the venv has no pip of its own,
+    and first-party packages load from the checkout through a path file, as the launcher's
+    `PYTHONPATH` already loads them. The venv keeps a copy of its lockfile. It is recreated
+    when the lockfile changes, which drops anything installed outside it, and is left alone
+    otherwise. The build needs pip 22.3 or later in the interpreter that runs it.
+  - `agents/.venv`, which the launcher runs, holds `agents/requirements-frozen.txt`, the set
+    the release ships. `make test-agents`, `make e2e` and `make coverage` now run in
+    `agents/.venv-dev`, built from the new `agents/requirements-dev-frozen.txt`: every runtime
+    pin, held, plus the agents' `dev` extras. `make test-mcp` builds `mcp/.venv` from the new
+    `mcp/requirements-dev-frozen.txt`. `make freeze-deps` writes all three under the same
+    cooldown, and `check-lockfile.sh`, `check-lockfile-installable.sh` and the CI pip-audit
+    gate cover all three. `make build-agents-force` is gone: a re-lock changes the lockfile,
+    and that rebuilds the venv.
+  - The dev launcher, finding no uvicorn, runs `scripts/build.sh agents` and switches to that
+    venv. It never installs into another interpreter.
+  - `make` no longer installs the agents into the interpreter on your `PATH`. A copy an earlier
+    `make build-agents` left there stays until you remove it.
+  - The dev venv has no `vulture-offline-skills` console script; run
+    `agents/.venv/bin/python -m cwe_agent.offline` instead.
 - **The frontend's lint tooling uses minimatch 11.0.4.** eslint, `@eslint/config-array` and
   typescript-eslint still require minimatch `^10`, and every minimatch 10 release carries
   GHSA-g3hv-75wg-m249 (moderate: a crafted glob pattern costs quadratic CPU and memory), which is
