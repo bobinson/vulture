@@ -61,28 +61,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Audit the capped Darwin cryptography pin (folded former C6)
-        run: |
-          # The constraint file pins Darwin cryptography to a capped version
-          # (newest with an Intel-mac wheel). The structural guard (split line
-          # present + universal mode) lives in gen-lockfile.sh and runs in C1;
-          # here we add the FORWARD-LOOKING CVE check so the manual cap can't
-          # silently rot into a vulnerable version.
-          CAP=$(awk -F'==' '/^cryptography==/ {sub(/[; ].*$/,"",$2); print $2; exit}' agents/lockfile-constraints.txt)
-          {
-            echo
-            echo "### Capped Darwin cryptography pin"
-            echo '```'
-            if [ -n "$CAP" ]; then
-              echo "auditing cryptography==$CAP (Darwin cap from lockfile-constraints.txt)"
-              printf 'cryptography==%s\n' "$CAP" > /tmp/darwin-cap.txt
-              .venv-tools/bin/pip-audit -r /tmp/darwin-cap.txt 2>&1 || true
-            else
-              echo "no Darwin cryptography cap found in lockfile-constraints.txt"
-            fi
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Open Dependabot alerts (needs DEPENDABOT_ALERTS_TOKEN PAT — M2)
         env:
           # M2: the default GITHUB_TOKEN CANNOT read /dependabot/alerts (403).

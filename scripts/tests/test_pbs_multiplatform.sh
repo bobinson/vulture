@@ -6,9 +6,9 @@
 # VULTURE_BUNDLE_PBS pipeline; they do NOT implement it.  Two artefacts are
 # under test:
 #
-#   scripts/pbs-shas-20260610.txt   — must pin SHAs for ALL FOUR PBS triples.
+#   scripts/pbs-shas-20260610.txt   — must pin SHAs for ALL THREE PBS triples.
 #   scripts/build-release.sh        — must DERIVE the PBS triple from (os,arch)
-#                                     for all four platforms and must NOT gate
+#                                     for all three platforms and must NOT gate
 #                                     bundling SOLELY on a linux+amd64
 #                                     conjunction (which ships PBS_NOT_BUNDLED
 #                                     for every other platform).
@@ -36,8 +36,9 @@ BUILD="$REPO_ROOT/scripts/build-release.sh"
 require_file_or_bail "pin-file-present" "$PIN"
 require_file_or_bail "build-release.sh-present" "$BUILD"
 
-# The four PBS triples the installer must support, one per host platform.
-TRIPLES='x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin'
+# The three PBS triples the installer must support, one per release platform
+# (no Intel Mac since v0.0.21).
+TRIPLES='x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin'
 
 # Slurp each file ONCE; membership is tested with `case` (no per-iteration grep).
 PIN_DATA=$(cat "$PIN")
@@ -58,7 +59,7 @@ triple_in() {
 }
 
 # ---------------------------------------------------------------------------
-# TEST 1 — the SHA pin file lists ALL FOUR triples.
+# TEST 1 — the SHA pin file lists ALL THREE triples.
 # ---------------------------------------------------------------------------
 test_pin_all_triples() {
     missing=
@@ -66,9 +67,9 @@ test_pin_all_triples() {
         triple_in "$PIN_DATA" "$t" || missing="$missing $t"
     done
     if [ -z "$missing" ]; then
-        pass "pin-all-four-triples"
+        pass "pin-all-triples"
     else
-        fail "pin-all-four-triples" "no SHA pin for:$missing"
+        fail "pin-all-triples" "no SHA pin for:$missing"
     fi
 }
 test_pin_all_triples

@@ -27,12 +27,11 @@ LOCK="$ROOT/agents/requirements-frozen.txt"
 LOCKS=("$LOCK" "$ROOT/agents/requirements-dev-frozen.txt" "$ROOT/mcp/requirements-dev-frozen.txt"
        "$ROOT/scripts/requirements-tools-frozen.txt")
 
-# The four release triples built by .github/workflows/release.yml, as uv
+# The three release triples built by .github/workflows/release.yml, as uv
 # --python-platform targets. KEEP IN SYNC with the release matrix.
 TARGETS=(
     x86_64-unknown-linux-gnu
     aarch64-unknown-linux-gnu
-    x86_64-apple-darwin
     aarch64-apple-darwin
 )
 PYVER=3.12  # the CPython the release bundles (python-build-standalone); litellm pins <3.14

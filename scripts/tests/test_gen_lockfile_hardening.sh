@@ -8,8 +8,9 @@
 # single-source inputs (scripts/uv-version.sh, scripts/lock-date.txt). Against
 # the pristine (pre-0056) tree they FAIL (expected RED): the script inlines
 # UV_VERSION="0.11.21", fails OPEN on a missing constraint (`[ -f … ] && …`),
-# has no --exclude-newer / lock-date wiring, and no post-generation Darwin-split
-# assertion. This test only asserts the contract; it does not implement it.
+# and has no --exclude-newer / lock-date wiring. (Its post-generation Darwin-split
+# assertion went with the Intel Mac release target after v0.0.21.) This test only
+# asserts the contract; it does not implement it.
 #
 # Tests are STATIC (grep the committed sources) EXCEPT the constraint-required
 # case, which is BEHAVIORAL: it stages a throwaway copy of the generator's tree
@@ -118,24 +119,6 @@ assert_file_matches \
     "$GEN" \
     'lock-date\.txt' \
     "gen-lockfile.sh never reads scripts/lock-date.txt for the --exclude-newer value"
-
-# ---------------------------------------------------------------------------
-# TEST 6 (M1/M6) — gen-lockfile.sh ASSERTS the resolved Darwin split line in
-# uv's SINGLE-QUOTE output form (cryptography==… ; sys_platform == 'darwin').
-# It must reference that single-quoted marker shape in an assertion (grep/case),
-# not the constraint file's double-quote form.
-# ---------------------------------------------------------------------------
-test_gen_asserts_darwin_split() {
-    name="gen-lockfile-asserts-darwin-split"
-    # Look for the single-quoted darwin marker shape used as an assertion target.
-    if grep -Eq "sys_platform == 'darwin'" "$GEN" \
-       && grep -Eq "cryptography==.*sys_platform == 'darwin'" "$GEN"; then
-        pass "$name"
-    else
-        fail "$name" "gen-lockfile.sh does not assert the single-quote \"cryptography==… ; sys_platform == 'darwin'\" line after generating (M1/M6)"
-    fi
-}
-test_gen_asserts_darwin_split
 
 # ---------------------------------------------------------------------------
 # TEST 7 (M1) STATIC — the fail-OPEN constraint pattern is GONE. The old line

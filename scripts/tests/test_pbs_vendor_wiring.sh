@@ -131,12 +131,12 @@ test_release_consumes_vendored
 # its `awk '$2==KEY'` lookup on that asset name — NOT the bare triple. We read
 # the key the WORKFLOW builds (its `ASSET=` line), expand it per triple using
 # pyver/tag from the committed pin, and assert it resolves a non-empty SHA for
-# ALL FOUR triples. The OLD workflow keyed on the bare triple
+# ALL THREE triples. The OLD workflow keyed on the bare triple
 # (`awk -v t="...matrix.triple..." '$2==t'`), which resolves EMPTY for every
 # triple (column 2 is never a bare triple) so the verify step exits 1 — this
 # case FAILs there and PASSes once B1 keys on the full asset name.
 # ---------------------------------------------------------------------------
-TRIPLES='x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin'
+TRIPLES='x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin'
 
 # resolve_key <asset-key> — print the SHA the pin lists for <asset-key> via the
 # SAME exact-field match the workflow uses (awk '$2==key'); empty if none.

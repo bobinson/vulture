@@ -9,12 +9,12 @@ to confirm a download is *authentic* (built by Vulture's release workflow) and
 ## What is signed
 
 Each release at `https://github.com/bobinson/vulture/releases` ships these assets
-per platform (`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`):
+per platform (`linux-amd64`, `linux-arm64`, `darwin-arm64`; v0.0.21 and earlier also `darwin-amd64`):
 
 | Asset | What it is | Signed |
 |-------|------------|--------|
 | `vulture-<ver>-<os>-<arch>.tar.gz` | the release tarball | ✅ sidecar `.tar.gz.sig` + `.tar.gz.pem` |
-| `SHA256SUMS` | sha256 of all four tarballs | ✅ `SHA256SUMS.sig` + `SHA256SUMS.pem` |
+| `SHA256SUMS` | sha256 of all the tarballs | ✅ `SHA256SUMS.sig` + `SHA256SUMS.pem` |
 | `*.sbom.json` | CycloneDX SBOM (for inspection) | — |
 | `*.vulns.json` | Trivy CVE report of the release gate (for inspection; waived findings are not listed) | — |
 
@@ -55,7 +55,7 @@ Pick the version and platform:
 
 ```sh
 VER=v0.0.9
-PLAT=linux-amd64          # or linux-arm64 / darwin-amd64 / darwin-arm64
+PLAT=linux-amd64          # or linux-arm64 / darwin-arm64
 BASE="https://github.com/bobinson/vulture/releases/download/$VER"
 ```
 

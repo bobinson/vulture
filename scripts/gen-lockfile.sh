@@ -47,20 +47,19 @@ if [ "$_uv_have" != "$UV_VERSION" ] && [ "${VULTURE_ALLOW_UV_MISMATCH:-}" != "tr
     exit 1
 fi
 
-# 1. The constraint file (LLD 0055 B1a) marker-splits the few packages whose
-#    latest version lacks a wheel on some target — currently cryptography on
-#    Intel macOS; uv forks those into per-platform pins. With the tool list
-#    (scripts/requirements-tools.in) it is the only hand-maintained lockfile
-#    input, and check-lockfile.sh inherits both by calling this script.
+# 1. The constraint file (LLD 0055 B1a) holds what the pyproject ranges cannot:
+#    security floors on transitive dependencies, and a per-platform pin should a
+#    release target ever lack a wheel for a package's latest version. With the
+#    tool list (scripts/requirements-tools.in) it is the only hand-maintained
+#    lockfile input, and check-lockfile.sh inherits both by calling this script.
 CONSTRAINTS="agents/lockfile-constraints.txt"
 # REQUIRE the constraint (feature 0056 M1): without it, `--universal` resolves
-# fine but to the WRONG answer — it drops the Darwin cryptography split and
-# re-breaks the darwin/amd64 leg ("no usable wheels"). A missing constraint is a
-# hard error, not a silent host-platform fallback.
+# fine but to the WRONG answer — below the floors, onto versions the pip-audit
+# gate flags. A missing constraint is a hard error, not a silent fallback.
 [ -f "$CONSTRAINTS" ] || {
     echo "error: required constraint file $CONSTRAINTS is missing." >&2
-    echo "       it marker-splits the Darwin cryptography pin; without it the" >&2
-    echo "       lockfile drops the split and the darwin/amd64 build breaks." >&2
+    echo "       it holds the security floors; without it the lockfile can" >&2
+    echo "       resolve versions with known advisories." >&2
     exit 1
 }
 
@@ -139,61 +138,31 @@ esac
 
 # compile <in> <out> [uv args...] — resolve <in> universally into <out>.
 # Fail CLOSED on a universal→host fallback (feature 0056 M1/M6). A host-only
-# lockfile silently omits the per-platform marker splits (e.g. the Darwin
-# cryptography cap), re-introducing the darwin/amd64 "no usable wheels" failure.
-# `--universal` resolving to the wrong answer is the real hole, so any universal
-# failure is fatal here — never emit a host-only lockfile.
+# lockfile silently omits the pins the other release platforms need (and any
+# per-platform marker split), so their builds fail with "no usable wheels".
+# Any universal failure is fatal here — never emit a host-only lockfile.
 compile() {
     local in=$1 out=$2
     shift 2
     if ! uv pip compile "$in" "${UV_ARGS[@]}" "$@" --universal -o "$out" 2>/dev/null; then
         echo "error: 'uv pip compile --universal' could not resolve $in." >&2
-        echo "       refusing to fall back to a host-only lockfile (it would drop the" >&2
-        echo "       per-platform marker splits and break the darwin/amd64 build)." >&2
+        echo "       refusing to fall back to a host-only lockfile (it would omit" >&2
+        echo "       the pins the other release platforms need)." >&2
         exit 1
     fi
 }
 MODE="universal"
 
-# assert_darwin_split <file> <committed-path> — the Darwin split survived
-# (feature 0056 M1/M6). uv emits the marker in SINGLE-quote form (the constraint
-# file uses double quotes); match uv's output shape. If it's absent the universal
-# resolve produced a no-split lockfile and the darwin/amd64 leg would fail — fail
-# closed WITHOUT overwriting any committed file, so a failed assert can never
-# leave a corrupt, split-less lockfile on disk (the M1 fail-dirty trap). The
-# temp files are cleaned by the EXIT trap.
-assert_darwin_split() {
-    if ! grep -Eq "^cryptography==[0-9][0-9.]* ; sys_platform == 'darwin'" "$1"; then
-        echo "error: generated lockfile is missing the Darwin cryptography split" >&2
-        echo "       (cryptography==… ; sys_platform == 'darwin'). The marker split" >&2
-        echo "       did not survive resolution — the darwin/amd64 build would break." >&2
-        echo "       refusing to overwrite $2 with a split-less lockfile." >&2
-        exit 1
-    fi
-}
-
-# assert_split_if_pinned <file> <committed-path> — the same, for a lockfile that
-# need not pin cryptography at all.
-assert_split_if_pinned() {
-    if grep -q '^cryptography==' "$1"; then
-        assert_darwin_split "$1" "$2"
-    fi
-}
-
 compile "$IN" "$TMP"
-assert_darwin_split "$TMP" "$OUT"
 # The dev lockfile holds every runtime pin: the fresh runtime lockfile is one of
 # its constraints, so the tests run against exactly the versions that ship. The
 # tools lockfile holds every dev pin the same way, so CI lints with the ruff the
 # agents' dev extra names.
 cp "$TMP" "$PINS"
 compile "$DEV_IN" "$DEV_TMP" --constraint "$PINS"
-assert_darwin_split "$DEV_TMP" "$DEV_OUT"
 cp "$DEV_TMP" "$DEV_PINS"
 compile "$MCP_IN" "$MCP_TMP"
-assert_split_if_pinned "$MCP_TMP" "$MCP_OUT"
 compile "$TOOLS_IN" "$TOOLS_TMP" --constraint "$DEV_PINS"
-assert_split_if_pinned "$TOOLS_TMP" "$TOOLS_OUT"
 
 # write_lock <tmp> <out> <source of truth>... — the committed file: the header,
 # then the resolved pins.
@@ -209,7 +178,7 @@ write_lock() {
     echo "wrote $out — $(grep -c -- '--hash=' "$out") hash lines, mode=$MODE"
 }
 
-# Only now, after every fail-closed check has passed, write the committed files.
+# Only now, after every resolution has succeeded, write the committed files.
 write_lock "$TMP" "$OUT" \
     "the agents' pyproject.toml dependency ranges (first-party vulture-*" \
     "packages are excluded; they load via PYTHONPATH)."

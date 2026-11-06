@@ -524,6 +524,21 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Removed
 
+- **Intel Mac (darwin-amd64) releases.** v0.0.21 is the last release with an Intel Mac tarball.
+  cryptography ships no Intel macOS wheel after 48.0.1, so that build held every macOS install at
+  48.0.1, under three advisories that could only be waived (PYSEC-2026-3552/3553/3554), and the
+  lockfiles carried a macOS-only cap that Dependabot reported against each of them.
+  - `release.yml` builds linux amd64/arm64 and darwin arm64, and `sign` and `release` expect 3
+    tarballs and 22 assets. `vendor-pbs.yml`, `vendor-cosign.yml`, `build-release.sh` and
+    `check-lockfile-installable.sh` no longer carry the Intel Mac target.
+  - `install.sh` refuses an Intel Mac, naming the last release that has a build for it. A shell
+    running under Rosetta on Apple Silicon reports x86_64; the installer detects it
+    (`sysctl.proc_translated`) and installs the arm64 build, which runs there natively.
+  - The cap is gone from `agents/lockfile-constraints.txt`, and with it `gen-lockfile.sh`'s check
+    that the split survived: every lockfile pins cryptography 50.0.2 for every platform. Its
+    waivers are gone from `.pip-audit-ignore` and `.trivyignore`, and the security digest no
+    longer audits the cap. `scripts/tests/test_release_platforms.sh` replaces
+    `test_lockfile_platform_split.sh` and fails if any of it comes back.
 - **The Semgrep Registry tier of the bundled plugin (feature 0102):** the `p/security-audit` default, the
   `r/solidity` Solidity namespace with its `VULTURE_SEMGREP_DISABLE_SOLIDITY_REGISTRY` switch, the
   `SEMGREP_APP_TOKEN` / `--pro` path, `rules/rule_to_cwe.json` (Registry rule IDs; CWE now comes from each

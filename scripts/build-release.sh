@@ -33,14 +33,13 @@ esac
 
 # pbs_triple_for <os> <arch> — map a (os,arch) build host to its
 # python-build-standalone target triple. Prints the triple on stdout for the
-# four supported platforms; prints nothing (and returns 1) for any other host,
+# three supported platforms; prints nothing (and returns 1) for any other host,
 # so callers can fall through to the unbundled marker. Keeps the single source
 # of truth for the os/arch→triple mapping (DRY) and stays low-complexity.
 pbs_triple_for() {
     case "$1/$2" in
         linux/amd64)  echo x86_64-unknown-linux-gnu ;;
         linux/arm64)  echo aarch64-unknown-linux-gnu ;;
-        darwin/amd64) echo x86_64-apple-darwin ;;
         darwin/arm64) echo aarch64-apple-darwin ;;
         *) return 1 ;;
     esac
@@ -201,14 +200,14 @@ fi
 # vendored tarball (vendor-pbs.yml) via VULTURE_PBS_TARBALL; absent that, we fall
 # back to a direct upstream fetch. EITHER source is SHA-verified against the
 # committed pin below (fail-closed). The triple is derived per platform, so all
-# four (linux/darwin × amd64/arm64) build hosts are supported.
+# three build hosts (linux amd64/arm64, darwin arm64) are supported.
 #
 # runtime/python is NOT pre-created here: the bundle branch rm's+mv's the whole
 # dir into place, so only the unbundled (else) branch — which writes the
 # PBS_NOT_BUNDLED marker — needs to mkdir it (done there).
 # Decide whether to bundle: opt-in flag AND a supported build host. The host's
-# PBS target triple is DERIVED from (os,arch) via pbs_triple_for for all four
-# platforms (linux/darwin × amd64/arm64). An UNSUPPORTED host does NOT error —
+# PBS target triple is DERIVED from (os,arch) via pbs_triple_for for all three
+# platforms (linux amd64/arm64, darwin arm64). An UNSUPPORTED host does NOT error —
 # pbs_triple_for returns empty, so we fall through to the unbundled marker and
 # VULTURE_BUNDLE_PBS can be set globally in release.yml without breaking jobs.
 _bundle_pbs=0
@@ -230,7 +229,7 @@ if [ "$_bundle_pbs" = 1 ]; then
     # repo fetch-vendored-pbs.sh uses (that is VULTURE_PBS_VENDOR_REPO).
     PBS_REPO=${VULTURE_PBS_UPSTREAM_REPO:-indygreg/python-build-standalone}
     # PBS_TRIPLE is derived from (os,arch) above by pbs_triple_for, so this block
-    # bundles the correct interpreter for any of the four supported platforms.
+    # bundles the correct interpreter for any of the three supported platforms.
     # PINNED version. The trust anchor is a REPO-COMMITTED SHA pin
     # (scripts/pbs-shas-<tag>.txt), reviewed at commit time — NOT the release's
     # own self-published SHA256SUMS (which an upstream-release compromise could

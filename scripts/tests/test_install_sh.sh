@@ -1880,5 +1880,45 @@ test_glibc_non_linux_skips() {
 test_glibc_non_linux_skips
 
 # ---------------------------------------------------------------------------
+# PLAT — detect_platform. No release ships an Intel Mac (darwin-amd64) build, so
+# an x86_64 Mac is refused with a message naming Apple Silicon. An x86_64 shell
+# under Rosetta on Apple Silicon (sysctl.proc_translated = 1) gets darwin-arm64,
+# which runs there natively.
+# ---------------------------------------------------------------------------
+# plat_probe <uname -s> <uname -m> <proc_translated> — detect_platform with uname
+# and sysctl shimmed; prints its output, then PLATFORM=<os>-<arch> if it returned.
+# shellcheck disable=SC2016  # the shim's $1 and the body's $OS/$ARCH expand later, by design
+plat_probe() {
+    _pbin="$SANDBOX/plat-bin"
+    mkdir -p "$_pbin"
+    printf '#!/bin/sh\ncase "$1" in -s) echo %s ;; -m) echo %s ;; esac\n' "$1" "$2" > "$_pbin/uname"
+    printf '#!/bin/sh\necho "%s"\n' "$3" > "$_pbin/sysctl"
+    chmod +x "$_pbin/uname" "$_pbin/sysctl"
+    run_in_install '
+        PATH="'"$_pbin"':'"$PATH"'"
+        detect_platform 2>&1
+        echo "PLATFORM=$OS-$ARCH"
+    '
+}
+
+# plat_case <name> <uname -s> <uname -m> <proc_translated> <want: os-arch | refused>
+plat_case() {
+    if [ "$SEAM_OK" -ne 1 ]; then fail "$1" "detect_platform unreachable: seam absent"; return; fi
+    out=$(plat_probe "$2" "$3" "$4")
+    rc=$?
+    got=$(printf '%s\n' "$out" | sed -n 's/^PLATFORM=//p')
+    [ "$rc" -eq 0 ] || got=refused
+    printf '%s' "$out" | grep -q 'Apple Silicon' || [ "$got" != refused ] || got="refused without naming Apple Silicon"
+    if [ "$got" = "$5" ]; then pass "$1"
+    else fail "$1" "want $5, got ${got:-nothing}: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-200)"; fi
+}
+plat_case PLAT1-linux-amd64 Linux x86_64 '' linux-amd64
+plat_case PLAT2-linux-arm64 Linux aarch64 '' linux-arm64
+plat_case PLAT3-apple-silicon Darwin arm64 '' darwin-arm64
+plat_case PLAT4-rosetta-gets-arm64 Darwin x86_64 1 darwin-arm64
+plat_case PLAT5-intel-mac-refused Darwin x86_64 '' refused
+plat_case PLAT6-intel-mac-refused-not-translated Darwin x86_64 0 refused
+
+# ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

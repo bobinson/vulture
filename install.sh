@@ -120,7 +120,16 @@ detect_platform() {
         aarch64|arm64) ARCH=arm64 ;;
         *) err "unsupported architecture: $UNAME_M" ;;
     esac
+    [ "$OS-$ARCH" != darwin-amd64 ] || require_apple_silicon
     log "detected platform: ${OS}-${ARCH}"
+}
+
+# require_apple_silicon — an x86_64 shell on a Mac is Rosetta on Apple Silicon,
+# which runs the arm64 build natively, or an Intel Mac, which no release supports.
+require_apple_silicon() {
+    [ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" = 1 ] \
+        || err "Intel Macs are not supported: releases ship for Apple Silicon (arm64) Macs only. v0.0.21 is the last release with an Intel Mac build."
+    ARCH=arm64
 }
 
 # glibc_version — echo the host glibc version (e.g. 2.35), or return non-zero

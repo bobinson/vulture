@@ -101,6 +101,8 @@ jobs:
         run: sh scripts/tests/test_build_agents_lockfile.sh
       - name: every Python environment is built from a generated, audited lockfile
         run: sh scripts/tests/test_locked_python_envs.sh
+      - name: the release targets linux amd64/arm64 and Apple Silicon only
+        run: sh scripts/tests/test_release_platforms.sh
 
   build-backend:
     runs-on: ubuntu-latest
