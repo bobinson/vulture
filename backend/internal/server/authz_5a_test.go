@@ -198,7 +198,10 @@ func TestAuthz5a_WriteGuardMethodGated(t *testing.T) {
 	if code := doJSON(t, h, http.MethodPost, "/api/sources", memberToken, map[string]string{}); code == http.StatusForbidden || code == http.StatusUnauthorized {
 		t.Fatalf("member POST /api/sources: got %d, want the write guard to admit a member", code)
 	}
-	if code := doJSON(t, h, http.MethodPost, "/api/audits", memberToken, map[string]string{}); code == http.StatusForbidden || code == http.StatusUnauthorized {
+	// An unknown source gets the handler's 404 past the guard. An empty body
+	// would be a valid discover-only audit, whose background run outlives this
+	// test and logs into whichever later test captures the global logger.
+	if code := doJSON(t, h, http.MethodPost, "/api/audits", memberToken, map[string]string{"source_id": "no-such-source"}); code == http.StatusForbidden || code == http.StatusUnauthorized {
 		t.Fatalf("member POST /api/audits: got %d, want the write guard to admit a member", code)
 	}
 }
