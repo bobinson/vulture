@@ -15,7 +15,7 @@ name: release
 # digests the build legs recorded; the write token (contents: write) exists
 # only in `release`, which runs only gh.
 #
-#   lint -> build-frontend -> build-binary (x4) -> scan -> sign -> release
+#   lint -> build-frontend -> build-binary (x3) -> scan -> sign -> release
 
 on:
   push:
@@ -91,7 +91,10 @@ jobs:
           # No Intel Mac leg since v0.0.21: cryptography ships no Intel macOS
           # wheel after 48.0.1, whose advisories that leg kept waived. install.sh
           # refuses an Intel Mac and gives Rosetta on Apple Silicon this build.
-          - { os: darwin, arch: arm64, runner: macos-14 }
+          # macos-14 was retired on 2026-11-02; macos-15 is the oldest image left.
+          # pip picks wheels by the host's macOS, and on 15 it picks the same
+          # macOS 11-tagged wheels it did on 14.
+          - { os: darwin, arch: arm64, runner: macos-15 }
     runs-on: ${{ matrix.runner }}
     # One digest per leg, recorded by the `digest` step BEFORE any post-build
     # step runs; `sign` refuses to sign bytes that differ. Each leg sets only
