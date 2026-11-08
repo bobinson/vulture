@@ -554,6 +554,11 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Fixed
 
+- **The Apple Silicon release tarball builds again.** Its release job ran on the `macos-14`
+  runner image, which GitHub retired on 2026-11-02, so the job was refused before it started
+  and the release never reached signing. It now runs on `macos-15`. The bundled agent
+  dependencies are the same wheels as before (all tagged for macOS 11 or earlier), so the
+  tarball still runs on macOS 14.
 - **LLM error classification reads the error body, not only the message.** openai 3.x puts
   only the body's `message` field in the exception text and leaves `code`, `type` and
   `x_retriable` on the exception, so the broker's permanent-fault signal
