@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from pydantic import BaseModel, create_model
 
 from shared import anchor, quote_store
+from shared.ast.consume import fold_hint_groups
 from shared.cancellation import (
     current_audit_deadline,
     current_cancel_token,
@@ -2952,6 +2953,33 @@ def _attach_code_snippet_safely(
         logger.warning("code_snippet_attach_failed run_id=%s: %s", run_id, exc)
 
 
+def _fold_hint_groups(
+    findings: list[dict[str, Any]], source_path: str, run_id: str,
+) -> list[dict[str, Any]]:
+    """Feature 0104 A2 (OD-2): each file's stamped group of hint-only AST rows
+    as one row, or refused (``consume.fold_hint_groups`` says when), between
+    the code window and the validate stage, on both audit paths.
+
+    Here because it is the first point that holds every row this agent emits:
+    the skills' rows after the line collapse — which has run on the members'
+    own rows, exactly as without grouping — and the LLM tier's new rows. Paths
+    are compared as the dedup compares them (``_normalize_dedup_path``), so an
+    LLM row's relative path meets a skill row's absolute one.
+
+    Grouping is presentation, never a gate: a failure keeps every row.
+    """
+    path_key = functools.partial(_normalize_dedup_path, source_path=source_path)
+    try:
+        folded = fold_hint_groups(findings, path_key)
+    except Exception as exc:
+        logger.warning("hint_group_fold_failed run_id=%s: %s", run_id, exc)
+        return findings
+    logger.info(
+        "hint_groups run_id=%s before=%d after=%d", run_id, len(findings), len(folded),
+    )
+    return folded
+
+
 def _validate_enabled() -> bool:
     """The validate stage runs unless ``VULTURE_DISABLE_VALIDATE=true``."""
     return os.environ.get("VULTURE_DISABLE_VALIDATE", "").lower() != "true"
@@ -3014,9 +3042,10 @@ def finalize_skill_findings(
     For a caller that runs the skills itself (the offline gate, feature 0098)
     and must report exactly what the full audit would: every row passes the
     pre-egress choke point (category conformance, deterministic id, secret
-    redaction), then the skill-vs-skill line collapse, the code window, and the
-    deterministic validate stage. Each step is the same function the audit
-    calls, in the audit's order, so the two paths cannot drift.
+    redaction), then the skill-vs-skill line collapse, the code window, the
+    fold of the AST tier's hint groups (0104 A2), and the deterministic
+    validate stage. Each step is the same function the audit calls, in the
+    audit's order, so the two paths cannot drift.
 
     ``findings`` are mutated in place and must cite paths under ``source_path``
     for the window and the validate stage to read them. Their ids are numbered
@@ -3028,6 +3057,7 @@ def finalize_skill_findings(
         )
     kept, _collapsed = _collapse_skill_findings(findings, run_id)
     _attach_code_snippet_safely(kept, source_path, run_id)
+    kept = _fold_hint_groups(kept, source_path, run_id)
     return [_public_view(f) for f in _validate_without_llm(kept, source_path, run_id)]
 
 
@@ -3542,6 +3572,10 @@ def run_combined_audit(
     # source) so the L5 judge is never blind (R4). Additive / no-op when a
     # finding already carries a snippet. Skipped if the source is gone.
     _attach_code_snippet_safely(all_findings, source_path, run_id)
+
+    # --- Feature 0104 A2: the AST tier's hint groups, one row each ----
+    # After the window and before validate: every row this agent emits is in.
+    all_findings = _fold_hint_groups(all_findings, source_path, run_id)
 
     # --- Validate stage (feature 0045) ---------------------------
     # Annotates each finding with validation_status + validation_confidence

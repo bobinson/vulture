@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from itertools import chain, islice
 from typing import Any
 
 from shared.ast import VALIDATION_KEYS
+from shared.ast.consume import hint_rows, without_rows
 from shared.tools.window import record_window_reason, window_reason_of
 
 from . import l5_cache
 from .compliance import apply_compliance_mode
-from .context_heuristics import clear_l1_cache, run_l1
+from .context_heuristics import checks_signature, clear_l1_cache, run_l1
 from .llm_judge import (
     COVERAGE_ID,
     COVERAGE_JUDGE_ERROR,
@@ -28,7 +30,7 @@ from .llm_judge import (
     stamp_coverage,
 )
 from .refutation import clear_route_model_cache, obligation_check
-from .rollup import derive_parent_verdicts, run_l2
+from .rollup import derive_parent_verdicts, rolled_up_keys, rollup_key, run_l2
 from .types import (
     FindingValidation,
     ValidateConfig,
@@ -111,15 +113,17 @@ def _run_l1_phase(
     findings: list[dict[str, Any]], cfg: ValidateConfig,
     event_texts: list[str], layers_run: list[str], duration_ms: dict[str, int],
     source_path: str = "",
-) -> list[list[ValidationCheck]]:
-    """RC3-isolated L1 dispatcher. Returns one check-list per finding.
+) -> tuple[list[dict[str, Any]], list[list[ValidationCheck]]]:
+    """RC3-isolated L1 dispatcher. Returns the findings and one check-list per
+    finding: the findings handed in, less each 0104 A2 group row this layer
+    ungroups, whose member rows take its place (``_settled_l1``).
 
     `source_path` is the scanned tree's root. It is what lets a WIRING-scoped
     obligation be resolved against the route model; without it every
     authorization finding can only ever be `unknown`.
     """
     if not cfg.enable_l1:
-        return [[] for _ in findings]
+        return findings, [[] for _ in findings]
     t0 = time.monotonic()
     clear_l1_cache()
     # The route model is cached per source root so it is built ONCE per audit
@@ -130,7 +134,7 @@ def _run_l1_phase(
     # table are exactly the false negatives this feature must not create.
     clear_route_model_cache()
     try:
-        l1_results = run_l1(findings, source_root=source_path)
+        findings, l1_results = _settled_l1(findings, source_path)
         layers_run.append("L1")
     except Exception as exc:
         event_texts.append(
@@ -144,7 +148,67 @@ def _run_l1_phase(
     event_texts.append(
         f"[validate] L1 done · {len(findings)} findings · "
         f"{demoted} demoting signal(s)")
-    return l1_results
+    return findings, l1_results
+
+
+def _settled_l1(
+    findings: list[dict[str, Any]], source_path: str,
+) -> tuple[list[dict[str, Any]], list[list[ValidationCheck]]]:
+    """``run_l1`` over every row each finding stands for (``hint_rows``): a
+    0104 A2 group row is checked as its members' rows, from the bytes this
+    layer reads, and stays ONE row only when every member's result equals its
+    anchor's (S2) and no other finding shares its L2 rollup key; otherwise its
+    members' rows replace it, each with its own result, as if it had never
+    been grouped (R5). Any other finding is checked as itself."""
+    stands = [hint_rows(f) for f in findings]
+    if all(len(rows) == 1 for rows in stands):  # no group row: every finding is itself
+        return findings, run_l1(findings, source_root=source_path)
+    return _settled_groups(findings, stands, source_path)
+
+
+def _settled_groups(
+    findings: list[dict[str, Any]], stands: list[Sequence[dict[str, Any]]],
+    source_path: str,
+) -> tuple[list[dict[str, Any]], list[list[ValidationCheck]]]:
+    """``_settled_l1`` when a group row is among ``findings`` (``stands``
+    each finding's rows): every row checked in ONE ``run_l1`` pass, then each
+    finding settled (``_settle``)."""
+    results = iter(run_l1(list(chain.from_iterable(stands)), source_root=source_path))
+    shared = rolled_up_keys(findings)
+    kept: list[dict[str, Any]] = []
+    checks: list[list[ValidationCheck]] = []
+    for f, rows in zip(findings, stands, strict=True):
+        rows_kept, rows_checks = _settle(f, rows, list(islice(results, len(rows))), shared)
+        kept += rows_kept
+        checks += rows_checks
+    return kept, checks
+
+
+def _settle(
+    finding: dict[str, Any], rows: Sequence[dict[str, Any]],
+    checks: list[list[ValidationCheck]], shared: set[tuple[str, str, str]],
+) -> tuple[list[dict[str, Any]], list[list[ValidationCheck]]]:
+    """One finding's rows and results: a finding that stands for itself, or
+    a group row kept whole (``_whole``) with its anchor's result, as one row;
+    else the group's member rows, each with its own result (R5)."""
+    if rows[0] is finding:
+        return [finding], checks
+    if _whole(finding, checks, shared):
+        return [without_rows(finding)], checks[:1]
+    return list(rows), checks
+
+
+def _whole(
+    finding: dict[str, Any], checks: list[list[ValidationCheck]],
+    shared: set[tuple[str, str, str]],
+) -> bool:
+    """A group row stays one row: every member's L1 result equals the
+    anchor's (S2), and L2 builds no parent over its rollup key (``shared``) —
+    one would stand over the group row and another finding, at one of their
+    lines, in place of the parent the members' rows have (R2)."""
+    anchor = checks_signature(checks[0])
+    return rollup_key(finding) not in shared and all(
+        checks_signature(c) == anchor for c in checks[1:])
 
 
 def _run_l2_phase(
@@ -584,7 +648,7 @@ def validate(
     layers_run: list[str] = []
     duration_ms: dict[str, int] = {}
 
-    l1_results = _run_l1_phase(
+    findings, l1_results = _run_l1_phase(
         findings, cfg, event_texts, layers_run, duration_ms, source_path)
     l2_results, rollups = _run_l2_phase(
         findings, cfg, audit_id, event_texts, layers_run, duration_ms,

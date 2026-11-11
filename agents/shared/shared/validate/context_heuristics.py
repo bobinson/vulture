@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import pathlib
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from shared.anchor import ANCHOR_CHECK_ID, anchor_weight
@@ -20,8 +21,9 @@ from shared.lines import parse_line
 
 from .refutation import REFUTATION_MAP, Scope, obligation_check, route_model_for
 from .types import ValidationCheck
+from .voter import vote
 
-__all__ = ["run_l1"]
+__all__ = ["checks_signature", "line_signature", "run_l1"]
 
 
 # ─── Path classification (demote test/vendor, promote production) ──
@@ -944,6 +946,24 @@ def _finding_checks(
         san,
         _obligation_for(f, san, category, file_path, line_start, source_root),
     ]
+
+
+# Feature 0104 A2 (S2): one finding's L1 verdict, as the vote reads it: the status and each
+# check's ``(id, result, weight)``.
+type LineSignature = tuple[str, tuple[tuple[str, str, float], ...]]
+
+
+def line_signature(finding: dict[str, Any]) -> LineSignature:
+    """0104 A2 (S2): this stage's own L1 verdict for ONE finding, ``checks_signature`` of the
+    checks ``_finding_checks(finding, "")`` builds. Exported, never copied; it binds no source
+    root (``set_l1_source_root``), so it leaves this stage's state alone."""
+    return checks_signature(_finding_checks(finding, ""))
+
+
+def checks_signature(checks: Sequence[ValidationCheck]) -> LineSignature:
+    """``voter.vote``'s status over ``checks``, and each check's ``(id, result, weight)``."""
+    status, _confidence = vote(checks)
+    return status, tuple((c.id, c.result, c.weight) for c in checks)
 
 
 def _l1_error_checks(

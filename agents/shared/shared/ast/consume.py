@@ -28,6 +28,14 @@ through three functions:
 tiers build from a rule (D19): ``flow_to_finding`` extends it, and a skill's regex body builds
 its own rows with it, so the two tiers' rows cannot drift apart.
 
+Feature 0104 A2 (OD-2, S1–S4) reports a file's hint-only rows of one rule as ONE row. The head
+picks the file's group (``hint_groups``) and stamps each member's row as it appends it
+(``stamp_member``), so the per-finding events, the line collapse, the LLM tier's dedup and the
+code window see each member's own row; ``fold_hint_groups`` then makes the group row, once
+every row the agent emits is known, unless another row would be reconciled with a member at
+its line (R1, R2). The group row keeps its members' rows (``hint_rows``), which the validate
+stage restores when its own reads disagree (R5).
+
 A rule may carry ONE named heuristic (``FamilyRule.heuristic``): ``command_param`` (D25,
 A42 (1), A43 (1)) is the command rule's — a flow whose origins are UNKNOWN-only, holding
 ``unknown(param)`` or ``unknown(argv)`` (A47 D22-c), at a sink that shells the argument, of a
@@ -42,8 +50,9 @@ first needs them — by then a model exists and has loaded them.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence, Set
 from dataclasses import dataclass
+from functools import partial
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -52,6 +61,9 @@ from shared.ast import MODEL_SCHEMA, VALIDATION_KEYS
 from shared.ast._nodes import parsed_buffer
 from shared.ast._records import ARGV, PARAM, PARAM_HINT_ROLE, hint_only
 from shared.ast.declines import render_origins
+from shared.ast.limits import MAX_GROUP_SINKS
+from shared.lines import parse_line
+from shared.tools.finding_collapse import reconciled_on_line
 from shared.tools.snippet import extract_snippet
 
 if TYPE_CHECKING:
@@ -68,7 +80,13 @@ __all__ = [
     "emit_for_line",
     "family_spans",
     "flow_to_finding",
+    "fold_hint_groups",
+    "group_to_finding",
+    "hint_groups",
+    "hint_rows",
     "rule_row",
+    "stamp_member",
+    "without_rows",
 ]
 
 type Finding = dict[str, Any]
@@ -88,6 +106,16 @@ OWNED_CHECK_IDS = frozenset({
 _AST_KEY, _FLOW_KEY = VALIDATION_KEYS
 # ``validation.flow``'s key for the named heuristic a row was reported on (§10.1, D25).
 _HEURISTIC_KEY = "heuristic"
+# A2 (S3): ``validation.flow``'s key for a group row's member sink lines.
+_SINKS_KEY = "sinks"
+# A2: the private keys of a member row's stamp (its group's sink lines, the anchor's first) and
+# of the member rows a group row stands for. Private, so no emit carries them (``_public_view``).
+_GROUP_KEY = "_hint_group"
+_ROWS_KEY = "_hint_rows"
+# A2: what the agent's own merges leave on the row they keep: the line collapse's absorbed
+# ancestors and the LLM tier's rows its dedup dropped against it (0074 C3). A member row that
+# carries one stands for more than its line, so its group is refused.
+_MERGED_KEYS = ("collapsed_from", "merged_llm", "merged_llm_dropped")
 # D25's token (A42 (1)): stable, it names the command parameter heuristic on every row it
 # reports and in SKILLS.md.
 COMMAND_PARAM = "command_param"
@@ -279,6 +307,180 @@ def emit_for_line(
         row = flow_to_finding(flow, rule, file_path=file_path, nl_lines=nl_lines)
         findings.append(enrich(row, rule.cwe_id))
     return True
+
+
+# ── 0104 A2: a file's hint-only rows as one row (OD-2; S1–S4, R1, R2, R5) ────
+
+# A group's key while its rows are gathered: the file, the check id and the stamp.
+type _GroupKey = tuple[Any, Any, tuple[int, ...]]
+# Where a row stands: its file as ``path_key`` names it, and its line.
+type _Site = tuple[str, int]
+
+
+def hint_groups(spans: Mapping[int, Flow] | None, excluded: Set[int]) -> tuple[int, ...]:
+    """A2's candidate group of ``spans`` (one file, one rule): the sink lines of the rows
+    ``emit_for_line`` appends, less ``excluded`` (those a child replaces and those the head's
+    line loop never reads), sorted, the lowest (the anchor's, S3) first — when there are two to
+    ``MAX_GROUP_SINKS`` of them (a larger file keeps its rows) and every row is hint-only (HT-7,
+    per row); else ``()``. A D25 or mixed-origin row is not hint-only, so it keeps every row of
+    its file apart (S1, S4)."""
+    rows = _row_flows(spans or {}, excluded)
+    return tuple(sorted(rows)) if _groupable(rows.values()) else ()
+
+
+def _row_flows(spans: Mapping[int, Flow], excluded: Set[int]) -> dict[int, Flow]:
+    """Sink line -> the flow of each row ``emit_for_line`` appends (at the flow's sink line),
+    less ``excluded``."""
+    return {n: flow for n, flow in spans.items() if n == flow.sink_line and n not in excluded}
+
+
+def _groupable(flows: Collection[Flow]) -> bool:
+    """Two to ``MAX_GROUP_SINKS`` rows, each hint-only (``hint_only``, HT-7)."""
+    return 2 <= len(flows) <= MAX_GROUP_SINKS and all(hint_only(f.origins) for f in flows)
+
+
+def stamp_member(row: Finding, sinks: tuple[int, ...]) -> None:
+    """A2: mark ``row`` a member of its file's group, ``sinks`` the group's sink lines (the
+    anchor's first). The stamp is private, so no emit carries it."""
+    row[_GROUP_KEY] = sinks
+
+
+def fold_hint_groups(findings: list[Finding], path_key: Callable[[str], str]) -> list[Finding]:
+    """A2: ``findings`` — every row the agent emits: the skills' rows after the line collapse
+    and the LLM tier's — with each stamped group's member rows replaced, at the anchor's place,
+    by the group row (``group_to_finding``), unless the group is refused. Refused, its rows
+    stay as they are: a member's row missing, out of place or kept by one of the agent's own
+    merges (``_MERGED_KEYS``), or another row standing at a member line that one line
+    reconciles with it — of the CWE's dedup family, or a ChildOf ancestor or descendant
+    (``reconciled_on_line``; R1, R2), the file named as ``path_key`` names it. Every stamp is
+    taken off.
+
+    Another agent's rows are not seen here: in the backend's merge an LLM row of a higher
+    severity at the anchor's line evicts the group, and a row corroborating the anchor's line
+    lifts every member's confidence (OD-2 effects (f) and (g), R3 and R4)."""
+    groups = _stamped(findings)
+    if not groups:
+        return findings
+    members = {line_num for key in groups for line_num in key[-1]}
+    standing = _standing(findings, members, path_key)
+    crowded = partial(_crowded, standing=standing, path_key=path_key)
+    return _replaced(findings, _folds(groups, crowded))
+
+
+def _stamped(findings: Iterable[Finding]) -> dict[_GroupKey, list[Finding]]:
+    """Each group's member rows, in their order, keyed by file, check id and stamp; every
+    stamp taken off."""
+    groups: dict[_GroupKey, list[Finding]] = {}
+    for finding in findings:
+        sinks = finding.pop(_GROUP_KEY, None)
+        if sinks:
+            key = (finding.get("file_path"), finding.get("check_id"), sinks)
+            groups.setdefault(key, []).append(finding)
+    return groups
+
+
+def _standing(
+    findings: Iterable[Finding], lines: Set[int], path_key: Callable[[str], str]
+) -> dict[_Site, list[Finding]]:
+    """Every row of ``findings`` on one of ``lines`` (the members' lines), by the site it
+    stands at (``_site``): only those can stand beside a member."""
+    standing: dict[_Site, list[Finding]] = {}
+    for finding in findings:
+        if parse_line(finding.get("line_start")) in lines:
+            standing.setdefault(_site(finding, path_key), []).append(finding)
+    return standing
+
+
+def _site(finding: Finding, path_key: Callable[[str], str]) -> _Site:
+    """Where ``finding`` stands: its file as ``path_key`` names it, and its line."""
+    return path_key(str(finding.get("file_path") or "")), parse_line(finding.get("line_start"))
+
+
+def _folds(
+    groups: Mapping[_GroupKey, list[Finding]], crowded: Callable[[Finding], bool]
+) -> dict[int, list[Finding]]:
+    """The groups to fold: the anchor row's identity -> the member rows."""
+    return {id(rows[0]): rows for key, rows in groups.items() if _foldable(key[-1], rows, crowded)}
+
+
+def _foldable(
+    sinks: tuple[int, ...], rows: Sequence[Finding], crowded: Callable[[Finding], bool]
+) -> bool:
+    """Every member's row is there, once, in line order, and none is ``crowded``
+    (``_crowded``)."""
+    return _lines(rows) == sinks and not any(map(crowded, rows))
+
+
+def _lines(rows: Iterable[Finding]) -> tuple[int, ...]:
+    """The line of each of ``rows`` (``parse_line``), in their order."""
+    return tuple(parse_line(row.get("line_start")) for row in rows)
+
+
+def _crowded(
+    row: Finding, standing: Mapping[_Site, list[Finding]], path_key: Callable[[str], str]
+) -> bool:
+    """One of the agent's own merges kept ``row`` for another row (``_MERGED_KEYS``), or
+    another row its line reconciles with it stands at its line (R1, R2)."""
+    return any(row.get(key) for key in _MERGED_KEYS) or _reconciled_at(row, standing, path_key)
+
+
+def _reconciled_at(
+    row: Finding, standing: Mapping[_Site, list[Finding]], path_key: Callable[[str], str]
+) -> bool:
+    """Another row at ``row``'s site that one line reconciles with it (``reconciled_on_line``)."""
+    here = standing.get(_site(row, path_key), ())
+    return any(other is not row and reconciled_on_line(other, row) for other in here)
+
+
+def _replaced(findings: Iterable[Finding], folds: Mapping[int, list[Finding]]) -> list[Finding]:
+    """``findings`` with each folded group's anchor row replaced by the group row and its
+    other members' rows left out."""
+    hidden = _hidden(folds)
+    return [_folded(finding, folds) for finding in findings if id(finding) not in hidden]
+
+
+def _hidden(folds: Mapping[int, list[Finding]]) -> set[int]:
+    """The identities of the folded groups' member rows other than the anchor's."""
+    return {id(row) for rows in folds.values() for row in rows[1:]}
+
+
+def _folded(finding: Finding, folds: Mapping[int, list[Finding]]) -> Finding:
+    """The group row when ``finding`` is a folded group's anchor row, else ``finding``."""
+    rows = folds.get(id(finding))
+    return finding if rows is None else group_to_finding(rows)
+
+
+def group_to_finding(rows: Sequence[Finding]) -> Finding:
+    """A2 (S3): the group row of ``rows`` (a group's member rows, the anchor's first): the
+    anchor's row, its description naming the count of sinks (never an identifier), and
+    ``validation.flow.sinks``, the members' sink lines, sorted (``MAX_GROUP_SINKS`` at most:
+    ``hint_groups`` makes no larger group). It keeps ``rows`` for ``hint_rows``."""
+    anchor = rows[0]
+    sinks = list(_lines(rows))
+    validation = dict(anchor["validation"])
+    validation[_FLOW_KEY] = {**validation[_FLOW_KEY], _SINKS_KEY: sinks}
+    description = (
+        f"{anchor['title']}: untrusted input reaches {len(sinks)} sinks, the first at line "
+        f"{sinks[0]}"
+    )
+    return {
+        **anchor, "description": description, "validation": validation, _ROWS_KEY: tuple(rows),
+    }
+
+
+def hint_rows(finding: Finding) -> Sequence[Finding]:
+    """The rows ``finding`` stands for: a group row's member rows as they were folded (the
+    anchor's first), which the validate stage restores when it ungroups (R5); any other row,
+    itself."""
+    return finding.get(_ROWS_KEY) or (finding,)
+
+
+def without_rows(finding: Finding) -> Finding:
+    """A copy of ``finding`` without the member rows a group row keeps: the validate stage is
+    their last reader."""
+    row = dict(finding)
+    row.pop(_ROWS_KEY, None)
+    return row
 
 
 # ── the spans (§9.2, §9.3; A28 (3), A30 (1), A41 (3)) ───────────────────────

@@ -1,0 +1,62 @@
+{
+ "parents": {
+  "a2/child_replaced/strip.js": [
+   "9:CWE-22"
+  ],
+  "a2/command_group/run.py": [
+   "7:CWE-78"
+  ],
+  "a2/cwe23_anchor/reader.js": [
+   "9:CWE-22"
+  ],
+  "a2/cwe23_member/reader.js": [
+   "4:CWE-22"
+  ],
+  "a2/cwe23_parent/reader.js": [
+   "14:CWE-22",
+   "5:CWE-23"
+  ],
+  "a2/guarded_member/shelf.js": [
+   "11:CWE-22"
+  ],
+  "a2/request_mixed/sheets.js": [
+   "6:CWE-22"
+  ],
+  "a2/shared_line/shelve.ts": [
+   "4:CWE-22"
+  ],
+  "a2/three_hint/albums.js": [
+   "4:CWE-22"
+  ],
+  "a2/waiver_member/ledger.py": [
+   "6:CWE-22"
+  ]
+ },
+ "status": {
+  "a2/child_replaced/strip.js:13:CWE-22": "suspicious",
+  "a2/child_replaced/strip.js:9:CWE-22": "suspicious",
+  "a2/command_group/run.py:12:CWE-78": "suspicious",
+  "a2/command_group/run.py:17:CWE-78": "suspicious",
+  "a2/command_group/run.py:7:CWE-78": "suspicious",
+  "a2/cwe23_anchor/reader.js:13:CWE-22": "suspicious",
+  "a2/cwe23_anchor/reader.js:9:CWE-22": "suspicious",
+  "a2/cwe23_member/reader.js:13:CWE-22": "suspicious",
+  "a2/cwe23_member/reader.js:4:CWE-22": "suspicious",
+  "a2/cwe23_parent/reader.js:14:CWE-22": "suspicious",
+  "a2/cwe23_parent/reader.js:18:CWE-22": "suspicious",
+  "a2/guarded_member/shelf.js:11:CWE-22": "suspicious",
+  "a2/guarded_member/shelf.js:15:CWE-22": "suspicious",
+  "a2/request_mixed/sheets.js:10:CWE-22": "suspicious",
+  "a2/request_mixed/sheets.js:14:CWE-22": "suspicious",
+  "a2/request_mixed/sheets.js:6:CWE-22": "suspicious",
+  "a2/shared_line/shelve.ts:12:CWE-22": "suspicious",
+  "a2/shared_line/shelve.ts:4:CWE-22": "suspicious",
+  "a2/shared_line/shelve.ts:8:CWE-22": "suspicious",
+  "a2/three_hint/albums.js:12:CWE-22": "suspicious",
+  "a2/three_hint/albums.js:4:CWE-22": "suspicious",
+  "a2/three_hint/albums.js:8:CWE-22": "suspicious",
+  "a2/waiver_member/ledger.py:13:CWE-22": "likely_fp",
+  "a2/waiver_member/ledger.py:19:CWE-22": "suspicious",
+  "a2/waiver_member/ledger.py:6:CWE-22": "suspicious"
+ }
+}

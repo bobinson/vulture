@@ -1833,6 +1833,18 @@ def clear_caches() -> None:
 
     _clear_anchor_cache()
     _reset_ast_audit_state()
+    _reset_l1_memo()
+
+
+def _reset_l1_memo() -> None:
+    """Feature 0104 A2 (S2): drop the validate stage's per-path line and sanitizer memos
+    (``context_heuristics.clear_l1_cache``). The AST heads read them in the skill phase
+    (``line_signature``) and only the stage's L1 layer cleared them, so an audit that never
+    reached it left the next audit reading the files as they were. Only a process that loaded
+    the stage has them: one that never did is not made to import it here."""
+    heuristics = sys.modules.get("shared.validate.context_heuristics")
+    if heuristics is not None:
+        heuristics.clear_l1_cache()
 
 
 def _reset_ast_audit_state() -> None:

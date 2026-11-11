@@ -65,6 +65,7 @@ __all__ = [
     "collapse_line_stacks",
     "cwe_ancestors",
     "max_severity",
+    "reconciled_on_line",
 ]
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,35 @@ def _cwe_id(finding: dict) -> str | None:
     """Numeric id from a ``CWE-N`` category, or None for anything else."""
     match = _CWE_RE.match(str(finding.get("category", "")).strip())
     return match.group(1) if match else None
+
+
+# --------------------------------------------------------------------------
+# Rows one line reconciles (feature 0104 A2, R1 and R2)
+# --------------------------------------------------------------------------
+
+# The backend's cross-agent merge keeps one row per (CWE family, path, line) (its CWE taxonomy,
+# ``internal/cwe``); these are its families of the CWEs the AST tier groups, as numeric ids.
+_DEDUP_FAMILIES = (frozenset({"22", "23", "36", "73"}), frozenset({"77", "78", "88"}))
+_FAMILY_OF = {cid: family for family in _DEDUP_FAMILIES for cid in family}
+
+
+def reconciled_on_line(a: dict, b: dict) -> bool:
+    """Whether rows ``a`` and ``b``, standing on one line, become one: one's CWE is a transitive
+    ``ChildOf`` ancestor of the other's (the collapse above), or both CWEs are in one of the
+    backend's dedup families. Ids are compared without leading zeros, as the backend does."""
+    a_id, b_id = _plain_id(a), _plain_id(b)
+    return a_id is not None and b_id is not None and _reconciled_ids(a_id, b_id)
+
+
+def _plain_id(finding: dict) -> str | None:
+    """``_cwe_id`` without leading zeros."""
+    cid = _cwe_id(finding)
+    return None if cid is None else str(int(cid))
+
+
+def _reconciled_ids(a: str, b: str) -> bool:
+    """One dedup family holds both ids, or one is a ``ChildOf`` ancestor of the other."""
+    return a in _FAMILY_OF.get(b, ()) or a in cwe_ancestors(b) or b in cwe_ancestors(a)
 
 
 # --------------------------------------------------------------------------

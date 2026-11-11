@@ -16,7 +16,7 @@ from shared.tools.window import WINDOW_ROLLUP_PARENT, window_check
 from .refutation import obligation_check
 from .types import ValidationCheck, _utc_now_iso
 
-__all__ = ["derive_parent_verdicts", "rollup_id", "run_l2"]
+__all__ = ["derive_parent_verdicts", "rolled_up_keys", "rollup_id", "rollup_key", "run_l2"]
 
 
 _NORM_WS_RE = re.compile(r"\s+")
@@ -57,19 +57,33 @@ def _rollup_status_for(category: str, instance_count: int) -> str:
     return "suspicious"
 
 
+def rollup_key(f: dict[str, Any]) -> tuple[str, str, str]:
+    """The key L2 groups a finding by: (category, normalised title, file_path)."""
+    return _text(f, "category"), _normalize_title(_text(f, "title")), _text(f, "file_path")
+
+
+def _text(f: dict[str, Any], key: str) -> str:
+    """``f[key]``, or ``""`` when it is absent or empty."""
+    return f.get(key, "") or ""
+
+
 def _group_findings(
     findings: list[dict[str, Any]],
 ) -> dict[tuple[str, str, str], list[int]]:
-    """Group findings by (category, normalised title, file_path)."""
+    """Group findings by ``rollup_key``."""
     groups: dict[tuple[str, str, str], list[int]] = defaultdict(list)
     for idx, f in enumerate(findings):
-        key = (
-            f.get("category", "") or "",
-            _normalize_title(f.get("title", "") or ""),
-            f.get("file_path", "") or "",
-        )
-        groups[key].append(idx)
+        groups[rollup_key(f)].append(idx)
     return groups
+
+
+# The fewest findings L2 builds a rollup parent over.
+_MIN_ROLLUP = 2
+
+
+def rolled_up_keys(findings: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
+    """The ``rollup_key`` groups L2 builds a parent over (``_MIN_ROLLUP`` findings or more)."""
+    return {key for key, idx in _group_findings(findings).items() if len(idx) >= _MIN_ROLLUP}
 
 
 _MAX_LISTED_LINES = 12
@@ -318,7 +332,7 @@ def run_l2(
         ]
         rollup_parents: list[dict[str, Any]] = []
         for (category, _norm_title, file_path), indices in groups.items():
-            if len(indices) < 2:
+            if len(indices) < _MIN_ROLLUP:
                 continue
             members = [findings[i] for i in indices]
             parent = _build_rollup_parent(
