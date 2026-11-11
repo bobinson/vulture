@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from shared.ast import MODEL_SCHEMA, VALIDATION_KEYS
 from shared.ast._nodes import parsed_buffer
-from shared.ast._records import ARGV, PARAM
+from shared.ast._records import ARGV, PARAM, PARAM_HINT_ROLE, hint_only
 from shared.ast.declines import render_origins
 from shared.tools.snippet import extract_snippet
 
@@ -223,7 +223,8 @@ def _flow_record(flow: Flow, rule: FamilyRule) -> dict[str, Any]:
     """``validation.flow``: the family; the origins rendered and sorted (A30 (1)); the sanitiser
     roles the value passed (``via``) and the roles of its guards, each sorted once; every hop
     as ``{line, kind, name}`` (A28 (4)); ``truncated``; and ``heuristic``, the token of the
-    named heuristic ``decide`` reported the flow on (D25), only when one did."""
+    named heuristic ``decide`` reported the flow on (D25), or ``param_hint`` on a hint-only
+    flow (A1), only when one applies."""
     return {
         "family": flow.family,
         "origins": list(render_origins(flow.origins)),
@@ -237,12 +238,17 @@ def _flow_record(flow: Flow, rule: FamilyRule) -> dict[str, Any]:
 
 def _heuristic(flow: Flow, rule: FamilyRule) -> dict[str, str]:
     """``validation.flow.heuristic`` (§10.1): the token of the named heuristic ``decide``
-    reported ``flow`` on (``flow.named_heuristic``, the one question both ask); nothing when
-    none did."""
+    reported ``flow`` on (``flow.named_heuristic``, the one question both ask), else
+    ``param_hint`` on a hint-only flow (A1, ``_hint_token``); nothing when neither applies."""
     from shared.ast.flow import named_heuristic
 
-    token = named_heuristic(flow, rule)
+    token = named_heuristic(flow, rule) or _hint_token(flow)
     return {} if token is None else {_HEURISTIC_KEY: token}
+
+
+def _hint_token(flow: Flow) -> str | None:
+    """A1 (HT-9): ``param_hint`` on a hint-only flow, else None."""
+    return PARAM_HINT_ROLE if hint_only(flow.origins) else None
 
 
 def _roles(sets: Iterable[frozenset[str]]) -> list[str]:
@@ -314,11 +320,19 @@ def _by_line(model: FileFacts, flows: Sequence[Flow]) -> dict[int, Flow]:
     worker parsed (§4), so its lines are counted there, by ``\\n`` only (D21): the buffer is
     read once (``_parsed_buffer``), and only when a flow was reported. The flows come sorted by
     sink line, so a later one takes a line two spans share: every reported sink line maps to a
-    flow at that line, which ``emit_for_line`` emits."""
+    flow at that line, which ``emit_for_line`` emits. Within one sink line the hint-only flows
+    go first (A1, ``_hint_first``), so a non-hint flow there takes the lines they share."""
     if not flows:
         return {}
     buffer = _parsed_buffer(model.nl_lines.text)
-    return {line: flow for flow in flows for line in _span_lines(flow, buffer)}
+    ordered = sorted(flows, key=_hint_first)
+    return {line: flow for flow in ordered for line in _span_lines(flow, buffer)}
+
+
+def _hint_first(flow: Flow) -> tuple[int, bool]:
+    """A1 tie-break key: the sink line, then non-hint after hint-only (a stable sort keeps the
+    order within each)."""
+    return flow.sink_line, not hint_only(flow.origins)
 
 
 def _parsed_buffer(text: str) -> tuple[str, str] | tuple[bytes, bytes]:

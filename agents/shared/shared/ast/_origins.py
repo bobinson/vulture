@@ -84,6 +84,7 @@ from shared.ast.profiles import EMPTY_MAP
 from shared.ast.roles import (
     BOUND_SOURCE_WORDS,
     CONDITIONAL_SOURCE_ROOTS,
+    DIGEST_KEYS,
     FILE_NAME_WORDS,
     NO_ROLES,
     PATH_RESULT_WORDS,
@@ -595,11 +596,19 @@ class Engine:
         return _union((args, received)) if shaped else _EXTERNAL_CALL
 
     def _sanitiser_roles(self, call: int) -> frozenset[str]:
-        """A CALL's sanitiser roles, as the one shared copy of that role set (an R-X
-        declaration has none)."""
-        if call in self.calls.constructors:
+        """A CALL's sanitiser roles, as the one shared copy of that role set: none for an R-X
+        declaration, nor for a digest call to a function the file binds (``_own_digest``)."""
+        if call in self.calls.constructors or self._own_digest(call):
             return NO_ROLES
         return role_set(sanitizer_roles(self.m, call, symbol_of=self.calls.symbol_of))
+
+    def _own_digest(self, call: int) -> bool:
+        """0104 WS-D (§4.4): a ``DIGEST_KEYS`` callee the file binds to a function
+        (``Calls.binds_function``) is that function, not a digest; ``numeric`` is the key's
+        only role. Only these keys: the same rule for ``int`` or ``number`` would undo
+        sanitising that holds today."""
+        key = self.calls.key(call)
+        return key in DIGEST_KEYS and self.calls.binds_function(key)
 
     def _method_name(self, call: int) -> bool:
         """R-S (W12): ``file_name()`` / ``getFileName()`` on a CALL result whose chain says path."""

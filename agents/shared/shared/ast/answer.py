@@ -420,6 +420,7 @@ _CODECS: Mapping[str, _Codec] = MappingProxyType({
     "built_arg": _Codec(_as_is, _flag),
     "param_bound": _Codec(_as_is, _flag),
     "builtin_program": _Codec(_as_is, _flag),
+    "bare_path_arg": _Codec(_as_is, _flag),
 })
 # The one field list (D19), in the record's order: a ``Flow`` field with no codec fails here,
 # at import, never on the wire.

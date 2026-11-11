@@ -41,7 +41,9 @@ with no external origin, and ``named_heuristic`` is that one question, which the
 again to name what ``decide`` acted on. A ``command`` flow carries the heuristic's per-flow
 facts (``Flow.shell_sink``, ``built_arg``, ``builtin_program``, ``param_bound``; A43 (1)), set
 here as each flow is built (the shared ``True``/``False``, so they add nothing to a footprint
-but the record's slots).
+but the record's slots). A ``path`` flow carries ``Flow.bare_path_arg`` (0104 WS-C, §4.3), set
+here before the flow's key is built and part of it: a flow carrying it at an existence probe
+with only R-T's hint as external origin declines ``probe:param_hint`` (OD-12).
 Every §9.1 table, ``COVERED_BY`` and ``COVERING_GUARDS`` included, is imported from ``roles``, never
 copied (A27 (5)). A model is shared across audit threads: the candidates never change once
 built, and every diagnostic query runs under one module lock (they are rare, so no analysis
@@ -69,6 +71,7 @@ from shared.ast._records import (
     ANY,
     EXTERNAL,
     PARAM,
+    PARAM_HINT_ROLE,
     Flow,
     Guard,
     Hop,
@@ -77,14 +80,23 @@ from shared.ast._records import (
     external,
     externals,
     has_external,
+    hint_only,
     role_set,
     unknown,
 )
 from shared.ast._sizing import flow_parts, own_ints, sized_once
 from shared.ast.coverage import ENV_ONLY_SINKS, ROLE_FILTERED_SINKS, UNKNOWN_ONLY_SINKS
 from shared.ast.profile import PROFILES
-from shared.ast.profiles import COMMAND, FAMILIES
-from shared.ast.roles import COVERED_BY, COVERING_GUARDS, NO_ROLES, SOURCE_ROLES_BY_FAMILY
+from shared.ast.profiles import COMMAND, FAMILIES, PATH
+from shared.ast.roles import (
+    COVERED_BY,
+    COVERING_GUARDS,
+    NO_ROLES,
+    PROBE_HINT_LANGUAGES,
+    PROBE_PATH_KEYS,
+    SOURCE_ROLES_BY_FAMILY,
+    path_sink_key,
+)
 
 if TYPE_CHECKING:
     from shared.ast.model import FileModel
@@ -99,11 +111,20 @@ __all__ = [
     "covered",
     "decide",
     "external",
+    "hint_only",
     "named_heuristic",
     "unknown",
 ]
 
 type Verdict = Literal["report", "decline", "none"]
+
+# A flow's key in ``_Passes.collect``: sink, argument, carried origins, filtered roles and the
+# bare bit (0104 WS-C).
+type _Key = tuple[int, int, Origins, frozenset[str], bool]
+
+# 0104 WS-C (§4.3, OD-12): the decline label of a bare hinted existence probe.
+_PROBE_LABEL = "probe:" + PARAM_HINT_ROLE
+_NO_FAMILIES: frozenset[str] = frozenset()
 
 
 class _Rule(Protocol):
@@ -142,8 +163,9 @@ def decide(
     gate; ``none`` (tallied) with no external origin, unless the rule's named heuristic names
     the flow (D25, A42 (1)); ``decline`` when every external origin is covered
     (``sanitized:``), or on the FIRST guard whose roles cover the family (``guarded:`` + its
-    smallest covering role); else ``report``. Each step is §8.5's statement, split into
-    helpers only to keep each function's branches few."""
+    smallest covering role), or on a bare hinted existence probe (``probe:param_hint``, 0104
+    WS-C); else ``report``. Each step is §8.5's statement, split into helpers only to keep
+    each function's branches few."""
     _tally_policy(flow, ctx)
     ext = externals(flow.origins)
     return _unreportable(flow, ext, rule, ctx, server_ctx) or _judged(flow, ext, rule, ctx, path)
@@ -173,8 +195,8 @@ def named_heuristic(flow: Flow, rule: _Rule) -> str | None:
     when ``decide`` acts on it — for a flow with no external origin, which the hook names —
     else None. Both callers ask only about a flow with origins: ``decide`` has returned
     ``none`` for one with none before it asks, and a row is a reported flow. The one question
-    both ``decide`` and the finding ask (§10.1), so a row names exactly what ``decide``
-    reported it on."""
+    both ``decide`` and the finding ask (§10.1), so a row names what ``decide`` reported it
+    on (a hint-only row names ``param_hint`` instead, A1)."""
     if rule.heuristic is None or has_external(flow.origins):
         return None
     return rule.heuristic(flow)
@@ -183,13 +205,20 @@ def named_heuristic(flow: Flow, rule: _Rule) -> str | None:
 def _judged(
     flow: Flow, ext: Origins, rule: _Rule, ctx: _Context, path: str | os.PathLike[str]
 ) -> Verdict:
-    """``decline`` on a full sanitiser cover, else on the first covering guard; ``report``.
-    A flow the named heuristic reports has no external origin, so no sanitiser cover (D8)."""
-    label = _sanitized(ext, rule) or _guarded(flow, rule)
+    """``decline`` with its label (``_decline_label``), else ``report``."""
+    label = _decline_label(flow, ext, rule)
     if label is None:
         return "report"
     ctx.decline(path, flow, rule, label)
     return "decline"
+
+
+def _decline_label(flow: Flow, ext: Origins, rule: _Rule) -> str | None:
+    """A full sanitiser cover's label, else the first covering guard's, else a bare hinted
+    probe's (0104 WS-C, OD-12: a decline after both, so a flow that declines today keeps its
+    label); None for none. A flow the named heuristic reports has no external origin, so no
+    sanitiser cover (D8) and no hint."""
+    return _sanitized(ext, rule) or _guarded(flow, rule) or _hint_probe(flow, ext)
 
 
 def _policed(origins: Origins, family: str) -> tuple[Origins, frozenset[str]]:
@@ -239,6 +268,19 @@ def _guarded(flow: Flow, rule: _Rule) -> str | None:
     cover = COVERING_GUARDS[rule.family]
     found = next(filter(None, (g.roles & cover for g in flow.guards)), None)
     return None if found is None else "guarded:" + min(found)
+
+
+def _hint_probe(flow: Flow, ext: Origins) -> str | None:
+    """0104 WS-C (§4.3, OD-12): ``probe:param_hint`` for a hint-only flow at a probe key
+    (``_hinted_probe``) whose argument is bare (``Flow.bare_path_arg``); read off the Flow
+    alone, as a worker-built answer carries it (HT-10)."""
+    return _PROBE_LABEL if flow.bare_path_arg and _hinted_probe(ext, flow.sink_key) else None
+
+
+def _hinted_probe(origins: Origins, sink_key: str) -> bool:
+    """0104 WS-C: the glued ``sink_key`` names a ``PROBE_PATH_KEYS`` probe (a synchronous twin
+    by its stem, ``path_sink_key``) and ``origins`` are hint-only (``hint_only``, HT-7)."""
+    return path_sink_key(sink_key) in PROBE_PATH_KEYS and hint_only(origins)
 
 
 # ── the analysis ─────────────────────────────────────────────────────────────
@@ -319,6 +361,8 @@ class _Passes:
         self.guards = Guards(self.engine)
         self._expanded = 0
         self._carried_sets: dict[Origins, Origins] = {}
+        in_scope = model.language in PROBE_HINT_LANGUAGES  # 0104 WS-C (D-N (1))
+        self._probe_families = PATH if in_scope else _NO_FAMILIES
 
     def build(self) -> dict[str, tuple[Flow, ...]]:
         """The candidates of every family the model's language owns (A38), collected in
@@ -332,10 +376,11 @@ class _Passes:
         return self
 
     def collect(self, family: str) -> tuple[Flow, ...]:
-        """Each context's flows, once per sink argument, origin set and filtered roles (the
-        first context's wins): the key is known before the hops and guards are built."""
+        """Each context's flows, once per sink argument, origin set, filtered roles and bare
+        bit (``_bare_path_arg``; the first context's wins): the key is known before the hops
+        and guards are built."""
         self._expand()
-        flows: dict[tuple[object, ...], Flow] = {}
+        flows: dict[_Key, Flow] = {}
         for ctx, context in enumerate(self.engine.contexts):
             for site, arg in self._sink_args(context, ctx, family):
                 self._add(flows, ctx, site, arg, family)
@@ -368,17 +413,29 @@ class _Passes:
             if not self.engine.source_read(site, ctx):
                 yield from ((site, arg) for arg in calls.sink_args(site, family))
 
-    def _add(
-        self, flows: dict[tuple[object, ...], Flow], ctx: int, site: int, arg: int, family: str
-    ) -> None:
+    def _add(self, flows: dict[_Key, Flow], ctx: int, site: int, arg: int, family: str) -> None:
         """R-P (A28 (3), (5)): a sink argument with no origin left is no candidate. A flow
         already found is not built again."""
         kept, filtered_roles = _policed(self.engine.origins(arg, ctx), family)
         if not kept:
             return
-        key = (site, arg, self._carried(kept), filtered_roles)
+        bare = self._bare_path_arg(ctx, family, site, arg, kept)
+        key = (site, arg, self._carried(kept), filtered_roles, bare)
         if key not in flows:
             flows[key] = self._flow(ctx, family, key)
+
+    def _bare_path_arg(self, ctx: int, family: str, site: int, arg: int, kept: Origins) -> bool:
+        """0104 WS-C (§4.3, A54): ``Flow.bare_path_arg`` - a probe candidate
+        (``_probe_candidate``) whose argument is the hinted parameter itself
+        (``Params.hinted_itself``)."""
+        candidate = self._probe_candidate(ctx, family, site, kept)
+        return candidate and self.engine.params.hinted_itself(arg)
+
+    def _probe_candidate(self, ctx: int, family: str, site: int, kept: Origins) -> bool:
+        """A BASE-context flow of a family ``_probe_families`` holds, hint-only at a probe key
+        (``_hinted_probe``): every other flow pays one set probe or two."""
+        based = self.engine.contexts[ctx] is BASE and family in self._probe_families
+        return based and _hinted_probe(kept, self.engine.calls.key(site))
 
     def _carried(self, kept: Origins) -> Origins:
         """W15 (c): what a flow carries — ``kept`` without ``constant`` — one set per distinct
@@ -387,8 +444,8 @@ class _Passes:
         origins = kept - CONSTANTS
         return self._carried_sets.setdefault(origins, origins)
 
-    def _flow(self, ctx: int, family: str, key: tuple[int, int, Origins, frozenset[str]]) -> Flow:
-        site, arg, origins, filtered_roles = key
+    def _flow(self, ctx: int, family: str, key: _Key) -> Flow:
+        site, arg, origins, filtered_roles, bare = key
         hops, truncated = self.hops.of(ctx, arg, site)
         shell_sink, built_arg, builtin_program = self._command_facts(family, site, arg)
         return Flow(
@@ -406,6 +463,7 @@ class _Passes:
             shell_sink=shell_sink,
             built_arg=built_arg,
             builtin_program=builtin_program,
+            bare_path_arg=bare,
         )
 
     def _command_facts(self, family: str, site: int, arg: int) -> tuple[bool, bool, bool]:
@@ -417,6 +475,8 @@ class _Passes:
             return False, False, False
         calls = self.engine.calls
         return calls.shell_arg(site, arg), calls.built(arg), calls.builtin_program(site, arg)
+
+
 
 
 def _params_bound(flows: tuple[Flow, ...]) -> tuple[Flow, ...]:

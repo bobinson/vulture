@@ -40,7 +40,8 @@ __all__ = [
 MODEL_SCHEMA = 2
 # The answer wire's version (§4.1 item 1, D3'): appended to D5's key for a worker-built answer,
 # so an answer and a model of one file are two entries. A version, not a knob.
-ANSWER_SCHEMA = 1
+# 2 (0104 WS-C, §4.3): a flow carries ``bare_path_arg``.
+ANSWER_SCHEMA = 2
 
 # The two top-level ``validation`` keys an AST-owned row carries (§10.1): written by
 # ``consume.flow_to_finding``, kept by the validate stage wherever it rebuilds the blob (A42 (3)).

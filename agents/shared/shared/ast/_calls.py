@@ -11,7 +11,8 @@ needs — never an origin, so every answer is the same in every summary context:
   the callee NAME is an import binding (R-H, W6); the builtin a PAIR key or a single key names
   (W5: pair first, then single — two O(1) probes);
 * the local FUNCTION a callee resolves to (a bound NAME, R-G, or ``this.m``/``self.m``, R-F):
-  a local def wins over every lexicon (§8.4);
+  a local def wins over every lexicon (§8.4); and, per file, whether the file binds a function
+  to a name at all (0104 WS-D, ``binds_function``), where no call to it need resolve;
 * the sink arguments of each family (§8.5): the builtin positions (L9, P4, W5 ``when``), the
   path defaults (R10's two-path keys, W14's one-argument writes; a generic verb only with
   file-system evidence, A47 (2) (i)), the request union (W10, L8, R-V) and the command program
@@ -29,6 +30,7 @@ alone (no R-H symbol). Nothing here imports ``tree_sitter`` (D1).
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -74,7 +76,9 @@ from shared.ast.roles import (
     OUTPUT_PARAM_WORDS,
     PATH_KWARGS,
     PATH_SYNC_TWINS,
+    PREDECLARED_CALLS,
     PROCESS_WORDS,
+    QUALIFIED_CALL_LANGUAGES,
     REGEX_WORDS,
     REQUEST_API_WORDS,
     REQUEST_CARRIER_WORDS,
@@ -210,6 +214,58 @@ def call_writes(model: FileModel, call: int) -> list[int]:
     return []
 
 
+# ── the name a FUNCTION is bound to (0104 WS-D, §4.4; WS-C, §4.3) ────────────
+
+# Where an unnamed FUNCTION's value is bound by the node holding it: a PAIR's key (an object
+# member, a struct literal field), an ASSIGN's target (`X.prototype.f =`, `this.f =`, `f =`).
+_BOUND_BY: Mapping[Kind, Field] = MappingProxyType({Kind.PAIR: Field.KEY, Kind.ASSIGN: Field.LHS})
+
+
+def declared_name(model: FileModel, fn: int) -> str:
+    """``fn``'s declared name: its NAME's last identifier (W3), so a C++ out-of-line method
+    (``Store::readEntry``) is named as the same method defined in its class; ``""`` for none."""
+    return identifier_text(model, last_identifier(model, first(model, fn, Field.NAME)))
+
+
+def name_holder(model: FileModel, fn: int) -> int:
+    """The node that names a FUNCTION: its NAME when it declares one (``declared_name``), else
+    the node naming where its value is bound (``_binder``); ``-1`` for none."""
+    return first(model, fn, Field.NAME) if declared_name(model, fn) else _binder(model, fn)
+
+
+def _function_name(model: FileModel, fn: int) -> str:
+    """The name a FUNCTION is declared with (``declared_name``), else the last identifier of
+    the name its value is bound to (``_binder``): ``name_holder``'s last identifier; ``""`` for
+    none."""
+    return identifier_text(model, last_identifier(model, name_holder(model, fn)))
+
+
+def _binder(model: FileModel, fn: int) -> int:
+    """The node naming where ``fn``'s value is bound (``_BOUND_BY``, else ``_class_field``),
+    read past ``_wrapping_call``; ``-1`` for none."""
+    held = _wrapping_call(model, fn)
+    holder = model.parent(held)
+    fld = _BOUND_BY.get(model.kind(holder))
+    return first(model, holder, fld) if fld is not None else _class_field(model, holder, held)
+
+
+def _wrapping_call(model: FileModel, fn: int) -> int:
+    """The CALL ``fn`` is an argument of, else ``fn`` itself: one wrapping call, never more."""
+    args = model.parent(fn)
+    call = model.parent(args)
+    wrapped = model.kind(args) is Kind.ARGS and is_kind(model, call, Kind.CALL)
+    return call if wrapped else fn
+
+
+def _class_field(model: FileModel, body: int, value: int) -> int:
+    """A class field (``f = (n) => ...``): the NAME just before ``value`` in a CLASS's BLOCK,
+    else ``-1``."""
+    in_class = is_kind(model, body, Kind.BLOCK) and is_kind(model, model.parent(body), Kind.CLASS)
+    kids = model.children(body) if in_class else ()
+    at = bisect_left(kids, value)  # siblings are in document order
+    return _leading_name(model, kids[max(at - 1, 0) : at])
+
+
 # ── small model reads ────────────────────────────────────────────────────────
 
 
@@ -287,6 +343,7 @@ class Calls:
         self._sinks_by_family: dict[str, list[int]] | None = None  # built on first use
         self._locals: tuple[int, ...] | None = None  # built on first use
         self._calling: dict[int, set[int]] | None = None  # built on first use
+        self._function_names: frozenset[str] | None = None  # built on first use
 
     def _declared(self, site: int, names: Sequence[int]) -> None:
         """C2 (R-X): a declaration's call shape, known up front — its declared type is the
@@ -526,6 +583,16 @@ class Calls:
         """Its methods (``methods_of``: its BODY's FUNCTION children), by declared name."""
         return MappingProxyType({named(self._m, f): f for f in methods_of(self._m, cls)})
 
+    def binds_function(self, key: str) -> bool:
+        """0104 WS-D (§4.4): the file binds a function to a name whose glued key is ``key`` —
+        declares one so in any scope or class, or binds a function value to it
+        (``_function_name``) — whether or not ``local`` resolves a call to it (``layout.f(x)``
+        on an object literal is no resolved call). One pass over the FUNCTIONs, on first ask."""
+        if self._function_names is None:
+            names = (_function_name(self._m, fn) for fn in self._m.nodes(Kind.FUNCTION))
+            self._function_names = frozenset(map(glue, names))
+        return key in self._function_names
+
     # ── which functions can hold a flow (§8.4) ──
 
     def reaching_sinks(self) -> frozenset[int]:
@@ -660,7 +727,20 @@ class Calls:
     def _language_global(self, site: int) -> bool:
         """A bare call to a name no Def binds (Python ``open``, PHP ``rename``, C ``remove``):
         a parameter or a value the file binds is no language global."""
-        return self.receiver(site) < 0 and not self._resolve(self.callee(site))
+        return self._bare_library(site) and not self._resolve(self.callee(site))
+
+    def _predeclared(self, site: int) -> bool:
+        """0104 WS-H H1 (A56): a call to one of the language's predeclared functions the file
+        does not rebind (``PREDECLARED_CALLS``: Go ``delete``), by the callee's exact text, as
+        Go identifiers are case-sensitive (an exported ``Delete`` is never the builtin)."""
+        callee = self.callee(site)
+        names = PREDECLARED_CALLS.get(self._m.language, NO_WORDS)
+        return self._m.ident(callee) in names and not self._resolve(callee)
+
+    def _bare_library(self, site: int) -> bool:
+        """A receiver-less call that may name a library API: never in a language whose library
+        calls are package-qualified (``QUALIFIED_CALL_LANGUAGES``, 0104 WS-H H3)."""
+        return self.receiver(site) < 0 and self._m.language not in QUALIFIED_CALL_LANGUAGES
 
     # ── the module an import binding names (A44 (1) (c), A47 (2) (i)) ──
 
@@ -751,10 +831,12 @@ class Calls:
         return self._free_call(site) or api(site, REQUEST_API_WORDS) or self._url_shaped(site, key)
 
     def _free_call(self, site: int) -> bool:
-        """A bare call, or one on a NAME a whole-module import binds (``import requests``:
-        ``scope.bound_source``)."""
+        """A bare call that is no predeclared builtin (``_predeclared``, 0104 WS-H H1), or one
+        on a NAME a whole-module import binds (``import requests``: ``scope.bound_source``)."""
         holder = self.receiver(site)
-        return holder < 0 or any(bound_source(self._m, d) >= 0 for d in self._arg_defs(holder))
+        if holder < 0:
+            return not self._predeclared(site)
+        return any(bound_source(self._m, d) >= 0 for d in self._arg_defs(holder))
 
     def _url_shaped(self, site: int, key: str) -> bool:
         """A KWARG or PAIR named like a URL, or a positional URL argument that is URL-shaped
