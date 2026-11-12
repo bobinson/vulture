@@ -10,8 +10,9 @@ Two kinds of pin, each a staged tree scanned by the two AST skills on a neutral 
     ``lstatSync`` probe, while its open and the caller's read stay); C-R1, a ``"use server"``
     export probing its bare positional parameter.
   - D: a ``hash`` the file does not bind is trusted as a digest (an imported helper named
-    ``hash``; a bcrypt-style output); and rev 3's residual (A55): a ``hash`` bound through
-    ``functools.partial``, and a Java lambda implementing an imported ``Hasher``.
+    ``hash``; a bcrypt-style output); and the residual (A55): a Java lambda implementing an
+    imported ``Hasher``. Rev 4 (D-P (1)) reports a ``functools.partial``-bound ``hash`` again:
+    ``d_partial_hash`` pins that row as reported.
   - H: H2L, a ``readall`` keyed read with no file-system evidence (Go and JS; a receiver
     whose words show a file system keeps its row); H3L, a Go
     same-package path helper in a sibling file, and its dot-import extension (``. "os"``).
@@ -192,7 +193,7 @@ def shelf():
     with open(hash(request.args["name"])) as fh:
         return fh.read()
 """,
-    }, (("shelf.py", 10, "CWE-22", "clean"),)),
+    }, (("shelf.py", 10, "CWE-22", "finding"),)),
     "d_java_lambda_hasher": Gap({
         "src/Shelf.java": """import java.nio.file.Files;
 import java.nio.file.Paths;

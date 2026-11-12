@@ -30,8 +30,7 @@ per (file, rule) where each head builds its file context; ``claim`` stamps each 
 with it (``consume.stamp_member``), and the agent folds the rows into one once every row it
 emits is known (``consume.fold_hint_groups``).
 The model, the cache and the lexicons are imported where ``ast_answers`` first needs them, as
-``consume`` imports its own: importing a skill loads no worker pool, profile or model (D1); the
-validate stage's ``line_signature`` where a group is first checked.
+``consume`` imports its own: importing a skill loads no worker pool, profile or model (D1).
 """
 
 from __future__ import annotations
@@ -84,15 +83,14 @@ FALLBACK = AstAnswer(None, ())
 def hint_groups(
     answer: AstAnswer, rule: FamilyRule, file_path: Path, excluded: Set[int] = frozenset()
 ) -> tuple[int, ...]:
-    """0104 A2 (S1–S4): the file's group of hint-only rows of one rule — every member's sink
-    line, sorted, the anchor's first: the stamp ``claim`` puts on each member's row; ``()`` when
-    the file has none. ``consume.hint_groups``' candidate for ``answer`` (``excluded`` the sink
-    lines that are no row: those a child replaces and those the head never reads,
-    ``unread_sinks``), kept only when every member's validate-stage L1 result equals the
-    anchor's (S2, ``line_signature``; the validate stage checks it again on its own reads, R5).
-    Asked once per (file, rule), where the head builds its file context."""
-    sinks = consume.hint_groups(answer.spans, excluded)
-    return sinks if sinks and _l1_equal(sinks, rule, file_path) else ()
+    """0104 A2 (S1, S3, S4): the file's group of hint-only rows of one rule — every member's
+    sink line, sorted, the anchor's first: the stamp ``claim`` puts on each member's row; ``()``
+    when the file has none. ``consume.hint_groups``' candidate for ``answer`` (``excluded`` the
+    sink lines that are no row: those a child replaces and those the head never reads,
+    ``unread_sinks``). Asked once per (file, rule) — ``file_path`` and ``rule`` — where the head
+    builds its file context. S2 is not asked here: whether the group stays one row is the
+    validate stage's decision, on its own reads (R5, D-P (2))."""
+    return consume.hint_groups(answer.spans, excluded)
 
 
 def unread_sinks(
@@ -112,34 +110,6 @@ def _sink_lines(spans: Mapping[int, Flow] | None) -> Iterable[int]:
 def _read(lines: Sequence[str], line_num: int, scanned: Callable[[str], bool]) -> bool:
     """The line loop reaches ``line_num`` and its ``scanned`` predicate keeps the line."""
     return 0 < line_num <= len(lines) and scanned(lines[line_num - 1])
-
-
-def _l1_equal(sinks: Sequence[int], rule: FamilyRule, file_path: Path) -> bool:
-    """S2: every member's ``line_signature`` equals the anchor's (``sinks[0]``); it stops at
-    the first that differs."""
-    signatures = (_signature(rule, file_path, line_num) for line_num in sinks)
-    anchor = next(signatures)
-    return all(signature == anchor for signature in signatures)
-
-
-def _signature(rule: FamilyRule, file_path: Path, line_num: int) -> object:
-    """A member's ``line_signature``. A failure is that member's alone, as one finding's is in
-    the validate stage's ``run_l1``: a fresh object, equal to nothing, so its file is not
-    grouped, and the skill's file loop goes on."""
-    from shared.validate.context_heuristics import line_signature
-
-    try:
-        return line_signature(_stage_view(rule, file_path, line_num))
-    except Exception:  # an L1 failure isolates one member (RC3)
-        return object()
-
-
-def _stage_view(rule: FamilyRule, file_path: Path, line_num: int) -> dict[str, Any]:
-    """What the validate stage's L1 reads of a member's row (S2)."""
-    return {
-        "file_path": str(file_path), "line_start": line_num,
-        "category": rule.category, "check_id": rule.check_id,
-    }
 
 
 class CatalogRule(RuleIdentity, Protocol):

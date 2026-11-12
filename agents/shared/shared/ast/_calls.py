@@ -11,8 +11,9 @@ needs — never an origin, so every answer is the same in every summary context:
   the callee NAME is an import binding (R-H, W6); the builtin a PAIR key or a single key names
   (W5: pair first, then single — two O(1) probes);
 * the local FUNCTION a callee resolves to (a bound NAME, R-G, or ``this.m``/``self.m``, R-F):
-  a local def wins over every lexicon (§8.4); and, per file, whether the file binds a function
-  to a name at all (0104 WS-D, ``binds_function``), where no call to it need resolve;
+  a local def wins over every lexicon (§8.4); and, per file, whether the file binds a name
+  itself at all, other than by an import or as a parameter (0104 WS-D, ``binds_name``), where
+  no call to it need resolve;
 * the sink arguments of each family (§8.5): the builtin positions (L9, P4, W5 ``when``), the
   path defaults (R10's two-path keys, W14's one-argument writes; a generic verb only with
   file-system evidence, A47 (2) (i)), the request union (W10, L8, R-V) and the command program
@@ -51,6 +52,7 @@ from shared.ast._nodes import (
     named,
     of_kind,
     parsed_buffer,
+    unawaited,
 )
 from shared.ast._validate import OTHER_LITERAL_CLASS
 from shared.ast.kinds import Field, Kind
@@ -233,13 +235,6 @@ def name_holder(model: FileModel, fn: int) -> int:
     return first(model, fn, Field.NAME) if declared_name(model, fn) else _binder(model, fn)
 
 
-def _function_name(model: FileModel, fn: int) -> str:
-    """The name a FUNCTION is declared with (``declared_name``), else the last identifier of
-    the name its value is bound to (``_binder``): ``name_holder``'s last identifier; ``""`` for
-    none."""
-    return identifier_text(model, last_identifier(model, name_holder(model, fn)))
-
-
 def _binder(model: FileModel, fn: int) -> int:
     """The node naming where ``fn``'s value is bound (``_BOUND_BY``, else ``_class_field``),
     read past ``_wrapping_call``; ``-1`` for none."""
@@ -264,6 +259,45 @@ def _class_field(model: FileModel, body: int, value: int) -> int:
     kids = model.children(body) if in_class else ()
     at = bisect_left(kids, value)  # siblings are in document order
     return _leading_name(model, kids[max(at - 1, 0) : at])
+
+
+# ── the names a file binds itself (0104 WS-D, §4.4 rev 4, D-P (1)) ───────────
+
+
+def _assigned(model: FileModel, assign: int) -> Sequence[int]:
+    """An ASSIGN's targets, none when its value is an import call (``const hash =
+    require("./hash")`` is an import binding, as R-H reads a DESTRUCT of one)."""
+    values = model.children(assign, Field.RHS)
+    if any(import_call(model, unawaited(model, value)) for value in values):
+        return _NONE
+    return model.children(assign, Field.LHS)
+
+
+def _object_key(model: FileModel, pair: int) -> int:
+    """An object or struct literal member's KEY, else ``-1``: an import specifier's or a
+    pattern's PAIR binds no name by its key."""
+    literal = is_kind(model, model.parent(pair), Kind.OBJECT)
+    return first(model, pair, Field.KEY) if literal else -1
+
+
+def _fields(model: FileModel, cls: int) -> list[int]:
+    """A CLASS's fields, with a value or without: the NAMEs among its BODY children (C++) and
+    among their children (a BLOCK's: JS, TS, PHP)."""
+    bodies = model.children(cls, Field.BODY)
+    nested = (kids_of(model, body, Kind.NAME) for body in bodies)
+    return [*of_kind(model, bodies, Kind.NAME), *chain.from_iterable(nested)]
+
+
+def _self_bound(model: FileModel) -> Iterator[int]:
+    """Every node naming where the file binds a name itself: each FUNCTION's ``name_holder``
+    (rev 3), each ASSIGN target (``_assigned``), each object key (``_object_key``) and each
+    class field (``_fields``). An import or a parameter is none of these."""
+    return chain(
+        map(partial(name_holder, model), model.nodes(Kind.FUNCTION)),
+        chain.from_iterable(map(partial(_assigned, model), model.nodes(Kind.ASSIGN))),
+        map(partial(_object_key, model), model.nodes(Kind.PAIR)),
+        chain.from_iterable(map(partial(_fields, model), model.nodes(Kind.CLASS))),
+    )
 
 
 # ── small model reads ────────────────────────────────────────────────────────
@@ -343,7 +377,7 @@ class Calls:
         self._sinks_by_family: dict[str, list[int]] | None = None  # built on first use
         self._locals: tuple[int, ...] | None = None  # built on first use
         self._calling: dict[int, set[int]] | None = None  # built on first use
-        self._function_names: frozenset[str] | None = None  # built on first use
+        self._bound_names: frozenset[str] | None = None  # built on first use
 
     def _declared(self, site: int, names: Sequence[int]) -> None:
         """C2 (R-X): a declaration's call shape, known up front — its declared type is the
@@ -583,15 +617,16 @@ class Calls:
         """Its methods (``methods_of``: its BODY's FUNCTION children), by declared name."""
         return MappingProxyType({named(self._m, f): f for f in methods_of(self._m, cls)})
 
-    def binds_function(self, key: str) -> bool:
-        """0104 WS-D (§4.4): the file binds a function to a name whose glued key is ``key`` —
-        declares one so in any scope or class, or binds a function value to it
-        (``_function_name``) — whether or not ``local`` resolves a call to it (``layout.f(x)``
-        on an object literal is no resolved call). One pass over the FUNCTIONs, on first ask."""
-        if self._function_names is None:
-            names = (_function_name(self._m, fn) for fn in self._m.nodes(Kind.FUNCTION))
-            self._function_names = frozenset(map(glue, names))
-        return key in self._function_names
+    def binds_name(self, key: str) -> bool:
+        """0104 WS-D (§4.4 rev 4): the file binds a name whose glued key is ``key`` itself —
+        declares a function so in any scope or class, or assigns it any value: an assignment
+        target, an object key, a class field (``_self_bound``), never an import or a
+        parameter — whether or not ``local`` resolves a call to it (``layout.f(x)`` on an
+        object literal is no resolved call). One pass over four kind indexes, on first ask."""
+        if self._bound_names is None:
+            nodes = map(partial(last_identifier, self._m), _self_bound(self._m))
+            self._bound_names = frozenset(glue(identifier_text(self._m, n)) for n in nodes)
+        return key in self._bound_names
 
     # ── which functions can hold a flow (§8.4) ──
 

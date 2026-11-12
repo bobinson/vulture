@@ -166,14 +166,24 @@ next audit retries the file.
   as Python's `open`). That import is the one of the bare callee or of the
   receiver chain's root (`cp` in `cp.execFile` after
   `const cp = require("child_process")`), and a multi-word command callee
-  finds its process word the same way. The lexicons live in
+  finds its process word the same way. Feature 0104 adds three readings: a
+  digest call, by its exact key (`hash`, `hexdigest`), is a `numeric`
+  sanitiser, so its result carries no external origin, unless the file binds
+  that name itself (a function, an assignment target, an object key or a class
+  field; an import or a parameter does not count); `readall` is a generic file
+  verb (a reader drain, `io.ReadAll(r)`, is no file read by itself); and in Go,
+  whose library calls are all package-qualified, a bare call is never a
+  language global, and a bare call to a predeclared function the file does not
+  define (`delete(m, k)`) is no HTTP-client evidence. The lexicons live in
   `shared/ast/roles/`, one home each.
 * **The decision.** `decide(flow, rule, ctx)` is the only place a flow is
   judged:
   * `report` when an external origin of a role the family accepts reaches the
     sink argument uncovered by a sanitiser and no covering guard precedes it;
   * `decline` when every such origin passed a covering sanitiser, or a guard
-    covering the family protects the sink; the decline is recorded;
+    covering the family protects the sink, or (CWE-22 in JavaScript and
+    TypeScript, feature 0104) the flow is a bare hinted existence probe
+    (below); the decline is recorded;
   * `none` when nothing external reaches it. A sink whose origins are all
     `unknown` is tallied (`unknown_only_sinks`), not reported, except where a
     rule's named heuristic reports it.
@@ -189,7 +199,23 @@ next audit retries the file.
   the argument, the argument is built, or it is the whole command of a
   command builtin of the profile's own table (`new ProcessBuilder(cmd)`),
   unless a caller in the same file binds the parameter; the row carries
-  `"heuristic": "command_param"`).
+  `"heuristic": "command_param"`). A row whose only external origin is the
+  parameter-name hint carries `"heuristic": "param_hint"` (feature 0104): a
+  label, never a filter. Where a hint-only flow and another flow both report
+  at one sink line, the other flow's row is emitted.
+* **The existence-probe decline (feature 0104).** A `path` flow carries
+  `Flow.bare_path_arg`, set before the flow's key is built and part of it, so
+  a same-file caller's flow into the same sink stays a flow of its own. It is
+  true only for a base-context flow in a JavaScript or TypeScript file whose
+  only external origin is the parameter-name hint, at a sink that only probes
+  a file (`exists`, `access`, `stat`, `lstat`, `isfile`, `isdir`, or a
+  synchronous twin), and whose argument is the hinted parameter itself: a name
+  every definition of which is that parameter, declared by its plain name, of
+  a function whose name the file uses only to declare it, to export it or as
+  the callee of a call that resolves to it. `decide` declines such a flow
+  `probe:param_hint`, after the sanitiser and guard tests, so a flow they
+  cover keeps their label. A composed argument (a join, a template, a value
+  built with `+=`) and every other language still report.
 
 The row keeps the regex tier's `check_id`, category, title, severity and
 recommendation, so finding identity is unchanged. It anchors at the **sink
@@ -198,20 +224,46 @@ carries the AST facts under the top-level `validation.ast` and
 `validation.flow` keys, never in `checks[]`. The wire shapes are in
 [agent_protocol.md](agent_protocol.md#ast-tier-fields-feature-0102-all-optional).
 
+**Hint-only rows as one row (feature 0104).** When every row a check id has
+in a file is hint-only (CWE-22 or CWE-78; the hint never sources CWE-918) and
+there are 2 to `MAX_GROUP_SINKS` (64) of them, the file reports them as one
+row. The consumer head picks the group once per file and rule
+(`consume.hint_groups`: the sink lines of the rows it emits, less those a
+more specific child replaces and those its line loop never reads) and stamps
+each member's row as it appends it (`stamp_member`), so the per-finding
+events, the line collapse, the LLM tier's dedup and the code window still see
+every member's own row. The agent folds the rows (`fold_hint_groups`) once
+every row it emits is known: after the skill-vs-skill line collapse and the
+code window, before the validate stage, on both the audit path and the
+offline gate's. The group row is the lowest sink line's row (the anchor) with
+`validation.flow.sinks`, the members' sink lines, and a description naming
+their count. The fold is refused, and the rows kept as they were, when a
+member's row is missing or out of order, carries a merge record, or another
+row that one line reconciles with it stands at a member line. The validate
+stage re-checks the group on its own reads: it runs L1 on every member and
+keeps one row only when each member's result equals the anchor's and no
+rollup parent would stand over it; otherwise the members' rows take its
+place, each with its own result (`hint_rows`). Grouping is presentation,
+never a gate: a fold that fails keeps every row.
+
 ## Coverage
 
 Every audit's `result` snapshot carries `ast_coverage`: files parsed and
 fallen back (with the reason), the fallback files as an uncapped lossless key
 list and as a capped display list, the grammar stamp per language, the
-declines by label, the tallies (UNKNOWN-only sinks, cap hits, model-cache hits
+declines by label (`sanitized:<roles>`, `guarded:<role>`, `probe:param_hint`),
+the tallies (UNKNOWN-only sinks, cap hits, model-cache hits
 and misses, node types a profile does not map) and the worker pool. A degraded
 run is therefore visible, never silent: a file the layer could not read is
 named, and scan-set coverage (`unsupported`) is kept apart from AST coverage.
 
 ## Declines
 
-A decline is the layer's only suppression, and it is structural: a covering
-sanitiser in the value's path or a covering guard before the sink. No
+A decline is the layer's only suppression. Two kinds are structural: a
+covering sanitiser in the value's path (`sanitized:<roles>`) or a covering
+guard before the sink (`guarded:<role>`). The third, `probe:param_hint`
+(feature 0104), declines a CWE-22 existence probe whose argument is a
+parameter the name hint alone sources (`Flow.bare_path_arg`, above). No
 sanitiser, guard or allowlist recognised by name ever deletes a finding at the
 validation layer. Each decline is recorded on the audit and streamed as one
 `ast_decline` thinking line (`family`, `file`, `line`, `rule`, `origins`), at
@@ -314,6 +366,11 @@ own them on every other file.
 * **Line moves.** A row both tiers can produce may change `line_start` when its
   file moves between tiers (parse success ↔ fallback): the AST tier anchors at
   the sink, the regex tier where its pattern matched.
+* **Rule changes.** A release that changes an AST rule (feature 0104) changes
+  the deterministic rows a scan reports with no change of file, so lineage
+  rows close or reopen on the first scan after an upgrade or a revert; the
+  effects are listed in
+  [agent_protocol.md](agent_protocol.md#ast-tier-fields-feature-0102-all-optional).
 
 ## Using the layer from an agent
 
@@ -336,6 +393,10 @@ rule_row(rule, description, *, file_path, line, lines, **extra) -> dict   # the 
 family_spans(model, rule, ctx, path, *, server_ctx=True) -> dict[int, Flow]
 emit_for_line(spans, line_num, rule, *, file_path, nl_lines, findings, enrich=identity) -> bool
 flow_to_finding(flow, rule, *, file_path, nl_lines) -> dict
+hint_groups(spans, excluded) -> tuple[int, ...]   # 0104: a file's group of hint-only sink lines, or ()
+stamp_member(row, sinks)                     # 0104: mark a member's row as the head appends it
+fold_hint_groups(findings, path_key) -> list[dict]   # 0104: the agent's fold, before validate
+hint_rows(finding) -> Sequence[dict]         # 0104: the rows a group row stands for (the validate stage's re-check)
 context.current() -> AuditContext            # the audit's coverage, decline ledger and breaker
 ```
 
