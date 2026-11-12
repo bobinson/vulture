@@ -35,7 +35,7 @@ import pytest
 
 import shared.ast
 from shared.ast._frames import ModelError
-from tests.unit.ast._0104 import HINT, cases, field_of, required, sink_table
+from tests.unit.ast._0104 import HINT, PROBE, cases, field_of, required, sink_table
 from tests.unit.ast._analysis import (
     PATH_CONTAIN,
     Spec,
@@ -53,7 +53,6 @@ from tests.unit.ast.test_0102_roles import ENTRY, violations
 
 pytestmark = pytest.mark.usefixtures("real_pool")
 
-PROBE = f"probe:{HINT}"
 BARE = "bare_path_arg"
 PROBE_KEYS = frozenset({"exists", "access", "stat", "lstat", "isfile", "isdir"})
 

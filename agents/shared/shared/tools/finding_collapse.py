@@ -66,6 +66,7 @@ __all__ = [
     "cwe_ancestors",
     "max_severity",
     "reconciled_on_line",
+    "severity_rank",
 ]
 
 logger = logging.getLogger(__name__)
@@ -83,9 +84,15 @@ _CWE_RE = re.compile(r"^CWE-(\d+)$", re.IGNORECASE)
 _SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 
+def severity_rank(severity: str | None) -> int:
+    """The rank of ``severity``: critical 4 > high 3 > medium 2 > low 1 > info 0, read
+    lower-cased; an unknown label, or none, ranks 0 (0104 D-S (5) compares two rows by it)."""
+    return _SEVERITY_RANK.get((severity or "").lower(), 0)
+
+
 def max_severity(sevs: Iterable[str]) -> str:
     """Highest severity label in ``sevs`` (unknown labels rank lowest)."""
-    return max(sevs, key=lambda s: _SEVERITY_RANK.get((s or "").lower(), 0))
+    return max(sevs, key=severity_rank)
 
 
 # --------------------------------------------------------------------------

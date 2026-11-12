@@ -91,7 +91,10 @@ class FindingValidation:
 class ValidationResult:
     """Output of one validate() call. JSON-round-trippable (V3, V10).
 
-    `findings` length equals input findings length (V6 — demote, never drop).
+    `findings` holds one output per input finding, in input order (V6 —
+    demote, never drop), except a feature 0104 A2 group row that L1 restores
+    (S2, R5): the group's member rows stand in its place, so `findings` may
+    be longer than the input, never shorter (D-S (1)).
     `rollups` contains NEW parent records from L2.
     `event_texts` are free-form "[validate] ..." strings the caller
     forwards via emitter.text_message() (folded into the existing

@@ -13,8 +13,8 @@ namespace import's ``digests.hash(...)``, ``const hash = require(...)`` and a de
 binds. Accepted loss (``test_0104_known_gaps.py``): a Java lambda implementing an imported
 ``Hasher``.
 
-RED until rev 4 lands: every shape the file binds by a value. Green today, and kept: the import,
-parameter and builtin controls.
+Green since aec5910e landed rev 4: every shape the file binds by a value reports, and the
+import, parameter and builtin controls stay digests.
 """
 
 from __future__ import annotations

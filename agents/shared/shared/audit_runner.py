@@ -3,13 +3,14 @@
 import asyncio
 import contextlib
 import contextvars
+import copy
 import functools
 import logging
 import os
 import re
 import threading
 import time
-from collections.abc import Callable, Generator, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Generator, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
@@ -46,7 +47,7 @@ from shared.prompt.extract import (  # noqa: F401  (re-exported for 0076 tests)
     _scan_json_arrays,
     _score_array,
 )
-from shared.provenance import is_llm_provenance
+from shared.provenance import MERGED_LLM_MAX_ENTRIES, is_llm_provenance
 from shared.tools import line_format
 from shared.tools.category_enum import normalize_to_enum
 from shared.tools.file_scanner import (
@@ -1575,7 +1576,7 @@ _ANCHOR_QUALITY = {
 _PARSE_PRIVATE_FIELDS = ("evidence_quote", "_model_check_id")
 
 
-def _public_view(finding: dict) -> dict:
+def _public_view(finding: Mapping[Any, Any]) -> dict:
     """The finding as a consumer outside this process may see it.
 
     `emitter.finding_event(**_public_view(finding))` forwards `**extra` VERBATIM and the SSE
@@ -1585,8 +1586,68 @@ def _public_view(finding: dict) -> dict:
     Filtering at the CALL SITE rather than inside the emitter keeps the
     emitter's documented forward-everything contract intact and makes every
     future underscore-prefixed stamp safe without a roster entry.
+
+    A key is read as its ``str`` so a nested mapping keyed by line number
+    (``_public_tree``) is filtered, not refused; a finding's keys are names.
     """
-    return {k: v for k, v in finding.items() if not k.startswith("_")}
+    return {k: v for k, v in finding.items() if not str(k).startswith("_")}
+
+
+# A ``FunctionTool.on_invoke_tool``: the SDK's tool context and the model's JSON arguments.
+_ToolInvoker = Callable[[Any, str], Awaitable[Any]]
+
+
+def _public_tree(value: Any) -> Any:
+    """``value`` without any ``_``-prefixed key at any depth: ``_public_view``'s rule on every
+    mapping in it; a list stays a list, a tuple a tuple, any other value is kept as is.
+
+    Feature 0104 (D-S (1)): a skill's answer is also the model's tool
+    result, and its rows carry private stamps (A2's ``_hint_group``: each of a group's k
+    members carries the k sink lines), which only the audit path consumes.
+    """
+    if isinstance(value, Mapping):
+        public = _public_view(value)
+        return dict(zip(public, map(_public_tree, public.values())))
+    if isinstance(value, list):
+        return list(map(_public_tree, value))
+    return tuple(map(_public_tree, value)) if isinstance(value, tuple) else value
+
+
+def _public_invoker(invoke: _ToolInvoker) -> _ToolInvoker:
+    """``invoke`` answering the model with ``_public_tree`` of its own answer (a skill tool
+    answers with a dict; a string, such as the SDK's failure message, passes unchanged). The
+    SDK's argument parsing and failure handling stay inside ``invoke``, unchanged."""
+
+    async def public(ctx: Any, arguments: str) -> Any:
+        return _public_tree(await invoke(ctx, arguments))
+
+    return public
+
+
+def _public_skill_tool(tool: Any) -> Any:
+    """A copy of the skill ``FunctionTool`` ``tool`` (same name, description and parameter
+    schema) that answers through ``_public_invoker``; ``tool`` itself is left as it was."""
+    public = copy.copy(tool)
+    public.on_invoke_tool = _public_invoker(public.on_invoke_tool)
+    return public
+
+
+def _public_skill_tools(skill_tools: Iterable[Any]) -> list[Any]:
+    """The skill tools as the generate phase hands them to the model: each ``FunctionTool``
+    as ``_public_skill_tool``, anything else as given.
+
+    Feature 0104 (D-S (1)): no ``_``-prefixed key reaches the model
+    through a skill tool, for every agent at once, while the skill FUNCTION keeps returning
+    its private stamps (the audit path folds on ``_hint_group``). One choke point, as
+    ``_public_view`` is for every emit; the agent's own file tools are not skill tools and
+    are not wrapped.
+    """
+    from agents import FunctionTool
+
+    return [
+        _public_skill_tool(tool) if isinstance(tool, FunctionTool) else tool
+        for tool in skill_tools
+    ]
 
 
 def _persist_evidence_quote(finding: dict) -> None:
@@ -1926,8 +1987,8 @@ def _dedup_tier(row: dict) -> str:
 
 # Feature 0074 contract T3 (re-audit R10): the bounds Go applies to
 # validation.merged_descriptions (handler/dedup_record.go), applied where the
-# entries are made, so the raw ``result`` snapshot is bounded too.
-_MERGED_LLM_MAX_ENTRIES = 8
+# entries are made, so the raw ``result`` snapshot is bounded too. The entry cap is
+# ``MERGED_LLM_MAX_ENTRIES`` (``shared.provenance``).
 _MERGED_LLM_MAX_BYTES = 2048
 _MERGED_LLM_MARKER = "…"
 
@@ -1961,7 +2022,7 @@ class _MergedLedger:
     judges it: non-empty after trimming Go's whitespace set, not the
     survivor's own, and not already stored, WHATEVER its tier (``"dup "`` and
     ``"dup"``, or one text under ``llm`` and ``llm_l5_verified``, are one
-    entry). At most ``_MERGED_LLM_MAX_ENTRIES`` descriptions, each cut to
+    entry). At most ``MERGED_LLM_MAX_ENTRIES`` descriptions, each cut to
     ``_MERGED_LLM_MAX_BYTES``; a distinct one refused at the cap is counted in
     the survivor's ``merged_llm_dropped`` (Go adds it to
     ``validation.merged_descriptions_dropped``) and costs no redaction.
@@ -2005,7 +2066,7 @@ class _MergedLedger:
         if key in self.keys:
             return None
         self.keys.add(key)
-        if self.described >= _MERGED_LLM_MAX_ENTRIES:
+        if self.described >= MERGED_LLM_MAX_ENTRIES:
             survivor["merged_llm_dropped"] = survivor.get("merged_llm_dropped", 0) + 1
             return None
         entry = _merged_llm_entry(tier, _redact_merged_description(
@@ -2019,7 +2080,7 @@ class _MergedLedger:
 
     def admit_tier(self, tier: str) -> dict | None:
         """A description-less entry for a tier not yet held, within the cap."""
-        if ("tier", tier) in self.keys or len(self.tier_only) >= _MERGED_LLM_MAX_ENTRIES:
+        if ("tier", tier) in self.keys or len(self.tier_only) >= MERGED_LLM_MAX_ENTRIES:
             return None
         return {"provenance": tier, "description": ""}
 
@@ -2957,8 +3018,8 @@ def _fold_hint_groups(
     findings: list[dict[str, Any]], source_path: str, run_id: str,
 ) -> list[dict[str, Any]]:
     """Feature 0104 A2 (OD-2): each file's stamped group of hint-only AST rows
-    as one row, or refused (``consume.fold_hint_groups`` says when), between
-    the code window and the validate stage, on both audit paths.
+    as one row, or refused (``consume.fold_hint_groups`` says when, D-S (2) and (5)),
+    between the code window and the validate stage, on both audit paths.
 
     Here because it is the first point that holds every row this agent emits:
     the skills' rows after the line collapse — which has run on the members'
@@ -3579,7 +3640,8 @@ def run_combined_audit(
 
     # --- Validate stage (feature 0045) ---------------------------
     # Annotates each finding with validation_status + validation_confidence
-    # + per-layer check trail. V6: never deletes findings (length-preserving).
+    # + per-layer check trail. V6: never deletes findings; an A2 group row the
+    # stage refuses comes back as its member rows (R5), so it may lengthen the list.
     # Disabled via VULTURE_DISABLE_VALIDATE=true env var.
     if _validate_enabled():
         try:
@@ -4602,7 +4664,8 @@ async def _collect_llm_findings_async(
         from shared.tools.file_reader import read_file_tool
         from shared.tools.pattern_matcher import search_pattern_tool
         extra_tools = [read_file_tool, list_files_tool, search_pattern_tool]
-    all_tools = list(skill_tools) + extra_tools
+    # Feature 0104 (D-S (1)): the model sees no private stamp of a skill row.
+    all_tools = _public_skill_tools(skill_tools) + extra_tools
 
     source_in_system = "anthropic" in resolved_model and bool(source_context)
     # Custom OpenAI-compatible endpoints (vLLM, LM Studio, etc.) and Gemini may

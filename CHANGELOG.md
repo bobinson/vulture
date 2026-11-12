@@ -157,10 +157,11 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
     name itself (a function, an assignment, an object key or a class field); an imported name or
     a parameter keeps it.
   - **Go.** A bare call to a predeclared function the file does not define (`delete(m, k)`) is
-    no HTTP-client evidence, so no SSRF sink; a bare call is never a language global, so a
-    same-package helper (`open(x)`) is no path sink by the generic-verb rule; and `readall` is a
-    generic verb, so a reader drain (`io.ReadAll(r)`) is a path sink only with file-system
-    evidence.
+    no HTTP-client evidence by itself, so no SSRF sink unless its argument is URL-shaped (a map
+    named with a URL word still reports, a kept false positive); a bare call is never a language
+    global, so a same-package helper (`open(x)`) is no path sink by the generic-verb rule; and
+    `readall` is a generic verb, so a reader drain (`io.ReadAll(r)`) is a path sink only with
+    file-system evidence.
   - **Lineage on upgrade.** The rules move deterministic rows with no change of file. On the
     first scan of an existing target, CWE-22/78/918 rows the AST tier no longer reports close as
     `fixed` (a revert reopens them as `regression`); a line such a row stood on may now carry a

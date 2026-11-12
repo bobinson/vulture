@@ -954,9 +954,18 @@ type LineSignature = tuple[str, tuple[tuple[str, str, float], ...]]
 
 
 def line_signature(finding: dict[str, Any]) -> LineSignature:
-    """0104 A2 (S2): this stage's own L1 verdict for ONE finding, ``checks_signature`` of the
-    checks ``_finding_checks(finding, "")`` builds. Exported, never copied; it binds no source
-    root (``set_l1_source_root``), so it leaves this stage's state alone."""
+    """0104 A2 (S2), the one-finding form of S2's predicate: ``checks_signature`` of the L1
+    checks ``_finding_checks(finding, "")`` builds. It sets no source root, but it READS the
+    one ``set_l1_source_root`` last bound (``_resolve_in_root``; ``clear_l1_cache`` does not
+    reset it): a relative ``file_path`` resolves under that root, so the answer depends on the
+    last ``run_l1``. An absolute path does not.
+
+    Not the verdict the stage decides S2 on: ``validate._whole`` compares ``checks_signature``
+    over ``run_l1``'s results for a group's member rows, under the audit's own root; the two
+    agree for an absolute path, or a relative one under the same root. No production code calls
+    it since the heads' S2 pre-check was dropped (D-P (2), A69): it is kept (D-S (1)) for
+    ``test_0104_validate_stage``'s agreement test, which pins it to the status and L1 checks
+    ``finalize_skill_findings`` gives each group member's row ungrouped."""
     return checks_signature(_finding_checks(finding, ""))
 
 

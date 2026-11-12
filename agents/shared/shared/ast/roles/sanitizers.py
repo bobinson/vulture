@@ -44,6 +44,7 @@ __all__ = [
     "KEY_ROLES",
     "PATH_RESULT_WORDS",
     "QUOTE_WORDS",
+    "REFLECTIVE_BINDERS",
     "SANITIZER_INDEX",
     "SANITIZER_KEYS",
     "SANITIZER_WORDS",
@@ -65,6 +66,11 @@ SANITIZER_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
 # returns a fixed-alphabet digest, never a steerable path, URL or command, so its key is a
 # `numeric` one (R-Q). EXACT glued keys, never words: `hashPath` and `newHashSet` are untouched.
 DIGEST_KEYS = frozenset({"hash", "hexdigest"})
+# 0104 WS-D (D-P (1)): the language builtins that bind a member by name, a string argument
+# (Python `setattr(o, "hash", v)`, JavaScript `Object.defineProperty` / `Reflect.defineProperty`):
+# a file that binds a DIGEST_KEYS name through one binds it itself (`Calls.binds_name`). EXACT
+# glued callee keys of the languages, not a library table.
+REFLECTIVE_BINDERS = frozenset({"setattr", "defineproperty"})
 # R4: EXACT glued callee keys (language builtins).
 SANITIZER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType({
     # Go filepath.Base / path.Base; basePath(x) is not (basename: a word above)

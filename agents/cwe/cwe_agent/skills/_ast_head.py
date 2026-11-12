@@ -42,14 +42,21 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from cwe_agent.catalog import enrich_finding
 from shared.ast import consume, prefetch
-from shared.ast.consume import RuleIdentity, emit_for_line, family_spans, rule_row, stamp_member
+from shared.ast.consume import (
+    RuleIdentity,
+    emit_for_line,
+    family_spans,
+    rule_row,
+    sink_lines,
+    stamp_member,
+)
 from shared.ast.context import current
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
     from shared.ast.answer import FileFacts
-    from shared.ast.consume import FamilyRule
+    from shared.ast.consume import Enrich, FamilyRule, Finding
     from shared.ast.flow import Flow
 
 __all__ = [
@@ -88,23 +95,18 @@ def hint_groups(
     when the file has none. ``consume.hint_groups``' candidate for ``answer`` (``excluded`` the
     sink lines that are no row: those a child replaces and those the head never reads,
     ``unread_sinks``). Asked once per (file, rule) — ``file_path`` and ``rule`` — where the head
-    builds its file context. S2 is not asked here: whether the group stays one row is the
-    validate stage's decision, on its own reads (R5, D-P (2))."""
+    builds its file context."""
     return consume.hint_groups(answer.spans, excluded)
 
 
 def unread_sinks(
     answer: AstAnswer, lines: Sequence[str], scanned: Callable[[str], bool]
 ) -> frozenset[int]:
-    """0104 A2: the sink lines of ``answer`` the head's line loop over ``lines`` never reads
-    (``scanned`` false, or past their end). No row is appended at such a line, so it is never
-    an anchor or a member (``consume.hint_groups`` reads sink lines only)."""
-    return frozenset(n for n in _sink_lines(answer.spans) if not _read(lines, n, scanned))
-
-
-def _sink_lines(spans: Mapping[int, Flow] | None) -> Iterable[int]:
-    """The sink line of each span of ``spans``: the line its row is appended at."""
-    return (n for n, flow in (spans or {}).items() if n == flow.sink_line)
+    """0104 A2: the sink lines of ``answer`` (``consume.sink_lines``) the head's line loop over
+    ``lines`` never reads (``scanned`` false, or past their end). ``claim`` is never asked
+    about such a line, so no row stands at it and it is never an anchor or a member
+    (``consume.hint_groups``)."""
+    return frozenset(n for n in sink_lines(answer.spans) if not _read(lines, n, scanned))
 
 
 def _read(lines: Sequence[str], line_num: int, scanned: Callable[[str], bool]) -> bool:
@@ -200,26 +202,31 @@ def claim(
     *, groups: tuple[int, ...] = (),
 ) -> bool:
     """True when ``line_num`` lies in a sink span ``answer`` reports — the AST owns the line —
-    and then, at the sink line itself, the row appended (``emit_for_line``, enriched as the
-    regex body's rows are): one per sink, stamped when it is a member of the file's ``groups``
-    (0104 A2). A line outside every span is answered without building the call (most lines of
-    an owned file)."""
+    and then, on a sink line (``consume.sink_lines``), the row ``emit_for_line`` appends there,
+    built through ``_enrich``: enriched as the regex body's rows are, and stamped when it is a
+    member of the file's ``groups`` (0104 A2). A line outside every span is answered without
+    building the call (most lines of an owned file)."""
     spans = answer.spans
     if not spans or line_num not in spans:
         return False
-    claimed = emit_for_line(
+    return emit_for_line(
         spans, line_num, rule, file_path=file_path, nl_lines=answer.nl_lines,
-        findings=findings, enrich=enrich_finding,
+        findings=findings, enrich=_enrich(groups),
     )
-    _stamp(groups, line_num, findings)
-    return claimed
 
 
-def _stamp(groups: tuple[int, ...], line_num: int, findings: list[Any]) -> None:
-    """0104 A2: at a member's sink line, the row just appended there carries the group's
-    stamp (``consume.stamp_member``)."""
-    if line_num in groups:
-        stamp_member(findings[-1], groups)
+def _enrich(groups: tuple[int, ...]) -> Enrich:
+    """``emit_for_line``'s ``enrich`` for the head (D-S (1)): the catalog's ``enrich_finding``
+    (A41 (5)), then the group's stamp (``consume.stamp_member``, 0104 A2) when the row's own
+    line is one of the file's ``groups``."""
+
+    def enrich(row: Finding, cwe_id: str) -> Finding:
+        row = enrich_finding(row, cwe_id)
+        if row["line_start"] in groups:
+            stamp_member(row, groups)
+        return row
+
+    return enrich
 
 
 def ast_owns(
@@ -227,9 +234,9 @@ def ast_owns(
     *, groups: tuple[int, ...] = (),
 ) -> bool:
     """The head of a check the AST tier owns line by line (LLD §9.3): True when the tier owns
-    ``rule``'s check on the file — ``answer`` holds its spans — and then, when ``line_num`` is
-    a reported sink line, the row appended (``claim``, stamped with the file's 0104 A2
-    ``groups``); False when the regex body owns the file and runs on the line."""
+    ``rule``'s check on the file — ``answer`` holds its spans — and then ``claim``'s row at
+    ``line_num``, if any (stamped with the file's 0104 A2 ``groups``); False when the regex
+    body owns the file and runs on the line."""
     if answer.spans is None:
         return False
     claim(answer, rule, file_path, line_num, findings, groups=groups)

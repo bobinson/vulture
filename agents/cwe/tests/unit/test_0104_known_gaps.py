@@ -13,11 +13,12 @@ Two kinds of pin, each a staged tree scanned by the two AST skills on a neutral 
     ``hash``; a bcrypt-style output); and the residual (A55): a Java lambda implementing an
     imported ``Hasher``. Rev 4 (D-P (1)) reports a ``functools.partial``-bound ``hash`` again:
     ``d_partial_hash`` pins that row as reported.
-  - H: H2L, a ``readall`` keyed read with no file-system evidence (Go and JS; a receiver
-    whose words show a file system keeps its row); H3L, a Go
+  - H: H1's cross-file ``delete``; H2L, a ``readall`` keyed read with no file-system evidence
+    (Go and JS; a receiver whose words show a file system keeps its row); H3L, a Go
     same-package path helper in a sibling file, and its dot-import extension (``. "os"``).
 * OUT-OF-SCOPE GAPS: today's answer, green now and after 0104 (no 0104 rule is meant to move
-  them): a Go serve-file sink, and a C++ parameter whose default value hides the hint.
+  them): a Go serve-file sink, a C++ parameter whose default value hides the hint, and Go's
+  builtin ``delete`` on a URL-named map.
 
 A site is ``(file, line, category, verdict)``; ``finding`` is a row of that category on that
 line, ``clean`` is none.
@@ -215,6 +216,25 @@ public class Shelf extends HttpServlet {
 }
 """,
     }, (("src/Shelf.java", 15, "CWE-22", "clean"),)),
+    # D-S (3): a sibling file's ``delete`` (an HTTP-client helper), called bare, read as builtin.
+    "h1_sibling_delete": Gap({
+        "svc/handler.go": """package svc
+
+import "net/http"
+
+func Purge(w http.ResponseWriter, r *http.Request) {
+	delete(r.FormValue("u"))
+}
+""",
+        "svc/client.go": """package svc
+
+import "net/http"
+
+func delete(target string) {
+	http.Get(target)
+}
+""",
+    }, (("svc/handler.go", 6, "CWE-918", "clean"),)),
     "h2l_go_readall": Gap({
         "svc/store.go": """package svc
 
@@ -313,6 +333,18 @@ func Download(w http.ResponseWriter, r *http.Request) {
 }
 """,
     }, (("handler.go", 12, "CWE-22", "clean"),)),
+    # D-S (4): the builtin ``delete`` on a URL-named map stays a CWE-918 row (URL-shaped argument).
+    "h1_url_named_map": Gap({
+        "svc/purge.go": """package svc
+
+import "net/http"
+
+func Purge(w http.ResponseWriter, r *http.Request) {
+	urlMap := r.URL.Query()
+	delete(urlMap, "x")
+}
+""",
+    }, (("svc/purge.go", 7, "CWE-918", "finding"),)),
     "s6_cpp_default_arg": Gap({
         "src/pages.cpp": """#include <fstream>
 #include <sstream>

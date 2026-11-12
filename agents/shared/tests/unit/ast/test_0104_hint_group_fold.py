@@ -10,23 +10,24 @@ stamps each member's row (``stamp_member``). ``fold_hint_groups`` (run by
 (``group_to_finding``: the anchor's row, ``validation.flow.sinks``, a description naming the
 count of sinks and never an identifier) in the anchor row's place and drops the other
 members' rows -- unless the group is refused and every row is kept (R1, R2): a member's row
-missing or out of order; one the agent's own merges kept for another (``collapsed_from``,
-``merged_llm``, ``merged_llm_dropped``); another row at a member's line that one line
-reconciles with it -- of the backend's dedup family (``finding_collapse._DEDUP_FAMILIES``,
-pinned below to ``backend/internal/cwe/taxonomy.go``) or a ChildOf ancestor or descendant --
-its path compared as the dedup compares it. A fold that raises keeps every row. The validate
+missing or out of order; one the line collapse kept for another (``collapsed_from``); another
+row of no LLM-family provenance at a member's line that one line reconciles with it -- of the
+backend's dedup family (``finding_collapse._DEDUP_FAMILIES``, pinned below to
+``backend/internal/cwe/taxonomy.go``) or a ChildOf ancestor or descendant -- its path compared
+as the dedup compares it. An LLM-family row, or a member's ``merged_llm``, never refuses (D-S
+(2); ``test_0104_fold_deterministic.py``). A fold that raises keeps every row. The validate
 stage keeps a group row whole only when every member's L1 result on its own reads equals the
 anchor's and no other finding shares its L2 rollup key; else the members' rows replace it, each
 with its own result (R5). No ``_hint_*`` key reaches a finalized row.
 
-RED until A2 lands: every test here names an A2 function or constant.
+Green since A2 landed: every test here names an A2 function or constant.
 """
 
 from __future__ import annotations
 
 import copy
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -34,24 +35,33 @@ from typing import Any
 import pytest
 
 from shared import audit_runner
-from shared.testing.lineage import local_quote_store
 from shared.tools import finding_collapse
-from tests.unit.ast._0104 import HINT, ROOT, cases, family_rule, required, spans_of
-from tests.unit.ast._analysis import (
-    TOKEN,
-    Spec,
-    external,
-    finding_of,
-    flow_with,
-    subject,
-    unknown,
+from tests.unit.ast._0104 import (
+    _FILE_SINKS,
+    _PATH,
+    _SINKS,
+    HINT,
+    ROOT,
+    Rows,
+    _carrying,
+    _file_members,
+    _file_rows,
+    _finalized,
+    _flow_sinks,
+    _fold,
+    _hint,
+    _members,
+    _other,
+    _private,
+    _row,
+    _written,
+    cases,
+    family_rule,
+    required,
+    spans_of,
 )
-from tests.unit.ast._support import write
+from tests.unit.ast._analysis import TOKEN, Spec, external, finding_of, subject, unknown
 
-Rows = list[dict[str, Any]]
-_PATH = ROOT / "app" / "store.py"
-_NL = ["x"] * 24
-_SINKS = (3, 7, 10)
 _TAXONOMY = Path(__file__).resolve().parents[5] / "backend" / "internal" / "cwe" / "taxonomy.go"
 _GO_FAMILIES = ("path-traversal", "os-command-injection")
 
@@ -63,48 +73,9 @@ def _api(module: ModuleType, name: str) -> Any:
     return found
 
 
-def _hint(line: int, family: str = "path", *origins: Any) -> Any:
-    """A flow sinking at ``line`` whose origins are ``origins``, the hint alone by default."""
-    return flow_with(family, *(origins or (external(HINT),)), sink_line=line)
-
-
-def _row(
-    line: int, family: str = "path", path: Path = _PATH, nl_lines: Sequence[str] = _NL
-) -> dict[str, Any]:
-    """The row the head appends for a hint-only flow sinking at ``line``."""
-    return finding_of(_hint(line, family), family_rule(family), path, nl_lines)
-
-
-def _stamped(rows: Rows, sinks: tuple[int, ...]) -> Rows:
-    """``rows``, each stamped a member of the group of ``sinks``, as the head stamps it."""
-    for row in rows:
-        required("consume", "stamp_member")(row, sinks)
-    return rows
-
-
-def _members(family: str = "path", path: Path = _PATH, sinks: tuple[int, ...] = _SINKS) -> Rows:
-    """One group's member rows, stamped."""
-    return _stamped([_row(line, family, path) for line in sinks], sinks)
-
-
-def _other(line: int, category: str, path: Path | str = _PATH) -> dict[str, Any]:
-    """Another check's row (a skill's, or the LLM tier's) at ``line``."""
-    return {"file_path": str(path), "line_start": line, "line_end": line,
-            "category": category, "check_id": f"other.{category}", "title": "Other",
-            "severity": "high", "description": "Other"}
-
-
-def _flow_sinks(row: dict[str, Any]) -> Any:
-    return ((row.get("validation") or {}).get("flow") or {}).get("sinks")
-
-
 def _shape(rows: Rows) -> list[tuple[int, str, Any]]:
     """Each row's line, category and ``sinks``, in order."""
     return [(row["line_start"], row["category"], _flow_sinks(row)) for row in rows]
-
-
-def _private(rows: Rows) -> list[str]:
-    return sorted(key for row in rows for key in row if key.startswith("_hint"))
 
 
 # ── the candidate group (S1, S3, S4) ──
@@ -191,17 +162,6 @@ def test_group_row_names_the_count_never_an_identifier() -> None:
 # ── the fold (R1, R2) ──
 
 
-def _fold(findings: Rows) -> Rows:
-    return required("consume", "fold_hint_groups")(findings, str)
-
-
-def _merged(key: str, value: Any) -> Callable[[Rows], Rows]:
-    def mutate(rows: Rows) -> Rows:
-        rows[1][key] = value
-        return rows
-    return mutate
-
-
 def _beside(line: int, category: str, path: Path = _PATH) -> Callable[[Rows], Rows]:
     def mutate(rows: Rows) -> Rows:
         return [*rows, _other(line, category, path)]
@@ -211,9 +171,8 @@ def _beside(line: int, category: str, path: Path = _PATH) -> Callable[[Rows], Ro
 REFUSED: list[tuple[str, str, Callable[[Rows], Rows]]] = [
     ("a member's row missing", "path", lambda rows: [rows[0], rows[2]]),
     ("the members out of order", "path", lambda rows: rows[::-1]),
-    ("a member the line collapse kept", "path", _merged("collapsed_from", ["CWE-706"])),
-    ("a member an LLM row merged into", "path", _merged("merged_llm", [{"provenance": "llm"}])),
-    ("a member LLM rows were dropped against", "path", _merged("merged_llm_dropped", 1)),
+    ("a member the line collapse kept", "path",
+     lambda rows: _carrying(rows, {1: {"collapsed_from": ["CWE-706"]}})),
     ("CWE-23 at a member's line", "path", _beside(7, "CWE-23")),
     ("CWE-36 at the anchor's line", "path", _beside(3, "CWE-36")),
     ("CWE-73 at a member's line", "path", _beside(10, "CWE-73")),
@@ -297,38 +256,6 @@ def _go_family(text: str, name: str) -> str:
 
 
 # ── the validate stage (R5) ──
-
-_FILE = (
-    "import os\n\n"
-    "def load(file_path):\n    return open(file_path)\n\n"
-    "def save(file_path):\n    {marker}\n    return open(file_path, 'w')\n\n"
-    "def drop(file_path):\n    os.remove(file_path)\n"
-)
-_FILE_SINKS = (4, 8, 11)
-
-
-@pytest.fixture
-def fresh_quotes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
-    """The test's own quote store (the stage keeps evidence quotes there)."""
-    yield from local_quote_store(monkeypatch, tmp_path)
-
-
-def _written(root: Path, marker: str) -> Path:
-    return write(root / "app" / "store.py", _FILE.format(marker=marker))
-
-
-def _file_rows(path: Path) -> Rows:
-    """The head's rows at the file's three sink lines, unstamped."""
-    nl_lines = path.read_text(encoding="utf-8").split("\n")
-    return [_row(n, path=path, nl_lines=nl_lines) for n in _FILE_SINKS]
-
-
-def _file_members(path: Path) -> Rows:
-    return _stamped(_file_rows(path), _FILE_SINKS)
-
-
-def _finalized(rows: Rows, root: Path) -> Rows:
-    return audit_runner.finalize_skill_findings(rows, str(root), "run-0104")
 
 
 def _statuses(rows: Rows) -> list[tuple[int, str, str, Any]]:
