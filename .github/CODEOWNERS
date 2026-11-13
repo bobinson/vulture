@@ -69,6 +69,7 @@
 /.github/workflows/security-digest.yml            @bobinson
 /.github/actions/setup-pinned-uv/                 @bobinson
 /scripts/security-preflight.sh                    @bobinson
+/scripts/govulncheck-preflight.sh                 @bobinson
 /scripts/uv-version.sh                            @bobinson
 
 # CVE allowlists — entries require SECURITY review with date-stamped

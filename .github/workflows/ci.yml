@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26.10"
+  GO_VERSION: "1.26.11"
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "22"
 
@@ -83,6 +83,8 @@ jobs:
         run: sh scripts/tests/test_release_cve_gate_trivy_arg.sh
       - name: release preflight tests
         run: sh scripts/tests/test_release_preflight.sh
+      - name: release preflight govulncheck gate tests
+        run: sh scripts/tests/test_govulncheck_preflight.sh
       - name: smoke-scan contract tests
         run: sh scripts/tests/test_smoke_scan.sh
       - name: ssh-version gate tests (0065 §L2)

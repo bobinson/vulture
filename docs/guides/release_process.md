@@ -31,7 +31,7 @@ and `install.sh` (which resolves `releases/latest`) ignores drafts until then.
 | Lockfile fresh (`make check-lockfile`) | the bundled agent deps match `pyproject.toml` |
 | Version ≥ `FALLBACK_TAG` (semver) | `install.sh`'s anti-downgrade guard refuses a lower tag |
 | The pinned `uv` installed *(only if re-locking)* | reproducible `requirements-frozen.txt` (the uv version pinned in `gen-lockfile.sh` / `scripts/uv-version.sh`) |
-| No un-waived HIGH/CRITICAL CVE in what ships | the release build's **Trivy CVE gate** refuses to sign otherwise, as do the preflight's pip-audit gate (gate 6) for the locked Python deps and the `audit-ci` step for npm advisories; dry-run the gate first ([below](#dry-run-the-release-cve-gate-before-every-tag)) |
+| No un-waived HIGH/CRITICAL CVE in what ships | the release build's **Trivy CVE gate** refuses to sign otherwise, as do the preflight's pip-audit gate (gate 7) for the locked Python deps, its govulncheck gate (gate 8) for reachable Go vulnerabilities, and the `audit-ci` step for npm advisories; dry-run the gate first ([below](#dry-run-the-release-cve-gate-before-every-tag)) |
 
 ## Step 1 — Preflight (local, before tagging)
 
@@ -39,14 +39,16 @@ and `install.sh` (which resolves `releases/latest`) ignores drafts until then.
 sh scripts/vulture.sh release vX.Y.Z
 ```
 
-Runs six fail-fast gates (`scripts/release-preflight.sh`):
+Runs eight fail-fast gates (`scripts/release-preflight.sh`):
 
 1. **clean git tree** — no uncommitted changes.
 2. **lockfile freshness** — `check-lockfile.sh` re-derives `requirements-frozen.txt` and diffs.
-3. **fallback-tag validity** — `check-fallback-tag.sh` enforces the "≤1 minor behind" rule.
-4. **shellcheck** — `install.sh` + `scripts/*.sh` + `scripts/lib/*.sh`.
-5. **installer branch tests** — `scripts/tests/test_install_sh.sh`.
-6. **security** — `security-preflight.sh`: `pip-audit` over the locked deps (+ open Dependabot alerts when a PAT is configured); a HIGH/CRITICAL finding with no `.pip-audit-ignore` waiver fails **before** you tag (feature 0056).
+3. **lockfile installable** — `check-lockfile-installable.sh`: every pin has a wheel for every release target (real PyPI).
+4. **fallback-tag validity** — `check-fallback-tag.sh` enforces the "≤1 minor behind" rule.
+5. **shellcheck** — `install.sh` + `scripts/*.sh` + `scripts/lib/*.sh`.
+6. **installer branch tests** — `scripts/tests/test_install_sh.sh`.
+7. **security** — `security-preflight.sh`: `pip-audit` over the locked deps (+ open Dependabot alerts when a PAT is configured); a HIGH/CRITICAL finding with no `.pip-audit-ignore` waiver fails **before** you tag (feature 0056).
+8. **govulncheck** — `govulncheck-preflight.sh`: govulncheck over the Go modules CI's `audit-go` job scans (`backend`, `cli`), under `GOTOOLCHAIN=go<V>` with V the `go-version` release.yml builds with, since govulncheck reports standard-library CVEs for the Go it runs (the go command downloads that toolchain if missing). Any reachable vulnerability fails; a standard-library one is fixed by bumping that Go patch in the workflows. govulncheck missing fails the gate: `go install golang.org/x/vuln/cmd/govulncheck@latest` (found on `PATH`, in `GOBIN` or in `GOPATH/bin`).
 
 `==> release preflight: ALL GATES PASSED` ⇒ safe to tag once the CVE gate's dry
 run below also passes.
@@ -178,7 +180,7 @@ How a vulnerable dependency is caught and handled:
 | Stage | Signal | Action |
 |-------|--------|--------|
 | **Continuous** | Dependabot **alert** (Security tab + notification) | the canonical inventory: package, severity, patched version |
-| **Pre-tag** | the preflight **security gate** (`security-preflight.sh`, gate 6) runs `pip-audit` over the locked deps + lists open Dependabot alerts (PAT) | plan + verify the fix **before** tagging, not after a red build |
+| **Pre-tag** | the preflight **security gate** (`security-preflight.sh`, gate 7) runs `pip-audit` over the locked deps + lists open Dependabot alerts (PAT); the **govulncheck gate** (gate 8) runs govulncheck over the Go modules under the release's Go | plan + verify the fix **before** tagging, not after a red build |
 | **Release build** | the **Trivy CVE gate** and **audit-ci** `--high` in the `scan` job; SBOM and **pip-audit** reports | the gate fails the run before anything is signed on any un-waived HIGH/CRITICAL finding in an extracted tarball (bundled Python packages, pip's vendored copies, the Go binary, secrets) or in a bundled wheel's SBOM; audit-ci does the same for npm advisories; pip-audit here is advisory. Trivy matches what its analyzers recognise, not native libraries inside the bundled CPython |
 
 **Fixing:**
@@ -226,7 +228,7 @@ one names a **Python package** in the agents' dependency closure, follow this lo
    - the installer/release suite is green — `for t in scripts/tests/test_*.sh; do sh "$t"; done`;
    - (optional) a real scan to confirm the agents still run.
 4. **Preflight** — `sh scripts/vulture.sh release vX.Y.Z`; the **security gate**
-   (gate 6) must show the advisory resolved (or carry a reviewed
+   (gate 7) must show the advisory resolved (or carry a reviewed
    `.pip-audit-ignore` waiver). Green ⇒ safe to ship.
 5. **PR + CI** — open a PR with **both** the `pyproject.toml` and the regenerated
    `requirements-frozen.txt`; the **lockfile gate** (`.github/workflows/lockfile.yml`)

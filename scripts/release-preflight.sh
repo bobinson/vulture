@@ -20,6 +20,7 @@
 #   5. shellcheck             install.sh + scripts/*.sh + scripts/lib/*.sh
 #   6. installer branch tests scripts/tests/test_install_sh.sh
 #   7. security               scripts/security-preflight.sh (pip-audit + alerts)
+#   8. govulncheck            scripts/govulncheck-preflight.sh (Go modules, release Go)
 #
 # POSIX sh, no bashisms. Tiny functions (cyclomatic < 5), DRY.
 set -eu
@@ -39,6 +40,7 @@ release preflight — pre-tag gates (all must pass before tagging; clean-tree fi
   5. shellcheck              install.sh + scripts/*.sh + scripts/lib/*.sh
   6. installer branch tests  scripts/tests/test_install_sh.sh
   7. security                scripts/security-preflight.sh (pip-audit + Dependabot alerts)
+  8. govulncheck             scripts/govulncheck-preflight.sh (CI's audit-go modules, under release.yml's Go)
 EOF
 }
 
@@ -111,5 +113,8 @@ run_gate "installer branch tests" "$SCRIPT_DIR/tests/test_install_sh.sh"
 # self-locating (reads agents/requirements-frozen.txt + .pip-audit-ignore from
 # the repo root) and carries its own sh shebang.
 run_gate "security"               "$SCRIPT_DIR/security-preflight.sh"
+# Then the Go modules: govulncheck as CI's audit-go job runs it, under the Go
+# release.yml builds with (a local Go of another patch misreports the stdlib).
+run_gate "govulncheck"            "$SCRIPT_DIR/govulncheck-preflight.sh"
 
 echo "==> release preflight: ALL GATES PASSED"

@@ -278,6 +278,25 @@ test_three_list_parity() {
 test_three_list_parity
 
 # ---------------------------------------------------------------------------
+# TEST 9 — the govulncheck gate (Go vulnerabilities, what CI's audit-go job
+# checks) is in all three hand-synced lists: the file header, the print_gates
+# heredoc, and a run_gate "govulncheck" dispatch of govulncheck-preflight.sh.
+# ---------------------------------------------------------------------------
+test_govulncheck_in_all_lists() {
+    name="govulncheck-gate-in-all-three-gate-lists"
+    require_file_or_bail "$name" "$PREFLIGHT_SH"
+    detail=""
+    header_block | grep -q 'govulncheck-preflight.sh' \
+        || detail="$detail file header omits govulncheck-preflight.sh;"
+    print_gates_block | grep -q 'govulncheck-preflight.sh' \
+        || detail="$detail print_gates heredoc omits govulncheck-preflight.sh;"
+    rungate_block | grep -q 'run_gate[[:space:]]*"govulncheck".*govulncheck-preflight.sh' \
+        || detail="$detail no run_gate \"govulncheck\" dispatch of govulncheck-preflight.sh;"
+    verdict "$name" "$detail"
+}
+test_govulncheck_in_all_lists
+
+# ---------------------------------------------------------------------------
 # Tally.
 # ---------------------------------------------------------------------------
 finish
