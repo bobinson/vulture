@@ -1228,7 +1228,7 @@ def test_an_import_names_its_whole_module_path(case: str) -> None:
 
 _GENERIC_PATH_VERBS = frozenset({
     "open", "read", "write", "append", "remove", "rename", "copy", "move", "truncate", "exists",
-    "access", "watch", "walk", "stream", "save", "load", "extract",
+    "access", "watch", "walk", "stream", "save", "load", "extract", "readall",
 })
 _FILE_SYSTEM_WORDS = frozenset({
     "fs", "file", "files", "path", "paths", "dir", "dirs", "directory", "folder", "filesystem",

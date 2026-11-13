@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -11,7 +11,15 @@ from typing import TYPE_CHECKING, NamedTuple
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
-from cwe_agent.skills._ast_head import AstAnswer, ast_spans, ast_walk, claim, regex_row
+from cwe_agent.skills._ast_head import (
+    AstAnswer,
+    ast_spans,
+    ast_walk,
+    claim,
+    hint_groups,
+    regex_row,
+    unread_sinks,
+)
 from cwe_agent.skills._lexical import (
     MAX_SCAN_CHARS,
     enclosing_routine,
@@ -764,9 +772,12 @@ class _FileCtx(NamedTuple):
     # its rows are numbered and quoted from.
     ast_answer: AstAnswer
     # Every line of each span above whose AST row a more specific child replaces (A42 (4),
-    # ``_consumed_lines``): still the AST's lines, so CWE-73 and the regex CWE-22 stay silent
+    # ``_lines_of``): still the AST's lines, so CWE-73 and the regex CWE-22 stay silent
     # on them, but no CWE-22 row is appended for the span.
     ast_consumed: frozenset[int] = frozenset()
+    # Feature 0104 A2: the file's group of hint-only CWE-22 rows (``_ast_head.hint_groups``),
+    # asked once, after the child replacement, without the replaced and the unread sink lines.
+    ast_groups: tuple[int, ...] = ()
 
 
 def _archive_entry_names(text: str) -> re.Pattern | None:
@@ -780,7 +791,8 @@ def _archive_entry_names(text: str) -> re.Pattern | None:
 def _build_context(file_path: Path, lines: tuple[str, ...]) -> _FileCtx:
     """Collect the file-level gates for the P7/P8 rules, and the CWE-22 spans: decided once
     per file, so each decline is recorded once (A30). The spans a child replaces are read off
-    the finished context, whose gates the children's hit tests read (A42 (4))."""
+    the finished context, whose gates the children's hit tests read (A42 (4)); the file's
+    0104 A2 group, after them (``_ast_context``)."""
     text = "\n".join(lines)
     archive = bool(_ARCHIVE_LIB.search(text))
     ctx = _FileCtx(
@@ -793,7 +805,20 @@ def _build_context(file_path: Path, lines: tuple[str, ...]) -> _FileCtx:
         entry_names=_archive_entry_names(text) if archive else None,
         ast_answer=ast_spans(file_path, text, _RULE_22),
     )
-    return ctx._replace(ast_consumed=_consumed_lines(ctx))
+    return _ast_context(ctx)
+
+
+def _ast_context(ctx: _FileCtx) -> _FileCtx:
+    """``ctx`` with the lines of the spans a child replaces (``ast_consumed``) and the file's
+    group of hint-only rows (``ast_groups``), whose rows are neither those nor the span lines
+    the line loop never reads (0104 A2)."""
+    spans = ctx.ast_answer.spans or {}
+    replaced = _replaced_sinks(ctx, spans)
+    excluded = replaced | unread_sinks(ctx.ast_answer, ctx.lines, _scanned)
+    return ctx._replace(
+        ast_consumed=_lines_of(spans, replaced),
+        ast_groups=hint_groups(ctx.ast_answer, _RULE_22, ctx.file_path, excluded),
+    )
 
 
 def _matches(patterns: Sequence[re.Pattern], line: str) -> bool:
@@ -1080,15 +1105,16 @@ def _ast_claims(
     child replaces the span (A42 (4)): its lines are still claimed, and no row is appended."""
     if line_num in ctx.ast_consumed:
         return True
-    return claim(ctx.ast_answer, _RULE_22, ctx.file_path, line_num, findings)
+    return claim(
+        ctx.ast_answer, _RULE_22, ctx.file_path, line_num, findings, groups=ctx.ast_groups
+    )
 
 
-def _consumed_lines(ctx: _FileCtx) -> frozenset[int]:
+def _lines_of(spans: Mapping[int, Flow], replaced: Set[int]) -> frozenset[int]:
     """Every line of each AST span a child claims on some line (A42 (4)): one path row per
-    span, the child's. A span is named by its sink line, the line its row would be appended
-    at; the whole span stays claimed. Run once per file, over the span lines only."""
-    spans = ctx.ast_answer.spans or {}
-    replaced = _replaced_sinks(ctx, spans)
+    span, the child's. A span is named by its sink line (``replaced`` holds those a child
+    claims), the line its row would be appended at; the whole span stays claimed. Run once per
+    file, over the span lines only."""
     return frozenset(line_num for line_num, flow in spans.items() if flow.sink_line in replaced)
 
 

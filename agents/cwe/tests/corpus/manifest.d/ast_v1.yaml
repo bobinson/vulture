@@ -327,3 +327,36 @@
 - {file: ast_v1/cwe_22_76_clean.js, language: JavaScript, cwe: "22", expectation: negative}
 - {file: ast_v1/cwe_22_77_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
 - {file: ast_v1/cwe_22_go_4_clean.go, language: Go, cwe: "22", expectation: negative}
+
+# ── 0104 WS-D: digest calls are numeric (exact keys `hash`, `hexdigest`) ──
+# A call keyed exactly `hash` / `hexdigest` that the file does not bind itself is a digest:
+# its result keeps no request origin. A word (newHashSet, blob_path_for_digest), a type
+# conversion (digest.Digest) and a same-file function named hash keep the flow.
+- {file: ast_v1/cwe_22_89_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_90_clean.py, language: Python, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_php_5_clean.php, language: PHP, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_java_3.java, language: Java, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_java_4.java, language: Java, cwe: "22", expectation: positive, line: 12}
+- {file: ast_v1/cwe_22_go_5.go, language: Go, cwe: "22", expectation: positive, line: 15}
+- {file: ast_v1/cwe_22_91.js, language: JavaScript, cwe: "22", expectation: positive, line: 5}
+- {file: ast_v1/cwe_22_92.py, language: Python, cwe: "22", expectation: positive, line: 11}
+
+# ── 0104 WS-C: an existence probe of a bare hinted parameter is no request path ──
+# JS/TS only: a probe (exists, access, stat, lstat) of an entry function's hinted parameter
+# itself, in a file that uses the function only by declaring, exporting or calling it, is
+# declined. A composed argument, another language and a content read keep reporting.
+- {file: ast_v1/cwe_22_96_clean.ts, language: TypeScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_97_clean.js, language: JavaScript, cwe: "22", expectation: negative}
+- {file: ast_v1/cwe_22_98.ts, language: TypeScript, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_99.py, language: Python, cwe: "22", expectation: positive, line: 12}
+- {file: ast_v1/cwe_22_go_6.go, language: Go, cwe: "22", expectation: positive, line: 13}
+- {file: ast_v1/cwe_22_java_5.java, language: Java, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_100.ts, language: TypeScript, cwe: "22", expectation: positive, line: 9}
+- {file: ast_v1/cwe_22_101.ts, language: TypeScript, cwe: "22", expectation: positive, line: 11}
+- {file: ast_v1/cwe_22_102.ts, language: TypeScript, cwe: "22", expectation: positive, line: 11}
+- {file: ast_v1/cwe_22_103.py, language: Python, cwe: "22", expectation: positive, line: 13}
+- {file: ast_v1/cwe_22_go_7.go, language: Go, cwe: "22", expectation: positive, line: 10}
+- {file: ast_v1/cwe_22_104.ts, language: TypeScript, cwe: "22", expectation: positive, line: 9}
+- {file: ast_v1/cwe_22_105.ts, language: TypeScript, cwe: "22", expectation: positive, line: 9}
+- {file: ast_v1/cwe_22_106.ts, language: TypeScript, cwe: "22", expectation: positive, line: 9}
+- {file: ast_v1/cwe_22_107.py, language: Python, cwe: "22", expectation: positive, line: 8}
