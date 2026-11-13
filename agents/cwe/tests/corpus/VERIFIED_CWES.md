@@ -15,7 +15,7 @@ Each of these CWE types passed the per-CWE promotion gate on the labeled corpus:
 | CWE-5 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-11 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-15 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
-| CWE-22 | VERIFIED | 73 | 57 | 1.000 | 0.000 |
+| CWE-22 | VERIFIED | 91 | 62 | 1.000 | 0.000 |
 | CWE-23 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-36 | VERIFIED | 3 | 3 | 1.000 | 0.000 |
 | CWE-73 | VERIFIED | 3 | 3 | 1.000 | 0.000 |

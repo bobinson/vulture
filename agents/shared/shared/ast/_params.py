@@ -25,13 +25,16 @@ then a reading function by its glued key (``SOURCE_CALL_KEYS``, W9 (a)).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import chain
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
+from shared.ast._calls import declared_name, name_holder
 from shared.ast._nodes import (
+    ancestors,
+    and_ancestors,
     cached,
     chain_root,
     first,
@@ -44,7 +47,7 @@ from shared.ast._nodes import (
     segment,
     top_statement,
 )
-from shared.ast._records import Origins, external, only
+from shared.ast._records import PARAM_HINT_ROLE, Origins, external, only
 from shared.ast.kinds import Field, Kind
 from shared.ast.profile import PROFILES
 from shared.ast.roles import (
@@ -66,6 +69,7 @@ from shared.ast.roles import (
     ROUTE_WORDS,
     SOURCE_CALL_KEYS,
     UPLOAD_WORDS,
+    callee_identifier,
     chain_names,
     glue,
     hits,
@@ -98,6 +102,22 @@ def _hint_named(name: str) -> bool:
     """R-T: ``name``'s words complete a PARAM_HINTS combination."""
     found = word_set((name,))
     return any(hint <= found for word in found for hint in _HINTS_OF_WORD.get(word, ()))
+
+
+def _grouped[K: Hashable](
+    nodes: Iterable[int], key_of: Callable[[int], K], none: K
+) -> dict[K, list[int]]:
+    """Each of ``nodes`` under its key (``key_of``), in document order; ``none`` left out."""
+    found: dict[K, list[int]] = {}
+    for node in nodes:
+        found.setdefault(key_of(node), []).append(node)
+    found.pop(none, None)
+    return found
+
+
+def _hint_param(d: Def) -> bool:
+    """0104 WS-C: ``d`` is a parameter whose name completes a PARAM_HINTS combination."""
+    return d.kind == "param" and _hint_named(d.name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +160,7 @@ class Params:
         self._main = profile.main_argv  # C4
         self._receiver_list = profile.receiver_list  # A3 (Go)
         self._entries: frozenset[int] | None = None  # A47 D23-d: built on first use
+        self._entry_reader = _Entries(model, scope, calls)
 
     # ── a function's parameters ──
 
@@ -285,14 +306,34 @@ class Params:
         ENTRY function of the file only (A47 D23-d, ``entries``); elsewhere the hint yields
         nothing, so the parameter is ``unknown(param)`` (or R-B's receiver)."""
         if _hint_named(d.name) and d.scope in self.entries():
-            yield "param_hint"
+            yield PARAM_HINT_ROLE
 
     def entries(self) -> frozenset[int]:
         """A47 D23-d: the file's ENTRY functions (``_Entries``), read once per file, on the
         first hinted parameter's ask (a None sentinel, as ``Calls.reaching_sinks``)."""
         if self._entries is None:
-            self._entries = _Entries(self._m, self._scope, self._calls).read()
+            self._entries = self._entry_reader.read()
         return self._entries
+
+    # ── 0104 WS-C (§4.3; D-N (1), A54): the hinted parameter itself ──
+
+    def hinted_itself(self, arg: int) -> bool:
+        """``arg`` is a hinted parameter itself: a NAME every reaching Def of which is a
+        parameter named with R-T's hint, a bare identifier (``_bare_slot``), of a function no
+        same-file use of whose name escapes the call graph (``_Entries.uses_resolved``)."""
+        defs = self._scope.resolve(arg) if is_kind(self._m, arg, Kind.NAME) else ()
+        return bool(defs) and all(map(self._bare_hint, defs))
+
+    def _bare_hint(self, d: Def) -> bool:
+        """``d`` is a hint-named bare parameter of a function whose name's uses all resolve."""
+        return _hint_param(d) and self._bare_slot(d) and self._entry_reader.uses_resolved(d.scope)
+
+    def _bare_slot(self, d: Def) -> bool:
+        """A54 (c): the parameter's slot (its PARAM, ``d.value``) starts at its name, as a typed
+        or defaulted name's does; a destructured ``{ filePath }`` or rest ``...filePath``
+        parameter's starts before it - the shapes a framework delivers request data in."""
+        slot = d.node if d.value is None else d.value
+        return self._m.span(slot)[0] == self._m.span(d.node)[0]
 
     def _argv(self, d: Def) -> Iterator[str]:
         """C4: the entry function's argv PARAM, by position (P6)."""
@@ -376,6 +417,22 @@ class Params:
 
 # ── A47 D23-d: the ENTRY functions of a file ─────────────────────────────────
 
+# 0104 WS-C (A54 (b)): what ends the walk up from a use of a name besides a CommonJS export
+# ASSIGN: an ``export``, or a FUNCTION, CLASS or CALL the use sits in (``_Entries._listing``).
+_LISTING_ENDS = frozenset({Kind.EXPORT, Kind.FUNCTION, Kind.CLASS, Kind.CALL})
+
+
+class _Uses(NamedTuple):
+    """A file's NAMEs by text, each local call's callee identifier with the FUNCTION
+    ``Calls.local`` resolves the call to (0104 WS-C, A54 (b)), each FUNCTION's name holder
+    (``name_holder``) with the FUNCTIONs it names, and the FUNCTIONs by the name their uses
+    spell (``_Entries._spelled``; HT-12, D-S (1)): read once, on the first ask."""
+
+    by_text: Mapping[str, list[int]]
+    callees: Mapping[int, int]
+    holders: Mapping[int, list[int]]
+    named: Mapping[str, list[int]]
+
 
 class _Entries:
     """One file's ENTRY functions (A47 D23-d), read once: ``Params.entries`` keeps the set.
@@ -387,7 +444,9 @@ class _Entries:
     too) that no same-file call site resolves to (``_uncalled``). One pass over the file's
     functions, its EXPORT nodes and its ASSIGNs, and one read of the local-call edges
     (``Calls.called``, memoised there); an exported name reads its Defs and the top-level
-    classes of its name, indexed once."""
+    classes of its name, indexed once. ``uses_resolved`` (0104 WS-C) asks whether any same-file
+    use of a function's name escapes the call graph, reading each name's uses once per file
+    (HT-12); it shares ``_commonjs`` with ``_exported``."""
 
     def __init__(self, model: FileModel, scope: ScopeTable, calls: Calls) -> None:
         self._m = model
@@ -395,9 +454,102 @@ class _Entries:
         self._calls = calls
         self._profile = PROFILES[model.language]  # a model is of a validated language
         self._classes: dict[str, list[int]] | None = None  # built on first use
+        self._uses: _Uses | None = None  # 0104 WS-C: built on first use
+        self._resolved: dict[int, bool] = {}
+        self._accounted: dict[str, frozenset[int]] = {}  # HT-12: per name
 
     def read(self) -> frozenset[int]:
         return frozenset(chain(self._exported(), self._uncalled()))
+
+    # ── the same-file uses of a function's name (0104 WS-C, §4.3, A54 (b)) ──
+
+    def uses_resolved(self, fn: int) -> bool:
+        """Every same-file use of ``fn``'s name (``name_holder``'s last identifier: each NAME
+        spelled so) is its declaration, an export listing (``_listing``) or the callee of a
+        call ``Calls.local`` resolves to ``fn``; an anonymous ``fn`` has none. An instance,
+        static or object method call, ``.call`` / ``.apply``, a reference or another
+        same-named function's declaration is none of the three. Memoised per function; each
+        name's uses are read once per file (``_every_use``), so the check is O(1) amortised
+        per use, never functions x uses (HT-12, D-S (1))."""
+        return cached(self._resolved, fn, self._only_resolved)
+
+    def _only_resolved(self, fn: int) -> bool:
+        """``fn`` is among the functions of its name (``_spelled``) every use of the name
+        accounts for (``_every_use``, memoised per name); an anonymous ``fn`` has no use."""
+        name = self._spelled(fn)
+        return not name or fn in cached(self._accounted, name, self._every_use)
+
+    def _every_use(self, name: str) -> frozenset[int]:
+        """The functions spelled ``name`` (``_named``) that every same-file use of ``name``
+        accounts for — an export listing (``_listing``) every one, any other use the ones
+        ``_accounts`` finds — read in document order until none is left. Each use is read
+        once: a use has one text."""
+        index = self._index()
+        found = frozenset(index.named.get(name, ()))
+        for use in index.by_text.get(name, ()):
+            if not found:
+                break
+            if not self._listing(use):
+                found = self._accounts(use, found)
+        return found
+
+    def _accounts(self, use: int, among: frozenset[int]) -> frozenset[int]:
+        """The functions of ``among`` a use that lists nothing accounts for: the one a call
+        whose callee it is resolves to (``Calls.local``), and each one ``use`` itself or an
+        ancestor of it names (``holders``: within its own declaration). One walk up from the
+        use, one map probe per ancestor, ended once every one of ``among`` is accounted for:
+        a resolved call to the only function of its name costs one probe."""
+        index = self._index()
+        missing = set(among)
+        missing.discard(index.callees.get(use, -1))
+        for node in and_ancestors(self._m, use):
+            if not missing:
+                break
+            missing.difference_update(index.holders.get(node, ()))
+        return among - missing
+
+    def _listing(self, use: int) -> bool:
+        """An export listing: the nearest ancestor of ``use`` that ends the walk
+        (``_ends_listing``) is an ``export`` or a CommonJS export ASSIGN (``export { f }``,
+        ``export default f``, ``export const g = f``, ``module.exports = { f }``,
+        ``exports.f = f``); a use inside a FUNCTION, a CLASS or a CALL lists nothing."""
+        end = next(filter(self._ends_listing, ancestors(self._m, use)), -1)
+        return is_kind(self._m, end, Kind.EXPORT) or is_kind(self._m, end, Kind.ASSIGN)
+
+    def _ends_listing(self, node: int) -> bool:
+        """``node`` is in ``_LISTING_ENDS`` or a CommonJS export ASSIGN (``_commonjs``)."""
+        return self._m.kind(node) in _LISTING_ENDS or self._commonjs(node)
+
+    def _index(self) -> _Uses:
+        """The file's ``_Uses``, read on the first ask (a None sentinel)."""
+        if self._uses is None:
+            self._uses = _Uses(self._by_text(), self._callees(), self._holders(), self._named())
+        return self._uses
+
+    def _by_text(self) -> dict[str, list[int]]:
+        """Each NAME of the file under its text, in document order; ``""`` left out."""
+        return _grouped(self._m.nodes(Kind.NAME), partial(identifier_text, self._m), "")
+
+    def _callees(self) -> dict[int, int]:
+        """Each local call's callee identifier (``callee_identifier``) -> its local FUNCTION."""
+        local, sites = self._calls.local, self._calls.local_calls(None)
+        return {callee_identifier(self._m, site): local(site) for site in sites}
+
+    def _holders(self) -> dict[int, list[int]]:
+        """Each FUNCTION's name holder (``name_holder``) -> the FUNCTIONs it names, in document
+        order (one holder may name several: ``f = wrap(function () {}, function () {})``);
+        none (``-1``) left out (``_grouped``). One pass over the file's functions."""
+        return _grouped(self._m.functions(), partial(name_holder, self._m), -1)
+
+    def _named(self) -> dict[str, list[int]]:
+        """Each FUNCTION under the name its uses spell (``_spelled``), in document order; an
+        anonymous one left out. One pass over the file's functions."""
+        return _grouped(self._m.functions(), self._spelled, "")
+
+    def _spelled(self, fn: int) -> str:
+        """The name ``fn``'s uses spell: its name holder's (``name_holder``) last identifier
+        (W3); ``""`` for an anonymous ``fn``."""
+        return identifier_text(self._m, last_identifier(self._m, name_holder(self._m, fn)))
 
     # ── public, top-level and uncalled (every language) ──
 
@@ -417,9 +569,8 @@ class _Entries:
         return self._m.function_of(node) == -1
 
     def _declared_name(self, fn: int) -> str:
-        """``fn``'s declared name: its NAME's last identifier (W3), so a C++ out-of-line method
-        (``Store::readEntry``) is named as the same method defined in its class."""
-        return identifier_text(self._m, last_identifier(self._m, first(self._m, fn, Field.NAME)))
+        """``fn``'s declared name (``_calls.declared_name``, W3)."""
+        return declared_name(self._m, fn)
 
     # ── exported (JavaScript / TypeScript) ──
 
@@ -495,9 +646,6 @@ class _Entries:
         return self._classes
 
     def _top_classes(self) -> dict[str, list[int]]:
-        """Each named top-level CLASS (``function_of == -1``) under its name, in order."""
-        found: dict[str, list[int]] = {}
-        for cls in filter(self._top, self._m.nodes(Kind.CLASS)):
-            found.setdefault(named(self._m, cls), []).append(cls)
-        found.pop("", None)  # an anonymous class expression declares no name
-        return found
+        """Each named top-level CLASS (``function_of == -1``) under its name, in order (an
+        anonymous class expression declares no name: ``""`` left out)."""
+        return _grouped(filter(self._top, self._m.nodes(Kind.CLASS)), partial(named, self._m), "")

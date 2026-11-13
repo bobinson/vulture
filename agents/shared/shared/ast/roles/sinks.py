@@ -44,8 +44,12 @@ __all__ = [
     "GENERIC_REQUEST_VERBS",
     "PATH_KWARGS",
     "PATH_SYNC_TWINS",
+    "PREDECLARED_CALLS",
     "PREFILTER",
+    "PROBE_HINT_LANGUAGES",
+    "PROBE_PATH_KEYS",
     "PROCESS_WORDS",
+    "QUALIFIED_CALL_LANGUAGES",
     "REGEX_WORDS",
     "REQUEST_API_WORDS",
     "REQUEST_CARRIER_WORDS",
@@ -118,7 +122,7 @@ SYNC_SUFFIX = "sync"
 # path key names a file operation by itself.
 GENERIC_PATH_VERBS = frozenset({
     "open", "read", "write", "append", "remove", "rename", "copy", "move", "truncate", "exists",
-    "access", "watch", "walk", "stream", "save", "load", "extract",
+    "access", "watch", "walk", "stream", "save", "load", "extract", "readall",
 })
 # The file-system concept words that evidence shows a file API by (`fs`, `Files`, `os.path`,
 # `uploadDir`, `node:fs/promises`). `shutil` follows PROCESS_WORDS' `subprocess`: a concept
@@ -127,6 +131,16 @@ FILE_SYSTEM_WORDS = frozenset({
     "fs", "file", "files", "path", "paths", "dir", "dirs", "directory", "folder", "filesystem",
     "os", "shutil",
 })
+
+# ── path: existence probes (0104 WS-C, §4.3) ─────────────────────────────────
+
+# The path sink keys that only probe a file - whether it exists, its type, its metadata - and
+# read none of its content (OD-11: `isfile` and `isdir` with `exists`); a synchronous twin
+# reads as its stem (`existsSync`, `statSync`). A probe whose argument is an entry's hinted
+# parameter itself declines `probe:param_hint`: the hint alone is no request path there.
+PROBE_PATH_KEYS = frozenset({"exists", "access", "stat", "lstat", "isfile", "isdir"})
+# The languages that probe rule applies in (D-N (1)): JavaScript and TypeScript.
+PROBE_HINT_LANGUAGES = frozenset({"javascript", "typescript"})
 
 # ── request: generic verbs and HTTP-client evidence (A44 (1) (a)) ────────────
 
@@ -137,6 +151,18 @@ FILE_SYSTEM_WORDS = frozenset({
 GENERIC_REQUEST_VERBS = frozenset({
     "get", "post", "put", "patch", "delete", "head", "options", "request", "open", "connect",
     "do",
+})
+# WS-H H3 (0104): languages whose every library call is package-qualified (Go: `os.Remove`,
+# `http.Get`). There a receiver-less call is a predeclared builtin or a same-package function,
+# so it is no language global (no file-system evidence; `Calls._bare_library`).
+QUALIFIED_CALL_LANGUAGES = frozenset({"go"})
+# WS-H H1 (0104): a language's predeclared functions (Go `delete(m, k)` removes a map key): a
+# bare call to one is the language's own operation, no HTTP-client evidence (`Calls._predeclared`).
+PREDECLARED_CALLS: Mapping[str, frozenset[str]] = MappingProxyType({
+    "go": frozenset({
+        "append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make",
+        "max", "min", "new", "panic", "print", "println", "real", "recover",
+    }),
 })
 # The client / transport concept words a receiver chain shows an HTTP client by.
 CLIENT_WORDS = frozenset({"client", "transport", "http", "https", "http2"})

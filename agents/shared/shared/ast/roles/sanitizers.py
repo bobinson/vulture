@@ -39,10 +39,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CONTAINED_WORDS",
     "COVERED_BY",
+    "DIGEST_KEYS",
     "FILE_NAME_WORDS",
     "KEY_ROLES",
     "PATH_RESULT_WORDS",
     "QUOTE_WORDS",
+    "REFLECTIVE_BINDERS",
     "SANITIZER_INDEX",
     "SANITIZER_KEYS",
     "SANITIZER_WORDS",
@@ -60,17 +62,26 @@ SANITIZER_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
     "allowlist": ALLOWLIST_WORDS | {"choices"},
     "validate": VALIDATE_WORDS,  # recorded in `via`; covers no family (§8.3)
 })  # no shell_quote / numeric WORDS (R4); no host_allow key (composed, guards.host_allow)
+# 0104 WS-D (§4.4): a digest call (`util.hash(email)`, `h.hexdigest()`, PHP `hash('sha256', $v)`)
+# returns a fixed-alphabet digest, never a steerable path, URL or command, so its key is a
+# `numeric` one (R-Q). EXACT glued keys, never words: `hashPath` and `newHashSet` are untouched.
+DIGEST_KEYS = frozenset({"hash", "hexdigest"})
+# 0104 WS-D (D-P (1)): the language builtins that bind a member by name, a string argument
+# (Python `setattr(o, "hash", v)`, JavaScript `Object.defineProperty` / `Reflect.defineProperty`):
+# a file that binds a DIGEST_KEYS name through one binds it itself (`Calls.binds_name`). EXACT
+# glued callee keys of the languages, not a library table.
+REFLECTIVE_BINDERS = frozenset({"setattr", "defineproperty"})
 # R4: EXACT glued callee keys (language builtins).
 SANITIZER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType({
     # Go filepath.Base / path.Base; basePath(x) is not (basename: a word above)
     "path_normalize": frozenset({"base"}),
     # PHP builtins; every other shell_quote is COMPOSED (below)
     "shell_quote": frozenset({"escapeshellarg", "escapeshellcmd"}),
-    # R-Q: Number(x), parseInt, strconv.Atoi; formatPhoneNumber is not
+    # R-Q: Number(x), parseInt, strconv.Atoi, a digest (DIGEST_KEYS); formatPhoneNumber is not
     "numeric": frozenset({
         "int", "float", "number", "parseint", "parsefloat", "atoi", "atol", "strtol", "toint",
         "tonumber", "integer", "isdigit", "isnumeric", "isdecimal",
-    }),
+    }) | DIGEST_KEYS,
 })
 # shell_quote is COMPOSED (R4): a QUOTE_WORDS word in the callee's last identifier AND a
 # SHELL_CONTEXT_WORDS word in the callee or its receiver chain. shlex.quote, shell_escape,

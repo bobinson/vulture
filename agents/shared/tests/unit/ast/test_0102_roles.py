@@ -943,7 +943,7 @@ RULED_TABLES: Mapping[str, Any] = MappingProxyType({
         "shell_quote": frozenset({"escapeshellarg", "escapeshellcmd"}),
         "numeric": frozenset({
             "int", "float", "number", "parseint", "parsefloat", "atoi", "atol", "strtol", "toint",
-            "tonumber", "integer", "isdigit", "isnumeric", "isdecimal",
+            "tonumber", "integer", "isdigit", "isnumeric", "isdecimal", "hash", "hexdigest",
         }),
     },
     "GUARD_KEYS": {"allowlist": _MEMBERSHIP},

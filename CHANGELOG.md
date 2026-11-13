@@ -130,6 +130,57 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **AST-tier precision for CWE-22, CWE-78 and CWE-918 (feature 0104), a follow-up to feature
+  0102.** Rows the parameter-name hint alone sources are labelled and grouped, never silenced,
+  and four structural readings remove false positives the hint and generic words produced. What
+  changes on a file the AST layer parses:
+  - **Hint-only rows are labelled.** A row whose only external origin is the parameter-name
+    hint (a path-like parameter of an entry function, `external:param_hint`) carries
+    `validation.flow.heuristic = "param_hint"`. A row with the hint and any other external origin
+    carries none, and where a hint-only flow and a request flow report at one sink line, the
+    request flow's row is the one emitted.
+  - **A file's hint-only rows of one check id become one row.** When every CWE-22 (or CWE-78)
+    row of a file is hint-only and there are 2 to 64 of them, the agent reports one row at the
+    lowest sink line, with `validation.flow.sinks` listing every member's sink line and a
+    description naming their count. The fold runs after the code window and before the validate
+    stage, and is refused when a member row is missing, carries a merge record, or stands beside
+    another row that one line reconciles with it; the validate stage re-checks every member on
+    its own reads and restores the members' rows when any validates differently from the anchor
+    or a rollup parent would stand over the group.
+  - **Existence probes (CWE-22, JavaScript and TypeScript).** A probe (`exists`, `stat`,
+    `access`, `lstat`, `isfile`, `isdir`, and their synchronous twins) whose argument is the
+    hinted parameter itself is declined with the recorded label `probe:param_hint`, streamed as an
+    `ast_decline` line and counted like the other labels. A composed argument, a function passed
+    by reference, and every other language still report.
+  - **Digests.** A call whose exact key is `hash` or `hexdigest` is a `numeric` sanitiser: its
+    output cannot carry `../`, a URL or a shell word. The rule is off in a file that binds that
+    name itself (a function, an assignment, an object key or a class field); an imported name or
+    a parameter keeps it.
+  - **Go.** A bare call to a predeclared function the file does not define (`delete(m, k)`) is
+    no HTTP-client evidence by itself, so no SSRF sink unless its argument is URL-shaped (a map
+    named with a URL word still reports, a kept false positive); a bare call is never a language
+    global, so a same-package helper (`open(x)`) is no path sink by the generic-verb rule; and
+    `readall` is a generic verb, so a reader drain (`io.ReadAll(r)`) is a path sink only with
+    file-system evidence.
+  - **Lineage on upgrade.** The rules move deterministic rows with no change of file. On the
+    first scan of an existing target, CWE-22/78/918 rows the AST tier no longer reports close as
+    `fixed` (a revert reopens them as `regression`); a line such a row stood on may now carry a
+    CWE-73 row, since the regex claim takes a span the AST tier stopped claiming; the rollup
+    parent over a now-grouped file's rows closes as `fixed` once; and another agent's row at a
+    member line other than the anchor no longer meets an AST row there, so it may persist on its
+    own where the AST row used to win.
+  - **Known gaps** (accepted, listed in the CWE agent's `SKILLS.md`): a non-digest helper named
+    `hash` defined in another file is read as a digest; a password-hash output is numeric; a file
+    that binds `hash` to a digest result or an options key loses the digest rule for that file
+    (the behaviour before this release); `.digest('hex')` is no digest key; a package that
+    defines `delete` in another file is read as using the builtin; an existence probe in an
+    exported helper declines even when a caller in another file passes it a request value.
+
+  No new flag and no backend change; both wire additions are optional values inside
+  `validation.flow`. Rollback is a code revert and a redeploy of the agents. See
+  [docs/architecture/ast_layer.md](docs/architecture/ast_layer.md) and
+  [docs/architecture/agent_protocol.md](docs/architecture/agent_protocol.md).
+
 - **Every local Python environment is built from a hashed lockfile, and nothing else.**
   `scripts/vulture.sh build agents`, `make build-agents` and `make test-mcp` used to resolve
   dependencies fresh from the index with `pip install -e`, and the build also upgraded pip and

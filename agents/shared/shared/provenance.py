@@ -16,6 +16,10 @@ from typing import Any
 from shared.gospace import trim_go_space
 
 _LLM_FAMILY_PREFIX = "llm"
+# Contract T3 (0074 C3): one row carries at most this many ``merged_llm`` entries on the raw
+# ``result`` snapshot; an entry refused at the cap is counted in ``merged_llm_dropped``. One
+# bound for every row that carries them: a survivor of the agent's dedup and an A2 group row.
+MERGED_LLM_MAX_ENTRIES = 8
 
 
 def is_llm_provenance(provenance: Any) -> bool:

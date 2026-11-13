@@ -13,7 +13,15 @@ from typing import TYPE_CHECKING, NamedTuple
 from agents import function_tool
 
 from cwe_agent.catalog import enrich_finding
-from cwe_agent.skills._ast_head import AstAnswer, ast_answers, ast_owns, ast_walk, regex_row
+from cwe_agent.skills._ast_head import (
+    AstAnswer,
+    ast_answers,
+    ast_owns,
+    ast_walk,
+    hint_groups,
+    regex_row,
+    unread_sinks,
+)
 from cwe_agent.skills._lexical import MAX_SCAN_CHARS
 from cwe_agent.skills._literal_provenance import constant_sprintf
 from shared.ast.consume import FamilyRule, command_param
@@ -806,6 +814,8 @@ class _FileCtx(NamedTuple):
     # The file's code view, masked on first use (by CWE-89's Go Sprintf test or a
     # CWE-94 candidate) and dropped with this context.
     code: CodeView
+    # Feature 0104 A2: the file's group of hint-only CWE-78 rows (``_ast_head.hint_groups``).
+    command_groups: tuple[int, ...] = ()
 
 
 def _analyze_file(file_path: Path, findings: list[dict]) -> None:
@@ -831,7 +841,8 @@ def _file_context(file_path: Path, lines: list[str]) -> _FileCtx:
     """The file's facts, each resolved once: its language and extension, ``server_ctx``, and
     the AST tier's spans of each family it owns here — decided once per file, so each decline
     is recorded once (A30), the prefilter reading the text once for both families. Passing
-    ``server_ctx`` for CWE-78 changes nothing: ``_RULE_78`` has no gate."""
+    ``server_ctx`` for CWE-78 changes nothing: ``_RULE_78`` has no gate. The file's 0104 A2
+    group of CWE-78 rows, without the span lines the line loop never reads."""
     text = "\n".join(lines)
     server_ctx = bool(_SERVER_CONTEXT.search(text))
     ssrf, command = ast_answers(file_path, text, (_RULE_918, _RULE_78), server_ctx)
@@ -845,6 +856,9 @@ def _file_context(file_path: Path, lines: list[str]) -> _FileCtx:
         ssrf=ssrf,
         command=command,
         code=CodeView(lines, lang),
+        command_groups=hint_groups(
+            command, _RULE_78, file_path, unread_sinks(command, lines, _scanned)
+        ),
     )
 
 
@@ -998,7 +1012,9 @@ def _has_validation_context(lines: list[str], line_num: int, radius: int = 10) -
 def _check_command(ctx: _FileCtx, line: str, line_num: int, findings: list[dict]) -> None:
     """CWE-78 OS command injection: the AST tier's rows on a file it owns (feature 0102, LLD
     §9.3), else the regex body."""
-    if not ast_owns(ctx.command, _RULE_78, ctx.file_path, line_num, findings):
+    if not ast_owns(
+        ctx.command, _RULE_78, ctx.file_path, line_num, findings, groups=ctx.command_groups
+    ):
         _check_command_regex(ctx.file_path, line, line_num, ctx.lines, findings, ctx.lang)
 
 

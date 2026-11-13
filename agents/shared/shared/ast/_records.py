@@ -36,6 +36,7 @@ __all__ = [
     "INDEX",
     "OVERFLOW",
     "PARAM",
+    "PARAM_HINT_ROLE",
     "TOP",
     "UNKNOWN",
     "UNKNOWN_REASONS",
@@ -47,6 +48,7 @@ __all__ = [
     "external",
     "externals",
     "has_external",
+    "hint_only",
     "only",
     "role_set",
     "unknown",
@@ -73,8 +75,9 @@ EMPTY: Origins = frozenset()
 # §8.1's closed vocabularies: an external origin's role (``any`` is the overflow collapse's) and
 # an unknown origin's reason. The flow pass mints no other; D3' admits a worker-built answer's
 # origins against them (§4.1 item 2). ``argv`` is in both (``ARGV``, A47 D22-c).
+PARAM_HINT_ROLE = "param_hint"
 EXTERNAL_ROLES = frozenset({
-    "request", "network", "upload", "argv", "stdin", "env", "error", "param_hint", "any",
+    "request", "network", "upload", "argv", "stdin", "env", "error", PARAM_HINT_ROLE, "any",
 })
 UNKNOWN_REASONS = frozenset({
     "unresolved", "param", "argv", "depth", "dynamic", "recursion", "arity", "external_call",
@@ -129,6 +132,14 @@ def has_external(origins: Origins) -> bool:
     return any(o.cls == EXTERNAL for o in origins)
 
 
+_HINT_ONLY = frozenset({PARAM_HINT_ROLE})
+
+
+def hint_only(origins: Origins) -> bool:
+    """A1 (HT-7): ``origins`` hold an external origin and every external one is the R-T hint."""
+    return {o.role for o in externals(origins)} == _HINT_ONLY
+
+
 # §8.6: a hop's kinds, and the placeholders of a hop's name (A30 (2)): a segment is a D16
 # identifier, ``INDEX`` (an M1 subscript key) or ``FLAG`` (an M4 literal); a name that cannot be
 # so spelled is ``EXPR`` whole.
@@ -171,7 +182,14 @@ class Flow:
     is (one hop); ``param_bound`` — set only on a flow holding ``unknown(param)``: another
     candidate at the same ``(sink, arg)`` holds none, so a same-file caller bound the
     parameter, and that flow decides; ``builtin_program`` — ``arg`` is the program position of
-    a command builtin of the profile's own table (the whole command)."""
+    a command builtin of the profile's own table (the whole command).
+
+    ``bare_path_arg`` (0104 WS-C, §4.3), the existence-probe rule's per-flow fact: set only on
+    a hint-only BASE-context ``path`` flow at a ``PROBE_PATH_KEYS`` sink in a
+    ``PROBE_HINT_LANGUAGES`` file (JavaScript, TypeScript; False in every other language)
+    whose argument is an entry's hinted parameter itself (``Params.hinted_itself``). Part of
+    the flow's key, so a summary flow with the same origins stays a flow of its own; ``decide``
+    declines a flow carrying it ``probe:param_hint`` (OD-12)."""
 
     family: str
     sink: int
@@ -188,3 +206,4 @@ class Flow:
     built_arg: bool = False
     param_bound: bool = False
     builtin_program: bool = False
+    bare_path_arg: bool = False
