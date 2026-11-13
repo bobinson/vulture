@@ -35,7 +35,7 @@ from bisect import bisect_left
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
-from itertools import chain, filterfalse
+from itertools import chain, filterfalse, pairwise
 from operator import attrgetter
 from string import ascii_letters, digits
 from types import MappingProxyType
@@ -58,6 +58,7 @@ from shared.ast._nodes import (
 from shared.ast._validate import IDENTIFIER, OTHER_LITERAL_CLASS
 from shared.ast.kinds import Field, Kind
 from shared.ast.limits import MAX_ARG_NAMES, MAX_CHAIN
+from shared.ast.model import NO_LITERAL
 from shared.ast.profile import PROFILES
 from shared.ast.profiles import EMPTY_MAP, FAMILIES, Builtin, Positions
 from shared.ast.roles import (
@@ -275,11 +276,31 @@ _BINDER_NAME_ARG = 1
 # D-P (1): what names a class member among a class body's children: an identifier, or a
 # quoted name (TS ``'hash' = f``); a quoted VALUE among them names nothing (``Calls._quoted``).
 _MEMBER_NAMES = frozenset({Kind.NAME, Kind.LITERAL})
+# D-S (7), detection first: a LITERAL or TEMPLATE whose ``lit`` class can still hold a callable
+# is no constant (``_constant``). The null rule, in every language: a null is a slot not yet
+# filled (``hash: Joiner = null``, ``let hash = null; hash ??= f``), binding as no value does
+# (``let hash;``).
+_UNFILLED = frozenset({"null"})
+# The string-callable languages, which call a string by name (PHP ``$f = 'trim'; $f($v)``):
+# there a string holds a callable too, and with it a TEMPLATE (a double-quoted string), which
+# carries no ``lit`` record (``NO_LITERAL``'s class). Languages, no library.
+_STRING_CALLABLE_LANGUAGES = frozenset({"php"})
+_UNFILLED_OR_STRING = _UNFILLED | {"string", NO_LITERAL.kind}
 
 
 def _textual(model: FileModel, node: int) -> bool:
-    """``node`` is a string LITERAL or a TEMPLATE (``_TEXTUAL``; ``-1`` is neither)."""
+    """``node`` is any LITERAL (string, number, boolean, null) or a TEMPLATE (``_TEXTUAL``;
+    ``-1`` is neither)."""
     return node >= 0 and model.kind(node) in _TEXTUAL
+
+
+def _constant(model: FileModel, node: int) -> bool:
+    """D-S (6), D-S (7): ``node`` is a constant value: a ``_textual`` node whose literal class
+    can hold no callable (see the null rule and the string-callable languages)."""
+    if not _textual(model, node):
+        return False
+    held = _UNFILLED_OR_STRING if model.language in _STRING_CALLABLE_LANGUAGES else _UNFILLED
+    return model.literal(node).kind not in held
 
 
 def _function_name(model: FileModel, fn: int) -> int:
@@ -290,13 +311,20 @@ def _function_name(model: FileModel, fn: int) -> int:
 
 
 def _assigned(model: FileModel, assign: int) -> Iterable[int]:
-    """An ASSIGN's targets, each as ``_target`` names it; none when its value is an import
-    call (``const hash = require("./hash")`` is an import binding, as R-H reads a DESTRUCT of
-    one)."""
-    values = model.children(assign, Field.RHS)
-    if any(import_call(model, unawaited(model, value)) for value in values):
+    """An ASSIGN's targets, each as ``_target`` names it; none when its values bind no
+    callable of the file's own (``_unbound``)."""
+    if _unbound(model, model.children(assign, Field.RHS)):
         return _NONE
     return map(partial(_target, model), model.children(assign, Field.LHS))
+
+
+def _unbound(model: FileModel, values: Sequence[int]) -> bool:
+    """An assignment's values bind no callable: an import call among them (``const hash =
+    require("./hash")`` is an import binding, as R-H reads a DESTRUCT of one), or D-S (7) at
+    least one value and every one a constant (``_constant``: a class attribute ``hash =
+    "sha256"``, ``cfg.hash = 0``); no value (``let hash;``) still binds, detection first."""
+    constant = bool(values) and all(map(partial(_constant, model), values))
+    return constant or any(import_call(model, unawaited(model, value)) for value in values)
 
 
 def _target(model: FileModel, target: int) -> int:
@@ -309,28 +337,13 @@ def _target(model: FileModel, target: int) -> int:
 
 def _object_key(model: FileModel, pair: int) -> int:
     """An object or struct literal member's KEY, else ``-1``: an import specifier's or a
-    pattern's PAIR binds no name by its key. A quoted or computed key (``{"hash": f}``,
-    ``{["hash"]: f}``) is a string the reader spells (D-P (1), ``Calls._quoted``)."""
+    pattern's PAIR binds no name by its key, nor (D-S (7)) a member whose value is a constant
+    (``_constant``: ``{ name: "HMAC", hash: "SHA-256" }``, ``{"hash": "sha256"}``). A quoted or
+    computed key (``{"hash": f}``, ``{["hash"]: f}``) is a string the reader spells (D-P (1),
+    ``Calls._quoted``)."""
     literal = is_kind(model, model.parent(pair), Kind.OBJECT)
-    return first(model, pair, Field.KEY) if literal else -1
-
-
-def _fields(model: FileModel, cls: int) -> list[int]:
-    """A CLASS's fields, with a value or without, each named by a NAME or a quoted name
-    (``_member_names``): among its BODY children (C++) and among their children (a BLOCK's:
-    JS, TS, PHP). A struct with no BODY (Go, Rust) names them among its own children, where
-    only a field of a function type binds a callable (``_function_typed``, D-S (6)): a
-    positional ``layout{f}`` sets it (D-P (1))."""
-    bodies = model.children(cls, Field.BODY)
-    if not bodies:
-        return _function_typed(model, model.children(cls, Field.NONE))
-    nested = (_member_names(model, model.children(body)) for body in bodies)
-    return [*_member_names(model, bodies), *chain.from_iterable(nested)]
-
-
-def _member_names(model: FileModel, nodes: Sequence[int]) -> list[int]:
-    """The nodes of ``nodes`` that can name a class member (``_MEMBER_NAMES``), in order."""
-    return [node for node in nodes if model.kind(node) in _MEMBER_NAMES]
+    named = literal and not _constant(model, first(model, pair, Field.VALUE))
+    return first(model, pair, Field.KEY) if named else -1
 
 
 def _function_typed(model: FileModel, kids: Sequence[int]) -> list[int]:
@@ -361,20 +374,48 @@ def _typed(model: FileModel, name: int, after: int, typed: bool) -> bool:
 
 def _keyword(model: FileModel, kwarg: int) -> int:
     """D-S (6): a keyword argument's name (``f(hash=g)``, ``SimpleNamespace(hash=g)``), else
-    ``-1``: a constant value (``_textual``: ``field(hash=False)``, ``make(hash="sha256")``,
+    ``-1``: a constant value (``_constant``: ``field(hash=False)``, ``make(hash="sha256")``,
     ``dict(hash=0)``) names an option, binding the name to no callable."""
-    constant = _textual(model, first(model, kwarg, Field.VALUE))
+    constant = _constant(model, first(model, kwarg, Field.VALUE))
     return -1 if constant else first(model, kwarg, Field.NAME)
 
 
 def _reflected(model: FileModel, global_object: Callable[[int], bool], call: int) -> int:
     """D-P (1): the string a reflective binder names its member by (``setattr(o, "hash", v)``),
     else ``-1``: a variable name argument names nothing, nor does a method merely so named
-    (``_own_binder``, D-S (6))."""
+    (``_own_binder``, D-S (6)), nor (D-S (7)) a binder setting a constant value
+    (``setattr(o, "hash", "sha256")``, ``defineProperty(o, "hash", { value: "sha256" })``)."""
     if not _own_binder(model, global_object, call):
         return -1
-    held = model.args(call)[_BINDER_NAME_ARG : _BINDER_NAME_ARG + 1]
+    return _reflected_name(model, call)
+
+
+def _reflected_name(model: FileModel, call: int) -> int:
+    """The member name a reflective binder sets, or ``-1`` when the value it sets is a constant
+    (D-S (7), ``_reflected_value``) or no string names the member."""
+    args = model.args(call)
+    if _constant(model, _reflected_value(model, args)):
+        return -1
+    held = args[_BINDER_NAME_ARG : _BINDER_NAME_ARG + 1]
     return next((arg for arg in held if _textual(model, arg)), -1)
+
+
+def _reflected_value(model: FileModel, args: Sequence[int]) -> int:
+    """The value a reflective binder sets, from its argument list ``args``: the argument after
+    the name (``setattr(o, n, V)``), or a property descriptor's ``value`` member
+    (``defineProperty(o, n, { value: V })``); ``-1`` for an absent value, which still binds
+    (detection first), as ``_constant`` reads ``-1`` as no constant."""
+    at = _BINDER_NAME_ARG + 1
+    value = args[at] if len(args) > at else -1
+    return _descriptor_value(model, value) if is_kind(model, value, Kind.OBJECT) else value
+
+
+def _descriptor_value(model: FileModel, obj: int) -> int:
+    """A property descriptor object's ``value`` member (``{ value: V }``), else ``-1``; a getter
+    descriptor (``{ get: f }``) has no ``value`` member, so it binds (detection first)."""
+    values = (first(model, p, Field.VALUE) for p in kids_of(model, obj, Kind.PAIR)
+              if glue(identifier_text(model, first(model, p, Field.KEY))) == "value")
+    return next(values, -1)
 
 
 def _own_binder(model: FileModel, global_object: Callable[[int], bool], call: int) -> bool:
@@ -386,23 +427,6 @@ def _own_binder(model: FileModel, global_object: Callable[[int], bool], call: in
         return False
     holder = receiver(model, call)
     return holder < 0 or global_object(holder)
-
-
-def _self_bound(model: FileModel, global_object: Callable[[int], bool]) -> Iterator[int]:
-    """Every node naming where the file binds a name itself to a possible callable (D-P (1),
-    D-S (6)): each FUNCTION's name (``_function_name``), each ASSIGN target (``_assigned``),
-    each object key (``_object_key``), each class or struct field (``_fields``), each keyword
-    argument's name (``_keyword``) and each reflective binder's member (``_reflected``, its
-    receiver tested by ``global_object``). An import or a parameter is none of these. One
-    pass over six kind indexes."""
-    return chain(
-        map(partial(_function_name, model), model.nodes(Kind.FUNCTION)),
-        chain.from_iterable(map(partial(_assigned, model), model.nodes(Kind.ASSIGN))),
-        map(partial(_object_key, model), model.nodes(Kind.PAIR)),
-        chain.from_iterable(map(partial(_fields, model), model.nodes(Kind.CLASS))),
-        map(partial(_keyword, model), model.nodes(Kind.KWARG)),
-        map(partial(_reflected, model, global_object), model.nodes(Kind.CALL)),
-    )
 
 
 # ── small model reads ────────────────────────────────────────────────────────
@@ -727,12 +751,68 @@ class Calls:
         itself, by any spelling ``_self_bound`` reads (never an import or a parameter),
         whether or not ``local`` resolves a call to it (``layout.f(x)`` on an object literal
         is no resolved call). Erring toward a binding only restores the pre-0104 reading;
-        a shape binding the name to no callable is none (D-S (6)). The bound names are read
-        once per file (O(nodes)), on the first ask."""
+        a shape binding the name to no callable is none (D-S (6), D-S (7)). The bound names
+        are read once per file (O(nodes)), on the first ask."""
         if self._bound_names is None:
-            nodes = (node for node in _self_bound(self._m, self._global_object) if node >= 0)
+            nodes = (node for node in self._self_bound() if node >= 0)
             self._bound_names = frozenset(map(glue, map(self._binding_spelling, nodes)))
         return key in self._bound_names
+
+    def _self_bound(self) -> Iterator[int]:
+        """Every node naming where the file binds a name itself to a possible callable (D-P
+        (1), D-S (6), D-S (7): never to a constant): each FUNCTION's name (``_function_name``),
+        each ASSIGN target (``_assigned``), each object key (``_object_key``), each class or
+        struct field (``_fields``), each keyword argument's name (``_keyword``) and each
+        reflective binder's member (``_reflected``, its receiver tested by ``_global_object``).
+        An import or a parameter is none of these. One pass over six kind indexes."""
+        m = self._m
+        return chain(
+            map(partial(_function_name, m), m.nodes(Kind.FUNCTION)),
+            chain.from_iterable(map(partial(_assigned, m), m.nodes(Kind.ASSIGN))),
+            map(partial(_object_key, m), m.nodes(Kind.PAIR)),
+            chain.from_iterable(map(self._fields, m.nodes(Kind.CLASS))),
+            map(partial(_keyword, m), m.nodes(Kind.KWARG)),
+            map(partial(_reflected, m, self._global_object), m.nodes(Kind.CALL)),
+        )
+
+    def _fields(self, cls: int) -> list[int]:
+        """A CLASS's fields, with a value or without, each named by a NAME or a quoted name
+        (``_member_names``): among its BODY children (C++) and among their children (a BLOCK's:
+        JS, TS, PHP). A struct with no BODY (Go, Rust) names them among its own children, where
+        only a field of a function type binds a callable (``_function_typed``, D-S (6)): a
+        positional ``layout{f}`` sets it (D-P (1))."""
+        m = self._m
+        bodies = m.children(cls, Field.BODY)
+        if not bodies:
+            return _function_typed(m, m.children(cls, Field.NONE))
+        nested = (self._member_names(m.children(body)) for body in bodies)
+        return [*self._member_names(bodies), *chain.from_iterable(nested)]
+
+    def _member_names(self, nodes: Sequence[int]) -> list[int]:
+        """The nodes of ``nodes`` that can name a class member (``_MEMBER_NAMES``), in order, but
+        (D-S (7)) a field whose value is a constant (``_assigned_constant``, of the node after
+        it: TS/JS ``hash = "";``), and that value, which names nothing; a field with no value,
+        or another value, still binds."""
+        found: list[int] = []
+        pairs = pairwise(chain(nodes, (-1,)))  # each node with the node after it
+        for node, value in pairs:
+            if self._m.kind(node) not in _MEMBER_NAMES:
+                continue
+            if self._assigned_constant(node, value):
+                next(pairs, None)  # ``value`` is that constant: never read as a name
+            else:
+                found.append(node)
+        return found
+
+    def _assigned_constant(self, name: int, value: int) -> bool:
+        """D-S (7): ``value``, the class body node after the field ``name``, is a constant
+        (``_constant``) assigned to it: the source between them ends in ``=`` (``hash = "";``,
+        ``hash: string = "";``) and holds no ``;`` or line break, so no other member sits
+        between (JS ships no ``#private`` name: ``hash; #p = "x"`` holds ``#p``'s value)."""
+        if not _constant(self._m, value):
+            return False
+        between = self._source(self._m.span(name)[1], self._m.span(value)[0]).rstrip()
+        return between.endswith("=") and ";" not in between and "\n" not in between
 
     def _global_object(self, node: int) -> bool:
         """D-S (6): ``node`` is a NAME of a language global the file does not bind (``Object``,

@@ -85,8 +85,7 @@ _SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 
 def severity_rank(severity: str | None) -> int:
-    """The rank of ``severity``: critical 4 > high 3 > medium 2 > low 1 > info 0, read
-    lower-cased; an unknown label, or none, ranks 0 (0104 D-S (5) compares two rows by it)."""
+    """Rank in ``_SEVERITY_RANK``, read lower-cased; an unknown label or None ranks 0."""
     return _SEVERITY_RANK.get((severity or "").lower(), 0)
 
 

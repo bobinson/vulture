@@ -32,11 +32,9 @@ Feature 0104 A2 (OD-2, S1–S4) reports a file's hint-only rows of one rule as O
 picks the file's group (``hint_groups``) and stamps each member's row as it appends it
 (``stamp_member``), so the per-finding events, the line collapse, the LLM tier's dedup and the
 code window see each member's own row; ``fold_hint_groups`` then makes the group row, once
-every row the agent emits is known, unless a deterministic row would be reconciled with a
-member at its line (R1, R2), or a strictly more severe LLM row with the anchor at its line, which
-the backend's merge would keep in the group row's place (D-S (5)); no other LLM row refuses a
-group (D-S (2)). The group row keeps its members' rows (``hint_rows``), which the validate
-stage restores when its own reads disagree (R5).
+every row the agent emits is known, unless it refuses the group (it says when: R1, R2, D-S (2)
+and (5)). The group row keeps its members' rows (``hint_rows``), which the validate stage
+restores when its own reads disagree (R5).
 
 A rule may carry ONE named heuristic (``FamilyRule.heuristic``): ``command_param`` (D25,
 A42 (1), A43 (1)) is the command rule's — a flow whose origins are UNKNOWN-only, holding
@@ -54,9 +52,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass
-from functools import partial
+from functools import cache, partial
 from itertools import chain
-from operator import is_not
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -362,18 +359,21 @@ def stamp_member(row: Finding, sinks: tuple[int, ...]) -> None:
 def fold_hint_groups(findings: list[Finding], path_key: Callable[[str], str]) -> list[Finding]:
     """A2: ``findings`` — every row the agent emits: the skills' rows after the line collapse
     and the LLM tier's — with each stamped group's member rows replaced, at the anchor's place,
-    by the group row (``group_to_finding``), unless the group is refused. It decides on the
-    deterministic rows (D-S (2)), with one exception (D-S (5)). Refused, its rows stay as they
-    are: a member's row missing, out of place or kept by the line collapse (``collapsed_from``),
-    or another row of no LLM-family provenance (``is_llm_provenance``; a row with none is
-    deterministic) standing at a member line that one line reconciles with it — of the CWE's
-    dedup family, or a ChildOf ancestor or descendant (``reconciled_on_line``; R1, R2), the file
-    named as ``path_key`` names it. D-S (5): an LLM-family row at the ANCHOR's site that one
-    line reconciles with the anchor's row, of a severity strictly above the anchor's
-    (``severity_rank``; the other members' severities do not count), refuses too. An LLM-family
-    row is never touched: the same row, in its place. A member's LLM merges (``merged_llm``,
-    ``merged_llm_dropped``) never refuse: they ride on the group row (``_llm_merges``). Every
-    stamp is taken off.
+    by the group row (``group_to_finding``), unless the group is refused. Refused, its rows stay
+    as they are: a member's row missing, out of place or kept by the line collapse
+    (``collapsed_from``), or a deterministic row (not ``_llm``) standing at a member's site that
+    one line reconciles with it — of the CWE's dedup family, or a ChildOf ancestor or
+    descendant (``reconciled_on_line``; R1, R2), the file named as ``path_key`` names it.
+    D-S (2): an LLM-family row never stands beside a member — the model's answer varies from
+    run to run — with one exception, D-S (5): one reconciled with the ANCHOR's row at its site,
+    of a severity strictly above the anchor's (``_evicted``; the other members' severities do
+    not count), refuses too. An LLM-family row is never touched: the same row, in its place. A
+    member's LLM merges (``merged_llm``, ``merged_llm_dropped``) never refuse: they ride on the
+    group row (``_llm_merges``). Every stamp is taken off.
+
+    Both rules read one index, every row at a member line (``_standing``). ``path_key`` is pure
+    within a fold, so it names each raw path once (``cache``); and while no LLM-family row
+    stands at a member line, no anchor is looked up for eviction (``_unevicted``).
 
     Another agent's rows are not seen here; only this agent's own are. So the backend's eviction
     is refused here for this agent's LLM rows only (D-S (5)): in the backend's merge another
@@ -383,10 +383,14 @@ def fold_hint_groups(findings: list[Finding], path_key: Callable[[str], str]) ->
     groups = _stamped(findings)
     if not groups:
         return findings
-    standing = _standing(findings, _member_lines(groups), path_key)
-    beside = _standing(findings, _anchor_lines(groups), path_key, llm=True)
-    crowded = partial(_crowded, standing=standing, path_key=path_key)
-    evicted = partial(_evicted, beside=beside, path_key=path_key)
+    file_key = cache(path_key)
+    standing = _standing(findings, groups, file_key)
+    crowded = partial(_crowded, standing=standing, path_key=file_key)
+    evicted = (
+        partial(_evicted, standing=standing, path_key=file_key)
+        if any(map(_llm, chain.from_iterable(standing.values())))
+        else _unevicted
+    )
     return _replaced(findings, _folds(groups, crowded, evicted))
 
 
@@ -402,41 +406,18 @@ def _stamped(findings: Iterable[Finding]) -> dict[_GroupKey, list[Finding]]:
     return groups
 
 
-def _member_lines(groups: Iterable[_GroupKey]) -> set[int]:
-    """Every member's line of ``groups`` (each key's stamp)."""
-    return {line_num for key in groups for line_num in key[-1]}
-
-
-def _anchor_lines(groups: Iterable[_GroupKey]) -> set[int]:
-    """D-S (5): each anchor's line of ``groups`` (the first of each key's stamp)."""
-    return {key[-1][0] for key in groups}
-
-
 def _standing(
-    findings: Iterable[Finding],
-    lines: Set[int],
-    path_key: Callable[[str], str],
-    *,
-    llm: bool = False,
+    findings: Iterable[Finding], groups: Iterable[_GroupKey], path_key: Callable[[str], str]
 ) -> dict[_Site, list[Finding]]:
-    """Every row of ``findings`` of the tier ``llm`` names on one of ``lines``, by the site it
-    stands at (``_site``, ``_tier_on``): the deterministic rows at the members' lines, the only
-    rows that stand beside a member (D-S (2)), or the LLM rows at the anchors' lines, the only
-    ones that can evict an anchor (D-S (5))."""
+    """Every row of ``findings``, of either tier, on a member line of ``groups`` (each key's
+    stamp; an anchor's line is one), by the site it stands at (``_site``): the rows both rules
+    read (``_crowded``, ``_evicted``)."""
+    lines = set(chain.from_iterable(key[-1] for key in groups))
     standing: dict[_Site, list[Finding]] = {}
     for finding in findings:
-        if _tier_on(finding, lines, llm):
+        if parse_line(finding.get("line_start")) in lines:
             standing.setdefault(_site(finding, path_key), []).append(finding)
     return standing
-
-
-def _tier_on(finding: Finding, lines: Set[int], llm: bool) -> bool:
-    """``finding`` stands on one of ``lines`` and is LLM-family exactly when ``llm`` is
-    (``is_llm_provenance``, the backend's rule; a row with none is deterministic). The model's
-    answer varies from run to run, so an LLM row never stands beside a member (D-S (2)); it
-    only refuses a group whose anchor it would evict (D-S (5))."""
-    on_line = parse_line(finding.get("line_start")) in lines
-    return on_line and is_llm_provenance(finding.get("provenance")) == llm
 
 
 def _site(finding: Finding, path_key: Callable[[str], str]) -> _Site:
@@ -476,31 +457,46 @@ def _lines(rows: Iterable[Finding]) -> tuple[int, ...]:
 def _crowded(
     row: Finding, standing: Mapping[_Site, list[Finding]], path_key: Callable[[str], str]
 ) -> bool:
-    """The line collapse kept ``row`` for another row (``collapsed_from``), or another row of
-    ``standing`` its line reconciles with it stands at its line (R1, R2)."""
-    return bool(row.get(_COLLAPSED_KEY)) or _reconciled_at(row, standing, path_key)
-
-
-def _reconciled_at(
-    row: Finding,
-    standing: Mapping[_Site, list[Finding]],
-    path_key: Callable[[str], str],
-    admits: Callable[[Finding, Finding], bool] = is_not,
-) -> bool:
-    """A row ``other`` of ``standing`` at ``row``'s site that one line reconciles with it
-    (``reconciled_on_line``) and that ``admits(other, row)``: by default, any but ``row``."""
-    here = standing.get(_site(row, path_key), ())
-    return any(admits(other, row) and reconciled_on_line(other, row) for other in here)
+    """The line collapse kept ``row`` for another row (``collapsed_from``), or a row reconciled
+    with it at its site (``_reconciled``; R1, R2) is not LLM-family (``_llm``)."""
+    if row.get(_COLLAPSED_KEY):
+        return True
+    return any(not _llm(other) for other in _reconciled(row, standing, path_key))
 
 
 def _evicted(
-    anchor: Finding, beside: Mapping[_Site, list[Finding]], path_key: Callable[[str], str]
+    anchor: Finding, standing: Mapping[_Site, list[Finding]], path_key: Callable[[str], str]
 ) -> bool:
-    """D-S (5): an LLM row of ``beside`` at the ``anchor`` row's site that one line reconciles
-    with it, of a severity strictly above the anchor's (``_outranks``). The backend's merge
-    keeps that row in the anchor's place, so the group row and every member folded into it
-    would leave the persisted set."""
-    return _reconciled_at(anchor, beside, path_key, _outranks)
+    """D-S (5): an LLM-family row reconciled with the ``anchor`` row at its site
+    (``_reconciled``), of a severity strictly above the anchor's (``_outranks``). The backend's
+    merge keeps that row in the anchor's place, so the group row and every member folded into
+    it would leave the persisted set; no other LLM-family row refuses a group (D-S (2)).
+
+    Reconciled is the backend's dedup family key PLUS ChildOf (``reconciled_on_line``), so this
+    over-refuses on purpose for a ChildOf relation the Go backend does not merge — safe: the
+    members just stay apart."""
+    here = _reconciled(anchor, standing, path_key)
+    return any(_llm(other) and _outranks(other, anchor) for other in here)
+
+
+def _unevicted(_anchor: Finding) -> bool:
+    """``_evicted`` while no LLM-family row stands at a member line: False, with no lookup."""
+    return False
+
+
+def _reconciled(
+    row: Finding, standing: Mapping[_Site, list[Finding]], path_key: Callable[[str], str]
+) -> Iterator[Finding]:
+    """The rows of ``standing`` at ``row``'s site (``_site``), other than ``row``, that one line
+    reconciles with it (``reconciled_on_line``), in their order, lazily."""
+    here = standing.get(_site(row, path_key), ())
+    return (other for other in here if other is not row and reconciled_on_line(other, row))
+
+
+def _llm(row: Finding) -> bool:
+    """``row`` is LLM-family (``is_llm_provenance``, the backend's rule; a row with no
+    provenance is deterministic)."""
+    return is_llm_provenance(row.get("provenance"))
 
 
 def _outranks(row: Finding, anchor: Finding) -> bool:

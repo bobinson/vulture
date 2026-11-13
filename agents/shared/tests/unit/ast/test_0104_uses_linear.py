@@ -1,7 +1,7 @@
 """Feature 0104 WS-C (LLD §4.3, HT-12): the existence-probe rule's use check costs O(1)
 amortised per node, never functions x uses.
 
-Review finding #3. ``_Entries.uses_resolved(fn)`` (``Params.hinted_itself``, asked once per
+HT-12 (D-S (1)). ``_Entries.uses_resolved(fn)`` (``Params.hinted_itself``, asked once per
 hint-only BASE probe flow) reads every same-file use of ``fn``'s name and walks each one up its
 ancestors (``_only_resolved`` -> ``_accounted`` -> ``_listing``), afresh for every function. M
 CommonJS listings ``exports.f = f;`` before N declarations ``function f(filePath) { return
