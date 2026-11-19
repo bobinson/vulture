@@ -45,7 +45,7 @@ The frontend connects to the Go backend via two channels:
 
 ### Go Backend (Orchestrator)
 
-- **Language**: Go 1.24+
+- **Language**: Go 1.26+
 - **Database**: PostgreSQL with pgvector extension (SQLite fallback available)
 - **Role**: Central orchestrator that receives audit requests, manages source code, dispatches work to Python agents, and aggregates results
 
