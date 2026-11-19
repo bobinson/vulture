@@ -1,4 +1,4 @@
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 # .npmrc carries legacy-peer-deps=true (eslint 10 vs eslint-plugin-react-hooks@7
 # peer range); it must be present for `npm ci` to resolve, same as local/CI.

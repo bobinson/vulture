@@ -4,3 +4,5 @@
 # would move every existing pin. Drop the line at the next intentional relock.
 tree-sitter-php=2026-10-07T00:00:00Z
 litellm=2026-10-27T20:00:00Z
+# opentelemetry-api 1.45.2 fixes GHSA-mf5v-w3w3-f6cg (1.45.1 is affected); Dependabot #277 pinned it
+opentelemetry-api=2026-10-30T00:00:00Z

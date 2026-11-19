@@ -24,9 +24,9 @@ Reference the issue from your PR.
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - Python 3.12+
-- Node.js 22+
+- Node.js 24 (CI and release builds; 22.19+ still satisfies `engines`)
 - Docker and Docker Compose
 
 ### Getting Started

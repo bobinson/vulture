@@ -50,7 +50,7 @@ Which audit agent is affected? (Select all that apply)
 - **Docker version**: [e.g., 24.0.7]
 - **Docker Compose version**: [e.g., 2.23.0]
 - **Browser** (if frontend issue): [e.g., Chrome 120, Firefox 121]
-- **Node.js version** (if frontend issue): [e.g., 20.10.0]
+- **Node.js version** (if frontend issue): [e.g., 24.11.0]
 - **Go version** (if backend issue): [e.g., 1.24]
 - **Python version** (if agent issue): [e.g., 3.12.1]
 - **LLM provider**: [e.g., OpenAI, Ollama, LM Studio]

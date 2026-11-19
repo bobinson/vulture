@@ -130,6 +130,13 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **Node.js 24.** CI (`NODE_VERSION`), the release workflow's two `setup-node` steps and the
+  frontend image's build stage (`node:24-alpine`) move from Node 22 to 24; the frontend's
+  install, type check, build and vitest suite pass on 24. `frontend/package.json` `engines`
+  stays `>=22.19.0`, so Node 22 still builds it. The `setup-pinned-uv` composite's
+  `astral-sh/setup-uv` pin moves from v6.1.0 (a node20 action, deprecated on GitHub's runners)
+  to v10.3.3 (node24); Dependabot does not scan `.github/actions/`, so that pin is bumped by hand.
+
 - **CWE-78 command look-alikes; CWE-89 at command calls (feature 0105), a follow-up to features
   0102 and 0104.** On a file the AST layer parses, a command-keyed call (`exec`, `system`, …) is
   now classed by its receiver and its program argument before it is reported, so a call whose
@@ -1249,6 +1256,13 @@ stack, which runs centralized with its shipped defaults (`VULTURE_LOCAL_MODE=fal
     renewed or the pin replaced. A tarball without the bundled Python runtime now
     fails the gate. Dry-run the gate before every tag ("Dry-run the release CVE
     gate" in [docs/guides/release_process.md](docs/guides/release_process.md)).
+
+- **opentelemetry-api: denial of service through quadratic-time `traceparent` parsing
+  (CWE-1333).**
+  - **Advisory:** GHSA-mf5v-w3w3-f6cg (CVE-2026-126360), medium.
+  - **Affected:** the agents' lockfiles pinned `opentelemetry-api` 1.45.1 (vulnerable: <= 1.45.1).
+  - **Fix:** `opentelemetry-api` 1.45.2. It postdates the lock date, so
+    `scripts/lock-date-packages.txt` admits it and the lockfiles reproduce (`make freeze-deps`).
 
 ### Planned
 
