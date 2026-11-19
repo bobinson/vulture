@@ -279,7 +279,11 @@ class LanguageProfile:
     ENTRY (A47 D23-d: JavaScript and TypeScript);
     ``public_name`` - whether a top-level declared name is public, so an outside caller can
     reach it (A47 D23-d: Python no leading ``_``, Go an upper-case initial; elsewhere any
-    name, ``bool``: an anonymous function has none).
+    name, ``bool``: an anonymous function has none);
+    ``value_imports`` - an import that is no whole-module import may bind an object (0105
+    E1; JavaScript and TypeScript: any import form; Python: a ``from m import x`` attribute), so
+    a receiver it binds is read as a value. Elsewhere an import is read as a package, a type
+    or a namespace (the default: a new profile's imports are namespaces).
     """
 
     language: str
@@ -303,6 +307,7 @@ class LanguageProfile:
     main_argv: tuple[str, int] | None = None
     export_chains: frozenset[tuple[str, ...]] = frozenset()
     public_name: Callable[[str], bool] = bool
+    value_imports: bool = False
 
     def grammar_for(self, path: str | PurePath) -> str:
         """The grammar entry point that parses ``path``: its suffix's variant, else the

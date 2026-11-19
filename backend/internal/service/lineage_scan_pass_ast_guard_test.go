@@ -82,10 +82,10 @@ func coverage(t *testing.T, breaker bool, keys ...string) json.RawMessage {
 	return raw
 }
 
-var astOwned = []string{"CWE-22", "CWE-918", "CWE-78"}
+var astOwned = []string{"CWE-22", "CWE-918", "CWE-78", "CWE-89"}
 
-// probeOwned asks g about a row in EVERY AST-owned category on every path: the
-// contract never distinguishes CWE-22, CWE-918 and CWE-78.
+// probeOwned asks g about a row in EVERY held category on every path: the
+// contract never distinguishes CWE-22, CWE-918, CWE-78 and CWE-89 (0105).
 func probeOwned(t *testing.T, g placedGuard, paths []string, want bool) {
 	t.Helper()
 	for _, cat := range astOwned {

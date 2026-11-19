@@ -58,20 +58,30 @@ def sized_once(objects: Iterable[object]) -> int:
 
 
 def flow_parts(flow: Flow, own_name: Callable[[str], bool]) -> Iterator[object]:
-    """One flow's own objects, an object held twice yielded twice: the record, its span, origin
-    set and hops, its guards (a flow with none holds the shared ``()``), each hop and guard, the
-    strings it holds of its own (``own_strs``) — each hop name ``own_name`` says is its holder's,
-    and its sink key — and its own ints (``_flow_ints``). Origins and role sets are shared
-    (``_records``)."""
-    held = (flow, flow.span, flow.origins, flow.hops, *flow.hops, *flow.guards)
+    """One flow's own objects, an object held twice yielded twice: the record, its spans
+    (``_spans``), origin set and hops, its guards (a flow with none holds the shared ``()``),
+    each hop and guard, the strings it holds of its own (``own_strs``) — each hop name
+    ``own_name`` says is its holder's, and its sink key — and its own ints (``_flow_ints``).
+    Origins and role sets are shared (``_records``)."""
+    spans = _spans(flow)
+    held = (flow, *spans, flow.origins, flow.hops, *flow.hops, *flow.guards)
     guards = (flow.guards,) if flow.guards else ()
     names = filter(own_name, (hop.name for hop in flow.hops))
-    return chain(held, guards, own_strs(chain(names, (flow.sink_key,))), _flow_ints(flow))
+    return chain(held, guards, own_strs(chain(names, (flow.sink_key,))), _flow_ints(flow, spans))
 
 
-def _flow_ints(flow: Flow) -> Iterator[int]:
-    """The ints a flow holds that are objects of their own (``own_ints``): its sink, sink line,
-    argument and span, each hop's line, each guard's node."""
+def _spans(flow: Flow) -> tuple[tuple[int, int], ...]:
+    """The flow's sink span, then its argument's (``Flow.arg_span``) and its sink's program
+    argument's (``Flow.program_span``; feature 0105, LLD §4.4), each when recorded: a flow
+    without one (None) does not hold it."""
+    recorded = (flow.arg_span, flow.program_span)
+    return (flow.span, *(span for span in recorded if span is not None))
+
+
+def _flow_ints(flow: Flow, spans: Iterable[tuple[int, int]]) -> Iterator[int]:
+    """The ints a flow holds that are objects of their own (``own_ints``): its sink, sink line
+    and argument, the offsets of its ``spans`` (``_spans``), each hop's line, each guard's
+    node."""
     lines = (hop.line for hop in flow.hops)
     nodes = (guard.node for guard in flow.guards)
-    return own_ints(chain((flow.sink, flow.sink_line, flow.arg, *flow.span), lines, nodes))
+    return own_ints(chain((flow.sink, flow.sink_line, flow.arg), *spans, lines, nodes))

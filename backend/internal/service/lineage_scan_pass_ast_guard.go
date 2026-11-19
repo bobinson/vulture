@@ -24,9 +24,17 @@ import (
 // provenance "skill", so the category is the ownership signal: a pure-regex
 // row in an owned category on a fallback file is held too — an over-hold,
 // which never false-closes and settles on the next scan that re-reads it.
+//
+// Feature 0105: the AST tier also reports CWE-89, at a command-keyed call
+// whose argument is SQL statement text or on a data-store receiver, wherever
+// no regex CWE-89 row covers the call. Those rows are AST-only in the same
+// way, so CWE-89 is held too, with the same over-hold of regex CWE-89 rows on
+// a fallback file.
 
-// astOwnedCategories are the categories the AST tier owns (LLD D24).
-var astOwnedCategories = map[string]struct{}{"CWE-22": {}, "CWE-918": {}, "CWE-78": {}}
+// astOwnedCategories are the categories in which an AST row can stand that
+// the regex fallback cannot reproduce: the three the AST tier owns (LLD D24)
+// and CWE-89 (feature 0105).
+var astOwnedCategories = map[string]struct{}{"CWE-22": {}, "CWE-918": {}, "CWE-78": {}, "CWE-89": {}}
 
 // The reasons a row was held, recorded on its `unconfirmable` event.
 const (

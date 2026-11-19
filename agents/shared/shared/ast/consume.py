@@ -5,8 +5,9 @@ A skill that migrates a check to the AST tier keeps ONE ``FamilyRule`` per check
 identity strings its regex body and its AST head both emit (D19) — and reaches the layer
 through three functions:
 
-* ``family_spans(model, rule, ctx, path, *, server_ctx)`` decides every candidate of the
-  rule's family (``flow.decide``, §8.5) and maps EVERY line of each reported sink's span to
+* ``family_spans(model, rule, ctx, path, *, server_ctx)`` decides (``flow.decide``, §8.5)
+  each candidate of the rule's family that the rule accepts (``FamilyRule.accepts``, feature
+  0105; every one, for a rule without it) and maps EVERY line of each reported sink's span to
   its flow. Declines are recorded there, on the audit's context against the consumer's file
   (A30 (1)), and the analysis' per-file fact counts reach the audit's coverage once per file
   (A28 (3)). A rule's gate (``FamilyRule.gate``, the SSRF ``server_ctx`` gate) is handed
@@ -28,6 +29,15 @@ through three functions:
 tiers build from a rule (D19): ``flow_to_finding`` extends it, and a skill's regex body builds
 its own rows with it, so the two tiers' rows cannot drift apart.
 
+``argument_lines(spans, nl_lines, flows)`` (feature 0105, LLD §4.6) maps each sink line of a
+rule's spans to that line, its flows' argument lines (``Flow.arg_span``) and its program
+argument's lines (``Flow.program_span``), counted in the parsed buffer as a span's lines are,
+none past the file's last: what a cover test reads where a span's lines hold the whole call.
+``family_flows`` gives ``family_spans``' spans together with the flows they are built from, and
+``sink_flows`` maps each sink line to every flow reported at the sink of the line's own flow
+(its one flow when none is recorded): a sink with several sink arguments has a flow per
+argument, of which the spans keep one, and another sink on the same line is a group of its own.
+
 Feature 0104 A2 (OD-2, S1–S4) reports a file's hint-only rows of one rule as ONE row. The head
 picks the file's group (``hint_groups``) and stamps each member's row as it appends it
 (``stamp_member``), so the per-finding events, the line collapse, the LLM tier's dedup and the
@@ -37,11 +47,14 @@ and (5)). The group row keeps its members' rows (``hint_rows``), which the valid
 restores when its own reads disagree (R5).
 
 A rule may carry ONE named heuristic (``FamilyRule.heuristic``): ``command_param`` (D25,
-A42 (1), A43 (1)) is the command rule's — a flow whose origins are UNKNOWN-only, holding
-``unknown(param)`` or ``unknown(argv)`` (A47 D22-c), at a sink that shells the argument, of a
-built argument or of the whole command of a profile builtin process API, with no same-file
-caller binding the parameter, reports. It is a heuristic, not data flow, and says
-so on its row (``validation.flow.heuristic``).
+A42 (1), A43 (1)) is the CWE-78 command rule's — a flow whose origins are UNKNOWN-only,
+holding ``unknown(param)`` or ``unknown(argv)`` (A47 D22-c), at a sink that shells the
+argument, of a built argument or of the whole command of a profile builtin process API, with
+no same-file caller binding the parameter, reports. It is a heuristic, not data flow, and says
+so on its row (``validation.flow.heuristic``). The command family has two rules (feature 0105,
+LLD §4.5): each takes the flows E4 gives it (``CLASS_REPORTS``: ``process_flow`` for CWE-78,
+``statement_flow`` for CWE-89), and the CWE-89 rule asks ``command_param``'s question under
+its own token (``statement_param``).
 
 ``import shared.ast`` stays a leaf (D1): a skill reads ``FamilyRule`` and ``OWNED_CHECK_IDS``
 at import time, so the flow engine, the profiles and the model are imported where a function
@@ -53,13 +66,24 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass
 from functools import cache, partial
-from itertools import chain
+from itertools import chain, groupby
+from operator import attrgetter
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
 from shared.ast import MODEL_SCHEMA, VALIDATION_KEYS
 from shared.ast._nodes import parsed_buffer
-from shared.ast._records import ARGV, PARAM, PARAM_HINT_ROLE, hint_only
+from shared.ast._records import (
+    ARGV,
+    PARAM,
+    PARAM_HINT_ROLE,
+    STORE,
+    TEXT,
+    UNPROVEN,
+    hint_only,
+    real_external,
+)
 from shared.ast.declines import render_origins
 from shared.ast.limits import MAX_GROUP_SINKS
 from shared.lines import parse_line
@@ -73,21 +97,29 @@ if TYPE_CHECKING:
     from shared.ast.context import AuditContext
 
 __all__ = [
+    "CLASS_REPORTS",
     "COMMAND_PARAM",
     "OWNED_CHECK_IDS",
+    "STATEMENT_PARAM",
     "FamilyRule",
     "RuleIdentity",
+    "argument_lines",
     "command_param",
     "emit_for_line",
+    "family_flows",
     "family_spans",
     "flow_to_finding",
     "fold_hint_groups",
     "group_to_finding",
     "hint_groups",
     "hint_rows",
+    "process_flow",
     "rule_row",
+    "sink_flows",
     "sink_lines",
     "stamp_member",
+    "statement_flow",
+    "statement_param",
     "without_rows",
 ]
 
@@ -95,8 +127,10 @@ type Finding = dict[str, Any]
 # What ``emit_for_line`` applies to a row before it appends it: (row, rule.cwe_id) -> row.
 type Enrich = Callable[[Finding, str], Finding]
 
-# The check ids the AST tier owns on every file it parses cleanly (LLD §9): the ``path``,
-# ``request`` and ``command`` families' rules, one each (§9.2, §9.3).
+# The check ids the AST tier owns on every file it parses cleanly (LLD §9): the ``path`` and
+# ``request`` families' rules and the ``command`` family's CWE-78 rule (§9.2, §9.3). The command
+# family's CWE-89 rule (feature 0105) owns no check id: its regex body runs on every line, and
+# an AST row of it stands only where no regex row covers its flow.
 OWNED_CHECK_IDS = frozenset({
     "cwe.input_validation.path_traversal",
     "cwe.injection.ssrf",
@@ -123,6 +157,9 @@ _MERGED_LLM_KEY, _DROPPED_KEY = "merged_llm", "merged_llm_dropped"
 # D25's token (A42 (1)): stable, it names the command parameter heuristic on every row it
 # reports and in SKILLS.md.
 COMMAND_PARAM = "command_param"
+# The same heuristic's token on the CWE-89 rule's rows (``statement_param``; feature 0105, LLD
+# §4.5).
+STATEMENT_PARAM = "statement_param"
 # What D25 keys on: ``unknown(param)``, and ``unknown(argv)`` read as it (A47 D22-c). One set,
 # so a flow is tested by the hashes both sets store.
 _COMMAND_KEYS: Origins = frozenset({PARAM, ARGV})
@@ -130,13 +167,19 @@ _COMMAND_KEYS: Origins = frozenset({PARAM, ARGV})
 
 @dataclass(frozen=True, slots=True)
 class FamilyRule:
-    """One migrated check (§5, D11, D19): its ``family``, the check id it owns and the identity
-    strings both tiers emit, ``cwe_id`` the catalog number ``enrich`` reads, ``gate`` —
-    ``(flow, server_ctx) -> keep?``, set only for the SSRF rule, reading ``Flow.sink_key``
-    (§9.3, A40 (3)); ``decide`` returns ``none`` for a flow it refuses — and ``heuristic`` —
-    ``flow -> token or None``, set only for the command rule (``command_param``, D25, A42
-    (1)): ``decide`` asks it for a flow with no external origin, and a token reports the flow
-    unless a covering guard declines it."""
+    """One migrated check (§5, D11, D19): its ``family``, its check id and the identity strings
+    both tiers emit, and ``cwe_id``, the catalog number ``enrich`` reads. Three optional hooks:
+
+    * ``gate``, ``(flow, server_ctx) -> keep?``, set only for the SSRF rule, reading
+      ``Flow.sink_key`` (§9.3, A40 (3)): ``decide`` returns ``none`` for a flow it refuses;
+    * ``heuristic``, ``flow -> token or None``, set only for the command rules
+      (``command_param``, D25, A42 (1); ``statement_param``, feature 0105): ``decide`` asks it
+      for a flow with no external origin, and a token reports the flow unless a covering guard
+      declines it;
+    * ``accepts`` (feature 0105, LLD §4.5), the flows the rule may report (``process_flow``,
+      ``statement_flow``; None: every flow): ``family_spans`` leaves out every other flow
+      before ``decide``, so two rules of one family decide each accepted flow once (a flow
+      neither rule accepts is never decided)."""
 
     family: str
     check_id: str
@@ -147,16 +190,29 @@ class FamilyRule:
     cwe_id: str
     gate: Callable[[Flow, bool], bool] | None = None
     heuristic: Callable[[Flow], str | None] | None = None
+    accepts: Callable[[Flow], bool] | None = None
 
 
 def command_param(flow: Flow) -> str | None:
-    """D25 (§8.5, A42 (1), A43 (1)), the command rule's hook: ``COMMAND_PARAM`` when the flow
+    """D25 (§8.5, A42 (1), A43 (1)), the CWE-78 command rule's hook: ``COMMAND_PARAM`` when the flow
     holds ``unknown(param)`` or ``unknown(argv)`` (A47 D22-c) at a sink that shells the
     argument, of a built argument or of a profile builtin's whole command, and no same-file
     caller bound the parameter (``Flow.shell_sink``, ``built_arg``, ``builtin_program``,
     ``param_bound``: set on a flow holding ``unknown(param)`` only, so it supersedes one holding
     both); else None. ``decide`` asks it only for a flow with no external origin."""
-    return COMMAND_PARAM if _param_at_a_command(flow) and not flow.param_bound else None
+    return _param_token(COMMAND_PARAM, flow)
+
+
+def statement_param(flow: Flow) -> str | None:
+    """The CWE-89 command rule's hook (feature 0105, LLD §4.5): ``command_param``'s question
+    (``_param_token``) under its own token, ``STATEMENT_PARAM``."""
+    return _param_token(STATEMENT_PARAM, flow)
+
+
+def _param_token(token: str, flow: Flow) -> str | None:
+    """``token`` when the flow holds ``unknown(param)`` or ``unknown(argv)`` at a command
+    (``_param_at_a_command``) and no same-file caller bound the parameter; else None."""
+    return token if _param_at_a_command(flow) and not flow.param_bound else None
 
 
 def _param_at_a_command(flow: Flow) -> bool:
@@ -164,6 +220,24 @@ def _param_at_a_command(flow: Flow) -> bool:
     argument, it is built or it is a profile builtin's whole command."""
     held = not flow.origins.isdisjoint(_COMMAND_KEYS)
     return held and (flow.shell_sink or flow.built_arg or flow.builtin_program)
+
+
+# E4 (feature 0105, LLD §4.5): a flow's ``command_class`` -> the CWE of the rule that reports
+# it, and whether the flow needs a real external origin (``real_external``) to be reported there.
+CLASS_REPORTS: Mapping[str, tuple[str, bool]] = MappingProxyType({
+    "": ("78", False), UNPROVEN: ("78", True), TEXT: ("89", False), STORE: ("89", True),
+})
+
+
+def _class_flow(rule: str, flow: Flow) -> bool:
+    """0105 E4: the rule of CWE ``rule`` reports ``flow`` (``CLASS_REPORTS``)."""
+    owner, real = CLASS_REPORTS[flow.command_class]
+    return owner == rule and (not real or real_external(flow.origins))
+
+
+# The two command rules' ``accepts`` (feature 0105, LLD §4.5): CWE-78's and CWE-89's flows.
+process_flow: Callable[[Flow], bool] = partial(_class_flow, "78")
+statement_flow: Callable[[Flow], bool] = partial(_class_flow, "89")
 
 
 def _as_is(finding: Finding, _cwe_id: str) -> Finding:
@@ -601,23 +675,47 @@ def family_spans(
     worker-built answer (§4.1 item 3) — -> its flow.
     ``decide`` records each decline on ``ctx`` against ``path``, the consumer's file; the
     gate is handed the file's ``server_ctx``, or True in a profile that is never browser code
-    (§8.5). The analysis' fact counts reach ``ctx``'s coverage once per file."""
+    (§8.5). The analysis' fact counts reach ``ctx``'s coverage once per file. The spans of
+    ``family_flows``."""
+    return family_flows(model, rule, ctx, path, server_ctx=server_ctx)[0]
+
+
+def family_flows(
+    model: FileFacts,
+    rule: FamilyRule,
+    ctx: AuditContext,
+    path: str | Path,
+    *,
+    server_ctx: bool = True,
+) -> tuple[dict[int, Flow], Sequence[Flow]]:
+    """``family_spans``' spans, and the flows they are built from: every flow ``decide``
+    reports, in its order, hint-only ones included, which ``sink_flows`` reads by sink (feature
+    0105, LLD §4.6). One ``decide`` pass gives both, so each decline is recorded once
+    (A30 (1))."""
     from shared.ast.profile import PROFILES
 
     analysis = model.analysis()
     ctx.coverage.record_analysis(path, analysis.tallies)
     server_like = server_ctx or not PROFILES[model.language].browser_capable
     reported = _reported(analysis.candidates(rule.family), rule, ctx, path, server_like)
-    return _by_line(model, reported)
+    return _by_line(model, reported), reported
 
 
 def _reported(
     flows: Iterable[Flow], rule: FamilyRule, ctx: AuditContext, path: str | Path, server_ctx: bool
 ) -> list[Flow]:
-    """The ``flows`` ``decide`` reports, in their order; it records the declines (§8.5)."""
+    """The ``flows`` ``decide`` reports, in their order; it records the declines (§8.5). A
+    flow the rule does not accept (``_accepted``) is never decided for it."""
     from shared.ast.flow import decide
 
-    return [f for f in flows if decide(f, rule, ctx, path=path, server_ctx=server_ctx) == "report"]
+    found = _accepted(flows, rule)
+    return [f for f in found if decide(f, rule, ctx, path=path, server_ctx=server_ctx) == "report"]
+
+
+def _accepted(flows: Iterable[Flow], rule: FamilyRule) -> Iterable[Flow]:
+    """The ``flows`` ``rule.accepts`` keeps (feature 0105, LLD §4.5), in their order; all of
+    them without one."""
+    return flows if rule.accepts is None else filter(rule.accepts, flows)
 
 
 def _by_line(model: FileFacts, flows: Sequence[Flow]) -> dict[int, Flow]:
@@ -652,3 +750,84 @@ def _span_lines[B: (str, bytes)](flow: Flow, buffer: tuple[B, B]) -> range:
     data, newline = buffer
     start, end = flow.span
     return range(flow.sink_line, flow.sink_line + data.count(newline, start, end) + 1)
+
+
+def sink_flows(
+    spans: Mapping[int, Flow], reported: Iterable[Flow] = ()
+) -> dict[int, Sequence[Flow]]:
+    """Each sink line of ``spans`` (``sink_lines``) -> every flow of ``reported``
+    (``family_flows``' list) at the sink of the line's own flow (``Flow.sink``, its call),
+    hint-only ones first (``_sink_first``): the flows of that one sink, never another sink's
+    on the same line (feature 0105, LLD §4.6). A line whose sink has none of them (none
+    recorded) -> its own flow alone. Line ownership keeps one flow per line (``_by_line``)."""
+    ordered = sorted(reported, key=_sink_first)
+    at = {sink: tuple(flows) for sink, flows in groupby(ordered, attrgetter("sink"))}
+    return {line: at.get(spans[line].sink, (spans[line],)) for line in sink_lines(spans)}
+
+
+def _sink_first(flow: Flow) -> tuple[int, bool]:
+    """``sink_flows``' key: the sink node, then non-hint after hint-only, so each sink's flows
+    keep ``_hint_first``'s order (a stable sort keeps the order within each; feature 0105, LLD
+    §4.6)."""
+    return flow.sink, not hint_only(flow.origins)
+
+
+def argument_lines(
+    spans: Mapping[int, Flow],
+    nl_lines: Sequence[str],
+    flows: Mapping[int, Sequence[Flow]] | None = None,
+) -> dict[int, Sequence[int]]:
+    """Each sink line of ``spans`` (``sink_lines``) -> that line, then the lines of the argument
+    (``Flow.arg_span``) and of the sink's program argument (``Flow.program_span``; feature 0105,
+    LLD §4.4) of each flow ``flows`` gives it (``sink_flows``' map: every flow reported at the
+    sink), sorted, each once; without ``flows``, its own flow's alone (feature 0105, LLD §4.6).
+    The lines a statement sink's arguments are written on, where its span's lines hold the whole
+    call (a callback body, later arguments). Counted as ``_span_lines`` counts a span's, in the
+    buffer the worker parsed, read once from the model's ``nl_lines`` (a ``Lines``, as
+    ``_by_line`` reads them). None past the last of ``nl_lines``: D3' bounds a span by the bytes
+    and the sink line by the lines, not one by another, so a forged answer can count lines past
+    the file's end, which hold no text."""
+    buffer = _parsed_buffer(nl_lines.text)
+    at = sink_flows(spans) if flows is None else flows
+    last = len(nl_lines)
+    return {line: _flows_lines(at[line], buffer, last) for line in sink_lines(spans)}
+
+
+def _flows_lines[B: (str, bytes)](
+    flows: Iterable[Flow], buffer: tuple[B, B], last: int
+) -> list[int]:
+    """The sink line, the argument lines and the program argument's lines of every one of
+    ``flows`` (``_flow_lines``), sorted, each once, none past ``last`` (feature 0105, LLD §4.6)."""
+    return sorted({n for flow in flows for n in _flow_lines(flow, buffer) if n <= last})
+
+
+def _flow_lines[B: (str, bytes)](flow: Flow, buffer: tuple[B, B]) -> Iterable[int]:
+    """``flow``'s sink line and argument lines (``_arg_lines``), then its sink's program
+    argument's lines (``Flow.program_span``; feature 0105, LLD §4.4) when recorded: the node
+    the classifier reads statement text from, which may be no reported flow's argument (feature
+    0105, LLD §4.6)."""
+    if flow.program_span is None:
+        return _arg_lines(flow, buffer)
+    return chain(_arg_lines(flow, buffer), _node_lines(flow, flow.program_span, buffer))
+
+
+def _arg_lines[B: (str, bytes)](flow: Flow, buffer: tuple[B, B]) -> Sequence[int]:
+    """``flow``'s sink line, then its argument's lines (``_node_lines``). A flow built without
+    an argument span (None) gets its whole sink span's lines (``_span_lines``), as a cover test
+    read a sink before the field."""
+    if flow.arg_span is None:
+        return _span_lines(flow, buffer)
+    return _node_lines(flow, flow.arg_span, buffer)
+
+
+def _node_lines[B: (str, bytes)](
+    flow: Flow, node: tuple[int, int], buffer: tuple[B, B]
+) -> Sequence[int]:
+    """``flow``'s sink line, then the lines of ``node``, the byte span of one of its sink's
+    arguments, over the parsed buffer: the node starts as many lines below the sink line as
+    newlines stand between the sink span's start and its own (feature 0105, LLD §4.6)."""
+    data, newline = buffer
+    start, end = node
+    first = flow.sink_line + data.count(newline, flow.span[0], start)
+    lines = range(first, first + data.count(newline, start, end) + 1)
+    return lines if first == flow.sink_line else (flow.sink_line, *lines)

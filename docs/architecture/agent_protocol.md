@@ -409,10 +409,24 @@ Feature 0104 adds, inside `validation.flow`, the `heuristic` value
 `param_hint` and the `sinks` key, both optional; Go stores and serves them
 with the blob, with no backend change.
 
+Feature 0105 adds AST rows of `cwe.injection.sql` (CWE-89), a check id the
+layer feeds at command-keyed calls but does not own: the regex body still runs
+on every line (and emits it wherever it matches), and an AST row stands only at
+a call no regex CWE-89 row covers. Such a row carries `validation.ast` and
+`validation.flow` (family `command`), `sinks` on a group row and, when one
+applies, a `heuristic` of `param_hint` or the new value `statement_param`. Like
+an AST CWE-78 row, it also carries `evidence_quote` (the sink line) and none of
+the regex row's `verification_hints` or `requires_context`, so rows of one
+check id differ in those optional fields by tier. No field changes shape, and
+Go stores and serves the `validation` keys with the blob, so the wire needs no
+backend change. The backend change 0105 carries is the lineage guard's, which
+now holds CWE-89 rows too (below); beside an older agent, which sends no AST
+CWE-89 row, it holds only regex ones.
+
 | Field | Direction / where | Shape | Absent means |
 |---|---|---|---|
-| `validation.ast` | agent → Go → storage / API, a top-level key of a finding's `validation` blob | object `{engine, grammar, model_schema}`: `"ast"`; the grammar stamp of the file's model, `<module>.<entry point>@<version>` (`tree_sitter_typescript.language_typescript@0.23.2`); the file-model schema, an int (`2`) | The row is not an AST-tier row: a regex-tier row (a check id the layer does not own, or a file it fell back on), another agent's row, or an older agent. This key is how a reader tells the two tiers apart. A top-level key, never a `checks[]` entry, so no voter reads it. The agent's validate stage keeps it when it rebuilds the blob, and Go stores and serves the blob whole, so it persists with no backend change. |
-| `validation.flow` | same blob, beside `validation.ast` | object `{family, origins, via, guards, hops, truncated, heuristic?, sinks?}`: `family` is `path`, `request` or `command`; `origins` the flow's origins rendered and sorted (`external:request`, `external:param_hint`, `unknown:param`); `via` the sanitiser roles the value passed, sorted; `guards` the roles of the guards examined, sorted; `hops` at most 8 `{line, kind, name}` from the source side, `kind` one of `param`, `member`, `assign`, `call`, `return`, `loop`, `catch`, `sink`; `truncated` true when hops were cut; `heuristic` a named heuristic's token, or `param_hint`; `sinks` (feature 0104) an array of 2 to 64 ints, sorted, the first the row's own `line_start` | As for `validation.ast`. `heuristic` is present only on a row a named heuristic reported (`"command_param"`, the CWE-78 command parameter heuristic, see the CWE agent's `SKILLS.md`) or, from feature 0104, on a row whose only external origin is the parameter-name hint (`"param_hint"`; a row with the hint and any other external origin carries none); absent, the row is a data-flow report. `sinks` is present only on a group row (feature 0104): one CWE-22 or CWE-78 row standing for a file's hint-only rows of that check id, listing their sink lines, with a description naming their count; absent, the row stands for its own line only. A file with more than 64 such rows keeps them apart, so no `sinks_truncated` key is sent. A reader that ignores `sinks` sees the anchor row alone. A hop `name` is an identifier of at most three `.`-joined segments; a literal subscript key or command flag is shown as `<index>` / `<flag>`, anything else as `<expr>`, so no source literal value reaches the wire. |
+| `validation.ast` | agent → Go → storage / API, a top-level key of a finding's `validation` blob | object `{engine, grammar, model_schema}`: `"ast"`; the grammar stamp of the file's model, `<module>.<entry point>@<version>` (`tree_sitter_typescript.language_typescript@0.23.2`); the file-model schema, an int (`2`) | The row is not an AST-tier row: a regex-tier row (a check id the layer does not own, or a file it fell back on; from feature 0105 a parsed file can hold `cwe.injection.sql` rows of both tiers, and only the AST tier's carry the key), another agent's row, or an older agent. This key is how a reader tells the two tiers apart. A top-level key, never a `checks[]` entry, so no voter reads it. The agent's validate stage keeps it when it rebuilds the blob, and Go stores and serves the blob whole, so it persists with no backend change. |
+| `validation.flow` | same blob, beside `validation.ast` | object `{family, origins, via, guards, hops, truncated, heuristic?, sinks?}`: `family` is `path`, `request` or `command` (an AST `cwe.injection.sql` row's is `command`, feature 0105); `origins` the flow's origins rendered and sorted (`external:request`, `external:param_hint`, `unknown:param`); `via` the sanitiser roles the value passed, sorted; `guards` the roles of the guards examined, sorted; `hops` at most 8 `{line, kind, name}` from the source side, `kind` one of `param`, `member`, `assign`, `call`, `return`, `loop`, `catch`, `sink`; `truncated` true when hops were cut; `heuristic` a named heuristic's token, or `param_hint`; `sinks` (feature 0104) an array of 2 to 64 ints, sorted, the first the row's own `line_start` | As for `validation.ast`. `heuristic` is present only on a row a named heuristic reported (`"command_param"`, the CWE-78 command parameter heuristic, see the CWE agent's `SKILLS.md`; from feature 0105 `"statement_param"`, the same heuristic on a `cwe.injection.sql` row, at a call whose argument is SQL statement text) or, from feature 0104, on a row whose only external origin is the parameter-name hint (`"param_hint"`, on a `cwe.injection.sql` row too from feature 0105; a row with the hint and any other external origin carries none); absent, the row is a data-flow report. Go neither reads nor enumerates the tokens, so an older backend stores and serves `statement_param` as it does the others. `sinks` is present only on a group row (feature 0104): one CWE-22 or CWE-78 row, or from feature 0105 an AST `cwe.injection.sql` row (its members are the AST tier's rows of that check id only, but a regex `cwe.injection.sql` row in the same file has the group row's category, title and file, so the validate stage restores the members' rows and rolls them up with it: such a group row reaches Go only from a file with no regex CWE-89 row), standing for a file's hint-only rows of that check id, listing their sink lines, with a description naming their count; absent, the row stands for its own line only. A file with more than 64 such rows keeps them apart, so no `sinks_truncated` key is sent. A reader that ignores `sinks` sees the anchor row alone. A hop `name` is an identifier of at most three `.`-joined segments; a literal subscript key or command flag is shown as `<index>` / `<flag>`, anything else as `<expr>`, so no source literal value reaches the wire. |
 | `ast_coverage` | agent → Go, top level of the `result` snapshot | object, keys sorted at every level: `files` `{parsed, fallback, fallback_keys, fallback_paths, fallback_paths_truncated, breaker_tripped}`; `grammars` (language → grammar stamp); `declines` `{count, by_rule, capped_rules}`; `tallies` (`unknown_only_sinks`, `origin_overflow`, `summary_cap`, `args_capped`, `chain_truncated`, `words_capped`, and when non-zero `env_only_sinks`, `role_filtered_sinks`, `branch_depth`; `cache` `{hits, misses, evictions}`; `unmapped_kinds` per language); `workers` `{count, recycled, breaker_tripped}` | An older agent. Go then applies no AST lineage guard (the pre-0102 behaviour). Every agent on a 0102 runner sends it; one that does not use the layer sends zero counts. An older backend ignores it. Go keeps it raw and reads only `files.fallback_keys` and `files.breaker_tripped`, in the lineage pass; it is not stored on the audit row. |
 
 **`ast_coverage.files`.** `parsed` counts the files the layer owned.
@@ -431,26 +445,38 @@ rendered root-relative in printable ASCII and cut at 200 characters, with
 signal; `workers.breaker_tripped` mirrors it.
 
 **What the lineage guard reads.** A CWE-22/918/78 finding the AST tier
-produced is deterministic-tier, so a scan that no longer reports it would close
-it as fixed. When its file falls back to the regex tier, that silence proves
-nothing, so the lineage pass holds such rows `unconfirmed`, never `fixed`: every
-deterministic row in those three categories when `files.breaker_tripped` is
-true, else each one whose root-relative file is in `files.fallback_keys` (never
-the lossy `fallback_paths`). A lineage row carries no check id, so a regex-tier
-row in those categories on a fallback file is held too, which never
-false-closes and settles on the next scan that parses the file. Both members are always present on a current agent, as `[]`
-and `false` when empty. A present `ast_coverage` whose `files` lacks either,
-or carries `null`, a wrong type, or an absolute, empty, `.` or `..`-escaping
-key, is unreadable and holds every such row; so does a result with
-`ast_coverage` but no `result_schema >= 2`, which leaves no scan offset to
-place keys by. An absent `ast_coverage` is no guard. The backend carrying this
-guard must be deployed before agents that carry the AST layer.
+produced, and from feature 0105 a CWE-89 one (it stands only at a call no regex
+CWE-89 row covers), is deterministic-tier, so a scan that no longer reports it
+would close it as fixed. When its file falls back to the regex tier, which
+cannot reproduce such a row, that silence proves nothing, so the lineage pass
+holds such rows `unconfirmed`, never `fixed`: every deterministic row in those
+four categories when `files.breaker_tripped` is true, else each one whose
+root-relative file is in `files.fallback_keys` (never the lossy
+`fallback_paths`). A lineage row carries no check id, so a regex-tier row in
+those categories on a fallback file is held too, which never false-closes and
+settles on the next scan that parses the file (on a file that keeps falling
+back, such a row stays `unconfirmed`, even after its code is fixed). For
+CWE-89, which the regex body scans on every file, that over-hold reaches each
+regex CWE-89 row a scan stopped reporting on a fallback file and, on a tripped
+breaker, every deterministic CWE-89 row of the agent the scan stopped
+reporting. Both members are always present on a current agent, as `[]` and
+`false` when empty. A present `ast_coverage` whose `files` lacks either, or
+carries `null`, a wrong type, or an absolute, empty, `.` or `..`-escaping key,
+is unreadable and holds every such row; so does a result with `ast_coverage`
+but no `result_schema >= 2`, which leaves no scan offset to place keys by. An
+absent `ast_coverage` is no guard. The backend carrying this guard must be
+deployed before agents that carry the AST layer, and one that holds CWE-89
+before agents that carry feature 0105: an older backend closes a file's CWE-89
+lineage row as `fixed` when the file falls back, unless the scan still reports
+a regex CWE-89 row in that file, and the lineage row reopens as `regression`
+once the file parses again. A backend that holds CWE-89 beside an older agent
+receives no AST CWE-89 row, so it holds only regex ones, the over-hold above.
 
 **Lineage across AST rule changes (operators).** The guard above covers a file
 that changes tier, not a rule that changes between releases. An AST rule
 change moves deterministic rows with no change of file, so expect, on the
-first scan of an existing target after upgrading (feature 0104 is such a
-release):
+first scan of an existing target after upgrading (features 0104 and 0105 are
+such releases):
 
 * A CWE-22, CWE-78 or CWE-918 row the new rules no longer report closes as
   `fixed` under `VULTURE_LINEAGE_FIX_MODE=evidence` (the default). Reverting
@@ -467,29 +493,58 @@ release):
   an AST row there in the cross-agent merge, so it may persist on its own
   where the AST row used to win; at the anchor line another agent's more
   severe LLM row takes the whole group's place.
+* Feature 0105 also moves rows between categories, and its effect is per file:
+  a lineage key carries no line, and an AST `cwe.injection.sql` row has the
+  regex CWE-89 row's check id, title and category, so a file's CWE-89 rows of
+  both tiers share one lineage row. A file's CWE-78 lineage row closes as
+  `fixed` when its last CWE-78 row goes: a re-labelled call's, whose CWE-89 row
+  (another check id and category, so another lineage row) joins the file's
+  CWE-89 lineage row, opening one only where the file had no CWE-89 row of
+  either tier and reopening it as `regression` where it was closed `fixed`; or,
+  with no successor, a regex look-alike's, or one fed only by a parameter, a
+  program's own arguments or the parameter-name hint at an unproven `system`
+  call or a newly recognised data store (`tx`, a declared type, a bound call).
+  A row the rules now add joins the file's lineage row of its category, opening
+  one where the file had none and reopening it as `regression` where it was
+  closed `fixed`: a CWE-89 row at a data-store call fed by a real external
+  origin; a CWE-78 row at a call whose process evidence outranks a data-store
+  or regex receiver; and a row at a receiver bound to a regex on some paths
+  only, or whose bindings are undecided, which earlier versions read as a regex
+  receiver (CWE-78, or CWE-89 at statement text when its bindings are decided),
+  where nothing was reported before. Reverting the release reopens a closed
+  CWE-78 lineage row as `regression`, and closes the CWE-89 one as `fixed` only
+  when no regex CWE-89 row remains in the file. The validate stage's rollup
+  parents (`catalog_rollup`, one wherever two or more rows share a category,
+  title and file) follow the row sets: a CWE-78 parent closes as `fixed` when
+  fewer than two rows of its category, title and file remain, and a CWE-89
+  parent opens where a file's CWE-89 rows of one title reach two (an AST row
+  beside a regex one, or two AST rows).
 
 **Decline lines.** The layer suppresses a finding only by its own decline: a
 flow whose external origins all passed a covering sanitiser, or that a guard
 covering the family protects, or (feature 0104; CWE-22 in JavaScript and
 TypeScript) an existence probe whose argument is a parameter the name hint
-alone sources. Each decline is streamed as a `thinking` event
-after the skill phase, and every audit then streams exactly one summary line,
-0 declines included:
+alone sources. Since feature 0105 a command call's class also drops flows, with
+no decline line and no tally: at a data-store call or an unproven `system` call
+a flow with no real external origin reaches neither command rule and is never
+decided. Each decline is streamed as a `thinking` event after the skill phase,
+and every audit then streams exactly one summary line, 0 declines included:
 
 ```
 ast_decline family=path file=src/files.py line=7 rule=sanitized:path_normalize origins=external:request
 ast_decline_summary declines=<count> shown=<lines shown> capped=<comma-joined capped rules, or ->
 ```
 
-`rule` is the decline label, `sanitized:<roles>`, `guarded:<role>` or
-`probe:param_hint`; `file`
-is rendered like `fallback_paths`. At most 50 lines are kept per label (the
-lexicographically smallest, so the set does not depend on thread order);
-`declines` counts every decline, kept or not, and a label past the cap is named
-in `capped`. They are progress text: Go forwards them as
-`TextMessageContent` and never parses them, nothing is persisted, and a decline
-is never a `false_positive` label or a `checks[]` entry. An older agent does
-not write them.
+`family` is the family of the rule the flow was decided for, so from feature
+0105 a `family=command` line may be a CWE-89 flow's (at a statement-text or
+data-store call). `rule` is the decline label, `sanitized:<roles>`,
+`guarded:<role>` or `probe:param_hint`; `file` is rendered like
+`fallback_paths`. At most 50 lines are kept per label (the lexicographically
+smallest, so the set does not depend on thread order); `declines` counts every
+decline, kept or not, and a label past the cap is named in `capped`. They are
+progress text: Go forwards them as `TextMessageContent` and never parses them,
+nothing is persisted, and a decline is never a `false_positive` label or a
+`checks[]` entry. An older agent does not write them.
 
 ### Health Check
 
