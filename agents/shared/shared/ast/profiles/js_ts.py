@@ -121,6 +121,7 @@ JAVASCRIPT = LanguageProfile(
     browser_capable=True,
     arm_types=frozenset(_ARMS),
     export_chains=_COMMONJS,
+    value_imports=True,
 )
 
 TYPESCRIPT = LanguageProfile(
@@ -134,4 +135,5 @@ TYPESCRIPT = LanguageProfile(
     pruned=TYPE_ARGUMENTS,
     grammar_variants=frozen({".tsx": "language_tsx"}),
     export_chains=_COMMONJS,
+    value_imports=True,
 )

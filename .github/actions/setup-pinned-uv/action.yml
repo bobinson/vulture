@@ -61,9 +61,10 @@ runs:
         echo "version=${version}" >> "$GITHUB_OUTPUT"
         echo "resolved pinned uv version: ${version}"
 
-    # Install exactly that version. SHA-pinned (Dependabot github-actions keeps
-    # the pin current). SHA verified to upstream release tag v6.1.0.
+    # Install exactly that version. SHA-pinned and verified to upstream release
+    # tag v10.3.3 (node24 runtime). Dependabot does not scan .github/actions/,
+    # so bump this pin by hand.
     - name: Install pinned uv
-      uses: astral-sh/setup-uv@f0ec1fc3b38f5e7cd731bb6ce540c5af426746bb # v6.1.0
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       with:
         version: ${{ steps.pin.outputs.version }}

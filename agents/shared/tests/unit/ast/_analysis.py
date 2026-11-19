@@ -468,6 +468,7 @@ class StubRule:
     cwe_id: str
     gate: Callable[[Any, bool], bool] | None = None
     heuristic: Callable[[Any], str | None] | None = None
+    accepts: Callable[[Any], bool] | None = None
 
 
 def stub_rule(

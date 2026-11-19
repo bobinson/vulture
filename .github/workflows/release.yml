@@ -56,13 +56,13 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # Must match ci.yml's NODE_VERSION and frontend/package.json engines.
+          # Must match ci.yml's NODE_VERSION and satisfy frontend/package.json engines.
           # The frontend's devDependencies (jsdom 30 -> undici 8) require Node
           # >= 22.19; building the release on 20 built it on a runtime CI never
           # exercises. Vite itself was fine on 20, so this is alignment, not a
           # bug fix — but a release artifact should come off the runtime its
           # tests ran on.
-          node-version: '22'
+          node-version: '24'
           # No dependency cache in a release build: a restored cache is an
           # input no review saw, and this job's output is signed.
           package-manager-cache: false
@@ -239,7 +239,7 @@ jobs:
       # lockfile), so nothing it pulls may run where its output is signed.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           package-manager-cache: false
       - name: audit-ci (npm advisories, gating)
         working-directory: frontend

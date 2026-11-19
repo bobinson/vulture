@@ -33,6 +33,7 @@ __all__ = [
     "COLLECTION_WORDS",
     "COMMAND_BUILDER_WORDS",
     "COMMAND_CARRIER_WORDS",
+    "COMMAND_RECEIVER_BOUND_KEYS",
     "COMMAND_RECEIVER_WORDS",
     "COMMAND_STRONG",
     "COMMAND_WEAK",
@@ -174,14 +175,22 @@ COLLECTION_WORDS = frozenset({"map", "set", "dict", "list", "array"})
 
 # ── command: regex and data-store receivers, process evidence (A44 (1) (c)) ──
 
-# A receiver whose words carry a data-store concept runs a statement, not a process
-# (`db.exec(sql)`, Go `db.Exec`, `conn.exec_driver_sql`): no command key makes it a sink.
+# A receiver whose chain words, or binding on every path, carry a data-store concept runs a
+# statement, not a process (`db.exec(sql)`, Go `db.Exec`, Go `tx.Exec` on a `*sql.Tx`): a
+# command key on it is `store` (feature 0105), its flows with a real external origin
+# re-labelled to CWE-89 and the rest dropped (0105 E4), unless process evidence or a regex
+# receiver outranks it.
 DATA_STORE_WORDS = frozenset({
     "db", "database", "sql", "statement", "stmt", "query", "cursor", "conn", "connection",
+    # a transaction runs statements
+    "tx", "txn", "transaction",
 })
 # A regex construction's callee chain carries one of these, by a word or glued (`new
 # RegExp(...)` -> regexp, `re.compile`, `Pattern.compile`, Go `regexp.MustCompile`): a
-# receiver bound to one, or to a regex literal, matches text and runs no command.
+# receiver bound to one, or to a regex literal, on every path (0105 E3) matches text and runs
+# no command, unless process evidence outranks it (0105 E2). So does a receiver named for one
+# (0105 WS-C): its last identifier, glued (`RegExp`), or its head word, that identifier's last
+# word (`entry.regex`, `cfg.routeRegex`; never `reRun`), is one of these.
 REGEX_WORDS = frozenset({"regexp", "regex", "pattern", "re"})
 # R-N's prefix reaches a single-word identifier only (`execa`, `execvp`). A multi-word one
 # (`execSync`, `runCommandWithTimeout`) reaches a command key only through leading words that
@@ -204,6 +213,11 @@ COMMAND_RECEIVER_WORDS = frozenset({
     "subprocess", "child", "process", "proc", "os", "shell", "sh", "cmd", "command", "exec",
     "spawn", "system", "pty", "ssh", "client",
 })
+# 0105 WS-D: a process key that is also a plain noun: on a value receiver it names a process
+# API only with command evidence. With none (`palette.system(text)`) the call is
+# `unproven`: only its flows with a real external origin stay CWE-78. A bare call or a
+# namespace receiver (`std::system`) stays a process.
+COMMAND_RECEIVER_BOUND_KEYS = frozenset({"system"})
 # R-V (L7): a builder-chain call on a COMMAND_CARRIER_WORDS receiver chain.
 COMMAND_BUILDER_WORDS = frozenset({
     "arg", "args", "env", "spawn", "output", "status", "exec", "run", "start", "wait",

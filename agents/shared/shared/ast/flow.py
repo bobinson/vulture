@@ -39,9 +39,11 @@ consumer's file through ``ctx.decline``) or ``none``; ``covered`` reads ``COVERE
 rule's named heuristic (``FamilyRule.heuristic``, D25, A42 (1)) is asked there, for a flow
 with no external origin, and ``named_heuristic`` is that one question, which the finding asks
 again to name what ``decide`` acted on. A ``command`` flow carries the heuristic's per-flow
-facts (``Flow.shell_sink``, ``built_arg``, ``builtin_program``, ``param_bound``; A43 (1)), set
-here as each flow is built (the shared ``True``/``False``, so they add nothing to a footprint
-but the record's slots). A ``path`` flow carries ``Flow.bare_path_arg`` (0104 WS-C, §4.3), set
+facts (``Flow.shell_sink``, ``built_arg``, ``builtin_program``, ``param_bound``; A43 (1)) and
+its sink's class (``Flow.command_class``: ``""``, ``unproven``, ``text`` or ``store``; feature
+0105, LLD §4.4), set here as each flow is built (shared constants, so they add nothing to a
+footprint but the record's slots); a rule's ``accepts`` reads the class, before ``decide``
+(``consume``). A ``path`` flow carries ``Flow.bare_path_arg`` (0104 WS-C, §4.3), set
 here before the flow's key is built and part of it: a flow carrying it at an existence probe
 with only R-T's hint as external origin declines ``probe:param_hint`` (OD-12).
 Every §9.1 table, ``COVERED_BY`` and ``COVERING_GUARDS`` included, is imported from ``roles``, never
@@ -447,7 +449,9 @@ class _Passes:
     def _flow(self, ctx: int, family: str, key: _Key) -> Flow:
         site, arg, origins, filtered_roles, bare = key
         hops, truncated = self.hops.of(ctx, arg, site)
-        shell_sink, built_arg, builtin_program = self._command_facts(family, site, arg)
+        shell_sink, built_arg, builtin_program, command_class = self._command_facts(
+            family, site, arg
+        )
         return Flow(
             family=family,
             sink=site,
@@ -464,17 +468,32 @@ class _Passes:
             built_arg=built_arg,
             builtin_program=builtin_program,
             bare_path_arg=bare,
+            command_class=command_class,
+            arg_span=self._m.span(arg),
+            program_span=self._program_span(family, site),
         )
 
-    def _command_facts(self, family: str, site: int, arg: int) -> tuple[bool, bool, bool]:
+    def _program_span(self, family: str, site: int) -> tuple[int, int] | None:
+        """``Flow.program_span`` (feature 0105, LLD §4.4): the span of a ``command`` flow's
+        sink's program argument (``Calls.program_arg``), the node WS-S reads; None for any
+        other family, and for a call with nothing there, which ``Calls._command_args`` never
+        gives a command flow."""
+        if family not in COMMAND:
+            return None
+        program = self.engine.calls.program_arg(site)
+        return self._m.span(program) if program >= 0 else None
+
+    def _command_facts(self, family: str, site: int, arg: int) -> tuple[bool, bool, bool, str]:
         """D25 (b) (A42 (1), A43 (1)): whether the sink shells the argument, whether it is
         built and whether it is a profile builtin's whole command — a ``command`` flow's three
-        per-argument facts (``Calls.shell_arg``, ``built``, ``builtin_program``); False for any
+        per-argument facts (``Calls.shell_arg``, ``built``, ``builtin_program``) — and its
+        sink's class (``Calls.flow_class``; feature 0105, LLD §4.4); False and ``""`` for any
         other family."""
         if family not in COMMAND:
-            return False, False, False
+            return False, False, False, ""
         calls = self.engine.calls
-        return calls.shell_arg(site, arg), calls.built(arg), calls.builtin_program(site, arg)
+        shell, built = calls.shell_arg(site, arg), calls.built(arg)
+        return shell, built, calls.builtin_program(site, arg), calls.flow_class(site)
 
 
 

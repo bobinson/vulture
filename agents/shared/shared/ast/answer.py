@@ -13,14 +13,18 @@ audit-independent (D8), so an answer is cached across audits as a model is (``ca
   the answer document ``{schema, language, grammar, size, error_nodes, unmapped, tallies,
   analysis_tallies, families: {family: [flow, ...]}}``. A flow is a JSON object keyed by the
   ``Flow`` field names: ``origins`` a sorted list of ``[cls, role, [via...]]``, ``hops`` of
-  ``[line, kind, name]``, ``guards`` of ``[node, [roles...]]``, ``span`` ``[start, end]``,
-  ``filtered_roles`` sorted. A model with an ERROR node ships no analysis: no consumer reads it.
+  ``[line, kind, name]``, ``guards`` of ``[node, [roles...]]``, ``span`` and ``arg_span``
+  (feature 0105, LLD §4.4) ``[start, end]``, ``program_span`` (feature 0105, LLD §4.4)
+  ``[start, end]`` or ``null`` (the one nullable field), ``filtered_roles`` sorted. A model
+  with an ERROR node ships no analysis: no consumer reads it.
 * ``validate_answer`` (D3', the parent's side) bounds what a forged answer can reach to what a
   validated skeleton reaches (§11 T10, T11). The answer is bound to its request (language, the
   stamp of its entry point, size, ``ANSWER_SCHEMA``); every vocabulary is closed (families the
   profile owns, origin classes, §8.1 roles and reasons, sanitiser and guard roles, §8.6 hop
-  kinds, the tally names ``coverage`` defines); every name obeys D16; every line lies within
-  the shipped text's ``\\n`` lines, every span within its bytes, every node id below
+  kinds, a command flow's class (``""``, ``unproven``, ``text``, ``store``; feature 0105, LLD
+  §4.4), the tally names ``coverage`` defines); every name obeys D16; every line lies within
+  the shipped text's ``\\n`` lines, every span within its bytes (``program_span`` may be
+  ``null``, no other field), every node id below
   ``MAX_NODES``; at most ``MAX_ORIGINS`` origins and ``MAX_HOPS`` hops; counts are never
   negative; ints and bools are of their JSON type. Anything else is ``ModelError``
   (``bad_model``). Records are built after their check, through ``_records``' shared
@@ -54,8 +58,11 @@ from shared.ast._records import (
     FLAG,
     HOP_KINDS,
     INDEX,
+    STORE,
+    TEXT,
     UNKNOWN,
     UNKNOWN_REASONS,
+    UNPROVEN,
     Flow,
     Guard,
     Hop,
@@ -222,6 +229,8 @@ _ROLES = spelled(frozenset().union(
     CONTAINMENT_ROLES, *GUARD_OPERATORS.values(), *COVERED_BY.values(), *COVERING_GUARDS.values(),
 ))
 _HOP_KINDS = spelled(HOP_KINDS)
+# What a flow's ``command_class`` may be (feature 0105, LLD §4.4).
+_COMMAND_CLASSES = spelled(("", UNPROVEN, TEXT, STORE))
 _PLACEHOLDERS = frozenset({INDEX, FLAG})
 # §10.2: the per-file fact counts a model carries, and those its analysis carries (A28 (3)).
 _MODEL_TALLIES = frozenset({ARGS_CAPPED, CHAIN_TRUNCATED, WORDS_CAPPED})
@@ -288,9 +297,29 @@ def _span(value: Any, bounds: _Bounds) -> tuple[int, int]:
     return start, end
 
 
+def _span_or_none_doc(span: tuple[int, int] | None) -> list[int] | None:
+    """An optional span's wire form (``Flow.program_span``; feature 0105, LLD §4.4): ``[start,
+    end]``, or ``null`` for none."""
+    return None if span is None else list(span)
+
+
+def _span_or_none(value: Any, bounds: _Bounds) -> tuple[int, int] | None:
+    """``null`` as None (none recorded), else a span within the shipped bytes (``_span``;
+    feature 0105, LLD §4.4)."""
+    return None if value is None else _span(value, bounds)
+
+
 def _flag(value: Any, _bounds: _Bounds) -> bool:
     require(type(value) is bool, "flag")
     return value
+
+
+def _command_class(value: Any, _bounds: _Bounds) -> str:
+    """``""``, ``unproven``, ``text`` or ``store``, as the shared spelling (feature 0105, LLD
+    §4.4)."""
+    name = _named(value, _COMMAND_CLASSES)
+    require(name is not None, "command class")
+    return name  # type: ignore[return-value]
 
 
 def _roles(value: Any, vocabulary: Mapping[str, str]) -> frozenset[str]:
@@ -421,6 +450,9 @@ _CODECS: Mapping[str, _Codec] = MappingProxyType({
     "param_bound": _Codec(_as_is, _flag),
     "builtin_program": _Codec(_as_is, _flag),
     "bare_path_arg": _Codec(_as_is, _flag),
+    "command_class": _Codec(_as_is, _command_class),
+    "arg_span": _Codec(list, _span),
+    "program_span": _Codec(_span_or_none_doc, _span_or_none),
 })
 # The one field list (D19), in the record's order: a ``Flow`` field with no codec fails here,
 # at import, never on the wire.

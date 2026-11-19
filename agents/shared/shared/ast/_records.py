@@ -37,9 +37,12 @@ __all__ = [
     "OVERFLOW",
     "PARAM",
     "PARAM_HINT_ROLE",
+    "STORE",
+    "TEXT",
     "TOP",
     "UNKNOWN",
     "UNKNOWN_REASONS",
+    "UNPROVEN",
     "Flow",
     "Guard",
     "Hop",
@@ -50,6 +53,7 @@ __all__ = [
     "has_external",
     "hint_only",
     "only",
+    "real_external",
     "role_set",
     "unknown",
 ]
@@ -140,6 +144,18 @@ def hint_only(origins: Origins) -> bool:
     return {o.role for o in externals(origins)} == _HINT_ONLY
 
 
+def real_external(origins: Origins) -> bool:
+    """0105 E4: ``origins`` hold a real external origin, an external origin whose role is not
+    R-T's hint; a set whose every external origin is the hint (``hint_only``) holds none.
+    A parameter or a JS/Python ``argv`` (``unknown``) is none either."""
+    return has_external(origins) and not hint_only(origins)
+
+
+# A command site's class as its flows carry it (``Flow.command_class``; feature 0105, LLD
+# §4.4), beside ``""`` (a process, a builtin, every other family).
+UNPROVEN, TEXT, STORE = "unproven", "text", "store"
+
+
 # §8.6: a hop's kinds, and the placeholders of a hop's name (A30 (2)): a segment is a D16
 # identifier, ``INDEX`` (an M1 subscript key) or ``FLAG`` (an M4 literal); a name that cannot be
 # so spelled is ``EXPR`` whole.
@@ -189,7 +205,29 @@ class Flow:
     ``PROBE_HINT_LANGUAGES`` file (JavaScript, TypeScript; False in every other language)
     whose argument is an entry's hinted parameter itself (``Params.hinted_itself``). Part of
     the flow's key, so a summary flow with the same origins stays a flow of its own; ``decide``
-    declines a flow carrying it ``probe:param_hint`` (OD-12)."""
+    declines a flow carrying it ``probe:param_hint`` (OD-12).
+
+    ``command_class`` (feature 0105, LLD §4.4), the class of a ``command`` flow's sink
+    (``Calls.flow_class``): ``UNPROVEN``, ``TEXT`` or ``STORE``, else ``""`` (a process, a
+    builtin, every other family). Read only by a rule's ``accepts`` (``consume``), which sends
+    the flow to the rule that reports it, if any.
+
+    ``arg_span`` (feature 0105, LLD §4.4), ``arg``'s byte span, as ``span`` is the sink's: the
+    lines a statement sink's argument is written on (``consume.argument_lines``), which the
+    CWE-89 cover test reads where ``span``'s lines hold the whole call, a callback body and
+    later arguments included (feature 0105, LLD §4.6). Every flow the flow pass builds, and
+    every flow an answer carries, has it; None (the default) is a flow built without it, a test
+    double, whose argument lines are read as its whole sink span's, the lines read before the
+    field.
+
+    ``program_span`` (feature 0105, LLD §4.4), set for a ``command`` flow only: the byte span
+    of its sink's program argument (``Calls.program_arg``), the node the classifier reads
+    statement text from (WS-S), whichever argument ``arg`` is; for a hoisted NAME the NAME at
+    the sink, never its Def. The CWE-89 cover test reads its lines with the argument's
+    (``consume.argument_lines``), so a statement built in the program argument counts although
+    no reported flow reads it (feature 0105, LLD §4.6). None for every other family, for a call with
+    nothing at the program position (never a command flow the flow pass builds) and for a test
+    double; on the wire the one nullable field."""
 
     family: str
     sink: int
@@ -207,3 +245,6 @@ class Flow:
     param_bound: bool = False
     builtin_program: bool = False
     bare_path_arg: bool = False
+    command_class: str = ""
+    arg_span: tuple[int, int] | None = None
+    program_span: tuple[int, int] | None = None

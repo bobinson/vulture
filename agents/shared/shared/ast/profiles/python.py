@@ -129,4 +129,5 @@ PYTHON = LanguageProfile(
     builtin_sinks=frozen(pair("os", "replace", EVERY_ARG_PATH)),
     arm_types=frozenset(_ARMS),
     public_name=_public,
+    value_imports=True,
 )

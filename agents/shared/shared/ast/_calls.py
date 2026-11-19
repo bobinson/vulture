@@ -21,7 +21,13 @@ needs — never an origin, so every answer is the same in every summary context:
 * the command parameter heuristic's three facts of a command sink argument (D25, A42 (1),
   A43 (1)), read off the same command row: whether the sink shells it (``shell_arg``), whether
   it is built (``built``) and whether it is the whole command of a profile builtin
-  (``builtin_program``).
+  (``builtin_program``);
+* a PARAM's annotation words (``annotation_words``: its decorator and default-call words and
+  its type words, R-D, W4, each with an import binding's symbol, R-H), which ``Params`` reads
+  too (feature 0105, LLD §4.3: moved from ``Params``);
+* a command site's class (feature 0105, LLD §4.1; ``command_class``: the first ``_CLASS_RULES``
+  row whose test holds, ``process`` when none does) and the class its flows carry
+  (``flow_class``).
 
 The source half of L6 (R-U, ``SOURCE_CALL_KEYS``, the accessor shape) is ``_params`` and
 ``_origins``'s: a sink here is a sink unless a source read pre-empts it there. ``call_writes``
@@ -53,11 +59,13 @@ from shared.ast._nodes import (
     named,
     of_kind,
     parsed_buffer,
+    preorder,
     unawaited,
 )
+from shared.ast._records import STORE, TEXT, UNPROVEN
 from shared.ast._validate import IDENTIFIER, OTHER_LITERAL_CLASS
 from shared.ast.kinds import Field, Kind
-from shared.ast.limits import MAX_ARG_NAMES, MAX_CHAIN
+from shared.ast.limits import MAX_ARG_NAMES, MAX_CHAIN, MAX_SPINE, MAX_STATEMENT_HEAD
 from shared.ast.model import NO_LITERAL
 from shared.ast.profile import PROFILES
 from shared.ast.profiles import EMPTY_MAP, FAMILIES, Builtin, Positions
@@ -66,6 +74,7 @@ from shared.ast.roles import (
     BUILDER_ARG_KEYS,
     COLLECTION_WORDS,
     COMMAND_BUILDER_WORDS,
+    COMMAND_RECEIVER_BOUND_KEYS,
     COMMAND_RECEIVER_WORDS,
     COMMAND_STRONG,
     COMMAND_WEAK,
@@ -112,7 +121,9 @@ from shared.ast.roles import (
     word_set,
     words,
 )
+from shared.ast.roles._words import word_count
 from shared.ast.scope import bound_source, import_call, module_of
+from shared.ast.sql_shape import opens_one_statement, statement_head
 
 if TYPE_CHECKING:
     from shared.ast.model import FileModel
@@ -124,6 +135,7 @@ __all__ = ["FAMILIES", "Calls", "call_writes"]  # FAMILIES: v1's three (§8.3), 
 # no sink or no method): every answer is memoised per site, so a fresh empty one each time
 # would be kept once per call.
 _NONE: tuple[int, ...] = ()
+_UNANNOTATED = (NO_WORDS, NO_WORDS)
 # R-F: the receiver NAMEs a method call through the enclosing class is made on (syntax, not
 # lexicon: `this.m()`, `self.m()`, `cls.m()`).
 _SELF_RECEIVERS = frozenset({"this", "self", "cls"})
@@ -152,6 +164,16 @@ _BUILT = frozenset({Kind.BINOP, Kind.TEMPLATE})
 # The ``_of_function`` group of the local calls (no family is named so).
 _LOCAL_CALLS = "local calls"
 _LITERAL_TRUE = "true"
+# The class of a command site that runs a process, or that no evidence takes from one
+# (``Calls.command_class``; feature 0105, LLD §4.1); the other classes are ``_records``'. A flow
+# carries its site's class only when it is one of those (``Calls.flow_class``): ``""`` for a
+# process.
+PROCESS = "process"
+_FLOW_CLASSES = frozenset({UNPROVEN, TEXT, STORE})
+# WS-S (feature 0105, LLD §3.3): command evidence's concept words
+# (``Calls._command_evidence``). Wider than E2's ``PROCESS_WORDS``: they are read only after the
+# data-store row, so ``client`` and ``exec`` never make ``dbClient.exec`` a process call again.
+_COMMAND_EVIDENCE_WORDS = PROCESS_WORDS | COMMAND_RECEIVER_WORDS
 # Every profile's builtin sink keys that name a family (a ``NO_FAMILY`` shadow names none).
 _FAMILY_BUILTINS = frozenset(
     key for p in PROFILES.values() for key, b in p.builtin_sinks.items() if b.families
@@ -192,6 +214,14 @@ def _first_child(model: FileModel, node: int) -> int:
 # A44 (1) (c): an identifier carrying a ``REGEX_WORDS`` concept, by a word or glued (``RegExp``
 # -> ``regexp``).
 _regex_name = partial(named_by, lexicon=REGEX_WORDS)
+
+
+def _head_word(name: str) -> str:
+    """0105 WS-C: the last word of ``name``, its head noun (``routeRegex`` -> ``regex``,
+    ``reRun`` -> ``run``); ``""`` past ``MAX_WORDS`` words, where ``words`` stops short of
+    the last one (E5: undecided)."""
+    found = words(name)
+    return found[-1] if found and word_count(name) == len(found) else ""
 
 
 def _leading_name(model: FileModel, nodes: Sequence[int]) -> int:
@@ -443,6 +473,13 @@ def _by_family(found: Iterable[tuple[str, tuple[int, ...]]]) -> Mapping[str, tup
     return MappingProxyType(sinks) if sinks else EMPTY_MAP
 
 
+def _decided(values: Sequence[int | None]) -> tuple[int, ...] | None:
+    """0105 E5: a NAME's reaching Defs' ``values`` when they are decided — at least one, at
+    most ``MAX_ARG_NAMES``, each with a value — else None (undecided: no test holds of it)."""
+    decided = 0 < len(values) <= MAX_ARG_NAMES and None not in values
+    return tuple(values) if decided else None  # type: ignore[return-value]
+
+
 def _select(args: Sequence[int], positions: Positions) -> tuple[int, ...]:
     """L9/W5: the arguments at ``positions`` (``"all"``: every positional argument)."""
     if positions == "all":
@@ -470,6 +507,7 @@ class _Facts:
     kwargs: dict[int, Mapping[str, int]] = field(default_factory=dict)
     shape: dict[int, _Shape] = field(default_factory=dict)
     chain: dict[int, frozenset[str]] = field(default_factory=dict)
+    annotations: dict[int, tuple[frozenset[str], frozenset[str]]] = field(default_factory=dict)
     local: dict[int, int] = field(default_factory=dict)
     methods: dict[int, Mapping[str, int]] = field(default_factory=dict)
     sinks: dict[int, Mapping[str, tuple[int, ...]]] = field(default_factory=dict)
@@ -477,6 +515,8 @@ class _Facts:
     builtins: dict[int, Builtin | None] = field(default_factory=dict)
     # A command site's arguments after an R-M interpreter + flag (``Calls._shelled``).
     shelled: dict[int, Sequence[int]] = field(default_factory=dict)
+    # A call's command class, None for none (``Calls.command_class``, feature 0105).
+    classes: dict[int, str | None] = field(default_factory=dict)
     # A site list's sites by nearest FUNCTION, keyed by family (``_LOCAL_CALLS``: the local
     # calls), made when a summary first asks for one function's (the base reads the whole list).
     grouped: dict[str, dict[int, list[int]]] = field(default_factory=dict)
@@ -492,6 +532,7 @@ class Calls:
         self._scope = scope
         self._builtins: Mapping[str, Builtin] = profile.builtin_sinks
         self._browser = profile.browser_capable
+        self._value_imports = profile.value_imports  # 0105 E1 (``_namespace_def``)
         self.constructors = scope.constructors
         self._facts = _Facts()
         # A Def is named by the text of a node outside every CALLEE (``_resolve``).
@@ -702,6 +743,45 @@ class Calls:
 
     def _chain_words(self, node: int) -> frozenset[str]:
         return word_set(chain_names(self._m, node))
+
+    def annotation_words(self, param: int | None) -> tuple[frozenset[str], frozenset[str]]:
+        """A PARAM's words, memoised: (decorator and default-call words, type words)."""
+        if param is None or self._m.kind(param) is not Kind.PARAM:
+            return _UNANNOTATED
+        return cached(self._facts.annotations, param, self._read_annotations)
+
+    def _read_annotations(self, param: int) -> tuple[frozenset[str], frozenset[str]]:
+        kids = self._m.children(param)  # a mark is a DECORATOR or CALL, a type a NAME or MEMBER
+        if not kids:
+            return _UNANNOTATED  # a bare identifier: no word of either
+        marks, types = self._names_where(kids, self._is_mark), self._names_where(kids, self.is_type)
+        return word_set(marks), word_set(types)
+
+    def _names_where(self, kids: Sequence[int], test: Callable[[int], bool]) -> list[str]:
+        """The NAME identifiers under each of ``kids`` that ``test`` holds for, in order."""
+        return [name for kid in kids if test(kid) for name in self.names_under(kid)]
+
+    def _is_mark(self, node: int) -> bool:
+        """A decorator, or a default-value CALL (R-D)."""
+        kind = self._m.kind(node)
+        return kind is Kind.DECORATOR or (kind is Kind.CALL and self._m.field(node) is Field.VALUE)
+
+    def is_type(self, node: int) -> bool:
+        return self._m.field(node) is Field.ANNOTATION and (
+            self._m.kind(node) in (Kind.NAME, Kind.MEMBER)
+        )
+
+    def names_under(self, node: int) -> list[str]:
+        """The NAME identifiers of a small annotation subtree (at most MAX_TEST_NODES nodes)."""
+        return [name for current in preorder(self._m, node) for name in self._symbolised(current)]
+
+    def _symbolised(self, node: int) -> Sequence[str]:
+        """A NAME's text and, when it is an import binding, its symbol (R-H: ``File(...)``)."""
+        if self._m.kind(node) is not Kind.NAME:
+            return ()
+        text = self._m.ident(node) or ""
+        symbol = self.symbol_of(node)
+        return (text, symbol) if symbol else (text,)
 
     # ── a local def wins (§8.4; R-F, R-G) ──
 
@@ -1189,6 +1269,12 @@ class Calls:
         holder = self.receiver(site)
         return holder >= 0 and self._one_hop(holder, test)
 
+    def _receiver_all(self, site: int, test: Callable[[int], bool]) -> bool:
+        """``test`` holds of the receiver on every path (``_every_hop``, 0105 E3): never for a
+        bare call, nor for a NAME receiver whose Defs are undecided (E5)."""
+        holder = self.receiver(site)
+        return holder >= 0 and self._every_hop(holder, test)
+
     def _url_pairs(self, site: int) -> Iterator[int]:
         """W10: the values of the OBJECT-literal PAIRs named like a URL, in any argument."""
         objects = of_kind(self._m, self.args(site), Kind.OBJECT)
@@ -1201,11 +1287,10 @@ class Calls:
     # ── command (§8.5; L2, L3, L7, R-L, R-M, R-N, W15 (a)) ──
 
     def _command_sink(self, site: int) -> bool:
-        """R-L (``$`` with a TEMPLATE); else, on a receiver that is no regex and no data store
-        (A44 (1) (c)), R-N (``_strong_sink``) or a weak key with a strengthener."""
-        if self._template_shell(site):
-            return True
-        return self._keyed_command(site) and not self._not_a_process(site)
+        """A command site with a class (``command_class``, feature 0105): R-L (``$`` with a
+        TEMPLATE), R-N (``_strong_sink``) or a weak key with a strengthener, unless an exit
+        takes it."""
+        return self.command_class(site) is not None
 
     def _keyed_command(self, site: int) -> bool:
         return self._strong_sink(site) or (self.key(site) in COMMAND_WEAK and self._strengthened(site))
@@ -1230,12 +1315,6 @@ class Calls:
         execSync } from "child_process"``, ``cp.execFile`` with ``const cp =
         require("child_process")``, ``from tools.process import run``)."""
         return self._evidence(site, words(self.ident(site)), PROCESS_WORDS)
-
-    def _not_a_process(self, site: int) -> bool:
-        """A44 (1) (c): the receiver is a regex — a regex literal, or a NAME one of whose
-        reaching Defs binds one or a regex construction — or its chain words carry a
-        data-store concept (``db.exec(sql)``)."""
-        return self._receiver_meets(site, DATA_STORE_WORDS) or self._receiver_is(site, self._regex)
 
     def _regex(self, node: int) -> bool:
         """A regex literal (R3's catch-all literal class, ``OTHER_LITERAL_CLASS``), or a CALL
@@ -1308,6 +1387,193 @@ class Calls:
         program = self._program(site)
         return args[program] if program < len(args) else -1
 
+    def program_arg(self, site: int) -> int:
+        """The node WS-S reads statement text from (``_statement_text``): the argument at the
+        program position (``_program_arg``), ``-1`` when the call has none there. The flow
+        pass records its span on each command flow (``Flow.program_span``; feature 0105, LLD
+        §4.4)."""
+        return self._program_arg(site)
+
+    # ── the command class (feature 0105, LLD §4.1; E2, E3, E5) ──
+
+    def command_class(self, site: int) -> str | None:
+        """The site's command class, memoised: the first ``_CLASS_RULES`` row whose test holds,
+        ``PROCESS`` when none does; None for a call that is no command site (``_command_site``)
+        or whose receiver runs no process (an exit)."""
+        return cached(self._facts.classes, site, self._classify)
+
+    def _classify(self, site: int) -> str | None:
+        if not self._command_site(site):
+            return None
+        return next((cls for test, cls in _CLASS_RULES if test(self, site)), PROCESS)
+
+    def flow_class(self, site: int) -> str:
+        """``Flow.command_class`` of every ``command`` flow at ``site`` (feature 0105, LLD
+        §4.4): the site's class when it is ``UNPROVEN``, ``TEXT`` or ``STORE``, else ``""`` (a
+        process, a builtin and none), so each flow goes to the rule E4 gives its class
+        (``consume``)."""
+        found = self.command_class(site)
+        return found if found in _FLOW_CLASSES else ""
+
+    def _command_site(self, site: int) -> bool:
+        """A command-keyed call: one whose callee fixes a process (``_fixed_process``), R-N
+        or a strengthened weak key (``_keyed_command``)."""
+        return self._fixed_process(site) or self._keyed_command(site)
+
+    def _fixed_process(self, site: int) -> bool:
+        """R-L's template shell, or a command builtin of the profile's own table: a process
+        whatever the receiver."""
+        return self._template_shell(site) or self._command_builtin(site)
+
+    def _command_builtin(self, site: int) -> bool:
+        """The site names a profile ``Builtin`` of the ``command`` family (``builtin``)."""
+        builtin = self.builtin(site)
+        return builtin is not None and "command" in builtin.families
+
+    def _process_bound(self, site: int) -> bool:
+        """E2: process evidence outranks every later row (the regex exit, the two re-labels
+        and WS-D's narrowing): ``_process_evidence``, a literal ``shell=True``, or a
+        ``PROCESS_WORDS`` word in the receiver's binding on any path (``_bound_meets``).
+        ``procDb.exec(q)`` is a process call, never a data store."""
+        evidence = self._process_evidence(site) or self._shell_true(site)
+        return evidence or self._bound_meets(site, PROCESS_WORDS)
+
+    def _bound_meets(self, site: int, lexicon: frozenset[str]) -> bool:
+        """``lexicon`` meets the receiver's binding (``_value_words``) on any path: the
+        receiver itself or one of its first ``MAX_ARG_NAMES`` Defs' values (``_receiver_is``)."""
+        return self._receiver_is(site, partial(self._meets, lexicon=lexicon))
+
+    def _bound_all(self, site: int, lexicon: frozenset[str]) -> bool:
+        """E3: ``lexicon`` meets the receiver's binding on every path (``_receiver_all``)."""
+        return self._receiver_all(site, partial(self._meets, lexicon=lexicon))
+
+    def _meets(self, node: int, lexicon: frozenset[str]) -> bool:
+        return not self._value_words(node).isdisjoint(lexicon)
+
+    def _value_words(self, node: int) -> frozenset[str]:
+        """The words a binding gives its value: a PARAM's type words (``annotation_words``), a
+        CALL's chain words (``chain_words``); none for anything else, a NAME included."""
+        kind = self._m.kind(node)
+        if kind is Kind.PARAM:
+            return self.annotation_words(node)[1]
+        return self.chain_words(node) if kind is Kind.CALL else NO_WORDS
+
+    def _every_hop(self, node: int, test: Callable[[int], bool]) -> bool:
+        """E3: ``test`` holds of every value ``node`` reaches (``_reach``); never of an
+        undecided NAME (E5)."""
+        values = self._reach(node)
+        return values is not None and all(map(test, values))
+
+    def _reach(self, node: int) -> tuple[int, ...] | None:
+        """``node`` itself, or for a NAME the values of all its reaching Defs, one hop, when
+        they are decided (``_decided``; None when not). At most ``MAX_ARG_NAMES + 1`` Defs are
+        read: one past the cap is already too many. A NAME is never tested itself: no test
+        ``_every_hop`` is given holds of one."""
+        if self._m.kind(node) is not Kind.NAME:
+            return (node,)
+        return _decided([d.value for d in self._resolve(node)[: MAX_ARG_NAMES + 1]])
+
+    def _regex_receiver(self, site: int) -> bool:
+        """The regex exit (A44 (1) (c)): the receiver is a regex (``_regex``) on every path
+        (E3) — a regex literal or construction itself, or a NAME every reaching Def of which
+        binds one (``_receiver_all``) — or it is named for one (``_regex_named``, 0105 WS-C);
+        never a bare call (no receiver, no name)."""
+        return self._receiver_all(site, self._regex) or self._regex_named(self.receiver(site))
+
+    def _regex_named(self, holder: int) -> bool:
+        """0105 WS-C: the receiver's own last identifier, glued, is a ``REGEX_WORDS`` word
+        (``RegExp`` -> ``regexp``), or its head word is (``_head_word``: ``entry.regex``,
+        ``cfg.routeRegex``; never ``reRun`` or ``patternRunner``), whatever its binding says.
+        A bare call's ``-1`` has no identifier (``""``), so it is never named for one."""
+        name = identifier_text(self._m, last_identifier(self._m, holder))
+        return glue(name) in REGEX_WORDS or _head_word(name) in REGEX_WORDS
+
+    def _data_store(self, site: int) -> bool:
+        """0105 WS-A: the receiver carries a ``DATA_STORE_WORDS`` concept — (a) in its chain
+        words (``db.exec(sql)``), or (b)-(c) in its binding on every path (``_bound_all``, E3):
+        the declared type of the parameter a NAME receiver binds (``h *sql.DB``), the chain
+        words of the call it binds (``t := conn.Begin()``) or of a call receiver itself. A
+        re-label (``STORE``), no longer the base exit (A44 (1) (c))."""
+        chained = self._receiver_meets(site, DATA_STORE_WORDS)
+        return chained or self._bound_all(site, DATA_STORE_WORDS)
+
+    def _statement_text(self, site: int) -> bool:
+        """0105 WS-S: statement text on a value receiver with no command evidence
+        (``_value_without_evidence``): every value one hop from the program argument (E3) opens
+        one SQL statement (``_opens_statement``). A bare call is the language's process API,
+        never statement text."""
+        arg = self._program_arg(site)
+        value = arg >= 0 and self._value_without_evidence(site)
+        return value and self._every_hop(arg, self._opens_statement)
+
+    def _opens_statement(self, node: int) -> bool:
+        """A built value (a BINOP or TEMPLATE) whose leading literal (``_leading_leaf``) opens
+        exactly one SQL statement at its head (``opens_one_statement``): anchored at offset 0,
+        with no ``;``, so ``"psql -c '...'" + x`` and ``"DELETE FROM t; " + x`` open none."""
+        leaf = self._leading_leaf(node) if self._built_node(node) else -1
+        return leaf >= 0 and opens_one_statement(self._statement_head(leaf))
+
+    def _leading_leaf(self, node: int) -> int:
+        """The leaf a built value starts with: at most ``MAX_SPINE`` BINOP left operands down,
+        the node reached when it is a LITERAL or TEMPLATE (``_textual``), else ``-1``."""
+        for _ in range(MAX_SPINE):
+            if not is_kind(self._m, node, Kind.BINOP):
+                break
+            node = _first_child(self._m, node)
+        return node if _textual(self._m, node) else -1
+
+    def _statement_head(self, leaf: int) -> str:
+        """The leaf's first ``MAX_STATEMENT_HEAD`` source bytes (``_source``) as a statement
+        would open them (``statement_head``): read where they stand and kept nowhere."""
+        start, end = self._m.span(leaf)
+        return statement_head(self._source(start, min(end, start + MAX_STATEMENT_HEAD)))
+
+    def _value_receiver(self, site: int) -> bool:
+        """0105 E1: the receiver is a value, never a namespace — a chain rooted at no NAME (a
+        call result, a literal, a ``new``) or at a NAME that names one (``_value_name``); never
+        a bare call."""
+        holder = self.receiver(site)
+        if holder < 0:
+            return False
+        root = chain_root(self._m, holder)[1]
+        return root < 0 or self._value_name(root)
+
+    def _value_name(self, root: int) -> bool:
+        """E1 under E5: with no reaching Def, a NAME is a value only as a self receiver (``this``,
+        ``$this``; ``_global_object`` reads every other one as a global or a namespace); else
+        when its Defs are decided (``_reach``) and none binds a namespace (``_namespace_def``)."""
+        defs = self._resolve(root)
+        if not defs:
+            return not self._global_object(root)
+        return self._reach(root) is not None and not any(map(self._namespace_def, defs))
+
+    def _namespace_def(self, d: Def) -> bool:
+        """E1: an import Def binds a namespace when it is a whole-module import
+        (``bound_source``) or its language reads every import as one (no ``value_imports``: a
+        Go package or cgo ``C``, a Java type, a PHP class, a Rust, C or C++ path)."""
+        return d.kind == "import" and (not self._value_imports or bound_source(self._m, d) >= 0)
+
+    def _value_without_evidence(self, site: int) -> bool:
+        """0105 WS-S and WS-D: the receiver is a value (``_value_receiver``, E1) with no command
+        evidence (``_command_evidence``)."""
+        return self._value_receiver(site) and not self._command_evidence(site)
+
+    # shell=True: unreachable today, E2 tests it first; defence in depth (feature 0105, LLD §3.3)
+    def _command_evidence(self, site: int) -> bool:
+        """0105 WS-S: a literal ``shell=True``, or a ``_COMMAND_EVIDENCE_WORDS`` word in the
+        receiver chain or the binding's module path (``_evidence``) or in the receiver's binding
+        on any path (``_bound_meets``). The callee's own words are not read."""
+        evidence = self._shell_true(site) or self._evidence(site, (), _COMMAND_EVIDENCE_WORDS)
+        return evidence or self._bound_meets(site, _COMMAND_EVIDENCE_WORDS)
+
+    def _bound_key_without_evidence(self, site: int) -> bool:
+        """0105 WS-D: a ``COMMAND_RECEIVER_BOUND_KEYS`` key (``palette.system(text)``) on a value
+        receiver with no command evidence (``_value_without_evidence``, as WS-S reads it): a
+        narrowing (``UNPROVEN``, D-12), never an exit. A bare call and a namespace receiver
+        (``std::system``, ``posix.system``) stay a process."""
+        keyed = self.key(site) in COMMAND_RECEIVER_BOUND_KEYS
+        return keyed and self._value_without_evidence(site)
+
     # ── the command parameter heuristic's facts (D25, A42 (1); §8.5) ──
 
     def shell_arg(self, site: int, arg: int) -> bool:
@@ -1331,8 +1597,7 @@ class Calls:
         Java ``new ProcessBuilder(cmd)``, Rust ``Command::new(cmd)``, C ``posix_spawn``) and
         ``arg`` sits at its program position (``_program_arg``). The table decides; no key is
         named here."""
-        builtin = self.builtin(site)
-        return builtin is not None and "command" in builtin.families and self._program_arg(site) == arg
+        return self._command_builtin(site) and self._program_arg(site) == arg
 
     def _flat(self, nodes: Sequence[int]) -> Iterator[int]:
         """W15 (a): ``nodes`` with each ARRAY literal flattened once."""
@@ -1402,3 +1667,18 @@ _WORD_ROWS: Mapping[str, Callable[[Calls, int], tuple[int, ...]]] = MappingProxy
     "request": Calls._request_args,
     "command": Calls._command_word_args,
 })
+# A command site's class (feature 0105, LLD §4.1): the first row whose test holds
+# (``Calls._classify``; ``PROCESS`` when none does). A process the callee fixes, then E2's
+# process evidence, outrank the regex exit (a regex receiver, on every path (E3) or by its
+# name: WS-C) and the two re-labels: a data-store receiver by its chain words or its binding on
+# every path (WS-A (a)-(c)), then statement text (WS-S). Last, a receiver-bound key on a value
+# receiver with no command evidence (WS-D) is a narrowing: its flows stay CWE-78 with a real
+# external origin only.
+_CLASS_RULES: tuple[tuple[Callable[[Calls, int], bool], str | None], ...] = (
+    (Calls._fixed_process, PROCESS),
+    (Calls._process_bound, PROCESS),
+    (Calls._regex_receiver, None),
+    (Calls._data_store, STORE),
+    (Calls._statement_text, TEXT),
+    (Calls._bound_key_without_evidence, UNPROVEN),
+)

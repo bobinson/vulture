@@ -20,7 +20,7 @@ for f in "${LOCKS[@]}"; do
 done
 
 SAVED=$(mktemp -d)
-# shellcheck disable=SC2317  # invoked by the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap
 restore() {   # always restore the committed files
     local f
     for f in "${LOCKS[@]}"; do cp "$SAVED/$f" "$f"; done

@@ -17,6 +17,8 @@ from cwe_agent.skills._ast_head import (
     ast_walk,
     claim,
     hint_groups,
+    loop_lines,
+    model_line,
     regex_row,
     unread_sinks,
 )
@@ -773,7 +775,8 @@ class _FileCtx(NamedTuple):
     ast_answer: AstAnswer
     # Every line of each span above whose AST row a more specific child replaces (A42 (4),
     # ``_lines_of``): still the AST's lines, so CWE-73 and the regex CWE-22 stay silent
-    # on them, but no CWE-22 row is appended for the span.
+    # on them, but no CWE-22 row is appended for the span. The model's lines (D21): the line
+    # loop's line is read as the model's (``model_line``, feature 0105, LLD §4.6).
     ast_consumed: frozenset[int] = frozenset()
     # Feature 0104 A2: the file's group of hint-only CWE-22 rows (``_ast_head.hint_groups``),
     # asked once, after the child replacement, without the replaced and the unread sink lines.
@@ -1102,8 +1105,10 @@ def _ast_claims(
 ) -> bool:
     """The AST tier's CWE-22 claim (feature 0102, LLD §9.2): True when ``line_num`` lies in a
     sink span it reports, whose row is appended once, at the sink line (A41 (5)) — unless a
-    child replaces the span (A42 (4)): its lines are still claimed, and no row is appended."""
-    if line_num in ctx.ast_consumed:
+    child replaces the span (A42 (4)): its lines are still claimed, and no row is appended.
+    ``line_num`` is the line loop's, read as the model's (``model_line``, feature 0105, LLD
+    §4.6), as ``claim`` reads it."""
+    if model_line(ctx.ast_answer, line_num) in ctx.ast_consumed:
         return True
     return claim(
         ctx.ast_answer, _RULE_22, ctx.file_path, line_num, findings, groups=ctx.ast_groups
@@ -1129,9 +1134,15 @@ def _replaced_sinks(ctx: _FileCtx, spans: Mapping[int, Flow]) -> set[int]:
 
 
 def _child_claims(ctx: _FileCtx, line_num: int) -> bool:
-    """True when a child (``_SPAN_CHILDREN``) claims line ``line_num`` in the line loop: a line
-    the loop reads (``_scanned``) on which a child's hit test holds. A span line past
-    ``ctx.lines`` reads as ``""``, which the loop never reaches and no child claims."""
+    """True when a child (``_SPAN_CHILDREN``) claims, in the line loop, one of the loop lines
+    of the span's model line ``line_num`` (``loop_lines``, feature 0105, LLD §4.6)."""
+    return any(_child_claims_at(ctx, k) for k in loop_lines(ctx.ast_answer, line_num))
+
+
+def _child_claims_at(ctx: _FileCtx, line_num: int) -> bool:
+    """True when a child claims the line loop's line ``line_num``: a line the loop reads
+    (``_scanned``) on which a child's hit test holds. A line past ``ctx.lines`` reads as
+    ``""``, which the loop never reaches and no child claims."""
     line = _window_text(ctx.lines, line_num, 0, 0)
     return _scanned(line) and any(hit(ctx, line, line_num) for hit in _SPAN_CHILDREN)
 

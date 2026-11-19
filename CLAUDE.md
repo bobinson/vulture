@@ -44,7 +44,7 @@ Mode A is the default when you clone the repo. No new env vars are required; all
 
 ```
 vulture/
-  backend/  # Go 1.24+ backend
+  backend/  # Go 1.26+ backend
     cmd/vulture/  # Entry point (serve, local_start, status, scan, version)
     internal/
       handler/  # HTTP handlers (audit, source, stream, auth, memory, agent, filesystem, health)

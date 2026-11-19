@@ -43,7 +43,6 @@ from shared.ast._nodes import (
     named,
     pair_part,
     params_in,
-    preorder,
     segment,
     top_statement,
 )
@@ -60,7 +59,6 @@ from shared.ast.roles import (
     ITERATION_WORDS,
     NAMED_REQUEST_WORDS,
     NAMED_TYPE_WORDS,
-    NO_WORDS,
     PARAM_ANNOTATION_WORDS,
     PARAM_HINTS,
     RECEIVER_PARAM_WORDS,
@@ -133,23 +131,21 @@ class _Handler:
 
 _PLAIN = _Handler()
 _ROUTE = _Handler(route=True)
-_UNANNOTATED = (NO_WORDS, NO_WORDS)
 _NO_NAMES: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
 class _Facts:
-    """One memo per parameter fact, each keyed by the FUNCTION or PARAM it is about (§8.7)."""
+    """One memo per parameter fact, each keyed by the FUNCTION it is about (§8.7)."""
 
     positional: dict[int, tuple[int, ...]] = field(default_factory=dict)
     slots: dict[int, tuple[int, ...]] = field(default_factory=dict)
     handler: dict[int, _Handler] = field(default_factory=dict)
     context: dict[int, bool] = field(default_factory=dict)  # A44 (1) (b): handler context
-    annotations: dict[int, tuple[frozenset[str], frozenset[str]]] = field(default_factory=dict)
 
 
 class Params:
-    """One file's parameter facts, memoised per Def and per FUNCTION."""
+    """One file's parameter facts, memoised per FUNCTION."""
 
     def __init__(self, model: FileModel, scope: ScopeTable, calls: Calls) -> None:
         self._m = model
@@ -276,7 +272,7 @@ class Params:
 
     def _annotated(self, d: Def) -> Iterator[str]:
         """R-D (W4): decorator / default-call words, then type words (``_typed_request``)."""
-        marks, types = self.annotation_words(d.value)
+        marks, types = self._calls.annotation_words(d.value)
         if marks & PARAM_ANNOTATION_WORDS or self._typed_request(d, types):
             yield "upload" if (marks | types) & UPLOAD_WORDS else "request"
 
@@ -296,10 +292,10 @@ class Params:
         """A MEMBER type annotation of ``param`` (a qualified type path) holds a container word."""
         kids = self._m.children(param) if param is not None else ()
         paths = filter(self._is_type_path, kids)
-        return hits(chain.from_iterable(map(self._names_under, paths)), CONTAINER_WORDS)
+        return hits(chain.from_iterable(map(self._calls.names_under, paths)), CONTAINER_WORDS)
 
     def _is_type_path(self, node: int) -> bool:
-        return self._m.kind(node) is Kind.MEMBER and self._is_type(node)
+        return self._m.kind(node) is Kind.MEMBER and self._calls.is_type(node)
 
     def _hinted(self, d: Def) -> Iterator[str]:
         """R-T (D23): a PARAM_HINTS combination of the name's words, for a parameter of an
@@ -344,43 +340,6 @@ class Params:
         held = self.positional(d.scope)[position : position + 1]
         return held == (d.value,) and named(self._m, d.scope) == name
 
-    def annotation_words(self, param: int | None) -> tuple[frozenset[str], frozenset[str]]:
-        """A PARAM's words, memoised: (decorator and default-call words, type words)."""
-        if param is None or self._m.kind(param) is not Kind.PARAM:
-            return _UNANNOTATED
-        return cached(self._facts.annotations, param, self._read_annotations)
-
-    def _read_annotations(self, param: int) -> tuple[frozenset[str], frozenset[str]]:
-        kids = self._m.children(param)  # a mark is a DECORATOR or CALL, a type a NAME or MEMBER
-        if not kids:
-            return _UNANNOTATED  # a bare identifier: no word of either
-        marks, types = self._names_where(kids, self._is_mark), self._names_where(kids, self._is_type)
-        return word_set(marks), word_set(types)
-
-    def _names_where(self, kids: Sequence[int], test: Callable[[int], bool]) -> list[str]:
-        """The NAME identifiers under each of ``kids`` that ``test`` holds for, in order."""
-        return [name for kid in kids if test(kid) for name in self._names_under(kid)]
-
-    def _is_mark(self, node: int) -> bool:
-        """A decorator, or a default-value CALL (R-D)."""
-        kind = self._m.kind(node)
-        return kind is Kind.DECORATOR or (kind is Kind.CALL and self._m.field(node) is Field.VALUE)
-
-    def _is_type(self, node: int) -> bool:
-        return self._m.field(node) is Field.ANNOTATION and self._m.kind(node) in (Kind.NAME, Kind.MEMBER)
-
-    def _names_under(self, node: int) -> list[str]:
-        """The NAME identifiers of a small annotation subtree (at most MAX_TEST_NODES nodes)."""
-        return [name for current in preorder(self._m, node) for name in self._symbolised(current)]
-
-    def _symbolised(self, node: int) -> Sequence[str]:
-        """A NAME's text and, when it is an import binding, its symbol (R-H: ``File(...)``)."""
-        if self._m.kind(node) is not Kind.NAME:
-            return ()
-        text = self._m.ident(node) or ""
-        symbol = self._calls.symbol_of(node)
-        return (text, symbol) if symbol else (text,)
-
     # ── R-B, R-U ──
 
     def iteration_receiver(self, d: Def) -> int:
@@ -410,7 +369,7 @@ class Params:
         return any(self._accessor_param(d) for d in found if d.kind == "param")
 
     def _accessor_param(self, d: Def) -> bool:
-        marks, types = self.annotation_words(d.value)
+        marks, types = self._calls.annotation_words(d.value)
         receiving = not (marks | types).isdisjoint(ACCESSOR_RECEIVER_WORDS)
         return receiving or self.request_named(d) or self.handler(d.scope).route
 
