@@ -45,6 +45,10 @@ MAX_HOPS = 8  # hops: hops kept per flow (then `truncated`)
 MAX_HOP_SEGMENTS = 3  # hops: `.`-joined segments per hop name, else `<expr>` (A30 (2))
 MAX_GROUP_SINKS = 64  # 0104 A2: rows one group takes; a file with more keeps its rows
 
+# ── 0105 command class: statement text (WS-S) ────────────────────────────────
+MAX_SPINE = 8  # statement text: BINOP left operands walked to the leading literal
+MAX_STATEMENT_HEAD = 160  # statement text: source bytes read from that literal
+
 # ── §8.7 declines, coverage, breaker ─────────────────────────────────────────
 # Decline ledger: per-rule bounded heap. The same fact as shared/tools/suppression.py's cap
 # (D9), restated as a literal because importing that module would load shared.tools into the

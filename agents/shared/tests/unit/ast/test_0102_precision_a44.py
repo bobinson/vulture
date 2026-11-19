@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from shared.ast.consume import process_flow
 from tests.unit.ast._analysis import (
     READ,
     SINK,
@@ -238,12 +239,16 @@ _NOT_A_PROCESS: dict[str, tuple[Spec, str]] = {
     "regex_literal_def": ("cwe_78_20_clean", "versionPattern.exec"),
     "regex_construction_def": ("cwe_78_21_clean", "tagMatcher.exec"),
     "regex_literal_receiver": ("cwe_78_22_clean", "/^v(\\d+)$/.exec"),
-    "database_receiver": ("cwe_78_23_clean", "db.exec"),
-    "go_database_receiver": ("cwe_78_go_3_clean", "db.Exec"),
     "connection_receiver": (("py", _CONNECTION_SQL), "conn.exec_driver_sql"),
     "execute_helper": ("cwe_78_24_clean", "executeTallyAction"),
     "exec_view_name": ("cwe_78_25_clean", "new ExecReviewPanel"),
     "fork_helper": (("ts", _MULTI_WORD_FORK), "forkMerge"),
+}
+# 0105 (listed edit 6): a data-store receiver is a command candidate of class ``store``, which
+# the CWE-89 rule reports and the CWE-78 rule never does; moved here from ``_NOT_A_PROCESS``.
+_DATA_STORE_CALLS: dict[str, tuple[Spec, str]] = {
+    "database_receiver": ("cwe_78_23_clean", "db.exec"),
+    "go_database_receiver": ("cwe_78_go_3_clean", "db.Exec"),
 }
 
 _SPAWN_SYNC = """
@@ -283,6 +288,15 @@ def test_a_regex_data_store_or_multi_word_exec_is_no_command_sink(case: str) -> 
     """(c) negative: no ``command`` candidate on the line of the look-alike."""
     spec, head = _NOT_A_PROCESS[case]
     assert _no_sink(spec, "command", head), f"{head} is still a command sink"
+
+
+@pytest.mark.parametrize("case", list(_DATA_STORE_CALLS))
+def test_a_data_store_call_is_a_store_never_a_process(case: str) -> None:
+    """(c) negative, 0105: the flows at a data-store call are ``store``; CWE-78 decides none."""
+    spec, head = _DATA_STORE_CALLS[case]
+    flows = flows_at_call(subject(spec), "command", head)
+    assert flows and {f.command_class for f in flows} == {"store"}
+    assert not any(process_flow(f) for f in flows), f"{head} reaches CWE-78"
 
 
 @pytest.mark.parametrize("case", list(_PROCESS_CALLS))

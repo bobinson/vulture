@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import bisect
 import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -18,13 +18,26 @@ from cwe_agent.skills._ast_head import (
     ast_answers,
     ast_owns,
     ast_walk,
+    emit_at,
     hint_groups,
+    model_line,
     regex_row,
     unread_sinks,
 )
 from cwe_agent.skills._lexical import MAX_SCAN_CHARS
 from cwe_agent.skills._literal_provenance import constant_sprintf
-from shared.ast.consume import FamilyRule, command_param
+from shared.ast.consume import (
+    FamilyRule,
+    argument_lines,
+    command_param,
+    process_flow,
+    sink_flows,
+    sink_lines,
+    statement_flow,
+    statement_param,
+)
+from shared.ast.limits import MAX_STATEMENT_HEAD
+from shared.ast.sql_shape import SQL_EDGE, opens_statement, sql_shape, statement_head
 from shared.language import detect_language
 from shared.tools.code_view import CodeView
 from shared.tools.file_scanner import (
@@ -91,51 +104,8 @@ _JS_TEMPLATE_BIGRAM = re.compile(
     re.IGNORECASE,
 )
 
-# The same shape for the formatting clauses (f-string, `.format`, `%`, Sprintf),
-# where the interpolation may BE the column list or the table (`SELECT {cols}
-# FROM`, `UPDATE %s SET`). Read from source text, so a keyword may also sit next
-# to a quote (`f"FROM {t}"`) or an escape (`"\nSELECT`, `*\tFROM`). SQL keywords,
-# not English, widen a statement: `INSERT OR REPLACE INTO`, `INSERT IGNORE INTO`,
-# an aliased `UPDATE users u SET`, a multi-table `DELETE t1 FROM t1 JOIN ...`, a
-# `SELECT nextval(...)` with no FROM, a subquery `FROM(`.
-_SQL_EDGE = r"(?:(?<![A-Za-z0-9_$])|(?<=\\[nrt]))"
-_SQL_GAP = r"(?:\s|\\[nrt])"
-_SQL_STATEMENT = re.compile(
-    _SQL_EDGE + r"(?:INSERT(?:\s+(?:OR\s+\w{1,10}|IGNORE|LOW_PRIORITY|DELAYED|HIGH_PRIORITY))?\s+INTO\s"
-    r"|UPDATE\s+\S{1,60}(?:\s+(?:AS\s+)?\w{1,30})?\s+SET\s"
-    r"|DELETE\s+FROM\s"
-    r"|DELETE\s+\w{1,30}(?:\s*,\s*\w{1,30}){0,4}\s+FROM\s+\S{1,60}\s+(?:JOIN|INNER|LEFT|RIGHT|CROSS|USING)\s"
-    r"|SELECT\s+[\w.]{1,60}\s*\("
-    r"|DROP\s+(?:TABLE|DATABASE)\s)",
-    re.IGNORECASE,
-)
-_SELECT = re.compile(_SQL_EDGE + r"SELECT" + _SQL_GAP, re.IGNORECASE)
-_FROM = re.compile(_SQL_EDGE + r"FROM(?:\s|\\[nrt]|\()", re.IGNORECASE)
-_STATEMENT_END = re.compile(";")
-# How far a FROM may follow its SELECT: a column list, not a paragraph.
-_SELECT_SPAN = 400
-
-
-def _sql_shape(text: str) -> bool:
-    """SQL statement shape anywhere in ``text``."""
-    return _SQL_STATEMENT.search(text) is not None or _select_from(text)
-
-
-def _select_from(text: str) -> bool:
-    """A SELECT whose next FROM follows within ``_SELECT_SPAN`` characters, in the
-    same statement. Each SELECT is paired with the first FROM after it, so the
-    test is linear however many of either the text holds."""
-    froms = [m.start() for m in _FROM.finditer(text)]
-    ends = [m.start() for m in _STATEMENT_END.finditer(text)]
-    return any(_select_reaches_from(sel.end(), froms, ends) for sel in _SELECT.finditer(text)) if froms else False
-
-
-def _select_reaches_from(at: int, froms: list[int], ends: list[int]) -> bool:
-    nxt = bisect.bisect_left(froms, at)
-    if nxt == len(froms) or froms[nxt] - at > _SELECT_SPAN:
-        return False
-    end = bisect.bisect_left(ends, at)
-    return end == len(ends) or ends[end] > froms[nxt]
+# The same shape for the formatting clauses (f-string, `.format`, `%`, Sprintf) is
+# `sql_shape` in `shared.ast.sql_shape` (feature 0105); `SQL_EDGE` is imported from there.
 
 # A SQL EXECUTION sink — the thing that turns a string into a query. Kept
 # generous on purpose: a missing sink here costs a true positive.
@@ -316,7 +286,7 @@ def _format_evidence(m: re.Match[str], line_num: int, lines: Sequence[str]) -> b
         return True
     if _NON_SQL_CONSUMER.search(m.string, 0, _sql_text_start(m)):
         return False
-    return _sql_shape(_joined(lines, line_num - 2, line_num + 1, " "))
+    return sql_shape(_joined(lines, line_num - 2, line_num + 1, " "))
 
 
 _DML_WORD = re.compile(r"SELECT|INSERT|UPDATE|DELETE|DROP", re.IGNORECASE)
@@ -347,7 +317,7 @@ _FORMAT_ARG = re.compile(r"\.format\([^)]*(?:SELECT|INSERT|UPDATE|DELETE)", re.I
 _RECEIVER_END = r"(?:(?<=[\"')])|(?<=[\"')][ \t])|(?<=[\"')][ \t]{2}))"
 _NOT_RECEIVER_END = r"(?<![\"')])(?<![\"')][ \t])(?<![\"')][ \t]{2})"
 _FORMAT_ON_LITERAL = re.compile(
-    r"^(?>[^\n]*?" + _SQL_EDGE + r"(?:SELECT|INSERT|UPDATE|DELETE)\s)"
+    r"^(?>[^\n]*?" + SQL_EDGE + r"(?:SELECT|INSERT|UPDATE|DELETE)\s)"
     r"(?:[^.\n]++|\.(?!(?-i:format)\()|" + _NOT_RECEIVER_END + r"\.(?-i:format)\()*+"
     + _RECEIVER_END + r"\.(?-i:format)\(",
     re.IGNORECASE,
@@ -451,7 +421,8 @@ COMMAND_INJECTION_PATTERNS = [
 # head both emit these strings. The AST tier owns the check on every file it parses cleanly;
 # the regex body on every other file (D10). No gate; its one named heuristic is D25's
 # ``command_param`` (A42 (1)): a parameter reaching a sink that shells it, or a built
-# argument, with no caller in the file, reports.
+# argument, with no caller in the file, reports. It reports the command flows E4 gives CWE-78
+# (``process_flow``, feature 0105).
 _RULE_78 = FamilyRule(
     family="command",
     check_id="cwe.injection.command",
@@ -461,6 +432,24 @@ _RULE_78 = FamilyRule(
     recommendation="Use subprocess with shell=False and list arguments",
     cwe_id="78",
     heuristic=command_param,
+    accepts=process_flow,
+)
+
+# CWE-89's identity, defined once (feature 0105, LLD §4.6): the regex body's rows (``_check_sql``)
+# and the AST head's rows of the command flows E4 gives CWE-89 (``statement_flow``: a call whose
+# argument is statement text, or whose receiver is a data store), D25's heuristic under its
+# own token (``statement_param``). The regex body runs on every line and wins: an AST row
+# stands only where no regex row covers its flow (``_statement_rows``).
+_RULE_89 = FamilyRule(
+    family="command",
+    check_id="cwe.injection.sql",
+    category="CWE-89",
+    severity="critical",
+    title="SQL injection via string interpolation",
+    recommendation="Use parameterized queries or prepared statements",
+    cwe_id="89",
+    heuristic=statement_param,
+    accepts=statement_flow,
 )
 
 # Validation-guard patterns. If any of these match within the radius of
@@ -799,8 +788,8 @@ def _is_excluded_file(file_path: Path) -> bool:
 
 
 class _FileCtx(NamedTuple):
-    """Per-file facts the line checks read, computed once; and the AST tier's CWE-918 and
-    CWE-78 answers for the file (feature 0102, LLD §9.3)."""
+    """Per-file facts the line checks read, computed once; and the AST tier's CWE-918, CWE-78
+    and CWE-89 answers for the file (feature 0102, LLD §9.3; feature 0105, LLD §4.6)."""
 
     file_path: Path
     lines: list[str]
@@ -811,6 +800,9 @@ class _FileCtx(NamedTuple):
     server_ctx: bool
     ssrf: AstAnswer
     command: AstAnswer
+    # Feature 0105: the AST tier's CWE-89 answer (``_RULE_89``), whose rows ``_statement_rows``
+    # emits after the line loop.
+    statement: AstAnswer
     # The file's code view, masked on first use (by CWE-89's Go Sprintf test or a
     # CWE-94 candidate) and dropped with this context.
     code: CodeView
@@ -824,10 +816,98 @@ def _analyze_file(file_path: Path, findings: list[dict]) -> None:
     if lines is None:
         return
     ctx = _file_context(file_path, lines)
+    start = len(findings)
     for line_num, line in enumerate(lines, start=1):
         if _scanned(line):
             _check_line(ctx, line, line_num, findings)
+    _statement_rows(ctx, findings, start)
     _check_obfuscation(file_path, lines, findings)
+
+
+def _statement_rows(ctx: _FileCtx, findings: list[dict], start: int) -> None:
+    """The file's AST CWE-89 rows (feature 0105, LLD §4.6), after its line loop,
+    ``findings[start:]`` the rows the loop added. One row at each statement sink line the loop
+    read (``unread_sinks``), unless a regex CWE-89 row covers the sink (``_regex_covered``): the
+    regex body wins on every line it covers. Each row stands at its model line (``emit_at``,
+    D21). The file's 0104 A2 group (``hint_groups``) leaves out the sink lines that get no
+    row."""
+    answer = ctx.statement
+    if not answer.spans:
+        return
+    covered = _regex_covered(answer, _regex_sql_lines(findings, start))
+    skipped = unread_sinks(answer, ctx.lines, _scanned) | covered
+    groups = hint_groups(answer, _RULE_89, ctx.file_path, skipped)
+    for line_num in sink_lines(answer.spans):
+        if line_num not in skipped:
+            emit_at(answer, _RULE_89, ctx.file_path, line_num, findings, groups=groups)
+
+
+def _regex_sql_lines(findings: list[dict], start: int) -> frozenset[int]:
+    """The lines of the regex CWE-89 rows among ``findings[start:]``, in the line loop's
+    numbering (``str.splitlines``)."""
+    rows = findings[start:]
+    return frozenset(r["line_start"] for r in rows if r.get("check_id") == _RULE_89.check_id)
+
+
+def _regex_covered(answer: AstAnswer, regex: frozenset[int]) -> frozenset[int]:
+    """The sink lines of ``answer``'s spans a regex row at ``regex`` covers, each regex line
+    read as the model's (``model_line``): a sink is covered when such a line is one of its
+    cover lines (``_cover_lines``), read over every flow reported at it (feature 0105, LLD
+    §4.6). The flows are grouped and the argument lines read once per file, and only for a
+    file with a regex CWE-89 row (``_met_sinks``)."""
+    if not regex:
+        return frozenset()
+    met = frozenset(model_line(answer, n) for n in regex)
+    return _met_sinks(answer, met)
+
+
+def _met_sinks(answer: AstAnswer, met: frozenset[int]) -> frozenset[int]:
+    """The sink lines of ``answer``'s spans whose cover lines (``_cover_lines``) ``met`` meets,
+    each sink read over every flow reported at its call (``consume.sink_flows`` of
+    ``answer.reported``; its own flow alone when none is recorded), on its sink line, its
+    program argument's lines and their arguments' lines (``consume.argument_lines``; feature
+    0105, LLD §4.6)."""
+    spans, nl_lines = answer.spans or {}, answer.nl_lines
+    flows = sink_flows(spans, answer.reported)
+    read = argument_lines(spans, nl_lines, flows)
+    return frozenset(n for n, lines in read.items() if not met.isdisjoint(
+        _cover_lines(flows[n], lines, nl_lines)))
+
+
+def _cover_lines(
+    flows: Sequence[Flow], lines: Sequence[int], nl_lines: Sequence[str]
+) -> Iterable[int]:
+    """The lines a regex CWE-89 row covers a sink on, ``flows`` every flow reported at it
+    (feature 0105, LLD §4.6): ``lines``, its sink line, its program argument's lines and their
+    arguments' lines (``consume.argument_lines``), never the whole call, whose lines hold a
+    callback body and later arguments; and the hops of every one of ``flows`` too only when the
+    statement is hoisted, ``lines`` carrying no statement text (``_carries_statement``), decided
+    once for the sink. A statement built at the sink is decided by ``lines`` alone, whichever
+    argument another flow hops through."""
+    if _carries_statement(lines, nl_lines):
+        return lines
+    return chain(lines, (hop.line for flow in flows for hop in flow.hops))
+
+
+# A quote that may open a string literal, where ``_carries_statement`` reads a statement's head.
+_QUOTE = re.compile(r"[\"'`]")
+
+
+def _carries_statement(lines: Sequence[int], nl_lines: Sequence[str]) -> bool:
+    """The text of ``lines`` (a sink line, its program argument's and its flows' arguments';
+    ``nl_lines``, the model's) carries statement text as the classifier reads it
+    (``Calls._opens_statement``): a literal whose head opens a statement — from a quote, its
+    first ``MAX_STATEMENT_HEAD`` characters as a statement would open them (``statement_head``)
+    open one (``opens_statement``). The classifier's ``opens_one_statement`` needs the literal's
+    end, which line text does not give. Whole lines are read, so another statement written on
+    one of them counts (feature 0105, LLD §3.4, §4.6)."""
+    text = "\n".join(nl_lines[n - 1] for n in lines)
+    return any(_opens_at(text, m.start()) for m in _QUOTE.finditer(text))
+
+
+def _opens_at(text: str, at: int) -> bool:
+    """A statement opens at the head of the literal whose quote stands at ``at``."""
+    return opens_statement(statement_head(text[at : at + MAX_STATEMENT_HEAD]))
 
 
 def _check_obfuscation(file_path: Path, lines: list[str], findings: list[dict]) -> None:
@@ -839,13 +919,18 @@ def _check_obfuscation(file_path: Path, lines: list[str], findings: list[dict]) 
 
 def _file_context(file_path: Path, lines: list[str]) -> _FileCtx:
     """The file's facts, each resolved once: its language and extension, ``server_ctx``, and
-    the AST tier's spans of each family it owns here — decided once per file, so each decline
-    is recorded once (A30), the prefilter reading the text once for both families. Passing
-    ``server_ctx`` for CWE-78 changes nothing: ``_RULE_78`` has no gate. The file's 0104 A2
-    group of CWE-78 rows, without the span lines the line loop never reads."""
+    the AST tier's spans of each of its three rules (CWE-918, CWE-78, CWE-89) on the families
+    it owns here. Each accepted flow is decided once per file (the two command rules accept
+    disjoint flows; a flow neither accepts is never decided), so each decline is recorded once
+    (A30), the prefilter reading the text once for both families. Passing ``server_ctx`` to
+    the command rules changes nothing: neither has a gate. The file's 0104 A2 group of CWE-78
+    rows, without the span lines the line loop never reads; CWE-89's group is made after the
+    loop (``_statement_rows``)."""
     text = "\n".join(lines)
     server_ctx = bool(_SERVER_CONTEXT.search(text))
-    ssrf, command = ast_answers(file_path, text, (_RULE_918, _RULE_78), server_ctx)
+    ssrf, command, statement = ast_answers(
+        file_path, text, (_RULE_918, _RULE_78, _RULE_89), server_ctx
+    )
     lang = detect_language(str(file_path))
     return _FileCtx(
         file_path=file_path,
@@ -855,6 +940,7 @@ def _file_context(file_path: Path, lines: list[str]) -> _FileCtx:
         server_ctx=server_ctx,
         ssrf=ssrf,
         command=command,
+        statement=statement,
         code=CodeView(lines, lang),
         command_groups=hint_groups(
             command, _RULE_78, file_path, unread_sinks(command, lines, _scanned)
@@ -889,21 +975,14 @@ def _check_sql(
     one (a direct call) the Go constant-Sprintf test is skipped."""
     if not _sql_row(line[:MAX_SCAN_CHARS], line_num, lines, view):
         return
-    finding = {
-        "severity": "critical",
-        "check_id": "cwe.injection.sql",
-        "category": "CWE-89",
-        "title": "SQL injection via string interpolation",
-        "description": f"SQL query built with string formatting at line {line_num}",
-        "file_path": str(file_path),
-        "line_start": line_num,
-        "line_end": line_num,
-        "recommendation": "Use parameterized queries or prepared statements",
-        "verification_hints": ["Test with payload: ' OR 1=1--", "Check if input is reflected in SQL error"],
-        "requires_context": True,
-    }
-    finding["code_snippet"] = extract_snippet(lines, line_num)
-    findings.append(enrich_finding(finding, "89"))
+    findings.append(regex_row(
+        _RULE_89, f"SQL query built with string formatting at line {line_num}", file_path,
+        line_num, lines,
+        verification_hints=[
+            "Test with payload: ' OR 1=1--", "Check if input is reflected in SQL error",
+        ],
+        requires_context=True,
+    ))
 
 
 def _sql_row(line: str, line_num: int, lines: Sequence[str], view: CodeView | None) -> bool:

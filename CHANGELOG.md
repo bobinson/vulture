@@ -130,6 +130,105 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **CWE-78 command look-alikes; CWE-89 at command calls (feature 0105), a follow-up to features
+  0102 and 0104.** On a file the AST layer parses, a command-keyed call (`exec`, `system`, …) is
+  now classed by its receiver and its program argument before it is reported, so a call whose
+  receiver shows it runs no process, or one on a value receiver with no command evidence whose
+  argument is SQL statement text, is no longer a CWE-78 row. What changes:
+  - **Look-alikes are not reported.** A command call on a regex receiver (a regex literal, a
+    name bound on every path to one or to a regex construction, or a receiver whose own name's
+    last word is a regex word: `routeRegex.exec(url)`) reports nothing. A receiver bound to a
+    regex on some paths only, or whose bindings are undecided, is no longer read as one unless
+    its name says so, so it is now a sink (CWE-78; CWE-89 at statement text when the bindings
+    are decided) where earlier versions reported nothing.
+  - **Statement text is CWE-89.** A command call on a value receiver with no command, data-store
+    or regex evidence whose argument opens exactly one SQL statement at the head of its leading
+    literal (`remote.exec("DELETE FROM jobs WHERE id = " + id)`; that literal at most 8
+    operators down) is reported as CWE-89 (`cwe.injection.sql`, the regex body's identity)
+    instead of CWE-78, for every flow CWE-78 would have reported. A row the command parameter
+    heuristic alone reported carries `validation.flow.heuristic = "statement_param"`, a new
+    optional value.
+  - **A data-store call fed by a real external source is CWE-89.** A command call on a receiver
+    with data-store evidence (its chain words, or, on every path, the declared type of the
+    parameter it is bound to or the chain of the call it is bound to; `tx`, `txn` and
+    `transaction` now count) reports its flows with a real external origin as CWE-89, whatever
+    the statement's shape, so `db.Exec("DELETE … " + r.FormValue("id"))`, which reported nothing
+    before, now has a row. A flow fed only by a parameter, a program's own arguments (read
+    anywhere but a C/C++ `main`) or the parameter-name hint is dropped there.
+  - **`system` on a value needs command evidence.** A `system` call on a value receiver with no
+    process or command-receiver word in its chain, its binding or its import, no data-store
+    evidence, no regex receiver and no statement text (`palette.system(label)`) reports only
+    flows with a real external origin, still as CWE-78, and drops one fed only by a parameter, a
+    program's own arguments or the parameter-name hint. A bare `system(…)` and a namespace
+    receiver (`std::system`, `posix.system`) are unchanged.
+  - **Process evidence outranks.** A literal `shell=True`, or a process word in the callee, the
+    receiver chain, its binding or the module it imports, keeps a call a process, so a
+    data-store or regex receiver also named for a process (`procDb.exec(q)`,
+    `PROCESS_RE.exec(…)`) is now a CWE-78 sink where nothing was reported before.
+  - **The regex CWE-89 body wins.** It still runs on every line; an AST CWE-89 row is added only
+    at a call no regex CWE-89 row covers.
+  - **Line numbering.** The CWE-22, CWE-78 and CWE-918 heads now read each line of their loop as
+    the parse tree's line it lies on. On a file with a form feed, a vertical tab or another
+    break the loop splits at and the parse tree does not (`\x1c`–`\x1e`, `\x85`, U+2028,
+    U+2029), the lines an AST row silences the regex siblings on, and whether the loop reads its
+    sink line, now follow the parse tree, so such a file's rows of those checks can change.
+  - **Lineage on upgrade.** The effect is per file: a lineage key carries no line, and an AST
+    CWE-89 row has the regex body's check id, title and category, so a file's CWE-89 rows of
+    both tiers share one lineage row. On the first scan of an existing target, a file's CWE-78
+    lineage row closes as `fixed` when the last CWE-78 row in it goes, whether the AST tier now
+    reports that call as CWE-89 or not at all. A re-labelled call's CWE-89 row (another check id
+    and category, so another lineage row than the CWE-78 one) joins the file's CWE-89 lineage
+    row, opening one only where the file had no CWE-89 row of either tier, and reopening it as
+    `regression` where that lineage row was closed `fixed`. A row the new rules add (at a
+    data-store call fed by a real external source, where process evidence outranks a data-store
+    or regex receiver, or at a receiver bound to a regex on some paths only or whose bindings
+    are undecided) joins the file's lineage row of its category the same way. A revert reopens a
+    closed CWE-78 lineage row as `regression`, and closes the CWE-89 one as `fixed` only when no
+    regex CWE-89 row remains in the file.
+  - **A CWE-89 row on a file that falls back to the regex tier is held, not closed.** The
+    backend's lineage pass already held `unconfirmed`, rather than closing as `fixed`, a
+    deterministic CWE-22, CWE-78 or CWE-918 row the scan stopped reporting, when the agent
+    reported that its file fell back to the regex tier (for any reason but `unsupported`: a
+    parse error, a cap, a worker timeout, crash or refused answer), and every such row of the
+    agent when its parse-worker breaker tripped: the regex tier cannot reproduce an AST row, so
+    its silence there proves nothing. It now holds CWE-89 rows too, so an AST CWE-89 row no
+    longer closes as `fixed` on such a scan, only to reopen as a `regression` once the file
+    parses again. A lineage row carries no check id, so a regex CWE-89 row the scan stopped
+    reporting there is held too, until a scan parses the file again: on a file that keeps
+    falling back (a parse error, a node or depth cap), such a row stays `unconfirmed` even when
+    the code was fixed.
+  - **Known gaps** (accepted, listed in the CWE agent's `SKILLS.md`): names are the evasion
+    surface (a receiver named or bound to a regex, or named or typed for a data store, loses or
+    re-labels its rows, though a flow with a real external origin at a data store is still
+    reported); a `system` call fed by a real external origin that runs no process
+    (`logger.system(req.body.msg)`) stays CWE-78; a statement call can get no row of its own
+    when the regex tier's row for an earlier request-built query covers it, or when it shares
+    its opening line with another call that reports CWE-89 (a statement-text or data-store
+    call); and another statement written on a line the cover reads (the call's, or one of its
+    arguments') can make two statements read as one finding, or one as two.
+  - **Upgrade notes:** upgrade the backend with the agents, and deploy it before them: an older
+    backend closes a file's CWE-89 lineage row as `fixed` when the file falls back to the regex
+    tier, unless the scan still reports a regex CWE-89 row in that file. A `docker compose`
+    stack takes the agents' shared code from the `vulture-agent-base` image, which
+    `docker compose up --build` does not rebuild, so rebuild it before the agent images with
+    `docker build -t vulture-agent-base:latest -f agents/Dockerfile.base agents/`, or the CWE
+    agent cannot import the new shared module. The AST answer schema is now 3, and parse workers
+    and the agent must agree on it (an answer of another schema is refused and its file falls
+    back to the regex tier), so restart a running agent stack after the upgrade.
+
+  No new flag. The one backend change is the lineage guard's category set (CWE-89 added); an
+  older agent sends no AST CWE-89 row, so a newer backend then holds only regex CWE-89 rows, an
+  over-hold that never closes a row wrongly. On the wire nothing changes shape: a
+  `cwe.injection.sql` row may now carry the AST tier's `validation.ast` and `validation.flow`
+  (family `command`), `validation.flow.sinks` on a group row, and `validation.flow.heuristic`
+  `"param_hint"` or the new optional value `"statement_param"`; Go stores and serves them with
+  the blob. Like an AST CWE-78 row, an AST CWE-89 row carries `evidence_quote` (the sink line)
+  and none of the regex row's `verification_hints` or `requires_context`. Rollback is a code
+  revert and a redeploy of the agents (rebuild `vulture-agent-base` first); a backend left on
+  this release holds as above. See the CWE agent's `SKILLS.md` (*Command look-alikes and
+  CWE-89*), [docs/architecture/ast_layer.md](docs/architecture/ast_layer.md) and
+  [docs/architecture/agent_protocol.md](docs/architecture/agent_protocol.md).
+
 - **AST-tier precision for CWE-22, CWE-78 and CWE-918 (feature 0104), a follow-up to feature
   0102.** Rows the parameter-name hint alone sources are labelled and grouped, never silenced,
   and four structural readings remove false positives the hint and generic words produced. What

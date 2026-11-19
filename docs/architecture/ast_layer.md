@@ -11,7 +11,7 @@ libraries, packages or frameworks.
 | | |
 |---|---|
 | Languages | JavaScript (`.js .jsx .mjs .cjs`), TypeScript (`.ts .mts .cts`; `.tsx` with the TSX grammar), Python, Go, Java, Rust, PHP, C (`.c .h`), C++ (`.cpp .cc .cxx .hpp`) |
-| Families | `path` (CWE-22), `request` (CWE-918), `command` (CWE-78); C and C++ own `path` and `command` only |
+| Families | `path` (CWE-22), `request` (CWE-918), `command` (CWE-78, and since feature 0105 CWE-89 for the command calls it re-labels); C and C++ own `path` and `command` only |
 | First consumers | the CWE agent: `cwe.input_validation.path_traversal`, `cwe.injection.ssrf`, `cwe.injection.command` (`OWNED_CHECK_IDS`) |
 | Scope of one analysis | one file: same-file callees are followed, nothing across files |
 
@@ -103,7 +103,9 @@ when:
 That is the whole rule. There is no engine selector, no environment variable
 and no configuration: ownership is decided per file by the parse outcome. On
 an owned file only the AST head emits the check id; on any other file only
-the regex body does. The two never both emit one check id on one file.
+the regex body does. The two never both emit an owned check id on one file
+(CWE-89, which the command family also feeds since feature 0105, is no owned
+check id: see *The command class*, below).
 
 A cheap prefilter runs first, on the text the skill already holds: a file of a
 supported language with no sink key of the family is owned with no rows and
@@ -154,28 +156,28 @@ next audit retries the file.
   only as an exact builtin key or inside a composition (`shell_quote`,
   `host_allow`). A few readings are structural: a generic HTTP verb is a
   request sink only with HTTP-client evidence and never on a collection
-  receiver; a regex or data-store receiver runs no command; a container word
-  (`params`, `body`, …) is a request source only in request context; a
-  dominating validation call statement and an early exit are read in the
-  sink's block and in every block enclosing it up to its function's body,
-  never across a nested function, so neither guards a sink inside a callback
-  placed after it; `<stem>sync` is a path sink when `<stem>` is; and a
-  generic file verb (`open`, `copy`, `save`, …) is a path sink only with
-  file-system evidence (a file-system word in the callee or receiver chain or
-  in the module path its import names, or a call to a language global such
-  as Python's `open`). That import is the one of the bare callee or of the
-  receiver chain's root (`cp` in `cp.execFile` after
-  `const cp = require("child_process")`), and a multi-word command callee
-  finds its process word the same way. Feature 0104 adds three readings: a
-  digest call, by its exact key (`hash`, `hexdigest`), is a `numeric`
-  sanitiser, so its result carries no external origin, unless the file binds
-  that name itself (a function, an assignment target, an object key or a class
-  field; an import or a parameter does not count); `readall` is a generic file
-  verb (a reader drain, `io.ReadAll(r)`, is no file read by itself); and in Go,
-  whose library calls are all package-qualified, a bare call is never a
-  language global, and a bare call to a predeclared function the file does not
-  define (`delete(m, k)`) is no HTTP-client evidence. The lexicons live in
-  `shared/ast/roles/`, one home each.
+  receiver; a regex receiver runs no command, and a data-store receiver runs a
+  statement (feature 0105, below); a container word (`params`, `body`, …) is a
+  request source only in request context; a dominating validation call
+  statement and an early exit are read in the sink's block and in every block
+  enclosing it up to its function's body, never across a nested function, so
+  neither guards a sink inside a callback placed after it; `<stem>sync` is a
+  path sink when `<stem>` is; and a generic file verb (`open`, `copy`,
+  `save`, …) is a path sink only with file-system evidence (a file-system word
+  in the callee or receiver chain or in the module path its import names, or a
+  call to a language global such as Python's `open`). That import is the one
+  of the bare callee or of the receiver chain's root (`cp` in `cp.execFile`
+  after `const cp = require("child_process")`), and a multi-word command
+  callee finds its process word the same way. Feature 0104 adds three
+  readings: a digest call, by its exact key (`hash`, `hexdigest`), is a
+  `numeric` sanitiser, so its result carries no external origin, unless the
+  file binds that name itself (a function, an assignment target, an object key
+  or a class field; an import or a parameter does not count); `readall` is a
+  generic file verb (a reader drain, `io.ReadAll(r)`, is no file read by
+  itself); and in Go, whose library calls are all package-qualified, a bare
+  call is never a language global, and a bare call to a predeclared function
+  the file does not define (`delete(m, k)`) is no HTTP-client evidence. The
+  lexicons live in `shared/ast/roles/`, one home each.
 * **The decision.** `decide(flow, rule, ctx)` is the only place a flow is
   judged:
   * `report` when an external origin of a role the family accepts reaches the
@@ -186,7 +188,8 @@ next audit retries the file.
     (below); the decline is recorded;
   * `none` when nothing external reaches it. A sink whose origins are all
     `unknown` is tallied (`unknown_only_sinks`), not reported, except where a
-    rule's named heuristic reports it.
+    rule's named heuristic reports it; a flow no rule accepts (feature 0105,
+    *The command class*, below) is never decided, so it is not tallied.
 * **Named heuristics.** Two places use a name, not a flow, and say so on the
   row: the parameter-name hint (a parameter named like `filename` or
   `dest_path` of an entry function of the file — an exported one in
@@ -199,10 +202,14 @@ next audit retries the file.
   the argument, the argument is built, or it is the whole command of a
   command builtin of the profile's own table (`new ProcessBuilder(cmd)`),
   unless a caller in the same file binds the parameter; the row carries
-  `"heuristic": "command_param"`). A row whose only external origin is the
-  parameter-name hint carries `"heuristic": "param_hint"` (feature 0104): a
-  label, never a filter. Where a hint-only flow and another flow both report
-  at one sink line, the other flow's row is emitted.
+  `"heuristic": "command_param"`; on a statement-text call the same heuristic
+  reports CWE-89 and its row carries `"heuristic": "statement_param"`, feature
+  0105). A row whose only external origin is the parameter-name hint carries
+  `"heuristic": "param_hint"` (feature 0104): a label, never a filter (since
+  feature 0105 a hint-only flow at a data-store call or an unproven `system`
+  call is dropped, by the call's class rather than by the label, below). Where
+  a hint-only flow and another flow both report at one sink line, the other
+  flow's row is emitted.
 * **The existence-probe decline (feature 0104).** A `path` flow carries
   `Flow.bare_path_arg`, set before the flow's key is built and part of it, so
   a same-file caller's flow into the same sink stays a flow of its own. It is
@@ -216,6 +223,62 @@ next audit retries the file.
   `probe:param_hint`, after the sanitiser and guard tests, so a flow they
   cover keeps their label. A composed argument (a join, a template, a value
   built with `+=`) and every other language still report.
+* **The command class (feature 0105).** One classifier, memoised per call
+  (`Calls.command_class`), puts every command-keyed call in the first class
+  that holds, in this order: `process`, a profile builtin, a shell template or
+  process evidence; none, a regex receiver, whose call is then no sink and so
+  has no flow; `store`, a receiver with data-store evidence; `text`, a value
+  receiver with no command evidence whose program argument opens one SQL
+  statement at its leading literal's head (the literal reached through at most
+  `MAX_SPINE` (8) left operands, `MAX_STATEMENT_HEAD` (160) bytes of it read);
+  `unproven`, a `system` key on a value receiver with no command evidence;
+  else `process`. Every flow carries the class as `Flow.command_class`:
+  `"unproven"`, `"text"` or `"store"`, else `""` (a process, a builtin, and
+  every flow of another family). Only a rule's `accepts` reads it
+  (`FamilyRule.accepts`; `None` accepts every flow), which sends each
+  `command` flow to at most one of the family's two rules before `decide` sees
+  it (`consume.CLASS_REPORTS`): `""` and `"unproven"` to CWE-78, `"text"` and
+  `"store"` to CWE-89, an `"unproven"` or `"store"` flow only with a real
+  external origin (`real_external`: an external origin other than the
+  parameter-name hint alone). A flow no rule accepts is never decided, tallied
+  or declined. CWE-89 (`cwe.injection.sql`) is no owned check id: the regex
+  body keeps its rows on every line, and the head adds an AST row only at a
+  call no regex CWE-89 row covers. The classes, the rules that bind them and
+  their known gaps are in the CWE agent's `SKILLS.md`.
+* **Argument spans (feature 0105).** Beside `span`, the sink call's byte span,
+  every flow carries `Flow.arg_span`, its argument node's byte span: the lines
+  a statement call's argument is written on, which CWE-89's cover test reads
+  where the call's own lines also hold a callback body and later arguments.
+  The flow pass sets it on every flow and every answer carries it; a flow
+  built without it (`None`, a test double) reads its whole sink span. Every
+  flow also carries `Flow.program_span`: for a `command` flow, the byte span
+  of its sink's program argument (`Calls.program_arg`), the node the
+  statement-text class is read from, whichever argument the flow's own is (for
+  a statement hoisted into a variable, the name at the call, never its
+  definition); `None` for every other family and for a test double. The cover
+  test groups the reported flows by their sink call (`consume.sink_flows`: by
+  the call, not by the line, so another call written on the same line does not
+  join them) and reads each sink on its sink line, its program argument's
+  lines and the argument lines of every flow reported at it
+  (`consume.argument_lines`). So a statement at the program position counts
+  although no reported flow reads it; one elsewhere in the call counts only
+  through a reported flow's argument. When none of those lines carries
+  statement text at a literal's head, the statement reads as hoisted into a
+  variable (decided once per sink, over all of those lines), and the lines the
+  sink's reported flows pass through (their hops) count too, such as the line
+  that built the statement (`injection_check._cover_lines`).
+* **The answer schema.** These facts cross the worker boundary in the answer,
+  never in a finding (`validation.flow` keeps its keys): `ANSWER_SCHEMA` is 3
+  (2 added `bare_path_arg`, feature 0104; 3 adds `command_class`, `arg_span`
+  and `program_span`, feature 0105). The parent validates each field
+  (`command_class` one of its four values, `arg_span` a span within the
+  shipped bytes, as `span` is, and `program_span` the same unless it is
+  `null`, a flow's one nullable field) and refuses an answer of another schema
+  (`bad_model`: the file falls back to the regex tier); the answer cache's key
+  carries the schema, so an answer of an older schema is never served. Parse
+  workers load the layer from the installed code when they start, so a running
+  agent is restarted after an upgrade: a worker started from the new code
+  answers with schema 3, which an agent still running the old code refuses.
 
 The row keeps the regex tier's `check_id`, category, title, severity and
 recommendation, so finding identity is unchanged. It anchors at the **sink
@@ -225,26 +288,29 @@ carries the AST facts under the top-level `validation.ast` and
 [agent_protocol.md](agent_protocol.md#ast-tier-fields-feature-0102-all-optional).
 
 **Hint-only rows as one row (feature 0104).** When every row a check id has
-in a file is hint-only (CWE-22 or CWE-78; the hint never sources CWE-918) and
-there are 2 to `MAX_GROUP_SINKS` (64) of them, the file reports them as one
-row. The consumer head picks the group once per file and rule
-(`consume.hint_groups`: the sink lines of the rows it emits, less those a
-more specific child replaces and those its line loop never reads) and stamps
-each member's row as it appends it (`stamp_member`), so the per-finding
-events, the line collapse, the LLM tier's dedup and the code window still see
-every member's own row. The agent folds the rows (`fold_hint_groups`) once
-every row it emits is known: after the skill-vs-skill line collapse and the
-code window, before the validate stage, on both the audit path and the
-offline gate's. The group row is the lowest sink line's row (the anchor) with
-`validation.flow.sinks`, the members' sink lines, and a description naming
-their count. The fold is refused, and the rows kept as they were, when a
-member's row is missing or out of order, carries a merge record, or another
-row that one line reconciles with it stands at a member line. The validate
-stage re-checks the group on its own reads: it runs L1 on every member and
-keeps one row only when each member's result equals the anchor's and no
-rollup parent would stand over it; otherwise the members' rows take its
-place, each with its own result (`hint_rows`). Grouping is presentation,
-never a gate: a fold that fails keeps every row.
+in a file is hint-only (CWE-22 or CWE-78, and since feature 0105 the AST
+tier's CWE-89 rows, where the regex body's rows elsewhere in the file do not
+count to pick the group, though a regex CWE-89 row shares the group row's
+rollup key (category, title, file), so a CWE-89 group stands only in a file
+with no regex CWE-89 row; the hint never sources CWE-918) and there are 2 to
+`MAX_GROUP_SINKS` (64) of them, the file reports them as one row. The consumer head picks the
+group once per file and rule (`consume.hint_groups`: the sink lines of the
+rows it emits, less those a more specific child replaces and those its line
+loop never reads) and stamps each member's row as it appends it
+(`stamp_member`), so the per-finding events, the line collapse, the LLM tier's
+dedup and the code window still see every member's own row. The agent folds
+the rows (`fold_hint_groups`) once every row it emits is known: after the
+skill-vs-skill line collapse and the code window, before the validate stage,
+on both the audit path and the offline gate's. The group row is the lowest
+sink line's row (the anchor) with `validation.flow.sinks`, the members' sink
+lines, and a description naming their count. The fold is refused, and the rows
+kept as they were, when a member's row is missing or out of order, carries a
+merge record, or another row that one line reconciles with it stands at a
+member line. The validate stage re-checks the group on its own reads: it runs
+L1 on every member and keeps one row only when each member's result equals the
+anchor's and no rollup parent would stand over it; otherwise the members' rows
+take its place, each with its own result (`hint_rows`). Grouping is
+presentation, never a gate: a fold that fails keeps every row.
 
 ## Coverage
 
@@ -259,15 +325,19 @@ named, and scan-set coverage (`unsupported`) is kept apart from AST coverage.
 
 ## Declines
 
-A decline is the layer's only suppression. Two kinds are structural: a
+A decline is the layer's only suppression, save one: since feature 0105, at a
+data-store call or an unproven `system` call a flow with no real external
+origin is accepted by no rule, so it is dropped before it is decided, with no
+decline and no tally (*The command class*, above). Two kinds are structural: a
 covering sanitiser in the value's path (`sanitized:<roles>`) or a covering
 guard before the sink (`guarded:<role>`). The third, `probe:param_hint`
 (feature 0104), declines a CWE-22 existence probe whose argument is a
 parameter the name hint alone sources (`Flow.bare_path_arg`, above). No
 sanitiser, guard or allowlist recognised by name ever deletes a finding at the
 validation layer. Each decline is recorded on the audit and streamed as one
-`ast_decline` thinking line (`family`, `file`, `line`, `rule`, `origins`), at
-most 50 per label in a bounded heap, followed by one `ast_decline_summary`
+`ast_decline` thinking line (`family`, `file`, `line`, `rule`, `origins`;
+since feature 0105 a `command` line may be a decline under the CWE-89 rule),
+at most 50 per label in a bounded heap, followed by one `ast_decline_summary`
 line per audit. A decline is never a `false_positive` label.
 
 ## Isolation
@@ -322,9 +392,9 @@ agent's concurrent audits. The model cache is byte-budgeted (at most 128 MB
 and a quarter of the deployment memory limit, an analysis charged to its
 model), keyed by the file's real path, size, mtime, grammar pack, model
 schema, language and grammar entry point (an answer's key adds the answer
-schema), single-flight, and shared across audits: the key makes a stale
-entry unreachable, so it is not cleared per audit. In production it holds
-answers, which weigh about a fourteenth of their models.
+schema, 3 since feature 0105), single-flight, and shared across audits: the
+key makes a stale entry unreachable, so it is not cleared per audit. In
+production it holds answers, which weigh about a fourteenth of their models.
 
 ## Determinism
 
@@ -346,13 +416,15 @@ AST tier owns its check ids on every file it parses cleanly; the regex bodies
 own them on every other file.
 
 * **Rollback is a code revert** of the consumer heads (the CWE-22, CWE-918 and
-  CWE-78 heads in the CWE skills) and a redeploy of the agent: an image
-  rebuild, or a native reinstall. The regex bodies are never deleted, so the
-  revert restores the pre-0102 behaviour exactly. No data migration and no
-  frontend change are involved. A reverted agent stops writing
-  `validation.ast`/`validation.flow` and the decline lines; rows both tiers
-  produce move back from the sink line to the regex anchor line (lineage keys
-  carry no line, so identity is kept).
+  CWE-78 heads in the CWE skills, and since feature 0105 the CWE-89 one) and a
+  redeploy of the agent: an image rebuild, or a native reinstall. The regex
+  bodies are never deleted, so the revert restores the pre-0102 behaviour
+  exactly. No data migration and no frontend change are involved. A reverted
+  agent stops writing `validation.ast`/`validation.flow` and the decline
+  lines; rows both tiers produce move back from the sink line to the regex
+  anchor line (lineage keys carry no line, so identity is kept). A backend
+  that holds CWE-89 (below) may stay: with no AST CWE-89 row to protect, it
+  holds only regex ones, an over-hold that never closes a row wrongly.
 * **Deploy order: backend before agents.** An AST-owned finding is
   deterministic-tier, so a later scan that does not re-report it would close
   it as fixed, and when its file falls back to regex (a new syntax error, a
@@ -360,16 +432,36 @@ own them on every other file.
   backend's lineage pass therefore reads the streamed `ast_coverage` and holds
   CWE-22/918/78 rows on fallback files `unconfirmed` instead
   ([agent_protocol.md](agent_protocol.md#ast-tier-fields-feature-0102-all-optional)).
-  A backend carrying this guard must be running before agents that carry the
-  layer; an agent with the layer against an older backend would let such rows
-  close as fixed.
+  Since feature 0105 it holds CWE-89 rows too: an AST CWE-89 row stands only
+  where no regex CWE-89 row covers its call, so the regex body cannot
+  reproduce it either. A lineage row carries no check id, so a regex CWE-89
+  row the scan stopped reporting on a fallback file is held as well, an
+  over-hold that never closes a row wrongly and settles on the next scan that
+  parses the file (on a file that keeps falling back it stays `unconfirmed`,
+  even after its code is fixed); on a tripped breaker every deterministic CWE-89 row of the
+  agent the scan stopped reporting is held. A backend carrying this guard must
+  be running before agents that carry the layer, and one that holds CWE-89
+  before agents that carry feature 0105: against an older backend a file's
+  CWE-89 lineage row closes as `fixed` when the file falls back, unless the
+  scan still reports a regex CWE-89 row in that file, and reopens as
+  `regression` once the file parses again.
 * **Line moves.** A row both tiers can produce may change `line_start` when its
   file moves between tiers (parse success ↔ fallback): the AST tier anchors at
   the sink, the regex tier where its pattern matched.
-* **Rule changes.** A release that changes an AST rule (feature 0104) changes
-  the deterministic rows a scan reports with no change of file, so lineage
-  rows close or reopen on the first scan after an upgrade or a revert; the
-  effects are listed in
+* **Rule changes.** A release that changes an AST rule (features 0104 and
+  0105) changes the deterministic rows a scan reports with no change of file,
+  so lineage rows close or reopen on the first scan after an upgrade or a
+  revert. Feature 0105 also moves rows between categories, per file: a lineage
+  key carries no line, and an AST CWE-89 row has the regex CWE-89 row's check
+  id, title and category, so a file's CWE-89 rows of both tiers share one
+  lineage row. A file's CWE-78 lineage row closes as `fixed` when its last
+  CWE-78 row goes; a re-labelled call's CWE-89 row (another check id and
+  category, so another lineage row) joins the file's CWE-89 lineage row,
+  opening one only where the file had no CWE-89 row of either tier and
+  reopening it as `regression` where that lineage row was closed `fixed`; and
+  a revert reopens a closed CWE-78 lineage row as `regression` and closes the
+  CWE-89 one as `fixed` only when no regex CWE-89 row remains in the file. The
+  effects of each release, including the rows its new rules open, are listed in
   [agent_protocol.md](agent_protocol.md#ast-tier-fields-feature-0102-all-optional).
 
 ## Using the layer from an agent
@@ -388,9 +480,16 @@ owns_lang(path) -> bool                      # a profile exists (no parse)
 model_needed(text, family) -> bool           # the prefilter: False = no sink of the family can exist
 roles.needed_families(text, families) -> frozenset[str]   # several families' prefilters, one glued view
 FamilyRule(family, check_id, category, title, severity, recommendation, cwe_id,
-           gate=None, heuristic=None)        # one per migrated check, shared by both tiers
+           gate=None, heuristic=None, accepts=None)   # one per migrated check, shared by both tiers
 rule_row(rule, description, *, file_path, line, lines, **extra) -> dict   # the row both tiers emit (D19)
 family_spans(model, rule, ctx, path, *, server_ctx=True) -> dict[int, Flow]
+family_flows(model, rule, ctx, path, *,
+             server_ctx=True) -> tuple[dict[int, Flow], Sequence[Flow]]   # 0105: the spans and the flows reported
+sink_flows(spans, reported=()) -> dict[int, Sequence[Flow]]   # 0105: sink line -> every flow reported at its call
+argument_lines(spans, nl_lines, flows=None) -> dict[int, Sequence[int]]   # 0105: sink line -> its arguments' lines
+process_flow(flow) -> bool                   # 0105: the CWE-78 command rule's `accepts` (`CLASS_REPORTS`)
+statement_flow(flow) -> bool                 # 0105: the CWE-89 command rule's `accepts` (`CLASS_REPORTS`)
+statement_param(flow) -> str | None          # 0105: the command parameter heuristic under CWE-89's token
 emit_for_line(spans, line_num, rule, *, file_path, nl_lines, findings, enrich=identity) -> bool
 flow_to_finding(flow, rule, *, file_path, nl_lines) -> dict
 hint_groups(spans, excluded) -> tuple[int, ...]   # 0104: a file's group of hint-only sink lines, or ()
@@ -417,7 +516,16 @@ A migrated check follows one shape:
    migrated check calls.
 3. In the line loop, call `emit_for_line` first: True on a span line (the AST
    owns it, the regex siblings stay silent there), and the row appended once,
-   at the sink line. When `spans` is `None`, run the regex body unchanged.
+   at the sink line. When `spans` is `None`, run the regex body unchanged. A
+   family-fed check the tier does not own (CWE-89, feature 0105) emits its
+   rows after the line loop instead, at the sinks no regex row covers: the CWE
+   agent's `injection_check._statement_rows` reads them through
+   `family_flows`, `sink_flows` and `argument_lines`. The line loop numbers
+   lines by `str.splitlines()` and the model by `\n` alone, so at a form feed,
+   a vertical tab or a Unicode line break the loop splits a line the model
+   keeps whole: the cwe agent's head reads each loop line as the model line it
+   lies on (`_ast_head.model_line`, `loop_lines`; feature 0105), so the lines
+   a span claims and the sink lines the loop reads are the parse tree's.
 
 The rules every consumer keeps (`test_0102_consumer_contract.py` checks them
 over `OWNED_CHECK_IDS`): one owner per check id per file; the finding schema
@@ -425,7 +533,9 @@ unchanged, with AST facts only under `validation.ast` / `validation.flow`; no
 literal value emitted; corpus parity before ownership and a held-out sample
 after the lexicons freeze; an `AST usage` bullet with known gaps in the agent's
 `SKILLS.md`; new words in `shared/ast/roles/`, never a per-agent table; every
-cap from `limits.py`.
+cap from `limits.py`; and the category of a check whose AST rows the regex
+fallback cannot reproduce in the backend lineage guard's set (the deploy-order
+bullet above; CWE-89 since feature 0105).
 
 ## Adding a language
 
@@ -451,7 +561,8 @@ examples in the CWE agent's `SKILLS.md`:
 
 * No cross-file flow; a request object reaching a sink only through a
   parameter with no role word is UNKNOWN-only and tallied, not reported (the
-  CWE-78 command parameter heuristic is the one named exception).
+  command parameter heuristic, under CWE-78 and CWE-89, is the one named
+  exception).
 * Calls to unknown callees pass origins through (the false-positive direction,
   filtered downstream); a sanitiser or guard whose name carries no concept
   word is not seen.
