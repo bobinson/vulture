@@ -1,0 +1,203 @@
+name: install-online-smoke
+
+# Closes #29 ([REQUEST] Test install.sh) — the durable half.
+#
+# The native install method has two halves in CI today, and neither one runs
+# the flow a user actually runs:
+#   - scripts/smoke-install.sh (release.yml) installs a LOCALLY BUILT tarball
+#     via VULTURE_OFFLINE_TARBALL — it never touches the GitHub API, never
+#     downloads a published release, and never exercises the SHA/cosign
+#     verification of a real release.
+#   - scripts/tests/docker (test-install-docker.yml) runs install.sh in fresh
+#     containers, but against a FABRICATED tarball.
+# This workflow runs the real online flow from the README /
+# docs/guides/native_installation.md on every OS the installer supports
+# (GNU/Linux and macOS): the checked-out install.sh resolves the latest
+# published release via the GitHub API, downloads the real tarball, verifies
+# it (SHA256 + cosign), installs it, and then a real skills-only
+# `vulture scan` of a tiny fixture must complete with findings — proving the
+# audit pipeline runs end-to-end, not merely that the installer exits 0.
+#
+# All install/doctor/start/scan/uninstall assertions live in
+# scripts/smoke-install.sh (online mode) instead of being duplicated here as
+# inline workflow steps, so the two harnesses cannot drift apart: release.yml
+# keeps calling the same script with a local tarball, this workflow calls it
+# with no tarball for the online path. The only workflow-level logic is which
+# installer the job exercises (below).
+#
+# Which installer each job exercises:
+#   - online-smoke (push / PR / dispatch): the CHECKED-OUT install.sh, which
+#     is the copy under test on a PR and which curl|sh could not fetch yet.
+#   - weekly-online-smoke (schedule only): the LITERAL user-facing command
+#     `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh`
+#     (see scripts/smoke-install.sh --online-curl). On main / the weekly run
+#     that file is byte-identical to the checked-out one, so the two jobs
+#     exercise the same installer code — the weekly job additionally proves
+#     the documented delivery path itself (raw.githubusercontent, the exact
+#     command a user pastes) still works.
+#   The literal curl|sh lives in scripts/smoke-install.sh, not in this file:
+#   test_workflow_supply_chain.sh (S2) forbids piping curl/wget into a shell
+#   in ANY workflow, and the literal command is the documented install
+#   command under test, so it belongs in the script it tests, not in YAML.
+#
+# Verification and failure policy (both jobs):
+#   - cosign is installed first (same SHA pin as release.yml) and
+#     VULTURE_REQUIRE_COSIGN=true is set, so install.sh refuses to install
+#     without cosign on PATH and refuses a silent downgrade to SHA-only
+#     verification when a published release carries no signature — the
+#     published artifacts are cosign-verified, never SHA-only by accident.
+#   - If install.sh cannot reach the GitHub API it warns
+#     "GitHub API unreachable; falling back to <FALLBACK_TAG>" and installs
+#     that old release. smoke-install.sh captures the installer log and
+#     FAILS on that warning: a weekly/push run must never silently pass
+#     while testing a stale release.
+#   - The installed version IS the latest published release: a separate
+#     workflow step (the reviewer's prescribed check, verbatim) fetches
+#     the latest tag from the GitHub API and requires `vulture version`
+#     to contain it. It runs as its own step, after the smoke script,
+#     because the script is also the thing that uninstalls — so the smoke
+#     step defers its uninstall (VULTURE_SMOKE_DEFER_UNINSTALL=1) and the
+#     script exports the installed bin dir to later steps via GITHUB_PATH;
+#     the workflow's final step (if: always()) stops the daemon and
+#     uninstalls. The log-grep fallback gate in the script stays as the
+#     first line of defence: it catches the API-unreachable case even
+#     before the version comparison runs.
+#
+# No LLM keys are configured here on purpose: the scan runs skills-only
+# (the default), which is what #29 asks to verify first. An LLM-backed run
+# needs provider credentials and stays a manual check.
+
+on:
+  push:
+    paths:
+      - 'install.sh'
+      - 'scripts/smoke-install.sh'
+      - '.github/workflows/test-install-online.yml'
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'scripts/smoke-install.sh'
+      - '.github/workflows/test-install-online.yml'
+  schedule:
+    # Weekly: catch drift between install.sh and the published releases
+    # (stale fallback tag, moved release assets, revoked signing certs)
+    # even when install.sh itself has not changed.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  online-smoke:
+    # Push / PR / dispatch only — the weekly run is weekly-online-smoke.
+    if: github.event_name != 'schedule'
+    # Runner labels mirror the release matrix in release.yml.
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest }
+          - { runner: macos-14 }
+          - { runner: macos-15-intel }
+    env:
+      VULTURE_NO_UPDATE_CHECK: 'true'
+      # Published artifacts must be cosign-verified; install.sh fails
+      # closed without cosign (see scripts/smoke-install.sh, online mode).
+      VULTURE_REQUIRE_COSIGN: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY, not just the action — same pin as the
+          # `sign` job in release.yml.
+          cosign-release: 'v2.4.3'
+
+      - name: online install smoke test (checked-out install.sh)
+        # The uninstall is deferred (VULTURE_SMOKE_DEFER_UNINSTALL=1) so
+        # the version check below can run `vulture version` against the
+        # installed binary; the final step uninstalls.
+        run: VULTURE_SMOKE_DEFER_UNINSTALL=1 scripts/smoke-install.sh
+
+      - name: installed version is the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name); vulture version | grep -qF "$latest" || { echo "FAIL: installed $(vulture version), latest is $latest"; exit 1; }
+
+      - name: stop daemon and uninstall
+        if: always()
+        run: |
+          if [ -n "${VULTURE_SMOKE_HOME:-}" ]; then
+            export VULTURE_HOME="$VULTURE_SMOKE_HOME"
+            vulture stop || true
+            vulture uninstall --yes || true
+            if [ -d "$VULTURE_SMOKE_HOME" ]; then
+              echo "FAIL: $VULTURE_SMOKE_HOME still present after uninstall"
+              exit 1
+            fi
+          fi
+
+  weekly-online-smoke:
+    # Schedule only — exercises the literal documented curl|sh command.
+    if: github.event_name == 'schedule'
+    name: weekly ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest }
+          - { runner: macos-14 }
+          - { runner: macos-15-intel }
+    env:
+      VULTURE_NO_UPDATE_CHECK: 'true'
+      VULTURE_REQUIRE_COSIGN: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY, not just the action — same pin as the
+          # `sign` job in release.yml.
+          cosign-release: 'v2.4.3'
+
+      - name: online install smoke test (literal curl|sh)
+        # The uninstall is deferred (VULTURE_SMOKE_DEFER_UNINSTALL=1) so
+        # the version check below can run `vulture version` against the
+        # installed binary; the final step uninstalls.
+        run: VULTURE_SMOKE_DEFER_UNINSTALL=1 scripts/smoke-install.sh --online-curl
+
+      - name: installed version is the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name); vulture version | grep -qF "$latest" || { echo "FAIL: installed $(vulture version), latest is $latest"; exit 1; }
+
+      - name: stop daemon and uninstall
+        if: always()
+        run: |
+          if [ -n "${VULTURE_SMOKE_HOME:-}" ]; then
+            export VULTURE_HOME="$VULTURE_SMOKE_HOME"
+            vulture stop || true
+            vulture uninstall --yes || true
+            if [ -d "$VULTURE_SMOKE_HOME" ]; then
+              echo "FAIL: $VULTURE_SMOKE_HOME still present after uninstall"
+              exit 1
+            fi
+          fi

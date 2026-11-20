@@ -5,7 +5,40 @@
 # verifying install.sh changes locally.
 #
 # Usage:
-#   scripts/smoke-install.sh <tarball.tar.gz>
+#   scripts/smoke-install.sh <tarball.tar.gz>   offline (release.yml): a
+#                                               locally built tarball; never
+#                                               touches the GitHub API or a
+#                                               published release.
+#   scripts/smoke-install.sh [--online]         online (test-install-online.yml):
+#                                               the CHECKED-OUT install.sh
+#                                               against the latest PUBLISHED
+#                                               release — the flow a user runs.
+#   scripts/smoke-install.sh --online-curl      online via the LITERAL
+#                                               documented command
+#                                               `curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh`
+#                                               (weekly schedule job only).
+#
+# Online modes additionally assert:
+#   - the published artifacts are cosign-verified: VULTURE_REQUIRE_COSIGN
+#     is set, so install.sh refuses to install without cosign on PATH and
+#     refuses a silent downgrade to SHA-only verification when a published
+#     release carries no signature. VULTURE_ALLOW_UNSIGNED is NOT set (and
+#     is unset if inherited), so nothing can quietly re-enable SHA-only.
+#   - the installer did NOT fall back to the hardcoded old release: the
+#     installer log is captured and the run FAILS if it contains the
+#     "falling back to" warning (GitHub API unreachable), instead of
+#     silently passing a smoke test of a stale release.
+#   - the installed version IS the latest published release: the workflow
+#     runs the reviewer's version check as its own step after this script
+#     (see test-install-online.yml), so in online mode under CI this
+#     script exports the installed bin dir to later steps via GITHUB_PATH
+#     (and the install dir as VULTURE_SMOKE_HOME via GITHUB_ENV) and
+#     defers its uninstall to the workflow's final step when
+#     VULTURE_SMOKE_DEFER_UNINSTALL=1 is set. Without the deferral the
+#     binary would be gone before the version check could run it.
+#   - the default user path is tested: unlike the offline mode, the online
+#     modes do NOT force VULTURE_USE_SYSTEM_PYTHON=0 — a published tarball
+#     bundles its Python runtime, so the installer default applies.
 #
 # What it asserts:
 #   - install.sh completes without sudo
@@ -23,59 +56,130 @@
 
 set -euo pipefail
 
+# Modes: a tarball argument means the OFFLINE mode (release.yml); no
+# argument means ONLINE via the checked-out install.sh; --online-curl
+# means ONLINE via the literal documented curl|sh command.
+SMOKE_MODE=offline
 TARBALL=${1:-}
-if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
-    echo "usage: $0 <vulture-*.tar.gz>" >&2
-    exit 1
-fi
+case "${1:-}" in
+    --online) SMOKE_MODE=online ;;
+    --online-curl) SMOKE_MODE=online-curl ;;
+    "") SMOKE_MODE=online ;;
+    *)
+        if [ ! -f "$TARBALL" ]; then
+            echo "usage: $0 [<vulture-*.tar.gz> | --online | --online-curl]" >&2
+            exit 1
+        fi
+        ;;
+esac
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/hash.sh"
 SMOKE_HOME=$(mktemp -d)/vulture-smoke
 SMOKE_HOME_REAL=$(readlink -f "$SMOKE_HOME" 2>/dev/null || echo "$SMOKE_HOME")
-TARBALL_REAL=$(readlink -f "$TARBALL" 2>/dev/null || echo "$TARBALL")
-
-# Work on an isolated COPY of the tarball: the offline-install path writes
-# companion fixtures (SHA256SUMS + an empty .sig) next to it, and we must NOT
-# pollute the tarball's source dir — in CI that dir is dist/, which is uploaded
-# verbatim as the release assets (an empty .sig there breaks the GH upload).
 SMOKE_WORK=$(mktemp -d)
-cp "$TARBALL_REAL" "$SMOKE_WORK/"
-OFFLINE_TARBALL="$SMOKE_WORK/$(basename "$TARBALL_REAL")"
 
-echo "==> smoke install into $SMOKE_HOME"
+echo "==> smoke install into $SMOKE_HOME (mode: $SMOKE_MODE)"
 
-# Use the offline-tarball path so we don't need a real GH release.
+# Both modes install into the isolated SMOKE_HOME and skip the update check.
 export VULTURE_HOME="$SMOKE_HOME_REAL"
-export VULTURE_OFFLINE_TARBALL="$OFFLINE_TARBALL"
 export VULTURE_NO_UPDATE_CHECK=true
-export VULTURE_ALLOW_UNSIGNED=true   # local builds aren't cosign-signed
-# Disable the SYSTEM-Python agent path so a LEAN (PBS_NOT_BUNDLED) tarball stays
-# deterministic: with AUTO detect (the default), a runner that happens to have
-# Python 3.12/3.13 would pull the entire hash-pinned agent closure (~80 PyPI
-# wheels) on every release build × platform, making releases slow and PyPI-flaky.
-# That system-Python install path is covered by the docker e2e matrix
-# (scripts/tests/docker) on controlled interpreters.
-#
-# NOTE: this does NOT force CLI-only for a BUNDLED tarball. install.sh checks for
-# a bundled runtime/python interpreter BEFORE consulting VULTURE_USE_SYSTEM_PYTHON
-# (see install_python_deps), so a VULTURE_BUNDLE_PBS=1 tarball runs its agents
-# from the bundled interpreter regardless of this flag. The bundled-vs-lean split
-# below uses the PBS marker to decide whether agents (and findings>0) are REQUIRED.
-export VULTURE_USE_SYSTEM_PYTHON=0
 
-# Prepare offline-companion fixtures beside the COPY (never the source dir).
-SHASUM_PATH=${OFFLINE_TARBALL%.tar.gz}.SHA256SUMS
-TARBALL_NAME=$(basename "$OFFLINE_TARBALL")
-SUM=$(sha256_of "$OFFLINE_TARBALL")
-printf '%s  %s\n' "$SUM" "$TARBALL_NAME" > "$SHASUM_PATH"
-: > "${OFFLINE_TARBALL%.tar.gz}.sig"   # empty sig OK with ALLOW_UNSIGNED
+if [ "$SMOKE_MODE" = "offline" ]; then
+    TARBALL_REAL=$(readlink -f "$TARBALL" 2>/dev/null || echo "$TARBALL")
+
+    # Work on an isolated COPY of the tarball: the offline-install path writes
+    # companion fixtures (SHA256SUMS + an empty .sig) next to it, and we must NOT
+    # pollute the tarball's source dir — in CI that dir is dist/, which is uploaded
+    # verbatim as the release assets (an empty .sig there breaks the GH upload).
+    cp "$TARBALL_REAL" "$SMOKE_WORK/"
+    OFFLINE_TARBALL="$SMOKE_WORK/$(basename "$TARBALL_REAL")"
+
+    # Use the offline-tarball path so we don't need a real GH release.
+    export VULTURE_OFFLINE_TARBALL="$OFFLINE_TARBALL"
+    export VULTURE_ALLOW_UNSIGNED=true   # local builds aren't cosign-signed
+    # Disable the SYSTEM-Python agent path so a LEAN (PBS_NOT_BUNDLED) tarball stays
+    # deterministic: with AUTO detect (the default), a runner that happens to have
+    # Python 3.12/3.13 would pull the entire hash-pinned agent closure (~80 PyPI
+    # wheels) on every release build × platform, making releases slow and PyPI-flaky.
+    # That system-Python install path is covered by the docker e2e matrix
+    # (scripts/tests/docker) on controlled interpreters.
+    #
+    # NOTE: this does NOT force CLI-only for a BUNDLED tarball. install.sh checks for
+    # a bundled runtime/python interpreter BEFORE consulting VULTURE_USE_SYSTEM_PYTHON
+    # (see install_python_deps), so a VULTURE_BUNDLE_PBS=1 tarball runs its agents
+    # from the bundled interpreter regardless of this flag. The bundled-vs-lean split
+    # below uses the PBS marker to decide whether agents (and findings>0) are REQUIRED.
+    export VULTURE_USE_SYSTEM_PYTHON=0
+
+    # Prepare offline-companion fixtures beside the COPY (never the source dir).
+    SHASUM_PATH=${OFFLINE_TARBALL%.tar.gz}.SHA256SUMS
+    TARBALL_NAME=$(basename "$OFFLINE_TARBALL")
+    SUM=$(sha256_of "$OFFLINE_TARBALL")
+    printf '%s  %s\n' "$SUM" "$TARBALL_NAME" > "$SHASUM_PATH"
+    : > "${OFFLINE_TARBALL%.tar.gz}.sig"   # empty sig OK with ALLOW_UNSIGNED
+else
+    # Online modes: the installer downloads the latest PUBLISHED release, so
+    # the published artifacts must be cosign-verified — never SHA-only by
+    # accident. VULTURE_REQUIRE_COSIGN makes install.sh fail closed when
+    # cosign is missing; when cosign IS present install.sh already refuses a
+    # missing signature/certificate unless ALLOW_UNSIGNED is set, so unset
+    # that here (and VULTURE_OFFLINE_TARBALL) even if a caller exported them.
+    # VULTURE_USE_SYSTEM_PYTHON is deliberately left at the installer
+    # default: the online test exercises the path a real user takes.
+    unset VULTURE_OFFLINE_TARBALL VULTURE_ALLOW_UNSIGNED
+    export VULTURE_REQUIRE_COSIGN=true
+fi
 
 # Run installer. Note: we run a shell-piped invocation rather than
-# bash -x so we can see real failure paths.
-echo "==> running install.sh"
-sh "$REPO_ROOT/install.sh" || { echo "FAIL: install.sh exited non-zero"; exit 1; }
+# bash -x so we can see real failure paths. Output is tee'd to a log so the
+# online modes can fail on a fallback to an old release (below).
+INSTALL_LOG="$SMOKE_WORK/install.log"
+if [ "$SMOKE_MODE" = "offline" ]; then
+    echo "==> running install.sh (offline tarball)"
+    sh "$REPO_ROOT/install.sh" 2>&1 | tee "$INSTALL_LOG" \
+        || { echo "FAIL: install.sh exited non-zero"; exit 1; }
+elif [ "$SMOKE_MODE" = "online-curl" ]; then
+    echo "==> running the literal documented install command"
+    # This curl|sh IS the documented user-facing install command and the
+    # thing under test on the weekly run — intentional here, in a script,
+    # not in a workflow: test_workflow_supply_chain.sh (S2) forbids piping
+    # curl/wget into a shell in any workflow file.
+    curl -fsSL https://raw.githubusercontent.com/bobinson/vulture/main/install.sh | sh 2>&1 | tee "$INSTALL_LOG" \
+        || { echo "FAIL: curl|sh install exited non-zero"; exit 1; }
+else
+    echo "==> running install.sh (online, real release)"
+    sh "$REPO_ROOT/install.sh" 2>&1 | tee "$INSTALL_LOG" \
+        || { echo "FAIL: install.sh exited non-zero"; exit 1; }
+fi
+
+# Online modes only: fail — do not silently continue — when the installer
+# fell back to its hardcoded old release (install.sh warns "GitHub API
+# unreachable; falling back to <FALLBACK_TAG>" and installs that tag). A
+# smoke test that passed against a stale release would prove nothing about
+# the current release, so the fallback warning is a hard failure here.
+if [ "$SMOKE_MODE" != "offline" ]; then
+    if grep -q "falling back to" "$INSTALL_LOG"; then
+        echo "FAIL: installer fell back to an old release instead of the latest published release:"
+        grep "falling back to" "$INSTALL_LOG" || true
+        echo "Refusing to pass a smoke test of a stale release (GitHub API unreachable or no latest release resolved)."
+        exit 1
+    fi
+    echo "    installed version: $(cat "$SMOKE_HOME_REAL/VERSION" 2>/dev/null || echo unknown)"
+    # CI only: expose the install to later workflow steps — the bin dir on
+    # PATH (the reviewer's version check runs `vulture version` as its own
+    # step after this script) and the install dir as VULTURE_SMOKE_HOME
+    # (the workflow's final step uninstalls it when the uninstall is
+    # deferred). No-ops outside GitHub Actions, where GITHUB_PATH and
+    # GITHUB_ENV are unset.
+    if [ -n "${GITHUB_PATH:-}" ]; then
+        printf '%s/bin\n' "$SMOKE_HOME_REAL" >> "$GITHUB_PATH"
+    fi
+    if [ -n "${GITHUB_ENV:-}" ]; then
+        printf 'VULTURE_SMOKE_HOME=%s\n' "$SMOKE_HOME_REAL" >> "$GITHUB_ENV"
+    fi
+fi
 
 # Assert binary is reachable at the documented path.
 BIN="$SMOKE_HOME_REAL/bin/vulture"
@@ -333,12 +437,22 @@ fi
 
 stop_daemon
 
-# Uninstall cleanly.
-echo "==> running vulture uninstall --yes"
-"$BIN" uninstall --yes || { echo "FAIL: uninstall non-zero"; exit 1; }
-if [ -d "$SMOKE_HOME_REAL" ]; then
-    echo "FAIL: $SMOKE_HOME_REAL still present after uninstall"; exit 1
-fi
+# Uninstall, unless the CI workflow deferred it: test-install-online.yml
+# runs the reviewer's version check as a separate step after this script,
+# so with VULTURE_SMOKE_DEFER_UNINSTALL=1 (online modes under CI only)
+# the install stays in place and the workflow's final step uninstalls it.
+# The daemon is already stopped by the EXIT trap above.
+if [ "$SMOKE_MODE" != "offline" ] && [ "${VULTURE_SMOKE_DEFER_UNINSTALL:-}" = "1" ]; then
+    echo ""
+    echo "==> smoke install: PASS (uninstall deferred to the workflow step)"
+else
+    # Uninstall cleanly.
+    echo "==> running vulture uninstall --yes"
+    "$BIN" uninstall --yes || { echo "FAIL: uninstall non-zero"; exit 1; }
+    if [ -d "$SMOKE_HOME_REAL" ]; then
+        echo "FAIL: $SMOKE_HOME_REAL still present after uninstall"; exit 1
+    fi
 
-echo ""
-echo "==> smoke install: PASS"
+    echo ""
+    echo "==> smoke install: PASS"
+fi
