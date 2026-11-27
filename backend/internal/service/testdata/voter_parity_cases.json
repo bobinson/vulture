@@ -664,6 +664,86 @@
         "status": "likely_fp",
         "confidence": 0.0
       }
+    },
+    {
+      "name": "a refuted claim dismisses on its own, confidence preserved",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "claim_refuted",
+          "weight": -0.25
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.25
+      }
+    },
+    {
+      "name": "the same weight without a refuted claim stays suspicious",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "demoted",
+          "weight": -0.25
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.25
+      }
+    },
+    {
+      "name": "a refuted claim keeps a strong detection's confidence",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "claim_refuted",
+          "weight": -0.25
+        },
+        {
+          "id": "l1_context",
+          "result": "promoted",
+          "weight": 0.5
+        }
+      ],
+      "want": {
+        "status": "likely_fp",
+        "confidence": 0.75
+      }
+    },
+    {
+      "name": "a neutralised refutation (weight 0) dismisses nothing",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "claim_refuted",
+          "weight": 0.0
+        }
+      ],
+      "want": {
+        "status": "suspicious",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "an operator's positive label outranks a refuted claim",
+      "checks": [
+        {
+          "id": "llm_judge",
+          "result": "claim_refuted",
+          "weight": -0.25
+        },
+        {
+          "id": "memory",
+          "result": "user_confirmed",
+          "weight": 0.5
+        }
+      ],
+      "want": {
+        "status": "high_confidence",
+        "confidence": 0.75
+      }
     }
   ]
 }

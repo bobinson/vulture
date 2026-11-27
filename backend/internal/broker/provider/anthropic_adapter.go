@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -77,7 +78,12 @@ type anthResponse struct {
 		Input json.RawMessage `json:"input"`
 	} `json:"content"`
 	StopReason string `json:"stop_reason"`
-	Usage      *struct {
+	// StopDetails is set when StopReason is "refusal": the safety classifier's
+	// category (cyber, bio, ...).
+	StopDetails *struct {
+		Category string `json:"category"`
+	} `json:"stop_details"`
+	Usage *struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -233,7 +239,27 @@ func (a *anthropicAdapter) toResponse(wire *anthResponse, model, requestID strin
 	if len(out.ToolCalls) > 0 {
 		out.FinishReason = "tool_calls" // OpenAI-wire convention
 	}
+	if wire.StopReason == "refusal" {
+		category := ""
+		if wire.StopDetails != nil {
+			category = wire.StopDetails.Category
+		}
+		out.Refusal = "the model declined the request (refusal category: " + refusalCategory(category) + ")"
+	}
 	return out, nil
+}
+
+// refusalPattern is the shape of a classifier category Anthropic documents
+// (cyber, bio, frontier_llm, reasoning_extraction, ...).
+var refusalPattern = regexp.MustCompile(`^[a-z][a-z_]{0,39}$`)
+
+// refusalCategory echoes the provider's refusal category only when it has that
+// shape: the text reaches the agent's logs and the persisted degraded reason.
+func refusalCategory(raw string) string {
+	if refusalPattern.MatchString(raw) {
+		return raw
+	}
+	return "unspecified"
 }
 
 func mapAnthropicStop(r string) string {
@@ -244,6 +270,10 @@ func mapAnthropicStop(r string) string {
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "refusal":
+		// OpenAI's signal for a withheld answer (LiteLLM maps it the same way);
+		// the agents SDK raises ModelRefusalError on it.
+		return "content_filter"
 	default:
 		return r
 	}

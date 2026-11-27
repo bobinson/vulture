@@ -8,6 +8,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
 # shellcheck disable=SC1091  # lib/tier3.sh is linted on its own
 . "$SCRIPT_DIR/lib/tier3.sh"
+# shellcheck source=scripts/lib/models.sh
+. "$SCRIPT_DIR/lib/models.sh"
 
 usage() {
     cat <<'EOF'
@@ -15,8 +17,8 @@ Usage: scripts/vulture.sh server <provider> [model]
 
 Providers:
   openai [model]       OpenAI API (default: gpt-4o)
-  anthropic [model]    Anthropic API (default: claude-sonnet)
-  gemini [model]       Remote Google Gemini via GEMINI_API_KEY (default: gemini-pro)
+  anthropic [model]    Anthropic API (default: claude-sonnet-5-5)
+  gemini [model]       Remote Google Gemini via GEMINI_API_KEY (default: gemini-2.5-flash)
   ollama [model]       Local Ollama (default: qwen3:1.7b)
   lmstudio [model]     LM Studio (default: local-model)
   skills               Skills only — no LLM (fastest, no API key needed)
@@ -34,7 +36,7 @@ Options:
 Examples:
   scripts/vulture.sh server openai
   scripts/vulture.sh server openai gpt-4o
-  scripts/vulture.sh server anthropic claude-sonnet
+  scripts/vulture.sh server anthropic claude-sonnet-5-5
   scripts/vulture.sh server ollama qwen3:8b
   scripts/vulture.sh server lmstudio my-model
   scripts/vulture.sh server skills
@@ -255,8 +257,15 @@ case "$PROVIDER" in
         ;;
 
     anthropic)
-        MODEL="${MODEL:-claude-sonnet}"
+        MODEL="${MODEL:-$DEFAULT_ANTHROPIC_MODEL}"
         require_key ANTHROPIC_API_KEY "Anthropic"
+        # Without the broker the agent containers call Anthropic themselves: an
+        # inherited OPENAI_BASE_URL (an OpenAI-compatible gateway) written to
+        # .env below would route their Claude calls there. With the broker the
+        # backend keeps it, for embeddings; the broker never sends Claude to it.
+        [[ "$NO_BROKER" == "1" ]] && unset OPENAI_BASE_URL
+        # litellm/anthropic/ routes LiteLLM to Anthropic; the broker block strips it.
+        MODEL="$(normalize_model anthropic "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
         ;;
@@ -266,15 +275,14 @@ case "$PROVIDER" in
         # NOT an OpenAI-compat shim. Clear any inherited OPENAI_BASE_URL so the
         # .env-generation block below does not propagate a stale base URL to the
         # containers (which would re-route Gemini calls to the wrong endpoint).
-        MODEL="${MODEL:-gemini-pro}"
+        # The default is a live id, not the `gemini-pro` alias: the broker is
+        # handed the BARE model, and Google 404s an alias or a retired id.
+        MODEL="${MODEL:-$DEFAULT_GEMINI_MODEL}"
         require_key GEMINI_API_KEY "Gemini"
         unset OPENAI_BASE_URL 2>/dev/null || true
-        # `gemini-pro` is a built-in alias (provider.py → litellm/gemini/...).
-        # Any other Gemini model gets the litellm/gemini/ prefix so LiteLLM routes
-        # it to Google (parallels the lmstudio arm's openai/ prefixing).
-        if [[ "$MODEL" != "gemini-pro" && "$MODEL" != litellm/* ]]; then
-            MODEL="litellm/gemini/${MODEL#gemini/}"
-        fi
+        # Expands aliases and adds the litellm/gemini/ prefix so LiteLLM routes
+        # it to Google; the broker block strips the prefix again.
+        MODEL="$(normalize_model gemini "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
         ;;
@@ -400,6 +408,10 @@ fi
 
 echo "  Provider:  $PROVIDER"
 echo "  Model:     ${VULTURE_LLM_MODEL:-$MODEL}"
+# Without the broker the agents call OPENAI_BASE_URL themselves: show it.
+if [[ "${VULTURE_LLM_BROKER:-off}" != "on" && -n "${OPENAI_BASE_URL:-}" ]]; then
+    echo "  Endpoint:  $OPENAI_BASE_URL"
+fi
 echo "  LLM:       $(env_flag_word "${VULTURE_USE_LLM:-}")"
 print_tier3_state "$WANT_TIER3"
 if [[ "${VULTURE_LLM_BROKER:-off}" == "on" ]]; then

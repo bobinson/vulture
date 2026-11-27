@@ -230,6 +230,9 @@ func renderChatCompletion(resp *provider.CompletionResponse) map[string]any {
 	if len(resp.ToolCalls) > 0 {
 		msg["tool_calls"] = toWireToolCalls(resp.ToolCalls)
 	}
+	if resp.Refusal != "" {
+		msg["refusal"] = resp.Refusal
+	}
 	return map[string]any{
 		"id":      "chatcmpl-" + resp.RequestID,
 		"object":  "chat.completion",

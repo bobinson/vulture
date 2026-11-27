@@ -156,6 +156,9 @@ PINNED: dict[str, tuple[str, str]] = {
     "prove/system": ("a2303c99fa112c56", "02d18fd9e91a78c4"),
     "validate/calibration": ("21c605fde941c79b", "61bfec93581a2123"),
     "validate/closure": ("197d6c869aa35005", "95329efab1b7d51e"),
+    # The claim question: a new fragment, and the contract gained
+    # `claim_holds`. Both judge specs moved 6 -> 7 in that one change.
+    "validate/claim": ("1688a5b581862a17", "61bfec93581a2123"),
     # Item 4.2 rewrote the citation section to ONE coordinate space and gave
     # the contract `evidence_file`; `validate/tool_discipline` lost its
     # competing definition of `evidence_line`. All three rows and both
@@ -166,7 +169,7 @@ PINNED: dict[str, tuple[str, str]] = {
     # declared and not shipped while the judge site rendered TRANSCRIBE; item
     # 4.1 flipped that site, so the declaration is live and the row is
     # unchanged — the fragment's BYTES never moved for either item.
-    "validate/output_contract": ("6ea2375bc8a8d847", "8340330e6aea1336"),
+    "validate/output_contract": ("562ff3eca9f8abcb", "0d139a2bf3d99f5b"),
     "validate/role": ("b8a29ed6369f5fcf", "61bfec93581a2123"),
     "validate/tool_discipline": ("24d419e2becd3dfc", "1d2c380fddeaeb91"),
     # Item 4.7: DECLARATION half only, `keep_trailing: true`. Not a mirrored
@@ -213,8 +216,8 @@ VERSIONS: dict[str, int] = {
     # switching on at once (mirror, language pin, no-system-role fold). The
     # fragment pins are therefore unchanged for this item, which is exactly the
     # combination `unbumped()` cannot flag, so it is spelled out here instead.
-    "validate_judge": 6,            # item 4.1 (4.8 took it to 5)
-    "validate_judge_plain": 6,      # item 4.1
+    "validate_judge": 7,            # the claim question (item 4.1 took it to 6)
+    "validate_judge_plain": 7,      # the claim question
 }
 
 # ── who owns a fragment that no manifest lists ────────────────────────────

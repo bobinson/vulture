@@ -32,6 +32,7 @@ __all__ = [
     "AUTHORITATIVE_POSITIVE",
     "CONFIDENCE_CEILING_UNVERIFIED",
     "JUDGE_CITED",
+    "JUDGE_CLAIM_REFUTED",
     "JUDGE_UNCITED",
     "JUDGE_UNDECIDED",
     "OBLIGATION_DISCHARGED",
@@ -101,6 +102,16 @@ JUDGE_UNCITED: str = "real_bug_uncited"  # asserts an absence -> may not
 # Inadmissible by CONSTRUCTION, not by a new rule: both _judge_verdict_admissible
 # implementations compare one literal, so anything != JUDGE_CITED already fails.
 JUDGE_UNDECIDED: str = "undecided"
+# The judge REFUTED the finding's claim: code it cited contradicts the weakness
+# the finding asserts at its location. Separate from exploitability on purpose:
+# a true but low-impact finding (an unlogged authentication failure) scores low
+# on `exploitable` and must stay reported, so a low score alone never dismisses
+# anything. Admissibility is decided at ingestion, where the source is readable
+# (llm_judge._claim_refutation_admissible: claim_holds literally false,
+# window_sufficient literally true, a cited line inside the finding's own file,
+# not a policy class), and the L5 safeguards (RC6, policy exemption) neutralise
+# the check before it reaches here. The voter compares one literal.
+JUDGE_CLAIM_REFUTED: str = "claim_refuted"
 
 # Check ids whose POSITIVE weight is human ground truth and overrides the
 # obligation gate. The weight test is load-bearing (see _has_authoritative_
@@ -147,6 +158,19 @@ def _is_refuted(checks: list[ValidationCheck]) -> bool:
     """True if the obligation was refuted at the class's declared scope."""
     return any(
         c.id == OBLIGATION_ID and c.result == OBLIGATION_REFUTED for c in checks
+    )
+
+
+def _claim_refuted(checks: list[ValidationCheck]) -> bool:
+    """True if an admissible judge verdict refuted the finding's claim.
+
+    The weight test is the same guard `_has_authoritative_demotion` uses: a
+    neutralised (safeguarded) verdict carries weight 0 and result `advisory`,
+    and a refutation can only ride a demoting verdict.
+    """
+    return any(
+        c.id == "llm_judge" and c.result == JUDGE_CLAIM_REFUTED and c.weight < 0
+        for c in checks
     )
 
 
@@ -270,6 +294,11 @@ def vote(checks: Iterable[ValidationCheck]) -> tuple[str, float]:
     # refuted finding indistinguishable from a weak one, and reviewing refuted
     # findings by detection strength is how the refuter itself gets audited.
     if _is_refuted(checks_list):
+        return "likely_fp", confidence
+    # A refuted CLAIM dismisses on its own, confidence preserved for the same
+    # reason as a refuted obligation. An operator's own positive label is
+    # ground truth and outranks a model verdict.
+    if _claim_refuted(checks_list) and not _has_authoritative_positive(checks_list):
         return "likely_fp", confidence
     status = _classify(confidence, _count_demoting(checks_list))
     # Withhold the LABEL, never the number. A blocking obligation deliberately

@@ -173,6 +173,11 @@ VERDICT_SCHEMA = OutputSchema(
         # is now always the FILE's own numbering; this names WHICH file, and is
         # absent whenever that is the finding's own.
         Field("evidence_file", STRING, required=False),
+        # The judge's SECOND question: does the weakness the finding claims
+        # exist at all. Separate from `exploitable` because a true but
+        # low-impact finding scores low there; only a cited `false` here may
+        # dismiss a finding (llm_judge._claim_refutation_admissible).
+        Field("claim_holds", BOOLEAN, required=False),
         Field("reasoning", STRING, required=False),
     ),
 )

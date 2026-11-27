@@ -20,3 +20,21 @@ func TestCanonicalBaseURL(t *testing.T) {
 		}
 	}
 }
+
+// Only the native adapters leave the OpenAI wire protocol; every other name is
+// served by an OpenAI-compatible adapter, so OPENAI_BASE_URL may feed it.
+func TestSpeaksOpenAIWire(t *testing.T) {
+	cases := map[string]bool{
+		"":                  true,
+		"openai":            true,
+		"openai-compatible": true,
+		"my-local-server":   true,
+		"gemini":            false,
+		"anthropic":         false,
+	}
+	for prov, want := range cases {
+		if got := SpeaksOpenAIWire(prov); got != want {
+			t.Errorf("SpeaksOpenAIWire(%q) = %v, want %v", prov, got, want)
+		}
+	}
+}

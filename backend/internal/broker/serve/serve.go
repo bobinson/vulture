@@ -87,16 +87,13 @@ func Build(cfg config.BrokerConfig, primaryModel string, db *sql.DB, dia dialect
 
 	// Resolve the default egress route: an operator can point the broker at a
 	// local OpenAI-compatible server (LM Studio / Ollama / vLLM) for self-host.
-	defaultProvider := cfg.Provider
-	if defaultProvider == "" {
-		defaultProvider = "openai"
-	}
+	defaultProvider := defaultProviderName(cfg.Provider)
 	allowlist := egress.NewAllowlist(allowlistOrDefault(cfg.ProviderAllowlist, defaultProvider)...)
 	newSSRF := ssrfFactory(allowlist, cfg.AllowLocalEgress)
 	ssrf := newSSRF(netResolver)
 
 	keys := keysFromEnv(defaultProvider)
-	baseURL := defaultBaseURL(cfg.ProviderBaseURL, defaultProvider)
+	baseURL := EgressBaseURL(cfg)
 
 	budgetDB := budget.NewSQLDB(db, dia)
 	// Provision the tenant budget: the sharded CAS reserves against existing
@@ -341,6 +338,20 @@ func netResolver(host string) ([]net.IP, error) { return net.LookupIP(host) }
 // canonical endpoint (gemini/anthropic/openai) so egress has a concrete URL to
 // SSRF-validate + pin (§30). "" for a bare openai-compatible with no override —
 // which is an operator error surfaced at first egress, by design.
+// EgressBaseURL is the upstream endpoint the broker calls its default provider
+// at: the configured ProviderBaseURL, else that provider's canonical endpoint.
+func EgressBaseURL(cfg config.BrokerConfig) string {
+	return defaultBaseURL(cfg.ProviderBaseURL, defaultProviderName(cfg.Provider))
+}
+
+// defaultProviderName is the broker's default provider; unset means openai.
+func defaultProviderName(name string) string {
+	if name == "" {
+		return "openai"
+	}
+	return name
+}
+
 func defaultBaseURL(override, defaultProvider string) string {
 	if override != "" {
 		return override

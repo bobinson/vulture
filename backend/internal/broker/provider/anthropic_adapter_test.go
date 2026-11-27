@@ -155,3 +155,72 @@ func TestAnthropic_Name(t *testing.T) {
 		t.Error("Name must be anthropic")
 	}
 }
+
+// The L5 judge sends temperature 0.1 on every call. A current Claude model
+// answers that with a 400, so it must never reach Anthropic for one.
+func TestAnthropic_JudgeTemperatureOmittedForCurrentModels(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"} {
+		body, err := json.Marshal(buildAnthropicRequest(CompletionRequest{
+			Model: model, MaxTokens: 16000, Temperature: 0.1, HasTemperature: true,
+			Messages: []Message{{Role: "user", Content: "judge this"}},
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(body, &m)
+		if _, ok := m["temperature"]; ok {
+			t.Errorf("%s: temperature sent, Anthropic rejects it with a 400", model)
+		}
+	}
+	body, _ := json.Marshal(buildAnthropicRequest(CompletionRequest{
+		Model: "claude-sonnet-4-6", MaxTokens: 100, Temperature: 0.1, HasTemperature: true,
+		Messages: []Message{{Role: "user", Content: "x"}},
+	}))
+	if !strings.Contains(string(body), `"temperature":0.1`) {
+		t.Errorf("claude-sonnet-4-6 accepts temperature; it must still be sent: %s", body)
+	}
+}
+
+// A safety-classifier decline is HTTP 200 with stop_reason "refusal" and no
+// text. It must reach the agent as the OpenAI-wire refusal (finish_reason
+// content_filter + a refusal message naming the category, as LiteLLM maps it),
+// not as an empty answer the judge retries and the generate phase misreads.
+// The tokens were billed, so it is a metered completion, not an error.
+func TestAnthropic_RefusalIsSurfacedAsContentFilter(t *testing.T) {
+	srv := anthServer(t, 200, `{
+		"content":[],
+		"stop_reason":"refusal",
+		"stop_details":{"type":"refusal","category":"cyber","explanation":"declined"},
+		"usage":{"input_tokens":900,"output_tokens":3}
+	}`, nil, nil)
+	defer srv.Close()
+	resp, err := NewAnthropicAdapter(srv.Client()).Complete(context.Background(),
+		Credentials{Provider: "anthropic", APIKey: "k", BaseURL: srv.URL},
+		CompletionRequest{Model: "claude-sonnet-5-5", Messages: []Message{{Role: "user", Content: "x"}}})
+	if err != nil {
+		t.Fatalf("a refusal is a billed completion, not an error: %v", err)
+	}
+	if resp.FinishReason != "content_filter" {
+		t.Errorf("finish_reason = %q, want content_filter", resp.FinishReason)
+	}
+	if !strings.Contains(resp.Refusal, "cyber") {
+		t.Errorf("refusal = %q, want it to name the category", resp.Refusal)
+	}
+	if resp.Usage.InputTokens != 900 || resp.Usage.CostUSD <= 0 {
+		t.Errorf("a refusal is still metered: %+v", resp.Usage)
+	}
+}
+
+// The category comes from the provider: anything but a short lowercase word is
+// not echoed into the agent's logs and persisted degraded reason.
+func TestAnthropic_RefusalCategorySanitised(t *testing.T) {
+	for raw, want := range map[string]string{
+		"bio": "bio", "frontier_llm": "frontier_llm", "": "unspecified",
+		"<script>": "unspecified", strings.Repeat("a", 80): "unspecified",
+	} {
+		if got := refusalCategory(raw); got != want {
+			t.Errorf("refusalCategory(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

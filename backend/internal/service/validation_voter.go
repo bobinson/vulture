@@ -68,7 +68,24 @@ const (
 	// judgeVerdictAdmissible compares one literal, so anything != JudgeCited
 	// already fails. Mirrors JUDGE_UNDECIDED in voter.py.
 	JudgeUndecided = "undecided"
+	// JudgeClaimRefuted: the judge REFUTED the finding's claim with an
+	// admissible, line-cited verdict (decided at ingestion in the agent; the
+	// L5 safeguards neutralise it before it reaches the voter). Dismisses on
+	// its own; separate from exploitability, which never does. Mirrors
+	// JUDGE_CLAIM_REFUTED in voter.py.
+	JudgeClaimRefuted = "claim_refuted"
 )
+
+// claimRefuted mirrors _claim_refuted in voter.py: a neutralised verdict
+// carries weight 0, so the weight test keeps a safeguarded refutation inert.
+func claimRefuted(checks []VoterCheck) bool {
+	for _, c := range checks {
+		if c.ID == "llm_judge" && c.Result == JudgeClaimRefuted && c.Weight < 0 {
+			return true
+		}
+	}
+	return false
+}
 
 // AuthoritativePositiveIDs are check IDs whose POSITIVE weight is human ground
 // truth and overrides the obligation gate. The weight test in
@@ -255,6 +272,11 @@ func Vote(checks []VoterCheck) VoteResult {
 	// refuted finding indistinguishable from a weak one, and reviewing refuted
 	// findings by detection strength is how the refuter itself gets audited.
 	if isRefuted(checks) {
+		return VoteResult{Status: "likely_fp", Confidence: confidence}
+	}
+	// A refuted CLAIM dismisses on its own, confidence preserved as for a
+	// refuted obligation; an operator's positive label outranks it.
+	if claimRefuted(checks) && !hasAuthoritativePositive(checks) {
 		return VoteResult{Status: "likely_fp", Confidence: confidence}
 	}
 	status := classify(confidence, countDemoting(checks))

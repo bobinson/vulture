@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	brokerprovider "github.com/vulture/backend/internal/broker/provider"
 	"github.com/vulture/backend/internal/pathutil"
 	"github.com/vulture/backend/pkg/agentregistry"
 	"github.com/vulture/backend/pkg/iniutil"
@@ -251,29 +252,14 @@ func loadBrokerConfig(ini iniValues) BrokerConfig {
 		url = DefaultBrokerURL(listen) // reachable without extra config
 	}
 
-	// Derive the broker's upstream from the existing provider endpoint so an
-	// auto-enabled broker egresses WHERE THE AGENT WOULD HAVE: a local LM
-	// Studio / vLLM / Ollama reached via OPENAI_BASE_URL keeps working after
-	// the broker turns on. Explicit broker provider config still wins.
+	// Explicit broker provider config wins; without a base URL the upstream
+	// may be derived from OPENAI_BASE_URL (inheritOpenAIBase).
 	provider := resolve(ini, "VULTURE_LLM_BROKER_PROVIDER", "broker", "provider", "")
 	providerBaseURL := resolve(ini, "VULTURE_LLM_BROKER_PROVIDER_BASE_URL", "broker", "provider_base_url", "")
 	allowLocalRaw := strings.TrimSpace(resolve(ini, "VULTURE_LLM_BROKER_ALLOW_LOCAL_EGRESS", "broker", "allow_local_egress", ""))
 	allowLocal := isTruthy(allowLocalRaw)
 	if providerBaseURL == "" {
-		if openaiBase := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")); openaiBase != "" {
-			providerBaseURL = openaiBase
-			if provider == "" {
-				provider = "openai-compatible"
-			}
-			// An auto-enabled broker must keep a LOCAL llm reachable: if the
-			// operator's endpoint is loopback/RFC1918 and they never set the
-			// egress switch, enable it (they already demonstrably intend local
-			// egress by pointing the LLM there). Only on auto-enable — an
-			// explicit broker operator configures egress deliberately.
-			if autoEnabled && allowLocalRaw == "" && isLocalURL(providerBaseURL) {
-				allowLocal = true
-			}
-		}
+		providerBaseURL, provider, allowLocal = inheritOpenAIBase(provider, allowLocal, autoEnabled && allowLocalRaw == "")
 	}
 	if provider == "" {
 		provider = "openai"
@@ -294,6 +280,35 @@ func loadBrokerConfig(ini iniValues) BrokerConfig {
 		ProviderBaseURL:   providerBaseURL,
 		AllowLocalEgress:  allowLocal,
 	}
+}
+
+// inheritOpenAIBase derives the broker's upstream from OPENAI_BASE_URL so an
+// auto-enabled broker egresses WHERE THE AGENT WOULD HAVE: a local LM Studio /
+// vLLM / Ollama reached via OPENAI_BASE_URL keeps working after the broker
+// turns on.
+//
+// Only for a provider that speaks the OpenAI wire protocol. OPENAI_BASE_URL
+// names an OpenAI-compatible host; a native provider (anthropic, gemini) sent
+// there would hand its own API key to whoever runs that host, so it keeps its
+// canonical endpoint (an explicit VULTURE_LLM_BROKER_PROVIDER_BASE_URL still
+// overrides that, upstream of this call).
+//
+// mayOpenLocal: an auto-enabled broker whose operator never set the egress
+// switch must keep a LOCAL llm reachable — pointing OPENAI_BASE_URL at a
+// loopback/RFC1918 endpoint already shows the intent. An explicit broker
+// operator configures egress deliberately.
+func inheritOpenAIBase(provider string, allowLocal, mayOpenLocal bool) (baseURL, resolvedProvider string, localEgress bool) {
+	openaiBase := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+	if openaiBase == "" || !brokerprovider.SpeaksOpenAIWire(provider) {
+		return "", provider, allowLocal
+	}
+	if provider == "" {
+		provider = "openai-compatible"
+	}
+	if mayOpenLocal && isLocalURL(openaiBase) {
+		allowLocal = true
+	}
+	return openaiBase, provider, allowLocal
 }
 
 // BrokerEnabled reports whether the LLM broker should run, from a getenv. Rule

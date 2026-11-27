@@ -9,8 +9,19 @@ import (
 // sampling (OpenAI o-series, newest Anthropic) must NOT receive temperature; an
 // o-series model must receive max_completion_tokens, not max_tokens.
 func TestAcceptsSamplingParams(t *testing.T) {
-	accept := []string{"gpt-4o", "claude-sonnet", "gemini-2.5-flash", "qwen3:8b", "z-ai/glm-4.6", "m"}
-	reject := []string{"o1", "o1-mini", "o3", "o3-mini", "o4-mini", "claude-opus-4-8", "claude-sonnet-5", "claude-fable-5"}
+	accept := []string{"gpt-4o", "gemini-2.5-flash", "qwen3:8b", "z-ai/glm-4.6", "m",
+		// Claude models released before Opus 4.7 still take sampling params.
+		"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-1-20250805",
+		"claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307",
+		"anthropic/claude-sonnet-4-5"}
+	reject := []string{"o1", "o1-mini", "o3", "o3-mini", "o4-mini",
+		// Every Claude model from Opus 4.7 on rejects them (400), as does an id
+		// that is not a released model: the safe default for a Claude name is
+		// to omit them. Gateway spellings (anthropic/…) are Claude models too.
+		"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5",
+		"claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+		"claude-fable-5", "claude-fable-5-2", "claude-mythos-5-2",
+		"claude-sonnet", "anthropic/claude-opus-5-5", "anthropic.claude-haiku-5-5"}
 	for _, m := range accept {
 		if !acceptsSamplingParams(m) {
 			t.Errorf("%s must accept sampling params", m)
@@ -66,12 +77,12 @@ func TestBuildAnthropic_TemperatureGatingAndClamp(t *testing.T) {
 		t.Errorf("claude-opus-4-8 must omit temperature, got %v", *out.Temperature)
 	}
 	// accepting model, out-of-range temp → clamped to [0,1]
-	out = buildAnthropicRequest(CompletionRequest{Model: "claude-sonnet", Temperature: 1.7, HasTemperature: true, Messages: []Message{{Role: "user", Content: "x"}}})
+	out = buildAnthropicRequest(CompletionRequest{Model: "claude-sonnet-4-6", Temperature: 1.7, HasTemperature: true, Messages: []Message{{Role: "user", Content: "x"}}})
 	if out.Temperature == nil || *out.Temperature != 1.0 {
 		t.Errorf("temperature must clamp to 1.0 for anthropic, got %v", out.Temperature)
 	}
 	// absent → omitted
-	out = buildAnthropicRequest(CompletionRequest{Model: "claude-sonnet", HasTemperature: false, Messages: []Message{{Role: "user", Content: "x"}}})
+	out = buildAnthropicRequest(CompletionRequest{Model: "claude-sonnet-4-6", HasTemperature: false, Messages: []Message{{Role: "user", Content: "x"}}})
 	if out.Temperature != nil {
 		t.Error("omitted temperature must not be sent")
 	}

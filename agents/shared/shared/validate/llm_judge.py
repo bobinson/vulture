@@ -34,12 +34,13 @@ from shared.language import detect_language
 from shared.lines import parse_line
 from shared.llm.errors import LLMErrorKind, broker_detail, classify_llm_error, error_text
 from shared.llm.jsonscan import iter_balanced_objects
-from shared.llm.provider import bare_model_name
+from shared.llm.provider import bare_model_name, sampling_settings
 from shared.prompt import Mode, RenderedPrompt, Slot, profile_for, render
 from shared.prompt.manifests.validate_judge import (
     VALIDATE_JUDGE,
     VALIDATE_JUDGE_PLAIN,
 )
+from shared.prompt.profile import family_for
 from shared.prompt.slots import new_nonce, wrap
 from shared.provenance import is_llm_provenance
 from shared.tools.line_format import strip_line_number
@@ -48,7 +49,7 @@ from shared.tools.window import CODE_SNIPPET_START
 from . import l5_cache
 from .refutation import POLICY_CLASSES
 from .types import ValidateConfig, ValidationCheck
-from .voter import JUDGE_CITED, JUDGE_UNCITED, JUDGE_UNDECIDED
+from .voter import JUDGE_CITED, JUDGE_CLAIM_REFUTED, JUDGE_UNCITED, JUDGE_UNDECIDED
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -514,7 +515,7 @@ def run_l5(
     # exemptions can neutralise demoting verdicts. Mutates both `out` and the
     # in-place finding validation so the offline backfill + final result see
     # the safe-guarded state.
-    _apply_l5_safeguards(findings, selected_idx, out)
+    _apply_l5_safeguards(findings, selected_idx, out, model=rt.model)
     _stamp_coverage_all(findings, selected_idx, skips, out)
     return out
 
@@ -602,6 +603,20 @@ _CRYPTO_POLICY_CWES = POLICY_CLASSES
 # A small minimum population avoids calling a 1-2 finding run a "blast radius".
 _RC6_DEMOTE_FRACTION = 0.5
 _RC6_MIN_JUDGED = 3
+# The cap per JUDGE-model family; any family not listed keeps 0.5. Measured on
+# one TypeScript target with claude-sonnet-5-5, two full runs (the second with
+# every verdict fresh): 91.9% and 86.7% of judged findings carried a demotion
+# that would land, each a window-cited refutation, so 0.5 froze the layer on
+# every run and the judge changed nothing. 0.95 still freezes a judge that
+# dismisses (nearly) everything — the anomaly RC6 exists for — and the
+# per-finding exemptions (crypto/policy never; deterministic only on a cited,
+# window-visible refutation) are unchanged.
+_RC6_DEMOTE_FRACTION_BY_FAMILY: dict[str, float] = {"claude": 0.95}
+
+
+def _rc6_demote_fraction(model: str) -> float:
+    """The RC6 cap for the judge `model` (any spelling)."""
+    return _RC6_DEMOTE_FRACTION_BY_FAMILY.get(family_for(model), _RC6_DEMOTE_FRACTION)
 
 
 def _l5_check_is_demoting(check: ValidationCheck) -> bool:
@@ -727,10 +742,13 @@ def _apply_l5_safeguards(
     findings: list[dict[str, Any]],
     selected_idx: list[int],
     out: list[list[ValidationCheck]],
+    model: str = "",
 ) -> None:
     """RC6 blast-radius cap + trusted/crypto exemption.
 
-    1. RC6: if L5 would demote MORE THAN 50% of the judged findings, freeze
+    1. RC6: if L5 would demote MORE THAN the judge model's cap (50%; 95% for
+       a Claude judge, see _RC6_DEMOTE_FRACTION_BY_FAMILY) of the judged
+       findings, freeze
        the whole L5 layer — discard every demoting verdict so a mass-FP run
        cannot gut the result.
     2. Otherwise, per-finding: neutralise a demoting verdict on any
@@ -767,16 +785,20 @@ def _apply_l5_safeguards(
     unanimous_all_nondet = unanimous and all(
         not _is_l5_exempt(findings[i]) for i in judged_idx
     )
+    cap = _rc6_demote_fraction(model)
     rc6_tripped = (
         n_judged >= _RC6_MIN_JUDGED
-        and demote_frac > _RC6_DEMOTE_FRACTION
+        and demote_frac > cap
         and not unanimous_all_nondet
     )
     if rc6_tripped:
+        # The count is the honoured demotions, the ones the decision used; the
+        # raw demoting verdicts include exempt ones that would never land.
         log.warning(
             "[validate.l5] RC6 blast-radius cap tripped — %d/%d judged findings "
-            "would be demoted (> %.0f%%); freezing L5 layer",
-            len(demoting_idx), len(judged_idx), _RC6_DEMOTE_FRACTION * 100,
+            "would be demoted (> %.0f%% cap for this judge; %d demoting verdicts "
+            "in all); freezing L5 layer",
+            n_demoted, n_judged, cap * 100, len(demoting_idx),
         )
 
     for i in judged_idx:
@@ -1014,6 +1036,7 @@ def _partition_batch_by_cache(
                 "window_sufficient": cached.get("window_sufficient"),
                 "evidence_line": cached.get("evidence_line"),
                 "evidence_file": cached.get("evidence_file"),
+                "claim_holds": cached.get("claim_holds"),
                 "_cached": True,
             }
         else:
@@ -1097,6 +1120,7 @@ def _store_verdicts(
                 window_sufficient=v.get("window_sufficient"),
                 evidence_line=v.get("evidence_line"),
                 evidence_file=v.get("evidence_file"),
+                claim_holds=v.get("claim_holds"),
             )
             break
         verdicts[v["id"]] = v
@@ -1157,6 +1181,8 @@ def _judge_batch(
         )
     except _TransportFailure as exc:
         _log_transport_stop(batch_idx, exc)
+    except _ModelRefused as exc:
+        _log_refusal_stop(batch_idx, exc)
     return verdicts
 
 
@@ -1273,7 +1299,7 @@ def _mark_undecided(
             "id": fid, "exploitable": 0.5,
             "reasoning": "tool budget exhausted before a decision",
             "window_sufficient": None, "evidence_line": None,
-            "evidence_file": None,
+            "evidence_file": None, "claim_holds": None,
         }
 
 
@@ -1353,12 +1379,13 @@ def _call_llm_with_tools(
                 messages=messages,
                 tools=JUDGE_TOOL_SPECS,
                 tool_choice="auto",
-                temperature=0.1,
                 max_tokens=_max_output_tokens(),
+                **sampling_settings(actual_model),
                 timeout=timeout_s,
             )
             if not getattr(resp, "choices", None):
                 return None, exhausted, True
+            _raise_if_refused(resp)
             msg = resp.choices[0].message
             tool_calls = getattr(msg, "tool_calls", None)
             if tool_calls:
@@ -1402,6 +1429,8 @@ def _call_llm_with_tools(
             return parsed, exhausted, True
         # Turn limit hit while the model still wanted tools.
         return None, True, True
+    except _ModelRefused:
+        raise
     except Exception as exc:
         _log_call_failure(exc, "tool-loop")
         _raise_if_transport(exc)
@@ -1552,9 +1581,9 @@ def _call_llm(
         kw: dict[str, Any] = {
             "model": actual_model,
             "messages": _judge_turns(system_prompt, user_msg),
-            "temperature": 0.1,
             "max_tokens": budget,
             "timeout": timeout_s,  # per-request timeout (issue #6)
+            **sampling_settings(actual_model),
         }
         if use_json_format:
             kw["response_format"] = {"type": "json_object"}
@@ -1563,6 +1592,7 @@ def _call_llm(
         # empty choices. Treat as no-response (caller retries / stubs).
         if not getattr(resp, "choices", None):
             return ""
+        _raise_if_refused(resp)
         if getattr(resp.choices[0], "finish_reason", None) == "length":
             log.warning(
                 "[validate.l5] hit max_tokens=%d (finish_reason=length) — verdict JSON "
@@ -1603,11 +1633,15 @@ def _try_both_modes(do_call: Any, budget: int) -> str:
         if text:
             return text
         log.info("[validate.l5] structured-output mode returned empty; retrying plain")
+    except _ModelRefused:
+        raise
     except Exception as exc:
         _log_call_failure(exc, "structured-output")
         _raise_if_transport(exc)
     try:
         return do_call(use_json_format=False, budget=budget)
+    except _ModelRefused:
+        raise
     except Exception as exc2:
         _log_call_failure(exc2, "plain")
         _raise_if_transport(exc2)
@@ -1676,6 +1710,36 @@ def _raise_if_transport(exc: Exception) -> None:
     """Escalate a transport failure past the format fallbacks."""
     if _is_transport_failure(exc):
         raise _TransportFailure(classify_llm_error(exc).value) from exc
+
+
+class _ModelRefused(Exception):
+    """The model declined to judge the batch: finish_reason content_filter or a
+    message.refusal (Claude's safety classifiers, surfaced by the broker and by
+    LiteLLM in OpenAI's shape). It ends the batch past every fallback, as a
+    transport failure does: a reshaped request, a doubled budget or a strict
+    JSON nudge carries the same content and is refused — and billed — again.
+    Before this the empty answer read as malformed and walked all of them."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _raise_if_refused(resp: Any) -> None:
+    """Raise _ModelRefused when the first choice is a refusal."""
+    choice = resp.choices[0]
+    refusal = getattr(getattr(choice, "message", None), "refusal", None)
+    if refusal or getattr(choice, "finish_reason", None) == "content_filter":
+        raise _ModelRefused(refusal or "the provider's content filter withheld the response")
+
+
+def _log_refusal_stop(batch_idx: int, exc: _ModelRefused) -> None:
+    """One line per batch the model declined to judge."""
+    log.warning(
+        "[validate.l5] batch %d: the model declined to judge it (%s); "
+        "no fallback requests sent, the batch gets no verdict",
+        batch_idx, exc.reason,
+    )
 
 
 def _log_transport_stop(batch_idx: int, exc: _TransportFailure) -> None:
@@ -2031,6 +2095,9 @@ def _coerce_verdict(v: Any) -> Optional[dict[str, Any]]:
         "window_sufficient": True if v.get("window_sufficient") is True else None,
         "evidence_line": _coerce_line(v.get("evidence_line")),
         "evidence_file": _coerce_path(v.get("evidence_file")),
+        # The claim answer, like closure, passes only as a literal bool; a
+        # string "false" is not a refutation.
+        "claim_holds": v["claim_holds"] if isinstance(v.get("claim_holds"), bool) else None,
     }
 
 
@@ -2230,6 +2297,39 @@ def _citation_extras(
     return out
 
 
+def _claim_refutation_admissible(v: dict[str, Any], finding: dict[str, Any]) -> bool:
+    """Whether a DEMOTING verdict's refuted claim may dismiss the finding alone.
+
+    Exploitability never dismisses: a true but low-impact finding scores low.
+    A refuted claim does, but only when the refutation rests on code the judge
+    could see and named: claim_holds literally False, closure literally True,
+    and a cited line that exists in the finding's own file. Everything else
+    fails closed to an ordinary demotion. The policy-class exemption and the
+    RC6 cap are applied afterwards by the L5 safeguards, which neutralise the
+    whole check.
+    """
+    if v.get("claim_holds") is not False or v.get("window_sufficient") is not True:
+        return False
+    return _cites_own_line(v.get("evidence_line"), v.get("evidence_file"), finding)
+
+
+def _cites_own_line(line: Any, evidence_file: Optional[str], finding: dict[str, Any]) -> bool:
+    """``line`` is a real line of the finding's own file."""
+    if type(line) is not int or line < 1 or _cited_elsewhere(evidence_file, finding):
+        return False
+    return line <= _line_count(finding.get("file_path") or "")
+
+
+def _line_count(file_path: str) -> int:
+    """Lines in ``file_path`` through the scanner's cached reader; 0 if unreadable."""
+    from pathlib import Path
+
+    from shared.tools.file_scanner import read_file_lines
+
+    lines = read_file_lines(Path(file_path)) if file_path else None
+    return len(lines) if lines else 0
+
+
 def _verdict_to_check(
     v: dict[str, Any], *, model: str, batch_id: int, language: str,
     finding: Optional[dict[str, Any]] = None,
@@ -2261,7 +2361,8 @@ def _verdict_to_check(
         # already exactly 0.0 there, so no confidence moves.
         result = JUDGE_UNDECIDED
     else:
-        result = "demoted"
+        result = (JUDGE_CLAIM_REFUTED if _claim_refutation_admissible(v, finding or {})
+                  else "demoted")
     return ValidationCheck(
         id="llm_judge",
         result=result,
@@ -2285,6 +2386,8 @@ def _verdict_to_check(
             # file travels with it. Persisted for the same reason the line is:
             # a coordinate recorded without its file cannot be re-measured.
             "evidence_file": evidence_file,
+            # The judge's separate answer to "does the claimed weakness exist".
+            "claim_holds": v.get("claim_holds"),
             **_citation_extras(evidence_line, finding, evidence_file),
         },
     )

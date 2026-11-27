@@ -105,6 +105,7 @@ def test_parse_valid_response():
         "window_sufficient": None,
         "evidence_line": None,   # 0072 T5.3, observation-only
         "evidence_file": None,   # 0089 item 4.2, one coordinate space
+        "claim_holds": None,     # the claim question; only a literal bool passes
     }]
 
 

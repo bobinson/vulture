@@ -4829,7 +4829,10 @@ async def _collect_llm_findings_async(
                 source_context=halved,
                 _size_retry=True,
             )
-        cooldown_manager.record_failure(resolved_model, error_kind=kind.value)
+        # A refusal is about THIS request's content: the model is healthy, so
+        # cooling it down would only push the next batch onto a fallback.
+        if kind is not LLMErrorKind.REFUSED:
+            cooldown_manager.record_failure(resolved_model, error_kind=kind.value)
         # Same renderer as retry_llm_call: `str(exc)` for an APIConnectionError
         # is the constant "Connection error." and names nothing.
         logger.warning("llm_failed kind=%s error=%s", kind.value, exception_detail(exc))
