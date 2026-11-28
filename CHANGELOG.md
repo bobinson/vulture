@@ -130,6 +130,22 @@ fixes a vulnerability discloses it (OpenSSF Best Practices passing criterion).
 
 ### Changed
 
+- **L5 judge: a refuted claim dismisses a finding.** The judge now answers a second question
+  per finding, `claim_holds`: does the weakness the finding claims exist at all, separately
+  from how exploitable it is. A low exploitability score still never dismisses anything,
+  because a true but low-impact finding (an unlogged authentication failure) scores low too.
+  A verdict that refutes the claim goes to `likely_fp` on its own, deterministic findings
+  included, and keeps its confidence. It must meet four conditions:
+  - `claim_holds` is literally `false` and `exploitable` is below 0.5;
+  - `window_sufficient` is literally `true`;
+  - `evidence_line` is a real line of the finding's own file;
+  - the finding's class is not a policy class.
+
+  The RC6 cap and the policy exemption neutralise it like any other demotion, and an
+  operator's positive label outranks it. The voter changes in both languages and gains
+  parity cases. The judge prompt adds a `validate/claim` section and both judge manifests
+  move to version 7. The verdict cache key moves to `v10-claim`, so the first run after
+  upgrading judges from a cold cache.
 - **Node.js 24.** CI (`NODE_VERSION`), the release workflow's two `setup-node` steps and the
   frontend image's build stage (`node:24-alpine`) move from Node 22 to 24; the frontend's
   install, type check, build and vitest suite pass on 24. `frontend/package.json` `engines`

@@ -59,8 +59,8 @@ class ModelProfile:
 # `structured` for anthropic is EMULATED_TOOL, not NATIVE: LiteLLM emulates
 # json_schema by injecting a synthetic tool and forcing tool_choice, which
 # makes the real read/list/grep tools uncallable. `supports_structured_output`
-# returned True for it because the check was `"gemini" not in model` — the
-# gemini reasoning was documented but never generalised.
+# once returned True for it because the check was `"gemini" not in model`; it
+# now reads `json_mode_with_tools` from this table, which is False for claude.
 MODEL_PROFILES: dict[str, dict] = {
     "openai":    dict(system_role=True,  structured=Structured.NATIVE,
                       tool_schema=ToolSchema.OPENAI, json_mode_with_tools=True,

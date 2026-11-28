@@ -5,6 +5,7 @@ Tests verify the fix is in place without modifying any business logic.
 """
 
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -384,13 +385,15 @@ class TestIssue14PriorContextOrder:
 
 
 class TestIssue15ClaudeModelVersion:
-    """Claude model should use the latest snapshot ID."""
+    """The claude-sonnet alias names the current Sonnet by its exact id."""
 
     def test_claude_model_id_updated(self):
         from shared.llm.provider import MODEL_MAP
         resolved = MODEL_MAP["claude-sonnet"]
-        assert "20250514" in resolved, f"Expected 20250514 snapshot, got {resolved}"
-        assert "20250929" not in resolved, "Old snapshot should be replaced"
+        # Current Anthropic ids carry no date suffix; the old target
+        # (claude-sonnet-4-5-20250514) was never a real model id.
+        assert resolved == "litellm/anthropic/claude-sonnet-5-5", resolved
+        assert not re.search(r"-\d{8}$", resolved), "no date suffix on a current id"
 
 
 # ---------------------------------------------------------------------------

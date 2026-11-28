@@ -199,7 +199,8 @@ class TestCacheCarriesClosure:
         # families that do not pin, and a no-system-role family gets one turn
         # instead of two. A v8 row was judged under a prompt none of those
         # rules had touched.
-        assert l5_cache._VERDICT_SCHEMA_VERSION == "v9-judge-adapt"
+        # v10-claim: the verdict gained `claim_holds`; a v9 row carries none.
+        assert l5_cache._VERDICT_SCHEMA_VERSION == "v10-claim"
         # A version bump must change the key, so pre-change rows go unreachable.
         old = l5_cache._VERDICT_SCHEMA_VERSION
         try:

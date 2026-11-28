@@ -33,7 +33,9 @@ def _repo_root() -> pathlib.Path:
     raise AssertionError("could not locate the repo root from " + __file__)
 
 
-START_SH = _repo_root() / "scripts" / "start.sh"
+SCRIPTS = _repo_root() / "scripts"
+MODELS_SH = SCRIPTS / "lib" / "models.sh"
+LAUNCHERS = (SCRIPTS / "start.sh", SCRIPTS / "prod_start.sh")
 
 # Ids that do NOT answer generateContent for this project's key, each verified
 # with a real POST (2026-09-15), not merely against ListModels — `gemini-2.5-pro`
@@ -55,16 +57,26 @@ UNAVAILABLE = RETIRED | TIER_GATED
 
 
 def _launcher_gemini_default() -> str:
-    text = START_SH.read_text()
-    m = re.search(r'MODEL="\$\{MODEL:-(gemini[^}"]*)\}"', text)
-    assert m, "could not find the gemini default in scripts/start.sh"
+    text = MODELS_SH.read_text()
+    m = re.search(r'^DEFAULT_GEMINI_MODEL="([^"]+)"', text, re.MULTILINE)
+    assert m, "could not find DEFAULT_GEMINI_MODEL in scripts/lib/models.sh"
     return m.group(1)
+
+
+def test_both_launchers_take_the_shared_gemini_default():
+    """prod_start.sh kept its own `gemini-pro` default after start.sh was fixed,
+    because only start.sh was checked. Both now read the one shared default."""
+    for launcher in LAUNCHERS:
+        assert 'MODEL="${MODEL:-$DEFAULT_GEMINI_MODEL}"' in launcher.read_text(), (
+            f"{launcher.name} does not default gemini to DEFAULT_GEMINI_MODEL "
+            "from scripts/lib/models.sh"
+        )
 
 
 def test_launcher_gemini_default_is_not_retired():
     got = _launcher_gemini_default()
     assert got not in UNAVAILABLE, (
-        f"scripts/start.sh defaults gemini to {got!r}, which does not answer for this key — "
+        f"scripts/lib/models.sh defaults gemini to {got!r}, which does not answer for this key — "
         "every call 404s and the provider is dead on arrival"
     )
 

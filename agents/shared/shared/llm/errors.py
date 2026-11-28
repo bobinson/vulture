@@ -35,6 +35,11 @@ class LLMErrorKind(Enum):
     # (provider_bad_request / provider_auth_error / model_not_found, or an
     # explicit x_retriable:false). Never retried — a retry fails identically.
     PROVIDER_BAD_REQUEST = "provider_bad_request"
+    # The model DECLINED the request (a safety classifier's stop_reason
+    # "refusal", surfaced as finish_reason content_filter / ModelRefusalError).
+    # The model is healthy and the same request is refused again, so it is
+    # never retried and never cools the model down.
+    REFUSED = "refused"
     UNKNOWN = "unknown"
 
 
@@ -158,7 +163,17 @@ def error_text(exc: Exception) -> str:
 # First match wins. The size/overflow codes come first (0074 review item 5),
 # then the broker's authoritative retryability BEFORE any status-string
 # heuristic — a permanent 502 must not be retried (§32.1 #6).
+# A model's refusal, in the agents SDK's ModelRefusalError wording, the broker's
+# refusal text, or OpenAI's finish_reason. FIRST: "Model refused to produce
+# output" otherwise matches _CONN_RE's "refused", and a refusal was retried as a
+# network fault, billed again on every attempt.
+_REFUSAL_RE = re.compile(
+    r"(model refused to produce output|declined the request|content_filter)",
+    re.IGNORECASE,
+)
+
 _CLASSIFIERS: tuple[tuple[re.Pattern[str], LLMErrorKind], ...] = (
+    (_REFUSAL_RE, LLMErrorKind.REFUSED),
     (_OVERFLOW_CODE_RE, LLMErrorKind.CONTEXT_OVERFLOW),
     (_BROKER_PERMANENT_RE, LLMErrorKind.PROVIDER_BAD_REQUEST),
     (_RATE_LIMIT_RE, LLMErrorKind.RATE_LIMITED),

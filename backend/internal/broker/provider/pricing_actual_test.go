@@ -52,3 +52,24 @@ func TestNormalizeUsage_UsesModelRate(t *testing.T) {
 		t.Fatalf("zero usage: err = %v, want ErrUsageMissing", err)
 	}
 }
+
+// The current Claude models are metered at their own list price. Unlisted, they
+// fell back to $3/$15: Sonnet 5.5 was over-reported by half (a measured run
+// logged $5.11 for $3.41 of spend), while Opus 5.5 ($4/$20) and Fable 5.2
+// ($8/$40) were UNDER-reserved, the direction a budget cap cannot tolerate.
+func TestActualUSD_CurrentClaudeModels(t *testing.T) {
+	cases := map[string][2]float64{
+		"claude-sonnet-5-5": {2.00, 10.00},
+		"claude-opus-5-5":   {4.00, 20.00},
+		"claude-fable-5-2":  {8.00, 40.00},
+		// Haiku 5.5 is $0.10/$0.50 up to a 100K-token prompt and $0.50/$2.50
+		// above it; one rate per model, so the higher one: never under-reserve.
+		"claude-haiku-5-5": {0.50, 2.50},
+	}
+	for model, rate := range cases {
+		want := rate[0] + rate[1] // 1M in + 1M out
+		if got := ActualUSD(model, 1_000_000, 1_000_000); got != want {
+			t.Errorf("ActualUSD(%s, 1M, 1M) = %.2f, want %.2f", model, got, want)
+		}
+	}
+}

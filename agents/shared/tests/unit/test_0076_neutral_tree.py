@@ -331,8 +331,13 @@ def test_T56_temperature_comment_no_longer_claims_determinism():
     assert "ensures deterministic, reproducible audit results" not in source
     assert "30.4%" in source
     assert "does NOT make an audit" in source
-    # The policy itself is unchanged — T5.6 is comments only.
-    assert "ModelSettings(temperature=0.1)" in source
+    # The policy is 0.1 wherever the model accepts a temperature; Claude
+    # models from Opus 4.7 on reject any non-default value with a 400, so
+    # sampling_settings leaves it out for them (test_sampling_params_parity.py).
+    from shared.llm.provider import sampling_settings
+
+    assert "ModelSettings(**sampling_settings(resolved))" in source
+    assert sampling_settings("gpt-4o") == {"temperature": 0.1}
 
 
 # ══════════════════════════════════════════════════════════════════════

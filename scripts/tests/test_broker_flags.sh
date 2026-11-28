@@ -93,6 +93,42 @@ assert_contains "$out" "Broker provider:     gemini" "server gemini: native gemi
 out=$(run_server anthropic claude-3-5-sonnet --no-broker)
 assert_not_contains "$out" "Broker:    on" "server anthropic --no-broker: broker OFF"
 
+# ── The provider receives a real model id, never an alias ─────────────────
+# The broker hands the model to Anthropic / Google verbatim, so an alias (or a
+# retired id) 404s on every call.
+out=$(run_dev anthropic)
+assert_contains "$out" "Model:     claude-sonnet-5-5" "dev anthropic: default is a real Claude id"
+out=$(run_dev anthropic claude-sonnet)
+assert_contains "$out" "Model:     claude-sonnet-5-5" "dev anthropic: claude-sonnet alias expanded"
+out=$(run_dev anthropic claude-sonnet --no-broker)
+assert_contains "$out" "Model:     litellm/anthropic/claude-sonnet-5-5" "dev anthropic --no-broker: LiteLLM routes to Anthropic"
+out=$(run_server anthropic)
+assert_contains "$out" "Model:     claude-sonnet-5-5" "server anthropic: default is a real Claude id"
+out=$(run_server gemini)
+assert_contains "$out" "Model:     gemini-2.5-flash" "server gemini: default is a live Google id"
+out=$(run_server gemini gemini-pro)
+assert_contains "$out" "Model:     gemini-2.5-pro" "server gemini: gemini-pro alias expanded"
+out=$(run_server gemini gemini-flash)
+assert_contains "$out" "Model:     gemini-2.5-flash" "server gemini: gemini-flash alias expanded"
+
+# ── An OpenAI-compatible OPENAI_BASE_URL never carries a native provider ──
+# Without the broker the agents call the provider themselves, and an inherited
+# OPENAI_BASE_URL (a gateway left in .env) would route Claude calls there.
+ENVF=$(mktemp)
+echo "OPENAI_BASE_URL=https://gateway.example.com/api/v3" > "$ENVF"
+run_dev_env() {
+    VULTURE_LAUNCH_DRY_RUN=1 VULTURE_ENV_FILE="$ENVF" \
+        OPENAI_API_KEY=dummy ANTHROPIC_API_KEY=dummy GEMINI_API_KEY=dummy \
+        bash "$START" "$@" 2>&1
+}
+out=$(run_dev_env openai gpt-4o --no-broker)
+assert_contains "$out" "Endpoint:  https://gateway.example.com/api/v3" "dev openai --no-broker: OPENAI_BASE_URL shown"
+out=$(run_dev_env anthropic --no-broker)
+assert_not_contains "$out" "gateway.example.com" "dev anthropic --no-broker: OPENAI_BASE_URL cleared"
+out=$(run_dev_env gemini --no-broker)
+assert_not_contains "$out" "gateway.example.com" "dev gemini --no-broker: OPENAI_BASE_URL cleared"
+rm -f "$ENVF"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

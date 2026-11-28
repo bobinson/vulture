@@ -8,7 +8,7 @@ id: validate/output_contract
 # invalidated by it.
 role: SYSTEM+USER_MIRROR
 stance: [BLESSES_ABSTENTION_AFTER_LOOKING, FORBIDS_FENCE, FORBIDS_PROSE]
-declares_fields: [id, exploitable, window_sufficient, evidence_line, evidence_file, reasoning]
+declares_fields: [id, exploitable, window_sufficient, evidence_line, evidence_file, claim_holds, reasoning]
 references: []
 # This is the LAST section of `prompts/validate_judge.txt`, and that file's
 # own terminating newline is part of the no-tools system turn: `_call_llm`
@@ -20,7 +20,7 @@ keep_trailing: true
 ---
 Your FINAL message must be STRICT JSON only — no prose, no markdown, no
 code fences. Tool calls before it are expected and are not a violation:
-{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"evidence_file":<string or null>,"reasoning":"<up to 60 words>"}]}
+{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"evidence_file":<string or null>,"claim_holds":<true|false|null>,"reasoning":"<up to 60 words>"}]}
 
 Every finding in the batch must appear in the response by id. If you
 cannot judge a specific finding from the code shown, spend a tool call on it

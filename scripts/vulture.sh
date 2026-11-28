@@ -33,7 +33,7 @@
 #   lmstudio [model]   LM Studio (auto-detects loaded model)
 #   ollama [model]     Local Ollama (default: qwen3:1.7b)
 #   openai [model]     OpenAI API (default: gpt-4o)
-#   anthropic [model]  Anthropic API (default: claude-sonnet)
+#   anthropic [model]  Anthropic API (default: claude-sonnet-5-5)
 #   gemini [model]     Google Gemini API — remote (default: gemini-2.5-flash); needs GEMINI_API_KEY
 #
 # LLM broker (feature 0064 §30) — ON BY DEFAULT whenever LLM is enabled:

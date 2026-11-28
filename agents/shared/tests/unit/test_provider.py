@@ -10,7 +10,7 @@ def test_get_model_default(monkeypatch):
 def test_get_model_cloud_providers():
     from shared.llm.provider import get_model
     assert get_model("gpt-4o") == "gpt-4o"
-    assert get_model("claude-sonnet") == "litellm/anthropic/claude-sonnet-4-5-20250514"
+    assert get_model("claude-sonnet") == "litellm/anthropic/claude-sonnet-5-5"
     # The alias target moved off `gemini-1.5-pro`: Google retired it, so every
     # call 404'd and the gemini provider was dead. See
     # test_gemini_model_ids_are_live.py, which pins the ids against a
@@ -310,8 +310,9 @@ class TestEstimateCost:
 
     def test_claude_cost(self):
         from shared.llm.provider import estimate_cost
+        # The alias resolves to claude-sonnet-5-5 and is priced as it ($2/$10).
         cost = estimate_cost(1_000_000, 0, model="claude-sonnet")
-        assert cost == 3.00
+        assert cost == 2.00
 
     def test_local_model_zero_cost(self):
         from shared.llm.provider import estimate_cost
@@ -464,6 +465,26 @@ def test_supports_structured_output_false_for_gemini(monkeypatch):
     monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
     assert provider.supports_structured_output("gemini-2.5-flash") is False
     assert provider.supports_structured_output("gemini-pro") is False
+
+
+def test_supports_structured_output_false_for_claude(monkeypatch):
+    """Claude cannot enforce a json_schema natively: the broker's Anthropic
+    adapter drops response_format, and LiteLLM emulates it with a forced tool
+    call that makes the real tools uncallable. Measured: a broker run on
+    claude-sonnet-5-5 set output_type, Claude answered in prose, and the SDK
+    failed the whole LLM phase with `Invalid JSON when parsing model output`.
+    Only a family whose profile can combine JSON mode with tools gets
+    output_type; every other family keeps the answer it had before."""
+    from shared.llm import provider
+    monkeypatch.setattr(provider, "_CUSTOM_BASE_URL", "")
+    monkeypatch.delenv("VULTURE_LLM_ENDPOINT_KIND", raising=False)
+    assert provider.supports_structured_output("claude-sonnet-5-5") is False
+    assert provider.supports_structured_output("litellm/anthropic/claude-sonnet-5-5") is False
+    assert provider.supports_structured_output("claude-sonnet") is False
+    assert provider.supports_structured_output("gpt-4o") is True
+    # Families that combined JSON mode with tools before keep output_type.
+    for model in ("qwen3:8b", "doubao-seed-1-6", "glm-4.6", "kimi-k2"):
+        assert provider.supports_structured_output(model) is True, model
 
 
 def test_supports_structured_output_false_for_custom_endpoint(monkeypatch):

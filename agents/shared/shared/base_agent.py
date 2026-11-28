@@ -4,7 +4,7 @@ from typing import Any
 
 from agents import Agent, ModelSettings
 
-from shared.llm.provider import get_model
+from shared.llm.provider import get_model, sampling_settings
 
 
 def create_agent(
@@ -44,8 +44,11 @@ def create_agent(
     # output stays well-formed and findings stay on-format. Verifiability is
     # the job of the anchor/quote verifier (0076), never of the sampler.
     #
+    # Claude models from Opus 4.7 on reject any non-default temperature with a
+    # 400, so sampling_settings leaves it out for them.
+    #
     # prompt_cache_retention is available in newer SDK versions for cost savings.
-    settings = ModelSettings(temperature=0.1)
+    settings = ModelSettings(**sampling_settings(resolved))
     return Agent(
         name=name,
         instructions=instructions,

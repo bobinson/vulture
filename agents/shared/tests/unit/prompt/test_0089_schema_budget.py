@@ -72,7 +72,7 @@ class TestOutputSchema:
         # field says which file.
         assert VERDICT_SCHEMA.field_names() == frozenset({
             "id", "exploitable", "window_sufficient", "evidence_line",
-            "evidence_file", "reasoning",
+            "evidence_file", "claim_holds", "reasoning",
         })
         props = VERDICT_SCHEMA.as_json_schema()["schema"]["properties"][
             VERDICT_SCHEMA.array_key]["items"]["properties"]

@@ -236,7 +236,7 @@ def test_schema_fields_are_the_verdict_schema():
     assert VALIDATE_JUDGE.schema_fields == tuple(f.name for f in VERDICT_SCHEMA.fields)
     assert VALIDATE_JUDGE.schema_fields == (
         "id", "exploitable", "window_sufficient", "evidence_line",
-        "evidence_file", "reasoning")
+        "evidence_file", "claim_holds", "reasoning")
     declared = get("validate/output_contract").declares_fields
     assert set(declared) == set(VALIDATE_JUDGE.schema_fields)
 

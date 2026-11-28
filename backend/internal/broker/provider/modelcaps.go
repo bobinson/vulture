@@ -1,12 +1,15 @@
 package provider
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Model capability predicates (§32.1 #4). Sampling params (temperature/top_p)
 // and the token-limit field name are NOT universal: OpenAI o-series reasoning
 // models reject temperature≠1 and require max_completion_tokens (not
-// max_tokens), and the newest Anthropic models (Opus 4.7/4.8, Sonnet 5, Fable 5)
-// removed sampling params entirely. Sending them anyway is a hard 400. These
+// max_tokens), and every Anthropic model from Opus 4.7 on removed sampling
+// params entirely. Sending them anyway is a hard 400. These
 // predicates gate emission per model so the broker works across the whole
 // fleet, not just the models that happen to accept every param.
 
@@ -20,12 +23,25 @@ var oSeriesExact = map[string]bool{
 
 var oSeriesPrefixes = []string{"o1-", "o3-", "o4-"}
 
-// anthropicNoSampling are substrings of Anthropic model ids that dropped
-// sampling params. Generic aliases (claude-sonnet, claude-3-5-…) still accept
-// them, so match only the specific newer versions.
-var anthropicNoSampling = []string{
-	"opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
-	"sonnet-5", "sonnet5", "fable-5", "fable5",
+// claudeLegacySampling matches the Claude models that still accept sampling
+// params: every one released before Opus 4.7 (Claude 2 / instant / 3.x, and the
+// Claude 4 generation up to 4.6, dated, Bedrock- or Vertex-suffixed or not).
+// Every later Claude model answers a non-default temperature/top_p with a 400,
+// and so will each new one, so this set is CLOSED: a new model needs no entry.
+// (The denylist it replaces had to name each new model and missed Opus 5,
+// Opus 5.5 and Haiku 5.5, so the L5 judge's temperature 0.1 400'd on them.)
+var claudeLegacySampling = regexp.MustCompile(
+	`^claude-(?:2|instant|3)|^claude-(?:opus|sonnet|haiku)-4(?:[-.][0-6])?(?:-\d{8})?(?:-v\d+(?::\d+)?)?(?:@\d{8})?$`)
+
+// claudeModelID returns the Claude model id inside a provider or gateway
+// spelling (anthropic/claude-…, anthropic.claude-…), or "" for a model that is
+// not Claude.
+func claudeModelID(lowerModel string) string {
+	i := strings.Index(lowerModel, "claude-")
+	if i < 0 {
+		return ""
+	}
+	return lowerModel[i:]
 }
 
 func isOSeries(model string) bool {
@@ -47,10 +63,8 @@ func acceptsSamplingParams(model string) bool {
 		return false
 	}
 	lm := strings.ToLower(strings.TrimSpace(model))
-	for _, s := range anthropicNoSampling {
-		if strings.Contains(lm, s) {
-			return false
-		}
+	if id := claudeModelID(lm); id != "" {
+		return claudeLegacySampling.MatchString(id)
 	}
 	return true
 }

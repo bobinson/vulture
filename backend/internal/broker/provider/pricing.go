@@ -9,7 +9,7 @@ package provider
 var priceUSDPer1M = map[string][2]float64{
 	"gpt-4o":        {2.50, 10.00},
 	"gpt-4o-mini":   {0.15, 0.60},
-	"claude-sonnet": {3.00, 15.00},
+	"claude-sonnet": {2.00, 10.00}, // alias: priced as claude-sonnet-5-5, what it resolves to
 	// ALIASES, priced as what they RESOLVE to (see MODEL_MAP in
 	// agents/shared/shared/llm/provider.py). `gemini-pro` was {1.25, 5.00} here:
 	// input matched gemini-2.5-pro but output was half its real 10.00, so a
@@ -24,6 +24,13 @@ var priceUSDPer1M = map[string][2]float64{
 	"claude-3-5-sonnet": {3.00, 15.00},
 	"claude-sonnet-4":   {3.00, 15.00},
 	"claude-3-5-haiku":  {0.80, 4.00},
+	// Current Claude models at list price. Haiku 5.5 is $0.10/$0.50 up to a
+	// 100K-token prompt and $0.50/$2.50 above; one rate per model, so the
+	// higher one (a cap must never be under-reserved).
+	"claude-sonnet-5-5": {2.00, 10.00},
+	"claude-opus-5-5":   {4.00, 20.00},
+	"claude-fable-5-2":  {8.00, 40.00},
+	"claude-haiku-5-5":  {0.50, 2.50},
 }
 
 const (
