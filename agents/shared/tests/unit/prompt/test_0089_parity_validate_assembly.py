@@ -181,6 +181,9 @@ EXPECTED_SYSTEM_FRAGMENTS = (
     "validate/language_idioms",
     "validate/calibration",
     "validate/closure",
+    # The claim question: a second answer about the same finding, beside
+    # closure. Only a cited `claim_holds = false` may dismiss a finding.
+    "validate/claim",
     "validate/evidence_citation",
     # Item 4.8. A `core/` fragment in the middle of the tier's own sections,
     # for the same reason `core/untrusted` is one two positions up: the policy

@@ -24,8 +24,11 @@ MODEL_MAP: dict[str, str] = {
     # This is intentional: native SDK path provides better streaming and
     # structured output support for OpenAI models.
     "gpt-4o": "gpt-4o",
-    # Update version date when new Claude releases are available
-    "claude-sonnet": "litellm/anthropic/claude-sonnet-4-5-20250514",
+    # The current Sonnet, by its exact id: Anthropic ids carry no date suffix
+    # now, and the old target (claude-sonnet-4-5-20250514) was never a real id.
+    # The launcher expands this alias the same way (scripts/lib/models.sh;
+    # parity: test_model_alias_shell_parity.py).
+    "claude-sonnet": "litellm/anthropic/claude-sonnet-5-5",
     # `gemini-1.5-pro` was retired: ListModels omits it and generateContent
     # returns 404 NOT_FOUND — measured as 33 upstream 404s in one run, reaching
     # the operator as a generic endpoint error.
@@ -509,23 +512,30 @@ def supports_structured_output(model: str | None = None) -> bool:
     Returns False when:
       - A custom OpenAI-compatible endpoint is configured (vLLM/LM Studio may
         reject ``response_format`` JSON schema with 'lazy grammar' errors), or
-      - The model is Google Gemini.  Gemini's API rejects function calling
-        combined with a JSON response mime type ("Function calling with a
-        response mime type: 'application/json' is unsupported"), and our audit
-        agents always attach tools.
+      - The model's family cannot combine a JSON response format with tools
+        (``json_mode_with_tools`` in ``shared.prompt.profile.MODEL_PROFILES``),
+        and our audit agents always attach tools. Gemini rejects function
+        calling combined with a JSON response mime type; Claude has no
+        ``response_format`` at all — the broker's Anthropic adapter drops it,
+        so Claude answered in prose and the SDK failed the whole LLM phase with
+        ``Invalid JSON when parsing model output``, and LiteLLM emulates it with
+        a forced tool call that makes the real tools uncallable. The old check
+        excluded gemini alone.
 
     When this returns False the caller falls back to prompt-based JSON and
     parses with ``_parse_llm_findings``.
     """
     if uses_custom_endpoint():
         return False
-    return "gemini" not in get_model(model)
+    from shared.prompt.profile import MODEL_PROFILES, family_for
+
+    return bool(MODEL_PROFILES[family_for(get_model(model))]["json_mode_with_tools"])
 
 
 # Cost per 1M tokens: (input_cost_usd, output_cost_usd).
 COST_PER_1M_TOKENS: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
-    "claude-sonnet": (3.00, 15.00),
+    "claude-sonnet": (2.00, 10.00),  # alias of claude-sonnet-5-5: priced as what it resolves to
     # Google list price per 1M tokens. These are the 2.5-generation numbers and
     # they are NOT interchangeable between tiers — the old (1.25, 5.00) was
     # gemini-1.5-pro's and would have mispriced a flash run ~4x on input.
@@ -634,6 +644,31 @@ def _single_attempt_kwargs() -> dict:
     return {"max_retries": 0, "timeout": _call_timeout_s(), "num_retries": 0}
 
 
+# The Claude models that still accept sampling params (temperature/top_p): every
+# one released before Opus 4.7. Every later Claude model answers a non-default
+# value with a 400, and so will each new one, so the set is CLOSED. The broker
+# gates on the same pattern (claudeLegacySampling in
+# backend/internal/broker/provider/modelcaps.go); test_sampling_params_parity.py
+# keeps the two identical. This copy matters WITHOUT the broker, where the
+# agents call Anthropic through LiteLLM themselves.
+_CLAUDE_LEGACY_SAMPLING = re.compile(
+    r"^claude-(?:2|instant|3)|^claude-(?:opus|sonnet|haiku)-4(?:[-.][0-6])?(?:-\d{8})?(?:-v\d+(?::\d+)?)?(?:@\d{8})?$")
+
+# The sampling temperature every LLM call uses where the model accepts one: it
+# narrows sampling so structured output stays well-formed (see base_agent).
+_TEMPERATURE = 0.1
+
+
+def sampling_settings(model: str | None) -> dict:
+    """``{"temperature": 0.1}``, or ``{}`` for a Claude model that rejects
+    sampling params (any spelling: bare, ``anthropic/``, ``litellm/anthropic/``)."""
+    low = (model or "").strip().lower()
+    at = low.find("claude-")
+    if at >= 0 and not _CLAUDE_LEGACY_SAMPLING.match(low[at:]):
+        return {}
+    return {"temperature": _TEMPERATURE}
+
+
 def get_model_settings(model: str | None = None) -> dict:
     """Return provider-specific model settings for prompt caching.
 
@@ -651,7 +686,7 @@ def get_model_settings(model: str | None = None) -> dict:
         Dict of settings suitable for ``ModelSettings(**settings)``.
     """
     resolved = get_model(model)
-    settings: dict = {"temperature": 0.1}
+    settings: dict = dict(sampling_settings(resolved))
     if "anthropic" in resolved:
         settings["extra_headers"] = {"anthropic-beta": "prompt-caching-2024-07-31"}
     retry_args = litellm_retry_extra_args(resolved)

@@ -59,6 +59,26 @@ hides a real vulnerability, so prefer false when unsure. Being unable to see
 enough is not a failure — but when you have tools it is not yet the answer
 either. Look first; report false only if the answer is still out of reach.
 
+Claim — a SECOND question, answered separately from the probability:
+  claim_holds = true    the weakness the finding describes EXISTS at its
+                        location as stated, however low its impact and
+                        however unlikely its exploitation. A real but
+                        harmless weakness is claim_holds = true with a low
+                        probability.
+  claim_holds = false   code you can cite CONTRADICTS the finding's own
+                        claim: the value it calls a secret is not one, the
+                        check it says is missing is present, the handler it
+                        says is silent logs or rethrows, the input it calls
+                        untrusted is not, or the event it says goes
+                        unrecorded is not a security event at all (a parse
+                        fallback, UI state in code that runs in the user's
+                        browser).
+  claim_holds = null    the code you have read does not settle it.
+
+"Not exploitable" is not "claim false". A false answer is what dismisses a
+finding, so give it only with window_sufficient = true and evidence_line on
+the line that contradicts the claim, in the finding's own file.
+
 Evidence citation — one coordinate space, the file's own:
   Every line number you are shown is a REAL line number in the file it came
   from. The code window prints `L<n>: ` and a read_file result prints `<n>: `,
@@ -89,7 +109,7 @@ it stops being evidence.
 
 Your FINAL message must be STRICT JSON only — no prose, no markdown, no
 code fences. Tool calls before it are expected and are not a violation:
-{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"evidence_file":<string or null>,"reasoning":"<up to 60 words>"}]}
+{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"evidence_file":<string or null>,"claim_holds":<true|false|null>,"reasoning":"<up to 60 words>"}]}
 
 Every finding in the batch must appear in the response by id. If you
 cannot judge a specific finding from the code shown, spend a tool call on it
@@ -123,7 +143,7 @@ role.
 
 Your FINAL message must be STRICT JSON only — no prose, no markdown, no
 code fences. Tool calls before it are expected and are not a violation:
-{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"evidence_file":<string or null>,"reasoning":"<up to 60 words>"}]}
+{"verdicts":[{"id":"<finding_id>","exploitable":<float 0..1>,"window_sufficient":<true|false>,"evidence_line":<int or null>,"evidence_file":<string or null>,"claim_holds":<true|false|null>,"reasoning":"<up to 60 words>"}]}
 
 Every finding in the batch must appear in the response by id. If you
 cannot judge a specific finding from the code shown, spend a tool call on it

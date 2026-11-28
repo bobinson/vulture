@@ -273,4 +273,6 @@ def test_schema_version_bumped_for_evidence_line():
     # clause again for the six families that do not pin, and rule 1 folds the
     # system turn away entirely for a no-system-role family — so a v8 row is a
     # verdict reached under a prompt that had none of that applied to it.
-    assert l5_cache._VERDICT_SCHEMA_VERSION == "v9-judge-adapt"
+    # v10-claim: the verdict gained `claim_holds` and the prompt asks for it;
+    # a v9 row carries no claim, so replaying it would make refutation inert.
+    assert l5_cache._VERDICT_SCHEMA_VERSION == "v10-claim"

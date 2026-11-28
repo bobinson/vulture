@@ -115,3 +115,45 @@ func truncate(s string) string {
 	}
 	return s
 }
+
+// A provider refusal reaches the client in OpenAI's own shape: an empty content,
+// message.refusal carrying the reason, finish_reason content_filter. The openai
+// agents SDK turns exactly that into ModelRefusalError; an empty answer with no
+// refusal field would instead be parsed as a malformed verdict and retried.
+func TestOpenAIWire_RefusalRendered(t *testing.T) {
+	h := newHealthyHarness()
+	h.openaiFake.resp.Content = ""
+	h.openaiFake.resp.FinishReason = "content_filter"
+	h.openaiFake.resp.Refusal = "the model declined the request (refusal category: cyber)"
+	rr := postRaw(t, h, completePath, testBearer, openaiChatBody(), vultureHeaders())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (a refusal is a billed completion); body=%q", rr.Code, rr.Body.String())
+	}
+	var raw struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Refusal *string `json:"refusal"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil || len(raw.Choices) != 1 {
+		t.Fatalf("decode: %v; body=%q", err, rr.Body.String())
+	}
+	c := raw.Choices[0]
+	if c.FinishReason != "content_filter" {
+		t.Errorf("finish_reason = %q, want content_filter", c.FinishReason)
+	}
+	if c.Message.Refusal == nil || !strings.Contains(*c.Message.Refusal, "cyber") {
+		t.Errorf("message.refusal = %v, want the reason", c.Message.Refusal)
+	}
+}
+
+// An ordinary answer carries no refusal key at all.
+func TestOpenAIWire_NoRefusalKeyOnNormalAnswer(t *testing.T) {
+	h := newHealthyHarness()
+	rr := postRaw(t, h, completePath, testBearer, openaiChatBody(), vultureHeaders())
+	if strings.Contains(rr.Body.String(), `"refusal"`) {
+		t.Errorf("a normal answer must not carry a refusal key: %q", rr.Body.String())
+	}
+}

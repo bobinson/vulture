@@ -12,6 +12,8 @@ CLI_DIR="$PROJECT_ROOT/cli"
 ENV_FILE="${VULTURE_ENV_FILE:-$PROJECT_ROOT/.env}"
 # shellcheck disable=SC1091  # lib/tier3.sh is linted on its own
 . "$SCRIPT_DIR/lib/tier3.sh"
+# shellcheck source=scripts/lib/models.sh
+. "$SCRIPT_DIR/lib/models.sh"
 
 # Ensure pyenv shims are on PATH when running non-interactively.
 if [[ -d "$HOME/.pyenv/shims" ]] && [[ ":$PATH:" != *":$HOME/.pyenv/shims:"* ]]; then
@@ -24,7 +26,7 @@ Usage: scripts/vulture.sh dev <provider> [model]
 
 Providers:
   openai [model]       OpenAI API (default: gpt-4o)
-  anthropic [model]    Anthropic API (default: claude-sonnet)
+  anthropic [model]    Anthropic API (default: claude-sonnet-5-5)
   gemini [model]       Google Gemini API — remote (default: gemini-2.5-flash); needs GEMINI_API_KEY
   ollama [model]       Local Ollama (default: qwen3:1.7b)
   lmstudio [model]     LM Studio (default: local-model)
@@ -40,7 +42,7 @@ Options:
 Examples:
   scripts/vulture.sh dev openai
   scripts/vulture.sh dev openai gpt-4o
-  scripts/vulture.sh dev anthropic claude-sonnet
+  scripts/vulture.sh dev anthropic claude-sonnet-5-5
   GEMINI_API_KEY=AIza... scripts/vulture.sh dev gemini            # remote Gemini (default gemini-2.5-flash)
   GEMINI_API_KEY=AIza... scripts/vulture.sh dev gemini gemini-2.5-flash
   scripts/vulture.sh dev ollama qwen3:8b
@@ -358,51 +360,6 @@ echo "  Vulture — starting with provider: $PROVIDER"
 echo
 
 
-# Apply the provider's model-id convention to an arbitrary model string.
-# Extracted so --validate-model gets the SAME treatment as the scan model: an
-# unprefixed Gemini id would be routed to the wrong provider entirely.
-normalize_model() {
-    _nm_provider="$1"; _nm="$2"
-    [[ -z "$_nm" ]] && { printf '%s' ""; return; }
-    case "$_nm_provider" in
-        gemini)
-            # Expand ALIASES here rather than exempting them: the broker receives
-            # a BARE model id and cannot consult MODEL_MAP, so an unexpanded
-            # alias is sent to Google verbatim and 404s.
-            #
-            # A TABLE, not an `if`, because the single hardcoded `gemini-pro`
-            # comparison this replaces made every FUTURE alias born broken —
-            # `gemini-flash` was added in the same change that fixed
-            # `gemini-pro` and inherited the bug immediately. Keep in step with
-            # MODEL_MAP in agents/shared/shared/llm/provider.py; parity in both
-            # directions is enforced by test_gemini_alias_shell_parity.py, which
-            # fails when an alias is added on either side alone.
-            case "$_nm" in
-                gemini-pro)   _nm="gemini-2.5-pro" ;;
-                gemini-flash) _nm="gemini-2.5-flash" ;;
-            esac
-            if [[ "$_nm" != litellm/* ]]; then
-                _nm="litellm/gemini/${_nm#gemini/}"
-            fi ;;
-        lmstudio)
-            [[ "$_nm" != openai/* ]] && _nm="openai/$_nm" ;;
-    esac
-    printf '%s' "$_nm"
-}
-
-# The broker speaks to providers through native adapters and wants a BARE model
-# id, so it strips the LiteLLM routing prefix the tiers above add. Mirrors the
-# per-provider stripping in the broker block below.
-strip_broker_prefix() {
-    _sb_provider="$1"; _sb="$2"
-    case "$_sb_provider" in
-        gemini)    _sb="${_sb#litellm/gemini/}"; _sb="${_sb#gemini/}" ;;
-        lmstudio)  _sb="${_sb#openai/}" ;;
-        anthropic) _sb="${_sb#litellm/anthropic/}"; _sb="${_sb#anthropic/}" ;;
-    esac
-    printf '%s' "$_sb"
-}
-
 case "$PROVIDER" in
     openai)
         MODEL="${MODEL:-gpt-4o}"
@@ -412,8 +369,15 @@ case "$PROVIDER" in
         ;;
 
     anthropic)
-        MODEL="${MODEL:-claude-sonnet}"
+        MODEL="${MODEL:-$DEFAULT_ANTHROPIC_MODEL}"
         require_key ANTHROPIC_API_KEY "Anthropic"
+        # Without the broker the agents call Anthropic themselves: an inherited
+        # OPENAI_BASE_URL (an OpenAI-compatible gateway left in .env) would route
+        # their Claude calls there. With the broker the backend keeps it, for
+        # embeddings; the broker itself never sends Claude calls to it.
+        [[ "$NO_BROKER" == "1" ]] && unset OPENAI_BASE_URL
+        # litellm/anthropic/ routes LiteLLM to Anthropic; the broker block strips it.
+        MODEL="$(normalize_model anthropic "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
         ;;
@@ -427,12 +391,11 @@ case "$PROVIDER" in
         # can expand reaches Google verbatim — and `gemini-pro` is retired there,
         # which made every gemini call 404. Pinned by
         # agents/shared/tests/unit/test_gemini_model_ids_are_live.py.
-        MODEL="${MODEL:-gemini-2.5-flash}"
+        MODEL="${MODEL:-$DEFAULT_GEMINI_MODEL}"
         require_key GEMINI_API_KEY "Gemini"
         unset OPENAI_BASE_URL 2>/dev/null || true
-        # A bare Gemini id gets the litellm/gemini/ prefix so LiteLLM routes it
-        # Any other Gemini model gets the litellm/gemini/ prefix so LiteLLM routes
-        # it to Google (parallels the lmstudio arm's openai/ prefixing).
+        # A Gemini id gets the litellm/gemini/ prefix so LiteLLM routes it to
+        # Google (parallels the lmstudio arm's openai/ prefixing).
         MODEL="$(normalize_model gemini "$MODEL")"
         export VULTURE_USE_LLM=true
         export VULTURE_LLM_MODEL="$MODEL"
@@ -589,6 +552,11 @@ fi
 
 echo "  Provider:  $PROVIDER"
 echo "  Model:     ${VULTURE_LLM_MODEL:-$MODEL}"
+# Without the broker the agents call OPENAI_BASE_URL themselves: show it, so a
+# gateway inherited from .env is visible before any call goes there.
+if [[ "${VULTURE_LLM_BROKER:-off}" != "on" && -n "${OPENAI_BASE_URL:-}" ]]; then
+    echo "  Endpoint:  $OPENAI_BASE_URL"
+fi
 if [[ -n "${VULTURE_VALIDATE_LLM_MODEL:-}" \
       && "$VULTURE_VALIDATE_LLM_MODEL" != "${VULTURE_LLM_MODEL:-$MODEL}" ]]; then
     echo "  Validate:  $VULTURE_VALIDATE_LLM_MODEL"

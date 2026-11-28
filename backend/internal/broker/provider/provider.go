@@ -183,9 +183,13 @@ type CompletionResponse struct {
 	Content      string     `json:"content"`
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 	FinishReason string     `json:"finish_reason"`
-	Usage        Usage      `json:"usage"`
-	Cached       bool       `json:"cached"`
-	RequestID    string     `json:"request_id"`
+	// Refusal is set when the model declined the request (FinishReason
+	// "content_filter"): OpenAI's message.refusal, which the agents SDK turns
+	// into ModelRefusalError. Never request content; see refusalCategory.
+	Refusal   string `json:"refusal,omitempty"`
+	Usage     Usage  `json:"usage"`
+	Cached    bool   `json:"cached"`
+	RequestID string `json:"request_id"`
 }
 
 // StreamChunk is one streaming delta or the terminal usage frame (§5).
@@ -244,6 +248,19 @@ func (k StaticKeys) KeyFor(provider string) string { return k[provider] }
 
 // Compile-time interface assertion.
 var _ KeyResolver = StaticKeys(nil)
+
+// SpeaksOpenAIWire reports whether the named broker provider is called over the
+// OpenAI chat-completions protocol. Only the native adapters (gemini, anthropic)
+// are not; any other name, an unknown local server included, is served by an
+// OpenAI-compatible adapter (serve.defaultAdapters).
+func SpeaksOpenAIWire(providerName string) bool {
+	switch providerName {
+	case "gemini", "anthropic":
+		return false
+	default:
+		return true
+	}
+}
 
 // CanonicalBaseURL returns the well-known default egress endpoint for a
 // first-party provider (§30). The broker needs a concrete base URL BEFORE the

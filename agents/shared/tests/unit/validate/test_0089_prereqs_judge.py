@@ -167,8 +167,9 @@ def test_prereq_verdict_field_whitelist_unchanged():
     # tool-read citation from a window citation.
     out = llm_judge._coerce_verdict(
         {"id": "f0", "exploitable": "0.8", "bogus": "x"})
+    # `claim_holds` joined it with the claim question.
     assert set(out) == {"id", "exploitable", "reasoning", "window_sufficient",
-                        "evidence_line", "evidence_file"}
+                        "evidence_line", "evidence_file", "claim_holds"}
 
 
 # ── P3 end to end: at the HTTP boundary, not the _call_llm seam ──────

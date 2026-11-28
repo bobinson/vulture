@@ -157,13 +157,16 @@ VALIDATE_JUDGE = PromptSpec(
     # way: `6a1dc6ce88af944c` -> `a2bf3e4ab0b59ece` / `f55bd54f11ab9c5d` /
     # `4a14146d7fc7d17e`. `_VERDICT_SCHEMA_VERSION` MOVES WITH IT — every
     # cached verdict was produced under the pre-flip prompt.
-    version=6,
+    version=7,                                  # the claim question (claim_holds)
     fragments=(
         "validate/role",
         "core/untrusted",
         "validate/language_idioms",
         "validate/calibration",
         "validate/closure",
+        # The claim question sits with closure: both are separate answers
+        # about the same finding, and the claim's admissibility leans on it.
+        "validate/claim",
         "validate/evidence_citation",
         # Between the citation rules and the output contract, not at the end:
         # `validate/tool_discipline` must stay LAST so `VALIDATE_JUDGE_PLAIN`
@@ -205,7 +208,7 @@ VALIDATE_JUDGE = PromptSpec(
 VALIDATE_JUDGE_PLAIN = PromptSpec(
     id="validate_judge_plain",
     tier="validate",
-    version=6,                                  # item 4.1, with VALIDATE_JUDGE
+    version=7,                                  # the claim question, with VALIDATE_JUDGE
     fragments=VALIDATE_JUDGE.fragments[:-1],
     user_fragments=VALIDATE_JUDGE.user_fragments,
     tools=(),

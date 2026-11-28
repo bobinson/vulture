@@ -159,6 +159,7 @@ def _connect() -> Optional[sqlite3.Connection]:
                 ("window_sufficient", "INTEGER"),   # closure gate
                 ("evidence_line", "INTEGER"),       # feature 0072 T5.3
                 ("evidence_file", "TEXT"),          # feature 0089 item 4.2
+                ("claim_holds", "INTEGER"),         # claim refutation
             ):
                 if col not in existing_cols:
                     conn.execute(f"ALTER TABLE l5_cache ADD COLUMN {col} {decl}")
@@ -218,7 +219,12 @@ def _connect() -> Optional[sqlite3.Connection]:
 # something different about output language. The model is already part of the
 # cache key, so what this version adds is the PROMPT dimension the key cannot
 # otherwise see. Old rows become unreachable rather than being deleted.
-_VERDICT_SCHEMA_VERSION = "v9-judge-adapt"
+# Bumped again for the claim question: the verdict gained `claim_holds`, the
+# judge's separate answer to "does the weakness the finding claims exist at
+# all", and the prompt now asks it. A v9 row carries no claim, so replaying it
+# would make claim refutation look inert on exactly the findings already
+# judged. Old rows become unreachable rather than being deleted.
+_VERDICT_SCHEMA_VERSION = "v10-claim"
 
 
 def cache_key(*, file_path: str, line_start: int, line_end: int,
@@ -263,7 +269,7 @@ def _lookup(key: str) -> Optional[dict]:
         with _LOCK:
             row = conn.execute(
                 "SELECT exploitable, reasoning, model, language, judged_at, "
-                "window_sufficient, evidence_line, evidence_file "
+                "window_sufficient, evidence_line, evidence_file, claim_holds "
                 "FROM l5_cache WHERE cache_key = ?",
                 (key,),
             ).fetchone()
@@ -286,6 +292,8 @@ def _lookup(key: str) -> Optional[dict]:
             # carry the WHOLE coordinate — a line without its file is the
             # two-space ambiguity the item removed, reintroduced by the cache.
             "evidence_file": row[7] or None,
+            # None when unanswered; only a literal False can refute a claim.
+            "claim_holds": None if row[8] is None else bool(row[8]),
         }
     except Exception as exc:
         log.warning("[validate.l5] cache lookup failed: %s", exc)
@@ -296,7 +304,8 @@ def store(key: str, *, exploitable: float, reasoning: str,
           model: str, language: str,
           window_sufficient: Optional[bool] = None,
           evidence_line: Optional[int] = None,
-          evidence_file: Optional[str] = None) -> None:
+          evidence_file: Optional[str] = None,
+          claim_holds: Optional[bool] = None) -> None:
     """Best-effort write. Silent on failure (caching is a perf nicety,
     not a correctness requirement)."""
     conn = _connect()
@@ -308,12 +317,13 @@ def store(key: str, *, exploitable: float, reasoning: str,
             conn.execute(
                 "INSERT OR REPLACE INTO l5_cache "
                 "(cache_key, exploitable, reasoning, model, language, judged_at, "
-                "window_sufficient, evidence_line, evidence_file) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "window_sufficient, evidence_line, evidence_file, claim_holds) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (key, float(exploitable), reasoning, model, language, time.time(),
                  None if window_sufficient is None else int(window_sufficient),
                  None if evidence_line is None else int(evidence_line),
-                 evidence_file or None),
+                 evidence_file or None,
+                 None if claim_holds is None else int(claim_holds)),
             )
         _count("stores")
     except Exception as exc:
